@@ -218,6 +218,27 @@ def test_a_cylinder_and_a_round_fan_hole_are_snapped_onto_their_true_surface(tmp
     assert math.isclose(pcb["volume_m3"], 0.09 * 0.07 * 0.0016, rel_tol=1e-9)
 
 
+def test_a_cylinder_lying_on_a_board_touches_it_along_a_line_only(tmp_path):
+    doc = Ecxml("Lying coil")
+    doc.material("FR4", 1900, 1200, 0.9, ("isotropic", 0.3))
+    doc.material("Cu", 8900, 385, 0.1, ("isotropic", 390))
+    doc.domain((0, 0, 0), (0.04, 0.03, 0.02))
+    doc.block("Board", (0.005, 0.005, 0.005), (0.03, 0.02, 0.0016), "FR4")
+    doc.cylinder("Coil", (0.01, 0.01, 0.0066), (0.02, 0.006, 0.006), "+yz", "Cu", 1.0)
+    doc.cylinder("Post", (0.028, 0.012, 0.0066), (0.004, 0.004, 0.005), "+xy", "Cu")
+    result = _mesh(tmp_path, doc, max_cells=150_000)
+    contacts = {tuple(c) for c in result.report["solid_contacts"]}
+    # the coil lies on the board (tangent: a line); the post stands on it (its end: a disc)
+    assert ("Board", "Coil") not in contacts and ("Board", "Post") in contacts
+    released = result.report["line_contacts"]
+    assert len(released) == 1 and released[0]["axis"] == "z" and released[0]["side"] == "-"
+    coil = next(s_ for s_ in result.report["staircased"] if s_["part"] == "Coil")
+    # the air under it near the line costs the coil some volume at this coarse grid (reported)
+    assert abs(coil["volume_error_pct"]) < 10.0 and abs(coil["side_area_error_pct"]) < 5.0
+    assert math.isclose(_region(result, "Board")["volume_m3"], 0.03 * 0.02 * 0.0016,
+                        rel_tol=1e-9)
+
+
 def test_a_50um_interface_and_a_25um_die_attach_keep_their_cells(tmp_path):
     doc = Ecxml("Lidded package")
     doc.material("Si", 2330, 700, 0.8, ("isotropic", 150))
@@ -242,6 +263,47 @@ def test_a_50um_interface_and_a_25um_die_attach_keep_their_cells(tmp_path):
     contacts = {tuple(c) for c in result.report["solid_contacts"]}
     assert {("Die", "Die_attach"), ("Die", "TIM1"), ("Lid", "TIM1"),
             ("Die_attach", "Substrate")} <= contacts
+
+
+def _lidded_package():
+    doc = Ecxml("Lidded package")
+    doc.material("Si", 2330, 700, 0.8, ("isotropic", 150))
+    doc.material("TIM", 2500, 800, 0.9, ("isotropic", 4))
+    doc.material("Cu", 8900, 385, 0.1, ("isotropic", 390))
+    doc.domain((0, 0, 0), (0.06, 0.06, 0.03))
+    z = 0.01
+    doc.block("Substrate", (0.01, 0.01, z), (0.04, 0.04, 0.001), "Cu")
+    z += 0.001
+    doc.block("Die attach", (0.025, 0.025, z), (0.01, 0.01, 25e-6), "TIM")
+    z += 25e-6
+    doc.block("Die", (0.025, 0.025, z), (0.01, 0.01, 0.0005), "Si", 50.0)
+    z += 0.0005
+    doc.block("TIM1", (0.025, 0.025, z), (0.01, 0.01, 50e-6), "TIM")
+    z += 50e-6
+    doc.block("Lid", (0.015, 0.015, z), (0.03, 0.03, 0.001), "Cu")
+    return doc
+
+
+def test_a_budget_that_takes_a_cell_from_a_thin_layer_says_so_and_names_the_budget(tmp_path):
+    from meshpipeline.engines.snapgrid import blocks as B
+
+    doc = _lidded_package()
+    pl = place(read_ecxml(doc.xml()))
+    with pytest.raises(G.OverBudget) as one:            # the fewest cells with ONE cell through
+        B.build_layout(pl, G.GridPlan(max_cells=1000, min_cells_across=1, growth=2.0,
+                                      cylinder_cells=6))
+    budget = one.value.needed + 50
+    lay = B.build_layout(pl, G.GridPlan(max_cells=budget, min_cells_across=2))
+    assert lay.plan.min_cells_across == 1 and lay.layers_budget > budget
+    result = _mesh(tmp_path, doc, max_cells=budget, min_cells_across=2)
+    short = {r["part"]: r for r in result.report["thin_layers_short"]}
+    assert short and all(r["cells_across"] < 2 and r["wanted"] == 2 for r in short.values())
+    assert result.report["layers_budget"] == lay.layers_budget
+    warn = [ln for ln in result.report["build_report"] if ln.startswith("WARNING")]
+    assert warn and f"{lay.layers_budget:,}" in warn[0]
+    # with that budget every layer keeps its two cells, and nothing is said
+    full = _mesh(tmp_path / "full", doc, max_cells=lay.layers_budget, min_cells_across=2)
+    assert not full.report["thin_layers_short"] and not full.report["layers_budget"]
 
 
 def test_overlaps_follow_the_files_precedence(tmp_path):

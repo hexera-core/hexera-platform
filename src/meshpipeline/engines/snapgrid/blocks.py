@@ -98,6 +98,9 @@ class Layout:
     relaxed: list[str] = field(default_factory=list)
     balanced: int = 0                      # lines added so block faces meet at a bounded angle
     leaf_cells: int = LEAF_CELLS
+    #: when the budget took cells out of the thin layers (fewer through them than the plan asks):
+    #: the fewest cells that would have kept the asked number through every layer; else 0
+    layers_budget: int = 0
 
     @property
     def n_cells(self) -> int:
@@ -528,25 +531,122 @@ def _balance_pair(A: Block, C: Block, a: int, G_, T: float) -> int:
             if not bad.any():
                 continue
             # Q's lines inside the offending P cells go into P
-            cells = np.unique(pi[bad])
-            # Q's lines across the shared rectangle, its two edges included: a coarse P cell that
-            # runs past the edge of the rectangle must be cut there too
-            inner = ql[(ql >= o0) & (ql <= o1)]
-            take = np.zeros(len(inner), dtype=bool)
-            for lo_, hi_ in zip(pl[cells].tolist(), pl[cells + 1].tolist()):
-                take |= (inner > lo_) & (inner < hi_)
-            if take.any():
-                merged = np.union1d(pl, inner[take]).astype(np.int64)
-                # grade the imported lines into each P cell they split - inside that cell only,
-                # so a finer neighbour never coarsens or refines the rest of the block
-                for lo_, hi_ in zip(pl[cells].tolist(), pl[cells + 1].tolist()):
-                    sub = merged[(merged >= lo_) & (merged <= hi_)]
-                    graded = _smooth(sub, G_[w], SMOOTH_RATIO)
-                    if len(graded) > len(sub):
-                        merged = np.union1d(merged, graded).astype(np.int64)
-                changed += len(merged) - len(pl)
-                P.lines[w] = merged
+            changed += _import_lines(P, Q, w, np.unique(pi[bad]), o0, o1, G_)
     return changed
+
+
+def _import_lines(P: Block, Q: Block, w: int, cells: np.ndarray, o0: int, o1: int, G_) -> int:
+    """Q's lines (axis w) across the rectangle the two blocks share, its two edges included, put
+    into the P cells `cells` (indices along w) - a coarse P cell that runs past the edge of the
+    rectangle is cut there too - and graded into each cell they split, inside that cell only, so a
+    finer neighbour never coarsens or refines the rest of the block. Returns the lines added."""
+    pl, ql = P.lines[w], Q.lines[w]
+    inner = ql[(ql >= o0) & (ql <= o1)]
+    take = np.zeros(len(inner), dtype=bool)
+    for lo_, hi_ in zip(pl[cells].tolist(), pl[cells + 1].tolist()):
+        take |= (inner > lo_) & (inner < hi_)
+    if not take.any():
+        return 0
+    merged = np.union1d(pl, inner[take]).astype(np.int64)
+    for lo_, hi_ in zip(pl[cells].tolist(), pl[cells + 1].tolist()):
+        sub = merged[(merged >= lo_) & (merged <= hi_)]
+        graded = _smooth(sub, G_[w], SMOOTH_RATIO)
+        if len(graded) > len(sub):
+            merged = np.union1d(merged, graded).astype(np.int64)
+    P.lines[w] = merged
+    return len(merged) - len(pl)
+
+
+#: The boundary-face skewness (OpenFOAM's formula) a face piece between two blocks may reach where
+#: it is an INTERFACE between two regions: once the regions are cut apart it is a boundary face of
+#: each, and checkMesh flags 4 and above on the region. Faces inside one region stay internal
+#: faces, which the angle bar above already keeps sound.
+MAX_INTERFACE_SKEW = 3.5
+
+
+def interface_skew(layout: Layout, *, max_skew: float = MAX_INTERFACE_SKEW) -> list[dict]:
+    """The face pieces between two blocks that are region interfaces (the cells on the two sides
+    are painted differently) and whose boundary-face skewness on either side exceeds `max_skew`:
+    the tangential offset of the piece's centre from the centre of the cell it bounds, over the
+    larger of 0.4 x that cell's half thickness and the piece's extent along the offset. One row
+    per (block pair, side) with the offending cell indices along the two axes of the face."""
+    G_ = layout.global_lines
+    out: list[dict] = []
+    for ia, ic, a in adjacency(layout):
+        A, C = layout.blocks[ia], layout.blocks[ic]
+        if A.zone is None or C.zone is None:
+            raise ValueError("interface_skew needs painted blocks")
+        ga, gc = G_[a][A.lines[a]], G_[a][C.lines[a]]
+        lat = [w for w in range(3) if w != a]
+        mids, halfs, ov = [], [], []
+        k: dict[int, list[np.ndarray]] = {ia: [], ic: []}
+        for w in lat:
+            o0 = max(A.lines[w][0], C.lines[w][0])
+            o1 = min(A.lines[w][-1], C.lines[w][-1])
+            U = np.union1d(A.lines[w][(A.lines[w] >= o0) & (A.lines[w] <= o1)],
+                           C.lines[w][(C.lines[w] >= o0) & (C.lines[w] <= o1)])
+            x = G_[w][U]
+            m = (x[:-1] + x[1:]) / 2
+            mids.append(m)
+            halfs.append((x[1:] - x[:-1]) / 2)
+            ov.append((o0, o1))
+            for bi, blk in ((ia, A), (ic, C)):
+                k[bi].append(np.clip(np.searchsorted(G_[w][blk.lines[w]], m) - 1, 0,
+                                     len(blk.lines[w]) - 2))
+        # the face layer of each side, (lat[1], lat[0]) - zone arrays are (z, y, x)
+        zA = np.take(A.zone, -1, axis=2 - a)[np.ix_(k[ia][1], k[ia][0])]
+        zC = np.take(C.zone, 0, axis=2 - a)[np.ix_(k[ic][1], k[ic][0])]
+        iface = zA != zC
+        if not iface.any():
+            continue
+        H0, H1 = np.meshgrid(halfs[0], halfs[1])
+        for bi, blk, half in ((ia, A, (ga[-1] - ga[-2]) / 2), (ic, C, (gc[1] - gc[0]) / 2)):
+            cen = [(G_[w][blk.lines[w]][k[bi][j]] + G_[w][blk.lines[w]][k[bi][j] + 1]) / 2
+                   for j, w in enumerate(lat)]
+            S0, S1 = np.meshgrid(mids[0] - cen[0], mids[1] - cen[1])
+            sv = np.hypot(S0, S1)
+            proj = (np.abs(S0) * H0 + np.abs(S1) * H1) / np.maximum(sv, 1e-300)
+            skew = sv / np.maximum(0.4 * half, proj)
+            bad = iface & (skew > max_skew)
+            if not bad.any():
+                continue
+            rows, cols = np.nonzero(bad)
+            other = ic if bi == ia else ia
+            out.append({"block": bi, "other": other, "axis": a, "lat": lat, "overlap": ov,
+                        "cells": [np.unique(k[bi][0][cols]), np.unique(k[bi][1][rows])],
+                        "pieces": int(bad.sum()), "worst": float(skew[bad].max())})
+    return out
+
+
+def hold_interface_skew(placement: Placement, layout: Layout, *,
+                        max_skew: float = MAX_INTERFACE_SKEW, rounds: int = 4) -> dict:
+    """Cut the cells whose interface pieces are too skewed (the finer side's lines brought in,
+    graded, as balancing does), re-balance and re-paint, until none is left or `rounds` run out.
+    The blocks come back painted. Returns what was done and what is left."""
+    added, before = 0, None
+    for _round in range(rounds):
+        rows = interface_skew(layout, max_skew=max_skew)
+        if before is None:
+            before = sum(r["pieces"] for r in rows)
+        if not rows:
+            return {"pieces_before": before, "lines_added": added, "pieces_left": 0,
+                    "worst_left": 0.0}
+        step = 0
+        for r in rows:
+            P, Q = layout.blocks[r["block"]], layout.blocks[r["other"]]
+            for j, w in enumerate(r["lat"]):
+                o0, o1 = r["overlap"][j]
+                step += _import_lines(P, Q, w, r["cells"][j], o0, o1, layout.global_lines)
+        step += balance(layout)
+        added += step
+        layout.balanced += step
+        paint_blocks(placement, layout)
+        if not step:
+            break                       # nothing left to cut with: the global lines run out
+    left = interface_skew(layout, max_skew=max_skew)
+    return {"pieces_before": before or 0, "lines_added": added,
+            "pieces_left": sum(r["pieces"] for r in left),
+            "worst_left": max((r["worst"] for r in left), default=0.0)}
 
 
 #: Inside a block, neighbouring cells differ by at most this much once balancing has brought in
@@ -613,14 +713,19 @@ def build_layout(placement: Placement, plan: G.GridPlan, *, local: bool = True) 
     if plan.cylinder_cells > 6:
         candidates.append(G._replace(candidates[-1], cylinder_cells=6))
     needed = 0
+    layers_budget = 0             # the fewest cells that keep the asked cells through every layer
     for k, cand in enumerate(candidates):
         geo_k = geometry_of(placement, cand) if cand is not plan else geo
         layout = decompose(geo_k, cand, H0, leaf_cells=leaf)
         if layout.n_cells <= plan.max_cells:
             layout.relaxed = G._relaxed_words(plan, cand) if k else []
+            if cand.min_cells_across < plan.min_cells_across:
+                layout.layers_budget = layers_budget
             return layout
         coarsest = relayout(layout, cand, longest)
         needed = coarsest.n_cells
+        if cand.min_cells_across == plan.min_cells_across:
+            layers_budget = needed if not layers_budget else min(layers_budget, needed)
         if needed > plan.max_cells:
             continue
         lo_h, hi_h, best = H0, longest, coarsest
@@ -637,6 +742,8 @@ def build_layout(placement: Placement, plan: G.GridPlan, *, local: bool = True) 
                         f"{hi_h * 1e3:.4g} mm instead of {H0 * 1e3:.4g} mm"]
         if k:
             best.relaxed += G._relaxed_words(plan, cand)
+        if cand.min_cells_across < plan.min_cells_across:
+            best.layers_budget = layers_budget
         return best
     raise G.OverBudget(
         f"this model needs at least {needed:,} cells to keep one cell through every part (its "
@@ -664,4 +771,4 @@ def paint_blocks(placement: Placement, layout: Layout) -> None:
 
 
 __all__ = ["Block", "Geometry", "LEAF_CELLS", "Layout", "build_layout", "decompose",
-           "geometry_of", "paint_blocks", "relayout"]
+           "geometry_of", "hold_interface_skew", "interface_skew", "paint_blocks", "relayout"]

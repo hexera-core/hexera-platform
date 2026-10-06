@@ -150,6 +150,15 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
         return SnapgridMesh(case=case, report=report, sidecar={})
 
     B.paint_blocks(placement, layout)
+    # where a block step lands on an interface between two regions, the face pieces become
+    # boundary faces of each region once they are cut apart: keep their skewness under the bar
+    # checkMesh reads on a region (the cells there are cut; the blocks come back painted)
+    skew_hold = B.hold_interface_skew(placement, layout) if local else {}
+    report["interface_skew"] = skew_hold
+    report["layers_budget"] = layout.layers_budget
+    # a cylinder lying on a box part touches it along a LINE: the cells of its staircase that
+    # stand on that face become air, so no face is shared where the file has only tangency
+    report["line_contacts"] = _release_line_contacts(placement, layout)
     zone = np.concatenate([_zone_of(blk).ravel() for blk in layout.blocks])
     vols = np.concatenate([_block_volumes(layout, blk).ravel() for blk in layout.blocks])
     t["painted"] = time.perf_counter()
@@ -166,6 +175,11 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
     names = _name_regions(placement, live, n_air)
     part_region = {k: names["parts"][k] for k in live}
     air_names = names["air"]
+    for row in report["line_contacts"]:
+        on = ", ".join(str(placement.parts[o].name) for o in row["others"])
+        build_report.append(f"Line contact: {placement.parts[row['part']].name} lies on {on} "
+                            f"along a line; the {row['cells_released']} staircase cell(s) "
+                            "standing on it are air, so the two share no face.")
 
     # curved parts: the staircase pulled onto the file's ellipse (boxes stay exact)
     keys = np.unique(np.concatenate([topo.face_pts, topo.b_pts]))
@@ -228,7 +242,7 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
     checks, contacts, staircase = _fidelity(placement, topo, zone, part_vol, live, part_region,
                                             regions, vols)
     staircase = _curved_rows(staircase, curved_rows, snapped)
-    thin = _thin_layers(placement, layout, live, part_region)
+    thin = _thin_layers(placement, layout, live, part_region, plan.min_cells_across)
     interfaces = _interfaces(topo, cell_zone, zone_names, n_air)
     patches, chunk_ids, patch_rows = _boundary(placement, layout, topo, zone_names)
     t["checked"] = time.perf_counter()
@@ -261,6 +275,7 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
                             "it): " + ", ".join(lost[:12]) + ".")
 
     stats = layout_stats(layout, topo)
+    stats["interface_skew"] = report.get("interface_skew") or {}
     report["grid"] = stats
     build_report += _report_lines(placement, layout, stats, thin, staircase, records)
     build_report += checks
@@ -287,6 +302,97 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
     return SnapgridMesh(case=case, report=report, sidecar=sidecar,
                         regions=[{"name": r["name"], "type": r["type"], "cells": r["cells"]}
                                  for r in regions])
+
+
+def _zone_at(layout: B.Layout, bounds: tuple[np.ndarray, np.ndarray], pts: np.ndarray
+             ) -> np.ndarray:
+    """The painted zone of the cell holding each point (G.AIR outside every block)."""
+    blo, bhi = bounds
+    out = np.full(len(pts), G.AIR, dtype=np.int64)
+    lo, hi = pts.min(axis=0), pts.max(axis=0)
+    for bi in np.flatnonzero(np.all((blo <= hi) & (bhi >= lo), axis=1)).tolist():
+        blk = layout.blocks[bi]
+        lines = [layout.coords(blk, a) for a in range(3)]
+        inside = np.all([(pts[:, a] >= lines[a][0]) & (pts[:, a] < lines[a][-1])
+                         for a in range(3)], axis=0)
+        if not inside.any():
+            continue
+        q = pts[inside]
+        ix = [np.clip(np.searchsorted(lines[a], q[:, a], side="right") - 1, 0, len(lines[a]) - 2)
+              for a in range(3)]
+        out[inside] = _zone_of(blk)[ix[2], ix[1], ix[0]]
+    return out
+
+
+def _release_line_contacts(placement: Placement, layout: B.Layout) -> list[dict]:
+    """A solid cylinder lying on a box part (its side tangent to the box's face) touches it along
+    a line, not over an area. The staircase cells standing on that face (painted by their centre)
+    would share faces with the box; they become air, and the snap then pulls the cylinder's side
+    down onto its circle as far as the air cells under it stay sound. Returns one row per contact
+    released: the parts, and the cells given to the air."""
+    from meshpipeline.cad.ingest.ecxml import axis_of_plane
+
+    tol = G.plane_tolerance(placement)
+    gap = max(4 * tol, 1e-12)
+    box_part = np.array([q.kind != "solidCylinder" for q in placement.parts], dtype=bool)
+    cyl = [k for k, p in enumerate(placement.parts)
+           if not p.dropped and p.kind == "solidCylinder"]
+    if not cyl:
+        return []
+    blo = np.array([[layout.coords(b, a)[0] for a in range(3)] for b in layout.blocks])
+    bhi = np.array([[layout.coords(b, a)[-1] for a in range(3)] for b in layout.blocks])
+    rows: list[dict] = []
+    for k in cyl:
+        p = placement.parts[k]
+        axis = axis_of_plane(p.objects[0].plane)
+        for a_ in (i for i in range(3) if i != axis):
+            lat = [i for i in range(3) if i != a_]
+            for side in (0, 1):
+                plane = p.box.lo[a_] if side == 0 else p.box.hi[a_]
+                if abs(plane - placement.domain.lo[a_]) <= tol or \
+                        abs(plane - placement.domain.hi[a_]) <= tol:
+                    continue
+                near = np.all([(blo[:, i] < p.box.hi[i] - tol) & (bhi[:, i] > p.box.lo[i] + tol)
+                               for i in lat], axis=0)
+                near &= (blo[:, a_] <= plane + tol) & (bhi[:, a_] >= plane - tol)
+                released, others = 0, set()
+                for bi in np.flatnonzero(near).tolist():
+                    blk = layout.blocks[bi]
+                    la = layout.coords(blk, a_)
+                    j = int(np.argmin(np.abs(la - plane)))
+                    if abs(la[j] - plane) > tol:
+                        continue
+                    layer, across_layer = (j, j - 1) if side == 0 else (j - 1, j)
+                    if layer < 0 or layer >= len(la) - 1:
+                        continue
+                    zone = _zone_of(blk)
+                    sl: list = [slice(None)] * 3
+                    sl[2 - a_] = layer
+                    cells = zone[tuple(sl)]                    # a view: (lat[1], lat[0])
+                    mine = cells == k
+                    if not mine.any():
+                        continue
+                    if 0 <= across_layer < len(la) - 1:        # the other side is this block
+                        sl[2 - a_] = across_layer
+                        across = zone[tuple(sl)].astype(np.int64)
+                    else:                                      # ...or the block next to it
+                        c0 = layout.coords(blk, lat[0])
+                        c1 = layout.coords(blk, lat[1])
+                        g1, g0 = np.meshgrid((c1[:-1] + c1[1:]) / 2, (c0[:-1] + c0[1:]) / 2,
+                                             indexing="ij")
+                        pts = np.zeros((g0.size, 3))
+                        pts[:, lat[0]], pts[:, lat[1]] = g0.ravel(), g1.ravel()
+                        pts[:, a_] = plane - gap if side == 0 else plane + gap
+                        across = _zone_at(layout, (blo, bhi), pts).reshape(cells.shape)
+                    hit = mine & (across >= 0) & (across != k) & box_part[np.maximum(across, 0)]
+                    if hit.any():
+                        cells[hit] = G.AIR
+                        released += int(hit.sum())
+                        others |= {int(x) for x in np.unique(across[hit])}
+                if released:
+                    rows.append({"part": k, "others": sorted(others), "axis": _AXES[a_],
+                                 "side": "-+"[side], "cells_released": released})
+    return rows
 
 
 def _points_of(layout: B.Layout, topo: boxmesh.BoxTopology, keys: np.ndarray) -> np.ndarray:
@@ -597,14 +703,15 @@ def _interfaces(topo: boxmesh.BoxTopology, cell_zone: np.ndarray, names: list[st
     return out
 
 
-def _thin_layers(placement: Placement, layout: B.Layout, live: list[int], names: dict
-                 ) -> list[dict]:
+def _thin_layers(placement: Placement, layout: B.Layout, live: list[int], names: dict,
+                 want: int) -> list[dict]:
     """Each part's thinnest extent and the cells through it (thinnest first): how every thin layer
     - a thermal interface, a die attach, a board - is resolved. A part always has at least one
     cell through each of its boxes on each axis: the blocks it reaches into hold both of its faces.
-    Counted in every block the part reaches into; the fewest is reported."""
+    Counted in every block the part reaches into; the fewest is reported. `want` is the cells the
+    PLAN asks for (not what a budget relaxed it to), so a layer the budget took a cell from is
+    listed."""
     tol = G.plane_tolerance(placement)
-    want = layout.plan.min_cells_across
     rows = []
     bounds = [(np.array([layout.coords(b, a)[0] for a in range(3)]),
                np.array([layout.coords(b, a)[-1] for a in range(3)])) for b in layout.blocks]
@@ -720,16 +827,27 @@ def _report_lines(placement: Placement, layout: B.Layout, st: dict, thin: list[d
              + (f" ({st.get('hanging_node_faces', 0):,} faces carry a hanging node where a finer "
                 "block meets a coarser one)." if st.get("hanging_node_faces") else ".")]
     lines += [f"Budget: {r}." for r in layout.relaxed]
+    hold = st.get("interface_skew") or {}
+    if hold.get("pieces_before"):
+        lines.append(f"Interfaces at block steps: {hold['pieces_before']} face piece(s) would have "
+                     f"read as skewed on their region (above {B.MAX_INTERFACE_SKEW:g}); "
+                     f"{hold['lines_added']} grid line(s) added to cut them"
+                     + (f"; {hold['pieces_left']} left (worst {hold['worst_left']:.2f})."
+                        if hold.get("pieces_left") else "; none left."))
     if thin:
         t0 = thin[0]
         lines.append(f"Thinnest part: {t0['part']}, {_um(t0['thickness_m'])} on {t0['axis']}, "
                      f"{t0['cells_across']} cell(s) through it.")
     short = [r for r in thin if not r["ok"]]
     if short:
-        lines.append(f"Thin layers with fewer than {layout.plan.min_cells_across} cells through "
-                     f"them ({len(short)}): " + ", ".join(
-                         f"{r['part']} ({_um(r['thickness_m'])}, {r['cells_across']})"
-                         for r in short[:8]) + ("..." if len(short) > 8 else "") + ".")
+        asked = short[0]["wanted"]
+        lines.append(f"WARNING: {len(short)} thin layer(s) have fewer than the {asked} cells "
+                     "through them the plan asks for: " + ", ".join(
+                         f"{r['part']} ({_um(r['thickness_m'])}, {r['cells_across']} cell"
+                         f"{'s' if r['cells_across'] != 1 else ''})"
+                         for r in short[:8]) + ("..." if len(short) > 8 else "") + "."
+                     + (f" A cell budget of at least {layout.layers_budget:,} keeps {asked} "
+                        "through every layer." if layout.layers_budget else ""))
     for s_ in staircase:
         if "side_area_error_pct" in s_:
             what = "round hole in" if s_.get("kind") == "round hole" else "cylinder"

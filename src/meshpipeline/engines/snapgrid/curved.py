@@ -56,6 +56,7 @@ class Snapped:
     undone: int = 0
     topo: Any = None                 # the topology after risers collapsed (None: unchanged)
     collapsed: int = 0               # riser edges collapsed onto the surface
+    still_bad: int = 0               # points of faces the settle could not bring under the bars
 
 
 def curves_of(placement, live: list[int], names: dict) -> list[Curve]:
@@ -210,17 +211,36 @@ def snap(curves: list[Curve], points: np.ndarray, keys: np.ndarray, topo, zone: 
         regions.append(_relax_region(points, c, u, v, topo, ids_i, fid_i, faces, on_curve,
                                      fixed | held[:, u] | held[:, v]))
     pairs = np.concatenate(risers) if risers else np.zeros((0, 2), dtype=np.int64)
-    if len(pairs):
-        topo, keys, points, disp, on_surface, regions = _collapse(
-            pairs, topo, keys, points, disp, on_surface, regions)
-        out.topo = topo
-        out.collapsed = int(len(pairs))
+    # A collapsed riser's merged point stands mid-riser whatever the settle does with its move, so
+    # a collapse that leaves a face past a bar is taken back (its riser stays an edge) and the
+    # surface settled again - at most COLLAPSE_RETRIES times.
+    keep = np.ones(len(pairs), dtype=bool)
+    base = (topo, keys, points, disp, on_surface, regions)
+    for _try in range(COLLAPSE_RETRIES + 1):
+        topo, keys, points, disp, on_surface, regions = base
+        sel = pairs[keep]
+        if len(sel):
+            topo, keys, points, disp, on_surface, regions = _collapse(
+                sel, topo, keys, points, disp, on_surface, regions)
         ids_i = np.searchsorted(keys, topo.face_pts)
         ids_b = np.searchsorted(keys, topo.b_pts)
-    moves, given_up = _settle(points, disp, on_surface, regions, topo, ids_i, ids_b)
+        moves, given_up, bad = _settle(points, disp, on_surface, regions, topo, ids_i, ids_b,
+                                       zone)
+        if not bad.any() or not len(sel):
+            break
+        bad_keys = keys[bad]
+        k0 = base[1]
+        hit = np.isin(k0[pairs[:, 0]], bad_keys) | np.isin(k0[pairs[:, 1]], bad_keys)
+        if not (hit & keep).any():
+            break
+        keep &= ~hit
+    if len(pairs[keep]):
+        out.topo = topo
+        out.collapsed = int(keep.sum())
     out.keys = keys
     out.xyz = points + moves
     out.undone = given_up
+    out.still_bad = int(bad.sum())
     return out
 
 
@@ -229,6 +249,9 @@ def snap(curves: list[Curve], points: np.ndarray, keys: np.ndarray, topo, zone: 
 #: along it, left with no area, goes. That is what lets the surface reach the true one where it
 #: runs almost along the grid (a riser cannot shrink to nothing and stay an edge).
 COLLAPSE_RATIO = 0.35
+#: How many times collapses that leave a face past a bar are taken back and the surface settled
+#: again.
+COLLAPSE_RETRIES = 3
 
 
 def _risers(points, disp, c: Curve, topo, ids_i, faces, on_curve, frozen) -> np.ndarray:
@@ -419,6 +442,8 @@ RELAX_RINGS = 5
 RELAX_SWEEPS = 80
 #: Halvings of a surface point's move before it is given up.
 SETTLE_ROUNDS = 10
+#: Rounds after SETTLE_ROUNDS, each giving the points of the faces still bad up outright.
+SETTLE_FINAL_ROUNDS = 10
 
 
 def _relax_region(points, c: Curve, u: int, v: int, topo, ids_i, fid_i, faces, on_curve,
@@ -478,11 +503,14 @@ def _diffuse(disp: np.ndarray, regions) -> np.ndarray:
     return out
 
 
-def _settle(points, disp, on_surface, regions, topo, ids_i, ids_b) -> tuple[np.ndarray, int]:
+def _settle(points, disp, on_surface, regions, topo, ids_i, ids_b,
+            zone: np.ndarray | None = None) -> tuple[np.ndarray, int, np.ndarray]:
     """The moves that keep every cell sound: every surface point goes all the way and the rings
     around it follow; where a face or a cell comes out bad (folded, crushed, past the angle or
-    skewness bar), the surface points nearby go half as far, and again, until none is bad - a
-    point that cannot move at all is given up (counted). Returns the moves and that count."""
+    skewness bar - on an interface between two regions, the skewness each region reads once they
+    are cut apart too), the surface points nearby go half as far, and again, until none is bad -
+    a point that cannot move at all is given up (counted). Returns the moves, that count and the
+    points of the faces still bad (none, unless a collapse left them so)."""
     frac = np.where(on_surface, 1.0, 0.0)
     free_all = np.zeros(len(points), dtype=bool)
     edges_all = [np.zeros((0, 2), dtype=np.int64)]
@@ -490,9 +518,12 @@ def _settle(points, disp, on_surface, regions, topo, ids_i, ids_b) -> tuple[np.n
         free_all[free] = True
         edges_all.append(edges)
     edges_cat = np.concatenate(edges_all)
-    guard = _Guard(points, on_surface | free_all, topo, ids_i, ids_b)
+    guard = _Guard(points, on_surface | free_all, topo, ids_i, ids_b, zone)
     moves = np.zeros_like(points)
-    for rnd in range(SETTLE_ROUNDS + 1):
+    bad = np.zeros(len(points), dtype=bool)
+    # the last rounds give the troubled points up outright, and run until nothing is bad: a move
+    # is never kept that leaves a face past a bar
+    for rnd in range(SETTLE_ROUNDS + 1 + SETTLE_FINAL_ROUNDS):
         moves = _diffuse(disp * frac[:, None], regions)
         moves[~(on_surface | free_all)] = 0.0
         bad = guard.bad_points(points + moves)
@@ -509,9 +540,11 @@ def _settle(points, disp, on_surface, regions, topo, ids_i, ids_b) -> tuple[np.n
             near |= reach & on_surface
         if not near.any():
             near = on_surface & (frac > 0)
+        if not (near & (frac > 0)).any():
+            break                       # nothing left to give up: every move here is already 0
         frac[near] = 0.0 if rnd >= SETTLE_ROUNDS - 1 else frac[near] * 0.5
     given_up = int((on_surface & (frac == 0.0)).sum())
-    return moves, given_up
+    return moves, given_up, bad
 
 
 def _sub(topo, cells: np.ndarray):
@@ -543,7 +576,7 @@ class _Guard:
     twentieth, a cell below a third of its volume, a face past MAX_SNAP_ANGLE_DEG or skewness
     MAX_SNAP_SKEW (and worse than before) is bad."""
 
-    def __init__(self, old, moved, topo, ids_i, ids_b) -> None:
+    def __init__(self, old, moved, topo, ids_i, ids_b, zone: np.ndarray | None = None) -> None:
         self.old = old
         fid_i = np.repeat(np.arange(len(topo.face_off) - 1), np.diff(topo.face_off))
         fid_b = np.repeat(np.arange(len(topo.b_off) - 1), np.diff(topo.b_off))
@@ -562,11 +595,15 @@ class _Guard:
         self.nei_i = local[topo.neighbour[self.fi]]
         self.own_b = local[topo.b_owner[self.fb]]
         self.both = (self.own_i >= 0) & (self.nei_i >= 0)
+        # a face between two regions is a boundary face of each once they are cut apart
+        self.iface = (self.both & (zone[topo.owner[self.fi]] != zone[topo.neighbour[self.fi]])
+                      if zone is not None else np.zeros(len(self.fi), dtype=bool))
         self.n = len(cells)
         self.fid_si = np.repeat(np.arange(len(self.fi)), np.diff(self.off_i))
         self.fid_sb = np.repeat(np.arange(len(self.fb)), np.diff(self.off_b))
         with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
-            self.a0_i, self.a0_b, self.v0, self.cos0, self.skew0 = self._measure(old)
+            self.a0_i, self.a0_b, self.v0, self.cos0, self.skew0, self.bskew0 = \
+                self._measure(old)
         self.m0_i = np.einsum("ij,ij->i", self.a0_i, self.a0_i)
         self.m0_b = np.einsum("ij,ij->i", self.a0_b, self.a0_b)
         self.cos_bar = math.cos(math.radians(MAX_SNAP_ANGLE_DEG))
@@ -577,6 +614,7 @@ class _Guard:
         touched[np.unique(self.fid_si[moved[self.pts_i]])] = True
         self.cos0 = np.where(touched, 1.0, self.cos0)
         self.skew0 = np.where(touched, 0.0, self.skew0)
+        self.bskew0 = np.where(touched, 0.0, self.bskew0)
 
     def _measure(self, pts):
         own_i, nei_i, own_b, both, n = self.own_i, self.nei_i, self.own_b, self.both, self.n
@@ -611,22 +649,40 @@ class _Guard:
         svn = np.linalg.norm(sv, axis=1)
         sv_hat = sv / (svn + 1e-300)[:, None]
         sizes = np.diff(self.off_i)
-        reach = np.abs(np.einsum("ij,ij->i", np.repeat(sv_hat, sizes, axis=0),
-                                 pts[self.pts_i] - np.repeat(c_i, sizes, axis=0)))
-        fd = np.maximum.reduceat(reach, self.off_i[:-1]) if len(reach) else np.zeros(0)
-        fd = np.maximum(fd, 0.2 * np.linalg.norm(d, axis=1)) + 1e-300
+        rel = pts[self.pts_i] - np.repeat(c_i, sizes, axis=0)
+
+        def extent(hat):
+            reach = np.abs(np.einsum("ij,ij->i", np.repeat(hat, sizes, axis=0), rel))
+            return np.maximum.reduceat(reach, self.off_i[:-1]) if len(reach) else np.zeros(0)
+
+        fd = np.maximum(extent(sv_hat), 0.2 * np.linalg.norm(d, axis=1)) + 1e-300
         skew = svn / fd
-        return a_i, a_b, vol, np.where(both, cos, 1.0), np.where(both, skew, 0.0)
+        # OpenFOAM's BOUNDARY-face skewness, from each side's own cell centre: what each region
+        # reads on an interface once the regions are cut apart
+        bskew = np.zeros(len(skew))
+        if self.iface.any():
+            nrm = a_i / (np.linalg.norm(a_i, axis=1) + 1e-300)[:, None]
+            for cen in (own_c, nei_c):
+                cpf_ = c_i - cen
+                dn = nrm * np.einsum("ij,ij->i", nrm, cpf_)[:, None]
+                svb = cpf_ - dn
+                svbn = np.linalg.norm(svb, axis=1)
+                fdb = np.maximum(extent(svb / (svbn + 1e-300)[:, None]),
+                                 0.4 * np.linalg.norm(dn, axis=1)) + 1e-300
+                bskew = np.maximum(bskew, svbn / fdb)
+        return (a_i, a_b, vol, np.where(both, cos, 1.0), np.where(both, skew, 0.0),
+                np.where(self.iface, bskew, 0.0))
 
     def bad_points(self, cur) -> np.ndarray:
         """The points of every bad face and of every face of a bad cell."""
         with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
-            a_i, a_b, vol, cos, skew = self._measure(cur)
+            a_i, a_b, vol, cos, skew, bskew = self._measure(cur)
         own_i, nei_i, own_b, both = self.own_i, self.nei_i, self.own_b, self.both
         bad_i = np.einsum("ij,ij->i", a_i, self.a0_i) < self.m0_i / 20.0
         bad_b = np.einsum("ij,ij->i", a_b, self.a0_b) < self.m0_b / 20.0
         tilt = both & (((cos < self.cos_bar) & (cos < self.cos0 - 1e-9))
-                       | ((skew > MAX_SNAP_SKEW) & (skew > self.skew0 + 1e-9)))
+                       | ((skew > MAX_SNAP_SKEW) & (skew > self.skew0 + 1e-9))
+                       | ((bskew > MAX_SNAP_SKEW) & (bskew > self.bskew0 + 1e-9)))
         bad_c = vol < self.v0 / 3.0
         bad_c[own_i[tilt]] = True
         bad_c[nei_i[tilt]] = True
