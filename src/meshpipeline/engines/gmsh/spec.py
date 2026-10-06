@@ -122,9 +122,14 @@ HOME_TURF = (
     TurfRow("layers_requested", "is", True, "weak",
             "It makes tetrahedra without near-wall prism layers: fine for laminar or low-Reynolds "
             "flow, not for a wall-function or y+ 1 layer stack.", flow="internal"),
-    TurfRow("scale_ratio", ">", 150.0, "weak",
-            "The smallest gap is tiny next to the part, so the tetrahedra count climbs steeply and "
-            "one-thread meshing may run out of time."),
+    TurfRow("cells_across_at_budget", "<", 24.0, "weak",
+            "The passages are narrow for the part's size: tetrahedra need about twice the cells of "
+            "hexahedra for the same resolution, and one-thread meshing may run out of time (a tube "
+            "bank, a pump volute with its suction pipe and two aortas did, at 7-24 here).",
+            flow="internal"),
+    TurfRow("thin_wall_fraction", ">", 0.3, "weak",
+            "Much of the body is thin sheet or blade: tetrahedra pinned across its sharp edges come "
+            "out as flat slivers (rotors, propellers, high-lift wings).", flow="external"),
     TurfRow("sharp_edges", ">", 8.0, "weak",
             "Many sharp edges: tetrahedra pinned between two faces at a sharp edge can come out as "
             "flat slivers.", flow="external"),

@@ -140,9 +140,10 @@ HOME_TURF = (
             "Much of this body is a thin hollow shell: walls thinner than a cell are smoothed over and "
             "near-wall layers cover only about half of the wall (a hollow car shell measured 53%).",
             flow="external"),
-    TurfRow("cells_across_at_budget", "<", 12.0, "weak",
-            "The narrowest passage gets fewer than 12 cells across within the cell budget: the "
-            "mesh needs a local refinement or a bigger budget to resolve it.", flow="internal"),
+    TurfRow("cells_across_at_budget", "<", 8.0, "weak",
+            "The narrowest passage gets fewer than 8 cells across within the cell budget: snappy "
+            "refines it locally and resolves it, but the mesh runs over the budget (a 19-tube heat "
+            "exchanger: 6.4M cells for a 2M budget).", flow="internal"),
 )
 
 
