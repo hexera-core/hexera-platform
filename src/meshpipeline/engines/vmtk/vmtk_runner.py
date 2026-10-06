@@ -776,8 +776,25 @@ def _run_vmtk_local(workspace, *, timeout: int, **_ignored) -> dict:
             argv = _winding_kept(ws, argv)
         if i:
             (ws / _MESH).unlink(missing_ok=True)
-        result = _run_pype(ws, argv, timeout=left())
+        layered = staged and int(strat.get("boundary_layers") or 0) > 0
+        bare_after = next((j for j in range(i + 1, len(ladder))
+                           if int(ladder[j].get("boundary_layers") or 0) <= 0), None)
+        # A LAYERED STEP NEVER TAKES THE WHOLE CLOCK while a layer-free step waits behind it:
+        # vmtk's layer generator scales with the wall's triangles, and on the Fluent aorta (328k
+        # wall triangles, 4 sublayers) the first layered attempt ran out the full 3000 s - no
+        # fill at all, where a layer-free fill was minutes away
+        step_budget = left()
+        if layered and bare_after is not None:
+            step_budget = max(int(floor), int(left() * LAYERED_SHARE))
+        result = _run_pype(ws, argv, timeout=step_budget)
         nxt: int | None = i + 1 if i + 1 < len(ladder) else None
+        if layered and bare_after is not None and result.get("timed_out"):
+            # a thinner stack is no faster to grow: straight on to the layer-free fill
+            notes.append(f"[vmtk] attempt {i + 1} ({_step_label(strat)}): the layered fill ran out "
+                         f"its {step_budget} s share of the budget - next: "
+                         f"{_step_label(ladder[bare_after])}")
+            i = bare_after
+            continue
         if _fill_completed(ws, result):
             if not staged or int(strat.get("boundary_layers") or 0) <= 0:
                 break

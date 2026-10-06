@@ -60,3 +60,35 @@ def test_a_layer_stage_that_dies_goes_straight_to_a_layer_free_fill(tmp_path, mo
     assert len(gens) == 2 and '-boundarylayer 0' in ' '.join(gens[1])
     assert 'last generator stage: Generating boundary layer' in res['repair_note']
     assert json.loads((tmp_path / 'vmtk_spec.json').read_text())['boundary_layers'] == 0
+
+
+def test_a_layered_fill_leaves_time_for_a_layer_free_one(tmp_path, monkeypatch):
+    clock = {'t': 0.0}
+    calls: list[tuple[list[str], float]] = []
+
+    def fake_run(argv, timeout=None, **kw):
+        calls.append((list(argv), timeout))
+        joined = ' '.join(argv)
+        if 'vmtksurfaceremeshing' in joined:
+            clock['t'] += 10.0
+            (tmp_path / 'lumen.vtp').write_text('remeshed')
+            return sp.CompletedProcess(argv, 0, stdout='Done.', stderr='')
+        if '-boundarylayer 1' in joined:      # the layered fill runs out its share
+            clock['t'] += timeout
+            raise sp.TimeoutExpired(argv, timeout)
+        clock['t'] += 100.0
+        (tmp_path / 'mesh.vtu').write_text('filled')
+        return sp.CompletedProcess(argv, 0, stdout='Done executing vmtkmeshgenerator.', stderr='')
+
+    monkeypatch.setattr(R, 'run_guarded', fake_run)
+    monkeypatch.setattr(R, '_now', lambda: clock['t'])
+    (tmp_path / 'vmtk_spec.json').write_text(json.dumps(R.resolve_strategy(
+        {'sizing_array': 'LocalRadius', 'boundary_layers': 4})))
+    (tmp_path / 'lumen_open.vtp').write_text('staged')
+    res = R._run_vmtk_local(tmp_path, timeout=3000)
+    gens = [(c, t) for c, t in calls if len(c) > 1 and c[1] == 'vmtkmeshgenerator']
+    assert len(gens) == 2
+    assert gens[0][1] <= 0.6 * 2990 + 1                    # the layered share, not the whole clock
+    assert '-boundarylayer 0' in ' '.join(gens[1][0])
+    assert 'ran out its' in res['repair_note']
+    assert (tmp_path / 'mesh.vtu').read_text() == 'filled'
