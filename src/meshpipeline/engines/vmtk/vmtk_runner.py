@@ -1347,6 +1347,19 @@ def patch_areas(patches: dict) -> dict[str, float]:
     return out
 
 
+def staged_opening_areas(ws: Path) -> dict[str, float]:
+    """{port: m2} of each opening as staging measured it on the wall's rims (open area: a ring is
+    its ring, not its lid), else the lid's area; {} when nothing was staged."""
+    from meshpipeline.engines.vmtk.lumen_staging import read_staging
+    staged = read_staging(ws) or {}
+    out: dict[str, float] = {}
+    for p in staged.get("ports") or []:
+        a = float(p.get("open_area_m2") or p.get("area_m2") or 0.0)
+        if p.get("name") and a > 0.0:
+            out[str(p["name"])] = a
+    return out
+
+
 def _caps_off_their_openings(ws: Path, patches: dict) -> list[str]:
     """Every delivered cap named after a staged port, held to that port's open area by the shared
     region check (engines/region_check.port_area_misses). The fill can bound a different region
@@ -1356,11 +1369,7 @@ def _caps_off_their_openings(ws: Path, patches: dict) -> list[str]:
     dropped, each cap the size of the flange). The caps say so, so this is fatal. [] when
     nothing was staged to compare with."""
     from meshpipeline.engines.region_check import port_area_misses
-    from meshpipeline.engines.vmtk.lumen_staging import read_staging
-    staged = read_staging(ws) or {}
-    expected = {str(p.get("name")): float(p.get("open_area_m2") or p.get("area_m2") or 0.0)
-                for p in staged.get("ports") or [] if p.get("name")}
-    misses = port_area_misses(patch_areas(patches), expected, band=STAGED_CAP_BAND)
+    misses = port_area_misses(patch_areas(patches), staged_opening_areas(ws), band=STAGED_CAP_BAND)
     return [f"the '{m['name']}' cap covers {m['delivered_m2'] * 1e6:,.0f} mm2 where the opening is "
             f"{m['expected_m2'] * 1e6:,.0f} mm2 - the mesh fills a different region than the fluid "
             "(a wall piece was lost or an outer skin was meshed)" for m in misses]
@@ -1484,11 +1493,15 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
         if _wrong:
             q["fatal"] = [*q.get("fatal", []), *_wrong]
             q["mesh_ok"] = False
-        # each delivered boundary's area, for the shared port-area gate (engines/region_check),
-        # which holds every inlet/outlet to the size the user DECLARED, as for every engine
+        # each delivered boundary's area, and each opening as staging MEASURED it on the rims,
+        # for the shared port-area gate (engines/region_check), which holds every inlet/outlet
+        # to the measured opening (the typed size only where nothing was measured)
         _areas = patch_areas(_review)
         if _areas:
             q["patch_areas_m2"] = {k: round(v, 10) for k, v in _areas.items()}
+        _opened = staged_opening_areas(ws)
+        if _opened:
+            q["port_openings_m2"] = {k: round(v, 10) for k, v in _opened.items()}
         if len(_declared_walls) == 1 and "wall" in _review and _declared_walls[0] != "wall":
             _review[_declared_walls[0]] = _review.pop("wall")
         if _review:

@@ -211,3 +211,14 @@ def test_the_winding_wrapper_runs_as_vmtkpythonscript_execs_it(tmp_path, monkeyp
     PythonScript().Execute()
     assert built['normals'] == 0
     assert built['args'][0] == 'vmtkmeshgenerator'
+
+
+def test_staged_openings_are_what_the_shared_gate_judges_by(tmp_path):
+    rec = {'ports': [{'name': 'inlet', 'size_m': 0.085, 'area_m2': 0.0179, 'open_area_m2': 0.00573},
+                     {'name': 'outlet', 'size_m': 0.04, 'area_m2': 0.0012}]}
+    (tmp_path / LS.STAGING_FACT).write_text(json.dumps(rec))
+    assert R.staged_opening_areas(tmp_path) == {'inlet': 0.00573, 'outlet': 0.0012}
+    from meshpipeline.engines.region_check import expected_port_areas
+    exp = expected_port_areas([{'name': 'inlet', 'type': 'inlet', 'diameter_mm': 20.0}],
+                              R.staged_opening_areas(tmp_path))
+    assert exp['inlet'] == (0.00573, 'measured')
