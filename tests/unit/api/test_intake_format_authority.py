@@ -21,10 +21,46 @@ SRC = Path(__file__).resolve().parents[3] / "src" / "meshpipeline"
 
 # the registry itself
 
-@pytest.mark.parametrize("suffix", [".stl", ".step", ".stp", ".iges", ".igs", ".vtp"])
+@pytest.mark.parametrize("suffix", [
+    ".stl", ".step", ".stp", ".iges", ".igs", ".vtp", ".brep", ".brp", ".obj", ".ply", ".off",
+    ".3mf", ".glb", ".gltf", ".vtk", ".vtu", ".msh", ".bdf", ".nas", ".inp", ".mesh", ".su2",
+    ".3dm"])
 def test_every_currently_implemented_format_is_declared(suffix):
     assert suffix in ACCEPTED_SUFFIXES
     assert format_for_suffix(suffix) is not None
+
+
+@pytest.mark.parametrize("given,kind", [
+    (".step", "cad"), (".STP", "cad"), ("iges", "cad"), (".brep", "cad"),
+    ("/w/geometry/source.step", "cad"), ("C:\\parts\\Wing.IGS", "cad"),
+    (".stl", "surface"), ("source.canonical.stl", "surface"), (".vtp", "surface"),
+    (".obj", "surface"), (".glb", "surface"), (".msh", "surface"), (".3dm", "surface"),
+    ("/tmp/a.b/part.inp", "surface"), (".sldprt", None), ("noext", None), ("", None)])
+def test_one_helper_answers_cad_or_surface_for_a_path_or_a_suffix(given, kind):
+    from meshpipeline.contracts.intake_formats import geometry_kind, is_cad, is_surface
+
+    got = geometry_kind(given)
+    assert (got.value if got else None) == kind
+    assert is_cad(given) is (kind == "cad") and is_surface(given) is (kind == "surface")
+
+
+def test_only_the_formats_read_as_they_are_are_canonical():
+    canonical = {f.key for f in INTAKE_FORMATS if f.canonical}
+    # today's formats: every engine reads these bytes exactly as it did before cad/ingest
+    assert canonical == {"stl", "step", "iges", "vtp"}
+
+
+def test_every_format_names_its_kind_in_the_capability_payload():
+    kinds = {f["key"]: f["kind"] for f in capability_payload()["formats"]}
+    assert {k for k, v in kinds.items() if v == "cad"} == {"step", "iges", "brep"}
+    assert all(v in ("cad", "surface") for v in kinds.values())
+
+
+def test_only_formats_that_record_a_unit_in_the_file_declare_one():
+    by_key = {f.key: f.declares_units for f in INTAKE_FORMATS}
+    assert {k for k, v in by_key.items() if v} == {"step", "iges", "3mf", "3dm"}
+    # glTF's spec says metres but the file records nothing, and real files break the rule
+    assert by_key["glb"] is False and by_key["gltf"] is False and by_key["brep"] is False
 
 
 def test_vtp_is_declared_and_reachable():
@@ -140,14 +176,23 @@ NATIVE = {
     ".iam":        ("Inventor", "File > Export > CAD Format"),
     ".x_t":        ("Parasolid", "reads Parasolid"),
     ".x_b":        ("Parasolid", "reads Parasolid"),
-    ".3dm":        ("Rhino", "File > Export Selected"),
     ".f3d":        ("Fusion 360", "File > Export"),
     ".par":        ("Solid Edge", "File > Save As"),
     ".psm":        ("Solid Edge", "File > Save As"),
     ".jt":         ("JT", "the CAD tool the JT came from"),
     ".sat":        ("ACIS", "reads ACIS"),
     ".sab":        ("ACIS", "reads ACIS"),
+    ".fcstd":      ("FreeCAD", "File > Export, type STEP"),
+    ".scdoc":      ("SpaceClaim", "File > Save As, type STEP"),
 }
+
+
+def test_rhino_is_read_now_and_its_export_path_is_kept_for_a_model_without_meshes():
+    from meshpipeline.contracts.intake_formats import RHINO_EXPORT, native_format_for_suffix
+    # .3dm moved from "refused with an export hint" to accepted (cad/ingest reads its meshes);
+    # the hint is what a .3dm with no stored meshes is refused with instead
+    assert ".3dm" in ACCEPTED_SUFFIXES and native_format_for_suffix(".3dm") is None
+    assert "File > Export Selected" in RHINO_EXPORT
 
 
 @pytest.mark.parametrize("suffix", sorted(NATIVE))

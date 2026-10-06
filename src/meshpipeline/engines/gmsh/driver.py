@@ -19,6 +19,10 @@ MIN_CELLS_ACROSS = 8
 #: passage that narrows inside (a volute scroll: 2-4 cells at the narrowest wall). The
 #: resolution_floor gate rejects a fill under PASSAGE_FLOOR_CELLS at the narrowest wall.
 PASSAGE_CELLS_ACROSS = 13
+#: EXTERNAL bodies: elements across the body's thinnest extent, and the finest body size as a
+#: fraction of its diagonal (the floor that keeps a thin plate from asking for millions of tets)
+EXTERNAL_THIN_DIVISIONS = 6
+EXTERNAL_MAX_DIVISIONS = 400
 #: the finest the passage field may ask for, as a fraction of the clamp size h: a chord that
 #: grazes a sharp corner reads as a tiny radius, and 2r/13 of that would never finish
 PASSAGE_MIN_SIZE_FRACTION = 1.0 / 30.0
@@ -101,7 +105,8 @@ def resolution_extent(ext, diag: float, *, planar: bool = False, ports=None) -> 
 # with the wrong default: a false success). Defaults apply only AFTER validation, to
 # omitted-but-recognized keys. To support a new capability, add its key here.
 _KNOWN_KEYS = {"element_order", "size", "curvature_nodes", "groups",
-               "default_group", "optimize", "extra_exports", "dimensionality"}
+               "default_group", "optimize", "extra_exports", "dimensionality",
+               "domain_margin"}
 _SIZE_FIELDS = {"mode", "value"}
 _SIZE_MODES = {"factor", "absolute"}
 # 3D groups target CAD surfaces (surface_tags); 2D planar groups target the
@@ -229,10 +234,28 @@ def measure_passage(points, faces, radius) -> dict:
             "min": round(float(across.min()), 1), "points": int(ok.sum())}
 
 
-def _passage_field(gmsh, ws, h: float, diag: float) -> tuple:
+def _surface_interior_point(pts, faces):
+    """A point deep inside a closed triangulated boundary (engines/passage.inside_point)."""
+    import numpy as np
+    import pyvista as pv
+
+    from meshpipeline.engines.passage import inside_point
+    f = np.asarray(faces, dtype=np.int64)
+    surf = pv.PolyData(np.asarray(pts, dtype=float),
+                       np.hstack([np.full((len(f), 1), 3, dtype=np.int64), f]).ravel())
+    p = inside_point(surf)
+    if p is None:
+        raise ValueError("no point inside the surface")
+    return p
+
+
+def _passage_field(gmsh, ws, h: float, diag: float, *, discrete: bool = False) -> tuple:
     """For an internal-flow fluid domain: mesh once coarsely at the clamp size h, measure the
     local passage radius on that boundary (engines/radius_field.local_radius: half the
     inward chord to the opposite wall), and return (callback, surface_points, radius, note).
+    A CLASSIFIED SURFACE is measured on the triangles it arrived with, before any meshing: they
+    ARE its boundary, and a coarse mesh cleared off a discrete surface takes the surface with
+    it (the elbow STL's remesh then ran past 13 CPU minutes without finishing, 2026-10-04).
     Anything missing (no flow_topology, no pyvista, a surface the chord cannot read) returns
     (None, None, None, why) and the clamp sizing stands - the gate still measures the result."""
     if _read_flow_topology(ws) != "internal":
@@ -242,6 +265,14 @@ def _passage_field(gmsh, ws, h: float, diag: float) -> tuple:
     except Exception as exc:  # noqa: BLE001 - standalone use without pyvista
         return None, None, None, f"local radius unavailable ({type(exc).__name__})"
     try:
+        if discrete:
+            pts, faces = _boundary_triangles(gmsh)
+            if len(faces) < 4:
+                return None, None, None, "no boundary triangles on the surface"
+            r = local_radius(pts, faces, _surface_interior_point(pts, faces), diag * 1e-5,
+                             diag / 2.0)
+            sizes = passage_sizes(r, h_max=h, h_min=h * PASSAGE_MIN_SIZE_FRACTION)
+            return passage_size_callback(pts, sizes), pts, r, "local radius (input surface)"
         gmsh.model.mesh.generate(3)
         pts, faces = _boundary_triangles(gmsh)
         if len(faces) < 4:
@@ -251,7 +282,8 @@ def _passage_field(gmsh, ws, h: float, diag: float) -> tuple:
         gmsh.model.mesh.clear()
         return passage_size_callback(pts, sizes), pts, r, "local radius"
     except Exception as exc:  # noqa: BLE001 - a sizing aid must never lose the mesh
-        gmsh.model.mesh.clear()
+        if not discrete:
+            gmsh.model.mesh.clear()
         return None, None, None, f"passage field failed ({type(exc).__name__}: {exc})"
 
 
@@ -384,8 +416,8 @@ def _mesh_planar(ws: Path, spec: dict, h: float, resolution: dict | None = None)
         gmsh.model.mesh.optimize()
     order = int(spec.get("element_order", 2))
     if order > 1:
+        gmsh.option.setNumber("Mesh.HighOrderOptimize", 2)   # read by setOrder: set it first
         gmsh.model.mesh.setOrder(order)
-        gmsh.option.setNumber("Mesh.HighOrderOptimize", 2)
 
     etypes, etags, _ = gmsh.model.mesh.getElements(2)
     all_tags = [t for arr in etags for t in arr]
@@ -430,6 +462,229 @@ def _mesh_planar(ws: Path, spec: dict, h: float, resolution: dict | None = None)
     return 0 if not fatal else 4
 
 
+#: The closed fluid boundary a triangle-surface upload is staged as for internal flow (one named
+#: solid per patch; engines/gmsh/gmsh_runner.stage_declared). Meshed when there is no geometry.step.
+FLUID_BOUNDARY = "fluid_boundary.stl"
+
+
+def _load_fluid_boundary(gmsh, path: Path) -> None:
+    """The staged fluid boundary as gmsh geometry: each named solid of the STL becomes one discrete
+    surface (tags 1..N in file order, the names geometry_report showed), the curves where patches
+    meet are built, every surface gets its own parametrisation so it is REMESHED to the size
+    asked for rather than inheriting the upload's triangles, and the volume they close is the one
+    solid the rest of this driver meshes - exactly as it meshes a CAD solid."""
+    gmsh.merge(str(path))
+    gmsh.model.mesh.removeDuplicateNodes()
+    gmsh.model.mesh.createTopology()
+    gmsh.model.mesh.createGeometry()
+    surfaces = [t for _, t in gmsh.model.getEntities(2)]
+    loop = gmsh.model.geo.addSurfaceLoop(surfaces)
+    gmsh.model.geo.addVolume([loop])
+    gmsh.model.geo.synchronize()
+
+
+def _refill_classified(gmsh, path: Path, spec: dict) -> list:
+    """The staged fluid boundary loaded again, split by angle into surfaces gmsh can map (its own
+    STL-remesh route), each new surface named by the patch its triangles came from, and the
+    spec's groups rebuilt on those names. Returns the surfaces no group claimed."""
+    import numpy as np
+    from scipy.spatial import cKDTree
+
+    # the tags the spec names are the per-patch load's: tag k is the k-th solid of the file
+    gmsh.model.remove()
+    gmsh.model.add("fea")
+    gmsh.merge(str(path))
+    named = {t: gmsh.model.getEntityName(2, t) for _, t in gmsh.model.getEntities(2)}
+    ntags, coords, _ = gmsh.model.mesh.getNodes()
+    pts = np.asarray(coords, dtype=float).reshape(-1, 3)
+    index = np.zeros(int(max(ntags)) + 1, dtype=np.int64)
+    index[np.asarray(ntags, dtype=np.int64)] = np.arange(len(ntags))
+
+    def centroids(tag):
+        _ty, _tg, nodes = gmsh.model.mesh.getElements(2, tag)
+        if not len(nodes):
+            return np.zeros((0, 3))
+        return pts[index[np.asarray(nodes[0], dtype=np.int64).reshape(-1, 3)]].mean(axis=1)
+
+    ref = [(centroids(t), n) for t, n in named.items()]
+    tree = cKDTree(np.vstack([c for c, _ in ref]))
+    label = np.concatenate([np.full(len(c), i) for i, (c, _) in enumerate(ref)])
+    names = [n for _, n in ref]
+    gmsh.model.mesh.removeDuplicateNodes()
+    gmsh.model.mesh.classifySurfaces(40.0 * np.pi / 180.0, True, True, np.pi)
+    ntags, coords, _ = gmsh.model.mesh.getNodes()
+    pts = np.asarray(coords, dtype=float).reshape(-1, 3)
+    index = np.zeros(int(max(ntags)) + 1, dtype=np.int64)
+    index[np.asarray(ntags, dtype=np.int64)] = np.arange(len(ntags))
+    by_name: dict[str, list[int]] = {}
+    for _, t in gmsh.model.getEntities(2):
+        c = centroids(t)
+        if not len(c):
+            continue
+        _, k = tree.query(c)
+        by_name.setdefault(names[int(np.bincount(label[k]).argmax())], []).append(t)
+    gmsh.model.mesh.createGeometry()
+    surfaces = [t for _, t in gmsh.model.getEntities(2)]
+    loop = gmsh.model.geo.addSurfaceLoop(surfaces)
+    gmsh.model.geo.addVolume([loop])
+    gmsh.model.geo.synchronize()
+    gmsh.model.addPhysicalGroup(3, [t for _, t in gmsh.model.getEntities(3)], name="solid")
+    assigned: set[int] = set()
+    for g in spec.get("groups", []) or []:
+        wanted = {named.get(t) for t in (g.get("surface_tags") or [])}
+        tags = sorted(t for n in wanted if n for t in by_name.get(n, []))
+        if tags:
+            gmsh.model.addPhysicalGroup(2, tags, name=str(g["name"]))
+            assigned.update(tags)
+    leftover = sorted(set(surfaces) - assigned)
+    if leftover:
+        gmsh.model.addPhysicalGroup(2, leftover, name=str(spec.get("default_group", "free")))
+    return leftover
+
+
+def _read_input_kind(ws) -> str:
+    try:
+        return (Path(ws) / "input_kind").read_text().strip()
+    except OSError:
+        return ""
+
+
+def _read_far_field(ws) -> dict:
+    try:
+        d = json.loads((Path(ws) / "far_field_request.json").read_text())
+        return d if isinstance(d, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _declared_names(ports) -> tuple[str, str]:
+    """(body wall name, far-field name) the intake approved; 'body'/'farfield' without one."""
+    walls = [str(p.get("name")) for p in ports or [] if isinstance(p, dict)
+             and str(p.get("type") or "") == "wall" and p.get("name")]
+    far = [str(p.get("name")) for p in ports or [] if isinstance(p, dict)
+           and str(p.get("type") or "") == "farfield" and p.get("name")]
+    return (walls[0] if walls else "body"), (far[0] if far else "farfield")
+
+
+def _external_fluid(gmsh, ws, spec, discrete, surfaces, bmin, bmax, h, ports):
+    """(fluid volumes, the body + far-field groups, facts for quality.json) of an external case."""
+    from meshpipeline.engines.far_field import far_field_box, margins_from, ruler_of
+    from meshpipeline.engines.gmsh.surface_volume import (
+        external_fluid_cad,
+        external_fluid_discrete,
+        grade_from_body,
+    )
+    ffr = _read_far_field(ws)
+    try:
+        request_txt = (Path(ws) / "request.txt").read_text(errors="replace")
+    except OSError:
+        request_txt = ""
+    margins = margins_from(spec.get("domain_margin"), ffr.get("requested_extents"), request_txt)
+    ruler = ruler_of(bmin, bmax, ffr.get("flow_axis"), ffr.get("reference_length_m"))
+    dmin, dmax = far_field_box(bmin, bmax, margins, flow_axis=ffr.get("flow_axis"),
+                               reference_length_m=ffr.get("reference_length_m"))
+    if discrete:
+        vols, far = external_fluid_discrete(gmsh, surfaces, dmin, dmax)
+        body = list(surfaces)
+        origin = {t: t for t in body}
+    else:
+        if not gmsh.model.getEntities(3):
+            return [], [], {}
+        before = {t: [float(v) for v in gmsh.model.occ.getCenterOfMass(2, t)]
+                  for _, t in gmsh.model.getEntities(2)}
+        vols, far, body = external_fluid_cad(gmsh, dmin, dmax)
+        origin = _face_origin(gmsh, body, before)
+    span = max(float(dmax[k]) - float(dmin[k]) for k in range(3))
+    h_far = max(float(h), span / 15.0)
+    grade_from_body(gmsh, body, h_body=float(h), h_far=h_far, ruler=ruler)
+    gmsh.option.setNumber("Mesh.MeshSizeMax", h_far)
+    groups = _external_groups(spec.get("groups"), body, far, origin, ports)
+    print(f"[GMSH] external: far-field box {[round(v, 4) for v in dmin]} .. "
+          f"{[round(v, 4) for v in dmax]} ({margins}, ruler {ruler:.4g} m); body size {h:.4g} m "
+          f"grading to {h_far:.4g} m", file=sys.stderr)
+    facts = {"external": True, "domain_box": [list(dmin), list(dmax)],
+             "body_bounds": [list(bmin), list(bmax)], "far_field_ruler": ruler,
+             "far_field_margins": margins}
+    if ffr.get("reference_length_m"):
+        facts["reference_length"] = float(ffr["reference_length_m"])
+    return vols, groups, facts
+
+
+def _face_origin(gmsh, faces, before: dict) -> dict:
+    """{face of the cut fluid: the body face it came from}, by nearest centre of mass - the box
+    cut renumbers the body's faces but does not move them."""
+    if not before:
+        return {}
+    import numpy as np
+    from scipy.spatial import cKDTree
+    old = list(before)
+    tree = cKDTree(np.asarray([before[t] for t in old], dtype=float))
+    out = {}
+    for t in faces:
+        _, i = tree.query(np.asarray(gmsh.model.occ.getCenterOfMass(2, t), dtype=float))
+        out[int(t)] = int(old[int(i)])
+    return out
+
+
+def _external_groups(spec_groups, body, far, origin: dict, ports) -> list[dict]:
+    """The groups of an external case. The builder's groups name the BODY's faces by the tags it
+    was shown (geometry_report), before the far-field box was cut around it: each is carried to
+    the faces those became; body faces it left out join its first wall group; every box face is
+    its first far-field group. Without builder groups: the declared wall and far field."""
+    wall, farfield = _declared_names(ports)
+    groups = [g for g in (spec_groups or []) if isinstance(g, dict) and g.get("name")]
+    if not groups:
+        return [{"name": wall, "role": "wall", "surface_tags": list(body)},
+                {"name": farfield, "role": "farfield", "surface_tags": list(far)}]
+    out, used = [], set()
+    far_groups = [g for g in groups if str(g.get("role")) == "farfield"]
+    for g in groups:
+        if g in far_groups:
+            continue
+        want = {int(t) for t in g.get("surface_tags") or []}
+        tags = [t for t in body if origin.get(t) in want and t not in used]
+        used.update(tags)
+        out.append({**g, "surface_tags": tags})
+    rest = [t for t in body if t not in used]
+    if rest:
+        first_wall = next((g for g in out if str(g.get("role")) == "wall"), None)
+        if first_wall is not None:
+            first_wall["surface_tags"] = [*first_wall["surface_tags"], *rest]
+        else:
+            out.append({"name": wall, "role": "wall", "surface_tags": rest})
+    if far_groups:
+        out.append({**far_groups[0], "surface_tags": list(far)})
+        out.extend({**g, "surface_tags": []} for g in far_groups[1:])
+    else:
+        out.append({"name": farfield, "role": "farfield", "surface_tags": list(far)})
+    return out
+
+
+def _bound_groups(gmsh, surfaces, ports, *, cad: bool = False) -> list[dict]:
+    """The groups when the builder named none: each declared port bound to its face
+    (engines/gmsh/surface_volume.bind_ports), every other face the declared wall - the same
+    reading for a CAD face table (mass properties) and a classified surface (its triangles)."""
+    from meshpipeline.engines.gmsh.surface_volume import bind_ports, surface_table
+    if cad:
+        table = [{"tag": int(t), "area": float(gmsh.model.occ.getMass(2, t)),
+                  "centroid": [float(v) for v in gmsh.model.occ.getCenterOfMass(2, t)]}
+                 for t in surfaces]
+    else:
+        table = surface_table(gmsh, surfaces)
+    bound = bind_ports(table, ports)
+    roles = {str(p.get("name")): str(p.get("type")) for p in ports or [] if isinstance(p, dict)}
+    used = {t for tags in bound.values() for t in tags}
+    wall, _ = _declared_names(ports)
+    groups = [{"name": n, "role": roles.get(n, "inlet"), "surface_tags": tags}
+              for n, tags in sorted(bound.items())]
+    rest = [t for t in surfaces if t not in used]
+    if rest:
+        groups.append({"name": wall, "role": "wall", "surface_tags": rest})
+    print(f"[GMSH] no groups in the spec: ports bound to faces {bound}; {len(rest)} face(s) are "
+          "the wall", file=sys.stderr)
+    return groups
+
+
 def main(workspace: str) -> int:
     ws = Path(workspace)
     try:
@@ -442,9 +697,15 @@ def main(workspace: str) -> int:
         print("[GMSH] gmsh_spec.json REJECTED (fix these and re-run - nothing was meshed):\n  - "
               + "\n  - ".join(_problems), file=sys.stderr)
         return 6
+    # THE SOURCE, in this order: the fluid boundary staged from the upload for internal flow
+    # (gmsh_runner.stage_declared, one named solid per patch), else the CAD solid as it is, else
+    # the uploaded surface itself (input.stl), classified into faces here.
+    boundary = ws / FLUID_BOUNDARY
     geom = ws / "geometry.step"
-    if not geom.exists():
-        print(f"[GMSH] geometry.step missing in {ws}", file=sys.stderr)
+    surface = ws / "input.stl"
+    if not boundary.exists() and not geom.exists() and not surface.exists():
+        print(f"[GMSH] geometry.step missing in {ws} (and no staged fluid_boundary.stl or "
+              "input.stl)", file=sys.stderr)
         return 2
     # The INTAKE-DECLARED dimensionality (neutral workspace file) is authoritative;
     # the spec key is optional but may not contradict it.
@@ -465,13 +726,43 @@ def main(workspace: str) -> int:
     gmsh.initialize(interruptible=False)
     try:
         gmsh.option.setNumber("General.Terminal", 1)
+        # PINNED: one thread and a fixed seed, so a staged surface gives the same mesh wherever
+        # it runs. Threaded meshing inserts nodes in the order threads finish, and the worst
+        # tet with it; a staged tee read worst SICN 0.18, 0.12 and 0.002 on three lab runs
+        # (2026-10-04), where three local runs of each of three cases matched to the digit.
+        gmsh.option.setNumber("General.NumThreads", 1)
+        gmsh.option.setNumber("Mesh.RandomSeed", 1)
         # the model's bounding box from its surface, not OpenCascade's loose envelope of B-spline
         # control points: the element size is a factor of this diagonal and the resolution clamp
         # reads its narrowest side (a 132 mm Supra read 570 x 492 x 401 mm without it)
         gmsh.option.setNumber("Geometry.OCCBoundsUseStl", 1)
         gmsh.model.add("fea")
-        gmsh.model.occ.importShapes(str(geom))
-        gmsh.model.occ.synchronize()
+        # an EXTERNAL BODY is cut out of a far-field box here; an external fluid domain the user
+        # prepared (the air box itself) is meshed as it is, like any other fluid domain
+        external = (_read_flow_topology(ws) == "external"
+                    and _read_input_kind(ws) in ("solid-body", "body-surface"))
+        # the staged fluid boundary first: it exists only when the fluid had to be derived from
+        # the upload for internal flow (a surface, or a wall), and then geometry.step - if any -
+        # is the metal
+        staged = boundary.exists() and not external
+        # a surface upload with no B-rep and nothing staged: its triangles are split into faces
+        # wherever the surface folds sharply and reparametrised (engines/gmsh/surface_volume.py) -
+        # gmsh's own recipe for remeshing an STL - instead of the run stopping on a missing
+        # geometry.step
+        classified = not staged and not geom.exists()
+        # both are DISCRETE: the passage radius is read off their own triangles
+        discrete = staged or classified
+        surfaces: list[int] = []
+        if staged:
+            _load_fluid_boundary(gmsh, boundary)
+        elif classified:
+            from meshpipeline.engines.gmsh.surface_volume import classify_closed_surface
+            surfaces = classify_closed_surface(gmsh, str(surface))
+            print(f"[GMSH] surface input: {len(surfaces)} face(s) classified from input.stl",
+                  file=sys.stderr)
+        else:
+            gmsh.model.occ.importShapes(str(geom))
+            gmsh.model.occ.synchronize()
 
         xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.getBoundingBox(-1, -1)
         diag = ((xmax - xmin) ** 2 + (ymax - ymin) ** 2 + (zmax - zmin) ** 2) ** 0.5
@@ -492,8 +783,22 @@ def main(workspace: str) -> int:
             _ports = json.loads((ws / "port_declaration.json").read_text())
         except (OSError, json.JSONDecodeError):
             pass
+        if _is2d and discrete:
+            print("[GMSH] a 2D case needs a planar CAD face (STEP/IGES); a triangulated surface "
+                  "has none", file=sys.stderr)
+            return 3
         min_ext, _basis = resolution_extent(ext, diag, planar=_is2d, ports=_ports)
-        h = min(h_req, min_ext / MIN_CELLS_ACROSS)
+        # EXTERNAL flow is not confined by the body: the clamp's "cells across the narrowest
+        # dimension" is a passage rule, and across a wing's thickness it would refine the whole
+        # far field to the thickness. The body size stands; the box grades away from it.
+        h = h_req if external else min(h_req, min_ext / MIN_CELLS_ACROSS)
+        if external:
+            # THE BODY'S THINNEST DIMENSION gets a few elements: a wing 79 mm thick under a 68 mm
+            # body size left its trailing edge to one element and boundary-locked slivers no
+            # optimiser can move (ONERA M6: min SICN 0.04; at a sixth of the thickness 0.08 with
+            # one sliver left, 2026-10-04). Bounded below so a thin plate cannot ask for millions.
+            h = min(h, max(narrowest_extent(ext, diag) / EXTERNAL_THIN_DIVISIONS,
+                           diag / EXTERNAL_MAX_DIVISIONS))
         if h < h_req:
             _what = (f"the {min_ext:.4g} m narrow dimension" if _basis == "bbox"
                      else f"the {min_ext:.4g} m flow width of {_basis[5:]}")
@@ -502,26 +807,62 @@ def main(workspace: str) -> int:
                   f"tightened to {h:.4g} m ({MIN_CELLS_ACROSS} across).", file=sys.stderr)
         gmsh.option.setNumber("Mesh.MeshSizeMax", h)
         gmsh.option.setNumber("Mesh.MeshSizeMin", h / 20.0)
+        # CURVATURE SIZING. Off for a CLASSIFIED upload: it reads the facets' kinks as curvature
+        # and refined a 69 mm elbow past 300 s of surface meshing without finishing
+        # (bend_elbow_021 STL, 2026-10-04) - the passage field sizes it. On for the STAGED fluid
+        # boundary: it reads each patch's own parametrisation, not the upload's facets, and
+        # turning it off dropped the worst tet of a capped housing from SICN 0.38 to 0.02
+        # (2026-10-04). On for a CAD face, which has a real curvature.
         gmsh.option.setNumber("Mesh.MeshSizeFromCurvature",
-                              int(spec.get("curvature_nodes", 24)))
-        _resolution = {"size_h_requested": round(h_req, 8),
-                       "min_extent": round(min_ext, 8),
-                       "min_extent_basis": _basis,
-                       "cells_across_min": round(min_ext / h, 3) if h > 0 else 0.0}
+                              0 if classified else int(spec.get("curvature_nodes", 24)))
+        _resolution = ({"size_h_requested": round(h_req, 8), "min_extent_basis": "external"}
+                       if external else
+                       {"size_h_requested": round(h_req, 8),
+                        "min_extent": round(min_ext, 8),
+                        "min_extent_basis": _basis,
+                        "cells_across_min": round(min_ext / h, 3) if h > 0 else 0.0})
 
         if _is2d:
             return _mesh_planar(ws, spec, h, resolution=_resolution)
 
+        # THE VOLUME. Internal CAD: the solids as they are. The staged fluid boundary: the one
+        # volume its patches close. A classified surface: the volume it closes. External: the
+        # fluid between the body and a far-field box (box minus body), sized in the unit the
+        # domain-extent gate judges it in (engines/far_field.py).
+        _external: dict = {}
+        if external:
+            vols, _groups_auto, _external = _external_fluid(gmsh, ws, spec, classified, surfaces,
+                                                            (xmin, ymin, zmin), (xmax, ymax, zmax),
+                                                            h, _ports)
+            if not vols:
+                print("[GMSH] external flow needs a closed body: no solid could be cut out of "
+                      "the far-field box", file=sys.stderr)
+                return 3
+            spec["groups"] = _groups_auto
+        elif staged:
+            vols = [t for _, t in gmsh.model.getEntities(3)]
+        elif classified:
+            from meshpipeline.engines.gmsh.surface_volume import internal_volume_discrete
+            vols = internal_volume_discrete(gmsh, surfaces)
+            if not spec.get("groups"):
+                spec["groups"] = _bound_groups(gmsh, surfaces, _ports)
+        else:
+            vols = [t for _, t in gmsh.model.getEntities(3)]
+            if not spec.get("groups") and any(isinstance(p, dict) and p.get("type") in
+                                               ("inlet", "outlet") for p in _ports):
+                spec["groups"] = _bound_groups(gmsh, [t for _, t in gmsh.model.getEntities(2)],
+                                               _ports, cad=True)
         # Physical groups: every volume is the solid; surfaces per the spec's
         # contracted names; unassigned surfaces land in the default group so
         # the .inp has a complete, named boundary decomposition.
-        vols = [t for _, t in gmsh.model.getEntities(3)]
         if not vols:
             print("[GMSH] no solid volumes in geometry.step - cannot mesh a "
                   "solid for FEA (is this a surface-only CAD file?)", file=sys.stderr)
             return 3
         gmsh.model.addPhysicalGroup(3, vols, name="solid")
-        all_surfs = {t for _, t in gmsh.model.getEntities(2)}
+        all_surfs = {t for _, t in gmsh.model.getBoundary([(3, v) for v in vols], oriented=False,
+                                                          combined=True)} \
+            if (external or classified) else {t for _, t in gmsh.model.getEntities(2)}
         # RECONCILIATION (contract -> artifact): a declared group whose tags do not exist
         # must REJECT, not silently vanish - the old `if tags:` dropped it while the
         # manifest still listed it (the group existed on paper, not in the deck).
@@ -546,13 +887,45 @@ def main(workspace: str) -> int:
 
         # PASSAGE SIZING (fluid domains): elements from the local radius, about
         # PASSAGE_CELLS_ACROSS across every passage, instead of one size for the whole part.
-        _cb, _spts, _srad, _why = _passage_field(gmsh, ws, h, diag)
+        _cb, _spts, _srad, _why = _passage_field(gmsh, ws, h, diag, discrete=discrete)
         _passage: dict = {"passage_sizing": _why, "passage_cells_across_target": PASSAGE_CELLS_ACROSS}
         if _cb is not None:
             gmsh.model.mesh.setSizeCallback(_cb)
         else:
             print(f"[GMSH] passage sizing not applied: {_why}", file=sys.stderr)
-        gmsh.model.mesh.generate(3)
+        try:
+            gmsh.model.mesh.generate(3)
+            if staged and not any(len(t) for t in gmsh.model.mesh.getElements(3)[1]):
+                # gmsh can fail to recover the boundary, say so in its log and carry on with
+                # an empty volume: that is a failed fill too
+                raise RuntimeError("no volume elements were generated")
+        except Exception as exc:  # noqa: BLE001 - a staged surface gets one other remesh, below
+            if not staged:
+                raise
+            # THE PATCHES, REMESHED EACH ON ITS OWN, DID NOT CLOSE INTO A FILLABLE BOUNDARY (a long
+            # bent wall can come back with facets crossing). Once more the way gmsh remeshes an
+            # STL itself - split by angle into patches it can map - with every group carried over
+            # by the patch name its surfaces came from.
+            print(f"[GMSH] the staged boundary did not fill ({exc}); remeshing it split by "
+                  "angle instead", file=sys.stderr)
+            if _cb is not None:
+                gmsh.model.mesh.removeSizeCallback()
+            # a failed fill leaves gmsh's meshing state behind it: start it afresh, same options
+            gmsh.finalize()
+            gmsh.initialize(interruptible=False)
+            gmsh.option.setNumber("General.Terminal", 1)
+            gmsh.option.setNumber("General.NumThreads", 1)
+            gmsh.option.setNumber("Mesh.RandomSeed", 1)
+            gmsh.option.setNumber("Mesh.MeshSizeMax", h)
+            gmsh.option.setNumber("Mesh.MeshSizeMin", h / 20.0)
+            gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", int(spec.get("curvature_nodes", 24)))
+            leftover = _refill_classified(gmsh, boundary, spec)
+            _cb, _spts, _srad, _why = _passage_field(gmsh, ws, h, diag, discrete=True)
+            _passage = {"passage_sizing": _why, "passage_cells_across_target": PASSAGE_CELLS_ACROSS,
+                        "surface_route": "classified by angle"}
+            if _cb is not None:
+                gmsh.model.mesh.setSizeCallback(_cb)
+            gmsh.model.mesh.generate(3)
         if _cb is not None:
             gmsh.model.mesh.removeSizeCallback()
         if spec.get("optimize", True):
@@ -573,8 +946,10 @@ def main(workspace: str) -> int:
                 print(f"[GMSH] passage measurement failed: {exc}", file=sys.stderr)
         order = int(spec.get("element_order", 2))
         if order > 1:
-            gmsh.model.mesh.setOrder(order)
+            # BEFORE setOrder: the option is read while the high-order nodes are placed, so set
+            # after it (as it was) it optimised nothing and curved elements shipped as snapped
             gmsh.option.setNumber("Mesh.HighOrderOptimize", 2)  # elastic+optim
+            gmsh.model.mesh.setOrder(order)
 
         # Quality: SICN over the volume elements (signed inverse condition
         # number - Gmsh's standard quality measure; 0 = degenerate, 1 = ideal).
@@ -620,6 +995,9 @@ def main(workspace: str) -> int:
             # unassigned) - finalize must not fabricate a group the mesh lacks:
             # a phantom entry fails the patch contract as an undeclared extra.
             "default_group_used": bool(leftover),
+            **({"surface_source": "input.stl, classified"} if classified else {}),
+            **({"surface_source": "fluid_boundary.stl, staged"} if staged else {}),
+            **_external,
         }, indent=1))
         print(f"[GMSH] elements={n_elem} nodes={n_nodes} order={order} "
               f"min_sicn={min_sicn:.3f} low_frac={low / max(n_elem, 1):.4f}")

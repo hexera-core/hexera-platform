@@ -336,7 +336,7 @@ def test_the_scout_stores_each_pictures_camera_the_six_way_picture_and_the_shape
     store = _Store({})
     monkeypatch.setattr(object_storage, "get_object_store", lambda: store)
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
-    monkeypatch.setattr(gc, "_fetch", lambda ref, work: (work / "geometry.step").write_text("step") or work / "geometry.step")
+    monkeypatch.setattr(gc, "_fetch", lambda ref, work: ((work / "geometry.step").write_text("step"), work / "geometry.step")[1])
     monkeypatch.setattr(gc, "_prepared_coordinates", lambda path, interp_ref, ref: (None, ""))
     facts = _car_facts()
     facts.pop("up_evidence")

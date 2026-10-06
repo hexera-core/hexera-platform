@@ -178,6 +178,10 @@ export function terminalResult(job, outcomeText) {
     cancelled: job.status === "cancelled",
     cancelReason: job.cancel_reason || "",
     attempts: job.current_attempt || 0,
+    // when the job was created and when it ended, by the server's clock: the run's timer stops
+    // there, however late the page heard about it - or however long after it reloaded
+    createdAt: job.created_at || "",
+    endedAt: job.ended_at || "",
     text: outcomeText,
     files: (job.artifacts || []).map((a) => ({
       type: a.artifact_type, label: a.label, size: a.size_bytes, url: a.download_url,

@@ -164,11 +164,20 @@ SPEC = EngineSpec(
             # so it serves either flow topology.
             MeshCapability("fluid-domain", "fluid-volume",
                            topologies=("internal", "external")),
+            # A BODY in EXTERNAL flow: the driver builds the fluid itself - a far-field box minus
+            # the body (an OpenCASCADE cut of the CAD solid, or two surface loops around a
+            # triangulated body), sized in the unit the domain-extent gate judges
+            # (engines/far_field.py). Before this every external case was refused for gmsh.
+            MeshCapability("body-surface", "fluid-volume", topologies=("external",),
+                           dimensionalities=("3D",)),
             # 2D plane-stress/strain FEA: a FLAT face/sheet body meshed into
             # triangles (CPS3/CPS6 in the .inp) with boundary groups on curves.
             MeshCapability("planar-domain", "surface-mesh"),
         ),
         input_contract=InputContract(
+            # internal flow from an STL/OBJ/PLY upload: cad/internal_surface closes it at the
+            # confirmed openings (snappy/cfMesh/gmsh/vmtk internal paths read that record)
+            internal_from_surface=True,
             dimensionalities=("2D", "3D"),
             input_kind="solid",
             min_thickness_ratio=0.0,
@@ -219,6 +228,8 @@ SPEC = EngineSpec(
                 # the CAD the deck was built from, and the alternate decks: gmsh writes these
                 # only when the corresponding export is requested, so they are conditional.
                 M("geometry.step", required=False),
+                # ...or, for a triangle-surface upload, the closed fluid boundary it was filled from
+                M("fluid_boundary.stl", required=False),
                 M("mesh.bdf", required=False),
                 M("mesh.unv", required=False),
             ),

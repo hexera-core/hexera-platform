@@ -54,7 +54,8 @@
    "input_kind": "surface",
    "min_thickness_ratio": 0.0,
    "rationale": "cfMesh ships BOTH a 3D workflow (cartesianMesh) and a native 2D workflow (cartesian2DMesh - meshes a profile ribbon one cell thick with empty front/back planes); it wraps a surface STL and tolerates non-watertight geometry. Raw thinness is handled by local refinement, so no hard thin-feature floor is set.",
-   "require_no_self_intersection": false
+   "require_no_self_intersection": false,
+   "internal_from_surface": true
   },
   "required_run_files": [
    "system/meshDict"
@@ -86,6 +87,7 @@
    "timed_out"
   ],
   "deliverable": [
+   "fluid_boundary.stl",
    "geometry.step",
    "gmsh_spec.json",
    "mesh.bdf",
@@ -125,7 +127,8 @@
    "input_kind": "solid",
    "min_thickness_ratio": 0.0,
    "rationale": "3D: a valid closed CAD solid \u2192 second-order tetrahedra. 2D: a FLAT (planar) face/sheet body \u2192 plane-stress/strain triangles with boundary groups on the curves. Element sizing adapts to thin solids, so no hard thin-feature floor is set.",
-   "require_no_self_intersection": false
+   "require_no_self_intersection": false,
+   "internal_from_surface": true
   },
   "required_run_files": [
    "gmsh_spec.json"
@@ -198,7 +201,8 @@
    "input_kind": "surface",
    "min_thickness_ratio": 0.0,
    "rationale": "snappyHexMesh is a 3D hex/split-hex mesher - 3D ONLY. It has no 2D mode (true 2D belongs to cfMesh's native cartesian2DMesh), and a thin slab is simply a 3D case with symmetry patches. It body-fits a surface STL and wants cleaner geometry than cfMesh. Thin features are resolved by surface refinement level, so no hard thin-feature floor.",
-   "require_no_self_intersection": false
+   "require_no_self_intersection": false,
+   "internal_from_surface": true
   },
   "required_run_files": [
    "system/blockMeshDict",
@@ -278,7 +282,8 @@
    "input_kind": "solid",
    "min_thickness_ratio": 0.0,
    "rationale": "A coupled multi-region case is inherently 3D and needs a multi-solid CAD assembly (one closed solid per region) whose regions share conformal faces, so splitMeshRegions can cut them apart with matching interfaces. A single solid or a bare surface cannot express the coupling.",
-   "require_no_self_intersection": false
+   "require_no_self_intersection": false,
+   "internal_from_surface": false
   },
   "required_run_files": [
    "system/blockMeshDict",
@@ -351,7 +356,8 @@
    "input_kind": "surface",
    "min_thickness_ratio": 0.0,
    "rationale": "vmtk fills the interior of a CLOSED 3D surface and sizes cells from the centerline radius, so it needs a watertight tubular/branching surface, not a solid or a 2D section. Thin branches are resolved by the radius-adaptive edge length, so no hard thin-feature floor is set.",
-   "require_no_self_intersection": true
+   "require_no_self_intersection": true,
+   "internal_from_surface": true
   },
   "required_run_files": [
    "vmtk_spec.json"

@@ -148,6 +148,10 @@ def _context_files(workspace: Path, state, source_path: str) -> tuple[str, str]:
         engine_params=state.get("engine_params", {}) or {},
         flow_topology=state.get("flow_topology", "") or "",
         purpose=state.get("purpose", "") or "",
+        far_field={"requested_extents": state.get("requested_extents"),
+                   "reference_length_m": state.get("reference_length_m"),
+                   "flow_axis": state.get("flow_axis")},
+        input_kind=str(state.get("input_kind") or ""),
     )
 
 
@@ -226,10 +230,16 @@ def _stage_declared(workspace: Path, geometry, state, engine: str) -> None:
         rec = fn(workspace, geometry_path=geometry.path, prepared=consumed,
                  intake_patches=state.get("intake_patches") or [],
                  input_kind=str(state.get("input_kind") or ""))
-    except Exception:  # noqa: BLE001 - reported by the engine's inspection, never fatal here
+    except Exception as exc:  # noqa: BLE001 - reported by the engine's inspection, never fatal here
         logger.exception("Builder: engine staging failed (engine=%s) - continuing on the "
                          "shared surface", engine)
+        # ...and kept, with its true reason, for that inspection to report: a log line alone left
+        # the engine saying only that a staged file was missing
+        from meshpipeline.cad.internal_surface import note_staging_failure
+        note_staging_failure(workspace, engine, exc)
         return
+    from meshpipeline.cad.internal_surface import clear_staging_failure
+    clear_staging_failure(workspace)
     if rec:
         logger.info("Builder: engine staged the declared geometry (engine=%s, ports=%d)",
                     engine, len(rec.get("ports") or []))

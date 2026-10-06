@@ -50,6 +50,15 @@ export function disableInput() {
 
 export function setPlaceholder(text) { $("chat-input").placeholder = text; }
 
+/** THE FILE A RUN MESHES, named by the server. The label was only ever filled by this page's own
+ *  upload, so a reload - or a run opened from a link - read "No geometry file selected" beside a
+ *  run that plainly had one. A page that holds an upload of its own keeps naming that upload. */
+export function showRunFile(name) {
+  const lbl = $("file-label");
+  if (!name || !lbl || getState.sessionId()) return;
+  lbl.textContent = name; lbl.className = "ready";
+}
+
 function autoResize(el) {
   el.style.height = "auto";
   el.style.height = Math.min(el.scrollHeight, MAX_INPUT_HEIGHT) + "px";
@@ -155,8 +164,11 @@ async function watchGeometryCheck(sessionId) {
   // THE WAY ON when a step gave up: the scout when the part was never measured, the naming when
   // it was. The watch goes on, so the fresh result lands where the old one would have.
   const retryFn = async (step) => { const d = await retryGeometryCheck(sessionId, step); told = ""; return d; };
-  const confirmFn = async (body) => {
+  // `edits` is the stage's (or the card's) one line saying what the user changed on the form. It
+  // is said once the server holds the answers, before the declaration that carries them all.
+  const confirmFn = async (body, edits) => {
     const reply = await confirmGeometryCheck(sessionId, body);
+    if (edits) deps.chat("assistant", edits);
     deps.chat("assistant", reply.message);
     // THE INTAKE PICKS UP: the confirm ran one chat turn in the user's name, and its reply
     // is the next question - or the dispatch, when nothing was left to ask.

@@ -327,7 +327,17 @@ async def get_job(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
             cancel_reason=(job.cancel_reason if isinstance(getattr(job, "cancel_reason", None), str)
                            else None),
             worker_wake_minutes=worker_wake_estimate(job),
+            geometry_filename=geometry_filename_of(job),
         )
+
+
+def geometry_filename_of(job) -> str | None:
+    """What the user called the file this run meshes, or None when the run has no recorded source.
+
+    Display only - the name the upload arrived with, never used to open anything. A string or
+    nothing: a row from before sources were recorded has none."""
+    name = getattr(getattr(job, "geometry_source", None), "original_filename", None)
+    return name if isinstance(name, str) and name else None
 
 
 def worker_wake_estimate(job) -> int | None:

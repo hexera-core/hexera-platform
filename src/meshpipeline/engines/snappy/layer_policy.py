@@ -37,21 +37,29 @@ LAYER_POLICY_FACT = "layer_policy.json"
 #: negative-volume failure the earlier attempt already measured).
 ESCALATION_FACT = ".thin_escalation.json"
 
-#: Terminal ladder stage. Stage 0 is the initial classification-derived policy; stages 1..MAX
-#: are deterministic escalations. escalate() beyond MAX returns None and the driver falls back
-#: to the planner's freeform re-plan, exactly as before this module existed.
-MAX_ESCALATION_STAGE = 2
+#: Terminal ladder stage. Stage 0 is the initial classification-derived policy - the FULL request
+#: everywhere, measured and recorded but not reduced; stages 1..MAX are deterministic escalations
+#: after a pass whose layers inverted cells. escalate() beyond MAX returns None and the driver
+#: falls back to the planner's freeform re-plan, exactly as before this module existed.
+#:
+#: Stage 0 used to cut the counts up front (razor 1, thin half). That cut was compensating for
+#: a collapse whose real cause was snappyHexMesh's absolute minVol bar (snappy_runner
+#: .layer_min_vol): with the bar scaled to the mesh, snappy keeps layers on thin and sharp
+#: regions wherever its own quality checks allow, and the up-front cut only threw them away -
+#: ONERA M6 3.6 -> 4.6 mean layers, CRM and C608 likewise (overnight lab, 2026-10-04). A cut is
+#: now made only once a pass has MEASURED inverted layer cells.
+MAX_ESCALATION_STAGE = 3
 
 #: min layer-thickness (relative, matches addLayersControls relativeSizes true) per stage.
-#: Stage 0 keeps snappy's historical 0.05 unless razor area exists - a razor region's single
-#: layer must be allowed to thin locally rather than abort the whole patch's inflation.
-_MIN_THICKNESS_BY_STAGE = {0: 0.05, 1: 0.01, 2: 0.005}
+#: Stages 0-1 keep snappy's historical 0.05 unless razor area exists - a razor region's layers
+#: must be allowed to thin locally rather than abort the whole patch's inflation.
+_MIN_THICKNESS_BY_STAGE = {0: 0.05, 1: 0.05, 2: 0.01, 3: 0.005}
 _MIN_THICKNESS_RAZOR_STAGE0 = 0.02
 
 #: maxThicknessToMedialRatio override per stage (None = renderer's own quality-derived value).
-#: From stage 1 the strict-profile 0.3 makes layers auto-thin approaching the medial axis - the
+#: From stage 2 the strict-profile 0.3 makes layers auto-thin approaching the medial axis - the
 #: mechanism that lets opposing stacks in a thin core shrink instead of colliding.
-_MEDIAL_BY_STAGE = {0: None, 1: 0.3, 2: 0.3}
+_MEDIAL_BY_STAGE = {0: None, 1: None, 2: 0.3, 3: 0.3}
 
 
 def intended_surface_cell(rec: dict, strategy: dict | None) -> float:
@@ -88,8 +96,10 @@ def class_layer_counts(n_requested: int, stage: int) -> dict[str, int]:
     n = max(0, int(n_requested))
     thin0 = max(1, (n + 1) // 2) if n else 0
     if stage <= 0:
-        return {"normal": n, "thin": thin0, "razor": min(1, n)}
+        return {"normal": n, "thin": n, "razor": n}
     if stage == 1:
+        return {"normal": n, "thin": thin0, "razor": min(1, n)}
+    if stage == 2:
         return {"normal": n, "thin": max(1, thin0 - 1) if n else 0, "razor": min(1, n)}
     return {"normal": n, "thin": min(1, n), "razor": 0}
 
@@ -168,17 +178,25 @@ def _plan_layer_policy(field_: ThinFeatureField | None, *, rec: dict, strategy: 
     stage = max(0, int(stage))
     counts = class_layer_counts(n_layers, stage)
     razor_present = fracs["razor"] > 0.0
-    if stage <= 0:
-        min_thickness = _MIN_THICKNESS_RAZOR_STAGE0 if razor_present else _MIN_THICKNESS_BY_STAGE[0]
+    if stage <= 1:
+        min_thickness = (_MIN_THICKNESS_RAZOR_STAGE0 if razor_present
+                         else _MIN_THICKNESS_BY_STAGE[stage])
     else:
         min_thickness = _MIN_THICKNESS_BY_STAGE.get(stage, _MIN_THICKNESS_BY_STAGE[MAX_ESCALATION_STAGE])
     medial = _MEDIAL_BY_STAGE.get(stage, _MEDIAL_BY_STAGE[MAX_ESCALATION_STAGE])
 
     # SPLIT only when a meaningful normal remainder exists to carry the declared wall patch and
     # the full layer request; an (almost) wholly thin body is a GLOBAL reduction, not a split.
+    # With every class at the same count (stage 0) there is nothing to split: one UNIFORM wall,
+    # the classes kept only as the honest record of what was measured.
     split = fracs["normal"] >= float(split_min_normal_frac)
     names = _region_names(wall_name)
-    if split:
+    uniform = len(set(counts.values())) == 1
+    if uniform:
+        mode = "uniform"
+        region_patches = {names["normal"]: "uniform"}
+        split = False
+    elif split:
         mode = "split"
         region_patches = {names[c]: c for c in ("normal", "thin", "razor") if fracs[c] > 0.0}
     else:
@@ -202,6 +220,8 @@ def _plan_layer_policy(field_: ThinFeatureField | None, *, rec: dict, strategy: 
                                        / max(field_.area_m2.sum(), 1e-30)), 6),
         "region_patches": region_patches,
     }
+    if uniform:
+        policy["uniform_n_layers"] = n_layers
     return LayerPolicy(policy=policy, labels=labels if split else None)
 
 
@@ -246,9 +266,15 @@ def reconcile_policy(policy: LayerPolicy | None, surface_regions: list,
         return None
     regions = [str(r) for r in (surface_regions or [])]
     names = _region_names(wall_name)
+    synthetic = {names["thin"], names["razor"]}
+    # the patches a uniform count lands on: the user's own named regions when the surface carries
+    # them (keyed by the wall name alone, the renderer gave each region the FULL request whatever
+    # the ladder said, and the record named a patch that was never staged), else the one wall
+    real = [r for r in regions if r not in synthetic]
+    uniform_patches = (dict.fromkeys(real, "uniform") if real and real != [names["normal"]]
+                       else {names["normal"]: "uniform"})
     p = dict(policy.policy)
     if policy.mode == "split":
-        synthetic = {names["thin"], names["razor"]}
         if regions and (synthetic & set(regions)):
             # keep only the class regions that actually exist on the staged surface
             p["region_patches"] = {r: c for r, c in p["region_patches"].items() if r in regions}
@@ -258,11 +284,13 @@ def reconcile_policy(policy: LayerPolicy | None, surface_regions: list,
         n_req = int(p.get("requested_layers", 0))
         uniform = n_req if stage <= 0 else class_layer_counts(n_req, stage)["thin"]
         p["mode"] = "uniform"
-        p["region_patches"] = {names["normal"]: "uniform"}
+        p["region_patches"] = uniform_patches
         p["classes"] = {c: {"n_layers": uniform, "area_frac": p["classes"][c]["area_frac"]}
                         for c in p["classes"]}
         p["uniform_n_layers"] = uniform
         return LayerPolicy(policy=p, labels=None)
+    if policy.mode == "uniform":
+        p["region_patches"] = uniform_patches
     return LayerPolicy(policy=p, labels=policy.labels)
 
 
@@ -342,13 +370,15 @@ def _siblings(ws: Path) -> list[Path]:
     return [ws.parent / f"attempt_{n}" for n in range(int(m.group(1)) - 1, 0, -1)]
 
 
-def measure_field(surface) -> ThinFeatureField | None:
-    """The driver's one-per-build measurement, degrading to None on any failure."""
+def measure_field(surface, wet_sides=None) -> ThinFeatureField | None:
+    """The driver's measurement, degrading to None on any failure. With `wet_sides` (an external
+    body's sealed-space reading, engines/sealed_cavities) the faces the fluid never touches drop
+    out and the thin class is read across the fluid only."""
     if not scfg.SNAPPY_THIN_LAYER_POLICY:
         return None
     try:
         from meshpipeline.cad.thin_features import measure_thin_features
-        return measure_thin_features(surface)
+        return measure_thin_features(surface, wet_sides=wet_sides)
     except Exception:  # noqa: BLE001 - perception must never cost a build
         logger.warning("thin-feature measurement failed; local layer policy disabled",
                        exc_info=True)

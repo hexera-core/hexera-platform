@@ -20,9 +20,7 @@ from meshpipeline.cad.repair.contracts import (
 )
 from meshpipeline.cad.repair.surface import inspect_surface_file
 from meshpipeline.contracts.geometry_source import MaterializedGeometry
-
-_BREP_SUFFIXES = {".step", ".stp", ".iges", ".igs"}
-_SURFACE_SUFFIXES = {".stl", ".vtp"}
+from meshpipeline.contracts.intake_formats import GeometryKind, geometry_kind
 
 
 def repair_input_for(geometry: MaterializedGeometry) -> RepairInput:
@@ -62,9 +60,11 @@ def inspect_geometry(
 ) -> RepairResult:
     path = Path(geometry.path)
     suffix = path.suffix.lower()
-    if suffix in _BREP_SUFFIXES:
+    # the materialised path is canonical (cad/ingest): a STEP/IGES solid, or an STL/VTP surface
+    kind = geometry_kind(path)
+    if kind is GeometryKind.cad:
         report = inspect_brep_file(path)
-    elif suffix in _SURFACE_SUFFIXES:
+    elif kind is GeometryKind.surface:
         report = inspect_surface_file(path)
     else:
         report = _unsupported_report(suffix)
