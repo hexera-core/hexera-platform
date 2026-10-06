@@ -43,3 +43,14 @@ def test_the_render_lets_an_external_wall_sit_eight_halvings_below_the_backgroun
                                domain_min=[0, 0, 0], domain_max=[14, 11, 11],
                                strategy={"wall_cell": 0.004}, cell_budget=2_000_000)
     assert old["wall_cell_size"] == pytest.approx(old["max_cell_size"] / 16)
+
+
+def test_the_wall_cell_snaps_down_the_octree_to_the_level_at_or_above_it():
+    # cfMesh halves until a cell is no larger than asked: 1.16 mm and 1.64 mm both land on level 8
+    # under a 0.294 m background (1.148 mm); the snap takes level 7 (2.30 mm) for both
+    for asked in (0.001158, 0.001638):
+        got = R.snap_to_octree(0.294, asked)
+        assert got == pytest.approx(0.294 / 128 * 1.001) and got >= asked
+    assert R.snap_to_octree(0.294, 0.3) == 0.3              # coarser than the background: as is
+    exact = R.snap_to_octree(0.256, 0.001)                     # 0.256 / 256 = 0.001 exactly
+    assert exact == pytest.approx(0.001 * 1.001)
