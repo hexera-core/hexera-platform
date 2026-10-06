@@ -110,8 +110,9 @@ SPEC = EngineSpec(
             "profiles are REJECTED (outside the supported Cartesian envelope)."),
         descriptor=(
         "FLUID / CFD volume meshing. Fills a region with a Cartesian "
-        "octree mesh (cfMesh cartesianMesh); the surface is STAIRCASED (cut-cell), not "
-        "body-fitted. cartesianMesh is inside-out: it meshes the volume ENCLOSED by the "
+        "octree mesh (cfMesh cartesianMesh) whose boundary cells are projected onto the surface "
+        "and its feature edges, so the wall is BODY-FITTED (polyhedral cells at the wall), as "
+        "fine as the wall cell. cartesianMesh is inside-out: it meshes the volume ENCLOSED by the "
         "supplied surface. So the region depends on the topology the user declares - "
         "INTERNAL meshes the cavity inside the geometry (ducts, pipes, manifolds); "
         "EXTERNAL wraps the body in a far-field box and meshes the fluid around it. "
@@ -132,9 +133,8 @@ SPEC = EngineSpec(
             "and patch names/types for renameBoundary."
         ),
         intake_advisories=(
-            "The cut-cell surface is STAIRCASED by design (not body-fitted) - fine surface "
-            "features and near-wall gradients may be under-resolved unless refined, and it "
-            "is a poor fit when smooth wall-shear/boundary-layer resolution is the goal.",
+            "The wall follows the surface only as finely as the wall cell - fine surface "
+            "features and near-wall gradients may be under-resolved unless refined locally.",
             "Sharp feature edges have to be captured before meshing or they are rounded off; "
             "very thin regions and tight gaps between surfaces can leave bad cells that need "
             "coarser or more careful local sizing.",
@@ -247,7 +247,11 @@ SPEC = EngineSpec(
         # 3.8M cells 100% of the wall area with a layer and 99.95% with all requested; blade-row
         # passages 99.9% / 99.6%; heat-exchanger shell side 99.6% / 98.2%. The finalize step
         # reports the coverage of every mesh, so a run that loses layers says so.
-        delivered_mesh=DeliveredMesh(cells="hex-dominant", walls="staircased", prism_layers=True),
+        # BODY-FITTED, measured (HOME-TURF audit, 2026-10-06): on 86 passing cfMesh meshes every
+        # delivered inlet/outlet patch is 0.99-1.01 of the opening declared and every fluid volume
+        # 0.99-1.002 of the CAD's - the boundary cells are projected onto the surface, not left as
+        # a stair-stepped cut-cell skin, which would miss both.
+        delivered_mesh=DeliveredMesh(cells="hex-dominant", walls="body-fitted", prism_layers=True),
         run_policy=RunPolicy(
             required_files=("system/meshDict",),
             # 20 MINUTES: at industry density (the passage caps put ~13 cells across every

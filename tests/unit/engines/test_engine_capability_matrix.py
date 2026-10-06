@@ -427,7 +427,7 @@ def test_the_proposer_reads_each_engines_declared_takes_and_delivers_lines():
         assert cap.delivers_line(get_spec(name)) in menu
     assert ("Takes: external flow from a CAD solid or a surface mesh; internal flow from a CAD "
             "solid or a surface mesh.") in menu
-    assert "Delivers: hex-dominant cells, a staircased wall, near-wall prism layers." in menu
+    assert "Delivers: hex-dominant cells, a body-fitted wall, near-wall prism layers." in menu
     assert "Delivers: tetrahedral cells, a body-fitted wall, no reliable near-wall prism" in menu
 
 
