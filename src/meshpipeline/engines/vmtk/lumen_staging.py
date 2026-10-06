@@ -238,6 +238,13 @@ def stage_lumen(workspace, geom_path, *, prepared, intake_patches: list,
     # in the flow - is meshed whole: the remesh keeps every piece (it kept only the largest, and
     # an annulus was delivered as the full pipe with its rod left out, every gate green)
     pieces = int(lumen.connectivity().point_data["RegionId"].max()) + 1 if lumen.n_points else 0
+    oriented = False
+    if pieces > 1:
+        # every piece wound with its normals OUT of the fluid, which is what vmtk's layer
+        # generator grows against - read from the fluid's side, not guessed per piece
+        lumen, oriented = orient_out_of_fluid(
+            lumen, [pv.read(str(p)) for k, p in stls.items() if k != "wall"],
+            res.get("interior_point"))
     lumen.save(str(ws / LUMEN_OPEN))
     lumen.save(str(ws / "lumen.vtp"))
     # input.stl is NOT replaced. It is the CAD surface the engine's admission judges
@@ -253,7 +260,7 @@ def stage_lumen(workspace, geom_path, *, prepared, intake_patches: list,
               "n_open_loops": n_loops, "wall_triangles": int(lumen.n_cells),
               "input_kind": str(input_kind or ""), "angular_deflection": ANGULAR_DEFLECTION,
               "interior_point": res.get("interior_point"),
-              "capping_method": capping, "wall_pieces": pieces}
+              "capping_method": capping, "wall_pieces": pieces, "wall_oriented": oriented}
     (ws / STAGING_FACT).write_text(json.dumps(record, indent=2))
     logger.info("vmtk staging: %d port(s) opened, %d wall triangles, %d open loop(s), local "
                 "radius %.4g..%.4g m", len(ports), lumen.n_cells, n_loops,
@@ -347,6 +354,93 @@ def fluid_wall(wall, lids: list, interior_point):
                 len(keep), n, hits_n.tolist())
     return con.extract_cells(np.flatnonzero(np.isin(region, keep))).extract_surface(
         algorithm="dataset_surface").clean()
+
+
+def _point_regions(faces: np.ndarray, n_points: int) -> np.ndarray:
+    """The connected piece of every point of a triangle sheet (shared vertices connect)."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    e = np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]])
+    g = coo_matrix((np.ones(len(e)), (e[:, 0], e[:, 1])), shape=(n_points, n_points))
+    return connected_components(g, directed=False)[1]
+
+
+def orient_out_of_fluid(lumen, lids: list, interior_point):
+    """(lumen, ok): every piece of the wall wound so its normals point OUT of the fluid - what
+    vmtk's boundary layer grows against. vmtk orients each piece on its own (vtkPolyDataNormals'
+    auto-orientation reads 'outward' from the piece's own extreme point), and on an annulus that
+    pointed the centre rod's normals into the fluid: its layer grew INTO the rod and the tets
+    overlapped by twice the layer's share of the volume (annular_006: 7.8% at a 10% stack, 3.9%
+    at 5%). Here each piece is read from the fluid's side - rays from the staging's proven fluid
+    point (and from points along them) stop first on the wall from inside the fluid, where a
+    normal out of the fluid points along the ray - and a piece that faces the other way is
+    turned. ok is False (and nothing is turned) when some piece is never seen."""
+    import pyvista as pv
+    import vtk
+    if interior_point is None or lumen.n_cells == 0:
+        return lumen, False
+    pts = np.asarray(lumen.points, dtype=float)
+    faces = np.asarray(lumen.faces).reshape(-1, 4)[:, 1:].astype(np.int64)
+    region = _point_regions(faces, len(pts))[faces[:, 0]]
+    n_regions = int(region.max()) + 1
+    lid_tris = []
+    for lid in lids:
+        s = lid.extract_surface(algorithm="dataset_surface").triangulate()
+        if s.n_cells:
+            lid_tris.append(np.asarray(s.points, dtype=float)[
+                np.asarray(s.faces).reshape(-1, 4)[:, 1:]])
+    tri = np.concatenate([pts[faces], *lid_tris]) if lid_tris else pts[faces]
+    tag = np.concatenate([region, np.full(len(tri) - len(faces), -1)])
+    flat = tri.reshape(-1, 3)
+    scene = pv.PolyData(flat, np.hstack([np.full((len(tri), 1), 3, dtype=np.int64),
+                                         np.arange(len(flat), dtype=np.int64).reshape(-1, 3)]).ravel())
+    normal = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    reach = 2.0 * float(np.linalg.norm(flat.max(axis=0) - flat.min(axis=0)))
+    obb = vtk.vtkOBBTree()
+    obb.SetDataSet(scene)
+    obb.BuildLocator()
+    vote = np.zeros(n_regions)
+    seen = np.zeros(n_regions, dtype=int)
+    hp, ids = vtk.vtkPoints(), vtk.vtkIdList()
+    eps = 1e-6 * reach
+
+    def cast(origin, dirs) -> list:
+        ends = []
+        for d in dirs:
+            hp.Reset()
+            ids.Reset()
+            if obb.IntersectWithLine(origin + eps * d, origin + reach * d, hp, ids) \
+                    and hp.GetNumberOfPoints():
+                c = int(ids.GetId(0))
+                if tag[c] >= 0:
+                    seen[tag[c]] += 1
+                    vote[tag[c]] += np.sign(float(np.dot(normal[c], d)))
+                ends.append((origin, np.asarray(hp.GetPoint(0))))
+        return ends
+
+    seed = np.asarray(interior_point, dtype=float)
+    ends = cast(seed, _sphere_dirs(FLUID_RAYS))
+    rng = np.random.default_rng(5)
+    for i in (rng.choice(len(ends), size=min(FLUID_ECHO_ORIGINS, len(ends)), replace=False)
+              if ends else []):
+        o, h = ends[i]
+        cast(o + (2.0 / 3.0) * (h - o), _sphere_dirs(FLUID_RAYS // 6))
+    if (seen < FLUID_MIN_HITS).any():
+        logger.warning("vmtk staging: a wall piece was never seen from the fluid (hits %s); its "
+                       "winding is left as staged", seen.tolist())
+        return lumen, False
+    flip = vote < 0
+    if not flip.any():
+        return lumen, True
+    f = faces.copy()
+    turn = flip[region]
+    f[turn, 1], f[turn, 2] = faces[turn, 2], faces[turn, 1]
+    out = pv.PolyData(pts, np.hstack([np.full((len(f), 1), 3, dtype=np.int64), f]).ravel())
+    for name in lumen.point_data:
+        out.point_data[name] = np.asarray(lumen.point_data[name])
+    logger.info("vmtk staging: %d of %d wall piece(s) turned to face out of the fluid",
+                int(flip.sum()), n_regions)
+    return out, True
 
 
 class OpeningShapeError(ValueError):
@@ -484,4 +578,6 @@ def merge_staged(strategy: dict | None, staged: dict | None) -> dict:
         s["capping_method"] = str(staged["capping_method"])
     if staged.get("wall_pieces"):
         s["wall_pieces"] = int(staged["wall_pieces"])
+    if staged.get("wall_oriented"):
+        s["wall_oriented"] = True
     return s

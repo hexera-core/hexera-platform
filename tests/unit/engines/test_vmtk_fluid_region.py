@@ -130,3 +130,43 @@ def test_a_rim_belongs_to_the_port_whose_lid_it_lies_on():
     # by centre distance over size alone, the branch's mouth went to the big port
     with pytest.raises(LS.OpeningShapeError):
         LS.measure_openings(wall, ports())
+
+
+def _radial_sign(piece_pts, piece_faces):
+    # mean sign of (cell normal . radial direction from the x axis): +1 points away from the axis
+    p = piece_pts[piece_faces]
+    n = np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0])
+    c = p.mean(axis=1)
+    radial = c.copy()
+    radial[:, 0] = 0.0
+    return float(np.sign(np.einsum('ij,ij->i', n, radial)).mean())
+
+
+def test_an_annulus_wall_is_wound_out_of_the_fluid_piece_by_piece():
+    # the bore wound out of the fluid (normals away from the axis) and the rod ALSO wound away
+    # from the axis - into the fluid - as vmtk's per-piece auto-orientation leaves it
+    bore, rod = _tube(0.05), _tube(0.03)
+    wall = bore.merge(rod).clean()
+    lids = [_disc(0.05, 0.0, r_in=0.03), _disc(0.05, L, r_in=0.03)]
+    out, ok = LS.orient_out_of_fluid(wall, lids, (0.2, 0.04, 0.0))
+    assert ok
+    pts = np.asarray(out.points)
+    f = np.asarray(out.faces).reshape(-1, 4)[:, 1:]
+    r = np.hypot(pts[f].mean(axis=1)[:, 1], pts[f].mean(axis=1)[:, 2])
+    assert _radial_sign(pts, f[r > 0.04]) > 0.9, 'the bore must face away from the fluid'
+    assert _radial_sign(pts, f[r < 0.04]) < -0.9, 'the rod must face into itself'
+
+
+def test_a_layered_multi_piece_fill_runs_with_the_staged_winding_kept(tmp_path):
+    s = R.resolve_strategy({'sizing_array': 'LocalRadius', 'wall_pieces': 2,
+                            'wall_oriented': True, 'boundary_layers': 3})
+    assert R._keeps_staged_winding(s)
+    assert not R._keeps_staged_winding({**s, 'boundary_layers': 0})
+    assert not R._keeps_staged_winding({**s, 'wall_pieces': 1})
+    argv = R._winding_kept(tmp_path, R.build_staged_stages(s)[1])
+    assert argv[1:] == ['vmtkpythonscript', '-scriptfile', 'vmtk_generate.py']
+    args = json.loads((tmp_path / 'vmtk_generate_args.json').read_text())
+    assert args[0] == 'vmtkmeshgenerator' and '-cappingmethod' not in args
+    src = (tmp_path / 'vmtk_generate.py').read_text()
+    assert 'AutoOrientNormals = 0' in src
+    compile(src, 'vmtk_generate.py', 'exec')

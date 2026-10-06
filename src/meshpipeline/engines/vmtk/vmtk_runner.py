@@ -62,6 +62,9 @@ _DEFAULTS: dict = {
     # centre rod); wall_pieces > 1 keeps every piece of the wall through the remesh (the rod)
     "capping_method": "simple",
     "wall_pieces": 1,
+    # staging wound every wall piece out of the fluid (lumen_staging.orient_out_of_fluid): a
+    # layered fill of a multi-piece wall then keeps that winding instead of vmtk's per-piece guess
+    "wall_oriented": False,
     # CENTERLINE SEEDING - must be NON-INTERACTIVE. vmtk's 'openprofiles'/'pickpoint'
     # selectors open an X render window and abort in a headless worker (verified: SIGABRT,
     # "bad X server connection"). The non-interactive selectors are:
@@ -146,6 +149,41 @@ def build_staged_stages(strategy: dict, *, collapse_angle: float | None = None,
         "-ofile", _MESH,
     ]
     return surface, generate
+
+
+#: The generator run through vmtkpythonscript with vmtk's per-piece normal auto-orientation off,
+#: so the boundary layer grows against the winding staging gave each piece (out of the fluid).
+_GENERATE_SCRIPT = "vmtk_generate.py"
+_GENERATE_ARGS = "vmtk_generate_args.json"
+_GENERATE_SOURCE = '''# written by meshpipeline (engines/vmtk/vmtk_runner.py): vmtkmeshgenerator, keeping the staged winding
+import json
+from vmtk import pypes, vmtkscripts
+_init = vmtkscripts.vmtkSurfaceNormals.__init__
+def _keep(self, *a, **k):
+    _init(self, *a, **k)
+    self.AutoOrientNormals = 0
+vmtkscripts.vmtkSurfaceNormals.__init__ = _keep
+_pipe = pypes.Pype()            # exactly as the vmtk launcher runs a pype
+_pipe.ExitOnError = 0
+_pipe.Arguments = json.load(open("''' + _GENERATE_ARGS + '''"))
+_pipe.ParseArguments()
+_pipe.Execute()
+'''
+
+
+def _keeps_staged_winding(s: dict) -> bool:
+    """A wall in several pieces whose winding staging set out of the fluid: vmtk's own normals
+    would orient each piece from its own extreme point and grow a centre rod's layer into the rod
+    (lumen_staging.orient_out_of_fluid). Only layered fills need it."""
+    return (int(s.get("wall_pieces") or 1) > 1 and bool(s.get("wall_oriented"))
+            and int(s.get("boundary_layers") or 0) > 0)
+
+
+def _winding_kept(ws: Path, argv: list[str]) -> list[str]:
+    """The generator argv rewritten to run with the staged winding kept (_GENERATE_SOURCE)."""
+    (ws / _GENERATE_ARGS).write_text(json.dumps(argv[1:]))
+    (ws / _GENERATE_SCRIPT).write_text(_GENERATE_SOURCE)
+    return [argv[0], "vmtkpythonscript", "-scriptfile", _GENERATE_SCRIPT]
 
 
 def _capping_args(s: dict) -> list[str]:
@@ -724,6 +762,8 @@ def _run_vmtk_local(workspace, *, timeout: int, **_ignored) -> dict:
             break
         last = i
         argv = build_staged_stages(strat)[1] if staged else build_pype(strat)
+        if staged and _keeps_staged_winding(strat):
+            argv = _winding_kept(ws, argv)
         if i:
             (ws / _MESH).unlink(missing_ok=True)
         result = _run_pype(ws, argv, timeout=left())

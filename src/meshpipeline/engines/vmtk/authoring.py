@@ -59,7 +59,8 @@ _STRATEGY = {"edge_length_factor", "boundary_layers", "boundary_layer_thickness_
              "source_ids", "target_ids", "source_points", "target_points",
              "min_edge_length", "max_edge_length", "sizing_array", "generator_remesh",
              # engine-written facts a re-configure may carry back from the shipped spec
-             "capping_method", "wall_pieces"}
+             "volume_element_factor", "cost_model", "budget_plan", "capping_method",
+             "wall_pieces", "wall_oriented"}
 _PREAMBLE = {"geometry_file", "wall_patch", "strategy", "wall_layers"}
 _KNOWN = _STRATEGY | _PREAMBLE
 # knobs from the OpenFOAM engines a confused model might send - name them so the redirect helps
