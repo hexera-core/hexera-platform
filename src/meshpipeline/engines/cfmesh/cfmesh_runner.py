@@ -272,7 +272,10 @@ def _object_refinement_blocks(features: list, *, cell_floor: float = 0.0) -> lis
 #: twenty cells along the body whatever the budget - an airliner came out with 452 wall faces
 #: and 49k cells in a 4M budget, a car with 1,490 (HOME-TURF lab, 2026-10-05), and every gate
 #: passed.
-EXTERNAL_WALL_BUDGET_SHARE = 0.5
+#: Calibrated on the lab: at 0.5 the SAE notchback, the Windsor body and the ONERA M6 came out at
+#: 3.8-4.2M cells on a 2M budget (the 2:1 grading and the feature refinement add about as much
+#: again), so the wall gets a quarter and the total lands near the budget.
+EXTERNAL_WALL_BUDGET_SHARE = 0.25
 #: cells per wall face through the refined shell and its 2:1 grading out to the background,
 #: before the prism layers (each layer adds one more per face)
 EXTERNAL_SHELL_DEPTH = 4.0
