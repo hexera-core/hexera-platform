@@ -153,16 +153,22 @@ def build_staged_stages(strategy: dict, *, collapse_angle: float | None = None,
 
 #: The generator run through vmtkpythonscript with vmtk's per-piece normal auto-orientation off,
 #: so the boundary layer grows against the winding staging gave each piece (out of the fluid).
+#: vmtkpythonscript exec()s the file INSIDE a method, so the file's own top-level names are that
+#: method's locals and a function defined in it cannot see them (a closure over a saved __init__
+#: raised NameError the moment vmtk built its normals, and every layered annulus fill died):
+#: the original __init__ is kept on the class itself and found through type(self).
 _GENERATE_SCRIPT = "vmtk_generate.py"
 _GENERATE_ARGS = "vmtk_generate_args.json"
 _GENERATE_SOURCE = '''# written by meshpipeline (engines/vmtk/vmtk_runner.py): vmtkmeshgenerator, keeping the staged winding
 import json
 from vmtk import pypes, vmtkscripts
-_init = vmtkscripts.vmtkSurfaceNormals.__init__
-def _keep(self, *a, **k):
-    _init(self, *a, **k)
-    self.AutoOrientNormals = 0
-vmtkscripts.vmtkSurfaceNormals.__init__ = _keep
+_cls = vmtkscripts.vmtkSurfaceNormals
+if not hasattr(_cls, "_hexera_init"):
+    _cls._hexera_init = _cls.__init__
+    def _keep(self):
+        type(self)._hexera_init(self)
+        self.AutoOrientNormals = 0
+    _cls.__init__ = _keep
 _pipe = pypes.Pype()            # exactly as the vmtk launcher runs a pype
 _pipe.ExitOnError = 0
 _pipe.Arguments = json.load(open("''' + _GENERATE_ARGS + '''"))

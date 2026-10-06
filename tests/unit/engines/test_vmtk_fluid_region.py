@@ -170,3 +170,44 @@ def test_a_layered_multi_piece_fill_runs_with_the_staged_winding_kept(tmp_path):
     src = (tmp_path / 'vmtk_generate.py').read_text()
     assert 'AutoOrientNormals = 0' in src
     compile(src, 'vmtk_generate.py', 'exec')
+
+
+def test_the_winding_wrapper_runs_as_vmtkpythonscript_execs_it(tmp_path, monkeypatch):
+    # vmtkpythonscript exec()s the file inside a method: its top-level names are that method's
+    # locals, which a function defined in the file cannot see. Run it exactly that way against a
+    # fake vmtk and check the generator's normals come out with auto-orientation off.
+    import sys
+    import types
+
+    built = {}
+
+    class Normals:
+        def __init__(self):
+            self.AutoOrientNormals = 1
+
+    class Pype:
+        def __init__(self):
+            self.Arguments = []
+
+        def ParseArguments(self):
+            built['args'] = list(self.Arguments)
+
+        def Execute(self):
+            built['normals'] = Normals().AutoOrientNormals   # vmtkmeshgenerator builds one
+
+    vmtk = types.ModuleType('vmtk')
+    vmtk.pypes = types.SimpleNamespace(Pype=Pype)
+    vmtk.vmtkscripts = types.SimpleNamespace(vmtkSurfaceNormals=Normals)
+    monkeypatch.setitem(sys.modules, 'vmtk', vmtk)
+    s = R.resolve_strategy({'sizing_array': 'LocalRadius', 'wall_pieces': 2,
+                            'wall_oriented': True, 'boundary_layers': 3})
+    R._winding_kept(tmp_path, R.build_staged_stages(s)[1])
+    monkeypatch.chdir(tmp_path)
+
+    class PythonScript:                       # vmtkpythonscript's Execute, verbatim in shape
+        def Execute(self):
+            exec(compile(open('vmtk_generate.py').read(), 'vmtk_generate.py', 'exec'))
+
+    PythonScript().Execute()
+    assert built['normals'] == 0
+    assert built['args'][0] == 'vmtkmeshgenerator'
