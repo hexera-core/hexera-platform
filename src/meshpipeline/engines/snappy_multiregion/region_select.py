@@ -61,7 +61,9 @@ def resolve_regions(regions: list[dict], solids: list[dict]) -> tuple[list[dict]
             got = _matches(item, names)
             if not got:
                 problems.append(f"region {r.get('name')!r}: {item!r} names no solid")
-            idx += [i for i in got if i not in idx]
+            # an index given twice stays twice, so the coverage rule reports it; a name or a
+            # pattern that meets a solid already listed adds nothing
+            idx += got if _is_index(item) else [i for i in got if i not in idx]
         claimed.update(idx)
         out.append({k: v for k, v in r.items() if k != "per_solid"} | {"solids": idx})
     taken = {str(r.get("name", "")).casefold() for r in out}
