@@ -80,8 +80,25 @@ GAP_FACTOR = 10.0
 CUT_REACH_M = 1e-5
 #: Relative error allowed between a solid's volume and the file's.
 VOLUME_RTOL = 1e-6
-#: More solids than any meshable system model; a model this detailed is simplified at the source.
-MAX_SOLIDS = 2000
+#: THE SIZE BOUND - from measured cost, not a part count. Converting and checking a model (build,
+#: fidelity checks, STEP, the geometry check's scout) was timed on generated models (8-core
+#: machine, 2026-10-06; PR #163). All on one board: 28 s at 500 parts, 72 s at 1,000, 276 s at
+#: 2,000. Spread over cards of 100 parts: 82 s at 2,020, 640 s at 4,040. The booleans grow with
+#: the footprints one face carries (a board's top face is cut once per part on it, and
+#: OpenCASCADE's face builder sorts its holes against each other); the STEP write and the scout
+#: that reads the STEP back grow with the square of the part count however the parts are laid
+#: out. Memory: ~0.5 MB per part above a 700 MB base (1.6 GB at 2,000, 1.9 GB at 4,040). Fitted
+#: from above: a*N + b*N^2 + c*sum(parts touching one part)^2 seconds. A model is converted when
+#: its predicted cost fits two thirds of the geometry check's 900 s limit and 6 GB: about 2,900
+#: parts on one board, 3,500 spread out. Above that this exact, face-for-face conversion is the
+#: wrong tool, and the refusal says so.
+SECONDS_PER_PART = 0.03
+SECONDS_PER_PART_SQUARED = 3.9e-5
+SECONDS_PER_CONTACT_SQUARED = 2.0e-5
+MB_BASE = 700.0
+MB_PER_PART = 0.5
+TIME_BUDGET_S = 600.0
+MEMORY_BUDGET_MB = 6000.0
 FLUID_NAME = "air"
 #: Box kinds: a solid that is exactly its box.
 BOX_KINDS = ("solid3dBlock", "printedCircuitBoard", "twoResistorModel", "solid2dBlock")
@@ -91,6 +108,10 @@ _AXES = "xyz"
 
 class FidelityError(EcxmlError):
     """The built solids would not be the file's model. The message says which check failed."""
+
+
+class ModelTooLargeError(EcxmlError):
+    """Converting the model exactly would cost more time or memory than a conversion is allowed."""
 
 
 class _Box:
@@ -131,6 +152,9 @@ class _Tol:
     thick_where: str
     snapped: int = 0              # coordinates moved onto a shared plane
     snap_shift: float = 0.0       # m: the largest such move
+    contacts_max: int = 0         # the most parts touching one part (footprints on one face)
+    contacts_sq: int = 0          # the sum over parts of (parts touching it)^2
+    contacts_where: str = ""
 
 
 @dataclass
@@ -467,7 +491,8 @@ def _measure(parts: list[_Part], domain: _Box, noise: float, moved: dict) -> _To
 
     boxes: list[_Box] = []
     owners: list[str] = []
-    for p in parts:
+    owner_ix: list[int] = []
+    for k, p in enumerate(parts):
         label = p.objects[0].props.get("heatsink") or p.objects[0].label
         if p.walls:
             pieces = [w[3] for w in p.walls]
@@ -480,7 +505,9 @@ def _measure(parts: list[_Part], domain: _Box, noise: float, moved: dict) -> _To
             if c is not None:
                 boxes.append(c)
                 owners.append(label)
+                owner_ix.append(k)
     gap, gap_where = math.inf, ""
+    touching: list[set[int]] = [set() for _ in parts]
     thick, thick_where = math.inf, ""
     for box, who in zip(boxes, owners):
         t = min(box.hi[i] - box.lo[i] for i in range(3))
@@ -493,7 +520,12 @@ def _measure(parts: list[_Part], domain: _Box, noise: float, moved: dict) -> _To
     if len(boxes) > 1:
         lo = np.array([b.lo for b in boxes])
         hi = np.array([b.hi for b in boxes])
-        best, (ia, ib), overlap, _touch = _pair_scan(lo, hi, noise)
+        best, (ia, ib), overlap, touch = _pair_scan(lo, hi, noise)
+        for ia, ib in touch:                   # who carries whose footprint
+            a, b = owner_ix[ia], owner_ix[ib]
+            if a != b:
+                touching[a].add(b)
+                touching[b].add(a)
         if best < gap:
             gap, gap_where = best, f"{owners[ia]} and {owners[ib]}"
         for ia, ib in overlap:                 # what an overlap leaves of the earlier part
@@ -504,8 +536,38 @@ def _measure(parts: list[_Part], domain: _Box, noise: float, moved: dict) -> _To
                         thick, thick_where = t, (f"the part of {owners[ia]} or {owners[ib]} "
                                                  "their overlap leaves")
     fuzzy = min(noise, gap / GAP_FACTOR, thick / GAP_FACTOR)
+    busiest = max(range(len(parts)), key=lambda k: len(touching[k]), default=-1)
     return _Tol(noise=noise, fuzzy=fuzzy, gap=gap, gap_where=gap_where, thick=thick,
-                thick_where=thick_where, snapped=int(moved["count"]), snap_shift=float(moved["max"]))
+                thick_where=thick_where, snapped=int(moved["count"]), snap_shift=float(moved["max"]),
+                contacts_max=len(touching[busiest]) if busiest >= 0 else 0,
+                contacts_sq=sum(len(t) ** 2 for t in touching),
+                contacts_where=(parts[busiest].objects[0].props.get("heatsink")
+                                or parts[busiest].objects[0].label) if busiest >= 0 else "")
+
+
+def predicted_cost(n_parts: int, contacts_sq: int) -> tuple[float, float]:
+    """Seconds and megabytes to convert and check a model (on an 8-core machine), from the
+    measured cost model above: per part, per part squared (the STEP and its re-reading), and per
+    (parts touching one part)^2 summed over the parts (a face carrying k footprints is cut k
+    ways, and its k holes are sorted against each other)."""
+    seconds = (SECONDS_PER_PART * n_parts + SECONDS_PER_PART_SQUARED * n_parts ** 2
+               + SECONDS_PER_CONTACT_SQUARED * contacts_sq)
+    return seconds, MB_BASE + MB_PER_PART * n_parts
+
+
+def _check_affordable(n_parts: int, tol: _Tol) -> None:
+    seconds, megabytes = predicted_cost(n_parts, tol.contacts_sq)
+    if seconds <= TIME_BUDGET_S and megabytes <= MEMORY_BUDGET_MB:
+        return
+    what = (f"about {seconds / 60:.0f} minutes" if seconds > TIME_BUDGET_S
+            else f"about {megabytes / 1024:.1f} GB of memory")
+    raise ModelTooLargeError(
+        f"the model has {n_parts:,} solid parts ({tol.contacts_max:,} of them on one part, "
+        f"{tol.contacts_where}); building them exactly, face for face, would take {what} - more "
+        f"than the {TIME_BUDGET_S / 60:.0f} minutes and {MEMORY_BUDGET_MB / 1024:.0f} GB a "
+        "conversion is allowed. The snap-grid conversion (Option B), which places the parts on "
+        "a grid without joining them face for face, is the way on for a model this size; until "
+        "it is available, export a sub-assembly (one board, one module) from the authoring tool")
 
 
 def _check_resolvable(tol: _Tol, model_size: float) -> None:
@@ -641,12 +703,8 @@ def build(model: EcxmlModel) -> EcxmlBuild:
     for (_path, material), group in heatsink_parts.items():
         parts.append(_heatsink(group, material, snapped))
 
-    if len(parts) > MAX_SOLIDS:
-        raise EcxmlError(f"the model holds {len(parts):,} solid parts, more than the {MAX_SOLIDS:,} "
-                         "a multi-region mesh can carry; export a sub-assembly, or simplify detailed "
-                         "components (pins, layers) in the authoring tool first")
-
     tol = _measure(parts, domain_box, noise, moved)
+    _check_affordable(len(parts), tol)
     _check_resolvable(tol, model_size)
     for p in parts:
         p.shape = p.make(tol)

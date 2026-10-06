@@ -755,3 +755,42 @@ def test_the_scout_measures_a_thermal_models_faces_without_searching_for_opening
     assert facts["openings"] == [] and facts["faces"]
     assert facts["solids"] == 9
     assert facts["bbox_max_m"] == pytest.approx([0.15, 0.12, 0.06], abs=1e-9)
+
+
+# ------------------------------------------------------------------------------ size bound --
+def _grid_board(doc: Ecxml, name: str, x0: float, y0: float, cols: int, rows: int) -> None:
+    doc.pcb(name, (x0, y0, 0.002), (cols * 0.004, rows * 0.004, 0.0016), "+xy", "M")
+    for r in range(rows):
+        for c in range(cols):
+            doc.block(f"{name} U{r * cols + c + 1}", (x0 + c * 0.004 + 0.001, y0 + r * 0.004 + 0.001,
+                                                     0.0036), (0.002, 0.002, 0.001), "M", 0.1)
+
+
+def test_the_size_bound_is_the_measured_cost_not_a_part_count(monkeypatch):
+    from meshpipeline.cad.ingest import ecxml_build as eb
+
+    # the cost model reproduces the timings it was fitted on, from above
+    for n, measured_s in ((500, 28), (1000, 72), (2000, 276)):        # one board, N parts
+        assert measured_s <= eb.predicted_cost(n, n * n)[0] <= 1.5 * measured_s
+    assert 82 <= eb.predicted_cost(2020, 20 * 100 ** 2 + 2020)[0]     # 20 cards of 100
+    assert 640 <= eb.predicted_cost(4040, 40 * 100 ** 2 + 4040)[0] <= 1.5 * 640   # 40 cards
+
+    # the same ~3,000 parts: over the budget on one board, inside it on 30 cards
+    one = Ecxml("one board").domain((0, 0, 0), (0.25, 0.25, 0.01))
+    _grid_board(one, "Board", 0.01, 0.01, 55, 55)                    # 3,025 parts on one board
+    with pytest.raises(eb.ModelTooLargeError) as err:
+        _build(one)
+    said = str(err.value)
+    assert "3,026 solid parts (3,025 of them on one part, Board)" in said
+    assert "Option B" in said and "sub-assembly" in said
+    class Affordable(Exception):
+        pass
+
+    def stop(*_a, **_k):
+        raise Affordable
+    monkeypatch.setattr(eb, "_check_resolvable", stop)               # stop before the booleans
+    many = Ecxml("many boards").domain((0, 0, 0), (0.25, 0.25, 0.01))
+    for k in range(30):
+        _grid_board(many, f"Card {k + 1}", 0.005 + (k % 6) * 0.04, 0.005 + (k // 6) * 0.045, 10, 10)
+    with pytest.raises(Affordable):
+        _build(many)                                                 # 3,030 parts: converted
