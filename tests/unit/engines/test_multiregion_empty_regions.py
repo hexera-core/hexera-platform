@@ -30,3 +30,13 @@ def test_the_missing_split_is_reported_by_its_cause(tmp_path):
         N.empty_regions_reason(tmp_path, ["fluid", "wall_solid"]))
     with pytest.raises(RG.RegionPropertiesError, match="no cell was placed in region"):
         RG.read_region_properties(tmp_path)
+
+
+def test_the_stop_reason_is_kept_without_the_engine_tag(tmp_path, monkeypatch):
+    # the failure that reads it adds "[SNAPPY_MULTIREGION]" itself (lab htf11 showed it twice)
+    (tmp_path / "log.topoSet").write_text("    Using zone fluid with 0 cells\n")
+    why = N.empty_regions_reason(tmp_path, ["fluid"])
+    assert why.startswith("[SNAPPY_MULTIREGION] ")
+    kept = why.removeprefix("[SNAPPY_MULTIREGION] ")
+    (tmp_path / N.STOP_REASON_FILE).write_text(kept)
+    assert not kept.startswith("[")

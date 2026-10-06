@@ -107,7 +107,8 @@ def run_native_build(workspace, *, preflight, render_region_properties, parse_la
                 why = empty_regions_reason(ws, empty)
                 # ...and kept beside the case, so the split's absence is reported by its cause
                 # (regions.read_region_properties), not as "regionProperties is missing"
-                (ws / STOP_REASON_FILE).write_text(why)
+                # (without the engine tag: the failure that reads it adds its own)
+                (ws / STOP_REASON_FILE).write_text(why.removeprefix("[SNAPPY_MULTIREGION] "))
                 out = describe_native_result(
                     returncode=1, args=["bash", "-lc", command], stage="regions",
                     output="\n".join(logs) + "\n" + why)
