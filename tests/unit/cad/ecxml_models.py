@@ -293,4 +293,23 @@ def tiny_board() -> Ecxml:
     return doc
 
 
+def wirebond_package(cap_gap_m: float | None = None) -> Ecxml:
+    """A wire-bond package on its substrate: a mold block written first, then a 25 um die attach
+    and a 0.3 mm die that overwrite it (Flotherm's rule: the later object wins). With `cap_gap_m`
+    a capacitor stands that far above the substrate beside the mold - a real air gap."""
+    doc = Ecxml("Wire-bond package")
+    doc.material("Cu", 8900, 385, 0.1, ("isotropic", 390.0))
+    doc.material("Si", 2330, 700, 0.8, ("isotropic", 150.0))
+    doc.material("Epoxy", 1900, 900, 0.9, ("isotropic", 0.8))
+    doc.material("Ag epoxy", 3000, 300, 0.9, ("isotropic", 2.0))
+    doc.domain((0.0, 0.0, 0.0), (0.01, 0.01, 0.004))
+    doc.block("Substrate", (0.002, 0.002, 0.001), (0.006, 0.006, 0.0005), "Cu")
+    doc.block("Mold", (0.0025, 0.0025, 0.0015), (0.003, 0.003, 0.0008), "Epoxy")
+    doc.block("Die attach", (0.003, 0.003, 0.0015), (0.002, 0.002, 0.000025), "Ag epoxy")
+    doc.block("Die", (0.003, 0.003, 0.001525), (0.002, 0.002, 0.0003), "Si", 1.0)
+    if cap_gap_m is not None:
+        doc.block("Cap", (0.006, 0.006, 0.0015 + cap_gap_m), (0.001, 0.001, 0.0005), "Cu")
+    return doc
+
+
 MODELS = {"set_top_box": set_top_box, "ducted_board": ducted_board, "tiny_board": tiny_board}

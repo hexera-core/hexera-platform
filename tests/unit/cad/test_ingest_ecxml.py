@@ -6,7 +6,13 @@ import math
 from pathlib import Path
 
 import pytest
-from tests.unit.cad.ecxml_models import Ecxml, ducted_board, set_top_box, tiny_board
+from tests.unit.cad.ecxml_models import (
+    Ecxml,
+    ducted_board,
+    set_top_box,
+    tiny_board,
+    wirebond_package,
+)
 
 from meshpipeline.cad.ingest import canonicalise, check_upload, sniff_format
 from meshpipeline.cad.ingest import ecxml as ecxml_mod
@@ -604,6 +610,23 @@ def test_a_die_on_its_substrate_shares_the_face_between_them():
     assert ["Die", "Substrate"] in r.sidecar["solid_contacts"]
     assert _distance_mm(r, "Die", "Substrate") == pytest.approx(0.0, abs=1e-12)
     assert _vol(r, "Die") == pytest.approx(0.002 * 0.002 * 0.0003, rel=1e-9)
+
+
+def test_each_region_records_its_thinnest_layer_and_the_narrow_air_a_mesh_must_keep_open():
+    # what a mesher must put cells across (ECXML-TEST: snappy lost a 25 um die attach silently)
+    side = _build(wirebond_package(cap_gap_m=5e-6)).sidecar
+    thin = {r["name"]: (r["thinnest_m"], r["thinnest_is"]) for r in side["regions"]
+            if r["type"] == "solid"}
+    assert thin["Die_attach"][0] == pytest.approx(25e-6, rel=1e-6)
+    # the die overwrites the mold and leaves it 0.475 mm over the die; under the die the attach
+    # fills what the die leaves, so the mold has no 25 um layer there
+    assert thin["Mold"][0] == pytest.approx(0.475e-3, rel=1e-6)
+    assert "sliver Die leaves" in thin["Mold"][1]
+    gaps = {tuple(g["between"]): g["gap_m"] for g in side["thin_gaps"]}
+    assert gaps[("Cap", "Substrate")] == pytest.approx(5e-6, rel=1e-6)
+    assert ("Die", "Substrate") not in gaps          # 25 um apart, but the die attach is between
+    area = {r["name"]: r["surface_area_m2"] for r in side["regions"]}
+    assert area["Die"] == pytest.approx(2 * (4 + 2 * 2 * 0.3) * 1e-6, rel=1e-9)
 
 
 def test_a_gap_the_files_precision_cannot_tell_from_contact_is_refused_with_the_way_on():

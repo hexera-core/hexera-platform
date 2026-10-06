@@ -99,6 +99,10 @@ MB_BASE = 700.0
 MB_PER_PART = 0.5
 TIME_BUDGET_S = 600.0
 MEMORY_BUDGET_MB = 6000.0
+#: Narrow gaps are listed up to this fraction of the model's diagonal (two background cells of a
+#: mesh that starts at a fortieth of it): anything wider needs no refinement to stay open.
+THIN_GAP_LIMIT_REL = 1 / 20
+MAX_THIN_GAPS = 2000
 FLUID_NAME = "air"
 #: Box kinds: a solid that is exactly its box.
 BOX_KINDS = ("solid3dBlock", "printedCircuitBoard", "twoResistorModel", "solid2dBlock")
@@ -316,6 +320,16 @@ def _centroid(shape) -> list[float]:
     """m"""
     c = _props(shape).CentreOfMass()
     return [float(c.X()) / UNIT, float(c.Y()) / UNIT, float(c.Z()) / UNIT]
+
+
+def _area(shape) -> float:
+    """m2"""
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+
+    props = GProp_GProps()
+    BRepGProp.SurfaceProperties_s(shape, props)
+    return abs(float(props.Mass())) / UNIT ** 2
 
 
 def _bounds(shape) -> _Box:
@@ -545,6 +559,95 @@ def _measure(parts: list[_Part], domain: _Box, noise: float, moved: dict) -> _To
                                 or parts[busiest].objects[0].label) if busiest >= 0 else "")
 
 
+def _thinnest(p: _Part, domain: _Box, noise: float) -> tuple[float, str]:
+    """How thin the part's region is anywhere, from the file's own numbers: the smallest side of
+    a box its material fills (a layer, a wall, a fin), or of the sliver a part overwriting it
+    leaves beside that part. A mesh must put cells across this to keep the region whole."""
+    best, what = math.inf, ""
+    mine = [c for c in (b.common(domain) for b in _material(p)) if c is not None]
+    for b in mine:
+        for i in range(3):
+            t = b.hi[i] - b.lo[i]
+            if noise < t < best:
+                best, what = t, f"its {_AXES[i]} size"
+    taken = [qb for q in p.winners for qb in _material(q)]
+    for q in p.winners:
+        for qb in _material(q):
+            for b in mine:
+                c = b.common(qb)
+                if c is None:
+                    continue
+                for i in range(3):
+                    for t, lo_i, hi_i in ((c.lo[i] - b.lo[i], b.lo[i], c.lo[i]),
+                                          (b.hi[i] - c.hi[i], c.hi[i], b.hi[i])):
+                        if not noise < t < best:
+                            continue
+                        # the slab beside q, over q's footprint - unless other winners fill it
+                        slab = _Box([lo_i if k == i else c.lo[k] for k in range(3)],
+                                    [hi_i if k == i else c.hi[k] for k in range(3)])
+                        if _union_volume(slab, taken) < slab.volume() * (1 - 1e-9):
+                            best, what = t, f"the sliver {q.name} leaves of it"
+    return best, what
+
+
+def _thin_gaps(parts: list[_Part], domain: _Box, noise: float, limit: float) -> list[dict]:
+    """The narrow air where parts face each other across a gap (a fin pitch counts, within one
+    part), and between a part and the domain's side: each pair's smallest such gap below `limit`.
+    A mesh must put cells across that air, or the two faces come out touching."""
+    import numpy as np
+
+    boxes: list[_Box] = []
+    owner: list[int] = []
+    for k, p in enumerate(parts):
+        for b in _material(p):
+            c = b.common(domain)
+            if c is not None:
+                boxes.append(c)
+                owner.append(k)
+    best: dict[tuple[str, str], float] = {}
+    n = len(boxes)
+    lo = np.array([b.lo for b in boxes]).reshape(-1, 3)
+    hi = np.array([b.hi for b in boxes]).reshape(-1, 3)
+
+    def air(slab: _Box) -> bool:
+        """Some of the slab is air: the parts in it do not fill it."""
+        near = np.nonzero(((lo < slab.hi) & (hi > slab.lo)).all(axis=1))[0]
+        return _union_volume(slab, [boxes[int(k)] for k in near]) < slab.volume() * (1 - 1e-9)
+
+    for k, box in zip(owner, boxes):
+        side = (parts[k].name, "domain")
+        for i in range(3):
+            for g, e_lo, e_hi in ((box.lo[i] - domain.lo[i], domain.lo[i], box.lo[i]),
+                                  (domain.hi[i] - box.hi[i], box.hi[i], domain.hi[i])):
+                if noise < g < min(limit, best.get(side, math.inf)) and air(_Box(
+                        [e_lo if j == i else box.lo[j] for j in range(3)],
+                        [e_hi if j == i else box.hi[j] for j in range(3)])):
+                    best[side] = g
+    for start in range(0, n, 256):
+        rows_ix = np.arange(start, min(n, start + 256))
+        ext = (np.minimum(hi[rows_ix][:, None, :], hi[None])
+               - np.maximum(lo[rows_ix][:, None, :], lo[None]))
+        # facing: they overlap in two directions and stand apart in the third
+        facing = ((ext > noise).sum(axis=2) == 2) & ((ext < -noise).sum(axis=2) == 1)
+        gap = np.where(facing, (-ext).max(axis=2), np.inf)
+        hit = (np.arange(n)[None, :] > rows_ix[:, None]) & (gap < limit)
+        for r, c in zip(*np.nonzero(hit)):
+            ia, ib = int(rows_ix[r]), int(c)
+            width = float(gap[r, c])
+            na, nb = sorted((parts[owner[ia]].name, parts[owner[ib]].name))
+            if width >= best.get((na, nb), math.inf):
+                continue
+            ax = int(np.argmin(ext[r, c]))
+            s_lo = [float(max(lo[ia][j], lo[ib][j])) for j in range(3)]
+            s_hi = [float(min(hi[ia][j], hi[ib][j])) for j in range(3)]
+            s_lo[ax] = float(min(hi[ia][ax], hi[ib][ax]))
+            s_hi[ax] = float(max(lo[ia][ax], lo[ib][ax]))
+            if air(_Box(s_lo, s_hi)):        # a layer of another part between them is no gap
+                best[(na, nb)] = width
+    ranked = sorted(best.items(), key=lambda kv: kv[1])
+    return [{"between": list(pair), "gap_m": w} for pair, w in ranked[:MAX_THIN_GAPS]]
+
+
 def predicted_cost(n_parts: int, contacts_sq: int) -> tuple[float, float]:
     """Seconds and megabytes to convert and check a model (on an 8-core machine), from the
     measured cost model above: per part, per part squared (the STEP and its re-reading), and per
@@ -753,9 +856,12 @@ def build(model: EcxmlModel) -> EcxmlBuild:
 
     named, fused = _conformal(named, notes, tol)
     by_name = dict(named)
+    for row in fluid_rows:
+        row["surface_area_m2"] = _area(by_name[str(row["name"])])
     regions = list(fluid_rows)
     for p in parts:
         shape = by_name[p.name]
+        thin, thin_is = _thinnest(p, domain_box, tol.noise)
         regions.append({
             "name": p.name, "type": "solid", "kind": p.kind,
             "material": p.material, "power_W": p.power,
@@ -763,7 +869,11 @@ def build(model: EcxmlModel) -> EcxmlBuild:
                          "box_m": snapped(o).as_dict(), "power_W": o.power,
                          "material": o.material or None} for o in p.objects],
             "volume_m3": _volume(shape), "centroid_m": _centroid(shape),
+            "surface_area_m2": _area(shape),
+            # the thinnest the region is anywhere: what a mesh must put cells across
+            "thinnest_m": thin if math.isfinite(thin) else None, "thinnest_is": thin_is,
             "notes": p.notes})
+    thin_gaps = _thin_gaps(parts, domain_box, tol.noise, THIN_GAP_LIMIT_REL * model_size)
 
     checks, contacts = _fidelity(model, objs, parts, regions, named, before, fused, domain_box,
                                  fate, records, tol)
@@ -817,6 +927,9 @@ def build(model: EcxmlModel) -> EcxmlBuild:
         "build_report": report,
         # pairs of solid regions that share a face (the conduction paths the mesh couples)
         "solid_contacts": sorted(sorted(c) for c in contacts),
+        # the narrow air between facing parts (and a part and the domain's side): a mesh must
+        # keep each open, so these set how fine it must be there
+        "thin_gaps": thin_gaps,
         "notes": notes,
     }
     if model.ignored_elements:

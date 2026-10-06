@@ -41,6 +41,9 @@ _CM = {
     # faces localized at a wing-body junction (out of millions) is normal + solvable; the single
     # worst value is not representative. Absent pattern ⇒ zero skewed faces.
     "skew_faces": re.compile(r"(\d+)\s+highly skew faces"),
+    # "Min volume = 1.2e-12. Max volume = 3.4e-09.  Total volume = 0.00096.  Cell volumes OK."
+    # (the sentence's full stop is not part of the number)
+    "total_volume": re.compile(r"Total volume\s*=\s*([-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)"),
 }
 _FATAL = (("negative volume", "negative-volume cells"),
           ("open cell", "open cells"),

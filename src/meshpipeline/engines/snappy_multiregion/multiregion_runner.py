@@ -13,6 +13,7 @@ from meshpipeline.cad.stl_io import _write_solid, read_stl_triangles
 # needs, and how to read its log. gave them their own authority, so this engine no
 # longer depends on another engine's runner for either.
 from meshpipeline.engines.snappy_hexmesh import _write_case_skeleton, parse_layer_coverage
+from meshpipeline.engines.snappy_multiregion import thermal_fidelity as _thermal
 from meshpipeline.engines.snappy_multiregion.foam_exec import (  # noqa: F401  re-exported for the adapter
     _CM,
     _DEFAULT_BASHRC,
@@ -21,6 +22,7 @@ from meshpipeline.engines.snappy_multiregion.foam_exec import (  # noqa: F401  r
     scan_case_dicts,
 )
 from meshpipeline.engines.snappy_multiregion.foam_exec import check_mesh as _single_region_check_mesh
+from meshpipeline.engines.snappy_multiregion.thermal_fidelity import THERMAL_MODEL
 from meshpipeline.render.review_artifacts import build_review_msh  # noqa: F401  adapter surface
 
 logger = logging.getLogger(__name__)
@@ -191,8 +193,6 @@ def render_zoned_set_dict(rmap: dict) -> str:
             + "\nactions\n(\n" + "\n".join(acts) + "\n);\n")
 
 
-#: A thermal model's physics (cad/ingest/ecxml_build's sidecar), staged beside the geometry.
-THERMAL_MODEL = "thermal_model.json"
 #: The exterior patches the native stage cuts the fluid's outside into, when the file names them.
 EXTERIOR_PATCHES = "exterior_patches.json"
 #: The band around each domain side, as a fraction of the domain's diagonal (a thousandth of the
@@ -689,7 +689,32 @@ def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
     allmins = [min(s["bbox_min"][i] for s in solids) for i in range(3)]
     allmaxs = [max(s["bbox_max"][i] for s in solids) for i in range(3)]
     diag = sum((allmaxs[i] - allmins[i]) ** 2 for i in range(3)) ** 0.5
-    base_cell = max(diag / 40.0, 1e-6)
+    base_cell = max(diag / _thermal.BACKGROUND_DIVISIONS, 1e-6)
+
+    # A THERMAL MODEL'S THINNEST LAYERS SET HOW FINE ITS MESH MUST BE (thermal_fidelity.plan).
+    # Each region is raised to the surface level that puts two cells across its thinnest layer
+    # and across the narrow air beside it. A model whose need does not fit the cell budget and
+    # the run's time is refused here, before any case file is written, with the reason - not
+    # meshed for 50 minutes into a mesh that loses the layer (ECXML-TEST, 2026-10-06).
+    thermal_plan = None
+    side = _thermal.load(ws)
+    if side is not None:
+        thermal_plan = _thermal.plan(
+            side, _thermal.file_regions(rmap, solids, side),
+            {n: str(r["type"]) for n, r in rmap.items()}, base_cell, surface_level,
+            region_refinement,
+            budget_cells=min(max_cells, int(_ignored.get("cell_budget") or max_cells)),
+            timeout_s=_run_timeout())
+        (ws / _thermal.THERMAL_PLAN).write_text(json.dumps(thermal_plan.as_dict()))
+        if thermal_plan.refusal:
+            (ws / "system" / "snappyHexMeshDict").unlink(missing_ok=True)
+            return {"success": False, "code": "thermal_model_beyond_engine",
+                    "error": thermal_plan.refusal,
+                    "next": ("STOP - no setting of this engine meshes this model faithfully within "
+                             "its limits. Do not retry; report this reason.")}
+        region_refinement = {**region_refinement, **{
+            d: lv for d, lv in thermal_plan.levels.items()
+            if lv != [int(v) for v in (region_refinement.get(d) or surface_level)]}}
 
     _write_case_skeleton(ws)
     # BACKGROUND CONTAINMENT: when one fluid region's bbox spans the whole assembly (an
@@ -736,8 +761,26 @@ def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
     reason = scan_case_dicts(ws)
     if reason:
         raise ValueError(f"case dicts rejected: {reason}")
-    return {"regions": list(rmap), "fluids": fluid_regions(rmap), "solids": solid_regions(rmap),
-            "surface_level": list(surface_level), "n_layers": n_layers, "base_cell": base_cell}
+    out = {"regions": list(rmap), "fluids": fluid_regions(rmap), "solids": solid_regions(rmap),
+           "surface_level": list(surface_level), "n_layers": n_layers, "base_cell": base_cell}
+    if thermal_plan is not None:
+        out["thermal_model"] = {"levels_raised": thermal_plan.raised,
+                                "cells_at_least": round(thermal_plan.cells),
+                                "cells_allowed": round(thermal_plan.limit_cells)}
+    return out
+
+
+def _run_timeout() -> float:
+    """This engine's run time limit (spec.py's run policy), seconds."""
+    try:
+        from meshpipeline.engines.registry import get_spec
+
+        policy = get_spec("snappy_multiregion").run_policy
+        if policy is not None:
+            return float(policy.run_timeout())
+    except Exception:  # noqa: BLE001 - the documented default when the registry cannot say
+        pass
+    return 3000.0
 
 
 def _locations_in_mesh(region_points: dict | None, fallback) -> str:
@@ -938,7 +981,18 @@ def check_mesh(workspace) -> dict:
             worst_non_ortho = no if worst_non_ortho is None else max(worst_non_ortho, no)
         per_region.append({"name": name, "type": rmap.get(name, {}).get("type", "?"),
                            "cells": cells, "fatal": q.get("fatal", []),
-                           "skew_fraction": q.get("skew_fraction", 0.0)})
+                           "skew_fraction": q.get("skew_fraction", 0.0),
+                           "volume_m3": q.get("total_volume")})
+    # A THERMAL MODEL'S MESH IS THE FILE'S MODEL OR IT FAILS: every region present, its volume
+    # the file's, no contact the file lacks, two cells across every layer (thermal_fidelity).
+    try:
+        staged = json.loads((ws / "_assembly" / "solids.json").read_text())
+    except (OSError, ValueError):
+        staged = []                            # regions are then matched by their own names
+    thermal = _thermal.failures(ws, rmap, {r["name"]: r for r in per_region},
+                                staged) if _thermal.load(ws) else []
+    if thermal:
+        fatal += [f"thermal model: {x}" for x in thermal] + [f"thermal model: {_thermal.WAY_ON}"]
     iface = check_interfaces(ws, rmap)
     # RECONCILIATION: actual split regions vs the declared plan. An undeclared region is a
     # semantic defect, not cosmetic - the delivered domain0 carried a coupled domain0_to_air
@@ -952,6 +1006,7 @@ def check_mesh(workspace) -> dict:
         "regions": per_region,
         "regions_missing": missing,
         "regions_undeclared": undeclared,
+        "thermal_fidelity": thermal,
         **iface,
         "mesh_ok": (not fatal) and (not missing) and (not undeclared) and iface["interface_ok"],
     }
