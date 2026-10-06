@@ -509,7 +509,7 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
     try:
         t, _wall_key, _bound_note = _bind_intake_shared(t, _decl, bore=_bore)
         from meshpipeline.engines.region_check import record_port_openings
-        record_port_openings(workspace, t.get("openings"), bore=_bore)
+        record_port_openings(workspace, t.get("openings"), bore=_bore, intake_patches=_decl)
     except BindError as exc:
         # a refusal, not a failure: the declaration and the measured geometry disagree, and
         # only the user can settle it

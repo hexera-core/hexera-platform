@@ -370,8 +370,9 @@ def bind_intake(t: dict, intake_patches: list, *, bore: bool = True) -> tuple[di
     # A TYPED SIZE THE GEOMETRY DISAGREES WITH, said before meshing: the measured opening is the
     # one meshed and judged (engines/region_check). pvc_mixing_tee's "about 20 mm" bound to the
     # pipe end's 330 mm2 metal ring, and the 801 mm2 bore it opens into is what the flow crosses.
-    from meshpipeline.engines.region_check import measured_port_areas, size_notes
-    sizes = size_notes(declared, measured_port_areas(out["openings"], bore=bore))
+    from meshpipeline.engines.region_check import measured_port_areas, size_notes, typed_port_areas
+    sizes = size_notes(declared, measured_port_areas(out["openings"], bore=bore,
+                                                     typed=typed_port_areas(declared)))
     out["binding"]["size_notes"] = sizes
     rows = "; ".join(
         f"{p['name']} ({p['role']}) at ({', '.join(f'{v:.3f}' for v in p['centroid'])}) m, "

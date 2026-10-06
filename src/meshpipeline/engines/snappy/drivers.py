@@ -1070,7 +1070,8 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
         t, _wall_key, _bound_note = _bind_declared_ports(
             t, state.get("intake_patches") or [], bore=_bore)
         from meshpipeline.engines.region_check import record_port_openings
-        record_port_openings(workspace, t.get("openings"), bore=_bore)
+        record_port_openings(workspace, t.get("openings"), bore=_bore,
+                             intake_patches=state.get("intake_patches") or [])
         _srcs = dict(t["stls"])
         if t.get("folded_stls"):
             # blind plugs are wall, physically: their triangles join the wall surface
