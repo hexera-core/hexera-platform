@@ -782,6 +782,13 @@ def _run_vmtk_local(workspace, *, timeout: int, **_ignored) -> dict:
                          f"{folded * 100:.1f}%) - next: {_step_label(ladder[nxt])}")
             i = nxt
             continue
+        if nxt is not None and _last_stage(result) == "Generating boundary layer":
+            # THE LAYER STAGE ITSELF DIED: a thinner stack dies the same way (an orifice plate's
+            # sharp edges, venturi_orifice_003: three 15-minute layered attempts, each lost in
+            # vmtk's layer untangling, and the layer-free fill never started) - straight on to
+            # the first layer-free step
+            nxt = next((j for j in range(i + 1, len(ladder))
+                        if int(ladder[j].get("boundary_layers") or 0) <= 0), nxt)
         if nxt is None:
             break
         notes.append(f"[vmtk] attempt {i + 1} ({_step_label(strat)}): the fill did not complete "
