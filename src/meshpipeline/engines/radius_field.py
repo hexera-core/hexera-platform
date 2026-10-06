@@ -38,7 +38,7 @@ FOLD_REACH = 0.5
 
 
 def local_radius(points: np.ndarray, faces: np.ndarray, interior_point, r_lo: float,
-                 r_hi: float) -> np.ndarray:
+                 r_hi: float, *, oriented: bool = False) -> np.ndarray:
     """The lumen's local radius at every wall point: half the chord from the point along its
     INWARD normal to the opposite wall, median-filtered over the 1-ring, clipped to
     [r_lo, r_hi], floored to the smallest radius within RADIUS_MIN_REACH of its own, and
@@ -50,7 +50,12 @@ def local_radius(points: np.ndarray, faces: np.ndarray, interior_point, r_lo: fl
     same radius everywhere, co-spherical points - so the descent stalls ("Degenerate descent
     detected. Target not reached", tee_wye_003 and manifold_002 on every clean surface tried,
     2026-09-11) and vmtkmeshgenerator then crashes on the nonsense sizing field. A chord along
-    the normal needs no diagram, no seeds and no luck; the generator only needs a size per point."""
+    the normal needs no diagram, no seeds and no luck; the generator only needs a size per point.
+
+    `oriented`: the faces are already wound with their normals OUT of the fluid, piece by piece
+    (engines/passage.orient_fluid_boundary), so no vote against the interior point is taken - with
+    an obstacle in the flow (a tube bank's tubes) the point-count vote can turn every piece the
+    wrong way."""
     import pyvista as pv
     import vtk
     mesh = pv.PolyData(np.asarray(points, dtype=float),
@@ -66,7 +71,8 @@ def local_radius(points: np.ndarray, faces: np.ndarray, interior_point, r_lo: fl
     pts = np.asarray(m.points, dtype=float)
     # the sheet is consistently oriented, so one majority vote against the interior point
     # decides whether its normals point into the fluid or away from it
-    if (np.einsum("ij,ij->i", n, np.asarray(interior_point, dtype=float) - pts) > 0).mean() > 0.5:
+    if not oriented and (np.einsum("ij,ij->i", n, np.asarray(interior_point, dtype=float) - pts)
+                         > 0).mean() > 0.5:
         n = -n
         fn = -fn
     obb = vtk.vtkOBBTree()

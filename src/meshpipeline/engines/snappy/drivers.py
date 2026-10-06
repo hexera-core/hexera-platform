@@ -953,7 +953,8 @@ def _staged_passage_field(t: dict, srcs: dict, wall_key: str, intake_patches: li
         return None
     ports = port_radius_stats(t.get("openings"),
                               _port_hydraulic_diameters(srcs, wall_key, intake_patches))
-    if ports and not plausible_radius(field_radius_stats(*raw), ports):
+    if ports and not plausible_radius(field_radius_stats(*raw), ports,
+                                      fluid_boundary=bool(t.get("wall_bounds_fluid"))):
         logger.info("narrow passages: the staged wall's reading is not the passage the ports "
                     "describe - no local refinement")
         return None

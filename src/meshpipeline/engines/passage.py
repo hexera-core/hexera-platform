@@ -162,23 +162,36 @@ def port_radius_stats(openings, hydraulic: dict | None = None) -> dict:
             "points": int(len(r)), "source": "ports"}
 
 
-def plausible_radius(chord: dict, ports: dict, *, low: float = 0.3, high: float = 1.5) -> bool:
+def plausible_radius(chord: dict, ports: dict, *, low: float = 0.3, high: float = 1.5,
+                     fluid_boundary: bool = False) -> bool:
     """A chord reading is trusted only when its 5th percentile sits within low..high times the
     smallest port radius: a reading off the outer skin (straight_reducer_015: 210 mm on a
-    ~100 mm bore) or the wall thickness (006: 4 mm) is not the passage."""
+    ~100 mm bore) or the wall thickness (006: 4 mm) is not the passage.
+
+    On the fluid's own boundary (`fluid_boundary`: a fluid domain, or a surface staged from its
+    fluid side) every chord crosses the fluid - there is no wall thickness to misread - so a
+    passage much narrower than the ports is real (a tube bank's 15 mm gaps behind 60 mm nozzles:
+    0.25 of the port radius), and the lower bound is FLUID_BOUNDARY_LOW of it: a reading at the
+    field's clip floor is a failed read, not a passage (a square-to-round loft read 0.01 mm)."""
     try:
         c, p = float(chord["p05"]), float(ports["p05"])
     except (KeyError, TypeError, ValueError):
         return False
-    return p > 0.0 and low * p <= c <= high * p
+    return p > 0.0 and (FLUID_BOUNDARY_LOW if fluid_boundary else low) * p <= c <= high * p
 
 
-def choose_passage_radius(chord: dict | None, ports: dict | None) -> dict | None:
+#: The narrowest passage a fluid boundary's reading may report, as a fraction of the smallest port
+#: radius, before it is taken for a failed read (plausible_radius).
+FLUID_BOUNDARY_LOW = 0.05
+
+
+def choose_passage_radius(chord: dict | None, ports: dict | None, *,
+                          fluid_boundary: bool = False) -> dict | None:
     """The radius statistics the size caps use: the chord reading when the ports vouch for it,
-    the port figures otherwise, None without either."""
+    the port figures otherwise, None without either (`fluid_boundary`: see plausible_radius)."""
     chord = chord or {}
     ports = ports or {}
-    if chord and ports and plausible_radius(chord, ports):
+    if chord and ports and plausible_radius(chord, ports, fluid_boundary=fluid_boundary):
         return {**chord, "source": "chord"}
     if chord and not ports:
         return {**chord, "source": "chord-unchecked"}
@@ -383,6 +396,80 @@ def orient_wall_faces(points, faces, port_centroids):
     return pts, f
 
 
+#: Ray directions for the inside test below: irrational enough to miss shared edges and vertices.
+_PARITY_DIRS = np.asarray([[0.5773, 0.5774, 0.5774], [-0.6400, 0.4300, 0.6370],
+                           [0.2110, -0.8930, 0.3970]], dtype=float)
+
+
+def _crossings(tris: np.ndarray, p: np.ndarray) -> list[int]:
+    """How many of the triangles each _PARITY_DIRS ray from p crosses (Moller-Trumbore)."""
+    v0, e1, e2 = tris[:, 0], tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0]
+    s = p - v0
+    q = np.cross(s, e1)
+    out = []
+    for d in _PARITY_DIRS / np.linalg.norm(_PARITY_DIRS, axis=1, keepdims=True):
+        pv_ = np.cross(d, e2)
+        det = np.einsum("ij,ij->i", e1, pv_)
+        ok = np.abs(det) > 1e-30
+        inv = np.divide(1.0, det, out=np.zeros_like(det), where=ok)
+        u = np.einsum("ij,ij->i", s, pv_) * inv
+        v = (q @ d) * inv
+        t = np.einsum("ij,ij->i", e2, q) * inv
+        out.append(int(np.sum(ok & (u >= 0) & (v >= 0) & (u + v <= 1) & (t > 0))))
+    return out
+
+
+def orient_fluid_boundary(points, faces, cap_polys, *, samples: int = 9):
+    """Every piece of a FLUID's own wall wound so its normals point OUT of the fluid, judged by the
+    fluid itself: a point just off a face along its normal is inside the closed boundary (wall +
+    port caps, by ray parity on three rays) when the normal points into the fluid, and the piece
+    is flipped on its faces' majority (its largest faces vote). orient_wall_faces votes by the
+    nearest port's axis instead, which holds for a wall that wraps the flow and turns an obstacle
+    IN the flow (a tube of a tube bank, a blade) inside out - its chords then cross the obstacle,
+    not the gap round it. Returns (points, faces) in the connectivity filter's order."""
+    import pyvista as pv
+    pts = np.asarray(points, dtype=float)
+    f = np.asarray(faces, dtype=np.int64).copy()
+    if len(f) == 0:
+        return pts, f
+    poly = pv.PolyData(pts, np.hstack([np.full((len(f), 1), 3, dtype=np.int64), f]).ravel())
+    # one winding within each piece first (a piece of separately wound CAD faces disagrees with
+    # itself), then the whole piece is turned by the vote
+    poly = poly.compute_normals(cell_normals=True, point_normals=False, split_vertices=False,
+                                consistent_normals=True, auto_orient_normals=False)
+    conn = poly.connectivity(extraction_mode="all")
+    f = np.asarray(conn.faces).reshape(-1, 4)[:, 1:].copy()
+    pts = np.asarray(conn.points, dtype=float)
+    region = np.asarray(conn.cell_data["RegionId"], dtype=np.int64)
+    tri = pts[f]
+    cap_tris = []
+    for c in cap_polys:
+        if not c.n_cells:
+            continue
+        cp, cf = _triangles(c)
+        if len(cf):
+            cap_tris.append(cp[cf])
+    closed = np.concatenate([tri, *cap_tris]) if cap_tris else tri
+    cn = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    area = 0.5 * np.linalg.norm(cn, axis=1)
+    cn /= (2.0 * area[:, None]).clip(1e-30)
+    centres = tri.mean(axis=1)
+    diag = float(np.linalg.norm(pts.max(axis=0) - pts.min(axis=0))) or 1.0
+    step = np.minimum(0.2 * np.sqrt(area), 1e-3 * diag)
+    for rid in np.unique(region):
+        idx = np.flatnonzero(region == rid)
+        pick = idx[np.argsort(-area[idx], kind="stable")[:samples]]
+        vote = 0
+        for i in pick:
+            if area[i] <= 0.0:
+                continue
+            odd = sum(c % 2 for c in _crossings(closed, centres[i] + step[i] * cn[i]))
+            vote += 1 if odd >= 2 else -1
+        if vote > 0:                                   # the normals point into the fluid: flip
+            f[region == rid] = f[region == rid][:, [0, 2, 1]]
+    return pts, f
+
+
 def passage_of_surface(points, faces, *, max_points: int = MAX_MEASURE_POINTS,
                        wall=None, edges=None) -> dict:
     """Local radius (half the inward chord to the opposite wall, engines/vmtk/lumen_staging)
@@ -570,7 +657,7 @@ def weighted_percentile(values, weights, q: float) -> float:
 
 
 def passage_field_of_stls(paths, *, interior_point=None, cap_paths=(), port_centroids=(),
-                          max_points: int = FIELD_MAX_POINTS):
+                          max_points: int = FIELD_MAX_POINTS, hollow_wall: bool = True):
     """(points, faces, radius at each point) of the staged WALL (open at the ports) BEFORE
     meshing, read the way VMTK's staging reads them (a ray leaving through a port borrows its
     neighbour). The chords are oriented from a point deep in the cavity found from the port
@@ -583,7 +670,13 @@ def passage_field_of_stls(paths, *, interior_point=None, cap_paths=(), port_cent
     The wall is read at points FIELD_EDGE_FRACTION of the diagonal apart at most (long edges are
     halved, which keeps the shape), and on a decimated copy when it has more than `max_points`
     points (a scanned vessel), so the field covers every passage at a bounded cost. The points
-    returned are the ones read. None when nothing reads."""
+    returned are the ones read. None when nothing reads.
+
+    `hollow_wall`: whether the wall is a hollow part's METAL skin (bore, outer skin and flange
+    faces), so only the cavity's own skin is read (cavity_skin). A wall that is the fluid's own
+    boundary - a fluid domain, or a surface staged from its fluid side - is read whole: split at
+    its sharp edges and kept where it touches a port, a heat exchanger's shell side lost its shell,
+    its 19 tubes and its baffles, and read the 60 mm nozzle pipes everywhere."""
     import pyvista as pv
 
     from meshpipeline.engines.vmtk.lumen_staging import local_radius
@@ -597,7 +690,8 @@ def passage_field_of_stls(paths, *, interior_point=None, cap_paths=(), port_cent
         caps = [pv.read(str(p)) for p in cap_paths if Path(p).exists()]
         cap_pts = (np.concatenate([np.asarray(c.points, dtype=float) for c in caps])
                    if caps else np.zeros((0, 3)))
-        if caps:
+        oriented = False
+        if caps and hollow_wall:
             pts, faces = cavity_skin(pts, faces, caps)
         deep = interior_from_ports(pts, cap_pts, list(port_centroids)) if len(port_centroids) else None
         if deep is None and interior_point is not None:
@@ -610,6 +704,10 @@ def passage_field_of_stls(paths, *, interior_point=None, cap_paths=(), port_cent
             deep = inside_point(surf)
             if deep is None:
                 return None
+        elif not hollow_wall and caps:
+            # the fluid's own boundary, closed by its caps: turned by where the fluid is, once the
+            # wall has its final points (below)
+            oriented = True
         elif len(port_centroids):
             pts, faces = orient_wall_faces(pts, faces, list(port_centroids))
         if len(pts) > max_points:
@@ -632,7 +730,11 @@ def passage_field_of_stls(paths, *, interior_point=None, cap_paths=(), port_cent
                 if len(pts) <= max_points:
                     break
                 h *= 1.5
-        r = local_radius(pts, faces, deep, diag * 1e-5, diag / 2.0)
+        if oriented:
+            # each piece by where the fluid is, not by the nearest port axis (an obstacle in the
+            # flow faces away from it) - after the edge halving, which does not keep the winding
+            pts, faces = orient_fluid_boundary(pts, faces, caps)
+        r = local_radius(pts, faces, deep, diag * 1e-5, diag / 2.0, oriented=oriented)
         return pts, faces, np.asarray(r, dtype=float)
     except Exception:  # noqa: BLE001 - sizing aid, not a verdict
         logger.warning("passage radius of the staged surface failed", exc_info=True)
@@ -789,7 +891,9 @@ def staged_passage_field(t: dict, srcs: dict, wall_key: str, declaration, *,
                      for p in (v if isinstance(v, list) else [v])]
         centroids = [o.get("centroid") for o in openings.values()
                      if isinstance(o, dict) and o.get("centroid")]
-        field = passage_field_of_stls(wall_paths, cap_paths=cap_paths, port_centroids=centroids)
+        # a record that does not say is read as a hollow wall, as before
+        field = passage_field_of_stls(wall_paths, cap_paths=cap_paths, port_centroids=centroids,
+                                      hollow_wall=not t.get("wall_bounds_fluid"))
     if field is None:
         return None
     pts, faces, r = field
@@ -916,7 +1020,7 @@ __all__ = ["MAX_MEASURE_POINTS", "PASSAGE_CEILING_CELLS", "PASSAGE_CELLS_ACROSS"
            "narrow_passage_regions", "passage_field_of_stls", "point_areas",
            "port_corrected_radius", "staged_passage_field", "weighted_percentile",
            "FIELD_MAX_POINTS",
-           "cavity_skin", "choose_passage_radius", "inside_point", "interior_from_ports",
+           "cavity_skin", "choose_passage_radius", "orient_fluid_boundary", "inside_point", "interior_from_ports",
            "mean_edge", "measure_deadline", "measure_passage", "orient_wall_faces",
            "passage_of_polymesh", "polygon_edges", "triangle_edges",
            "passage_of_stls", "passage_of_surface", "plausible_radius", "port_radius_stats",

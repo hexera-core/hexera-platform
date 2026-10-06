@@ -431,7 +431,8 @@ def _passage_sizing(t: dict, srcs: dict, wall_key: str, declaration: list):
         if hw and p.get("name"):
             name = str(p["name"])
             widths[name] = min(float(widths.get(name) or float("inf")), 2.0 * hw)
-    chosen = choose_passage_radius(chord, port_radius_stats(t.get("openings"), widths))
+    chosen = choose_passage_radius(chord, port_radius_stats(t.get("openings"), widths),
+                                   fluid_boundary=bool(t.get("wall_bounds_fluid")))
     if not chosen or not str(chosen.get("source", "")).startswith("chord") or raw is None:
         return chosen, None
     field = staged_passage_field(t, srcs, wall_key, declaration, field=raw)
@@ -522,6 +523,11 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
         feature_angle=float(args.get("feature_angle", 30.0)))
     # the local passage radius of the staged boundary (wall + port caps close it) sizes the
     # wall band and the background; {} when the surfaces do not close, and the strategy stands
+    # a solid DECLARED the fluid domain is the fluid's own boundary, whatever its ports look like
+    # (this path stages a CAD solid without the declaration, so the record cannot know it)
+    from meshpipeline.engines.workspace_facts import read_input_kind
+    if read_input_kind(workspace) == "fluid-domain":
+        t = {**t, "wall_bounds_fluid": True}
     passage_radius, _field = _passage_sizing(t, _srcs, _wall_key, port_declaration(workspace))
 
     _patches = list(contract_patches or [])
