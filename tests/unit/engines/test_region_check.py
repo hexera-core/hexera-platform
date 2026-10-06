@@ -1,6 +1,8 @@
-# THE PORT-AREA GATE, shared by every engine: a delivered inlet/outlet far from the size the user
-# declared is not that opening. On the HOME-TURF audit (2026-10-06) six gmsh fluid-domain meshes
-# passed every gate with ports 2.4-5.3x their declared openings.
+# THE PORT-AREA GATE, shared by every engine: a delivered inlet/outlet far from its opening's size is
+# not that opening. On the HOME-TURF audit (2026-10-06) six gmsh fluid-domain meshes passed every
+# gate with ports 2.4-5.3x their declared openings. The opening is the one MEASURED on the geometry
+# when the staging measured one, the typed size only otherwise: pvc_mixing_tee's spec typed "about
+# 20 mm" for a 32 mm bore, and judged by the typed size every engine's correct mesh was refused.
 from __future__ import annotations
 
 import json
@@ -13,8 +15,15 @@ from meshpipeline.engines.region_check import (
     PORT_AREA_BAND,
     declared_port_area_m2,
     delivered_areas,
+    expected_port_areas,
+    flow_area_m2,
     gate_port_areas,
+    measured_openings,
+    measured_port_areas,
     port_area_misses,
+    record_port_openings,
+    recorded_port_openings,
+    size_notes,
 )
 from meshpipeline.engines.registry import get_spec
 
@@ -40,8 +49,9 @@ def test_misses_are_outside_the_band_only():
     assert port_area_misses({"inlet": PORT_AREA_BAND[1] * 1.01}, {"inlet": 1.0})
 
 
-def _ctx(tmp_path, areas, patches):
-    (tmp_path / "mesh_manifest.json").write_text(json.dumps({"quality": {"patch_areas_m2": areas}}))
+def _ctx(tmp_path, areas, patches, openings=None):
+    quality = {"patch_areas_m2": areas, **({"port_openings_m2": openings} if openings else {})}
+    (tmp_path / "mesh_manifest.json").write_text(json.dumps({"quality": quality}))
     return GateCtx(workspace=tmp_path, engine="gmsh", intake_patches=patches)
 
 
@@ -143,3 +153,147 @@ def test_the_prelaunch_check_lets_the_engine_build_the_declared_wall(tmp_path):
         {"name": "wall", "type": "wall"}]))
     (tmp_path / "flow_topology").write_text("internal")
     assert _gmsh_boundary(tmp_path).patches == {"inlet": "inlet", "outlet": "outlet", "wall": "wall"}
+
+
+# pvc_mixing_tee as staged (dry configure, 2026-10-06): each port face is the pipe end's metal ring
+# (330 mm2) round the 32 mm bore its inner wire encloses (803 mm2); the spec typed "about 20 mm"
+PVC_RING = {"area": 0.00032987, "centroid": [-0.038, 0.0, 0.0],
+            "opening": {"area": 0.00080292, "centroid": [-0.038, 0.0, 0.0], "wh": [0.03198, 0.03199]}}
+PVC = [{"name": "inlet_1", "type": "inlet", "near_mm": [-38, 0, 0], "diameter_mm": 20.0},
+       {"name": "inlet_2", "type": "inlet", "near_mm": [0, 0, 48], "diameter_mm": 20.0},
+       {"name": "outlet", "type": "outlet", "near_mm": [44, 0, 0], "diameter_mm": 20.0},
+       {"name": "wall", "type": "wall"}]
+PVC_BORES = {"inlet_1": 0.00080292, "inlet_2": 0.00080292, "outlet": 0.00080292}
+
+
+def test_the_flow_crosses_a_bodys_bore_and_a_fluid_solids_own_face():
+    # a part declared a body: the fluid is the bore its ring encloses
+    assert flow_area_m2(PVC_RING, bore=True) == pytest.approx(0.00080292)
+    # the solid is the fluid: the ring face itself is the opening (an annular passage)
+    assert flow_area_m2(PVC_RING, bore=False) == pytest.approx(0.00032987)
+    # annular_001: the tube's ring encloses 17,923 mm2, the rod's end disc fills 12,223 of it
+    annulus = {"area": 0.00266667, "opening": {"area": 0.01792321, "filled": 0.01222281}}
+    assert flow_area_m2(annulus, bore=True) == pytest.approx(0.0057004)
+    assert flow_area_m2({"area": 0.0036}, bore=True) == pytest.approx(0.0036)   # a plain disc
+    # a surface staging measured its lid: that is the opening, whatever the face reads
+    lid = {"area": 0.0041, "flow_area": 0.004, "opening": {"area": 0.009}}
+    assert flow_area_m2(lid, bore=True) == pytest.approx(0.004)
+    assert measured_port_areas({"inlet_1": PVC_RING, "x": {"centroid": [0, 0, 0]}}) == {
+        "inlet_1": pytest.approx(0.00080292)}
+
+
+def test_the_measured_opening_wins_over_the_typed_size():
+    exp = expected_port_areas(PVC, {"inlet_1": 0.000803})
+    assert exp["inlet_1"] == (pytest.approx(0.000803), "measured")
+    assert exp["outlet"] == (pytest.approx(math.pi / 4 * 0.02 ** 2), "declared")
+    assert "wall" not in exp
+
+
+def test_a_typed_size_the_geometry_disagrees_with_is_said_plainly():
+    notes = size_notes(PVC, {**PVC_BORES, "outlet": 0.000330})
+    assert notes == [
+        "inlet_1: you said about 20 mm across; the opening measures 32 mm across (803 mm2); "
+        "using the measured opening.",
+        "inlet_2: you said about 20 mm across; the opening measures 32 mm across (803 mm2); "
+        "using the measured opening."]
+    ring = [{"name": "inlet", "type": "inlet", "diameter_mm": 151.19, "inner_diameter_mm": 124.75}]
+    assert size_notes(ring, {"inlet": 0.0179}) == [
+        "inlet: you said an annulus about 151.19 mm across round a 124.75 mm centre; the opening "
+        "measures 17,900 mm2 (about 151 mm across); using the measured opening."]
+    assert size_notes(ring, {"inlet": 0.0057}) == []           # agrees: nothing to say
+    assert size_notes(PVC, {}) == []                            # nothing measured: nothing to say
+
+
+def test_pvc_mixing_tee_passes_on_its_measured_bores_and_its_metal_still_fails(tmp_path):
+    bore_mesh = {"inlet_1": 0.000801, "inlet_2": 0.000801, "outlet": 0.000801, "wall": 0.02}
+    assert gate_port_areas(_ctx(tmp_path, bore_mesh, PVC, openings=PVC_BORES)) == (True, "")
+    # the WRONG REGION - the pipe's metal meshed, its end rings delivered as the ports
+    metal_mesh = {"inlet_1": 0.00033, "inlet_2": 0.00033, "outlet": 0.00033, "wall": 0.02}
+    ok, why = gate_port_areas(_ctx(tmp_path, metal_mesh, PVC, openings=PVC_BORES))
+    assert not ok and "0.411 times the opening measured on the geometry" in why
+    # nothing measured: the typed size is all there is, and the bore is 2.55x it
+    ok, why = gate_port_areas(_ctx(tmp_path, bore_mesh, PVC))
+    assert not ok and "2.55 times the opening declared" in why
+
+
+def test_the_measured_openings_travel_from_staging_to_the_manifest(tmp_path):
+    assert recorded_port_openings(tmp_path) == {}
+    got = record_port_openings(tmp_path, {"inlet_1": PVC_RING}, bore=True)
+    assert got == recorded_port_openings(tmp_path) == {"inlet_1": pytest.approx(0.00080292)}
+    assert measured_openings({"quality": {"port_openings_m2": got}}) == got
+    assert record_port_openings(tmp_path / "x", {}, bore=True) == {}      # nothing measured
+
+
+def test_bind_intake_says_a_wrong_typed_bore_before_meshing(tmp_path):
+    # a 32 mm bore in a 3 mm wall, typed as "about 20 mm": the binder matches the 20 mm to the
+    # end ring's metal (330 mm2), the flow crosses the bore - and the user is told
+    pytest.importorskip("OCP.STEPControl")
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+    from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
+
+    from meshpipeline.cad.cad_tessellate import tessellate_internal
+    from meshpipeline.contracts.coordinate_state import from_occ_transfer
+    from meshpipeline.contracts.geometry_units import (
+        GeometryInterpretation,
+        LengthUnit,
+        ResolutionBasis,
+    )
+    from meshpipeline.engines.port_binding import bind_intake, declaration_targets
+    ax = gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(1, 0, 0))
+    pipe = BRepAlgoAPI_Cut(BRepPrimAPI_MakeCylinder(ax, 19.0, 120.0).Shape(),
+                           BRepPrimAPI_MakeCylinder(ax, 16.0, 120.0).Shape()).Shape()
+    w = STEPControl_Writer()
+    w.Transfer(pipe, STEPControl_AsIs)
+    w.Write(str(tmp_path / "pipe.step"))
+    prepared = from_occ_transfer(GeometryInterpretation(
+        interpretation_id="t", owner_id="t", geometry_source_id="t", unit=LengthUnit.millimetre,
+        scale_to_metres=0.001, basis=ResolutionBasis.file_declared, evidence="t"),
+        LengthUnit.millimetre)
+    patches = [{"name": "inlet", "type": "inlet", "near_mm": [0, 0, 0], "diameter_mm": 20.0},
+               {"name": "outlet", "type": "outlet", "near_mm": [120, 0, 0], "diameter_mm": 20.0},
+               {"name": "wall", "type": "wall"}]
+    t = tessellate_internal(tmp_path / "pipe.step", tmp_path / "out", prepared=prepared,
+                            declared_ports=declaration_targets(patches), fluid_solid=False)
+    out, _wall, note = bind_intake(t, patches, bore=True)
+    bore = math.pi * 0.016 ** 2
+    assert measured_port_areas(out["openings"]) == {"inlet": pytest.approx(bore, rel=0.01),
+                                                    "outlet": pytest.approx(bore, rel=0.01)}
+    assert "inlet: you said about 20 mm across; the opening measures 32 mm across" in note
+    assert out["binding"]["size_notes"] and len(out["binding"]["size_notes"]) == 2
+
+
+def test_gmsh_measures_each_port_on_the_face_its_binder_finds():
+    gmsh = pytest.importorskip("gmsh")
+    from meshpipeline.engines.gmsh import driver
+    gmsh.initialize()
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.model.add("t")
+        gmsh.model.occ.addCylinder(0, 0, 0, 0.2, 0, 0, 0.02)
+        gmsh.model.occ.synchronize()
+        faces = [t for _, t in gmsh.model.getEntities(2)]
+        area = {t: gmsh.model.occ.getMass(2, t) for t in faces}
+        side = max(faces, key=lambda t: area[t])
+        discs = sorted((t for t in faces if t != side),
+                       key=lambda t: gmsh.model.occ.getCenterOfMass(2, t)[0])
+        # typed as 20 mm on a 40 mm bore: the faces at the declared places are still the openings
+        ports = [{"name": "inlet", "type": "inlet", "near_mm": [0, 0, 0], "diameter_mm": 20.0},
+                 {"name": "outlet", "type": "outlet", "near_mm": [200, 0, 0], "diameter_mm": 20.0}]
+        got = driver._port_openings(gmsh, faces, ports, cad=True)
+        assert got == {"inlet": pytest.approx(area[discs[0]]), "outlet": pytest.approx(area[discs[1]])}
+        assert size_notes(ports, got)[0].startswith("inlet: you said about 20 mm across; the "
+                                                    "opening measures 40 mm across")
+        sound = [{"name": "inlet", "role": "inlet", "surface_tags": [discs[0]]},
+                 {"name": "outlet", "role": "outlet", "surface_tags": [discs[1]]},
+                 {"name": "wall", "role": "wall", "surface_tags": [side]}]
+        assert driver._checked_port_groups(gmsh, sound, faces, ports, cad=True) == sound
+        swept = [{"name": "inlet", "role": "inlet", "surface_tags": [discs[0], side]},
+                 {"name": "outlet", "role": "outlet", "surface_tags": [discs[1]]},
+                 {"name": "wall", "role": "wall", "surface_tags": []}]
+        out = {g["name"]: g["surface_tags"] for g in
+               driver._checked_port_groups(gmsh, swept, faces, ports, cad=True)}
+        assert out == {"inlet": [discs[0]], "outlet": [discs[1]], "wall": [side]}
+    finally:
+        gmsh.finalize()

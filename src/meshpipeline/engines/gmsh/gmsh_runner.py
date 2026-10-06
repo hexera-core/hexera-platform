@@ -112,6 +112,8 @@ def stage_declared(workspace, *, geometry_path, prepared, intake_patches: list,
     t = stage_internal_surface(ws / "input.stl", ws / "_internal_stls",
                                intake_patches=intake_patches, input_kind=input_kind)
     shutil.copy2(t["fluid_boundary"], ws / FLUID_BOUNDARY)
+    from meshpipeline.engines.region_check import record_port_openings
+    record_port_openings(ws, t["openings"])
     record = {k: t[k] for k in ("openings", "interior_point", "bbox_min", "bbox_max", "wall_name")}
     record["patches"] = t["facts"]["patches"]
     (ws / "internal_surface.json").write_text(json.dumps(record, indent=1))

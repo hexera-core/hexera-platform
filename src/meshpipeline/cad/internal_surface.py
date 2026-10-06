@@ -309,7 +309,11 @@ def write_staged(staged: StagedInternal, out_dir: Path) -> dict:
         rec = {"area": round(float(o.area), 10),
                "centroid": [round(float(v), 6) for v in o.centroid],
                "normal": [round(float(v), 6) for v in o.normal],
-               "kind": o.kind}
+               "kind": o.kind,
+               # the staged lid is what the flow crosses (a ring's lid is the gap round the
+               # centre body): the port-area gate holds the delivered patch to it
+               # (engines/region_check.flow_area_m2)
+               "flow_area": round(float(o.area), 10)}
         if o.inner is not None:
             # a ring: what its inner edge encloses, in the shape the CAD path reports a ring port
             # face's inner wire - so the binder holds a declaration against the ring, the centre
