@@ -619,7 +619,7 @@ def interface_skew(layout: Layout, *, max_skew: float = MAX_INTERFACE_SKEW) -> l
 
 
 def hold_interface_skew(placement: Placement, layout: Layout, *,
-                        max_skew: float = MAX_INTERFACE_SKEW, rounds: int = 4) -> dict:
+                        max_skew: float = MAX_INTERFACE_SKEW, rounds: int = 12) -> dict:
     """Cut the cells whose interface pieces are too skewed (the finer side's lines brought in,
     graded, as balancing does), re-balance and re-paint, until none is left or `rounds` run out.
     The blocks come back painted. Returns what was done and what is left."""
