@@ -111,15 +111,54 @@ def test_configure_mesh_defaults_to_external_when_nothing_declared(tmp_path, mon
     assert out["topology"] == "external"
 
 
-def test_internal_without_the_cad_solid_fails_with_an_actionable_error(tmp_path):
+def test_internal_with_no_staged_geometry_says_what_is_missing(tmp_path):
     from meshpipeline.engines.cfmesh import cfmesh_runner as R
     (tmp_path / "flow_topology").write_text("internal")   # neutral fact, not an engine_param
     out = R.configure_mesh(tmp_path, geometry_file="input.stl", surface=_surface(tmp_path), strategy={},
                            wall_patch="wall", contract_patches=[], args={},
                            cell_budget=1_000_000)
     assert out["success"] is False
-    assert "geometry.step" in out["error"]
-    assert "external topology" in out["next"]
+    assert "input.stl" in out["error"] and "missing" in out["error"]
+
+
+def _open_tube_stl(path: Path, r=0.05, length=0.3, sides=32, rows=4):
+    """A thin pipe wall open at both ends, as a surface upload arrives (metres)."""
+    import math
+
+    from meshpipeline.cad.stl_io import write_stl_binary
+
+    def at(t, k):
+        a = 2 * math.pi * k / sides
+        return [t * length, r * math.cos(a), r * math.sin(a)]
+    tris = []
+    for k in range(sides):
+        for j in range(rows):
+            a0, a1 = at(j / rows, k), at(j / rows, k + 1)
+            b0, b1 = at((j + 1) / rows, k), at((j + 1) / rows, k + 1)
+            tris += [(a0, b1, b0), (a0, a1, b1)]
+    write_stl_binary(path, tris)
+    return path
+
+
+def test_internal_from_a_surface_closes_its_open_ends_into_the_declared_ports(tmp_path, monkeypatch):
+    """No CAD solid: the staged surface and the confirmed openings are enough. The meshDict is
+    written for a boundary whose ports carry the declared names."""
+    from meshpipeline.engines.cfmesh import cfmesh_runner as R
+    monkeypatch.setattr(R, "_to_fms", lambda ws, fa, br: "geom.stl")
+    (tmp_path / "flow_topology").write_text("internal")
+    patches = [{"name": "feed", "type": "inlet", "near_mm": [0, 0, 0], "diameter_mm": 100},
+               {"name": "exit", "type": "outlet", "near_mm": [300, 0, 0], "diameter_mm": 100},
+               {"name": "pipe", "type": "wall"}]
+    (tmp_path / "port_declaration.json").write_text(json.dumps(patches))
+    _open_tube_stl(tmp_path / "input.stl")
+    out = R.configure_mesh(tmp_path, geometry_file="input.stl", surface=_surface(tmp_path), strategy={},
+                           wall_patch="pipe", contract_patches=patches, args={},
+                           cell_budget=1_000_000)
+    assert out["success"], out
+    text = (tmp_path / "geom.stl").read_text()
+    for name in ("pipe", "feed", "exit"):
+        assert f"solid {name}" in text
+    assert set(out["openings"]) == {"feed", "exit"}
 
 
 # the internal surface: named solids, and NO bounding box

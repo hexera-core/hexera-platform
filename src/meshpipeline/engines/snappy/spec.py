@@ -182,6 +182,9 @@ SPEC = EngineSpec(
                       MeshCapability("fluid-domain", "fluid-volume",
                                      topologies=("internal",))),
         input_contract=InputContract(
+            # internal flow from an STL/OBJ/PLY upload: cad/internal_surface closes it at the
+            # confirmed openings (snappy/cfMesh/gmsh/vmtk internal paths read that record)
+            internal_from_surface=True,
             # UPSTREAM TRUTH: snappyHexMesh is a 3D hex/split-hex mesher. The former
             # pseudo-2D workflow (thin slab + extrudeMesh collapse + empty retype) was a
             # wrapper invention and is REMOVED from supported capabilities - real 2D
