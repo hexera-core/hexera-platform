@@ -480,6 +480,11 @@ def declared_openings(facts: dict, thermal: dict) -> None:
                 if not parts:
                     walled.append(face)
                     continue
+                if len(parts) > _MAX_SIDE_OPENINGS:
+                    facts.setdefault("notes", []).append(
+                        f"the plates on the domain's {face} side leave {len(parts)} separate gaps; "
+                        f"the {_MAX_SIDE_OPENINGS} largest are offered - add any other on the stage")
+                    parts = parts[:_MAX_SIDE_OPENINGS]
                 for k, part in enumerate(parts, 1):
                     if len(parts) > 1:
                         part = {**part, "name": f"{side['name']}_{k}"}
@@ -503,7 +508,7 @@ def declared_openings(facts: dict, thermal: dict) -> None:
 
 #: Plates on one domain side the open-part reading takes (each adds two grid lines per axis).
 _MAX_SIDE_PLATES = 256
-#: Open rectangles offered for one side; the largest are kept.
+#: Open rectangles offered for one side; the largest are kept, and a note says how many more.
 _MAX_SIDE_OPENINGS = 8
 
 
@@ -561,7 +566,7 @@ def _open_rects(side: dict, plates: list[dict]) -> list[dict]:
         centre[axes[0]], centre[axes[1]] = (u0 + u1) / 2, (v0 + v1) / 2
         out.append({**side, "centre_m": centre, "size_m": [u1 - u0, v1 - v0]})
     out.sort(key=lambda p: -p["size_m"][0] * p["size_m"][1])
-    return out[:_MAX_SIDE_OPENINGS]
+    return out
 
 
 def _side_area(box: dict, axis: int) -> float:
