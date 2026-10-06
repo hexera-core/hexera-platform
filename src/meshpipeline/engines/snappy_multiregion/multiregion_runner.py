@@ -495,7 +495,10 @@ def _attach_solid_names(geom_path, solids: list[dict], trsf) -> None:
                 exp.Next()
         lo = [min(s["bbox_min"][i] for s in solids) for i in range(3)]
         hi = [max(s["bbox_max"][i] for s in solids) for i in range(3)]
-        tol = 1e-6 * (math.dist(lo, hi) or 1.0)
+        # the staged centroid is rounded to the micrometre (read_assembly_solids): up to 0.87 um
+        # of that is rounding alone, which left any solid whose centroid is no round number -
+        # an enclosure with round fan holes, the air around it - unnamed
+        tol = 1e-6 * (math.dist(lo, hi) or 1.0) + 1e-6
         for s in solids:
             near = [(math.dist(c, s["centroid"]), v, n) for c, v, n in named]
             near = [t for t in near if t[0] <= tol and abs(t[1] - abs(s["volume"]))
@@ -992,7 +995,9 @@ def check_mesh(workspace) -> dict:
     thermal = _thermal.failures(ws, rmap, {r["name"]: r for r in per_region},
                                 staged) if _thermal.load(ws) else []
     if thermal:
-        fatal += [f"thermal model: {x}" for x in thermal] + [f"thermal model: {_thermal.WAY_ON}"]
+        # the way on first: a caller that shortens the list keeps it
+        fatal += [f"thermal model: not the file's model - {_thermal.WAY_ON}"]
+        fatal += [f"thermal model: {x}" for x in thermal]
     iface = check_interfaces(ws, rmap)
     # RECONCILIATION: actual split regions vs the declared plan. An undeclared region is a
     # semantic defect, not cosmetic - the delivered domain0 carried a coupled domain0_to_air

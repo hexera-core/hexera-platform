@@ -395,6 +395,33 @@ def test_the_multiregion_report_names_each_solid(stb, tmp_path):
     assert by_name["PCB"]["centroid"] == pytest.approx(pcb["centroid_m"], abs=1e-6)
 
 
+def test_a_solid_whose_centroid_is_no_round_number_is_still_named(tmp_path):
+    # ECXML-TEST's enclosure with two round fan holes came back with the air and the housing
+    # unnamed: the staged centroid is rounded to the micrometre, the match allowed 1e-6 of the
+    # model's diagonal (0.3 um here)
+    from meshpipeline.cad.ingest.ecxml_build import ecxml_to_step
+    from meshpipeline.contracts.coordinate_state import from_occ_transfer
+    from meshpipeline.contracts.geometry_units import GeometryInterpretation, ResolutionBasis
+    from meshpipeline.engines.snappy_multiregion.multiregion_runner import read_assembly_solids
+
+    doc = Ecxml("Enclosure with fans").domain((-0.04, -0.03, -0.02), (0.28, 0.21, 0.1))
+    doc.material("Steel", 7850, 460, 0.3, ("isotropic", 50.0))
+    doc.enclosure("Housing", (0.0, 0.0, 0.0), (0.2, 0.15, 0.06), "Steel", 0.0015)
+    doc.grille("Front", (0.0, 0.03, 0.01), (0.0015, 0.09, 0.03), "+yz", 2.0, 0.5)
+    flow = [(0.0, 60.0), (0.003, 0.0)]
+    doc.fan3d("Fan 1", (0.19, 0.0213, 0.0117), (0.01, 0.04, 0.04), "+yz", 0.012, flow)
+    doc.fan3d("Fan 2", (0.19, 0.0887, 0.0117), (0.01, 0.04, 0.04), "+yz", 0.012, flow)
+    src = tmp_path / "enc.ecxml"
+    src.write_bytes(doc.xml())
+    built, _ = ecxml_to_step(src, tmp_path / "enc.step")
+    interp = GeometryInterpretation(
+        interpretation_id="i", owner_id="o", geometry_source_id="s", unit=LengthUnit.millimetre,
+        scale_to_metres=1e-3, basis=ResolutionBasis.file_declared, evidence="ecxml")
+    solids = read_assembly_solids(tmp_path / "enc.step", tmp_path / "asm",
+                                  prepared=from_occ_transfer(interp, LengthUnit.millimetre))
+    assert sorted(str(s.get("name")) for s in solids) == ["Housing", "air"]
+
+
 # ------------------------------------------------------------------------------ the rules ----
 def _build(doc: Ecxml):
     from meshpipeline.cad.ingest.ecxml_build import build

@@ -35,13 +35,13 @@ def _plan(side: dict, *, budget: int = 6_000_000):
                    timeout_s=3000.0), base
 
 
-def test_a_layer_too_thin_for_its_level_is_raised_to_two_cells_across(package):
+def test_a_layer_too_thin_for_its_level_is_raised_to_three_cells_across(package):
     p, base = _plan(package)
     assert not p.refusal
-    # a 14.7 mm model starts from 0.37 mm cells: 2 across 25 um need level 5 (11.5 um)
-    assert p.levels["Die_attach"] == [5, 5]
-    assert base / 2 ** 5 <= 12.5e-6 < base / 2 ** 4
-    assert any(r.startswith("Die_attach: surface level 2 -> 5") and "25 um thick" in r
+    # a 14.7 mm model starts from 0.37 mm cells: 3 across 25 um need level 6 (5.7 um)
+    assert p.levels["Die_attach"] == [6, 6]
+    assert base / 2 ** 6 <= 25e-6 / 3 < base / 2 ** 5
+    assert any(r.startswith("Die_attach: surface level 2 -> 6") and "25 um thick" in r
                for r in p.raised)
     assert p.levels["air"] == [2, 2]              # the air follows the solids around it
 
@@ -51,7 +51,7 @@ def test_a_model_whose_layers_need_more_than_the_budget_is_refused_naming_option
     assert "Die_attach is 25 um thick" in p.refusal
     assert "Option B" in p.refusal and "0.1 M-cell budget" in p.refusal
     # 5 um of air under a capacitor: the smaller of the two faces must reach level 8 (1.4 um
-    # cells) - millions of cells on its own, so no budget this engine has can keep it open
+    # cells) - millions of cells on its own, more than this engine can afford
     q, base = _plan(_sidecar(wirebond_package(cap_gap_m=5e-6)))
     assert q.levels["Cap"][0] == TF.level_for(5e-6, base) == 8
     assert "the 5 um of air between Cap and Substrate" in q.refusal
@@ -121,8 +121,8 @@ def test_check_mesh_fails_a_thermal_mesh_that_is_not_the_files_model(tmp_path, m
         q = R.check_mesh(ws)
         assert q["mesh_ok"] is (not bad)
         if bad:
-            assert q["fatal"][0].startswith("thermal model: Die_attach comes out +79.6% in volume")
-            assert "Option B" in q["fatal"][-1]
+            assert "Option B" in q["fatal"][0]
+            assert q["fatal"][1].startswith("thermal model: Die_attach comes out +79.6% in volume")
 
 
 def test_checkmesh_total_volume_is_read_without_the_sentences_full_stop():

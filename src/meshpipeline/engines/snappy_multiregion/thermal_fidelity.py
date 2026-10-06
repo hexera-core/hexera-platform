@@ -8,8 +8,8 @@ stack with 1-5 um gaps ran 53 minutes and gave no mesh. Every check passed. Two 
 both general to any thermal model (the ECXML sidecar, staged beside the case as
 thermal_model.json), never to one file:
 
-- `plan`, before meshing: the surface level each region needs for CELLS_ACROSS cells across its
-  thinnest layer and across the air in its narrow gaps, and what that costs. Levels below the
+- `plan`, before meshing: the surface level each region needs for PLAN_CELLS_ACROSS cells across
+  its thinnest layer and across the air in its narrow gaps, and what that costs. Levels below the
   need are raised; a model whose need does not fit the cell budget and the run's time is refused
   with the reason, naming the snap-grid conversion (Option B) as the way on.
 - `failures`, after meshing: every region of the file present, each region's volume the file's,
@@ -28,8 +28,13 @@ from pathlib import Path
 THERMAL_MODEL = "thermal_model.json"
 #: What configure_mesh planned for it (levels raised, predicted cells), for the run's record.
 THERMAL_PLAN = ".thermal_plan.json"
-#: A layer - a solid's thinnest side, or the air in a gap - needs at least this many cells across.
+#: A layer - a solid's thinnest side, or the air in a gap - needs at least this many cells across,
+#: or the mesh is not delivered.
 CELLS_ACROSS = 2
+#: What the plan aims for: a margin over that floor. A 1.5 mm vented housing wall at ~2.6 cells
+#: across lost its zone to unzoned 'domainN' regions on the lab (ECXML-TEST, enclosure_fans);
+#: walls at 3.2 cells and more (the set-top box's 2.5 mm case) came out whole.
+PLAN_CELLS_ACROSS = 3
 #: A region's meshed volume may differ from the file's by this fraction. Resolved lab meshes of
 #: ECXML models come within 0.44% (a cylinder; box parts within 0.01%, 2026-10-06); the wrong
 #: meshes ECXML-TEST found were +8.4% and +79.6%.
@@ -104,8 +109,8 @@ def _by_centroid(solid: dict, rows: list[dict]) -> str | None:
 
 
 def level_for(thickness: float, base_cell: float) -> int:
-    """The surface level whose cells put CELLS_ACROSS across `thickness`."""
-    return max(0, math.ceil(math.log2(CELLS_ACROSS * base_cell / thickness) - 1e-9))
+    """The surface level whose cells put PLAN_CELLS_ACROSS across `thickness`."""
+    return max(0, math.ceil(math.log2(PLAN_CELLS_ACROSS * base_cell / thickness) - 1e-9))
 
 
 @dataclass
@@ -165,7 +170,7 @@ def plan(sidecar: dict, mapping: dict[str, list[str]], kinds: dict[str, str], ba
         lvl = need.get(d, (0, ""))[0]
         if lvl > lo:
             raised.append(f"{d}: surface level {lo} -> {lvl}, because {need[d][1]} and "
-                          f"{CELLS_ACROSS} cells across it need cells of "
+                          f"{PLAN_CELLS_ACROSS} cells across it need cells of "
                           f"{_um(base_cell / 2 ** lvl)} or less")
             lo, hi = lvl, max(hi, lvl)
         levels[d] = [lo, hi]
@@ -189,13 +194,14 @@ def plan(sidecar: dict, mapping: dict[str, list[str]], kinds: dict[str, str], ba
         why = need[worst][1] if worst in need else f"{worst}'s surface is large"
         cap = (f"the {_cells(budget_cells)}-cell budget" if budget_cells <= by_time else
                f"the {_cells(by_time)} cells meshable in {TIME_SHARE * timeout_s / 60:.0f} minutes")
+        # the verdict and the way on first: a caller that shortens the message keeps both
         out.refusal = (
-            f"this thermal model cannot be meshed faithfully by snappy within its limits: {why}; "
-            f"{CELLS_ACROSS} cells across it need cells of {_um(base_cell / 2 ** levels[worst][0])} "
-            f"(surface level {levels[worst][0]}) - about {_cells(per[worst])} cells for {worst} "
-            f"alone, at least {_cells(cells)} in all (about {seconds / 60:.0f} minutes), over "
-            f"{cap}. With fewer cells the layer comes out lost or thickened, or parts touch where "
-            f"the file has air; {OPTION_B}")
+            f"snappy cannot mesh this thermal model faithfully within its limits - {OPTION_B}. "
+            f"Why: {why}; {PLAN_CELLS_ACROSS} cells across it need cells of "
+            f"{_um(base_cell / 2 ** levels[worst][0])} (surface level {levels[worst][0]}): about "
+            f"{_cells(per[worst])} cells for {worst} alone, at least {_cells(cells)} in all (about "
+            f"{seconds / 60:.0f} minutes), over {cap}. With fewer cells the layer comes out lost or "
+            "thickened, or parts touch where the file has air")
     return out
 
 
