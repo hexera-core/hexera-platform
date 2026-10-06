@@ -551,17 +551,12 @@ def _domain(domain: Domain | None, objs: list[Obj], snapped) -> tuple[_Box | Non
 def _enclosure(o: Obj, box: _Box) -> _Part:
     t = float(o.props["wall_thickness_m"])
     outer = _occ_box(box)
-    size = [box.hi[i] - box.lo[i] for i in range(3)]
     part = _Part(name="", kind="enclosure", objects=[o], box=box, shape=outer, order=o.order,
                  material=o.material or None, power=o.power or 0.0, wall=True)
-    if all(s > 2 * t + SNAP_M for s in size):
+    part.walls = _enclosure_walls(box, t)
+    if part.walls:
         inner = _Box([box.lo[i] + t for i in range(3)], [box.hi[i] - t for i in range(3)])
         part.shape = _boolean("cut", [outer], [_occ_box(inner)])
-        for axis in range(3):
-            for lo, hi in ((box.lo[axis], box.lo[axis] + t), (box.hi[axis] - t, box.hi[axis])):
-                slab_lo, slab_hi = list(box.lo), list(box.hi)
-                slab_lo[axis], slab_hi[axis] = lo, hi
-                part.walls.append((axis, lo, hi, _Box(slab_lo, slab_hi)))
         part.notes.append(f"enclosure: walls {t * 1000:g} mm thick")
     else:
         part.notes.append(f"enclosure: its walls ({t * 1000:g} mm) meet in the middle, so it is "
@@ -688,34 +683,51 @@ def _heatsink(group: list[Obj], material: str, snapped) -> _Part:
     return part
 
 
-def _device_prism(o: Obj, box: _Box, axis: int, lo: float, hi: float, slab: _Box,
-                  tol: float):
-    """The prism a device cuts through a wall slab normal to `axis`, or None when the device
-    does not lie in that wall. The cutter reaches well past both faces of the wall: only this
-    wall is cut, and a cutter face a hair off a wall face would be merged into it by tolerance."""
+def _device_cut(o: Obj, box: _Box, axis: int, lo: float, hi: float, slab: _Box,
+                tol: float) -> _Box | None:
+    """The box of the hole a device cuts through a wall slab normal to `axis` (round for an
+    axial fan, inscribed in this box), or None when the device does not lie in that wall. The
+    cutter reaches well past both faces of the wall: only this wall is cut, and a cutter face a
+    hair off a wall face would be merged into it by tolerance."""
     reach = max(hi - lo, CUT_REACH_M)
-    if o.kind == "axial3dFan":
-        if axis_of_plane(o.plane) != axis:
-            return None
-        if not (box.lo[axis] < hi - tol and box.hi[axis] > lo + tol):
-            return None
-        cut = _Box([box.lo[i] if i != axis else lo - reach for i in range(3)],
-                   [box.hi[i] if i != axis else hi + reach for i in range(3)])
-        return _occ_cylinder(cut, axis) if cut.overlaps(slab, 0.0) else None
     if axis_of_plane(o.plane) != axis:
         return None
-    # the device's plane is at its location; a grille written with its thickness may also put
-    # its other face in the wall (a sane thickness - never a stray huge normal size)
-    span = min(box.hi[i] - box.lo[i] for i in range(3) if i != axis)
-    planes = [box.lo[axis]] + ([box.hi[axis]] if box.hi[axis] - box.lo[axis] <= span else [])
-    if not any(lo - tol <= at <= hi + tol for at in planes):
+    if o.kind == "axial3dFan":
+        if not (box.lo[axis] < hi - tol and box.hi[axis] > lo + tol):
+            return None
+    else:
+        # the device's plane is at its location; a grille written with its thickness may also
+        # put its other face in the wall (a sane thickness - never a stray huge normal size)
+        span = min(box.hi[i] - box.lo[i] for i in range(3) if i != axis)
+        planes = [box.lo[axis]] + ([box.hi[axis]] if box.hi[axis] - box.lo[axis] <= span else [])
+        if not any(lo - tol <= at <= hi + tol for at in planes):
+            return None
+    cut = _Box([box.lo[i] if i != axis else lo - reach for i in range(3)],
+               [box.hi[i] if i != axis else hi + reach for i in range(3)])
+    return cut if cut.overlaps(slab, 0.0) else None
+
+
+def _device_prism(o: Obj, box: _Box, axis: int, lo: float, hi: float, slab: _Box,
+                  tol: float):
+    """The solid a device cuts out of a wall slab (see _device_cut), or None."""
+    cut = _device_cut(o, box, axis, lo, hi, slab, tol)
+    if cut is None:
         return None
-    cut_lo, cut_hi = list(box.lo), list(box.hi)
-    cut_lo[axis], cut_hi[axis] = lo - reach, hi + reach
-    cut = _Box(cut_lo, cut_hi)
-    if not cut.overlaps(slab, 0.0):
-        return None
-    return _occ_box(cut)
+    return _occ_cylinder(cut, axis) if o.kind == "axial3dFan" else _occ_box(cut)
+
+
+def _enclosure_walls(box: _Box, t: float) -> list[tuple[int, float, float, _Box]]:
+    """An enclosure's six wall slabs (axis, inner bound, outer bound, slab box); none when its
+    walls meet in the middle."""
+    if not all(box.hi[i] - box.lo[i] > 2 * t + SNAP_M for i in range(3)):
+        return []
+    walls = []
+    for axis in range(3):
+        for lo, hi in ((box.lo[axis], box.lo[axis] + t), (box.hi[axis] - t, box.hi[axis])):
+            slab_lo, slab_hi = list(box.lo), list(box.hi)
+            slab_lo[axis], slab_hi[axis] = lo, hi
+            walls.append((axis, lo, hi, _Box(slab_lo, slab_hi)))
+    return walls
 
 
 def _open_walls(parts: list[_Part], devices: list[tuple[Obj, _Box]], producer: str,
@@ -868,9 +880,11 @@ def plan_region_names(model: EcxmlModel) -> tuple[str, ...]:
     """The region names build() gives this model, worked out without building any geometry - for
     the intake, which asks while a person waits and must not wait for booleans. The same parts, in
     the same order, through the same namer; a part is left out where build() leaves it out by its
-    box: outside the domain, or inside the box of a solid block that takes precedence. Only the
-    geometry can settle two rarer cases, where the lists may differ: a part hidden by several
-    parts together (or inside a cylinder), and a sealed enclosure's own air ("air_2")."""
+    box: outside the domain, or inside the box of a solid block that takes precedence. The air is
+    left out when a solid fills the domain, and a sealed enclosure (no vent or fan in its walls)
+    with air outside it adds its own ("air_2"). Only the geometry settles the rarer cases, where
+    the lists may differ: a part hidden by several parts together or inside a cylinder, a sealed
+    space that solids fill, or an enclosure the domain cuts."""
     objs = model.active_objects
     snapped = _snap_function(model, objs)
     domain_box, _source = _domain(model.domain, objs, snapped)
@@ -893,7 +907,8 @@ def plan_region_names(model: EcxmlModel) -> tuple[str, ...]:
                             "full_box": True})
         elif o.kind in ("solidCylinder", "enclosure"):
             planned.append({"raw": o.name, "kind": o.kind, "box": box, "order": o.order,
-                            "full_box": False})
+                            "full_box": False,
+                            "wall_thickness": o.props.get("wall_thickness_m", 0.0)})
         elif o.kind == "solid2dBlock" and not _on_domain_face(o, box, domain_box, tol):
             axis = axis_of_plane(o.plane)
             thickness = box.hi[axis] - box.lo[axis]
@@ -925,15 +940,34 @@ def plan_region_names(model: EcxmlModel) -> tuple[str, ...]:
         if p["kind"] == "heatsink":
             per_heatsink[p["heatsink"]] = per_heatsink.get(p["heatsink"], 0) + 1
     namer = _unique_namer()
-    names = [namer(FLUID_NAME)]
+    air = namer(FLUID_NAME)
+    parts = []
     for p in kept:
         if p["kind"] == "heatsink":
             raw = p["heatsink"] if per_heatsink[p["heatsink"]] == 1 else \
                 f"{p['heatsink']}_{p.get('material') or 'part'}"
         else:
             raw = p["raw"]
-        names.append(namer(raw))
-    return tuple(names)
+        parts.append(namer(raw))
+    # the air: none where a solid fills the whole domain; one more space inside each sealed
+    # enclosure that also has air outside it
+    if any(p["full_box"] and domain_box.inside(p["box"]) for p in kept):
+        return tuple(parts)
+    devices = [(o, snapped(o)) for o in objs
+               if o.kind in ("grille", "rectangular2dFan", "axial3dFan")
+               and o.location is not None and o.size is not None]
+    sealed = 0
+    for p in kept:
+        if p["kind"] != "enclosure" or not p["box"].inside(domain_box):
+            continue
+        walls = _enclosure_walls(p["box"], float(p["wall_thickness"]))
+        if not walls or domain_box.inside(p["box"]):
+            continue                      # solid throughout, or no air outside it
+        if not any(_device_cut(o, box, axis, lo, hi, slab, tol) is not None
+                   for o, box in devices for axis, lo, hi, slab in walls):
+            sealed += 1
+    extra = [namer(f"{FLUID_NAME}_{i + 2}") for i in range(sealed)]
+    return (air, *extra, *parts)
 
 
 # ------------------------------------------------------------------------------ STEP --------

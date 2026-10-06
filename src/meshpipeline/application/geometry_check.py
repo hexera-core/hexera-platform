@@ -470,8 +470,16 @@ def declared_openings(facts: dict, thermal: dict) -> None:
                     role = p.get("suggested_type") if p["role"] == "fan" else vent_role
                     openings.append(_declared_opening(p, face, role, scale, mesh_safe))
             elif side is not None and not (side_area > 0 and walls >= _WALLED * side_area):
-                opening = _declared_opening(side, face, vent_role, scale, mesh_safe)
+                plates = [p for p in on_face if p["role"] in ("wall", "heat_flux")]
+                open_part = _open_part(side, plates) if plates else side
+                if open_part is None:
+                    walled.append(face)
+                    continue
+                opening = _declared_opening(open_part, face, vent_role, scale, mesh_safe)
                 opening["confidence"] = 0.6       # open air: which way it flows is the user's
+                if plates:
+                    opening["notes"] = [f"the open part of the side: {', '.join(p['name'] for p in plates[:6])} "
+                                        "close(s) the rest"]
                 openings.append(opening)
             else:
                 walled.append(face)
@@ -482,6 +490,43 @@ def declared_openings(facts: dict, thermal: dict) -> None:
         facts.setdefault("notes", []).append(
             "the thermal model closes the domain's " + ", ".join(walled)
             + " side(s) with walls, so they are not offered as openings")
+
+
+def _open_part(side: dict, plates: list[dict]) -> dict | None:
+    """What is left open of a domain side its plates partly close: the uncovered area, at its
+    own centroid, inside the smallest rectangle that holds it - or None when nothing is left.
+    Exact for any set of axis-aligned plates (the side is cut on every plate edge)."""
+    def rect(p):
+        c, s = p["centre_m"], p["size_m"]
+        axes = ["xyz".index(a) for a in p["size_axes"]]
+        return [(c[axes[k]] - s[k] / 2, c[axes[k]] + s[k] / 2) for k in range(2)], axes
+
+    (su, sv), axes = rect(side)
+    covers = []
+    for p in plates:
+        (pu, pv), paxes = rect(p)
+        if paxes != axes:
+            continue
+        covers.append(((max(pu[0], su[0]), min(pu[1], su[1])), (max(pv[0], sv[0]), min(pv[1], sv[1]))))
+    us = sorted({su[0], su[1], *(v for c in covers for v in c[0] if su[0] < v < su[1])})
+    vs = sorted({sv[0], sv[1], *(v for c in covers for v in c[1] if sv[0] < v < sv[1])})
+    area, cu, cv = 0.0, 0.0, 0.0
+    box = [float("inf"), float("-inf"), float("inf"), float("-inf")]
+    for u0, u1 in zip(us, us[1:]):
+        for v0, v1 in zip(vs, vs[1:]):
+            mu, mv = (u0 + u1) / 2, (v0 + v1) / 2
+            if any(c[0][0] <= mu <= c[0][1] and c[1][0] <= mv <= c[1][1] for c in covers):
+                continue
+            a = (u1 - u0) * (v1 - v0)
+            area, cu, cv = area + a, cu + a * mu, cv + a * mv
+            box = [min(box[0], u0), max(box[1], u1), min(box[2], v0), max(box[3], v1)]
+    if area <= 1e-6 * (su[1] - su[0]) * (sv[1] - sv[0]):
+        return None
+    centre = list(side["centre_m"])
+    centre[axes[0]], centre[axes[1]] = cu / area, cv / area
+    out = dict(side)
+    out.update(centre_m=centre, size_m=[box[1] - box[0], box[3] - box[2]], open_area_m2=area)
+    return out
 
 
 def _side_area(box: dict, axis: int) -> float:
@@ -502,7 +547,7 @@ def _declared_opening(patch: dict, face: str, role, scale: float, mesh_safe) -> 
     normal[axis] = 1.0 if face[0] == "+" else -1.0         # out of the air, like every opening
     centre = [float(v) * scale for v in patch["centre_m"]]
     w, h = (float(v) * scale for v in patch["size_m"])
-    area = w * h
+    area = float(patch["open_area_m2"]) * scale * scale if "open_area_m2" in patch else w * h
     return {"id": 0, "face": None, "name": mesh_safe(patch["name"], fallback=f"side_{face[1]}"),
             "role": role if role in ("inlet", "outlet") else "outlet", "kind": "disc",
             "shape": "rectangle", "confidence": 0.95, "centroid_m": centre,

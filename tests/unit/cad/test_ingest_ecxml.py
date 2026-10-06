@@ -531,7 +531,13 @@ def test_the_intake_hears_the_same_region_names_without_building_anything():
                .block("Hidden", (0.01, 0.01, 0.01), (0.01, 0.01, 0.01), "M")
                .block("Cover", (0.0, 0.0, 0.0), (0.05, 0.05, 0.05), "M")
                .block("Away", (0.3, 0.3, 0.3), (0.01, 0.01, 0.01), "M"))
-    for doc in (set_top_box(), ducted_board(), tiny_board(), overlap):
+    sealed = (Ecxml("sealed").domain((-0.01, -0.01, -0.01), (0.07, 0.07, 0.07))
+              .enclosure("Box", (0, 0, 0), (0.05, 0.05, 0.05), "M", 0.002))
+    vented = (Ecxml("vented").domain((-0.01, -0.01, -0.01), (0.07, 0.07, 0.07))
+              .enclosure("Box", (0, 0, 0), (0.05, 0.05, 0.05), "M", 0.002)
+              .grille("Vent", (0.0, 0.01, 0.01), (0.002, 0.02, 0.02), "+yz", 1.0, 0.5))
+    full = Ecxml("full").domain((0, 0, 0), (0.1, 0.1, 0.1)).block("All", (0, 0, 0), (0.1, 0.1, 0.1), "M")
+    for doc in (set_top_box(), ducted_board(), tiny_board(), overlap, sealed, vented, full):
         model = read_ecxml(doc.xml())
         assert plan_region_names(model) == build(model).region_names
 
@@ -594,3 +600,33 @@ def test_a_fan_in_a_walled_side_is_offered_at_its_own_rectangle():
     assert pusher["centroid_m"] == pytest.approx([0.05, 0.2, 0.025])
     # the bare sides stay open; with the fan blowing out, they are where the air comes in
     assert {o["role"] for o in facts["openings"] if o["name"].startswith("domain_")} == {"inlet"}
+
+
+def test_a_partly_walled_side_offers_only_its_open_part():
+    from meshpipeline.application.geometry_check import declared_openings
+    from meshpipeline.cad.ingest.ecxml_build import build
+
+    doc = Ecxml("half").domain((0, 0, 0), (0.1, 0.2, 0.05))
+    doc.plate("Lower", (0.0, 0.2, 0.0), (0.1, 0.001, 0.03), "+xz", "M")   # 60% of the +y side
+    doc.block("B", (0.02, 0.05, 0.01), (0.02, 0.02, 0.02), "M")
+    facts = {"scale_to_m": 1.0, "notes": [], "openings": []}
+    declared_openings(facts, build(read_ecxml(doc.xml())).sidecar)
+    side = next(o for o in facts["openings"] if o["name"] == "domain_ymax")
+    assert side["area_m2"] == pytest.approx(0.1 * 0.02)
+    assert side["centroid_m"] == pytest.approx([0.05, 0.2, 0.04])
+    assert (side["width_mm"], side["height_mm"]) == pytest.approx((100.0, 20.0))
+
+
+def test_a_rectangular_opening_reaches_the_patches_as_a_rectangle():
+    from types import SimpleNamespace
+
+    from meshpipeline.application.geometry_confirmation import patches_from
+
+    fan = SimpleNamespace(name="Inlet_fan", role="inlet", diameter_mm=74.2, width_mm=120.0,
+                          height_mm=36.0, centroid_mm=[0.0, 120.0, 12.0])
+    round_port = SimpleNamespace(name="out", role="outlet", diameter_mm=50.0, width_mm=None,
+                                 height_mm=None, centroid_mm=None)
+    got = patches_from(SimpleNamespace(flow="internal", openings=[fan, round_port]))
+    assert got[0] == {"name": "Inlet_fan", "type": "inlet", "width_mm": 120.0, "height_mm": 36.0,
+                      "near_mm": [0.0, 120.0, 12.0]}
+    assert got[1] == {"name": "out", "type": "outlet", "diameter_mm": 50.0}
