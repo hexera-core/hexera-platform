@@ -427,6 +427,9 @@ def paint_part(zone: np.ndarray, grid: Grid, p, k: int, tol: float) -> None:
         from meshpipeline.cad.ingest.ecxml import axis_of_plane
         mask &= _ellipse_mask(grid, p.box, axis_of_plane(p.objects[0].plane), sl)
     for kind, cut, axis in p.cutters:
+        cut = _within_walls(p, cut, axis)
+        if cut is None:
+            continue
         hole = _cut_slice(grid, cut, axis, tol, sl)
         if hole is None:
             continue
@@ -439,13 +442,33 @@ def paint_part(zone: np.ndarray, grid: Grid, p, k: int, tol: float) -> None:
     zone[sl][mask] = k
 
 
+def _within_walls(p, cut: _Box, axis: int) -> _Box | None:
+    """A vent's cutter cut back, along the wall's normal, to the walls it opens: it reaches past
+    them on purpose (so no sliver of wall is left), but there is no material beyond them to open,
+    and the grid of a block beside the wall need not hold the vent's outline."""
+    slabs = [s for ax_, _lo, _hi, s in p.walls if ax_ == axis and all(
+        min(s.hi[i], cut.hi[i]) > max(s.lo[i], cut.lo[i]) for i in range(3) if i != axis)]
+    if not slabs:
+        return cut
+    lo = max(cut.lo[axis], min(s.lo[axis] for s in slabs))
+    hi = min(cut.hi[axis], max(s.hi[axis] for s in slabs))
+    if hi <= lo:
+        return None
+    return _Box([cut.lo[i] if i != axis else lo for i in range(3)],
+                [cut.hi[i] if i != axis else hi for i in range(3)])
+
+
 def _cut_slice(grid: Grid, cut: _Box, axis: int, tol: float, within) -> tuple | None:
     """The cells a vent's cutter covers inside a part's slice: exact across the wall (its outline
     lies on grid planes), by cell centre along the wall's normal (the cutter reaches past the wall
     on purpose, to planes the grid does not hold)."""
     idx: list[slice] = [slice(0), slice(0), slice(0)]
-    # along the wall's normal first: a cutter that reaches no cell centre here cuts nothing here
-    # (and its outline need not be planes of this grid)
+    # a cutter that reaches no cell of this grid cuts nothing here (and its outline need not be
+    # planes of this grid): looked at on every axis before any outline is looked up
+    for i in range(3):
+        if i != axis and min(cut.hi[i], float(grid.lines[i][-1])) - \
+                max(cut.lo[i], float(grid.lines[i][0])) <= tol:
+            return None
     for i in (axis, *(c for c in range(3) if c != axis)):
         if i == axis:
             s = _centre_slice(grid, i, cut.lo[i], cut.hi[i])

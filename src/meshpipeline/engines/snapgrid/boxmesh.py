@@ -317,37 +317,60 @@ class _EdgeFinder:
 
 
 def write(case: Path, layout, topo: BoxTopology, *, cell_zone: np.ndarray, zone_names: list[str],
-          chunk_patches: list[np.ndarray], patches: list[Patch], binary: bool = True) -> dict:
-    """Write constant/polyMesh. `cell_zone` holds each cell's zone (global cell order);
-    `chunk_patches[c]` the patch index of each face of topo.chunks[c] (side-array order)."""
+          chunk_patches: list[np.ndarray], patches: list[Patch], binary: bool = True,
+          points: np.ndarray | None = None) -> dict:
+    """Write constant/polyMesh (the whole mesh, one cellZone per region). `cell_zone` holds each
+    cell's zone (global cell order); `chunk_patches[c]` the patch index of each face of
+    topo.chunks[c] (side-array order); `points` the points as moved (curved parts snapped)."""
     mesh = Path(case) / "constant" / "polyMesh"
-    mesh.mkdir(parents=True, exist_ok=True)
     keys = np.unique(np.concatenate([topo.face_pts, topo.b_pts]))
-    ix, iy, iz = _decode(keys, topo.dims)
-    G = layout.global_lines
-    points = np.stack([G[0][ix], G[1][iy], G[2][iz]], axis=1)
-
-    bp = np.concatenate([np.asarray(p, dtype=np.int64).ravel() for p in chunk_patches]) \
-        if chunk_patches else np.zeros(0, dtype=np.int64)
+    if points is None:
+        ix, iy, iz = _decode(keys, topo.dims)
+        G = layout.global_lines
+        points = np.stack([G[0][ix], G[1][iy], G[2][iz]], axis=1)
+    bp = _boundary_patch_ids(topo, chunk_patches)
     order = np.argsort(bp, kind="stable")
     b_owner = topo.b_owner[order]
     b_off, b_pts = _reorder(topo.b_off, topo.b_pts, order)
     bp = bp[order]
     counts = np.bincount(bp, minlength=len(patches))
     n_int = topo.n_internal
-    written = []
+    entries = []
     start = n_int
     for pid, patch in enumerate(patches):
         if counts[pid]:
-            written.append((patch, int(counts[pid]), start))
+            entries.append(_entry(patch.name, patch.type, int(counts[pid]), start))
             start += int(counts[pid])
-    owner = np.concatenate([topo.owner, b_owner])
-    flat = np.concatenate([topo.face_pts, b_pts])
     off = np.concatenate([topo.face_off, topo.face_off[-1] + b_off[1:]])
-    ids = np.searchsorted(keys, flat)
-    n_faces = len(owner)
-    note = (f"nPoints:{len(points)}  nCells:{topo.n_cells}  nFaces:{n_faces}  "
-            f"nInternalFaces:{n_int}")
+    ids = np.searchsorted(keys, np.concatenate([topo.face_pts, b_pts]))
+    _write_mesh(mesh, points, off, ids, np.concatenate([topo.owner, b_owner]), topo.neighbour,
+                entries, topo.n_cells, binary)
+    _write_cell_zones(mesh / "cellZones", cell_zone, zone_names, binary)
+    return {"cells": topo.n_cells, "faces": len(off) - 1, "internal_faces": n_int,
+            "points": len(points), "binary": binary,
+            "hanging_node_faces": topo.hanging_faces, "block_faces": topo.block_faces,
+            "patches": {e["name"]: e["nFaces"] for e in entries},
+            "empty_patches": [p.name for pid, p in enumerate(patches) if not counts[pid]]}
+
+
+def _boundary_patch_ids(topo: BoxTopology, chunk_patches: list[np.ndarray]) -> np.ndarray:
+    if not chunk_patches:
+        return np.zeros(0, dtype=np.int64)
+    return np.concatenate([np.asarray(p, dtype=np.int64).ravel() for p in chunk_patches])
+
+
+def _entry(name: str, ptype: str, n: int, start: int, **extra) -> dict:
+    return {"name": name, "type": ptype, "nFaces": n, "startFace": start, **extra}
+
+
+def _write_mesh(mesh: Path, points: np.ndarray, off: np.ndarray, ids: np.ndarray,
+                owner: np.ndarray, neighbour: np.ndarray, entries: list[dict], n_cells: int,
+                binary: bool) -> None:
+    """One polyMesh directory: points, faces (polygon loops), owner, neighbour, boundary."""
+    mesh.mkdir(parents=True, exist_ok=True)
+    n_faces = len(off) - 1
+    note = (f"nPoints:{len(points)}  nCells:{n_cells}  nFaces:{n_faces}  "
+            f"nInternalFaces:{len(neighbour)}")
     with (mesh / "points").open("wb") as fh:
         fh.write(_header("vectorField", "points", binary=binary).encode())
         if binary:
@@ -377,15 +400,120 @@ def write(case: Path, layout, topo: BoxTopology, *, cell_zone: np.ndarray, zone_
         _write_labels(fh, owner, binary)
     with (mesh / "neighbour").open("wb") as fh:
         fh.write(_header("labelList", "neighbour", binary=binary, note=note).encode())
-        _write_labels(fh, topo.neighbour, binary)
-    from meshpipeline.engines.snapgrid.polymesh import _write_boundary
-    _write_boundary(mesh / "boundary", written)
-    _write_cell_zones(mesh / "cellZones", cell_zone, zone_names, binary)
-    return {"cells": topo.n_cells, "faces": n_faces, "internal_faces": n_int,
-            "points": len(points), "binary": binary,
-            "hanging_node_faces": topo.hanging_faces, "block_faces": topo.block_faces,
-            "patches": {p.name: n for p, n, _s in written},
-            "empty_patches": [p.name for pid, p in enumerate(patches) if not counts[pid]]}
+        _write_labels(fh, neighbour, binary)
+    out = [_header("polyBoundaryMesh", "boundary", binary=False), f"{len(entries)}", "("]
+    for e in entries:
+        out += [f"    {e['name']}", "    {", f"        type            {e['type']};"]
+        if e["type"] in ("wall", "mappedWall"):
+            out.append("        inGroups        List<word> 1(wall);")
+        out += [f"        nFaces          {e['nFaces']};", f"        startFace       {e['startFace']};"]
+        for k, v in e.items():
+            if k not in ("name", "type", "nFaces", "startFace"):
+                out.append(f"        {k:<15} {v};")
+        out.append("    }")
+    out += [")", ""]
+    (mesh / "boundary").write_text("\n".join(out))
 
 
-__all__ = ["BoxTopology", "Chunk", "build", "build_topology", "write"]
+def _loops(off: np.ndarray, flat: np.ndarray, faces: np.ndarray, flip: np.ndarray | None = None
+           ) -> tuple[np.ndarray, np.ndarray]:
+    """The point loops of `faces` (offsets, flat), each reversed where `flip` (first point kept),
+    so a face that points into a region's cell points out of it."""
+    sizes = np.diff(off)[faces]
+    new_off = np.concatenate(([0], np.cumsum(sizes))).astype(np.int64)
+    pos = np.arange(int(new_off[-1])) - np.repeat(new_off[:-1], sizes)       # k within its loop
+    if flip is not None and flip.any():
+        n = np.repeat(sizes, sizes)
+        pos = np.where(np.repeat(flip, sizes), (n - pos) % n, pos)
+    idx = np.repeat(off[:-1][faces], sizes) + pos
+    return new_off, flat[idx]
+
+
+#: The OpenFOAM dialects a mappedWall is written for: ESI (v2412, the mesh image) samples by
+#: region and patch; the Foundation releases (OpenFOAM 11) name the neighbour - and refuse the
+#: ESI keywords, so each is written its own way.
+DIALECTS = ("esi", "foundation")
+
+
+def mapped_entry(other: str, other_patch: str, dialect: str = "esi") -> dict:
+    """What a mappedWall interface patch says about its partner, in the reader's dialect."""
+    if dialect == "foundation":
+        return {"neighbourRegion": other, "neighbourPatch": other_patch, "transformType": "none"}
+    return {"sampleMode": "nearestPatchFace", "sampleRegion": other, "samplePatch": other_patch}
+
+
+def write_regions(case: Path, topo: BoxTopology, points: np.ndarray, *, cell_zone: np.ndarray,
+                  zone_names: list[str], chunk_patches: list[np.ndarray], patches: list[Patch],
+                  binary: bool = True, dialect: str = "esi") -> dict:
+    """Every region's own polyMesh, written straight from the topology (what splitMeshRegions
+    -cellZonesOnly would write, without reading the whole mesh back): constant/<region>/polyMesh
+    with its cells, its internal faces, the patches of the domain sides it touches, and one
+    mappedWall patch <region>_to_<other> per region it touches - the same faces as the other
+    region's <other>_to_<region>, in the same order, pointing the other way. Vectorised: each face
+    is handled once per region it bounds."""
+    keys = np.unique(np.concatenate([topo.face_pts, topo.b_pts]))
+    ids_i = np.searchsorted(keys, topo.face_pts)
+    ids_b = np.searchsorted(keys, topo.b_pts)
+    cz = np.asarray(cell_zone, dtype=np.int64)
+    R = len(zone_names)
+    N = topo.n_cells
+    order_c = np.argsort(cz, kind="stable")
+    cstart = np.searchsorted(cz[order_c], np.arange(R + 1))
+    local = np.empty(N, dtype=np.int64)
+    local[order_c] = np.arange(N) - cstart[cz[order_c]]
+    ro, rn = cz[topo.owner], cz[topo.neighbour]
+    same = np.flatnonzero(ro == rn)
+    same = same[np.argsort(ro[same], kind="stable")]
+    sstart = np.searchsorted(ro[same], np.arange(R + 1))
+    cross = np.flatnonzero(ro != rn)
+    e_r = np.concatenate([ro[cross], rn[cross]])
+    e_s = np.concatenate([rn[cross], ro[cross]])
+    e_f = np.concatenate([cross, cross])
+    e_flip = np.concatenate([np.zeros(len(cross), bool), np.ones(len(cross), bool)])
+    eo = np.lexsort((e_f, e_s, e_r))
+    e_r, e_s, e_f, e_flip = e_r[eo], e_s[eo], e_f[eo], e_flip[eo]
+    estart = np.searchsorted(e_r, np.arange(R + 1))
+    bp = _boundary_patch_ids(topo, chunk_patches)
+    br = cz[topo.b_owner]
+    bo = np.lexsort((np.arange(len(bp)), bp, br))
+    bstart = np.searchsorted(br[bo], np.arange(R + 1))
+    summary = {}
+    for r, name in enumerate(zone_names):
+        fi = same[sstart[r]:sstart[r + 1]]
+        fb = bo[bstart[r]:bstart[r + 1]]
+        fx = slice(estart[r], estart[r + 1])
+        xf, xs, xflip = e_f[fx], e_s[fx], e_flip[fx]
+        o_i, f_i = _loops(topo.face_off, ids_i, fi)
+        o_b, f_b = _loops(topo.b_off, ids_b, fb)
+        o_x, f_x = _loops(topo.face_off, ids_i, xf, xflip)
+        off = np.concatenate([o_i, o_i[-1] + o_b[1:], o_i[-1] + o_b[-1] + o_x[1:]])
+        flat = np.concatenate([f_i, f_b, f_x])
+        used, inv = np.unique(flat, return_inverse=True)
+        owner = np.concatenate([local[topo.owner[fi]], local[topo.b_owner[fb]],
+                                local[np.where(xflip, topo.neighbour[xf], topo.owner[xf])]])
+        neighbour = local[topo.neighbour[fi]]
+        entries = []
+        start = len(fi)
+        pids, pcounts = np.unique(bp[fb], return_counts=True)
+        for pid, n in zip(pids.tolist(), pcounts.tolist()):
+            entries.append(_entry(patches[pid].name, patches[pid].type, n, start))
+            start += n
+        others, ocounts = np.unique(xs, return_counts=True)
+        for s_, n in zip(others.tolist(), ocounts.tolist()):
+            other = zone_names[s_]
+            entries.append(_entry(f"{name}_to_{other}", "mappedWall", n, start,
+                                  **mapped_entry(other, f"{other}_to_{name}", dialect)))
+            start += n
+        n_cells = int(cstart[r + 1] - cstart[r])
+        _write_mesh(Path(case) / "constant" / name / "polyMesh", points[used], off,
+                    inv.astype(np.int64), owner, neighbour, entries, n_cells, binary)
+        summary[name] = {"cells": n_cells, "faces": int(len(off) - 1),
+                         "internal_faces": int(len(fi)), "points": int(len(used)),
+                         "interfaces": {f"{name}_to_{zone_names[s_]}": int(n)
+                                        for s_, n in zip(others.tolist(), ocounts.tolist())},
+                         "patches": {patches[p_].name: int(n)
+                                     for p_, n in zip(pids.tolist(), pcounts.tolist())}}
+    return summary
+
+
+__all__ = ["BoxTopology", "Chunk", "build", "build_topology", "write", "write_regions"]

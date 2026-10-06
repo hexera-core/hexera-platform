@@ -49,8 +49,8 @@ _FRACTIONS = (0.25, 0.375, 0.5, 0.625, 0.75)
 
 @dataclass
 class Block:
-    lo: tuple[int, int, int]                       # global-line index of each lower bound
-    hi: tuple[int, int, int]                       # ... and upper bound
+    lo: tuple[int, ...]                            # global-line index of each lower bound
+    hi: tuple[int, ...]                            # ... and upper bound
     lines: list[np.ndarray] = field(default_factory=list)   # global-line indices kept, per axis
     zone: np.ndarray | None = None                 # (z, y, x) part index per cell (AIR: -1)
 
@@ -124,7 +124,7 @@ def geometry_of(placement: Placement, plan: G.GridPlan) -> Geometry:
         return min((c for c in (j - 1, j) if 0 <= c < len(a)), key=lambda c: abs(a[c] - v))
 
     boxes: list[tuple[_Box, bool, int]] = []        # (box, closed, skip axis)
-    src: list[tuple[_Box, tuple[float, float, float]]] = []
+    src: list[tuple[_Box, tuple[float, ...]]] = []
     for p in placement.parts:
         if p.dropped:
             continue
@@ -350,7 +350,8 @@ def decompose(geo: Geometry, plan: G.GridPlan, H: float, *, leaf_cells: int = LE
     SPLIT_GAIN of its cells - an octree of tensor blocks, small where the detail is."""
     glines, k2g = _global(geo, plan, H)
     L = _Lines(geo, plan, H, glines, k2g)
-    root = ((0, 0, 0), tuple(len(glines[i]) - 1 for i in range(3)))
+    root: tuple[tuple[int, ...], tuple[int, ...]] = (
+        (0, 0, 0), tuple(len(glines[i]) - 1 for i in range(3)))
     leaves: list[Block] = []
     stack = [(root[0], root[1], L.block(root[0], root[1]), 0)]
     while stack:

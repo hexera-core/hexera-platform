@@ -177,12 +177,17 @@ def test_region_names_are_the_fused_paths_names(tmp_path):
     assert tuple(result.region_names) == plan_region_names(read_ecxml(doc.xml()))
 
 
-def test_a_cylinder_and_a_round_fan_hole_are_staircased_and_say_by_how_much(tmp_path):
+def test_a_cylinder_and_a_round_fan_hole_are_snapped_onto_their_true_surface(tmp_path):
     result = _mesh(tmp_path, set_top_box(), max_cells=600_000)
-    stair = {s["part"]: s for s in result.report["staircased"]}
-    assert "Bulk_cap" in stair and abs(stair["Bulk_cap"]["error_pct"]) < 3.0
-    assert "Case" in stair            # the fan's round hole in its back wall
-    assert any(line.startswith("Staircased: Bulk_cap") for line in result.report["build_report"])
+    curved = {s["part"]: s for s in result.report["staircased"]}
+    cap, case = curved["Bulk_cap"], curved["Case"]      # Case: the fan's round hole in its wall
+    # a staircase has 4/pi (+27%) of a cylinder's side; snapped, the side is the file's
+    assert abs(cap["side_area_error_pct"]) < 10.0 and abs(cap["volume_error_pct"]) < 3.0
+    assert case["kind"] == "round hole" and abs(case["side_area_error_pct"]) < 10.0
+    assert any(line.startswith("Curved: Bulk_cap") for line in result.report["build_report"])
+    # every box part is still exactly the file's, snapped points or not
+    pcb = _region(result, "PCB")
+    assert math.isclose(pcb["volume_m3"], 0.09 * 0.07 * 0.0016, rel_tol=1e-9)
 
 
 def test_a_50um_interface_and_a_25um_die_attach_keep_their_cells(tmp_path):

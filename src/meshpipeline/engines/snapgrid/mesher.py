@@ -54,6 +54,7 @@ from meshpipeline.cad.ingest.ecxml_place import (
 )
 from meshpipeline.engines.snapgrid import blocks as B
 from meshpipeline.engines.snapgrid import boxmesh
+from meshpipeline.engines.snapgrid import curved as C
 from meshpipeline.engines.snapgrid import grid as G
 from meshpipeline.engines.snapgrid.polymesh import SIDES, Patch
 
@@ -101,6 +102,15 @@ def write_case_skeleton(case: Path) -> None:
     (system / "fvSolution").write_text(_foam_dict("dictionary", "fvSolution", "solvers {}\n"))
 
 
+def _write_region_system(case: Path, region: str) -> None:
+    """system/<region>/fvSchemes and fvSolution: what an OpenFOAM utility opens beside a region's
+    mesh (splitMeshRegions writes the same placeholders)."""
+    d = case / "system" / region
+    d.mkdir(parents=True, exist_ok=True)
+    for name in ("fvSchemes", "fvSolution"):
+        (d / name).write_text((case / "system" / name).read_text())
+
+
 def render_region_properties(fluids: list[str], solids: list[str]) -> str:
     return _foam_dict("dictionary", "regionProperties", (
         "regions\n(\n"
@@ -111,7 +121,7 @@ def render_region_properties(fluids: list[str], solids: list[str]) -> str:
 
 # ------------------------------------------------------------------------------ the mesh ------
 def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None = None,
-               dry_run: bool = False, local: bool = True) -> SnapgridMesh:
+               dry_run: bool = False, local: bool = True, dialect: str = "esi") -> SnapgridMesh:
     """Read `src` (ECXML), mesh it on a snap grid refined locally (blocks) and write the
     single-region polyMesh with a cellZone per region, constant/regionProperties, the report and
     the physics sidecar into the OpenFOAM case `case`. `dry_run` stops after the grid is sized
@@ -140,7 +150,7 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
         return SnapgridMesh(case=case, report=report, sidecar={})
 
     B.paint_blocks(placement, layout)
-    zone = np.concatenate([blk.zone.ravel() for blk in layout.blocks])
+    zone = np.concatenate([_zone_of(blk).ravel() for blk in layout.blocks])
     vols = np.concatenate([_block_volumes(layout, blk).ravel() for blk in layout.blocks])
     t["painted"] = time.perf_counter()
     topo = boxmesh.build_topology(layout)
@@ -148,10 +158,6 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
     airs, n_air = _air_spaces(layout, topo, vols)
     P = len(placement.parts)
     part_cells = np.bincount(zone + 1, minlength=P + 1)[1:]
-    part_vol = np.bincount(zone + 1, weights=vols, minlength=P + 1)[1:]
-    air_vol = np.bincount(airs + 1, weights=vols, minlength=n_air + 1)[1:]
-    air_cells = np.bincount(airs + 1, minlength=n_air + 1)[1:]
-    t["measured"] = time.perf_counter()
 
     notes = placement.notes
     records = placement.records
@@ -160,6 +166,28 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
     names = _name_regions(placement, live, n_air)
     part_region = {k: names["parts"][k] for k in live}
     air_names = names["air"]
+
+    # curved parts: the staircase pulled onto the file's ellipse (boxes stay exact)
+    keys = np.unique(np.concatenate([topo.face_pts, topo.b_pts]))
+    points = _points_of(layout, topo, keys)
+    curves = C.curves_of(placement, live, part_region)
+    snapped = C.Snapped()
+    if curves:
+        solid_box = np.array([p.kind != "solidCylinder" for p in placement.parts], dtype=bool)
+        snapped = C.snap(curves, points, keys, topo, zone, solid_box, _wall_keys(topo))
+        if len(snapped.keys):
+            points[np.searchsorted(keys, snapped.keys)] = snapped.xyz
+            ids_i = np.searchsorted(keys, topo.face_pts)
+            ids_b = np.searchsorted(keys, topo.b_pts)
+            a_i, c_i = C.face_geometry(points, topo.face_off, ids_i)
+            a_b, c_b = C.face_geometry(points, topo.b_off, ids_b)
+            vols = C.cell_volumes(topo.n_cells, topo.owner, topo.neighbour, a_i, c_i,
+                                  topo.b_owner, a_b, c_b)
+    curved_rows = C.report(curves, points, keys, topo, zone, part_region) if curves else []
+    t["snapped"] = time.perf_counter()
+    part_vol = np.bincount(zone + 1, weights=vols, minlength=P + 1)[1:]
+    air_vol = np.bincount(airs + 1, weights=vols, minlength=n_air + 1)[1:]
+    air_cells = np.bincount(airs + 1, minlength=n_air + 1)[1:]
     fluid_rows = []
     for a in range(n_air):
         fluid_rows.append({"name": air_names[a], "type": "fluid", "kind": "air",
@@ -195,6 +223,7 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
 
     checks, contacts, staircase = _fidelity(placement, topo, zone, part_vol, live, part_region,
                                             regions, vols)
+    staircase = _curved_rows(staircase, curved_rows, snapped)
     thin = _thin_layers(placement, layout, live, part_region)
     interfaces = _interfaces(topo, cell_zone, zone_names, n_air)
     patches, chunk_ids, patch_rows = _boundary(placement, layout, topo, zone_names)
@@ -202,9 +231,17 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
 
     case.mkdir(parents=True, exist_ok=True)
     write_case_skeleton(case)
+    as_binary = binary if binary is not None else topo.n_cells > 20_000
     written = boxmesh.write(case, layout, topo, cell_zone=cell_zone, zone_names=zone_names,
-                            chunk_patches=chunk_ids, patches=patches,
-                            binary=binary if binary is not None else topo.n_cells > 20_000)
+                            chunk_patches=chunk_ids, patches=patches, binary=as_binary,
+                            points=points)
+    # every region's own mesh, written straight from the topology - no splitMeshRegions
+    region_meshes = boxmesh.write_regions(case, topo, points, cell_zone=cell_zone,
+                                          zone_names=zone_names, chunk_patches=chunk_ids,
+                                          patches=patches, binary=as_binary,
+                                          dialect=dialect)
+    for rname in zone_names:
+        _write_region_system(case, rname)
     fluids = list(air_names)
     solids = [part_region[k] for k in live]
     (case / "constant" / "regionProperties").write_text(render_region_properties(fluids, solids))
@@ -237,6 +274,7 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
         "solid_contacts": sorted(sorted(c) for c in contacts),
         "polymesh": {k: written[k] for k in ("cells", "faces", "internal_faces", "points",
                                              "binary", "hanging_node_faces", "block_faces")},
+        "region_meshes": region_meshes,
         "build_report": build_report, "notes": notes,
         "physics": physics_summary(sidecar),
     })
@@ -245,6 +283,54 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
     return SnapgridMesh(case=case, report=report, sidecar=sidecar,
                         regions=[{"name": r["name"], "type": r["type"], "cells": r["cells"]}
                                  for r in regions])
+
+
+def _points_of(layout: B.Layout, topo: boxmesh.BoxTopology, keys: np.ndarray) -> np.ndarray:
+    ix, iy, iz = boxmesh._decode(keys, topo.dims)
+    g = layout.global_lines
+    return np.stack([g[0][ix], g[1][iy], g[2][iz]], axis=1)
+
+
+def _wall_keys(topo: boxmesh.BoxTopology) -> np.ndarray:
+    """The points on a wall between two blocks: every point of a face whose two cells are in
+    different blocks (the hanging nodes of the coarser side among them)."""
+    bo = np.searchsorted(topo.offsets, topo.owner, side="right")
+    bn = np.searchsorted(topo.offsets, topo.neighbour, side="right")
+    faces = np.flatnonzero(bo != bn)
+    if not len(faces):
+        return np.zeros(0, dtype=np.int64)
+    sizes = np.diff(topo.face_off)[faces]
+    idx = np.repeat(topo.face_off[:-1][faces], sizes) + \
+        (np.arange(int(sizes.sum())) - np.repeat(np.cumsum(sizes) - sizes, sizes))
+    return np.unique(topo.face_pts[idx])
+
+
+def _curved_rows(staircase: list[dict], curved: list[dict], snapped: C.Snapped) -> list[dict]:
+    """The curved parts, as snapped: volume, side area and contacts against the file's."""
+    by = {r["part"]: r for r in curved if r["kind"] == "cylinder"}
+    out = []
+    for s_ in staircase:
+        row = dict(s_)
+        c = by.get(s_["part"])
+        if c is not None:
+            row["error_pct"] = c["volume_error_pct"]
+            row["mesh_volume_m3"] = c["mesh_volume_m3"]
+        out.append(row)
+    for c in curved:
+        found = next((r for r in out if r["part"] == c["part"]), None)
+        row = found if found is not None else {"part": c["part"]}
+        if found is None:
+            out.append(row)
+        row.update({k: v for k, v in c.items() if k != "part"})
+        row["points_snapped"] = int(len(snapped.keys))
+        row["moves_undone"] = snapped.undone
+    return out
+
+
+def _zone_of(blk: B.Block) -> np.ndarray:
+    if blk.zone is None:
+        raise FidelityError("internal: a block was never painted")
+    return blk.zone
 
 
 def _block_volumes(layout: B.Layout, blk: B.Block) -> np.ndarray:
@@ -635,8 +721,14 @@ def _report_lines(placement: Placement, layout: B.Layout, st: dict, thin: list[d
                          f"{r['part']} ({_um(r['thickness_m'])}, {r['cells_across']})"
                          for r in short[:8]) + ("..." if len(short) > 8 else "") + ".")
     for s_ in staircase:
-        lines.append(f"Staircased: {s_['part']} is built from cubes on the grid; its volume is "
-                     f"{s_['error_pct']:+.2g}% of the file's.")
+        if "side_area_error_pct" in s_:
+            what = "round hole in" if s_.get("kind") == "round hole" else "cylinder"
+            vol = (f"volume {s_['error_pct']:+.2g}%, " if "error_pct" in s_ else "")
+            lines.append(f"Curved: {s_['part']} ({what}) snapped onto the file's surface: "
+                         f"{vol}side area {s_['side_area_error_pct']:+.2g}% of the file's.")
+        else:
+            lines.append(f"Staircased: {s_['part']} is built from cubes on the grid; its volume "
+                         f"is {s_['error_pct']:+.2g}% of the file's.")
     if records["inactive"]:
         names = ", ".join(r["name"] for r in records["inactive"][:8])
         more = f" and {len(records['inactive']) - 8} more" if len(records["inactive"]) > 8 else ""
