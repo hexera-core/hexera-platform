@@ -18,7 +18,8 @@ def test_the_wall_spends_the_budget():
 
 
 def test_never_coarser_than_the_old_default_and_safe_without_facts():
-    assert R.external_wall_cell(1e-6, 2_000_000, 2, 1.0) == pytest.approx(1e-6 * 0 + (1e-6 * 6 / 1e6) ** 0.5)
+    tiny = (1e-6 * (R.EXTERNAL_SHELL_DEPTH + 2) / (R.EXTERNAL_WALL_BUDGET_SHARE * 2_000_000)) ** 0.5
+    assert R.external_wall_cell(1e-6, 2_000_000, 2, 1.0) == pytest.approx(tiny)
     assert R.external_wall_cell(1e6, 100, 2, 1.0) == pytest.approx(1.0 / 20.0)
     assert R.external_wall_cell(0.0, 2_000_000, 2, 1.0) == pytest.approx(1.0 / 20.0)
     assert R.external_wall_cell(1.6, 0, 2, 1.0) == pytest.approx(1.0 / 20.0)
