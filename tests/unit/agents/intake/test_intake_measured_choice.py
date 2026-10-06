@@ -219,3 +219,33 @@ def test_a_comparison_the_user_asked_for_carries_the_measured_ranking():
     rows = json.loads(res.content)["measured_ranking"]
     assert [r["engine"] for r in rows] == ["snappyHexMesh", "Gmsh", "cfMesh"]
     assert rows[0]["recommended"] and rows[0]["reason"].startswith("passed 5 of 5")
+
+
+# ------------------------------------------------------------- the staged upload ----
+def test_the_staged_upload_is_measured_and_ranked_for_the_confirmed_flow(tmp_path, monkeypatch):
+    # the real path a turn takes: the file staged beside the session, measured, and every engine
+    # that can take it ranked from the committed table
+    pytest.importorskip("OCP")
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+    from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
+
+    import meshpipeline.settings.runtime as rtcfg
+    monkeypatch.setattr(rtcfg, "JOBS_DIR", str(tmp_path))
+    (tmp_path / "sess").mkdir()
+    w = STEPControl_Writer()
+    w.Transfer(BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(1, 0, 0)), 10.0, 200.0).Shape(),
+               STEPControl_AsIs)
+    w.Write(str(tmp_path / "sess" / "pipe.step"))
+    state = {"session_id": "sess", "purpose": "internal_cfd", "input_kind": "fluid-domain",
+             "intake_patches": [{"name": "inlet", "type": "inlet", "diameter_mm": 20.0},
+                                {"name": "outlet", "type": "outlet", "diameter_mm": 20.0},
+                                {"name": "wall", "type": "wall"}]}
+    rec = asyncio.run(intake._measured_recommendation(state, []))
+    assert rec is not None and rec.engine in rec.ranking
+    assert rec.shape == "a long passage about as wide as its openings"
+    assert set(rec.ranking) <= {"cfmesh", "snappy", "gmsh", "vmtk"}
+    assert all(f.reason for f in rec.fits)
+    # a settled engine, or no flow yet, is never measured
+    assert asyncio.run(intake._measured_recommendation({**state, "engine": "snappy"}, [])) is None
+    assert asyncio.run(intake._measured_recommendation({**state, "purpose": ""}, [])) is None

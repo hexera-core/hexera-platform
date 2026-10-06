@@ -124,7 +124,8 @@ def _case_facts(case: dict, result: dict, traits: dict) -> dict[str, str]:
     annulus = any(isinstance(p, dict) and (p.get("inner_diameter_mm") or p.get("inner_diameter"))
                   for p in (case.get("patches") or []) + (case.get("ports") or []))
     return {"input_kind": str(result.get("input_kind") or case.get("input_kind") or ""),
-            "form": str(traits.get("form") or ""), "annulus": "1" if annulus else "0"}
+            "form": str(traits.get("form") or ""), "annulus": "1" if annulus else "0",
+            "closed": "1" if traits.get("closed") else "0"}
 
 
 def _find_case(case_id: str, dirs: list[Path]) -> dict | None:
