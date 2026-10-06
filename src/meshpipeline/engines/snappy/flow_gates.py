@@ -10,6 +10,7 @@ import meshpipeline.settings.policy as polcfg
 from meshpipeline.contracts.failure_cause import FailureCause
 from meshpipeline.engines.gates import GateCtx, GateFeedback, GateSpec, refuse
 from meshpipeline.engines.passage import PASSAGE_FLOOR_CELLS
+from meshpipeline.engines.region_check import gate_port_areas
 
 logger = logging.getLogger(__name__)
 
@@ -196,6 +197,12 @@ FLOW_GATES: tuple[GateSpec, ...] = (
     GateSpec(key="patch_contract", check=_gate_patch_contract, section="GROUPS",
              proves="Every boundary you named exists in the mesh, and carries real faces",
              cause=FailureCause.CONTRACT_MISMATCH),
+    # SHARED with every engine (engines/region_check.py): each declared inlet/outlet delivered at
+    # about the size declared - a port that swept in the wall round it, or a mesh of another
+    # region, is refused here though every other gate passes
+    GateSpec(key="port_areas", check=gate_port_areas, section="GROUPS",
+             proves="Every inlet and outlet is the opening you declared, at its size",
+             cause=FailureCause.PATCH_NOT_CAPTURED),
     GateSpec(key="boundary_types", check=_gate_boundary_types, section="GROUPS",
              proves="Each boundary is typed as the solver needs it (wall / symmetry / empty)",
              cause=FailureCause.BOUNDARY_TYPE),

@@ -20,7 +20,7 @@ def test_both_flow_engines_declare_the_same_gate_chain():
         # the floor last a patch-name mismatch refused a run while leaving its quality unmeasured.
         assert [g.key for g in get_spec(name).gates] == [
             "manifest_valid", "quality_floor", "resolution_floor", "patch_contract",
-            "boundary_types"]
+            "port_areas", "boundary_types"]
 
 
 def test_every_engine_gates_its_own_declared_quality_bars():
