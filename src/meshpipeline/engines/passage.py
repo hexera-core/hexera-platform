@@ -365,6 +365,52 @@ def _inside_solid(tris: np.ndarray, p: np.ndarray) -> bool:
     return odd * 2 > len(dirs)
 
 
+class _RayCaster:
+    """Ray queries against a triangle set through a VTK cell locator: how many triangles a ray from
+    p crosses (to `reach`), counted hit by hit. The numpy loops above test every triangle for every
+    ray; a staged wall of 100k+ triangles split into hundreds of pieces took minutes there."""
+
+    def __init__(self, tris: np.ndarray, reach: float):
+        import pyvista as pv
+        import vtk
+        pts = tris.reshape(-1, 3)
+        faces = np.arange(len(pts)).reshape(-1, 3)
+        poly = pv.PolyData(pts, np.hstack([np.full((len(faces), 1), 3), faces]).ravel())
+        self._loc = vtk.vtkCellLocator()
+        self._loc.SetDataSet(poly)
+        self._loc.BuildLocator()
+        self._reach = float(reach)
+        self._step = 1e-7 * float(reach)
+        self._dirs = _ENCLOSURE_DIRS / np.linalg.norm(_ENCLOSURE_DIRS, axis=1, keepdims=True)
+        import vtk as _vtk
+        self._t = _vtk.reference(0.0)
+        self._x = [0.0, 0.0, 0.0]
+        self._pc = [0.0, 0.0, 0.0]
+        self._sub = _vtk.reference(0)
+
+    def _count(self, p: np.ndarray, d: np.ndarray, limit: int = 64) -> int:
+        n = 0
+        o = np.asarray(p, dtype=float)
+        end = o + self._reach * d
+        while n < limit:
+            hit = self._loc.IntersectWithLine(o, end, 0.0, self._t, self._x, self._pc, self._sub)
+            if not hit:
+                break
+            n += 1
+            o = np.asarray(self._x, dtype=float) + self._step * d
+        return n
+
+    def crossings(self, p: np.ndarray) -> list[int]:
+        return [self._count(p, d) for d in self._dirs]
+
+    def shut_in(self, p: np.ndarray) -> bool:
+        return all(self._count(p, d, limit=1) > 0 for d in self._dirs)
+
+    def inside(self, p: np.ndarray) -> bool:
+        odd = sum(c % 2 for c in self.crossings(p))
+        return odd * 2 > len(self._dirs)
+
+
 def cavity_skin(points, faces, cap_polys, *, feature_angle: float = 60.0, samples: int = 5):
     """The part of a staged wall that bounds the FLUID: a hollow solid with flanges stages its
     bore skin, its outer skin and the annular flange faces all as 'wall' (straight_reducer_006:
@@ -394,6 +440,9 @@ def cavity_skin(points, faces, cap_polys, *, feature_angle: float = 60.0, sample
         return pts, f
     wall_tris = pts[f]
     closed = np.concatenate([wall_tris, *cap_tris])
+    span = float(np.linalg.norm(closed.reshape(-1, 3).max(axis=0) - closed.reshape(-1, 3).min(axis=0)))
+    wall_rays = _RayCaster(wall_tris, 4.0 * span)
+    closed_rays = _RayCaster(closed, 4.0 * span)
     poly = pv.PolyData(pts, np.hstack([np.full((len(f), 1), 3, dtype=np.int64), f]).ravel())
     split = poly.compute_normals(cell_normals=False, point_normals=True, split_vertices=True,
                                  feature_angle=feature_angle, consistent_normals=False,
@@ -418,7 +467,7 @@ def cavity_skin(points, faces, cap_polys, *, feature_angle: float = 60.0, sample
             eps = min(1e-4 * diag, 0.25 * float(np.sqrt(area[i])))
             if eps <= 0.0:
                 continue
-            cavity = any(not _inside_solid(wall_tris, p) and _shut_in(closed, p)
+            cavity = any(not wall_rays.inside(p) and closed_rays.shut_in(p)
                          for p in (cen[i] + eps * nrm[i], cen[i] - eps * nrm[i]))
             votes += 1 if cavity else -1
         if votes > 0:
