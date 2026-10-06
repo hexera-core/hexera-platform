@@ -71,7 +71,7 @@ def test_configure_raises_the_thin_wall_region_and_says_so(tmp_path, monkeypatch
         {"name": "fluid", "type": "fluid", "solids": [0]},
         {"name": "wall_solid", "type": "solid", "solids": [1]}]})
     assert out["thin_regions"] == {"wall_solid": {"wall_thickness_mm": pytest.approx(7.7, rel=0.02),
-                                                  "level": 4}}
+                                                  "level": 3}}
     shm = (ws / "system" / "snappyHexMeshDict").read_text()
     assert "level (2 2);" in shm                 # the fluid keeps the global level
     assert "level (3 4);" in shm                 # the wall: 3, + the interface refinement
