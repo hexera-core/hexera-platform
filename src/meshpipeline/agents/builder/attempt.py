@@ -15,6 +15,7 @@ from meshpipeline.agents.builder.workspace import (
     _setup_workspace,
     _write_workspace_context_files,
 )
+from meshpipeline.cad.internal_surface import STAGING_GATE as _STAGING_GATE
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +149,10 @@ def _context_files(workspace: Path, state, source_path: str) -> tuple[str, str]:
         engine_params=state.get("engine_params", {}) or {},
         flow_topology=state.get("flow_topology", "") or "",
         purpose=state.get("purpose", "") or "",
+        far_field={"requested_extents": state.get("requested_extents"),
+                   "reference_length_m": state.get("reference_length_m"),
+                   "flow_axis": state.get("flow_axis")},
+        input_kind=str(state.get("input_kind") or ""),
     )
 
 
@@ -240,6 +245,8 @@ def _stage_declared(workspace: Path, geometry, state, engine: str) -> None:
         _record_staging_failure(workspace, engine, exc, ours=True)
         return
     except Exception as exc:  # noqa: BLE001 - recorded as the attempt's reason, never a crash
+        # ONE record of the fact (the pre-flight refusal below): the executor reports it, and an
+        # engine's own inspection (vmtk's inspect_stl) reads the same record for its true reason.
         logger.exception("Builder: engine staging failed (engine=%s) - the attempt stops on the "
                          "recorded reason", engine)
         _record_staging_failure(workspace, engine, exc)
@@ -249,8 +256,9 @@ def _stage_declared(workspace: Path, geometry, state, engine: str) -> None:
                     engine, len(rec.get("ports") or []))
 
 
-#: The gate key a staging refusal is recorded under (engines/preflight.py's refusal record).
-STAGING_GATE = "staging"
+#: The gate key a staging refusal is recorded under (engines/preflight.py's refusal record). One key,
+#: owned by cad/internal_surface, whose staging_failure() is how the engines read the record back.
+STAGING_GATE = _STAGING_GATE
 
 #: What the builder's turn ends with when staging failed on OUR side (errors.py classifies it as
 #: transient): graph.node_infra_retry waits, then prepares the SAME attempt again, spending none of

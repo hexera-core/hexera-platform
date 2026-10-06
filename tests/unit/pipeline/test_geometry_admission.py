@@ -121,28 +121,38 @@ def _tripwired(monkeypatch) -> dict:
     return tripped
 
 
-@pytest.mark.parametrize("engine", ["snappy", "cfmesh", "vmtk", "gmsh"])
-def test_a_surface_for_internal_flow_is_refused_by_design_before_anything_is_built(
-        tmp_path, monkeypatch, engine):
-    # the aorta STL of 2026-10-03: no internal-flow engine on main takes a surface, so each one
-    # refuses it HERE - nothing staged, nothing built - with the facts the message is told from
+def test_a_file_no_engine_takes_is_refused_by_design_before_anything_is_built(
+        tmp_path, monkeypatch):
+    # a surface for a structural part: Gmsh (the one structural engine) needs the CAD solid's
+    # faces, so it refuses it HERE - nothing staged, nothing built - with the facts the message
+    # is told from. (The aorta STL of 2026-10-03, internal flow, is taken now: see below.)
     tripped = _tripwired(monkeypatch)
-    out = _run({"job_id": "t", "engine": engine, "purpose": "internal_cfd",
-                "input_kind": "fluid-domain", "dimensionality": "3D",
-                "intake_patches": _INTERNAL_PORTS,
-                "engine_params": ec.resolve_engine_params(engine, {}),
-                "geometry": geometry_state(tmp_path, filename="aorta.stl")})
+    out = _run({"job_id": "t", "engine": "gmsh", "purpose": "structural",
+                "input_kind": "solid-body", "dimensionality": "3D", "intake_patches": [],
+                "engine_params": ec.resolve_engine_params("gmsh", {}),
+                "geometry": geometry_state(tmp_path, filename="bracket.stl")})
     assert tripped["v"] is False
     assert out["executor_success"] is False
     facts = out["executor_failure_facts"]
     assert facts["codes"] == ["geometry_form_unsupported"] and facts["phases"] == ["declared"]
     assert facts["refused_by_design"] is True and facts["before_meshing"] is True
-    assert (facts["flow"], facts["form"], facts["engine"]) == ("internal", "surface", engine)
+    assert (facts["flow"], facts["form"], facts["engine"]) == ("structural", "surface", "gmsh")
     assert facts["able"] == [], "an engine that cannot take an STL was named as able to"
-    label = ec.engine_label(engine)
     assert out["geometry_unsuitable_reason"].startswith(
-        f"{label} cannot mesh internal flow from a surface mesh")
+        "Gmsh cannot mesh a structural (FEA) part from a surface mesh")
     assert "crash" not in out["geometry_unsuitable_reason"].lower()
+
+
+@pytest.mark.parametrize("engine", ["snappy", "cfmesh"])
+def test_a_surface_for_internal_flow_passes_the_form_check(tmp_path, monkeypatch, engine):
+    # the aorta STL of 2026-10-03, refused by every engine then: the shared internal staging
+    # takes it now (these engines measure nothing at admission: nothing is staged here either)
+    _tripwired(monkeypatch)
+    assert _run({"job_id": "t", "engine": engine, "purpose": "internal_cfd",
+                 "input_kind": "fluid-domain", "dimensionality": "3D",
+                 "intake_patches": _INTERNAL_PORTS,
+                 "engine_params": ec.resolve_engine_params(engine, {}),
+                 "geometry": geometry_state(tmp_path, filename="aorta.stl")}) == {}
 
 
 @pytest.mark.parametrize("engine,purpose,filename", [

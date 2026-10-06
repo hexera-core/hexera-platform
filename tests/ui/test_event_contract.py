@@ -49,8 +49,9 @@ def test_a_run_is_interpreted_into_the_cards_and_lanes_a_user_sees(live):
     # A stage becoming active retires the one before it, so no lane is left open behind.
     assert [c[1] for c in calls if c[0] == "done"] == ["builder", "executor"]
 
-    verdict = next(c for c in calls if c[0] == "info" and "Verdict" in str(c[2]))
-    assert "meets your brief" in verdict[2] and verdict[3] is False, \
+    # the verdict reaches its lane as a verdict, so the lane's mark can never contradict it
+    verdict = next(c for c in calls if c[0] == "verdict")
+    assert verdict[1] == "reviewer" and verdict[2] is True and "meets your brief" in verdict[3], \
         "a PASS was worded or toned as a failure"
     assert not any("closing" in str(c) for c in calls), \
         "`closing` drew a card - the result card owns that text"

@@ -78,6 +78,11 @@ class InputContract:
     # closed surface (TetGen-backed, e.g. vmtk) requires this; a wrap-then-fill engine that
     # tolerates a dirty surface (snappy/cfMesh) does not - so it is opt-in per engine.
     require_no_self_intersection: bool = False
+    # INTERNAL FLOW FROM A TRIANGLE SURFACE (STL, OBJ, PLY, ...): the engine's internal path takes
+    # the staged surface and the openings the user confirmed on it (cad/internal_surface: lids on
+    # open ends, capped faces kept, the fluid's side of a thick wall) instead of needing a CAD
+    # solid. An engine without it meshes internal flow from a CAD solid only.
+    internal_from_surface: bool = False
 
 
 @dataclass(frozen=True)
@@ -164,6 +169,9 @@ class MeshCapability:
     # () = the distinction does not apply: a solid-volume mesh, or a multi-region case
     # whose fluid topology is its own declared param.
     topologies: tuple[str, ...] = ()
+    # the dimensionalities THIS capability serves; () = whatever the engine's InputContract takes.
+    # gmsh builds the fluid around a 3D body, but its 2D path is a planar FE mesh, not a far field.
+    dimensionalities: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -424,16 +432,16 @@ class EngineSpec:
         """The geometry forms this bundle consumes for `flow`, or None when it is not designed
         for that flow at all.
 
-        INTERNAL FLOW FROM A SURFACE is also read from the input contract's own declaration,
-        `InputContract.internal_from_surface` (the shared internal-surface staging, STL-INTERNAL
-        #135/#138): an engine that declares it takes a surface for internal flow, without its
-        `accepts` row being edited a second time. One fact, read in one place - when both land,
-        keep one of the two declarations."""
+        INTERNAL FLOW FROM A SURFACE is declared in ONE place, the input contract's
+        `InputContract.internal_from_surface` (the shared internal-surface staging,
+        cad/internal_surface): an engine that declares it takes a surface for internal flow. Its
+        `accepts` internal row names the CAD form only, so the fact is never stated twice."""
         for fs in self.accepts:
             if fs.flow == flow:
                 forms = tuple(fs.forms)
                 if (flow == "internal" and "surface" not in forms
-                        and bool(getattr(self.input_contract, "internal_from_surface", False))):
+                        and self.input_contract is not None
+                        and self.input_contract.internal_from_surface):
                     forms = (*forms, "surface")
                 return forms
         return None
@@ -644,7 +652,11 @@ class EngineSpec:
                 elif ik:
                     req = PURPOSES[purpose].requires_mesh_kind
                     req = (req,) if isinstance(req, str) else tuple(req)
-                    ok = sorted({c.input_kind for c in self.capabilities if c.output_kind in req})
+                    topo = PURPOSES[purpose].flow_topology
+                    # only what this engine takes for THIS flow: gmsh takes a body for external
+                    # flow, and "submit a body-surface" to a body-surface internal case was a lie
+                    ok = sorted({c.input_kind for c in self.capabilities if c.output_kind in req
+                                 and (not topo or topo in c.topologies)})
                     out.append(Rejection(
                         code="input_kind_incompatible", phase="declared", field="input_kind",
                         actual=ik, expected=ok,
@@ -736,6 +748,21 @@ class EngineSpec:
                 message=f"{self.name} cannot mesh {evidence.dimensionality} geometry - it "
                         f"supports {', '.join(ic.dimensionalities)}.",
                 fix_hint="use an engine that supports this dimensionality"))
+
+        # ...and the capability that serves THIS purpose from THIS geometry must serve it too
+        if (evidence.dimensionality and purpose in PURPOSES and ik
+                and not any(r.code == "dimensionality_unsupported" for r in out)):
+            from meshpipeline.engines.purposes import serving_capabilities
+            caps = serving_capabilities(self, purpose, ik)
+            if caps and all(c.dimensionalities and evidence.dimensionality not in c.dimensionalities
+                            for c in caps):
+                dims = sorted({d for c in caps for d in c.dimensionalities})
+                out.append(Rejection(
+                    code="dimensionality_unsupported", phase="declared", field="dimensionality",
+                    actual=evidence.dimensionality, expected=dims,
+                    message=f"{self.name} cannot produce a {purpose} mesh from {evidence.dimensionality} "
+                            f"'{ik}' geometry - it does that in {', '.join(dims)} only.",
+                    fix_hint="use an engine that supports this dimensionality"))
 
         # SYMMETRY-plane production - a declared symmetry patch needs half-domain meshing.
         if any(p.type == "symmetry" for p in evidence.patches) and not self.supports_symmetry_plane:

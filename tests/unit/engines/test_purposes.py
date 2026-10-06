@@ -69,8 +69,10 @@ def test_compatibility_can_refine_on_submitted_geometry_kind():
     gmsh = ec.get_spec("gmsh")
     assert is_compatible(gmsh, "structural", input_kind="solid-body")
     assert is_compatible(gmsh, "external_cfd", input_kind="fluid-domain")
-    # a solid body submitted for a CFD run: gmsh would mesh the body, not the fluid
-    assert not is_compatible(gmsh, "external_cfd", input_kind="solid-body")
+    # a solid body for EXTERNAL CFD: gmsh cuts it out of a far-field box and meshes the fluid
+    assert is_compatible(gmsh, "external_cfd", input_kind="solid-body")
+    # for INTERNAL CFD it would still mesh the part, not the cavity: refused
+    assert not is_compatible(gmsh, "internal_cfd", input_kind="solid-body")
 
 
 def test_a_solid_body_is_a_body_surface_to_a_flow_engine_but_not_to_a_structural_one():

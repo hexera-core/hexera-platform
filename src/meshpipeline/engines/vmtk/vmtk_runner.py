@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 import meshpipeline.settings.runtime as rtcfg
+from meshpipeline.contracts.intake_formats import is_cad
 from meshpipeline.contracts.mesh_units import COMPLETED_MESH_UNIT
 from meshpipeline.engines.base import RunPolicy
 from meshpipeline.sandbox.safe_exec import (
@@ -26,6 +27,9 @@ _CENTERLINES = "centerlines.vtp"
 _DIST = "lumen_dist.vtp"
 _MESH = "mesh.vtu"
 _LUMEN_OPEN = "lumen_open.vtp"     # the staged open wall (engines/vmtk/lumen_staging.py)
+#: The surface formats this bundle reads itself (cad/staging.py hands them over unconverted):
+#: a segmented vessel's VTK PolyData, with whatever arrays it carries.
+native_surface_suffixes = (".vtp",)
 #: A boundary layer whose tets sum to more than this above the enclosed volume has folded;
 #: tets summing to less than the enclosed volume by more than this never filled it.
 OVERLAP_TOLERANCE = 0.02
@@ -95,15 +99,18 @@ def _seed_args(s: dict) -> list[str]:
         "(geometry_report lists them). Interactive seeding is impossible in a headless worker.")
 
 
-def build_staged_stages(strategy: dict) -> tuple[list[str], list[str]]:
-    """The STAGED CAD LUMEN route as two argv lists: the surface stage, run once, and the
-    generator stage, run per repair-ladder step. The open wall arrives with its local radius
-    at every point (engines/vmtk/lumen_staging.py).
+def build_staged_stages(strategy: dict, *, collapse_angle: float | None = None,
+                        ) -> tuple[list[str], list[str]]:
+    """The STAGED CAD LUMEN route as two argv lists: the surface stage, run once (again only
+    when its remesh folds the wall, _SURFACE_RETRIES), and the generator stage, run per
+    repair-ladder step. The open wall arrives with its local radius at every point
+    (engines/vmtk/lumen_staging.py).
     Surface: 1. remesh it radius-adaptively (the staged triangles are edge-bounded CAD
     slivers; handing those straight to the generator left TetGen an inner surface it refused -
     "Unable to find an edge in subface" on tee_wye_003 and straight_reducer_004); 2. keep the
     one lumen and drop the orphan points the remesher leaves; 3. project the radius array back
-    from the staged wall (the remesher drops point data).
+    from the staged wall (the remesher drops point data). `collapse_angle` (radians) caps how
+    far a collapse may turn the triangles round it; None keeps vmtk's own (0.2).
     Generate: vmtkmeshgenerator caps the declared openings (one CellEntityId each, from 2),
     optionally remeshes with the array again, grows the layers and fills the volume. Capping is
     not optional here - the surface is open by construction - so cap_openings does not apply;
@@ -117,6 +124,7 @@ def build_staged_stages(strategy: dict) -> tuple[list[str], list[str]]:
         "vmtksurfaceremeshing", "-ifile", _LUMEN_OPEN,
         "-elementsizemode", "edgelengtharray", "-edgelengtharray", array,
         "-edgelengthfactor", f"{elf:g}", "-preserveboundary", "0", "-iterations", "10",
+        *(["-collapseangle", f"{collapse_angle:g}"] if collapse_angle is not None else []),
         "--pipe", "vmtksurfaceconnectivity", "-method", "largest",
         "--pipe", "vmtksurfaceprojection", "-rfile", _LUMEN_OPEN, "-ofile", _LUMEN,
     ]
@@ -209,7 +217,7 @@ def tessellate_to_stl(geom_path, out_stl, *, context=None, prepared=None) -> Pat
     geom_path, out_stl = Path(geom_path), Path(out_stl)
     ws = out_stl.parent
     suffix = geom_path.suffix.lower()
-    if suffix in (".step", ".stp", ".iges", ".igs"):
+    if is_cad(geom_path):
         from meshpipeline.cad.cad_tessellate import tessellate_to_stl as _cad
         _cad(geom_path, out_stl, prepared=prepared)    # CAD -> surface STL, already metres
         surf = _read_surface(out_stl)
@@ -245,6 +253,11 @@ def _metre_factor(prepared) -> float:
 def inspect_stl(workspace, geometry_file: str = "input.stl", *, context=None) -> dict:
     ws = Path(workspace)
     lumen = ws / _LUMEN
+    err = _staging_error(ws)
+    if err:
+        # the true reason the lumen was never prepared - even with an unopened skin staged as
+        # lumen.vtp, the failure is what is reported, not whatever that surface looks like
+        return {"error": f"the geometry could not be staged for vmtk: {err}"}
     if not lumen.exists():
         return {"error": f"{_LUMEN} missing - the workspace was not staged for vmtk"}
     surf = _read_surface(lumen).extract_surface()
@@ -305,6 +318,11 @@ def inspect_stl(workspace, geometry_file: str = "input.stl", *, context=None) ->
 def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
                    geometry_file: str = "input.stl", **_ignored) -> dict:
     ws = Path(workspace)
+    # NOTHING STAGED, OR STAGING FAILED: say so before any check of a surface that is not the
+    # lumen (the unopened CAD skin reads "closed", a missing lumen reads as nothing at all)
+    unstaged = _unstaged_refusal(ws)
+    if unstaged is not None:
+        return unstaged
     # WHERE THE ENGINE'S INPUT CONTRACT IS ENFORCED. vmtk derives its centerline endpoints from
     # the surface's real boundary loops - the inlet and outlet the anatomy actually has. A sealed
     # lumen states none, and the `pointlist` selector cannot invent them: it maps a coordinate to
@@ -343,10 +361,38 @@ def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
 def stage_declared(workspace, *, geometry_path, prepared, intake_patches: list,
                    input_kind: str = "") -> dict | None:
     """Deterministic lumen preparation - see engines/vmtk/lumen_staging.py. Returns the
-    staging record, or None when it does not apply (a surface input, nothing declared)."""
+    staging record, or None when it does not apply (nothing declared). A failure propagates to
+    the builder's attempt seam (agents/builder/attempt._stage_declared), which records it ONCE,
+    with its reason, as the attempt's pre-flight refusal; _staging_error reads it back."""
     from meshpipeline.engines.vmtk.lumen_staging import stage_lumen
     return stage_lumen(workspace, geometry_path, prepared=prepared,
                        intake_patches=intake_patches, input_kind=input_kind)
+
+
+def _staging_error(ws: Path) -> str:
+    """Why the lumen could not be prepared, so the run says THAT instead of whatever the unstaged
+    surface looks like (job a76e3ca1 burned two attempts on "lumen.vtp missing"; the faceted CAD
+    aorta was refused as "this surface is closed"). "" when staging did not fail. The one record
+    of a staging failure (cad/internal_surface.staging_failure), not one of the engine's own."""
+    from meshpipeline.cad.internal_surface import staging_failure
+    return staging_failure(ws)
+
+
+def _unstaged_refusal(ws: Path) -> dict | None:
+    """The refusal for a run whose lumen was never prepared, or whose CAD body could not be
+    opened at its ports - said before anything native starts, with the reason."""
+    err = _staging_error(ws)
+    if err:
+        return {"code": "vmtk_staging_failed",
+                "error": ("the engine could not open this geometry at its declared ports, so there "
+                          f"is no lumen to mesh: {err}. Nothing a mesh setting changes can fix "
+                          "this - it needs the geometry (or the port declaration) changed.")}
+    if not (ws / _LUMEN).exists() and not (ws / _LUMEN_OPEN).exists():
+        return {"code": "vmtk_lumen_not_staged",
+                "error": ("no lumen surface was prepared for this upload (lumen.vtp is missing), "
+                          "so there is nothing for vmtk to mesh. Nothing a mesh setting changes "
+                          "can fix this.")}
+    return None
 
 
 # run (isolated subprocess)
@@ -473,12 +519,125 @@ def _last_stage(result: dict) -> str:
     return last
 
 
+#: THE SURFACE RETRIES, tried in order while the remeshed wall comes back folded.
+#: vmtksurfaceremeshing walks the wall's triangles in storage order and collapses short edges
+#: as it meets them; nothing in it stops a run of collapses from folding the wall over itself.
+#: Whether one does depends on the order the wall is stored in, not only on its shape: the IGES
+#: and STEP exports of venturi_orifice_005_fluid staged the very same wall (same points, same
+#: triangles, only numbered differently) and the IGES numbering came back with 82 non-manifold
+#: edges and 130 zero-area triangles while the STEP one came back clean; straight_reducer_004 and
+#: bend_elbow_021 (fluid volumes) the same. On a folded wall every generator step fails and the
+#: last one segfaults, so no ladder step can mend it - the remesh has to be run again. First
+#: with collapses held to a 0.1 rad turn of the triangles round them (vmtk's default is 0.2),
+#: then that on the wall stored in another order (a fixed shuffle; sorted orders fold as often
+#: as any). A clean first remesh never reaches this.
+_SURFACE_RETRIES: tuple[dict, ...] = (
+    {"collapse_angle": 0.1, "shuffle": None},
+    {"collapse_angle": 0.1, "shuffle": 1},
+    {"collapse_angle": 0.1, "shuffle": 2},
+)
+#: a triangle with less area than this share of the squared bounding-box diagonal has none
+_FLAT_TRIANGLE = 1e-12
+
+
+def _surface_ran(ws: Path, result: dict) -> bool:
+    return result.get("rc") in (0, None) and not result.get("timed_out") \
+        and (ws / _LUMEN).exists()
+
+
+def _wall_defects(path: Path) -> dict:
+    """What marks a remeshed wall as folded, the kind the generator cannot mesh: edges shared by
+    more than two triangles, and triangles with no area. Empty when the wall is clean, or when it
+    cannot be read (the generator then says so itself)."""
+    import numpy as np
+    try:
+        surf = _read_surface(path).triangulate()      # lumen.vtp: a PolyData
+    except Exception:  # noqa: BLE001 - evidence, not a verdict
+        return {}
+    if not getattr(surf, "n_cells", 0):
+        return {}
+    pts = np.asarray(surf.points, dtype=float)
+    tri = np.asarray(surf.faces).reshape(-1, 4)[:, 1:]
+    edges = np.sort(np.concatenate([tri[:, [0, 1]], tri[:, [1, 2]], tri[:, [2, 0]]]), axis=1)
+    _, shared = np.unique(edges, axis=0, return_counts=True)
+    diag2 = float(np.sum((pts.max(axis=0) - pts.min(axis=0)) ** 2)) or 1.0
+    area = 0.5 * np.linalg.norm(np.cross(pts[tri[:, 1]] - pts[tri[:, 0]],
+                                         pts[tri[:, 2]] - pts[tri[:, 0]]), axis=1)
+    found = {"non-manifold edges": int(np.sum(shared > 2)),
+             "zero-area triangles": int(np.sum(area <= _FLAT_TRIANGLE * diag2))}
+    return {k: v for k, v in found.items() if v}
+
+
+def _defect_label(defects: dict) -> str:
+    return ", ".join(f"{v} {k}" for k, v in defects.items())
+
+
+def _shuffled(wall, seed: int):
+    """The same wall - points, triangles, winding and point arrays - stored in a fixed
+    pseudo-random order."""
+    import numpy as np
+    import pyvista as pv
+    wall = wall.triangulate()
+    pts = np.asarray(wall.points, dtype=float)
+    tri = np.asarray(wall.faces).reshape(-1, 4)[:, 1:]
+    rng = np.random.default_rng(seed)
+    perm = rng.permutation(len(pts))
+    new_id = np.empty_like(perm)
+    new_id[perm] = np.arange(len(perm))
+    t = new_id[tri][rng.permutation(len(tri))]
+    out = pv.PolyData(pts[perm], np.hstack([np.full((len(t), 1), 3, dtype=np.int64), t]).ravel())
+    for name in wall.point_data:
+        out.point_data[name] = np.asarray(wall.point_data[name])[perm]
+    return out
+
+
+def _remesh_folded_wall(ws: Path, strategy: dict, left, floor: float,
+                        notes: list[str]) -> dict | None:
+    """Runs _SURFACE_RETRIES while the remeshed wall (lumen.vtp) is folded. Returns the last
+    surface run's result, or None when the first remesh was clean and nothing ran. The staged
+    wall on disk ends as the one the last remesh read, so a re-run reproduces it."""
+    defects = _wall_defects(ws / _LUMEN)
+    if not defects:
+        return None
+    staged_wall = _read_surface(ws / _LUMEN_OPEN)
+    result: dict | None = None
+    for i, retry in enumerate(_SURFACE_RETRIES):
+        if left() < floor:
+            notes.append(f"[vmtk] the remeshed wall is folded ({_defect_label(defects)}) and "
+                         f"under {floor:g} s of the budget is left to remesh it again")
+            return result
+        how = f"with collapses held to {retry['collapse_angle']:g} rad"
+        if retry["shuffle"] is not None:
+            how += ", on the staged wall stored in another order"
+        notes.append(f"[vmtk] surface remesh {i + 1}: the remeshed wall came back folded "
+                     f"({_defect_label(defects)}) - remeshing it again {how}")
+        if retry["shuffle"] is not None:
+            _shuffled(staged_wall, int(retry["shuffle"])).save(str(ws / _LUMEN_OPEN))
+        surface, _ = build_staged_stages(strategy, collapse_angle=retry["collapse_angle"])
+        result = _run_pype(ws, surface, timeout=left())
+        if not _surface_ran(ws, result):
+            return result
+        defects = _wall_defects(ws / _LUMEN)
+        if not defects:
+            notes.append(f"[vmtk] surface remesh {i + 2}: the wall came back clean")
+            return result
+    notes.append(f"[vmtk] the remeshed wall is still folded ({_defect_label(defects)}) after "
+                 f"{len(_SURFACE_RETRIES)} more remeshes - going on with it")
+    return result
+
+
 def _run_vmtk_local(workspace, *, timeout: int, **_ignored) -> dict:
     ws = Path(workspace)
     spec_path = ws / "vmtk_spec.json"
     if not spec_path.exists():
         return {"rc": 1, "timed_out": False,
                 "log_tail": "vmtk_spec.json missing - call configure_mesh before run_mesh"}
+    if not (ws / _LUMEN).exists() and not (ws / _LUMEN_OPEN).exists():
+        # never launch the pype on nothing: it fails minutes later as "Error opening file" and
+        # reads as a mesher crash (job a76e3ca1)
+        return {"rc": 1, "timed_out": False,
+                "log_tail": f"{_LUMEN} missing - no lumen was staged for this upload; vmtk was "
+                            "not started"}
     strategy = json.loads(spec_path.read_text())
     ladder = repair_ladder(strategy)
     notes: list[str] = []
@@ -493,15 +652,17 @@ def _run_vmtk_local(workspace, *, timeout: int, **_ignored) -> dict:
     def left() -> int:
         return max(1, int(deadline - _now()))
 
+    floor = min(_LADDER_MIN_SECONDS, _LADDER_MIN_FRACTION * float(timeout))
     if staged:
-        # the surface stage once; the generator per ladder step
+        # the surface stage once (again while its remesh folds the wall); the generator per
+        # ladder step
         surface, _ = build_staged_stages(ladder[0])
         result = _run_pype(ws, surface, timeout=left())
-        if result.get("rc") not in (0, None) or result.get("timed_out") \
-                or not (ws / _LUMEN).exists():
-            (ws / "log.vmtk").write_text(result.get("log_tail") or "")
+        if _surface_ran(ws, result):
+            result = _remesh_folded_wall(ws, ladder[0], left, floor, notes) or result
+        if not _surface_ran(ws, result):
+            (ws / "log.vmtk").write_text("\n".join([*notes, result.get("log_tail") or ""]))
             return result
-    floor = min(_LADDER_MIN_SECONDS, _LADDER_MIN_FRACTION * float(timeout))
     last = 0
     for i, strat in enumerate(ladder):
         if i and deadline - _now() < floor:

@@ -13,6 +13,10 @@ from meshpipeline.cad.cad_tessellate import (  # noqa: F401
     tessellate_internal,
     tessellate_to_stl,
 )
+
+# The internal-flow staging of a triangle surface (any upload that is not a CAD solid): the same
+# record tessellate_internal returns, from the staged metre surface and the confirmed openings.
+from meshpipeline.cad.internal_surface import stage_internal_surface  # noqa: F401
 from meshpipeline.cad.stl_io import (  # noqa: F401
     _write_solid,
     drop_degenerate,
@@ -82,6 +86,38 @@ def _feature_extract_dict(surf_file: str, feature_angle: float) -> str:
             + f"{surf_file}\n{{ extractionMethod extractFromSurface;\n"
             f"  extractFromSurfaceCoeffs {{ includedAngle {feature_angle:g}; }}\n"
             "  writeObj yes; }\n")
+
+
+#: meshQualityControls minVol as OpenFOAM's tutorials set it - an ABSOLUTE volume, m^3.
+MIN_VOL_HISTORICAL = 1e-13
+#: How far under the thinnest legitimate layer cell's face pyramid minVol sits: far enough that no
+#: real cell trips it, while an inverted (negative) or collapsed one still does.
+MIN_VOL_MARGIN = 1e-3
+
+
+def layer_min_vol(finest_cell_m: float, *, n_layers: int, min_thickness_rel: float) -> float:
+    """meshQualityControls minVol for a mesh whose finest wall cell is finest_cell_m.
+
+    minVol is the one quality bar snappyHexMesh reads in absolute units: a face whose pyramid to
+    a cell centre holds less than minVol cubic metres is "illegal" and its prism layers are
+    taken back. The tutorials' 1e-13 suits metre-scale cells. A wall cell of 0.2 mm with five
+    layers has layer cells of a few 1e-13 m^3 - every one of them illegal: the SAE notchback lost
+    182 357 faces' worth of layers in the first check (52 % coverage on a smooth car body), the
+    128 mm Supra 2.2 million (15 %), with no other bar breached. So the bar is set from the mesh's
+    own scale: MIN_VOL_MARGIN of the face pyramid of the thinnest layer cell snappy may keep (the
+    stack thinned to minThickness, split across the layers, on the finest cell), never above the
+    historical 1e-13 - a body whose cells are big enough for it keeps exactly that."""
+    h = float(finest_cell_m)
+    if not (math.isfinite(h) and h > 0.0):
+        return MIN_VOL_HISTORICAL
+    if int(n_layers) <= 0:
+        # no layers: the thinnest legitimate cell is the finest wall cell itself, so the bar sits
+        # under that and no lower - castellation and snapping keep their full positive-volume check
+        thinnest = 0.5 * h
+    else:
+        thinnest = max(float(min_thickness_rel), 1e-3) * h / int(n_layers) * 0.5
+    pyramid = h * h * thinnest / 6.0
+    return max(1e-30, min(MIN_VOL_HISTORICAL, MIN_VOL_MARGIN * pyramid))
 
 
 # #
@@ -462,6 +498,44 @@ def domain_from_strategy(analysis: dict, strategy: dict | None = None,
     return dmin, dmax
 
 
+#: The background box's budget: total cells before refinement, and a per-axis sanity bound.
+BG_CELL_BUDGET = 600_000
+BG_MAX_DIV = 256
+#: blockMesh sanity minimum per axis. A thin slab's span axis sits on it, finer than the rest.
+BG_MIN_DIV = 12
+
+
+def background_grid(ext, base: float, *, budget: int = BG_CELL_BUDGET,
+                    max_div: int = BG_MAX_DIV, min_div: int = BG_MIN_DIV) -> tuple[list[int], int]:
+    """Divisions of the background box, with CUBIC cells, and how many doublings that took.
+
+    The cell starts at the recommender's base cell and doubles until the whole box fits the
+    budget; every axis gets the same cell. Returns (divisions, k): the cell is base * 2**k on
+    every axis (to the rounding of a whole number of cells, or finer on an axis held at
+    min_div), and k is the number of levels the surface must be bumped by to keep the wall cell
+    the recommender intended.
+
+    Cubic matters for the wall. The old fit trimmed the LONGEST axis until the box fitted, which
+    walks every far-field box towards the same count on each axis: a 2 x 5 x 1.5 m car box came
+    out 82 x 82 x 82, cells 3.3 times longer along the flow than up, every refinement level
+    copying that shape down to the body (job 9548829e). snappyHexMesh sizes a cell, a layer and
+    its warped-face test from ONE edge length per level - the shortest - so on such cells the
+    relative layer stack is sized for the short edge, the long faces read as warped and lose their
+    layers, and snapped cells cut across their long edge come out highly non-orthogonal."""
+    base = float(base)
+    if not (math.isfinite(base) and base > 0.0):
+        raise ValueError(f"background_grid needs a positive base cell, got {base!r}")
+    e = [max(float(v), 0.0) for v in ext]
+    div = [min_div] * 3
+    for k in range(64):
+        h = base * (2.0 ** k)
+        div = [max(int(min_div), int(round(v / h))) for v in e]
+        if (max(div) <= max_div and div[0] * div[1] * div[2] <= budget) or \
+                all(d <= min_div for d in div):
+            return div, k
+    return div, 63
+
+
 def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analysis: dict,
                        recommendation: dict, domain_min, domain_max,
                        strategy: dict | None = None, dimensionality: str = "3D",
@@ -471,7 +545,8 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
                        layer_overrides: dict | None = None,
                        ground: str | None = None,
                        farfield: str = "farfield",
-                       class_regions: bool = True) -> dict:
+                       class_regions: bool = True,
+                       outside_points: list | None = None) -> dict:
     ws = Path(workspace)
     strategy = strategy or {}
     rec = recommendation
@@ -497,36 +572,21 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
     # levels. That is a ~4000x multiplier on the wall shell to save 500k background cells, and it
     # OOM-killed snappy at both 8 GiB and 16 GiB.
     #
-    # So budget the background directly and let each axis resolve as finely as that budget allows.
-    _BG_MAX_DIV = 256          # per-axis sanity bound
-    _BG_CELL_BUDGET = 600_000  # total background cells before refinement
-    div = [max(12, min(_BG_MAX_DIV, int(round(ext[i] / base)))) for i in range(3)]
-    # Trim the coarsest-paying axis until the whole grid fits the budget. The floor of 12 is a
-    # blockMesh sanity minimum, so a thin slab's span axis is exempt from the trimming.
-    for _ in range(256):
-        if div[0] * div[1] * div[2] <= _BG_CELL_BUDGET:
-            break
-        k = max(range(3), key=lambda i: div[i])
-        if div[k] <= 12:
-            break
-        div[k] = max(12, int(div[k] * 0.92))
+    # So budget the background directly - with CUBIC cells (background_grid): the same cell on
+    # every axis, coarsened in whole doublings until the box fits the budget.
+    div, deficit = background_grid(ext, base)
 
     # DOMAIN-DECOUPLED RESOLUTION. A refinement LEVEL is relative to the background base cell,
-    # but the clamp above (needed so a large far-field doesn't explode the background) makes the
-    # ACTUAL base cell (ext/div) coarser than the recommender assumed. Uncompensated, a big domain
+    # but the budget (needed so a large far-field doesn't explode the background) makes the
+    # ACTUAL base cell coarser than the recommender assumed. Uncompensated, a big domain
     # silently coarsens the wall until cells are larger than the feature (the aircraft failure:
-    # 0.125 m cells on a 0.05 m wing). Bump every level by the clamp DEFICIT so the ABSOLUTE cell
-    # size the recommender intended is held regardless of domain size. deficit=0 when the clamp
-    # doesn't bite (small domains - e.g. an airfoil - are unchanged). snappy's maxGlobalCells is
-    # the hard budget backstop and the distance bands are already in absolute units, so this
-    # cannot explode the count - the fine cells stay a thin shell on the wall.
+    # 0.125 m cells on a 0.05 m wing). Every level is bumped by the DEFICIT - the number of
+    # whole doublings background_grid took - so the ABSOLUTE wall cell the recommender intended
+    # is held regardless of domain size, on every axis alike. deficit=0 when the budget doesn't
+    # bite (small domains - e.g. an airfoil - are unchanged). snappy's maxGlobalCells is the hard
+    # budget backstop and the distance bands are already in absolute units, so this cannot
+    # explode the count - the fine cells stay a thin shell on the wall.
     base_actual = max(ext[i] / max(div[i], 1) for i in range(3))
-    # floor, not ceil - the same correction render_internal_case already carries at the matching
-    # line. div is an integer count, so ext/div lands slightly above the requested base cell for
-    # pure rounding reasons; ceil turns that rounding into a whole extra refinement level, and a
-    # level is an 8x cell multiplier in 3D. Only a genuine doubling of the base cell should cost
-    # a level.
-    deficit = max(0, int(math.floor(math.log2(max(base_actual / max(base, 1e-30), 1.0)) + 1e-9)))
     _HARD_MAX_LEVEL = 10
 
     # levels - the surface level is FLOORED at the body-sealing level the recommender computed
@@ -553,6 +613,15 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
 
     def vf(p) -> str:
         return f"({p[0]:.6g} {p[1]:.6g} {p[2]:.6g})"
+
+    # SEALED SPACES (engines/sealed_cavities.py). A point inside each space the far field reaches
+    # only through gaps too narrow to mesh is a place the mesh must NOT reach: snappyHexMesh walks
+    # the leak path from locationInMesh to it and closes the narrow gap on that path with a wall
+    # face, instead of meshing the whole inside through a slit. With no points the dict is
+    # exactly what it has always been.
+    _pts = [p for p in (outside_points or []) if p is not None and len(p) == 3]
+    _outside = (f"\n  locationsOutsideMesh ({' '.join(vf(p) for p in _pts)}); useLeakClosure true;"
+                if _pts else "")
 
     V = [(domain_min[0], domain_min[1], domain_min[2]), (domain_max[0], domain_min[1], domain_min[2]),
          (domain_max[0], domain_max[1], domain_min[2]), (domain_min[0], domain_max[1], domain_min[2]),
@@ -634,6 +703,11 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
     # region's count must not leave the layer stage running against an all-zero table.
     _any_layers = (any(_n_for(r) > 0 for r in _names) if _names
                    else _n_for(surface_name) > 0)
+    # minVol from the mesh's own finest wall cell (layer_min_vol): the feature/near-band level
+    _finest = (min(ext[i] / max(div[i], 1) for i in range(3))
+               / (2 ** max(smax, flevel, near_band_level)))
+    _min_vol = layer_min_vol(_finest, n_layers=max([n_layers, *layer_counts.values()]),
+                             min_thickness_rel=_min_thick)
     (ws / "system" / "snappyHexMeshDict").write_text(
         _HDR.format(cls="dictionary", obj="snappyHexMeshDict") + f"""
 castellatedMesh true; snap true; addLayers {'true' if _any_layers else 'false'};
@@ -642,7 +716,7 @@ castellatedMeshControls {{ maxLocalCells {max_cells}; maxGlobalCells {max_cells}
   maxLoadUnbalance 0.10; nCellsBetweenLevels 3; features ( {{ file "{feature_file}"; level {flevel}; }} );
   refinementSurfaces {{ {surface_name} {{ level ({smin} {smax});{_ref_regions} }} }} resolveFeatureAngle {ang:.0f};
   refinementRegions {{ {surface_name} {{ mode distance; levels (({b0d:.6g} {near_band_level}) ({b1d:.6g} {max(1, smin - 1)})); }} }}
-  locationInMesh {vf(loc)}; allowFreeStandingZoneFaces true; }}
+  locationInMesh {vf(loc)}; allowFreeStandingZoneFaces true;{_outside} }}
 snapControls {{ nSmoothPatch 3; tolerance 2.0; nSolveIter 50; nRelaxIter 8; nFeatureSnapIter 15;
   implicitFeatureSnap false; explicitFeatureSnap true; multiRegionFeatureSnap false; }}
 addLayersControls {{ relativeSizes true; layers {{ {_layers} }}
@@ -651,7 +725,7 @@ addLayersControls {{ relativeSizes true; layers {{ {_layers} }}
   maxFaceThicknessRatio 0.5; maxThicknessToMedialRatio {medial}; minMedialAxisAngle 90;
   nBufferCellsNoExtrude 0; nLayerIter 50; nRelaxedIter {n_relaxed}; }}
 meshQualityControls {{ maxNonOrtho 65; maxBoundarySkewness 20; maxInternalSkewness 4; maxConcave 80;
-  minVol 1e-13; minTetQuality {min_tet}; minArea -1; minTwist 0.02; minDeterminant 0.001;
+  minVol {_min_vol:.3g}; minTetQuality {min_tet}; minArea -1; minTwist 0.02; minDeterminant 0.001;
   minFaceWeight 0.02; minVolRatio 0.01; minTriangleTwist -1; nSmoothScale 4; errorReduction 0.75;
   relaxed {{ maxNonOrtho {relaxed_no}; maxInternalSkewness 4; }} }}
 mergeTolerance 1e-6; debug 0;
@@ -688,6 +762,8 @@ mergeTolerance 1e-6; debug 0;
         out["merged_regions"] = list(_synthetic)
     if ground:
         out["ground"] = {"patch": ground, "floor_z": round(float(domain_min[VERTICAL_AXIS]), 6)}
+    if _pts:
+        out["sealed_points"] = [[round(float(v), 6) for v in p] for p in _pts]
     return out
 
 
@@ -792,6 +868,18 @@ def _port_levels(*, base_cell: float, default_level: int, smin: int,
     return out
 
 
+def _off_grid(point, lo, hi, div, levels: int) -> tuple:
+    """The centre of the cell holding `point` in a uniform box grid (corners `lo`/`hi`, `div`
+    cells per axis) refined `levels` times: inside one cell at every coarser level too, since
+    each refinement only halves the cells of the one before."""
+    out = []
+    for i in range(3):
+        h = (hi[i] - lo[i]) / max(div[i], 1) / 2 ** levels
+        k = math.floor((float(point[i]) - lo[i]) / h) if h > 0 else 0
+        out.append(lo[i] + (k + 0.5) * h if h > 0 else float(point[i]))
+    return tuple(out)
+
+
 def render_internal_case(workspace, *, names: dict, features: dict, interior_point,
                          bbox_min, bbox_max, base_cell: float, surface_level: int,
                          feature_level: int, n_layers: int, first_layer_rel: float = 0.3,
@@ -807,14 +895,12 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
     dmax = [bbox_max[i] + pad for i in range(3)]
     dext = [dmax[i] - dmin[i] for i in range(3)]
 
-    div = [max(8, min(120, int(round(dext[i] / base_cell)))) for i in range(3)]
-    # domain-decoupled resolution: if the background clamp coarsened the base cell, bump levels
-    # so the ABSOLUTE wall cell size is held (same rationale as render_snappy_case).
+    # CUBIC background cells, at most 120 a side (background_grid): a pipe ten bores long used to
+    # be clamped on its axis alone - cells twice as long as they were wide, all the way down to
+    # the wall. Domain-decoupled resolution: every doubling the clamp takes is one level the wall
+    # gets back, so the ABSOLUTE wall cell size is held (same rationale as render_snappy_case).
+    div, deficit = background_grid(dext, base_cell, budget=120 ** 3, max_div=120, min_div=8)
     base_actual = max(dext[i] / max(div[i], 1) for i in range(3))
-    # floor (not ceil): a refinement LEVEL is a factor of 2, so bump only when the clamp genuinely
-    # DOUBLED the base cell. ceil would add a phantom +1 level from mere div-rounding (base_actual
-    # marginally > base_cell), needlessly doubling wall resolution on every internal build.
-    deficit = max(0, int(math.floor(math.log2(max(base_actual / max(base_cell, 1e-30), 1.0)) + 1e-9)))
     # THE OTHER DIRECTION, which was missing and detonated the internal cluster: when the
     # min-8 division clamp makes the background FINER than base_cell (a high planner
     # surface_level inflates base_cell = wall_cell * 2^level far past the domain), keeping
@@ -863,6 +949,18 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
         + f");\nblocks (hex (0 1 2 3 4 5 6 7) ({div[0]} {div[1]} {div[2]}) simpleGrading (1 1 1)); edges ();\n"
         "boundary (outer { type patch; faces "
         "((0 3 2 1)(4 5 6 7)(0 1 5 4)(2 3 7 6)(1 2 6 5)(0 4 7 3)); });\nmergePatchPairs ();\n")
+
+    # THE SEED OFF THE GRID. A part symmetric about a plane has its seed on that plane, and the
+    # background box, built round the part, is symmetric about it too: the plane is a cell face
+    # whenever the cell count across it is even, and a face of every refined cell whenever it
+    # is odd. snappyHexMesh cannot then say which cell holds locationInMesh ("is not inside the
+    # mesh or on a face or edge") and stops before it carves - every attempt on the centred
+    # tee_wye_018_fluid did, and the untouched background box read back as an exterior leak.
+    # The point the mesher gets is the centre of the finest cell (_HARD_MAX_LEVEL) holding the
+    # seed, on the box as written: strictly inside one cell at every level, and never more
+    # than half a finest cell from the seed.
+    location = _off_grid(interior_point, [float(f"{v:.6g}") for v in dmin],
+                         [float(f"{v:.6g}") for v in dmax], div, _HARD_MAX_LEVEL)
 
     # THE SEED BUBBLE. locationInMesh decides which region survives; interior cells far
     # from any surface stay at the BACKGROUND size, and a background cell containing the
@@ -917,6 +1015,12 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
         min_tet, relaxed_no, n_relaxed, medial = "1e-13", 65, 6, 0.3
     else:
         min_tet, relaxed_no, n_relaxed, medial = "-1e30", 75, 20, 0.5
+    # minVol from the finest wall cell this case refines to (layer_min_vol): a passage a few
+    # millimetres across has layer cells far below the tutorials' absolute 1e-13 m^3
+    _top = max([smax, flevel, near_level, *port_lvls.values(),
+                *(min(_HARD_MAX_LEVEL, smin + int(r.get("level_bump", 1))) for r in _thin)])
+    _min_vol = layer_min_vol(min(dext[i] / max(div[i], 1) for i in range(3)) / (2 ** _top),
+                             n_layers=n_layers, min_thickness_rel=0.05)
     (ws / "system" / "snappyHexMeshDict").write_text(
         _HDR.format(cls="dictionary", obj="snappyHexMeshDict") + f"""
 castellatedMesh true; snap true; addLayers {'true' if n_layers > 0 else 'false'};
@@ -925,7 +1029,7 @@ castellatedMeshControls {{ maxLocalCells {max_cells}; maxGlobalCells {max_cells}
   maxLoadUnbalance 0.10; nCellsBetweenLevels 3; features ( {feat_entries} );
   refinementSurfaces {{ {refine_surfs} }} resolveFeatureAngle 30;
   refinementRegions {{ {wall} {{ mode distance; levels (({near_dist:.6g} {near_level})); }} {port_regions}{thin_refine}seedZone {{ mode inside; levels ((1e15 {smin})); }} }}
-  locationInMesh {vf(interior_point)}; allowFreeStandingZoneFaces true; }}
+  locationInMesh ({location[0]:.12g} {location[1]:.12g} {location[2]:.12g}); allowFreeStandingZoneFaces true; }}
 snapControls {{ nSmoothPatch 3; tolerance 2.0; nSolveIter 50; nRelaxIter 8; nFeatureSnapIter 15;
   implicitFeatureSnap false; explicitFeatureSnap true; multiRegionFeatureSnap false; }}
 addLayersControls {{ relativeSizes true; layers {{ {wall} {{ nSurfaceLayers {n_layers}; }} }}
@@ -934,13 +1038,13 @@ addLayersControls {{ relativeSizes true; layers {{ {wall} {{ nSurfaceLayers {n_l
   maxFaceThicknessRatio 0.5; maxThicknessToMedialRatio {medial}; minMedialAxisAngle 90;
   nBufferCellsNoExtrude 0; nLayerIter 50; nRelaxedIter {n_relaxed}; }}
 meshQualityControls {{ maxNonOrtho 65; maxBoundarySkewness 20; maxInternalSkewness 4; maxConcave 80;
-  minVol 1e-13; minTetQuality {min_tet}; minArea -1; minTwist 0.02; minDeterminant 0.001;
+  minVol {_min_vol:.3g}; minTetQuality {min_tet}; minArea -1; minTwist 0.02; minDeterminant 0.001;
   minFaceWeight 0.02; minVolRatio 0.01; minTriangleTwist -1; nSmoothScale 4; errorReduction 0.75;
   relaxed {{ maxNonOrtho {relaxed_no}; maxInternalSkewness 4; }} }}
 mergeTolerance 1e-6; debug 0;
 """)
     return {"divisions": div, "surface_level": [smin, smax], "feature_level": flevel,
-            "location_in_mesh": [round(x, 5) for x in interior_point], "max_cells": max_cells,
+            "location_in_mesh": [round(x, 9) for x in location], "max_cells": max_cells,
             "n_layers": n_layers, "domain_min": [round(x, 4) for x in dmin],
             "domain_max": [round(x, 4) for x in dmax], "patches": list(names.values()),
             "port_levels": {names[p]: port_lvls[p] for p in port_lvls if p in names},
