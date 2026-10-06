@@ -3743,6 +3743,19 @@
   "roots": []
  },
  {
+  "context": "engines/snappy_multiregion/thermal_fidelity.py::_touching::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/snappy_multiregion/thermal_fidelity.py",
+  "qualname": "_touching",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "errors.py::record_dead_letter::error#1|NotAPublisher|not-a-publisher|",
   "path": "errors.py",
   "qualname": "record_dead_letter",
