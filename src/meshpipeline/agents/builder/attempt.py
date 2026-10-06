@@ -209,8 +209,8 @@ def _stage_declared(workspace: Path, geometry, state, engine: str) -> None:
     """Engine-owned preparation that needs the INTAKE, not just the file: an engine exposing
     `stage_declared` (vmtk opens a CAD body at the declared inlet/outlet faces) gets the
     declared ports and the input kind here, once the shared surface is staged. Nothing to
-    stage, or an engine without the hook, is a no-op; a staging failure is logged and the
-    attempt proceeds on the shared surface, where the engine's own inspection says why."""
+    stage, or an engine without the hook, is a no-op; a staging FAILURE is recorded with its
+    reason (_record_staging_failure) and the builder ends the attempt on it."""
     from meshpipeline.engines.runtime import get_engine
     try:
         fn = getattr(get_engine(engine), "stage_declared", None)
@@ -218,6 +218,11 @@ def _stage_declared(workspace: Path, geometry, state, engine: str) -> None:
         fn = None
     if fn is None or geometry is None:
         return
+    # A replay of this same attempt (graph.node_infra_retry, after a failure on our side) stages
+    # again in the same workspace: the earlier pass's record is no longer this pass's verdict.
+    if staging_failure(workspace) is not None:
+        from meshpipeline.engines.preflight import clear_refusal
+        clear_refusal(workspace)
     if (workspace / "vmtk_staging.json").exists():
         return                                  # carried forward from the previous attempt
     try:
@@ -226,13 +231,71 @@ def _stage_declared(workspace: Path, geometry, state, engine: str) -> None:
         rec = fn(workspace, geometry_path=geometry.path, prepared=consumed,
                  intake_patches=state.get("intake_patches") or [],
                  input_kind=str(state.get("input_kind") or ""))
-    except Exception:  # noqa: BLE001 - reported by the engine's inspection, never fatal here
-        logger.exception("Builder: engine staging failed (engine=%s) - continuing on the "
-                         "shared surface", engine)
+    except _SYSTEM_ERRORS as exc:
+        # OUR side (a disk write, memory, a timeout): nothing about the file, and not the same
+        # next time. Recorded as ours - the attempt stops on it and the run may try again - never
+        # as the file's refusal, and never left for the builder to stumble over a missing input.
+        logger.exception("Builder: engine staging hit a system error (engine=%s) - the attempt "
+                         "stops, and may be tried again", engine)
+        _record_staging_failure(workspace, engine, exc, ours=True)
+        return
+    except Exception as exc:  # noqa: BLE001 - recorded as the attempt's reason, never a crash
+        logger.exception("Builder: engine staging failed (engine=%s) - the attempt stops on the "
+                         "recorded reason", engine)
+        _record_staging_failure(workspace, engine, exc)
         return
     if rec:
         logger.info("Builder: engine staged the declared geometry (engine=%s, ports=%d)",
                     engine, len(rec.get("ports") or []))
+
+
+#: The gate key a staging refusal is recorded under (engines/preflight.py's refusal record).
+STAGING_GATE = "staging"
+
+#: What the builder's turn ends with when staging failed on OUR side (errors.py classifies it as
+#: transient): graph.node_infra_retry waits, then prepares the SAME attempt again, spending none of
+#: the mesh-retry ladder; past its replay budget the run ends as our failure, never the file's.
+STAGING_SYSTEM_FAILURE = "<<API_FAILURE:builder_staging_system>>"
+
+#: Staging errors that are the system's, not the file's: a write that failed, memory, a time limit.
+#: They say nothing about the upload, and a later attempt may well not meet them.
+_SYSTEM_ERRORS: tuple[type[BaseException], ...] = (OSError, MemoryError, TimeoutError)
+
+
+def _record_staging_failure(workspace: Path, engine: str, exc: BaseException, *,
+                            ours: bool = False) -> None:
+    """THE ENGINE COULD NOT PREPARE ITS INPUT, recorded with its reason. It used to be logged and
+    swallowed: the builder ran on without the staged input (job a76e3ca1 spent 15 minutes looking
+    for a lumen that was never written) and the run ended as "the mesher stopped", with the one
+    fact that explained it lost. The executor reports the record while no mesh exists.
+
+    From the FILE (the default), it is deterministic - the same file stages the same way every
+    time - so it is not retried. From OUR side (`ours`: disk, memory, a time limit), it is our
+    infrastructure, said as ours, and the run may try again."""
+    from meshpipeline.contracts.failure_cause import FailureCause
+    from meshpipeline.engines.preflight import PreflightRefusal
+    from meshpipeline.engines.registry import engine_label
+    reason = " ".join(str(exc).split())[:300] or type(exc).__name__
+    PreflightRefusal(
+        gate=STAGING_GATE,
+        cause=(FailureCause.RUN_INFRASTRUCTURE if ours else FailureCause.NOT_BUILT).value,
+        builder_text=f"[STAGING_FAILED] {engine}: {reason}",
+        facts={"engine": engine_label(engine), "stage": "staging", "reason": reason,
+               "deterministic": not ours, "ours": ours, "before_meshing": True}).write(workspace)
+
+
+def staging_failure(workspace: Path):
+    """The staging refusal this attempt recorded, or None."""
+    from meshpipeline.engines.preflight import read_refusal
+    refusal = read_refusal(workspace)
+    return refusal if refusal is not None and refusal.gate == STAGING_GATE else None
+
+
+def _same_dir(a: Path, b: Path) -> bool:
+    try:
+        return a.resolve() == b.resolve()
+    except OSError:
+        return False
 
 
 def _carry_forward(prev: Path, workspace: Path, engine: str, job_id: str) -> None:
@@ -303,7 +366,10 @@ def prepare(state, *, job_id: str, mode: str) -> BuilderAttempt:
         # valid retry mesh.
         request_txt, review_brief_txt = _context_files(workspace, state, source_path)
         prev = Path(state.get("openfoam_workspace", ""))
-        if prev.is_dir():
+        # A REPLAY of this same attempt (graph.node_infra_retry, after a failure on our side)
+        # comes back to the workspace it left: what it carried is already here, and copying it
+        # onto itself would raise (shutil.SameFileError) before staging could run again.
+        if prev.is_dir() and not _same_dir(prev, workspace):
             _carry_forward(prev, workspace, engine, job_id)
         _ensure_surface(workspace, geometry, source_path, engine, job_id)
         if source_path and Path(source_path).exists():

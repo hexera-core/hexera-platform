@@ -206,6 +206,39 @@ class RunPolicy:
     submit_hint: str                  # coaching when submit is premature
 
 
+def _label(name: str) -> str:
+    from meshpipeline.contracts.display_names import display_name
+    return display_name("mesh_engine", name)
+
+
+def _mm(v: object) -> str:
+    try:
+        x = float(v) * 1000.0      # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return "?"
+    return f"{x:.3g}" if abs(x) < 100 else f"{x:.0f}"
+
+
+def _crossing_words(report: object) -> str:
+    """Where a self-intersection is and how big, in millimetres, from the measured report
+    (cad/surface_checks.self_intersection_report) - '' when there is none."""
+    if not isinstance(report, dict):
+        return ""
+    try:
+        n = int(report.get("pairs") or 0)
+        at = [_mm(v) for v in (report.get("first_at_m") or [])][:3]
+        region = [_mm(v) for v in (report.get("region_m") or [])][:3]
+    except (TypeError, ValueError):
+        return ""
+    if n <= 0 or len(at) != 3:
+        return ""
+    places = f"{n}{' or more' if report.get('more') else ''} place{'s' if n != 1 else ''}"
+    where = f" in {places} - first near x={at[0]}, y={at[1]}, z={at[2]} mm"
+    if len(region) == 3:
+        where += f", within about {region[0]} x {region[1]} x {region[2]} mm"
+    return where
+
+
 def _region_source(evidence) -> str:
     return str((evidence.surface_analysis or {}).get("region_source") or "")
 
@@ -813,11 +846,13 @@ class EngineSpec:
         # cannot mesh it, so it is rejected here rather than after wasted build attempts.
         # The flag is set upstream (builder geometry_report) only for engines that require it.
         if ic.require_no_self_intersection and analysis.get("self_intersecting"):
-            return ("[GEOMETRY_UNSUITABLE] the input surface self-intersects - its triangles "
-                    "pass through each other, so it does not bound a solid volume and no "
-                    f"tetrahedral fill is possible. This is a defect in the GEOMETRY, not the "
-                    f"mesh strategy: no {self.name} parameter (edge length, layers, capping) "
-                    "can fix it. The surface must be repaired or replaced upstream.")
+            return ("[GEOMETRY_UNSUITABLE] the input surface self-intersects"
+                    + _crossing_words(analysis.get("self_intersection"))
+                    + f": there its triangles pass through each other, so it encloses no single "
+                    f"volume and {_label(self.name)} cannot fill it. No mesh parameter changes "
+                    "that. Fix the surface where it crosses - in a mesh tool, delete the crossing "
+                    "triangles and close the gap (MeshLab's self-intersecting-face selection, "
+                    "then Close Holes) - or export it again from the source model.")
         if ic.min_thickness_ratio <= 0:
             return ""
         diag = float(analysis.get("diag") or 0.0)

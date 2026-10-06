@@ -79,7 +79,9 @@ def _gate_statement(engine: str, gate_key: str) -> str:
                 return g.proves or g.key
     except Exception:  # noqa: BLE001
         pass
-    return {"domain_extent": "The far-field domain is the size you asked for"}.get(
+    return {"domain_extent": "The far-field domain is the size you asked for",
+            # agents/builder/attempt.STAGING_GATE: the engine's own preparation of the file
+            "staging": "The engine prepared its input from your file"}.get(
         gate_key, "The mesh setup matches what you approved")
 
 
@@ -99,6 +101,52 @@ def _gate_cause(engine: str, gate_key: str, feedback: object) -> str:
         pass
     seam = SEAM_CAUSES.get(gate_key)
     return seam.value if seam is not None else ""
+
+
+def _meshers_started(workspace) -> int | None:
+    from meshpipeline.contracts.mesh_execution import meshers_started, native_runs
+    return meshers_started(native_runs(workspace))
+
+
+def _no_mesh_cause(state, workspace, cause: str, facts: dict) -> tuple[str, dict]:
+    """(cause, facts) for an attempt that ended with no mesh and no refusal on record, read from
+    the attempt's record of native runs (contracts/mesh_execution.native_runs):
+
+    * no mesher started at all          -> NOT_BUILT (the engine stopped while preparing);
+    * the last run ran out of time      -> ENGINE_TIMED_OUT;
+    * the last run never started        -> RUN_INFRASTRUCTURE (never a statement about the input)
+      - positively: it raised, or its log carries the never-started tag;
+    * the last run ran, and its result could not be brought back (the uncollected tag)
+                                        -> RUN_INFRASTRUCTURE, said as a run that RAN;
+    * a mesher ran and left no mesh     -> the finalize seam's cause (the mesher crashed). An
+      RC_INFRASTRUCTURE result with neither tag is snappy's own stage verdict: it ran, and left
+      no valid mesh.
+
+    A workspace whose record this process never opened says nothing, and the seam's cause stands
+    exactly as before."""
+    from meshpipeline.contracts.failure_cause import FailureCause
+    from meshpipeline.contracts.mesh_execution import meshers_started, native_runs
+    runs = native_runs(workspace)
+    if runs is None:
+        return cause, facts
+    started = meshers_started(runs) or 0
+    facts = {**facts, "meshers_started": started}
+    launched = [r for r in runs if not r.get("refused_before_launch")]
+    if started == 0:
+        try:
+            from meshpipeline.engines.registry import get_spec
+            deterministic = get_spec(state.get("engine", "")).build_driver is not None
+        except Exception:  # noqa: BLE001 - an unknown engine claims nothing
+            deterministic = False
+        return FailureCause.NOT_BUILT.value, {**facts, "deterministic": deterministic}
+    last = launched[-1]
+    if last.get("timed_out"):
+        return FailureCause.ENGINE_TIMED_OUT.value, facts
+    if last.get("never_started"):
+        return FailureCause.RUN_INFRASTRUCTURE.value, facts
+    if last.get("uncollected"):
+        return FailureCause.RUN_INFRASTRUCTURE.value, {**facts, "result_uncollected": True}
+    return cause, facts
 
 
 async def node_executor(state: PipelineState) -> dict:
@@ -201,7 +249,18 @@ async def node_executor(state: PipelineState) -> dict:
         # the refused gate speaks for itself, and the user sees which check it was
         failed_gate, failure_cause = _refusal.gate, _refusal.cause
         failure_facts = dict(_refusal.facts)
+        _started = _meshers_started(workspace)
+        if _started is not None:
+            # whether an earlier pass of this attempt did start a mesher: what the attempt is
+            # counted by (engine_fallback.mesher_started)
+            failure_facts["meshers_started"] = _started
         await _pub.acheck(_gate_statement(state.get("engine", ""), _refusal.gate), ok=False)
+    elif not executor_success:
+        # NO MESH, AND NOTHING REFUSED IT: say which of the four it was, from the attempt's record
+        # of native runs - not "the mesher stopped" for every one of them (job d20ad762 was told
+        # its mesher crashed when no mesher had started)
+        failure_cause, failure_facts = _no_mesh_cause(state, workspace, failure_cause,
+                                                      failure_facts)
     executor_output  = result.get("output", "")
     mesh_manifest: dict = {}
     solvability_metrics: dict = {}  # residual/iters/n_cells/info
