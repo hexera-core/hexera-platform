@@ -569,17 +569,27 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
     trsf = _occ_to_metres(prepared)
     shape = BRepBuilderAPI_Transform(shape, trsf, True).Shape()
 
+    # EVERY SOLID OF THE FILE. A file can hold several: an annular passage's pipe and the centre
+    # rod modelled as a body of its own (all ten annular corpus parts), an insert, a baffle, a
+    # tube bundle. The fluid is the space they bound together, so "in the material" means in ANY
+    # of them - the first alone saw the rod and called the pipe's own metal open space.
+    solids: list = []
     solid_exp = TopExp_Explorer(shape, TopAbs_SOLID)
-    if not solid_exp.More():
+    while solid_exp.More():
+        solids.append(TopoDS.Solid_s(solid_exp.Current()))
+        solid_exp.Next()
+    if not solids:
         raise RuntimeError(
             "internal-flow input is not a watertight SOLID - the fluid volume must be a "
             "closed solid (a loose surface/shell is the pipe skin, not the flow passage)")
-    solid = TopoDS.Solid_s(solid_exp.Current())
+    classifiers = [BRepClass3d_SolidClassifier(s) for s in solids]
 
     def _inside(p) -> bool:
-        cls = BRepClass3d_SolidClassifier(solid)
-        cls.Perform(gp_Pnt(*p), 1e-9)
-        return cls.State() == TopAbs_IN
+        for cls in classifiers:
+            cls.Perform(gp_Pnt(*p), 1e-9)
+            if cls.State() == TopAbs_IN:
+                return True
+        return False
 
     diag = 0.0
     from OCP.Bnd import Bnd_Box
@@ -730,6 +740,80 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
                 return cand
         return None
 
+    def _owner(face):
+        # the solid a face bounds (None for a face of no solid)
+        for s in solids:
+            fe = TopExp_Explorer(s, TopAbs_FACE)
+            while fe.More():
+                if fe.Current().IsSame(face):
+                    return s
+                fe.Next()
+        return None
+
+    def _less_other_solids(cap, host):
+        # THE LID IS WHAT IS OPEN: the bore less every other solid's footprint in its plane - a
+        # centre rod ending there (or running through it) fills the middle, and a lid over the
+        # rod's own end face would lay the port patch on top of the wall. OpenCASCADE takes off
+        # what lies IN or ON each solid; the faces left are the lid. Returns (faces, area taken).
+        if len(solids) < 2:
+            return [cap], 0.0
+        from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Cut
+
+        g = GProp_GProps(); BRepGProp.SurfaceProperties_s(cap, g)
+        before = g.Mass()
+        cbox = Bnd_Box(); BRepBndLib.Add_s(cap, cbox)
+        result = cap
+        ends: set = set()
+        for s in solids:
+            if host is not None and s.IsSame(host):
+                continue
+            sbox = Bnd_Box(); BRepBndLib.Add_s(s, sbox)
+            if sbox.IsOut(cbox):
+                continue
+            # the solid's own faces lying in the lid, wholly inside the bore: its end faces at
+            # the mouth (they are wall no longer once the lid is cut round them - see below)
+            fe = TopExp_Explorer(s, TopAbs_FACE)
+            while fe.More():
+                sf = TopoDS.Face_s(fe.Current())
+                fe.Next()
+                if BRepAdaptor_Surface(sf).GetType() != GeomAbs_Plane:
+                    continue
+                gs = GProp_GProps(); BRepGProp.SurfaceProperties_s(sf, gs)
+                common = BRepAlgoAPI_Common(sf, cap)
+                if not common.IsDone():
+                    continue
+                gc = GProp_GProps(); BRepGProp.SurfaceProperties_s(common.Shape(), gc)
+                if gs.Mass() > 0 and gc.Mass() >= 0.99 * gs.Mass():
+                    ends.update(i for i, f in enumerate(faces) if f.IsSame(sf))
+            cut = BRepAlgoAPI_Cut(result, s)
+            if not cut.IsDone():
+                # half a cut is worse than none: the whole lid stays as it was, and so does the wall
+                logger.error("tessellate_internal: could not take a solid's footprint off a port "
+                             "lid - the lid spans the whole bore, as for a single solid")
+                return [cap], 0.0
+            result = cut.Shape()
+        g = GProp_GProps(); BRepGProp.SurfaceProperties_s(result, g)
+        taken = max(before - g.Mass(), 0.0)
+        if taken <= 1e-6 * before:
+            return [cap], 0.0
+        left = []
+        fe = TopExp_Explorer(result, TopAbs_FACE)
+        while fe.More():
+            lf = TopoDS.Face_s(fe.Current())
+            gl = GProp_GProps(); BRepGProp.SurfaceProperties_s(lf, gl)
+            if gl.Mass() > 1e-9 * before:
+                BRepMesh_IncrementalMesh(lf, lin, False, angular_deflection, True)
+                if _triangles_of(lf):
+                    left.append(lf)
+            fe.Next()
+        if left:
+            lidded_ends.update(ends)  # a bore filled whole has no lid to meet them: they stay
+        return left, taken
+
+    port_bored: set = set()           # port faces whose bore holes were lidded
+    port_filled: set = set()          # ...of which another solid fills part, room left round it
+    lidded_ends: set = set()          # other solids' faces lying in a lid, inside its bore
+
     def _mouth_caps(port_i):
         """Cap face(s) that SEAL a hollow part's port mouth.
 
@@ -750,6 +834,7 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
             return []
         outer_w = BRepTools.OuterWire_s(f)
         pln = BRepAdaptor_Surface(f).Plane()
+        host = _owner(f)
         caps = []
         for wire in wires:
             if wire.IsSame(outer_w):
@@ -762,10 +847,20 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
                     "internal carve may keep the exterior void (finalize flags it)",
                     port_i)
                 continue
-            caps.append(cap)
+            port_bored.add(port_i)
+            left, taken = _less_other_solids(cap, host)
+            if taken > 0.0 and left:
+                port_filled.add(port_i)
+                logger.info("tessellate_internal: port face %d - another solid fills %.0f mm^2 of "
+                            "its bore; the lid is the %d face(s) left open", port_i, taken * 1e6,
+                            len(left))
+            elif taken > 0.0:
+                logger.warning("tessellate_internal: port face %d - another solid fills its whole "
+                               "bore; nothing is left open to lid", port_i)
+            caps.extend(left)
         if caps:
             logger.info("tessellate_internal: annular port face %d - sealed %d bore "
-                        "hole(s) so the port STL closes the full mouth", port_i, len(caps))
+                        "hole(s) so the port STL closes the mouth", port_i, len(caps))
         return caps
 
     # #
@@ -974,6 +1069,28 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
     for nm in outlet_names:
         stls[nm] = out_dir / f"{nm}.stl"
     port_caps = {pi: _mouth_caps(pi) for pi in (inlet_i, *outlet_ids)}
+
+    # verified interior point for locationInMesh. WHICH region is the flow comes first:
+    #   * a declared fluid domain, or an undeclared solid: the solid IS the flow (a duct modeled
+    #     as a rod, an annular passage), and a point inside it is in the flow;
+    #   * a solid declared a BODY whose ports are rings with capped bores: the solid is the
+    #     METAL of a hollow wall, and the flow is the cavity the wall closes with its port caps.
+    #     No point inside the solid is ever the seed there - a thick part's volume centroid
+    #     sits in its metal, and a carve seeded there meshes the wall whole, with no stray
+    #     patch to give it away;
+    #   * a body whose ports are plain discs is a rod the user called a body: the solid again;
+    #   * a file that does not say, whose port bores hold ANOTHER solid with room left round it
+    #     (a centre rod, an insert): the flow is that room between the solids, so every solid
+    #     is wall - read as the solids themselves, the seed landed in the pipe's metal.
+    hollow_wall = bool(port_bored) and (
+        fluid_solid is False or (fluid_solid is None and bool(port_filled)))
+    if hollow_wall and lidded_ends:
+        # The other solids' end faces a lid was cut round are no boundary of the flow: the flow
+        # stops at the lid, and those faces only close the solid off from the outside. Kept, they
+        # close it into a region of its own - cfMesh meshed annular_001's rod (the largest
+        # closed region), not the annulus round it. The lid and the solid's side wall meet edge
+        # to edge without them.
+        wall_idx = [i for i in wall_idx if i not in lidded_ends]
     _write_group(wall_idx, stls["wall"], extra_faces=undeclared_caps)
     _write_group([inlet_i], stls["inlet"], extra_faces=port_caps[inlet_i])
     for nm, oi in zip(outlet_names, outlet_ids):
@@ -1010,16 +1127,7 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
             "internal carve may keep the exterior void (finalize flags it)",
             sum(1 for r in open_rims if not r["sealed"]))
 
-    # verified interior point for locationInMesh. WHICH region is the flow comes first:
-    #   * a declared fluid domain, or an undeclared solid: the solid IS the flow (a duct modeled
-    #     as a rod, an annular passage), and a point inside it is in the flow;
-    #   * a solid declared a BODY whose ports are rings with capped bores: the solid is the
-    #     METAL of a hollow wall, and the flow is the cavity the wall closes with its port caps.
-    #     No point inside the solid is ever the seed there - a thick part's volume centroid
-    #     sits in its metal, and a carve seeded there meshes the wall whole, with no stray
-    #     patch to give it away;
-    #   * a body whose ports are plain discs is a rod the user called a body: the solid again.
-    hollow_wall = fluid_solid is False and any(port_caps.values())
+    # (which region is the flow - hollow_wall - is read above, before the groups were written)
 
     def _plane_basis(n):
         # two in-plane unit vectors: any vector not parallel to n, made orthogonal, and n x it
@@ -1033,11 +1141,13 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
 
     interior: tuple | None = None
     if not hollow_wall:
-        # Candidates, cheapest-first: volume centroid, then each port centroid nudged inward
-        # along its (oriented) normal.
-        gv = GProp_GProps(); BRepGProp.VolumeProperties_s(solid, gv)
-        vc = gv.CentreOfMass()
-        candidates = [(vc.X(), vc.Y(), vc.Z())]
+        # Candidates, cheapest-first: each solid's volume centroid, then each port centroid nudged
+        # inward along its (oriented) normal.
+        candidates = []
+        for s in solids:
+            gv = GProp_GProps(); BRepGProp.VolumeProperties_s(s, gv)
+            vc = gv.CentreOfMass()
+            candidates.append((vc.X(), vc.Y(), vc.Z()))
         for pi in (inlet_i, *outlet_ids):
             f = faces[pi]
             area, c = _face_props(f)
@@ -1076,7 +1186,23 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
                 on_ring = [c[k] + r_mid * d[k] for k in range(3)]
                 for sign in (-1.0, 1.0):
                     candidates.append(tuple(on_ring[k] + sign * step * n[k] for k in range(3)))
-        interior = next((p for p in candidates if _inside(p)), None)
+        # THE SOLID IS THE FLOW - but which, when there are several? The one the ports belong to:
+        # an annular fluid with a separate insert down its middle is the annulus, and its centroid,
+        # on the axis, lies in the insert. A point in a solid that carries no port is in a body.
+        owners = [o for o in (_owner(faces[pi]) for pi in (inlet_i, *outlet_ids)) if o is not None]
+        flow_cls = [c for s, c in zip(solids, classifiers) if any(s.IsSame(o) for o in owners)] or classifiers
+        body_cls = [c for c in classifiers if all(c is not f for f in flow_cls)]
+
+        def _in_flow(p) -> bool:
+            def _in(cls_list) -> bool:
+                for cls in cls_list:
+                    cls.Perform(gp_Pnt(*p), 1e-9)
+                    if cls.State() == TopAbs_IN:
+                        return True
+                return False
+            return _in(flow_cls) and not _in(body_cls)
+
+        interior = next((p for p in candidates if _in_flow(p)), None)
     if interior is None and fluid_solid:
         # A DECLARED fluid domain is the fluid: a point that is not inside the solid is not in
         # the flow, whatever the hollow-wall search below would make of it. Refuse loudly
