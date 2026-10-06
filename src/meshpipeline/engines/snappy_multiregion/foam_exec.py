@@ -44,7 +44,11 @@ _CM = {
 }
 _FATAL = (("negative volume", "negative-volume cells"),
           ("open cell", "open cells"),
-          ("incorrectly oriented", "incorrectly oriented faces"))
+          ("incorrectly oriented", "incorrectly oriented faces"),
+          # checkMesh: "Total number of faces on empty patches is not divisible by the number of
+          # cells in the mesh. Hence this mesh is not 1D or 2D." An `empty` patch on a 3D mesh
+          # (a background block's unnamed outside) makes every solver refuse the case.
+          ("not 1d or 2d", "empty patches on a 3D mesh"))
 
 
 def check_mesh(workspace, *, bashrc: str = _DEFAULT_BASHRC, region: str = "") -> dict:

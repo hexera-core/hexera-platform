@@ -191,6 +191,52 @@ def render_zoned_set_dict(rmap: dict) -> str:
             + "\nactions\n(\n" + "\n".join(acts) + "\n);\n")
 
 
+#: A thermal model's physics (cad/ingest/ecxml_build's sidecar), staged beside the geometry.
+THERMAL_MODEL = "thermal_model.json"
+#: The exterior patches the native stage cuts the fluid's outside into, when the file names them.
+EXTERIOR_PATCHES = "exterior_patches.json"
+
+
+def thermal_exterior_patches(sidecar: dict, *, tol: float) -> list[dict]:
+    """The fluid's outside as the thermal model declares it, as boxes (metres) around each
+    rectangle on a domain side: the fans, vents and plates on the sides first ("device"), then
+    each side ("side"), which keeps what the devices leave of it. Fans and vents are open
+    boundaries (type patch); plates and heat-flux rectangles are walls."""
+    from meshpipeline.contracts.patch_names import mesh_safe, unreserved
+
+    box = (sidecar.get("domain") or {}).get("box_m") or {}
+    lo, hi = box.get("min"), box.get("max")
+    if not (lo and hi):
+        return []
+    rows = [p for p in sidecar.get("patches") or [] if p.get("domain_face")]
+    devices = [p for p in rows if p.get("role") != "domain_boundary"]
+    sides = [p for p in rows if p.get("role") == "domain_boundary"]
+    taken: set[str] = set()
+    out: list[dict] = []
+    for kind, group in (("device", devices), ("side", sides)):
+        for p in group:
+            face = str(p["domain_face"])
+            axis = "xyz".index(face[1])
+            at = float(hi[axis] if face[0] == "+" else lo[axis])
+            b_lo, b_hi = [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]
+            b_lo[axis], b_hi[axis] = at - tol, at + tol
+            for k, a in enumerate(p.get("size_axes") or []):
+                i = "xyz".index(a)
+                c, s = float(p["centre_m"][i]), float(p["size_m"][k])
+                b_lo[i], b_hi[i] = c - s / 2 - tol, c + s / 2 + tol
+            name = base = unreserved(mesh_safe(p.get("name"), fallback=f"side_{face[1]}"))
+            n = 1
+            while name.casefold() in taken:
+                n += 1
+                name = f"{base}_{n}"
+            taken.add(name.casefold())
+            out.append({"name": name, "file_name": p.get("name"), "kind": kind, "face": face,
+                        "role": p.get("role"),
+                        "type": "wall" if p.get("role") in ("wall", "heat_flux") else "patch",
+                        "lo": b_lo, "hi": b_hi})
+    return out
+
+
 def interface_name(region_a: str, region_b: str) -> str:
     return f"{region_a}_to_{region_b}"
 
@@ -538,6 +584,11 @@ def tessellate_to_stl(geom_path, out_stl, *, context=None, prepared=None):
     # the B-rep is staged under its OWN format: an IGES copied to geometry.step was read by the
     # STEP reader and refused ("OpenCASCADE could not read CAD file")
     shutil.copy2(geom_path, ws / f"geometry{Path(geom_path).suffix.lower()}")
+    # a thermal model's physics travels with its geometry: the outside patches are cut from it
+    from meshpipeline.cad.ingest.ecxml_build import SIDECAR_SUFFIX
+    sidecar = Path(str(geom_path) + SIDECAR_SUFFIX)
+    if sidecar.is_file():
+        shutil.copy2(sidecar, ws / THERMAL_MODEL)
     _whole(geom_path, out_stl, prepared=prepared)                # preview of the whole assembly
     solids = read_assembly_solids(geom_path, ws / "_assembly", prepared=prepared)
     (ws / "_assembly" / "solids.json").write_text(json.dumps(solids))
@@ -650,6 +701,14 @@ def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
             break
     (ws / "system" / "blockMeshDict").write_text(
         render_block_mesh(allmins, allmaxs, base_cell, pad=_pad))
+    # A THERMAL MODEL NAMES ITS OWN OUTSIDE. Its domain sides and the fans, vents and plates on
+    # them are exact rectangles in the file (cad/ingest's sidecar, staged as thermal_model.json);
+    # the native stage cuts the fluid's exterior into those patches instead of one wall.
+    (ws / EXTERIOR_PATCHES).unlink(missing_ok=True)
+    thermal = ws / THERMAL_MODEL
+    if thermal.exists() and _pad == 0.0:
+        (ws / EXTERIOR_PATCHES).write_text(json.dumps(
+            thermal_exterior_patches(json.loads(thermal.read_text()), tol=1e-6 * diag)))
     (ws / "system" / "topoSetDict.zoned").write_text(render_zoned_set_dict(rmap))
     (ws / "system" / "snappyHexMeshDict").write_text(
         render_snappy_multiregion_dict(rmap, allmins, allmaxs, surface_level=surface_level,
@@ -855,6 +914,13 @@ def check_mesh(workspace) -> dict:
         q = _single_region_check_mesh(ws, region=name) if (ws / "constant" / name).is_dir() else {}
         cells = int(q.get("cells", 0) or 0)
         total_cells += cells
+        # A MULTI-REGION CASE IS 3D: an `empty` patch in it is a broken case whatever checkMesh's
+        # wording - every solver refuses it - so it is read from the boundary itself too.
+        empties = sorted(p for p, t in _parse_boundary_of_types(
+            ws / "constant" / name / "polyMesh" / "boundary").items() if t == "empty")
+        if empties:
+            q.setdefault("fatal", [])
+            q["fatal"] = list(q["fatal"]) + [f"empty patch(es) {empties} on a 3D mesh"]
         if q.get("fatal"):
             fatal += [f"{name}:{f}" for f in q["fatal"]]
         worst_skew_frac = max(worst_skew_frac, q.get("skew_fraction", 0.0) or 0.0)
