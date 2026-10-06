@@ -622,7 +622,10 @@ def _scout_exact(local_path: Path, work: Path, interp_ref, ref) -> tuple[dict, P
     from meshpipeline.cad.scout import scout_cad, write_view_stl
 
     prepared, unit_note = _prepared_coordinates(local_path, interp_ref, ref)
-    facts = scout_cad(local_path, prepared=prepared).as_dict()
+    # a thermal model states its openings (declared_openings, below); its many solids are not
+    # searched for them
+    declared = {"declared_openings": True} if _thermal_sidecar(local_path) is not None else {}
+    facts = scout_cad(local_path, prepared=prepared, **declared).as_dict()
     facts["read_as"] = "cad"
     facts["unit_assumed"] = bool(unit_note)
     interp = getattr(prepared, "interpretation", None)

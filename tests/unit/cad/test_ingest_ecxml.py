@@ -737,3 +737,21 @@ def test_a_rectangular_opening_reaches_the_patches_as_a_rectangle():
     assert got[0] == {"name": "Inlet_fan", "type": "inlet", "width_mm": 120.0, "height_mm": 36.0,
                       "near_mm": [0.0, 120.0, 12.0]}
     assert got[1] == {"name": "out", "type": "outlet", "diameter_mm": 50.0}
+
+
+def test_the_scout_measures_a_thermal_models_faces_without_searching_for_openings(stb):
+    from meshpipeline.cad.scout import scout_cad
+    from meshpipeline.contracts.coordinate_state import from_occ_transfer
+    from meshpipeline.contracts.geometry_units import GeometryInterpretation, ResolutionBasis
+
+    interp = GeometryInterpretation(
+        interpretation_id="i", owner_id="o", geometry_source_id="s", unit=LengthUnit.millimetre,
+        scale_to_metres=1e-3, basis=ResolutionBasis.file_declared, evidence="ecxml")
+    result = scout_cad(stb["canonical"].path, declared_openings=True,
+                       prepared=from_occ_transfer(interp, LengthUnit.millimetre))
+    facts = result.as_dict()
+    # the file states its openings (declared_openings, in the check); the flat faces are still
+    # measured for the stage, in metres
+    assert facts["openings"] == [] and facts["faces"]
+    assert facts["solids"] == 9
+    assert facts["bbox_max_m"] == pytest.approx([0.15, 0.12, 0.06], abs=1e-9)
