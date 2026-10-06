@@ -122,6 +122,34 @@ def test_blocks_meet_with_hanging_nodes_and_every_cell_still_closes():
     assert min(edges.values()) >= 2
 
 
+def test_a_part_that_reaches_a_block_on_some_axes_only_is_not_looked_up_there():
+    """server_1u / heatsink_plate_fin_duct regression: a heat sink's bounding box (or a vent, or
+    a patch) overlapping a block on x but not on y must not have its x faces looked up in that
+    block - they need not be its planes."""
+    from meshpipeline.cad.ingest.ecxml_build import _Box
+
+    grid = G.Grid(lines=[np.array([0.0, 0.1, 0.2]), np.array([0.0, 0.1]), np.array([0.0, 0.1])],
+                  plan=G.GridPlan())
+    # x bound 0.15 is no plane of this grid, and the box does not reach it on y at all
+    assert G._slice(grid, _Box([0.05, 0.2, 0.0], [0.15, 0.3, 0.1]), 1e-9) is None
+    doc = Ecxml("Split sink")
+    doc.material("Al", 2700, 900, 0.1, ("isotropic", 200))
+    doc.domain((0, 0, 0), (0.2, 0.2, 0.05))
+    # two blocks far apart: the sink's bounding box spans regions none of its blocks reach
+    doc.heatsink("Sink", [("A", (0.01, 0.01, 0.01), (0.004, 0.004, 0.02), "Al", 0.0),
+                          ("B", (0.15, 0.15, 0.01), (0.004, 0.004, 0.02), "Al", 0.0)])
+    for k in range(12):
+        doc.block(f"P{k}", (0.03 + 0.009 * k, 0.12, 0.01), (0.002, 0.002, 0.001), "Al")
+    from meshpipeline.engines.snapgrid import blocks as B
+
+    pl = place(read_ecxml(doc.xml()))
+    layout = B.decompose(B.geometry_of(pl, G.GridPlan()), G.GridPlan(), 0.01, leaf_cells=64)
+    assert len(layout.blocks) > 2
+    B.paint_blocks(pl, layout)                      # raised "not a grid plane" before
+    painted = sum(int((blk.zone == 0).sum()) for blk in layout.blocks)
+    assert painted > 0
+
+
 # ------------------------------------------------------------------------------ the grid ------
 def test_the_grid_holds_every_plane_the_model_states_and_grows_smoothly():
     pl = place(read_ecxml(tiny_board().xml()))
