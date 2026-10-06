@@ -154,6 +154,9 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
     # boundary faces of each region once they are cut apart: keep their skewness under the bar
     # checkMesh reads on a region (the cells there are cut; the blocks come back painted)
     skew_hold = B.hold_interface_skew(placement, layout) if local else {}
+    if skew_hold.get("lines_added") and layout.n_cells > plan.max_cells:
+        layout, skew_hold = _back_within_budget(placement, plan, layout, skew_hold)
+        report["plan_used"], report["relaxed"] = asdict(layout.plan), layout.relaxed
     report["interface_skew"] = skew_hold
     report["layers_budget"] = layout.layers_budget
     # a cylinder lying on a box part touches it along a LINE: the cells of its staircase that
@@ -302,6 +305,35 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
     return SnapgridMesh(case=case, report=report, sidecar=sidecar,
                         regions=[{"name": r["name"], "type": r["type"], "cells": r["cells"]}
                                  for r in regions])
+
+
+def _back_within_budget(placement: Placement, plan: G.GridPlan, layout: B.Layout,
+                        hold: dict) -> tuple[B.Layout, dict]:
+    """The interface hold cut cells after the grid was sized, so it can end over the budget. The
+    grid is sized again for what the hold costs; the new one is kept only when it is within the
+    budget AND keeps every cell through the layers the first one kept (cells through a layer are
+    never traded for skewness). Otherwise the first stays, over the budget, and says so."""
+    over = layout.n_cells
+    sized = max(1000, int(plan.max_cells * plan.max_cells / over * 0.98))
+    try:
+        trial = B.build_layout(placement, G._replace(plan, max_cells=sized))
+    except G.OverBudget:
+        trial = None
+    if trial is not None:
+        B.paint_blocks(placement, trial)
+        hold2 = B.hold_interface_skew(placement, trial)
+        same = (trial.plan.min_cells_across >= layout.plan.min_cells_across
+                and trial.plan.cylinder_cells >= layout.plan.cylinder_cells)
+        if same and trial.n_cells <= plan.max_cells:
+            trial.layers_budget = max(trial.layers_budget, layout.layers_budget)
+            trial.relaxed = [r.replace(f"({sized:,})", f"({plan.max_cells:,}, less what the "
+                                       "interface cuts cost)") for r in trial.relaxed]
+            return trial, {**hold2, "resized_for_budget": True}
+    layout.relaxed = list(layout.relaxed) + [
+        f"the cuts that keep every interface under the skewness bar took the mesh to "
+        f"{over:,} cells, over the budget of {plan.max_cells:,} (a grid sized down for them "
+        "did not fit without costing cells through the thin layers)"]
+    return layout, {**hold, "over_budget": over - plan.max_cells}
 
 
 def _zone_at(layout: B.Layout, bounds: tuple[np.ndarray, np.ndarray], pts: np.ndarray

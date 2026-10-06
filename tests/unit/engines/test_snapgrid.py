@@ -151,6 +151,24 @@ def test_a_part_that_reaches_a_block_on_some_axes_only_is_not_looked_up_there():
 
 
 # ------------------------------------------------------------------------------ the grid ------
+def test_interfaces_at_block_steps_stay_under_the_regions_skewness_bar():
+    # where a hanging-node face lands on an interface between two regions, each region reads it
+    # as a boundary face once they are cut apart: its skewness there is held under the bar by
+    # cutting the coarse cell, at a few per cent of cells - not by refining every block face
+    from meshpipeline.engines.snapgrid import blocks as B
+
+    pl = place(read_ecxml(set_top_box().xml()))
+    lay = B.build_layout(pl, G.GridPlan(max_cells=150_000))
+    B.paint_blocks(pl, lay)
+    before = B.interface_skew(lay)
+    n0 = lay.n_cells
+    assert before and max(r["worst"] for r in before) > B.MAX_INTERFACE_SKEW
+    held = B.hold_interface_skew(pl, lay)
+    assert held["pieces_left"] == 0 and not B.interface_skew(lay)
+    assert held["pieces_before"] == sum(r["pieces"] for r in before)
+    assert n0 < lay.n_cells < 1.1 * n0
+
+
 def test_the_grid_holds_every_plane_the_model_states_and_grows_smoothly():
     pl = place(read_ecxml(tiny_board().xml()))
     grid = G.build_grid(pl, G.GridPlan(max_cells=10**6, growth=1.3))
