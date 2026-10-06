@@ -51,6 +51,12 @@ CELLS_PER_SURFACE = 4.5
 #: Meshing time on the lab (4 cores, the same four meshes): 380-530 s per million cells; the slow
 #: end, since deeper refinement is not faster.
 SECONDS_PER_MILLION_CELLS = 530.0
+#: ...and per region on top of that, per million cells: snapping to every region's surface, one
+#: zone per region, the split and a checkMesh per region all grow with both. A 102-part board
+#: took 2.9 s per region per million cells; a 502-part one at least 1.1 and was still running at
+#: 70 minutes (snappy alone 44 min). The low end, so a board is refused only when even it is
+#: too slow.
+SECONDS_PER_REGION_MILLION_CELLS = 1.0
 #: The share of the run's time limit a planned mesh may use.
 TIME_SHARE = 0.8
 #: The way on, wherever this engine cannot keep the file's layers.
@@ -187,15 +193,17 @@ def plan(sidecar: dict, mapping: dict[str, list[str]], kinds: dict[str, str], ba
         if kinds.get(d) == "solid":
             per[d] = CELLS_PER_SURFACE * area[d] * (2 ** levels[d][0] / base_cell) ** 2
             cells += per[d]
-    seconds = cells / 1e6 * SECONDS_PER_MILLION_CELLS
-    by_time = TIME_SHARE * timeout_s / SECONDS_PER_MILLION_CELLS * 1e6
+    per_mcell = SECONDS_PER_MILLION_CELLS + SECONDS_PER_REGION_MILLION_CELLS * len(mapping)
+    seconds = cells / 1e6 * per_mcell
+    by_time = TIME_SHARE * timeout_s / per_mcell * 1e6
     limit = min(float(budget_cells), by_time)
     out = Plan(levels=levels, raised=raised, cells=cells, seconds=seconds, limit_cells=limit)
     if cells > limit and per:
         worst = max(per, key=lambda d: per[d])
         why = need[worst][1] if worst in need else f"{worst}'s surface is large"
         cap = (f"the {_cells(budget_cells)}-cell budget" if budget_cells <= by_time else
-               f"the {_cells(by_time)} cells meshable in {TIME_SHARE * timeout_s / 60:.0f} minutes")
+               f"the {_cells(by_time)} cells meshable in {TIME_SHARE * timeout_s / 60:.0f} minutes"
+               f" with {len(mapping)} regions")
         # the verdict and the way on first: a caller that shortens the message keeps both
         out.refusal = (
             f"snappy cannot mesh this thermal model faithfully within its limits - {OPTION_B}. "

@@ -44,6 +44,10 @@ def test_a_layer_too_thin_for_its_level_is_raised_to_three_cells_across(package)
     assert any(r.startswith("Die_attach: surface level 2 -> 6") and "25 um thick" in r
                for r in p.raised)
     assert p.levels["air"] == [2, 2]              # the air follows the solids around it
+    # the time grows with the regions too (a 502-part board's snappy alone took 44 minutes)
+    per_mcell = (TF.SECONDS_PER_MILLION_CELLS
+                 + TF.SECONDS_PER_REGION_MILLION_CELLS * len(package["regions"]))
+    assert p.seconds == pytest.approx(p.cells / 1e6 * per_mcell)
 
 
 def test_a_model_whose_layers_need_more_than_the_budget_is_refused_naming_option_b(package):
