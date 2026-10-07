@@ -26,10 +26,11 @@ def test_an_expired_upload_is_the_users_next_step_not_our_outage():
     assert "on our side" not in msg and "try again in a few minutes" not in msg
 
 
-def test_a_rejected_geometry_says_fix_the_cad_and_re_upload():
+def test_a_rejected_geometry_says_fix_the_file_and_re_upload():
     msg = user_message_for(FailureClass.DOMAIN_REJECTED,
                            reason="the surface self-intersects (12 faces)")
-    assert "CAD file" in msg and "not our systems" in msg
+    # the uploaded file has the problem, whatever kind it is - an STL is not a "CAD file"
+    assert "geometry file" in msg and "CAD file" not in msg and "not our systems" in msg
     assert "self-intersects" in msg
     assert msg.endswith("Fix the geometry and upload it again.")
     assert "quality checks" not in msg

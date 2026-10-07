@@ -116,28 +116,43 @@ def _measure_opening(poly) -> dict:
 
 def stage_lumen(workspace, geom_path, *, prepared, intake_patches: list,
                 input_kind: str = "") -> dict | None:
-    """From a CAD body and the intake's declared ports, write into the workspace:
+    """From the uploaded geometry and the intake's declared ports, write into the workspace:
       lumen_open.vtp     the fluid WALL only, its port faces removed (real holes), rims refined
       lumen.vtp          the same surface (what geometry_report inspects; the pype overwrites it
                          with the remeshed lumen)
       vmtk_staging.json  ports (declared name, role, centroid, size), seeds, sizing
-    Returns the record, or None when this does not apply (not CAD, or nothing declared).
+    A CAD body is opened on its B-rep. Any other upload is the staged metre surface (input.stl):
+    the shared internal-flow staging (cad/internal_surface) closes it at the confirmed openings
+    and names them, and its wall - the lumen with real holes where the openings are - is what
+    vmtk reads, whether the file came with open ends, capped ends or a thick wall.
+    A STEP whose B-rep cannot be separated (a faceted shell, an opening that is not a flat face)
+    is staged from its own surface the same way.
+    Returns the record, or None when this does not apply (nothing declared - then a surface upload
+    is still written as lumen.vtp as it stands, for geometry_report to list its open profiles).
     Geometry failures propagate: a body that cannot be opened is reported, not guessed around."""
     ws = Path(workspace)
     geom = Path(geom_path)
-    if not is_cad(geom):
-        return None
     from meshpipeline.engines.port_binding import declaration_targets
     targets = declaration_targets(intake_patches or [])
+    surface = ws / "input.stl"
     if not targets:
+        if not is_cad(geom) and surface.exists() and not (ws / "lumen.vtp").exists():
+            import pyvista as pv
+            # points welded: an STL repeats each corner per triangle, and unwelded every edge
+            # would read as an open profile
+            pv.read(str(surface)).extract_surface(algorithm="dataset_surface").clean().save(str(ws / "lumen.vtp"))
         return None
     roles = {str(p.get("name")): str(p.get("type"))
              for p in (intake_patches or []) if isinstance(p, dict) and p.get("name")}
-    from meshpipeline.cad.cad_tessellate import tessellate_internal
-    # the same reading of input_kind the snappy driver applies to the same intake fact
-    fluid_solid = str(input_kind or "").strip() == "fluid-domain"
-    res = tessellate_internal(geom, ws / "_lumen_stls", prepared=prepared, declared_ports=targets,
-                              fluid_solid=fluid_solid, angular_deflection=ANGULAR_DEFLECTION)
+    if not is_cad(geom) and not surface.exists():
+        return None
+    from meshpipeline.cad.internal_surface import stage_internal
+    # one call for every source: a B-rep is opened on its faces (and, when it cannot be, staged
+    # from its own surface); any other upload is input.stl closed at the confirmed openings, its
+    # ports already under their declared names, so the binding below finds each at distance zero
+    res = stage_internal(geom, ws, prepared=prepared, intake_patches=intake_patches or [],
+                         input_kind=input_kind, out_name="_lumen_stls", declared_ports=targets,
+                         cad_kwargs={"angular_deflection": ANGULAR_DEFLECTION})
     import pyvista as pv
     stls = dict(res["stls"])
     measured = []

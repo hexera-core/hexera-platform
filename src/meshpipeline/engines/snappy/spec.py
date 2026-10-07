@@ -11,6 +11,7 @@ from meshpipeline.engines.base import (
     DeliveredMesh,
     DownstreamTarget,
     EngineSpec,
+    FlowSupport,
     InputContract,
     MeshCapability,
     RunPolicy,
@@ -181,7 +182,19 @@ SPEC = EngineSpec(
                       # inlet/outlet mouths, not a far-field box.
                       MeshCapability("fluid-domain", "fluid-volume",
                                      topologies=("internal",))),
+        # WHAT FILE IT TAKES, per flow - the true path on main. EXTERNAL wraps a surface, so a CAD
+        # solid (tessellated first) and a surface mesh both reach it. INTERNAL carves the fluid out
+        # of a CAD solid (cad_tessellate.tessellate_internal): the openings and the interior point
+        # are read off the solid's faces, and the driver refuses a surface (drivers.py,
+        # _build_internal_deterministic). When surface internal flow lands, widen it here.
+        accepts=(FlowSupport("external", ("cad", "surface")),
+                 FlowSupport("internal", ("cad",))),
+        # the body-fitted hex mesher: after cfMesh on the ladder, before the tet engines
+        ladder_rank=20,
         input_contract=InputContract(
+            # internal flow from an STL/OBJ/PLY upload: cad/internal_surface closes it at the
+            # confirmed openings (snappy/cfMesh/gmsh/vmtk internal paths read that record)
+            internal_from_surface=True,
             # UPSTREAM TRUTH: snappyHexMesh is a 3D hex/split-hex mesher. The former
             # pseudo-2D workflow (thin slab + extrudeMesh collapse + empty retype) was a
             # wrapper invention and is REMOVED from supported capabilities - real 2D

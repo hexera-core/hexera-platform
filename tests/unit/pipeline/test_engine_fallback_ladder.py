@@ -67,9 +67,20 @@ def _node(state: dict) -> dict:
 # the declarations the ladder stands on
 
 def test_every_engine_that_produces_a_topology_is_on_its_ladder():
-    for topo, order in lad.FALLBACK_ORDER.items():
+    for topo in ("external", "internal"):
+        order = lad.fallback_order(topo)
         missing = set(engines_producing_topology(topo)) - set(order)
         assert not missing, f"{sorted(missing)} produce {topo} flow but are not on its ladder"
+
+
+def test_the_ladder_order_is_read_from_the_engines_declarations_not_a_list():
+    # most robust input handling first, then the body-fitted hex mesher, then the tet engines -
+    # declared by each engine (EngineSpec.ladder_rank), so a new engine joins from its spec alone
+    assert lad.fallback_order("external") == ("cfmesh", "snappy", "gmsh")
+    assert lad.fallback_order("internal") == ("cfmesh", "snappy", "vmtk", "gmsh")
+    import inspect
+    src = inspect.getsource(lad)
+    assert '"cfmesh", "snappy"' not in src, "the ladder lists engines by hand again"
 
 
 def test_every_implemented_engine_declares_what_it_delivers():
@@ -244,10 +255,12 @@ def test_a_relaxation_is_never_switched_to_on_its_own(quiet):
 def test_the_run_ends_with_an_offer_that_states_the_change():
     rec = lad.final_record(_fluid_domain(retry_count=2), succeeded=False, system_failure=False)
     offer = rec["offer"]
-    assert offer["engine"] == "snappy" and offer["same_contract"] is False
+    # the first hex engine on the ladder that takes a fluid domain: cfMesh (it declares a fluid
+    # solid for internal flow), then snappyHexMesh
+    assert offer["engine"] == "cfmesh" and offer["same_contract"] is False
     assert any("OpenFOAM" in c for c in offer["changes"])
     assert any("hex-dominant cells instead of tetrahedral" in c for c in offer["changes"])
-    assert 'Reply "use snappyHexMesh"' in offer["text"]
+    assert 'Reply "use cfMesh"' in offer["text"]
     assert "did not switch without asking" in offer["text"]
 
 
@@ -344,9 +357,11 @@ def test_after_a_switch_the_offer_names_every_engine_that_failed():
                                   "switches": [{"attempt": 2, "from": "cfmesh",
                                                 "to": "snappy"}]})
     offer = lad.final_record(st, succeeded=False, system_failure=False)["offer"]
-    # external: after cfMesh and snappy, the only rung left is gmsh, which needs a fluid domain -
-    # nothing is left to offer rather than an engine that cannot build the declaration
-    assert offer is None
+    # external: after cfMesh and snappy, the rung left is gmsh, which cuts a body out of a
+    # far-field box itself - offered with what changes, never switched to silently
+    assert offer["engine"] == "gmsh" and offer["same_contract"] is False
+    assert offer["text"].startswith("Neither cfMesh nor snappyHexMesh could mesh this shape")
+    assert any("Abaqus" in c for c in offer["changes"])
     internal = _fluid_domain(engine="snappy", engine_params={}, retry_count=2,
                              executor_failed_gate="finalize", input_kind="body-surface",
                              engine_ladder={"approved": "cfmesh", "attempts": [
@@ -547,9 +562,11 @@ def test_an_admission_refusal_is_not_recorded_as_a_build():
     assert rec["attempts"] == [{"attempt": 0, "engine": "vmtk", "kind": lad.ENGINE,
                                 "cause": "geometry_rejected",
                                 "reason": "it cannot take this geometry as it is",
+                                "stop": "refused_by_design",
                                 "refused_before_building": True}]
-    # and the refusal still ends with an out: another engine, differences stated
-    assert rec["offer"]["engine"] == "snappy" and rec["offer"]["same_contract"] is False
+    # and the refusal still ends with an out: another engine, differences stated (cfMesh: first
+    # on the ladder, and it takes a fluid domain)
+    assert rec["offer"]["engine"] == "cfmesh" and rec["offer"]["same_contract"] is False
 
 
 def test_the_run_seeds_provenance_after_the_pin_and_the_dispute():

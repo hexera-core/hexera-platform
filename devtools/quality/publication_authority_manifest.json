@@ -381,6 +381,32 @@
   "roots": []
  },
  {
+  "context": "agents/builder/agent.py::node_builder::error#4|NotAPublisher|not-a-publisher|",
+  "path": "agents/builder/agent.py",
+  "qualname": "node_builder",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 4,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "agents/builder/agent.py::node_builder::error#5|NotAPublisher|not-a-publisher|",
+  "path": "agents/builder/agent.py",
+  "qualname": "node_builder",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 5,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "agents/builder/agent.py::node_builder::note#1|ExecutionEventPublisher|execution-owned|agents/builder/agent.py::execution_publisher",
   "path": "agents/builder/agent.py",
   "qualname": "node_builder",
@@ -2426,6 +2452,19 @@
   "roots": []
  },
  {
+  "context": "cad/cad_tessellate.py::tessellate_internal._less_other_solids::error#1|NotAPublisher|not-a-publisher|",
+  "path": "cad/cad_tessellate.py",
+  "qualname": "tessellate_internal._less_other_solids",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "cad/cad_tessellate.py::tessellate_internal._mouth_caps::error#1|NotAPublisher|not-a-publisher|",
   "path": "cad/cad_tessellate.py",
   "qualname": "tessellate_internal._mouth_caps",
@@ -3030,17 +3069,19 @@
   "roots": []
  },
  {
-  "context": "engines/snappy/drivers.py::_build_internal_deterministic::error#3|NotAPublisher|not-a-publisher|",
+  "context": "engines/snappy/drivers.py::_build_internal_deterministic::error#3|ExecutionEventPublisher|execution-owned|engines/snappy/drivers.py::parameter",
   "path": "engines/snappy/drivers.py",
   "qualname": "_build_internal_deterministic",
   "semantic": "error",
-  "method": "error",
+  "method": "aerror",
   "ordinal": 3,
-  "receiver": "logger",
-  "authority": "NotAPublisher",
-  "lifecycle": "not-a-publisher",
-  "gated_required": false,
-  "roots": []
+  "receiver": "publish",
+  "authority": "ExecutionEventPublisher",
+  "lifecycle": "execution-owned",
+  "gated_required": true,
+  "roots": [
+   "engines/snappy/drivers.py::parameter"
+  ]
  },
  {
   "context": "engines/snappy/drivers.py::_build_internal_deterministic::error#4|ExecutionEventPublisher|execution-owned|engines/snappy/drivers.py::parameter",
@@ -3058,27 +3099,12 @@
   ]
  },
  {
-  "context": "engines/snappy/drivers.py::_build_internal_deterministic::error#5|ExecutionEventPublisher|execution-owned|engines/snappy/drivers.py::parameter",
-  "path": "engines/snappy/drivers.py",
-  "qualname": "_build_internal_deterministic",
-  "semantic": "error",
-  "method": "aerror",
-  "ordinal": 5,
-  "receiver": "publish",
-  "authority": "ExecutionEventPublisher",
-  "lifecycle": "execution-owned",
-  "gated_required": true,
-  "roots": [
-   "engines/snappy/drivers.py::parameter"
-  ]
- },
- {
-  "context": "engines/snappy/drivers.py::_build_internal_deterministic::error#6|NotAPublisher|not-a-publisher|",
+  "context": "engines/snappy/drivers.py::_build_internal_deterministic::error#5|NotAPublisher|not-a-publisher|",
   "path": "engines/snappy/drivers.py",
   "qualname": "_build_internal_deterministic",
   "semantic": "error",
   "method": "error",
-  "ordinal": 6,
+  "ordinal": 5,
   "receiver": "logger",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
@@ -3197,6 +3223,21 @@
   "semantic": "note",
   "method": "anote",
   "ordinal": 7,
+  "receiver": "publish",
+  "authority": "ExecutionEventPublisher",
+  "lifecycle": "execution-owned",
+  "gated_required": true,
+  "roots": [
+   "engines/snappy/drivers.py::parameter"
+  ]
+ },
+ {
+  "context": "engines/snappy/drivers.py::_build_internal_deterministic::note#8|ExecutionEventPublisher|execution-owned|engines/snappy/drivers.py::parameter",
+  "path": "engines/snappy/drivers.py",
+  "qualname": "_build_internal_deterministic",
+  "semantic": "note",
+  "method": "anote",
+  "ordinal": 8,
   "receiver": "publish",
   "authority": "ExecutionEventPublisher",
   "lifecycle": "execution-owned",
@@ -4035,9 +4076,9 @@
   ]
  },
  {
-  "context": "pipeline/geometry_admission.py::node_geometry_admission::error#1|NotAPublisher|not-a-publisher|",
+  "context": "pipeline/geometry_admission.py::_refuse::error#1|NotAPublisher|not-a-publisher|",
   "path": "pipeline/geometry_admission.py",
-  "qualname": "node_geometry_admission",
+  "qualname": "_refuse",
   "semantic": "error",
   "method": "error",
   "ordinal": 1,

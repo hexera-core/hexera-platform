@@ -126,6 +126,20 @@ async def node_builder(state: PipelineState) -> dict:
             return _patch(retry_count=bcfg.MAX_BUILDER_RETRIES + 1,      # → failure sink
                           noop_count=state.get("builder_noop_count", 0))
 
+    # THE ENGINE COULD NOT PREPARE ITS INPUT (attempt._record_staging_failure): nothing is run, and
+    # the attempt's closing note says why. Running the builder on without the staged input only
+    # spends model time looking for a file that was never written (job a76e3ca1: 15 minutes), and
+    # the recorded reason - not "the mesher stopped" - is what the executor reports.
+    _staging = attempt_mod.staging_failure(attempt.workspace)
+    if _staging is not None and (_staging.facts or {}).get("ours"):
+        # ...unless the failure was OURS (a disk write, memory, a time limit): nothing about the
+        # file, and possibly gone next time. It goes to the infrastructure replay, which prepares
+        # this same attempt again - never to the executor as the file's refusal.
+        logger.error("Builder: engine staging failed on our side - handing the attempt to the "
+                     "infrastructure replay - job_id=%s: %s", job_id, _staging.builder_text)
+        return _patch(retry_count=attempt.retry_count,
+                      api_failure=attempt_mod.STAGING_SYSTEM_FAILURE)
+
     authored_before = (noop_mod.authored_digest(attempt.workspace, attempt.engine)
                        if attempt.is_retry else "")
 
@@ -135,10 +149,21 @@ async def node_builder(state: PipelineState) -> dict:
     await _publish.aattempt(attempt.retry_count, bcfg.BUILDER_MAX_TOTAL_ATTEMPTS)
     await _publish.anote("Designing the mesh", op_id=f"designing:{attempt.retry_count}")
 
+    # THE ATTEMPT'S RECORD OF NATIVE RUNS opens here: every mesher this attempt starts is recorded
+    # (contracts/mesh_execution.run_mesh), so the executor can tell "no mesher was started" from "a
+    # mesher crashed", and the closing note below says which.
+    from meshpipeline.contracts.mesh_execution import meshers_started, native_runs, open_native_record
+    open_native_record(attempt.workspace)
+
     # Supersession and cancellation propagate out of here untouched: a stale generation writes
     # nothing, and a cancelled attempt is not a failed one.
-    outcome = await invoke.run_attempt(attempt, state, job_id=job_id, publish=_publish,
-                                       timeout_s=budget.attempt_timeout_s)
+    if _staging is None:
+        outcome = await invoke.run_attempt(attempt, state, job_id=job_id, publish=_publish,
+                                           timeout_s=budget.attempt_timeout_s)
+    else:
+        logger.error("Builder: engine staging failed - the attempt ends on it, nothing runs - "
+                     "job_id=%s: %s", job_id, _staging.builder_text)
+        outcome = invoke.TurnOutcome()
 
     if outcome.provider_failed:
         attempt_capture.record_attempt(job_id, attempt=attempt, outcome=outcome)
@@ -154,6 +179,11 @@ async def node_builder(state: PipelineState) -> dict:
     if stopped:
         logger.warning("Builder stop: retry %d would rebuild the mesh the review rejected - "
                        "ending on that review - job_id=%s", attempt.retry_count, job_id)
+    elif _staging is not None:
+        # an ordinary turn that authored nothing - never a no-op of the builder's making
+        verdict = noop_mod.NoopVerdict(
+            repeated=False, consecutive=int(state.get("builder_noop_count", 0) or 0),
+            retry_count=attempt.retry_count)
     else:
         verdict = noop_mod.assess(
             before=authored_before,
@@ -181,11 +211,14 @@ async def node_builder(state: PipelineState) -> dict:
 
     # THE ATTEMPT'S ONE CLOSING NOTE, whichever way it ended. An engine's deterministic driver
     # takes no tool steps, so "0 steps" read as "did nothing" on every snappy attempt - count
-    # steps only where there are steps to count.
+    # steps only where there are steps to count. And only a mesh is "built": an attempt that
+    # stopped before its mesher said "Mesh built" too (jobs d20ad762, 26f5429a).
     _steps = len(attempt.tool_calls)
     await _publish.anote(
         _REVIEWED_CASE_REPEATS_NOTE if stopped
-        else (f"Mesh built - {_steps} steps" if _steps else "Mesh built"),
+        else _staging_note(attempt, _staging) if _staging is not None
+        else _closing_note(attempt, _steps,
+                           meshers_started(native_runs(attempt.workspace))),
         op_id=f"{'review-repeat-stop' if stopped else 'built'}:{attempt.retry_count}")
 
     attempt_capture.record_attempt(job_id, attempt=attempt, outcome=outcome, noop=verdict)
@@ -195,6 +228,29 @@ async def node_builder(state: PipelineState) -> dict:
                       workspace=str(state.get("openfoam_workspace") or ""),
                       stop=STOP_REVIEWED_CASE_REPEATS)
     return _patch(retry_count=verdict.retry_count, noop_count=verdict.consecutive)
+
+
+def _staging_note(attempt, refusal) -> str:
+    facts = refusal.facts or {}
+    return (f"{facts.get('engine') or attempt.engine} could not prepare its input from your file: "
+            f"{facts.get('reason') or 'staging failed'}. No mesher was started.")
+
+
+def _closing_note(attempt, steps: int, started: int | None) -> str:
+    """What the attempt produced, said as what it was: a mesh on disk (the engine's declared
+    deliverable marker), no mesher started at all, or no mesh on disk otherwise. A record this
+    process does not have (None) claims nothing beyond whether the mesh is on disk."""
+    from meshpipeline.engines.registry import get_spec
+    try:
+        d = get_spec(attempt.engine).deliverable
+        built = d is not None and (attempt.workspace / d.marker).exists()
+    except Exception:  # noqa: BLE001 - a note never decides anything
+        built = True
+    if built:
+        return f"Mesh built - {steps} steps" if steps else "Mesh built"
+    if started == 0:
+        return "No mesh was built: the mesher was not started in this attempt"
+    return "No mesh came out of this attempt"
 
 
 #: What the user reads when a review's retry would have rebuilt the mesh that review rejected.
