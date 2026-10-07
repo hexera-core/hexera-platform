@@ -40,15 +40,15 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: THE LADDER ORDER, per flow topology: the approved engine first, then the rest in this order.
-#: Most robust input handling first (cfMesh wraps dirty surfaces), then the body-fitted hex mesher,
-#: then the tetrahedral engines. Every implemented engine that produces a topology is listed under
-#: it (test-enforced), so a new engine cannot silently miss the ladder. Only the rungs that pass
-#: the approved request's own admission rules are ever considered.
-FALLBACK_ORDER: dict[str, tuple[str, ...]] = {
-    "external": ("cfmesh", "snappy", "gmsh"),
-    "internal": ("cfmesh", "snappy", "vmtk", "gmsh"),
-}
+def fallback_order(flow: str) -> tuple[str, ...]:
+    """THE LADDER ORDER for a flow: the approved engine first, then every implemented engine
+    designed for that flow, in the order the engines DECLARE (EngineSpec.ladder_rank: most robust
+    input handling first - cfMesh wraps dirty surfaces - then the body-fitted hex mesher, then the
+    tetrahedral engines). Derived, never listed here, so a new engine joins the ladder from its
+    own spec. Only the rungs that pass the approved request's own admission rules - the file's
+    form included - are ever considered."""
+    from meshpipeline.engines.capability import ladder_order
+    return ladder_order(flow)
 
 #: Engine provenance values, as the application seeds them (see pipeline_run). `user_direct` and
 #: `suggested_confirmed` are the intake's own words; `dispute` and `system` are the run's.
@@ -95,6 +95,13 @@ _LADDER_CLASS: dict[FailureCause, str] = {
     # the review of a validated mesh did not finish: our reviewer's failing, which the same mesh
     # from another engine would meet again - never a reason to leave the engine
     FailureCause.REVIEW_INCOMPLETE: NEVER,
+    # the engine stopped while preparing, before its mesher started: its own preparation's limit,
+    # which another engine's preparation may not share
+    FailureCause.NOT_BUILT: ENGINE,
+    # the run ran out of time: a smaller plan on the same engine may well finish
+    FailureCause.ENGINE_TIMED_OUT: FIXABLE,
+    # the service that runs the mesher failed: every engine runs on it, so no engine changes it
+    FailureCause.RUN_INFRASTRUCTURE: NEVER,
 }
 #: The causes the retry policy calls hopeless that another ENGINE still changes. A refused
 #: geometry is the same file on the next attempt - but a different engine has a different input
@@ -104,7 +111,7 @@ _LADDER_CLASS: dict[FailureCause, str] = {
 #: cell limit (failure_cause.rebuild_over_limit): this engine's next attempt cannot reach the floor,
 #: but another engine sizes its cells another way - the run ends, and the offer stands.
 _ONLY_ANOTHER_ENGINE_CHANGES: frozenset[FailureCause] = frozenset({
-    FailureCause.GEOMETRY_REJECTED, FailureCause.UNDER_RESOLVED})
+    FailureCause.GEOMETRY_REJECTED, FailureCause.UNDER_RESOLVED, FailureCause.NOT_BUILT})
 
 #: What each failure means, said to the user. Short and plain: the full account of the failure is
 #: the terminal message's (failure_cause.describe); this is the half-sentence that says why the
@@ -122,6 +129,9 @@ _REASON_BY_CAUSE: dict[FailureCause, str] = {
     FailureCause.DOMAIN_EXTENT: "the far-field domain came out short of the size you asked for",
     FailureCause.REGION_SPLIT: "the parts did not come out as separate meshes",
     FailureCause.REVIEW_INCOMPLETE: "the review of its mesh did not finish",
+    FailureCause.NOT_BUILT: "it stopped before its mesher started",
+    FailureCause.ENGINE_TIMED_OUT: "its run ran out of time",
+    FailureCause.RUN_INFRASTRUCTURE: "the mesh run did not complete on our side",
 }
 _REASON_REVIEW = "the mesh did not pass review"
 _REASON_GENERIC = "it did not produce a mesh that passed its checks"
@@ -207,8 +217,11 @@ def may_switch_on_its_own(state: Mapping) -> bool:
     return engine_source(state) in _SWITCHABLE_SOURCES
 
 
-def _declared_evidence(state: Mapping, engine: str):
+def _declared_evidence(state: Mapping, engine: str, *, form: str | None = None):
+    """What `engine` is asked to build: the approved declaration, from this file - or, with
+    `form`, from the same request in that geometry form (what WOULD pass, for an offer)."""
     from meshpipeline.engines.admission import AdmissionEvidence, PatchSummary
+    from meshpipeline.engines.capability import geometry_form_of_state
     from meshpipeline.engines.registry import resolve_engine_params
     patches = tuple(
         PatchSummary(name=str(p.get("name", "")).strip(), type=str(p.get("type", "")).strip())
@@ -221,7 +234,30 @@ def _declared_evidence(state: Mapping, engine: str):
         patches=patches,
         # the candidate's OWN parameters are judged separately (_params_carry_over): here only
         # "can it build what was declared at all"
-        engine_params=resolve_engine_params(engine, {}))
+        engine_params=resolve_engine_params(engine, {}),
+        # ...from THIS file: an engine that cannot take the upload's form for this flow (VMTK and
+        # an STL, for internal flow) is not a rung, and is never offered
+        geometry_form=(form if form is not None else geometry_form_of_state(state)) or None)
+
+
+def able_engines(state: Mapping, *, form: str | None = None,
+                 exclude: tuple[str, ...] = ()) -> list[str]:
+    """Every implemented engine, in ladder order, that admits the WHOLE approved request - the
+    boundaries, the geometry kind and the file's form (or `form`, when asking what another file
+    would allow). The one answer the ladder, the refusal note and the closing offer all give."""
+    from meshpipeline.engines.capability import flow_of
+    from meshpipeline.engines.registry import engine_names, get_spec
+    implemented = set(engine_names())
+    return [n for n in fallback_order(flow_of(state.get("purpose", "")))
+            if n in implemented and n not in exclude
+            and not get_spec(n).admit(_declared_evidence(state, n, form=form))]
+
+
+def takers_by_form(state: Mapping) -> dict[str, list[str]]:
+    """{another geometry form: the engines that would admit this very request from it}."""
+    from meshpipeline.engines.capability import GEOMETRY_FORMS, geometry_form_of_state
+    here = geometry_form_of_state(state)
+    return {f: able_engines(state, form=f) for f in GEOMETRY_FORMS if f != here}
 
 
 #: The file a user receives, by the engine's native export format - words for the offer only.
@@ -273,15 +309,15 @@ def _params_carry_over(state: Mapping, spec) -> bool:
 def ladder(state: Mapping) -> list[Rung]:
     """The approved engine, then every other engine that can build the approved request, in the
     fallback order - each marked with whether it delivers what was approved."""
-    from meshpipeline.engines.purposes import topology_of
+    from meshpipeline.engines.capability import flow_of
     from meshpipeline.engines.registry import engine_names, get_spec
 
     approved = approved_engine(state)
     if not approved:
         return []
     rungs = [Rung(approved, True)]
-    topo = topology_of(str(state.get("purpose", "") or ""))
-    if not topo or engine_source(state) == SOURCE_DISPUTE:
+    flow = flow_of(state.get("purpose", ""))
+    if not flow or engine_source(state) == SOURCE_DISPUTE:
         return rungs
     try:
         approved_spec = get_spec(approved)
@@ -290,7 +326,7 @@ def ladder(state: Mapping) -> list[Rung]:
     layers = layer_request(str(state.get("request_txt", "") or ""),
                            str(state.get("review_brief_txt", "") or ""))
     implemented = set(engine_names())
-    for name in FALLBACK_ORDER.get(topo, ()):
+    for name in fallback_order(flow):
         if name == approved or name not in implemented:
             continue
         spec = get_spec(name)
@@ -312,19 +348,26 @@ class Failure:
     kind: str       # ENGINE | FIXABLE | NEVER
     cause: str      # the recorded cause, the gate key, or "review"
     reason: str     # the plain half-sentence
+    #: WHY THE ENGINE STOPPED, in the six classes (contracts/failure_cause.StopClass)
+    stop: str = ""
 
     def as_dict(self) -> dict:
-        return {"kind": self.kind, "cause": self.cause, "reason": self.reason}
+        d = {"kind": self.kind, "cause": self.cause, "reason": self.reason}
+        if self.stop:
+            d["stop"] = self.stop
+        return d
 
 
 def classify(state: Mapping) -> Failure | None:
     """What stopped the attempt whose result the state now holds, or None when it did not fail."""
+    from meshpipeline.contracts.failure_cause import StopClass, stop_class_of
     if state.get("executor_success"):
         if state.get("requirement_caveats"):
             return Failure(NEVER, "requirements_near_miss",
-                           "the far-field domain came out short of the size you asked for")
+                           "the far-field domain came out short of the size you asked for",
+                           StopClass.CHECK_FAILED.value)
         if str(state.get("reviewer_verdict", "") or "").upper() == "FAIL":
-            return Failure(FIXABLE, "review", _REASON_REVIEW)
+            return Failure(FIXABLE, "review", _REASON_REVIEW, StopClass.REVIEW_REBUILD.value)
         return None
     gate = str(state.get("executor_failed_gate", "") or "")
     facts = state.get("executor_failure_facts")
@@ -334,14 +377,55 @@ def classify(state: Mapping) -> Failure | None:
         if gate:
             # a gate that names no cause, on no engine this system knows: never a reason to switch
             # at once, never a reason to refuse one
-            return Failure(FIXABLE, gate, _REASON_GENERIC)
+            return Failure(FIXABLE, gate, _REASON_GENERIC, StopClass.CHECK_FAILED.value)
         # no gate at all: the executor had nothing to validate - the builder produced no mesh
         cause = FailureCause.ENGINE_CRASHED
     kind = _LADDER_CLASS[cause]
     if not retry_can_help(cause, facts) and cause not in _ONLY_ANOTHER_ENGINE_CHANGES:
         # the retry policy's own verdict: nothing that runs again changes this, so no engine does
         kind = NEVER
-    return Failure(kind, cause.value, _REASON_BY_CAUSE[cause])
+    stop = stop_class_of(cause)
+    stopped = stop.value if stop is not None else ""
+    if refused_by_design(state):
+        # the engine's DECLARED limit, said as that limit - not "it cannot take this geometry as it
+        # is", which sends a user to repair a file that is fine
+        return Failure(kind, cause.value, _by_design_reason(facts), stopped)
+    return Failure(kind, cause.value, _REASON_BY_CAUSE[cause], stopped)
+
+
+def mesher_started(state: Mapping) -> bool:
+    """Whether the attempt whose result the state holds actually started a mesher - the one fact
+    an attempt is COUNTED by. Not when admission or a pre-flight refused before meshing, and not
+    when the executor's record of native runs says none was started (NOT_BUILT). Unknown counts as
+    started, as it always did."""
+    if state.get("geometry_unsuitable_reason"):
+        return False
+    if state.get("executor_success"):
+        return True
+    facts = state.get("executor_failure_facts")
+    facts = facts if isinstance(facts, Mapping) else {}
+    started = facts.get("meshers_started")
+    if isinstance(started, int) and not isinstance(started, bool):
+        # the attempt's own record of native runs is the authority: an earlier pass that meshed
+        # before a later pass's pre-flight refused still made this an attempt
+        return started > 0
+    return not facts.get("before_meshing")
+
+
+def refused_by_design(state: Mapping) -> bool:
+    """The attempt ended on an engine refusing this file's form for this flow - its declared
+    limit, recorded by geometry admission before anything was built."""
+    facts = state.get("executor_failure_facts")
+    return bool(isinstance(facts, Mapping) and facts.get("refused_by_design")
+                and as_cause(state.get("executor_failure_cause")) is FailureCause.GEOMETRY_REJECTED)
+
+
+def _by_design_reason(facts: Mapping) -> str:
+    from meshpipeline.engines.capability import flow_words, form_words
+    flow, form = str(facts.get("flow") or ""), str(facts.get("form") or "")
+    if not flow or not form:
+        return _REASON_BY_CAUSE[FailureCause.GEOMETRY_REJECTED]
+    return f"it cannot mesh {flow_words(flow)} from {form_words(form, short=True)}"
 
 
 def _cause_of(state: Mapping, gate: str) -> FailureCause | None:
@@ -383,10 +467,31 @@ def with_attempt(state: Mapping, failure: Failure | None) -> dict:
         entry.update(failure.as_dict() if failure else {"kind": "passed"})
         if n == 0:
             entry["refused_before_building"] = True
+        elif not mesher_started(state):
+            # an attempt that never started a mesher is not one the user is told was made
+            entry["built"] = False
         attempts.append(entry)
     rec["attempts"] = attempts
     rec.setdefault("switches", [])
     return rec
+
+
+def attempts_made(state: Mapping, *, succeeded: bool) -> int:
+    """HOW MANY ATTEMPTS ACTUALLY STARTED A MESHER, the attempt that just ended included - the
+    number a user is shown. A refusal before building, a pre-flight stop and an attempt whose
+    record shows no mesher started are not attempts anyone made (jobs d20ad762 and 26f5429a read
+    "2 attempts" with nothing ever built).
+
+    Counted DOWN from the run's own counter: every builder turn is an attempt unless the record
+    says no mesher started in it, so an attempt the record knows nothing about still counts, as it
+    always did. A geometry-admission refusal ends the run before the first turn: none was made."""
+    if state.get("geometry_unsuitable_reason"):
+        return 0
+    rec = with_attempt(state, None if succeeded else classify(state))
+    turns = int(state.get("retry_count", 0) or 0)
+    not_made = {int(a.get("attempt", 0) or 0) for a in rec["attempts"]
+                if isinstance(a, Mapping) and a.get("built") is False}
+    return max(0, turns - len({n for n in not_made if 0 < n <= turns}))
 
 
 # #
@@ -632,16 +737,22 @@ def offer(state: Mapping, record: Mapping) -> dict | None:
         # review fails a run only when the mesh is the wrong problem (review_policy.WRONG_PROBLEM).
         head = (f"{names[0]} built a mesh that passed every automatic check, but the review found "
                 "it represents a different problem than you asked for.")
+    by_design = refused_by_design(state)
+    if by_design:
+        # the run's own account already says what was refused and that nothing was built; the
+        # offer is the OUT, and only that - the engines whose declarations take this file
+        head = ""
     if same:
         to = same[0].engine
-        why = (f"You chose {engine_label(engine)}, so I did not switch engines without asking."
+        why = ("Nothing was built, and I did not switch engines without asking." if by_design else
+               f"You chose {engine_label(engine)}, so I did not switch engines without asking."
                if not may_switch_on_its_own(state) else
                "There was no attempt or time left to try it in this run.")
         return {"kind": "engine", "engine": to, "same_contract": True, "changes": [],
                 "reply": f"use {engine_label(to)}",
                 "text": (f"{head} {engine_label(to)} can build the same mesh - same boundaries, "
                          f"same units, same settings. {why} Reply \"use {engine_label(to)}\" "
-                         "and I will set that run up.")}
+                         "and I will set that run up.").strip()}
     fewer = _fewer_layers(state, engine, failure)
     if fewer is not None:
         return fewer
@@ -652,7 +763,18 @@ def offer(state: Mapping, record: Mapping) -> dict | None:
                 "changes": list(rungs[0].changes), "reply": f"use {engine_label(to)}",
                 "text": (f"{head} {engine_label(to)} can mesh it, but not exactly as you "
                          f"approved: {diff}. I did not switch without asking. Reply "
-                         f"\"use {engine_label(to)}\" if that works for you.")}
+                         f"\"use {engine_label(to)}\" if that works for you.").strip()}
+    if by_design:
+        # NO ENGINE takes this file for this request: the out is the file - which form the
+        # engines that admit this very request take, and how to get it
+        from meshpipeline.engines.capability import way_on, who_can
+        facts = state.get("executor_failure_facts") or {}
+        flow, form = str(facts.get("flow") or ""), str(facts.get("form") or "")
+        other = takers_by_form(state)
+        return {"kind": "input", "engine": "", "same_contract": False, "changes": [],
+                "reply": "",
+                "text": (f"{who_can(flow, form, able=[], takers=other)} "
+                         f"{way_on(flow, form, able=[], takers=other)}")}
     return None
 
 
@@ -738,10 +860,11 @@ async def node_engine_fallback(state: PipelineState) -> dict:
     }
 
 
-__all__ = ["ENGINE", "FALLBACK_ORDER", "FIXABLE", "NEVER", "SOURCE_DISPUTE", "SOURCE_SUGGESTED",
+__all__ = ["ENGINE", "FIXABLE", "NEVER", "SOURCE_DISPUTE", "SOURCE_SUGGESTED",
            "SOURCE_SYSTEM", "SOURCE_USER", "Decision", "Failure", "LayerRequest", "Rung",
-           "approved_engine", "classify", "decide", "delivered_note", "engine_source",
-           "fresh_start_brief",
-           "final_record", "ladder", "layer_request", "may_switch_on_its_own",
-           "node_engine_fallback", "offer", "remaining_seconds", "rung_seconds", "switch_note",
-           "tried_engines", "with_attempt", "with_switch"]
+           "able_engines", "approved_engine", "attempts_made", "classify", "decide",
+           "delivered_note", "engine_source", "fallback_order", "fresh_start_brief",
+           "final_record", "ladder", "layer_request", "may_switch_on_its_own", "mesher_started",
+           "node_engine_fallback", "offer", "refused_by_design", "remaining_seconds",
+           "rung_seconds", "switch_note", "takers_by_form", "tried_engines", "with_attempt",
+           "with_switch"]

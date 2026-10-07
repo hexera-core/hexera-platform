@@ -160,6 +160,9 @@ class TerminalAssembly:
     api_failure: str = ""
     attempts: int = 0
     attempts_max: int = 0
+    #: the attempts that started a mesher (pipeline/engine_fallback.attempts_made), when the run
+    #: counted them - what the record says was used; None keeps `attempts`
+    attempts_made: int | None = None
     pipeline_timed_out: bool = False
     #: the fallback ladder's closing record (pipeline/engine_fallback.final_record) - carried into
     #: the final result verbatim; {} when the run never classified a failure
@@ -210,6 +213,7 @@ def build_terminal_result(assembly: TerminalAssembly, *, delivered_types: list) 
         failed_gate=assembly.failed_gate,
         api_failure=assembly.api_failure,
         attempts=assembly.attempts, attempts_max=assembly.attempts_max,
+        attempts_made=assembly.attempts_made,
         required_ready=ready, delivered_types=delivered_types, optional_warnings=warnings,
         requirement_caveats=list(assembly.requirement_caveats or []),
         failure_cause=assembly.failure_cause,

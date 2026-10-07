@@ -16,9 +16,11 @@
  */
 import { esc, fmtDur, mdBlock } from "../core/format.js";
 import { prettyText } from "../core/engineering_text.js";
-import { laneLabel, reasoningHeader } from "../core/events.js";
+import { SENT_BACK, attemptsLabel, laneLabel, reasoningHeader } from "../core/events.js";
 import { applyFlow, bindAxis, bindUnit, displayText, followAxis, followSuggestion, followUnit, formHtml, markConfirmed,
   readForm, shown, unitChoiceHint, unitChoiceNeeded, unitOf } from "./geometry_form.js";
+// the card keeps the user's answers through a re-draw and says back what they changed
+import { changedAnswers, editsLine, noteDrawn, servedProposal } from "./geometry_form.js";
 
 /* The lightbox is its own DOM region (#lb) but too small to be its own module. */
 export function openLightbox(src) {
@@ -39,6 +41,13 @@ export function setResultHandler(fn) { onResult = fn || (() => {}); }
 let onCancel = () => {};
 export function setCancelHandler(fn) { onCancel = fn || (() => {}); }
 
+/* What each lane mark means, in words: the dot's title and its name for a screen reader. The
+   marks themselves are drawn by css/theme.css; `Stage.markOf` decides which one a lane earns. */
+const MARKS = {
+  done: "finished", bad: "did not pass", back: "sent back for a rebuild",
+  warn: "finished with a warning", nomesh: "no mesh was built here", ended: "stopped",
+};
+
 export const Stage = {
   // The empty state names no formats. It used to say "(STL or STEP)" while the server accepted
   // four, so a user holding a .vtp or .iges read that their file was unsupported and never tried
@@ -46,7 +55,14 @@ export const Stage = {
   // list now comes from the capability response through `setSupportedCopy`, and until that
   // arrives the copy stays format-neutral rather than guessing.
   mount(){document.getElementById('stage').innerHTML='<div class="scroll"><div class="chat-col" id="cc"><div id="empty"><p id="empty-lead">Upload geometry to begin.</p><p id="empty-formats"></p><p class="empty-sub">Hexera will guide you through the simulation setup.</p></div></div></div>';
-    this.nodes={};this.proc=null;this.tl=null;this._briefEl=null;this._briefSig='';},
+    this.nodes={};this.proc=null;this.tl=null;this._briefEl=null;this._briefSig='';
+    // A NEW RUN STARTS CLEAN. The attempt the last run ended on, the attempts that built and a
+    // mesh bar a run left open when it ended mid-mesh all belonged to that run: kept, the next
+    // run's "Attempt 1" header went missing and its mesh bar never appeared (the old, detached
+    // one still counted as open).
+    this._att=null;this._attSep=null;this._built=new Set();this._seq=0;this.meshBar=null;this._ended=false;
+    // ...and so did the stopped clock and the last event's time
+    this.finished=false;this._evt=0;},
   // Fill the empty state's format line from the SERVER's capability description. Advisory and
   // best-effort: when capabilities are unavailable the line stays empty and the neutral lead
   // sentence still invites an upload, because the server is the authority on what it accepts.
@@ -109,11 +125,16 @@ export const Stage = {
      session, replaced if the check is shown again. */
   geometryCheck(d,confirm){
     const p=d.proposal||{},pics=d.pictures||[];
+    // what the check proposed, kept apart from the card the user edits: Proceed says back what changed
+    this._gcServed=servedProposal(null,p);
     // WHAT WAS TYPED ON THE CARD BEFORE outlives its re-draw (the model's labels arriving): a
-    // name or role the user set, a typed diameter, the kind, the flow, the unit box - read before
-    // the new form is built, so the unit box is drawn with the user's unit
+    // name or role the user set, a typed diameter, the kind, the flow, the far-field box, the
+    // ground, the unit box - read before the new form is built, so it is drawn with the user's
+    // answers. Only what the user CHANGED is carried: an answer they left as drawn takes the
+    // model's word, where it used to put the measuring step's back over it.
     const was=this._gcEl&&!this._gcEl.querySelector('.gc-done')?this._gcTyped(this._gcEl,this._gcP):null;
     if(was&&was.unit){p.unit=was.unit;p.unit_basis='chosen';p.unit_touched=true;}
+    if(was&&Object.keys(was.answers).length){p.user_set=was.answers;Object.assign(p,was.answers);}
     const hero=pics.find(x=>x.name==='iso')||pics.find(x=>x.name!=='overview')||pics[0];
     const thumbs=pics.filter(x=>x!==hero&&x.name!=='overview').slice(0,8).map(x=>
       `<img class="gc-thumb" src="${x.url}" alt="${esc(x.name)}" title="${esc(x.name)}" loading="lazy">`).join('');
@@ -130,7 +151,7 @@ export const Stage = {
     const g=document.createElement('div');g.className='im assistant';g.innerHTML=html;
     this.col().appendChild(g);this._gcEl=g;this._gcP=p;
     if(was)this._gcRestore(g,was,p);
-    applyFlow(g);bindUnit(g,p);bindAxis(g,p);
+    applyFlow(g);bindUnit(g,p);bindAxis(g,p);noteDrawn(g);
     g.querySelectorAll('.gc-overview,.gc-thumb').forEach(im=>{im.onclick=()=>openLightbox(im.src);});
     const btn=g.querySelector('.gc-proceed');
     btn.onclick=async()=>{
@@ -139,7 +160,7 @@ export const Stage = {
       const body=readForm(g,p);
       btn.disabled=true;btn.textContent='Confirming…';
       try{
-        await confirm(body);
+        await confirm(body,editsLine(this._gcServed,body,p));     // the chat says back what the user changed
         markConfirmed(g);
         g.querySelector('.gc-card').classList.add('ok');
       }catch(e){
@@ -157,12 +178,13 @@ export const Stage = {
       // each field on its own: a row whose role was changed keeps the model's name when it lands
       const r={};if(name!==undefined&&name!==(o.name||''))r.name=name;if(role!==undefined&&role!==o.role)r.role=role;if(dia)r.dia=dia;
       if(Object.keys(r).length)rows[id]=r;});
-    return {kind:v('.gc-kind'),flow:v('.gc-flow'),unit:p&&p.unit_touched?p.unit:undefined,rows,
+    // the kind, the flow, the far field and the ground: only those the user changed, on top of
+    // what they changed before an earlier re-draw
+    return {answers:{...((p&&p.user_set)||{}),...changedAnswers(g)},unit:p&&p.unit_touched?p.unit:undefined,rows,
             // the flow axis the user turned, and a reference length they typed (as typed, in the file's units)
             axis:p&&p.flow_axis_touched?p.flow_axis:undefined,ref:p&&p.reference_length_typed?v('.gc-ref'):undefined};},
   _gcRestore(g,was,p){
     const set=(sel,val)=>{const el=g.querySelector(sel);if(el&&val!==undefined)el.value=val;};
-    set('.gc-kind',was.kind);set('.gc-flow',was.flow);
     if(was.ref!==undefined){set('.gc-ref',was.ref);p.reference_length_typed=true;}
     if(was.axis)followAxis(g,p,was.axis);        // an untyped reference length follows the user's axis
     Object.entries(was.rows).forEach(([id,r])=>{const tr=g.querySelector(`.gc-table tr[data-id="${id}"]`);if(!tr)return;
@@ -175,6 +197,7 @@ export const Stage = {
   geometryCheckUpdate(d){
     const g=this._gcEl,p=this._gcP;if(!g||!p||g.querySelector('.gc-done'))return;
     const q=(d&&d.proposal)||{};
+    if(d&&d.proposal)this._gcServed=servedProposal(this._gcServed,d.proposal);
     followUnit(g,p,q.unit,q.unit_basis);followSuggestion(g,p,q.unit_suggestion);},
 
   ensureProc(){if(this.proc)return;this.clearEmpty();
@@ -210,10 +233,30 @@ export const Stage = {
   // renders the same card, and a control that could stop nothing must not be on it.
   showCancel(){const b=this.proc?.querySelector('#proc-cancel');if(b)b.hidden=false;},
 
+  // THE RUN'S CLOCK IS THE SERVER'S. It counts from when the job was created, not from when this
+  // page opened it - a reload, or a run opened from a link, used to start it again at 0:00 - and it
+  // stops at the time the job ended. Before, it never stopped at all: a finished run kept counting.
+  // A start ahead of this machine's own clock is held at now, so the clock never runs backwards.
+  clock(createdAt,endedAt){
+    const t0=Date.parse(createdAt||''),t1=Date.parse(endedAt||'');
+    if(this.finished&&!(t1>0))return;
+    if(t0>0)this.t0=Math.min(t0,Date.now());
+    if(t1>0)this.finished=true;
+    const c=this.proc&&this.proc.querySelector('.proc-clock');
+    if(c&&this.t0)c.textContent=fmtDur((t1>0?t1:Date.now())-this.t0);},
+  // WHEN, BY THE SERVER'S CLOCK. Every event says when it happened; a lane opens and closes at
+  // those times, so a replayed run's stages last as long as they did - not the instant the replay
+  // took, which read "0:00" on every stage after a reload. Live, it is the moment the event left.
+  at(ts){const t=Date.parse(ts||'');this._evt=t>0?Math.min(t,Date.now()):0;},
+  now(){return this._evt||Date.now();},
+
   // MESH RUN - bounded by the engine's DECLARED budget (published by the backend).
   // We bar elapsed against that real cap; we do not invent a percentage.
   startMesh(engine,budget,history){
     const n=this.node('builder');   // meshing IS the builder's run_mesh call
+    // A MESHER RAN, in this lane and in this attempt: what the lane's mark and the attempt count
+    // are about. The event is published just before the mesher starts, after every refusal.
+    n.built=true;this._built.add(this._att||1);
     if(this.meshBar)return;
     // What we bar elapsed against. When we have MEASURED history for this engine+purpose
     // we bar against the TYPICAL time and say the honest range; otherwise we bar against
@@ -225,9 +268,9 @@ export const Stage = {
       :`no history yet · will run up to ${fmtDur(budget*1000)}`;
     const w=document.createElement('div');w.className='meshbar';
     w.innerHTML=`<div class="mb-top"><span class="mb-lbl">meshing · ${esc(engine||'')}</span>
-        <span class="mb-num" id="mb-num">0:00</span></div>
-      <div class="mb-track"><div class="mb-fill" id="mb-fill"></div></div>
-      <div class="mb-sub" id="mb-sub">${esc(sub)}</div>`;
+        <span class="mb-num">0:00</span></div>
+      <div class="mb-track"><div class="mb-fill"></div></div>
+      <div class="mb-sub">${esc(sub)}</div>`;
     n.body.appendChild(w);this.scroll(n);
     this.meshBar={el:w,t0:Date.now(),ref:ref,budget:budget*1000,hasHist:hasHist};},
   tickMesh(){const m=this.meshBar;if(!m)return;
@@ -236,7 +279,9 @@ export const Stage = {
     // bar holds full and the label keeps counting up - a run CAN take longer than usual,
     // and pretending otherwise (or racing to a fake 100%) would be the lie we are avoiding.
     const pct=Math.min(100,(el/m.ref)*100);
-    const f=document.getElementById('mb-fill'),num=document.getElementById('mb-num');
+    // THIS bar's parts, not a page-wide id: a retry keeps attempt 1's finished bar in the
+    // timeline, and an id lookup found that one - attempt 2's bar sat at 0:00, empty.
+    const f=m.el.querySelector('.mb-fill'),num=m.el.querySelector('.mb-num');
     if(f)f.style.width=pct+'%';
     if(f&&el>=m.ref)f.classList.add('over');
     if(num)num.textContent=fmtDur(el)+(el>=m.ref&&m.hasHist?' · longer than usual':'');},
@@ -246,12 +291,12 @@ export const Stage = {
     // The run FINISHED. While it runs the bar is elapsed against the engine's
     // budget, but a delivered mesh is 100% of the work - a run that lands well
     // inside its budget must not be left as a 3% sliver that has turned green.
-    const f=document.getElementById('mb-fill');
+    const f=m.el.querySelector('.mb-fill');
     if(f){f.classList.remove('over');f.style.width='100%';}
     // and the sub-line stops predicting a run that already happened
-    const sub=document.getElementById('mb-sub');
+    const sub=m.el.querySelector('.mb-sub');
     if(sub)sub.textContent=`finished in ${fmtDur(el)}`;
-    const num=document.getElementById('mb-num');
+    const num=m.el.querySelector('.mb-num');
     if(num&&cells)num.textContent=`${fmtDur(el)} · ${cells}`;
     this.meshBar=null;},
   node(agent){this.ensureProc();
@@ -265,11 +310,36 @@ export const Stage = {
     this.tl.appendChild(n);
     this.nodes[agent]={el:n,body:n.querySelector('.tl-inner'),dot:n.querySelector('.tl-dot'),
                        ct:n.querySelector('.ct'),dur:n.querySelector('.dur'),
-                       t0:Date.now(),tEnd:null,count:0};
+                       t0:this.now(),tEnd:null,count:0,
+                       // what the lane's mark is read from: see markOf
+                       agent,seq:++this._seq,worst:0};
     return this.nodes[agent];},
-  done(a){const n=this.nodes[a];if(n&&!n.tEnd){n.dot.classList.remove('active');n.dot.classList.add('done');
-    n.el.classList.remove('open');n.tEnd=Date.now();
-    if(n.dur)n.dur.textContent=fmtDur(n.tEnd-n.t0);}},
+  done(a){const n=this.nodes[a];if(n&&!n.tEnd){n.dot.classList.remove('active');
+    n.el.classList.remove('open');n.tEnd=Math.max(n.t0,this.now());
+    if(n.dur)n.dur.textContent=fmtDur(n.tEnd-n.t0);this.paint(n);}},
+  /* THE LANE'S MARK SAYS HOW IT ENDED. A tick is earned: it used to be every closed lane's, so a
+     review that failed the mesh and sent it back for a rebuild closed with a green tick beside its
+     FAIL, and "Mesh creation" was ticked on runs where nothing was built.
+       bad    ✕  a check failed, an error was reported, or the review failed the mesh
+       back   ↺  the attempt was sent back for a rebuild from here (set by `attempt`)
+       warn   !  it only warned - or a delivered mesh's review left points open
+       nomesh –  a mesh lane in which no mesher ran: nothing was built there
+       ended  –  the run was cancelled while it was open
+       done   ✓  it finished and nothing in it went wrong
+     The mark is read from what the lane showed (failed checks, a note's tone, the verdict), never
+     from the words of a note. */
+  markOf(n){
+    if(n.mark)return n.mark;
+    if(n.verdict)return n.verdict==='PASS'?'done':'bad';
+    if(n.worst>=2)return 'bad';
+    if(n.worst===1)return 'warn';
+    if(n.agent==='builder'&&!n.built)return 'nomesh';
+    return 'done';},
+  paint(n){if(!n||!n.tEnd)return;
+    const m=this.markOf(n);
+    Object.keys(MARKS).forEach(k=>n.dot.classList.remove(k));
+    n.dot.classList.add(m);n.dot.title=MARKS[m];
+    n.dot.setAttribute('role','img');n.dot.setAttribute('aria-label',MARKS[m]);},
   stage(agent){Object.keys(this.nodes).forEach(k=>{if(k!==agent)this.done(k);});this.node(agent);},
   bump(n){n.count++;n.ct.textContent=n.count+(n.count===1?' step':' steps');},
   scroll(n){n.body.scrollTop=n.body.scrollHeight;this.scrollBottom();},
@@ -278,12 +348,20 @@ export const Stage = {
   // Each retry re-opens the stages and marks which attempt they belong to.
   attempt(n){
     if(this._att===n)return;
+    this.ensureProc();
+    // THE LANE THAT SENT THE RUN BACK - the last one the attempt opened: the review that failed
+    // the mesh, or the validation it did not pass. It reads "sent back for a rebuild", never a
+    // tick, and a failed verdict is reworded as the request it turned out to be.
+    const lanes=['builder','executor','classifier','reviewer'].map(a=>this.nodes[a]).filter(Boolean);
+    const last=lanes.reduce((m,x)=>(!m||x.seq>m.seq?x:m),null);
+    if(last){last.mark='back';
+      if(last.verdict==='FAIL'&&last.verdictRow){const t=last.verdictRow.querySelector('.e-info');if(t)t.textContent=SENT_BACK;}}
+    this._closeAttempt();
     this._att=n;
     // RETIRE the previous attempt's stages - close them and unregister the lane so the
     // next attempt opens fresh ones INSIDE the new group. The rows STAY in the DOM:
     // "why did attempt 1 fail" is the whole reason a user reads this timeline.
-    ['builder','executor','classifier','reviewer'].forEach(a=>{
-      if(this.nodes[a]){this.done(a);delete this.nodes[a];}});
+    lanes.forEach(x=>{this.done(x.agent);this.paint(x);delete this.nodes[x.agent];});
     const sep=document.createElement('div');sep.className='tl-att';
     sep.textContent=`Attempt ${n}`;
     // A run that passes first time has no "attempts" - it just has stages. Grouping is
@@ -291,17 +369,29 @@ export const Stage = {
     // until one arrives, and then both appear together.
     if(n===1)sep.hidden=true;
     else this.tl.querySelectorAll('.tl-att[hidden]').forEach(e=>e.hidden=false);
-    this.tl.appendChild(sep);},
+    this.tl.appendChild(sep);this._attSep=sep;},
+  // AN ATTEMPT THAT BUILT NOTHING SAYS SO on its header: "Attempt 2" alone read as a second mesh
+  // on runs where every attempt was refused before a mesher ever started.
+  _closeAttempt(){const s=this._attSep;if(!s||s.dataset.closed)return;s.dataset.closed='1';
+    if(!this._built.has(this._att))s.textContent+=' · no mesh built';},
+  // THE REVIEW'S VERDICT, kept on its lane: it decides the lane's mark (a FAIL is never a tick),
+  // and a rebuild that follows rewords it as the request it was.
+  verdict(agent,ok,text){this.info(agent,text,!ok);const n=this.node(agent);
+    n.verdict=ok?'PASS':'FAIL';n.verdictRow=n.body.lastElementChild;this.paint(n);},
 
   // a passed/failed CHECK - the evidence the user is owed. The STATEMENT comes from
   // the engine (GateSpec.proves); the UI never translates an internal key.
   check(agent,text,ok){const n=this.node(agent);this.bump(n);
+    if(!ok)n.worst=2;     // a failed check is never under a ticked lane
     const r=document.createElement('div');r.className='row';
     r.innerHTML=`<div class="e-check${ok?'':' bad'}"><span class="ic">${ok?'✓':'✕'}</span>`
       +`<span class="ct">${esc(text)}</span></div>`;
-    n.body.appendChild(r);this.scroll(n);},
-  info(agent,text,warn){const n=this.node(agent);this.bump(n);const r=document.createElement('div');r.className='row';
-    r.innerHTML=`<div class="e-info${warn?' warn':''}">${esc(text)}</div>`;n.body.appendChild(r);this.scroll(n);},
+    n.body.appendChild(r);this.scroll(n);this.paint(n);},
+  // `tone` is the note's own (info | warn | error): an error marks its lane failed, a warning
+  // marks it warned. A caller that names no tone is read by `warn` alone, as before.
+  info(agent,text,warn,tone){const n=this.node(agent);this.bump(n);const r=document.createElement('div');r.className='row';
+    n.worst=Math.max(n.worst||0,tone==='error'?2:warn?1:0);
+    r.innerHTML=`<div class="e-info${warn?' warn':''}">${esc(text)}</div>`;n.body.appendChild(r);this.scroll(n);this.paint(n);},
   // `action` arrives already in plain words - the tool roster is named on the backend,
   // beside the tools themselves. The UI does not know what a tool is called.
   tool(agent,action,detail){const n=this.node(agent);this.bump(n);const r=document.createElement('div');r.className='row';
@@ -434,22 +524,50 @@ export const Stage = {
     count.textContent=String(n.shots.size);
     if(follow)grid.scrollTop=grid.scrollHeight;
     this.scrollBottom();},
-  final(data){Object.keys(this.nodes).forEach(k=>this.done(k));
+  final(data){
+    // ONE ENDING PER RUN: two status polls in flight can both see the job end, and a second
+    // ending drew a second verdict row and a second closing message under the first.
+    if(this._ended)return;this._ended=true;
     const cancelled=!!data.cancelled;
-    if(this.proc){this.proc.classList.add('done');
-      const concerns=data.pass&&data.reviewOutcome==='delivered_with_concerns';
+    // a delivered mesh whose review left points open is never stamped PASS
+    const concerns=data.pass&&data.reviewOutcome==='delivered_with_concerns';
+    const failed=!data.pass&&!cancelled;
+    const outcome=concerns?'concerns':data.pass?'pass':cancelled?'cancelled':'fail';
+    // THE MARKS FOLLOW HOW THE RUN ENDED (see markOf). A cancelled run's open lane stopped; a
+    // failed run shows its failure where it stopped, unless a lane already shows it; a delivered
+    // mesh whose review left points open is a warning on that review, not a failure.
+    const lanes=Object.values(this.nodes);
+    if(cancelled)lanes.filter(n=>!n.tEnd).forEach(n=>{n.mark='ended';});
+    else if(failed&&!lanes.some(n=>this.markOf(n)==='bad'))lanes.filter(n=>!n.tEnd).forEach(n=>{n.mark='bad';});
+    if(concerns&&this.nodes.reviewer&&this.nodes.reviewer.verdict==='FAIL')this.nodes.reviewer.mark='warn';
+    this._closeAttempt();
+    // A MESH BAR STILL RUNNING when the run ended stops where it is: it counted on for ever after a
+    // run cancelled mid-mesh. It does not turn green either - nothing finished.
+    if(this.meshBar){const s=this.meshBar.el.querySelector('.mb-sub');
+      if(s)s.textContent='stopped when the run ended';this.meshBar.el.classList.add('stopped');this.meshBar=null;}
+    // the open lanes close when the job ended, and the run's clock stops there
+    this.at(data.endedAt);
+    Object.keys(this.nodes).forEach(k=>this.done(k));
+    lanes.forEach(n=>this.paint(n));
+    this.clock(data.createdAt,data.endedAt);
+    if(!this.finished){this.finished=true;
+      const c=this.proc&&this.proc.querySelector('.proc-clock');if(c&&this.t0)c.textContent=fmtDur(Date.now()-this.t0);}
+    // HOW MANY ATTEMPTS, as the timeline counted them: only one that ran a mesher counts
+    const opened=this._att!=null||this._built.size>0;
+    const att=attemptsLabel(opened,this._built.size,data.attempts);
+    if(this.proc){this.proc.classList.add('done','r-'+outcome);   // the header's mark takes the verdict's colour
       this.proc.querySelector('.proc-title').textContent=data.pass?'Mesh ready':cancelled?'Run cancelled':'Run ended';
       this.proc.querySelector('#proc-sub').textContent=concerns?'delivered with concerns':data.pass?'completed':cancelled?'cancelled by you':'failed';
       const cb=this.proc.querySelector('#proc-cancel');if(cb)cb.hidden=true;}
     // verdict row in the timeline. A cancelled run has no verdict: nobody judged a mesh.
     if(this.proc){const n=this.node('result');const v=document.createElement('div');v.className='tl-verd';
-      const att=data.attempts>0?`${data.attempts} attempt${data.attempts!==1?'s':''}`:'';
-      // a delivered mesh whose review left points open is never stamped PASS
-      const concerns=data.pass&&data.reviewOutcome==='delivered_with_concerns';
       const pill=concerns?'DELIVERED WITH CONCERNS':data.pass?'PASS':cancelled?'CANCELLED':'FAIL';
       v.innerHTML=`<span class="pill${concerns?' concerns':data.pass?'':cancelled?' cancelled':' fail'}">${pill}</span><span class="mt">${esc(att)}</span>`;
       if(cancelled&&data.cancelReason){const r=document.createElement('span');r.className='mt';r.textContent=`reason: ${data.cancelReason}`;v.appendChild(r);}
+      // the result lane's mark is the verdict's: never a tick beside a FAIL
+      n.mark={pass:'done',concerns:'warn',cancelled:'ended',fail:'bad'}[outcome];
       n.body.appendChild(v);this.done('result');}
+    if(opened)data={...data,attempts:this._built.size};    // the viewer says the same number
 
     // FINAL RESULT - one turn in the SAME conversation that took the request, so the
     // verified result reaches the user through the identity they have been talking to.

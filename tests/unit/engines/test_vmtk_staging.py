@@ -231,6 +231,7 @@ def test_run_walks_the_ladder_when_tetgen_gives_up(tmp_path, monkeypatch):
     monkeypatch.setattr(R, "run_guarded", fake_run)
     (tmp_path / "vmtk_spec.json").write_text(json.dumps(R.resolve_strategy(
         {"sizing_array": "LocalRadius", "boundary_layers": 3})))
+    (tmp_path / "lumen_open.vtp").write_text("staged")   # what staging leaves
     res = R._run_vmtk_local(tmp_path, timeout=10)
     # the surface stage once, then two generator attempts
     assert res["rc"] == 0 and len(calls) == 3
@@ -266,12 +267,162 @@ def test_the_ladder_shares_one_time_budget(tmp_path, monkeypatch):
     monkeypatch.setattr(R, "_now", lambda: clock["t"])
     (tmp_path / "vmtk_spec.json").write_text(json.dumps(R.resolve_strategy(
         {"sizing_array": "LocalRadius", "boundary_layers": 3})))
+    (tmp_path / "lumen_open.vtp").write_text("staged")   # what staging leaves
     res = R._run_vmtk_local(tmp_path, timeout=1000)
     # the surface stage (700 s) and one generator step (700 s) exhaust the 1000 s budget: the
     # remaining ladder steps are not started, and the note says so
     assert len(calls) == 2
     assert "ladder step(s) not started" in res["repair_note"]
     assert "of the 1000 s budget left" in res["repair_note"]
+
+
+def _polydata(pts, tri):
+    return pv.PolyData(np.asarray(pts, dtype=float),
+                       np.hstack([np.full((len(tri), 1), 3, dtype=np.int64), tri]).ravel())
+
+
+def _folded(pts, tri):
+    # the tube plus a fin on one of its edges (that edge now has three triangles) and a triangle
+    # whose corners lie on one line (no area): what a remesh that folded the wall looks like
+    a, b = tri[0][0], tri[0][1]
+    n = len(pts)
+    pts = np.vstack([pts, pts[a] + np.array([0.0, 0.0, 0.3]), pts[a], 0.5 * (pts[a] + pts[b])])
+    return pts, np.vstack([tri, [[a, b, n], [a, n + 2, b]]])
+
+
+def _staged_tube(ws):
+    pts, tri = _tube()
+    wall = _polydata(pts, tri)
+    wall.point_data["LocalRadius"] = 1.0 + pts[:, 0]           # any per-point value
+    wall.save(str(ws / "lumen_open.vtp"))
+    return pts, tri
+
+
+def test_wall_defects_finds_non_manifold_edges_and_zero_area_triangles(tmp_path):
+    from meshpipeline.engines.vmtk import vmtk_runner as R
+    pts, tri = _tube()
+    _polydata(pts, tri).save(str(tmp_path / "clean.vtp"))
+    assert R._wall_defects(tmp_path / "clean.vtp") == {}
+    _polydata(*_folded(pts, tri)).save(str(tmp_path / "folded.vtp"))
+    found = R._wall_defects(tmp_path / "folded.vtp")
+    assert found["non-manifold edges"] >= 1 and found["zero-area triangles"] == 1
+    (tmp_path / "junk.vtp").write_text("not a surface")
+    assert R._wall_defects(tmp_path / "junk.vtp") == {}       # the generator will say so itself
+
+
+def test_a_shuffled_wall_is_the_same_wall_with_its_radius_field(tmp_path):
+    from meshpipeline.engines.vmtk import vmtk_runner as R
+    _staged_tube(tmp_path)
+    wall = pv.read(str(tmp_path / "lumen_open.vtp"))
+    s = R._shuffled(wall, 1)
+    assert not np.array_equal(np.asarray(s.points), np.asarray(wall.points))
+    assert np.array_equal(np.unique(np.asarray(s.points), axis=0),
+                          np.unique(np.asarray(wall.points), axis=0))
+    assert np.allclose(np.asarray(s.point_data["LocalRadius"]), 1.0 + np.asarray(s.points)[:, 0])
+    # the same triangles, each wound the same way: the same set of (centroid, normal)
+    def faces(m):
+        p = np.asarray(m.points)
+        t = np.asarray(m.faces).reshape(-1, 4)[:, 1:]
+        n = np.cross(p[t[:, 1]] - p[t[:, 0]], p[t[:, 2]] - p[t[:, 0]])
+        return sorted(map(tuple, np.round(np.hstack([p[t].mean(axis=1), n]), 9)))
+    assert faces(s) == faces(wall)
+    assert np.array_equal(np.asarray(R._shuffled(wall, 1).points), np.asarray(s.points))  # fixed
+
+
+def _surface_faker(tmp_path, pts, tri, folds):
+    """A run_guarded stand-in: surface stage number k (from 0) writes a folded wall when
+    folds(k, argv) says so, a clean one otherwise; the generator always fills."""
+    import subprocess as sp
+    calls: list[list[str]] = []
+    seen: list[np.ndarray] = []
+
+    def fake_run(argv, **kw):
+        calls.append(list(argv))
+        if argv[1] == "vmtksurfaceremeshing":
+            seen.append(np.asarray(pv.read(str(tmp_path / "lumen_open.vtp")).points).copy())
+            k = sum(c[1] == "vmtksurfaceremeshing" for c in calls) - 1
+            out = _polydata(*_folded(pts, tri)) if folds(k, argv) else _polydata(pts, tri)
+            out.save(str(tmp_path / "lumen.vtp"))
+            return sp.CompletedProcess(argv, 0, stdout="Done executing vmtksurfaceprojection.",
+                                       stderr="")
+        if argv[1] == "vmtkmeshgenerator":
+            (tmp_path / "mesh.vtu").write_text("filled")
+            return sp.CompletedProcess(argv, 0, stdout="Done executing vmtkmeshgenerator.",
+                                       stderr="")
+        return sp.CompletedProcess(argv, 0, stdout="", stderr="")    # the OpenFOAM export
+    return fake_run, calls, seen
+
+
+def test_a_clean_remesh_runs_once_as_before(tmp_path, monkeypatch):
+    from meshpipeline.engines.vmtk import vmtk_runner as R
+    pts, tri = _staged_tube(tmp_path)
+    fake_run, calls, _ = _surface_faker(tmp_path, pts, tri, lambda k, argv: False)
+    monkeypatch.setattr(R, "run_guarded", fake_run)
+    (tmp_path / "vmtk_spec.json").write_text(json.dumps(R.resolve_strategy(
+        {"sizing_array": "LocalRadius", "boundary_layers": 3})))
+    res = R._run_vmtk_local(tmp_path, timeout=100)
+    assert [c[1] for c in calls][:2] == ["vmtksurfaceremeshing", "vmtkmeshgenerator"]
+    assert "-collapseangle" not in " ".join(calls[0])
+    assert "repair_note" not in res
+
+
+def test_a_folded_remesh_is_run_again_with_gentler_collapses(tmp_path, monkeypatch):
+    from meshpipeline.engines.vmtk import vmtk_runner as R
+    pts, tri = _staged_tube(tmp_path)
+    # vmtk's default collapse folds this wall; the gentler one does not
+    fake_run, calls, seen = _surface_faker(tmp_path, pts, tri,
+                                           lambda k, argv: "-collapseangle" not in argv)
+    monkeypatch.setattr(R, "run_guarded", fake_run)
+    (tmp_path / "vmtk_spec.json").write_text(json.dumps(R.resolve_strategy(
+        {"sizing_array": "LocalRadius", "boundary_layers": 3})))
+    res = R._run_vmtk_local(tmp_path, timeout=100)
+    assert [c[1] for c in calls][:3] == ["vmtksurfaceremeshing", "vmtksurfaceremeshing",
+                                         "vmtkmeshgenerator"]
+    assert "-collapseangle 0.1 --pipe" in " ".join(calls[1])
+    assert np.array_equal(seen[0], seen[1])                 # the same wall, in the same order
+    assert "came back folded (1 non-manifold edges, 1 zero-area triangles)" in res["repair_note"]
+    assert "surface remesh 2: the wall came back clean" in res["repair_note"]
+    assert res["rc"] == 0 and (tmp_path / "mesh.vtu").read_text() == "filled"
+
+
+def test_a_wall_that_still_folds_is_remeshed_in_other_orders_then_goes_on(tmp_path, monkeypatch):
+    from meshpipeline.engines.vmtk import vmtk_runner as R
+    pts, tri = _staged_tube(tmp_path)
+    fake_run, calls, seen = _surface_faker(tmp_path, pts, tri, lambda k, argv: True)
+    monkeypatch.setattr(R, "run_guarded", fake_run)
+    (tmp_path / "vmtk_spec.json").write_text(json.dumps(R.resolve_strategy(
+        {"sizing_array": "LocalRadius", "boundary_layers": 3})))
+    res = R._run_vmtk_local(tmp_path, timeout=100)
+    n = 1 + len(R._SURFACE_RETRIES)
+    assert [c[1] for c in calls][:n + 1] == ["vmtksurfaceremeshing"] * n + ["vmtkmeshgenerator"]
+    # the shuffled retries remesh the same wall stored in other orders, its radius field intact
+    assert not np.array_equal(seen[0], seen[2]) and not np.array_equal(seen[2], seen[3])
+    assert np.array_equal(np.unique(seen[0], axis=0), np.unique(seen[3], axis=0))
+    shuffled = pv.read(str(tmp_path / "lumen_open.vtp"))
+    assert np.allclose(np.asarray(shuffled.point_data["LocalRadius"]),
+                       1.0 + np.asarray(shuffled.points)[:, 0])
+    assert "stored in another order" in res["repair_note"]
+    assert "still folded" in res["repair_note"] and "going on with it" in res["repair_note"]
+    assert "still folded" in (tmp_path / "log.vmtk").read_text()
+
+
+def test_the_surface_retries_respect_the_budget(tmp_path, monkeypatch):
+    from meshpipeline.engines.vmtk import vmtk_runner as R
+    pts, tri = _staged_tube(tmp_path)
+    clock = {"t": 0.0}
+    fake_run, calls, _ = _surface_faker(tmp_path, pts, tri, lambda k, argv: True)
+
+    def slow(argv, **kw):
+        clock["t"] += 700.0
+        return fake_run(argv, **kw)
+    monkeypatch.setattr(R, "run_guarded", slow)
+    monkeypatch.setattr(R, "_now", lambda: clock["t"])
+    (tmp_path / "vmtk_spec.json").write_text(json.dumps(R.resolve_strategy(
+        {"sizing_array": "LocalRadius", "boundary_layers": 3})))
+    res = R._run_vmtk_local(tmp_path, timeout=1000)
+    # the first remesh (700 s) and one retry (700 s) use the budget up: no third remesh
+    assert [c[1] for c in calls].count("vmtksurfaceremeshing") == 2
+    assert "of the budget is left to remesh it again" in res["repair_note"]
 
 
 def test_an_unchanged_retry_keeps_its_pass_identity(tmp_path, monkeypatch):
@@ -304,6 +455,7 @@ def test_a_completed_fill_is_also_written_as_an_openfoam_case(tmp_path, monkeypa
     monkeypatch.setattr(R, "export_openfoam_case", lambda ws, **kw: exported.append(kw) or "openfoam_case")
     (tmp_path / "vmtk_spec.json").write_text(json.dumps(R.resolve_strategy(
         {"sizing_array": "LocalRadius", "boundary_layers": 3})))
+    (tmp_path / "lumen_open.vtp").write_text("staged")   # what staging leaves
     res = R._run_vmtk_local(tmp_path, timeout=900)
     assert res["rc"] == 0 and res["openfoam_case"] == "openfoam_case"
     assert len(exported) == 1 and 0 < exported[0]["timeout"] <= 900
@@ -386,6 +538,7 @@ def test_run_makes_one_attempt_when_nothing_was_staged(tmp_path, monkeypatch):
     monkeypatch.setattr(R, "run_guarded", fake_run)
     (tmp_path / "vmtk_spec.json").write_text(json.dumps({"source_ids": [0], "target_ids": [1],
                                                         "boundary_layers": 3}))
+    (tmp_path / "lumen_open.vtp").write_text("staged")   # what staging leaves
     res = R._run_vmtk_local(tmp_path, timeout=10)
     assert len(calls) == 1 and "repair_note" not in res
 
@@ -436,12 +589,97 @@ def test_geometry_report_lists_the_staged_ports(tmp_path):
     assert "local radius" in rep["note"].lower()
 
 
-def test_stage_lumen_does_not_apply_to_surfaces_or_undeclared_runs(tmp_path):
+def test_stage_lumen_does_not_apply_without_a_staged_surface_or_a_declaration(tmp_path):
     assert LS.stage_lumen(tmp_path, tmp_path / "lumen.stl", prepared=None,
                           intake_patches=[{"name": "inlet", "type": "inlet"}]) is None
     assert LS.stage_lumen(tmp_path, tmp_path / "body.step", prepared=None,
                           intake_patches=[]) is None
     assert not (tmp_path / LS.STAGING_FACT).exists()
+
+
+def _open_tube_stl(path, r=0.02, length=0.2, n=32):
+    from meshpipeline.cad.stl_io import write_stl_binary
+    tris = []
+    for k in range(n):
+        a0, a1 = 2 * np.pi * k / n, 2 * np.pi * ((k + 1) % n) / n     # the seam closes exactly
+        for j in range(4):
+            x0, x1 = length * j / 4, length * (j + 1) / 4
+            p = [[x, r * np.cos(a), r * np.sin(a)] for x in (x0, x1) for a in (a0, a1)]
+            tris += [(p[0], p[3], p[2]), (p[0], p[1], p[3])]
+    write_stl_binary(path, tris)
+
+
+_TUBE_PORTS = [{"name": "inlet", "type": "inlet", "near_mm": [0, 0, 0], "diameter_mm": 40},
+               {"name": "outlet", "type": "outlet", "near_mm": [200, 0, 0], "diameter_mm": 40},
+               {"name": "wall", "type": "wall"}]
+
+
+def test_an_undeclared_surface_upload_is_still_staged_as_the_lumen_vmtk_inspects(tmp_path):
+    """No ports declared yet: the upload itself becomes lumen.vtp, so geometry_report lists its
+    open profiles instead of saying the workspace was never staged."""
+    from meshpipeline.engines.vmtk.vmtk_runner import inspect_stl
+    _open_tube_stl(tmp_path / "input.stl")
+    assert LS.stage_lumen(tmp_path, tmp_path / "scan.stl", prepared=None, intake_patches=[]) is None
+    rep = inspect_stl(tmp_path)
+    assert not rep.get("error") and rep["n_open_profiles"] == 2
+
+
+def test_a_step_whose_brep_cannot_be_opened_is_staged_from_its_own_surface(tmp_path, monkeypatch):
+    """A faceted STEP (a shell of triangles, not a solid) fails the B-rep path; its staged
+    surface is closed at the confirmed openings instead of the lumen never being written."""
+    from meshpipeline.cad import cad_tessellate
+    _open_tube_stl(tmp_path / "input.stl")
+
+    def no_solid(*_a, **_k):
+        raise RuntimeError("internal-flow input is not a watertight SOLID")
+    monkeypatch.setattr(cad_tessellate, "tessellate_internal", no_solid)
+    rec = LS.stage_lumen(tmp_path, tmp_path / "faceted.stp", prepared=None, intake_patches=_TUBE_PORTS)
+    assert rec is not None and {p["name"] for p in rec["ports"]} == {"inlet", "outlet"}
+    assert (tmp_path / LS.LUMEN_OPEN).exists()
+
+
+def test_a_staging_failure_reaches_the_engines_report_with_its_true_reason(tmp_path, monkeypatch):
+    from meshpipeline.agents.builder import attempt
+    from meshpipeline.engines.vmtk import vmtk_runner
+
+    def broken(*_a, **_k):
+        raise ValueError("the surface holds too few triangles to bound a fluid")
+    monkeypatch.setattr(vmtk_runner, "stage_declared", broken)
+    monkeypatch.setattr("meshpipeline.cad.staging.staged_surface",
+                        lambda g, p: type("S", (), {"consumed": None})())
+    geometry = type("G", (), {"path": str(tmp_path / "scan.stl")})()
+    attempt._stage_declared(tmp_path, geometry, {"intake_patches": _TUBE_PORTS}, "vmtk")
+    rep = vmtk_runner.inspect_stl(tmp_path)
+    assert "too few triangles" in rep["error"], rep
+
+
+def test_stage_lumen_opens_a_surface_upload_at_its_confirmed_openings(tmp_path):
+    """A capped vessel surface (STL, metres, staged as input.stl): the shared internal-flow staging
+    finds each confirmed opening's capped face, and the lumen vmtk reads is the wall with those
+    faces taken out - real holes, one per declared port, under the declared names."""
+    from meshpipeline.cad.stl_io import write_stl_binary
+
+    r, length, n = 0.02, 0.2, 32
+    tris = []
+    for k in range(n):
+        a0, a1 = 2 * np.pi * k / n, 2 * np.pi * (k + 1) / n
+        for j in range(4):
+            x0, x1 = length * j / 4, length * (j + 1) / 4
+            p = [[x, r * np.cos(a), r * np.sin(a)] for x in (x0, x1) for a in (a0, a1)]
+            tris += [(p[0], p[3], p[2]), (p[0], p[1], p[3])]
+        for x, s in ((0.0, -1), (length, 1)):
+            q0, q1 = [x, r * np.cos(a0), r * np.sin(a0)], [x, r * np.cos(a1), r * np.sin(a1)]
+            tris.append(([x, 0, 0], q1, q0) if s < 0 else ([x, 0, 0], q0, q1))
+    write_stl_binary(tmp_path / "input.stl", tris)
+    patches = [{"name": "aortic_root", "type": "inlet", "near_mm": [0, 0, 0], "diameter_mm": 40},
+               {"name": "descending", "type": "outlet", "near_mm": [200, 0, 0], "diameter_mm": 40},
+               {"name": "vessel", "type": "wall"}]
+    rec = LS.stage_lumen(tmp_path, tmp_path / "upload.stl", prepared=None, intake_patches=patches,
+                         input_kind="fluid-domain")
+    assert rec is not None
+    assert {p["name"] for p in rec["ports"]} == {"aortic_root", "descending"}
+    assert rec["n_open_loops"] == 2, "the lumen must be open at exactly the two declared ports"
+    assert (tmp_path / LS.LUMEN_OPEN).exists() and (tmp_path / "lumen.vtp").exists()
 
 
 def test_the_builder_hook_is_inert_without_geometry_or_hook(tmp_path):

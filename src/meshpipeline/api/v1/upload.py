@@ -12,6 +12,7 @@ from pydantic import BaseModel
 import meshpipeline.agents.intake.settings as icfg
 import meshpipeline.settings.runtime as rtcfg
 from meshpipeline.api.security import org_dep, owner_dep, plan_dep
+from meshpipeline.cad.ingest.upload_check import STEP_HEADER_REFUSAL as _STEP_HEADER_REFUSAL
 from meshpipeline.contracts.intake_formats import (
     ACCEPTED_SUFFIXES,
     refusal_suffix,
@@ -34,8 +35,8 @@ UPLOAD_ACKNOWLEDGEMENT = (
 _JOBS_DIR = Path(rtcfg.JOBS_DIR)
 _JOBS_DIR.mkdir(parents=True, exist_ok=True)
 
-# .vtp is a VTK PolyData surface - vmtk's native lumen input (a segmented vessel/duct
-# surface). The engine's staging seam converts between the surface formats it needs.
+# Every accepted format (contracts/intake_formats) is stored as uploaded; cad/ingest turns it into
+# a canonical CAD solid or STL surface where it is read (the job materialiser, the geometry check).
 _MAX_FILE_BYTES   = 500 * 1024 * 1024
 
 # The IGES unit is read by OpenCASCADE, which loads the whole model to answer - several times the
@@ -59,14 +60,35 @@ def sanitised_upload_name(filename: str) -> tuple[str, str]:
     return cleaned, Path(cleaned).suffix.lower()
 
 
-def has_step_header(staged: Path) -> bool:
-    """Whether a staged STEP file opens with the ISO-10303-21 header (after a BOM or whitespace)."""
-    with open(staged, "rb") as fh:
-        head = fh.read(64)
-    return head.lstrip(b"\xef\xbb\xbf \t\r\n").startswith(b"ISO-10303-21")
+def checked_upload(dest: Path, suffix: str) -> tuple[Path, str]:
+    """THE content check every upload makes, shared by the multipart and the direct route.
+
+    The bytes decide, not the name (cad/ingest/upload_check): a STEP without its ISO-10303-21
+    header, a renamed SolidWorks part, a zip bomb posing as 3MF or a glTF that points at files the
+    upload does not carry are refused here with a sentence that says what to do instead. A file
+    that is plainly ANOTHER accepted format than its name says (an STL named .obj) is kept, and
+    recorded as what it is. Returns the staged file and the suffix its bytes really are."""
+    from meshpipeline.cad.ingest import check_upload
+
+    try:
+        verdict = check_upload(dest, suffix)
+    except Exception as exc:  # noqa: BLE001 - a check that cannot run must not cost the upload
+        logger.warning("upload: the content check could not run (%s); the file is kept and read "
+                       "on the worker", exc)
+        return dest, suffix
+    if not verdict.ok:
+        dest.unlink(missing_ok=True)
+        raise HTTPException(status_code=verdict.status, detail=verdict.refusal)
+    if verdict.suffix != suffix:
+        moved = dest.with_name(staged_name_for(verdict.suffix))
+        dest.replace(moved)
+        logger.info("upload: a %s-named file is a %s file by its content; recorded as such",
+                    suffix, verdict.suffix)
+        return moved, verdict.suffix
+    return dest, suffix
 
 
-STEP_HEADER_REFUSAL = "File does not appear to be a valid STEP file (missing ISO-10303-21 header)."
+STEP_HEADER_REFUSAL = _STEP_HEADER_REFUSAL
 
 
 
@@ -89,7 +111,7 @@ class StepFileOut(BaseModel):
         "POST /api/v1/upload/direct, PUT the bytes to the `upload_url` it returns, then POST its "
         "`finalize_url` - which answers exactly what this route answers."))
 async def upload_step_file(
-    file:     UploadFile = File(..., description="Geometry file - a surface (.stl, .vtp) or CAD (.step/.stp, .iges/.igs). The selected engine's staging seam converts it to what that engine meshes."),
+    file:     UploadFile = File(..., description="Geometry file. CAD: .step/.stp, .iges/.igs, .brep. Surface or volume meshes: .stl, .obj, .ply, .off, .3mf, .glb, .gltf (single file), .vtk, .vtp, .vtu, .msh (Gmsh or Fluent), .bdf/.nas, .inp, .mesh, .su2, .3dm (Rhino meshes). The contents decide the format, not the name. A volume mesh is read as its boundary surface; named groups become named regions. Every file becomes a canonical CAD solid or STL surface before an engine sees it. GET /api/v1/client-config lists the formats."),
     owner_id: str        = Depends(owner_dep),
     plan:     str        = Depends(plan_dep),
     organization_id: str = Depends(org_dep),
@@ -145,15 +167,9 @@ async def upload_step_file(
         dest.unlink(missing_ok=True)
         raise HTTPException(status_code=422, detail="Uploaded file is empty")
 
-    if suffix in (".step", ".stp"):
-        try:
-            if not has_step_header(dest):
-                dest.unlink(missing_ok=True)
-                raise HTTPException(status_code=400, detail=STEP_HEADER_REFUSAL)
-        except HTTPException:
-            raise
-        except Exception as exc:
-            logger.warning("upload_step_file: could not validate STEP header: %s", exc)
+    # off the event loop: the check reads the file, and a large one must not stall other requests
+    import asyncio as _asyncio
+    dest, suffix = await _asyncio.to_thread(checked_upload, dest, suffix)
 
     step_filename = filename
 

@@ -99,7 +99,27 @@ def materialize(ref: GeometrySourceRef, interpretation: GeometryInterpretationRe
             "the retrieved geometry does not match the approved upload",
             failure_class=FailureClass.DATA_INTEGRITY)
     logger.info("geometry materialize: verified %d bytes - job_id=%s", size, job_id)
-    return MaterializedGeometry(ref=ref, interpretation=interpretation, local_path=dest)
+    canonical = canonical_path(dest, job_id=job_id)
+    return MaterializedGeometry(ref=ref, interpretation=interpretation, local_path=canonical)
+
+
+def canonical_path(verified: Path, *, job_id: str = "") -> Path:
+    """The verified upload in its canonical form (cad/ingest): the bytes themselves for STEP,
+    IGES, VTP and a well-formed STL - so every engine reads exactly what it read before - and a
+    STEP or STL converted beside them for every other accepted format. Everything downstream
+    reads this path, so a format is supported everywhere the moment it converts."""
+    from meshpipeline.cad.ingest import IngestError, canonicalise
+
+    try:
+        canonical = canonicalise(verified, verified.parent, stem=_BASENAME)
+    except IngestError as exc:
+        # the file was accepted for its name and its first bytes; what is inside cannot be read
+        logger.warning("geometry materialize: not readable as geometry - job_id=%s: %s", job_id, exc)
+        raise GeometrySourceError(str(exc), failure_class=FailureClass.USER_INPUT) from exc
+    if canonical.converted:
+        logger.info("geometry materialize: %s converted to %s (%s) - job_id=%s",
+                    canonical.source_format, canonical.path.name, canonical.kind.value, job_id)
+    return canonical.path
 
 
 async def resolve_row_interpretation(db, snapshot: GeometryInterpretationRef,

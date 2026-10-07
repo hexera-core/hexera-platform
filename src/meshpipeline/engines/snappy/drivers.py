@@ -451,6 +451,64 @@ def _plan_surface(state, workspace):
     return staged_surface(_materialized(state), Path(workspace) / "input.stl")
 
 
+async def _sealed_cavities(cache: dict, surface, rec: dict, strategy: dict):
+    """The external body's sealed-space reading at this plan's wall cell (engines/sealed_cavities),
+    measured once per cell size per build and off the event loop. None when switched off or not
+    measurable - the case is then authored exactly as before."""
+    if not scfg.SNAPPY_SEAL_CAVITIES:
+        return None
+    try:
+        from meshpipeline.engines.snappy.layer_policy import intended_surface_cell
+        key = round(float(intended_surface_cell(rec, strategy)), 12)
+    except (TypeError, ValueError, KeyError, IndexError):
+        return None
+    if not (key > 0.0) or getattr(surface, "path", None) is None:
+        return None
+    if key not in cache:
+        import asyncio as _asyncio
+
+        from meshpipeline.cad.thin_features import staged_triangles
+        from meshpipeline.engines.sealed_cavities import read_cavities
+
+        def _read():
+            try:
+                # the staged triangles, one for one: wet_sides indexes them for the layer policy
+                return read_cavities(staged_triangles(surface.path), cell_m=key)
+            except Exception:  # noqa: BLE001 - a reading is an improvement, never a prerequisite
+                logger.warning("sealed-cavity reading failed; meshing without it", exc_info=True)
+                return None
+        cache[key] = await _asyncio.to_thread(_read)
+    return cache[key]
+
+
+async def _wetted_field(cache: dict, surface, reading, fallback):
+    """The thin-feature field to classify: re-measured with the reading's wetted sides when there
+    is a reading (the faces only a sealed space touches drop out, and the thin class is read
+    across the fluid), else the build's own field unchanged."""
+    if reading is None or fallback is None:
+        return fallback
+    key = id(reading)
+    if key not in cache:
+        import asyncio as _asyncio
+
+        from meshpipeline.engines.snappy import layer_policy as LP
+        field = await _asyncio.to_thread(LP.measure_field, surface, reading.wet_sides)
+        cache[key] = field if field is not None else fallback
+    return cache[key]
+
+
+def _sealed_note(reading) -> str:
+    """The carving note's tail when spaces inside the body are kept out of the mesh."""
+    if reading is None or not reading.cavities:
+        return ""
+    n = len(reading.cavities)
+    vol = sum(c.volume_m3 for c in reading.cavities)
+    return (f"; {n} enclosed space{'s' if n > 1 else ''} inside the body ({vol * 1e6:.3g} cm³) "
+            f"reach{'' if n > 1 else 'es'} the outside only through gaps narrower than "
+            f"{reading.seal_gap_m * 1e3:.2g} mm - too narrow to mesh flow through - so "
+            f"{'they are' if n > 1 else 'it is'} kept out of the mesh and the gaps are closed")
+
+
 def _pass_shape(q: dict, wall_faces: int) -> str:
     _cells = f"{int(q['cells']):,}" if q.get("cells") else "no"
     _skew = int(q.get("skew_faces") or 0)
@@ -483,6 +541,10 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
     # the escalation ladder's durable stage: 0 on a fresh geometry, advanced by layer-fatal
     # passes below, carried across pipeline retries via the sibling attempt's fact
     _esc_stage = LP.read_escalation(workspace)
+    # sealed-space readings, one per wall-cell size this build plans (engines/sealed_cavities),
+    # and the thin-feature field re-read with each reading's wetted sides
+    _cavity_cache: dict = {}
+    _field_cache: dict = {}
 
     # SYMMETRY (3D external) comes in two shapes, told apart by how many patches were declared:
     # ONE is a half-model, cut on a plane, meshed on one side; TWO is a 2.5D slab - an extruded
@@ -666,11 +728,16 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             if _dom is not None:
                 raise PreflightStop(_dom)
             wall = _contract_wall_patch(workspace) or "body"
+            # SEALED SPACES: a hollow body's inside, reached by the far field only through gaps
+            # too narrow to mesh, is kept out of the mesh (engines/sealed_cavities.py) - and the
+            # faces only it touches are no part of the wall the layer policy judges
+            _cavities = await _sealed_cavities(_cavity_cache, _surface, rec, strategy)
+            _field = await _wetted_field(_field_cache, _surface, _cavities, _thin_field)
             # LOCAL LAYER POLICY - classification against THIS plan's wall-cell scale. None
             # (no thin features, policy off, no layers requested) authors the historical case
             # exactly; otherwise razor/thin regions get locally fewer, thinner layers instead
             # of one global count that folds at the sharp features or collapses everywhere.
-            _policy = LP.plan_layer_policy(_thin_field, rec=rec, strategy=strategy,
+            _policy = LP.plan_layer_policy(_field, rec=rec, strategy=strategy,
                                            wall_name=wall, stage=_esc_stage)
             prep = R.prepare_surface(
                 workspace, geometry_file="input.stl", domain_min=dmin, domain_max=dmax,
@@ -695,7 +762,8 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                 symmetry=symmetry, surface_regions=_dict_regions,
                 layer_counts=LP.layer_counts_for(_policy),
                 layer_overrides=LP.overrides_for(_policy), ground=_ground,
-                farfield=_farfield, class_regions=_split)
+                farfield=_farfield, class_regions=_split,
+                outside_points=[c.point for c in _cavities.cavities] if _cavities else None)
             # the honest record travels with the case: the manifest reports the per-region
             # layer decisions this pass actually authored (stale records are removed)
             LP.write_layer_policy(workspace, _policy)
@@ -712,7 +780,8 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             if _repeats_timed_out_case(workspace, _timeout_case):
                 raise TimedOutCaseRepeats(f"external pass {attempt}")
             await publish.anote("Carving the body out of the background mesh - refinement level "
-                            f"{summary['surface_level']}, {summary['n_layers']} boundary layers",
+                            f"{summary['surface_level']}, {summary['n_layers']} boundary layers"
+                            + _sealed_note(_cavities),
                     op_id=f"snappy:carving:{attempt}")
             # RUN (deterministic; Cloud Run Job / local) + user-facing instrumentation
             _t_mesh = _time.monotonic()
@@ -835,6 +904,78 @@ def _bind_declared_ports(t: dict, intake_patches: list) -> tuple[dict, str, str]
     return bind_intake(t, intake_patches)
 
 
+def _lid_hydraulic_diameters(srcs: dict, wall_key: str) -> dict:
+    """{port: hydraulic diameter of its staged lid} (engines/passage); {} when none reads."""
+    from meshpipeline.engines.passage import lid_hydraulic_diameters
+    try:
+        return lid_hydraulic_diameters(srcs, wall_key)
+    except Exception:  # noqa: BLE001 - a measurement is an optimisation, never fatal
+        logger.exception("lid hydraulic diameters failed - sizing from the port areas")
+        return {}
+
+
+def _port_hydraulic_diameters(srcs: dict, wall_key: str, intake_patches: list) -> dict:
+    """{port: hydraulic diameter}: the smaller of the staged lid's (4 x area / perimeter) and the
+    declared size's (a bore, an annulus's D - d, a rectangle's 2wh / (w + h))."""
+    from meshpipeline.engines.passage import declared_hydraulic_diameters
+    out = dict(_lid_hydraulic_diameters(srcs, wall_key))
+    for name, v in declared_hydraulic_diameters(intake_patches).items():
+        out[name] = min(float(out.get(name) or float("inf")), float(v))
+    return out
+
+
+def _bore_port_name(t: dict) -> str:
+    """The port _bore_area_m2 sizes from: the largest declared inlet (any port without one)."""
+    def _opening(p: dict) -> float:
+        v = p.get("opening_area_m2")
+        return float(v) if v is not None else float(p.get("area_m2") or 0.0)
+    ports = (t.get("binding") or {}).get("ports") or []
+    if ports:
+        pool = [p for p in ports if p.get("role") == "inlet"] or list(ports)
+        return str(max(pool, key=_opening).get("name"))
+    return "inlet"
+
+
+def _staged_passage_field(t: dict, srcs: dict, wall_key: str, intake_patches: list):
+    """(points, radius, wall area per point) of the staged cavity wall, held near each declared
+    port to its half flow-width (engines/passage.staged_passage_field); None when unreadable,
+    or when the ports do not vouch for the reading (a hollow part's outer skin read instead of
+    its bore: the boxes would be placed by a passage that is not there)."""
+    from meshpipeline.engines.passage import (
+        field_radius_stats,
+        plausible_radius,
+        point_areas,
+        port_radius_stats,
+        staged_passage_field,
+    )
+    raw = staged_passage_field(t, srcs, wall_key, intake_patches, corrected=False)
+    if raw is None:
+        return None
+    ports = port_radius_stats(t.get("openings"),
+                              _port_hydraulic_diameters(srcs, wall_key, intake_patches))
+    if ports and not plausible_radius(field_radius_stats(*raw), ports):
+        logger.info("narrow passages: the staged wall's reading is not the passage the ports "
+                    "describe - no local refinement")
+        return None
+    pts, faces, r = staged_passage_field(t, srcs, wall_key, intake_patches, field=raw)
+    return pts, r, point_areas(pts, faces)
+
+
+def _narrow_passage_boxes(field, *, wall_cell: float, budget_cells: float) -> list:
+    """Refinement boxes, in render_internal_case's thin-region form ({min, max, level_bump} over
+    the wall's surface level), for every passage the wall cell puts under the floor
+    (engines/passage.narrow_passage_regions); [] without a field."""
+    if field is None:
+        return []
+    from meshpipeline.engines.passage import narrow_passage_regions
+    try:
+        return narrow_passage_regions(field[0], field[1], cell_m=wall_cell, areas=field[2],
+                                      budget_cells=budget_cells)
+    except Exception:  # noqa: BLE001 - a measurement is an optimisation, never fatal
+        logger.exception("narrow-passage regions failed - continuing without them")
+        return []
+
+
 def _bore_area_m2(t: dict) -> float:
     """The resolution yardstick's area. With a binding: the largest DECLARED-inlet opening -
     never the engine's largest-opening guess, which is backwards on combiners. A ring
@@ -854,39 +995,74 @@ def _bore_area_m2(t: dict) -> float:
     return float(t["openings"]["inlet"]["area"])
 
 
+async def _separate_fluid(R, workspace: Path, state, source_path: str, *, job_id: str) -> dict:
+    """The fluid's closed boundary, named patch by patch, and a point inside it - the one
+    internal-flow staging every engine reads (cad/internal_surface). A CAD solid is separated on
+    its B-rep (tessellate_internal); any other upload is the staged metre surface (input.stl) with
+    the openings the user confirmed on it. When the B-rep path cannot separate a solid (an opening
+    that is not a flat face), the solid's own staged surface is tried the surface way before
+    anything is refused. A declaration the geometry disagrees with is never retried."""
+    import asyncio as _asyncio
+
+    from meshpipeline.cad.internal_surface import is_cad
+    from meshpipeline.engines.port_binding import declaration_targets
+
+    patches = state.get("intake_patches") or []
+    kind = str(state.get("input_kind") or "").strip()
+    surface = Path(workspace) / "input.stl"
+
+    def _surface_way() -> dict:
+        return R.stage_internal_surface(surface, Path(workspace) / "_internal_stls",
+                                        intake_patches=patches, input_kind=kind)
+
+    if not is_cad(source_path):
+        return await _asyncio.to_thread(_surface_way)
+    # The coordinate state staging would have supplied. This path tessellates the CAD itself
+    # instead of going through prepare_surface, and cad_tessellate refuses outright without it -
+    # rightly, since the conversion to metres would otherwise be a guess. Omitting it killed
+    # every internal-flow job in 8 seconds, before the mesher was ever reached: the external
+    # path gets the same state from _plan_surface, so take it from there rather than
+    # reconstructing a second opinion about the scale.
+    _prepared = _plan_surface(state, workspace).consumed
+    try:
+        return await _asyncio.to_thread(
+            R.tessellate_internal, source_path, Path(workspace) / "_internal_stls",
+            fluid_solid=(kind == "fluid-domain"), prepared=_prepared,
+            declared_ports=declaration_targets(patches))
+    except (_fence.StaleWorkerFenced, StaleExecutionPublish, _PortBindError):
+        raise
+    except Exception as exc:  # noqa: BLE001 - the surface way is tried, else this is raised
+        if not surface.exists():
+            raise
+        logger.warning("internal build: the B-rep could not be separated (%s: %s) - staging its "
+                       "surface with the confirmed openings instead - job_id=%s",
+                       type(exc).__name__, exc, job_id)
+        t = await _asyncio.to_thread(_surface_way)
+        t.setdefault("facts", {})["cad_path_failed"] = f"{type(exc).__name__}: {exc}"[:300]
+        return t
+
+
 async def _build_internal_deterministic(workspace: Path, state: PipelineState, *, job_id: str,
                                         publish: ExecutionEventPublisher, source_path: str,
                                         initial_plan: dict | None,
                                         run: BuilderDriverRun) -> bool:
-    import asyncio as _asyncio
     import json as _json
     import math as _math
     import time as _time
 
+    from meshpipeline.cad.internal_surface import InternalSurfaceError, is_cad
     from meshpipeline.engines.snappy import snappy_runner as R
     from meshpipeline.engines.snappy.planner import clamp_cell_budget, plan_with_accounting
 
-    # tessellate the fluid solid ONCE (geometry is fixed across attempts; only strategy changes)
+    # separate the fluid ONCE (geometry is fixed across attempts; only strategy changes)
     if not (source_path and Path(source_path).exists()):
-        logger.error("internal build: no CAD file to tessellate - job_id=%s", job_id)
-        return False
-    if Path(source_path).suffix.lower() == ".stl":
-        logger.error("internal build: needs a CAD SOLID (STEP/IGES), got an STL - job_id=%s", job_id)
+        logger.error("internal build: no geometry file to stage - job_id=%s", job_id)
         return False
     try:
-        # The coordinate state staging would have supplied. This path tessellates the CAD itself
-        # instead of going through prepare_surface, and cad_tessellate refuses outright without it -
-        # rightly, since the conversion to metres would otherwise be a guess. Omitting it killed
-        # every internal-flow job in 8 seconds, before the mesher was ever reached: the external
-        # path gets the same state from _plan_surface, so take it from there rather than
-        # reconstructing a second opinion about the scale.
-        _prepared = _plan_surface(state, workspace).consumed
-        from meshpipeline.engines.port_binding import declaration_targets
-        t = await _asyncio.to_thread(
-            R.tessellate_internal, source_path, workspace / "_internal_stls",
-            fluid_solid=(str(state.get("input_kind") or "").strip() == "fluid-domain"),
-            prepared=_prepared,
-            declared_ports=declaration_targets(state.get("intake_patches") or []))
+        if not is_cad(source_path) and not (workspace / "input.stl").exists():
+            raise InternalSurfaceError("the uploaded surface was not staged for meshing (input.stl is "
+                                       "missing), so nothing was meshed")
+        t = await _separate_fluid(R, workspace, state, source_path, job_id=job_id)
         t, _wall_key, _bound_note = _bind_declared_ports(
             t, state.get("intake_patches") or [])
         _srcs = dict(t["stls"])
@@ -904,10 +1080,14 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                       f"measured on the geometry. {exc}",
                 op_id="internal:port-binding-refused")
         return False
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         logger.exception("internal build: tessellation/prep failed - job_id=%s", job_id)
-        await publish.aerror("The fluid volume could not be separated from the solid - the "
-                      "geometry has no clean inlet/outlet openings to close off",
+        # a surface whose confirmed openings do not close a fluid region: the staging says why in
+        # the user's terms and what to change on the picture; anything else is the solid's case
+        await publish.aerror(f"The fluid could not be closed off from this surface: {exc}"
+                             if isinstance(exc, InternalSurfaceError) else
+                             "The fluid volume could not be separated from the solid - the "
+                             "geometry has no clean inlet/outlet openings to close off",
                 op_id="internal:volume-unseparable")
         return False
 
@@ -915,14 +1095,23 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
     # constant. With a binding it is the DECLARED inlet's area (the guess is dead there).
     _inlet_area = _bore_area_m2(t) or 1e-9
     bore_D = 2.0 * _math.sqrt(_inlet_area / _math.pi)
+    # ... read as the inlet lid's HYDRAULIC diameter (4 x area / perimeter) where the lid reads:
+    # the bore of a round pipe, unchanged; twice the gap of an annulus, where the area-equivalent
+    # bore put 3 cells across annular_001's 13.2 mm gap (2026-10-04); the width of a slot.
+    _dh = _port_hydraulic_diameters(_srcs, _wall_key, state.get("intake_patches") or [])
+    _bore_name = _bore_port_name(t)
+    if _dh.get(_bore_name):
+        bore_D = min(bore_D, float(_dh[_bore_name]))
     # EVERY port's own diameter, for per-port refinement: the base cell is sized from the
     # inlet bore, and a much smaller side port seals over at that size (the corpus's
-    # biggest failure cluster). Ring ports size by their inner opening, not the metal.
+    # biggest failure cluster). Ring ports size by their inner opening, not the metal - and
+    # every lid by its hydraulic diameter where it reads.
     _port_sizes: dict = {}
     for _nm, _rec in (t.get("openings") or {}).items():
         _a = float((_rec.get("opening") or {}).get("area") or _rec.get("area") or 0.0)
         if _a > 0:
-            _port_sizes[_nm] = 2.0 * _math.sqrt(_a / _math.pi)
+            _port_sizes[_nm] = min(2.0 * _math.sqrt(_a / _math.pi),
+                                   float(_dh.get(_nm) or float("inf")))
     # WHICH opening became the inlet is a GUESS - cad_tessellate takes the largest planar opening,
     # and that is wrong for every diffusing or combining part, where the feed is not the widest
     # port. The geometry alone often cannot settle it: a wye is a wye whether flow splits or joins.
@@ -945,6 +1134,20 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
         _msg = (f"Fluid volume identified - {len(_ports)} openings separated from the wall: "
                 f"{_detail}. Bore Ø{bore_D * 1000:.1f} mm{_caveat}")
     await publish.anote(_msg, op_id="internal:volume-identified")
+    # THE PASSAGE, POINT BY POINT. The wall cell below is sized from the inlet bore, and every
+    # passage narrower than that cell carries at the floor came in under it: the Fluent aorta's
+    # 5.6-7.5 mm branches (3 mm at their narrowest) behind a 20 mm inlet read 6 cells across, and
+    # 11.2 after the whole part was refined to 6.7 M cells (2026-10-04). The staged wall's
+    # radius field is read once here (the geometry is fixed across passes); each pass refines
+    # locally where it is narrow (_narrow_passage_boxes). A failed reading refines nothing.
+    from asyncio import to_thread as _to_thread
+    try:
+        _passage_field = await _to_thread(_staged_passage_field, t, _srcs, _wall_key,
+                                          state.get("intake_patches") or [])
+    except Exception:  # noqa: BLE001 - a measurement is an optimisation, never fatal
+        logger.exception("internal build: passage field failed - continuing without local "
+                         "narrow-passage refinement - job_id=%s", job_id)
+        _passage_field = None
 
     plan = initial_plan
     feedback = (state.get("classifier_result", {}) or {}).get("summary", "") \
@@ -1031,7 +1234,7 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
         # mesher reads - and refine locally where it is too thin: a global refinement fine
         # enough to reach 3 mm would detonate the budget across a 400 mm pipe. Any
         # measurement failure degrades to "no thin features", never to a guess.
-        _wall_cell = bore_D / cells_across
+        _wall_cell = base_cell / (2 ** surface_level)
         # the values this pass actually meshes with - what a timeout is measured against
         _effective = {**strategy, "max_cells": _budget, "cells_across_diameter": cells_across}
         _thin_regions: list = []
@@ -1065,6 +1268,16 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                    else "refining locally as far as the cell budget allows")
                 + (f" ({_thin_note})" if _thin_note else ""),
                 op_id=f"internal:thin-feature:{attempt}")
+        _narrow_regions = _narrow_passage_boxes(_passage_field, wall_cell=_wall_cell,
+                                                budget_cells=max(50_000, int(0.5 * _budget)))
+        if _narrow_regions:
+            _narrow_note = str(getattr(_narrow_regions, "note", "") or "")
+            await publish.anote(
+                f"Narrow passages - {len(_narrow_regions)} region(s) down to "
+                f"{_mm(2.0 * min(float(b['radius_m']) for b in _narrow_regions))} across, "
+                f"under 12 cells at the {_wall_cell * 1000:.1f} mm wall cell; refining them "
+                "locally to 13 across" + (f" ({_narrow_note})" if _narrow_note else ""),
+                op_id=f"internal:narrow-passage:{attempt}")
 
         await publish.anote(f"Meshing pass {attempt} of {max_attempts} - "
                      f"{str(strategy.get('approach', 'default strategy'))[:80]}"
@@ -1090,7 +1303,7 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                 feature_level=feature_level, n_layers=n_layers, first_layer_rel=first_rel,
                 max_cells=_budget, quality=quality,
                 port_sizes=_port_sizes, sealed_before=_sealed_before,
-                thin_regions=_thin_regions)
+                thin_regions=[*_thin_regions, *_narrow_regions])
             _stop_on_repeated_case(workspace, _reviewed_ws, job_id=job_id,
                                    where=f"internal pass {attempt}")
             if _repeats_timed_out_case(workspace, _timeout_case):

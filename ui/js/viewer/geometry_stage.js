@@ -18,8 +18,9 @@
  */
 import { getGeometrySkin } from "../api/endpoints.js";
 import { esc } from "../core/format.js";
-import { applyFlow, bindAxis, bindUnit, extentAlong, followSuggestion, followUnit, formHtml, markConfirmed, readExternal,
-  readForm, rowHtml, shown, tableHead, unitChoiceHint, unitChoiceNeeded, unitOf } from "../render/geometry_form.js";
+import { applyFlow, bindAxis, bindUnit, changedAnswers, editsLine, extentAlong, followSuggestion, followUnit, formHtml,
+  markConfirmed, noteDrawn, readExternal, readForm, rowHtml, servedProposal, shown, tableHead, unitChoiceHint,
+  unitChoiceNeeded, unitOf } from "../render/geometry_form.js";
 import { circleThrough, clickIndex, snapAt } from "./open_ends.js";
 import { bindMouse, isUpAxis, orient, saveUp, savedUp, shield, upSelectHtml, upVector } from "./view_controls.js";
 
@@ -96,6 +97,8 @@ function leadHtml(p) {
 export async function openGeometryStage(sessionId, d, confirm, opts) {
   opts = opts || {};
   const p = d.proposal || {};
+  // what the check proposed, kept apart from the form the user edits: Proceed says back what changed
+  let served = servedProposal(null, p);
   const id = "gstage-" + sessionId;
   document.getElementById(id)?.remove();
   const box = document.createElement("div"); box.className = "viewer gc-stage"; box.id = id;
@@ -115,7 +118,7 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
   const release = takeOver(box, opts.anchorEl);
   const panel = box.querySelector(".gc-panel");
   const form = panel.querySelector(".gc-form");
-  applyFlow(form); bindUnit(panel, p); bindAxis(form, p);
+  applyFlow(form); bindUnit(panel, p); bindAxis(form, p); noteDrawn(form);
   const banner = panel.querySelector(".gc-banner");
   /* THE FORM IS NEVER LOCKED. The user can fix the measuring step's labels and proceed at any
      point; the banner says what is happening around them - whether the file said its unit (a
@@ -202,7 +205,7 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
       const body = readForm(form, p);
       btn.disabled = true; btn.textContent = "Confirming…";
       try {
-        await confirm(body);
+        await confirm(body, editsLine(served, body, p));     // the chat says back what the user changed
         markConfirmed(form);
         scene.stop();
         release();                       // the workbench goes back; the conversation carries on
@@ -222,6 +225,7 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
     if (!d2) return;
     unitNeeded = !!d2.unit_needed;
     const q = d2.proposal || {};
+    if (d2.proposal) served = servedProposal(served, d2.proposal);
     followUnit(panel, p, q.unit, q.unit_basis);      // a unit settled in the chat reaches an untouched box
     followSuggestion(panel, p, q.unit_suggestion);   // the other reading, as the server now sees it
     if (d2.status === "scouted") {
@@ -260,13 +264,16 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
       const answered = {};
       if (p.flow_axis_touched) Object.assign(answered, { flow_axis: p.flow_axis, flow_axis_guessed: false });
       if (p.reference_length_typed) answered.reference_length_mm = p.reference_length_mm;
-      Object.assign(p, words, { openings: merged }, chosen, answered);
+      // ...and so does every other answer the user changed on the form - the kind, the flow, the
+      // far-field box, the ground - which the re-draw used to put back to the check's values
+      p.user_set = { ...(p.user_set || {}), ...changedAnswers(form) };
+      Object.assign(p, words, { openings: merged }, chosen, answered, p.user_set);
       if (p.flow_axis_touched && !p.reference_length_typed) {
         const along = extentAlong(p, p.flow_axis); if (along !== null) p.reference_length_mm = along;
       }
       panel.querySelector(".gc-lead").innerHTML = leadHtml(p);
       form.innerHTML = formHtml(p);
-      applyFlow(form); bindUnit(panel, p); bindAxis(form, p); bindProceed(); scene.rebind();
+      applyFlow(form); bindUnit(panel, p); bindAxis(form, p); noteDrawn(form); bindProceed(); scene.rebind();
       shown = "ready"; showBanner("");
     } else {
       const key = "failed|" + (d2.reason || "");

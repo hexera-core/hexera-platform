@@ -128,6 +128,12 @@ def _measures(area: float, opening: dict | None) -> list[float]:
     if opening and opening.get("area") is not None:
         inner = float(opening["area"])
         out.append(inner)
+        # A body standing in the bore (an annular passage's centre rod, its own solid) shows a
+        # flat face inside the inner wire: the flow crosses the bore LESS that face, which is
+        # what a declaration with a centre body states (cad_tessellate records it as "filled").
+        filled = float(opening.get("filled") or 0.0)
+        if 0.0 < filled < inner:
+            out.append(inner - filled)
         # The disc the ring's OUTER wire encloses. When the STEP is the fluid itself (a
         # blade-row passage, an annular duct modelled as the flow volume), the port face IS
         # the annulus and the declaration still quotes "the pipe bore diameter" - that bore is

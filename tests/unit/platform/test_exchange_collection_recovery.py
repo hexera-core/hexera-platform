@@ -55,6 +55,11 @@ class _FakeBlob:
             raise _Fault(f"404 no such object: {self.key}")
         return self._b.objects[self.key]
 
+    def download_to_filename(self, filename) -> None:
+        # the client streams the returned workspace to disk; same object, same faults
+        with open(filename, "wb") as fh:
+            fh.write(self.download_as_bytes())
+
     def upload_from_string(self, data, content_type=None) -> None:
         self._b.objects[self.key] = data if isinstance(data, bytes) else data.encode()
 

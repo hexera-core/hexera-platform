@@ -12,6 +12,7 @@ from meshpipeline.engines.base import (
     DeliveredMesh,
     DownstreamTarget,
     EngineSpec,
+    FlowSupport,
     InputContract,
     MeshCapability,
     ParamSpec,
@@ -195,7 +196,19 @@ SPEC = EngineSpec(
                       # that backs it is in engines/validation_evidence.json.
                       MeshCapability("fluid-domain", "fluid-volume",
                                      topologies=("internal",))),
+        # WHAT FILE IT TAKES - the true path on main. The lumen is staged from a CAD solid
+        # (lumen_staging.stage_lumen opens the declared ports and writes lumen.vtp). An STL upload
+        # is copied as input.stl and nothing writes lumen.vtp from it, so the builder found no
+        # lumen and ran out of ways on (job a76e3ca1, 2026-10-03). Built for tubular passages; when
+        # surface internal flow lands, widen the forms here.
+        accepts=(FlowSupport("internal", ("cad",),
+                             designed_for="tubular passages: vessels, pipes, ducts"),),
+        # a tetrahedral lumen filler: after the hex meshers on the internal ladder
+        ladder_rank=30,
         input_contract=InputContract(
+            # internal flow from an STL/OBJ/PLY upload: cad/internal_surface closes it at the
+            # confirmed openings (snappy/cfMesh/gmsh/vmtk internal paths read that record)
+            internal_from_surface=True,
             dimensionalities=("3D",),
             input_kind="surface",
             min_thickness_ratio=0.0,

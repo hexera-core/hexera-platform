@@ -49,10 +49,17 @@ export function isOfferable(filename, intake) {
   return intake.formats.some((f) => f.suffixes.includes(suffix));
 }
 
-/** Human list for copy, derived from the same response - never a second hardcoded string. */
+/** Human list for copy, derived from the same response - never a second hardcoded string.
+ *  Split into CAD and meshes when the server says which is which (each format's `kind`), so a
+ *  list of twenty formats still reads at a glance. */
 export function supportedCopy(intake) {
   if (!intake) return "Upload a geometry file.";
-  const labels = intake.formats.map((f) => f.suffixes.join(" / ")).join(", ");
+  const list = (fs) => fs.map((f) => f.suffixes.join(" / ")).join(", ");
+  const cad = intake.formats.filter((f) => f.kind === "cad");
+  const mesh = intake.formats.filter((f) => f.kind !== "cad");
+  const labels = cad.length && mesh.length
+    ? `CAD ${list(cad)}; meshes ${list(mesh)} (a volume mesh is read as its surface)`
+    : list(intake.formats);
   return `Accepted geometry formats: ${labels}. Compatibility with a particular mesh engine is `
        + `checked after upload.`;
 }

@@ -80,8 +80,12 @@ _STORE_DOWN = "Storage is unavailable - the upload was not saved."
 
 class DirectUploadIn(BaseModel):
     filename: str = Field(..., min_length=1, max_length=1024,
-                          description="The file's name. Its suffix decides the format (.step/.stp, "
-                                      ".iges/.igs, .stl, .vtp); send the same name to finalize.")
+                          description="The file's name. Its suffix must be an accepted geometry "
+                                      "format (GET /api/v1/client-config lists them: STEP, IGES, "
+                                      "BREP, STL, OBJ, PLY, OFF, 3MF, glTF/GLB, VTK/VTP/VTU, MSH, "
+                                      "Nastran, Abaqus, Medit, SU2, Rhino 3DM); finalize then "
+                                      "reads the bytes and they decide. Send the same name to "
+                                      "finalize.")
     size_bytes: int = Field(..., ge=0, description="The file's size in bytes, so an empty or "
                                                    "oversized file is refused before it is sent.")
 
@@ -313,15 +317,12 @@ async def finalize_direct_upload(
                 logger.error("finalize_direct_upload: read-back failed for %s: %s", source_id, exc)
                 raise HTTPException(status_code=503, detail=_STORE_DOWN) from exc
 
-            if suffix in (".step", ".stp"):
-                try:
-                    step_ok = _multipart.has_step_header(dest)
-                except Exception as exc:  # noqa: BLE001 - the multipart path's own tolerance
-                    logger.warning("finalize_direct_upload: could not validate STEP header: %s", exc)
-                    step_ok = True
-                if not step_ok:
-                    await _discard(store, scope, "the uploaded object is not a STEP file")
-                    raise HTTPException(status_code=400, detail=_multipart.STEP_HEADER_REFUSAL)
+            try:
+                dest, suffix = await asyncio.to_thread(_multipart.checked_upload, dest, suffix)
+            except HTTPException:
+                await _discard(store, scope, "the uploaded object is not geometry this product "
+                                             "reads")
+                raise
 
             digest, counted = await asyncio.to_thread(sha256_of, dest)
             if counted != size:
