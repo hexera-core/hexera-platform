@@ -34,25 +34,45 @@ def tessellate_to_stl(geom_path, out_stl, *, context=None, prepared=None) -> Pat
     _mine = not gmsh.isInitialized()
     if _mine:
         gmsh.initialize(interruptible=False)
+    drawn = False
     try:
         gmsh.option.setNumber("General.Terminal", 0)
         gmsh.model.add("tess")
-        tags = gmsh.model.occ.importShapes(str(geom_path))
-        if factor != 1.0:
-            # ONE dilation about the origin, before synchronize: entity tags, volumes and
-            # surfaces are carried through it, so physical groups assigned later still land on
-            # the same topology.
-            gmsh.model.occ.dilate(tags, 0, 0, 0, factor, factor, factor)
+        # The metre scale is applied AS the shapes are read (a uniform similarity, OCC's
+        # BRepBuilderAPI_Transform), not by occ.dilate afterwards: dilate is a general affine map
+        # that rebuilds every curve, and on the Toyota Supra STEP it stopped staging with
+        # "Geom_TrimmedCurve::parameters out of range" before any mesher ran (2026-10-04).
+        gmsh.option.setNumber("Geometry.OCCScaling", float(factor))
+        try:
+            gmsh.model.occ.importShapes(str(geom_path))
+        finally:
+            gmsh.option.setNumber("Geometry.OCCScaling", 1.0)
         gmsh.model.occ.synchronize()
         # the metre-normalised B-rep IS the staged geometry - the driver reads this, unscaled
         gmsh.write(str(staged_brep))
+        # The staged SURFACE (input.stl) is a picture of that B-rep for the report and review,
+        # never what the driver meshes. A size floor keeps a degenerate CAD edge from asking for
+        # a zero size (CRM high-lift: "Wrong mesh element size lc = 0" stopped staging, lab
+        # 2026-10-04); a surface gmsh still cannot draw is drawn by the shared OCC tessellator.
+        x0, y0, z0, x1, y1, z1 = gmsh.model.getBoundingBox(-1, -1)
+        diag = ((x1 - x0) ** 2 + (y1 - y0) ** 2 + (z1 - z0) ** 2) ** 0.5
+        gmsh.option.setNumber("Mesh.MeshSizeMin", max(diag * 1e-5, 1e-9))
         gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 24)
-        gmsh.model.mesh.generate(2)
-        gmsh.write(str(out_stl))
+        try:
+            gmsh.model.mesh.generate(2)
+            gmsh.write(str(out_stl))
+            drawn = True
+        except Exception as exc:  # noqa: BLE001 - the B-rep is staged; only the picture failed
+            logger.warning("gmsh staging: the surface picture could not be meshed (%s) - drawing "
+                           "it with the shared OCC tessellator", exc)
+            drawn = False
         gmsh.model.remove()
     finally:
         if _mine:
             gmsh.finalize()
+    if not drawn:
+        from meshpipeline.cad.cad_tessellate import tessellate_to_stl as _occ_tessellate
+        _occ_tessellate(geom_path, out_stl, prepared=prepared)
     return out_stl
 
 
@@ -64,18 +84,167 @@ def _metre_factor(prepared) -> float:
     return prepared.to_metres
 
 
-def inspect_stl(workspace, geometry_file: str = "input.stl", *, context=None) -> dict:
+#: A surface upload staged for internal flow (cad/internal_surface): the closed fluid boundary, one
+#: named solid per patch - the wall and each confirmed opening. The driver fills it when there is
+#: no CAD solid (geometry.step) to mesh.
+FLUID_BOUNDARY = "fluid_boundary.stl"
+
+
+def stage_declared(workspace, *, geometry_path, prepared, intake_patches: list,
+                   input_kind: str = "") -> dict | None:
+    """A fluid with declared openings whose volume is not the uploaded solid itself - a triangle
+    surface (STL, OBJ, PLY, ...), or a CAD part declared to be the WALL around the fluid: the
+    shared internal-flow staging closes the staged surface at the confirmed openings and names
+    every patch, and the result is staged as FLUID_BOUNDARY for the driver to fill (it takes
+    precedence over geometry.step, which would be the metal). None when it does not apply - a CAD
+    solid that is the fluid or the part itself (meshed from geometry.step as before), or nothing
+    declared to open."""
+    import shutil
+
+    from meshpipeline.cad.internal_surface import is_cad, stage_internal_surface
     ws = Path(workspace)
-    geom = ws / "geometry.step"
-    if not geom.exists():
-        return {"error": "geometry.step missing - the workspace was not staged "
-                         "for gmsh (upload a CAD solid, not a bare STL)"}
+    ports = [p for p in (intake_patches or []) if isinstance(p, dict)
+             and str(p.get("type") or "").strip() in ("inlet", "outlet")]
+    if not ports or not (ws / "input.stl").exists():
+        return None
+    if is_cad(geometry_path) and str(input_kind or "").strip() != "body-surface":
+        return None
+    t = stage_internal_surface(ws / "input.stl", ws / "_internal_stls",
+                               intake_patches=intake_patches, input_kind=input_kind)
+    shutil.copy2(t["fluid_boundary"], ws / FLUID_BOUNDARY)
+    record = {k: t[k] for k in ("openings", "interior_point", "bbox_min", "bbox_max", "wall_name")}
+    record["patches"] = t["facts"]["patches"]
+    (ws / "internal_surface.json").write_text(json.dumps(record, indent=1))
+    return {"ports": list(t["openings"]), **record}
+
+
+def _discrete_surfaces(gmsh) -> list[dict]:
+    """Tag, patch name, area and centroid of every discrete surface, from its own triangles."""
+    import numpy as np
+    ntags, coords, _ = gmsh.model.mesh.getNodes()
+    ntags = np.asarray(ntags, dtype=np.int64)
+    pts = np.asarray(coords, dtype=float).reshape(-1, 3)
+    index = np.zeros(int(ntags.max()) + 1 if len(ntags) else 1, dtype=np.int64)
+    index[ntags] = np.arange(len(ntags))
+    out = []
+    for _, tag in gmsh.model.getEntities(2):
+        _types, _tags, nodes = gmsh.model.mesh.getElements(2, tag)
+        if not len(nodes):
+            continue
+        conn = np.asarray(nodes[0], dtype=np.int64).reshape(-1, 3)
+        tri = pts[index[conn]]
+        a = 0.5 * np.linalg.norm(np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]), axis=1)
+        c = (tri.mean(axis=1) * a[:, None]).sum(axis=0) / max(float(a.sum()), 1e-300)
+        out.append({"tag": tag, "name": gmsh.model.getEntityName(2, tag), "area": round(float(a.sum()), 8),
+                    "centroid": [round(float(v), 6) for v in c]})
+    return out
+
+
+def _inspect_fluid_boundary(ws: Path) -> dict:
     import gmsh
     _mine = not gmsh.isInitialized()
     if _mine:
         gmsh.initialize(interruptible=False)
     try:
         gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.model.add("inspect_surface")
+        # loaded EXACTLY as the driver loads it, so every tag reported here is the tag it meshes
+        from meshpipeline.engines.gmsh.driver import _load_fluid_boundary
+        _load_fluid_boundary(gmsh, ws / FLUID_BOUNDARY)
+        surfaces = _discrete_surfaces(gmsh)
+        xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.getBoundingBox(-1, -1)
+        gmsh.model.remove()
+    finally:
+        if _mine:
+            gmsh.finalize()
+    return {
+        "volumes": 1,
+        "surfaces": surfaces,
+        "curves": [],
+        "bbox": [xmin, ymin, zmin, xmax, ymax, zmax],
+        "diag": ((xmax - xmin) ** 2 + (ymax - ymin) ** 2 + (zmax - zmin) ** 2) ** 0.5,
+        "note": ("The upload is a triangle surface, staged as ONE closed fluid volume: each surface "
+                 "tag above is one patch, already named for the declaration (the wall and each "
+                 "inlet/outlet). Map each contracted group to the surface of the same name; the "
+                 "driver fills the volume they enclose."),
+    }
+
+
+def _inspect_surface(ws: Path, stl: Path) -> dict:
+    """The face table of a SURFACE upload, classified exactly as the driver will classify it
+    (engines/gmsh/surface_volume.py), so the tags a builder binds groups to are the tags meshed."""
+    import gmsh
+
+    from meshpipeline.engines.gmsh.surface_volume import classify_closed_surface, surface_table
+    from meshpipeline.engines.workspace_facts import read_flow_topology, read_input_kind
+    _mine = not gmsh.isInitialized()
+    if _mine:
+        gmsh.initialize(interruptible=False)
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.model.add("inspect_surface")
+        try:
+            tags = classify_closed_surface(gmsh, str(stl))
+        except Exception as exc:  # noqa: BLE001 - reported, the builder cannot fix a surface
+            tags, why = [], f" ({type(exc).__name__}: {exc})"
+        else:
+            why = ""
+        if not tags:
+            gmsh.model.remove()
+            return {"error": ("the staged surface (input.stl) has no faces gmsh can close into a "
+                              f"volume{why} - an empty or open surface bounds nothing. Supply a "
+                              "closed surface (or a CAD solid)."),
+                    "source": "surface"}
+        xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.getBoundingBox(-1, -1)
+        out = {
+            "volumes": 0,
+            "surfaces": surface_table(gmsh, tags),
+            "curves": [],
+            "bbox": [xmin, ymin, zmin, xmax, ymax, zmax],
+            "diag": ((xmax - xmin) ** 2 + (ymax - ymin) ** 2 + (zmax - zmin) ** 2) ** 0.5,
+            "source": "surface",
+        }
+        if read_flow_topology(ws) == "external" and read_input_kind(ws) in ("solid-body", "body-surface"):
+            out["note"] = ("A triangulated BODY for external flow: the engine cuts it out of a "
+                           "far-field box and names the groups itself (the body under the declared "
+                           "wall, the box under the declared far field) - write gmsh_spec.json "
+                           "without groups.")
+        else:
+            out["note"] = ("A triangulated surface, split into faces wherever it folds sharply "
+                           "(a port lid against its wall). Bind each declared port to its face by "
+                           "the centroids below, every other face to the wall - or leave groups "
+                           "out and the engine binds the declared ports itself.")
+        gmsh.model.remove()
+        return out
+    finally:
+        if _mine:
+            gmsh.finalize()
+
+
+def inspect_stl(workspace, geometry_file: str = "input.stl", *, context=None) -> dict:
+    ws = Path(workspace)
+    geom = ws / "geometry.step"
+    if (ws / FLUID_BOUNDARY).exists():
+        return _inspect_fluid_boundary(ws)
+    if not geom.exists():
+        from meshpipeline.cad.internal_surface import staging_failure
+        why = staging_failure(ws)
+        if why:
+            # the true reason the fluid boundary was never staged, not just a missing file
+            return {"error": f"the geometry could not be staged for gmsh: {why}"}
+        stl = ws / geometry_file
+        if stl.exists():
+            return _inspect_surface(ws, stl)
+        return {"error": "neither geometry.step nor a staged surface (input.stl) is in the "
+                         "workspace - nothing was staged for gmsh"}
+    import gmsh
+    _mine = not gmsh.isInitialized()
+    if _mine:
+        gmsh.initialize(interruptible=False)
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        # the size the builder is told is the surface's, not OpenCascade's loose envelope
+        gmsh.option.setNumber("Geometry.OCCBoundsUseStl", 1)
         gmsh.model.add("inspect")
         gmsh.model.occ.importShapes(str(geom))
         gmsh.model.occ.synchronize()
@@ -107,6 +276,12 @@ def inspect_stl(workspace, geometry_file: str = "input.stl", *, context=None) ->
             "bbox": [xmin, ymin, zmin, xmax, ymax, zmax],
             "diag": ((xmax - xmin) ** 2 + (ymax - ymin) ** 2 + (zmax - zmin) ** 2) ** 0.5,
         }
+        from meshpipeline.engines.workspace_facts import read_flow_topology, read_input_kind
+        if read_flow_topology(ws) == "external" and read_input_kind(ws) in ("solid-body", "body-surface"):
+            out["note"] = ("A BODY for external flow: the engine cuts it out of a far-field box "
+                           "(box minus body) and names the groups itself - the body under the "
+                           "declared wall, the box under the declared far field. The tags above "
+                           "name the body BEFORE that cut; write gmsh_spec.json without groups.")
         gmsh.model.remove()
         return out
     finally:
@@ -171,6 +346,14 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
         groups.setdefault(str(q.get("default_group", "free")), "free")
     bounds = q.get("bounds") or [0, 0, 0, 1, 1, 1]
     xmin, ymin, zmin, xmax, ymax, zmax = bounds
+    # EXTERNAL: the body sits inside the far-field box the driver cut it from. The extent gate
+    # measures that box around THAT body (engines/far_field.py sized it in the gate's own unit),
+    # so the manifest records both, never the box as its own body.
+    body_bbox = ((xmin, ymin, zmin), (xmax, ymax, zmax))
+    requested_box = None
+    if q.get("external") and q.get("domain_box") and q.get("body_bounds"):
+        requested_box = [list(q["domain_box"][0]), list(q["domain_box"][1])]
+        body_bbox = (tuple(q["body_bounds"][0]), tuple(q["body_bounds"][1]))
     from meshpipeline.engines.manifest import write_manifest
     write_manifest(
         ws,
@@ -179,7 +362,9 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
         bbox=tuple(bounds),
         quality=q,
         domain=domain or "structural FEA",
-        body_bbox=((xmin, ymin, zmin), (xmax, ymax, zmax)),
+        body_bbox=body_bbox,
+        requested_box=requested_box,
+        reference_length=q.get("reference_length"),
         mesh_bounds=tuple(bounds),
         volume_path=str((ws / "mesh.inp").resolve()),   # the deliverable deck
         mesh_units=COMPLETED_MESH_UNIT.value,

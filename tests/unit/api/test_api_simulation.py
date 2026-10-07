@@ -95,6 +95,17 @@ async def test_a_started_job_carries_no_wake_estimate(monkeypatch):
     assert (await _get(_make_mock_job())).json()["worker_wake_minutes"] is None   # succeeded
 
 
+async def test_a_job_names_the_file_it_meshes():
+    # The console named the file from its own upload, so a reload lost it; the status says it.
+    job = _make_mock_job()
+    job.geometry_source = MagicMock(original_filename="aorta_fluid.stl")
+    assert (await _get(job)).json()["geometry_filename"] == "aorta_fluid.stl"
+    job.geometry_source = None                       # a run from before sources were recorded
+    assert (await _get(job)).json()["geometry_filename"] is None
+    assert (await _get(_make_mock_job())).json()["geometry_filename"] is None, \
+        "a value that is not a name reached the wire"
+
+
 async def test_the_reviewers_reasoning_is_served_as_plain_engineering_text(monkeypatch):
     # the reviewer model's own words go on the result card; LaTeX in them is made plain there
     review = {"verdict": "FAIL",

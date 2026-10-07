@@ -182,6 +182,13 @@ th,td{border-color:var(--border)}
 .proc.done .proc-orb{animation:none;transform:none;background:none;border:0}
 .proc.done .sp-arm{stroke:var(--ok);stroke-dasharray:none}
 .proc.done .sp-hd{fill:var(--ok)}
+/* ...and the verdict's colour when the run did not pass: a failed run's header was green */
+.proc.done.r-fail .sp-arm{stroke:var(--danger)}
+.proc.done.r-fail .sp-hd{fill:var(--danger)}
+.proc.done.r-concerns .sp-arm{stroke:var(--warn)}
+.proc.done.r-concerns .sp-hd{fill:var(--warn)}
+.proc.done.r-cancelled .sp-arm{stroke:var(--text-faint)}
+.proc.done.r-cancelled .sp-hd{fill:var(--text-faint)}
 .proc-orb{width:15px;height:15px;border:0;border-radius:0;background:none}
 .proc-title{font:600 var(--fs-base)/1.3 var(--sans);letter-spacing:-.005em;text-transform:none;color:var(--text)}
 .proc-sub{font:var(--fs-sm)/1 var(--sans);color:var(--text-faint)}
@@ -198,6 +205,16 @@ th,td{border-color:var(--border)}
 .tl-dot.active::after{width:5px;height:5px;border-radius:50%;background:var(--accent)}
 .tl-dot.done{border-color:transparent;background:var(--ok-soft)}
 .tl-dot.done::after{content:'✓';color:var(--ok);font-size:9px;font-weight:700}
+/* a tick is earned (Stage.markOf): a lane that failed, was sent back, warned or built nothing
+   says so in its mark, in the verdict's colours */
+.tl-dot.bad{border-color:transparent;background:var(--danger-soft)}
+.tl-dot.bad::after{content:'✕';color:var(--danger);font-size:9px;font-weight:700}
+.tl-dot.back{border-color:transparent;background:var(--warn-soft)}
+.tl-dot.back::after{content:'↺';color:var(--warn);font-size:10px;font-weight:700}
+.tl-dot.warn{border-color:transparent;background:var(--warn-soft)}
+.tl-dot.warn::after{content:'!';color:var(--warn);font-size:9px;font-weight:700}
+.tl-dot.nomesh,.tl-dot.ended{border-color:var(--border-strong);background:var(--surface-2)}
+.tl-dot.nomesh::after,.tl-dot.ended::after{content:'–';color:var(--text-faint);font-size:9px;font-weight:700}
 .tl-name{gap:8px;padding:4px 0}
 .tl-name .nm{font:500 var(--fs-md)/1.5 var(--sans);letter-spacing:0;color:var(--text)}
 .tl-name:hover .nm{color:var(--text-bright)}
@@ -304,6 +321,8 @@ th,td{border-color:var(--border)}
 .mb-fill.over{background:var(--warn)}
 .meshbar.done{opacity:1}
 .meshbar.done .mb-fill{background:var(--ok)}
+/* a run that ended while its mesher ran: the bar stops where it was, in no verdict's colour */
+.meshbar.stopped .mb-fill{background:var(--text-faint)}
 .mb-sub{margin-top:6px;color:var(--text-faint);font:var(--fs-sm)/1.4 var(--sans);letter-spacing:0}
 
 /* --------------------------------------------------------------- viewer ---- */
@@ -661,8 +680,8 @@ th,td{border-color:var(--border)}
 .gc-x{border-radius:var(--r-sm);color:var(--text-faint)}
 .gc-x:hover{background:var(--hover);color:var(--danger)}
 .gc-tools{gap:10px;padding:10px 0 2px}
-.gc-tools .gc-add{height:30px;font-size:var(--fs-sm)}
-.gc-tools .gc-add.armed{border-color:var(--accent-line);background:var(--accent-soft);color:var(--accent-hover)}
+.gc-tools .gc-add,.gc-tools .gc-measure{height:30px;font-size:var(--fs-sm)}
+.gc-tools .gc-add.armed,.gc-tools .gc-measure.armed{border-color:var(--accent-line);background:var(--accent-soft);color:var(--accent-hover)}
 .gc-tools-hint{color:var(--text-faint);font-size:var(--fs-sm)}
 .gc-note{padding:0;margin-top:10px;color:var(--text-faint);font-size:var(--fs-sm);line-height:1.55}
 .gc-actions{display:flex;align-items:center;flex-wrap:wrap;gap:10px 14px;margin-top:14px;padding:16px 0 0;

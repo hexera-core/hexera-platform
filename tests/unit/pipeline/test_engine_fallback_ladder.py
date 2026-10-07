@@ -104,6 +104,15 @@ def test_a_cause_the_retry_policy_calls_hopeless_never_moves_the_run_unless_an_e
     assert lad.classify({"engine": "gmsh", "executor_failed_gate": "patch_contract",
                          "executor_failure_cause": "contract_mismatch",
                          "executor_failure_facts": {"retry_may_fix": True}}).kind == lad.NEVER
+    # a mesh too coarse whose cheapest rebuild here is over the cell limit: not retried on this
+    # engine (failure_cause.rebuild_over_limit), but another engine sizes its cells another way -
+    # the run keeps its offer
+    over = {"cells_across": 6.0, "needed": 12, "cells": 4_000_000, "cell_limit": 8_000_000,
+            "rebuild_cells": 16_000_000}
+    assert not retry_can_help("under_resolved", over)
+    assert lad.classify({"engine": "snappy", "executor_failed_gate": "resolution_floor",
+                         "executor_failure_cause": "under_resolved",
+                         "executor_failure_facts": over}).kind == lad.FIXABLE
 
 
 def test_a_record_without_a_cause_reads_the_cause_the_executor_would_have_recorded():
@@ -235,10 +244,12 @@ def test_a_relaxation_is_never_switched_to_on_its_own(quiet):
 def test_the_run_ends_with_an_offer_that_states_the_change():
     rec = lad.final_record(_fluid_domain(retry_count=2), succeeded=False, system_failure=False)
     offer = rec["offer"]
-    assert offer["engine"] == "snappy" and offer["same_contract"] is False
+    # the first hex engine on the ladder that takes a fluid domain: cfMesh (it declares a fluid
+    # solid for internal flow), then snappyHexMesh
+    assert offer["engine"] == "cfmesh" and offer["same_contract"] is False
     assert any("OpenFOAM" in c for c in offer["changes"])
     assert any("hex-dominant cells instead of tetrahedral" in c for c in offer["changes"])
-    assert 'Reply "use snappyHexMesh"' in offer["text"]
+    assert 'Reply "use cfMesh"' in offer["text"]
     assert "did not switch without asking" in offer["text"]
 
 
@@ -335,9 +346,11 @@ def test_after_a_switch_the_offer_names_every_engine_that_failed():
                                   "switches": [{"attempt": 2, "from": "cfmesh",
                                                 "to": "snappy"}]})
     offer = lad.final_record(st, succeeded=False, system_failure=False)["offer"]
-    # external: after cfMesh and snappy, the only rung left is gmsh, which needs a fluid domain -
-    # nothing is left to offer rather than an engine that cannot build the declaration
-    assert offer is None
+    # external: after cfMesh and snappy, the rung left is gmsh, which cuts a body out of a
+    # far-field box itself - offered with what changes, never switched to silently
+    assert offer["engine"] == "gmsh" and offer["same_contract"] is False
+    assert offer["text"].startswith("Neither cfMesh nor snappyHexMesh could mesh this shape")
+    assert any("Abaqus" in c for c in offer["changes"])
     internal = _fluid_domain(engine="snappy", engine_params={}, retry_count=2,
                              executor_failed_gate="finalize", input_kind="body-surface",
                              engine_ladder={"approved": "cfmesh", "attempts": [
@@ -539,8 +552,9 @@ def test_an_admission_refusal_is_not_recorded_as_a_build():
                                 "cause": "geometry_rejected",
                                 "reason": "it cannot take this geometry as it is",
                                 "refused_before_building": True}]
-    # and the refusal still ends with an out: another engine, differences stated
-    assert rec["offer"]["engine"] == "snappy" and rec["offer"]["same_contract"] is False
+    # and the refusal still ends with an out: another engine, differences stated (cfMesh: first
+    # on the ladder, and it takes a fluid domain)
+    assert rec["offer"]["engine"] == "cfmesh" and rec["offer"]["same_contract"] is False
 
 
 def test_the_run_seeds_provenance_after_the_pin_and_the_dispute():

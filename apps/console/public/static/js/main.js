@@ -24,7 +24,7 @@ import { configure as configureStream, replay, start as startStream, terminalRes
   from "./realtime/stream.js";
 import { confirmCancel } from "./shell/cancel.js";
 import { clearNewRunOffer, configureComposer, disableInput, enableInput, mountComposer,
-  offerNewRun, setPlaceholder } from "./shell/composer.js";
+  offerNewRun, setPlaceholder, showRunFile } from "./shell/composer.js";
 import { refreshHealth } from "./shell/settings.js";
 import { configureDispute } from "./viewer/dispute.js";
 import { openGeometryStage } from "./viewer/geometry_stage.js";
@@ -70,7 +70,8 @@ configureStream({
   },
   // WHILE THE JOB WAITS FOR A WORKER the header says so, with the backend's estimate; once a
   // worker has it the line goes back to "working…" and the timeline takes over.
-  onStatus: (job) => Stage.waiting(waitingCopy(job)),
+  // The run's clock follows the server's: it counts from when the job was created.
+  onStatus: (job) => { Stage.waiting(waitingCopy(job)); Stage.clock(job.created_at); },
   onPollTrouble: () => Notice.hold("poll",
     "Having trouble reaching the server for status updates - still retrying.", "warn"),
   onPollRecovered: () => Notice.release("poll"),
@@ -102,9 +103,11 @@ setResultHandler((data, anchor) => {
    conversation the run belongs to: the page's own session for a run the chat started, the
    disputed run's conversation for a re-review. */
 function attachJob(id, { replayHistory = false, message = "", origin = getState.sessionId() } = {}) {
-  if (message) Stage.chat("assistant", message);
   clearNewRunOffer();      // a run is starting; the "run again" offer belonged to the last one
   Stage.mount();
+  // the message goes on the NEW stage: said before the mount, it was wiped the instant it was
+  // drawn, so "re-review started" never reached the user
+  if (message) Stage.chat("assistant", message);
   beginRun(id, { sessionId: origin });
   // WHERE THE RUN LIVES IN THE URL. The console routes runs at /runs/<id>; ui/index.html has no
   // routes and keeps the query string it has always used. Neither global set means the second
@@ -203,6 +206,10 @@ function bootLive() {
     beginRun(deepLinkJob);
     setState.jobStatus(job.status);
     Stage.ensureProc();
+    // WHAT A RELOAD USED TO LOSE, read back from the server rather than this page's memory: the
+    // file the run meshes, and how long it has been running - or ran, once it has ended.
+    showRunFile(job.geometry_filename);
+    Stage.clock(job.created_at, isTerminalStatus(job.status) ? job.ended_at : null);
     Stage.waiting(waitingCopy(job));
     if (isTerminalStatus(job.status)) {
       // REPLAY THE WHOLE RUN FIRST. A finished job still has its event log, and the point of

@@ -41,7 +41,8 @@ async def test_wrong_extension_rejected():
     async with AsyncClient(transport=ASGITransport(app=_app), base_url="http://test") as c:
         resp = await c.post(
             "/api/v1/upload/step-file",
-            files={"file": ("model.obj", b"some data", "application/octet-stream")},
+            # .obj is read now (cad/ingest); a DWG drawing still is not
+            files={"file": ("model.dwg", b"some data", "application/octet-stream")},
         )
     assert resp.status_code == 422
     detail = resp.json()["detail"].lower()
@@ -102,6 +103,55 @@ async def test_valid_step_file_accepted(tmp_path):
     assert "intake_greeting" in data
     assert data["intake_greeting"]
 
+
+
+def _one_triangle_binary_stl() -> bytes:
+    import struct
+    return (b"binary".ljust(80, b" ") + struct.pack("<I", 1)
+            + struct.pack("<12fH", 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0))
+
+
+async def _upload(tmp_path, name: str, body: bytes):
+    svc_mock = _make_svc_mock()
+    added: list = []
+
+    @asynccontextmanager
+    async def _db():
+        async with _mock_get_db() as db:
+            db.add = MagicMock(side_effect=added.append)
+            yield db
+
+    with (
+        patch("meshpipeline.persistence.session.get_db", _db),
+        patch("meshpipeline.application.job_service.JobService", return_value=svc_mock),
+        patch("meshpipeline.api.v1.upload._JOBS_DIR", tmp_path),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=_app), base_url="http://test") as c:
+            resp = await c.post("/api/v1/upload/step-file",
+                                files={"file": (name, body, "application/octet-stream")})
+    sources = [r for r in added if type(r).__name__ == "GeometrySource"]
+    return resp, sources
+
+
+async def test_a_mesh_format_is_accepted_and_kept_as_uploaded(tmp_path):
+    resp, sources = await _upload(tmp_path, "duct.obj",
+                                  b"v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n")
+    assert resp.status_code == 200, resp.text
+    assert sources and sources[0].suffix_hint == ".obj"
+
+
+async def test_the_bytes_decide_the_format_not_the_name(tmp_path):
+    # an STL saved with the wrong extension is recorded as the STL it is; the name stays for show
+    resp, sources = await _upload(tmp_path, "duct.obj", _one_triangle_binary_stl())
+    assert resp.status_code == 200, resp.text
+    assert sources[0].suffix_hint == ".stl" and sources[0].original_filename == "duct.obj"
+
+
+async def test_a_renamed_native_cad_part_is_told_how_to_export_a_step(tmp_path):
+    resp, sources = await _upload(tmp_path, "bracket.stl",
+                                  b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\0" * 512)
+    assert resp.status_code == 422 and not sources
+    assert "native CAD part" in resp.json()["detail"] and "STEP" in resp.json()["detail"]
 
 
 async def test_filename_with_special_chars_is_sanitized(tmp_path):

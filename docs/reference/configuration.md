@@ -480,7 +480,7 @@ API: it logs that the directory is missing and leaves `/ui` and `/static` unmoun
 
 <!-- Regenerate: python -m meshpipeline.settings.inventory --reference -->
 
-Every supported setting (243 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
+Every supported setting (244 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
 
 | Setting | Exposure | Read by | Secret |
 |---|---|---|---|
@@ -657,6 +657,7 @@ Every supported setting (243 entries). `template` settings are the ones `.env.ex
 | `PLANNER_TOTAL_TIMEOUT_SECONDS` | internal | app |  |
 | `REVIEWER_TOTAL_TIMEOUT_SECONDS` | internal | app |  |
 | `SNAPPY_RAZOR_CELL_FACTOR` | internal | app |  |
+| `SNAPPY_SEAL_CAVITIES` | internal | app |  |
 | `SNAPPY_THIN_AREA_FLOOR` | internal | app |  |
 | `SNAPPY_THIN_LAYER_POLICY` | internal | app |  |
 | `SNAPPY_THIN_STACK_FACTOR` | internal | app |  |

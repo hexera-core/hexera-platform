@@ -145,7 +145,7 @@ export function formHtml(p) {
     <div class="gc-int"${p.flow === "external" ? " hidden" : ""}>
     ${rows ? `<table class="gc-table">${tableHead()}<tbody>${rows}</tbody></table>`
            : `<div class="gc-note">No openings found. Add one below if the fluid flows through this part.</div>`}
-    <div class="gc-tools"><button class="gc-add v-btn" type="button">Add an opening</button><span class="gc-tools-hint">then click the part where it is</span></div>
+    <div class="gc-tools"><button class="gc-add v-btn" type="button">Add an opening</button><button class="gc-measure v-btn" type="button" title="measure between two points on the part">Measure</button><span class="gc-tools-hint">then click the part where it is</span></div>
     </div>
     ${external}
     ${notes}
@@ -290,6 +290,10 @@ export function readForm(root, p) {
     const id = Number(tr.dataset.id), o = (p.openings || []).find((x) => x.id === id) || {};
     const body = { id, name: tr.querySelector(".gc-name").value.trim() || o.name || `opening_${id}`,
                    role: tr.querySelector(".gc-role").value, centroid_mm: o.centroid_mm || null };
+    // which way the mouth faces, out of the part - measured, never typed - when it is known
+    if (Array.isArray(o.normal) && o.normal.length === 3 && o.normal.every((v) => Number.isFinite(Number(v)))) {
+      body.normal = o.normal.map(Number);
+    }
     const dia = tr.querySelector(".gc-dia");
     if (dia) { const v = num(dia.value, 0); if (v > 0) body.diameter_mm = typed(v, p); }    // typed in the file's units
     else if (o.shape === "circle") body.diameter_mm = o.diameter_mm;
@@ -307,6 +311,90 @@ export function readForm(root, p) {
   const up = (upSel && upSel.value) || p.up_axis;
   if (up) body.up_axis = up;
   return body;
+}
+
+/* WHAT THE FORM WAS DRAWN WITH. The model's names land while the user may already be editing, and
+   the form is drawn again from the proposal: a select or a box the user changed went back to the
+   check's value, and Proceed then confirmed the check's far field, not theirs. `noteDrawn` keeps
+   what a fresh form shows; `changedAnswers` says which answers the user has changed since, as
+   proposal fields a re-draw can keep. Names, roles, the unit, the flow axis and a typed reference
+   length are kept by their own rules where the form is re-drawn. */
+function formAnswers(root) {
+  const v = (s) => { const el = root.querySelector(s); return el ? el.value : undefined; };
+  const extents = {};
+  root.querySelectorAll(".gc-extents input[data-k]").forEach((el) => { extents[el.dataset.k] = el.value; });
+  const g = root.querySelector(".gc-ground");
+  return { input_kind: v(".gc-kind"), flow: v(".gc-flow"), extents, grounded: g ? g.checked : undefined };
+}
+export function noteDrawn(root) { if (root) root._drawn = formAnswers(root); }
+export function changedAnswers(root) {
+  const was = root && root._drawn;
+  if (!was) return {};
+  const now = formAnswers(root), out = {};
+  if (now.input_kind !== was.input_kind) out.input_kind = now.input_kind;
+  if (now.flow !== was.flow) out.flow = now.flow;
+  if (Object.keys(now.extents).some((k) => now.extents[k] !== was.extents[k])) {
+    out.extents = Object.fromEntries(Object.entries(now.extents).map(([k, x]) => [k, Math.max(0.5, num(x, 5))]));
+  }
+  if (now.grounded !== was.grounded) out.grounded = now.grounded;
+  return out;
+}
+
+/** The check's proposal as the server now serves it, laid over what it served before: what the
+ *  user's answers are compared with. Openings join by id, so the naming's words meet the scout's
+ *  measurements. Never holds anything the user typed. */
+export function servedProposal(before, next) {
+  const a = before || {}, b = next ? JSON.parse(JSON.stringify(next)) : {};
+  const byId = new Map((a.openings || []).map((o) => [Number(o.id), o]));
+  (b.openings || []).forEach((o) => byId.set(Number(o.id), { ...(byId.get(Number(o.id)) || {}), ...o }));
+  return { ...a, ...b, openings: [...byId.values()] };
+}
+
+/* WHAT THE USER CHANGED, SAID BACK. Every answer on the form travels with Proceed and the server
+   records it, but the chat only showed the whole declaration afterwards, so an edit read like the
+   check's own proposal and nothing said "got it". This is the one line that does: each change
+   against what the check proposed, in plain words. "" when nothing was changed. */
+const KIND_WORDS = { "body-surface": "a hollow wall", "fluid-domain": "the fluid volume", "solid-body": "a solid body" };
+const FLOW_WORDS = { internal: "through the part", external: "around the part" };
+const ROLE_WORDS = { inlet: "an inlet", outlet: "an outlet", not_an_opening: "not an opening" };
+const MAX_EDITS = 6;
+export function editsLine(served, body, p) {
+  const s = served || {}, out = [];
+  const kindWas = s.input_kind || KIND[0][0], flowWas = s.flow || "internal";
+  if (body.input_kind && body.input_kind !== kindWas) {
+    out.push(`the file is ${KIND_WORDS[body.input_kind] || body.input_kind} (was ${KIND_WORDS[kindWas] || kindWas})`);
+  }
+  if (body.flow && body.flow !== flowWas) out.push(`the fluid flows ${FLOW_WORDS[body.flow]} (was ${FLOW_WORDS[flowWas]})`);
+  if (body.unit && body.unit !== unitOf(s)) out.push(`the file is in ${UNIT_WORDS[body.unit]} (was ${UNIT_WORDS[unitOf(s)]})`);
+  if (body.flow === "external") {
+    const axisWas = s.flow_axis || "unknown";
+    if (body.flow_axis && body.flow_axis !== axisWas) {
+      const said = (a) => (a === "unknown" ? "not sure" : a);
+      out.push(`the fluid travels along ${said(body.flow_axis)}` + (axisWas === "unknown" ? "" : ` (was ${axisWas})`));
+    }
+    if (body.reference_length_typed && body.reference_length_mm > 0) {
+      out.push(`reference length ${shown(body.reference_length_mm, p)} ${unitOf(p)}`);
+    }
+    const far = EXTENTS.filter(([k]) => body.extents && num(body.extents[k], 5) !== num((s.extents || {})[k], 5))
+      .map(([k, l]) => `${num(body.extents[k], 5)} ${l} (was ${num((s.extents || {})[k], 5)})`);
+    if (far.length) out.push(`far field, in part lengths: ${far.join(", ")}`);
+    if (!!body.grounded !== !!s.grounded) out.push(body.grounded ? "the part stands on the ground" : "the part is not on the ground");
+  } else {
+    const was = new Map((s.openings || []).map((o) => [Number(o.id), o]));
+    const kept = new Set();
+    (body.openings || []).forEach((o) => {
+      const id = Number(o.id), w = was.get(id);
+      kept.add(id);
+      if (!w) { out.push(`opening ${id} added as ${o.name} (${ROLE_WORDS[o.role] || o.role})`); return; }
+      if (o.name !== (w.name || `opening_${id}`)) out.push(`opening ${id} named ${o.name}`);
+      if (o.role !== w.role) out.push(`opening ${id} is ${ROLE_WORDS[o.role] || o.role} (was ${ROLE_WORDS[w.role] || w.role || "unset"})`);
+    });
+    was.forEach((_w, id) => { if (!kept.has(id)) out.push(`opening ${id} removed`); });
+  }
+  if (body.up_axis && body.up_axis !== (s.up_axis || "+z")) out.push(`up is ${body.up_axis} (was ${s.up_axis || "+z"})`);
+  if (!out.length) return "";
+  const listed = out.slice(0, MAX_EDITS), more = out.length - listed.length;
+  return "Noted your changes on the picture: " + listed.join("; ") + (more ? `; and ${more} more` : "") + ".";
 }
 
 /** Lock a form after it was accepted, and say so where the action was. */

@@ -196,7 +196,7 @@ def test_the_check_stores_the_skin_the_viewer_draws(tmp_path, monkeypatch):
     store = _Store()
     monkeypatch.setattr(object_storage, "get_object_store", lambda: store)
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
-    monkeypatch.setattr(gc, "_fetch", lambda ref, work: (work / "geometry.step").write_text("step") or work / "geometry.step")
+    monkeypatch.setattr(gc, "_fetch", lambda ref, work: ((work / "geometry.step").write_text("step"), work / "geometry.step")[1])
     monkeypatch.setattr(gc, "_prepared_coordinates", lambda path, interp_ref, ref: (None, ""))
     monkeypatch.setattr(gc, "_name_with_vision", lambda *a, **k: {"error": "no model in this test"})
     monkeypatch.setattr(scout_mod, "scout_cad", lambda path, *, prepared: _Scout(_facts()))
@@ -224,6 +224,61 @@ def test_the_check_stores_the_skin_the_viewer_draws(tmp_path, monkeypatch):
     stored = json.loads(store.written["sessions/abcdef12-1111/geometry_check/scout.json"])
     assert stored["skin_key"] == "sessions/abcdef12-1111/geometry_check/skin.json"
     assert stored["proposal"]["openings"][0]["centroid_mm"] == [0.0, 0.0, 0.0]
+    assert stored["proposal"]["holes"] == []                   # a closed box has no hole to snap to
+
+
+def test_a_step_files_check_serves_the_holes_of_the_skin_the_stage_is_clicked_on(tmp_path, monkeypatch):
+    """A STEP file's openings are measured from its exact faces; the stage is clicked on its
+    tessellated skin, so the holes "Add an opening" snaps to are read from that skin, by the one
+    definition the triangle scout uses - a thick tube's two bores, edge and all."""
+    import json
+    import tempfile
+
+    import meshpipeline.cad.scout as scout_mod
+    import meshpipeline.render.scout_snapshots as snaps_mod
+    from meshpipeline.cad.stl_io import write_stl_binary
+    from meshpipeline.contracts import object_storage
+
+    store = _Store()
+    monkeypatch.setattr(object_storage, "get_object_store", lambda: store)
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(gc, "_fetch", lambda ref, work: ((work / "geometry.step").write_text("step"), work / "geometry.step")[1])
+    monkeypatch.setattr(gc, "_prepared_coordinates", lambda path, interp_ref, ref: (None, ""))
+    monkeypatch.setattr(scout_mod, "scout_cad", lambda path, *, prepared: _Scout(_facts()))
+    import math
+
+    def at(x, r, k):
+        return [x, r * math.cos(2 * math.pi * k / 32), r * math.sin(2 * math.pi * k / 32)]
+
+    tube = []                                    # a 100 mm tube, 10 mm wall, 300 mm long, along x
+    for k in range(32):
+        a0, a1, b0, b1 = at(0, 0.05, k), at(0, 0.05, k + 1), at(0.3, 0.05, k), at(0.3, 0.05, k + 1)
+        c0, c1, d0, d1 = at(0, 0.04, k), at(0, 0.04, k + 1), at(0.3, 0.04, k), at(0.3, 0.04, k + 1)
+        tube += [(a0, b1, b0), (a0, a1, b1), (c0, d0, d1), (c0, d1, c1),
+                 (a0, c0, c1), (a0, c1, a1), (b0, d1, d0), (b0, b1, d1)]
+
+    def _skin(path, dest, *, prepared):
+        write_stl_binary(Path(dest), tube)
+        return Path(dest)
+    monkeypatch.setattr(scout_mod, "write_view_stl", _skin)
+    monkeypatch.setattr(snaps_mod, "render_snapshots", lambda skin, openings, out: [])
+    monkeypatch.setattr(snaps_mod, "render_upright_sheet",
+                        lambda skin, out, **k: (_ for _ in ()).throw(RuntimeError("nothing is drawn in this test")))
+    source = {"source_id": "s1", "owner_id": "o1", "object_key": "uploads/s1/tube.step", "sha256": "0" * 64,
+              "size_bytes": 4, "original_filename": "tube.step", "suffix_hint": ".step"}
+    gc.run_geometry_check(session_id="abcdef12-2222", owner_id="o1", source=source)
+    stored = json.loads(store.written["sessions/abcdef12-2222/geometry_check/scout.json"])
+    holes = sorted(stored["proposal"]["holes"], key=lambda h: h["centroid_mm"][0])
+    assert [h["centroid_mm"][0] for h in holes] == [0.0, 300.0]
+    assert all(h["kind"] == "bore" and abs(h["diameter_mm"] - 79.74) < 0.05 for h in holes)
+    assert all(len(h["loop_m"]) == 32 and "outer_m" in h for h in holes)
+    assert holes[0]["normal"][0] == pytest.approx(-1.0) and holes[1]["normal"][0] == pytest.approx(1.0)
+
+
+def test_a_skin_the_holes_cannot_be_read_from_gives_none_and_never_fails_the_check(tmp_path):
+    bad = tmp_path / "skin.stl"
+    bad.write_bytes(b"not an stl")
+    assert gc.skin_holes(bad) == []
 
 
 # ------------------------------------------------------------------------------ the naming ----

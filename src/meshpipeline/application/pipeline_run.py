@@ -851,6 +851,11 @@ async def _run_async(req: JobRequest) -> dict:
         # and the review-inconclusive caveat, from the predicate that grants its delivery
         from meshpipeline.application.final_result import review_inconclusive_caveat
         _review_caveat = review_inconclusive_caveat(_run_outcome)
+        # and the narrow-gap note, from the verdict the resolution floor gave the delivered mesh:
+        # side passages under the floor are told, never a failure (engines/passage_flow). Like the
+        # review caveats it never enters the graph state, so it can never start a retry.
+        from meshpipeline.application.final_result import narrow_passage_caveat
+        _narrow_caveat = narrow_passage_caveat(_run_outcome)
         verdict, api_failure = _run_outcome.reviewer_verdict, _run_outcome.api_failure
 
         retry_count = _run_outcome.retry_count
@@ -1043,7 +1048,8 @@ async def _run_async(req: JobRequest) -> dict:
                     system_failure=bool(api_failure) or _timed_out, jlog=jlog),
                 requirement_caveats=(list(final_state.get("requirement_caveats") or [])
                                      + ([_concerns_caveat] if _concerns_caveat else [])
-                                     + ([_review_caveat] if _review_caveat else [])),
+                                     + ([_review_caveat] if _review_caveat else [])
+                                     + ([_narrow_caveat] if _narrow_caveat else [])),
                 review_blocking=list(_review_blocking),
                 pre_composed_message=str(final_state.get("outcome_message") or "").strip()),
             ownership=ownership, lease_repo=lease_repo, job_repo=job_repo, jlog=jlog)

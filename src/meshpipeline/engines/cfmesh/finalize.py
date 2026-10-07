@@ -14,6 +14,16 @@ from meshpipeline.engines.cfmesh.deliverable import (
 logger = logging.getLogger(__name__)
 
 
+def _stated_reference_length(ws: Path) -> float | None:
+    """The reference length the user quoted the far field in, when the intake approved one."""
+    from meshpipeline.engines.workspace_facts import read_far_field_request
+    v = read_far_field_request(ws).get("reference_length_m")
+    try:
+        return float(v) if v and float(v) > 0.0 else None
+    except (TypeError, ValueError):
+        return None
+
+
 def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str = "",
                      internal_flow: bool = False, engine_params: dict | None = None,
                      flow_topology: str = "") -> dict:
@@ -29,6 +39,11 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
     if incomplete:
         return {"success": False, "stdout": "", "stderr": "", "output": incomplete}
     q = R.check_mesh(ws)
+    if internal_flow:
+        # which under-resolved passages the flow can go round - read only when the measure put the
+        # narrowest wall under the floor (engines/passage_flow.py, as in the snappy finalize)
+        from meshpipeline.engines.passage_flow import passage_flow_of_polymesh
+        q.update(passage_flow_of_polymesh(ws, q))
     # NEAR-WALL PRISM LAYER COVERAGE - a MEASURED number, not a visual: a ~1e-4 m layer band
     # on a metre-scale body is invisible in any whole-body render, so the reviewer must judge
     # the layer axis from this figure (it otherwise mistook an unresolvable near-wall region
@@ -161,7 +176,10 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
                      # writes metres; the constant says so rather than a default assuming it.
                      mesh_units=COMPLETED_MESH_UNIT.value,
                      mesh_mode=getattr(R, "name", "") or engine or "cfmesh",
-                     engine_params=engine_params or {}, flow_topology=flow_topology)
+                     engine_params=engine_params or {}, flow_topology=flow_topology,
+                     # the ruler the box was sized in (engines/far_field.py), so the extent
+                     # check reads the margins in the unit they were asked in
+                     reference_length=_stated_reference_length(ws))
     fatal = q.get("fatal", [])
     out = (f"[CFMESH] polyMesh cells={q.get('cells')} fatal={fatal} "
            f"non_ortho={q.get('max_non_ortho')} skew={q.get('max_skewness')}")

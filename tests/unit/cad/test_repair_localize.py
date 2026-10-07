@@ -3,12 +3,12 @@ from __future__ import annotations
 
 from meshpipeline.cad.repair.contracts import DefectCode, DefectSeverity
 from meshpipeline.cad.repair.localize import (
+    _STATUS_TO_CODE,
     REGION_EXTERIOR,
     REGION_INTERIOR,
     REGION_UNKNOWN,
     SMALL_EDGE_LENGTH_FRACTION,
     SMALL_FACE_AREA_FRACTION,
-    _STATUS_TO_CODE,
     EntityDefect,
     summarise,
 )

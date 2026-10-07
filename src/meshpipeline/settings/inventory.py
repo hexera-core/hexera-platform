@@ -576,6 +576,7 @@ INVENTORY: list[Group] = [
         EnvVar("SNAPPY_THIN_AREA_FLOOR", "0.002", kind="float", exposure="internal", help="act only when thin+razor classes cover at least this wetted-area fraction"),
         EnvVar("SNAPPY_RAZOR_CELL_FACTOR", "1.0", kind="float", exposure="internal", help="razor threshold: locally thinner than this many wall cells"),
         EnvVar("SNAPPY_THIN_STACK_FACTOR", "2.0", kind="float", exposure="internal", help="thin threshold: locally thinner than this many two-sided prism stacks"),
+        EnvVar("SNAPPY_SEAL_CAVITIES", "true", kind="bool", exposure="internal", help="external flow: keep out of the mesh any space inside the body that the far field reaches only through gaps narrower than two wall cells (snappy closes the gap on the leak path)"),
     ]),
 
     # EXTERNAL: nobody edits these in .env; a platform or a library supplies them.

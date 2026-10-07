@@ -141,21 +141,34 @@ def _gate_boundary_types(ctx: GateCtx) -> tuple[bool, str]:
 def _gate_resolution_floor(ctx: GateCtx) -> tuple[bool, str]:
     """The fill must span the passage where it matters: cells across the local passage at the
     narrowest wall (5th percentile of the boundary points, measured beside the mesh for
-    internal flow). A mesh without the measure (external flow, an older image) is not judged."""
-    q = (ctx.manifest_or_load().get("quality") or {})
-    local = q.get("passage_cells_across_local") or {}
-    p05 = local.get("p05")
-    if p05 is None:
+    internal flow), with the side passages the flow can go round set aside
+    (engines/passage_flow.judge_resolution). A mesh without the measure (external flow, an older
+    image) is not judged."""
+    from meshpipeline.engines.passage_flow import judge_resolution, refuse_under_resolved
+    manifest = ctx.manifest_or_load()
+    verdict = judge_resolution(manifest.get("quality") or {}, PASSAGE_FLOOR_CELLS)
+    if verdict.ok:
         return True, ""
-    if float(p05) < PASSAGE_FLOOR_CELLS:
-        return False, refuse(
-            f"[RESOLUTION] undermeshed: {float(p05):g} cells across the passage at the narrowest "
-            f"wall (5th percentile; median {local.get('median')}) - a CFD mesh needs at least "
-            f"{PASSAGE_FLOOR_CELLS} everywhere (industry practice is 20-40). Refine the wall "
-            "surface level (and the background if the passage is narrow everywhere) so at least "
-            "13 cells span the narrowest passage, then run_mesh again.",
-            FailureCause.UNDER_RESOLVED, cells_across=float(p05), needed=PASSAGE_FLOOR_CELLS)
-    return True, ""
+    x = float(verdict.cells_across or 0.0)
+    # THE LEVER THAT MOVES IT. The internal wall cell is bore / cells_across_diameter whatever the
+    # surface level (drivers.py: base = wall cell x 2^level). The old advice - "refine the wall
+    # surface level" - sent job 02ed0d14's re-plan to raise the level expecting twice the cells
+    # across, and only its 24 -> 28 across moved anything: 8.3 -> 9.8, a 27-minute attempt spent.
+    factor = (PASSAGE_FLOOR_CELLS + 1) / x if x > 0 else 2.0
+    # WHAT THAT REBUILD COSTS, at the least: every cell near the wall shrinks by the factor, so the
+    # count grows by at least its square. Over the job's cell limit, no rebuild can reach the floor
+    # and the retry policy does not start one (failure_cause.retry_can_help).
+    cells = manifest.get("cell_count")
+    facts: dict = {}
+    if isinstance(cells, (int, float)) and not isinstance(cells, bool) and cells > 0 and x > 0:
+        facts = {"cells": int(cells), "cell_limit": int(polcfg.CELL_HARD_LIMIT),
+                 "rebuild_cells": int(cells * (PASSAGE_FLOOR_CELLS / x) ** 2)}
+    return False, refuse_under_resolved(
+        verdict,
+        f"Raise cells_across_diameter by at least x{factor:.2g} so {PASSAGE_FLOOR_CELLS + 1} "
+        "cells span it: the internal wall cell is the bore over cells_across_diameter, and "
+        "surface_level alone does not change it. Then run_mesh again.",
+        **facts)
 
 
 def _gate_quality_floor(ctx: GateCtx) -> tuple[bool, str]:
@@ -178,7 +191,7 @@ FLOW_GATES: tuple[GateSpec, ...] = (
              proves="The mesh clears every quality bar snappyHexMesh requires - skewness is localized and the body is captured on the wall",
              cause=FailureCause.MESH_QUALITY),
     GateSpec(key="resolution_floor", check=_gate_resolution_floor, section="MESH",
-             proves="Every passage is spanned by enough cells to carry the flow (12 at the narrowest wall)",
+             proves="Every passage the flow must go through is spanned by enough cells to carry it (12 at the narrowest wall)",
              cause=FailureCause.UNDER_RESOLVED),
     GateSpec(key="patch_contract", check=_gate_patch_contract, section="GROUPS",
              proves="Every boundary you named exists in the mesh, and carries real faces",

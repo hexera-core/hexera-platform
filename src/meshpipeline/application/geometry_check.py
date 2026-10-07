@@ -23,8 +23,6 @@ logger = logging.getLogger(__name__)
 #: failed and unsupported are terminal and say why.
 STATUS_PENDING, STATUS_SCOUTED, STATUS_READY = "pending", "scouted", "ready"
 STATUS_FAILED, STATUS_UNSUPPORTED = "failed", "unsupported"
-_CAD_SUFFIXES = (".step", ".stp", ".igs", ".iges")
-_MESH_SUFFIXES = (".stl", ".obj", ".vtp")
 #: THE WORKER'S LIMITS for the two steps, in seconds. Past the soft one the task is told to stop
 #: and stores `failed` itself; past the hard one it is killed and stores nothing - and a worker
 #: whose VM is deleted mid-task stores nothing either. The Celery tasks take these same numbers,
@@ -354,14 +352,16 @@ def _fetch(ref, work: Path) -> Path:
 
 
 def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict | None) -> dict:
+    from meshpipeline.cad.ingest import IngestError, canonicalise
     from meshpipeline.contracts.geometry_source import GeometryInterpretationRef, GeometrySourceRef
+    from meshpipeline.contracts.intake_formats import GeometryKind, format_for_suffix
     from meshpipeline.contracts.object_storage import get_object_store
     from meshpipeline.render.scout_snapshots import render_snapshots
 
     ref = GeometrySourceRef.from_payload(source)
     suffix = (ref.suffix_hint or "").lower()
-    if suffix not in _CAD_SUFFIXES + _MESH_SUFFIXES:
-        raise _Unsupported("the geometry check reads STEP, IGES, STL, OBJ and VTP files; this upload "
+    if format_for_suffix(suffix) is None:
+        raise _Unsupported("the geometry check reads the accepted geometry formats; this upload "
                            f"is a {suffix or 'nameless'} file, so the intake will ask about its openings")
     interp_ref = GeometryInterpretationRef.from_payload(interpretation) if interpretation else None
 
@@ -369,11 +369,19 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
     # skin and picture left behind in /tmp would stay there until the disk was full.
     with tempfile.TemporaryDirectory(prefix=f"geometry_check_{session_id[:8]}_") as tmp:
         work = Path(tmp)
-        local_path = _fetch(ref, work)
-        if suffix in _CAD_SUFFIXES:
+        # the same canonical form the job materialiser hands the engines (cad/ingest)
+        try:
+            canonical = canonicalise(_fetch(ref, work), work, stem="geometry")
+        except IngestError as exc:
+            raise _Unsupported(str(exc)) from exc
+        local_path = canonical.path
+        if canonical.kind is GeometryKind.cad:
             facts, skin = _scout_exact(local_path, work, interp_ref, ref)
         else:
             facts, skin = _scout_triangles(local_path, work, interp_ref, ref)
+        # what kind of geometry this is and what it came from, for whoever decides what to offer
+        facts.update(canonical.facts())
+        facts.setdefault("notes", []).extend(n for n in canonical.notes if n not in facts["notes"])
 
         # the same skin, stored for the stage the user turns the part in
         skin_key = check_object_key(session_id, "skin.json")
@@ -430,7 +438,26 @@ def _scout_exact(local_path: Path, work: Path, interp_ref, ref) -> tuple[dict, P
     if unit_note:
         facts["notes"].append(unit_note)
     skin = write_view_stl(local_path, work / "skin.stl", prepared=prepared)
+    facts["holes"] = skin_holes(skin)
     return facts, skin
+
+
+def skin_holes(skin: Path) -> list[dict]:
+    """The holes of the skin the stage draws, by the one definition the triangle scout uses
+    (cad/open_ends) - what "Add an opening" snaps to. A STEP file's openings are measured exactly
+    from its faces; these are for the click, on the same triangles the user clicks. Never fails
+    the scout: a skin it cannot read has no holes to snap to, and the click falls back."""
+    import numpy as np
+
+    from meshpipeline.cad.open_ends import find_holes
+    from meshpipeline.cad.stl_io import read_stl_triangles
+
+    try:
+        tris = np.asarray(read_stl_triangles(Path(skin)), dtype=float).reshape(-1, 3, 3)
+        return [h.as_dict() for h in find_holes(tris)]
+    except Exception as exc:  # noqa: BLE001 - a click aid, never a reason to fail the check
+        logger.warning("geometry check: the skin's holes could not be read (%s: %s)", type(exc).__name__, exc)
+        return []
 
 
 def _scout_triangles(local_path: Path, work: Path, interp_ref, ref) -> tuple[dict, Path]:
@@ -1039,6 +1066,7 @@ def _proposal(facts: dict, vision: dict | None) -> dict:
         "notes": list(facts.get("notes") or []),
         "read_as": facts.get("read_as", "cad"),
         "faces": list(facts.get("faces") or []),      # every flat face measured: what "add an opening" snaps to
+        "holes": list(facts.get("holes") or []),      # every hole in the skin: what a click into one snaps to
         "named": vision is not None,
         "vision_available": bool(vision) and "error" not in (vision or {}),
     }

@@ -642,6 +642,8 @@ def _render_outcome(fr: FinalResult) -> str:
                          if kinds == {"domain_extent"} else
                          "Delivered with a stated caveat:" if kinds == {REVIEW_INCONCLUSIVE} else
                          "Delivered with the reviewer's concerns:" if kinds == {REVIEW_CONCERNS}
+                         else "Delivered with a note on its narrowest gaps:"
+                         if kinds == {NARROW_PASSAGES}
                          else "Delivered with stated deviations:")
             for c in fr.requirement_caveats:
                 kind = (c or {}).get("kind") or "domain_extent"
@@ -681,22 +683,27 @@ def _render_outcome(fr: FinalResult) -> str:
                     lines.append(_review_caveat_line(c))
                 elif kind == REVIEW_CONCERNS:
                     lines.extend(_concern_lines(c))
+                elif kind == NARROW_PASSAGES:
+                    lines.extend(_narrow_passage_lines(c))
                 else:
                     lines.append("  - a stated deviation of an unrecognized kind "
                                  "(see the result record)")
-            if kinds == {"domain_extent"}:
+            # the narrow-gap note says everything it needs in its own lines; the closing speaks
+            # for the rest
+            core = kinds - {NARROW_PASSAGES}
+            if core == {"domain_extent"}:
                 lines.append("Every mesh-quality check passed; only the margins above fell "
                              "short of the request. Rebuild with relaxed constraints if "
                              "they matter for your analysis.")
-            elif kinds == {REVIEW_INCONCLUSIVE}:
+            elif core == {REVIEW_INCONCLUSIVE}:
                 # true by construction: the caveat is granted only on a mesh the executor
                 # validated with no gate failed (review_inconclusive_caveat)
                 lines.append(REVIEW_INCONCLUSIVE_CLOSING)
-            elif REVIEW_CONCERNS in kinds and "layer_coverage" not in kinds:
+            elif REVIEW_CONCERNS in core and "layer_coverage" not in core:
                 # true by construction, as above (review_concerns_caveat); the margins, if any,
                 # are listed above it in their own words
                 lines.append(REVIEW_CONCERNS_CLOSING)
-            else:
+            elif core:
                 # NEVER claim every check passed when a layer caveat exists: the pipeline's
                 # own quality review judged layer coverage short of its bar. 'Solver-ready'
                 # is scoped to what was actually measured.
@@ -1062,6 +1069,71 @@ def review_concerns_caveat(outcome: RunOutcome) -> dict | None:
     if not items:
         return None
     return {"kind": REVIEW_CONCERNS, "items": items}
+
+
+#: The caveat kind a delivery carries when the resolution floor set narrow SIDE passages aside:
+#: gaps the flow can go round (engines/passage_flow) that have fewer cells across them than the
+#: floor. Job 02ed0d14's tube bank: its 20 mm gaps between tubes held 8 to 10 cells across, and a
+#: sound mesh was refused twice although the flow goes round the bundle (on the same part's other
+#: meshes the rest of the passage held 19 to 25 or more). Now such a mesh is delivered, and the
+#: delivery says which gaps fell short and by how much.
+NARROW_PASSAGES = "narrow_passages"
+
+
+def narrow_passage_caveat(outcome: RunOutcome) -> dict | None:
+    """THE one predicate for the narrow-gap note, read at terminal assembly from the delivered
+    mesh's own quality record through the same verdict the gate gave
+    (passage_flow.judge_resolution), so the note and the gate can never disagree. None unless the
+    executor validated the mesh with no gate failed and the floor passed by setting side passages
+    aside."""
+    if not outcome.executor_success or outcome.failed_gate:
+        return None
+    q = outcome.quality if isinstance(outcome.quality, Mapping) else {}
+    from meshpipeline.engines.passage_flow import judge_resolution
+    v = judge_resolution(dict(q))
+    if not (v.ok and v.scope == "main" and v.side):
+        return None
+    raw = v.side.get("cells_across")
+    cells: Mapping = raw if isinstance(raw, Mapping) else {}
+    return {"kind": NARROW_PASSAGES, "floor": v.floor,
+            "cells_across": cells.get("p05"), "cells_across_min": cells.get("min"),
+            "width_m": v.side.get("width_m"),
+            "narrowest_width_m": v.side.get("narrowest_width_m"),
+            "share": v.side.get("under_floor_share"),
+            "main_cells_across": v.cells_across, "main_way_width_m": v.main_way_width_m}
+
+
+def _mm_text(metres: object) -> str | None:
+    if not isinstance(metres, (int, float)) or isinstance(metres, bool) or metres <= 0:
+        return None
+    mm = float(metres) * 1000.0
+    return f"{mm:.0f} mm" if mm >= 10 else f"{mm:.2g} mm"
+
+
+def _narrow_passage_lines(c: Mapping) -> list[str]:
+    """The narrow-gap note in plain words: how wide the gaps are, how much of the wall they line,
+    how many cells cross them against the floor, and the way round them that holds it."""
+    def n(v: object) -> float | None:
+        return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+    width, share, x = _mm_text(c.get("width_m")), n(c.get("share")), n(c.get("cells_across"))
+    floor = n(c.get("floor")) or 12.0
+    main_w, main_x = _mm_text(c.get("main_way_width_m")), n(c.get("main_cells_across"))
+    first = "  - The narrowest gaps" + (f" are about {width} across" if width else "")
+    if share is not None:
+        first += (" and" if width else "") + f" cover about {max(share * 100, 0.1):.2g}% of the wall"
+    lines = [first + "."]
+    lines.append("    They have about "
+                 + (f"{x:.1f}" if x is not None else "too few")
+                 + f" cells across them. Our floor is {floor:g}, and 20 to 40 is common practice.")
+    way = "    The flow can go round these gaps"
+    if main_w:
+        way += f": its main way through is at least {main_w} across"
+        if main_x is not None:
+            way += f", with about {main_x:.1f} or more cells across it"
+    lines.append(way + ". So the mesh is delivered.")
+    lines.append("    If the flow in these gaps matters to you, ask for a finer mesh.")
+    return lines
 
 
 def _concern_lines(c: Mapping) -> list[str]:

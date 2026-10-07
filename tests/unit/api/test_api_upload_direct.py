@@ -220,7 +220,7 @@ async def test_begin_hands_out_a_url_for_one_key_behind_a_held_intent(world):
     assert _store().keys() == []                       # nothing stored yet
 
 
-@pytest.mark.parametrize("name", ["model.obj", "model", "notes.txt", "../../etc/passwd"])
+@pytest.mark.parametrize("name", ["model.dwg", "model", "notes.txt", "../../etc/passwd"])
 async def test_begin_refuses_a_suffix_the_product_does_not_accept(world, name):
     resp = await _begin(name=name)
     assert resp.status_code == 422
@@ -501,7 +501,7 @@ def test_the_multipart_route_and_the_direct_route_share_one_set_of_checks():
     import inspect
 
     src = inspect.getsource(direct_mod)
-    for shared in ("sanitised_upload_name", "has_step_header", "STEP_HEADER_REFUSAL",
+    for shared in ("sanitised_upload_name", "checked_upload",
                    "_declared_unit_evidence", "_MAX_FILE_BYTES", "UPLOAD_ACKNOWLEDGEMENT"):
         assert f"_multipart.{shared}" in src, f"the direct upload has its own {shared}"
     assert "ACCEPTED_SUFFIXES" in src
