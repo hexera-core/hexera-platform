@@ -366,6 +366,8 @@ INVENTORY: list[Group] = [
     Group("CAD repair", note="Whether a customer's geometry may be MUTATED, and the caps a conservative repair must stay inside. Inspection runs regardless and only ever reads; CAD_REPAIR_ENABLED is the switch that separates looking from changing, and with it off a repair is refused before any kernel call.", vars=[
         EnvVar("CAD_REPAIR_ENABLED", "false", kind="bool",
                help="allow repair attempts to write new geometry; inspection is unaffected"),
+        EnvVar("CAD_REPAIR_AUTONOMOUS", "true", kind="bool", exposure="internal",
+               help="repair a file in the run when triage can point at the defect, instead of only reporting it"),
         EnvVar("CAD_REPAIR_MAX_DEVIATION_RATIO", "0.001", kind="float", exposure="internal",
                help="largest surface movement a repair may leave, as a fraction of the part diagonal"),
         EnvVar("CAD_REPAIR_MAX_TOLERANCE_MM", "0.1", kind="float", exposure="internal",

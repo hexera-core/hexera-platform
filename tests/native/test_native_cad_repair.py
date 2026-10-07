@@ -315,3 +315,90 @@ def test_the_bore_rims_are_located_as_two_separate_openings(tmp_path):
     assert len(openings) == 2
     spans = {round(o["measurements"]["boundary_length"], 3) for o in openings}
     assert len(spans) == 1, f"the two rims of one bore should measure the same: {spans}"
+
+
+# THE WHOLE LOOP, AUTONOMOUS, AGAINST THE REAL KERNEL
+
+
+def test_a_broken_file_is_inspected_repaired_and_promoted_without_anyone_asking(tmp_path,
+                                                                               monkeypatch):
+    """Inspect -> locate -> triage -> repair -> prove it stages -> mesh the repair.
+
+    The acceptance this service exists for, on geometry OpenCASCADE genuinely objects to, with no
+    operator in the loop. Every guard is live: the caps measure the result, promotion needs a real
+    staging proof, and had any of them refused, the assertions below would see the original.
+    """
+    import asyncio
+
+    from tests._geometry_support import geometry_state
+    from tests.cad_fixtures import write_open_shell_step
+
+    import meshpipeline.settings.cad_repair as cfg
+    from meshpipeline.pipeline.repair_attempt import node_repair_attempt
+    from meshpipeline.pipeline.repair_inspect import node_repair_inspect
+
+    monkeypatch.setattr(cfg, "CAD_REPAIR_ENABLED", True)
+    monkeypatch.setattr(cfg, "CAD_REPAIR_AUTONOMOUS", True)
+    # the fixture's opening is one whole face of a cube, which the span cap rightly calls a missing
+    # wall; this test is about the loop, so patching is allowed to reach it
+    monkeypatch.setattr(cfg, "CAD_REPAIR_FILL_PLANAR_HOLES", True)
+    monkeypatch.setattr(cfg, "CAD_REPAIR_MAX_HOLE_SPAN_RATIO", 1.0)
+
+    write_open_shell_step(tmp_path / "part.step")
+    state = {"job_id": "native-loop", "engine": "gmsh",
+             "geometry": geometry_state(tmp_path, filename="part.step")}
+    # geometry_state rewrites the file it is handed, so author the broken part over it afterwards
+    write_open_shell_step(tmp_path / "part.step")
+    original_sha = state["geometry"]["ref"]["sha256"]
+
+    # 1: the inspection locates the opening
+    state.update(asyncio.run(node_repair_inspect(state)))
+    assert state["repair_status"] == "repairable", state["repair_status"]
+    located = state["repair_report"]["report"]["entities"]
+    assert [e["code"] for e in located] == ["open_shell"]
+
+    # 2: the run repairs it and promotes the result, with nobody asked
+    out = asyncio.run(node_repair_attempt(state))
+
+    assert out["repair_attempt"]["attempted"] is True, out["repair_attempt"]
+    assert "fill_planar_holes" in out["repair_attempt"]["operations"]
+    assert out["repair_attempt"]["holes_filled"], "the opening should have been patched"
+    # THE RUN NOW MESHES THE REPAIR, and can still say which bytes it started from
+    assert out["geometry"]["ref"]["sha256"] != original_sha
+    assert out["repair_lineage"]["original"]["sha256"] == original_sha
+    assert out["repair_lineage"]["engine_staged_for"] == "gmsh"
+
+    # 3: and the repaired file really is repaired - proved by re-inspecting what was promoted
+    from pathlib import Path as _Path
+
+    from meshpipeline.cad.repair.brep import inspect_brep_file
+    after = inspect_brep_file(_Path(out["geometry"]["local_path"]))
+    assert after.entities == (), f"still located: {after.entities}"
+    assert {m.name: m.value for m in after.measurements}["is_valid"] is True
+
+
+def test_the_customers_upload_is_still_intact_after_an_autonomous_repair(tmp_path, monkeypatch):
+    import asyncio
+
+    from tests._geometry_support import geometry_state
+    from tests.cad_fixtures import write_open_shell_step
+
+    import meshpipeline.settings.cad_repair as cfg
+    from meshpipeline.pipeline.repair_attempt import node_repair_attempt
+    from meshpipeline.pipeline.repair_inspect import node_repair_inspect
+
+    monkeypatch.setattr(cfg, "CAD_REPAIR_ENABLED", True)
+    monkeypatch.setattr(cfg, "CAD_REPAIR_AUTONOMOUS", True)
+    monkeypatch.setattr(cfg, "CAD_REPAIR_FILL_PLANAR_HOLES", True)
+    monkeypatch.setattr(cfg, "CAD_REPAIR_MAX_HOLE_SPAN_RATIO", 1.0)
+
+    state = {"job_id": "native-intact", "engine": "gmsh",
+             "geometry": geometry_state(tmp_path, filename="part.step")}
+    source = write_open_shell_step(tmp_path / "part.step")
+    before = source.read_bytes()
+
+    state.update(asyncio.run(node_repair_inspect(state)))
+    asyncio.run(node_repair_attempt(state))
+
+    # THE ONE INVARIANT THIS SERVICE RESTS ON: whatever we did, their bytes are still theirs.
+    assert source.read_bytes() == before

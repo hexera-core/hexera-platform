@@ -21,6 +21,7 @@ from meshpipeline.pipeline.engine_select import node_engine_select
 from meshpipeline.pipeline.enums import Verdict
 from meshpipeline.pipeline.executor import node_executor
 from meshpipeline.pipeline.geometry_admission import node_geometry_admission
+from meshpipeline.pipeline.repair_attempt import node_repair_attempt
 from meshpipeline.pipeline.repair_inspect import node_repair_inspect
 
 logger = logging.getLogger(__name__)
@@ -349,6 +350,7 @@ def build_graph(checkpointer):
     b.add_node("node_intake",          _fenced("node_intake", node_intake))
     b.add_node("node_engine_select",   _fenced("node_engine_select", node_engine_select))
     b.add_node("node_repair_inspect",   _fenced("node_repair_inspect", node_repair_inspect))
+    b.add_node("node_repair_attempt",   _fenced("node_repair_attempt", node_repair_attempt))
     b.add_node("node_geometry_admission", _fenced("node_geometry_admission", node_geometry_admission))
     b.add_node("node_builder",         _fenced("node_builder", node_builder))
     b.add_node("node_executor",        _fenced("node_executor", node_executor))
@@ -370,8 +372,11 @@ def build_graph(checkpointer):
         route_after_engine_select,
         {"node_repair_inspect": "node_repair_inspect", "node_reviewer": "node_reviewer"},
     )
-    # Inspection is evidence and never ends a run, so its one edge is the gate that decides.
-    b.add_edge("node_repair_inspect", "node_geometry_admission")
+    # INSPECT, THEN FIX, THEN JUDGE. Inspection is evidence and the attempt refuses rather than
+    # ending a run, so both have a single unconditional edge and the admission gate still decides -
+    # on whichever geometry the attempt left in place.
+    b.add_edge("node_repair_inspect", "node_repair_attempt")
+    b.add_edge("node_repair_attempt", "node_geometry_admission")
     b.add_conditional_edges(
         "node_geometry_admission",
         route_after_geometry_admission,

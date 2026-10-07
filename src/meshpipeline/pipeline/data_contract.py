@@ -358,6 +358,9 @@ EVENT_TYPES: dict[str, str] = {
     "geometry_admission": "qa: input-contract admission verdict - when an engine's "
                           "measured input contract (e.g. self-intersection) rejected the "
                           "geometry before any build; deterministic, no model",
+    "repair_attempt":     "training+qa: what an automatic repair aimed at and what it did - the "
+                          "targets triage named, the operations the kernel ran, and the lineage of "
+                          "the geometry that replaced the upload; deterministic, no model",
     "repair_inspect":     "training+qa: what CAD repair inspection measured on the verified "
                           "input before admission judged it - the defect taxonomy an operator's "
                           "repair decision is later learned from; deterministic, no model",
@@ -396,6 +399,9 @@ STATE_FIELDS: dict[str, str] = {
                              "a decision, and never a reason to move the geometry",
     "repair_report":         "the typed RepairResult payload behind repair_status: defects, "
                              "measurements and the inspect operation that produced them",
+    "repair_attempt":        "whether the run repaired its own geometry, what it aimed at and "
+                             "what it did - or why it declined; a decline leaves the run on the "
+                             "customer's own file",
     "repair_lineage":        "which upload a promoted repair replaced, and the engine the "
                              "replacement was proved to stage for; empty unless repaired "
                              "geometry became the geometry this run meshes",

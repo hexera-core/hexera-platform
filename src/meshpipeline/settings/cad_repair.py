@@ -13,6 +13,18 @@ from meshpipeline.settings.env import bool_env, optional_env
 #: cannot mutate a customer's CAD by any path.
 CAD_REPAIR_ENABLED: bool = bool_env("CAD_REPAIR_ENABLED", "false")
 
+#: Whether the pipeline REPAIRS A FILE BY ITSELF when triage can point at what is wrong, rather
+#: than only reporting it. Reachable only when CAD_REPAIR_ENABLED is on, so a deployment that has
+#: not opted into geometry mutation is unaffected either way.
+#:
+#: ON, because an advisory that needs a person before anything is fixed is not the service this is
+#: for. What makes that defensible is not optimism: the repair is bounded by the caps below, its
+#: result is MEASURED and refused if it left them, the repaired geometry must provably stage for
+#: the chosen engine before it replaces anything, and the original upload stays immutable and
+#: retrievable. If any of those refuse, the run continues on the file the customer sent - which is
+#: the same outcome as not having tried.
+CAD_REPAIR_AUTONOMOUS: bool = bool_env("CAD_REPAIR_AUTONOMOUS", "true")
+
 #: THE DEVIATION CEILING, as a fraction of the part's diagonal. A conservative repair closes gaps
 #: and sews shells; it must not move the surface further than this from where the customer put it.
 #: Measured after the fact and enforced by refusing the result, because an OpenCASCADE tolerance

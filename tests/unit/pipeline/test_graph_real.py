@@ -49,15 +49,18 @@ def test_build_graph_calls_all_required_nodes():
     expected_nodes = {
         "node_intake", "node_builder", "node_executor",
         "node_classifier", "node_reviewer", "node_failure_handler",
-        "node_repair_inspect",
+        "node_repair_inspect", "node_repair_attempt",
     }
     assert expected_nodes.issubset(recorder.nodes), (
         f"Missing nodes: {expected_nodes - recorder.nodes}"
     )
-    # Repair inspection is evidence, not a gate: its ONE edge is the admission gate, so no run
-    # can reach the builder by way of inspection without being judged first.
-    assert ("node_repair_inspect", "node_geometry_admission") in recorder.edges
+    # INSPECT, THEN FIX, THEN JUDGE. Neither repair node is a gate: each has ONE unconditional
+    # edge, so no run can reach the builder by way of them without the admission gate judging
+    # whichever geometry they left in place.
+    assert ("node_repair_inspect", "node_repair_attempt") in recorder.edges
+    assert ("node_repair_attempt", "node_geometry_admission") in recorder.edges
     assert "node_repair_inspect" not in recorder.cond_edges
+    assert "node_repair_attempt" not in recorder.cond_edges
 
 
 
