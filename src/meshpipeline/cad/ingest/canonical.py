@@ -78,14 +78,20 @@ def resolve_format(src: Path) -> str:
     return declared.key
 
 
-def canonicalise(src, workdir=None, *, stem: str | None = None) -> CanonicalGeometry:
+def canonicalise(src, workdir=None, *, stem: str | None = None,
+                 ecxml_form: str = "fused") -> CanonicalGeometry:
     """The canonical form of `src`, written into `workdir` (default: beside it).
 
     STEP, IGES, VTP and a well-formed STL are returned AS THEY ARE - the bytes the user uploaded,
     so every engine that reads them today reads exactly what it read before. Everything else is
     converted: an exact CAD format to STEP, a mesh format to STL, its named groups kept as named
     STL solids. A file that turns out to be another format than its name says is read as what
-    it is."""
+    it is.
+
+    An ECXML thermal model has two forms: "fused" (one STEP of conformal named solids plus the
+    air, what multi-region snappyHexMesh meshes; the default) and "placed" (its parts where the
+    file puts them, nothing joined - what the geometry check draws and the snap-grid mesher
+    reads, ecxml_placed)."""
     src = Path(src)
     workdir = Path(workdir) if workdir is not None else src.parent
     workdir.mkdir(parents=True, exist_ok=True)
@@ -111,6 +117,10 @@ def canonicalise(src, workdir=None, *, stem: str | None = None) -> CanonicalGeom
         return CanonicalGeometry(path=path, kind=fmt.kind, source_format=key,
                                  converted=path != src)
 
+    if key == "ecxml" and ecxml_form == "placed":
+        result = ecxml_placed(src, workdir / f"{stem}.stl")
+        _write_sidecar(result, declared_unit=_source_unit(src, fmt))
+        return result
     dest = workdir / f"{stem}{CANONICAL_SUFFIX[fmt.kind]}"
     if dest.resolve() == src.resolve():
         raise IngestError("internal: the canonical file would overwrite its own source")
@@ -235,18 +245,54 @@ def _cad_to_step(src: Path, key: str, dest: Path) -> CanonicalGeometry:
 
 def _ecxml_to_step(src: Path, dest: Path) -> CanonicalGeometry:
     """An ECXML thermal model as one STEP holding a named solid per part and the air around them,
-    its physics written beside it (cad/ingest/ecxml_build)."""
-    from meshpipeline.cad.ingest.ecxml import EcxmlError
+    its physics written beside it (cad/ingest/ecxml_build). When the parts cannot be joined (the
+    fused build refuses or OpenCASCADE fails), the model is still read: as its placed parts
+    (ecxml_placed), which the placed-parts mesher meshes without joining anything - said in a
+    note, so nobody takes it for the fused form."""
+    from meshpipeline.cad.ingest.ecxml import EcxmlError, read_ecxml
     from meshpipeline.cad.ingest.ecxml_build import ecxml_to_step, physics_summary
 
     try:
-        built, stats = ecxml_to_step(src, dest)
+        read_ecxml(src)
     except EcxmlError as exc:
         raise IngestError(f"the ECXML model could not be converted: {exc}") from exc
+    try:
+        built, stats = ecxml_to_step(src, dest)
+    except EcxmlError as exc:
+        placed = ecxml_placed(src, dest.with_suffix(".stl"))
+        note = (f"the parts could not be joined into one conformal STEP ({exc}); the model is kept "
+                "as its placed parts, which the placed-parts mesher (snap grid) meshes without "
+                "joining them")
+        return CanonicalGeometry(path=placed.path, kind=placed.kind, source_format="ecxml",
+                                 converted=True, regions=placed.regions,
+                                 notes=(note, *placed.notes), stats=placed.stats,
+                                 physics={**placed.physics, "fused": False,
+                                          "fused_refusal": str(exc)})
     return CanonicalGeometry(path=dest, kind=GeometryKind.cad, source_format="ecxml",
                              converted=True, regions=built.region_names,
                              notes=tuple(built.notes), stats=stats,
                              physics=physics_summary(built.sidecar))
+
+
+def ecxml_placed(src: Path, dest: Path) -> CanonicalGeometry:
+    """An ECXML thermal model as its PLACED parts (cad/ingest/ecxml_place): one STL of named
+    solids, each part where the file puts it, nothing joined, in millimetres - with the physics
+    beside it in the same sidecar as the fused form. What the geometry check draws and measures,
+    and what the placed-parts mesher needs; no boolean, so it costs milliseconds per part."""
+    from meshpipeline.cad.ingest.ecxml import EcxmlError
+    from meshpipeline.cad.ingest.ecxml_build import physics_summary
+    from meshpipeline.cad.ingest.ecxml_place import write_placed
+
+    try:
+        placement, sidecar = write_placed(src, dest)
+    except EcxmlError as exc:
+        raise IngestError(f"the ECXML model could not be read: {exc}") from exc
+    live = [n for p, n in zip(placement.parts, placement.names) if not p.dropped]
+    return CanonicalGeometry(
+        path=dest, kind=GeometryKind.surface, source_format="ecxml", converted=True,
+        regions=("air", *live), notes=tuple(placement.notes),
+        stats={"regions": len(live) + 1, "fluid_regions": 1, "placed_parts": len(live)},
+        physics={**physics_summary(sidecar), "placed_parts": True})
 
 
 def _surface_to_stl(src: Path, key: str, dest: Path) -> CanonicalGeometry:

@@ -154,6 +154,82 @@
    "write_file"
   ]
  },
+ "snapgrid": {
+  "axes": [
+   "interface_continuity",
+   "placed_part_capture"
+  ],
+  "criteria": [
+   "fatal",
+   "interface_ok",
+   "max_non_ortho",
+   "rc",
+   "regions_missing",
+   "skew_fraction",
+   "thin_layers_short",
+   "timed_out"
+  ],
+  "deliverable": [
+   "constant",
+   "snapgrid_report.json",
+   "snapgrid_viewer.npz",
+   "source.ecxml",
+   "system",
+   "thermal_model.json"
+  ],
+  "deliverable_kind": "Deliverable",
+  "export_formats": [
+   "openfoam_polymesh_multiregion"
+  ],
+  "gates": [
+   [
+    "manifest_valid",
+    true,
+    "MANIFEST"
+   ],
+   [
+    "quality_floor",
+    true,
+    "MESH"
+   ],
+   [
+    "file_fidelity",
+    true,
+    "GEOMETRY"
+   ],
+   [
+    "patch_contract",
+    true,
+    "GROUPS"
+   ],
+   [
+    "regions_split",
+    true,
+    "MESH"
+   ],
+   [
+    "interfaces",
+    true,
+    "GEOMETRY"
+   ]
+  ],
+  "input_contract": {
+   "input_kind": "solid",
+   "internal_from_surface": false,
+   "min_thickness_ratio": 0.0,
+   "rationale": "An ECXML thermal model is a 3D assembly of axis-aligned parts the file places itself; the snap grid resolves any thinness by putting grid planes on both faces of every layer, so no thin-feature floor applies.",
+   "require_no_self_intersection": false
+  },
+  "required_run_files": [
+   "source.ecxml"
+  ],
+  "tools": [
+   "list_directory",
+   "read_file",
+   "run_mesh",
+   "submit_mesh"
+  ]
+ },
  "snappy": {
   "axes": [
    "feature_refinement_transition",
