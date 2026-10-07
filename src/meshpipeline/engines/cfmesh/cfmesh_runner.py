@@ -588,14 +588,15 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
         # cap, the surface closes the fluid alone (cad/bore_staging.py); when that cannot be built
         # closed, the staging stands as it was.
         from meshpipeline.cad.bore_staging import bore_only_surfaces
+        _bore_surfaces: dict | None
         try:
-            _bore = bore_only_surfaces(_srcs, _wall_key, ws / "_internal_bore")
+            _bore_surfaces = bore_only_surfaces(_srcs, _wall_key, ws / "_internal_bore")
         except Exception:  # noqa: BLE001 - the whole-mouth staging is the fallback
             logger.warning("cfMesh internal: bore-only staging failed - keeping the whole-mouth "
                            "staging", exc_info=True)
-            _bore = None
-        if _bore:
-            _srcs = {**_srcs, **_bore}
+            _bore_surfaces = None
+        if _bore_surfaces:
+            _srcs = {**_srcs, **_bore_surfaces}
             t = {**t, "wall_bounds_fluid": True}
     prep = prepare_surface_internal(
         workspace, surfaces_src=_srcs,
