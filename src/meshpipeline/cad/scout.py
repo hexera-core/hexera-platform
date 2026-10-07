@@ -320,12 +320,19 @@ def _measure_wires(face) -> tuple[dict | None, dict | None]:
 
 
 # --------------------------------------------------------------------------- the scout ----
-def scout_cad(path, *, prepared, angular_deflection: float = 0.3, shape=None) -> ScoutResult:
+def scout_cad(path, *, prepared, angular_deflection: float = 0.3, shape=None,
+              declared_openings: bool = False) -> ScoutResult:
     """Everything the geometry can say about itself, in metres, as a proposal.
 
     `prepared` is the coordinate state the tessellation seam uses (contracts/coordinate_state),
     so this reads the same metres every downstream step reads. `shape` is the part as read_cad
-    read it, when the caller has it already."""
+    read it, when the caller has it already.
+
+    `declared_openings`: the file states its own openings and regions (a thermal model), so the
+    search for them - a classifier probe on both sides of every flat face, rays and rim checks on
+    the largest - is not made: on an assembly of hundreds of solids it costs minutes and its
+    answer is replaced by the file's. The flat faces are still measured (what the stage's "add an
+    opening" snaps to), their normals taken from the solids' own orientation."""
     from OCP.BRepAdaptor import BRepAdaptor_Surface
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
     from OCP.BRepGProp import BRepGProp
@@ -429,7 +436,8 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3, shape=None) ->
         # the normal must point OUT of the material; a face's own orientation says so for a
         # well-formed solid, and the classifier settles it for the rest
         probe = 0.002 * diag
-        if solids and inside_any(_add(centroid, normal, probe)) and not inside_any(_add(centroid, normal, -probe)):
+        if solids and not declared_openings and inside_any(_add(centroid, normal, probe)) \
+                and not inside_any(_add(centroid, normal, -probe)):
             normal = _flip(normal)
         outer, inner = _measure_wires(f)
         kind: str
@@ -460,7 +468,7 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3, shape=None) ->
     # faces, and they are the whole point.
     every_flat = list(candidates)                          # what the stage's "add an opening" may snap to
     probed: list[Opening] = []
-    for kind in ("ring", "disc"):
+    for kind in (() if declared_openings else ("ring", "disc")):
         same = sorted((o for o in candidates if o.kind == kind), key=lambda o: o.area, reverse=True)
         largest = same[0].area if same else 0.0
         for o in same[:MAX_PROBED]:
