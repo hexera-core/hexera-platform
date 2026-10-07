@@ -390,9 +390,9 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
             **({"narrow_note": _narrow_note} if _narrow_note else {})}
 
 
-def _bind_intake_shared(t: dict, declaration: list):
+def _bind_intake_shared(t: dict, declaration: list, *, bore: bool = True):
     from meshpipeline.engines.port_binding import bind_intake
-    return bind_intake(t, declaration)
+    return bind_intake(t, declaration, bore=bore)
 
 
 def _passage_sizing(t: dict, srcs: dict, wall_key: str, declaration: list):
@@ -508,8 +508,17 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
                 "next": "Relay this to the user verbatim - the declaration needs a size, "
                         "location or interchangeability answer only they can give. Do NOT "
                         "retry with invented values."}
+    # the fluid is the solid itself only for a confirmed fluid domain; anything else is a body
+    # whose fluid is the bore it closes (which measure of a ring port the flow crosses)
+    from meshpipeline.engines.workspace_facts import read_input_kind
+    _bore = read_input_kind(ws) != "fluid-domain"
     try:
-        t, _wall_key, _bound_note = _bind_intake_shared(t, _decl)
+        t, _wall_key, _bound_note = _bind_intake_shared(t, _decl, bore=_bore)
+        from meshpipeline.engines.region_check import record_port_openings, trusted_declaration
+        # sized from the measured opening where the typed size disagrees (as the gate judges it)
+        _sizing_decl = trusted_declaration(
+            _decl, record_port_openings(workspace, t.get("openings"), bore=_bore,
+                                        intake_patches=_decl))
     except BindError as exc:
         # a refusal, not a failure: the declaration and the measured geometry disagree, and
         # only the user can settle it
@@ -550,7 +559,7 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
     # (this path stages a CAD solid without the declaration, so the record cannot know it)
     if _fluid_declared:
         t = {**t, "wall_bounds_fluid": True}
-    passage_radius, _field = _passage_sizing(t, _srcs, _wall_key, port_declaration(workspace))
+    passage_radius, _field = _passage_sizing(t, _srcs, _wall_key, _sizing_decl)
 
     _patches = list(contract_patches or [])
     if not _patches:
@@ -563,10 +572,15 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
         patches=_patches, body_bbox=prep["body_bbox"], L=L,
         domain_min=bb_min, domain_max=bb_max, strategy=strategy, cell_budget=cell_budget,
         passage_radius=passage_radius, passage_field=_field)
+    _sizes = list((t.get("binding") or {}).get("size_notes") or [])
     return {"success": True, "wrote": ["system/meshDict"], "topology": "internal",
             "openings": t.get("openings"), "passage_radius": passage_radius, **summary,
-            "next": "meshDict written for the enclosed cavity (valid + budget-clamped). "
-                    "Call run_mesh NOW. Reconfigure ONLY on a concrete run_mesh failure."}
+            **({"port_sizes": _sizes} if _sizes else {}),
+            "next": ("meshDict written for the enclosed cavity (valid + budget-clamped). "
+                     + ("Tell the user, in these words, that a declared port size disagrees with "
+                        "the geometry and the measured opening is used: " + " ".join(_sizes) + " "
+                        if _sizes else "")
+                     + "Call run_mesh NOW. Reconfigure ONLY on a concrete run_mesh failure.")}
 
 
 def configure_mesh(workspace, *, geometry_file: str, strategy: dict, wall_patch: str,

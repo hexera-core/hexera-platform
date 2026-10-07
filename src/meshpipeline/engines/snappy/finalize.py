@@ -276,6 +276,20 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
         build_surface_msh(ws)
     except Exception:
         logger.exception("Executor: surface deliverable export failed (non-fatal)")
+    # each boundary's AREA, off the same VTK boundary: the shared port-area gate holds every
+    # inlet/outlet to the opening the user declared (engines/region_check.py)
+    try:
+        from meshpipeline.engines.region_check import patch_areas_from_vtk, recorded_port_openings
+        _areas = patch_areas_from_vtk(ws)
+        if _areas:
+            q["patch_areas_m2"] = {k: round(v, 10) for k, v in _areas.items()}
+        # ...and the openings the staging measured on the geometry: the sizes the gate holds
+        # them to (a typed size only where nothing was measured)
+        _openings = recorded_port_openings(ws)
+        if _openings:
+            q["port_openings_m2"] = _openings
+    except Exception:
+        logger.exception("Executor: patch areas not measured (non-fatal)")
     body_bbox = None
     try:
         _bi = R.inspect_stl(ws)

@@ -335,6 +335,12 @@ def _gmsh_boundary(ws: Path) -> CaseBoundary | None:
         raise CaseUnreadable("gmsh_spec.json has no groups list")
     patches = {str(g.get("name") or "").strip(): str(g.get("role") or "free").strip()
                for g in groups if isinstance(g, dict) and str(g.get("name") or "").strip()}
+    _ports = [p for p in declared if p.get("type") in ("inlet", "outlet")]
+    _wall = next((p["name"] for p in declared if p.get("type") == "wall"), None)
+    if _ports and _wall and str(_wall) not in patches:
+        # the engine holds each port group to its declared opening and walls the faces a port
+        # group swept in (driver._checked_port_groups): the declared wall is the engine's to build
+        patches[str(_wall)] = "wall"
     if read_flow_topology(ws) == "external"             and read_input_kind(ws) in ("solid-body", "body-surface")             and "farfield" not in patches.values():
         # the far-field box is cut around the body after the builder named its faces: the
         # engine adds the declared far field when the builder named none (driver._external_groups)
