@@ -71,15 +71,13 @@ def test_a_fluid_boundary_keeps_the_obstacle_the_ports_do_not_touch(tube_with_an
     assert np.percentile(r, 5) < 0.015
 
 
-def test_a_hollow_walls_reading_is_unchanged(tube_with_an_obstacle):
-    # the same staged files read as a hollow wall's metal: only the pieces at the port rims
+def test_a_hollow_walls_reading_keeps_every_wetted_piece(tube_with_an_obstacle):
+    # read as a hollow wall's metal, the obstacle is wetted too (the cavity is on its outside)
     metal = _field(tube_with_an_obstacle, True)
-    old = P.passage_field_of_stls([tube_with_an_obstacle / "wall.stl"],
-                                  cap_paths=[tube_with_an_obstacle / "caps.stl"],
-                                  port_centroids=[[0, 0, 0], [1, 0, 0]])
-    assert metal is not None and old is not None
-    assert np.array_equal(metal[0], old[0]) and np.allclose(metal[2], old[2])
-    assert np.percentile(metal[2], 5) > 0.04, "the default stays the hollow-wall reading"
+    assert metal is not None
+    pts, _faces, r = metal
+    on_rod = np.hypot(pts[:, 1], pts[:, 2]) < 0.035
+    assert on_rod.any()
 
 
 def test_the_staged_record_says_which_wall_it_is(monkeypatch, tube_with_an_obstacle):
