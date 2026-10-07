@@ -280,7 +280,12 @@ def build_final_result(*, job_id: str, owner_id: str, status: TerminalStatus, en
                        failure_cause: str = "",
                        failure_facts: Mapping | None = None,
                        review_reruns: int = 0,
-                       review_blocking: list | None = None) -> FinalResult:
+                       review_blocking: list | None = None,
+                       attempts_made: int | None = None) -> FinalResult:
+    # `attempts` is the run's retry counter - the budget the category is judged against.
+    # `attempts_made`, when the run knows it, is what the record SAYS was used: the attempts that
+    # started a mesher (pipeline/engine_fallback.attempts_made), the same number the job row shows.
+    _shown = attempts if attempts_made is None else max(0, int(attempts_made))
     _verdict = (reviewer_verdict or "").strip().upper()
 
     # REVIEW-COMPLETION INVARIANT.
@@ -349,7 +354,7 @@ def build_final_result(*, job_id: str, owner_id: str, status: TerminalStatus, en
             approved_snapshot_id=approved_snapshot_id, executor_success=True,
             reviewer_verdict=verdict, review_execution=execution,
             failed_gate="", patch_contract_ok=True, outcome_code="success", failure_category=None,
-            attempts=attempts, attempts_max=attempts_max, required_ready=required_ready,
+            attempts=_shown, attempts_max=attempts_max, required_ready=required_ready,
             delivered_types=list(delivered_types), optional_warnings=list(optional_warnings),
             missing_outputs=[], finalized_at=datetime.now(UTC).isoformat())
 
@@ -403,7 +408,7 @@ def build_final_result(*, job_id: str, owner_id: str, status: TerminalStatus, en
         approved_snapshot_id=approved_snapshot_id, executor_success=executor_success,
         reviewer_verdict=verdict, review_execution=execution,
         failed_gate=failed_gate, patch_contract_ok=patch_ok, outcome_code=cat.value,
-        failure_category=cat.value, attempts=attempts, attempts_max=attempts_max,
+        failure_category=cat.value, attempts=_shown, attempts_max=attempts_max,
         required_ready=False, delivered_types=[], optional_warnings=list(optional_warnings),
         # Derived from the ONE artifact policy, never named here: a literal list silently
         # disagreed with the policy the moment a second required class was added.
@@ -544,6 +549,13 @@ def _admission_account(failure_facts: Mapping | None,
     phases = {str(p) for p in (facts.get("phases") or [])}
     reason = clean_reason(facts.get("reason"))
     declared_reason = clean_reason(facts.get("declared_reason"))
+    if facts.get("refused_by_design") and declared_reason:
+        # REFUSED BY DESIGN: the engine cannot take this FORM of file for this flow - its declared
+        # limit, not a defect in the file and not a crash. Said as exactly that, with the fact that
+        # nothing was built; the run's one offer (engine_fallback.offer) carries the way on - the
+        # engines that can take the file, or the file every engine for this flow takes.
+        return (FailureCategory.incompatible_requirements, FailureCause.GEOMETRY_REJECTED.value,
+                f"{declared_reason}. Nothing was built, and no attempt was used.", "")
     if phases and "measured" not in phases:
         reason = declared_reason or reason
         label = engine

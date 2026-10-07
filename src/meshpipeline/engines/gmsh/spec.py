@@ -12,6 +12,7 @@ from meshpipeline.engines.base import (
     DeliveredMesh,
     DownstreamTarget,
     EngineSpec,
+    FlowSupport,
     InputContract,
     MeshCapability,
     ParamSpec,
@@ -174,6 +175,17 @@ SPEC = EngineSpec(
             # triangles (CPS3/CPS6 in the .inp) with boundary groups on curves.
             MeshCapability("planar-domain", "surface-mesh"),
         ),
+        # WHAT FILE IT TAKES, per flow. A CAD B-rep is staged as geometry.step and gmsh meshes the
+        # volume it bounds, for every flow. A surface upload has no B-rep: for EXTERNAL flow the
+        # driver classifies its triangles into faces and cuts the body out of a far-field box
+        # (engines/gmsh/surface_volume.py); for INTERNAL flow it is taken through the staged fluid
+        # boundary, declared once below as input_contract.internal_from_surface. Structural FEA
+        # stays CAD-only (a solid's faces carry its boundary conditions).
+        accepts=(FlowSupport("structural", ("cad",)),
+                 FlowSupport("external", ("cad", "surface")),
+                 FlowSupport("internal", ("cad",))),
+        # a tetrahedral mesher of a prepared volume: last on the flow ladders
+        ladder_rank=40,
         input_contract=InputContract(
             # internal flow from an STL/OBJ/PLY upload: cad/internal_surface closes it at the
             # confirmed openings (snappy/cfMesh/gmsh/vmtk internal paths read that record)

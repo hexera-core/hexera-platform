@@ -12,6 +12,7 @@ from meshpipeline.engines.base import (
     DeliveredMesh,
     DownstreamTarget,
     EngineSpec,
+    FlowSupport,
     InputContract,
     MeshCapability,
     RunPolicy,
@@ -159,6 +160,14 @@ SPEC = EngineSpec(
                       # not admitted from a fluid domain: the far field is a box around a body.
                       MeshCapability("fluid-domain", "fluid-volume",
                                      topologies=("internal",))),
+        # WHAT FILE IT TAKES, per flow. EXTERNAL wraps a surface, so a CAD solid (tessellated
+        # first) and a surface mesh both reach it. INTERNAL carves the fluid out of the CAD solid
+        # (geometry.step + tessellate_internal); a surface upload is taken for internal flow too,
+        # declared once below as input_contract.internal_from_surface (cad/internal_surface).
+        accepts=(FlowSupport("external", ("cad", "surface")),
+                 FlowSupport("internal", ("cad",))),
+        # the most forgiving input handling (it wraps dirty surfaces): first on the ladder
+        ladder_rank=10,
         input_contract=InputContract(
             # internal flow from an STL/OBJ/PLY upload: cad/internal_surface closes it at the
             # confirmed openings (snappy/cfMesh/gmsh/vmtk internal paths read that record)
