@@ -229,6 +229,11 @@ def domain_from_strategy(body_bbox, L: float, strategy: dict | None = None,
 
 def _render_object_refinements(features: list, *, cell_floor: float = 0.0) -> str:
     """objectRefinements blocks; no region cuts finer than `cell_floor` (the passage ceiling)."""
+    blocks = _object_refinement_blocks(features, cell_floor=cell_floor)
+    return "objectRefinements\n{\n" + "\n".join(blocks) + "\n}\n" if blocks else ""
+
+
+def _object_refinement_blocks(features: list, *, cell_floor: float = 0.0) -> list[str]:
     def _v(p) -> str:
         return f"({float(p[0]):.6g} {float(p[1]):.6g} {float(p[2]):.6g})"
     blocks = []
@@ -258,7 +263,7 @@ def _render_object_refinements(features: list, *, cell_floor: float = 0.0) -> st
         except (KeyError, TypeError, ValueError):
             continue
         blocks.append(f"    {name} {{ {body} }}")
-    return "objectRefinements\n{\n" + "\n".join(blocks) + "\n}\n" if blocks else ""
+    return blocks
 
 
 def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
@@ -266,7 +271,8 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
                        domain_min, domain_max, strategy: dict | None = None,
                        cell_budget: int | None = None,
                        default_boundary: bool = True,
-                       passage_radius: dict | None = None) -> dict:
+                       passage_radius: dict | None = None,
+                       passage_field: tuple | None = None) -> dict:
     ws = Path(workspace)
     strategy = strategy or {}
     ext = [float(domain_max[i] - domain_min[i]) for i in range(3)]
@@ -311,9 +317,31 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
         f"maxCellSize {max_cell:.6g};\n",
         f"localRefinement\n{{\n    {wall_patch} {{ cellSize {wall_cell:.6g};{_thick} }}\n}}\n",
     ]
-    _obj = _render_object_refinements(strategy.get("features") or [], cell_floor=_floor)
-    if _obj:
-        dict_parts.append(_obj)
+    # NARROW PASSAGES, LOCALLY. The band above is sized for the passage most of the wall bounds;
+    # where a passage is narrower than that cell carries at the floor, a box refines it to 13
+    # across its own narrowest point - and only there (engines/passage.narrow_passage_regions).
+    # Sized from the narrowest passage everywhere, the Fluent aorta's 20 mm trunk was cut at its
+    # 3 mm branches' cell and cartesianMesh had made no mesh after 47 minutes; sized from the
+    # typical one, a tee came in at 11.5 across where the floor is 12 (2026-10-04).
+    # passage_field: (points, radius, wall area per point) of the staged wall.
+    _narrow: list = []
+    _narrow_note = ""
+    if passage_field is not None and _caps:
+        from meshpipeline.engines.passage import narrow_passage_regions
+        _narrow = narrow_passage_regions(
+            passage_field[0], passage_field[1], cell_m=wall_cell,
+            areas=(passage_field[2] if len(passage_field) > 2 else None),
+            budget_cells=(0.5 * cell_budget if cell_budget else None))
+        _narrow_note = str(getattr(_narrow, "note", "") or "")
+    # the builder's own regions stop at the ceiling; a narrow passage's box is sized for it
+    _blocks = (_object_refinement_blocks(strategy.get("features") or [], cell_floor=_floor)
+               + _object_refinement_blocks(
+                   [{"name": f"narrowPassage{i}", "type": "box", "cellSize": b["cell_needed_m"],
+                     "centre": [0.5 * (b["min"][k] + b["max"][k]) for k in range(3)],
+                     "lengthX": b["max"][0] - b["min"][0], "lengthY": b["max"][1] - b["min"][1],
+                     "lengthZ": b["max"][2] - b["min"][2]} for i, b in enumerate(_narrow)]))
+    if _blocks:
+        dict_parts.append("objectRefinements\n{\n" + "\n".join(_blocks) + "\n}\n")
 
     n_layers = max(0, int(strategy.get("n_layers", 0)))
     if n_layers > 0:
@@ -356,12 +384,68 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
     return {"max_cell_size": round(max_cell, 6), "wall_cell_size": round(wall_cell, 6),
             "n_layers": n_layers, "features": len(strategy.get("features") or []),
             "est_background_cells": est_bg,
-            "passage_caps": {k: round(v, 6) for k, v in _caps.items()} or None}
+            "passage_caps": {k: round(v, 6) for k, v in _caps.items()} or None,
+            "narrow_regions": [{"cell_size": round(b["cell_needed_m"], 6),
+                                "radius": round(b["radius_m"], 6)} for b in _narrow] or None,
+            **({"narrow_note": _narrow_note} if _narrow_note else {})}
 
 
 def _bind_intake_shared(t: dict, declaration: list):
     from meshpipeline.engines.port_binding import bind_intake
     return bind_intake(t, declaration)
+
+
+def _passage_sizing(t: dict, srcs: dict, wall_key: str, declaration: list):
+    """(radius statistics for the size caps, (points, radius, wall area per point) for local
+    refinement, or None) of the staged cavity. The field is read on the staged wall and held
+    near each declared port to that port's half flow-width (engines/passage.staged_passage_field)
+    - the flow crosses the port, so the passage there is no wider (a reading off a hollow part's
+    outer skin, or along a rectangular duct's long side, sized cells for a passage the flow
+    never sees: 20 of 72 corpus walls read 8-173% wide, 2026-10-04) - and its band is never
+    wider than the widest declared port. The ports vouch for the reading; one they do not vouch
+    for is replaced by the port radii, with no local refinement (the gate still measures the
+    delivered mesh)."""
+    from meshpipeline.engines.passage import (
+        GLOBAL_BAND_MAX_CELLS,
+        band_shell_cells,
+        choose_passage_radius,
+        declared_port_half_width,
+        field_radius_stats,
+        lid_hydraulic_diameters,
+        point_areas,
+        port_radius_stats,
+        staged_passage_field,
+    )
+    raw = staged_passage_field(t, srcs, wall_key, declaration, corrected=False)
+    # the ports vouch for the RAW reading: held to the port widths first, a reading off a hollow
+    # part's outer skin (straight_reducer_015: 210-336 mm on an 82-165 mm bore) passed the check
+    # at the ports and sized the whole wall from the skin (5.3 cells across, lab 2026-10-04).
+    # Each port is read by its lid's hydraulic diameter: an annulus is its gap, not its bore.
+    chord = field_radius_stats(*raw) if raw is not None else {}
+    # each port at its narrowest flow width: the lid's hydraulic diameter, and the declared
+    # short side of a rectangle or gap of an annulus where stated (a 140 x 384 mm duct's
+    # hydraulic diameter is 205 mm; the floor counts cells across its 140 mm side)
+    widths = dict(lid_hydraulic_diameters(srcs, wall_key))
+    for p in declaration or []:
+        hw = declared_port_half_width([p]) if isinstance(p, dict) else None
+        if hw and p.get("name"):
+            name = str(p["name"])
+            widths[name] = min(float(widths.get(name) or float("inf")), 2.0 * hw)
+    chosen = choose_passage_radius(chord, port_radius_stats(t.get("openings"), widths))
+    if not chosen or not str(chosen.get("source", "")).startswith("chord") or raw is None:
+        return chosen, None
+    field = staged_passage_field(t, srcs, wall_key, declaration, field=raw)
+    chosen = {**field_radius_stats(*field), "source": chosen["source"]}
+    # the band at the NARROWEST passage while that is affordable (a one-width part meshes as it
+    # always did); the typical passage, with the narrow ones refined locally, when it is not
+    if band_shell_cells(field[0], field[1], field[2], float(chosen["p05"])) <= GLOBAL_BAND_MAX_CELLS:
+        chosen = {**chosen, "band": chosen["p05"], "band_from": "narrowest"}
+    else:
+        chosen = {**chosen, "band_from": "typical"}
+    widest = max((declared_port_half_width([p]) or 0.0 for p in declaration or []), default=0.0)
+    if widest and chosen.get("band") and float(chosen["band"]) > widest:
+        chosen = {**chosen, "band": widest, "band_capped_at_declared_port": True}
+    return chosen, (field[0], field[2], point_areas(field[0], field[1]))
 
 
 def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
@@ -438,21 +522,7 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
         feature_angle=float(args.get("feature_angle", 30.0)))
     # the local passage radius of the staged boundary (wall + port caps close it) sizes the
     # wall band and the background; {} when the surfaces do not close, and the strategy stands
-    from meshpipeline.engines.passage import (
-        choose_passage_radius,
-        passage_of_stls,
-        port_radius_stats,
-    )
-    _wall_src = _srcs.get(_wall_key) or []
-    _wall_paths = _wall_src if isinstance(_wall_src, list) else [_wall_src]
-    _cap_paths = [p for k, v in _srcs.items() if k != _wall_key
-                  for p in (v if isinstance(v, list) else [v])]
-    _centroids = [o.get("centroid") for o in (t.get("openings") or {}).values()
-                  if isinstance(o, dict) and o.get("centroid")]
-    _chord = passage_of_stls(_wall_paths, cap_paths=_cap_paths, port_centroids=_centroids)
-    # the ports vouch for the chord reading; a reading off the outer skin or the wall thickness
-    # is replaced by the port radii (the gate still measures the delivered mesh)
-    passage_radius = choose_passage_radius(_chord, port_radius_stats(t.get("openings")))
+    passage_radius, _field = _passage_sizing(t, _srcs, _wall_key, port_declaration(workspace))
 
     _patches = list(contract_patches or [])
     if not _patches:
@@ -464,7 +534,7 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
         workspace, surface_file=prep["surface_file"], wall_patch=wall_patch,
         patches=_patches, body_bbox=prep["body_bbox"], L=L,
         domain_min=bb_min, domain_max=bb_max, strategy=strategy, cell_budget=cell_budget,
-        passage_radius=passage_radius)
+        passage_radius=passage_radius, passage_field=_field)
     return {"success": True, "wrote": ["system/meshDict"], "topology": "internal",
             "openings": t.get("openings"), "passage_radius": passage_radius, **summary,
             "next": "meshDict written for the enclosed cavity (valid + budget-clamped). "

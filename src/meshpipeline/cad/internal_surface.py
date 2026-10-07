@@ -20,10 +20,6 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-#: Source files OpenCASCADE reads as solids: these take the B-rep path (tessellate_internal).
-#: Everything else arrives as the staged metre surface (input.stl) and takes this module's path.
-CAD_SUFFIXES = frozenset({".step", ".stp", ".iges", ".igs"})
-
 #: A declared opening's location picks a hole when it lies within this share of the hole's size
 #: from the hole's centre - the stage put the sticker at the centre, so the real distance is ~0.
 HOLE_REACH = 0.5
@@ -113,33 +109,26 @@ class StagedInternal:
 
 # ------------------------------------------------------------------------------ entry points ----
 def is_cad(path) -> bool:
-    return Path(path).suffix.lower() in CAD_SUFFIXES
+    """Whether a source file is a CAD solid (it takes the B-rep path, tessellate_internal); every
+    other file arrives as the staged metre surface (input.stl) and takes this module's path. The
+    answer is the intake's one CAD-or-surface table (contracts/intake_formats), never a list here."""
+    from meshpipeline.contracts.intake_formats import is_cad as _is_cad
+    return _is_cad(path)
 
 
-#: Where an engine's staging failure is kept, with its true reason, for the engine's own
-#: inspection to report (a staged file missing says nothing about why).
-STAGING_FAILURE = "staging_failure.json"
-
-
-def note_staging_failure(workspace, engine: str, exc: BaseException) -> None:
-    try:
-        (Path(workspace) / STAGING_FAILURE).write_text(json.dumps(
-            {"engine": str(engine), "kind": type(exc).__name__, "reason": str(exc)[:2000]}))
-    except OSError:
-        logger.warning("could not record the staging failure in %s", workspace)
-
-
-def clear_staging_failure(workspace) -> None:
-    (Path(workspace) / STAGING_FAILURE).unlink(missing_ok=True)
+#: An engine's staging failure is recorded ONCE, as the attempt's pre-flight refusal under this gate
+#: (agents/builder/attempt._record_staging_failure, which the executor reports). The engines' own
+#: inspection reads its true reason back here: a staged file missing says nothing about why.
+STAGING_GATE = "staging"
 
 
 def staging_failure(workspace) -> str:
     """The recorded staging failure in plain words, or "" when staging did not fail."""
-    try:
-        rec = json.loads((Path(workspace) / STAGING_FAILURE).read_text())
-    except (OSError, ValueError):
+    from meshpipeline.engines.preflight import read_refusal
+    refusal = read_refusal(workspace)
+    if refusal is None or refusal.gate != STAGING_GATE:
         return ""
-    return str(rec.get("reason") or rec.get("kind") or "")
+    return str((refusal.facts or {}).get("reason") or refusal.builder_text or "")
 
 
 def stage_internal(source_path, workspace, *, prepared, intake_patches: list | None,
@@ -1290,6 +1279,6 @@ def _seed(V, F, L, ports: dict[str, _Opening]) -> tuple[np.ndarray, dict]:
                   "clearance_m": round(float(best[2]), 7), "from": owners[best[0]][0]}
 
 
-__all__ = ["CAD_SUFFIXES", "STAGING_FAILURE", "InternalSurfaceError", "StagedInternal",
-           "clear_staging_failure", "is_cad", "note_staging_failure", "stage_internal",
-           "stage_internal_surface", "stage_triangles", "staging_failure", "write_staged"]
+__all__ = ["STAGING_GATE", "InternalSurfaceError", "StagedInternal", "is_cad",
+           "stage_internal", "stage_internal_surface", "stage_triangles", "staging_failure",
+           "write_staged"]

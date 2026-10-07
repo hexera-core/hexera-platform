@@ -35,6 +35,9 @@ class AdmissionEvidence:
     regions: tuple[RegionSummary, ...] = ()
     engine_params: Mapping[str, Any] = field(default_factory=dict)
     surface_analysis: dict | None = None
+    #: The canonical form of the uploaded file ("cad" | "surface", engines/capability.py), or
+    #: None when the caller does not know it - and then nothing is refused on it.
+    geometry_form: str | None = None
 
 
 @dataclass(frozen=True)

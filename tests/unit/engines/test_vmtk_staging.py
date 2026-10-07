@@ -276,6 +276,155 @@ def test_the_ladder_shares_one_time_budget(tmp_path, monkeypatch):
     assert "of the 1000 s budget left" in res["repair_note"]
 
 
+def _polydata(pts, tri):
+    return pv.PolyData(np.asarray(pts, dtype=float),
+                       np.hstack([np.full((len(tri), 1), 3, dtype=np.int64), tri]).ravel())
+
+
+def _folded(pts, tri):
+    # the tube plus a fin on one of its edges (that edge now has three triangles) and a triangle
+    # whose corners lie on one line (no area): what a remesh that folded the wall looks like
+    a, b = tri[0][0], tri[0][1]
+    n = len(pts)
+    pts = np.vstack([pts, pts[a] + np.array([0.0, 0.0, 0.3]), pts[a], 0.5 * (pts[a] + pts[b])])
+    return pts, np.vstack([tri, [[a, b, n], [a, n + 2, b]]])
+
+
+def _staged_tube(ws):
+    pts, tri = _tube()
+    wall = _polydata(pts, tri)
+    wall.point_data["LocalRadius"] = 1.0 + pts[:, 0]           # any per-point value
+    wall.save(str(ws / "lumen_open.vtp"))
+    return pts, tri
+
+
+def test_wall_defects_finds_non_manifold_edges_and_zero_area_triangles(tmp_path):
+    from meshpipeline.engines.vmtk import vmtk_runner as R
+    pts, tri = _tube()
+    _polydata(pts, tri).save(str(tmp_path / "clean.vtp"))
+    assert R._wall_defects(tmp_path / "clean.vtp") == {}
+    _polydata(*_folded(pts, tri)).save(str(tmp_path / "folded.vtp"))
+    found = R._wall_defects(tmp_path / "folded.vtp")
+    assert found["non-manifold edges"] >= 1 and found["zero-area triangles"] == 1
+    (tmp_path / "junk.vtp").write_text("not a surface")
+    assert R._wall_defects(tmp_path / "junk.vtp") == {}       # the generator will say so itself
+
+
+def test_a_shuffled_wall_is_the_same_wall_with_its_radius_field(tmp_path):
+    from meshpipeline.engines.vmtk import vmtk_runner as R
+    _staged_tube(tmp_path)
+    wall = pv.read(str(tmp_path / "lumen_open.vtp"))
+    s = R._shuffled(wall, 1)
+    assert not np.array_equal(np.asarray(s.points), np.asarray(wall.points))
+    assert np.array_equal(np.unique(np.asarray(s.points), axis=0),
+                          np.unique(np.asarray(wall.points), axis=0))
+    assert np.allclose(np.asarray(s.point_data["LocalRadius"]), 1.0 + np.asarray(s.points)[:, 0])
+    # the same triangles, each wound the same way: the same set of (centroid, normal)
+    def faces(m):
+        p = np.asarray(m.points)
+        t = np.asarray(m.faces).reshape(-1, 4)[:, 1:]
+        n = np.cross(p[t[:, 1]] - p[t[:, 0]], p[t[:, 2]] - p[t[:, 0]])
+        return sorted(map(tuple, np.round(np.hstack([p[t].mean(axis=1), n]), 9)))
+    assert faces(s) == faces(wall)
+    assert np.array_equal(np.asarray(R._shuffled(wall, 1).points), np.asarray(s.points))  # fixed
+
+
+def _surface_faker(tmp_path, pts, tri, folds):
+    """A run_guarded stand-in: surface stage number k (from 0) writes a folded wall when
+    folds(k, argv) says so, a clean one otherwise; the generator always fills."""
+    import subprocess as sp
+    calls: list[list[str]] = []
+    seen: list[np.ndarray] = []
+
+    def fake_run(argv, **kw):
+        calls.append(list(argv))
+        if argv[1] == "vmtksurfaceremeshing":
+            seen.append(np.asarray(pv.read(str(tmp_path / "lumen_open.vtp")).points).copy())
+            k = sum(c[1] == "vmtksurfaceremeshing" for c in calls) - 1
+            out = _polydata(*_folded(pts, tri)) if folds(k, argv) else _polydata(pts, tri)
+            out.save(str(tmp_path / "lumen.vtp"))
+            return sp.CompletedProcess(argv, 0, stdout="Done executing vmtksurfaceprojection.",
+                                       stderr="")
+        if argv[1] == "vmtkmeshgenerator":
+            (tmp_path / "mesh.vtu").write_text("filled")
+            return sp.CompletedProcess(argv, 0, stdout="Done executing vmtkmeshgenerator.",
+                                       stderr="")
+        return sp.CompletedProcess(argv, 0, stdout="", stderr="")    # the OpenFOAM export
+    return fake_run, calls, seen
+
+
+def test_a_clean_remesh_runs_once_as_before(tmp_path, monkeypatch):
+    from meshpipeline.engines.vmtk import vmtk_runner as R
+    pts, tri = _staged_tube(tmp_path)
+    fake_run, calls, _ = _surface_faker(tmp_path, pts, tri, lambda k, argv: False)
+    monkeypatch.setattr(R, "run_guarded", fake_run)
+    (tmp_path / "vmtk_spec.json").write_text(json.dumps(R.resolve_strategy(
+        {"sizing_array": "LocalRadius", "boundary_layers": 3})))
+    res = R._run_vmtk_local(tmp_path, timeout=100)
+    assert [c[1] for c in calls][:2] == ["vmtksurfaceremeshing", "vmtkmeshgenerator"]
+    assert "-collapseangle" not in " ".join(calls[0])
+    assert "repair_note" not in res
+
+
+def test_a_folded_remesh_is_run_again_with_gentler_collapses(tmp_path, monkeypatch):
+    from meshpipeline.engines.vmtk import vmtk_runner as R
+    pts, tri = _staged_tube(tmp_path)
+    # vmtk's default collapse folds this wall; the gentler one does not
+    fake_run, calls, seen = _surface_faker(tmp_path, pts, tri,
+                                           lambda k, argv: "-collapseangle" not in argv)
+    monkeypatch.setattr(R, "run_guarded", fake_run)
+    (tmp_path / "vmtk_spec.json").write_text(json.dumps(R.resolve_strategy(
+        {"sizing_array": "LocalRadius", "boundary_layers": 3})))
+    res = R._run_vmtk_local(tmp_path, timeout=100)
+    assert [c[1] for c in calls][:3] == ["vmtksurfaceremeshing", "vmtksurfaceremeshing",
+                                         "vmtkmeshgenerator"]
+    assert "-collapseangle 0.1 --pipe" in " ".join(calls[1])
+    assert np.array_equal(seen[0], seen[1])                 # the same wall, in the same order
+    assert "came back folded (1 non-manifold edges, 1 zero-area triangles)" in res["repair_note"]
+    assert "surface remesh 2: the wall came back clean" in res["repair_note"]
+    assert res["rc"] == 0 and (tmp_path / "mesh.vtu").read_text() == "filled"
+
+
+def test_a_wall_that_still_folds_is_remeshed_in_other_orders_then_goes_on(tmp_path, monkeypatch):
+    from meshpipeline.engines.vmtk import vmtk_runner as R
+    pts, tri = _staged_tube(tmp_path)
+    fake_run, calls, seen = _surface_faker(tmp_path, pts, tri, lambda k, argv: True)
+    monkeypatch.setattr(R, "run_guarded", fake_run)
+    (tmp_path / "vmtk_spec.json").write_text(json.dumps(R.resolve_strategy(
+        {"sizing_array": "LocalRadius", "boundary_layers": 3})))
+    res = R._run_vmtk_local(tmp_path, timeout=100)
+    n = 1 + len(R._SURFACE_RETRIES)
+    assert [c[1] for c in calls][:n + 1] == ["vmtksurfaceremeshing"] * n + ["vmtkmeshgenerator"]
+    # the shuffled retries remesh the same wall stored in other orders, its radius field intact
+    assert not np.array_equal(seen[0], seen[2]) and not np.array_equal(seen[2], seen[3])
+    assert np.array_equal(np.unique(seen[0], axis=0), np.unique(seen[3], axis=0))
+    shuffled = pv.read(str(tmp_path / "lumen_open.vtp"))
+    assert np.allclose(np.asarray(shuffled.point_data["LocalRadius"]),
+                       1.0 + np.asarray(shuffled.points)[:, 0])
+    assert "stored in another order" in res["repair_note"]
+    assert "still folded" in res["repair_note"] and "going on with it" in res["repair_note"]
+    assert "still folded" in (tmp_path / "log.vmtk").read_text()
+
+
+def test_the_surface_retries_respect_the_budget(tmp_path, monkeypatch):
+    from meshpipeline.engines.vmtk import vmtk_runner as R
+    pts, tri = _staged_tube(tmp_path)
+    clock = {"t": 0.0}
+    fake_run, calls, _ = _surface_faker(tmp_path, pts, tri, lambda k, argv: True)
+
+    def slow(argv, **kw):
+        clock["t"] += 700.0
+        return fake_run(argv, **kw)
+    monkeypatch.setattr(R, "run_guarded", slow)
+    monkeypatch.setattr(R, "_now", lambda: clock["t"])
+    (tmp_path / "vmtk_spec.json").write_text(json.dumps(R.resolve_strategy(
+        {"sizing_array": "LocalRadius", "boundary_layers": 3})))
+    res = R._run_vmtk_local(tmp_path, timeout=1000)
+    # the first remesh (700 s) and one retry (700 s) use the budget up: no third remesh
+    assert [c[1] for c in calls].count("vmtksurfaceremeshing") == 2
+    assert "of the budget is left to remesh it again" in res["repair_note"]
+
+
 def test_an_unchanged_retry_keeps_its_pass_identity(tmp_path, monkeypatch):
     from meshpipeline.contracts import mesh_execution as ME
     from meshpipeline.engines.vmtk import vmtk_runner as R

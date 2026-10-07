@@ -169,21 +169,16 @@ class ScoutResult:
 def write_view_stl(path, dest, *, prepared, angular_deflection: float = 0.3) -> Path:
     """The part's skin as a binary STL in metres, for the pictures the user and the vision model
     look at. Coarser than a meshing surface on purpose: it only has to look right."""
-    from OCP.Bnd import Bnd_Box
-    from OCP.BRepBndLib import BRepBndLib
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
-    from OCP.BRepMesh import BRepMesh_IncrementalMesh
     from OCP.StlAPI import StlAPI_Writer
 
     from meshpipeline.cad.normalise import occ_scale_transform
+    from meshpipeline.cad.occ_box import mesh_to_size
 
     shape = _read_shape(Path(path))
     shape = BRepBuilderAPI_Transform(shape, occ_scale_transform(prepared), True).Shape()
-    box = Bnd_Box()
-    BRepBndLib.Add_s(shape, box)
-    x0, y0, z0, x1, y1, z1 = box.Get()
-    diag = _norm((x1 - x0, y1 - y0, z1 - z0)) or 1.0
-    BRepMesh_IncrementalMesh(shape, diag / 1500.0, False, angular_deflection, True)
+    # meshed at its REAL size: the loose OpenCascade envelope can be several times the part
+    mesh_to_size(shape, 1.0 / 1500.0, angular_deflection)
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
     writer = StlAPI_Writer()
@@ -319,14 +314,11 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3,
     the largest - is not made: on an assembly of hundreds of solids it costs minutes and its
     answer is replaced by the file's. The flat faces are still measured (what the stage's "add an
     opening" snaps to), their normals taken from the solids' own orientation."""
-    from OCP.Bnd import Bnd_Box
     from OCP.BRepAdaptor import BRepAdaptor_Surface
-    from OCP.BRepBndLib import BRepBndLib
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
     from OCP.BRepClass3d import BRepClass3d_SolidClassifier
     from OCP.BRepGProp import BRepGProp
     from OCP.BRepIntCurveSurface import BRepIntCurveSurface_Inter
-    from OCP.BRepMesh import BRepMesh_IncrementalMesh
     from OCP.BRepTools import BRepTools
     from OCP.GeomAbs import GeomAbs_Plane
     from OCP.gp import gp_Dir, gp_Lin, gp_Pnt
@@ -336,19 +328,25 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3,
     from OCP.TopoDS import TopoDS
 
     from meshpipeline.cad.normalise import occ_scale_transform
+    from meshpipeline.cad.occ_box import diagonal, loose_box, mesh_to_size
 
     path = Path(path)
     shape = _read_shape(path)
     shape = BRepBuilderAPI_Transform(shape, occ_scale_transform(prepared), True).Shape()
 
-    box = Bnd_Box()
-    BRepBndLib.Add_s(shape, box)
-    x0, y0, z0, x1, y1, z1 = box.Get()
+    envelope = diagonal(loose_box(shape))
+    if not math.isfinite(envelope) or envelope <= 0:
+        raise UnreadableCad("the part has no size (empty or degenerate geometry)")
+    # THE PART'S SIZE is the box of its own surface, measured on the mesh - never OpenCascade's
+    # loose envelope, which encloses every B-spline control point and tolerance: a 132 mm Supra
+    # read 570 x 492 x 401 mm that way, and the user chose his reference length and far field
+    # from it. Everything below - the size on the form, the unit check, the extremity and seed
+    # tests - reads this box.
+    (x0, y0, z0, x1, y1, z1), _lin = mesh_to_size(shape, 1.0 / 2500.0, angular_deflection)
     bbox_min, bbox_max = (x0, y0, z0), (x1, y1, z1)
     diag = _norm(_sub(bbox_max, bbox_min))
     if not math.isfinite(diag) or diag <= 0:
         raise UnreadableCad("the part has no size (empty or degenerate geometry)")
-    BRepMesh_IncrementalMesh(shape, diag / 2500.0, False, angular_deflection, True)
 
     solids: list = []
     se = TopExp_Explorer(shape, TopAbs_SOLID)
@@ -367,11 +365,8 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3,
     # each solid's box (with its tolerance): a point outside it cannot be in that solid, so an
     # assembly of hundreds of solids asks only the one or two whose box holds the point - not
     # every solid for every face, which made the check grow with the square of the part count
-    solid_boxes = []
-    for s in solids:
-        sb = Bnd_Box()
-        BRepBndLib.Add_s(s, sb)
-        solid_boxes.append(sb.Get())
+    from meshpipeline.cad.occ_box import loose_box
+    solid_boxes = [loose_box(s) for s in solids]     # an envelope: never smaller than the solid
     vg = GProp_GProps()
     BRepGProp.VolumeProperties_s(shape, vg)
     volume = abs(float(vg.Mass()))

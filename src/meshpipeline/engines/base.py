@@ -169,6 +169,26 @@ class MeshCapability:
     # () = the distinction does not apply: a solid-volume mesh, or a multi-region case
     # whose fluid topology is its own declared param.
     topologies: tuple[str, ...] = ()
+    # the dimensionalities THIS capability serves; () = whatever the engine's InputContract takes.
+    # gmsh builds the fluid around a 3D body, but its 2D path is a planar FE mesh, not a far field.
+    dimensionalities: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class FlowSupport:
+    """ONE FLOW this bundle is designed for, and the canonical geometry forms its staging can
+    consume for it (engines/capability.py: GEOMETRY_FORMS, FLOW_KINDS).
+
+    Declared, never inferred: the proposal, the fallback ladder and the offers all read it, so an
+    engine is offered only for a file and flow it can actually take, and a new engine is offered
+    exactly where its own spec says it fits. Claim the TRUE path on main - the forms the staging
+    reaches the mesher with today - and widen it when that path is proven, never before."""
+
+    flow: str                     # one of capability.FLOW_KINDS
+    forms: tuple[str, ...]        # the subset of capability.GEOMETRY_FORMS it consumes for `flow`
+    #: The shapes this flow's method is BUILT for, in plain words ("tubular passages: vessels,
+    #: pipes, ducts"). A heads-up the proposal and the offers say out loud; never a gate.
+    designed_for: str = ""
 
 
 @dataclass(frozen=True)
@@ -192,6 +212,39 @@ class RunPolicy:
     submit_marker: str                # physical deliverable gating submit_mesh
     submit_ok_key: str                # key set true in the submit payload
     submit_hint: str                  # coaching when submit is premature
+
+
+def _label(name: str) -> str:
+    from meshpipeline.contracts.display_names import display_name
+    return display_name("mesh_engine", name)
+
+
+def _mm(v: object) -> str:
+    try:
+        x = float(v) * 1000.0      # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return "?"
+    return f"{x:.3g}" if abs(x) < 100 else f"{x:.0f}"
+
+
+def _crossing_words(report: object) -> str:
+    """Where a self-intersection is and how big, in millimetres, from the measured report
+    (cad/surface_checks.self_intersection_report) - '' when there is none."""
+    if not isinstance(report, dict):
+        return ""
+    try:
+        n = int(report.get("pairs") or 0)
+        at = [_mm(v) for v in (report.get("first_at_m") or [])][:3]
+        region = [_mm(v) for v in (report.get("region_m") or [])][:3]
+    except (TypeError, ValueError):
+        return ""
+    if n <= 0 or len(at) != 3:
+        return ""
+    places = f"{n}{' or more' if report.get('more') else ''} place{'s' if n != 1 else ''}"
+    where = f" in {places} - first near x={at[0]}, y={at[1]}, z={at[2]} mm"
+    if len(region) == 3:
+        where += f", within about {region[0]} x {region[1]} x {region[2]} mm"
+    return where
 
 
 def _region_source(evidence) -> str:
@@ -364,6 +417,34 @@ class EngineSpec:
     # requires_mesh_kind is matched against these outputs for the compatibility gate
     # (engines.purposes.is_compatible) - declared capability, NOT a domain claim.
     capabilities: tuple = ()
+    #: WHAT FILE THIS BUNDLE CAN TAKE, PER FLOW (FlowSupport tuple): the flows it is designed for
+    #: and, for each, the canonical geometry forms ("cad", "surface") its staging consumes. The
+    #: one declaration every offer of an engine is derived from (engines/capability.py). Every
+    #: implemented engine declares it, and its flows agree with `capabilities` (test-enforced).
+    accepts: tuple[FlowSupport, ...] = ()
+    #: WHERE THIS ENGINE STANDS ON THE FALLBACK LADDER, lowest first: the most robust input
+    #: handling first, then the body-fitted hex meshers, then the tetrahedral engines. A new
+    #: engine that declares nothing goes last. The ladder and the start-of-run choice read it
+    #: (capability.ladder_order); nothing lists engines by hand.
+    ladder_rank: int = 100
+
+    def forms_for(self, flow: str) -> tuple[str, ...] | None:
+        """The geometry forms this bundle consumes for `flow`, or None when it is not designed
+        for that flow at all.
+
+        INTERNAL FLOW FROM A SURFACE is declared in ONE place, the input contract's
+        `InputContract.internal_from_surface` (the shared internal-surface staging,
+        cad/internal_surface): an engine that declares it takes a surface for internal flow. Its
+        `accepts` internal row names the CAD form only, so the fact is never stated twice."""
+        for fs in self.accepts:
+            if fs.flow == flow:
+                forms = tuple(fs.forms)
+                if (flow == "internal" and "surface" not in forms
+                        and self.input_contract is not None
+                        and self.input_contract.internal_from_surface):
+                    forms = (*forms, "surface")
+                return forms
+        return None
     # THE THREE AUDIT SEAMS (stage C): builder briefing fragments, the user
     # deliverable recipe, and the run/submit tool policy. Implemented rows
     # must declare all three (enforced); planned rows leave them None.
@@ -556,9 +637,11 @@ class EngineSpec:
         purpose = evidence.purpose or ""
         ik = evidence.input_kind
 
-        # (engine × purpose × input) CAPABILITY - the core "can it produce this at all".
+        # (engine × purpose × input) CAPABILITY - the core "can it produce this at all". The file's
+        # form is passed so a surface for internal flow is read as the one input it is, whichever
+        # kind the user confirmed (purposes.kinds_admitted_as).
         if purpose in PURPOSES:
-            if not is_compatible(self, purpose, ik):
+            if not is_compatible(self, purpose, ik, form=str(evidence.geometry_form or "")):
                 if not is_compatible(self, purpose):
                     out.append(Rejection(
                         code="purpose_incompatible", phase="declared", field="purpose",
@@ -569,7 +652,11 @@ class EngineSpec:
                 elif ik:
                     req = PURPOSES[purpose].requires_mesh_kind
                     req = (req,) if isinstance(req, str) else tuple(req)
-                    ok = sorted({c.input_kind for c in self.capabilities if c.output_kind in req})
+                    topo = PURPOSES[purpose].flow_topology
+                    # only what this engine takes for THIS flow: gmsh takes a body for external
+                    # flow, and "submit a body-surface" to a body-surface internal case was a lie
+                    ok = sorted({c.input_kind for c in self.capabilities if c.output_kind in req
+                                 and (not topo or topo in c.topologies)})
                     out.append(Rejection(
                         code="input_kind_incompatible", phase="declared", field="input_kind",
                         actual=ik, expected=ok,
@@ -578,6 +665,21 @@ class EngineSpec:
                                 f"{' or '.join(ok)} geometry (no fluid-domain generation/prep "
                                 "step exists to derive it here).",
                         fix_hint=f"submit a {' or '.join(ok)} geometry"))
+
+        # THE FILE'S FORM this bundle can take for this flow (declared in `accepts`). A surface
+        # for internal flow on an engine whose internal carve needs a CAD solid is refused HERE,
+        # before anything is built - not by the driver minutes in, where it read as a crash and
+        # was retried unchanged (aorta STL, 2026-10-03). Unknown form or flow: nothing is claimed.
+        from meshpipeline.engines.capability import flow_of, form_words, refusal
+        _flow, _form = flow_of(purpose), str(evidence.geometry_form or "")
+        _forms = self.forms_for(_flow) if _flow else None
+        if _form and _forms is not None and _form not in _forms:
+            out.append(Rejection(
+                code="geometry_form_unsupported", phase="declared", field="geometry",
+                actual=_form, expected=list(_forms),
+                message=refusal(self, _flow, _form),
+                fix_hint=(f"supply {' or '.join(form_words(f) for f in _forms)}, or use an "
+                          f"engine that takes {form_words(_form, short=True)} for this flow")))
 
         # PATCH NAMES the mesher can write. The intake makes every name mesh-safe where it enters;
         # this is the same rule at the last gate before a mesh runs, so a name that slipped past
@@ -646,6 +748,21 @@ class EngineSpec:
                 message=f"{self.name} cannot mesh {evidence.dimensionality} geometry - it "
                         f"supports {', '.join(ic.dimensionalities)}.",
                 fix_hint="use an engine that supports this dimensionality"))
+
+        # ...and the capability that serves THIS purpose from THIS geometry must serve it too
+        if (evidence.dimensionality and purpose in PURPOSES and ik
+                and not any(r.code == "dimensionality_unsupported" for r in out)):
+            from meshpipeline.engines.purposes import serving_capabilities
+            caps = serving_capabilities(self, purpose, ik)
+            if caps and all(c.dimensionalities and evidence.dimensionality not in c.dimensionalities
+                            for c in caps):
+                dims = sorted({d for c in caps for d in c.dimensionalities})
+                out.append(Rejection(
+                    code="dimensionality_unsupported", phase="declared", field="dimensionality",
+                    actual=evidence.dimensionality, expected=dims,
+                    message=f"{self.name} cannot produce a {purpose} mesh from {evidence.dimensionality} "
+                            f"'{ik}' geometry - it does that in {', '.join(dims)} only.",
+                    fix_hint="use an engine that supports this dimensionality"))
 
         # SYMMETRY-plane production - a declared symmetry patch needs half-domain meshing.
         if any(p.type == "symmetry" for p in evidence.patches) and not self.supports_symmetry_plane:
@@ -756,11 +873,13 @@ class EngineSpec:
         # cannot mesh it, so it is rejected here rather than after wasted build attempts.
         # The flag is set upstream (builder geometry_report) only for engines that require it.
         if ic.require_no_self_intersection and analysis.get("self_intersecting"):
-            return ("[GEOMETRY_UNSUITABLE] the input surface self-intersects - its triangles "
-                    "pass through each other, so it does not bound a solid volume and no "
-                    f"tetrahedral fill is possible. This is a defect in the GEOMETRY, not the "
-                    f"mesh strategy: no {self.name} parameter (edge length, layers, capping) "
-                    "can fix it. The surface must be repaired or replaced upstream.")
+            return ("[GEOMETRY_UNSUITABLE] the input surface self-intersects"
+                    + _crossing_words(analysis.get("self_intersection"))
+                    + f": there its triangles pass through each other, so it encloses no single "
+                    f"volume and {_label(self.name)} cannot fill it. No mesh parameter changes "
+                    "that. Fix the surface where it crosses - in a mesh tool, delete the crossing "
+                    "triangles and close the gap (MeshLab's self-intersecting-face selection, "
+                    "then Close Holes) - or export it again from the source model.")
         if ic.min_thickness_ratio <= 0:
             return ""
         diag = float(analysis.get("diag") or 0.0)

@@ -54,8 +54,11 @@ def test_multiple_wall_patches_is_impossible_and_preserves_all_five():
 
 def test_capability_dimensionality_symmetry_malformed_categories():
     assert preview_admission("snappy", "structural", "body-surface")["verdict"] == ADMIT_IMPOSSIBLE
+    # an engine not designed for the flow (gmsh meshes an external body itself now: a far-field
+    # box minus the body, engines/gmsh/surface_volume.py)
+    assert preview_admission("vmtk", "external_cfd", "body-surface")["verdict"] == ADMIT_IMPOSSIBLE
     assert preview_admission("gmsh", "external_cfd", "solid-body",
-                             engine_params={"element_order": "2"})["verdict"] == ADMIT_IMPOSSIBLE
+                             engine_params={"element_order": "2"})["verdict"] == ADMIT_SUPPORTED
     assert preview_admission("snappy", "external_cfd", "body-surface",
                              dimensionality="2D")["verdict"] == ADMIT_IMPOSSIBLE   # snappy has no 2D
     assert preview_admission("nope", "structural", "body-surface")["verdict"] == ADMIT_MALFORMED
