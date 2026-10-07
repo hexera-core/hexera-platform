@@ -25,6 +25,16 @@ MIN_RING_BORE_FRACTION = 0.1
 #: rectangular section at least this fraction of the part's thinnest box side. A nacelle's 8 mm
 #: tail flat on a 200 mm body, a blade tip, a wing's airfoil-shaped tip are not mouths.
 MIN_MOUTH_OF_THICKNESS = 0.1
+#: A mouth is the end of a fluid VOLUME: the body runs back behind it at least this much of the
+#: mouth's own size. A flat on a thin skin - a plate, a panel, a grille insert - has the skin's
+#: thickness behind it: the Toyota Supra's 0.3 mm body shell gave three "mouths" 0.2 mm deep at its
+#: nose. The shallowest real mouth in the corpus runs back half its size (a short elbow's).
+MIN_MOUTH_DEPTH = 0.25
+#: An open ring under the mouth bar still rims a port unless it sits on a minor part - solids
+#: holding under this share of the part's volume. A coil or a vessel is the tube its small ports
+#: open; a pipe drawn in pieces keeps its ends (each piece is a real share); a car's exhaust tips are
+#: their own solids, a thousandth of the car.
+MINOR_PART_SHARE = 0.02
 #: A mouth is a duct section, not a plate's edge or a pin's end: a flat with sides beyond this
 #: ratio is a mouth only when its narrow side is a real size against the part (THIN_FLAT of the
 #: diagonal); a wide flat HVAC duct's 6:1 mouth stays, a bracket's 3 mm edge goes.
@@ -484,10 +494,30 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3) -> ScoutResult
     rings = [c for c in candidates if c.kind == "ring" and c.clear_ahead and c.rim_free and not c.inward]
     discs = [c for c in candidates if c.kind == "disc" and c.clear_ahead]
     hollow = any(n > 1 for n in shells_per_solid)
+    # the part's thinnest side: the yardstick every mouth is held to, ring or flat end
+    sx, sy, sz = (bbox_max[k] - bbox_min[k] for k in range(3))
+    thinnest = max(min(sx, sy, sz), 1e-9)
+    # An open ring makes the part a pipe wall only when its hole is a MOUTH of the part: at least
+    # MIN_MOUTH_OF_THICKNESS of the part's thinnest side, the bar a solid's flat end must clear to be
+    # a mouth too. Small open tubes on a body - a car's exhaust tips, a housing's drain and vent - are
+    # tubes on a body, not the ends of the passage the part is: the Toyota Supra (57 x 128 x 37 mm, a
+    # thin-shelled body of 62 solids) read as "pipe_wall, 2 openings" off its two 2.5 mm exhaust tips.
+    # A smaller ring still counts unless it sits on a minor part (MINOR_PART_SHARE): a coil or a vessel
+    # with small nozzles IS the tube, not a body carrying one.
+    small = [c for c in rings if c.equivalent_diameter < MIN_MOUTH_OF_THICKNESS * thinnest]
+    share = _volume_share(solids, faces, [c.face_index for c in small]) if small else {}
+    mouth_rings = [c for c in rings if c.equivalent_diameter >= MIN_MOUTH_OF_THICKNESS * thinnest
+                   or share.get(c.face_index, 1.0) >= MINOR_PART_SHARE]
+    tubes = [c for c in rings if all(c is not m for m in mouth_rings)]
+    if tubes:
+        widest = max(c.equivalent_diameter for c in tubes)
+        notes.append(f"{len(tubes)} small open tube{'s' if len(tubes) > 1 else ''} on minor parts (the widest "
+                     f"{1000 * widest:.1f} mm across, under a tenth of the part's {1000 * thinnest:.0f} mm thinnest "
+                     "side) read as tubes on a body, not ends of a passage, and are not proposed as openings")
 
-    if len(rings) >= 2 or (rings and hollow):
+    if len(mouth_rings) >= 2 or (mouth_rings and hollow):
         body_kind, input_kind, flow = "pipe_wall", "body-surface", "internal"
-        pool = rings
+        pool = mouth_rings
         confidence_kind = 0.9
     elif hollow:
         body_kind, input_kind, flow = "hollow_wall", "body-surface", "internal"
@@ -503,20 +533,21 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3) -> ScoutResult
         # passage) or a solid body in a flow (a car, a hub, a wing). Geometry alone cannot always
         # tell a solid cylinder from the water inside a pipe - that is the user's word - but it can
         # rule out the usual false mouths and the box-like bodies:
-        #   - a mouth is a round or rectangular flat at least a fifth of the part's thinnest side
-        #     (a nacelle's tail flat, a blade tip and a wing's airfoil-shaped tip are not);
+        #   - a mouth is a round or rectangular flat at least a tenth of the part's thinnest side
+        #     (a nacelle's tail flat, a blade tip and a wing's airfoil-shaped tip are not), with the
+        #     body running back behind it (a flat on a thin skin is not the end of a fluid volume);
         #   - a body whose flats cover much of its box AND which fills it is a body (the Ahmed body:
         #     84% and 95%); a short fat elbow covers a third but fills less than half;
         #   - a part with more than a couple of odd flats, or a dozen mouth-like ones, is machined
         #     (a switch, a connector, a bracket), and so is one whose same-size flats fan around an axis;
         #   - a body with more odd flats than mouths (blade tips, lugs, keyways) is machined, not swept.
-        sx, sy, sz = (bbox_max[k] - bbox_min[k] for k in range(3))
-        thinnest = max(min(sx, sy, sz), 1e-9)
         fill = volume / max(sx * sy * sz, 1e-18)
         walls = _wall_pairs(discs)
         mouth_like = [o for o in discs if o.shape in ("circle", "rectangle")
                       and o.equivalent_diameter >= MIN_MOUTH_OF_THICKNESS * thinnest
-                      and (max(o.wh) <= MOUTH_MAX_ASPECT * max(min(o.wh), 1e-9) or min(o.wh) >= THIN_FLAT * diag)]
+                      and (max(o.wh) <= MOUTH_MAX_ASPECT * max(min(o.wh), 1e-9) or min(o.wh) >= THIN_FLAT * diag)
+                      # no surface found behind it (depth 0) says nothing either way
+                      and (o.depth <= 0.0 or o.depth_ratio >= MIN_MOUTH_DEPTH)]
         if mouth_like and all(id(o) in walls for o in mouth_like) and fill >= BOX_LIKE_FILL:
             # A short fat passage: its two ends face each other a diameter apart, and they are all it
             # has. It fills its box like the cylinder it is; a rotor hub whose two end discs sit as
@@ -577,6 +608,30 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3) -> ScoutResult
 
 
 MAX_FACES = 200
+
+
+def _volume_share(solids: list, faces: list, face_indices: list[int]) -> dict[int, float]:
+    """For each listed face, the share of the part's volume held by the solids it belongs to. A file
+    of one solid (or none - loose surfaces) is all one part: every share is 1."""
+    if len(solids) <= 1:
+        return dict.fromkeys(face_indices, 1.0)
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    volumes, members = [], []
+    for s in solids:
+        g = GProp_GProps()
+        BRepGProp.VolumeProperties_s(s, g)
+        volumes.append(abs(float(g.Mass())))
+        fmap = TopTools_IndexedMapOfShape()
+        TopExp.MapShapes_s(s, TopAbs_FACE, fmap)
+        members.append(fmap)
+    total = sum(volumes) or 1.0
+    return {i: sum(v for v, m in zip(volumes, members, strict=True) if m.Contains(faces[i])) / total
+            for i in face_indices}
 
 
 def _wall_pairs(discs: list[Opening]) -> set[int]:
