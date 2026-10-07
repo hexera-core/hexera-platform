@@ -619,20 +619,22 @@ def _store_upright_sheet(session_id: str, skin: Path, work: Path, store) -> dict
 
 def _scout_exact(local_path: Path, work: Path, interp_ref, ref) -> tuple[dict, Path]:
     """A STEP or IGES file: OpenCASCADE reads real faces, so the openings come out exact."""
-    from meshpipeline.cad.scout import scout_cad, write_view_stl
+    from meshpipeline.cad.scout import read_cad, scout_cad, write_view_stl
 
     prepared, unit_note = _prepared_coordinates(local_path, interp_ref, ref)
+    # read once: the scout and the view skin each work on their own scaled copy of it
+    shape = read_cad(local_path)
     # a thermal model states its openings (declared_openings, below); its many solids are not
     # searched for them
     declared = {"declared_openings": True} if _thermal_sidecar(local_path) is not None else {}
-    facts = scout_cad(local_path, prepared=prepared, **declared).as_dict()
+    facts = scout_cad(local_path, prepared=prepared, shape=shape, **declared).as_dict()
     facts["read_as"] = "cad"
     facts["unit_assumed"] = bool(unit_note)
     interp = getattr(prepared, "interpretation", None)
     facts["scale_to_m"] = float(interp.scale_to_metres) if interp is not None else 0.001
     if unit_note:
         facts["notes"].append(unit_note)
-    skin = write_view_stl(local_path, work / "skin.stl", prepared=prepared)
+    skin = write_view_stl(local_path, work / "skin.stl", prepared=prepared, shape=shape)
     facts["holes"] = skin_holes(skin)
     return facts, skin
 

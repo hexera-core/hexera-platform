@@ -130,7 +130,7 @@ def _graph(seed_state):
     return g
 
 async def _run(monkeypatch, ws, *, reject="", fin_ok=True, gates=(True,"",""), gate_results=(("mesh_ok",True),),
-               extents=None, solv=None, retry=0, preflight=False):
+               extents=None, solv=None, retry=0, preflight=False, topology="internal"):
     from meshpipeline.runtime.composition import install_adapters
     install_adapters()
     j=uuid.uuid4(); o=f"exec-{j.hex[:8]}"; await _seed(j,o)
@@ -157,7 +157,7 @@ async def _run(monkeypatch, ws, *, reject="", fin_ok=True, gates=(True,"",""), g
     # bound claim. An empty id was harmless when the executor published unchecked; now it means
     # publishing for a different job than the one this worker owns, which is refused.
     built=_graph({"job_id":str(j),"geometry_unsuitable_reason":reject,"openfoam_workspace":str(ws),
-                  "engine":"gmsh","retry_count":retry,"flow_topology":"internal","request_txt":"far field 10m"})
+                  "engine":"gmsh","retry_count":retry,"flow_topology":topology,"request_txt":"far field 10m"})
     monkeypatch.setattr(gm,"build_graph", lambda checkpointer: built.compile(checkpointer=checkpointer))
     from meshpipeline.application.pipeline_run import JobRequest, _run_async
     t=asyncio.create_task(_run_async(JobRequest(job_id=str(j),owner_id=o)))
@@ -201,7 +201,8 @@ SCENARIOS = [
     ("early_reject",  {"reject": "bad geometry"}),
     ("gate_fail",     {"gates": (False, "patchx", "fb")}),
     ("all_pass",      {"solv": (True, "ok")}),
-    ("extent_reject", {"extents": (False, "too small")}),
+    # the far-field extent is judged only where a far field exists: an external flow
+    ("extent_reject", {"extents": (False, "too small"), "topology": "external"}),
     ("solv_fail",     {"solv": (False, "no converge"), "retry": 2}),
     ("preflight_record", {"preflight": True}),
 ]
