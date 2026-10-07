@@ -43,9 +43,10 @@ _DISPUTE = {"of_job_id": "parent-1",
 
 # graph routing  #
 
-def test_normal_run_routes_engine_select_to_geometry_admission():
-    # normal run enters the deterministic input gate (geometry admission) before the builder
-    assert route_after_engine_select({"user_dispute": {}}) == "node_geometry_admission"
+def test_normal_run_routes_engine_select_to_repair_inspection():
+    # a normal run inspects the input for CAD defects (evidence), and that node's single edge is
+    # the deterministic input gate (geometry admission) that runs before the builder
+    assert route_after_engine_select({"user_dispute": {}}) == "node_repair_inspect"
 
 
 def test_dispute_run_routes_to_reviewer_first():
@@ -67,9 +68,9 @@ def test_rejected_geometry_skips_the_builder_to_the_executor_short_circuit():
 
 def test_dispute_after_first_review_engine_select_not_rerouted():
     # once a verdict exists (should engine_select ever re-run), take the normal path
-    # (geometry admission → builder), not the dispute re-review
+    # (repair inspection → geometry admission → builder), not the dispute re-review
     assert route_after_engine_select(
-        {"user_dispute": _DISPUTE, "reviewer_verdict": Verdict.FAIL}) == "node_geometry_admission"
+        {"user_dispute": _DISPUTE, "reviewer_verdict": Verdict.FAIL}) == "node_repair_inspect"
 
 
 def test_dispute_initial_review_always_rebuilds_even_on_pass():

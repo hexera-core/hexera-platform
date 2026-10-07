@@ -903,6 +903,64 @@ async def _run_async(req: JobRequest) -> dict:
                 await _worker_engine.dispose()
                 return {"job_id": job_id, "status": "fenced", "skipped": "not_owner"}
 
+        # THE INSPECTION REPORT, on EVERY terminal outcome. Artifact delivery below runs only on a
+        # genuine success and only from an engine workspace, but the report's most important
+        # readers are on the runs that produced no mesh at all: the operator deciding whether the
+        # file is worth repairing, and the customer being told why it was refused. It is evidence,
+        # so it cannot change `final_status` and its own failures are swallowed (see
+        # application/repair_report_delivery.py); only being FENCED stops this worker, for the
+        # same reason it stops artifact registration.
+        if final_state.get("repair_report"):
+            from meshpipeline.application.execution_fence import (
+                StaleWorkerFenced as _StaleFenced,
+            )
+            from meshpipeline.application.execution_fence import (
+                execution_ownership as _own_ctx,
+            )
+            from meshpipeline.application.execution_fence import (
+                lock_ownership_for_commit as _lock_owner,
+            )
+            from meshpipeline.application.repair_report_delivery import deliver_repair_report
+
+            async def _fence_report(db):
+                await _lock_owner(db, "repair report registration")
+
+            try:
+                with _own_ctx(ownership, session_factory=AsyncSessionLocal):
+                    await deliver_repair_report(
+                        AsyncSessionLocal, job_id=job_id,
+                        report=dict(final_state.get("repair_report") or {}),
+                        repair_status=str(final_state.get("repair_status", "") or ""),
+                        delivery_attempt=int(final_state.get("retry_count", 0) or 0),
+                        execution_generation=_generation,
+                        fence_commit=_fence_report)
+                    # AND THE REPAIRED FILE ITSELF, when a repair was promoted: `geometry` names
+                    # the repaired bytes from that moment on, and repair_lineage is the record
+                    # that they ARE repaired rather than the upload. A customer whose CAD we fixed
+                    # paid for the fixed CAD as much as for the mesh built from it.
+                    if final_state.get("repair_lineage"):
+                        from meshpipeline.application.repair_report_delivery import (
+                            deliver_repaired_cad,
+                        )
+                        from meshpipeline.pipeline.geometry_state import (
+                            materialized as _mat,
+                        )
+                        _repaired = _mat(final_state)
+                        if _repaired is not None:
+                            await deliver_repaired_cad(
+                                AsyncSessionLocal, job_id=job_id,
+                                local_path=_repaired.path,
+                                suffix=_repaired.ref.suffix_hint or ".step",
+                                delivery_attempt=int(final_state.get("retry_count", 0) or 0),
+                                execution_generation=_generation,
+                                fence_commit=_fence_report)
+            except _StaleFenced:
+                jlog.warning("Worker FENCED at repair report registration (the job was cancelled "
+                             "or taken over) - producing no terminal side effects. job_id=%s",
+                             job_id)
+                await _worker_engine.dispose()
+                return {"job_id": job_id, "status": "fenced", "skipped": "not_owner"}
+
         # Artifacts are delivered ONLY on a genuine success (verdict PASS with a real
         # visual review). DELIVER FIRST - a delivery failure downgrades the job to a
         # system failure, recorded by the single status commit below.
@@ -1003,6 +1061,7 @@ async def _run_async(req: JobRequest) -> dict:
                 pipeline_timed_out=_timed_out,
                 # THE FALLBACK LADDER'S ACCOUNT: which engines ran, why the run moved, and - when
                 # no mesh came out - the one offer the user can accept in a sentence
+                repair_lineage=dict(final_state.get("repair_lineage") or {}),
                 engine_ladder=_ladder_record(
                     final_state, succeeded=final_status == JobStatus.succeeded,
                     system_failure=bool(api_failure) or _timed_out, jlog=jlog),

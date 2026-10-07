@@ -156,6 +156,14 @@ def test_the_served_routes_are_exactly_the_supported_set():
         ("GET", "/api/v1/admin/ops/organizations"),
         ("GET", "/api/v1/admin/ops/organizations/{organization_id}"),
         ("POST", "/api/v1/admin/ops/organizations/{organization_id}/credit-grants"),
+        # THE OPERATOR REPAIR QUEUE, cross-tenant behind the same admin credential, because the
+        # people working it are this service's own staff and the queue is one list over every
+        # customer's repair jobs. Its writes name the operator, who the shared credential cannot.
+        ("GET", "/api/v1/admin/repair/queue"),
+        ("GET", "/api/v1/admin/repair/throughput"),
+        ("GET", "/api/v1/admin/repair/jobs/{job_id}"),
+        ("POST", "/api/v1/admin/repair/jobs/{job_id}/assign"),
+        ("POST", "/api/v1/admin/repair/jobs/{job_id}/decide"),
         # THE PROVIDER'S OWN CALLER. Not a capability a person invokes: it is authenticated by
         # signature rather than by any credential of ours, which is why it is listed apart.
         ("POST", "/api/v1/webhooks/stripe"),

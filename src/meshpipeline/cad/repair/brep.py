@@ -2,6 +2,7 @@
 # Boundaries: diagnostics only; never mutates geometry and never exports repaired shapes.
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from meshpipeline.cad.repair.contracts import (
@@ -11,6 +12,8 @@ from meshpipeline.cad.repair.contracts import (
     RepairMeasurement,
     RepairReport,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class _CadReadError(ValueError):
@@ -91,15 +94,63 @@ def _is_valid(shape) -> bool:
     return bool(BRepCheck_Analyzer(shape, True).IsValid())
 
 
+def _summarise_defects(found) -> tuple[RepairDefect, ...]:
+    """One RepairDefect per defect KIND, carrying the entities it was found on.
+
+    The located detail lives in `RepairReport.entities`; this is the summary a list view reads.
+    Both come from the same findings, so they cannot disagree about what is wrong.
+    """
+    by_code: dict = {}
+    for entity_defect in found:
+        key = entity_defect.code
+        bucket = by_code.setdefault(key, {"severity": entity_defect.severity, "entities": [],
+                                          "messages": []})
+        bucket["entities"].append(f"{entity_defect.entity_type}:{entity_defect.entity_index}")
+        if entity_defect.message not in bucket["messages"]:
+            bucket["messages"].append(entity_defect.message)
+        # The worst severity for this kind wins the summary row.
+        if _SEVERITY_RANK[entity_defect.severity] > _SEVERITY_RANK[bucket["severity"]]:
+            bucket["severity"] = entity_defect.severity
+    return tuple(
+        RepairDefect(code=code, severity=bucket["severity"],
+                     message=" ".join(bucket["messages"])[:400],
+                     count=len(bucket["entities"]),
+                     details={"entities": bucket["entities"][:50],
+                              "entity_count": len(bucket["entities"])})
+        for code, bucket in by_code.items())
+
+
+_SEVERITY_RANK = {DefectSeverity.info: 0, DefectSeverity.warning: 1,
+                  DefectSeverity.error: 2, DefectSeverity.fatal: 3}
+
+
 def inspect_brep_file(path: Path) -> RepairReport:
     p = Path(path)
     suffix = p.suffix.lower()
     fmt = "iges" if suffix in (".iges", ".igs") else "step"
+    entities: tuple[dict, ...] = ()
     try:
         shape = _read_shape(p)
         counts = _count_subshapes(shape)
         is_valid = _is_valid(shape)
-        defects: tuple[RepairDefect, ...] = ()
+
+        # WHERE IT IS BROKEN, not just whether. `IsValid()` is one bit about the whole part and
+        # cannot be acted on by an operator or aimed at by a repair; this attributes the damage to
+        # entities, with their size and position (cad/repair/localize.py).
+        from meshpipeline.cad.repair.localize import localize, summarise
+        try:
+            found = localize(shape)
+        except Exception as exc:  # noqa: BLE001
+            # EVIDENCE, NEVER LOAD-BEARING. Localisation reaches deep into the kernel and a shape
+            # it cannot walk must still get an inspection: the report then carries no entities,
+            # which triage already reads as "nothing to aim at" rather than "nothing wrong".
+            logger.warning("inspect_brep: could not localise defects (%s) - reporting the "
+                           "whole-shape result only", exc)
+            found = ()
+        entities = tuple(d.to_dict() for d in found)
+        located = summarise(found)
+
+        defects = _summarise_defects(found)
         if counts["faces"] == 0:
             defects = (
                 RepairDefect(
@@ -109,21 +160,38 @@ def inspect_brep_file(path: Path) -> RepairReport:
                     details={"reason": "no_faces"},
                 ),
             )
-        elif not is_valid:
+        elif not is_valid and not found:
+            # INVALID, AND WE CANNOT SAY WHY. This is a real and distinct answer: the kernel
+            # objects to the part but attributes the objection to no entity, so there is nothing
+            # for an automatic repair to aim at and nothing to tell a customer beyond the fact.
+            # Triage treats exactly this case as one for a person, which is why it must not be
+            # conflated with the located defects above.
             defects = (
                 RepairDefect(
                     code=DefectCode.invalid_brep,
                     severity=DefectSeverity.error,
-                    message="OpenCASCADE reported the B-rep as invalid.",
+                    message=("OpenCASCADE reports the B-rep as invalid but attributes it to no "
+                             "entity, so the cause is not localised."),
+                    details={"reason": "unattributed"},
                 ),
             )
-        measurements = {"format": fmt, "is_valid": is_valid, **counts}
+
+        measurements = {"format": fmt, "is_valid": is_valid, **counts, "located": located}
         if not defects:
             summary = "No repair needed."
         elif counts["faces"] == 0:
             summary = "Automatic repair was not safe for this geometry."
         else:
-            summary = "Repair recommended before meshing."
+            _worst = max((d.severity for d in defects), key=lambda sv: _SEVERITY_RANK[sv])
+            _where = located.get("by_region", {})
+            _inside = _where.get("interior", 0)
+            summary = (
+                f"{located['total']} located problem(s) across "
+                f"{len(located['by_code'])} kind(s)"
+                + (f", {_inside} inside the part" if _inside else "")
+                + ("." if _worst is not DefectSeverity.fatal
+                   else "; automatic repair was not safe for this geometry.")
+            ) if found else "Repair recommended before meshing."
     except _kernel_failures() as exc:
         defects = (
             RepairDefect(
@@ -150,4 +218,5 @@ def inspect_brep_file(path: Path) -> RepairReport:
         operations=({"name": "inspect_brep", "mutated": False},),
         summary=summary,
         diagnostics={"path_suffix": suffix},
+        entities=entities,
     )

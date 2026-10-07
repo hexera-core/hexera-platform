@@ -1,0 +1,455 @@
+# Responsibility: Verify repair jobs are owner-isolated and that an illegal or losing status change is refused by the database.
+# Boundaries: an ordinary member of the integration tier - the tier's own conftest builds the whole
+# schema and this file uses the `db` session it already provides, isolating only its own two tables.
+from __future__ import annotations
+
+import asyncio
+import os
+import uuid
+
+import pytest
+from sqlalchemy import delete
+
+if not os.getenv("DATABASE_URL"):
+    pytest.skip("a real PostgreSQL endpoint is required", allow_module_level=True)
+
+from meshpipeline.persistence.job_state import TransitionResult
+from meshpipeline.persistence.models import (
+    CadRepairAttempt,
+    CadRepairDecision,
+    CadRepairJob,
+    GeometrySource,
+    Organization,
+)
+from meshpipeline.persistence.models import (
+    RepairJobStatus as S,
+)
+from meshpipeline.persistence.repositories.repair_job_repository import RepairJobRepository
+
+_A = "owner-alpha"
+_B = "owner-bravo"
+_SHA_IN = "a" * 64
+_SHA_OUT = "b" * 64
+
+
+@pytest.fixture(autouse=True)
+async def _clean(db):
+    # ROLLED BACK FIRST. A test that proved a constraint refuses something leaves the transaction
+    # aborted, and every statement in an aborted transaction fails - including this cleanup, which
+    # would then report the previous test's failure as this one's.
+    await db.rollback()
+    # Child-first DELETE, never a TRUNCATE ... CASCADE: this session's schema is shared with every
+    # other integration suite, and a cascade off geometry_sources or organizations would take
+    # their rows with it.
+    for model in (CadRepairDecision, CadRepairAttempt, CadRepairJob):
+        await db.execute(delete(model))
+    await db.commit()
+    yield
+    await db.rollback()
+    for model in (CadRepairDecision, CadRepairAttempt, CadRepairJob):
+        await db.execute(delete(model))
+    await db.commit()
+
+
+async def _source(db, owner_id: str) -> GeometrySource:
+    row = GeometrySource(owner_id=owner_id, original_filename="part.step", suffix_hint=".step",
+                         object_key=f"sources/{uuid.uuid4()}/part.step",
+                         sha256=uuid.uuid4().hex + uuid.uuid4().hex, size_bytes=4096)
+    db.add(row)
+    await db.flush()
+    return row
+
+
+async def _job(db, owner_id: str, **kw) -> CadRepairJob:
+    src = await _source(db, owner_id)
+    job = await RepairJobRepository().create(
+        db, owner_id=owner_id, geometry_source_id=src.id, target_engine="snappy", **kw)
+    await db.commit()
+    return job
+
+
+# OWNER ISOLATION
+
+
+async def test_another_owner_cannot_read_a_repair_job(db):
+    job = await _job(db, _A)
+    repo = RepairJobRepository()
+
+    assert (await repo.get_for_owner(db, job.id, _A)) is not None
+    # absent, not forbidden: a foreign reader learns nothing about whether the row exists
+    assert (await repo.get_for_owner(db, job.id, _B)) is None
+
+
+async def test_another_owner_sees_none_of_the_queue(db):
+    await _job(db, _A)
+    await _job(db, _A)
+    repo = RepairJobRepository()
+
+    assert len(await repo.queue_for_owner(db, _A)) == 2
+    assert await repo.queue_for_owner(db, _B) == []
+
+
+async def test_an_organisation_scopes_over_the_owner(db):
+    org = Organization(name="acme", slug=f"acme-{uuid.uuid4().hex[:8]}")
+    db.add(org)
+    await db.flush()
+    src = await _source(db, _A)
+    repo = RepairJobRepository()
+    job = await repo.create(db, owner_id=_A, geometry_source_id=src.id,
+                            organization_id=str(org.id))
+    await db.commit()
+
+    # a colleague in the same organisation reads it; the owner_id alone no longer decides
+    assert (await repo.get_for_owner(db, job.id, _B, organization_id=str(org.id))) is not None
+    assert (await repo.get_for_owner(db, job.id, _B)) is None
+    # and a malformed organisation id narrows to the owner rather than widening access
+    assert (await repo.get_for_owner(db, job.id, _B, organization_id="not-a-uuid")) is None
+
+
+async def test_the_queue_is_ordered_by_urgency_then_age(db):
+    repo = RepairJobRepository()
+    low = await _job(db, _A, service_priority=200)
+    high = await _job(db, _A, service_priority=10)
+    mid = await _job(db, _A, service_priority=100)
+
+    ordered = [j.id for j in await repo.queue_for_owner(db, _A)]
+    assert ordered == [high.id, mid.id, low.id]
+
+
+async def test_the_queue_narrows_to_the_states_asked_for(db):
+    repo = RepairJobRepository()
+    waiting = await _job(db, _A)
+    other = await _job(db, _A)
+    assert await repo.transition(db, other.id, S.inspecting) == TransitionResult.applied
+    await db.commit()
+
+    found = await repo.queue_for_owner(db, _A, statuses=(S.received,))
+    assert [j.id for j in found] == [waiting.id]
+
+
+# STATUS TRANSITIONS
+
+
+async def test_a_legal_transition_applies_once_and_is_then_idempotent(db):
+    repo = RepairJobRepository()
+    job = await _job(db, _A)
+
+    assert await repo.transition(db, job.id, S.inspecting) == TransitionResult.applied
+    await db.commit()
+    assert await repo.transition(db, job.id, S.inspecting) == TransitionResult.already_at_target
+
+
+async def test_an_illegal_transition_is_refused_and_changes_nothing(db):
+    repo = RepairJobRepository()
+    job = await _job(db, _A)
+
+    # received -> delivered is not a route: nothing was inspected, repaired, meshed or reviewed
+    assert await repo.transition(db, job.id, S.delivered) == TransitionResult.rejected_current_state
+    await db.commit()
+    assert (await repo.get_internal(db, job.id)).status is S.received
+
+
+async def test_a_delivered_job_cannot_be_moved_back_into_the_pipeline(db):
+    repo = RepairJobRepository()
+    job = await _job(db, _A)
+    for target in (S.inspecting, S.awaiting_strategy, S.meshing, S.mesh_review, S.delivered):
+        assert await repo.transition(db, job.id, target) == TransitionResult.applied
+    await db.commit()
+
+    for target in (S.meshing, S.repairing, S.awaiting_strategy, S.cancelled):
+        assert await repo.transition(db, job.id, target) == TransitionResult.rejected_current_state
+    # the customer's right of reply is the one way out
+    assert await repo.transition(db, job.id, S.delivery_disputed) == TransitionResult.applied
+    await db.commit()
+
+
+async def test_only_one_of_two_racing_transitions_wins(db):
+    # TWO OPERATORS ON ONE QUEUE ITEM is the ordinary case here, so the database decides - a
+    # check-then-act would let the later writer overwrite a decision it never saw. Each claim gets
+    # its OWN session, because two writers sharing one transaction would never contend.
+    from meshpipeline.persistence.session import get_db
+
+    repo = RepairJobRepository()
+    job = await _job(db, _A)
+    await repo.transition(db, job.id, S.inspecting)
+    await repo.transition(db, job.id, S.awaiting_strategy)
+    await db.commit()
+    job_id = job.id
+
+    async def _claim(target):
+        async with get_db() as s:
+            out = await repo.transition(s, job_id, target)
+            await s.commit()
+            return out
+
+    results = await asyncio.gather(_claim(S.repairing), _claim(S.meshing),
+                                   return_exceptions=True)
+    outcomes = [r for r in results if isinstance(r, TransitionResult)]
+    assert sum(o == TransitionResult.applied for o in outcomes) == 1, (
+        f"exactly one writer may win: {results}")
+    # and the loser is told it was too late, not that the job vanished
+    assert TransitionResult.not_found not in outcomes
+
+
+async def test_a_transition_only_writes_the_fields_it_was_given(db):
+    repo = RepairJobRepository()
+    job = await _job(db, _A)
+    await repo.transition(db, job.id, S.inspecting, repair_status="repairable")
+    await repo.transition(db, job.id, S.awaiting_strategy, current_strategy="conservative")
+    await db.commit()
+
+    row = await repo.get_internal(db, job.id)
+    # the strategy transition said nothing about repair_status, so it must still be there
+    assert (row.repair_status, row.current_strategy) == ("repairable", "conservative")
+
+
+async def test_a_missing_job_is_reported_as_missing_rather_than_refused(db):
+    assert await RepairJobRepository().transition(
+        db, uuid.uuid4(), S.inspecting) == TransitionResult.not_found
+
+
+# ATTEMPT HISTORY
+
+
+async def test_attempts_are_numbered_in_order_and_append_only(db):
+    repo = RepairJobRepository()
+    job = await _job(db, _A)
+
+    first = await repo.record_attempt(db, repair_job_id=job.id, mode="inspect",
+                                      input_sha256=_SHA_IN, status="repairable",
+                                      report={"summary": "a wire has a gap"})
+    second = await repo.record_attempt(db, repair_job_id=job.id, mode="repair",
+                                       input_sha256=_SHA_IN, output_sha256=_SHA_OUT,
+                                       profile="conservative", tool_version="OCCT 7.8",
+                                       status="repaired")
+    await db.commit()
+
+    assert (first.attempt_no, second.attempt_no) == (1, 2)
+    history = await repo.attempts_for_job(db, job.id)
+    assert [a.attempt_no for a in history] == [1, 2]
+    # THE AUDIT PAIR: an inspection produced no geometry, a repair produced new bytes, and in
+    # neither case did the input digest change
+    assert history[0].output_sha256 is None
+    assert history[1].output_sha256 == _SHA_OUT
+    assert {a.input_sha256 for a in history} == {_SHA_IN}
+
+
+async def test_an_attempt_cannot_claim_a_number_another_already_holds(db):
+    from sqlalchemy.exc import IntegrityError
+
+    repo = RepairJobRepository()
+    job = await _job(db, _A)
+    await repo.record_attempt(db, repair_job_id=job.id, mode="inspect", input_sha256=_SHA_IN)
+    await db.commit()
+
+    db.add(CadRepairAttempt(repair_job_id=job.id, attempt_no=1, mode="repair",
+                            input_sha256=_SHA_IN))
+    with pytest.raises(IntegrityError):
+        await db.flush()
+    await db.rollback()
+
+
+async def test_a_malformed_digest_never_reaches_the_row(db):
+    repo = RepairJobRepository()
+    job = await _job(db, _A)
+
+    # absent, too short, and not hex at all: each is refused before the row is built
+    for bad in ("", "abc", "z" * 64, _SHA_IN + "0"):
+        with pytest.raises(ValueError, match="input_sha256"):
+            await repo.record_attempt(db, repair_job_id=job.id, mode="inspect", input_sha256=bad)
+    await db.rollback()
+
+
+async def test_an_uppercase_digest_is_normalised_rather_than_refused(db):
+    # THE DIGEST IS A VALUE, NOT A SPELLING. The same bytes hashed by a tool that prints upper
+    # case are the same bytes, so the repository lowercases rather than rejecting - and the column
+    # therefore only ever holds one spelling, which is what makes a later comparison meaningful.
+    repo = RepairJobRepository()
+    job = await _job(db, _A)
+
+    row = await repo.record_attempt(db, repair_job_id=job.id, mode="inspect",
+                                    input_sha256=_SHA_IN.upper())
+    await db.commit()
+    assert row.input_sha256 == _SHA_IN
+
+
+async def test_deleting_a_repair_job_takes_its_attempts_with_it(db):
+    repo = RepairJobRepository()
+    job = await _job(db, _A)
+    await repo.record_attempt(db, repair_job_id=job.id, mode="inspect", input_sha256=_SHA_IN)
+    await db.commit()
+
+    await db.execute(delete(CadRepairJob).where(CadRepairJob.id == job.id))
+    await db.commit()
+    assert await repo.attempts_for_job(db, job.id) == []
+
+
+async def test_the_customer_upload_cannot_be_deleted_from_under_a_job(db):
+    from sqlalchemy.exc import IntegrityError
+
+    job = await _job(db, _A)
+    row = await RepairJobRepository().get_internal(db, job.id)
+
+    # RESTRICT: the repair job is ABOUT those bytes, so their identity outlives it. PostgreSQL
+    # enforces this at the DELETE itself rather than deferring to COMMIT, so the refusal arrives
+    # from execute() - and the transaction is then aborted, so it has to be rolled back before
+    # the fixture can clean up behind this test.
+    with pytest.raises(IntegrityError):
+        await db.execute(
+            delete(GeometrySource).where(GeometrySource.id == row.geometry_source_id))
+    await db.rollback()
+
+
+# THE OPERATOR SURFACE (cross-tenant by design - see RepairJobRepository.operator_queue)
+
+
+async def test_the_operator_queue_spans_every_tenant(db):
+    repo = RepairJobRepository()
+    mine = await _job(db, _A)
+    theirs = await _job(db, _B)
+
+    queued = {j.id for j in await repo.operator_queue(db)}
+
+    # the whole point of this surface: one list over every customer's work
+    assert {mine.id, theirs.id} <= queued
+
+
+async def test_claiming_is_refused_when_somebody_already_holds_it(db):
+    repo = RepairJobRepository()
+    job = await _job(db, _A)
+
+    assert await repo.assign(db, job.id, operator="ana", claim_only_if_unassigned=True) is True
+    await db.commit()
+    assert await repo.assign(db, job.id, operator="ben", claim_only_if_unassigned=True) is False
+    await db.commit()
+
+    row = await repo.get_internal(db, job.id)
+    assert row.assigned_operator == "ana" and row.assigned_at is not None
+    # a lead reassigning does overwrite
+    assert await repo.assign(db, job.id, operator="ben") is True
+    await db.commit()
+    assert (await repo.get_internal(db, job.id)).assigned_operator == "ben"
+
+
+async def test_releasing_a_job_clears_the_claim_and_its_timestamp(db):
+    repo = RepairJobRepository()
+    job = await _job(db, _A)
+    await repo.assign(db, job.id, operator="ana")
+    await db.commit()
+
+    assert await repo.assign(db, job.id, operator="") is True
+    await db.commit()
+    row = await repo.get_internal(db, job.id)
+    assert row.assigned_operator is None and row.assigned_at is None
+
+
+async def test_the_queue_can_show_one_operators_load_or_only_unclaimed_work(db):
+    repo = RepairJobRepository()
+    held = await _job(db, _A)
+    free = await _job(db, _A)
+    await repo.assign(db, held.id, operator="ana")
+    await db.commit()
+
+    assert [j.id for j in await repo.operator_queue(db, assigned_operator="ana")] == [held.id]
+    unclaimed = {j.id for j in await repo.operator_queue(db, unassigned_only=True)}
+    assert free.id in unclaimed and held.id not in unclaimed
+
+
+async def test_decisions_are_appended_in_order_and_keep_their_actor(db):
+    repo = RepairJobRepository()
+    job = await _job(db, _A)
+
+    await repo.record_decision(db, repair_job_id=job.id, decision="inspect", actor="ana",
+                               from_status="received")
+    await repo.record_decision(db, repair_job_id=job.id, decision="block", actor="ben",
+                               from_status="inspecting", reason="no units in the STEP file")
+    await db.commit()
+
+    history = await repo.decisions_for_job(db, job.id)
+    assert [(d.decision, d.actor) for d in history] == [("inspect", "ana"), ("block", "ben")]
+    # WHY, kept with WHO: the question "who approved this, and on what grounds" is answerable
+    assert history[1].reason == "no units in the STEP file"
+    assert history[1].from_status == "inspecting"
+
+
+async def test_an_unattributed_decision_is_refused(db):
+    repo = RepairJobRepository()
+    job = await _job(db, _A)
+
+    for actor in ("", "   "):
+        with pytest.raises(ValueError, match="actor is required"):
+            await repo.record_decision(db, repair_job_id=job.id, decision="inspect", actor=actor)
+    await db.rollback()
+
+
+async def test_deleting_a_repair_job_takes_its_decisions_with_it(db):
+
+    repo = RepairJobRepository()
+    job = await _job(db, _A)
+    await repo.record_decision(db, repair_job_id=job.id, decision="inspect", actor="ana")
+    await db.commit()
+
+    await db.execute(delete(CadRepairJob).where(CadRepairJob.id == job.id))
+    await db.commit()
+    assert await repo.decisions_for_job(db, job.id) == []
+
+
+# WHAT THE SERVICE IS DELIVERING
+
+
+async def test_throughput_counts_delivery_and_tells_the_waits_apart(db):
+    repo = RepairJobRepository()
+
+    # one delivered with a mesh, one waiting on the customer, one blocked, one still ours
+    delivered = await _job(db, _A)
+    for target in (S.inspecting, S.awaiting_strategy, S.meshing, S.mesh_review, S.delivered):
+        assert await repo.transition(db, delivered.id, target) == TransitionResult.applied
+
+    waiting = await _job(db, _A)
+    await repo.transition(db, waiting.id, S.waiting_customer, blocked_reason="no units")
+
+    blocked = await _job(db, _B)
+    await repo.transition(db, blocked.id, S.waiting_customer, blocked_reason="no units")
+    await repo.transition(db, blocked.id, S.customer_blocked, blocked_reason="wrong part")
+
+    await _job(db, _A)      # received: ours to move
+    await db.commit()
+
+    out = await repo.service_throughput(db)
+
+    assert out["jobs_total"] == 4
+    assert out["delivered_with_mesh"] == 1 and out["delivered_repair_only"] == 0
+    assert out["delivery_rate"] == 0.25
+    # A JOB WAITING ON A CUSTOMER IS NOT LATE BECAUSE WE ARE SLOW: the buckets are kept apart
+    assert out["awaiting_human"] == 1
+    assert out["blocked"] == 1 and out["blocked_rate"] == 0.25
+    assert out["in_flight"] == 1
+    assert out["by_state"]["delivered"] == 1
+    # it took SOME measurable time, counted from the row's own timestamps
+    assert out["mean_seconds_to_delivery"] is not None
+
+
+async def test_throughput_reports_no_rate_rather_than_zero_percent_of_nothing(db):
+    out = await RepairJobRepository().service_throughput(db)
+    # "we delivered 0% of nothing" has misled every dashboard that ever printed it
+    assert out["jobs_total"] == 0
+    assert out["delivery_rate"] is None and out["blocked_rate"] is None
+    assert out["mean_seconds_to_delivery"] is None
+
+
+async def test_throughput_counts_operator_effort_as_decisions_not_minutes(db):
+    repo = RepairJobRepository()
+    job = await _job(db, _A)
+    await repo.record_decision(db, repair_job_id=job.id, decision="inspect", actor="ana")
+    await repo.record_decision(db, repair_job_id=job.id, decision="retry", actor="ana")
+    await repo.record_attempt(db, repair_job_id=job.id, mode="inspect", input_sha256=_SHA_IN)
+    await db.commit()
+
+    out = await repo.service_throughput(db)
+
+    # NOT minutes: nothing here times an operator, so the field is named for what it counts
+    assert out["operator_decisions_total"] == 2
+    assert out["jobs_touched_by_an_operator"] == 1
+    assert out["retry_decisions"] == 1
+    assert out["attempts_total"] == 1 and out["jobs_with_attempts"] == 1
+    assert "operator_minutes" not in out

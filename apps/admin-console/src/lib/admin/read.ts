@@ -192,3 +192,264 @@ export function signedNumber(amount: number): string {
   if (amount === 0) return "0";
   return amount > 0 ? `+${formatted}` : `-${formatted}`;
 }
+
+// THE OPERATOR REPAIR QUEUE
+//
+// One list over every customer's repair jobs, for this service's own staff. The API answers
+// `awaiting_human` / `blocked` / `settled` per row rather than leaving each screen to decide what
+// a status means, so the presentation below groups by what it was TOLD, never by re-deriving it.
+
+export type RepairJobRow = {
+  assigned_at: string | null;
+  assigned_operator: string | null;
+  awaiting_human: boolean;
+  blocked: boolean;
+  blocked_reason: string | null;
+  created_at: string | null;
+  current_strategy: string;
+  id: string;
+  organization_id: string | null;
+  owner_id: string;
+  repair_status: string;
+  service_priority: number;
+  settled: boolean;
+  status: string;
+  target_engine: string;
+  updated_at: string | null;
+};
+
+export type RepairAttemptRow = {
+  attempt_no: number;
+  caps: Record<string, unknown> | null;
+  created_at: string | null;
+  input_sha256: string;
+  measurements: Record<string, unknown> | null;
+  mode: string;
+  output_sha256: string | null;
+  profile: string;
+  report: Record<string, unknown> | null;
+  status: string;
+  tool_version: string;
+};
+
+export type RepairDecisionRow = {
+  actor: string;
+  created_at: string | null;
+  decision: string;
+  from_status: string;
+  notes: string | null;
+  reason: string | null;
+};
+
+export type RepairTarget = {
+  code: string;
+  entity: string;
+  location: { bbox_max?: number[]; bbox_min?: number[]; centroid?: number[] };
+  measurements: Record<string, unknown>;
+  message: string;
+  // "interior" is the one an operator will not spot by rotating the part in a viewer.
+  region: string;
+  severity: string;
+};
+
+export type RepairRecommendation = {
+  abstain_reason: string;
+  advisor: string;
+  confidence: number;
+  evidence: Record<string, unknown>;
+  profile: string;
+  reasons: string[];
+  route: string;
+  // WHAT THE ADVICE IS ABOUT: the located failure points, so an operator can disagree with the
+  // specific defect rather than only with the conclusion.
+  targets: RepairTarget[];
+  // Always true for now. A screen that renders this as anything but advice is contradicting the
+  // payload - which is why the flag travels with it rather than being assumed by the reader.
+  shadow: boolean;
+};
+
+export type RepairJobDetail = {
+  attempts: RepairAttemptRow[];
+  available_decisions: string[];
+  decisions: RepairDecisionRow[];
+  job: RepairJobRow;
+  recommendation: RepairRecommendation | null;
+};
+
+// WHAT THE ADVICE IS SUGGESTING, in the operator's words rather than the route's name.
+export const REPAIR_ROUTE_LABELS: Readonly<Record<string, string>> = {
+  abstain: "No recommendation",
+  ask_customer: "Ask the customer for a different file",
+  conservative_repair: "Try a conservative repair",
+  manual_cleanup: "Needs a person",
+  mesh_as_is: "Mesh it as it arrived",
+};
+
+export function repairRouteLabel(route: string): string {
+  return REPAIR_ROUTE_LABELS[route] ?? route.replace(/_/g, " ");
+}
+
+export function formatPoint(point: number[] | undefined): string {
+  // The part's OWN coordinates, unconverted: an operator types these into their CAD system, and
+  // silently rescaling them would send them to the wrong place.
+  if (!point || point.length < 3) return "—";
+  return point.map((v) => (Math.round(v * 1000) / 1000).toString()).join(", ");
+}
+
+export function describeDefectSize(measurements: Record<string, unknown>): string {
+  const loop = measurements.boundary_edges;
+  const length = measurements.boundary_length;
+  if (Array.isArray(loop)) {
+    const span = typeof length === "number" ? `, ${Math.round(length * 100) / 100} long` : "";
+    return `${loop.length} edge loop${span}`;
+  }
+  if (typeof measurements.area === "number") return `area ${measurements.area}`;
+  if (typeof measurements.length === "number") return `length ${measurements.length}`;
+  return "—";
+}
+
+export async function readRepairQueue(query: {
+  limit?: number;
+  operator?: string;
+  status?: string;
+  unassigned?: boolean;
+} = {}): Promise<Read<{ filter: Record<string, unknown>; jobs: RepairJobRow[] }>> {
+  return request(hexeraApiRoutes.adminRepairQueue(query));
+}
+
+export type RepairThroughput = {
+  attempts_total: number;
+  awaiting_human: number;
+  blocked: number;
+  blocked_rate: number | null;
+  by_state: Record<string, number>;
+  delivered_repair_only: number;
+  delivered_with_mesh: number;
+  // null, not zero, when there are no jobs yet: "0% of nothing" reads as a failure.
+  delivery_rate: number | null;
+  in_flight: number;
+  jobs_total: number;
+  jobs_touched_by_an_operator: number;
+  jobs_with_attempts: number;
+  mean_seconds_to_delivery: number | null;
+  operator_decisions_total: number;
+  retry_decisions: number;
+};
+
+export async function readRepairThroughput(): Promise<Read<{ throughput: RepairThroughput }>> {
+  return request(hexeraApiRoutes.adminRepairThroughput);
+}
+
+export function formatRate(rate: number | null): string {
+  // A missing rate is "—", never "0%": the two mean opposite things to someone reading a launch
+  // dashboard, and printing the wrong one has sunk confidence in better services than this.
+  return rate === null ? "—" : `${Math.round(rate * 100)}%`;
+}
+
+export function formatDuration(seconds: number | null): string {
+  if (seconds === null) return "—";
+  if (seconds < 90) return `${Math.round(seconds)}s`;
+  if (seconds < 5400) return `${Math.round(seconds / 60)}m`;
+  return `${(seconds / 3600).toFixed(1)}h`;
+}
+
+export async function readRepairJob(jobId: string): Promise<Read<RepairJobDetail>> {
+  return request(hexeraApiRoutes.adminRepairJob(jobId));
+}
+
+export async function assignRepairJob(input: {
+  claim?: boolean;
+  jobId: string;
+  operator: string;
+}): Promise<Read<{ job: RepairJobRow }>> {
+  return request(hexeraApiRoutes.adminRepairJobAssign(input.jobId), {
+    body: JSON.stringify({ claim: input.claim ?? true, operator: input.operator }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+}
+
+export async function decideRepairJob(input: {
+  actor: string;
+  decision: string;
+  jobId: string;
+  notes?: string;
+  reason?: string;
+  strategy?: string;
+}): Promise<Read<{ applied: string; decisions: RepairDecisionRow[]; job: RepairJobRow }>> {
+  return request(hexeraApiRoutes.adminRepairJobDecide(input.jobId), {
+    body: JSON.stringify({
+      actor: input.actor,
+      decision: input.decision,
+      notes: input.notes ?? "",
+      reason: input.reason ?? "",
+      strategy: input.strategy ?? "",
+    }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+}
+
+// WHAT THE OPERATOR IS ASKED TO DO, in the words of the decision rather than the state. A button
+// reading "awaiting_strategy" tells nobody what clicking it means.
+export const REPAIR_DECISION_LABELS: Readonly<Record<string, string>> = {
+  ask_customer: "Ask the customer",
+  block: "Stop — cannot proceed",
+  choose_strategy: "Choose a strategy",
+  deliver: "Deliver mesh",
+  deliver_repair: "Deliver repaired CAD only",
+  escalate: "Escalate",
+  inspect: "Inspect",
+  manual_cleanup: "Send to manual cleanup",
+  mesh: "Mesh it",
+  repair: "Run repair",
+  retry: "Try again",
+  review_mesh: "Review the mesh",
+  review_repair: "Review the repair",
+};
+
+// The decisions that stop or hold a customer's job, which the API refuses without a reason. The
+// form uses this to REQUIRE the field rather than letting the operator discover it as a 422.
+export const REPAIR_DECISIONS_NEEDING_REASON: readonly string[] = [
+  "ask_customer",
+  "block",
+  "escalate",
+  "manual_cleanup",
+];
+
+export function repairDecisionLabel(decision: string): string {
+  return REPAIR_DECISION_LABELS[decision] ?? decision.replace(/_/g, " ");
+}
+
+export type RepairQueueGroup = {
+  jobs: RepairJobRow[];
+  key: "blocked" | "ours" | "settled" | "waiting";
+  title: string;
+};
+
+export function groupRepairQueue(rows: readonly RepairJobRow[]): RepairQueueGroup[] {
+  // GROUPED BY WHO IS HOLDING IT UP, because that is what an operator opening this page needs to
+  // know first - not alphabetical order and not raw status. Classification comes from the API's
+  // own flags so this page and the service metrics cannot disagree about what a state means.
+  const groups: RepairQueueGroup[] = [
+    { jobs: [], key: "ours", title: "Ours to move" },
+    { jobs: [], key: "waiting", title: "Waiting on a person" },
+    { jobs: [], key: "blocked", title: "Blocked" },
+    { jobs: [], key: "settled", title: "Settled" },
+  ];
+  const bucket = (row: RepairJobRow): RepairQueueGroup["key"] => {
+    if (row.settled) return "settled";
+    if (row.blocked) return "blocked";
+    if (row.awaiting_human) return "waiting";
+    return "ours";
+  };
+  for (const row of rows) {
+    const key = bucket(row);
+    groups.find((g) => g.key === key)?.jobs.push(row);
+  }
+  return groups.filter((g) => g.jobs.length > 0);
+}
+
+export function repairStatusLabel(status: string): string {
+  return status.replace(/_/g, " ");
+}

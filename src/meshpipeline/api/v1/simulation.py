@@ -147,6 +147,8 @@ def _artifact_label(artifact_type, engine: str) -> str:
     _t = getattr(artifact_type, "value", str(artifact_type))
     if _t == "mesh":
         return "Surface preview (.msh)"
+    if _t == "repair_report":
+        return "CAD inspection report (.json)"
     if _t == "mesh_bundle":
         try:
             from meshpipeline.engines.registry import get_spec
@@ -304,6 +306,19 @@ async def get_job(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
             except Exception:  # noqa: BLE001 - a malformed/old-version record never breaks the read
                 _final_message = None
 
+        # The parcel's contents, from the same rows the downloads above came from. Guarded like
+        # the rendered message beside it: a malformed or older record must never break a read of
+        # what a customer was given.
+        _manifest = None
+        try:
+            from meshpipeline.application.delivery_manifest import build as _build_manifest
+            _manifest = _build_manifest(
+                job_id=str(job.id),
+                artifacts=([] if _is_cancelled(job) else (job.artifacts or [])),
+                final_result=_fr_dict)
+        except Exception:  # noqa: BLE001
+            _manifest = None
+
         return JobStatus_(
             id=job.id,
             status=job.status,
@@ -320,6 +335,7 @@ async def get_job(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
             reviewer_findings=_failed_concerns(_review, _engine),
             final_message=_final_message,
             final_result=_fr_dict,
+            delivery_manifest=_manifest,
             review_outcome=_review_outcome(_fr_dict),
             review_concerns=_review_concerns(_fr_dict),
             # a string or nothing: a row from before the column carries none, and a test double must
