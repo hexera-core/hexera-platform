@@ -42,6 +42,11 @@ _REPAIRABLE: frozenset[str] = frozenset({
     DefectCode.curve_inconsistency.value,
     DefectCode.open_shell.value,
     DefectCode.duplicate_surface_data.value,
+    # ShapeFix repairs an orientation, and the caps catch it if the fix overreaches.
+    DefectCode.bad_orientation.value,
+    # A tolerance outlier is usually the written trace of a gap somebody widened the tolerance to
+    # hide; re-fixing it at a sane tolerance is exactly the conservative pass's job.
+    DefectCode.tolerance_outlier.value,
 })
 
 #: Defects that need a person. Each one is a question about intent that no cap can answer: whether
@@ -76,6 +81,12 @@ class Recommendation:
     abstain_reason: str = ""
     #: The profile a repair route would use. Empty for every other route.
     profile: str = ""
+    #: THE LOCATED FAILURE POINTS THIS ADVICE IS ABOUT: entity, region, size and position, taken
+    #: verbatim from the inspection. A route without targets is a verdict on the whole part; with
+    #: them, an executor has something to aim at and a person has somewhere to look. This is also
+    #: the per-defect context a model would be given, which is why it is assembled here rather
+    #: than left for each caller to dig out of the report.
+    targets: tuple[dict, ...] = ()
 
     @property
     def abstained(self) -> bool:
@@ -89,6 +100,7 @@ class Recommendation:
             "evidence": dict(self.evidence),
             "abstain_reason": self.abstain_reason,
             "profile": self.profile,
+            "targets": [dict(t) for t in self.targets],
             # WHO IS ADVISING, stated in the payload itself. When a model takes this over, a
             # recorded recommendation has to say which advisor produced it or the corpus cannot
             # tell the baseline's agreement from the model's.
@@ -116,12 +128,81 @@ def _severities(report: Mapping) -> set[str]:
             if isinstance(d, Mapping) and d.get("severity")}
 
 
+def _entities(report: Mapping) -> list[dict]:
+    """The located failure points, from wherever the report carries them.
+
+    Tolerates both shapes: a report nested under "report" (the stored RepairResult payload) and a
+    bare RepairReport dict. An older report has none, which is not an error - it is the absence
+    this module treats as "nothing to aim at".
+    """
+    for candidate in (report.get("report"), report):
+        if isinstance(candidate, Mapping):
+            found = candidate.get("entities")
+            if isinstance(found, list):
+                return [dict(e) for e in found if isinstance(e, Mapping)]
+    return []
+
+
+def _has_unattributed_invalid(report: Mapping) -> bool:
+    """Whether the report says "invalid, and we cannot say which entity"."""
+    inner = report.get("report") if isinstance(report.get("report"), Mapping) else report
+    defects = inner.get("defects") if isinstance(inner, Mapping) else None
+    if not isinstance(defects, list):
+        return False
+    for defect in defects:
+        if not isinstance(defect, Mapping):
+            continue
+        if defect.get("code") != DefectCode.invalid_brep.value:
+            continue
+        details = defect.get("details")
+        if isinstance(details, Mapping) and details.get("reason") == "unattributed":
+            return True
+    return False
+
+
+#: How many targets travel with one recommendation. A part with a thousand sliver faces does not
+#: need a thousand of them in a payload an operator reads or a model is prompted with - the count
+#: is in the evidence, and the worst are what gets looked at.
+_MAX_TARGETS = 20
+
+
+def _targets(entities: list[dict]) -> tuple[dict, ...]:
+    """The failure points to aim at, worst first, trimmed to a readable number."""
+    rank = {"fatal": 3, "error": 2, "warning": 1, "info": 0}
+    ordered = sorted(entities, key=lambda e: -rank.get(str(e.get("severity")), 0))
+    out = []
+    for entity in ordered[:_MAX_TARGETS]:
+        out.append({
+            "entity": entity.get("entity", ""),
+            "code": entity.get("code", ""),
+            "severity": entity.get("severity", ""),
+            "region": entity.get("region", "unknown"),
+            "message": entity.get("message", ""),
+            "measurements": dict(entity.get("measurements") or {}),
+            "location": dict(entity.get("location") or {}),
+        })
+    return tuple(out)
+
+
 def recommend(*, repair_status: str = "", report: Mapping | None = None,
               target_engine: str = "") -> Recommendation:
     """What to do with this file, on the evidence of its inspection. Advice only.
 
-    Abstains whenever the evidence is absent, inconclusive, or says something this baseline has no
-    rule for - which is most of what will arrive once real customer files do.
+    THE PRECEDENCE, AND WHY IT IS THIS WAY ROUND. Before defects were localised the only thing a
+    STEP inspection could say was `invalid_brep`, that code routed to the customer, and so the
+    conservative repair could never be recommended for the one format it can repair. Now the
+    question is not "is the part invalid" but "can we point at what is wrong":
+
+      1. nothing to go on, or something this baseline has no rule for  -> abstain
+      2. the file is unusable at all (no faces, unreadable)            -> ask the customer
+      3. invalid but attributed to NO entity                           -> a person looks
+      4. a defect that is a question about intent                      -> a person looks
+      5. every located defect is in how the file was written            -> repair it
+      6. nothing found                                                  -> mesh as it arrived
+
+    Step 3 is the honest reading of "invalid, cause unknown": there is nothing for a repair to aim
+    at, but bouncing it back to the customer having diagnosed nothing is poor service. A person
+    decides whether to ask them or dig further.
     """
     payload = dict(report or {})
 
@@ -142,8 +223,10 @@ def recommend(*, repair_status: str = "", report: Mapping | None = None,
                               abstain_reason="the inspection was inconclusive")
 
     codes = _codes(payload)
+    entities = _entities(payload)
     evidence = {"defect_codes": sorted(set(codes)), "repair_status": status,
-                "target_engine": target_engine}
+                "target_engine": target_engine,
+                "located_entities": len(entities)}
 
     if status == RepairStatus.clean.value and not codes:
         return Recommendation(
@@ -158,24 +241,47 @@ def recommend(*, repair_status: str = "", report: Mapping | None = None,
             route=ROUTE_ABSTAIN, confidence=0.0, evidence=evidence,
             abstain_reason=f"no rule covers {', '.join(sorted(set(unknown)))}")
 
-    if any(c in _CUSTOMER_MUST_ACT for c in codes):
-        fatal = "fatal" in _severities(payload)
+    # THE FILE IS UNUSABLE AS DELIVERED. No faces, or the kernel could not read it: there is no
+    # geometry to repair, and only a different file helps.
+    if "fatal" in _severities(payload):
         return Recommendation(
-            route=ROUTE_ASK_CUSTOMER, confidence=0.8 if fatal else 0.5,
-            reasons=("the file's B-rep is invalid, which repair cannot substitute for",),
-            evidence=evidence, profile="")
+            route=ROUTE_ASK_CUSTOMER, confidence=0.85,
+            reasons=("the file cannot be read or carries no geometry to mesh",),
+            evidence=evidence)
 
+    # INVALID, AND NOT FATAL. One rule for every shape of this, because the distinction that
+    # matters is whether we can POINT at the problem - not how the code happened to be written
+    # down. Nothing to aim a repair at, and nothing diagnosed worth bouncing a customer over, so a
+    # person looks. (Before localisation this case went straight back to the customer, which meant
+    # we asked them for a new file having diagnosed nothing.)
+    if any(c in _CUSTOMER_MUST_ACT for c in codes):
+        _unattributed = _has_unattributed_invalid(payload)
+        return Recommendation(
+            route=ROUTE_MANUAL_CLEANUP, confidence=0.5,
+            reasons=((("OpenCASCADE calls the part invalid but attributes it to no entity, so "
+                       "there is nothing for an automatic repair to aim at"),)
+                     if _unattributed else
+                     ("the part's B-rep is invalid in a way this baseline cannot localise",)),
+            evidence=evidence, profile=RepairProfile.manual_review.value)
+
+    judgement = [e for e in entities if e.get("code") in _NEEDS_JUDGEMENT]
     if any(c in _NEEDS_JUDGEMENT for c in codes):
         return Recommendation(
             route=ROUTE_MANUAL_CLEANUP, confidence=0.6,
             reasons=("the defects found are questions about intent that no cap can answer",),
-            evidence=evidence, profile=RepairProfile.manual_review.value)
+            evidence=evidence, profile=RepairProfile.manual_review.value,
+            targets=_targets(judgement or entities))
 
     if codes:
+        repairable = [e for e in entities if e.get("code") in _REPAIRABLE]
         return Recommendation(
             route=ROUTE_CONSERVATIVE_REPAIR, confidence=0.7,
             reasons=("every defect found is in how the file was written, not in what the part is",),
-            evidence=evidence, profile=RepairProfile.conservative.value)
+            evidence=evidence, profile=RepairProfile.conservative.value,
+            # WHAT A REPAIR WOULD AIM AT. Without these a recommendation to repair is still just a
+            # verdict on the whole part; with them an executor - or a person - has the entity, its
+            # size and its position.
+            targets=_targets(repairable))
 
     # A status that reports defects with none listed, or anything else this baseline cannot read.
     return Recommendation(route=ROUTE_ABSTAIN, confidence=0.0, evidence=evidence,

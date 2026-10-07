@@ -146,7 +146,10 @@ def test_a_clean_repair_is_accepted():
 
 def test_the_conservative_operation_set_closes_geometry_and_never_deletes_it():
     assert _CONSERVATIVE_OPERATIONS == (
-        "fix_small_edges", "fix_wireframe", "fix_face_boundaries", "sew_shells")
+        "fix_small_edges", "fix_wireframe", "fix_face_boundaries", "sew_shells",
+        # ADDS geometry rather than rearranging it, which is why it is opt-in and capped: sewing
+        # cannot close a hole, because a missing face has nothing coincident to stitch to.
+        "fill_planar_holes")
     # anything that removes or re-draws geometry is deliberately absent from a conservative pass
     for forbidden in ("remove", "delete", "defeature", "simplify", "rebuild"):
         assert not any(forbidden in op for op in _CONSERVATIVE_OPERATIONS)

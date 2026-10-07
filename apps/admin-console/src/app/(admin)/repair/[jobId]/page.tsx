@@ -3,6 +3,8 @@ import Link from "next/link";
 import { Alert, EmptyState, Panel, StatRow } from "@/app/_components/panel";
 import {
   compactDate,
+  describeDefectSize,
+  formatPoint,
   readRepairJob,
   repairDecisionLabel,
   repairRouteLabel,
@@ -192,6 +194,40 @@ export default async function RepairJobPage({
               ))}
             </ul>
           ) : null}
+        </Panel>
+      ) : null}
+
+      {recommendation && recommendation.targets.length > 0 ? (
+        <Panel
+          title="Where it is broken"
+          heading={`${recommendation.targets.length} located failure point(s)`}
+        >
+          {/* THE DIFFERENCE BETWEEN AN ADVISORY AND A SERVICE. "Your file is invalid" cannot be
+              acted on; "this 4-edge loop at (5, 5, 10) bounds a hole on an interior wall" can. */}
+          <table className="admin-table">
+            <thead>
+              <tr>
+                <th>Defect</th>
+                <th>Entity</th>
+                <th>Where on the part</th>
+                <th>Position</th>
+                <th>Size</th>
+              </tr>
+            </thead>
+            <tbody>
+              {recommendation.targets.map((target) => (
+                <tr key={`${target.entity}-${target.code}`}>
+                  <td>{target.code.replace(/_/g, " ")}</td>
+                  <td>{target.entity}</td>
+                  <td>
+                    {target.region === "interior" ? "inside the part" : target.region}
+                  </td>
+                  <td>{formatPoint(target.location.centroid)}</td>
+                  <td>{describeDefectSize(target.measurements)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </Panel>
       ) : null}
 

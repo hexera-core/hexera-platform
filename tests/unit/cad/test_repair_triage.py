@@ -93,11 +93,27 @@ def test_a_judgement_defect_outranks_a_repairable_one():
 
 
 def test_an_unusable_file_sends_us_back_to_the_customer():
+    # FATAL means there is no geometry to work with - unreadable, or no faces at all. Only a
+    # different file helps, so this is the one route that asks the customer for one.
     advice = recommend(repair_status="unrepairable", report=_report(("invalid_brep", "fatal")))
     assert advice.route == ROUTE_ASK_CUSTOMER
-    # and it is more certain when the inspection called it fatal than when it did not
-    softer = recommend(repair_status="repairable", report=_report(("invalid_brep", "error")))
-    assert advice.confidence > softer.confidence
+
+
+def test_an_invalid_part_we_cannot_localise_goes_to_a_person_not_the_customer():
+    # THE DECISION THIS PINS: before defects were localised, any invalid B-rep went straight back
+    # to the customer - which meant asking them for a new file having diagnosed nothing. An
+    # invalid part we cannot point at is now a person's problem first.
+    advice = recommend(repair_status="repairable", report=_report(("invalid_brep", "error")))
+    assert advice.route == ROUTE_MANUAL_CLEANUP
+    assert advice.profile == "manual_review"
+
+
+def test_the_unattributed_case_says_so_in_its_reasoning():
+    report = {"report": {"defects": [{"code": "invalid_brep", "severity": "error",
+                                      "details": {"reason": "unattributed"}}]}}
+    advice = recommend(repair_status="repairable", report=report)
+    assert advice.route == ROUTE_MANUAL_CLEANUP
+    assert "attributes it to no entity" in advice.reasons[0]
 
 
 def test_asking_the_customer_outranks_everything_else():
@@ -155,3 +171,87 @@ def test_a_malformed_report_never_raises():
     for junk in ({"report": "not-a-mapping"}, {"report": {"defects": "nope"}},
                  {"report": {"defects": [None, 7, {}]}}):
         assert recommend(repair_status="repairable", report=junk).abstained
+
+
+# LOCATED FAILURE POINTS - what a repair aims at
+
+
+def _located(*entities, defects=None) -> dict:
+    """A report in the shape the localiser produces: summary defects plus located entities."""
+    codes = defects or [(e["code"], e.get("severity", "error")) for e in entities]
+    return {"report": {"summary": "inspected",
+                       "defects": [{"code": c, "severity": s} for c, s in codes],
+                       "entities": list(entities)}}
+
+
+def _entity(code, *, entity="edge:8", severity="error", region="unknown", **measurements) -> dict:
+    return {"code": code, "severity": severity, "entity": entity, "region": region,
+            "message": f"{code} here", "measurements": measurements,
+            "location": {"centroid": [5.0, 5.0, 10.0]}}
+
+
+def test_a_hole_we_can_point_at_is_advised_to_repair_even_though_the_part_is_invalid():
+    # THE WHOLE POINT OF LOCALISATION. A part with a hole is invalid, and before this every such
+    # STEP routed to the customer - so the conservative repair could never be recommended for the
+    # one format it can actually repair.
+    advice = recommend(repair_status="repairable",
+                       report=_located(_entity("open_shell", boundary_edges=[8, 12, 2, 6])))
+
+    assert advice.route == ROUTE_CONSERVATIVE_REPAIR
+    assert advice.profile == "conservative"
+
+
+def test_the_advice_carries_what_a_repair_would_aim_at():
+    advice = recommend(repair_status="repairable",
+                       report=_located(_entity("open_shell", boundary_edges=[8, 12, 2, 6],
+                                               boundary_length=40.0)))
+
+    # a route without targets is just a verdict on the whole part
+    assert len(advice.targets) == 1
+    target = advice.targets[0]
+    assert target["entity"] == "edge:8"
+    assert target["measurements"]["boundary_edges"] == [8, 12, 2, 6]
+    assert target["location"]["centroid"] == [5.0, 5.0, 10.0]
+    assert advice.to_dict()["targets"][0]["entity"] == "edge:8"
+
+
+def test_a_defect_inside_the_part_is_carried_as_such():
+    advice = recommend(repair_status="repairable",
+                       report=_located(_entity("open_shell", entity="edge:3",
+                                               region="interior")))
+    # the one nobody spots by looking at the part in a viewer
+    assert advice.targets[0]["region"] == "interior"
+
+
+def test_targets_are_worst_first():
+    advice = recommend(
+        repair_status="repairable",
+        report=_located(_entity("small_edge", entity="edge:1", severity="warning"),
+                        _entity("open_shell", entity="edge:9", severity="error")))
+    assert [t["entity"] for t in advice.targets] == ["edge:9", "edge:1"]
+
+
+def test_a_judgement_defect_still_wins_and_still_carries_its_targets():
+    advice = recommend(
+        repair_status="repairable",
+        report=_located(_entity("open_shell", entity="edge:9"),
+                        _entity("self_intersection", entity="face:4")))
+    assert advice.route == ROUTE_MANUAL_CLEANUP
+    # and the person is pointed at the defect that needs the judgement, not at the easy one
+    assert [t["entity"] for t in advice.targets] == ["face:4"]
+
+
+def test_a_thousand_slivers_do_not_become_a_thousand_targets():
+    many = [_entity("small_edge", entity=f"edge:{i}", severity="warning") for i in range(200)]
+    advice = recommend(repair_status="repairable", report=_located(*many))
+    assert len(advice.targets) == 20
+    # the real count is still reported, so nothing is hidden by the trim
+    assert advice.evidence["located_entities"] == 200
+
+
+def test_advice_with_no_located_entities_still_routes_but_aims_at_nothing():
+    # the surface path and older reports carry no entities; the route is unchanged and the
+    # absence of targets is the honest signal that there is nothing to aim at
+    advice = recommend(repair_status="repairable", report=_report(("wire_gap", "error")))
+    assert advice.route == ROUTE_CONSERVATIVE_REPAIR
+    assert advice.targets == ()

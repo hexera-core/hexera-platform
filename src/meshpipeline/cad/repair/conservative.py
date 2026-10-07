@@ -55,6 +55,8 @@ _CONSERVATIVE_OPERATIONS: tuple[str, ...] = (
     "fix_wireframe",        # wire ordering, gaps between edges of the same wire
     "fix_face_boundaries",  # face/wire consistency, same-parameter and pcurve repair
     "sew_shells",           # coincident face boundaries joined into closed shells
+    "fill_planar_holes",    # a FLAT patch across a FLAT closed loop - the one operation that adds
+                            # geometry, because sewing cannot close a hole with nothing to stitch to
 )
 
 
@@ -107,6 +109,209 @@ def _write_step(shape, destination: Path) -> None:
         raise RepairRefused(f"the repaired shape could not be written to {destination.name}")
 
 
+def _free_loops(shape) -> list:
+    """The closed free-boundary wires on a shape - its holes, as loops."""
+    from OCP.ShapeAnalysis import ShapeAnalysis_FreeBounds
+    from OCP.TopAbs import TopAbs_WIRE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    out = []
+    try:
+        wires = ShapeAnalysis_FreeBounds(shape).GetClosedWires()
+        if wires is None:
+            return []
+        explorer = TopExp_Explorer(wires, TopAbs_WIRE)
+        while explorer.More():
+            out.append(TopoDS.Wire_s(explorer.Current()))
+            explorer.Next()
+    except Exception as exc:  # noqa: BLE001 - no free bounds is the common case
+        logger.debug("conservative: free-bound analysis unavailable (%s)", exc)
+    return out
+
+
+def _span(shape) -> float:
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+
+    box = Bnd_Box()
+    BRepBndLib.Add_s(shape, box)
+    if box.IsVoid():
+        return 0.0
+    xmin, ymin, zmin, xmax, ymax, zmax = box.Get()
+    return float(((xmax - xmin) ** 2 + (ymax - ymin) ** 2 + (zmax - zmin) ** 2) ** 0.5)
+
+
+def _loop_plane(wire):
+    """The plane a closed loop lies in, as (normal, centroid), or None when it is not planar."""
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCP.GeomAbs import GeomAbs_Plane
+
+    maker = BRepBuilderAPI_MakeFace(wire, True)
+    if not maker.IsDone():
+        return None
+    surface = BRepAdaptor_Surface(maker.Face())
+    if surface.GetType() != GeomAbs_Plane:
+        return None
+    axis = surface.Plane().Axis()
+    direction = axis.Direction()
+    geometry = _centre(wire)
+    if geometry is None:
+        return None
+    return ((direction.X(), direction.Y(), direction.Z()), geometry)
+
+
+def _centre(shape):
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+
+    box = Bnd_Box()
+    BRepBndLib.Add_s(shape, box)
+    if box.IsVoid():
+        return None
+    xmin, ymin, zmin, xmax, ymax, zmax = box.Get()
+    return ((xmin + xmax) / 2, (ymin + ymax) / 2, (zmin + zmax) / 2)
+
+
+#: How close two rims' spans must be to count as the same opening seen twice.
+_RIM_SPAN_TOLERANCE = 0.02
+#: How parallel their planes must be (|dot| of unit normals).
+_RIM_PARALLEL_TOLERANCE = 0.999
+
+
+def _paired_rims(loops: list) -> set[int]:
+    """Indices of loops that are the two ENDS OF A MISSING TUBE, not two separate holes.
+
+    THE PART-RUINING CASE, and the reason filling is not autonomous yet. A drilled through-hole
+    whose bore wall is missing leaves two rims: planar, parallel, congruent, offset along their
+    own normal. Each one looks exactly like a small fillable hole, and patching both SEALS the
+    hole - handing back a part with no bolt hole where the customer had one. Demonstrated on a
+    100x100x10 plate with an 8 mm bore: two loops, identical 22.627 spans, both far inside the
+    size cap.
+
+    What the right repair is for them - rebuild the cylinder, or ask - is a judgement, so they are
+    reported and left rather than guessed at.
+    """
+    planes = {}
+    for index, wire in enumerate(loops):
+        plane = _loop_plane(wire)
+        if plane is not None:
+            planes[index] = (plane, _span(wire))
+
+    paired: set[int] = set()
+    indices = sorted(planes)
+    for i, left in enumerate(indices):
+        for right in indices[i + 1:]:
+            (n1, c1), s1 = planes[left]
+            (n2, c2), s2 = planes[right]
+            if s1 <= 0 or s2 <= 0:
+                continue
+            if abs(s1 - s2) / max(s1, s2) > _RIM_SPAN_TOLERANCE:
+                continue
+            dot = abs(n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2])
+            if dot < _RIM_PARALLEL_TOLERANCE:
+                continue
+            # Offset along the shared normal rather than merely apart: two coplanar holes of the
+            # same size in one face are two holes, and must stay fillable.
+            offset = abs(sum((c2[k] - c1[k]) * n1[k] for k in range(3)))
+            lateral = sum((c2[k] - c1[k]) ** 2 for k in range(3)) ** 0.5
+            if offset > max(s1, s2) * 0.01 and offset >= lateral * 0.99:
+                paired.add(left)
+                paired.add(right)
+    return paired
+
+
+def _fill_planar_holes(shape, *, tolerance_mm: float, diagonal: float) -> tuple:
+    """Patch every FLAT closed free boundary. Returns (shape, what was filled, what was left).
+
+    PLANAR ONLY, AND SIZE-CAPPED, because this is the one operation here that adds surface the
+    customer never drew. Across a flat loop there is exactly one surface that can go there, so the
+    patch is determined rather than invented. A non-planar loop has infinitely many - that is a
+    judgement about the part's shape, and `BRepBuilderAPI_MakeFace(wire, OnlyPlane=True)` simply
+    declines it, which is the behaviour we want: left alone, reported, and routed to a person.
+    """
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_Sewing
+
+    loops = _free_loops(shape)
+    if not loops:
+        return shape, [], []
+
+    filled: list[dict] = []
+    left: list[dict] = []
+    patches = []
+    rims = _paired_rims(loops)
+    for position, wire in enumerate(loops):
+        span = _span(wire)
+        ratio = (span / diagonal) if diagonal > 0 else 0.0
+        if position in rims:
+            # SEALING THIS WOULD DELETE A FEATURE. Two rims of a missing tube wall, not two holes.
+            left.append({"reason": "paired_rims", "span": round(span, 6),
+                         "span_ratio": round(ratio, 6),
+                         "detail": ("this loop pairs with another of the same size on a parallel "
+                                    "plane - a missing tube wall, and patching both would seal a "
+                                    "through-hole")})
+            continue
+        if diagonal > 0 and ratio > rcfg.CAD_REPAIR_MAX_HOLE_SPAN_RATIO:
+            # NOT A HOLE, A MISSING WALL. A flat lid over one is a different part.
+            left.append({"reason": "too_large", "span": round(span, 6),
+                         "span_ratio": round(ratio, 6)})
+            continue
+        maker = BRepBuilderAPI_MakeFace(wire, True)
+        if not maker.IsDone():
+            left.append({"reason": "not_planar", "span": round(span, 6),
+                         "span_ratio": round(ratio, 6)})
+            continue
+        patches.append(maker.Face())
+        filled.append({"span": round(span, 6), "span_ratio": round(ratio, 6)})
+
+    if not patches:
+        return shape, filled, left
+
+    sewing = BRepBuilderAPI_Sewing(tolerance_mm)
+    sewing.SetNonManifoldMode(False)
+    sewing.Add(shape)
+    for patch in patches:
+        sewing.Add(patch)
+    sewing.Perform()
+    sewn = sewing.SewedShape()
+    if sewn is None or (hasattr(sewn, "IsNull") and sewn.IsNull()):
+        return shape, [], left + [{"reason": "sewing_failed"}]
+    return _as_solid_if_closed(sewn), filled, left
+
+
+def _as_solid_if_closed(shape):
+    """Promote a now-closed shell back to a solid, or hand back what came in.
+
+    A patched shell is geometrically closed but still typed as a shell, and a shell is not a
+    volume to a mesher. Promotion is attempted and its failure is not an error: the refusal checks
+    compare solid counts afterwards, so a shape that could not be promoted is judged on that
+    rather than on this function's opinion.
+    """
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeSolid
+    from OCP.TopAbs import TopAbs_SHELL
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    try:
+        shells = TopExp_Explorer(shape, TopAbs_SHELL)
+        maker = BRepBuilderAPI_MakeSolid()
+        added = 0
+        while shells.More():
+            maker.Add(TopoDS.Shell_s(shells.Current()))
+            added += 1
+            shells.Next()
+        if added == 0:
+            return shape
+        solid = maker.Solid()
+        if solid is None or (hasattr(solid, "IsNull") and solid.IsNull()):
+            return shape
+        return solid
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("conservative: could not promote a closed shell to a solid (%s)", exc)
+        return shape
+
+
 def _fix(shape, *, tolerance_mm: float):
     """Run the conservative operation set: a ShapeFix pass, and sewing ONLY where it belongs.
 
@@ -141,7 +346,7 @@ def _fix(shape, *, tolerance_mm: float):
     if _counts(fixed)["solids"] > 0:
         # Already closed. ShapeFix has done the conservative work; sewing from here could only
         # take the solid away.
-        return fixed
+        return fixed, [], []
 
     sewing = BRepBuilderAPI_Sewing(tolerance_mm)
     # NON-MANIFOLD MODE OFF: joining three faces along one edge produces a shape no mesher will
@@ -151,8 +356,21 @@ def _fix(shape, *, tolerance_mm: float):
     sewing.Perform()
     sewn = sewing.SewedShape()
     if sewn is None or (hasattr(sewn, "IsNull") and sewn.IsNull()):
-        return fixed
-    return sewn
+        sewn = fixed
+
+    # SEWING CANNOT CLOSE A HOLE. It stitches coincident boundaries, and a face that is simply
+    # missing has nothing to stitch to - so the commonest reason a real part will not mesh
+    # survives every operation above it. Patching is what closes it.
+    if not rcfg.CAD_REPAIR_FILL_PLANAR_HOLES:
+        # STILL REPORTED. A repair that leaves the defect it was run for must say so: an operator
+        # reading "repaired" over a part that still has a hole in it is how a ruined delivery
+        # happens. The loops are enumerated and handed back as left, with the reason.
+        remaining = _free_loops(sewn)
+        return sewn, [], [{"reason": "filling_disabled",
+                           "span": round(_span(wire), 6)} for wire in remaining]
+    patched, filled, left = _fill_planar_holes(
+        sewn, tolerance_mm=tolerance_mm, diagonal=_diagonal_mm(sewn))
+    return patched, filled, left
 
 
 def repair_step_file(source: Path, destination: Path, *,
@@ -186,7 +404,7 @@ def repair_step_file(source: Path, destination: Path, *,
 
     tolerance = min(rcfg.CAD_REPAIR_MAX_TOLERANCE_MM,
                     max(before["diagonal_mm"], 1.0) * rcfg.CAD_REPAIR_MAX_DEVIATION_RATIO)
-    fixed_shape = _fix(before_shape, tolerance_mm=tolerance)
+    fixed_shape, filled, unfilled = _fix(before_shape, tolerance_mm=tolerance)
 
     after = {
         "valid": _is_valid(fixed_shape),
@@ -195,7 +413,12 @@ def repair_step_file(source: Path, destination: Path, *,
         **_counts(fixed_shape),
     }
     measurements = {"before": before, "after": after, "tolerance_requested_mm": tolerance,
-                    "operations": list(_CONSERVATIVE_OPERATIONS)}
+                    "operations": list(_CONSERVATIVE_OPERATIONS),
+                    # WHAT SURFACE WAS ADDED, and what was left alone and why. A repair that
+                    # invented geometry has to say so and say how much, because a reviewer
+                    # approving it is approving the invention.
+                    "holes_filled": filled,
+                    "holes_left": unfilled}
 
     # THE AFTER-CHECKS. Each one refuses a specific way a "successful" repair can still be the
     # wrong answer. They run on the RESULT because an OpenCASCADE tolerance is a request.

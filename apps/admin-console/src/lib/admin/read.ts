@@ -241,6 +241,17 @@ export type RepairDecisionRow = {
   reason: string | null;
 };
 
+export type RepairTarget = {
+  code: string;
+  entity: string;
+  location: { bbox_max?: number[]; bbox_min?: number[]; centroid?: number[] };
+  measurements: Record<string, unknown>;
+  message: string;
+  // "interior" is the one an operator will not spot by rotating the part in a viewer.
+  region: string;
+  severity: string;
+};
+
 export type RepairRecommendation = {
   abstain_reason: string;
   advisor: string;
@@ -249,6 +260,9 @@ export type RepairRecommendation = {
   profile: string;
   reasons: string[];
   route: string;
+  // WHAT THE ADVICE IS ABOUT: the located failure points, so an operator can disagree with the
+  // specific defect rather than only with the conclusion.
+  targets: RepairTarget[];
   // Always true for now. A screen that renders this as anything but advice is contradicting the
   // payload - which is why the flag travels with it rather than being assumed by the reader.
   shadow: boolean;
@@ -273,6 +287,25 @@ export const REPAIR_ROUTE_LABELS: Readonly<Record<string, string>> = {
 
 export function repairRouteLabel(route: string): string {
   return REPAIR_ROUTE_LABELS[route] ?? route.replace(/_/g, " ");
+}
+
+export function formatPoint(point: number[] | undefined): string {
+  // The part's OWN coordinates, unconverted: an operator types these into their CAD system, and
+  // silently rescaling them would send them to the wrong place.
+  if (!point || point.length < 3) return "—";
+  return point.map((v) => (Math.round(v * 1000) / 1000).toString()).join(", ");
+}
+
+export function describeDefectSize(measurements: Record<string, unknown>): string {
+  const loop = measurements.boundary_edges;
+  const length = measurements.boundary_length;
+  if (Array.isArray(loop)) {
+    const span = typeof length === "number" ? `, ${Math.round(length * 100) / 100} long` : "";
+    return `${loop.length} edge loop${span}`;
+  }
+  if (typeof measurements.area === "number") return `area ${measurements.area}`;
+  if (typeof measurements.length === "number") return `length ${measurements.length}`;
+  return "—";
 }
 
 export async function readRepairQueue(query: {

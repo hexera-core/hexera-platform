@@ -32,6 +32,30 @@ CAD_REPAIR_MAX_TOLERANCE_MM: float = float(
 #: an operator with the customer's intent in front of them - not to a conservative pass.
 CAD_REPAIR_ALLOW_FACE_REMOVAL: bool = bool_env("CAD_REPAIR_ALLOW_FACE_REMOVAL", "false")
 
+#: Whether a repair may CLOSE A HOLE by building a flat patch across it. OFF, and the reason is
+#: worth reading before turning it on.
+#:
+#: THIS ONE INVENTS GEOMETRY. Every other conservative operation rearranges what the customer
+#: drew; this adds a face that was never in their file. It exists because sewing CANNOT close a
+#: hole - sewing stitches coincident boundaries, and a face that is simply missing has nothing to
+#: stitch to - so the commonest reason a real part will not mesh survives every other operation.
+#:
+#: WHY IT IS NOT ON BY DEFAULT. A flat patch across a flat loop looks determined, and across an
+#: isolated opening it is. But the two rims of a DRILLED THROUGH-HOLE are also flat closed loops,
+#: and patching them seals the hole - turning a part with a bolt hole into a part without one,
+#: which is a ruined part rather than a repaired one. Telling those two cases apart needs a
+#: discriminator this code does not have yet (paired, parallel, congruent loops offset along their
+#: normal are a missing tube wall, not two holes). Until it does, filling is an operator's
+#: decision on evidence, not an autonomous one, and the unfilled loops are reported with their
+#: reasons so that evidence exists.
+CAD_REPAIR_FILL_PLANAR_HOLES: bool = bool_env("CAD_REPAIR_FILL_PLANAR_HOLES", "false")
+
+#: The largest hole that may be patched, as a fraction of the part's diagonal measured across the
+#: hole's own bounding box. Past this it is not a hole, it is a missing wall - and a flat lid over
+#: a missing wall is a different part, not a repaired one.
+CAD_REPAIR_MAX_HOLE_SPAN_RATIO: float = float(
+    optional_env("CAD_REPAIR_MAX_HOLE_SPAN_RATIO", "0.75"))
+
 # NO TIMEOUT SETTING HERE, deliberately. ShapeFix on a pathological shape can run for a very long
 # time and a worker holding a lease is not free - but OpenCASCADE offers no interruption point, so
 # a declared timeout would be a number nothing honours. The bound that exists is the run's own

@@ -372,6 +372,10 @@ INVENTORY: list[Group] = [
                help="largest tolerance in mm a repair may leave on any sub-shape"),
         EnvVar("CAD_REPAIR_ALLOW_FACE_REMOVAL", "false", kind="bool", exposure="internal",
                help="allow a repair to delete faces; defeaturing is an operator judgement, not a conservative pass"),
+        EnvVar("CAD_REPAIR_FILL_PLANAR_HOLES", "false", kind="bool", exposure="internal",
+               help="close a hole with a flat patch; adds geometry, and can seal a drilled through-hole - operator decision until that case is detected"),
+        EnvVar("CAD_REPAIR_MAX_HOLE_SPAN_RATIO", "0.75", kind="float", exposure="internal",
+               help="largest patchable hole, as a fraction of the part diagonal; past this it is a missing wall"),
     ]),
     Group("Quotas", vars=[
         EnvVar("MAX_JOBS_PER_OWNER", "5"),
