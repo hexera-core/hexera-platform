@@ -398,6 +398,39 @@ async def _run_snappy_timed(R, workspace, cap, publish: ExecutionEventPublisher,
     return result
 
 
+#: the approved request's typed directions -> snappy's domain_margin keys
+_CONFIRMED_KEYS = {"upstream": "up", "downstream": "down", "lateral": "side", "vertical": "vert"}
+
+
+def confirmed_margins(strategy: dict, requested: dict | None, ruler_m: float | None) -> dict:
+    """The strategy with every far-field direction the user confirmed set to the confirmed
+    number. Only with a stated reference length - the unit those numbers are in, and the unit
+    domain_from_strategy sizes in when it has one; without it the typed numbers have no unit and
+    the planner's margins stand. 'lateral' also sets the vertical room when no vertical number
+    was stated, the way the extent gate reads 'above/below' as lateral."""
+    if not (requested and ruler_m):
+        return strategy
+    margin = dict((strategy or {}).get("domain_margin") or {})
+    stated = {}
+    for key, mk in _CONFIRMED_KEYS.items():
+        v = requested.get(key)
+        try:
+            if v is not None and float(v) > 0.0:
+                stated[mk] = float(v)
+        except (TypeError, ValueError):
+            continue
+    if "side" in stated and "vert" not in stated:
+        stated["vert"] = stated["side"]
+    if not stated:
+        return strategy
+    changed = {k: (margin.get(k), v) for k, v in stated.items() if margin.get(k) != v}
+    if changed:
+        logger.info("far field: the confirmed margins replace the planner's %s",
+                    ", ".join(f"{k} {old}->{new}" for k, (old, new) in changed.items()))
+    margin.update(stated)
+    return {**(strategy or {}), "domain_margin": margin}
+
+
 def _domain_preflight(state, analysis: dict, dmin, dmax, *,
                       grounded: bool, symmetry_faces: list | None = None
                       ) -> PreflightRefusal | None:
@@ -714,6 +747,14 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                     _budget = _corr
             strategy = {**strategy, "max_cells": _budget}
             rec = recommend_refinement(analysis, max_cells=_budget)
+            # THE USER'S CONFIRMED MARGINS WIN. The planner writes domain_margin itself, and a
+            # brief cannot bind a model: an F1 front wing confirmed at 10 reference lengths
+            # downstream (flow -z) was planned at 5, the reviewer sent it back three times and it
+            # shipped with concerns. Each direction the user stated is the number the box gets -
+            # in the reference length, the unit the extent gate judges it in; unstated directions
+            # keep the planner's sizing.
+            strategy = confirmed_margins(strategy, state.get("requested_extents"),
+                                         state.get("reference_length_m"))
             # the approved ruler travels with the box it sizes - the same length the extent
             # gate will judge the delivered box in (see domain_from_strategy)
             dmin, dmax = R.domain_from_strategy(analysis, strategy, symmetry,
