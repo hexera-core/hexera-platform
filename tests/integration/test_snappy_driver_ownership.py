@@ -467,6 +467,11 @@ async def _run(monkeypatch, tmp_path, *, body=_full_span_cube, native_double=Non
         # block that box, so the domain pre-flight re-plans every pass and meshes none of them
         st.update({"requested_extents": {"downstream": 20.0}, "reference_length_m": 1.0,
                    "requirements_strict": True, "flow_axis": "+x"})
+        # The driver now builds the box from the confirmed margins, so a short box can no longer
+        # come from the plan. The pre-flight stays the safety net for a box that still misses
+        # the request; hold the plan's margins here so that net is what this scenario exercises.
+        import meshpipeline.engines.snappy.drivers as _drivers
+        monkeypatch.setattr(_drivers, "confirmed_margins", lambda s, _r, _m: s)
     graph = _graph(st)
     monkeypatch.setattr(gm, "build_graph",
                         lambda checkpointer: graph.compile(checkpointer=checkpointer))
