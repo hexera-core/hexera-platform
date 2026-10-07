@@ -60,10 +60,12 @@ def test_stack_thickness_is_the_geometric_sum_of_the_layer_stack():
 
 
 def test_class_layer_counts_per_stage_are_the_documented_table():
-    assert LP.class_layer_counts(5, 0) == {"normal": 5, "thin": 3, "razor": 1}
-    assert LP.class_layer_counts(5, 1) == {"normal": 5, "thin": 2, "razor": 1}
-    assert LP.class_layer_counts(5, 2) == {"normal": 5, "thin": 1, "razor": 0}
-    assert LP.class_layer_counts(3, 0) == {"normal": 3, "thin": 2, "razor": 1}
+    # stage 0: the full request everywhere - nothing is cut before a pass has measured a failure
+    assert LP.class_layer_counts(5, 0) == {"normal": 5, "thin": 5, "razor": 5}
+    assert LP.class_layer_counts(5, 1) == {"normal": 5, "thin": 3, "razor": 1}
+    assert LP.class_layer_counts(5, 2) == {"normal": 5, "thin": 2, "razor": 1}
+    assert LP.class_layer_counts(5, 3) == {"normal": 5, "thin": 1, "razor": 0}
+    assert LP.class_layer_counts(3, 1) == {"normal": 3, "thin": 2, "razor": 1}
     assert LP.class_layer_counts(0, 0) == {"normal": 0, "thin": 0, "razor": 0}
     # past the terminal stage the terminal counts hold (total function, no KeyError ever)
     assert LP.class_layer_counts(5, 99) == LP.class_layer_counts(5, LP.MAX_ESCALATION_STAGE)
@@ -72,22 +74,39 @@ def test_class_layer_counts_per_stage_are_the_documented_table():
 def test_the_ladder_is_finite_and_deterministic():
     assert LP.escalate(0) == 1
     assert LP.escalate(1) == 2
-    assert LP.escalate(2) is None, "exhausted - the planner's freeform re-plan takes over"
+    assert LP.escalate(2) == 3
+    assert LP.escalate(3) is None, "exhausted - the planner's freeform re-plan takes over"
+
+
+def test_stage_zero_measures_and_records_but_cuts_nothing():
+    # the up-front cut compensated for snappy's absolute minVol bar; with the bar scaled to the
+    # mesh, thin and sharp regions keep the layers snappy's own quality checks allow
+    pol = LP.plan_layer_policy(mixed_field(), rec=REC, strategy=STRATEGY, wall_name="body")
+    assert pol is not None and pol.mode == "uniform" and pol.labels is None
+    p = pol.policy
+    assert p["escalation_stage"] == 0 and p["uniform_n_layers"] == 5
+    assert p["classes"]["thin"] == {"n_layers": 5, "area_frac": 0.06}
+    assert p["classes"]["razor"] == {"n_layers": 5, "area_frac": 0.04}
+    assert p["min_thickness_rel"] == 0.02, "razor present relaxes minThickness at stage 0"
+    assert LP.make_region_labeler(pol, "body") is None, "nothing to split"
+    assert LP.layer_counts_for(LP.reconcile_policy(pol, [], "body")) == {"body": 5}
 
 
 # -- policy planning --------------------------------------------------------------------------
 
 
 def test_a_mixed_surface_yields_a_split_policy_with_honest_fractions():
-    pol = LP.plan_layer_policy(mixed_field(), rec=REC, strategy=STRATEGY, wall_name="body")
+    # the first escalation (a pass measured inverted layer cells) splits the wall by class
+    pol = LP.plan_layer_policy(mixed_field(), rec=REC, strategy=STRATEGY, wall_name="body",
+                               stage=1)
     assert pol is not None and pol.mode == "split"
     p = pol.policy
-    assert p["requested_layers"] == 5 and p["escalation_stage"] == 0
+    assert p["requested_layers"] == 5 and p["escalation_stage"] == 1
     assert p["classes"]["normal"]["n_layers"] == 5
     assert p["classes"]["thin"] == {"n_layers": 3, "area_frac": 0.06}
     assert p["classes"]["razor"] == {"n_layers": 1, "area_frac": 0.04}
     assert p["region_patches"] == {"body": "normal", "body_thin": "thin", "body_razor": "razor"}
-    assert p["min_thickness_rel"] == 0.02, "razor present relaxes minThickness at stage 0"
+    assert p["min_thickness_rel"] == 0.02, "razor present relaxes minThickness at stage 1"
 
 
 def test_no_thin_features_means_no_policy_at_all():
@@ -116,7 +135,7 @@ def test_the_master_switch_disables_everything(monkeypatch):
 
 def test_a_wholly_thin_surface_degrades_to_a_global_policy_not_a_split():
     pol = LP.plan_layer_policy(field_of([0.005] * 100), rec=REC, strategy=STRATEGY,
-                               wall_name="body")
+                               wall_name="body", stage=1)
     assert pol is not None and pol.mode == "global"
     assert pol.labels is None, "a global policy splits nothing"
     assert pol.policy["region_patches"] == {"body": "razor"}
@@ -135,14 +154,16 @@ def test_a_broken_recommendation_costs_no_build(caplog):
 
 
 def test_reconcile_keeps_a_split_that_really_staged():
-    pol = LP.plan_layer_policy(mixed_field(), rec=REC, strategy=STRATEGY, wall_name="body")
+    pol = LP.plan_layer_policy(mixed_field(), rec=REC, strategy=STRATEGY, wall_name="body",
+                               stage=1)
     out = LP.reconcile_policy(pol, ["body", "body_razor", "body_thin"], "body")
     assert out.mode == "split"
     assert LP.layer_counts_for(out) == {"body": 5, "body_thin": 3, "body_razor": 1}
 
 
 def test_reconcile_drops_class_regions_that_received_no_triangles():
-    pol = LP.plan_layer_policy(mixed_field(), rec=REC, strategy=STRATEGY, wall_name="body")
+    pol = LP.plan_layer_policy(mixed_field(), rec=REC, strategy=STRATEGY, wall_name="body",
+                               stage=1)
     out = LP.reconcile_policy(pol, ["body", "body_razor"], "body")
     assert set(LP.layer_counts_for(out)) == {"body", "body_razor"}
 
@@ -152,12 +173,22 @@ def test_reconcile_degrades_to_uniform_on_real_cad_regions():
     pol = LP.plan_layer_policy(mixed_field(), rec=REC, strategy=STRATEGY, wall_name="body")
     out = LP.reconcile_policy(pol, ["fluid", "casing"], "body")
     assert out.mode == "uniform"
-    assert LP.layer_counts_for(out) == {"body": 5}
-    # from stage 1 the ladder reduces uniformly
+    # the count lands on the regions that were staged, by their own names - keyed by the wall
+    # name alone, the renderer gave each real region the full request whatever the ladder
+    # decided, and the record named a patch that did not exist
+    assert LP.layer_counts_for(out) == {"fluid": 5, "casing": 5}
+    # from stage 1 the ladder reduces uniformly, to the thin class's count of that stage
     pol1 = LP.plan_layer_policy(mixed_field(), rec=REC, strategy=STRATEGY, wall_name="body",
                                 stage=1)
     out1 = LP.reconcile_policy(pol1, ["fluid", "casing"], "body")
-    assert LP.layer_counts_for(out1) == {"body": 2}
+    assert LP.layer_counts_for(out1) == {"fluid": 3, "casing": 3}
+    pol2 = LP.plan_layer_policy(mixed_field(), rec=REC, strategy=STRATEGY, wall_name="body",
+                                stage=2)
+    out2 = LP.reconcile_policy(pol2, ["fluid", "casing"], "body")
+    assert LP.layer_counts_for(out2) == {"fluid": 2, "casing": 2}
+    # a surface staged as the one wall keeps the one entry
+    assert LP.layer_counts_for(LP.reconcile_policy(pol1, ["body"], "body")) == {"body": 3}
+    assert LP.layer_counts_for(LP.reconcile_policy(pol1, [], "body")) == {"body": 3}
 
 
 # -- the authored artefacts -------------------------------------------------------------------
@@ -183,7 +214,7 @@ def test_split_surface_and_per_region_layer_counts_reach_the_dict(tmp_path):
     tris = wedge()
     write_stl_solids(ws / "input.stl", {"body": tris})
     f = measure_from_triangles(tris)
-    pol = LP.plan_layer_policy(f, rec=REC, strategy=STRATEGY, wall_name="body")
+    pol = LP.plan_layer_policy(f, rec=REC, strategy=STRATEGY, wall_name="body", stage=1)
     assert pol is not None and pol.mode == "split"
     prep = R.prepare_surface(ws, geometry_file="input.stl", wall_patch="body",
                              domain_min=[-1] * 3, domain_max=[2] * 3,
@@ -244,7 +275,8 @@ def test_write_layer_policy_records_and_removes(tmp_path):
 
 
 def test_the_mirror_doubled_triangle_list_is_labelled_by_tiling():
-    pol = LP.plan_layer_policy(mixed_field(), rec=REC, strategy=STRATEGY, wall_name="body")
+    pol = LP.plan_layer_policy(mixed_field(), rec=REC, strategy=STRATEGY, wall_name="body",
+                               stage=1)
     label = LP.make_region_labeler(pol, "body")
     base = [((0, 0, 0), (1, 0, 0), (0, 1, 0))] * 100
     once = label(base)
@@ -261,9 +293,9 @@ GOLDEN_SNAPPY_DICT = (
     '\ncastellatedMesh true; snap true; addLayers true;\n'
     'geometry { body.stl { type triSurfaceMesh; name body; } }\n'
     'castellatedMeshControls { maxLocalCells 2000000; maxGlobalCells 2000000; minRefinementCells 10;\n'
-    '  maxLoadUnbalance 0.10; nCellsBetweenLevels 3; features ( { file "body.eMesh"; level 4; } );\n'
-    '  refinementSurfaces { body { level (3 3); } } resolveFeatureAngle 35;\n'
-    '  refinementRegions { body { mode distance; levels ((0.0625 3) (0.25 2)); } }\n'
+    '  maxLoadUnbalance 0.10; nCellsBetweenLevels 3; features ( { file "body.eMesh"; level 5; } );\n'
+    '  refinementSurfaces { body { level (4 4); } } resolveFeatureAngle 35;\n'
+    '  refinementRegions { body { mode distance; levels ((0.0625 4) (0.25 3)); } }\n'
     '  locationInMesh (-3.78 -2.86 -2.86); allowFreeStandingZoneFaces true; }\n'
     'snapControls { nSmoothPatch 3; tolerance 2.0; nSolveIter 50; nRelaxIter 8; nFeatureSnapIter 15;\n'
     '  implicitFeatureSnap false; explicitFeatureSnap true; multiRegionFeatureSnap false; }\n'
@@ -283,13 +315,17 @@ def test_no_thin_features_authors_the_byte_identical_historical_dict(tmp_path):
     # Captured from the renderer BEFORE the thin-feature layer policy existed (fixed inputs).
     # A geometry with no thin features - policy None, no counts, no overrides - must author
     # EXACTLY this case: the policy is an addition at thin features, never a drift elsewhere.
+    # Re-captured once when the background grid became cubic (snappy_runner.background_grid):
+    # the 11 x 7 x 7 box was 82 x 83 x 83 (cells 1.6x longer along x) at level 3; it is now
+    # 66 x 42 x 42 cubic cells at level 4 - the same 0.0104 wall cell the recommender intends,
+    # on every axis instead of only two.
     ws = _workspace(tmp_path)
     summary = R.render_snappy_case(
         ws, surface_name="body", feature_file="body.eMesh", analysis=ANALYSIS,
         recommendation=REC, domain_min=[-4.0, -3.0, -3.0], domain_max=[7.0, 4.0, 4.0],
         strategy=STRATEGY)
     assert (ws / "system" / "snappyHexMeshDict").read_text() == GOLDEN_SNAPPY_DICT
-    assert summary == {"divisions": [82, 83, 83], "surface_level": [3, 3], "feature_level": 4,
+    assert summary == {"divisions": [66, 42, 42], "surface_level": [4, 4], "feature_level": 5,
                        "location_in_mesh": [-3.78, -2.86, -2.86], "max_cells": 2000000,
                        "n_layers": 5, "domain_min": [-4.0, -3.0, -3.0],
                        "domain_max": [7.0, 4.0, 4.0]}, (

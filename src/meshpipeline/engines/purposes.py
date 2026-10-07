@@ -27,6 +27,10 @@ class Purpose:
     # it from the purpose; only the gate and the engine runners read it.
     # "" = the distinction does not apply (structural; CHT, which declares its own).
     flow_topology: str = ""
+    # THE FLOW KIND an engine must be designed for to serve this purpose (engines/capability.py
+    # FLOW_KINDS): the topology for the CFD purposes, and its own kind for the two that have none.
+    # Engines declare, per flow kind, the geometry forms they can take (EngineSpec.accepts).
+    flow_kind: str = ""
     # USE-CASE review axes (ReviewAxis tuple): what THIS workflow requires of any mesh,
     # regardless of engine (external CFD wants far-field clearance; structural wants the
     # restraint/load surfaces tagged). The reviewer runtime unions these with the
@@ -50,6 +54,7 @@ PURPOSES: dict[str, Purpose] = {
         # PLANAR body (2D plane-stress/strain) - the surface mesh that IS the solid
         # discretization (CPS/plane elements). Both kinds serve this purpose.
         requires_mesh_kind=("solid-volume", "surface-mesh"),
+        flow_kind="structural",
         review_axes=_STRUCTURAL_AXES,
     ),
     "external_cfd": Purpose(
@@ -58,6 +63,7 @@ PURPOSES: dict[str, Purpose] = {
         boundary_roles=("wall", "farfield", "symmetry", "empty"),
         requires_mesh_kind="fluid-volume",   # needs the fluid AROUND the body meshed
         flow_topology="external",
+        flow_kind="external",
         review_axes=_EXTERNAL_CFD_AXES,
     ),
     "internal_cfd": Purpose(
@@ -66,6 +72,7 @@ PURPOSES: dict[str, Purpose] = {
         boundary_roles=("wall", "inlet", "outlet", "symmetry", "empty"),
         requires_mesh_kind="fluid-volume",   # needs the fluid INSIDE the cavity meshed
         flow_topology="internal",
+        flow_kind="internal",
         review_axes=_INTERNAL_CFD_AXES,
     ),
     "conjugate_heat_transfer": Purpose(
@@ -75,6 +82,7 @@ PURPOSES: dict[str, Purpose] = {
         # (splitMeshRegions auto-creates the coupled mappedWall patches), not asked for.
         boundary_roles=("inlet", "outlet", "wall", "external", "symmetry", "empty"),
         requires_mesh_kind="multiregion-volume",  # coupled fluid + solid meshes in one case
+        flow_kind="multi-region",
         review_axes=_CHT_AXES,
     ),
 }
@@ -136,32 +144,65 @@ def topology_of(purpose_key: str) -> str:
     return PURPOSES[purpose_key].flow_topology if purpose_key in PURPOSES else ""
 
 
-def kinds_admitted_as(input_kind: str | None, required_mesh_kinds: tuple) -> tuple:
+def flow_kind_of(purpose_key: str) -> str:
+    return PURPOSES[purpose_key].flow_kind if purpose_key in PURPOSES else ""
+
+
+#: For INTERNAL flow from a SURFACE, these kinds are one input: the closed boundary of the fluid.
+#: A surface of the fluid volume (open-ended or capped), a surface of the part whose bore carries
+#: the flow, and a part's skin all come down, once staged, to the wall around the fluid with the
+#: confirmed openings as its lids (the shared internal-surface staging finds the fluid's side). So
+#: an engine that takes a surface for internal flow takes it whichever of them the user confirmed.
+_FLUID_BOUNDARY_KINDS: tuple[str, ...] = ("fluid-domain", "body-surface", "solid-body")
+
+
+def kinds_admitted_as(input_kind: str | None, required_mesh_kinds: tuple, *,
+                      topology: str = "", form: str = "") -> tuple:
     """The capability input kinds a submitted geometry satisfies for a purpose. To a flow engine a
     CAD solid of the physical part IS its surface - the mesher wraps the skin and fills the fluid
     around or inside it - so for a purpose that needs a fluid volume, "solid-body" satisfies a
     "body-surface" capability. For structural work it stays its own kind: gmsh meshes the solid
     itself. Without this, a car body, a wing or a blade confirmed on the geometry check as "a
     solid body the fluid flows around" was refused: "cannot produce an external_cfd mesh from a
-    'solid-body' geometry"."""
+    'solid-body' geometry". And for internal flow from a SURFACE file (`form`, engines/capability)
+    every kind in _FLUID_BOUNDARY_KINDS is the same input: cfMesh was refused an STL confirmed as
+    the fluid volume, and Gmsh one confirmed as the part, for a distinction a surface does not
+    carry. Whether the engine takes a surface at all is its own declaration (the form rule)."""
     if input_kind is None:
         return ()
+    if (form == "surface" and topology == "internal" and "fluid-volume" in required_mesh_kinds
+            and input_kind in _FLUID_BOUNDARY_KINDS):
+        return _FLUID_BOUNDARY_KINDS
     if input_kind == "solid-body" and "fluid-volume" in required_mesh_kinds:
         return ("solid-body", "body-surface")
     return (input_kind,)
 
 
-def is_compatible(spec, purpose_key: str, input_kind: str | None = None) -> bool:
+def is_compatible(spec, purpose_key: str, input_kind: str | None = None, *,
+                  form: str = "") -> bool:
     p = PURPOSES[purpose_key]
     req, req_topo = p.requires_mesh_kind, p.flow_topology
     req = (req,) if isinstance(req, str) else tuple(req)
-    admitted = kinds_admitted_as(input_kind, req)
+    admitted = kinds_admitted_as(input_kind, req, topology=req_topo, form=form)
     return any(
         c.output_kind in req
         and (input_kind is None or c.input_kind in admitted)
         and (not req_topo or req_topo in c.topologies)
         for c in spec.capabilities
     )
+
+
+def serving_capabilities(spec, purpose_key: str, input_kind: str | None) -> list:
+    """The capabilities of `spec` that produce this purpose's mesh from this geometry (the ones
+    is_compatible accepts on)."""
+    p = PURPOSES[purpose_key]
+    req, req_topo = p.requires_mesh_kind, p.flow_topology
+    req = (req,) if isinstance(req, str) else tuple(req)
+    admitted = kinds_admitted_as(input_kind, req)
+    return [c for c in spec.capabilities
+            if c.output_kind in req
+            and (input_kind is None or c.input_kind in admitted)
+            and (not req_topo or req_topo in c.topologies)]
 
 
 def engines_producing_topology(specs: dict, topo: str) -> list[str]:

@@ -79,12 +79,18 @@ async def node_engine_select(state: PipelineState) -> dict:
     # (which is where the two could disagree).
     _topology = flow_topology(state.get("purpose", "")) if state.get("purpose") else ""
     if _topology == "internal":
-        candidates = engines_producing_topology("internal")
-        # Prefer the default engine when it qualifies, else the first in a STABLE order.
-        # Was `candidates[0]` - whichever engine happened to come first in the catalog
-        # dict, so opening internal on another engine silently re-pointed this branch.
+        # The engines DECLARED to take this file for internal flow, in their declared ladder
+        # order (engines/capability.py). When none takes it, every internal engine stays a
+        # candidate so admission refuses with the honest account rather than this node guessing.
+        from meshpipeline.engines.capability import engines_for, geometry_form_of_state
+        candidates = (list(engines_for("internal", geometry_form_of_state(state)))
+                      or sorted(engines_producing_topology("internal")))
+        # Prefer the default engine when it qualifies, else the first in a STABLE order (the
+        # declared ladder order, or by name). Was a raw `candidates[0]` - whichever engine
+        # happened to come first in the catalog dict, so opening internal on another engine
+        # silently re-pointed this branch.
         forced = (default_engine() if default_engine() in candidates
-                  else (sorted(candidates)[0] if candidates else default_engine()))
+                  else (candidates[0] if candidates else default_engine()))
         logger.info("node_engine_select: topology=internal → %s (spec: %s) - job_id=%s",
                     forced, candidates, job_id)
         await _publish(job_id, f"Mesh engine: {forced}", "forced")

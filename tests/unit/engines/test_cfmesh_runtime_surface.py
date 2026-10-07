@@ -44,6 +44,8 @@ MUST_NOT_DECLARE: dict[str, str] = {
     "surface_capture_reference": "cfMesh does not body-fit a snapped wall to a reference CAD",
     "stage_declared":            "cfMesh does not open a CAD body at the declared ports before the "
                                  "builder starts (vmtk does); the builder hook is optional",
+    "native_surface_suffixes":   "cfMesh reads only STL: cad/staging converts every other surface "
+                                 "for it (vmtk declares .vtp, which it reads itself)",
 }
 
 

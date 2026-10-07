@@ -181,16 +181,18 @@ def test_layer_fatal_passes_escalate_without_consulting_the_planner(harness, tmp
     # the ladder instead of burning model rounds on a failure the classifier already located
     assert harness["planner_calls"] == 1
     assert harness["policy_stages"] == [0, 1, 2], "each pass planned its policy at its stage"
-    assert json.loads((tmp_path / LP.ESCALATION_FACT).read_text())["stage"] == 2
-    # the authored counts walked the ladder: razor-dominant global count 1, 1, 0
-    assert [c.get("body") for c in harness["render_counts"]] == [1, 1, 0]
+    assert json.loads((tmp_path / LP.ESCALATION_FACT).read_text())["stage"] == 3
+    # the authored counts walked the ladder: the full request first (nothing is cut before a
+    # failure is measured), then the razor-dominant global count 1, 1
+    assert [c.get("body") for c in harness["render_counts"]] == [5, 1, 1]
 
 
 def test_the_exhausted_ladder_hands_the_failure_back_to_the_planner(harness, tmp_path,
                                                                     monkeypatch):
-    LP.write_escalation(tmp_path, 2)  # the ladder is already at its terminal stage
+    # the ladder is already at its terminal stage
+    LP.write_escalation(tmp_path, LP.MAX_ESCALATION_STAGE)
     _drive(tmp_path, monkeypatch)
-    # pass 1 fails at stage 2 -> no rung left -> the freeform re-plan resumes for passes 2, 3
+    # pass 1 fails at the last stage -> no rung left -> the freeform re-plan resumes for 2, 3
     assert harness["planner_calls"] == 3
 
 

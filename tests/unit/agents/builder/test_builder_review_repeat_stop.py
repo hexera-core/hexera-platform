@@ -30,6 +30,10 @@ def _driver(stop: bool, called: list):
         if stop:
             return False, STOP_REVIEWED_CASE_REPEATS, run.outcome(
                 produced_deliverable=False, failure_marker=STOP_REVIEWED_CASE_REPEATS)
+        # an ordinary build leaves its mesh on disk (snappy's declared deliverable marker): only a
+        # mesh on disk is announced as "Mesh built"
+        (workspace / "constant" / "polyMesh").mkdir(parents=True, exist_ok=True)
+        (workspace / "constant" / "polyMesh" / "owner").write_text("")
         return True, "submit_mesh:success", run.outcome(produced_deliverable=True)
     return _drive
 

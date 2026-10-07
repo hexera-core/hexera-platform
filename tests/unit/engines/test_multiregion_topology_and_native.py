@@ -150,9 +150,12 @@ def test_2_the_stage_order_is_the_contract():
         "blockMesh",
         "surfaceFeatureExtract",
         "snappyHexMesh -overwrite",
+        # the cells of no declared region are removed before the split (no `domain0`)
+        "topoSet -dict system/topoSetDict.zoned",
+        "subsetMesh zoned -overwrite -patch exterior",
         "splitMeshRegions -cellZones -overwrite",
     ]
-    assert len(native.NATIVE_STAGES) == 4
+    assert len(native.NATIVE_STAGES) == 6
 
 
 def _drive(tmp_path, monkeypatch, *, rc_for=None, timeout_on=None, preflight=None):
@@ -188,7 +191,7 @@ def test_1_a_valid_build_runs_every_stage_in_order_then_declares_the_regions(tmp
                                                                              monkeypatch):
     ws, seen, result = _drive(tmp_path, monkeypatch)
     assert [s["stage"] for s in seen] == [n for _c, n in native.NATIVE_STAGES]
-    assert len(seen) == 4, f"{len(seen)} stages ran, expected 4"
+    assert len(seen) == 6, f"{len(seen)} stages ran, expected 6"
     assert result["rc"] == 0
     assert (ws / "constant" / "regionProperties").exists(), (
         "a successful split did not declare its regions")
