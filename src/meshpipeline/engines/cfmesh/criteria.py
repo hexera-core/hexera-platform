@@ -52,15 +52,15 @@ CRITERIA_ROWS: tuple[Criterion, ...] = (
 REVIEW_AXES: tuple[ReviewAxis, ...] = (
     ReviewAxis(
         name="surface_staircasing_adequacy", validation_axis="quality",
-        guidance=("cfMesh staircases the surface (cut-cell) by design - judge whether the "
-                  "staircase is FINE ENOUGH to represent the body the workflow needs, not "
-                  "whether it is absent. Coarser is acceptable for a draft; too coarse "
-                  "loses a feature the request depends on."),
-        concern="The stair-stepped surface is too coarse to represent your geometry",
-        failure_signals=("staircasing so coarse a feature the request needs is lost",
-                         "the wrapped surface no longer recognisably matches the body"),
+        guidance=("cfMesh projects its boundary cells onto the surface, so the wall follows "
+                  "the body as finely as the wall cell - judge whether the captured wall is FINE "
+                  "ENOUGH to represent the body the workflow needs: coarser is acceptable for a "
+                  "draft; too coarse rounds off a feature the request depends on."),
+        concern="The meshed wall is too coarse to represent your geometry",
+        failure_signals=("a feature the request needs is rounded off or lost at this wall cell",
+                         "the meshed surface no longer recognisably matches the body"),
         evidence=("render", "geometry", "brief"),
-        # cut-cell staircasing is inherent and "fine enough for the workflow" is a judgment, not a
+        # how finely the wall follows the body is set by the wall cell, and "fine enough for the workflow" is a judgment, not a
         # scalar - so visual_only (no metric anchor). But the judgement must be made on the CAPTURED
         # WALL at an inspectable scale, not the whole-domain opening: require a standard view AND an
         # isolated boundary patch, so a generic opening image cannot satisfy it. cfMesh always has
