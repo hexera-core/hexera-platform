@@ -205,6 +205,9 @@ SPEC = EngineSpec(
                              designed_for="tubular passages: vessels, pipes, ducts"),),
         # a tetrahedral lumen filler: after the hex meshers on the internal ladder
         ladder_rank=30,
+        # HOME TURF: VMTK's rows come from its tubularity definition (ov/vmtk-tubular adds
+        # them); until then it declares none and every case it accepts reads alike.
+        home_turf=(),
         input_contract=InputContract(
             # internal flow from an STL/OBJ/PLY upload: cad/internal_surface closes it at the
             # confirmed openings (snappy/cfMesh/gmsh/vmtk internal paths read that record)
