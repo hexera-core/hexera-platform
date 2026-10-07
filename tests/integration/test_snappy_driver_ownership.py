@@ -416,7 +416,7 @@ def _install_thin_feature_double(monkeypatch) -> None:
 def _install_narrow_passage_double(monkeypatch) -> None:
     from meshpipeline.engines.snappy import drivers as D
 
-    def narrow_passage_boxes(field, *, wall_cell, budget_cells):
+    def narrow_passage_boxes(field, *, wall_cell, budget_cells, **_k):
         return [{"min": [-0.02, -0.02, 0.48], "max": [0.02, 0.02, 0.52], "level_bump": 1,
                  "radius_m": 0.004}]
 

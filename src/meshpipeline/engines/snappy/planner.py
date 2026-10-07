@@ -173,6 +173,9 @@ def coarsen_after_timeout(timed_out: dict, proposed: dict, *, ceiling: int,
 #: grown by the square of the factor): snappy's maxGlobalCells stops refining at the budget, so a
 #: plan asked for more cells across under its old budget would come out as coarse as before.
 REFINE_BUDGET_HEADROOM = 1.5
+#: The share of the hard cell limit a refined attempt's projected count (the count grown by the
+#: square of the factor) may reach before the factor is held back to fit it.
+REFINE_CEILING_SHARE = 0.95
 
 
 def refine_after_under_resolved(gated: dict | None, proposed: dict, *, measured: object,
@@ -210,13 +213,31 @@ def refine_after_under_resolved(gated: dict | None, proposed: dict, *, measured:
             return 24
 
     factor = (n + 1.0) / m
-    want = int(math.ceil(_ca(gated) * factor))
+    c = _finite(cells)
+    # ... WITHIN THE HARD LIMIT. A wall-bound mesh grows with the square of the factor (its wall
+    # cells and the prism layers on them), and a rebuild projected past `ceiling` is refused at
+    # the manifest gate after a full run: annular_001 at 5.45 M cells and 10 across was sent to
+    # x1.3 (~9 M). Over it, the factor is held to the limit, though never below what puts the
+    # floor itself across (needed / measured) - past THAT, no rebuild can help, and the retry
+    # policy does not start one (failure_cause.retry_can_help).
+    held = c is not None and c > 0.0 and c * factor ** 2 > REFINE_CEILING_SHARE * float(ceiling)
+    if held and c is not None:
+        factor = max(n / m, min(factor, math.sqrt(REFINE_CEILING_SHARE * float(ceiling) / c)))
+        # rounded DOWN to a whole count, never under the floor's own: rounding up put
+        # annular_001's rebuild at 8.005 M cells against the 8 M limit
+        want = max(int(math.ceil(_ca(gated) * n / m)), int(math.floor(_ca(gated) * factor)))
+    else:
+        want = int(math.ceil(_ca(gated) * factor))
     have = _ca(out)
     changes: list[str] = []
     if have < want:
         out["cells_across_diameter"] = want
         changes.append(f"cells across the bore raised from {have} to {want}")
-    c = _finite(cells)
+    elif held and have > want:
+        # a re-plan cannot ask for a rebuild the hard limit would refuse after a full run
+        out["cells_across_diameter"] = want
+        changes.append(f"cells across the bore held to {want} (asked {have}) by the "
+                       f"{float(ceiling) / 1e6:.2g} M cell limit")
     if c is not None and c > 0.0:
         floor_budget = min(int(ceiling), int(REFINE_BUDGET_HEADROOM * c * factor ** 2))
         p_budget = clamp_cell_budget(out.get("max_cells"), ceiling=ceiling)
