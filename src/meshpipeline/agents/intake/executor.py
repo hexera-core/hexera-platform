@@ -5,12 +5,12 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 from meshpipeline.agents.intake import admission_token as at
 from meshpipeline.agents.intake import approval as ap
 from meshpipeline.agents.intake import engine_selection as es
+from meshpipeline.agents.intake import measured_choice
 from meshpipeline.agents.intake import recommendation as rec
 from meshpipeline.agents.intake import vocabulary as _vocab
 from meshpipeline.agents.intake.validation import preview_admission, validate_submission
@@ -105,6 +105,9 @@ class IntakeExecutionState:
     # opens them, so it holds the reference and no path.
     source_ref: object | None = None
     rec_authorized: bool = False
+    #: THE MEASURED RECOMMENDATION for the uploaded geometry (engines/fitness.Recommendation),
+    #: or None when there is nothing to rank yet. The engine question proposes ITS engine.
+    recommendation: Any = None
 
     pending: dict | None = None       # the issued admission token record
     selection: dict | None = None
@@ -183,31 +186,14 @@ class IntakeToolExecutor:
 
     def _staged_upload(self) -> str:
         # The upload as staged beside the session (the file cad/regions reads), or ''.
-        try:
-            import meshpipeline.settings.runtime as rtcfg
-            from meshpipeline.contracts.intake_formats import format_for_suffix
-
-            root = Path(rtcfg.JOBS_DIR) / str(self.state.session_id or "")
-            staged = sorted(p for p in root.iterdir()
-                            if p.is_file() and format_for_suffix(p.suffix.lower()))
-            return str(staged[0]) if staged else ""
-        except Exception:  # noqa: BLE001 - no staged file simply leaves the name to answer
-            return ""
+        return measured_choice.staged_upload(str(self.state.session_id or ""))
 
     def _geometry_form(self) -> str:
         # WHAT KIND OF FILE the user uploaded - a CAD solid or a surface mesh - asked of the one
-        # reading (engines/capability.geometry_form): the staged file itself first, so a STEP that
-        # is really a faceted mesh reads as the surface it is, then the approved source's own
-        # name. Every engine check below asks the engine whether it takes THIS file for the flow;
-        # '' (no upload, or a name that says nothing) claims nothing, and nothing is refused on it.
-        from meshpipeline.engines.capability import geometry_form
-        ref = self.state.source_ref
-        for candidate in (self._staged_upload(), getattr(ref, "suffix_hint", ""),
-                          getattr(ref, "original_filename", "")):
-            form = geometry_form(candidate)
-            if form:
-                return form
-        return ""
+        # reading (measured_choice.upload_form: the staged file first, then the source's name).
+        # Every engine check below asks the engine whether it takes THIS file for the flow; ''
+        # (no upload, or a name that says nothing) claims nothing, and nothing is refused on it.
+        return measured_choice.upload_form(self._staged_upload(), self.state.source_ref)
 
 
     async def run(self, tool: str, args: dict | None) -> IntakeToolResult:
@@ -281,6 +267,10 @@ class IntakeToolExecutor:
             dimensionality=args.get("dimensionality"), patches=args.get("patches"),
             engine_params=args.get("engine_params"), authorized=st.rec_authorized,
             geometry_form=self._geometry_form())
+        if st.rec_authorized and st.recommendation is not None:
+            # THE COMPARISON THE USER ASKED FOR CARRIES THE MEASURED RANKING: every engine that can
+            # take this file, best lab record on shapes like it first, with its plain reason.
+            recs["measured_ranking"] = measured_choice.ranking_rows(st.recommendation)
         if st.rec_authorized:
             # TURN-SCOPED latch. Set once, cleared only by a new Intake invocation.
             st.recommended_this_turn = True
@@ -324,6 +314,18 @@ class IntakeToolExecutor:
                 "value that was your own and check again, or put the finding to the user with "
                 "the one revision that would pass; if they want alternatives they will ask."))
         chosen_by_user = named_now or es.user_chose(eng, st.user_texts)
+        # THE MEASURED RECOMMENDATION IS THE ENGINE PROPOSED. The model presents the system's
+        # recommendation, it does not pick its own: when the user named no engine and the
+        # geometry was measured and ranked, the question proposes the best-ranked engine, with its
+        # evidence, whatever the model suggested. The user's answer still decides.
+        recd = st.recommendation
+        model_pick = eng
+        if (not chosen_by_user and recd is not None and recd.engine
+                and recd.engine in self._engines and recd.engine != eng
+                and es.state_of(sel) != es.CONFIRMED):
+            logger.info("Intake: the model proposed %s; the measured recommendation %s is "
+                        "proposed instead - job_id=%s", eng, recd.engine, self._job_id)
+            eng = recd.engine
         if not chosen_by_user and st.declared_case:
             # AN ENGINE THE USER DID NOT NAME MUST BE ABLE TO MESH WHAT THEY CONFIRMED. The model
             # proposed cfMesh for a fluid-volume file on its own; the admission then refused, and
@@ -362,6 +364,8 @@ class IntakeToolExecutor:
         # EARLIER IN THIS SAME provider response.
         st.selection = es.propose(eng, session_id=st.session_id, owner_id=st.owner_id,
                                   revision=st.revision, user_msg_count=st.user_msg_count)
+        if recd is not None:
+            st.selection["recommendation"] = measured_choice.compact(recd)
         st.pending = None
         st.invalidate_approval("engine selection replaced")
         # A refusal was about the engine the user has just left behind; the reply about the one
@@ -383,12 +387,19 @@ class IntakeToolExecutor:
                 content=(f"The user named {_vocab.to_display(_vocab.ENGINE, eng)} themselves, so it is SELECTED - "
                          "do not ask them to confirm it. Gather the remaining requirements and call "
                          "preview_selected_admission."))
-        st.selection_prompt = es.render_selection_statement(eng, str(args.get("reason") or ""))
+        if recd is not None and recd.fit_of(eng) is not None:
+            st.selection_prompt = measured_choice.statement(recd, eng)
+        else:
+            st.selection_prompt = es.render_selection_statement(eng, str(args.get("reason") or ""))
         logger.info("Intake: engine selection PROPOSED engine=%s - job_id=%s", eng, self._job_id)
+        swapped = (f" You suggested {_vocab.to_display(_vocab.ENGINE, model_pick)}; the measured "
+                   f"recommendation for this geometry is {_vocab.to_display(_vocab.ENGINE, eng)}, "
+                   "so that is the engine proposed." if model_pick != eng else "")
         return IntakeToolResult(tool="propose_engine_selection", accepted=True, advanced=True,
-                                content=("Proposed. The application asks the user this one engine "
-                                         "question in its own words; do not paraphrase it or ask "
-                                         "it again. Await their answer."))
+                                content=("Proposed." + swapped + " The application asks the user "
+                                         "this one engine question in its own words, with the "
+                                         "measured evidence and the alternatives; do not "
+                                         "paraphrase it or ask it again. Await their answer."))
 
     async def _do_confirm_engine_selection(self, args: dict) -> IntakeToolResult:
         st = self.state
