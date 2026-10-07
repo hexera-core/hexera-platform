@@ -1510,6 +1510,12 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
             "inlet": _opening_record(inlet_i),
             **{nm: _opening_record(oi) for nm, oi in zip(outlet_names, outlet_ids)}},
         "n_wall_faces": n_wall_faces,
+        # WHAT THE WALL IS: the fluid's own boundary - a solid declared the fluid domain, or one
+        # whose ports are plain discs, not rings round a bore - or (False) possibly the metal skin
+        # of a hollow wall (bore, outer skin, flange faces). A reader of the wall's passages reads
+        # the first whole and keeps only the cavity's skin of the second
+        # (engines/passage.passage_field_of_stls).
+        "wall_bounds_fluid": bool(fluid_solid is True or (not hollow_wall and not port_bored)),
         # what was sealed into the wall beyond the declared ports, for manifests and
         # user-facing evidence: undeclared shell openings (B-rep holes nothing fills)
         # and open rim rings (gaps the tessellator itself left in the staged surface)

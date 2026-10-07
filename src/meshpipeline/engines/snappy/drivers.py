@@ -942,6 +942,7 @@ def _staged_passage_field(t: dict, srcs: dict, wall_key: str, intake_patches: li
     or when the ports do not vouch for the reading (a hollow part's outer skin read instead of
     its bore: the boxes would be placed by a passage that is not there)."""
     from meshpipeline.engines.passage import (
+        FLUID_BOUNDARY_LOW,
         field_radius_stats,
         point_areas,
         port_radius_stats,
@@ -953,7 +954,11 @@ def _staged_passage_field(t: dict, srcs: dict, wall_key: str, intake_patches: li
         return None
     ports = port_radius_stats(t.get("openings"),
                               _port_hydraulic_diameters(srcs, wall_key, intake_patches))
-    if ports and not vouched_by_ports(field_radius_stats(*raw), ports):
+    # every port's size vouches (#156); a fluid domain's whole wall may read down to
+    # FLUID_BOUNDARY_LOW of the smallest port (#166)
+    if ports and not vouched_by_ports(
+            field_radius_stats(*raw), ports,
+            low=FLUID_BOUNDARY_LOW if t.get("wall_bounds_fluid") else 0.3):
         logger.info("narrow passages: the staged wall's reading is not the passage the ports "
                     "describe - no local refinement")
         return None
