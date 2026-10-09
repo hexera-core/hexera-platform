@@ -24,6 +24,7 @@ from meshpipeline.engines.region_check import (
     record_port_openings,
     recorded_port_openings,
     size_notes,
+    trusted_declaration,
 )
 from meshpipeline.engines.registry import get_spec
 
@@ -178,6 +179,22 @@ def test_the_flow_crosses_a_bodys_bore_and_a_fluid_solids_own_face():
     # a surface staging measured its lid: that is the opening, whatever the face reads
     lid = {"area": 0.0041, "flow_area": 0.004, "opening": {"area": 0.009}}
     assert flow_area_m2(lid, bore=True) == pytest.approx(0.004)
+    # a typed size the bore agrees with, and a clean ring round its own bore the typed size does not
+    assert flow_area_m2(annulus, bore=True, typed=0.00573) == pytest.approx(0.0057004)
+    assert flow_area_m2(PVC_RING, bore=True, typed=0.000314) == pytest.approx(0.00080292)
+
+
+def test_a_ring_that_does_not_say_its_bore_leaves_the_typed_size_standing():
+    # hvac_transition_duct as staged (2026-10-06): the inlet bound to a flange plate (53,097 mm2 of
+    # metal, the typed 260 mm bore by coincidence) whose cut-out (146,816 mm2, 50 mm off centre)
+    # holds the duct's own end (43,708 mm2): neither the cut-out nor the cut-out less the duct's
+    # end is the opening, so nothing is measured and the gate holds the typed size
+    flange = {"area": 0.05309743, "centroid": [0.0, 0.0, 0.0],
+              "opening": {"area": 0.146816, "centroid": [0.0, 0.0496, 0.0], "filled": 0.04370834}}
+    assert flow_area_m2(flange, bore=True, typed=math.pi / 4 * 0.26 ** 2) is None
+    assert measured_port_areas({"inlet": flange}, typed={"inlet": math.pi / 4 * 0.26 ** 2}) == {}
+    off_centre = dict(PVC_RING, opening=dict(PVC_RING["opening"], centroid=[-0.038, 0.004, 0.0]))
+    assert flow_area_m2(off_centre, bore=True, typed=0.000314) is None
     assert measured_port_areas({"inlet_1": PVC_RING, "x": {"centroid": [0, 0, 0]}}) == {
         "inlet_1": pytest.approx(0.00080292)}
 
@@ -193,13 +210,13 @@ def test_a_typed_size_the_geometry_disagrees_with_is_said_plainly():
     notes = size_notes(PVC, {**PVC_BORES, "outlet": 0.000330})
     assert notes == [
         "inlet_1: you said about 20 mm across; the opening measures 32 mm across (803 mm2); "
-        "using the measured opening.",
+        "using the measured opening",
         "inlet_2: you said about 20 mm across; the opening measures 32 mm across (803 mm2); "
-        "using the measured opening."]
+        "using the measured opening"]
     ring = [{"name": "inlet", "type": "inlet", "diameter_mm": 151.19, "inner_diameter_mm": 124.75}]
     assert size_notes(ring, {"inlet": 0.0179}) == [
         "inlet: you said an annulus about 151.19 mm across round a 124.75 mm centre; the opening "
-        "measures 17,900 mm2 (about 151 mm across); using the measured opening."]
+        "measures 17,900 mm2 (about 151 mm across); using the measured opening"]
     assert size_notes(ring, {"inlet": 0.0057}) == []           # agrees: nothing to say
     assert size_notes(PVC, {}) == []                            # nothing measured: nothing to say
 
@@ -218,7 +235,7 @@ def test_pvc_mixing_tee_passes_on_its_measured_bores_and_its_metal_still_fails(t
 
 def test_the_measured_openings_travel_from_staging_to_the_manifest(tmp_path):
     assert recorded_port_openings(tmp_path) == {}
-    got = record_port_openings(tmp_path, {"inlet_1": PVC_RING}, bore=True)
+    got = record_port_openings(tmp_path, {"inlet_1": PVC_RING}, bore=True, intake_patches=PVC)
     assert got == recorded_port_openings(tmp_path) == {"inlet_1": pytest.approx(0.00080292)}
     assert measured_openings({"quality": {"port_openings_m2": got}}) == got
     assert record_port_openings(tmp_path / "x", {}, bore=True) == {}      # nothing measured
@@ -297,3 +314,13 @@ def test_gmsh_measures_each_port_on_the_face_its_binder_finds():
         assert out == {"inlet": [discs[0]], "outlet": [discs[1]], "wall": [side]}
     finally:
         gmsh.finalize()
+
+
+def test_the_mesh_is_sized_from_the_measured_opening_where_the_typed_size_disagrees():
+    sized = trusted_declaration(PVC, {**PVC_BORES, "outlet": 0.000330})
+    by = {p["name"]: p for p in sized}
+    assert "diameter_mm" not in by["inlet_1"] and "diameter_mm" not in by["inlet_2"]
+    assert by["inlet_1"]["near_mm"] == [-38, 0, 0]                 # still located
+    assert by["outlet"]["diameter_mm"] == 20.0                      # agrees: kept as typed
+    assert by["wall"] == {"name": "wall", "type": "wall"}
+    assert trusted_declaration(PVC, {}) == PVC                      # nothing measured: as typed

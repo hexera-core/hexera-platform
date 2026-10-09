@@ -176,11 +176,16 @@
    "type": "function"
   },
   {
-   "description_sha": "b635ca48968cc9d3",
+   "description_sha": "23b9d54de6ecf4f4",
    "name": "geometry_report",
    "position": 4,
    "schema": {
-    "properties": {},
+    "properties": {
+     "page": {
+      "description": "page of a long report (default 1)",
+      "type": "integer"
+     }
+    },
     "required": [],
     "type": "object"
    },

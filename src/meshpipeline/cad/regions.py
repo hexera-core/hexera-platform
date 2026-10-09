@@ -113,16 +113,32 @@ def _cad_regions(path: Path) -> CadRegions:
 def regions_of(path) -> CadRegions:
     # Never fatal: a file this cannot describe is reported as carrying no regions, which is what
     # the caller would otherwise have assumed anyway.
-    from meshpipeline.contracts.intake_formats import is_cad
+    from meshpipeline.contracts.intake_formats import format_for_suffix, is_cad
 
     p = Path(path)
     try:
         if p.suffix.lower() == ".stl":       # the canonical surface: its named solids
             return _stl_regions(p)
         if is_cad(p):
+            fmt = format_for_suffix(p.suffix)
+            if fmt is not None and fmt.key == "ecxml":
+                return _ecxml_regions(p)
             return _cad_regions(p)
     except Exception as exc:
         logger.info("cad regions: %s could not be described (%s)", p.name, exc)
+    return CadRegions()
+
+
+def _ecxml_regions(path: Path) -> CadRegions:
+    """An ECXML thermal model's regions - the air and each part - under the names its conversion
+    writes into the canonical STEP, read from the XML alone: the intake asks while a person waits,
+    and the solids themselves are built later, on a worker."""
+    from meshpipeline.cad.ingest.ecxml import read_ecxml
+    from meshpipeline.cad.ingest.ecxml_build import plan_region_names
+
+    names = plan_region_names(read_ecxml(path))
+    if len(set(names)) > 1:
+        return CadRegions(names=names, source="roots")
     return CadRegions()
 
 

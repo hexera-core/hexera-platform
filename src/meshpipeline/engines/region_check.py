@@ -72,12 +72,30 @@ def declared_port_area_m2(patch: Mapping) -> float | None:
     return None
 
 
-def flow_area_m2(rec: Mapping, *, bore: bool) -> float | None:
-    """The area the flow crosses at one staged opening, in m2. A surface staging measured its lid
-    ("flow_area"). A CAD port face (cad_tessellate) is read by which side is the fluid: with the
-    fluid in the BORE of a part declared a body (`bore`), a ring face's inner wire, less the end
-    face of a body standing in it (an annulus's centre rod, "filled"); otherwise - the solid is the
-    fluid, or the port face is a plain disc - the port face itself."""
+#: a ring's inner wire is its own bore when their centres are this close (a fraction of the bore's
+#: across): pvc_mixing_tee's socket rings sit exactly round their bores; hvac_transition_duct's
+#: flange plate's cut-out is 50 mm off its centre and holds the duct's own end inside it
+CONCENTRIC_FRACTION = 0.05
+
+
+def _concentric(rec: Mapping, opening: Mapping, inner: float) -> bool:
+    try:
+        off = math.dist([float(v) for v in rec["centroid"]], [float(v) for v in opening["centroid"]])
+    except (KeyError, TypeError, ValueError):
+        return False
+    return off <= CONCENTRIC_FRACTION * math.sqrt(4.0 * inner / math.pi)
+
+
+def flow_area_m2(rec: Mapping, *, bore: bool, typed: float | None = None) -> float | None:
+    """The area the flow crosses at one staged opening, in m2; None when the staged faces do not
+    say it plainly. A surface staging measured its lid ("flow_area"). A CAD port face
+    (cad_tessellate) is read by which side is the fluid. The solid is the fluid, or the port face
+    is a plain disc: the face itself. The fluid is the BORE of a part declared a body (`bore`) and
+    the face is a ring: what its inner wire encloses, less the end face of a body standing in it
+    (an annulus's centre rod, "filled") - taken when it agrees with the size typed (`typed`), or
+    when the ring is a clean one round its own bore (nothing standing in it, concentric). A ring
+    that is neither - a flange plate whose cut-out holds another solid's end - does not say which
+    area the flow crosses, and the typed size stands."""
     if not isinstance(rec, Mapping):
         return None
     lid = _num(rec.get("flow_area"))
@@ -85,18 +103,39 @@ def flow_area_m2(rec: Mapping, *, bore: bool) -> float | None:
         return lid
     opening = rec.get("opening") if isinstance(rec.get("opening"), Mapping) else None
     inner = _num(opening.get("area")) if opening else None
-    if bore and opening and inner:
-        left = inner - (_num(opening.get("filled")) or 0.0)
-        return left if left > 0.0 else inner
-    return _num(rec.get("area"))
+    if not (bore and opening and inner):
+        return _num(rec.get("area"))
+    filled = _num(opening.get("filled")) or 0.0
+    left = inner - filled if filled < inner else inner
+    if not typed or SIZE_AGREES_BAND[0] <= left / typed <= SIZE_AGREES_BAND[1]:
+        return left
+    if not filled and _concentric(rec, opening, inner):
+        return inner
+    return None
 
 
-def measured_port_areas(openings: Mapping | None, *, bore: bool = True) -> dict[str, float]:
+def typed_port_areas(intake_patches) -> dict[str, float]:
+    """{port: m2} of every declared inlet/outlet that states a size."""
+    out: dict[str, float] = {}
+    for p in intake_patches or []:
+        if (isinstance(p, Mapping) and str(p.get("type") or "") in ("inlet", "outlet")
+                and p.get("name")):
+            a = declared_port_area_m2(p)
+            if a:
+                out[str(p["name"])] = a
+    return out
+
+
+def measured_port_areas(openings: Mapping | None, *, bore: bool = True,
+                        typed: Mapping[str, float] | None = None) -> dict[str, float]:
     """{port: the area the flow crosses there, m2} off a staging record's openings
-    (flow_area_m2); openings with no measure are left out."""
+    (flow_area_m2, each held against its typed size in `typed`); openings with no plain measure
+    are left out."""
+    typed = dict(typed or {})
     out: dict[str, float] = {}
     for name, rec in dict(openings or {}).items():
-        a = flow_area_m2(rec, bore=bore) if isinstance(rec, Mapping) else None
+        a = (flow_area_m2(rec, bore=bore, typed=typed.get(str(name)))
+             if isinstance(rec, Mapping) else None)
         if a:
             out[str(name)] = a
     return out
@@ -148,26 +187,55 @@ def size_notes(intake_patches, measured: Mapping[str, float] | None,
     for p in intake_patches or []:
         if not (isinstance(p, Mapping) and str(p.get("type") or "") in ("inlet", "outlet")):
             continue
-        name = str(p.get("name") or "")
-        typed, got = declared_port_area_m2(p), _num(measured.get(name))
-        if not (typed and got) or band[0] <= got / typed <= band[1]:
+        if not _disagrees(p, measured, band):
             continue
+        name = str(p.get("name") or "")
+        typed, got = declared_port_area_m2(p) or 0.0, float(measured[name])
         round_bore = _num(p.get("diameter_mm")) and not _num(p.get("inner_diameter_mm"))
         size = (f"{_across_mm(got):.0f} mm across ({got * 1e6:,.0f} mm2)" if round_bore
                 else f"{got * 1e6:,.0f} mm2 (about {_across_mm(got):.0f} mm across)")
         said = _typed(p) or f"{typed * 1e6:,.0f} mm2"
         out.append(f"{name}: you said {said}; the opening measures {size}; using the measured "
-                   "opening.")
+                   "opening")
     return out
 
 
-def record_port_openings(workspace, openings: Mapping | None, *, bore: bool = True
-                         ) -> dict[str, float]:
-    """Write the staging's measured openings ({port: m2}, measured_port_areas) beside the case,
-    for finalize to carry into the manifest and the gate to judge by; returns them ({} and nothing
-    written when none)."""
+#: the fields a declared port states its size in (engines/port_binding.DeclaredPatch)
+_SIZE_KEYS = ("diameter_mm", "inner_diameter_mm", "outer_diameter_mm", "width_mm", "height_mm",
+              "area_mm2")
+
+
+def _disagrees(p: Mapping, measured: Mapping[str, float], band: tuple[float, float]) -> bool:
+    typed, got = declared_port_area_m2(p), _num(measured.get(str(p.get("name") or "")))
+    if typed is None or got is None:
+        return False
+    return not band[0] <= got / typed <= band[1]
+
+
+def trusted_declaration(intake_patches, measured: Mapping[str, float] | None,
+                        band: tuple[float, float] = SIZE_AGREES_BAND) -> list:
+    """The declaration as the mesh is SIZED from: every port whose typed size the measured opening
+    disagrees with (the ports size_notes speaks of) loses its typed size, so the measured opening
+    sizes the mesh there as it is judged there. pvc_mixing_tee's "about 20 mm" on a 32 mm bore
+    sized snappy's cells for a 20 mm pipe: 1.2M cells where the 32 mm declaration takes 0.39M."""
+    measured = dict(measured or {})
+    out = []
+    for p in intake_patches or []:
+        if (isinstance(p, Mapping) and str(p.get("type") or "") in ("inlet", "outlet")
+                and _disagrees(p, measured, band)):
+            out.append({k: v for k, v in p.items() if k not in _SIZE_KEYS})
+        else:
+            out.append(p)
+    return out
+
+
+def record_port_openings(workspace, openings: Mapping | None, *, bore: bool = True,
+                         intake_patches=None) -> dict[str, float]:
+    """Write the staging's measured openings ({port: m2}, measured_port_areas against the sizes
+    the declaration typed) beside the case, for finalize to carry into the manifest and the gate
+    to judge by; returns them ({} and nothing written when none)."""
     import json
-    measured = measured_port_areas(openings, bore=bore)
+    measured = measured_port_areas(openings, bore=bore, typed=typed_port_areas(intake_patches))
     if measured:
         (Path(workspace) / PORT_OPENINGS_FILE).write_text(
             json.dumps({k: round(v, 10) for k, v in measured.items()}, indent=1))
@@ -269,6 +337,6 @@ def gate_port_areas(ctx) -> tuple[bool, str]:
 
 __all__ = ["PORT_AREA_BAND", "PORT_OPENINGS_FILE", "SIZE_AGREES_BAND", "declared_port_area_m2",
            "delivered_areas", "expected_port_areas", "flow_area_m2", "gate_port_areas",
-           "measured_openings",
+           "measured_openings", "trusted_declaration", "typed_port_areas",
            "measured_port_areas", "patch_areas_from_vtk", "port_area_misses",
            "record_port_openings", "recorded_port_openings", "size_notes"]

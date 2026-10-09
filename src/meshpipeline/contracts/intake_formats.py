@@ -13,7 +13,8 @@ from pathlib import PurePosixPath
 class GeometryKind(str, Enum):
     """The two canonical forms every accepted file becomes (cad/ingest does the converting).
 
-    cad      an exact B-rep solid OpenCASCADE reads (STEP, IGES; BREP arrives converted to STEP)
+    cad      an exact B-rep solid OpenCASCADE reads (STEP, IGES; BREP and ECXML arrive converted
+             to STEP - an ECXML model as one named solid per part plus the air around them)
     surface  triangles (STL; VTP stays VTP for the engine that reads it natively; every other
              mesh format arrives converted to STL, its named groups kept as named STL solids)
     """
@@ -61,6 +62,15 @@ INTAKE_FORMATS: tuple[IntakeFormat, ...] = (
         media_type="",
         # A BREP file is raw OpenCASCADE geometry: it records no unit at all.
         declares_units=False, staged_as="input.brep", kind=GeometryKind.cad),
+    IntakeFormat(
+        # Flotherm writes .ecxml; Icepak names its export <project>_ec.xml. A .xml file is read as
+        # ECXML only when its root element says so (cad/ingest/sniff), and refused otherwise.
+        key="ecxml", label="JEDEC JEP181 ECXML thermal model",
+        suffixes=(".ecxml", ".xml"), media_type="application/xml",
+        # JEP181A 4.1: every ECXML value is SI - lengths in metres - and the schema has no way to
+        # say otherwise. Its boxes, cylinders and enclosures are built as exact solids, with the air
+        # around them as one more solid, so it is CAD (converted to STEP) like a BREP.
+        declares_units=True, staged_as="input.ecxml", kind=GeometryKind.cad),
     IntakeFormat(
         key="obj", label="Wavefront OBJ mesh", suffixes=(".obj",),
         media_type="model/obj", declares_units=False, staged_as="input.obj"),

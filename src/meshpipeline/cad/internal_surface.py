@@ -38,6 +38,14 @@ CAP_CREASE_DEG = 30.0
 FLAT_COS = math.cos(math.radians(3.0))
 #: The seed must stand at least this share of its opening's radius clear of every face.
 SEED_CLEARANCE = 0.02
+#: A loop along which the wall runs OUTWARD from it (away from its axis) on at least this share of
+#: its edges is a STEP in the passage - where it widens: a counterbore's floor, the lip of an exit
+#: cone. A centre body's own surface lies wholly within its edge, so such a loop is never one, and
+#: it is where a bore opens through a face (the CAD path's bore: the inner wire of a planar face).
+STEP_SHARE = 0.5
+#: ...counting a face as running outward when its direction from the loop leans away from the axis
+#: by more than this (a faceted cylinder's own faces lean by its sagitta only: 0.2 at 8 sides).
+OUTWARD_LEAN = 0.3
 
 
 class InternalSurfaceError(RuntimeError):
@@ -208,7 +216,8 @@ def stage_triangles(tris, *, intake_patches: list | None = None, input_kind: str
     outlines = _outlines(mesh, {r.key() for r in rims})
     bores = _bores(mesh, outlines)
     ports_decl, wall = _declared(intake_patches, surface_path, rims, bores, mesh)
-    matched = _match(ports_decl, rims, bores, mesh, inner_pool=[*rims, *outlines], input_kind=input_kind)
+    matched = _match(ports_decl, rims, bores, mesh, inner_pool=[*rims, *outlines], input_kind=input_kind,
+                     step_pool=outlines)
     port_loops = [o for o in matched.values() if o.loop is not None]
     caps = [o for o in matched.values() if o.kind == "cap"]
     # every open end that is not a declared opening is sealed into the wall: the fluid may leave
@@ -216,17 +225,18 @@ def stage_triangles(tris, *, intake_patches: list | None = None, input_kind: str
     port_loop_keys = {o.key() for o in port_loops} | {o.inner.key() for o in port_loops if o.inner is not None}
     seal_rims = [r for r in rims if r.key() not in port_loop_keys]
     seal_bores: list[_Opening] = []
-    attempt = 0
-    while True:
-        attempt += 1
-        lidded = port_loops + seal_rims + seal_bores
-        pieces, chosen, conflict = _fluid_side(mesh, lidded, caps)
-        if not conflict or seal_bores or not bores:
-            break
+    lidded = port_loops + seal_rims
+    pieces, chosen, conflict = _fluid_side(mesh, lidded, caps)
+    if conflict:
         # THE FLUID REACHES THE OUTSIDE BY ANOTHER WAY: a thick wall's bore the user did not declare
         # (a drain, a stub left open) joins the passage to the outer skin. Its mouth is sealed into
-        # the wall, as the CAD path seals an undeclared opening, and the sides are read again.
+        # the wall, as the CAD path seals an undeclared opening, and the sides are read again - once:
+        # with no undeclared bore left to seal, nothing would change on a second reading (a loop that
+        # read the same sides forever is what held the rocket nozzle's STL for the lab's 90 minutes).
         seal_bores = [b for b in bores if b.key() not in port_loop_keys]
+        if seal_bores:
+            lidded = port_loops + seal_rims + seal_bores
+            pieces, chosen, conflict = _fluid_side(mesh, lidded, caps)
     if conflict:
         raise InternalSurfaceError(
             "the openings confirmed on the picture do not close the fluid in: the passage reaches the "
@@ -507,10 +517,13 @@ def _listing(rims, bores) -> str:
     return "\n".join(rows) if rows else "  (no open ends or bore mouths)"
 
 
-def _inner_loop(o: _Opening, pool: list[_Opening]) -> _Opening | None:
+def _inner_loop(o: _Opening, pool: list[_Opening], mesh) -> _Opening | None:
     """The largest loop lying in the mouth's own plane, around its centre and wholly inside it -
     the edge of a centre body standing in the opening (an annular passage's rod: its open end, or
-    the outline of its flush end face). The opening is then the ring between the two."""
+    the outline of its flush end face). The opening is then the ring between the two. A loop the
+    wall runs outward from is not a body's edge but a step in the passage just inside the mouth
+    (the rocket nozzle's exit cone, 0.76 mm below its 73 mm counterbore): never a ring's inner
+    edge, or the ring's lid leaves the narrower bore open and the fluid reaches the outside."""
     d = o.diameter
     dev = o.planarity * d
     best = None
@@ -525,9 +538,48 @@ def _inner_loop(o: _Opening, pool: list[_Opening]) -> _Opening | None:
             continue
         if float(np.linalg.norm(rel - axial * o.normal)) > 0.3 * d:
             continue
-        if best is None or q.area > best.area:
-            best = q
+        if best is not None and q.area <= best.area:
+            continue
+        if not _inside_loop(mesh, o, q) or _step_share(mesh, q) >= STEP_SHARE:
+            continue
+        best = q
     return best
+
+
+def _step_share(mesh, o: _Opening) -> float:
+    """The share of a loop's edges along which a face runs OUTWARD from it - away from the loop's
+    own axis, by more than OUTWARD_LEAN of its direction: the wall widening there (STEP_SHARE).
+    Orientation-free: it reads where the faces lie, never which way they were wound."""
+    e = np.asarray(o.edges if o.edges is not None else [], dtype=np.int64)
+    if len(e) == 0:
+        return 0.0
+    P = mesh.verts
+    mid = (P[mesh.ea[e]] + P[mesh.eb[e]]) / 2.0
+    rel = mid - o.centroid
+    rad = rel - np.outer(rel @ o.normal, o.normal)
+    rad /= np.linalg.norm(rad, axis=1, keepdims=True).clip(1e-30)
+    out = np.zeros(len(e), dtype=bool)
+    for f in (mesh.f0[e], mesh.f1[e]):
+        d = mesh.centre[np.maximum(f, 0)] - mid
+        d /= np.linalg.norm(d, axis=1, keepdims=True).clip(1e-30)
+        out |= (f >= 0) & (np.einsum("ij,ij->i", d, rad) > OUTWARD_LEAN)
+    return float(out.mean())
+
+
+def _step_mouth(mesh, o: _Opening) -> _Opening:
+    """A step loop as an opening (a bore's mouth, as the CAD path calls the inner wire of a planar
+    face), facing the way the fluid leaves: away from the wall that runs back from it, the rims'
+    own rule."""
+    P = mesh.verts
+    e = np.asarray(o.edges, dtype=np.int64)
+    mid = (P[mesh.ea[e]] + P[mesh.eb[e]]) / 2.0
+    back = 0.0
+    for f in (mesh.f0[e], mesh.f1[e]):
+        ok = f >= 0
+        back += float(np.sum(mesh.area[f[ok]] * ((mesh.centre[f[ok]] - mid[ok]) @ o.normal)))
+    n = -o.normal if back > 0 else o.normal
+    return _Opening(kind="bore", centroid=o.centroid, normal=n, area=o.area, loop=o.loop, edges=o.edges,
+                    planarity=o.planarity)
 
 
 def _inside_loop(mesh, outer: _Opening, inner: _Opening) -> bool:
@@ -540,11 +592,18 @@ def _inside_loop(mesh, outer: _Opening, inner: _Opening) -> bool:
     return float(radial(inner.loop).max()) < float(radial(outer.loop).min())
 
 
-def _match(ports: list[_Port], rims, bores, mesh, inner_pool=(), input_kind: str = "") -> dict[str, _Opening]:
+def _match(ports: list[_Port], rims, bores, mesh, inner_pool=(), input_kind: str = "",
+           step_pool=()) -> dict[str, _Opening]:
     """Each declared opening as a loop of the surface (an open end or a bore's mouth, or the ring
     between such a loop and a centre body's edge inside it) or, on a closed fluid surface, as the
     face region that caps it. A location decides; the size has to agree within MATCH_RATIO with
-    one of the opening's measures (its own area; for a ring also the outer disc and the inner)."""
+    one of the opening's measures (its own area; for a ring also the outer disc and the inner).
+
+    The hole finder proposes one mouth per opening, the outermost (cad/open_ends._distinct), but a
+    user may place the opening at a step just inside it - the narrower bore behind a counterbore,
+    where the CAD path reads the inner wire of the step's planar face. On a part's wall, every
+    loop of `step_pool` the wall widens from (STEP_SHARE) is such a mouth too. Not on a body
+    declared to be the fluid itself: its openings are its faces."""
     from meshpipeline.engines.port_binding import BindError
 
     if len(ports) < 1:
@@ -552,9 +611,18 @@ def _match(ports: list[_Port], rims, bores, mesh, inner_pool=(), input_kind: str
                         "at least an inlet and an outlet")
     out: dict[str, _Opening] = {}
     taken: set = set()
-    holes = [*rims, *bores]
-    rings: dict[int, _Opening | None] = {}
     fluid_body = str(input_kind or "").strip() == "fluid-domain"
+    holes = [*rims, *bores]
+    if not fluid_body:
+        known = {h.key() for h in holes}
+
+        def near_a_port(q) -> bool:
+            return any(p.near is not None and float(np.linalg.norm(q.centroid - p.near))
+                       <= HOLE_REACH * max(q.diameter, p.reach) for p in ports)
+        holes += [_step_mouth(mesh, q) for q in step_pool
+                  if q.loop is not None and q.key() not in known and near_a_port(q)
+                  and _step_share(mesh, q) >= STEP_SHARE]
+    rings: dict[int, _Opening | None] = {}
 
     def size_err(measures, declared: float | None) -> float:
         if not declared:
@@ -578,8 +646,7 @@ def _match(ports: list[_Port], rims, bores, mesh, inner_pool=(), input_kind: str
             if d > HOLE_REACH * size:
                 continue
             if k not in rings:
-                inner = _inner_loop(o, list(inner_pool))
-                rings[k] = inner if inner is not None and _inside_loop(mesh, o, inner) else None
+                rings[k] = _inner_loop(o, list(inner_pool), mesh)
             inner = rings[k]
             measures = [o.area] if inner is None else [o.area - inner.area, inner.area, o.area]
             err = size_err(measures, p.area)
