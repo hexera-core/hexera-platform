@@ -398,6 +398,39 @@ async def _run_snappy_timed(R, workspace, cap, publish: ExecutionEventPublisher,
     return result
 
 
+#: the approved request's typed directions -> snappy's domain_margin keys
+_CONFIRMED_KEYS = {"upstream": "up", "downstream": "down", "lateral": "side", "vertical": "vert"}
+
+
+def confirmed_margins(strategy: dict, requested: dict | None, ruler_m: float | None) -> dict:
+    """The strategy with every far-field direction the user confirmed set to the confirmed
+    number. Only with a stated reference length - the unit those numbers are in, and the unit
+    domain_from_strategy sizes in when it has one; without it the typed numbers have no unit and
+    the planner's margins stand. 'lateral' also sets the vertical room when no vertical number
+    was stated, the way the extent gate reads 'above/below' as lateral."""
+    if not (requested and ruler_m):
+        return strategy
+    margin = dict((strategy or {}).get("domain_margin") or {})
+    stated = {}
+    for key, mk in _CONFIRMED_KEYS.items():
+        v = requested.get(key)
+        try:
+            if v is not None and float(v) > 0.0:
+                stated[mk] = float(v)
+        except (TypeError, ValueError):
+            continue
+    if "side" in stated and "vert" not in stated:
+        stated["vert"] = stated["side"]
+    if not stated:
+        return strategy
+    changed = {k: (margin.get(k), v) for k, v in stated.items() if margin.get(k) != v}
+    if changed:
+        logger.info("far field: the confirmed margins replace the planner's %s",
+                    ", ".join(f"{k} {old}->{new}" for k, (old, new) in changed.items()))
+    margin.update(stated)
+    return {**(strategy or {}), "domain_margin": margin}
+
+
 def _domain_preflight(state, analysis: dict, dmin, dmax, *,
                       grounded: bool, symmetry_faces: list | None = None
                       ) -> PreflightRefusal | None:
@@ -714,6 +747,14 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                     _budget = _corr
             strategy = {**strategy, "max_cells": _budget}
             rec = recommend_refinement(analysis, max_cells=_budget)
+            # THE USER'S CONFIRMED MARGINS WIN. The planner writes domain_margin itself, and a
+            # brief cannot bind a model: an F1 front wing confirmed at 10 reference lengths
+            # downstream (flow -z) was planned at 5, the reviewer sent it back three times and it
+            # shipped with concerns. Each direction the user stated is the number the box gets -
+            # in the reference length, the unit the extent gate judges it in; unstated directions
+            # keep the planner's sizing.
+            strategy = confirmed_margins(strategy, state.get("requested_extents"),
+                                         state.get("reference_length_m"))
             # the approved ruler travels with the box it sizes - the same length the extent
             # gate will judge the delivered box in (see domain_from_strategy)
             dmin, dmax = R.domain_from_strategy(analysis, strategy, symmetry,
@@ -944,17 +985,17 @@ def _staged_passage_field(t: dict, srcs: dict, wall_key: str, intake_patches: li
     its bore: the boxes would be placed by a passage that is not there)."""
     from meshpipeline.engines.passage import (
         field_radius_stats,
-        plausible_radius,
         point_areas,
         port_radius_stats,
         staged_passage_field,
+        vouched_by_ports,
     )
     raw = staged_passage_field(t, srcs, wall_key, intake_patches, corrected=False)
     if raw is None:
         return None
     ports = port_radius_stats(t.get("openings"),
                               _port_hydraulic_diameters(srcs, wall_key, intake_patches))
-    if ports and not plausible_radius(field_radius_stats(*raw), ports):
+    if ports and not vouched_by_ports(field_radius_stats(*raw), ports):
         logger.info("narrow passages: the staged wall's reading is not the passage the ports "
                     "describe - no local refinement")
         return None
@@ -962,19 +1003,271 @@ def _staged_passage_field(t: dict, srcs: dict, wall_key: str, intake_patches: li
     return pts, r, point_areas(pts, faces)
 
 
-def _narrow_passage_boxes(field, *, wall_cell: float, budget_cells: float) -> list:
+#: The cells across a narrow passage its local refinement aims at (engines/passage).
+_PASSAGE_TARGET = 13.0
+
+
+def _narrow_passage_boxes(field, *, wall_cell: float, budget_cells: float,
+                          target: float = _PASSAGE_TARGET) -> list:
     """Refinement boxes, in render_internal_case's thin-region form ({min, max, level_bump} over
-    the wall's surface level), for every passage the wall cell puts under the floor
-    (engines/passage.narrow_passage_regions); [] without a field."""
+    the level whose cell is `wall_cell`), for every passage that cell puts under `target` cells
+    across (engines/passage.narrow_passage_regions); [] without a field. Detected AT the target,
+    not half a cell under it: a snapped wall reads ~15% under its nominal cells across at the
+    gate's 5th percentile, so a passage a hair under 13 nominal is one the floor refuses."""
     if field is None:
         return []
     from meshpipeline.engines.passage import narrow_passage_regions
     try:
         return narrow_passage_regions(field[0], field[1], cell_m=wall_cell, areas=field[2],
+                                      target=float(target), detect=float(target),
                                       budget_cells=budget_cells)
     except Exception:  # noqa: BLE001 - a measurement is an optimisation, never fatal
         logger.exception("narrow-passage regions failed - continuing without them")
         return []
+
+
+def _over_band(boxes: list, offset: int) -> list:
+    """Local refinement boxes measured against the cell AT the wall, re-based onto the wall's
+    surface level (render_internal_case adds level_bump to it): inside the near-wall band that
+    cell is one level finer than the surface level, so every box is `offset` levels further."""
+    for b in boxes or []:
+        b["level_bump"] = int(b.get("level_bump", 1)) + int(offset)
+    return boxes
+
+
+def _band_inputs(field, wall_stl: Path, bore_D: float):
+    """(wall area per point, local passage half-width per point) the near-wall band is costed on:
+    the staged passage field when it reads (engines/passage.staged_passage_field), else the
+    staged wall's whole area at half the bore."""
+    import numpy as np
+    if field is not None:
+        return np.asarray(field[2], dtype=float), np.asarray(field[1], dtype=float)
+    try:
+        from meshpipeline.cad.stl_io import read_stl_triangles
+        tri = np.asarray(read_stl_triangles(Path(wall_stl)), dtype=float).reshape(-1, 3, 3)
+        area = 0.5 * float(np.linalg.norm(np.cross(tri[:, 1] - tri[:, 0],
+                                                   tri[:, 2] - tri[:, 0]), axis=1).sum())
+    except Exception:  # noqa: BLE001 - nothing to cost the band on: it stays as it always was
+        logger.warning("near-wall band: the staged wall could not be read - default band",
+                       exc_info=True)
+        return None
+    return np.asarray([area]), np.asarray([0.5 * float(bore_D)])
+
+
+def _near_band(gated: dict | None, R, *, wall_cell: float, budget_cells: float, n_layers: int,
+               field, wall_stl: Path, bore_D: float, t: dict) -> tuple[float, str, bool]:
+    """(depth in metres, note, set) of this pass's near-wall band. `set` is False when the band
+    is the default one, which render_internal_case sizes itself from its own wall cell (the case
+    is then written as it always was). After a LOCAL retry (`gated`, the plan it follows) the
+    band of that plan is kept, so the retry raises only the narrow passages."""
+    default = R.default_near_band_depth(wall_cell, t["bbox_min"], t["bbox_max"])
+    if gated and gated.get("near_band_m") is not None:
+        held = max(0.0, float(gated["near_band_m"]))
+        return held, ("" if held > 0.0 else "no near-wall band, as on the mesh before"), True
+    inputs = _band_inputs(field, wall_stl, bore_D)
+    if inputs is None:
+        return default, "", False
+    depth, note = R.plan_near_band(wall_cell=wall_cell, default_depth=default,
+                                   budget_cells=budget_cells, areas=inputs[0], radius=inputs[1],
+                                   n_layers=n_layers, hard_cells=polcfg.CELL_HARD_LIMIT)
+    return (depth, note, True) if note else (default, "", False)
+
+
+#: A mesh whose wall is under the floor on more than this share of its points is coarse as a
+#: whole: the retry refines the part, not boxes round most of it.
+LOCAL_RETRY_MAX_SHARE = 0.5
+
+
+def _sibling_under_floor(workspace: Path) -> dict | None:
+    """Where the newest EARLIER attempt's mesh fell under the floor, as the measure beside it
+    recorded (engines/passage.under_floor_regions, in its mesh_quality.json); None without."""
+    import json as _json
+    import re as _re
+
+    m = _re.fullmatch(r"attempt_(\d+)", Path(workspace).name)
+    if m is None:
+        return None
+    for n in range(int(m.group(1)) - 1, 0, -1):
+        try:
+            q = _json.loads((Path(workspace).parent / f"attempt_{n}"
+                             / "mesh_quality.json").read_text())
+        # an attempt that built no mesh measured nothing: look further back
+        except Exception:  # noqa: BLE001,S112
+            continue
+        uf = q.get("passage_under_floor") if isinstance(q, dict) else None
+        return uf if isinstance(uf, dict) and uf.get("regions") else None
+    return None
+
+
+def _gate_boxes(under: dict | None, *, wall_cell: float, target: float) -> tuple[list, float, float]:
+    """(boxes, their estimated cost in cells, the share of the wall they cover) for the regions
+    a mesh fell under the floor (_sibling_under_floor), in render_internal_case's thin-region
+    form over the wall's surface level: each refined from the cell measured at its wall (edge_m)
+    by as many levels as put `target` cells across where it read `cells`."""
+    import math
+    if not under or not under.get("regions") or wall_cell <= 0.0:
+        return [], 0.0, 0.0
+    boxes, cost, pts = [], 0.0, 0
+    for g in under["regions"]:
+        try:
+            e, c, r = float(g["edge_m"]), float(g["cells"]), float(g["radius_m"])
+            lo, hi = [float(v) for v in g["min"]], [float(v) for v in g["max"]]
+            n = int(g["points"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if e <= 0.0 or c <= 0.0 or r <= 0.0:
+            continue
+        extra = max(1, math.ceil(math.log2(max(float(target) / c, 1.0)) - 1e-9))
+        at_wall = max(0, round(math.log2(max(wall_cell / e, 1e-12))))
+        cell = e / 2 ** extra
+        volume = min(math.prod(max(0.0, b - a) for a, b in zip(lo, hi)), n * e * e * r)
+        boxes.append({"min": lo, "max": hi, "level_bump": int(at_wall + extra),
+                      "radius_m": r, "extra": int(extra), "cost": volume / cell ** 3})
+        cost += volume / cell ** 3
+        pts += n
+    share = pts / float(under.get("points") or max(pts, 1))
+    return boxes, cost, share
+
+
+def _narrow_retry(gated: dict | None, facts: dict | None, field, bore_D: float, *,
+                  ceiling: int, under: dict | None = None) -> tuple[dict, str] | None:
+    """The plan changes for an attempt after a mesh too coarse across its narrowest passage, when
+    that shortfall is LOCAL: (strategy fields, plain words), or None when it is not - nothing
+    measured where it fell short, most of the wall short, or the narrow passages already raised
+    locally and the mesh still short - and then the whole part is refined
+    (planner.refine_after_under_resolved).
+
+    THE NARROW PASSAGES FIRST. The floor is measured where the passage is narrowest; refining the
+    whole part to reach it multiplies every cell of the trunk with the branch's. The Fluent aorta's
+    retry raised its cells across the bore from 24 to 44 and its count from 1.3 to 6.5 M, and its
+    smallest branch still read 10 across. So the bore keeps its cell, and the passages get what
+    they lacked, from two readings:
+    - WHERE THE MESH FELL SHORT (`under`, the measure beside the last mesh -
+      passage.under_floor_regions): each region is refined from the cell measured at its wall by
+      as many levels as put (needed + 1) across where it read. That is the gate's own reading,
+      so it includes what no reading of the staged wall sees: the measure floors every wall
+      point to the narrowest passage within its reach, and on the Fluent aorta 43% of the wall
+      under the floor was trunk wall round a branch's mouth (and blind stubs the staged reading
+      missed), where the staged field read the trunk.
+    - The staged wall's narrow passages (`field`): they get the levels the last budget held
+      their narrowest box back by; when nothing was measured, the target also rises by the
+      shortfall those levels do not explain (cells across x (needed + 1) / measured, at most
+      the top of industry practice).
+    The budget rises by what their boxes cost, up to `ceiling`."""
+    import math
+
+    from meshpipeline.engines.passage import (
+        PASSAGE_CEILING_CELLS,
+        PASSAGE_CELLS_ACROSS,
+        narrow_passage_regions,
+    )
+    if not gated or not facts or gated.get("narrow_retry") or (field is None and not under):
+        return None
+
+    def _num(v: object) -> float | None:
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            return None
+        return float(v) if math.isfinite(float(v)) else None
+
+    m, n, cells = _num(facts.get("cells_across")), _num(facts.get("needed")), _num(facts.get("cells"))
+    if m is None or n is None or m <= 0.0 or m >= n:
+        return None
+    try:
+        ca = max(8, int(gated.get("cells_across_diameter", 24)))
+    except (TypeError, ValueError):
+        return None
+    prev = _num(gated.get("narrow_target")) or float(PASSAGE_CELLS_ACROSS)
+    band = _num(gated.get("near_band_m"))
+    wall_cell = float(bore_D) / ca
+    near = wall_cell / 2.0 if band is None or band > 0.0 else wall_cell
+    prev_budget = _clamp_budget_of(gated, ceiling)
+    prev_boxes = _num(gated.get("narrow_budget")) or max(50_000.0, 0.5 * prev_budget)
+    # where the last mesh measured short - unless that is most of its wall: then it is coarse
+    gate, gate_cost, share = _gate_boxes(under, wall_cell=wall_cell, target=n + 1.0)
+    if gate and share > LOCAL_RETRY_MAX_SHARE:
+        return None
+
+    def _regions(t_: float, budget_: float | None):
+        return narrow_passage_regions(field[0], field[1], cell_m=near, areas=field[2],
+                                      target=t_, detect=t_, budget_cells=budget_)
+    boxes: list = []
+    target = prev
+    if field is not None:
+        try:
+            # WHAT THE LAST MESH'S NARROWEST PASSAGE WAS DENIED: the levels its budget took off.
+            # A passage held two levels short reads a quarter of its cells across, and giving
+            # it those levels is the repair; only the shortfall they do not explain - when the
+            # mesh's own reading does not say where it is - raises the target.
+            full, held = _regions(prev, None), _regions(prev, prev_boxes)
+            lost = 0
+            if full:
+                key = min(full, key=lambda b: float(b["radius_m"]))
+                kept = [b for b in held if b["min"] == key["min"] and b["max"] == key["max"]]
+                lost = int(key["level_bump"]) - (int(kept[0]["level_bump"]) if kept else 0)
+            m_eff = m * 2.0 ** max(0, lost)
+            if not gate and m_eff < n + 1.0:
+                target = min(float(PASSAGE_CEILING_CELLS), prev * (n + 1.0) / m_eff)
+            boxes = _regions(target, None)
+        except Exception:  # noqa: BLE001 - no reading: the measured regions alone, if any
+            logger.warning("narrow retry: the passage field could not be read", exc_info=True)
+            boxes = []
+    if not boxes and not gate:
+        return None
+    cost = gate_cost + sum(float(b["volume_m3"]) / float(b["cell_m"]) ** 3 for b in boxes)
+    used = cells if cells is not None else float(prev_budget)
+    room = max(0.0, float(ceiling) - used)
+    if gate and cost > room:
+        # within the hard limit: the measured regions' extra levels come off the costliest first
+        gate, gate_cost = _hold_gate(gate, room - (cost - gate_cost))
+        cost = gate_cost + sum(float(b["volume_m3"]) / float(b["cell_m"]) ** 3 for b in boxes)
+    # a little over their estimate: the boxes are costed again in the pass, against this figure
+    box_budget = int(math.ceil(max(0.5 * prev_budget, min(1.05 * cost, room))))
+    budget = int(min(float(ceiling), max(float(prev_budget), used + box_budget)))
+    narrowest = 2.0 * min(float(b["radius_m"]) for b in [*boxes, *gate])
+    words = []
+    if gate:
+        words.append(f"the {len(gate)} region(s) where the last mesh measured under the floor, "
+                     f"refined from their own wall cell to {n + 1:.3g} cells across")
+    if boxes:
+        words.append(f"the {len(boxes)} narrow passage region(s) of the staged wall, refined "
+                     f"locally to {target:.3g} cells across")
+    # the thin-feature boxes keep the share of the mesh before: the retry is for the passages
+    return ({"cells_across_diameter": ca, "narrow_target": round(target, 2), "narrow_retry": True,
+             "narrow_budget": box_budget, "max_cells": budget,
+             "thin_budget": int(max(50_000, 0.5 * prev_budget)),
+             "local_boxes": [{k: b[k] for k in ("min", "max", "level_bump", "radius_m")}
+                             for b in gate]},
+            " and ".join(words) + f" - narrowest {_mm(narrowest)} - the bore kept at {ca} "
+            "across")
+
+
+def _hold_gate(boxes: list, room: float) -> tuple[list, float]:
+    """The measured regions' boxes (_gate_boxes) held within `room` cells: the deepest extra
+    level comes off first, all boxes at it together (never below one level past their wall);
+    then, if still over, the costliest boxes are left out."""
+    out = [dict(b) for b in boxes]
+
+    def _cost(bs: list) -> float:
+        return sum(float(b["cost"]) for b in bs)
+    while _cost(out) > room and max(int(b["extra"]) for b in out) > 1:
+        top = max(int(b["extra"]) for b in out)
+        for b in out:
+            if int(b["extra"]) == top:
+                b["extra"] -= 1
+                b["level_bump"] -= 1
+                b["cost"] = float(b["cost"]) / 8.0
+    out.sort(key=lambda b: float(b["cost"]))
+    kept, spent = [], 0.0
+    for b in out:
+        if spent + float(b["cost"]) <= room:
+            kept.append(b)
+            spent += float(b["cost"])
+    return kept, spent
+
+
+def _clamp_budget_of(plan: dict, ceiling: int) -> int:
+    from meshpipeline.engines.snappy.planner import clamp_cell_budget
+    return int(clamp_cell_budget(plan.get("max_cells"), ceiling=ceiling))
 
 
 def _bore_area_m2(t: dict) -> float:
@@ -1069,8 +1362,13 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
         _bore = str(state.get("input_kind") or "").strip() != "fluid-domain"
         t, _wall_key, _bound_note = _bind_declared_ports(
             t, state.get("intake_patches") or [], bore=_bore)
-        from meshpipeline.engines.region_check import record_port_openings
-        record_port_openings(workspace, t.get("openings"), bore=_bore)
+        from meshpipeline.engines.region_check import record_port_openings, trusted_declaration
+        # the declaration the mesh is SIZED from: a typed size the measured opening disagrees with
+        # gives way to the measurement (said in the binding note), as the port gate judges it
+        _sizing_decl = trusted_declaration(
+            state.get("intake_patches") or [],
+            record_port_openings(workspace, t.get("openings"), bore=_bore,
+                                 intake_patches=state.get("intake_patches") or []))
         _srcs = dict(t["stls"])
         if t.get("folded_stls"):
             # blind plugs are wall, physically: their triangles join the wall surface
@@ -1104,7 +1402,7 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
     # ... read as the inlet lid's HYDRAULIC diameter (4 x area / perimeter) where the lid reads:
     # the bore of a round pipe, unchanged; twice the gap of an annulus, where the area-equivalent
     # bore put 3 cells across annular_001's 13.2 mm gap (2026-10-04); the width of a slot.
-    _dh = _port_hydraulic_diameters(_srcs, _wall_key, state.get("intake_patches") or [])
+    _dh = _port_hydraulic_diameters(_srcs, _wall_key, _sizing_decl)
     _bore_name = _bore_port_name(t)
     if _dh.get(_bore_name):
         bore_D = min(bore_D, float(_dh[_bore_name]))
@@ -1149,7 +1447,7 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
     from asyncio import to_thread as _to_thread
     try:
         _passage_field = await _to_thread(_staged_passage_field, t, _srcs, _wall_key,
-                                          state.get("intake_patches") or [])
+                                          _sizing_decl)
     except Exception:  # noqa: BLE001 - a measurement is an optimisation, never fatal
         logger.exception("internal build: passage field failed - continuing without local "
                          "narrow-passage refinement - job_id=%s", job_id)
@@ -1180,6 +1478,8 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
     # pass of this attempt puts the floor across that passage (_refine_after_under_resolved)
     _under = _under_resolved_facts(state)
     _gated_plan = _sibling_plan_memory(workspace) if _under else None
+    # ... and WHERE it fell short, as the measure beside that mesh recorded it
+    _measured_short = _sibling_under_floor(workspace) if _under else None
 
     for attempt in range(1, max_attempts + 1):
         _timed_out_now, _repeat_stop, _mesh_minutes = False, False, 0.0
@@ -1197,14 +1497,28 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
             run.note_plan_round(_po.round)
         strategy = _inherit_durable_plan_fields(plan or {}, workspace)
         # after a mesh too coarse across its passage the next one is FINER where it counts,
-        # whatever the re-plan proposed - and a timeout below still makes it smaller
-        strategy, _refined = _refine_after_under_resolved(_gated_plan, _under, strategy)
+        # whatever the re-plan proposed - and a timeout below still makes it smaller. Where it
+        # counts FIRST: when the staged wall shows passages narrower than the rest, those are
+        # raised locally and the bore keeps its cell (_narrow_retry); only a mesh short of the
+        # floor with no such passage - or still short after that - is refined as a whole.
+        _local = _narrow_retry(_gated_plan, _under, _passage_field, bore_D,
+                               ceiling=polcfg.CELL_HARD_LIMIT, under=_measured_short)
+        if _local is not None:
+            strategy, _refined = {**strategy, **_local[0]}, _local[1]
+            logger.info("pass after an under-resolved mesh: %s", _refined)
+        else:
+            # a local retry's boxes and budgets belong to the attempt that made them, never to a
+            # re-plan that echoes them back
+            strategy = {k: v for k, v in strategy.items()
+                        if k not in ("local_boxes", "narrow_budget", "thin_budget")}
+            strategy, _refined = _refine_after_under_resolved(_gated_plan, _under, strategy)
+            if _under and _gated_plan and _gated_plan.get("narrow_retry"):
+                # the narrow passages were raised locally and the mesh is still short: the whole
+                # part is refined now, and the narrow passages keep the target they were raised to
+                strategy = {**strategy, "narrow_retry": True,
+                            "narrow_target": _gated_plan.get("narrow_target")}
         # after a timeout the next mesh is SMALLER, whatever the re-plan proposed
         strategy, _coarsened = _coarsen_after_timeout(_timeout_ref, strategy, internal=True)
-        previous_plan = strategy
-        await run.fence("write plan memory")
-        _mem = await _op_begin(publish, "author_configuration", run, attempt)
-        _write_plan_memory(workspace, strategy)
 
         # strategy → concrete numbers (internal knobs; tolerant of external-style keys)
         _budget = clamp_cell_budget(strategy.get("max_cells"), ceiling=polcfg.CELL_HARD_LIMIT)
@@ -1241,19 +1555,38 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
         # enough to reach 3 mm would detonate the budget across a 400 mm pipe. Any
         # measurement failure degrades to "no thin features", never to a guess.
         _wall_cell = base_cell / (2 ** surface_level)
+        _wall_stl = (Path(workspace) / "constant" / "triSurface"
+                     / f"{prep['names'][_wall_key]}.stl")
+        # THE NEAR-WALL BAND, sized for the passage and the budget (snappy_runner.plan_near_band):
+        # every cell within its depth of the wall is one level finer, so the cells AT the wall
+        # are half the wall cell wherever there is a band - the cell the local refinements below
+        # start from. A pass after a local retry keeps the band of the pass it follows, so the
+        # retry stays local.
+        _band_m, _band_note, _band_set = _near_band(
+            _gated_plan if _local is not None else None, R, wall_cell=_wall_cell,
+            budget_cells=_budget, n_layers=n_layers, field=_passage_field, wall_stl=_wall_stl,
+            bore_D=bore_D, t=t)
+        if _band_note:
+            logger.info("internal pass %d: %s - job_id=%s", attempt, _band_note, job_id)
+        _near_cell = _wall_cell / 2.0 if _band_m > 0.0 else _wall_cell
+        _near_offset = 1 if _band_m > 0.0 else 0
+        strategy = {**strategy, "near_band_m": round(_band_m, 6)}
+        previous_plan = strategy
+        await run.fence("write plan memory")
+        _mem = await _op_begin(publish, "author_configuration", run, attempt)
+        _write_plan_memory(workspace, strategy)
         # the values this pass actually meshes with - what a timeout is measured against
         _effective = {**strategy, "max_cells": _budget, "cells_across_diameter": cells_across}
         _thin_regions: list = []
         try:
             from meshpipeline.cad.stl_io import read_stl_triangles as _read_tris
             from meshpipeline.cad.thin_features import thin_refinement_boxes as _thin_boxes
-            _wall_stl = (Path(workspace) / "constant" / "triSurface"
-                         / f"{prep['names'][_wall_key]}.stl")
             if _wall_stl.exists():
                 # the extra levels may spend at most half the run's cell budget: a thin feature
                 # is captured locally, never by re-meshing the whole part at the finest level
-                _thin_regions = _thin_boxes(_read_tris(_wall_stl), cell_m=_wall_cell,
-                                            budget_cells=max(50_000, int(0.5 * _budget)))
+                _thin_regions = _thin_boxes(
+                    _read_tris(_wall_stl), cell_m=_wall_cell,
+                    budget_cells=max(50_000, int(strategy.get("thin_budget") or 0.5 * _budget)))
         except Exception:  # noqa: BLE001 - a measurement is an optimisation, never fatal
             logger.exception("internal build: thin-feature probe failed - continuing without "
                              "local thin refinement - job_id=%s", job_id)
@@ -1274,15 +1607,21 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                    else "refining locally as far as the cell budget allows")
                 + (f" ({_thin_note})" if _thin_note else ""),
                 op_id=f"internal:thin-feature:{attempt}")
-        _narrow_regions = _narrow_passage_boxes(_passage_field, wall_cell=_wall_cell,
-                                                budget_cells=max(50_000, int(0.5 * _budget)))
+        # NARROW PASSAGES, against the cell at the wall too, to the target this pass carries (13
+        # across, more after a local retry), within the budget the pass gives them
+        _narrow_target = float(strategy.get("narrow_target") or _PASSAGE_TARGET)
+        _narrow_regions = _narrow_passage_boxes(
+            _passage_field, wall_cell=_near_cell, target=_narrow_target,
+            budget_cells=max(50_000, int(strategy.get("narrow_budget") or 0.5 * _budget)))
+        _over_band(_narrow_regions, _near_offset)
         if _narrow_regions:
             _narrow_note = str(getattr(_narrow_regions, "note", "") or "")
             await publish.anote(
                 f"Narrow passages - {len(_narrow_regions)} region(s) down to "
                 f"{_mm(2.0 * min(float(b['radius_m']) for b in _narrow_regions))} across, "
-                f"under 12 cells at the {_wall_cell * 1000:.1f} mm wall cell; refining them "
-                "locally to 13 across" + (f" ({_narrow_note})" if _narrow_note else ""),
+                f"under {_narrow_target:.3g} cells at the {_near_cell * 1000:.2g} mm cell "
+                f"at the wall; refining them locally to {_narrow_target:.3g} across"
+                + (f" ({_narrow_note})" if _narrow_note else ""),
                 op_id=f"internal:narrow-passage:{attempt}")
 
         await publish.anote(f"Meshing pass {attempt} of {max_attempts} - "
@@ -1309,14 +1648,16 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                 feature_level=feature_level, n_layers=n_layers, first_layer_rel=first_rel,
                 max_cells=_budget, quality=quality,
                 port_sizes=_port_sizes, sealed_before=_sealed_before,
-                thin_regions=[*_thin_regions, *_narrow_regions])
+                thin_regions=[*_thin_regions, *_narrow_regions,
+                              *(strategy.get("local_boxes") or [])],
+                near_band_depth=_band_m if _band_set else None)
             _stop_on_repeated_case(workspace, _reviewed_ws, job_id=job_id,
                                    where=f"internal pass {attempt}")
             if _repeats_timed_out_case(workspace, _timeout_case):
                 raise TimedOutCaseRepeats(f"internal pass {attempt}")
             await publish.anote(f"Filling the cavity - about {cells_across} cells across the bore, "
                          f"refinement level {summary['surface_level']}, {n_layers} "
-                         f"boundary layers",
+                         f"boundary layers" + (f"; {_band_note}" if _band_note else ""),
                     op_id=f"internal:filling:{attempt}")
             run.note_authoring()
             _t_mesh = _time.monotonic()
