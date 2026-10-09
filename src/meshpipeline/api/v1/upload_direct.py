@@ -83,7 +83,8 @@ class DirectUploadIn(BaseModel):
                           description="The file's name. Its suffix must be an accepted geometry "
                                       "format (GET /api/v1/client-config lists them: STEP, IGES, "
                                       "BREP, STL, OBJ, PLY, OFF, 3MF, glTF/GLB, VTK/VTP/VTU, MSH, "
-                                      "Nastran, Abaqus, Medit, SU2, Rhino 3DM); finalize then "
+                                      "Nastran, Abaqus, Medit, SU2, Rhino 3DM, ECXML thermal "
+                                      "models); finalize then "
                                       "reads the bytes and they decide. Send the same name to "
                                       "finalize.")
     size_bytes: int = Field(..., ge=0, description="The file's size in bytes, so an empty or "

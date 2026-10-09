@@ -106,8 +106,13 @@ def _viewer_surface():
 # and where the surface is not closed, and it cannot lay a ground plane today.
 HOME_TURF = (
     TurfRow("layers_requested", "is", True, "home",
-            "Its boundary layers are extruded over the whole wall, so near-wall layers reach "
-            "almost all of it."),
+            "Its boundary layers are extruded over the whole wall: measured at 100% of the wall "
+            "area with a layer and 99.95-99.99% with all requested (ONERA M6, Windsor body at "
+            "3.8-4.2M cells)."),
+    TurfRow("knife_edges", ">", 1.0, "weak",
+            "Thin slotted elements (slats and flaps of a high-lift wing) can fold the boundary "
+            "cells: the high-lift airliner came out with incorrectly oriented faces at 1.4M "
+            "cells.", flow="external"),
     TurfRow("ground", "is", True, "outside",
             "It cannot lay a ground plane under the body yet: the far-field box is all open air.",
             flow="external"),

@@ -38,13 +38,20 @@ class CanonicalGeometry:
     regions: tuple[str, ...] = ()   # named groups/bodies the source carried, as written
     notes: tuple[str, ...] = ()
     stats: dict = field(default_factory=dict)
+    #: What a thermal model (ECXML) carries beyond its shape, in brief: regions with their fluid or
+    #: solid role, material and power, the boundary patches it implies. The whole of it is in the
+    #: sidecar beside `path` (cad/ingest/ecxml_build.SIDECAR_SUFFIX).
+    physics: dict = field(default_factory=dict)
 
     def facts(self) -> dict:
         """The plain facts other workstreams read: what kind of geometry this is, and from what."""
         fmt = format_for_key(self.source_format)
-        return {"geometry_kind": self.kind.value, "source_format": self.source_format,
-                "source_format_label": fmt.label if fmt else self.source_format,
-                "converted": self.converted, "source_regions": list(self.regions)}
+        out: dict = {"geometry_kind": self.kind.value, "source_format": self.source_format,
+               "source_format_label": fmt.label if fmt else self.source_format,
+               "converted": self.converted, "source_regions": list(self.regions)}
+        if self.physics:
+            out["thermal_model"] = dict(self.physics)
+        return out
 
 
 def _refuse_native(sniffed: str) -> IngestError:
@@ -211,6 +218,8 @@ def _source_unit(src: Path, fmt) -> dict:
 def _cad_to_step(src: Path, key: str, dest: Path) -> CanonicalGeometry:
     from meshpipeline.cad.ingest.cad import CadReadError, brep_to_step
 
+    if key == "ecxml":
+        return _ecxml_to_step(src, dest)
     if key != "brep":
         raise IngestError(f"internal: no CAD converter for {key!r}")
     try:
@@ -222,6 +231,22 @@ def _cad_to_step(src: Path, key: str, dest: Path) -> CanonicalGeometry:
         notes.append("the BREP file holds surfaces but no closed solid")
     return CanonicalGeometry(path=dest, kind=GeometryKind.cad, source_format=key, converted=True,
                              notes=tuple(notes), stats=stats)
+
+
+def _ecxml_to_step(src: Path, dest: Path) -> CanonicalGeometry:
+    """An ECXML thermal model as one STEP holding a named solid per part and the air around them,
+    its physics written beside it (cad/ingest/ecxml_build)."""
+    from meshpipeline.cad.ingest.ecxml import EcxmlError
+    from meshpipeline.cad.ingest.ecxml_build import ecxml_to_step, physics_summary
+
+    try:
+        built, stats = ecxml_to_step(src, dest)
+    except EcxmlError as exc:
+        raise IngestError(f"the ECXML model could not be converted: {exc}") from exc
+    return CanonicalGeometry(path=dest, kind=GeometryKind.cad, source_format="ecxml",
+                             converted=True, regions=built.region_names,
+                             notes=tuple(built.notes), stats=stats,
+                             physics=physics_summary(built.sidecar))
 
 
 def _surface_to_stl(src: Path, key: str, dest: Path) -> CanonicalGeometry:
