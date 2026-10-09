@@ -67,6 +67,7 @@ from meshpipeline.engines.snappy.solvability import check_solvability  # noqa: F
 # the name has to be here even though the native phase is what calls it.
 from meshpipeline.engines.snappy_hexmesh import (  # noqa: F401
     _write_case_skeleton,
+    off_grid_point,
     parse_layer_coverage,
 )
 from meshpipeline.render.review_artifacts import (  # noqa: F401
@@ -832,6 +833,102 @@ def prepare_surface_internal(workspace, *, surfaces_src: dict, feature_angle: fl
     return {"names": names, "features": feats}
 
 
+# #
+# THE NEAR-WALL BAND of an internal case: every cell within its depth of the wall is refined one
+# level past the wall's surface level, so the wall's own cells are HALF the planned wall cell.
+# #
+
+#: The band's depth by default: eight wall cells, or 2% of the part's longest side if deeper.
+NEAR_BAND_WALL_CELLS = 8.0
+NEAR_BAND_EXTENT_FRACTION = 0.02
+#: The share of the run's cell budget the band may spend. The narrow-passage and thin-feature
+#: boxes are each held to half the budget too (drivers.py); what the band costs is estimated by
+#: near_band_cost, and a band over its share is made shallower - or dropped - before the mesher
+#: runs, not cut off by maxGlobalCells part way through a refinement level.
+NEAR_BAND_BUDGET_SHARE = 0.5
+
+
+def default_near_band_depth(wall_cell: float, bbox_min, bbox_max) -> float:
+    """The band depth render_internal_case uses when no other is given (metres)."""
+    maxext = max(float(bbox_max[i]) - float(bbox_min[i]) for i in range(3))
+    return max(NEAR_BAND_WALL_CELLS * float(wall_cell), NEAR_BAND_EXTENT_FRACTION * maxext)
+
+
+def near_band_cost(depth: float, *, wall_cell: float, areas, radius, n_layers: int) -> float:
+    """Cells a near-wall band `depth` deep adds over a mesh without one.
+
+    - The fluid within `depth` of the wall is cut into cells half the wall cell, eight for one:
+      seven more per wall cell of volume. Per point of the wall (its area `areas`, the local
+      passage half-width `radius`) that volume is a tube's: area x min(depth, r) x
+      (1 - min(depth, r) / 2r), which is the whole passage, area x r / 2, once the band is as
+      deep as the passage is wide.
+    - The wall's own faces become a quarter the size, so every prism layer on them costs four
+      faces' worth of cells for one: 3 x n_layers more per wall face. Any band at all costs this.
+    """
+    import numpy as np
+    a = np.asarray(areas, dtype=float)
+    r = np.maximum(np.asarray(radius, dtype=float), 1e-12)
+    h = float(wall_cell)
+    if depth <= 0.0 or h <= 0.0 or not len(a):
+        return 0.0
+    d = np.minimum(float(depth), r)
+    volume = float((a * d * (1.0 - d / (2.0 * r))).sum())
+    return 7.0 * volume / h ** 3 + 3.0 * max(0, int(n_layers)) * float(a.sum()) / h ** 2
+
+
+def plan_near_band(*, wall_cell: float, default_depth: float, budget_cells: float, areas, radius,
+                   n_layers: int, hard_cells: float | None = None,
+                   share: float = NEAR_BAND_BUDGET_SHARE) -> tuple[float, str]:
+    """(depth, note): the near-wall band an internal case can afford.
+
+    THE BAND IS A BAND, NOT A FILL. Eight wall cells (or 2% of the part) deep, one level past the
+    wall: in a round pipe sized at 24 cells across its bore that is the outer two thirds of the
+    radius. In a passage no wider than the band - an annulus, a slot, a long thin branch - it is
+    the WHOLE passage, eight cells for every one planned: annular_001's 13.2 mm gap, 820 mm long,
+    came to ~30 M cells, and the 5 prism layers on its quartered wall faces to ~12 M more, against
+    a 2 M budget. So the band's cost (near_band_cost) is held to `share` of the budget:
+    - within it, the band is the default, as before;
+    - over it, the band is made shallower, to the depth that fits - but never under one wall
+      cell: the wall's own cells, which decide its cells across, are the band's at any depth;
+    - and when even that one wall cell of band would cost more than `share` of the HARD limit
+      (`hard_cells`) - the layers on the finer wall faces alone can be - there is no band, and the
+      wall is meshed at its planned cell. Every passage still gets its cells across from the
+      wall cell, and a passage too narrow for it is refined locally (drivers._narrow_passage_boxes).
+    """
+    h = float(wall_cell)
+    allowance = float(share) * float(budget_cells)
+    hard = float(share) * float(hard_cells) if hard_cells else allowance
+    if h <= 0.0 or default_depth <= 0.0:
+        return 0.0, ""
+
+    def cost(d: float) -> float:
+        return near_band_cost(d, wall_cell=h, areas=areas, radius=radius, n_layers=n_layers)
+
+    full = cost(default_depth)
+    if full <= allowance:
+        return float(default_depth), ""
+    one = cost(min(h, float(default_depth)))
+    if one > max(hard, allowance):
+        return 0.0, (f"no near-wall band: one wall cell of it would cost about {one / 1e6:.2g} M "
+                     f"cells, over the {max(hard, allowance) / 1e6:.2g} M it may spend")
+    if h >= default_depth:
+        return float(default_depth), ""
+    if one > allowance:
+        return h, (f"near-wall band held to one wall cell ({h * 1000:.3g} mm, from "
+                   f"{default_depth * 1000:.3g} mm): the full band would cost about "
+                   f"{full / 1e6:.2g} M cells, over the {allowance / 1e6:.2g} M it may spend")
+    lo, hi = h, float(default_depth)
+    for _ in range(40):
+        mid = 0.5 * (lo + hi)
+        if cost(mid) <= allowance:
+            lo = mid
+        else:
+            hi = mid
+    return lo, (f"near-wall band held to {lo * 1000:.3g} mm deep (from {default_depth * 1000:.3g} "
+                f"mm): the full band would cost about {full / 1e6:.2g} M cells, over the "
+                f"{allowance / 1e6:.2g} M it may spend")
+
+
 #: Minimum castellation cells across a port opening. Below ~4 the octree can seal the
 #: opening entirely (the corpus's biggest failure cluster - 21 episodes died at the
 #: manifest gate with a zero-face port); 6 leaves margin for snapping to eat one each side.
@@ -868,13 +965,18 @@ def _port_levels(*, base_cell: float, default_level: int, smin: int,
     return out
 
 
+# the seed is placed off the background grid by the rule both snappy engines share
+_off_grid = off_grid_point
+
+
 def render_internal_case(workspace, *, names: dict, features: dict, interior_point,
                          bbox_min, bbox_max, base_cell: float, surface_level: int,
                          feature_level: int, n_layers: int, first_layer_rel: float = 0.3,
                          max_cells: int = 8_000_000, quality: str = "balanced",
                          wall_key: str = "wall", port_sizes: dict[str, float] | None = None,
                          sealed_before: frozenset[str] | set[str] = frozenset(),
-                         thin_regions: list | None = None) -> dict:
+                         thin_regions: list | None = None,
+                         near_band_depth: float | None = None) -> dict:
     ws = Path(workspace)
     ext = [float(bbox_max[i] - bbox_min[i]) for i in range(3)]
     maxext = max(ext)
@@ -914,8 +1016,13 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
     # base_cell made it 3 base cells deep - with an inflated base_cell that was most of
     # the domain at max level (the same detonation). Scale by the actual WALL cell.
     wall_cell_actual = base_actual / (2 ** smin)
-    near_dist = max(8.0 * wall_cell_actual, 0.02 * maxext)
-    near_level = min(_HARD_MAX_LEVEL, smax + 1)
+    # ... unless the caller sized it for the passage and the budget (plan_near_band): a band
+    # deeper than the passage is wide fills it, and 0 means no band at all - the wall at its level
+    near_dist = (default_near_band_depth(wall_cell_actual, bbox_min, bbox_max)
+                 if near_band_depth is None else max(0.0, float(near_band_depth)))
+    near_level = min(_HARD_MAX_LEVEL, smax + 1) if near_dist > 0.0 else smax
+    near_region = (f"{names[wall_key]} {{ mode distance; levels (({near_dist:.6g} {near_level})); }} "
+                   if near_dist > 0.0 else "")
     max_cells = int(max_cells)
     n_layers = max(0, int(n_layers))
     first_rel = float(first_layer_rel)
@@ -937,6 +1044,18 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
         + f");\nblocks (hex (0 1 2 3 4 5 6 7) ({div[0]} {div[1]} {div[2]}) simpleGrading (1 1 1)); edges ();\n"
         "boundary (outer { type patch; faces "
         "((0 3 2 1)(4 5 6 7)(0 1 5 4)(2 3 7 6)(1 2 6 5)(0 4 7 3)); });\nmergePatchPairs ();\n")
+
+    # THE SEED OFF THE GRID. A part symmetric about a plane has its seed on that plane, and the
+    # background box, built round the part, is symmetric about it too: the plane is a cell face
+    # whenever the cell count across it is even, and a face of every refined cell whenever it
+    # is odd. snappyHexMesh cannot then say which cell holds locationInMesh ("is not inside the
+    # mesh or on a face or edge") and stops before it carves - every attempt on the centred
+    # tee_wye_018_fluid did, and the untouched background box read back as an exterior leak.
+    # The point the mesher gets is the centre of the finest cell (_HARD_MAX_LEVEL) holding the
+    # seed, on the box as written: strictly inside one cell at every level, and never more
+    # than half a finest cell from the seed.
+    location = _off_grid(interior_point, [float(f"{v:.6g}") for v in dmin],
+                         [float(f"{v:.6g}") for v in dmax], div, _HARD_MAX_LEVEL)
 
     # THE SEED BUBBLE. locationInMesh decides which region survives; interior cells far
     # from any surface stay at the BACKGROUND size, and a background cell containing the
@@ -1004,8 +1123,8 @@ geometry {{ {geom} }}
 castellatedMeshControls {{ maxLocalCells {max_cells}; maxGlobalCells {max_cells}; minRefinementCells 10;
   maxLoadUnbalance 0.10; nCellsBetweenLevels 3; features ( {feat_entries} );
   refinementSurfaces {{ {refine_surfs} }} resolveFeatureAngle 30;
-  refinementRegions {{ {wall} {{ mode distance; levels (({near_dist:.6g} {near_level})); }} {port_regions}{thin_refine}seedZone {{ mode inside; levels ((1e15 {smin})); }} }}
-  locationInMesh {vf(interior_point)}; allowFreeStandingZoneFaces true; }}
+  refinementRegions {{ {near_region}{port_regions}{thin_refine}seedZone {{ mode inside; levels ((1e15 {smin})); }} }}
+  locationInMesh ({location[0]:.12g} {location[1]:.12g} {location[2]:.12g}); allowFreeStandingZoneFaces true; }}
 snapControls {{ nSmoothPatch 3; tolerance 2.0; nSolveIter 50; nRelaxIter 8; nFeatureSnapIter 15;
   implicitFeatureSnap false; explicitFeatureSnap true; multiRegionFeatureSnap false; }}
 addLayersControls {{ relativeSizes true; layers {{ {wall} {{ nSurfaceLayers {n_layers}; }} }}
@@ -1020,7 +1139,8 @@ meshQualityControls {{ maxNonOrtho 65; maxBoundarySkewness 20; maxInternalSkewne
 mergeTolerance 1e-6; debug 0;
 """)
     return {"divisions": div, "surface_level": [smin, smax], "feature_level": flevel,
-            "location_in_mesh": [round(x, 5) for x in interior_point], "max_cells": max_cells,
+            "near_band_m": round(near_dist, 6), "near_band_level": near_level,
+            "location_in_mesh": [round(x, 9) for x in location], "max_cells": max_cells,
             "n_layers": n_layers, "domain_min": [round(x, 4) for x in dmin],
             "domain_max": [round(x, 4) for x in dmax], "patches": list(names.values()),
             "port_levels": {names[p]: port_lvls[p] for p in port_lvls if p in names},

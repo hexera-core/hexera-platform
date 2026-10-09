@@ -10,6 +10,7 @@ from meshpipeline.engines.base import (
     DeliveredMesh,
     DownstreamTarget,
     EngineSpec,
+    FlowSupport,
     InputContract,
     MeshCapability,
     RunPolicy,
@@ -128,6 +129,11 @@ SPEC = EngineSpec(
             "materials or power for it to place.",
         ),
         capabilities=(MeshCapability("solid-assembly", "multiregion-volume"),),
+        # WHAT FILE IT TAKES: a multi-region assembly as CAD solids - the ingestion layer builds
+        # an ECXML model into them (reads_source_formats keeps it to ECXML). Never a surface.
+        accepts=(FlowSupport("multi-region", ("cad",)),),
+        # after snappy multi-region on the multi-region ladder
+        ladder_rank=60,
         input_contract=InputContract(
             dimensionalities=("3D",),
             input_kind="solid",

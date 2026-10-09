@@ -88,11 +88,11 @@ osmod.set_object_store(_CountingStore(osmod.get_object_store()))
 _real_prepare = gm.prepare_execution_geometry
 
 
-async def _counted_prepare(ref, interpretation=None, *, job_id):
+async def _counted_prepare(ref, interpretation=None, *, job_id, engine=""):
     if FORBID:
         raise AssertionError("the geometry materializer was called")
     T["materializer"] += 1; _flush()
-    return await _real_prepare(ref, interpretation, job_id=job_id)
+    return await _real_prepare(ref, interpretation, job_id=job_id, engine=engine)
 
 
 gm.prepare_execution_geometry = _counted_prepare

@@ -24,6 +24,7 @@ def _write_workspace_context_files(
     flow_topology: str = "",
     purpose: str = "",
     far_field: dict | None = None,
+    input_kind: str = "",
 ) -> tuple[str, str]:
     if not request_txt:
         step_basename = os.path.basename(source_path) if source_path else "input.stl"
@@ -100,6 +101,11 @@ def _write_workspace_context_files(
         # in, the flow axis): what the domain-extent gate will judge the box against. Same
         # neutral-file treatment, so an engine that builds its own box (cfMesh) sizes it in the
         # unit it is judged in instead of re-deriving one.
+        # What the user CONFIRMED the file is (a fluid domain, a body, a solid): an engine that
+        # builds its own fluid (gmsh's box around a body) must not build one around a file
+        # that already IS the fluid.
+        if input_kind:
+            (workspace / "input_kind").write_text(str(input_kind), encoding="utf-8")
         ff = {k: v for k, v in (far_field or {}).items() if v not in (None, "", {})}
         if ff:
             (workspace / "far_field_request.json").write_text(json.dumps(ff), encoding="utf-8")

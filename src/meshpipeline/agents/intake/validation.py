@@ -43,7 +43,10 @@ ADMIT_MALFORMED = "malformed"
 _HARD_IMPOSSIBLE_CODES = frozenset({
     "purpose_incompatible", "input_kind_incompatible", "dimensionality_unsupported",
     "symmetry_unsupported", "multiple_wall_patches_unsupported", "geometry_unsuitable",
-    "ground_plane_unsupported", "boundary_count_unsupported", "source_format_unsupported",
+    "ground_plane_unsupported", "boundary_count_unsupported",
+    # the engine cannot take the uploaded file's FORM (CAD solid / surface) for this flow
+    "geometry_form_unsupported",
+    "source_format_unsupported",
 })
 
 # The two lines closing every impossible message: they preserve user intent, name NO alternative
@@ -64,24 +67,28 @@ def _normalise_patches(patches) -> list[dict]:
     return out
 
 
-def _impossible_message(hard: list) -> str:
+def _impossible_message(hard: list, closing: str = "") -> str:
     # One finding per line, and the assurance and the question each on their own. Joining every
     # rejection with a space produced one run-on block in which two independent constraints - a
     # geometry mismatch and a patch-structure limit, say - were indistinguishable, so a reader
     # could not tell how many decisions they were being asked to make. The chat renderer turns
-    # "- " into a list, so N findings arrive as N things.
+    # "- " into a list, so N findings arrive as N things. `closing` replaces the revise question
+    # when the only way on is a different FILE - asking which value to revise, or offering to list
+    # compatible engines, would send the user looking for an engine that does not exist.
     findings = [r.message.strip() for r in hard if (r.message or "").strip()]
     body = findings[0] if len(findings) == 1 else "\n".join(f"- {f}" for f in findings)
-    return f"{body}\n\n{_PRESERVED_LINE}\n\n{_REVISE_QUESTION}"
+    return f"{body}\n\n{_PRESERVED_LINE}\n\n{closing or _REVISE_QUESTION}"
 
 
 def preview_admission(engine: str, purpose: str, input_kind: str, dimensionality: str | None = None,
-                      patches=None, engine_params=None, geometry_facts=None) -> dict:
+                      patches=None, engine_params=None, geometry_facts=None,
+                      geometry_form: str | None = None) -> dict:
     # ONE boundary between the keys the system routes on and the words a person reads. Every
     # message below is written with keys, so translating here means no verdict can reach a user in
     # the system's own vocabulary. The declared values keep their keys - callers route on them.
+    # `geometry_form` is the uploaded file's canonical form (engines/capability.py), when known.
     result = _admission(engine, purpose, input_kind, dimensionality, patches, engine_params,
-                        geometry_facts)
+                        geometry_facts, geometry_form)
     for field in ("safe_user_message", "capability_reason"):
         if result.get(field):
             result[field] = _vocab.humanize(result[field])
@@ -91,7 +98,8 @@ def preview_admission(engine: str, purpose: str, input_kind: str, dimensionality
 
 
 def _admission(engine: str, purpose: str, input_kind: str, dimensionality: str | None = None,
-               patches=None, engine_params=None, geometry_facts=None) -> dict:
+               patches=None, engine_params=None, geometry_facts=None,
+               geometry_form: str | None = None) -> dict:
     from meshpipeline.engines.admission import AdmissionEvidence, PatchSummary
     from meshpipeline.engines.registry import engine_names, get_spec
 
@@ -128,7 +136,8 @@ def _admission(engine: str, purpose: str, input_kind: str, dimensionality: str |
     ev = AdmissionEvidence(
         engine=_eng, purpose=_pur, input_kind=_ik, dimensionality=_dim,
         patches=tuple(PatchSummary(name=p["name"], type=p["role"]) for p in _patches),
-        engine_params=_eparams, surface_analysis=geometry_facts)
+        engine_params=_eparams, surface_analysis=geometry_facts,
+        geometry_form=(geometry_form or None))
     rejections = get_spec(_eng).admit(ev)
     hard = [r for r in rejections if r.code in _HARD_IMPOSSIBLE_CODES]
     if hard:
@@ -141,7 +150,19 @@ def _admission(engine: str, purpose: str, input_kind: str, dimensionality: str |
                     "ground_plane_unsupported": ["patches", "engine"],
                     "boundary_count_unsupported": ["patches", "engine"],
                     "geometry_unsuitable": ["geometry", "engine"],
+                    "geometry_form_unsupported": ["geometry", "engine"],
                     "source_format_unsupported": ["geometry", "engine"]}
+        what_would_pass = [str(r.fix_hint) for r in hard if r.fix_hint]
+        closing = ""
+        if any(r.code == "geometry_form_unsupported" for r in hard):
+            # NO ENGINE AT ALL takes this file for this flow: the out is the FILE, not an engine
+            # (no replacement is named - the rule above - because none exists). Said up front, so
+            # a user is never sent to try every engine in turn.
+            from meshpipeline.engines.capability import engines_for, flow_of, way_on, who_can
+            _flow, _form = flow_of(_pur), str(geometry_form or "")
+            if not engines_for(_flow, _form):
+                closing = f"{who_can(_flow, _form, named=False)} {way_on(_flow, _form)}"
+                what_would_pass = [closing]
         return {"verdict": ADMIT_IMPOSSIBLE, "blocking_rule_code": r0.code,
                 "blocking_rule_codes": sorted({r.code for r in hard}),
                 "selected_engine": _eng, "conflicting_field_names": field_of.get(r0.code, ["engine"]),
@@ -152,8 +173,8 @@ def _admission(engine: str, purpose: str, input_kind: str, dimensionality: str |
                 # The engine's own statement of what WOULD pass, one per finding. Handed to the
                 # model with the refusal, so it can repair a value of its own or propose the one
                 # revision to the user instead of ending the turn on what cannot be done.
-                "what_would_pass": [str(r.fix_hint) for r in hard if r.fix_hint],
-                "safe_user_message": _impossible_message(hard)}
+                "what_would_pass": what_would_pass,
+                "safe_user_message": _impossible_message(hard, closing)}
     # capability + structure OK; anything left (params / missing patches) is still-to-gather.
     gather = [r for r in rejections if r.code in ("engine_param_invalid",) or r.field == "patches"]
     if gather:

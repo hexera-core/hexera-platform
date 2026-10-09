@@ -25,6 +25,16 @@ MIN_RING_BORE_FRACTION = 0.1
 #: rectangular section at least this fraction of the part's thinnest box side. A nacelle's 8 mm
 #: tail flat on a 200 mm body, a blade tip, a wing's airfoil-shaped tip are not mouths.
 MIN_MOUTH_OF_THICKNESS = 0.1
+#: A mouth is the end of a fluid VOLUME: the body runs back behind it at least this much of the
+#: mouth's own size. A flat on a thin skin - a plate, a panel, a grille insert - has the skin's
+#: thickness behind it: the Toyota Supra's 0.3 mm body shell gave three "mouths" 0.2 mm deep at its
+#: nose. The shallowest real mouth in the corpus runs back half its size (a short elbow's).
+MIN_MOUTH_DEPTH = 0.25
+#: An open ring under the mouth bar still rims a port unless it sits on a minor part - solids
+#: holding under this share of the part's volume. A coil or a vessel is the tube its small ports
+#: open; a pipe drawn in pieces keeps its ends (each piece is a real share); a car's exhaust tips are
+#: their own solids, a thousandth of the car.
+MINOR_PART_SHARE = 0.02
 #: A mouth is a duct section, not a plate's edge or a pin's end: a flat with sides beyond this
 #: ratio is a mouth only when its narrow side is a real size against the part (THIN_FLAT of the
 #: diagonal); a wide flat HVAC duct's 6:1 mouth stays, a bracket's 3 mm edge goes.
@@ -166,24 +176,21 @@ class ScoutResult:
 
 
 # ------------------------------------------------------------------- reading the part ----
-def write_view_stl(path, dest, *, prepared, angular_deflection: float = 0.3) -> Path:
+def write_view_stl(path, dest, *, prepared, angular_deflection: float = 0.3, shape=None) -> Path:
     """The part's skin as a binary STL in metres, for the pictures the user and the vision model
-    look at. Coarser than a meshing surface on purpose: it only has to look right."""
-    from OCP.Bnd import Bnd_Box
-    from OCP.BRepBndLib import BRepBndLib
+    look at. Coarser than a meshing surface on purpose: it only has to look right. `shape` is the
+    part as read_cad read it, when the caller has it already: a big STEP takes 10-25 s to read."""
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
-    from OCP.BRepMesh import BRepMesh_IncrementalMesh
     from OCP.StlAPI import StlAPI_Writer
 
     from meshpipeline.cad.normalise import occ_scale_transform
+    from meshpipeline.cad.occ_box import mesh_to_size
 
-    shape = _read_shape(Path(path))
+    shape = _read_shape(Path(path)) if shape is None else shape
+    # a scaled COPY: the shape as read is left untouched (unmeshed) for anyone else reading it
     shape = BRepBuilderAPI_Transform(shape, occ_scale_transform(prepared), True).Shape()
-    box = Bnd_Box()
-    BRepBndLib.Add_s(shape, box)
-    x0, y0, z0, x1, y1, z1 = box.Get()
-    diag = _norm((x1 - x0, y1 - y0, z1 - z0)) or 1.0
-    BRepMesh_IncrementalMesh(shape, diag / 1500.0, False, angular_deflection, True)
+    # meshed at its REAL size: the loose OpenCascade envelope can be several times the part
+    mesh_to_size(shape, 1.0 / 1500.0, angular_deflection)
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
     writer = StlAPI_Writer()
@@ -191,6 +198,12 @@ def write_view_stl(path, dest, *, prepared, angular_deflection: float = 0.3) -> 
     if not writer.Write(shape, str(dest)):
         raise UnreadableCad("the part's skin could not be written for viewing")
     return dest
+
+
+def read_cad(path):
+    """The part in a STEP or IGES file, as read - unscaled and unmeshed. scout_cad and
+    write_view_stl both take it (shape=), so the geometry check reads a file once, not twice."""
+    return _read_shape(Path(path))
 
 
 def _read_shape(path: Path):
@@ -307,48 +320,51 @@ def _measure_wires(face) -> tuple[dict | None, dict | None]:
 
 
 # --------------------------------------------------------------------------- the scout ----
-def scout_cad(path, *, prepared, angular_deflection: float = 0.3,
+def scout_cad(path, *, prepared, angular_deflection: float = 0.3, shape=None,
               declared_openings: bool = False) -> ScoutResult:
     """Everything the geometry can say about itself, in metres, as a proposal.
 
     `prepared` is the coordinate state the tessellation seam uses (contracts/coordinate_state),
-    so this reads the same metres every downstream step reads.
+    so this reads the same metres every downstream step reads. `shape` is the part as read_cad
+    read it, when the caller has it already.
 
     `declared_openings`: the file states its own openings and regions (a thermal model), so the
     search for them - a classifier probe on both sides of every flat face, rays and rim checks on
     the largest - is not made: on an assembly of hundreds of solids it costs minutes and its
     answer is replaced by the file's. The flat faces are still measured (what the stage's "add an
     opening" snaps to), their normals taken from the solids' own orientation."""
-    from OCP.Bnd import Bnd_Box
     from OCP.BRepAdaptor import BRepAdaptor_Surface
-    from OCP.BRepBndLib import BRepBndLib
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
-    from OCP.BRepClass3d import BRepClass3d_SolidClassifier
     from OCP.BRepGProp import BRepGProp
-    from OCP.BRepIntCurveSurface import BRepIntCurveSurface_Inter
-    from OCP.BRepMesh import BRepMesh_IncrementalMesh
     from OCP.BRepTools import BRepTools
     from OCP.GeomAbs import GeomAbs_Plane
-    from OCP.gp import gp_Dir, gp_Lin, gp_Pnt
     from OCP.GProp import GProp_GProps
-    from OCP.TopAbs import TopAbs_FACE, TopAbs_IN, TopAbs_REVERSED, TopAbs_SHELL, TopAbs_SOLID
+    from OCP.TopAbs import TopAbs_FACE, TopAbs_REVERSED, TopAbs_SHELL, TopAbs_SOLID
     from OCP.TopExp import TopExp_Explorer
     from OCP.TopoDS import TopoDS
 
     from meshpipeline.cad.normalise import occ_scale_transform
+    from meshpipeline.cad.occ_box import diagonal, loose_box, mesh_to_size
+    from meshpipeline.cad.scout_probe import LazyProbe
 
     path = Path(path)
-    shape = _read_shape(path)
+    shape = _read_shape(path) if shape is None else shape
+    # a scaled COPY, meshed below: the shape as read stays untouched for the view skin
     shape = BRepBuilderAPI_Transform(shape, occ_scale_transform(prepared), True).Shape()
 
-    box = Bnd_Box()
-    BRepBndLib.Add_s(shape, box)
-    x0, y0, z0, x1, y1, z1 = box.Get()
+    envelope = diagonal(loose_box(shape))
+    if not math.isfinite(envelope) or envelope <= 0:
+        raise UnreadableCad("the part has no size (empty or degenerate geometry)")
+    # THE PART'S SIZE is the box of its own surface, measured on the mesh - never OpenCascade's
+    # loose envelope, which encloses every B-spline control point and tolerance: a 132 mm Supra
+    # read 570 x 492 x 401 mm that way, and the user chose his reference length and far field
+    # from it. Everything below - the size on the form, the unit check, the extremity and seed
+    # tests - reads this box.
+    (x0, y0, z0, x1, y1, z1), lin = mesh_to_size(shape, 1.0 / 2500.0, angular_deflection)
     bbox_min, bbox_max = (x0, y0, z0), (x1, y1, z1)
     diag = _norm(_sub(bbox_max, bbox_min))
     if not math.isfinite(diag) or diag <= 0:
         raise UnreadableCad("the part has no size (empty or degenerate geometry)")
-    BRepMesh_IncrementalMesh(shape, diag / 2500.0, False, angular_deflection, True)
 
     solids: list = []
     se = TopExp_Explorer(shape, TopAbs_SOLID)
@@ -363,49 +379,22 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3,
             n += 1
             he.Next()
         shells_per_solid.append(n)
-    classifiers = [BRepClass3d_SolidClassifier(s) for s in solids]
-    # each solid's box (with its tolerance): a point outside it cannot be in that solid, so an
-    # assembly of hundreds of solids asks only the one or two whose box holds the point - not
-    # every solid for every face, which made the check grow with the square of the part count
-    solid_boxes = []
-    for s in solids:
-        sb = Bnd_Box()
-        BRepBndLib.Add_s(s, sb)
-        solid_boxes.append(sb.Get())
     vg = GProp_GProps()
     BRepGProp.VolumeProperties_s(shape, vg)
     volume = abs(float(vg.Mass()))
-
-    def inside_any(p) -> bool:
-        for c, (x0, y0, z0, x1, y1, z1) in zip(classifiers, solid_boxes):
-            if not (x0 <= p[0] <= x1 and y0 <= p[1] <= y1 and z0 <= p[2] <= z1):
-                continue
-            c.Perform(gp_Pnt(*p), 1e-9)
-            if c.State() == TopAbs_IN:
-                return True
-        return False
+    # THE PROBES' ANSWERS come from the part's own mesh wherever the mesh cannot be wrong, and from
+    # the exact B-rep everywhere else (cad/scout_probe): the same answers, minutes faster on a
+    # part with hundreds of curved faces.
+    part_probe = LazyProbe(shape, solids, deflection=lin)
+    inside_any = part_probe.inside_any
 
     def clear_ahead(origin, direction, skip: float) -> bool:
         """Nothing of the part lies along `direction` from `origin` beyond `skip`."""
-        inter = BRepIntCurveSurface_Inter()
-        inter.Init(shape, gp_Lin(gp_Pnt(*origin), gp_Dir(*direction)), 1e-9)
-        while inter.More():
-            if inter.W() > skip:
-                return False
-            inter.Next()
-        return True
+        return not part_probe.meets_beyond(origin, direction, skip)
 
     def first_hit(origin, direction, skip: float) -> float:
         """Distance to the first surface along `direction` beyond `skip`, or 0.0 when none."""
-        inter = BRepIntCurveSurface_Inter()
-        inter.Init(shape, gp_Lin(gp_Pnt(*origin), gp_Dir(*direction)), 1e-9)
-        best = 0.0
-        while inter.More():
-            w = inter.W()
-            if w > skip and (best == 0.0 or w < best):
-                best = w
-            inter.Next()
-        return best
+        return part_probe.first_beyond(origin, direction, skip)
 
     def rim_is_free(face, centroid, normal) -> bool:
         """The face's plane just outside its outer rim holds no material: an end face, not a plate
@@ -504,10 +493,30 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3,
     rings = [c for c in candidates if c.kind == "ring" and c.clear_ahead and c.rim_free and not c.inward]
     discs = [c for c in candidates if c.kind == "disc" and c.clear_ahead]
     hollow = any(n > 1 for n in shells_per_solid)
+    # the part's thinnest side: the yardstick every mouth is held to, ring or flat end
+    sx, sy, sz = (bbox_max[k] - bbox_min[k] for k in range(3))
+    thinnest = max(min(sx, sy, sz), 1e-9)
+    # An open ring makes the part a pipe wall only when its hole is a MOUTH of the part: at least
+    # MIN_MOUTH_OF_THICKNESS of the part's thinnest side, the bar a solid's flat end must clear to be
+    # a mouth too. Small open tubes on a body - a car's exhaust tips, a housing's drain and vent - are
+    # tubes on a body, not the ends of the passage the part is: the Toyota Supra (57 x 128 x 37 mm, a
+    # thin-shelled body of 62 solids) read as "pipe_wall, 2 openings" off its two 2.5 mm exhaust tips.
+    # A smaller ring still counts unless it sits on a minor part (MINOR_PART_SHARE): a coil or a vessel
+    # with small nozzles IS the tube, not a body carrying one.
+    small = [c for c in rings if c.equivalent_diameter < MIN_MOUTH_OF_THICKNESS * thinnest]
+    share = _volume_share(solids, faces, [c.face_index for c in small]) if small else {}
+    mouth_rings = [c for c in rings if c.equivalent_diameter >= MIN_MOUTH_OF_THICKNESS * thinnest
+                   or share.get(c.face_index, 1.0) >= MINOR_PART_SHARE]
+    tubes = [c for c in rings if all(c is not m for m in mouth_rings)]
+    if tubes:
+        widest = max(c.equivalent_diameter for c in tubes)
+        notes.append(f"{len(tubes)} small open tube{'s' if len(tubes) > 1 else ''} on minor parts (the widest "
+                     f"{1000 * widest:.1f} mm across, under a tenth of the part's {1000 * thinnest:.0f} mm thinnest "
+                     "side) read as tubes on a body, not ends of a passage, and are not proposed as openings")
 
-    if len(rings) >= 2 or (rings and hollow):
+    if len(mouth_rings) >= 2 or (mouth_rings and hollow):
         body_kind, input_kind, flow = "pipe_wall", "body-surface", "internal"
-        pool = rings
+        pool = mouth_rings
         confidence_kind = 0.9
     elif hollow:
         body_kind, input_kind, flow = "hollow_wall", "body-surface", "internal"
@@ -523,20 +532,21 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3,
         # passage) or a solid body in a flow (a car, a hub, a wing). Geometry alone cannot always
         # tell a solid cylinder from the water inside a pipe - that is the user's word - but it can
         # rule out the usual false mouths and the box-like bodies:
-        #   - a mouth is a round or rectangular flat at least a fifth of the part's thinnest side
-        #     (a nacelle's tail flat, a blade tip and a wing's airfoil-shaped tip are not);
+        #   - a mouth is a round or rectangular flat at least a tenth of the part's thinnest side
+        #     (a nacelle's tail flat, a blade tip and a wing's airfoil-shaped tip are not), with the
+        #     body running back behind it (a flat on a thin skin is not the end of a fluid volume);
         #   - a body whose flats cover much of its box AND which fills it is a body (the Ahmed body:
         #     84% and 95%); a short fat elbow covers a third but fills less than half;
         #   - a part with more than a couple of odd flats, or a dozen mouth-like ones, is machined
         #     (a switch, a connector, a bracket), and so is one whose same-size flats fan around an axis;
         #   - a body with more odd flats than mouths (blade tips, lugs, keyways) is machined, not swept.
-        sx, sy, sz = (bbox_max[k] - bbox_min[k] for k in range(3))
-        thinnest = max(min(sx, sy, sz), 1e-9)
         fill = volume / max(sx * sy * sz, 1e-18)
         walls = _wall_pairs(discs)
         mouth_like = [o for o in discs if o.shape in ("circle", "rectangle")
                       and o.equivalent_diameter >= MIN_MOUTH_OF_THICKNESS * thinnest
-                      and (max(o.wh) <= MOUTH_MAX_ASPECT * max(min(o.wh), 1e-9) or min(o.wh) >= THIN_FLAT * diag)]
+                      and (max(o.wh) <= MOUTH_MAX_ASPECT * max(min(o.wh), 1e-9) or min(o.wh) >= THIN_FLAT * diag)
+                      # no surface found behind it (depth 0) says nothing either way
+                      and (o.depth <= 0.0 or o.depth_ratio >= MIN_MOUTH_DEPTH)]
         if mouth_like and all(id(o) in walls for o in mouth_like) and fill >= BOX_LIKE_FILL:
             # A short fat passage: its two ends face each other a diameter apart, and they are all it
             # has. It fills its box like the cylinder it is; a rotor hub whose two end discs sit as
@@ -597,6 +607,30 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3,
 
 
 MAX_FACES = 200
+
+
+def _volume_share(solids: list, faces: list, face_indices: list[int]) -> dict[int, float]:
+    """For each listed face, the share of the part's volume held by the solids it belongs to. A file
+    of one solid (or none - loose surfaces) is all one part: every share is 1."""
+    if len(solids) <= 1:
+        return dict.fromkeys(face_indices, 1.0)
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    volumes, members = [], []
+    for s in solids:
+        g = GProp_GProps()
+        BRepGProp.VolumeProperties_s(s, g)
+        volumes.append(abs(float(g.Mass())))
+        fmap = TopTools_IndexedMapOfShape()
+        TopExp.MapShapes_s(s, TopAbs_FACE, fmap)
+        members.append(fmap)
+    total = sum(volumes) or 1.0
+    return {i: sum(v for v, m in zip(volumes, members, strict=True) if m.Contains(faces[i])) / total
+            for i in face_indices}
 
 
 def _wall_pairs(discs: list[Opening]) -> set[int]:

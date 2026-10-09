@@ -12,6 +12,7 @@ from meshpipeline.engines.base import (
     DeliveredMesh,
     DownstreamTarget,
     EngineSpec,
+    FlowSupport,
     InputContract,
     MeshCapability,
     ParamSpec,
@@ -159,6 +160,12 @@ SPEC = EngineSpec(
         # topologies=() - a multi-region case declares its own `fluid_topology` param;
         # the CHT purpose does not fix it.
         capabilities=(MeshCapability("solid-assembly", "multiregion-volume"),),
+        # WHAT FILE IT TAKES: the assembly read solid by solid (multiregion_runner), from a B-rep
+        # (STEP, IGES, BREP, each by its own reader) or from a surface - an STL's named solids, or
+        # an unnamed triangle soup split into the closed bodies it bounds
+        # (snappy_multiregion/surface_solids.py).
+        accepts=(FlowSupport("multi-region", ("cad", "surface")),),
+        ladder_rank=50,
         input_contract=InputContract(
             dimensionalities=("3D",),
             input_kind="solid",
