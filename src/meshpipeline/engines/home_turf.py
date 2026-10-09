@@ -50,6 +50,7 @@ TURF_FACTS: dict[str, TurfFact] = {
     "closed": TurfFact("bool", _CENSUS, "watertight after welding"),
     "genus": TurfFact("count", _CENSUS, "through-holes / obstacles crossing the fluid (a tube bank)"),
     "sharp_edges": TurfFact("number", _CENSUS, "feature-edge length (dihedral > 40 deg) per sqrt(wetted area)"),
+    "knife_edges": TurfFact("number", _CENSUS, "knife-edge length (thin trailing edges, slat/flap lips) per sqrt(wetted area)"),
     "thin_wall_fraction": TurfFact("number", _CENSUS, "share of wetted area whose solid is thinner than 1% of the part"),
     "scale_ratio": TurfFact("number", _CENSUS, "part size / 5th-percentile fluid chord"),
     "passage": TurfFact("number", _CENSUS, "median fluid gap, metres"),

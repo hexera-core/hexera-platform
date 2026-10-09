@@ -95,14 +95,47 @@ _EXPLICIT_RE = {
     "downstream": re.compile(r"D_DOWNSTREAM\s*[=:]\s*([\d.]+)", re.I),
     "lateral":    re.compile(r"D_LATERAL\s*[=:]\s*([\d.]+)", re.I),
 }
+
+# #
+# WHAT STATES A FAR-FIELD EXTENT IN WORDS. A margin is a multiple of a length placed somewhere
+# around the body: '8 downstream', '20 chords upstream', '5 above/below', '10c outlet'. A number
+# that only stands near such a word is not one. 'ONE inlet and 9 outlets' COUNTS openings, and
+# was read as 9 chords downstream (the Fluent aorta export, an internal flow with no far field,
+# blocked at domain_extent after a good 6.4 M-cell mesh); '5 side branches' counts branches.
+#
+#   * A PLACE word names where the room is and nothing else: upstream, in front, downstream,
+#     wake, behind, lateral, above, below. The number before it is a margin, with or without
+#     its multiple ('8 downstream', '20 chords upstream').
+#   * inlet, outlet and side are also NOUNS - the openings of a part, its sides. A number before
+#     a noun counts it, so these are a margin only when the number carries the multiple:
+#     '10c outlet', '5 chords side'. Bare, '9 outlets', '1 inlet', '5 side branches' are counts.
+#   * The number stands on its own: never the tail of a name or another number ('outlet_9',
+#     '1.5' read from its '5'). The single-letter multiple is a lower-case c ('10c'); a capital
+#     C after a number is a temperature ('water at 20 C inlet temperature').
+# #
+_NUM = r"(?<![\w.])(\d+(?:\.\d+)?|\.\d+)"
+_MULTIPLE = r"(?:(?-i:c)|chords?)\b"
+_PLACE = {
+    "upstream":   r"(?:upstream|in\s+front)",
+    "downstream": r"(?:downstream|wake|behind)",
+    "lateral":    r"(?:lateral|above/below|above|below)",
+}
+_NOUN_PLACE = {
+    "upstream":   r"inlet",
+    "downstream": r"outlet",
+    "lateral":    r"side",
+}
 _PHRASE_RE = {
-    "upstream":   re.compile(r"([\d.]+)\s*(?:c|chord|chords)?\s*(?:upstream|inlet|in front)", re.I),
-    "downstream": re.compile(r"([\d.]+)\s*(?:c|chord|chords)?\s*(?:downstream|outlet|wake|behind)", re.I),
-    "lateral":    re.compile(r"([\d.]+)\s*(?:c|chord|chords)?\s*(?:lateral|above/below|above|below|side)", re.I),
+    k: re.compile(rf"{_NUM}\s*(?:{_MULTIPLE}\s*)?{_PLACE[k]}"
+                  rf"|{_NUM}\s*{_MULTIPLE}\s*{_NOUN_PLACE[k]}(?!s\b)", re.I)
+    for k in _KEYS
 }
 
 
 def parse_requested_extents(request_txt: str) -> dict:
+    """The far-field margins a request states in words, in multiples of its reference length:
+    {upstream, downstream, lateral} - only the directions it states (see WHAT STATES A FAR-FIELD
+    EXTENT above). A text that states none - an internal flow's, say - reads as {}."""
     out: dict = {}
     if not request_txt:
         return out
@@ -110,8 +143,8 @@ def parse_requested_extents(request_txt: str) -> dict:
         m = _EXPLICIT_RE[key].search(request_txt) or _PHRASE_RE[key].search(request_txt)
         if m:
             try:
-                out[key] = float(m.group(1))
-            except ValueError:
+                out[key] = float(next(g for g in m.groups() if g is not None))
+            except (StopIteration, ValueError):
                 pass
     return out
 
@@ -185,7 +218,21 @@ def check_domain_extents(requested: dict | None, manifest: dict,
     return True, ""
 
 
+def far_field_exists(flow_topology: str | None = None, manifest: dict | None = None) -> bool:
+    """Whether the mesh has a far field for an extent to be measured on. An INTERNAL flow has
+    none: its fluid is the passage, closed by the wall and the openings, and the box a mesher
+    records around it is its own background - margins read there are the passage's own ends (the
+    Fluent aorta's 6.4 M-cell mesh 'had -0.0002c downstream'). The flow is internal when the job
+    says so or the mesh's manifest does. An external flow keeps the gate, and so does a job that
+    names no topology (a multi-region case may carry an exterior far field)."""
+    topologies = {str(t or "").strip().lower()
+                  for t in (flow_topology, (manifest or {}).get("flow_topology"))}
+    return "internal" not in topologies
+
+
 def extent_gate_for_request(request_txt: str, manifest: dict) -> tuple[bool, str]:
+    if not far_field_exists(manifest=manifest):
+        return True, ""           # no far field, no extent to judge (far_field_exists)
     return check_domain_extents(parse_requested_extents(request_txt), manifest)
 
 
@@ -292,7 +339,8 @@ def evaluate_domain_extents(requested: dict | None, reference_length_m: float | 
         symmetry_faces = manifest_symmetry_faces(manifest)
     if (not isinstance(requested, dict)
             or not any(v is not None for v in requested.values())
-            or not reference_length_m):
+            or not reference_length_m
+            or not far_field_exists(manifest=manifest)):
         return ExtentVerdict("na", [], "")
     geom = (manifest or {}).get("geometry") or {}
     box = geom.get("domain_box") or geom.get("box")

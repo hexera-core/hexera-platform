@@ -281,10 +281,12 @@ def patches_from(body) -> list[dict]:
         if o.role == "not_an_opening":
             continue
         entry: dict = {"name": o.name, "type": o.role}
-        if o.diameter_mm:
-            entry["diameter_mm"] = float(o.diameter_mm)
-        elif o.width_mm and o.height_mm:
+        # a rectangle keeps its sides: the form sends width and height only for a rectangular
+        # opening (with its equal-area diameter beside them, which would turn it into a circle)
+        if o.width_mm and o.height_mm:
             entry["width_mm"], entry["height_mm"] = float(o.width_mm), float(o.height_mm)
+        elif o.diameter_mm:
+            entry["diameter_mm"] = float(o.diameter_mm)
         if o.centroid_mm and len(o.centroid_mm) == 3:
             entry["near_mm"] = [float(v) for v in o.centroid_mm]
         patches.append(entry)
