@@ -172,13 +172,15 @@ def test_the_attempt_after_an_under_resolved_mesh_is_finer_where_it_counts(retry
     (ok, _value, _outcome), pub = retry.go()
     assert ok is True
     filling = [n for n in pub.notes if n.startswith("Filling the cavity")]
-    assert "about 38 cells across the bore" in filling[0], filling
+    # x 13 / 8.3 would project 4.18 M cells to 10.3 M, over the 8 M limit: the factor is held
+    # to the limit, but never below 12 / 8.3 - the floor itself: ceil(24 x 1.446) = 35
+    assert "about 35 cells across the bore" in filling[0], filling
     opened = [n for n in pub.notes if n.startswith("Meshing pass 1 of")]
     assert ("made finer because the last mesh had too few cells across its narrowest passage: "
-            "cells across the bore raised from 28 to 38; cell budget raised from 5 M to 8 M"
+            "cells across the bore raised from 28 to 35; cell budget raised from 5 M to 8 M"
             in opened[0]), opened
     plan = json.loads((retry.ws / ".last_plan.json").read_text())
-    assert plan["cells_across_diameter"] == 38 and plan["max_cells"] == 8_000_000
+    assert plan["cells_across_diameter"] == 35 and plan["max_cells"] == 8_000_000
     assert "maxGlobalCells 8000000" in retry.cases[0]
 
 

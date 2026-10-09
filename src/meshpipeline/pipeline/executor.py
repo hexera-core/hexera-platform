@@ -329,7 +329,13 @@ async def node_executor(state: PipelineState) -> dict:
 
         if executor_success:
             _domain_check_failed = False
-            if executor_success and not contract_failed and mesh_manifest and polcfg.DOMAIN_EXTENT_GATE_ENABLED:
+            from meshpipeline.engines.domain_extent_gate import far_field_exists
+            # the far-field extent is judged only where a far field exists: never on an internal
+            # flow, whose box is the mesher's background around the passage, not room the user
+            # asked for (the gate itself says the same from the manifest)
+            if (executor_success and not contract_failed and mesh_manifest
+                    and polcfg.DOMAIN_EXTENT_GATE_ENABLED
+                    and far_field_exists(state.get("flow_topology"), mesh_manifest)):
                 _typed_req = state.get("requested_extents")
                 _typed_ruler = state.get("reference_length_m")
                 if _typed_req and _typed_ruler:
