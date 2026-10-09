@@ -205,14 +205,65 @@ def _port_diameter_m(p: dict) -> float | None:
     return None
 
 
+def _file_patches(ws: Path) -> list[dict]:
+    """The exterior patches a thermal model declares (multiregion_runner.EXTERIOR_PATCHES)."""
+    try:
+        d = json.loads((ws / "exterior_patches.json").read_text())
+    except (OSError, ValueError):
+        return []
+    return [p for p in d if isinstance(p, dict) and p.get("name") and p.get("lo") and p.get("hi")]
+
+
+def _inside(point: list[float], p: dict) -> bool:
+    return all(p["lo"][k] <= point[k] <= p["hi"][k] for k in range(3))
+
+
+def _box(p: dict) -> str:
+    lo = " ".join(f"{v:.12g}" for v in p["lo"])
+    hi = " ".join(f"{v:.12g}" for v in p["hi"])
+    return f"box ({lo}) ({hi});"
+
+
+def file_patch_actions(rects: list[dict], ports: list[dict]
+                       ) -> tuple[list[str], list[tuple[str, str, str]]]:
+    """topoSet actions and (patch name, OpenFOAM type, set) for a thermal model's own exterior
+    rectangles: each device's faces (a fan, a vent, a plate) and each side's faces less every
+    device on that side - so the sets never share a face. A rectangle holding a declared port's
+    location takes the user's name and role for it."""
+    acts: list[str] = []
+    made: list[tuple[str, str, str]] = []
+    claimed: set[int] = set()
+    for k, r in enumerate(rects):
+        name, of_type = str(r["name"]), str(r.get("type") or "patch")
+        for j, p in enumerate(ports):
+            c = [float(v) / 1000.0 for v in p["near_mm"]]
+            if j not in claimed and _inside(c, r):
+                claimed.add(j)
+                name = str(p["name"])
+                of_type = "wall" if p.get("type") == "wall" else "patch"
+                break
+        s = f"file_{k}"
+        acts += [f"    {{ name {s}; type faceSet; action new; source patchToFace; patch exterior; }}",
+                 f"    {{ name {s}; type faceSet; action subset; source boxToFace; {_box(r)} }}"]
+        if r.get("kind") == "side":
+            for d in rects:
+                if d.get("kind") == "device" and d.get("face") == r.get("face"):
+                    acts.append(f"    {{ name {s}; type faceSet; action delete; source boxToFace; "
+                                f"{_box(d)} }}")
+        made.append((name, of_type, s))
+    return acts, made
+
+
 def name_exterior(ws: Path, regions: list) -> list[tuple[str, list[tuple[str, str]]]]:
     """Per region with exterior faces: write its topoSetDict / createPatchDict and return the
     commands that turn `exterior` into the declared ports (fluid regions: the exterior faces
     inside a box of _PORT_BOX diameters around each declared port's location) and the declared
-    wall (everything else)."""
+    wall (everything else). A thermal model's fluid takes its file's own rectangles instead: each
+    domain side a patch, each fan, vent and plate on a side its own patch (file_patch_actions)."""
     declared = _declared(ws)
     wall = next((p["name"] for p in declared if p.get("type") == "wall"), "wall")
     ports = [p for p in declared if p.get("type") in ("inlet", "outlet") and p.get("near_mm")]
+    rects = _file_patches(ws)
     kind = {str(r.get("name")): str(r.get("type")) for r in regions or [] if isinstance(r, dict)}
     hdr = "FoamFile {{ version 2.0; format ascii; class dictionary; object {obj}; }}\n"
     out = []
@@ -224,7 +275,18 @@ def name_exterior(ws: Path, regions: list) -> list[tuple[str, list[tuple[str, st
         sysdir.mkdir(parents=True, exist_ok=True)
         cmds: list[tuple[str, str]] = []
         made: list[str] = []
-        if kind[region] == "fluid" and ports:
+        if kind[region] == "fluid" and rects:
+            acts, sets = file_patch_actions(rects, ports)
+            (sysdir / "topoSetDict").write_text(hdr.format(obj="topoSetDict")
+                                                + "actions\n(\n" + "\n".join(acts) + "\n);\n")
+            cmds.append((f"topoSet -region {region}", f"topoSet.{region}"))
+            entries = [f"    {{ name {n}; patchInfo {{ type {t}; }} constructFrom set; set {s}; }}"
+                       for n, t, s in sets]
+            (sysdir / "createPatchDict").write_text(hdr.format(obj="createPatchDict")
+                                                    + "pointSync false;\npatches\n(\n"
+                                                    + "\n".join(entries) + "\n);\n")
+            cmds.append((f"createPatch -region {region} -overwrite", f"createPatch.{region}"))
+        elif kind[region] == "fluid" and ports:
             acts = []
             for p in ports:
                 d = _port_diameter_m(p) or 0.0
