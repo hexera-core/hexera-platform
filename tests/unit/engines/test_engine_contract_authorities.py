@@ -459,14 +459,18 @@ def test_every_snappy_stage_runs_in_the_case_directory(tmp_path, monkeypatch):
     assert _sp is not None
 
 
-def test_the_shared_authority_exposes_exactly_two_names():
+def test_the_shared_authority_exposes_exactly_its_three_mechanics():
     import ast
     import inspect
 
     import meshpipeline.engines.snappy_hexmesh as SH
 
-    assert set(SH.__all__) == {"_write_case_skeleton", "parse_layer_coverage"}
+    # The third is where snappyHexMesh can be told locationInMesh (off_grid_point): both snappy
+    # engines build a background box round the part and seed inside it, and a seed on a cell face
+    # of that box stops the mesher in either - one rule, so they cannot drift apart again.
+    assert set(SH.__all__) == {"SEED_OFF_GRID_LEVEL", "_write_case_skeleton", "off_grid_point",
+                               "parse_layer_coverage"}
     defined = {n.name for n in ast.parse(inspect.getsource(SH)).body
                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
-    assert defined == {"_write_case_skeleton", "parse_layer_coverage"}, (
-        f"the shared authority grew a third definition: {sorted(defined)}")
+    assert defined == {"_write_case_skeleton", "off_grid_point", "parse_layer_coverage"}, (
+        f"the shared authority grew a fourth definition: {sorted(defined)}")

@@ -382,6 +382,20 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
         # what kind of geometry this is and what it came from, for whoever decides what to offer
         facts.update(canonical.facts())
         facts.setdefault("notes", []).extend(n for n in canonical.notes if n not in facts["notes"])
+        # a thermal model's physics (ECXML: materials, powers, fans, vents...), kept whole beside
+        # the session's check so a later solver step - or the user - has all of it
+        thermal = _thermal_sidecar(canonical.path)
+        if thermal is not None:
+            thermal_key = check_object_key(session_id, "thermal_model.json")
+            _store_json(thermal_key, thermal)
+            facts.setdefault("thermal_model", {})["object_key"] = thermal_key
+            # the file names its parts and which one is the air: an assembly of regions whose air
+            # fills the domain box, not a body to guess about
+            facts["input_kind"] = "solid-assembly"
+            facts["flow"] = "internal"
+            if isinstance(facts.get("confidence"), dict):
+                facts["confidence"]["input_kind"] = 0.95
+            declared_openings(facts, thermal)
 
         # the same skin, stored for the stage the user turns the part in
         skin_key = check_object_key(session_id, "skin.json")
@@ -408,6 +422,184 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
     return result
 
 
+def _thermal_sidecar(canonical_path: Path) -> dict | None:
+    """The physics a thermal-model upload carried, as cad/ingest wrote it beside the canonical
+    geometry; None for every other file."""
+    from meshpipeline.cad.ingest.ecxml_build import read_ecxml_sidecar
+
+    return read_ecxml_sidecar(canonical_path)
+
+
+#: A side counts as walled off when its wall plates cover this much of it.
+_WALLED = 0.99
+_OPENING_ROLES = ("fan", "vent")
+
+
+def declared_openings(facts: dict, thermal: dict) -> None:
+    """A thermal model SAYS what each side of its solution domain is - a fan, a vent, a wall, or
+    open air - so its openings are the file's, not a guess from the shape of the air box (which
+    is a plain box, and reads as six openings, or none for an external flow):
+
+    * each fan and each vent on a side is an opening, at its own rectangle, under its own name;
+      a fan blowing in is an inlet, one blowing out an outlet, and a vent takes the other role;
+    * a side with neither, not walled off, is an opening the size of the side, named for it;
+    * a side the file's plates wall off offers nothing.
+
+    Positions are metres: the thermal model states them in SI (JEP181A 4.1), whatever unit its
+    solids are built in."""
+    from meshpipeline.contracts.patch_names import mesh_safe
+
+    patches = [p for p in thermal.get("patches") or [] if p.get("domain_face")]
+    if not patches:
+        return
+    scale = 1.0
+    fans_in = sum(1 for p in patches if p["role"] == "fan" and p.get("suggested_type") == "inlet")
+    fans_out = sum(1 for p in patches if p["role"] == "fan" and p.get("suggested_type") == "outlet")
+    vent_role = "inlet" if fans_out and not fans_in else "outlet"
+    box = (thermal.get("domain") or {}).get("box_m") or {}
+    openings, walled = [], []
+    for axis in range(3):
+        for sign in ("-", "+"):
+            face = sign + "xyz"[axis]
+            on_face = [p for p in patches if p["domain_face"] == face]
+            side = next((p for p in on_face if p["role"] == "domain_boundary"), None)
+            side_area = _side_area(box, axis)
+            walls = sum(float(p.get("area_m2") or 0.0) for p in on_face if p["role"] == "wall")
+            devices = [p for p in on_face if p["role"] in _OPENING_ROLES]
+            if devices:
+                for p in devices:
+                    role = p.get("suggested_type") if p["role"] == "fan" else vent_role
+                    openings.append(_declared_opening(p, face, role, scale, mesh_safe))
+            elif side is not None and not (side_area > 0 and walls >= _WALLED * side_area):
+                plates = [p for p in on_face if p["role"] in ("wall", "heat_flux")]
+                if len(plates) > _MAX_SIDE_PLATES:
+                    facts.setdefault("notes", []).append(
+                        f"the domain's {face} side carries {len(plates)} plates, too many to read "
+                        "its open part from; add its opening on the stage")
+                    continue
+                parts = _open_rects(side, plates) if plates else [side]
+                if not parts:
+                    walled.append(face)
+                    continue
+                if len(parts) > _MAX_SIDE_OPENINGS:
+                    facts.setdefault("notes", []).append(
+                        f"the plates on the domain's {face} side leave {len(parts)} separate gaps; "
+                        f"the {_MAX_SIDE_OPENINGS} largest are offered - add any other on the stage")
+                    parts = parts[:_MAX_SIDE_OPENINGS]
+                for k, part in enumerate(parts, 1):
+                    if len(parts) > 1:
+                        part = {**part, "name": f"{side['name']}_{k}"}
+                    opening = _declared_opening(part, face, vent_role, scale, mesh_safe)
+                    opening["confidence"] = 0.6   # open air: which way it flows is the user's
+                    if plates:
+                        opening["notes"] = [
+                            "an open part of the side: "
+                            f"{', '.join(p['name'] for p in plates[:6])} close(s) the rest"]
+                    openings.append(opening)
+            else:
+                walled.append(face)
+    for i, o in enumerate(openings, 1):
+        o["id"] = i
+    facts["openings"] = openings
+    if walled:
+        facts.setdefault("notes", []).append(
+            "the thermal model closes the domain's " + ", ".join(walled)
+            + " side(s) with walls, so they are not offered as openings")
+
+
+#: Plates on one domain side the open-part reading takes (each adds two grid lines per axis).
+_MAX_SIDE_PLATES = 256
+#: Open rectangles offered for one side; the largest are kept, and a note says how many more.
+_MAX_SIDE_OPENINGS = 8
+
+
+def _open_rects(side: dict, plates: list[dict]) -> list[dict]:
+    """What is left open of a domain side its plates partly close, as rectangles that tile the
+    open area exactly - one for a strip, two for an L - largest first; [] when nothing is left.
+    The side is cut on every plate edge into a grid; covered cells are marked plate by plate
+    (one array slice each), and the open cells are merged row by row into rectangles."""
+    import numpy as np
+
+    def rect(p):
+        c, s = p["centre_m"], p["size_m"]
+        axes = ["xyz".index(a) for a in p["size_axes"]]
+        return [(c[axes[k]] - s[k] / 2, c[axes[k]] + s[k] / 2) for k in range(2)], axes
+
+    (su, sv), axes = rect(side)
+    covers = []
+    for p in plates:
+        (pu, pv), paxes = rect(p)
+        if paxes == axes:
+            covers.append(((max(pu[0], su[0]), min(pu[1], su[1])),
+                           (max(pv[0], sv[0]), min(pv[1], sv[1]))))
+    us = sorted({su[0], su[1], *(v for c in covers for v in c[0] if su[0] < v < su[1])})
+    vs = sorted({sv[0], sv[1], *(v for c in covers for v in c[1] if sv[0] < v < sv[1])})
+    iu, iv = {v: i for i, v in enumerate(us)}, {v: j for j, v in enumerate(vs)}
+    covered = np.zeros((len(vs) - 1, len(us) - 1), dtype=bool)
+    for (cu0, cu1), (cv0, cv1) in covers:
+        if cu1 > cu0 and cv1 > cv0:
+            covered[iv[cv0]:iv[cv1], iu[cu0]:iu[cu1]] = True
+    rects: list[tuple[int, int, int, int]] = []          # (i0, i1, j0, j1) in grid indices
+    active: dict[tuple[int, int], int] = {}
+    for j in range(covered.shape[0] + 1):
+        runs: list[tuple[int, int]] = []
+        if j < covered.shape[0]:
+            open_row = ~covered[j]
+            i = 0
+            while i < len(open_row):
+                if open_row[i]:
+                    start = i
+                    while i < len(open_row) and open_row[i]:
+                        i += 1
+                    runs.append((start, i))
+                else:
+                    i += 1
+        nxt = {run: active.pop(run, j) for run in runs}
+        rects += [(r[0], r[1], j0, j) for r, j0 in active.items()]
+        active = nxt
+    side_area = (su[1] - su[0]) * (sv[1] - sv[0])
+    out = []
+    for i0, i1, j0, j1 in rects:
+        u0, u1, v0, v1 = us[i0], us[i1], vs[j0], vs[j1]
+        if (u1 - u0) * (v1 - v0) <= 1e-6 * side_area:
+            continue
+        centre = list(side["centre_m"])
+        centre[axes[0]], centre[axes[1]] = (u0 + u1) / 2, (v0 + v1) / 2
+        out.append({**side, "centre_m": centre, "size_m": [u1 - u0, v1 - v0]})
+    out.sort(key=lambda p: -p["size_m"][0] * p["size_m"][1])
+    return out
+
+
+def _side_area(box: dict, axis: int) -> float:
+    try:
+        lo, hi = box["min"], box["max"]
+        a, b = (hi[i] - lo[i] for i in range(3) if i != axis)
+        return float(a * b)
+    except (KeyError, TypeError, ValueError):
+        return 0.0
+
+
+def _declared_opening(patch: dict, face: str, role, scale: float, mesh_safe) -> dict:
+    """An opening as the geometry stage draws it, from a patch the thermal model declares."""
+    import math
+
+    axis = "xyz".index(face[1])
+    normal = [0.0, 0.0, 0.0]
+    normal[axis] = 1.0 if face[0] == "+" else -1.0         # out of the air, like every opening
+    centre = [float(v) * scale for v in patch["centre_m"]]
+    w, h = (float(v) * scale for v in patch["size_m"])
+    area = w * h
+    return {"id": 0, "face": None, "name": mesh_safe(patch["name"], fallback=f"side_{face[1]}"),
+            "role": role if role in ("inlet", "outlet") else "outlet", "kind": "disc",
+            "shape": "rectangle", "confidence": 0.95, "centroid_m": centre,
+            "centroid_mm": [c * 1000.0 for c in centre], "normal": normal, "area_m2": area,
+            "area_mm2": area * 1e6, "on_extremity": True, "clear_ahead": True,
+            "width_mm": w * 1000.0, "height_mm": h * 1000.0,
+            "diameter_mm": math.sqrt(4.0 * area / math.pi) * 1000.0,
+            "declared_by": {"object": patch.get("object"), "role": patch.get("role"),
+                            "name": patch.get("name")}}
+
+
 def _store_upright_sheet(session_id: str, skin: Path, work: Path, store) -> dict | None:
     """The six-way picture the naming asks which way is up from, stored beside the others but not
     among them: it is for that one question, never for the card or the naming. None when it could
@@ -427,17 +619,22 @@ def _store_upright_sheet(session_id: str, skin: Path, work: Path, store) -> dict
 
 def _scout_exact(local_path: Path, work: Path, interp_ref, ref) -> tuple[dict, Path]:
     """A STEP or IGES file: OpenCASCADE reads real faces, so the openings come out exact."""
-    from meshpipeline.cad.scout import scout_cad, write_view_stl
+    from meshpipeline.cad.scout import read_cad, scout_cad, write_view_stl
 
     prepared, unit_note = _prepared_coordinates(local_path, interp_ref, ref)
-    facts = scout_cad(local_path, prepared=prepared).as_dict()
+    # read once: the scout and the view skin each work on their own scaled copy of it
+    shape = read_cad(local_path)
+    # a thermal model states its openings (declared_openings, below); its many solids are not
+    # searched for them
+    declared = {"declared_openings": True} if _thermal_sidecar(local_path) is not None else {}
+    facts = scout_cad(local_path, prepared=prepared, shape=shape, **declared).as_dict()
     facts["read_as"] = "cad"
     facts["unit_assumed"] = bool(unit_note)
     interp = getattr(prepared, "interpretation", None)
     facts["scale_to_m"] = float(interp.scale_to_metres) if interp is not None else 0.001
     if unit_note:
         facts["notes"].append(unit_note)
-    skin = write_view_stl(local_path, work / "skin.stl", prepared=prepared)
+    skin = write_view_stl(local_path, work / "skin.stl", prepared=prepared, shape=shape)
     facts["holes"] = skin_holes(skin)
     return facts, skin
 
