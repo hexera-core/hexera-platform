@@ -9,10 +9,14 @@ BRIEFING = Briefing(
                    "closed solid per region: the fluid plus each solid). input.stl is a "
                    "tessellated preview of the whole assembly."),
     workflow=("Build the mesh per your system prompt: geometry_report (lists the assembly's "
-              "solids - volumes, bounding boxes, centroids) -> assign each solid to a REGION "
-              "(fluid or solid) -> configure_mesh (regions + per-region strategy) -> run_mesh "
-              "(meshes the background, then splitMeshRegions cuts the coupled regions) -> "
-              "submit_mesh. You do NOT write dicts by hand - configure_mesh writes them."),
+              "solids - names, bounding boxes, the level each needs; a large assembly as name "
+              "groups and short rows, in pages) -> assign each solid to a REGION (fluid or solid) "
+              "-> configure_mesh (regions + per-region strategy) -> run_mesh (meshes the "
+              "background, then splitMeshRegions cuts the coupled regions) -> submit_mesh. Name "
+              "solids by index, by name or by a glob pattern; one {per_solid: true} entry gives "
+              "every other solid its own region, so a large assembly needs no per-solid list - "
+              "and when geometry_report gives suggested_regions, send them. You do NOT write "
+              "dicts by hand - configure_mesh writes them."),
     contract_title="Region + patch contract (user-confirmed) - use these EXACT names",
     contract_guidance=("Map each assembly solid onto a REGION name and type (fluid | solid) "
                        "from the brief; map the external boundary faces (inlet/outlet on the "
