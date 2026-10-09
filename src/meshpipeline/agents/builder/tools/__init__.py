@@ -50,7 +50,7 @@ _ROUTES: dict[str, Callable[[BuilderToolContext, dict], dict]] = {
     "read_file":       lambda ctx, a: workspace.read_file(ctx.workspace, a["path"]),
     "list_directory":  lambda ctx, a: workspace.list_directory(ctx.workspace, a.get("path", ".")),
     "web_search":      lambda ctx, a: research.web_search(a["query"], job_id=ctx.job_id),
-    "geometry_report": lambda ctx, a: geometry.geometry_report(ctx),
+    "geometry_report": lambda ctx, a: geometry.geometry_report(ctx, a),
     "measure_scales":  lambda ctx, a: geometry.measure_scales(ctx, a),
     "configure_mesh":  lambda ctx, a: meshing.configure_mesh(ctx, a),
     "run_mesh":        lambda ctx, a: meshing.run_mesh(ctx),

@@ -203,7 +203,12 @@ def test_configure_persists_the_assembly_plan_and_seeds_regions(tmp_path, monkey
     # SINGLE locationInMesh at the VERIFIED fluid point (the multi-point locationsInMesh
     # form loses the cellZones in this workflow - proven live, 78 connectivity fragments)
     assert "locationsInMesh" not in dict_txt
-    assert "locationInMesh (0.1 0.2 0.3);" in dict_txt
+    # ... moved off the background grid's cell faces by at most half a finest cell
+    # (test_multiregion_seed_off_grid): still the verified point, to well within a cell
+    import re as _re
+    loc = [float(v) for v in _re.search(r"locationInMesh \(([^)]*)\);", dict_txt).group(1).split()]
+    assert dict_txt.count("locationInMesh") == 1
+    assert max(abs(a - b) for a, b in zip(loc, (0.1, 0.2, 0.3))) < 1e-3
     # enclosing fluid (its bbox spans the assembly) => ZERO background padding: the
     # background box coincides with the fluid's outer faces, so no unzoned shell exists
     bm = (ws / "system" / "blockMeshDict").read_text()
