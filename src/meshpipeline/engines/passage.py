@@ -184,6 +184,19 @@ def plausible_radius(chord: dict, ports: dict, *, low: float = 0.3, high: float 
 #: radius, before it is taken for a failed read (plausible_radius).
 FLUID_BOUNDARY_LOW = 0.05
 
+def vouched_by_ports(chord: dict, ports: dict, *, low: float = 0.3, high: float = 1.5) -> bool:
+    """plausible_radius for a part whose ports differ in size: the chord reading's 5th percentile
+    sits between low x the SMALLEST port radius and high x the LARGEST. A reading off a hollow
+    part's outer skin is still wider than every port it serves, and one across the wall metal
+    still thinner than every port; but a vessel with a 20 mm inlet and a 1.6 mm side branch
+    reads its 5th percentile in its many small branches - a true reading that the smallest
+    port's own band (0.24 - 1.2 mm) refused, and the aorta lost its local refinement with it."""
+    try:
+        c, lo, hi = float(chord["p05"]), float(ports["min"]), float(ports["max"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    return lo > 0.0 and low * lo <= c <= high * max(hi, lo)
+
 
 def choose_passage_radius(chord: dict | None, ports: dict | None, *,
                           fluid_boundary: bool = False) -> dict | None:
@@ -519,8 +532,65 @@ def passage_of_surface(points, faces, *, max_points: int = MAX_MEASURE_POINTS,
         logger.info("passage measure: %d boundary points, chords cast on %d", len(pts), len(cpts))
     else:
         r = local_radius(pts, f, interior, diag * 1e-5, diag / 2.0)
-    return {"passage_radius": radius_stats(r),
-            "passage_cells_across_local": measure_passage(pts, f, r, edges=edges)}
+    out = {"passage_radius": radius_stats(r),
+           "passage_cells_across_local": measure_passage(pts, f, r, edges=edges)}
+    local = out["passage_cells_across_local"]
+    if local and float(local.get("p05") or 0.0) < PASSAGE_FLOOR_CELLS:
+        try:
+            h = mean_edge(pts, triangle_edges(f) if edges is None else edges)
+            regions = under_floor_regions(pts, r, h)
+            if regions:
+                out["passage_under_floor"] = regions
+        except Exception:  # noqa: BLE001 - where it fell short is a retry's aid, never a verdict
+            logger.warning("under-floor regions of the passage measure failed", exc_info=True)
+    return out
+
+
+#: The wall points under the floor are boxed in at most this many groups (under_floor_regions).
+UNDER_FLOOR_MAX_REGIONS = 128
+
+
+def under_floor_regions(points, radius, edge, *, floor: float = PASSAGE_FLOOR_CELLS,
+                        max_regions: int = UNDER_FLOOR_MAX_REGIONS) -> dict:
+    """WHERE a finished mesh's wall falls under the floor, as boxes a retry can refine there:
+    the wall points reading under `floor` cells across, grouped in bins about one passage wide
+    (coarser while there are more than `max_regions` groups), each boxed tight round its points
+    (two of their cells out). A narrow branch's box spans the branch, wall to wall; a wider
+    passage's wall that reads a narrow neighbour's radius (the measure floors every point to the
+    narrowest within its reach - the trunk round a branch's mouth) gets a box hugging that wall,
+    not its whole passage. {"points": wall points measured, "regions": [{min, max (metres),
+    radius_m (the passage there, median), edge_m (the cell at the wall there, median), cells
+    (5th percentile there), points}]}; {} when no point is under. Measured on the mesh, so it
+    names the passages the gate measured - not the ones a reading of the staged wall expected."""
+    pts = np.asarray(points, dtype=float)
+    r = np.asarray(radius, dtype=float)
+    h = np.asarray(edge, dtype=float)
+    ok = (h > 0.0) & (r > 0.0) & np.isfinite(r)
+    cells = np.where(ok, 2.0 * r / np.maximum(h, 1e-300), np.inf)
+    under = ok & (cells < float(floor))
+    if not under.any():
+        return {}
+    P, R, H, C = pts[under], r[under], h[under], cells[under]
+    size = max(3.0 * float(np.median(H)), 2.0 * float(np.median(R)))
+    groups: list[np.ndarray] = []
+    for _ in range(40):
+        keys = np.floor(P / size).astype(np.int64)
+        _, lab = np.unique(keys, axis=0, return_inverse=True)
+        lab = np.asarray(lab).ravel()
+        groups = [np.flatnonzero(lab == g) for g in range(int(lab.max()) + 1)]
+        if len(groups) <= max_regions:
+            break
+        size *= 1.5
+    regions = []
+    for idx in sorted(groups, key=len, reverse=True):
+        pad = 2.0 * float(H[idx].max())
+        regions.append({"min": [round(float(v), 6) for v in P[idx].min(axis=0) - pad],
+                        "max": [round(float(v), 6) for v in P[idx].max(axis=0) + pad],
+                        "radius_m": round(float(np.median(R[idx])), 7),
+                        "edge_m": round(float(np.median(H[idx])), 7),
+                        "cells": round(float(np.percentile(C[idx], 5)), 2),
+                        "points": int(len(idx))})
+    return {"points": int(ok.sum()), "regions": regions}
 
 
 def _triangles(poly):
@@ -1024,4 +1094,5 @@ __all__ = ["MAX_MEASURE_POINTS", "PASSAGE_CEILING_CELLS", "PASSAGE_CELLS_ACROSS"
            "mean_edge", "measure_deadline", "measure_passage", "orient_wall_faces",
            "passage_of_polymesh", "polygon_edges", "triangle_edges",
            "passage_of_stls", "passage_of_surface", "plausible_radius", "port_radius_stats",
-           "radius_stats", "size_caps"]
+           "radius_stats", "size_caps", "under_floor_regions", "vouched_by_ports",
+           "UNDER_FLOOR_MAX_REGIONS"]
