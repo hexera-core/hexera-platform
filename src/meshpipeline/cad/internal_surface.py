@@ -335,6 +335,9 @@ def write_staged(staged: StagedInternal, out_dir: Path) -> dict:
         "bbox_max": [round(float(v), 6) for v in hi],
         "openings": openings,
         "n_wall_faces": int(np.sum(L == staged.wall)),
+        # the wall is the fluid's own side (a thick wall is staged from its fluid side), never
+        # a hollow part's whole metal skin (engines/passage.passage_field_of_stls reads it whole)
+        "wall_bounds_fluid": True,
         "sealed": {"undeclared_openings": staged.facts.get("sealed", []), "open_rims": []},
         "fluid_boundary": str(boundary),
         "wall_name": staged.wall,

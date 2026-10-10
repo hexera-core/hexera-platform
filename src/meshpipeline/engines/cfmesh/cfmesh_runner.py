@@ -431,7 +431,8 @@ def _passage_sizing(t: dict, srcs: dict, wall_key: str, declaration: list):
         if hw and p.get("name"):
             name = str(p["name"])
             widths[name] = min(float(widths.get(name) or float("inf")), 2.0 * hw)
-    chosen = choose_passage_radius(chord, port_radius_stats(t.get("openings"), widths))
+    chosen = choose_passage_radius(chord, port_radius_stats(t.get("openings"), widths),
+                                   fluid_boundary=bool(t.get("wall_bounds_fluid")))
     if not chosen or not str(chosen.get("source", "")).startswith("chord") or raw is None:
         return chosen, None
     field = staged_passage_field(t, srcs, wall_key, declaration, field=raw)
@@ -522,11 +523,33 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
     if t.get("folded_stls"):
         # blind plugs are wall, physically: their triangles join the wall surface
         _srcs[_wall_key] = [_srcs[_wall_key], *t["folded_stls"].values()]
+    from meshpipeline.engines.workspace_facts import read_input_kind
+    _fluid_declared = read_input_kind(workspace) == "fluid-domain"
+    if not t.get("wall_bounds_fluid") and not _fluid_declared and t.get("source") != "surface":
+        # ONE REGION. A hollow wall is staged for a carve: the metal's whole skin and caps over the
+        # whole mouths close the metal AND the cavity, and cartesianMesh - no seed point - fills
+        # either (the rocket nozzle: its metal). Cut to the bore skin and the bore's part of each
+        # cap, the surface closes the fluid alone (cad/bore_staging.py); when that cannot be built
+        # closed, the staging stands as it was.
+        from meshpipeline.cad.bore_staging import bore_only_surfaces
+        try:
+            _bore = bore_only_surfaces(_srcs, _wall_key, ws / "_internal_bore")
+        except Exception:  # noqa: BLE001 - the whole-mouth staging is the fallback
+            logger.warning("cfMesh internal: bore-only staging failed - keeping the whole-mouth "
+                           "staging", exc_info=True)
+            _bore = None
+        if _bore:
+            _srcs = {**_srcs, **_bore}
+            t = {**t, "wall_bounds_fluid": True}
     prep = prepare_surface_internal(
         workspace, surfaces_src=_srcs,
         feature_angle=float(args.get("feature_angle", 30.0)))
     # the local passage radius of the staged boundary (wall + port caps close it) sizes the
     # wall band and the background; {} when the surfaces do not close, and the strategy stands
+    # a solid DECLARED the fluid domain is the fluid's own boundary, whatever its ports look like
+    # (this path stages a CAD solid without the declaration, so the record cannot know it)
+    if _fluid_declared:
+        t = {**t, "wall_bounds_fluid": True}
     passage_radius, _field = _passage_sizing(t, _srcs, _wall_key, port_declaration(workspace))
 
     _patches = list(contract_patches or [])
