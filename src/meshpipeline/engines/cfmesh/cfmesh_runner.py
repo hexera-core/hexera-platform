@@ -266,13 +266,57 @@ def _object_refinement_blocks(features: list, *, cell_floor: float = 0.0) -> lis
     return blocks
 
 
+#: EXTERNAL FLOW, a builder that sets no wall cell: the wall is sized from the measured wetted area
+#: so the wall shell, its grading and its layers spend about this share of the cell budget (the
+#: way snappy's planner back-solves its surface level from the area). The old default was L/20:
+#: twenty cells along the body whatever the budget - an airliner came out with 452 wall faces
+#: and 49k cells in a 4M budget, a car with 1,490 (HOME-TURF lab, 2026-10-05), and every gate
+#: passed.
+#: The wall cell is then snapped DOWN the octree (snap_to_octree): cfMesh refines by halving until
+#: a cell is no larger than the size asked, so a size just under a level costs a whole level - 4x
+#: the wall cells. Unsnapped, the SAE notchback, the Windsor body and the ONERA M6 came out at
+#: 3.8-4.2M cells on a 2M budget at both a half and a quarter share (lab htf2-/htf5-: identical
+#: meshes, the same octree level).
+EXTERNAL_WALL_BUDGET_SHARE = 0.5
+#: cells per wall face through the refined shell and its 2:1 grading out to the background,
+#: before the prism layers (each layer adds one more per face)
+EXTERNAL_SHELL_DEPTH = 4.0
+#: how many halvings below the background cell the wall may sit, external flow (2^8: a far field
+#: tens of body lengths across still reaches a wall cell sized for the body)
+EXTERNAL_MAX_HALVINGS = 8
+
+
+def external_wall_cell(surface_area_m2: float, cell_budget: int, n_layers: int,
+                       L: float) -> float:
+    """The default wall cell for external flow (metres): the size at which the wall's faces, times
+    the shell depth and the layers, fill EXTERNAL_WALL_BUDGET_SHARE of the budget - never coarser
+    than the old L/20."""
+    area = max(float(surface_area_m2 or 0.0), 0.0)
+    if area <= 0.0 or not cell_budget:
+        return L / 20.0
+    depth = EXTERNAL_SHELL_DEPTH + max(0, int(n_layers))
+    cell = (area * depth / (EXTERNAL_WALL_BUDGET_SHARE * float(cell_budget))) ** 0.5
+    return min(cell, L / 20.0)
+
+
+def snap_to_octree(max_cell: float, wall_cell: float) -> float:
+    """The octree cell (max_cell / 2^n) no finer than `wall_cell`, nudged up so cfMesh stops at that
+    level: it refines a cell while it is larger than the size asked."""
+    import math
+    if not (max_cell > 0.0 and wall_cell > 0.0) or wall_cell >= max_cell:
+        return wall_cell
+    n = int(math.floor(math.log2(max_cell / wall_cell) + 1e-9))
+    return max_cell / (2 ** n) * 1.001
+
+
 def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
                        patches: list, body_bbox, L: float,
                        domain_min, domain_max, strategy: dict | None = None,
                        cell_budget: int | None = None,
                        default_boundary: bool = True,
                        passage_radius: dict | None = None,
-                       passage_field: tuple | None = None) -> dict:
+                       passage_field: tuple | None = None,
+                       max_halvings: int = 4, snap_wall: bool = False) -> dict:
     ws = Path(workspace)
     strategy = strategy or {}
     ext = [float(domain_max[i] - domain_min[i]) for i in range(3)]
@@ -303,7 +347,10 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
         _caps = size_caps(passage_radius)
         max_cell = min(max_cell, _caps["max_cell"])
         wall_cell = min(wall_cell, _caps["wall_cell"])
-    wall_cell = max(wall_cell, max_cell / 16.0)
+    wall_cell = max(wall_cell, max_cell / float(2 ** max(1, int(max_halvings))))
+    if snap_wall:
+        # a wall size the engine chose from the budget: the octree level at or above it
+        wall_cell = snap_to_octree(max_cell, wall_cell)
     # PASSAGE CEILING: neither the wall band nor a refinement box may cut finer than 40 cells
     # across the narrowest passage (the top of industry practice). A builder that asked for
     # 79 across turned a tee into 16.4 M hexes, an 886 MB deliverable and a 161-minute run.
@@ -647,10 +694,18 @@ def configure_mesh(workspace, *, geometry_file: str, strategy: dict, wall_patch:
         feature_angle=float(args.get("feature_angle", 30.0)),
         mirror_y_half=bool(args.get("mirror_y_half", False)),
         body_walls=body_walls(_patches) or None)
+    strategy = dict(strategy or {})
+    _sized_here = strategy.get("wall_cell") is None
+    if _sized_here:
+        # no size from the builder: spend the budget on the wall, measured from its area
+        strategy = {**strategy, "wall_cell": external_wall_cell(
+            analysis.get("surface_area") or 0.0, cell_budget,
+            int(strategy.get("n_layers", 0) or 0), float(analysis["L"]))}
     summary = render_cfmesh_case(
         workspace, surface_file=prep["surface_file"], wall_patch=wall_patch,
         patches=_patches, body_bbox=prep["body_bbox"], L=analysis["L"],
-        domain_min=dmin, domain_max=dmax, strategy=strategy, cell_budget=cell_budget)
+        domain_min=dmin, domain_max=dmax, strategy=strategy, cell_budget=cell_budget,
+        max_halvings=EXTERNAL_MAX_HALVINGS, snap_wall=_sized_here)
     return {"success": True, "wrote": ["system/meshDict"], "topology": "external", **summary,
             "next": "meshDict written (valid + budget-clamped). Call run_mesh NOW. "
                     "Reconfigure ONLY in response to a concrete run_mesh failure."}
