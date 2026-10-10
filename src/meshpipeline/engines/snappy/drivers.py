@@ -11,6 +11,7 @@ import meshpipeline.settings.policy as polcfg
 from meshpipeline.engines.ground_plane import VERTICAL_AXIS, ground_patch_name
 from meshpipeline.engines.port_binding import BindError as _PortBindError
 from meshpipeline.engines.preflight import PreflightRefusal, PreflightStop, check_domain
+from meshpipeline.engines.wake_region import WakeRequest
 from meshpipeline.engines.workspace_facts import contract_patches, read_purpose
 
 logger = logging.getLogger(__name__)
@@ -94,10 +95,12 @@ def _inherit_durable_plan_fields(strategy: dict, workspace: Path) -> dict:
     """Fields that are FACTS about the request - not per-attempt choices - must survive
     re-planning. A revised plan that omits reference_length_m silently changes the RULER the
     domain gate measures with: the heat-sink retries lost it, the gate fell back to the wrong
-    axis, and two production-grade meshes were rejected over a mismeasured wake margin. Walk
-    the sibling attempts newest-first and take the first value each forgotten field ever had;
-    a revision that STATES a value keeps its own."""
-    missing = [k for k in ("reference_length_m", "max_cells") if strategy.get(k) is None]
+    axis, and two production-grade meshes were rejected over a mismeasured wake margin. The
+    wake refinement is the same kind of fact once a plan has stated it: a brief that asked for
+    none must not get one back because a re-plan left the field out. Walk the sibling attempts
+    newest-first and take the first value each forgotten field ever had; a revision that STATES
+    a value keeps its own."""
+    missing = [k for k in ("reference_length_m", "max_cells", "wake") if strategy.get(k) is None]
     if not missing:
         return strategy
     out = dict(strategy)
@@ -711,6 +714,10 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             plan = _po.plan
             run.note_plan_round(_po.round)
         strategy = _inherit_durable_plan_fields(plan or {}, workspace)
+        # ... and within this attempt: a re-plan that leaves the wake out keeps the last one
+        _carried = previous_plan.get("wake") if isinstance(previous_plan, dict) else None
+        if strategy.get("wake") is None and _carried is not None:
+            strategy = {**strategy, "wake": _carried}
         # after a timeout the next mesh is SMALLER (here the lever is the cell budget, which sets
         # the refinement levels), whatever the re-plan proposed
         strategy, _coarsened = _coarsen_after_timeout(_timeout_ref, strategy, internal=False)
@@ -804,7 +811,11 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                 layer_counts=LP.layer_counts_for(_policy),
                 layer_overrides=LP.overrides_for(_policy), ground=_ground,
                 farfield=_farfield, class_regions=_split,
-                outside_points=[c.point for c in _cavities.cavities] if _cavities else None)
+                outside_points=[c.point for c in _cavities.cavities] if _cavities else None,
+                # the wake behind the body, along the declared flow, in the approved ruler
+                wake=WakeRequest(knobs=strategy.get("wake"), flow_axis=state.get("flow_axis"),
+                                 ruler_m=state.get("reference_length_m")
+                                 or strategy.get("reference_length_m")))
             # the honest record travels with the case: the manifest reports the per-region
             # layer decisions this pass actually authored (stale records are removed)
             LP.write_layer_policy(workspace, _policy)
@@ -822,7 +833,8 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                 raise TimedOutCaseRepeats(f"external pass {attempt}")
             await publish.anote("Carving the body out of the background mesh - refinement level "
                             f"{summary['surface_level']}, {summary['n_layers']} boundary layers"
-                            + _sealed_note(_cavities),
+                            + _sealed_note(_cavities)
+                            + (f"; {summary['wake_note']}" if summary.get("wake_note") else ""),
                     op_id=f"snappy:carving:{attempt}")
             # RUN (deterministic; Cloud Run Job / local) + user-facing instrumentation
             _t_mesh = _time.monotonic()
