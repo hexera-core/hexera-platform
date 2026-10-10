@@ -371,3 +371,70 @@ def test_the_geometry_stage_draws_each_placed_part_under_its_own_name():
     names = [p["name"] for p in skin["patches"]]
     assert len(names) == len(set(names)) == 8
     assert {"Case", "PCB", "SoC", "SoC_heat_sink", "Bulk_cap"} <= set(names)
+
+
+# ------------------------------------------------------------------ what real exports carry ---
+# Traits of public Flotherm 2020.2 exports and other tools' ECXML (the vendor files are
+# third-party and not kept here; each test is a synthetic model with the same trait).
+def _channels() -> Ecxml:
+    """A heat-sink sub-model whose domain is its own bounding box: the fins reach the top and run
+    the full depth, so the air is separate channels open at the ends and the top. A sourceBlock
+    in the base carries the power (as Flotherm writes it), and one straddles a fin and its air."""
+    doc = Ecxml("channels").domain((0, -0.005, 0), (0.034, 0.02, 0.04))
+    doc.material("Al", 2700, 900, 0.9, ("isotropic", 205.0))
+    with doc.assembly("Heat Sink"):
+        doc.block("Base", (0, -0.005, 0), (0.034, 0.005, 0.04), "Al")
+        for k in range(5):
+            doc.block(f"Fin {k + 1}", (0.008 * k, 0.0, 0.0), (0.002, 0.015, 0.04), "Al")
+    doc.source("Heat Source", (0.0175, -0.005, 0.0175), (0.005, 0.0005, 0.005), 1.0)
+    doc.source("Straddle", (0.0, 0.0, 0.0), (0.004, 0.015, 0.04), 0.25)
+    return doc
+
+
+def test_air_channels_open_to_the_domain_are_not_called_sealed(tmp_path):
+    result = _mesh(tmp_path, _channels())
+    fluids = [r for r in result.sidecar["regions"] if r["type"] == "fluid"]
+    assert len(fluids) == 4
+    for f in fluids:
+        assert f["open_to_domain_sides"] == ["+y", "-z", "+z"]
+        assert not any("sealed" in n for n in f["notes"])
+
+
+def test_each_heat_source_says_which_regions_it_lands_in(tmp_path):
+    result = _mesh(tmp_path, _channels())
+    lands = {s["name"]: s["lands_in"] for s in result.sidecar["volume_heat_sources"]}
+    assert lands["Heat Source"] == [{"region": "Base", "fraction": pytest.approx(1.0)}]
+    straddle = {x["region"]: x["fraction"] for x in lands["Straddle"]}
+    assert straddle["Fin_1"] == pytest.approx(0.5)
+    assert sum(straddle.values()) == pytest.approx(1.0)
+    assert any(x.startswith("Heat sources: 2 volume source(s), 1.25 W")
+               for x in result.report["build_report"])
+
+
+def test_sources_and_probes_outside_the_domain_are_not_applied(tmp_path):
+    doc = Ecxml("clutter").domain((0, 0, 0), (0.05, 0.05, 0.05))
+    doc.material("M", 2700, 900, 0.9, ("isotropic", 200.0))
+    doc.block("Board", (0.005, 0.005, 0.02), (0.04, 0.04, 0.0016), "M", 2.0)
+    doc.source2d("Far source", (0.0, 1.0, -0.32), (1.0, 2.0, 3333.0), "+xy", 23.3)
+    doc.monitor("Far probe", (0.0, 0.0, 33.23))
+    for k in range(5):
+        doc.block(f"Far fin {k}", (1.0 + 0.01 * k, 1.0, 1.0), (0.001, 0.02, 0.02), "M")
+    placement = place(read_ecxml(doc.xml()))
+    assert placement.tol.noise < 2e-8            # precision at the domain, not at 33 m
+    gone = {r["name"] for r in placement.records["not_built"]}
+    assert {"Far source", "Far probe"} <= gone
+    assert placement.records["monitor_points"] == []
+    result = _mesh(tmp_path, doc)
+    lines = [x for x in result.report["build_report"] if x.startswith("Not built:")]
+    assert lines == [x for x in lines if "objects - it lies outside the solution domain" in x]
+    assert result.sidecar["power_W"]["in_heat_sources"] == 0
+
+
+def test_a_model_without_air_says_it_is_conduction_only(tmp_path):
+    die = Ecxml("bare die")                      # no solutionDomain, as PackStudio writes
+    die.material("Si", 2330, 700, 0.0, ("isotropic", 117.5))
+    die.block("die-part-1", (-0.00245, -0.00245, 0), (0.0049, 0.0049, 0.00022), "Si", 2.0)
+    result = _mesh(tmp_path, die)
+    assert result.report["fluid_regions"] == []
+    assert any(x.startswith("No air: the file sets no solution domain")
+               for x in result.report["build_report"])

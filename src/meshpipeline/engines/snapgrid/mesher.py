@@ -37,11 +37,13 @@ from meshpipeline.cad.ingest.ecxml_build import (
     SIDECAR_SUFFIX,
     VOLUME_RTOL,
     FidelityError,
+    _air_space_note,
     _Box,
     _domain_patches,
     _expected_volume,
     _file_contacts,
     _material,
+    _not_built_lines,
     _um,
     _unique_namer,
     physics_summary,
@@ -213,13 +215,16 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
     for a in range(n_air):
         fluid_rows.append({"name": air_names[a], "type": "fluid", "kind": "air",
                            "cells": int(air_cells[a]), "volume_m3": float(air_vol[a]),
-                           "notes": [] if a == 0 else
-                           ["an air space not connected to the main air (a sealed cavity)"]})
-    if n_air > 1:
-        notes.append(f"the air is {n_air} separate spaces (a sealed enclosure keeps its own air); "
-                     "each is its own fluid region")
+                           "notes": []})       # open or sealed: known once the patches are
     if n_air == 0:
         notes.append("the parts fill the whole domain: there is no air to mesh")
+        build_report.append(
+            "No air: the file sets no solution domain, so the domain is the parts' own bounding "
+            "box, and they fill it. The model is conduction only. To model the air around the "
+            "parts, give the model a solution domain larger than the parts in the authoring tool "
+            "and export it again." if model.domain is None else
+            "No air: the solids fill the whole solution domain the file sets. The model is "
+            "conduction only (no air region).")
 
     # one cellZone per region: the air spaces first (largest first), then the parts in file order
     zone_names = list(air_names) + [part_region[k] for k in live]
@@ -229,6 +234,8 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
     cell_zone = np.where(zone >= 0, part_zone[np.maximum(zone, 0)], airs).astype(np.int32)
     if (cell_zone < 0).any():
         raise FidelityError("internal: a cell belongs to no region")
+    build_report += _where_sources_land(placement, layout, cell_zone, zone_names, vols,
+                                        set(air_names))
 
     regions = list(fluid_rows)
     snapped_box = _snapped_boxes(placement)
@@ -273,6 +280,20 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
     t["written"] = time.perf_counter()
     for row in patch_rows:
         row["faces"] = written["patches"].get(row["mesh_patch"], 0)
+    # an air space apart from the main air is sealed only when it reaches no side of the domain
+    # (a heat sink whose domain is its own box has channels open at both ends, not cavities)
+    side_of = {r["mesh_patch"]: r["domain_face"] for r in patch_rows if r.get("domain_face")}
+    order = {f"{s}{a}": k for k, (a, s) in enumerate((a, s) for a in _AXES for s in "-+")}
+    for a, row in enumerate(fluid_rows):
+        faces = (region_meshes.get(row["name"]) or {}).get("patches") or {}
+        row["open_to_domain_sides"] = sorted(
+            {side_of[p_] for p_, n in faces.items() if n and p_ in side_of}, key=order.__getitem__)
+        if a:
+            row["notes"] = [_air_space_note(row["open_to_domain_sides"])]
+    if n_air > 1:
+        sealed = sum(1 for r in fluid_rows if not r["open_to_domain_sides"])
+        notes.append(f"the air is {n_air} separate spaces ({n_air - sealed} open to the domain's "
+                     f"sides, {sealed} sealed inside the parts); each is its own fluid region")
     # a side the file's plates cover whole has no patch of its own (expected); any other patch
     # left without a face was overwritten on its side by a later object - said, never hidden
     lost = [r["name"] for r in patch_rows if not r["faces"] and not r.get("covered_side")]
@@ -489,6 +510,61 @@ def _zone_of(blk: B.Block) -> np.ndarray:
 def _block_volumes(layout: B.Layout, blk: B.Block) -> np.ndarray:
     dx, dy, dz = (np.diff(layout.coords(blk, a)) for a in range(3))
     return dz[:, None, None] * dy[None, :, None] * dx[None, None, :]
+
+
+#: Cells x sources scanned at most when working out where the sources land.
+MAX_SOURCE_SCAN = 2_000_000_000
+
+
+def _where_sources_land(placement: Placement, layout: B.Layout, cell_zone: np.ndarray,
+                        zone_names: list[str], vols: np.ndarray, fluids: set[str]) -> list[str]:
+    """Which regions each volume heat source's box lies in, by volume (`lands_in` on its sidecar
+    row) - the cells whose centres lie in the box, which is exact: the box's faces are grid
+    planes. Real Flotherm exports carry most of their power this way (a sourceBlock on or inside
+    a part, not the part's own powerDissipation). Returns the report line."""
+    sources = placement.records["volume_heat_sources"]
+    if not sources:
+        return []
+    if len(sources) * len(cell_zone) > MAX_SOURCE_SCAN:
+        return [f"Heat sources: {len(sources)} volume source(s); where each lands was not worked "
+                "out (too many to scan); each applies its power in its box, on grid planes."]
+    centres = []
+    for blk in layout.blocks:
+        mid = [(c[1:] + c[:-1]) / 2 for c in (layout.coords(blk, a) for a in range(3))]
+        z, y, x = np.meshgrid(mid[2], mid[1], mid[0], indexing="ij")
+        centres.append(np.stack([x.ravel(), y.ravel(), z.ravel()], axis=1))
+    xyz = np.concatenate(centres)
+    whole: dict[str, list[str]] = {"solid": [], "air": []}
+    split = 0
+    for s in sources:
+        b = s.get("box_in_domain_m") or s["box_m"]
+        lo, hi = np.array(b["min"]), np.array(b["max"])
+        inside = ((xyz > lo) & (xyz < hi)).all(axis=1)
+        total = float(vols[inside].sum())
+        if total <= 0.0:
+            s["lands_in"] = []
+            split += 1
+            continue
+        per = np.bincount(cell_zone[inside], weights=vols[inside], minlength=len(zone_names))
+        found = sorted(((zone_names[z], float(per[z]) / total) for z in np.nonzero(per)[0]),
+                       key=lambda nf: -nf[1])
+        s["lands_in"] = [{"region": n, "fraction": f} for n, f in found]
+        if found[0][1] >= 1 - 1e-6:
+            whole["air" if found[0][0] in fluids else "solid"].append(found[0][0])
+        else:
+            split += 1
+    power = sum(float(s.get("power_W") or 0.0) for s in sources)
+    bits = []
+    if whole["solid"]:
+        names = sorted(set(whole["solid"]))
+        bits.append(f"{len(whole['solid'])} lie wholly in one solid region ("
+                    + ", ".join(names[:8]) + (", ..." if len(names) > 8 else "") + ")")
+    if whole["air"]:
+        bits.append(f"{len(whole['air'])} lie wholly in air")
+    if split:
+        bits.append(f"{split} span more than one region (fractions in the sidecar)")
+    return [f"Heat sources: {len(sources)} volume source(s), {power:.6g} W; " + "; ".join(bits)
+            + "."]
 
 
 def _air_spaces(layout: B.Layout, topo: boxmesh.BoxTopology, vols: np.ndarray
@@ -897,8 +973,7 @@ def _report_lines(placement: Placement, layout: B.Layout, st: dict, thin: list[d
         names = ", ".join(r["name"] for r in records["inactive"][:8])
         more = f" and {len(records['inactive']) - 8} more" if len(records["inactive"]) > 8 else ""
         lines.append(f"Switched off in the file, so not meshed: {names}{more}.")
-    for r in records["not_built"]:
-        lines.append(f"Not built: {r['name']} - {r['why']}.")
+    lines += _not_built_lines(records["not_built"])
     for bf in records["baffles"]:
         lines.append(f"Not meshed: {bf['name']}, a plate without a usable thickness "
                      f"({_um(bf['thickness_m'])}): the air flows through it; its outline lies on "

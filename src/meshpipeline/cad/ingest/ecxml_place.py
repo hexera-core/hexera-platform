@@ -48,6 +48,7 @@ from meshpipeline.cad.ingest.ecxml_build import (
     _pair_scan,
     _Part,
     _plate,
+    _records_in_domain,
     _snap_function,
     _Tol,
     _um,
@@ -208,6 +209,9 @@ def place(model: EcxmlModel) -> Placement:
             extra.append(box)
     for (_path, material), group in heatsink_parts.items():
         parts.append(_heatsink(group, material, snapped))
+    # devices, sources and probes outside the domain are not applied; partly outside, they keep
+    # the box inside it (the fused build's rule, cad/ingest/ecxml_build._records_in_domain)
+    notes += _records_in_domain(records, domain, noise)
     if len(parts) > MAX_PLACED_PARTS:
         raise EcxmlError(f"the model holds {len(parts):,} solid parts, more than the "
                          f"{MAX_PLACED_PARTS:,} regions a conjugate case can carry; export a "
