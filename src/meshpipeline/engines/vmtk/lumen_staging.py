@@ -261,6 +261,10 @@ def stage_lumen(workspace, geom_path, *, prepared, intake_patches: list,
               "input_kind": str(input_kind or ""), "angular_deflection": ANGULAR_DEFLECTION,
               "interior_point": res.get("interior_point"),
               "capping_method": capping, "wall_pieces": pieces, "wall_oriented": oriented}
+    try:
+        record["cost_model"] = lumen_cost_model(lumen, size, all_pieces=pieces > 1)
+    except Exception:  # noqa: BLE001 - without a model the run is sized as before, not refused
+        logger.warning("vmtk staging: the cell-cost model could not be measured", exc_info=True)
     (ws / STAGING_FACT).write_text(json.dumps(record, indent=2))
     logger.info("vmtk staging: %d port(s) opened, %d wall triangles, %d open loop(s), local "
                 "radius %.4g..%.4g m", len(ports), lumen.n_cells, n_loops,
@@ -543,6 +547,34 @@ def measure_openings(wall, ports: list[dict], lids: list | None = None) -> str:
         "all disks.")
 
 
+def lumen_cost_model(lumen, size: dict, *, all_pieces: bool = False) -> dict:
+    """What the staged lumen will cost to fill (engines/vmtk/budget.cost_model), measured on the
+    piece(s) the remesh keeps - its largest connected region, or every region when the wall is
+    in several pieces by design (an annulus) - closed by a flat fan over each open loop, as
+    vmtk's own capper closes it (a ring's two fans overlap; the inside test reads that right)."""
+    from meshpipeline.engines.vmtk.budget import cost_model
+    region = lumen if all_pieces else lumen.connectivity(extraction_mode="largest")
+    region = region.extract_surface(algorithm="dataset_surface").triangulate().clean()
+    pts = np.asarray(region.points, dtype=float)
+    faces = np.asarray(region.faces).reshape(-1, 4)[:, 1:]
+    r = np.asarray(region.point_data[SIZING_ARRAY], dtype=float)
+    tris = [pts[faces]]
+    rim = region.extract_feature_edges(boundary_edges=True, feature_edges=False,
+                                       manifold_edges=False, non_manifold_edges=False)
+    if rim.n_cells:
+        for loop in rim.connectivity().split_bodies():
+            seg = np.asarray(loop.cells_dict.get(3, np.zeros((0, 2))), dtype=np.int64)  # VTK_LINE
+            if not len(seg):
+                continue
+            lp = np.asarray(loop.points, dtype=float)
+            c = lp.mean(axis=0)
+            tris.append(np.stack([lp[seg[:, 0]], lp[seg[:, 1]],
+                                  np.broadcast_to(c, (len(seg), 3))], axis=1))
+    model = cost_model(pts, faces, r, np.concatenate(tris),
+                       h_min=float(size["min_edge_length"]), h_max=float(size["max_edge_length"]))
+    return {k: (float(f"{v:.6g}") if isinstance(v, float) else v) for k, v in model.items()}
+
+
 def read_staging(workspace) -> dict | None:
     p = Path(workspace) / STAGING_FACT
     if not p.exists():
@@ -572,6 +604,9 @@ def merge_staged(strategy: dict | None, staged: dict | None) -> dict:
             s[k] = float(staged[k])
     if not s.get("sizing_array") and staged.get("sizing_array"):
         s["sizing_array"] = str(staged["sizing_array"])
+    # the staged lumen's measured cost, which the run sizes the fill to its budget from
+    if isinstance(staged.get("cost_model"), dict):
+        s["cost_model"] = dict(staged["cost_model"])
     # how the openings are capped and whether every wall piece is kept: facts of the geometry,
     # never the builder's to choose
     if staged.get("capping_method"):
