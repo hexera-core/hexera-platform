@@ -1151,5 +1151,28 @@ def main(workspace: str) -> int:
         gmsh.finalize()
 
 
+#: Where the driver leaves the reason it stopped without a mesh, for finalize to tell the user.
+STOP_REASON = "gmsh_stop_reason.txt"
+
+
+def run(workspace: str) -> int:
+    """main(), with the reason it stopped written beside the workspace: gmsh's own last error (a
+    boundary it could not recover, a surface it could not classify) instead of a bare traceback
+    and, downstream, "the Builder did not produce a valid mesh deck"."""
+    stop = Path(workspace) / STOP_REASON
+    try:
+        stop.unlink()
+    except OSError:
+        pass
+    try:
+        return main(workspace)
+    except Exception as exc:
+        try:
+            stop.write_text(f"{type(exc).__name__}: {exc}"[:600])
+        except OSError:
+            pass
+        raise
+
+
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1]))
+    sys.exit(run(sys.argv[1]))

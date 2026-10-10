@@ -563,6 +563,109 @@ class CarveRays:
         return self.first_hit(a, d, t_min=1e-4 * length) >= length
 
 
+def _fluid_union(shape, solids: list, declared_ports: list):
+    """ONE FLUID FROM SEVERAL SOLIDS. A declared fluid domain modelled as several solids that touch
+    (a pump's impeller region and its volute + suction region) is one fluid, but the faces where
+    they touch were staged as wall: a surface with a wall through the middle closes two regions,
+    a carve's seed or cfMesh's fill took one, and the port on the other came out with no faces
+    (volute_pump_domains, snappy and cfMesh; HOME-TURF lab, 2026-10-06). Every solid that carries
+    a declared port, and every solid touching one of those (transitively), is split against the
+    others - OCC's general fuse makes coincident faces shared, however each side was modelled -
+    and the faces two of them share are returned as the interface, which the caller leaves out
+    of the staged surface. A solid that touches no port-carrying solid stays as it is. Returns
+    (shape, solids, interface faces); the input unchanged and [] when nothing touches or the
+    split fails."""
+    import math as _m
+
+    from OCP.Bnd import Bnd_Box
+    from OCP.BOPAlgo import BOPAlgo_Builder
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.BRepBndLib import BRepBndLib
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GeomAbs import GeomAbs_Plane
+    from OCP.GProp import GProp_GProps
+    from OCP.TopAbs import TopAbs_FACE, TopAbs_SOLID
+    from OCP.TopExp import TopExp, TopExp_Explorer
+    from OCP.TopoDS import TopoDS, TopoDS_Compound
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+
+    def _planar_centres(sol):
+        e = TopExp_Explorer(sol, TopAbs_FACE)
+        while e.More():
+            f = TopoDS.Face_s(e.Current())
+            e.Next()
+            if BRepAdaptor_Surface(f).GetType() == GeomAbs_Plane:
+                g = GProp_GProps()
+                BRepGProp.SurfaceProperties_s(f, g)
+                c = g.CentreOfMass()
+                yield (c.X(), c.Y(), c.Z())
+
+    fluid = set()
+    for port in declared_ports:
+        near = port.get("near_m") if isinstance(port, dict) else None
+        if not near:
+            continue
+        dist = [min((_m.dist(near, c) for c in _planar_centres(sol)), default=_m.inf)
+                for sol in solids]
+        k = min(range(len(solids)), key=lambda i: dist[i])
+        if _m.isfinite(dist[k]):
+            fluid.add(k)
+    if not fluid:
+        return shape, solids, []
+    box = Bnd_Box()
+    BRepBndLib.Add_s(shape, box)
+    touch_tol = 1e-6 * (box.CornerMin().Distance(box.CornerMax()) or 1.0)
+    grown = True
+    while grown:
+        grown = False
+        for k, sol in enumerate(solids):
+            if k in fluid:
+                continue
+            for j in list(fluid):
+                d = BRepExtrema_DistShapeShape(sol, solids[j])
+                if d.IsDone() and d.Value() <= touch_tol:
+                    fluid.add(k)
+                    grown = True
+                    break
+    if len(fluid) < 2:
+        return shape, solids, []
+    try:
+        bop = BOPAlgo_Builder()
+        for k in sorted(fluid):
+            bop.AddArgument(solids[k])
+        bop.SetFuzzyValue(touch_tol)
+        bop.Perform()
+        if bop.HasErrors():
+            return shape, solids, []
+        split = bop.Shape()
+        parts = []
+        e = TopExp_Explorer(split, TopAbs_SOLID)
+        while e.More():
+            parts.append(TopoDS.Solid_s(e.Current()))
+            e.Next()
+        fmap = TopTools_IndexedDataMapOfShapeListOfShape()
+        TopExp.MapShapesAndAncestors_s(split, TopAbs_FACE, TopAbs_SOLID, fmap)
+        interface = [fmap.FindKey(i) for i in range(1, fmap.Extent() + 1)
+                     if fmap.FindFromIndex(i).Extent() > 1]
+        if not interface or len(parts) < 2:
+            return shape, solids, []
+        rest = [sol for k, sol in enumerate(solids) if k not in fluid]
+        comp = TopoDS_Compound()
+        bld = BRep_Builder()
+        bld.MakeCompound(comp)
+        for sol in [*parts, *rest]:
+            bld.Add(comp, sol)
+        logger.info("tessellate_internal: %d touching fluid solids are one fluid - %d face(s) "
+                    "between them left out of the staged surface", len(fluid), len(interface))
+        return comp, [*parts, *rest], interface
+    except Exception:  # noqa: BLE001 - the solids as they came is the fallback
+        logger.warning("tessellate_internal: the fluid solids could not be split against each "
+                       "other - kept apart", exc_info=True)
+        return shape, solids, []
+
+
 def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection: float = 0.2,
                         linear_deflection: float | None = None,
                         opening_faces: list[int] | None = None,
@@ -624,6 +727,9 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
         raise RuntimeError(
             "internal-flow input is not a watertight SOLID - the fluid volume must be a "
             "closed solid (a loose surface/shell is the pipe skin, not the flow passage)")
+    interface: list = []
+    if fluid_solid is True and len(solids) > 1 and declared_ports:
+        shape, solids, interface = _fluid_union(shape, solids, declared_ports)
     classifiers = [BRepClass3d_SolidClassifier(s) for s in solids]
 
     def _inside(p) -> bool:
@@ -645,7 +751,11 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
     faces: list = []
     e = TopExp_Explorer(shape, TopAbs_FACE)
     while e.More():
-        faces.append(TopoDS.Face_s(e.Current())); e.Next()
+        _f = TopoDS.Face_s(e.Current()); e.Next()
+        # a face between two fluid solids bounds neither: the fluid runs through it
+        if interface and any(_f.IsSame(x) for x in interface):
+            continue
+        faces.append(_f)
 
     def _face_props(f):
         g = GProp_GProps(); BRepGProp.SurfaceProperties_s(f, g)
@@ -876,6 +986,13 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
         f = faces[port_i]
         wires = _wires_of(f)
         if len(wires) < 2:
+            return []
+        if fluid_solid is True:
+            # A DECLARED FLUID DOMAIN's ring-shaped port face IS the opening: the flow crosses the
+            # ring, and its inner hole (a hub, a shaft) is outside the fluid. Capping that hole
+            # closed a second pocket - hub surface + disc - beside the fluid (blade-row passages:
+            # staged ports 1.5-1.8x the declared annulus, 140 edges used three times), which only
+            # a lucky seed or fill kept out of the mesh. The ring face is the whole lid.
             return []
         outer_w = BRepTools.OuterWire_s(f)
         pln = BRepAdaptor_Surface(f).Plane()
@@ -1393,6 +1510,12 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
             "inlet": _opening_record(inlet_i),
             **{nm: _opening_record(oi) for nm, oi in zip(outlet_names, outlet_ids)}},
         "n_wall_faces": n_wall_faces,
+        # WHAT THE WALL IS: the fluid's own boundary - a solid declared the fluid domain, or one
+        # whose ports are plain discs, not rings round a bore - or (False) possibly the metal skin
+        # of a hollow wall (bore, outer skin, flange faces). A reader of the wall's passages reads
+        # the first whole and keeps only the cavity's skin of the second
+        # (engines/passage.passage_field_of_stls).
+        "wall_bounds_fluid": bool(fluid_solid is True or (not hollow_wall and not port_bored)),
         # what was sealed into the wall beyond the declared ports, for manifests and
         # user-facing evidence: undeclared shell openings (B-rep holes nothing fills)
         # and open rim rings (gaps the tessellator itself left in the staged surface)

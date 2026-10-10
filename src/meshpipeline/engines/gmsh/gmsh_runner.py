@@ -331,13 +331,33 @@ def check_mesh(workspace) -> dict:
 
 # finalize: manifest + deliverable check (executor seam)
 
+def _no_deck_reason(ws: Path) -> str:
+    """Why there is no deck: gmsh's own reason when the driver stopped on an error (driver.run
+    writes it), so the user reads what gmsh could not do - not a builder that failed to write."""
+    from meshpipeline.engines.gmsh.driver import STOP_REASON
+    try:
+        why = (ws / STOP_REASON).read_text().strip()
+    except OSError:
+        why = ""
+    if not why:
+        return "[GMSH] no mesh.inp - the Builder did not produce a valid mesh deck"
+    hint = ""
+    low = why.lower()
+    if "plc" in low or "intersect" in low or "recover" in low:
+        hint = (" - two faces of the closed surface cross or touch, so gmsh cannot recover the "
+                "boundary as a volume to fill")
+    elif "no solid" in low or "no volume" in low:
+        hint = " - the surface does not close a volume gmsh can fill"
+    return f"[GMSH] no mesh.inp - gmsh stopped: {why}{hint}"
+
+
 def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str = "",
              internal_flow: bool = False, engine_params: dict | None = None,
              flow_topology: str = "") -> dict:
     ws = Path(workspace_dir)
     if not (ws / "mesh.inp").exists():
         return {"success": False, "stdout": "", "stderr": "",
-                "output": "[GMSH] no mesh.inp - the Builder did not produce a valid mesh deck"}
+                "output": _no_deck_reason(ws)}
     q = check_mesh(ws)
     groups: dict = dict(q.get("groups", {}))
     # Include the default (unassigned-surfaces) group ONLY when the driver actually

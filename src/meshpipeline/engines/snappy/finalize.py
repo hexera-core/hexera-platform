@@ -191,6 +191,18 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
                 q["layer_policy"] = _pol
         except Exception:
             logger.exception("finalize: layer-policy record unreadable (non-fatal)")
+    # THE WAKE REFINEMENT the case authored (engines/wake_region.py): the boxes behind the body
+    # and their cells, and what the cell budget cut - so the reviewer judging the wake reads
+    # what was asked of the mesher, not a guess from the render.
+    _wk = ws / "wake_refinement.json"
+    if _wk.exists():
+        try:
+            import json as _json
+            _w = _json.loads(_wk.read_text())
+            if isinstance(_w, dict):
+                q["wake_refinement"] = _w
+        except Exception:
+            logger.exception("finalize: wake-refinement record unreadable (non-fatal)")
     patch_entities, bbox = {}, (0.0,) * 6
     _review_tris: dict = {}   # per-patch triangles → precomputed reviewer camera views
     # The review surface the vision reviewer renders is built from the geometry THIS ENGINE
