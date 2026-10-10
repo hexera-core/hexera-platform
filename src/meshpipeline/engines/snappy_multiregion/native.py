@@ -96,6 +96,24 @@ def run_native_build(workspace, *, preflight, render_region_properties, parse_la
             return describe_native_result(returncode=outcome.returncode,
                                           args=["bash", "-lc", command],
                                           stage=outcome.stage, output="\n".join(logs))
+        if logname == "topoSet":
+            empty = empty_regions(ws)
+            if empty:
+                # NO CELL IN A REGION: splitMeshRegions would crash on the empty mesh (signal 11,
+                # "regionProperties is missing" - diffuser_plenum_004_cht, lab 2026-10-06). Said
+                # here with the cause snappy leaves behind: it could not tell the region's inside
+                # from its outside because the region's surface is not closed.
+                logs.append(f"[regions] no cells in {', '.join(empty)}")
+                why = empty_regions_reason(ws, empty)
+                # ...and kept beside the case, so the split's absence is reported by its cause
+                # (regions.read_region_properties), not as "regionProperties is missing"
+                # (without the engine tag: the failure that reads it adds its own)
+                (ws / STOP_REASON_FILE).write_text(why.removeprefix("[SNAPPY_MULTIREGION] "))
+                out = describe_native_result(
+                    returncode=1, args=["bash", "-lc", command], stage="regions",
+                    output="\n".join(logs) + "\n" + why)
+                out["empty_regions"] = empty
+                return out
 
     # THE USER'S BOUNDARY NAMES. Each region's `exterior` faces become the declared ports where
     # they lie at a declared port, and the declared wall everywhere else.
@@ -122,6 +140,38 @@ def run_native_build(workspace, *, preflight, render_region_properties, parse_la
     result.update({"layer_coverage": layer.get("overall_pct"),
                    "per_patch_layers": layer.get("per_patch")})
     return result
+
+
+#: why the run stopped before the region split, in words (read by regions.read_region_properties)
+STOP_REASON_FILE = "multiregion_stop_reason.txt"
+
+
+def empty_regions(ws: Path) -> list[str]:
+    """The declared regions whose cellZone came out of snappyHexMesh with no cells, read off the
+    topoSet log ("Using zone <name> with 0 cells")."""
+    import re
+    try:
+        text = (Path(ws) / "log.topoSet").read_text(errors="replace")
+    except OSError:
+        return []
+    return sorted({m.group(1) for m in re.finditer(r"Using zone (\S+) with 0 cells", text)})
+
+
+def empty_regions_reason(ws: Path, empty: list[str]) -> str:
+    """Why a region got no cells, in words, with the open edges surfaceFeatureExtract counted on
+    the region surfaces when it reported any."""
+    import re
+    opens: list[int] = []
+    try:
+        text = (Path(ws) / "log.surfaceFeatureExtract").read_text(errors="replace")
+        opens = [int(n) for n in re.findall(r"open edges\s*:\s*(\d+)", text)]
+    except OSError:
+        pass
+    where = (f" (the region surfaces have {sum(opens)} open edge(s))" if any(opens) else "")
+    return (f"[SNAPPY_MULTIREGION] no cell was placed in region(s) {', '.join(empty)}: "
+            "snappyHexMesh could not tell their inside from their outside, because a region's "
+            f"surface is not closed{where}. The solids of the assembly must be closed and share "
+            "matching faces; re-export it with each solid closed (or stitched), then mesh again.")
 
 
 _PORT_BOX = 0.6   # a port's faces are taken within this many port diameters of its centre
