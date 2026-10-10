@@ -332,29 +332,130 @@ def interior_from_ports(wall_points, cap_points, port_centroids):
     return best
 
 
-def cavity_skin(points, faces, cap_polys, *, feature_angle: float = 60.0):
+#: Directions a point is tested along for being shut in by the staged wall and its caps.
+_ENCLOSURE_DIRS = np.asarray([[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1],
+                              [0.577, 0.577, 0.577], [-0.577, -0.577, 0.577],
+                              [0.577, -0.577, -0.577], [-0.577, 0.577, -0.577],
+                              [0.267, 0.802, -0.535], [-0.802, 0.267, 0.535]], dtype=float)
+
+
+def _shut_in(tris: np.ndarray, p: np.ndarray) -> bool:
+    """Whether every test ray from p hits one of the triangles: p is in a closed pocket (the
+    capped cavity, or the metal itself), not in the open air around the part."""
+    v0, e1, e2 = tris[:, 0], tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0]
+    s = p - v0
+    q = np.cross(s, e1)
+    for d in _ENCLOSURE_DIRS / np.linalg.norm(_ENCLOSURE_DIRS, axis=1, keepdims=True):
+        pv_ = np.cross(d, e2)
+        det = np.einsum("ij,ij->i", e1, pv_)
+        ok = np.abs(det) > 1e-30
+        inv = np.divide(1.0, det, out=np.zeros_like(det), where=ok)
+        u = np.einsum("ij,ij->i", s, pv_) * inv
+        v = (q @ d) * inv
+        t = np.einsum("ij,ij->i", e2, q) * inv
+        if not np.any(ok & (u >= 0) & (v >= 0) & (u + v <= 1) & (t > 0)):
+            return False
+    return True
+
+
+def _inside_solid(tris: np.ndarray, p: np.ndarray) -> bool:
+    """Whether p is inside the closed surface `tris` by ray parity (majority over the test
+    directions): odd crossings - inside."""
+    v0, e1, e2 = tris[:, 0], tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0]
+    s = p - v0
+    q = np.cross(s, e1)
+    odd = 0
+    dirs = _ENCLOSURE_DIRS / np.linalg.norm(_ENCLOSURE_DIRS, axis=1, keepdims=True)
+    for d in dirs:
+        pv_ = np.cross(d, e2)
+        det = np.einsum("ij,ij->i", e1, pv_)
+        ok = np.abs(det) > 1e-30
+        inv = np.divide(1.0, det, out=np.zeros_like(det), where=ok)
+        u = np.einsum("ij,ij->i", s, pv_) * inv
+        v = (q @ d) * inv
+        t = np.einsum("ij,ij->i", e2, q) * inv
+        odd += int(np.sum(ok & (u >= 0) & (v >= 0) & (u + v <= 1) & (t > 0))) % 2
+    return odd * 2 > len(dirs)
+
+
+class _RayCaster:
+    """Ray queries against a triangle set through a VTK cell locator: how many triangles a ray from
+    p crosses (to `reach`), counted hit by hit. The numpy loops above test every triangle for every
+    ray; a staged wall of 100k+ triangles split into hundreds of pieces took minutes there."""
+
+    def __init__(self, tris: np.ndarray, reach: float):
+        import pyvista as pv
+        import vtk
+        pts = tris.reshape(-1, 3)
+        faces = np.arange(len(pts)).reshape(-1, 3)
+        poly = pv.PolyData(pts, np.hstack([np.full((len(faces), 1), 3), faces]).ravel())
+        self._loc = vtk.vtkCellLocator()
+        self._loc.SetDataSet(poly)
+        self._loc.BuildLocator()
+        self._reach = float(reach)
+        self._step = 1e-7 * float(reach)
+        self._dirs = _ENCLOSURE_DIRS / np.linalg.norm(_ENCLOSURE_DIRS, axis=1, keepdims=True)
+        import vtk as _vtk
+        self._t = _vtk.reference(0.0)
+        self._x = [0.0, 0.0, 0.0]
+        self._pc = [0.0, 0.0, 0.0]
+        self._sub = _vtk.reference(0)
+
+    def _count(self, p: np.ndarray, d: np.ndarray, limit: int = 64) -> int:
+        n = 0
+        o = np.asarray(p, dtype=float)
+        end = o + self._reach * d
+        while n < limit:
+            hit = self._loc.IntersectWithLine(o, end, 0.0, self._t, self._x, self._pc, self._sub)
+            if not hit:
+                break
+            n += 1
+            o = np.asarray(self._x, dtype=float) + self._step * d
+        return n
+
+    def crossings(self, p: np.ndarray) -> list[int]:
+        return [self._count(p, d) for d in self._dirs]
+
+    def shut_in(self, p: np.ndarray) -> bool:
+        return all(self._count(p, d, limit=1) > 0 for d in self._dirs)
+
+    def inside(self, p: np.ndarray) -> bool:
+        odd = sum(c % 2 for c in self.crossings(p))
+        return odd * 2 > len(self._dirs)
+
+
+def cavity_skin(points, faces, cap_polys, *, feature_angle: float = 60.0, samples: int = 5):
     """The part of a staged wall that bounds the FLUID: a hollow solid with flanges stages its
     bore skin, its outer skin and the annular flange faces all as 'wall' (straight_reducer_006:
-    8.6 mm between the skins, and every chord stopped there). Split the wall at sharp edges,
-    keep the smooth pieces that hold a point of a port cap's rim (the bore skin meets the caps;
-    the outer skin meets the flange annulus only). Returns (points, faces) of those pieces, or
-    the input unchanged when no piece touches a rim."""
+    8.6 mm between the skins, and every chord stopped there). The wall is split at sharp edges and
+    a piece is the cavity's when one of its sides is CAVITY: outside the metal (even ray parity
+    against the wall) and shut in by the wall and the caps (every test ray hits one). The other
+    side of a bore piece is the metal; the outer skin and the end rings have the metal on one side
+    and open air on the other. Returns (points, faces) of the kept pieces, or the input unchanged when
+    none is kept.
+
+    It used to keep the pieces that touch a cap's rim. The caps span the whole mouth (bore and end
+    ring), so their rim is the mouth's OUTER edge: a rocket nozzle kept 832 of 3,326 wall faces
+    near its two ends, read the 25 mm port radius everywhere and never saw its 16.5 mm throat
+    (cfMesh: 4.1 cells across it); 19 of 37 hollow-wall parts fell back to the port sizes."""
     import pyvista as pv
-    from scipy.spatial import cKDTree
     pts = np.asarray(points, dtype=float)
     f = np.asarray(faces, dtype=np.int64)
-    rims = []
+    cap_tris = []
     for cap in cap_polys:
         try:
-            edge = cap.extract_feature_edges(boundary_edges=True, feature_edges=False,
-                                             manifold_edges=False, non_manifold_edges=False)
-            if edge.n_points:
-                rims.append(np.asarray(edge.points, dtype=float))
-        except Exception:  # noqa: BLE001 - a cap that yields no rim is skipped
-            logger.debug("cap rim extraction failed; cap skipped", exc_info=True)
-    if not rims or len(f) == 0:
+            cp, cf_ = _triangles(cap)
+            if len(cf_):
+                cap_tris.append(cp[cf_])
+        except Exception:  # noqa: BLE001 - a cap that cannot be read is left out
+            logger.debug("cap unreadable; left out of the enclosure test", exc_info=True)
+    if not cap_tris or len(f) == 0:
         return pts, f
-    rim = np.concatenate(rims)
+    wall_tris = pts[f]
+    closed = np.concatenate([wall_tris, *cap_tris])
+    span = float(np.linalg.norm(closed.reshape(-1, 3).max(axis=0) - closed.reshape(-1, 3).min(axis=0)))
+    wall_rays = _RayCaster(wall_tris, 4.0 * span)
+    closed_rays = _RayCaster(closed, 4.0 * span)
     poly = pv.PolyData(pts, np.hstack([np.full((len(f), 1), 3, dtype=np.int64), f]).ravel())
     split = poly.compute_normals(cell_normals=False, point_normals=True, split_vertices=True,
                                  feature_angle=feature_angle, consistent_normals=False,
@@ -363,12 +464,28 @@ def cavity_skin(points, faces, cap_polys, *, feature_angle: float = 60.0):
     cpts = np.asarray(conn.points, dtype=float)
     cf = np.asarray(conn.faces).reshape(-1, 4)[:, 1:]
     region = np.asarray(conn.cell_data["RegionId"], dtype=np.int64)
+    tri = cpts[cf]
+    cr = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    area = 0.5 * np.linalg.norm(cr, axis=1)
+    nrm = cr / (2.0 * area[:, None]).clip(1e-30)
+    cen = tri.mean(axis=1)
     b = np.asarray(poly.bounds, dtype=float)
-    tol = float(np.linalg.norm(b[1::2] - b[0::2])) * 1e-4
-    d, _ = cKDTree(rim).query(cpts)
-    touching = d <= tol                                   # points that sit on a cap rim
-    keep_regions = np.unique(region[touching[cf].any(axis=1)])
-    if len(keep_regions) == 0:
+    diag = float(np.linalg.norm(b[1::2] - b[0::2])) or 1.0
+    keep_regions = []
+    for rid in np.unique(region):
+        idx = np.flatnonzero(region == rid)
+        pick = idx[np.argsort(-area[idx], kind="stable")[:samples]]
+        votes = 0
+        for i in pick:
+            eps = min(1e-4 * diag, 0.25 * float(np.sqrt(area[i])))
+            if eps <= 0.0:
+                continue
+            cavity = any(not wall_rays.inside(p) and closed_rays.shut_in(p)
+                         for p in (cen[i] + eps * nrm[i], cen[i] - eps * nrm[i]))
+            votes += 1 if cavity else -1
+        if votes > 0:
+            keep_regions.append(rid)
+    if not keep_regions:
         return pts, f
     keep = np.isin(region, keep_regions)
     return cpts, cf[keep]
