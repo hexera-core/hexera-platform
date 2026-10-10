@@ -38,12 +38,16 @@ FOLD_REACH = 0.5
 
 
 def local_radius(points: np.ndarray, faces: np.ndarray, interior_point, r_lo: float,
-                 r_hi: float, *, oriented: bool = False) -> np.ndarray:
+                 r_hi: float, *, oriented: bool = False,
+                 read_sharp_edges: bool = False) -> np.ndarray:
     """The lumen's local radius at every wall point: half the chord from the point along its
     INWARD normal to the opposite wall, median-filtered over the 1-ring, clipped to
     [r_lo, r_hi], floored to the smallest radius within RADIUS_MIN_REACH of its own, and
     smoothed once over the 1-ring. Rays that leave through an open port borrow the nearest
     measured value, and so do rays that read no passage at all (see _first_chord).
+    With `read_sharp_edges` the points on sharp edges are also read along each adjoining
+    face's own normal (see below) - VMTK's staging, which sizes cells from this field, asks
+    for it; the passage measures beside the other engines' meshes read as before.
 
     WHY NOT vmtk's centerline: vmtkcenterlines traces a steepest descent on the Voronoi diagram
     of the surface, and on a uniformly remeshed straight run the diagram is degenerate - the
@@ -93,6 +97,48 @@ def local_radius(points: np.ndarray, faces: np.ndarray, interior_point, r_lo: fl
         if obb.IntersectWithLine(pts[i] - n[i] * eps, pts[i] - n[i] * reach, hits, ids) \
                 and hits.GetNumberOfPoints():
             first[i], r[i] = _first_chord(pts[i], -n[i], hits, ids, f, fn, ring[i], fold[i])
+    # SHARP EDGES ARE READ ALONG EACH SIDE'S OWN NORMAL. A point on a sharp edge has an averaged
+    # normal that points along neither face, and a SHORT narrow passage has no other points:
+    # an orifice bore 9 mm long, a sharp throat, a step's lip carry vertices only on their two
+    # rims, every one of them on a 90-degree edge with the plate, its ray running diagonally
+    # into the pipe. venturi_orifice_003 (a 0.35 orifice in a 290 mm pipe) read 145 mm - the
+    # pipe - at every point, and the orifice was meshed 4.7 cells across while the gate,
+    # reading the same field, said 13. Each face meeting such an edge is read from its centroid
+    # along its own normal, and the edge point keeps the narrowest valid reading.
+    sharp = _sharp_points(f, fn, len(pts)) if read_sharp_edges else np.zeros(len(pts), bool)
+    if sharp.any():
+        cent = pts[f].mean(axis=1)
+        fold_f = fold[f].mean(axis=1)
+        face_r = np.full(len(f), np.nan)
+        # ...BUT ONLY A CHORD ACROSS OPEN FLUID IS A PASSAGE. Two faces of a shallow groove or a
+        # step recess face each other too: the rocket nozzle's 0.5 mm deep, 3.2 mm wide groove
+        # read a 1.6 mm 'radius' that the ball-min below spread over the whole 38 mm bore - the
+        # field sat on its floor everywhere, the fill grew from 180 k to 2.5 M cells and TetGen
+        # failed on the STEP. A chord reads the passage when the fluid is open around its middle:
+        # the wall stands at least CHORD_OPEN_FRACTION of the half-chord away from the midpoint
+        # (an orifice bore's midpoint is on its axis, a full half-chord from the wall; a shallow
+        # groove's is within its depth of the groove floor).
+        loc = vtk.vtkStaticCellLocator()
+        loc.SetDataSet(mesh)
+        loc.BuildLocator()
+        cp = [0.0, 0.0, 0.0]
+        cid, sid, d2 = vtk.reference(0), vtk.reference(0), vtk.reference(0.0)
+        for t in np.flatnonzero(sharp[f].any(axis=1)):
+            hits.Reset()
+            ids.Reset()
+            if obb.IntersectWithLine(cent[t] - fn[t] * eps, cent[t] - fn[t] * reach, hits, ids) \
+                    and hits.GetNumberOfPoints():
+                half = _first_chord(cent[t], -fn[t], hits, ids, f, fn,
+                                    frozenset(f[t].tolist()), fold_f[t])[1]
+                if not np.isfinite(half):
+                    continue
+                mid = cent[t] - fn[t] * half
+                loc.FindClosestPoint(mid.tolist(), cp, cid, sid, d2)
+                if math.sqrt(float(d2)) >= CHORD_OPEN_FRACTION * half:
+                    face_r[t] = half
+        for k in range(3):
+            on = sharp[f[:, k]] & ~np.isnan(face_r)
+            np.fmin.at(r, f[on, k], face_r[on])
     if np.isnan(r).all() and not np.isnan(first).all():
         # nothing read as a passage (a surface wound against its own normals?): the raw first
         # hits, as this field read before the chords were judged, rather than r_lo everywhere
@@ -121,6 +167,29 @@ def local_radius(points: np.ndarray, faces: np.ndarray, interior_point, r_lo: fl
     cnt = np.bincount(e[:, 0], minlength=len(pts)) + np.bincount(e[:, 1], minlength=len(pts))
     nb = np.where(cnt > 0, acc / np.maximum(cnt, 1), r)
     return 0.5 * r + 0.5 * nb
+
+
+#: Two faces meeting at a point turn by more than this (cosine 0.7, about 45 degrees) make it a
+#: sharp-edge point, read along each face's own normal as well (see local_radius).
+SHARP_EDGE_COS = 0.7
+#: A sharp-edge face chord counts only when the wall stands at least this share of the
+#: half-chord away from the chord midpoint - open fluid, not a groove floor (see local_radius).
+CHORD_OPEN_FRACTION = 0.6
+
+
+def _sharp_points(faces: np.ndarray, face_normals: np.ndarray, n_points: int) -> np.ndarray:
+    """Points where two of the faces meeting there turn by more than SHARP_EDGE_COS."""
+    out = np.zeros(n_points, dtype=bool)
+    e = np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]])
+    owner = np.tile(np.arange(len(faces)), 3)
+    key = np.sort(e, axis=1)
+    order = np.lexsort((key[:, 1], key[:, 0]))
+    k, o = key[order], owner[order]
+    same = np.all(k[1:] == k[:-1], axis=1)
+    a, b = o[:-1][same], o[1:][same]
+    turn = np.einsum("ij,ij->i", face_normals[a], face_normals[b]) < SHARP_EDGE_COS
+    out[k[:-1][same][turn].ravel()] = True
+    return out
 
 
 def _mean_edge(pts: np.ndarray, faces: np.ndarray) -> np.ndarray:
