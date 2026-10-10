@@ -43,6 +43,7 @@ EXPECTED: dict[tuple[str, str], set[str]] = {
     ("gmsh", "internal"): {"cad", "surface"},
     ("vmtk", "internal"): {"cad", "surface"},
     ("snappy_multiregion", "multi-region"): {"cad", "surface"},
+    ("snapgrid", "multi-region"): {"cad"},
 }
 
 FILE_OF = {"cad": "part.step", "surface": "part.stl"}

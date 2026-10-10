@@ -588,6 +588,12 @@ class EngineSpec:
     #: named solids). A region the staged surface no longer carries is one the mesher never sees, so
     #: the wall-arity rule counts it as merged. Every source by default.
     keeps_regions_from: tuple[str, ...] = ("assembly", "roots", "stl-solids")
+    #: The UPLOADED FORMATS this engine reads itself (contracts/intake_formats keys), not through
+    #: the canonical STEP/STL every other engine reads. Empty = any accepted format (the canonical
+    #: form is what it meshes). Non-empty = only these: the snap-grid mesher reads the ECXML
+    #: thermal model's own boxes and cylinders, so a STEP or an STL gives it nothing to place.
+    #: Admission refuses another format from the upload's facts (cad/regions.py source_format).
+    reads_source_formats: tuple[str, ...] = ()
     #: THE BOUNDARIES THIS BUNDLE'S CASE WRITER CAN BUILD, per flow topology: role -> the most
     #: patches of that role it delivers (0 = none). A role the purpose allows but this engine's path
     #: for that topology cannot build - a second far-field patch on a box that is one surface, a
@@ -858,7 +864,21 @@ class EngineSpec:
 
     def _admit_measured(self, evidence) -> list:
         from meshpipeline.engines.admission import Rejection
-        reason = self.geometry_unsuitable(evidence.surface_analysis or {})
+        facts = evidence.surface_analysis or {}
+        # A format this engine does not read is a physical impossibility, not a quality call. Only
+        # judged when the facts NAME the upload's format: an older caller that never measured it
+        # says nothing, and the build driver refuses a missing source on its own.
+        fmt = str(facts.get("source_format") or "")
+        if self.reads_source_formats and fmt and fmt not in self.reads_source_formats:
+            wants = " or ".join(self.reads_source_formats).upper()
+            return [Rejection(
+                code="source_format_unsupported", phase="measured", field="geometry",
+                actual=fmt, expected=list(self.reads_source_formats),
+                message=f"{self.name} reads only {wants} files - it meshes the model the file "
+                        f"describes (its parts, their materials and positions), and a "
+                        f"{fmt.upper()} file carries no such model.",
+                fix_hint=f"upload the {wants} export of this model")]
+        reason = self.geometry_unsuitable(facts)
         if reason:
             return [Rejection(code="geometry_unsuitable", phase="measured", field="surface_analysis",
                               message=reason,

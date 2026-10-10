@@ -46,6 +46,7 @@ _HARD_IMPOSSIBLE_CODES = frozenset({
     "ground_plane_unsupported", "boundary_count_unsupported",
     # the engine cannot take the uploaded file's FORM (CAD solid / surface) for this flow
     "geometry_form_unsupported",
+    "source_format_unsupported",
 })
 
 # The two lines closing every impossible message: they preserve user intent, name NO alternative
@@ -149,7 +150,8 @@ def _admission(engine: str, purpose: str, input_kind: str, dimensionality: str |
                     "ground_plane_unsupported": ["patches", "engine"],
                     "boundary_count_unsupported": ["patches", "engine"],
                     "geometry_unsuitable": ["geometry", "engine"],
-                    "geometry_form_unsupported": ["geometry", "engine"]}
+                    "geometry_form_unsupported": ["geometry", "engine"],
+                    "source_format_unsupported": ["geometry", "engine"]}
         what_would_pass = [str(r.fix_hint) for r in hard if r.fix_hint]
         closing = ""
         if any(r.code == "geometry_form_unsupported" for r in hard):

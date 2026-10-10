@@ -11,6 +11,7 @@ MESH_ENGINES: Final[dict[str, str]] = {
     "gmsh":               "Gmsh",
     "snappy":             "snappyHexMesh",
     "snappy_multiregion": "snappyHexMesh multi-region",
+    "snapgrid":           "Snap-grid multi-region (ECXML)",
     "vmtk":               "VMTK",
 }
 
