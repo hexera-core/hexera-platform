@@ -32,6 +32,9 @@ let deps = {
   geometryCheck() {},
   // the card that stands in when the stage cannot draw, following the check in place
   geometryCard() {},
+  // the open engine question's choice (every engine that can take the file, with its fit), and
+  // the function that sends the user's pick
+  engineChoice() {},
 };
 export function configureComposer(d) { deps = { ...deps, ...d }; }
 
@@ -177,6 +180,7 @@ async function watchGeometryCheck(sessionId) {
     if (reply.next) {
       if (reply.continued_with) deps.chat("user", reply.continued_with);
       if (reply.next.reply) deps.chat("assistant", reply.next.reply);
+      deps.engineChoice(reply.next.engine_choice || null, sendText);
       deps.brief(reply.next.brief);
       if (reply.next.done && reply.next.job_id) { disableInput(); deps.onJobStarted(reply.next.job_id); }
     }
@@ -294,6 +298,7 @@ async function sendText(txt) {
   try {
     const d = await sendMessage(sessionId, txt);
     deps.chat("assistant", d.reply);
+    deps.engineChoice(d.engine_choice || null, sendText);
     deps.brief(d.brief);
     if (d.done && d.job_id) deps.onJobStarted(d.job_id);
     else if (String(d.reply || "").startsWith(DRAWING_PREFIX)) holdForDrawing();

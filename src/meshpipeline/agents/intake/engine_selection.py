@@ -439,6 +439,31 @@ def confirm_by_assent(sel: dict | None, *, session_id: str, owner_id: str, revis
     return _confirmed(sel, revision)
 
 
+def choose_listed(sel: dict | None, *, session_id: str, owner_id: str, revision: str,
+                  latest_user_message: str, user_msg_count: int) -> dict | None:
+    """THE USER PICKS ANOTHER ENGINE FROM THE LIST. The engine question lists every engine that can
+    take the file, with its fit (agents/intake/measured_choice.statement), and the console draws
+    one button per engine. An answer that plainly chooses ONE of the listed engines - "use cfMesh",
+    "cfMesh", "go with Gmsh" - is the user's selection, read here before the model runs, exactly
+    as a plain yes to the proposed one is. Anything else (a question, a hedge, two engines, an
+    engine the list does not hold) is left to the model, as before."""
+    ok, _ = _answerable(sel, session_id=session_id, owner_id=owner_id,
+                        user_msg_count=user_msg_count)
+    if not ok or sel is None:
+        return None
+    listed = [str(f.get("engine") or "") for f in
+              ((sel.get("recommendation") or {}).get("fits") or ()) if isinstance(f, dict)]
+    named = _vocab.engines_named_in(str(latest_user_message or ""), "")
+    if len(named) != 1 or named[0] not in listed or named[0] == sel.get("engine"):
+        return None
+    engine = named[0]
+    message = str(latest_user_message or "")
+    if "?" in message or declines(engine, message) or not _chooses_in(engine, message):
+        return None
+    return {**sel, "id": uuid.uuid4().hex, "engine": engine, "state": CONFIRMED,
+            "confirmed_revision": revision, "expires_at": time.time() + CONFIRMED_TTL_S}
+
+
 def verify_confirmed(sel: dict | None, engine: str, *, session_id: str,
                      owner_id: str) -> tuple[bool, str]:
     st = state_of(sel)
