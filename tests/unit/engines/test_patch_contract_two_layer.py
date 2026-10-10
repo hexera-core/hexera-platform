@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from meshpipeline.engines.registry import all_engine_names, get_spec
 
-FIVE_ENGINES = {"cfmesh", "snappy", "gmsh", "snappy_multiregion", "vmtk"}
+FIVE_ENGINES = {"cfmesh", "snappy", "gmsh", "snappy_multiregion", "vmtk", "snapgrid"}
 
 
 def test_all_five_engines_still_declare_a_patch_contract_gate():

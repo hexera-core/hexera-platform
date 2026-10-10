@@ -69,9 +69,12 @@ async def get_chat_history(session_id: uuid.UUID, owner_id: str = Depends(owner_
                                                    organization_id=organization_id)
         if not session:
             raise HTTPException(404, "Session not found")
+    from meshpipeline.agents.intake.measured_choice import choice_payload
     return {
         "session_id": str(session_id),
         "messages": session.messages or [],
+        # the open engine question's choice, so a reload draws it again
+        "engine_choice": choice_payload(getattr(session, "intake_gate", None)),
         # Awaiting confirmation only when intake is complete AND no job has
         # been dispatched yet (request_txt is cleared on dispatch, but be explicit).
         "awaiting_confirmation": bool(session.request_txt) and session.job_id is None,
@@ -97,6 +100,7 @@ async def chat_message(body: ChatMessageIn, owner_id: str = Depends(owner_dep),
     the part is drawn), else the intake answers. The geometry confirm runs a turn through here
     too, calling it directly."""
     from meshpipeline.agents.intake.agent import node_intake
+    from meshpipeline.agents.intake.measured_choice import choice_payload
     from meshpipeline.persistence.repositories.session_repository import SessionRepository
 
     session_repo = SessionRepository()
@@ -156,6 +160,7 @@ async def chat_message(body: ChatMessageIn, owner_id: str = Depends(owner_dep),
         # re-projected for the mode running NOW: a session written under raw must
         # not be served raw by a server that has since restarted safe
         trace=project_all(result.get("_public_trace", [])),
+        engine_choice=choice_payload(getattr(_sess, "intake_gate", None)),
     )
 
 

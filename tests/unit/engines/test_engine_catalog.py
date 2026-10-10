@@ -6,7 +6,8 @@ from meshpipeline.engines import registry as ec  # noqa: E402
 
 def test_implemented_roster():
     import pytest
-    assert set(ec.engine_names()) == {"cfmesh", "snappy", "gmsh", "snappy_multiregion", "vmtk"}
+    assert set(ec.engine_names()) == {"cfmesh", "snappy", "gmsh", "snappy_multiregion", "vmtk",
+                                      "snapgrid"}
     assert ec.default_engine() == "cfmesh"
     assert ec.get_spec("").name == "cfmesh"              # UNSET → default
     with pytest.raises(ec.UnknownEngineError):           # UNKNOWN → raises, never substituted

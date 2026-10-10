@@ -950,11 +950,12 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
     return last_valid
 
 
-def _bind_declared_ports(t: dict, intake_patches: list) -> tuple[dict, str, str]:
+def _bind_declared_ports(t: dict, intake_patches: list, *, bore: bool = True
+                         ) -> tuple[dict, str, str]:
     """Engine-shared binding seam - see port_binding.bind_intake (one implementation, so a
     combiner binds identically whichever engine meshes it)."""
     from meshpipeline.engines.port_binding import bind_intake
-    return bind_intake(t, intake_patches)
+    return bind_intake(t, intake_patches, bore=bore)
 
 
 def _lid_hydraulic_diameters(srcs: dict, wall_key: str) -> dict:
@@ -995,6 +996,7 @@ def _staged_passage_field(t: dict, srcs: dict, wall_key: str, intake_patches: li
     or when the ports do not vouch for the reading (a hollow part's outer skin read instead of
     its bore: the boxes would be placed by a passage that is not there)."""
     from meshpipeline.engines.passage import (
+        FLUID_BOUNDARY_LOW,
         field_radius_stats,
         point_areas,
         port_radius_stats,
@@ -1006,7 +1008,11 @@ def _staged_passage_field(t: dict, srcs: dict, wall_key: str, intake_patches: li
         return None
     ports = port_radius_stats(t.get("openings"),
                               _port_hydraulic_diameters(srcs, wall_key, intake_patches))
-    if ports and not vouched_by_ports(field_radius_stats(*raw), ports):
+    # every port's size vouches (#156); a fluid domain's whole wall may read down to
+    # FLUID_BOUNDARY_LOW of the smallest port (#166)
+    if ports and not vouched_by_ports(
+            field_radius_stats(*raw), ports,
+            low=FLUID_BOUNDARY_LOW if t.get("wall_bounds_fluid") else 0.3):
         logger.info("narrow passages: the staged wall's reading is not the passage the ports "
                     "describe - no local refinement")
         return None
@@ -1368,8 +1374,18 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
             raise InternalSurfaceError("the uploaded surface was not staged for meshing (input.stl is "
                                        "missing), so nothing was meshed")
         t = await _separate_fluid(R, workspace, state, source_path, job_id=job_id)
+        # the fluid is the solid itself only for a fluid domain (tessellate_internal's
+        # fluid_solid, above); anything else is a body whose fluid is the bore it closes
+        _bore = str(state.get("input_kind") or "").strip() != "fluid-domain"
         t, _wall_key, _bound_note = _bind_declared_ports(
-            t, state.get("intake_patches") or [])
+            t, state.get("intake_patches") or [], bore=_bore)
+        from meshpipeline.engines.region_check import record_port_openings, trusted_declaration
+        # the declaration the mesh is SIZED from: a typed size the measured opening disagrees with
+        # gives way to the measurement (said in the binding note), as the port gate judges it
+        _sizing_decl = trusted_declaration(
+            state.get("intake_patches") or [],
+            record_port_openings(workspace, t.get("openings"), bore=_bore,
+                                 intake_patches=state.get("intake_patches") or []))
         _srcs = dict(t["stls"])
         if t.get("folded_stls"):
             # blind plugs are wall, physically: their triangles join the wall surface
@@ -1403,7 +1419,7 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
     # ... read as the inlet lid's HYDRAULIC diameter (4 x area / perimeter) where the lid reads:
     # the bore of a round pipe, unchanged; twice the gap of an annulus, where the area-equivalent
     # bore put 3 cells across annular_001's 13.2 mm gap (2026-10-04); the width of a slot.
-    _dh = _port_hydraulic_diameters(_srcs, _wall_key, state.get("intake_patches") or [])
+    _dh = _port_hydraulic_diameters(_srcs, _wall_key, _sizing_decl)
     _bore_name = _bore_port_name(t)
     if _dh.get(_bore_name):
         bore_D = min(bore_D, float(_dh[_bore_name]))
@@ -1448,7 +1464,7 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
     from asyncio import to_thread as _to_thread
     try:
         _passage_field = await _to_thread(_staged_passage_field, t, _srcs, _wall_key,
-                                          state.get("intake_patches") or [])
+                                          _sizing_decl)
     except Exception:  # noqa: BLE001 - a measurement is an optimisation, never fatal
         logger.exception("internal build: passage field failed - continuing without local "
                          "narrow-passage refinement - job_id=%s", job_id)

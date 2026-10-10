@@ -184,7 +184,12 @@ def test_the_gate_refuses_a_manifest_it_cannot_judge(tmp_path, engine):
 def test_gmsh_and_vmtk_keep_their_own_floors():
     assert "sicn_floor" in {g.key for g in get_spec("gmsh").gates}
     assert "quality_floor" in {g.key for g in get_spec("vmtk").gates}
-    assert any(c.key == "min_sicn" and c.gating for c in criteria_for("gmsh"))
+    # gmsh's element floor gates by the bar the mesh is for: 0.1 SICN for an FEA solid (unchanged),
+    # 0.01 plus face non-orthogonality for a flow mesh (engines/gmsh/driver.CFD_*)
+    assert any(c.key == "elements_under_floor" and c.gating for c in criteria_for("gmsh"))
+    assert any(c.key == "max_non_ortho" and c.gating for c in criteria_for("gmsh"))
+    from meshpipeline.engines.gmsh.gmsh_runner import SICN_FLOOR
+    assert SICN_FLOOR == 0.1
     assert any(c.key == "min_quality" and c.gating for c in criteria_for("vmtk"))
 
 

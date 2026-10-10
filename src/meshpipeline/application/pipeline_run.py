@@ -596,7 +596,9 @@ async def _run_async(req: JobRequest) -> dict:
             geometry_interpretation=req.geometry_interpretation,
             classify_checkpoint=_classify_checkpoint, checkpoint_thread=_ckpt_thread,
             job_repo=job_repo, jlog=jlog,
-            publish=lambda msg: _pub(job_id).closing(msg, _terminal_event_id(job_id)))
+            publish=lambda msg: _pub(job_id).closing(msg, _terminal_event_id(job_id)),
+            # an engine that reads the ECXML itself gets its parts placed, never fused
+            engine=req.mesh_engine or "")
         if _prep.refusal is not None:
             await _worker_engine.dispose()
             return _prep.refusal
