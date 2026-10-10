@@ -61,6 +61,13 @@ def parse_region_properties(text: str) -> dict[str, str]:
 def read_region_properties(workspace) -> dict[str, str]:
     path = Path(workspace) / "constant" / "regionProperties"
     if not path.is_file():
+        # the run said why it stopped before the split (native.STOP_REASON_FILE): that is the cause
+        try:
+            why = (Path(workspace) / "multiregion_stop_reason.txt").read_text(errors="replace")
+        except OSError:
+            why = ""
+        if why.strip():
+            raise RegionPropertiesError(why.strip())
         raise RegionPropertiesError("constant/regionProperties is missing - the region split "
                                     "did not complete")
     return parse_region_properties(path.read_text(errors="replace"))

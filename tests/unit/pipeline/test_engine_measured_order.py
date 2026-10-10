@@ -116,15 +116,20 @@ def test_the_users_engine_stays_first_and_the_measured_order_follows_it(tmp_path
 
 
 def test_the_closing_offer_names_the_best_measured_engine_not_the_first_declared(tmp_path, gmsh_best):
-    # snappyHexMesh, the user's engine, failed. The declared order would offer cfMesh first; the
-    # measured order for this tube offers the engine with the best record on tubes.
+    # cfMesh and then snappyHexMesh failed. With no engine left that builds the same mesh (both
+    # hex engines tried; cfMesh delivers what snappy does), the declared order would offer VMTK
+    # next; the measured order for this tube offers the engine with the best record on tubes.
     st = _tube_state(tmp_path, engine="snappy", engine_source=lad.SOURCE_USER, retry_count=2,
                      executor_success=False, executor_failed_gate="finalize",
-                     executor_failure_cause="engine_crashed")
+                     executor_failure_cause="engine_crashed",
+                     engine_ladder={"attempts": [{"attempt": 1, "engine": "cfmesh",
+                                                  "kind": lad.ENGINE, "cause": "finalize"}],
+                                    "switches": [{"attempt": 2, "from": "cfmesh",
+                                                  "to": "snappy"}]})
     plain = lad.final_record(st, succeeded=False, system_failure=False)["offer"]
     st["engine_ladder"] = {**st["engine_ladder"], **lad.measure_order(st)}
     measured = lad.final_record(st, succeeded=False, system_failure=False)["offer"]
-    assert plain["engine"] == "cfmesh"
+    assert plain["engine"] == "vmtk", plain
     assert measured["engine"] == "gmsh", measured
     assert 'Reply "use Gmsh"' in measured["text"]
 

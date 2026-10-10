@@ -43,7 +43,10 @@ AUTHORING_TOOL: dict = {
                 "boundary_layer_thickness_factor": {"type": "number", "description": "total layer thickness as a fraction of the local radius (default 0.10; layers grow 1.25x away from the wall; thicker stacks fold at wye crotches)"},
                 "cap_openings": {"type": "boolean", "description": "cap the open profiles at the lumen ends into inlet/outlet patches (default true; set false when the lumen is already closed)"},
                 "remesh_surface": {"type": "boolean", "description": "radius-adaptive surface remesh before the volume fill (default true)"},
-                "max_cells": {"type": "integer", "description": "cell budget (default 8e6)"},
+                "max_cells": {"type": "integer", "description": (
+                    "the cell budget the brief states (default 8e6, the compute limit). The engine "
+                    "sizes the fill to it: it coarsens the interior first, then the edge factor down "
+                    "to the 12-cells-across floor, and never thins the layers for it.")},
                 "min_edge_length": {"type": "number",
                                     "description": "ENGINE-STAGED (metres): floor on the radius-adaptive cell size"},
                 "max_edge_length": {"type": "number",
@@ -57,7 +60,10 @@ AUTHORING_TOOL: dict = {
 _STRATEGY = {"edge_length_factor", "boundary_layers", "boundary_layer_thickness_factor",
              "cap_openings", "remesh_surface", "max_cells",
              "source_ids", "target_ids", "source_points", "target_points",
-             "min_edge_length", "max_edge_length", "sizing_array", "generator_remesh"}
+             "min_edge_length", "max_edge_length", "sizing_array", "generator_remesh",
+             # engine-written facts a re-configure may carry back from the shipped spec
+             "volume_element_factor", "cost_model", "budget_plan", "capping_method",
+             "wall_pieces", "wall_oriented"}
 _PREAMBLE = {"geometry_file", "wall_patch", "strategy", "wall_layers"}
 _KNOWN = _STRATEGY | _PREAMBLE
 # knobs from the OpenFOAM engines a confused model might send - name them so the redirect helps
@@ -132,6 +138,16 @@ def validate(strategy: dict) -> list[Diagnostic]:
                 f"({type(got).__name__}). Send {b}: false, not \"false\".")))
     if "max_cells" in strategy and (not _int(strategy["max_cells"]) or strategy["max_cells"] <= 0):
         d.append(Diagnostic("error", "max_cells", "max_cells must be a positive integer"))
+    cm = strategy.get("capping_method")
+    if cm is not None and cm not in ("simple", "annular"):
+        d.append(Diagnostic("error", "capping_method",
+                            "capping_method is read from the geometry at staging ('simple' or "
+                            f"'annular'); leave it out - received {cm!r}"))
+    vf = strategy.get("volume_element_factor")
+    if vf is not None and not (_num(vf) and 0.2 <= float(vf) <= 4.0):
+        d.append(Diagnostic("error", "volume_element_factor",
+                            "volume_element_factor is engine-sized (interior cell size over the wall's, "
+                            f"0.2-4); leave it out - received {vf!r}"))
     for k in ("min_edge_length", "max_edge_length"):
         v = strategy.get(k)
         if v is not None and (not _num(v) or not math.isfinite(float(v)) or float(v) <= 0):

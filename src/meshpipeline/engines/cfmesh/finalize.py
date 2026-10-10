@@ -67,6 +67,26 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
                             "coverage_pct": v.get("coverage_pct")} for n, v in _walls.items()}
             except Exception:
                 logger.exception("finalize: layer-coverage parse failed (non-fatal)")
+    # cfMesh writes no layer log: count the layers it extruded on the walls themselves
+    # (engines/layer_census.py), so its manifest reports coverage the way snappy's does
+    if q.get("layer_coverage_pct") is None:
+        try:
+            from meshpipeline.engines.layer_census import layer_census, requested_layers
+            _n = requested_layers(ws / "system" / "meshDict")
+            _wall_names = [str(p.get("name")) for p in (intake_patches or [])
+                           if str(p.get("type") or "") == "wall" and p.get("name")]
+            _lc2 = layer_census(ws / "constant" / "polyMesh", _n, _wall_names) if _n else {}
+            if _lc2:
+                _faces = sum(v["faces"] for v in _lc2.values())
+                q["layer_coverage_pct"] = round(sum(v["coverage_pct"] * v["faces"]
+                                                    for v in _lc2.values()) / max(_faces, 1), 2)
+                q["layer_coverage_source"] = "census"
+                q["per_patch_layers"] = {n: {"layers": v["mean_layers"], "target": _n,
+                                             "coverage_pct": v["coverage_pct"],
+                                             "area_with_full_layers": v["area_with_full_layers"]}
+                                         for n, v in _lc2.items()}
+        except Exception:
+            logger.exception("finalize: layer census failed (non-fatal)")
     patch_entities, bbox = {}, (0.0,) * 6
     _review_tris: dict = {}   # per-patch triangles → precomputed reviewer camera views
     # The review surface the vision reviewer renders is built from the geometry THIS ENGINE
@@ -112,6 +132,20 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
         build_surface_msh(ws)
     except Exception:
         logger.exception("Executor: surface deliverable export failed (non-fatal)")
+    # each boundary's AREA, off the same VTK boundary: the shared port-area gate holds every
+    # inlet/outlet to the opening the user declared (engines/region_check.py)
+    try:
+        from meshpipeline.engines.region_check import patch_areas_from_vtk, recorded_port_openings
+        _areas = patch_areas_from_vtk(ws)
+        if _areas:
+            q["patch_areas_m2"] = {k: round(v, 10) for k, v in _areas.items()}
+        # ...and the openings the staging measured on the geometry: the sizes the gate holds
+        # them to (a typed size only where nothing was measured)
+        _openings = recorded_port_openings(ws)
+        if _openings:
+            q["port_openings_m2"] = _openings
+    except Exception:
+        logger.exception("Executor: patch areas not measured (non-fatal)")
     body_bbox = None
     try:
         _bi = R.inspect_stl(ws)

@@ -353,18 +353,27 @@ def declaration_targets(intake_patches: list) -> list:
     return out
 
 
-def bind_intake(t: dict, intake_patches: list) -> tuple[dict, str, str]:
+def bind_intake(t: dict, intake_patches: list, *, bore: bool = True) -> tuple[dict, str, str]:
     """Bind intake-declared patches onto the measured openings: (t re-keyed to user names,
     wall key, binding-evidence note). No declaration -> t untouched, engine-canonical keys and
     an empty note, so programmatic submits keep today's behaviour exactly. A BindError
     propagates to the caller - a pre-mesh refusal, not a meshing failure. Shared by every
     engine that carves internal flow (snappy, cfmesh), so a combiner binds identically
-    whichever engine meshes it."""
+    whichever engine meshes it. `bore`: the fluid is the bore of a part declared a body (not the
+    solid itself) - which measure of a ring port face the flow crosses (region_check.flow_area_m2),
+    for the note on a typed size the geometry disagrees with."""
     declared = [p for p in (intake_patches or []) if isinstance(p, dict)]
     if not declared:
         return t, "wall", ""
     b = bind_ports([DeclaredPatch.from_intake(p) for p in declared], t)
     out = apply_binding(t, b)
+    # A TYPED SIZE THE GEOMETRY DISAGREES WITH, said before meshing: the measured opening is the
+    # one meshed and judged (engines/region_check). pvc_mixing_tee's "about 20 mm" bound to the
+    # pipe end's 330 mm2 metal ring, and the 801 mm2 bore it opens into is what the flow crosses.
+    from meshpipeline.engines.region_check import measured_port_areas, size_notes, typed_port_areas
+    sizes = size_notes(declared, measured_port_areas(out["openings"], bore=bore,
+                                                     typed=typed_port_areas(declared)))
+    out["binding"]["size_notes"] = sizes
     rows = "; ".join(
         f"{p['name']} ({p['role']}) at ({', '.join(f'{v:.3f}' for v in p['centroid'])}) m, "
         f"{float(p['area_m2']) * 1e6:.0f} mm²"
@@ -373,7 +382,8 @@ def bind_intake(t: dict, intake_patches: list) -> tuple[dict, str, str]:
         for p in out["binding"]["ports"])
     note = (f"bound to your declared ports: {rows}; wall = {b.wall_name}"
             + (f"; {len(b.folded_into_wall)} blind face(s) folded into the wall"
-               if b.folded_into_wall else ""))
+               if b.folded_into_wall else "")
+            + (". Sizes: " + "; ".join(sizes) if sizes else ""))
     return out, b.wall_name, note
 
 
