@@ -57,3 +57,15 @@ def test_a_smooth_tube_reads_the_same_either_way():
     a = RF.local_radius(pts, tri, (0.2, 0.0, 0.0), 1e-4, 0.3)
     b = RF.local_radius(pts, tri, (0.2, 0.0, 0.0), 1e-4, 0.3, read_sharp_edges=True)
     assert np.allclose(a, b) and np.allclose(a, R, rtol=0.03)
+
+
+def test_a_shallow_groove_is_not_read_as_the_passage():
+    # a 0.5 mm deep, 3 mm wide groove in a 19 mm bore (the rocket nozzle's): its two step faces
+    # face each other 3 mm apart, but the fluid between them is the groove, not a passage - the
+    # bore must keep reading its 19 mm, not a 1.5 mm chord spread over the whole wall
+    prof = [(0.0, 0.019), (0.02, 0.019), (0.02, 0.0195), (0.023, 0.0195), (0.023, 0.019),
+            (0.045, 0.019)]
+    pts, tri = _revolve(prof, n=64)
+    read = RF.local_radius(pts, tri, (0.01, 0.0, 0.0), 1e-4, 0.05, read_sharp_edges=True)
+    assert np.median(read) == pytest.approx(0.019, rel=0.1)
+    assert read.min() > 0.5 * 0.019
