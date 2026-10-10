@@ -7,6 +7,17 @@ import sys
 from pathlib import Path
 
 SICN_FLOOR = 0.1   # shared with the executor gate + quality criteria
+#: THE CFD BAR (a mesh delivered for internal or external FLOW, read from the workspace's
+#: flow_topology). A finite-volume solver integrates over faces, so a tet mesh for CFD is judged
+#: the way the hex engines' meshes are - by face non-orthogonality (engines/gmsh/face_quality,
+#: checkMesh's definition) - with an element floor that only rules out near-flat cells. The 0.1
+#: SICN floor stays for structural FEA, whose stiffness matrix it was set for. On the lab's 13
+#: gmsh meshes (2026-10-05) every one this bar refuses has a face over 85 degrees or a cell under
+#: SICN 0.01 (a flattened sliver at a sharp CAD edge), and every one it newly lets through has its
+#: worst face at 76-80 degrees - the same as meshes the 0.1 floor already passed (a wing at SICN
+#: 0.110: 81.0 degrees, 154 faces over 70).
+CFD_SICN_FLOOR = 0.01
+CFD_MAX_NON_ORTHO = 85.0
 # Minimum elements across the narrowest bbox extent. The clamp aims for 8; the
 # resolution_floor gate (gmsh/gates.py) rejects below 6, so a clamped mesh clears
 # the gate with margin. Kept a local literal on purpose: this driver runs as a
@@ -130,6 +141,31 @@ def _final_node_bounds(gmsh) -> list[float]:
     xs, ys, zs = coords[0::3], coords[1::3], coords[2::3]
     return [float(xs.min()), float(ys.min()), float(zs.min()),
             float(xs.max()), float(ys.max()), float(zs.max())]
+
+
+def _quality_bar(ws) -> str:
+    """'cfd' for a mesh delivered for internal or external flow, 'fea' otherwise (a structural
+    solid, or a case that does not say)."""
+    return "cfd" if _read_flow_topology(ws) in ("internal", "external") else "fea"
+
+
+def _face_quality(gmsh) -> dict:
+    """engines/gmsh/face_quality over the current volume mesh (corner nodes of every tet)."""
+    import numpy as np
+
+    from meshpipeline.engines.gmsh.face_quality import face_quality
+    etypes, _etags, enodes = gmsh.model.mesh.getElements(3)
+    per = {4: 4, 11: 10}
+    blocks = [np.asarray(n, dtype=np.int64).reshape(-1, per[int(t)])[:, :4]
+              for t, n in zip(etypes, enodes) if int(t) in per]
+    if not blocks:
+        return {}
+    tets = np.concatenate(blocks)
+    tags, xyz, _ = gmsh.model.mesh.getNodes()
+    tags = np.asarray(tags, dtype=np.int64)
+    X = np.zeros((int(tags.max()) + 1, 3))
+    X[tags] = np.asarray(xyz, dtype=float).reshape(-1, 3)
+    return face_quality(X, tets)
 
 
 def _read_flow_topology(ws) -> str:
@@ -966,6 +1002,17 @@ def main(workspace: str) -> int:
         if min_sicn <= 0.0:
             fatal.append("degenerate elements (SICN <= 0)")
 
+        # THE FACES, as a CFD solver sees them (corner nodes; a curved order-2 element's faces
+        # are judged on its straight-sided frame, as gmshToFoam would deliver it)
+        _faces: dict = {}
+        _bar = _quality_bar(ws)
+        if _bar == "cfd":
+            try:
+                _faces = _face_quality(gmsh)
+            except Exception as exc:  # noqa: BLE001 - evidence; without it SICN alone is judged
+                print(f"[GMSH] face quality not measured: {exc}", file=sys.stderr)
+        _floor = CFD_SICN_FLOOR if _bar == "cfd" else SICN_FLOOR
+
         gmsh.option.setNumber("Mesh.SaveGroupsOfNodes", 1)   # *NSET per group (BC targets)
         gmsh.write(str(ws / "mesh.inp"))
         gmsh.write(str(ws / "mesh.msh"))
@@ -982,6 +1029,12 @@ def main(workspace: str) -> int:
             "min_sicn": round(min_sicn, 4),
             "sicn_low_fraction": round(low / n_elem, 6) if n_elem else 1.0,
             "fatal": fatal, "size_h": h,
+            # which bar this mesh is judged by: "cfd" (a flow mesh: CFD_SICN_FLOOR + face
+            # non-orthogonality) or "fea" (a solid: SICN_FLOOR)
+            "quality_bar": _bar,
+            "sicn_floor": _floor,
+            "elements_under_floor": int(sum(1 for q in qualities if q < _floor)),
+            **_faces,
             **_resolution,
             **_passage,
             "bounds": _final_node_bounds(gmsh),
