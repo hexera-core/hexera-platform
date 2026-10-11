@@ -16,6 +16,12 @@ export function displayText(text) {
   return t;
 }
 
+/** A reason the check gives in lower case ("the file declares ...") as a sentence on the stage. */
+export function sentence(text) {
+  const t = String(text == null ? "" : text).trim().replace(/\.+$/, "");
+  return t ? t.charAt(0).toUpperCase() + t.slice(1) + "." : "";
+}
+
 export const KIND = [["body-surface", "the part's wall, hollow inside for the fluid"],
                      ["fluid-domain", "the fluid volume itself"],
                      ["solid-body", "a solid body the fluid flows around"],
@@ -146,6 +152,7 @@ export function formHtml(p) {
     <div class="rc-row"><div class="rc-k">The file's unit</div><div class="rc-v">${sel("gc-sel gc-unit", UNITS, unitOf(p), p.unit_fixed)}${pickHtml(p)}<span class="gc-unit-hint">${esc(unitHint(p))}</span></div></div>
     <div class="rc-row"><div class="rc-k">The fluid flows</div><div class="rc-v">${sel("gc-sel gc-flow", [["internal", "through the part"], ["external", "around the part"]], p.flow)}</div></div>
     <div class="gc-int"${p.flow === "external" ? " hidden" : ""}>
+    ${p.openings_reason ? `<div class="gc-note gc-why">${esc(sentence(p.openings_reason))}</div>` : ""}
     ${rows ? `<table class="gc-table">${tableHead()}<tbody>${rows}</tbody></table>`
            : `<div class="gc-note">No openings found. Add one below if the fluid flows through this part.</div>`}
     <div class="gc-tools"><button class="gc-add v-btn" type="button">Add an opening</button><button class="gc-measure v-btn" type="button" title="measure between two points on the part">Measure</button><span class="gc-tools-hint">then click the part where it is</span></div>

@@ -1966,6 +1966,32 @@
   "roots": []
  },
  {
+  "context": "application/geometry_confirmation.py::roles_reason_of::search#1|NotAPublisher|not-a-publisher|",
+  "path": "application/geometry_confirmation.py",
+  "qualname": "roles_reason_of",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_ROLES_RE",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "application/geometry_confirmation.py::roles_reason_of::search#2|NotAPublisher|not-a-publisher|",
+  "path": "application/geometry_confirmation.py",
+  "qualname": "roles_reason_of",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "_OPENINGS_RE",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "application/geometry_materializer.py::materialize::error#1|NotAPublisher|not-a-publisher|",
   "path": "application/geometry_materializer.py",
   "qualname": "materialize",

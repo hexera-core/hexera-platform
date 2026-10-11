@@ -15,6 +15,49 @@ from typing import Any
 
 #: How the confirmation announces itself in the conversation; the intake prompt block names it.
 CONFIRMED_MARK = "GEOMETRY CHECK (confirmed by the user):"
+#: How the declaration says why the openings have their roles, when the uploaded file declares them;
+#: the brief reads it back from here (application/intake_brief).
+ROLES_MARK = "Roles as the file declares them:"
+_ROLES_RE = re.compile(re.escape(ROLES_MARK) + r" ([^.]+)\.")
+
+
+def declared_reason_kept(facts: dict, openings) -> str:
+    """The check's reason for its openings (geometry_check.declared_openings_reason), when the user
+    confirmed the file's openings with the file's roles - '' when the file declared nothing, or
+    the user changed a role, removed one or added one: the reason would then claim the file said
+    what the user decided."""
+    reason = str((facts or {}).get("openings_reason") or "").strip()
+    if not reason:
+        return ""
+    declared = {int(o["id"]): o.get("role") for o in (facts.get("openings") or [])
+                if isinstance(o, dict) and "id" in o}
+    confirmed = {int(getattr(o, "id", -1)): getattr(o, "role", None) for o in (openings or [])}
+    return reason if declared and confirmed == declared else ""
+
+
+_OPENINGS_RE = re.compile(r"Openings: ([^\n]*?)\.(?: |$)")
+_ROW_RE = re.compile(r"([^\s;(]+) \((inlet|outlet|wall)\)")
+
+
+def roles_reason_of(messages, assignments=None) -> str:
+    """The reason the latest declaration gives for its openings' roles, or ''. With `assignments`
+    (the brief's [{name, role}]), only while every declared opening is still there with its
+    declared role - a role changed in the chat afterwards is the user's, not the file's."""
+    for m in reversed(list(messages or [])):
+        if isinstance(m, dict) and _is_declaration(m):
+            text = str(m.get("content") or "")
+            found = _ROLES_RE.search(text)
+            if not found:
+                return ""
+            if assignments is not None:
+                rows = _OPENINGS_RE.search(text)
+                declared = dict(_ROW_RE.findall(rows.group(1))) if rows else {}
+                now = {str(a.get("name")): str(a.get("role") or a.get("type") or "")
+                       for a in assignments or [] if isinstance(a, dict)}
+                if not declared or any(now.get(n) != r for n, r in declared.items()):
+                    return ""
+            return found.group(1).strip()
+    return ""
 
 
 def renamed_openings_sentence(before, after) -> str:
@@ -219,6 +262,9 @@ def confirmation_message(body) -> str:
                   if o.centroid_mm and len(o.centroid_mm) == 3 else "")
             rows.append(f"{o.name} ({o.role}){', ' + size if size else ''}{at}")
         parts.append("Openings: " + "; ".join(rows) + ".")
+        why = str(getattr(body, "openings_reason", "") or "").strip().rstrip(".")
+        if why:
+            parts.append(f"{ROLES_MARK} {why}.")
         skipped = [str(o.id) for o in body.openings if o.role == "not_an_opening"]
         if skipped:
             parts.append(f"Sticker{'s' if len(skipped) > 1 else ''} {', '.join(skipped)}: not an opening (a hole or a face the fluid does not pass).")
@@ -336,7 +382,7 @@ _OPENING_DEFAULTS: dict[str, object] = {"centroid_mm": None, "diameter_mm": None
 _BODY_DEFAULTS: dict[str, object] = {"openings": [], "seed_point_mm": None, "size_mm": None, "part": "",
                                      "flow_axis": None, "reference_length_mm": None, "extents": None,
                                      "grounded": False, "up_axis": None, "scale_to_m": None, "unit": None,
-                                     "unit_fixed": False, "regions": None}
+                                     "unit_fixed": False, "regions": None, "openings_reason": ""}
 
 
 def body_of(record: dict) -> SimpleNamespace:

@@ -458,6 +458,8 @@ def declared_openings(facts: dict, thermal: dict) -> None:
     vent_role = "inlet" if fans_out and not fans_in else "outlet"
     box = (thermal.get("domain") or {}).get("box_m") or {}
     openings, walled = [], []
+    open_sides: list[str] = []          # sides the file leaves open (all or in part)
+    declared_devices: list[dict] = []   # fans and vents the file puts on its domain sides
     for axis in range(3):
         for sign in ("-", "+"):
             face = sign + "xyz"[axis]
@@ -469,7 +471,11 @@ def declared_openings(facts: dict, thermal: dict) -> None:
             if devices:
                 for p in devices:
                     role = p.get("suggested_type") if p["role"] == "fan" else vent_role
-                    openings.append(_declared_opening(p, face, role, scale, mesh_safe))
+                    opening = _declared_opening(p, face, role, scale, mesh_safe)
+                    openings.append(opening)
+                    # named as the stage shows it (mesh-safe), not as the file spells it
+                    declared_devices.append({"name": str(opening.get("name") or face),
+                                             "role": p["role"], "flow": p.get("suggested_type") or role})
             elif side is not None and not (side_area > 0 and walls >= _WALLED * side_area):
                 plates = [p for p in on_face if p["role"] in ("wall", "heat_flux")]
                 if len(plates) > _MAX_SIDE_PLATES:
@@ -481,6 +487,7 @@ def declared_openings(facts: dict, thermal: dict) -> None:
                 if not parts:
                     walled.append(face)
                     continue
+                open_sides.append(str(side.get("name") or face))
                 if len(parts) > _MAX_SIDE_OPENINGS:
                     facts.setdefault("notes", []).append(
                         f"the plates on the domain's {face} side leave {len(parts)} separate gaps; "
@@ -501,10 +508,36 @@ def declared_openings(facts: dict, thermal: dict) -> None:
     for i, o in enumerate(openings, 1):
         o["id"] = i
     facts["openings"] = openings
+    reason = declared_openings_reason(open_sides, declared_devices, walled)
+    if reason:
+        facts["openings_reason"] = reason
     if walled:
         facts.setdefault("notes", []).append(
             "the thermal model closes the domain's " + ", ".join(walled)
             + " side(s) with walls, so they are not offered as openings")
+
+
+def declared_openings_reason(open_sides: list[str], devices: list[dict], walled: list[str]) -> str:
+    """WHY the openings are what they are, in the file's own terms - for a converter that declares
+    its boundary roles (here: a thermal model's domain sides, fans and vents). Shown on the form,
+    said in the declaration and carried into the brief, so the roles read as the file's and not
+    as a guess: a set-top box whose six domain sides all came up "outlet" was corrected three
+    times by a user who knew it had a vent and a fan inside (dev-areen, 2026-10-11) - the file
+    declares every side of its solution domain open, and the stage never said so. '' when the
+    file declares nothing about its sides."""
+    if open_sides and not devices and not walled and len(open_sides) == 6:
+        return "the file declares every side of its solution domain open"
+    said: list[str] = []
+    if open_sides:
+        said.append(f"its solution domain open at {', '.join(open_sides)}")
+    for d in devices:
+        if d["role"] == "fan":
+            said.append(f"{d['name']}, a fan blowing {'in' if d['flow'] == 'inlet' else 'out'}")
+        else:
+            said.append(f"{d['name']}, a vent")
+    if walled:
+        said.append(f"its {', '.join(walled)} side{'s' if len(walled) > 1 else ''} walled")
+    return ("the file declares " + "; ".join(said)) if said else ""
 
 
 #: Plates on one domain side the open-part reading takes (each adds two grid lines per axis).
@@ -1268,6 +1301,8 @@ def _proposal(facts: dict, vision: dict | None) -> dict:
         "seed_point_mm": facts.get("seed_point_mm"),
         "size_mm": facts["size_mm"],
         "notes": list(facts.get("notes") or []),
+        # why the openings are what they are, when the file itself declares them (declared_openings)
+        "openings_reason": str(facts.get("openings_reason") or ""),
         "read_as": facts.get("read_as", "cad"),
         "faces": list(facts.get("faces") or []),      # every flat face measured: what "add an opening" snaps to
         "holes": list(facts.get("holes") or []),      # every hole in the skin: what a click into one snaps to
