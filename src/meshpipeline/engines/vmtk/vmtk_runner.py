@@ -57,6 +57,23 @@ _DEFAULTS: dict = {
     # staged route only: whether vmtkmeshgenerator remeshes the (already remeshed) surface
     # again before capping and filling; the repair ladder toggles it
     "generator_remesh": True,
+    # THE INTERIOR'S SIZE relative to the wall (vmtkmeshgenerator -volumeelementfactor): the
+    # interior target is this times the root mean wall-triangle area around each wall point.
+    # vmtk's own 0.8 makes the core about twice as fine as the wall; the budget (budget.fit)
+    # raises it when the fill would not fit, before it touches the wall or the layers.
+    "volume_element_factor": 0.8,
+    # the staged lumen's measured fill cost (lumen_staging.lumen_cost_model) and the plan the
+    # budget made from it - facts the run re-checks once the remeshed wall is known
+    "cost_model": None,
+    "budget_plan": None,
+    # GEOMETRY FACTS from staging (lumen_staging.measure_openings): 'simple' caps each opening
+    # with a flat fan, 'annular' stitches a ring between an opening's two rims (an annulus round a
+    # centre rod); wall_pieces > 1 keeps every piece of the wall through the remesh (the rod)
+    "capping_method": "simple",
+    "wall_pieces": 1,
+    # staging wound every wall piece out of the fluid (lumen_staging.orient_out_of_fluid): a
+    # layered fill of a multi-piece wall then keeps that winding instead of vmtk's per-piece guess
+    "wall_oriented": False,
     # CENTERLINE SEEDING - must be NON-INTERACTIVE. vmtk's 'openprofiles'/'pickpoint'
     # selectors open an X render window and abort in a headless worker (verified: SIGABRT,
     # "bad X server connection"). The non-interactive selectors are:
@@ -125,7 +142,11 @@ def build_staged_stages(strategy: dict, *, collapse_angle: float | None = None,
         "-elementsizemode", "edgelengtharray", "-edgelengtharray", array,
         "-edgelengthfactor", f"{elf:g}", "-preserveboundary", "0", "-iterations", "10",
         *(["-collapseangle", f"{collapse_angle:g}"] if collapse_angle is not None else []),
-        "--pipe", "vmtksurfaceconnectivity", "-method", "largest",
+        # one piece: the largest (it drops what the remesh orphans); several by design - the
+        # bore and the rod of an annulus - every piece, cleaned of orphan points
+        "--pipe", "vmtksurfaceconnectivity",
+        *(["-method", "all", "-cleanoutput", "1"] if int(s.get("wall_pieces") or 1) > 1
+          else ["-method", "largest"]),
         "--pipe", "vmtksurfaceprojection", "-rfile", _LUMEN_OPEN, "-ofile", _LUMEN,
     ]
     generate = [
@@ -133,9 +154,65 @@ def build_staged_stages(strategy: dict, *, collapse_angle: float | None = None,
         "-elementsizemode", "edgelengtharray", "-edgelengtharray", array,
         "-edgelengthfactor", f"{elf:g}", *_clamp_args(s),
         "-skipcapping", "0", "-skipremeshing", "0" if s.get("generator_remesh", True) else "1",
-        *_layer_args(s), "-tetrahedralize", "1", "-ofile", _MESH,
+        *_capping_args(s), *_volume_args(s), *_layer_args(s), "-tetrahedralize", "1",
+        "-ofile", _MESH,
     ]
     return surface, generate
+
+
+#: The generator run through vmtkpythonscript with vmtk's per-piece normal auto-orientation off,
+#: so the boundary layer grows against the winding staging gave each piece (out of the fluid).
+#: vmtkpythonscript exec()s the file INSIDE a method, so the file's own top-level names are that
+#: method's locals and a function defined in it cannot see them (a closure over a saved __init__
+#: raised NameError the moment vmtk built its normals, and every layered annulus fill died):
+#: the original __init__ is kept on the class itself and found through type(self).
+_GENERATE_SCRIPT = "vmtk_generate.py"
+_GENERATE_ARGS = "vmtk_generate_args.json"
+_GENERATE_SOURCE = '''# written by meshpipeline (engines/vmtk/vmtk_runner.py): vmtkmeshgenerator, keeping the staged winding
+import json
+from vmtk import pypes, vmtkscripts
+_cls = vmtkscripts.vmtkSurfaceNormals
+if not hasattr(_cls, "_hexera_init"):
+    _cls._hexera_init = _cls.__init__
+    def _keep(self):
+        type(self)._hexera_init(self)
+        self.AutoOrientNormals = 0
+    _cls.__init__ = _keep
+_pipe = pypes.Pype()            # exactly as the vmtk launcher runs a pype
+_pipe.ExitOnError = 0
+_pipe.Arguments = json.load(open("''' + _GENERATE_ARGS + '''"))
+_pipe.ParseArguments()
+_pipe.Execute()
+'''
+
+
+def _keeps_staged_winding(s: dict) -> bool:
+    """A wall in several pieces whose winding staging set out of the fluid: vmtk's own normals
+    would orient each piece from its own extreme point and grow a centre rod's layer into the rod
+    (lumen_staging.orient_out_of_fluid). Only layered fills need it."""
+    return (int(s.get("wall_pieces") or 1) > 1 and bool(s.get("wall_oriented"))
+            and int(s.get("boundary_layers") or 0) > 0)
+
+
+def _winding_kept(ws: Path, argv: list[str]) -> list[str]:
+    """The generator argv rewritten to run with the staged winding kept (_GENERATE_SOURCE)."""
+    (ws / _GENERATE_ARGS).write_text(json.dumps(argv[1:]))
+    (ws / _GENERATE_SCRIPT).write_text(_GENERATE_SOURCE)
+    return [argv[0], "vmtkpythonscript", "-scriptfile", _GENERATE_SCRIPT]
+
+
+def _capping_args(s: dict) -> list[str]:
+    # vmtk's own 'simple' is left implicit, so a disk-capped run's argv is what it always was
+    method = str(s.get("capping_method") or "simple")
+    return [] if method == "simple" else ["-cappingmethod", method]
+
+
+def _volume_args(s: dict) -> list[str]:
+    # vmtk's own default (0.8) is left implicit, so an unbudgeted run's argv is what it always was
+    vf = float(s.get("volume_element_factor") or _DEFAULTS["volume_element_factor"])
+    if abs(vf - float(_DEFAULTS["volume_element_factor"])) < 1e-9:
+        return []
+    return ["-volumeelementfactor", f"{vf:g}"]
 
 
 def _clamp_args(s: dict) -> list[str]:
@@ -199,7 +276,7 @@ def build_pype(strategy: dict) -> list[str]:
         # vmtkmeshgenerator expresses these as the INVERSE (skip-*) booleans
         "-skipcapping", "0" if s["cap_openings"] else "1",
         "-skipremeshing", "0" if s["remesh_surface"] else "1",
-        *layer_args,
+        *_volume_args(s), *layer_args,
     ]
     argv += ["-tetrahedralize", "1", "-ofile", _MESH]
     return argv
@@ -352,8 +429,68 @@ def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
                           "geometry: give source_points+target_points (coordinates on the "
                           "inlet and outlet ends) or source_ids+target_ids (open-profile ids "
                           "from geometry_report). Interactive seeding cannot run headless.")}
+    s = size_to_budget(s)
+    plan = s.get("budget_plan") or {}
+    if plan.get("within") == "over":
+        # NOT STARTED: even at the passage floor, with the interior as coarse as it may go and
+        # no layers, the fill is predicted over the compute limit - a run would burn its hour
+        # and fail the cell gate. Tetrahedra are as long as they are wide, so a thin passage
+        # that is long and wide (a slot, a narrow annulus) costs the cube of its gap.
+        return {"code": "vmtk_over_compute_limit", "predicted_cells": plan.get("predicted"),
+                "error": (f"VMTK would need about {int(plan.get('predicted') or 0):,} cells to put "
+                          f"{_floor_cells()} cells across this passage, over the "
+                          f"{int(plan.get('hard_limit') or 0):,}-cell compute limit, even with "
+                          "the coarsest interior and no boundary layers. VMTK's tetrahedra are "
+                          "as long as they are wide, so a thin passage that is also long and "
+                          "wide costs the cube of its gap. snappyHexMesh or cfMesh can stretch "
+                          "their cells along the passage and fit it.")}
     (ws / "vmtk_spec.json").write_text(json.dumps(s, indent=2))
-    return {"spec": s, "pype": " ".join(build_pype(s))}
+    out: dict = {"spec": s, "pype": " ".join(build_pype(s))}
+    if plan:
+        out["predicted_cells"] = plan.get("predicted")
+        from meshpipeline.engines.vmtk.budget import plan_words
+        if plan_words(plan):
+            out["budget_note"] = plan_words(plan)
+    return out
+
+
+def _floor_cells() -> int:
+    from meshpipeline.engines.vmtk.criteria import PASSAGE_MIN_CELLS_ACROSS
+    return int(PASSAGE_MIN_CELLS_ACROSS)
+
+
+def size_to_budget(s: dict, *, wall_triangles: float | None = None) -> dict:
+    """The strategy fitted to its cell budget (budget.fit) when the staged lumen carries a cost
+    model: the strategy's max_cells, never above the compute limit. Without a model the strategy
+    stands (an unstaged .vtp, or a staging that could not measure it)."""
+    model = s.get("cost_model")
+    if not isinstance(model, dict) or not model.get("wall"):
+        return s
+    import meshpipeline.settings.policy as polcfg
+    from meshpipeline.engines.vmtk.budget import fit
+    from meshpipeline.engines.vmtk.criteria import PASSAGE_MIN_CELLS_ACROSS
+    base = dict(s)
+    prior = (s.get("budget_plan") or {}).get("asked") or {}
+    if wall_triangles is not None:
+        # THE RE-CHECK on the remeshed wall: the edge factor is spent (the wall is meshed at it),
+        # so the interior and the layers are re-fitted from what was ASKED, with the real count
+        for k in ("boundary_layers", "volume_element_factor"):
+            if k in prior:
+                base[k] = prior[k]
+    current = {k: base.get(k) for k in ("edge_length_factor", "boundary_layers",
+                                        "volume_element_factor")}
+    asked = (prior or current) if wall_triangles is not None else current
+    try:
+        requested = int(base.get("max_cells") or polcfg.CELL_HARD_LIMIT)
+    except (TypeError, ValueError):
+        requested = int(polcfg.CELL_HARD_LIMIT)
+    fitted, plan = fit(base, model, requested=requested, hard_limit=int(polcfg.CELL_HARD_LIMIT),
+                       min_cells_across=float(PASSAGE_MIN_CELLS_ACROSS),
+                       wall_triangles=wall_triangles,
+                       allow_edge_change=wall_triangles is None)
+    plan["asked"] = asked
+    fitted["budget_plan"] = plan
+    return fitted
 
 
 # staging (builder attempt seam): open the declared ports of a CAD body before anything runs
@@ -471,15 +608,19 @@ def repair_ladder(strategy: dict) -> list[dict]:
     s = resolve_strategy(strategy)
     if not s.get("sizing_array"):
         return [s]
+    layered = int(s.get("boundary_layers") or 0) > 0
     steps = [s]
-    if s.get("generator_remesh", True):
+    # WITHOUT LAYERS THE GENERATOR'S OWN REMESH STAYS ON: a layer-free fill caps the openings up
+    # front with polygon caps (vmtk's capper, TriangleOutput off) and only that remesh turns them
+    # into triangles - skipped, the sizing function meets polygons ("Cell not triangle") and the
+    # fill crashes (venturi_orifice_003, rc -11), so that step could never succeed
+    if s.get("generator_remesh", True) and layered:
         steps.append({**s, "generator_remesh": False})
-    if int(s.get("boundary_layers") or 0) > 0:
+    if layered:
         steps.append({**s, "generator_remesh": False,
                       "boundary_layer_thickness_factor":
                           float(s["boundary_layer_thickness_factor"]) / 2.0})
-        steps.append({**s, "boundary_layers": 0})
-        steps.append({**s, "boundary_layers": 0, "generator_remesh": False})
+        steps.append({**s, "boundary_layers": 0, "generator_remesh": True})
     return steps
 
 
@@ -498,6 +639,68 @@ def _fill_completed(ws: Path, result: dict) -> bool:
     return not any(f in low for f in _TETGEN_FAILURES)
 
 
+def _folded_share(ws: Path) -> float | None:
+    """How far a completed fill's tetrahedra overlap: their summed volume over what the mesh's
+    own boundary encloses, less one (check_mesh's overlap test, run before the fill is accepted).
+    vmtk's layer generator has no collision handling, so where two walls meet at a corner - a
+    rectangular duct's edges, a wye crotch - the stacks grow into each other and TetGen still
+    completes; the ladder used to stop there and ship a mesh check_mesh then refused
+    (fluid_radius_elbow: 27.7% overlap). None when it cannot be measured."""
+    import numpy as np
+    try:
+        mesh = _read_surface(ws / _MESH)
+        tets = mesh.extract_cells_by_type(_VTK_TETRA)
+        if not tets.n_cells:
+            return None
+        vol = np.asarray(tets.compute_cell_sizes(length=False, area=False,
+                                                 volume=True).cell_data["Volume"])
+        return _overlap_fraction(mesh, float(np.abs(vol).sum()))
+    except Exception:  # noqa: BLE001 - evidence, not a verdict; check_mesh judges again
+        logger.warning("vmtk: the fill's overlap could not be measured", exc_info=True)
+        return None
+
+
+def _thinner(ladder: list[dict], i: int) -> int | None:
+    """The first ladder step after `i` whose layer stack is thinner than step i's (fewer layers,
+    or the same count thinner): the move for a stack that folded into itself."""
+    cur = ladder[i]
+
+    def depth(s: dict) -> float:
+        return int(s.get("boundary_layers") or 0) * float(s["boundary_layer_thickness_factor"])
+
+    for j in range(i + 1, len(ladder)):
+        if depth(ladder[j]) < depth(cur) - 1e-12:
+            return j
+    return None
+
+
+def _refit_to_wall(ws: Path, strategy: dict, notes: list[str]) -> dict | None:
+    """The budget re-checked on the REMESHED wall, whose triangle count is now known: the layer
+    stack is exactly three tetrahedra per wall triangle per sublayer, and the interior estimate is
+    corrected by the same ratio. Returns the re-fitted strategy when it changed, else None."""
+    if not isinstance(strategy.get("cost_model"), dict):
+        return None
+    try:
+        n = int(_read_surface(ws / _LUMEN).n_cells)
+    except Exception:  # noqa: BLE001 - the configured plan stands
+        return None
+    if n <= 0:
+        return None
+    refit = size_to_budget(dict(strategy), wall_triangles=n)
+    keys = ("volume_element_factor", "boundary_layers")
+    if all(abs(float(refit.get(k) or 0) - float(strategy.get(k) or 0)) < 1e-9 for k in keys):
+        return None
+    plan = refit.get("budget_plan") or {}
+    notes.append(f"[vmtk] the remeshed wall has {n:,} triangles: the fill is re-sized to its "
+                 f"budget - volume factor {float(strategy.get('volume_element_factor') or 0.8):g}"
+                 f" -> {float(refit['volume_element_factor']):g}, layers "
+                 f"{strategy.get('boundary_layers')} -> {refit.get('boundary_layers')}, about "
+                 f"{int(plan.get('predicted') or 0):,} cells predicted")
+    return refit
+
+
+#: the share of the remaining clock a LAYERED ladder step may take while a layer-free step waits
+LAYERED_SHARE = 0.6
 _LADDER_MIN_SECONDS = 60   # a ladder step is not started with less of the budget left ...
 _LADDER_MIN_FRACTION = 0.1  # ... or less than this share of it, whichever is smaller
 _now = time.monotonic       # the run clock; tests substitute it
@@ -663,22 +866,73 @@ def _run_vmtk_local(workspace, *, timeout: int, **_ignored) -> dict:
         if not _surface_ran(ws, result):
             (ws / "log.vmtk").write_text("\n".join([*notes, result.get("log_tail") or ""]))
             return result
+        from meshpipeline.engines.vmtk.budget import plan_words
+        if plan_words(strategy.get("budget_plan") or {}):
+            notes.append("[vmtk] " + plan_words(strategy["budget_plan"]))
+        refit = _refit_to_wall(ws, resolve_strategy(strategy), notes)
+        if refit is not None:
+            strategy = refit
+            ladder = repair_ladder(strategy)
     last = 0
-    for i, strat in enumerate(ladder):
+    i = 0
+    while i < len(ladder):
+        strat = ladder[i]
         if i and deadline - _now() < floor:
             notes.append(f"[vmtk] {len(ladder) - i} ladder step(s) not started: under "
                          f"{floor:g} s of the {int(timeout)} s budget left")
             break
         last = i
         argv = build_staged_stages(strat)[1] if staged else build_pype(strat)
+        if staged and _keeps_staged_winding(strat):
+            argv = _winding_kept(ws, argv)
         if i:
             (ws / _MESH).unlink(missing_ok=True)
-        result = _run_pype(ws, argv, timeout=left())
-        if _fill_completed(ws, result) or i == len(ladder) - 1:
+        layered = staged and int(strat.get("boundary_layers") or 0) > 0
+        bare_after = next((j for j in range(i + 1, len(ladder))
+                           if int(ladder[j].get("boundary_layers") or 0) <= 0), None)
+        # A LAYERED STEP NEVER TAKES THE WHOLE CLOCK while a layer-free step waits behind it:
+        # vmtk's layer generator scales with the wall's triangles, and on the Fluent aorta (328k
+        # wall triangles, 4 sublayers) the first layered attempt ran out the full 3000 s - no
+        # fill at all, where a layer-free fill was minutes away
+        step_budget = left()
+        if layered and bare_after is not None:
+            step_budget = max(int(floor), int(left() * LAYERED_SHARE))
+        result = _run_pype(ws, argv, timeout=step_budget)
+        nxt: int | None = i + 1 if i + 1 < len(ladder) else None
+        if layered and bare_after is not None and result.get("timed_out"):
+            # a thinner stack is no faster to grow: straight on to the layer-free fill
+            notes.append(f"[vmtk] attempt {i + 1} ({_step_label(strat)}): the layered fill ran out "
+                         f"its {step_budget} s share of the budget - next: "
+                         f"{_step_label(ladder[bare_after])}")
+            i = bare_after
+            continue
+        if _fill_completed(ws, result):
+            if not staged or int(strat.get("boundary_layers") or 0) <= 0:
+                break
+            folded = _folded_share(ws)
+            if folded is None or folded <= OVERLAP_TOLERANCE:
+                break
+            nxt = _thinner(ladder, i)
+            if nxt is None or deadline - _now() < floor:
+                break
+            notes.append(f"[vmtk] attempt {i + 1} ({_step_label(strat)}): the fill completed but "
+                         f"its boundary layer folded into itself (the tetrahedra overlap by "
+                         f"{folded * 100:.1f}%) - next: {_step_label(ladder[nxt])}")
+            i = nxt
+            continue
+        if nxt is not None and _last_stage(result) == "Generating boundary layer":
+            # THE LAYER STAGE ITSELF DIED: a thinner stack dies the same way (an orifice plate's
+            # sharp edges, venturi_orifice_003: three 15-minute layered attempts, each lost in
+            # vmtk's layer untangling, and the layer-free fill never started) - straight on to
+            # the first layer-free step
+            nxt = next((j for j in range(i + 1, len(ladder))
+                        if int(ladder[j].get("boundary_layers") or 0) <= 0), nxt)
+        if nxt is None:
             break
         notes.append(f"[vmtk] attempt {i + 1} ({_step_label(strat)}): the fill did not complete "
                      f"(last generator stage: {_last_stage(result) or 'unknown'}) - next: "
-                     f"{_step_label(ladder[i + 1])}")
+                     f"{_step_label(ladder[nxt])}")
+        i = nxt
     if notes:
         effective = dict(ladder[last])
         effective["repair_note"] = "; ".join(notes)
@@ -1185,6 +1439,53 @@ def _overlap_fraction(grid, tet_volume: float) -> float | None:
 
 
 
+#: A delivered cap outside this band of its STAGED opening's area is not that opening. Tighter
+#: than the shared gate's band against the declared size (region_check.PORT_AREA_BAND): the
+#: staged opening is measured on the very rims vmtk caps, so only a different region misses it.
+STAGED_CAP_BAND = (0.75, 1.25)
+
+
+def patch_areas(patches: dict) -> dict[str, float]:
+    """{patch name: area m2} of the delivered boundary (name -> triangles as coordinate triples)."""
+    import numpy as np
+    out: dict[str, float] = {}
+    for name, tris in patches.items():
+        if not tris:
+            continue
+        t = np.asarray(tris, dtype=float).reshape(-1, 3, 3)
+        out[str(name)] = float(0.5 * np.linalg.norm(
+            np.cross(t[:, 1] - t[:, 0], t[:, 2] - t[:, 0]), axis=1).sum())
+    return out
+
+
+def staged_opening_areas(ws: Path) -> dict[str, float]:
+    """{port: m2} of each opening as staging measured it on the wall's rims (open area: a ring is
+    its ring, not its lid), else the lid's area; {} when nothing was staged."""
+    from meshpipeline.engines.vmtk.lumen_staging import read_staging
+    staged = read_staging(ws) or {}
+    out: dict[str, float] = {}
+    for p in staged.get("ports") or []:
+        a = float(p.get("open_area_m2") or p.get("area_m2") or 0.0)
+        if p.get("name") and a > 0.0:
+            out[str(p["name"])] = a
+    return out
+
+
+def _caps_off_their_openings(ws: Path, patches: dict) -> list[str]:
+    """Every delivered cap named after a staged port, held to that port's open area by the shared
+    region check (engines/region_check.port_area_misses). The fill can bound a different region
+    than the fluid and pass every other check - its tetrahedra tile their own boundary exactly:
+    an annulus delivered as the full pipe (the rod dropped by the remesh, each cap a full disk
+    three times the ring), a metal part delivered as the volume inside its OUTER skin (the bore
+    dropped, each cap the size of the flange). The caps say so, so this is fatal. [] when
+    nothing was staged to compare with."""
+    from meshpipeline.engines.region_check import port_area_misses
+    misses = port_area_misses(patch_areas(patches), staged_opening_areas(ws), band=STAGED_CAP_BAND)
+    return [f"the '{m['name']}' cap covers {m['delivered_m2'] * 1e6:,.0f} mm2 where the opening is "
+            f"{m['expected_m2'] * 1e6:,.0f} mm2 - the mesh fills a different region than the fluid "
+            "(a wall piece was lost or an outer skin was meshed)" for m in misses]
+
+
 def _run_policy() -> RunPolicy:
     from meshpipeline.engines.vmtk.spec import SPEC
 
@@ -1299,6 +1600,19 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
         # ("lumen_wall"). The review surface carries the DECLARED name, so the reviewer inspects
         # the patch the manifest lists instead of an empty one beside an undeclared "wall".
         _declared_walls = [n for n, r in patch_types.items() if r == "wall"]
+        _wrong = _caps_off_their_openings(ws, _review)
+        if _wrong:
+            q["fatal"] = [*q.get("fatal", []), *_wrong]
+            q["mesh_ok"] = False
+        # each delivered boundary's area, and each opening as staging MEASURED it on the rims,
+        # for the shared port-area gate (engines/region_check), which holds every inlet/outlet
+        # to the measured opening (the typed size only where nothing was measured)
+        _areas = patch_areas(_review)
+        if _areas:
+            q["patch_areas_m2"] = {k: round(v, 10) for k, v in _areas.items()}
+        _opened = staged_opening_areas(ws)
+        if _opened:
+            q["port_openings_m2"] = {k: round(v, 10) for k, v in _opened.items()}
         if len(_declared_walls) == 1 and "wall" in _review and _declared_walls[0] != "wall":
             _review[_declared_walls[0]] = _review.pop("wall")
         if _review:

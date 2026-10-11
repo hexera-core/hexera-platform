@@ -660,6 +660,124 @@ def _external_groups(spec_groups, body, far, origin: dict, ports) -> list[dict]:
     return out
 
 
+#: A builder's port group whose faces add up to more than this far from its opening's area (either
+#: way) is not that opening (engines/region_check.PORT_AREA_BAND, the gate's band).
+PORT_GROUP_BAND = (0.6, 1.6)
+
+
+def _face_table(gmsh, surfaces, *, cad: bool) -> list[dict]:
+    from meshpipeline.engines.gmsh.surface_volume import surface_table
+    if cad:
+        return [{"tag": int(t), "area": float(gmsh.model.occ.getMass(2, t)),
+                 "centroid": [float(v) for v in gmsh.model.occ.getCenterOfMass(2, t)]}
+                for t in surfaces]
+    return surface_table(gmsh, surfaces)
+
+
+def _port_openings(gmsh, surfaces, ports, *, cad: bool = False) -> dict[str, float]:
+    """{port: area m2} of the face the engine's own binder finds for each declared inlet/outlet
+    (surface_volume.bind_ports: the face at the declared location, of about the declared size
+    when one is that size) - the opening as MEASURED on the geometry, which the port groups and
+    the shared port-area gate are held to (engines/region_check)."""
+    from meshpipeline.engines.gmsh.surface_volume import bind_ports
+    declared = [p for p in ports or [] if isinstance(p, dict)
+                and str(p.get("type") or "") in ("inlet", "outlet")]
+    if not declared or not surfaces:
+        return {}
+    table = _face_table(gmsh, surfaces, cad=cad)
+    area_of = {int(r["tag"]): float(r["area"]) for r in table}
+    return {n: sum(area_of.get(int(t), 0.0) for t in tags)
+            for n, tags in bind_ports(table, declared).items() if tags}
+
+
+def _checked_port_groups(gmsh, groups, surfaces, ports, *, cad: bool = False) -> list[dict]:
+    """The builder's groups, with every PORT group held to the opening it names: a group whose
+    faces add up to an area far from its opening (outside PORT_GROUP_BAND) is replaced by the
+    face the engine's own binder finds for that port, and the faces it gave up join the first
+    wall group. The opening is the binder's face as measured (_port_openings), the declared size
+    only where the binder finds none. A builder that picked port faces by distance alone swept
+    the wall next to each opening into the port (lab, 2026-10-06: inlets 2.4-5.3x the declared
+    opening on three fluid domains, every gate green). Groups that hold their opening, and ports
+    declared by location alone with nothing bound, are left exactly as written."""
+    from meshpipeline.engines.gmsh.surface_volume import _port_area_m2, bind_ports
+    declared = {str(p.get("name")): p for p in ports or []
+                if isinstance(p, dict) and str(p.get("type") or "") in ("inlet", "outlet")}
+    if not declared or not groups:
+        return groups
+    table = _face_table(gmsh, surfaces, cad=cad)
+    area_of = {int(r["tag"]): float(r["area"]) for r in table}
+    opening = _port_openings(gmsh, surfaces, ports, cad=cad)
+    wrong = {}
+    for g in groups:
+        p = declared.get(str(g.get("name")))
+        want = (opening.get(str(g.get("name"))) or _port_area_m2(p)) if p else None
+        if not want:
+            continue
+        got = sum(area_of.get(int(t), 0.0) for t in g.get("surface_tags") or [])
+        if not PORT_GROUP_BAND[0] <= got / want <= PORT_GROUP_BAND[1]:
+            wrong[str(g["name"])] = got / want
+    if not wrong:
+        return _with_wall(groups, surfaces, ports)
+    bound = bind_ports(table, [declared[n] for n in wrong])
+    out = [dict(g) for g in groups]
+    freed: list[int] = []
+    for g in out:
+        if str(g.get("name")) in bound:
+            freed += [int(t) for t in g.get("surface_tags") or [] if int(t) not in bound[str(g["name"])]]
+            g["surface_tags"] = list(bound[str(g["name"])])
+    taken = {t for tags in bound.values() for t in tags}
+    for g in out:
+        if str(g.get("name")) not in bound:
+            g["surface_tags"] = [int(t) for t in g.get("surface_tags") or [] if int(t) not in taken]
+    wall = next((g for g in out if str(g.get("role")) == "wall"), None)
+    if wall is not None:
+        wall["surface_tags"] = list(dict.fromkeys([*wall["surface_tags"], *freed]))
+    out = _with_wall(out, surfaces, ports)
+    print(f"[GMSH] port group(s) {', '.join(f'{n} ({r:.2f}x its opening)' for n, r in wrong.items())} "
+          f"rebound to the opening face(s) {bound}; {len(freed)} face(s) returned to the wall",
+          file=sys.stderr)
+    return out
+
+
+def _with_wall(groups, surfaces, ports) -> list[dict]:
+    """The groups with the declared wall in them: when the builder named no wall group, every face
+    no group holds is the declared wall (internal flow - what the patch contract approved)."""
+    if any(str(g.get("role")) == "wall" for g in groups):
+        return groups
+    held = {int(t) for g in groups for t in g.get("surface_tags") or []}
+    rest = [int(t) for t in surfaces if int(t) not in held]
+    if not rest:
+        return groups
+    name = next((str(p.get("name")) for p in ports or [] if isinstance(p, dict)
+                 and str(p.get("type") or "") == "wall" and p.get("name")), "wall")
+    return [*groups, {"name": name, "role": "wall", "surface_tags": rest}]
+
+
+def _group_areas(gmsh) -> dict[str, float]:
+    """{physical surface group: area in m2} of the generated surface mesh."""
+    import numpy as np
+    tags, xyz, _ = gmsh.model.mesh.getNodes()
+    tags = np.asarray(tags, dtype=np.int64)
+    idx = np.zeros(int(tags.max()) + 1, dtype=np.int64) if len(tags) else np.zeros(1, np.int64)
+    idx[tags] = np.arange(len(tags))
+    X = np.asarray(xyz, dtype=float).reshape(-1, 3)
+    out: dict[str, float] = {}
+    for dim, ptag in gmsh.model.getPhysicalGroups(2):
+        name = gmsh.model.getPhysicalName(dim, ptag)
+        a = 0.0
+        for ent in gmsh.model.getEntitiesForPhysicalGroup(dim, ptag):
+            etypes, _, enodes = gmsh.model.mesh.getElements(2, int(ent))
+            for et, nodes in zip(etypes, enodes):
+                per = {2: 3, 9: 6}.get(int(et))
+                if not per:
+                    continue
+                c = idx[np.asarray(nodes, dtype=np.int64).reshape(-1, per)[:, :3]]
+                cr = np.cross(X[c[:, 1]] - X[c[:, 0]], X[c[:, 2]] - X[c[:, 0]])
+                a += 0.5 * float(np.linalg.norm(cr, axis=1).sum())
+        out[name] = out.get(name, 0.0) + a
+    return out
+
+
 def _bound_groups(gmsh, surfaces, ports, *, cad: bool = False) -> list[dict]:
     """The groups when the builder named none: each declared port bound to its face
     (engines/gmsh/surface_volume.bind_ports), every other face the declared wall - the same
@@ -830,6 +948,7 @@ def main(workspace: str) -> int:
         # fluid between the body and a far-field box (box minus body), sized in the unit the
         # domain-extent gate judges it in (engines/far_field.py).
         _external: dict = {}
+        _openings: dict = {}
         if external:
             vols, _groups_auto, _external = _external_fluid(gmsh, ws, spec, classified, surfaces,
                                                             (xmin, ymin, zmin), (xmax, ymax, zmax),
@@ -841,17 +960,32 @@ def main(workspace: str) -> int:
             spec["groups"] = _groups_auto
         elif staged:
             vols = [t for _, t in gmsh.model.getEntities(3)]
+            from meshpipeline.engines.region_check import recorded_port_openings
+            _openings = recorded_port_openings(ws)
         elif classified:
             from meshpipeline.engines.gmsh.surface_volume import internal_volume_discrete
             vols = internal_volume_discrete(gmsh, surfaces)
             if not spec.get("groups"):
                 spec["groups"] = _bound_groups(gmsh, surfaces, _ports)
+            else:
+                spec["groups"] = _checked_port_groups(gmsh, spec["groups"], surfaces, _ports)
+            _openings = _port_openings(gmsh, surfaces, _ports)
         else:
             vols = [t for _, t in gmsh.model.getEntities(3)]
+            _faces2 = [t for _, t in gmsh.model.getEntities(2)]
             if not spec.get("groups") and any(isinstance(p, dict) and p.get("type") in
                                                ("inlet", "outlet") for p in _ports):
-                spec["groups"] = _bound_groups(gmsh, [t for _, t in gmsh.model.getEntities(2)],
-                                               _ports, cad=True)
+                spec["groups"] = _bound_groups(gmsh, _faces2, _ports, cad=True)
+            elif spec.get("groups"):
+                spec["groups"] = _checked_port_groups(gmsh, spec["groups"], _faces2, _ports,
+                                                      cad=True)
+            _openings = _port_openings(gmsh, _faces2, _ports, cad=True)
+        if _openings:
+            # a typed size the geometry disagrees with, said before meshing (the measured opening
+            # is the one the groups and the port-area gate are held to)
+            from meshpipeline.engines.region_check import size_notes
+            for _note in size_notes(_ports, _openings):
+                print(f"[GMSH] port size: {_note}", file=sys.stderr)
         # Physical groups: every volume is the solid; surfaces per the spec's
         # contracted names; unassigned surfaces land in the default group so
         # the .inp has a complete, named boundary decomposition.
@@ -966,6 +1100,12 @@ def main(workspace: str) -> int:
         if min_sicn <= 0.0:
             fatal.append("degenerate elements (SICN <= 0)")
 
+        _areas: dict = {}
+        try:
+            _areas = {k: round(v, 10) for k, v in _group_areas(gmsh).items()}
+        except Exception as exc:  # noqa: BLE001 - evidence; the port-area gate then judges nothing
+            print(f"[GMSH] group areas not measured: {exc}", file=sys.stderr)
+
         gmsh.option.setNumber("Mesh.SaveGroupsOfNodes", 1)   # *NSET per group (BC targets)
         gmsh.write(str(ws / "mesh.inp"))
         gmsh.write(str(ws / "mesh.msh"))
@@ -982,6 +1122,11 @@ def main(workspace: str) -> int:
             "min_sicn": round(min_sicn, 4),
             "sicn_low_fraction": round(low / n_elem, 6) if n_elem else 1.0,
             "fatal": fatal, "size_h": h,
+            # each named group's area, and each port's opening as measured on the geometry: the
+            # shared port-area gate holds the one to the other (engines/region_check.py)
+            **({"patch_areas_m2": _areas} if _areas else {}),
+            **({"port_openings_m2": {k: round(v, 10) for k, v in _openings.items()}}
+               if _openings else {}),
             **_resolution,
             **_passage,
             "bounds": _final_node_bounds(gmsh),
@@ -1006,5 +1151,28 @@ def main(workspace: str) -> int:
         gmsh.finalize()
 
 
+#: Where the driver leaves the reason it stopped without a mesh, for finalize to tell the user.
+STOP_REASON = "gmsh_stop_reason.txt"
+
+
+def run(workspace: str) -> int:
+    """main(), with the reason it stopped written beside the workspace: gmsh's own last error (a
+    boundary it could not recover, a surface it could not classify) instead of a bare traceback
+    and, downstream, "the Builder did not produce a valid mesh deck"."""
+    stop = Path(workspace) / STOP_REASON
+    try:
+        stop.unlink()
+    except OSError:
+        pass
+    try:
+        return main(workspace)
+    except Exception as exc:
+        try:
+            stop.write_text(f"{type(exc).__name__}: {exc}"[:600])
+        except OSError:
+            pass
+        raise
+
+
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1]))
+    sys.exit(run(sys.argv[1]))

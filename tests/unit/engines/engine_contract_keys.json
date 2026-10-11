@@ -45,6 +45,11 @@
     "GROUPS"
    ],
    [
+    "port_areas",
+    true,
+    "GROUPS"
+   ],
+   [
     "boundary_types",
     true,
     "GROUPS"
@@ -119,6 +124,11 @@
    ],
    [
     "patch_contract",
+    true,
+    "GROUPS"
+   ],
+   [
+    "port_areas",
     true,
     "GROUPS"
    ]
@@ -264,6 +274,11 @@
    ],
    [
     "patch_contract",
+    true,
+    "GROUPS"
+   ],
+   [
+    "port_areas",
     true,
     "GROUPS"
    ],
@@ -424,6 +439,11 @@
    ],
    [
     "patch_contract",
+    true,
+    "GROUPS"
+   ],
+   [
+    "port_areas",
     true,
     "GROUPS"
    ]

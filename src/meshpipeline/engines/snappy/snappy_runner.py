@@ -70,11 +70,17 @@ from meshpipeline.engines.snappy_hexmesh import (  # noqa: F401
     off_grid_point,
     parse_layer_coverage,
 )
+from meshpipeline.engines.wake_region import WakeRequest, plan_wake
 from meshpipeline.render.review_artifacts import (  # noqa: F401
     build_review_msh,
 )
 
 logger = logging.getLogger(__name__)
+
+#: The wake's refinement boxes are named <_WAKE_BOX><tier> in the dictionary's geometry.
+_WAKE_BOX = "wakeTier"
+#: The workspace record of the wake a pass authored (read into the manifest by finalize).
+WAKE_FACT = "wake_refinement.json"
 
 _HDR = ("FoamFile{{ version 2.0; format ascii; class {cls}; object {obj}; }}\n")
 
@@ -537,6 +543,39 @@ def background_grid(ext, base: float, *, budget: int = BG_CELL_BUDGET,
     return div, 63
 
 
+#: The castellated mesh of an external body, per unit of what drives it, fitted on eight finished
+#: lab runs on main (castellated cells built / estimated, millions: SAE notchback 1.19 / 1.34,
+#: Windsor 1.12 / 1.42, Ahmed 1.01 / 1.45, ONERA M6 0.89 / 1.14, bluff cylinder 0.77 / 1.04,
+#: Toyota Supra 2.43 / 2.30, F1 front wing 1.12 / 0.70, CRM high-lift 0.93 / 0.65 - within about
+#: 45 %, high on smooth bulky bodies and low on many-element ones): the surface and feature
+#: refinement leave about this many surface-level cells per surface-level cell of wall area ...
+CAST_SURFACE_CELLS = 5.5
+#: ... and the two distance bands come out about this many times the cells of their own volume
+#: on one side of the wall.
+CAST_BAND_GRADING = 2.0
+
+
+def castellated_estimate(*, area: float | None, divisions, base_cell: float, surface_level: int,
+                         near: tuple[float, int], far: tuple[float, int]) -> float | None:
+    """The cells snappyHexMesh's castellation reaches for an external body before any extra
+    region (the count maxGlobalCells is checked against): the background, the wall's surface
+    refinement and its two distance bands. None when the wall area is unknown."""
+    try:
+        a = float(area)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if not (math.isfinite(a) and a > 0.0 and base_cell > 0.0):
+        return None
+    (d0, l0), (d1, l1) = near, far
+    h_s = base_cell / 2.0 ** int(surface_level)
+    h_0 = base_cell / 2.0 ** int(l0)
+    h_1 = base_cell / 2.0 ** int(l1)
+    background = float(math.prod(int(v) for v in divisions))
+    surface = CAST_SURFACE_CELLS * a / h_s ** 2
+    bands = a * (float(d0) / h_0 ** 3 + max(0.0, float(d1) - float(d0)) / h_1 ** 3)
+    return background + surface + CAST_BAND_GRADING * bands
+
+
 def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analysis: dict,
                        recommendation: dict, domain_min, domain_max,
                        strategy: dict | None = None, dimensionality: str = "3D",
@@ -547,7 +586,8 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
                        ground: str | None = None,
                        farfield: str = "farfield",
                        class_regions: bool = True,
-                       outside_points: list | None = None) -> dict:
+                       outside_points: list | None = None,
+                       wake: WakeRequest | None = None) -> dict:
     ws = Path(workspace)
     strategy = strategy or {}
     rec = recommendation
@@ -609,11 +649,11 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
     ang = rec["resolve_feature_angle"]
     max_cells = int(strategy.get("max_cells", 8_000_000))
 
-    # locationInMesh - a far-field corner, GUARANTEED in the fluid (body is centred with margin).
-    loc = [domain_min[i] + 0.02 * ext[i] for i in range(3)]
-
     def vf(p) -> str:
         return f"({p[0]:.6g} {p[1]:.6g} {p[2]:.6g})"
+
+    # locationInMesh - a far-field corner, GUARANTEED in the fluid (body is centred with margin).
+    loc = [domain_min[i] + 0.02 * ext[i] for i in range(3)]
 
     # SEALED SPACES (engines/sealed_cavities.py). A point inside each space the far field reaches
     # only through gaps too narrow to mesh is a place the mesh must NOT reach: snappyHexMesh walks
@@ -709,14 +749,41 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
                / (2 ** max(smax, flevel, near_band_level)))
     _min_vol = layer_min_vol(_finest, n_layers=max([n_layers, *layer_counts.values()]),
                              min_thickness_rel=_min_thick)
+    # THE WAKE (engines/wake_region.py). Graded boxes behind the body, along the flow, each one
+    # level coarser and longer than the one inside it, sized on the background cell the mesher
+    # really uses and held to a share of this run's cell budget. Without them the cells behind
+    # the body coarsened straight back to the background a few wall cells downstream, and a
+    # review that asked for a resolved wake could never be answered by a rebuild (job 679ae2a9).
+    # No request (an internal case, a caller that owns no flow) authors the historical dict.
+    _wake = None
+    if wake is not None:
+        _wake = plan_wake(body_min=analysis["bbox_min"], body_max=analysis["bbox_max"],
+                          domain_min=domain_min, domain_max=domain_max,
+                          flow_axis=wake.flow_axis, base_cell=base_actual, surface_level=smax,
+                          budget_cells=max_cells, knobs=wake.knobs, ruler_m=wake.ruler_m,
+                          grounded=bool(ground),
+                          # what the body itself costs, so the wake never starves the wall's
+                          # refinement of the budget snappyHexMesh stops refining at
+                          body_cells=castellated_estimate(
+                              area=analysis.get("surface_area"), divisions=div,
+                              base_cell=base_actual, surface_level=smax,
+                              near=(b0d, near_band_level), far=(b1d, max(1, smin - 1))))
+        logger.info("render_snappy_case: %s", _wake.summary())
+    _wake_tiers = list(_wake.tiers) if _wake is not None else []
+    _wake_geom = "".join(
+        f" {_WAKE_BOX}{k} {{ type searchableBox; min {vf(t.box_min)}; max {vf(t.box_max)}; }}"
+        for k, t in enumerate(_wake_tiers))
+    _wake_refine = "".join(f" {_WAKE_BOX}{k} {{ mode inside; levels ((1e15 {t.level})); }}"
+                           for k, t in enumerate(_wake_tiers))
+
     (ws / "system" / "snappyHexMeshDict").write_text(
         _HDR.format(cls="dictionary", obj="snappyHexMeshDict") + f"""
 castellatedMesh true; snap true; addLayers {'true' if _any_layers else 'false'};
-geometry {{ {surface_name}.stl {{ type triSurfaceMesh; name {surface_name};{_geo_regions} }} }}
+geometry {{ {surface_name}.stl {{ type triSurfaceMesh; name {surface_name};{_geo_regions} }}{_wake_geom} }}
 castellatedMeshControls {{ maxLocalCells {max_cells}; maxGlobalCells {max_cells}; minRefinementCells 10;
   maxLoadUnbalance 0.10; nCellsBetweenLevels 3; features ( {{ file "{feature_file}"; level {flevel}; }} );
   refinementSurfaces {{ {surface_name} {{ level ({smin} {smax});{_ref_regions} }} }} resolveFeatureAngle {ang:.0f};
-  refinementRegions {{ {surface_name} {{ mode distance; levels (({b0d:.6g} {near_band_level}) ({b1d:.6g} {max(1, smin - 1)})); }} }}
+  refinementRegions {{ {surface_name} {{ mode distance; levels (({b0d:.6g} {near_band_level}) ({b1d:.6g} {max(1, smin - 1)})); }}{_wake_refine} }}
   locationInMesh {vf(loc)}; allowFreeStandingZoneFaces true;{_outside} }}
 snapControls {{ nSmoothPatch 3; tolerance 2.0; nSolveIter 50; nRelaxIter 8; nFeatureSnapIter 15;
   implicitFeatureSnap false; explicitFeatureSnap true; multiRegionFeatureSnap false; }}
@@ -765,6 +832,15 @@ mergeTolerance 1e-6; debug 0;
         out["ground"] = {"patch": ground, "floor_z": round(float(domain_min[VERTICAL_AXIS]), 6)}
     if _pts:
         out["sealed_points"] = [[round(float(v), 6) for v in p] for p in _pts]
+    # the honest record of the wake this pass authored, beside the case (finalize puts it in the
+    # manifest); a pass without one leaves no stale record behind
+    _wr = ws / WAKE_FACT
+    if _wake is not None:
+        out["wake"] = _wake.record()
+        out["wake_note"] = _wake.summary()
+        _wr.write_text(json.dumps(out["wake"]))
+    elif _wr.exists():
+        _wr.unlink()
     return out
 
 
@@ -796,7 +872,11 @@ def configure_mesh(workspace, *, geometry_file: str, strategy: dict, wall_patch:
         analysis=analysis, recommendation=rec, domain_min=dmin, domain_max=dmax,
         strategy=strategy, dimensionality=args.get("dimensionality", "3D"), ground=ground,
         surface_regions=prep.get("surface_regions") or None, farfield=farfield,
-        class_regions=False)
+        class_regions=False,
+        # no flow axis reaches this tool: the wake goes where the box has the most room behind
+        # the body, which is downstream by every margin this function sizes
+        wake=WakeRequest(knobs=strategy.get("wake"),
+                         ruler_m=strategy.get("reference_length_m")))
     return {"success": True, "wrote": ["system/blockMeshDict", "system/snappyHexMeshDict"],
             **summary,
             "next": "Dicts written (valid + clamped to the budget). Call run_mesh NOW to build "

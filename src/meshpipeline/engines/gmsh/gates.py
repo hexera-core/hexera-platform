@@ -10,6 +10,7 @@ import meshpipeline.settings.policy as polcfg
 from meshpipeline.contracts.failure_cause import FailureCause
 from meshpipeline.engines.gates import GateCtx, GateSpec, refuse
 from meshpipeline.engines.gmsh.gmsh_runner import SICN_FLOOR
+from meshpipeline.engines.region_check import gate_port_areas
 
 logger = logging.getLogger(__name__)
 
@@ -184,4 +185,10 @@ GMSH_GATES: tuple[GateSpec, ...] = (
     GateSpec(key="patch_contract", check=_gate_gmsh_region_contract, section="GROUPS",
              proves="Every named group you asked for exists in the deck",
              cause=FailureCause.CONTRACT_MISMATCH),
+    # SHARED with every engine (engines/region_check.py): each declared inlet/outlet delivered at
+    # about the size declared - a port that swept in the wall round it, or a mesh of another
+    # region, is refused here though every other gate passes
+    GateSpec(key="port_areas", check=gate_port_areas, section="GROUPS",
+             proves="Every inlet and outlet is the opening you declared, at its size",
+             cause=FailureCause.PATCH_NOT_CAPTURED),
 )

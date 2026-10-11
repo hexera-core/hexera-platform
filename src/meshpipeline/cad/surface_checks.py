@@ -60,6 +60,11 @@ def surface_deviation(snapped_surface_path, reference_stl_path) -> dict | None:
         return None
 
 
+#: a face covering more cells than this is kept out of the self-intersection grid and tested
+#: against the faces its box overlaps directly (see self_intersection_report)
+LONG_FACE_CELLS = 64
+
+
 def self_intersects(surface_path, *, max_faces: int = 400_000) -> bool:
     return self_intersection_report(surface_path, max_faces=max_faces, max_pairs=1) is not None
 
@@ -102,9 +107,19 @@ def self_intersection_report(surface_path, *, max_faces: int = 400_000,
         cell = max(cell, 1e-9)
         gl = np.floor(lo / cell).astype(np.int64)
         gh = np.floor(hi / cell).astype(np.int64)
+        # LONG SLIVERS GO THEIR OWN WAY: a swept CAD tube tessellates into slivers as long as the
+        # tube, each spanning hundreds of median-sized cells per axis - a diagonal one millions -
+        # and bucketing them filled the container's memory (a vessel tree STEP: killed, rc 137,
+        # at admission) or ran past the hour (a helical coil). A face covering more than
+        # LONG_FACE_CELLS cells is tested against every face whose box it overlaps, found in one
+        # vectorised pass instead of through the grid.
+        reach = np.prod((gh - gl + 1).astype(float), axis=1)
+        long_faces = np.flatnonzero(reach > LONG_FACE_CELLS)
+        is_long = np.zeros(n, dtype=bool)
+        is_long[long_faces] = True
 
         buckets: dict[tuple, list] = defaultdict(list)
-        for i in range(len(tris)):
+        for i in np.flatnonzero(~is_long).tolist():
             for x in range(gl[i, 0], gh[i, 0] + 1):
                 for y in range(gl[i, 1], gh[i, 1] + 1):
                     for z in range(gl[i, 2], gh[i, 2] + 1):
@@ -113,27 +128,33 @@ def self_intersection_report(surface_path, *, max_faces: int = 400_000,
         triset = [frozenset(t.tolist()) for t in tris]
         tested: set[tuple[int, int]] = set()
         found: list[tuple[int, int]] = []
-        for ids in buckets.values():
-            m = len(ids)
-            if m < 2:
+
+        def _pairs():
+            for ids in buckets.values():
+                m = len(ids)
+                for a in range(m):
+                    for b in range(a + 1, m):
+                        yield ids[a], ids[b]
+            for i in long_faces.tolist():
+                hit = np.flatnonzero(np.all(lo <= hi[i], axis=1) & np.all(hi >= lo[i], axis=1))
+                for j in hit.tolist():
+                    if j != i and not (is_long[j] and j < i):
+                        yield i, j
+
+        for i, j in _pairs():
+            key = (i, j) if i < j else (j, i)
+            if key in tested:
                 continue
-            for a in range(m):
-                i = ids[a]
-                for b in range(a + 1, m):
-                    j = ids[b]
-                    key = (i, j) if i < j else (j, i)
-                    if key in tested:
-                        continue
-                    tested.add(key)
-                    if triset[i] & triset[j]:            # shares a vertex → adjacency, not a defect
-                        continue
-                    if (lo[i] > hi[j]).any() or (lo[j] > hi[i]).any():
-                        continue                          # AABBs miss
-                    if vtkTriangle.TrianglesIntersect(tp[i][0], tp[i][1], tp[i][2],
-                                                      tp[j][0], tp[j][1], tp[j][2]):
-                        found.append(key)
-                        if len(found) >= max_pairs:
-                            return _crossing_report(found, tp, more=True)
+            tested.add(key)
+            if triset[i] & triset[j]:            # shares a vertex → adjacency, not a defect
+                continue
+            if (lo[i] > hi[j]).any() or (lo[j] > hi[i]).any():
+                continue                          # AABBs miss
+            if vtkTriangle.TrianglesIntersect(tp[i][0], tp[i][1], tp[i][2],
+                                              tp[j][0], tp[j][1], tp[j][2]):
+                found.append(key)
+                if len(found) >= max_pairs:
+                    return _crossing_report(found, tp, more=True)
         return _crossing_report(found, tp, more=False) if found else None
     except Exception as exc:  # noqa: BLE001 - a probe must never be the reason a build dies
         logger.warning("self_intersects: check failed (%s) - treating as inconclusive", exc)

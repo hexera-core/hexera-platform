@@ -266,13 +266,57 @@ def _object_refinement_blocks(features: list, *, cell_floor: float = 0.0) -> lis
     return blocks
 
 
+#: EXTERNAL FLOW, a builder that sets no wall cell: the wall is sized from the measured wetted area
+#: so the wall shell, its grading and its layers spend about this share of the cell budget (the
+#: way snappy's planner back-solves its surface level from the area). The old default was L/20:
+#: twenty cells along the body whatever the budget - an airliner came out with 452 wall faces
+#: and 49k cells in a 4M budget, a car with 1,490 (HOME-TURF lab, 2026-10-05), and every gate
+#: passed.
+#: The wall cell is then snapped DOWN the octree (snap_to_octree): cfMesh refines by halving until
+#: a cell is no larger than the size asked, so a size just under a level costs a whole level - 4x
+#: the wall cells. Unsnapped, the SAE notchback, the Windsor body and the ONERA M6 came out at
+#: 3.8-4.2M cells on a 2M budget at both a half and a quarter share (lab htf2-/htf5-: identical
+#: meshes, the same octree level).
+EXTERNAL_WALL_BUDGET_SHARE = 0.5
+#: cells per wall face through the refined shell and its 2:1 grading out to the background,
+#: before the prism layers (each layer adds one more per face)
+EXTERNAL_SHELL_DEPTH = 4.0
+#: how many halvings below the background cell the wall may sit, external flow (2^8: a far field
+#: tens of body lengths across still reaches a wall cell sized for the body)
+EXTERNAL_MAX_HALVINGS = 8
+
+
+def external_wall_cell(surface_area_m2: float, cell_budget: int, n_layers: int,
+                       L: float) -> float:
+    """The default wall cell for external flow (metres): the size at which the wall's faces, times
+    the shell depth and the layers, fill EXTERNAL_WALL_BUDGET_SHARE of the budget - never coarser
+    than the old L/20."""
+    area = max(float(surface_area_m2 or 0.0), 0.0)
+    if area <= 0.0 or not cell_budget:
+        return L / 20.0
+    depth = EXTERNAL_SHELL_DEPTH + max(0, int(n_layers))
+    cell = (area * depth / (EXTERNAL_WALL_BUDGET_SHARE * float(cell_budget))) ** 0.5
+    return min(cell, L / 20.0)
+
+
+def snap_to_octree(max_cell: float, wall_cell: float) -> float:
+    """The octree cell (max_cell / 2^n) no finer than `wall_cell`, nudged up so cfMesh stops at that
+    level: it refines a cell while it is larger than the size asked."""
+    import math
+    if not (max_cell > 0.0 and wall_cell > 0.0) or wall_cell >= max_cell:
+        return wall_cell
+    n = int(math.floor(math.log2(max_cell / wall_cell) + 1e-9))
+    return max_cell / (2 ** n) * 1.001
+
+
 def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
                        patches: list, body_bbox, L: float,
                        domain_min, domain_max, strategy: dict | None = None,
                        cell_budget: int | None = None,
                        default_boundary: bool = True,
                        passage_radius: dict | None = None,
-                       passage_field: tuple | None = None) -> dict:
+                       passage_field: tuple | None = None,
+                       max_halvings: int = 4, snap_wall: bool = False) -> dict:
     ws = Path(workspace)
     strategy = strategy or {}
     ext = [float(domain_max[i] - domain_min[i]) for i in range(3)]
@@ -303,7 +347,10 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
         _caps = size_caps(passage_radius)
         max_cell = min(max_cell, _caps["max_cell"])
         wall_cell = min(wall_cell, _caps["wall_cell"])
-    wall_cell = max(wall_cell, max_cell / 16.0)
+    wall_cell = max(wall_cell, max_cell / float(2 ** max(1, int(max_halvings))))
+    if snap_wall:
+        # a wall size the engine chose from the budget: the octree level at or above it
+        wall_cell = snap_to_octree(max_cell, wall_cell)
     # PASSAGE CEILING: neither the wall band nor a refinement box may cut finer than 40 cells
     # across the narrowest passage (the top of industry practice). A builder that asked for
     # 79 across turned a tee into 16.4 M hexes, an 886 MB deliverable and a 161-minute run.
@@ -390,9 +437,9 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
             **({"narrow_note": _narrow_note} if _narrow_note else {})}
 
 
-def _bind_intake_shared(t: dict, declaration: list):
+def _bind_intake_shared(t: dict, declaration: list, *, bore: bool = True):
     from meshpipeline.engines.port_binding import bind_intake
-    return bind_intake(t, declaration)
+    return bind_intake(t, declaration, bore=bore)
 
 
 def _passage_sizing(t: dict, srcs: dict, wall_key: str, declaration: list):
@@ -431,7 +478,8 @@ def _passage_sizing(t: dict, srcs: dict, wall_key: str, declaration: list):
         if hw and p.get("name"):
             name = str(p["name"])
             widths[name] = min(float(widths.get(name) or float("inf")), 2.0 * hw)
-    chosen = choose_passage_radius(chord, port_radius_stats(t.get("openings"), widths))
+    chosen = choose_passage_radius(chord, port_radius_stats(t.get("openings"), widths),
+                                   fluid_boundary=bool(t.get("wall_bounds_fluid")))
     if not chosen or not str(chosen.get("source", "")).startswith("chord") or raw is None:
         return chosen, None
     field = staged_passage_field(t, srcs, wall_key, declaration, field=raw)
@@ -476,9 +524,14 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
     try:
         if solid.exists():
             try:
+                from meshpipeline.engines.workspace_facts import read_input_kind as _kind
                 t = tessellate_internal(solid, ws / "_internal_stls", prepared=prepared_state,
                                         opening_faces=args.get("opening_faces") or None,
-                                        declared_ports=declaration_targets(_decl))
+                                        declared_ports=declaration_targets(_decl),
+                                        # a DECLARED fluid domain: its touching solids are one
+                                        # fluid (cad_tessellate._fluid_union)
+                                        fluid_solid=(True if _kind(workspace) == "fluid-domain"
+                                                     else None))
             except BindError:
                 raise
             except Exception as exc:  # noqa: BLE001 - the solid's own surface is tried next
@@ -502,8 +555,17 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
                 "next": "Relay this to the user verbatim - the declaration needs a size, "
                         "location or interchangeability answer only they can give. Do NOT "
                         "retry with invented values."}
+    # the fluid is the solid itself only for a confirmed fluid domain; anything else is a body
+    # whose fluid is the bore it closes (which measure of a ring port the flow crosses)
+    from meshpipeline.engines.workspace_facts import read_input_kind
+    _bore = read_input_kind(ws) != "fluid-domain"
     try:
-        t, _wall_key, _bound_note = _bind_intake_shared(t, _decl)
+        t, _wall_key, _bound_note = _bind_intake_shared(t, _decl, bore=_bore)
+        from meshpipeline.engines.region_check import record_port_openings, trusted_declaration
+        # sized from the measured opening where the typed size disagrees (as the gate judges it)
+        _sizing_decl = trusted_declaration(
+            _decl, record_port_openings(workspace, t.get("openings"), bore=_bore,
+                                        intake_patches=_decl))
     except BindError as exc:
         # a refusal, not a failure: the declaration and the measured geometry disagree, and
         # only the user can settle it
@@ -517,12 +579,35 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
     if t.get("folded_stls"):
         # blind plugs are wall, physically: their triangles join the wall surface
         _srcs[_wall_key] = [_srcs[_wall_key], *t["folded_stls"].values()]
+    from meshpipeline.engines.workspace_facts import read_input_kind
+    _fluid_declared = read_input_kind(workspace) == "fluid-domain"
+    if not t.get("wall_bounds_fluid") and not _fluid_declared and t.get("source") != "surface":
+        # ONE REGION. A hollow wall is staged for a carve: the metal's whole skin and caps over the
+        # whole mouths close the metal AND the cavity, and cartesianMesh - no seed point - fills
+        # either (the rocket nozzle: its metal). Cut to the bore skin and the bore's part of each
+        # cap, the surface closes the fluid alone (cad/bore_staging.py); when that cannot be built
+        # closed, the staging stands as it was.
+        from meshpipeline.cad.bore_staging import bore_only_surfaces
+        _bore_surfaces: dict | None
+        try:
+            _bore_surfaces = bore_only_surfaces(_srcs, _wall_key, ws / "_internal_bore")
+        except Exception:  # noqa: BLE001 - the whole-mouth staging is the fallback
+            logger.warning("cfMesh internal: bore-only staging failed - keeping the whole-mouth "
+                           "staging", exc_info=True)
+            _bore_surfaces = None
+        if _bore_surfaces:
+            _srcs = {**_srcs, **_bore_surfaces}
+            t = {**t, "wall_bounds_fluid": True}
     prep = prepare_surface_internal(
         workspace, surfaces_src=_srcs,
         feature_angle=float(args.get("feature_angle", 30.0)))
     # the local passage radius of the staged boundary (wall + port caps close it) sizes the
     # wall band and the background; {} when the surfaces do not close, and the strategy stands
-    passage_radius, _field = _passage_sizing(t, _srcs, _wall_key, port_declaration(workspace))
+    # a solid DECLARED the fluid domain is the fluid's own boundary, whatever its ports look like
+    # (this path stages a CAD solid without the declaration, so the record cannot know it)
+    if _fluid_declared:
+        t = {**t, "wall_bounds_fluid": True}
+    passage_radius, _field = _passage_sizing(t, _srcs, _wall_key, _sizing_decl)
 
     _patches = list(contract_patches or [])
     if not _patches:
@@ -535,10 +620,15 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
         patches=_patches, body_bbox=prep["body_bbox"], L=L,
         domain_min=bb_min, domain_max=bb_max, strategy=strategy, cell_budget=cell_budget,
         passage_radius=passage_radius, passage_field=_field)
+    _sizes = list((t.get("binding") or {}).get("size_notes") or [])
     return {"success": True, "wrote": ["system/meshDict"], "topology": "internal",
             "openings": t.get("openings"), "passage_radius": passage_radius, **summary,
-            "next": "meshDict written for the enclosed cavity (valid + budget-clamped). "
-                    "Call run_mesh NOW. Reconfigure ONLY on a concrete run_mesh failure."}
+            **({"port_sizes": _sizes} if _sizes else {}),
+            "next": ("meshDict written for the enclosed cavity (valid + budget-clamped). "
+                     + ("Tell the user, in these words, that a declared port size disagrees with "
+                        "the geometry and the measured opening is used: " + " ".join(_sizes) + " "
+                        if _sizes else "")
+                     + "Call run_mesh NOW. Reconfigure ONLY on a concrete run_mesh failure.")}
 
 
 def configure_mesh(workspace, *, geometry_file: str, strategy: dict, wall_patch: str,
@@ -604,10 +694,18 @@ def configure_mesh(workspace, *, geometry_file: str, strategy: dict, wall_patch:
         feature_angle=float(args.get("feature_angle", 30.0)),
         mirror_y_half=bool(args.get("mirror_y_half", False)),
         body_walls=body_walls(_patches) or None)
+    strategy = dict(strategy or {})
+    _sized_here = strategy.get("wall_cell") is None
+    if _sized_here:
+        # no size from the builder: spend the budget on the wall, measured from its area
+        strategy = {**strategy, "wall_cell": external_wall_cell(
+            analysis.get("surface_area") or 0.0, cell_budget,
+            int(strategy.get("n_layers", 0) or 0), float(analysis["L"]))}
     summary = render_cfmesh_case(
         workspace, surface_file=prep["surface_file"], wall_patch=wall_patch,
         patches=_patches, body_bbox=prep["body_bbox"], L=analysis["L"],
-        domain_min=dmin, domain_max=dmax, strategy=strategy, cell_budget=cell_budget)
+        domain_min=dmin, domain_max=dmax, strategy=strategy, cell_budget=cell_budget,
+        max_halvings=EXTERNAL_MAX_HALVINGS, snap_wall=_sized_here)
     return {"success": True, "wrote": ["system/meshDict"], "topology": "external", **summary,
             "next": "meshDict written (valid + budget-clamped). Call run_mesh NOW. "
                     "Reconfigure ONLY in response to a concrete run_mesh failure."}
