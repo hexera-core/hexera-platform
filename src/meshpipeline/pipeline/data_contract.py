@@ -223,7 +223,10 @@ CONTRACT: tuple[ContractVar, ...] = (
         purpose="the fallback ladder's durable record (pipeline/engine_fallback.py): the "
                 "approved engine, every attempt's engine and failure class, each switch and "
                 "why, the engine that built the delivered mesh, and - on a mesh failure - the "
-                "one offer the run ends with. Carried into the terminal result verbatim",
+                "one offer the run ends with; plus the MEASURED order its rungs are walked in for "
+                "this geometry (order, order_source, order_recommended, order_reasons - "
+                "engines/fitness.py, seeded by node_engine_select). Carried into the terminal "
+                "result verbatim",
         state_field="engine_ladder",
         corpus="qa: which shapes need which rung - every engine a run tried and why it "
                "left each one",
@@ -381,8 +384,8 @@ STATE_FIELDS: dict[str, str] = {
     "engine":                "the RESOLVED engine that runs (see 'engine (resolved)' above)",
     "engine_source":         "who chose the engine: user_direct | suggested_confirmed | dispute | "
                              "system (see 'engine choice provenance'); gates the fallback ladder",
-    "engine_ladder":         "the fallback ladder's record: attempts, switches, the closing offer "
-                             "(see 'engine fallback ladder record')",
+    "engine_ladder":         "the fallback ladder's record: the measured rung order, attempts, "
+                             "switches, the closing offer (see 'engine fallback ladder record')",
     "messages":              "LangGraph message accumulator for the intake node",
     "job_id":                "job identity (see contract)",
     "user_id":               "owner identity (see contract; alias of owner_id)",

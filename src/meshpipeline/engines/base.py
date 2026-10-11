@@ -191,6 +191,65 @@ class FlowSupport:
     designed_for: str = ""
 
 
+#: HOME TURF verdicts, best first. A row's severity says what its condition, when it HOLDS,
+#: means for this engine on this case:
+#:   home    - a strength: the engine is a first choice where this holds (ranks it up);
+#:   weak    - a known weak spot: still offered, with the row's words as the heads-up;
+#:   outside - not what the engine is for: not proposed (a user who names it is told why).
+TURF_HOME = "home"
+TURF_WEAK = "weak"
+TURF_OUTSIDE = "outside"
+TURF_SEVERITIES: tuple[str, ...] = (TURF_HOME, TURF_WEAK, TURF_OUTSIDE)
+#: The comparison a row applies, fact on the left, the row's value on the right.
+TURF_OPS: tuple[str, ...] = ("<", "<=", ">", ">=", "==", "!=", "in", "not in", "is")
+
+
+@dataclass(frozen=True)
+class TurfRow:
+    """ONE MEASURABLE CONDITION on an engine's home turf: WHEN `fact op value` holds (for `flow`,
+    or any flow when it is ''), the engine is `severity` there, for the reason `words` says.
+
+    Declared, never inferred from the engine's name: the recommender, the proposal and the offers
+    read these rows, so a new engine says where it is strong and where it is not in its own spec.
+    `fact` names one measured or carried fact (engines/home_turf.TURF_FACTS lists every one and
+    where it comes from); a case that does not carry the fact makes the row say nothing.
+    Thresholds come from lab evidence - the words cite it where they can."""
+
+    fact: str
+    op: str                       # one of TURF_OPS
+    value: object                 # float/int (ordered ops), bool (is), str (==, !=), tuple (in)
+    severity: str                 # one of TURF_SEVERITIES
+    words: str                    # plain words a user reads: what holds, and what it means
+    flow: str = ""                # capability.FLOW_KINDS member this row is about; '' = every flow
+
+    def applies_to(self, flow: str) -> bool:
+        return not self.flow or not flow or self.flow == flow
+
+    def holds(self, facts) -> bool | None:
+        """Whether the condition holds on these facts; None when the fact is absent (or of a type
+        the comparison cannot take) - an unmeasured fact claims nothing."""
+        if not hasattr(facts, "get") or self.fact not in facts:
+            return None
+        got = facts.get(self.fact)
+        if got is None:
+            return None
+        try:
+            if self.op == "is":
+                return bool(got) is bool(self.value)
+            if self.op == "==":
+                return bool(got == self.value)
+            if self.op == "!=":
+                return bool(got != self.value)
+            if self.op in ("in", "not in"):
+                pool = self.value if isinstance(self.value, (tuple, list, frozenset, set)) else ()
+                inside = got in pool
+                return inside if self.op == "in" else not inside
+            a, b = float(got), float(self.value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return None
+        return {"<": a < b, "<=": a <= b, ">": a > b, ">=": a >= b}.get(self.op)
+
+
 @dataclass(frozen=True)
 class Diagnostic:
     severity: str      # "error" | "warning"
@@ -427,6 +486,12 @@ class EngineSpec:
     #: engine that declares nothing goes last. The ladder and the start-of-run choice read it
     #: (capability.ladder_order); nothing lists engines by hand.
     ladder_rank: int = 100
+    #: WHERE THIS ENGINE IS AT HOME, as measurable conditions (TurfRow tuple): its strengths, its
+    #: weak spots and what it is not for, per flow - what the recommender ranks engines by and the
+    #: proposal says out loud (engines/home_turf.py reads them). `accepts` says what file it CAN
+    #: take; these say how well it does there. Empty = nothing declared: every case it accepts is
+    #: treated alike.
+    home_turf: tuple[TurfRow, ...] = ()
 
     def forms_for(self, flow: str) -> tuple[str, ...] | None:
         """The geometry forms this bundle consumes for `flow`, or None when it is not designed

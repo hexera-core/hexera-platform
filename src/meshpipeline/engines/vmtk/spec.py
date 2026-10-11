@@ -17,6 +17,7 @@ from meshpipeline.engines.base import (
     MeshCapability,
     ParamSpec,
     RunPolicy,
+    TurfRow,
 )
 from meshpipeline.engines.base import (
     DeliverableMember as M,
@@ -133,6 +134,47 @@ def _viewer_surface():
     return _hook
 
 
+# WHERE VMTK IS AT HOME (engines/home_turf.py reads these). VMTK fills the inside of a PASSAGE: any
+# internal flow whose openings it can cap (each a disk, or each a ring round a centre body) and
+# whose wall it sizes from the local radius - so every tubular structure: vessels, pipes, bends,
+# tees, manifolds, reducers, transitions, S-ducts, coils, venturis, tube-like nozzles, annuli and
+# non-circular ducts. Its cells are tetrahedra sized at 12 or more across the LOCAL gap, so its
+# cost follows the passage's length over its gap: the VMTK-TUBULAR sweep (2026-10-05/06) measured
+# the default fill at about 64-87 thousand cells per unit of slenderness (a bend 754k at 8.6, a
+# tee 954k at 14.9, a thin annulus 113M at 1333); at the 12-across floor with the interior
+# coarsened that is about 0.42 of it with five layers and 0.11 with none - so past ~100 the cell
+# budget reshapes the fill, and past ~800 no tetrahedral fill fits the 8M compute limit.
+HOME_TURF = (
+    TurfRow("flow", "!=", "internal", "outside",
+            "VMTK fills the inside of a passage; it builds no far field around a body and no "
+            "solid regions."),
+    TurfRow("ports", "<", 2, "outside",
+            "VMTK needs an inlet and an outlet opening to cap: a passage with fewer is not one it "
+            "can fill."),
+    TurfRow("slenderness", ">=", 3.0, "home",
+            "A long passage a centerline describes: VMTK sizes every stretch of it from its own "
+            "radius, with boundary layers on the whole wall.", flow="internal"),
+    TurfRow("neck", "<", 0.35, "home",
+            "Branches of very different sizes: VMTK gives each its own cell size from its own "
+            "radius, where a uniform mesher starves the small ones or floods the big one.",
+            flow="internal"),
+    TurfRow("gap_vs_port", ">", 1.4, "weak",
+            "A chamber much wider than its pipes (a plenum, a housing, a volute): VMTK meshes it, "
+            "but its tube sizing buys nothing there.", flow="internal"),
+    TurfRow("slenderness", "<", 1.5, "weak",
+            "Short and stubby, barely a passage: a centerline hardly describes it, so VMTK's "
+            "sizing gains little over a general mesher.", flow="internal"),
+    TurfRow("slenderness", ">", 100.0, "weak",
+            "Long and thin for its gap (a narrow annulus, a flat slot): VMTK's cells are as long "
+            "as they are wide, so to stay in the cell budget it coarsens the core and may drop "
+            "the boundary layers.", flow="internal"),
+    TurfRow("slenderness", ">", 800.0, "outside",
+            "Too thin for its length and width: 12 tetrahedra across the gap would need more than "
+            "the 8 million-cell limit. snappyHexMesh or cfMesh stretch their cells along the "
+            "passage and fit it.", flow="internal"),
+)
+
+
 SPEC = EngineSpec(
 
         name="vmtk",
@@ -205,6 +247,7 @@ SPEC = EngineSpec(
                              designed_for="tubular passages: vessels, pipes, ducts"),),
         # a tetrahedral lumen filler: after the hex meshers on the internal ladder
         ladder_rank=30,
+        home_turf=HOME_TURF,
         input_contract=InputContract(
             # internal flow from an STL/OBJ/PLY upload: cad/internal_surface closes it at the
             # confirmed openings (snappy/cfMesh/gmsh/vmtk internal paths read that record)

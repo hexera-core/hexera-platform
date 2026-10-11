@@ -28,3 +28,7 @@ class ChatResponse(BaseModel):
     # rationale for work that happened before a job (and therefore before any Redis
     # channel) existed. Already projected for the deployment's trace mode.
     trace: list[dict[str, Any]] = []
+    # THE OPEN ENGINE QUESTION, drawn as a choice: the engine proposed and every engine that can
+    # take the file, with its measured fit and reason (agents/intake/measured_choice.choice_payload).
+    # Present only while the question is open; the user's pick is sent back as an ordinary message.
+    engine_choice: dict[str, Any] | None = None
