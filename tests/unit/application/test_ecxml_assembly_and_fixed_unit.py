@@ -432,6 +432,7 @@ async def test_a_unit_named_beside_another_request_leaves_the_request_to_the_tur
     from meshpipeline.agents.intake import unit_clarification as uc
 
     assert uc.only_states_unit("the file is in metres, not millimetres") is True
+    assert uc.only_states_unit("the file is in metres, thanks") is True
     assert uc.only_states_unit("the file is in metres, and make the mesh finer") is False
 
     async def _interp(db, sess, owner_id, organization_id):

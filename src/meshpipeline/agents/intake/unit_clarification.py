@@ -266,7 +266,9 @@ _UNIT_SENTENCE_WORDS = _REPLY_FILLER | frozenset({
     "file", "geometry", "model", "cad", "step", "part", "drawing", "coordinate", "coordinates",
     "numbers", "dimensions", "sizes", "unit", "units", "scale", "everything", "this", "that",
     "they", "was", "were", "uses", "used", "drawn", "modelled", "modeled", "exported", "saved",
-    "given", "written", "made", "ecxml", "a", "an", "please", "just", "think", "says", "say"})
+    "given", "written", "made", "ecxml", "a", "an", "please", "just", "think", "says", "say",
+    # courtesy carries no request: "the file is in metres, thanks"
+    "thanks", "thank", "you", "cheers", "fyi", "btw", "hi", "hello"})
 
 
 def only_states_unit(message: str) -> bool:
