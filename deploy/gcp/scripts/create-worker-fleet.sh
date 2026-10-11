@@ -393,6 +393,23 @@ WORKER_METADATA=(
   "redis-key-prefix=${REDIS_KEY_PREFIX:-}"
   "database-url=${WORKER_DATABASE_URL}"
   "env-uri=${WORKER_ENV_URI}"
+  # THE OBJECT STORE AND THE DEPLOYMENT'S OWN NAMES, from the same variables create-api-service.sh
+  # gives the API. The env object above is published once, from .env.example, the first time a
+  # personal environment's fleet is created and never again - so without these a dev-<slug> worker
+  # dialled localhost:9000: it took each geometry check off the queue, could not fetch the upload,
+  # could not store the failure either, and the check stayed "pending" until the API gave up
+  # (dev-areen, 2026-10-11). startup.sh appends each non-empty one to the worker's env, exactly as it
+  # does the database and the broker. The ACCESS KEY ID is the public half of the HMAC pair, a plain
+  # value on the API service too; the secret half stays a Secret Manager NAME (minio-secret-key-secret).
+  "deployment-id=${DEPLOYMENT_ID:-}"
+  "minio-endpoint=${MINIO_ENDPOINT:-}"
+  "minio-public-endpoint=${MINIO_PUBLIC_ENDPOINT:-${MINIO_ENDPOINT:-}}"
+  "minio-access-key=${MINIO_ACCESS_KEY:-}"
+  "minio-bucket=${MINIO_BUCKET:-}"
+  "minio-region=${MINIO_REGION:-}"
+  "minio-secure=${MINIO_SECURE:-${MINIO_ENDPOINT:+true}}"
+  "gcp-mesh-bucket=${GCP_MESH_BUCKET:-}"
+  "cloudrun-job=${CLOUDRUN_MESH_JOB:-}"
 )
 WORKER_METADATA+=(${WORKER_SECRET_METADATA[@]+"${WORKER_SECRET_METADATA[@]}"})
 
