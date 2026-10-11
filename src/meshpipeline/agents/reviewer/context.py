@@ -142,6 +142,14 @@ def layer_policy_line(pol: dict) -> str:
             f"stage {pol.get('escalation_stage', 0)}): ")
     sharp = round(_pct("thin") + _pct("razor"), 1)
     dominant = next(iter((pol.get("region_patches") or {}).values()), "")
+    if "repair" in classes:
+        rep = classes["repair"]
+        return ("Local layer repair (measured): an earlier pass's prism layers folded into invalid "
+                f"cells at {rep.get('points', 'some')} spot(s) on the wall, so this pass leaves the "
+                f"layers out within {round(float(rep.get('radius_m') or 0) * 1e3, 1)} mm of them - "
+                f"{_pct('repair')}% of the wall area, with no layers there by design. Every other "
+                f"face was asked for the full {req} layers; coverage missing outside that "
+                "repaired area is a real finding.")
     if pol.get("mode") == "global" and dominant in classes and req and _n(dominant) < req:
         return (head + f"almost the whole wall is locally thin or razor-sharp ({cls}), so the "
                 f"WHOLE wall carries the {dominant} count of {_n(dominant)} layers instead of the "

@@ -552,6 +552,57 @@ def _pass_shape(q: dict, wall_faces: int) -> str:
             + (f", {_skew:,} skewed" if _skew else ", none skewed"))
 
 
+def _repair_after_fold(workspace: Path, q: dict, *, production: bool, repairable: bool,
+                       surface, rec: dict | None, strategy: dict, job_id: str) -> str | None:
+    """After a pass whose prism layers folded into invalid cells, record a LOCAL repair for the
+    next pass and say so in the engineer's words; None when there is nothing to repair here - a
+    clean pass, a wall the repair may not split, no located spot on the wall, or every repair
+    stage spent. The spots come from checkMesh (foam_exec.fatal_points); a spot off the wall is
+    no prism fold and is left to the planner."""
+    from meshpipeline.cad.thin_features import staged_triangles
+    from meshpipeline.engines.snappy import layer_policy as LP
+    if production or not repairable or rec is None or not LP.is_layer_fatal(q):
+        return None
+    pts = q.get("fatal_points") or []
+    if not pts:
+        return None
+    try:
+        tris = staged_triangles(surface.path)
+        surf_cell = LP.intended_surface_cell(rec, strategy)
+        on_wall = LP.points_on_wall(pts, tris, LP.repair_radius_m(surf_cell, LP.MAX_REPAIR_STAGE))
+    except Exception:  # noqa: BLE001 - a repair is an improvement, never a prerequisite
+        logger.warning("layer repair: the folded spots could not be placed on the wall - "
+                       "job_id=%s", job_id, exc_info=True)
+        return None
+    if not on_wall:
+        return None
+    prev = LP.read_repair(workspace)
+    if prev:
+        # a spot inside the area the last repair already stripped of layers is no layer fold:
+        # cutting more layers cannot fix it (the Camaro's snapped cells folded at the very same
+        # spot with no layer within 100 mm), so it goes to the planner instead
+        done = LP.repair_mask([[p, p, p] for p in on_wall], prev["points"],
+                              LP.repair_radius_m(surf_cell, prev["stage"]))
+        on_wall = [p for p, inside in zip(on_wall, done) if not inside]
+        if not on_wall:
+            logger.info("layer-fatal pass: every folded spot lies inside the area already "
+                        "repaired - not a prism-layer fold; no further layer repair - job_id=%s",
+                        job_id)
+            return None
+    rep = LP.escalate_repair(workspace, on_wall)
+    if rep is None:
+        return None
+    radius = LP.repair_radius_m(surf_cell, rep["stage"])
+    logger.info("layer-fatal pass: %d folded spot(s) on the wall - local layer repair stage %d, "
+                "%d spot(s), radius %.4g m (same plan) - job_id=%s", len(on_wall), rep["stage"],
+                len(rep["points"]), radius, job_id)
+    n = len(rep["points"])
+    return (f"its prism layers folded into invalid cells at {n} spot{'s' if n != 1 else ''} on "
+            f"the body, so the next pass leaves the layers out within {_mm(radius)} of "
+            f"{'those spots' if n != 1 else 'that spot'} and keeps the full layer count "
+            "everywhere else")
+
+
 async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, job_id: str,
                                       publish: ExecutionEventPublisher,
                                       initial_plan: dict | None,
@@ -695,6 +746,7 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
     # the plan (and authored case) of the last pass that RAN OUT OF TIME - see the internal build
     _timeout_ref: dict | None = _sibling_timed_out_plan(workspace)
     _timeout_case: dict[str, bytes] | None = None
+    rec: dict | None = None                            # the recommendation the pass planned with
 
     for attempt in range(1, max_attempts + 1):
         _timed_out_now, _repeat_stop, _mesh_minutes = False, False, 0.0
@@ -723,6 +775,7 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
         strategy, _coarsened = _coarsen_after_timeout(_timeout_ref, strategy, internal=False)
         previous_plan = strategy                       # remember for the next repair
         _policy = None                                 # this pass's local layer policy, if any
+        _repairable = False                            # may a repair split this pass's wall?
         await run.fence("write plan memory")
         _mem = await _op_begin(publish, "author_configuration", run, attempt)
         _write_plan_memory(workspace, strategy)
@@ -787,6 +840,13 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             # of one global count that folds at the sharp features or collapses everywhere.
             _policy = LP.plan_layer_policy(_field, rec=rec, strategy=strategy,
                                            wall_name=wall, stage=_esc_stage)
+            # LOCAL REPAIR: once a pass's layers folded, the spots checkMesh named lose their
+            # layers on this pass - and only they; every other face keeps the full request
+            _repair = LP.read_repair(workspace)
+            _repair_policy = LP.plan_repair_policy(_policy, rec=rec, strategy=strategy,
+                                                   wall_name=wall, repair=_repair)
+            if _repair_policy is not None:
+                _policy = _repair_policy
             prep = R.prepare_surface(
                 workspace, geometry_file="input.stl", domain_min=dmin, domain_max=dmax,
                 wall_patch=wall, farfield_patch=_farfield, feature_angle=150,
@@ -794,6 +854,8 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                 region_labeler=LP.make_region_labeler(_policy, wall) if _policy else None,
                 body_walls=_body_walls or None, symmetry_faces=_sym_faces)
             _policy = LP.reconcile_policy(_policy, prep.get("surface_regions") or [], wall)
+            # a repair needs a wall it may split: the user's own named parts are never split
+            _repairable = LP.can_split(prep.get("surface_regions") or [], wall)
             await _op_end(publish, _mem, "author_configuration", {"stage": "plan"}, True)
             await run.fence("author mesh specification")
             _spec = await _op_begin(publish, "validate_configuration", run, attempt)
@@ -897,14 +959,23 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
         logger.info("snappy attempt %d - cells=%s wall_faces=%s skew_faces=%s -> %s (job_id=%s)",
                     attempt, q.get("cells"), wall_faces, q.get("skew_faces"),
                     "PRODUCTION-GRADE" if production else reason[:50], job_id)
-        # THE ESCALATION LADDER. A layer-fatal pass (negative-volume / mis-oriented cells -
-        # folding prisms) on a geometry with a MEASURED thin-feature policy escalates that
-        # policy deterministically - reduce layers at the classified thin regions first, then
-        # thin them, then drop the razor regions to zero - keeping the SAME plan. The planner's
-        # freeform re-plan stays the answer for every other failure, and for this one once the
-        # ladder is exhausted.
+        # A LAYER-FATAL PASS (negative-volume / mis-oriented cells - folding prisms) is repaired
+        # where it folded: checkMesh located the invalid cells, and the next pass - the SAME plan -
+        # leaves layers out only round those spots (_repair_after_fold). Only when the spots are
+        # unknown (no location came back) does the older ladder cut the thin-feature classifier's
+        # whole classes: fewer layers at thin regions, then thinner, then none at razor regions.
+        # The planner's freeform re-plan stays the answer for every other failure, and for this
+        # one once the repair or the ladder is spent.
         _esc_note = ""
-        if not production and _policy is not None and LP.is_layer_fatal(q):
+        _repair_note = _repair_after_fold(workspace, q, production=production,
+                                          repairable=_repairable, surface=_surface,
+                                          rec=rec, strategy=strategy, job_id=job_id)
+        if _repair_note is not None:
+            # a repair is in play: the class ladder below never cuts the classifier's classes
+            # on top of it (the spots are KNOWN; whole classes are a guess)
+            _esc_note = _repair_note
+        elif not production and _policy is not None and LP.is_layer_fatal(q) \
+                and LP.read_repair(workspace) is None:
             _nxt = LP.escalate(_esc_stage)
             if _nxt is not None:
                 _esc_stage = _nxt

@@ -51,7 +51,7 @@ def folded_class_regions(ws: Path, layer_policy: dict | None) -> dict:
     out: dict = {}
     for r in regions:
         base, _, cls = str(r).rpartition("_")
-        if cls in ("thin", "razor") and base and r not in present:
+        if cls in ("thin", "razor", "repair") and base and r not in present:
             out[str(r)] = base
     return out
 

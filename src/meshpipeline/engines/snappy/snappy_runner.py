@@ -102,6 +102,39 @@ MIN_VOL_HISTORICAL = 1e-13
 MIN_VOL_MARGIN = 1e-3
 
 
+#: addLayersControls layerTerminationAngle: -180 asks snappyHexMesh to TRY every point and let its
+#: own mesh-quality checks decide. Left unset it defaults to half the featureAngle (65 degrees
+#: here), and before the first layer iteration snappy then stops extrusion at every point where a
+#: partly extruded face meets its neighbour at under 65 degrees - 27 170 points on a Camaro, 27 258
+#: on the Supra, 10 240 on an F1 front wing. Those points never reach a quality check, so their
+#: layers are lost whether or not the cells would have been good. Measured on the jobs' own snapped
+#: meshes (production image): Camaro 2.32 -> 2.44 mean layers of 3, F1 wing 2.36 -> 2.53, Supra
+#: 1.83 -> 1.91, with the same maximum non-orthogonality and skewness.
+LAYER_TERMINATION_ANGLE = -180
+
+
+def balanced_quality() -> tuple[str, int, int, float, str]:
+    """The "balanced" quality bars, split by STAGE: (minTetQuality, relaxed maxNonOrtho,
+    nRelaxedIter, maxThicknessToMedialRatio, the extra relaxed entry).
+
+    snappyHexMesh reads one meshQualityControls for castellation, snap and layers, and a
+    `relaxed` sub-set the layer stage switches to after nRelaxedIter iterations - the snap never
+    uses it. "balanced" used to switch the tet check off everywhere (minTetQuality -1e30) to keep
+    layers. That also let the SNAP leave a cell or two turned inside out on a full-size car: the
+    Camaro (job 406c002b, and every replay of it in the lab on the production image) came out of
+    each pass with 1-2 wrongly oriented wall faces, checkMesh called the mesh invalid, and three
+    rounds of cutting layers - whole thin-feature classes, then the spots themselves - never
+    removed them, because no layer made them. A pass with the tet check on throughout was valid,
+    but its layers fell to 1.92 of 3.
+
+    So the bars are split: the snap keeps the tet check (1e-13, the "strict" value), and the layer
+    stage uses the relaxed set from its first iteration (nRelaxedIter 0) with the tet check off
+    there only. maxNonOrtho stays 65 in both, the bar the reviewer judges. Measured (production
+    image, product path): Camaro valid on the first pass, 2.39 of 3 layers (was invalid three
+    times); F1 wing 2.53 (2.52 with the old bars), skewed faces 34 -> 27."""
+    return "1e-13", 65, 0, 0.5, " minTetQuality -1e30;"
+
+
 def layer_min_vol(finest_cell_m: float, *, n_layers: int, min_thickness_rel: float) -> float:
     """meshQualityControls minVol for a mesh whose finest wall cell is finest_cell_m.
 
@@ -717,10 +750,13 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
     # quality vs coverage: "balanced" buys layer coverage with relaxed cell quality (some
     # high-skew cells); "strict" enforces a real tet quality + tighter relaxed bounds so
     # checkMesh passes (skew < 4), trading a few % coverage. The builder flips this on high skew.
+    # "balanced" splits the bars by STAGE (balanced_quality): the snap keeps the tet check, the
+    # layers alone get it relaxed.
     if strategy.get("quality") == "strict":
         min_tet, relaxed_no, n_relaxed, medial = "1e-13", 65, 6, 0.3
+        relaxed_tet = ""
     else:
-        min_tet, relaxed_no, n_relaxed, medial = "-1e30", 75, 20, 0.5
+        min_tet, relaxed_no, n_relaxed, medial, relaxed_tet = balanced_quality()
     _med_override = (layer_overrides or {}).get("max_thickness_to_medial")
     if _med_override is not None:
         medial = float(_med_override)
@@ -791,11 +827,12 @@ addLayersControls {{ relativeSizes true; layers {{ {_layers} }}
   expansionRatio 1.2; finalLayerThickness {first_rel:g}; minThickness {_min_thick:g}; nGrow 0; featureAngle 130;
   slipFeatureAngle 30; nRelaxIter 8; nSmoothSurfaceNormals 2; nSmoothNormals 3; nSmoothThickness 10;
   maxFaceThicknessRatio 0.5; maxThicknessToMedialRatio {medial}; minMedialAxisAngle 90;
+  layerTerminationAngle {LAYER_TERMINATION_ANGLE};
   nBufferCellsNoExtrude 0; nLayerIter 50; nRelaxedIter {n_relaxed}; }}
 meshQualityControls {{ maxNonOrtho 65; maxBoundarySkewness 20; maxInternalSkewness 4; maxConcave 80;
   minVol {_min_vol:.3g}; minTetQuality {min_tet}; minArea -1; minTwist 0.02; minDeterminant 0.001;
   minFaceWeight 0.02; minVolRatio 0.01; minTriangleTwist -1; nSmoothScale 4; errorReduction 0.75;
-  relaxed {{ maxNonOrtho {relaxed_no}; maxInternalSkewness 4; }} }}
+  relaxed {{ maxNonOrtho {relaxed_no}; maxInternalSkewness 4;{relaxed_tet} }} }}
 mergeTolerance 1e-6; debug 0;
 """)
     # SYNTHETIC CLASS REGIONS ARE A MESHING DEVICE, NOT A DELIVERABLE. The layer policy splits
@@ -809,7 +846,8 @@ mergeTolerance 1e-6; debug 0;
     # they are the user's own patches.
     # Only the layer policy's OWN split is folded back: a user who declared walls "car" and
     # "car_thin" on a multi-part surface meant two patches, and merging them would drop one.
-    _synthetic = ([r for r in _names if r in (f"{surface_name}_thin", f"{surface_name}_razor")]
+    _synthetic = ([r for r in _names if r in (f"{surface_name}_thin", f"{surface_name}_razor",
+                                              f"{surface_name}_repair")]
                   if class_regions else [])
     _cp = ws / "system" / "createPatchDict"
     if _synthetic:
@@ -1188,8 +1226,9 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
 
     if quality == "strict":
         min_tet, relaxed_no, n_relaxed, medial = "1e-13", 65, 6, 0.3
+        relaxed_tet = ""
     else:
-        min_tet, relaxed_no, n_relaxed, medial = "-1e30", 75, 20, 0.5
+        min_tet, relaxed_no, n_relaxed, medial, relaxed_tet = balanced_quality()
     # minVol from the finest wall cell this case refines to (layer_min_vol): a passage a few
     # millimetres across has layer cells far below the tutorials' absolute 1e-13 m^3
     _top = max([smax, flevel, near_level, *port_lvls.values(),
@@ -1211,11 +1250,12 @@ addLayersControls {{ relativeSizes true; layers {{ {wall} {{ nSurfaceLayers {n_l
   expansionRatio 1.2; finalLayerThickness {first_rel:g}; minThickness 0.05; nGrow 0; featureAngle 130;
   slipFeatureAngle 30; nRelaxIter 8; nSmoothSurfaceNormals 2; nSmoothNormals 3; nSmoothThickness 10;
   maxFaceThicknessRatio 0.5; maxThicknessToMedialRatio {medial}; minMedialAxisAngle 90;
+  layerTerminationAngle {LAYER_TERMINATION_ANGLE};
   nBufferCellsNoExtrude 0; nLayerIter 50; nRelaxedIter {n_relaxed}; }}
 meshQualityControls {{ maxNonOrtho 65; maxBoundarySkewness 20; maxInternalSkewness 4; maxConcave 80;
   minVol {_min_vol:.3g}; minTetQuality {min_tet}; minArea -1; minTwist 0.02; minDeterminant 0.001;
   minFaceWeight 0.02; minVolRatio 0.01; minTriangleTwist -1; nSmoothScale 4; errorReduction 0.75;
-  relaxed {{ maxNonOrtho {relaxed_no}; maxInternalSkewness 4; }} }}
+  relaxed {{ maxNonOrtho {relaxed_no}; maxInternalSkewness 4;{relaxed_tet} }} }}
 mergeTolerance 1e-6; debug 0;
 """)
     return {"divisions": div, "surface_level": [smin, smax], "feature_level": flevel,
