@@ -31,6 +31,7 @@ from __future__ import annotations
 import heapq
 import math
 from dataclasses import dataclass, field
+from typing import Any
 
 from meshpipeline.cad.ingest.ecxml import EcxmlError, EcxmlModel, Obj, axis_of_plane, sign_of_plane
 from meshpipeline.cad.ingest.ecxml_build import (
@@ -49,7 +50,6 @@ from meshpipeline.cad.ingest.ecxml_build import (
     _Part,
     _plate,
     _records_in_domain,
-    _snap_function,
     _Tol,
     _um,
     _unique_namer,
@@ -77,6 +77,8 @@ class Placement:
     planes: list[list[float]]              # every plane the model states, per axis (inside the domain)
     names: list[str] = field(default_factory=list)   # display name per part (the region name to be)
     order_cycles: int = 0                  # precedence cycles the file's rule could not order
+    snapped: Any = None                    # Obj -> its box as placed (the planes it shares)
+    roundoff: list = field(default_factory=list)   # planes read as one beyond the precision
 
     @property
     def size(self) -> float:
@@ -98,7 +100,7 @@ def place(model: EcxmlModel) -> Placement:
     notes: list[str] = list(model.notes)
     report: list[str] = []
     noise = _noise(model, objs)
-    snapped, moved = _snap_function(model, objs, noise)
+    snapped, moved, roundoff = _snap_roundoff(model, objs, noise)
     domain, domain_source = _domain(model.domain, objs, snapped, noise)
     if domain is None:
         raise EcxmlError("the ECXML model holds no object with a size and no solution domain, so "
@@ -219,7 +221,10 @@ def place(model: EcxmlModel) -> Placement:
 
     _open_walls(parts, devices, notes, noise)
     for p in parts:
-        if not p.box.overlaps(domain, 0.0):
+        if _material(p) and all(any(b.hi[i] - b.lo[i] <= noise for i in range(3))
+                                for b in _material(p)):
+            p.dropped = thinner_why(noise)          # flattened: its two faces are one plane
+        elif not p.box.overlaps(domain, 0.0):
             p.dropped = "it lies outside the solution domain"
         elif not p.box.inside(domain, noise):
             p.clipped = True
@@ -232,10 +237,12 @@ def place(model: EcxmlModel) -> Placement:
     if cycles:
         report.append(f"Overlap: the file's precedence rule went round in a circle for {cycles} "
                       "part(s); those are painted in file order (the later object wins).")
+    report += roundoff_lines(roundoff)
     names = _names(parts)
     return Placement(model=model, domain=domain, domain_source=domain_source, parts=parts,
                      paint=paint, records=records, fate=fate, notes=notes, report=report,
-                     tol=tol, planes=planes, names=names, order_cycles=cycles)
+                     tol=tol, planes=planes, names=names, order_cycles=cycles,
+                     snapped=snapped, roundoff=roundoff)
 
 
 def _no_solid(_tol):
@@ -338,6 +345,124 @@ def _paint_order(parts: list[_Part], producer: str, noise: float) -> tuple[list[
                 heapq.heappush(ready, (parts[w].order, w))
     left = sorted((k for k in live if k not in set(order)), key=lambda k: parts[k].order)
     return order + left, len(left)
+
+
+THINNER_WHY = "it is thinner than the file's own precision"
+
+
+def thinner_why(noise: float) -> str:
+    """Why a part the file's precision flattens is not built (the words the report keys on)."""
+    return (f"{THINNER_WHY} ({_um(noise)}) on some axis, so the file cannot place both of its "
+            "faces")
+
+
+#: Exporters round a plane they compute (a location plus a size, a unit conversion) differently
+#: from the same plane written as a number: Analog Devices' public models carry 10-50 nm steps
+#: between faces that are meant to meet. No electronics layer is this thin, so two planes of
+#: DIFFERENT objects closer than this are one plane. (One object's own two faces never merge.)
+ROUNDOFF_M = 1e-7
+
+
+def _snap_roundoff(model: EcxmlModel, objs: list[Obj], noise: float):
+    """The fused build's snapping (every bound onto the plane it is meant to share, planes within
+    the file's precision one plane), widened to exporter round-off: planes of different objects
+    closer than max(precision, ROUNDOFF_M) are one plane - the one most objects state (the
+    domain's own sides first) - unless that would put one object's two faces on one plane while
+    the file keeps them further apart than its precision. Returns snapped(o) -> _Box, the moved
+    counts, and the merges beyond the file's precision (what the report says)."""
+    merge = max(noise, ROUNDOFF_M)
+    by_axis: list[list[tuple[float, int, int]]] = [[], [], []]   # (value, owner, 0 lo / 1 hi)
+    own_extent: dict[tuple[int, int], tuple[float, float]] = {}
+    names: dict[int, str] = {-1: "the solution domain"}
+    for o in objs:
+        if o.location is not None and o.size is not None:
+            lo, hi = o.lo, o.hi
+            names[o.order] = o.label
+            for i in range(3):
+                by_axis[i] += [(lo[i], o.order, 0), (hi[i], o.order, 1)]
+                own_extent[(o.order, i)] = (lo[i], hi[i])
+    if model.domain is not None:
+        d = model.domain
+        for i in range(3):
+            by_axis[i] += [(d.location[i], -1, 0), (d.location[i] + d.size[i], -1, 1)]
+    rep_of: dict[tuple[int, int, int], float] = {}         # (owner, axis, lo/hi) -> plane
+    merges: list[dict] = []
+    for i, vals in enumerate(by_axis):
+        vals.sort()
+        clusters: list[list[tuple[float, int, int]]] = []
+        for v in vals:
+            cur = clusters[-1] if clusters else None
+            if cur is not None and v[0] - cur[0][0] <= merge:
+                # one object's own two faces stay apart when the file keeps them apart
+                clash = v[0] - cur[0][0] > noise and any(
+                    w[1] == v[1] and w[1] >= 0 and w[2] != v[2]
+                    and abs(own_extent[(v[1], i)][1] - own_extent[(v[1], i)][0]) > noise
+                    for w in cur)
+                if not clash:
+                    cur.append(v)
+                    continue
+            clusters.append([v])
+        for cl in clusters:
+            values = sorted({w[0] for w in cl})
+            if any(w[1] == -1 for w in cl):
+                rep = next(w[0] for w in cl if w[1] == -1)
+            elif values[-1] - values[0] <= noise:
+                rep = values[0]                      # the fused build's choice
+            else:
+                count: dict[float, int] = {}
+                for w in cl:
+                    count[w[0]] = count.get(w[0], 0) + 1
+                rep = max(values, key=lambda x: (count[x], -x))
+            for w in cl:
+                rep_of[(w[1], i, w[2])] = rep
+            if values[-1] - values[0] > noise:
+                his = [w for w in cl if w[2] == 1 and w[1] >= 0]
+                los = [w for w in cl if w[2] == 0 and w[1] >= 0]
+                closed = sorted({(names[a[1]], names[b[1]], b[0] - a[0]) for a in his for b in los
+                                 if a[1] != b[1] and b[0] - a[0] > noise},
+                                key=lambda r: -r[2])
+                merges.append({"axis": "xyz"[i], "at_m": rep, "step_m": values[-1] - values[0],
+                               "objects": sorted({names[w[1]] for w in cl})[:6],
+                               "gaps_closed": [{"between": [a, b], "gap_m": g}
+                                               for a, b, g in closed[:4]]})
+    moved = {"count": 0, "max": 0.0}
+    cache: dict[int, _Box] = {}
+
+    def snapped(o: Obj) -> _Box:
+        if o.order not in cache:
+            box = []
+            for side, vals in ((0, o.lo), (1, o.hi)):
+                row = []
+                for i in range(3):
+                    v = rep_of.get((o.order, i, side), vals[i])
+                    if v != vals[i]:
+                        moved["count"] += 1
+                        moved["max"] = max(moved["max"], abs(v - vals[i]))
+                    row.append(v)
+                box.append(row)
+            cache[o.order] = _Box(box[0], box[1])
+        return cache[o.order]
+
+    return snapped, moved, merges
+
+
+def roundoff_lines(merges: list[dict]) -> list[str]:
+    """The report's words for the planes read as one beyond the file's precision."""
+    if not merges:
+        return []
+    worst = max(merges, key=lambda m: m["step_m"])
+    line = (f"Exporter round-off: {len(merges)} group(s) of planes of different objects closer "
+            f"than {ROUNDOFF_M * 1e6:g} um were read as one plane each (largest step "
+            f"{worst['step_m'] * 1e9:.3g} nm, on {worst['axis']} at {worst['at_m']:.9g} m: "
+            + ", ".join(worst["objects"][:4]) + ").")
+    gaps = [g for m in merges for g in m["gaps_closed"]]
+    if gaps:
+        gaps.sort(key=lambda g: -g["gap_m"])
+        line += (f" {len(gaps)} gap(s) that thin are closed, so those parts touch: "
+                 + "; ".join(f"{g['between'][0]} and {g['between'][1]} "
+                             f"({g['gap_m'] * 1e9:.3g} nm)" for g in gaps[:6])
+                 + ("..." if len(gaps) > 6 else "") + ".")
+    return [line]
 
 
 def _measure_plain(parts: list[_Part], domain: _Box, noise: float, moved: dict) -> _Tol:

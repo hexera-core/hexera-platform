@@ -49,10 +49,12 @@ from meshpipeline.cad.ingest.ecxml_build import (
     physics_summary,
 )
 from meshpipeline.cad.ingest.ecxml_place import (
+    THINNER_WHY,
     Placement,
     describe,
     place,
     placement_sidecar,
+    thinner_why,
 )
 from meshpipeline.engines.snapgrid import blocks as B
 from meshpipeline.engines.snapgrid import boxmesh
@@ -123,29 +125,42 @@ def render_region_properties(fluids: list[str], solids: list[str]) -> str:
 
 # ------------------------------------------------------------------------------ the mesh ------
 def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None = None,
-               dry_run: bool = False, local: bool = True, dialect: str = "esi") -> SnapgridMesh:
+               dry_run: bool = False, local: bool = True, dialect: str = "esi",
+               memory_bytes: float | None = None) -> SnapgridMesh:
     """Read `src` (ECXML), mesh it on a snap grid refined locally (blocks) and write the
     single-region polyMesh with a cellZone per region, constant/regionProperties, the report and
     the physics sidecar into the OpenFOAM case `case`. `dry_run` stops after the grid is sized
     (nothing written but the report); `local=False` meshes one tensor grid over the whole domain.
     Raises EcxmlError (a file that cannot be read or placed), G.OverBudget (a model that needs
     more cells than the budget to keep its layers) or FidelityError (a mesh that would not be the
-    file's model - a bug, never a model fault)."""
+    file's model - a bug, never a model fault). `memory_bytes`: the memory the job may use (None:
+    read from the machine and its container); a budget that would not fit in it is lowered before
+    anything is built, and a model that cannot keep its layers in it raises grid.OutOfMemory."""
     plan = plan or G.GridPlan()
     case = Path(case)
     t = {"start": time.perf_counter()}
     model = read_ecxml(src)
     placement = place(model)
     t["placed"] = time.perf_counter()
-    layout = B.build_layout(placement, plan, local=local)
+    asked = plan
+    plan, memory = _plan_for_memory(plan, memory_bytes)
+    try:
+        layout = B.build_layout(placement, plan, local=local)
+    except G.OverBudget as exc:
+        if plan.max_cells < asked.max_cells and exc.needed <= asked.max_cells:
+            raise G.OutOfMemory(_memory_sentence(exc.needed, memory), exc.needed) from None
+        raise
+    if memory.get("lowered_from"):
+        layout.relaxed = [memory["note"]] + list(layout.relaxed)
     t["gridded"] = time.perf_counter()
     report: dict = {"mesher": MESHER, "report_version": REPORT_VERSION,
                     "input": {"file": Path(src).name, "model_name": model.name,
                               "producer": model.producer,
                               "active_objects": sum(1 for o in model.active_objects
                                                     if o.kind not in ("assembly", "heatsink"))},
-                    "plan": asdict(plan), "plan_used": asdict(layout.plan),
-                    "relaxed": layout.relaxed, "grid": layout_stats(layout)}
+                    "plan": asdict(asked), "plan_used": asdict(layout.plan),
+                    "relaxed": layout.relaxed, "grid": layout_stats(layout),
+                    "memory": {**memory, "estimate_bytes": G.memory_needed(layout.n_cells)}}
     if dry_run:
         report["dry_run"] = True
         report["timings_s"] = _timings(t)
@@ -176,7 +191,9 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
     notes = placement.notes
     records = placement.records
     build_report = describe(placement) + list(placement.report)
-    live = _settle_parts(placement, part_cells, build_report)
+    live, flattened = _settle_parts(placement, part_cells, build_report)
+    report["flattened"] = [placement.parts[k].objects[0].label for k in flattened]
+    report["file_precision_m"] = placement.tol.noise
     names = _name_regions(placement, live, n_air)
     part_region = {k: names["parts"][k] for k in live}
     air_names = names["air"]
@@ -318,6 +335,9 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
     stats["interface_skew"] = report.get("interface_skew") or {}
     report["grid"] = stats
     build_report += _report_lines(placement, layout, stats, thin, staircase, records)
+    build_report += _flattened_warning(placement, flattened, contacts)
+    report["thin_air"] = _thin_air(placement, live)
+    build_report += _thin_air_lines(report["thin_air"])
     build_report += checks
     sidecar = _sidecar(placement, regions, patch_rows, build_report, contacts, stats)
     (case / SIDECAR_NAME).write_text(json.dumps(sidecar, indent=1, default=float))
@@ -342,6 +362,34 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
     return SnapgridMesh(case=case, report=report, sidecar=sidecar,
                         regions=[{"name": r["name"], "type": r["type"], "cells": r["cells"]}
                                  for r in regions])
+
+
+def _plan_for_memory(plan: G.GridPlan, memory_bytes: float | None) -> tuple[G.GridPlan, dict]:
+    """The plan with its cell budget lowered to what the job's memory holds (measured: about
+    3.4 GB per million cells at peak), and what was found - before anything is built."""
+    have = memory_bytes if memory_bytes is not None else G.available_memory()
+    if have is None:
+        return plan, {"available_bytes": None}
+    fit = G.cells_that_fit(have)
+    out: dict = {"available_bytes": have, "cells_that_fit": fit}
+    if fit >= plan.max_cells:
+        return plan, out
+    lowered = max(1000, fit)
+    out["lowered_from"] = plan.max_cells
+    out["note"] = (f"the memory this job has ({have / 1e9:.3g} GB) holds about {fit:,} cells at "
+                   f"{G.BYTES_PER_CELL * 1e3:.3g} GB per million, so the cell budget was lowered "
+                   f"from {plan.max_cells:,} to {lowered:,} before anything was built")
+    return G._replace(plan, max_cells=lowered), out
+
+
+def _memory_sentence(needed: int, memory: dict) -> str:
+    have = memory.get("available_bytes") or 0.0
+    return (f"this model needs at least {needed:,} cells to keep one cell through every part, "
+            f"about {G.memory_needed(needed) / 1e9:.3g} GB of memory, but this job has "
+            f"{have / 1e9:.3g} GB (room for about {memory.get('cells_that_fit', 0):,} cells); it "
+            "is refused before anything is built rather than stopped by the system half way. Run "
+            f"it where at least {G.memory_needed(needed) / G.MEMORY_SHARE / 1e9:.3g} GB is "
+            "free; no layer is merged away to fit.")
 
 
 def _back_within_budget(placement: Placement, plan: G.GridPlan, layout: B.Layout,
@@ -438,7 +486,7 @@ def _release_line_contacts(placement: Placement, layout: B.Layout) -> list[dict]
                 # to its die's side touches what is beyond that side along a line only)
                 touching = _lying_on(parts, k, a_, side, plane, tol, boxes_lo, boxes_hi)
                 hosts = _lying_on(parts, k, a_, 1 - side, plane, tol, boxes_lo, boxes_hi,
-                                  before=[q for q in placement.paint[:rank[k]]])
+                                  before=list(placement.paint[:rank[k]]))
                 hosts = {q: [b for b in bs if (b[1][a_] > plane + tol if side == 0
                                                else b[0][a_] < plane - tol)]
                          for q, bs in hosts.items() if parts[q].kind != "solidCylinder"}
@@ -483,19 +531,12 @@ def _release_line_contacts(placement: Placement, layout: B.Layout) -> list[dict]
                     c1 = layout.coords(blk, lat[1])
                     m1, m0 = np.meshgrid((c1[:-1] + c1[1:]) / 2, (c0[:-1] + c0[1:]) / 2,
                                          indexing="ij")
-                    def footprint(boxes) -> np.ndarray:
-                        foot = np.zeros(cells.shape, dtype=bool)
-                        for lo_, hi_ in boxes:
-                            foot |= ((m0 > lo_[lat[0]]) & (m0 < hi_[lat[0]])
-                                     & (m1 > lo_[lat[1]]) & (m1 < hi_[lat[1]]))
-                        return foot
-
                     hit = np.zeros(cells.shape, dtype=bool)
                     for q, boxes in touching.items():
                         here = mine & (across == q)
                         if not here.any():
                             continue
-                        here &= footprint(boxes)
+                        here &= _footprint(boxes, m0, m1, lat)
                         if here.any():
                             hit |= here
                             others.add(q)
@@ -506,7 +547,7 @@ def _release_line_contacts(placement: Placement, layout: B.Layout) -> list[dict]
                             under_cache[key] = _paint_under(placement, layout, blk, k, rank)
                         under = np.take(under_cache[key], layer, axis=2 - a_)
                         for q, boxes in hosts.items():
-                            here = mine & ~hit & (across != k) & (under == q) & footprint(boxes)
+                            here = mine & ~hit & (across != k) & (under == q) & _footprint(boxes, m0, m1, lat)
                             if here.any():
                                 hit |= here
                                 others |= {int(x) for x in np.unique(across[here])}
@@ -526,6 +567,14 @@ def _release_line_contacts(placement: Placement, layout: B.Layout) -> list[dict]
                                  "side": "-+"[side], "cells_released": released,
                                  "given_to": sorted(given), "inside": sorted(inside)})
     return rows
+
+
+def _footprint(boxes, m0: np.ndarray, m1: np.ndarray, lat: list[int]) -> np.ndarray:
+    """The cells (centres m0, m1 on the two axes of a plane) inside any of the boxes."""
+    foot = np.zeros(m0.shape, dtype=bool)
+    for lo_, hi_ in boxes:
+        foot |= ((m0 > lo_[lat[0]]) & (m0 < hi_[lat[0]]) & (m1 > lo_[lat[1]]) & (m1 < hi_[lat[1]]))
+    return foot
 
 
 def _lying_on(parts, k: int, a_: int, side: int, plane: float, tol: float,
@@ -786,20 +835,27 @@ def _timings(t: dict) -> dict:
 def _snapped_boxes(placement: Placement):
     from meshpipeline.cad.ingest.ecxml_build import _snap_function
 
+    if placement.snapped is not None:
+        return placement.snapped            # the boxes as placed (round-off merged)
     objs = placement.model.active_objects
     snapped, _moved = _snap_function(placement.model, objs, placement.tol.noise)
     return snapped
 
 
-def _settle_parts(placement: Placement, part_cells: np.ndarray, report: list[str]) -> list[int]:
+def _settle_parts(placement: Placement, part_cells: np.ndarray, report: list[str]
+                  ) -> tuple[list[int], list[int]]:
     """The parts that kept cells (in file order); the others are recorded as not built, with the
-    reason: overwritten by parts that take precedence, or thinner than the file can state."""
-    live = []
+    reason: overwritten by parts that take precedence, or thinner than the file can state. Returns
+    the live parts and the flattened ones (thinner than the file's precision: lost, said loudly)."""
+    live: list[int] = []
+    flattened: list[int] = []
     records = placement.records
     for k, p in enumerate(placement.parts):
         name = p.objects[0].props.get("heatsink") or p.objects[0].name
         if p.dropped:
             why = p.dropped
+            if why.startswith(THINNER_WHY):
+                flattened.append(k)
         elif part_cells[k] > 0:
             live.append(k)
             continue
@@ -813,15 +869,67 @@ def _settle_parts(placement: Placement, part_cells: np.ndarray, report: list[str
                           "not meshed.")
             why = "objects that take precedence overwrite all of it (JEP181A 4.5.1)"
         else:
-            why = (f"it is thinner than the file's own precision ({_um(placement.tol.noise)}) "
-                   "on some axis, so the file cannot place both of its faces")
+            why = thinner_why(placement.tol.noise)
+            flattened.append(k)
         p.dropped = why
         records["not_built"].append({
             "name": name, "kind": p.kind, "path": list(p.objects[0].path),
             "material": p.material, "power_W": p.power, "why": why})
         for o in p.objects:
             placement.fate[o.order] = f"not built ({why})"
-    return live
+    return live, flattened
+
+
+#: Air between two parts (or a part and the domain's side) thinner than this is reported: no
+#: package has such a gap on purpose; it is an exporter's round-off or a misplaced part, and it
+#: carries cells (and a thermal resistance) the model did not mean.
+THIN_AIR_M = 1e-6
+
+
+def _thin_air(placement: Placement, live: list[int]) -> list[dict]:
+    """The air films thinner than THIN_AIR_M the mesh keeps, thinnest first."""
+    from meshpipeline.cad.ingest.ecxml_build import _thin_gaps
+
+    parts = [placement.parts[k] for k in live]
+    if not parts:
+        return []
+    rows = _thin_gaps(parts, placement.domain, placement.tol.noise, THIN_AIR_M)
+    return sorted(rows, key=lambda r: r["gap_m"])
+
+
+def _thin_air_lines(rows: list[dict]) -> list[str]:
+    if not rows:
+        return []
+    return [f"WARNING: {len(rows)} air gap(s) thinner than {_um(THIN_AIR_M)} are kept as air "
+            "(the file states them; check they are meant): " + "; ".join(
+                f"{' and '.join(r['between'])} ({r['gap_m'] * 1e9:.3g} nm)" for r in rows[:8])
+            + ("..." if len(rows) > 8 else "") + "."]
+
+
+def _flattened_warning(placement: Placement, flattened: list[int], contacts: set) -> list[str]:
+    """One WARNING line for the parts the file's precision flattened away, naming the parts that
+    now touch across where each one was (the file keeps them apart by its thickness)."""
+    if not flattened:
+        return []
+    tol = G.plane_tolerance(placement)
+    rows, across = [], set()
+    for d in flattened:
+        p = placement.parts[d]
+        t = min(p.box.hi[i] - p.box.lo[i] for i in range(3))
+        rows.append(f"{p.objects[0].name} ({_um(max(t, 0.0))})")
+        near = [q.name for k, q in enumerate(placement.parts) if k != d and q.name and all(
+            min(q.box.hi[i], p.box.hi[i]) - max(q.box.lo[i], p.box.lo[i]) >= -tol
+            for i in range(3))]
+        for c in contacts:
+            if c <= set(near):
+                across.add(" and ".join(sorted(c)))
+    line = (f"WARNING: {len(flattened)} part(s) are thinner than the file's own number precision "
+            f"({_um(placement.tol.noise)}) and are NOT meshed: " + ", ".join(rows[:12])
+            + (f" and {len(rows) - 12} more" if len(rows) > 12 else "") + ".")
+    if across:
+        line += (" Where they were, " + "; ".join(sorted(across)[:8])
+                 + " now touch, though the file keeps them apart.")
+    return [line + " Export the model with more digits (a finer precision) to keep them."]
 
 
 def _name_regions(placement: Placement, live: list[int], n_air: int) -> dict:
@@ -985,15 +1093,18 @@ def _thin_layers(placement: Placement, layout: B.Layout, live: list[int], names:
             if c is None:
                 continue
             for bi, (blo, bhi) in enumerate(bounds):
-                if not all(min(c.hi[i], bhi[i]) - max(c.lo[i], blo[i]) > tol for i in range(3)):
+                if not all(min(c.hi[i], bhi[i]) - max(c.lo[i], blo[i]) > tol / G.PLANE_RUN
+                           for i in range(3)):
                     continue
                 blk = layout.blocks[bi]
                 for i in range(3):
                     t = c.hi[i] - c.lo[i]
-                    if t <= tol or c.lo[i] < blo[i] - tol or c.hi[i] > bhi[i] + tol:
+                    if t <= tol / G.PLANE_RUN or c.lo[i] < blo[i] - tol or c.hi[i] > bhi[i] + tol:
                         continue                  # the part runs on into the next block
                     lines = layout.coords(blk, i)
-                    n = int(np.count_nonzero((lines > c.lo[i] + tol) & (lines < c.hi[i] - tol))) + 1
+                    inner = min(tol, t / 4)
+                    n = int(np.count_nonzero((lines > c.lo[i] + inner)
+                                             & (lines < c.hi[i] - inner))) + 1
                     if best is None or (t, n) < (best[0], best[1]):
                         best = (t, n, i)
         if best is None:
@@ -1069,13 +1180,22 @@ def _fidelity(placement: Placement, topo: boxmesh.BoxTopology, zone: np.ndarray,
         pair = sorted(next(iter(lost)))
         raise FidelityError(f"{pair[0]} and {pair[1]} touch in the file, but the mesh does not "
                             "share the faces between them")
+    # what the check above cannot see: a part that is not meshed takes its contacts with it, so
+    # "none lost" holds between the parts that are meshed - said so whenever one is missing
+    unmeshed = list(placement.records["not_built"])
+    if unmeshed:
+        tail = (f"{len(contacts)} contact(s) between the parts that are meshed share their faces, "
+                f"none invented, none lost between them - but {len(unmeshed)} part(s) of the file "
+                "are not meshed (listed above), and their contacts with them")
+    else:
+        tail = (f"{len(contacts)} contact(s) between solids share their faces, none invented, "
+                "none lost")
     lines = [f"Checked: {exact} of {len(live)} solid volume(s) match the file's numbers to "
              f"round-off, {len(staircase)} are staircased (listed with their volume error), the "
              f"rest are bounded by the file; the cells fill the domain to "
              f"{abs(total - domain.volume()) / domain.volume():.1e}; all "
              f"{len([o for o in objs if o.kind not in ('assembly', 'heatsink')])} active objects "
-             f"are accounted for; {len(contacts)} contact(s) between solids share their faces, "
-             "none invented, none lost."]
+             f"are accounted for; {tail}."]
     return lines, contacts, staircase
 
 

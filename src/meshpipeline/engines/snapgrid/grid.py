@@ -286,13 +286,7 @@ def build_grid(placement: Placement, plan: GridPlan) -> Grid:
     longest = max(dom.hi[i] - dom.lo[i] for i in range(3))
     relaxed: list[str] = []
     H0 = longest / plan.background_cells
-    candidates = [plan]
-    if plan.growth < 2.0:
-        candidates.append(_replace(plan, growth=2.0))
-    if plan.min_cells_across > 1:
-        candidates.append(_replace(candidates[-1], min_cells_across=1))
-    if plan.cylinder_cells > 6:
-        candidates.append(_replace(candidates[-1], cylinder_cells=6))
+    candidates = relaxations(plan)
     needed = 0
     for k, cand in enumerate(candidates):
         lines = lines_for(placement, cand, H0)
@@ -327,6 +321,90 @@ def build_grid(placement: Placement, plan: GridPlan) -> Grid:
         "away to fit.", needed)
 
 
+# ------------------------------------------------------------------------------ memory -------
+#: Peak memory of one mesh, per million cells, measured on the production image (ECXML-hard
+#: sweep, 2026-10-11): 3.0-3.2 GB on packages (0.9M-15M cells), 3.1-3.4 GB on a 1U server with
+#: many parts (10.7M, 16.7M). The guard plans with the worst seen, plus a base for the interpreter
+#: and the model.
+BYTES_PER_CELL = 3.4e3
+BASE_BYTES = 0.5e9
+#: The share of the memory a job has that a mesh may plan to use.
+MEMORY_SHARE = 0.9
+
+
+def memory_needed(cells: int) -> float:
+    """Bytes a mesh of `cells` cells peaks at, from the measured rate."""
+    return BASE_BYTES + BYTES_PER_CELL * cells
+
+
+def cells_that_fit(memory_bytes: float) -> int:
+    """The most cells a mesh may plan for in `memory_bytes`."""
+    return max(0, int((MEMORY_SHARE * memory_bytes - BASE_BYTES) / BYTES_PER_CELL))
+
+
+def available_memory() -> float | None:
+    """The memory this job may use, bytes: its container's limit (cgroup v2 or v1) where one is
+    set, never more than the machine's total; less what the rest of the machine holds now (the
+    machine's available memory plus what this process already has). None when unknown."""
+    from pathlib import Path
+
+    def read(path: str) -> float | None:
+        try:
+            text = Path(path).read_text().split()[0]
+        except (OSError, IndexError):
+            return None
+        return float(text) if text.isdigit() else None
+
+    meminfo: dict[str, float] = {}
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            key, _, rest = line.partition(":")
+            if rest.split():
+                meminfo[key] = float(rest.split()[0]) * 1024
+    except OSError:
+        return None
+    total = meminfo.get("MemTotal")
+    if total is None:
+        return None
+    limit = total
+    for path in ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
+        got = read(path)
+        if got is not None and got < limit:
+            limit = got
+    used_here = 0.0
+    try:
+        used_here = float(Path("/proc/self/statm").read_text().split()[1]) * 4096
+    except (OSError, IndexError, ValueError):
+        pass
+    in_cgroup = read("/sys/fs/cgroup/memory.current")
+    if limit < total and in_cgroup is not None:
+        free = limit - in_cgroup + used_here       # the container's own headroom
+    else:
+        free = meminfo.get("MemAvailable", total) + used_here
+    return max(0.0, min(limit, free))
+
+
+class OutOfMemory(OverBudget):
+    """The model needs more memory to keep its layers than this job has."""
+
+
+def relaxations(plan: GridPlan) -> list[GridPlan]:
+    """The plans tried, in order, when a model does not fit the cell budget - each one only after
+    the one before it could not fit even with the coarsest background: the plan; the growth limit
+    relaxed to 2; then one cell fewer through each part at a time (N-1, N-2, ... 1 - never straight
+    from N to 1); then two cells fewer across each cylinder at a time, down to 6."""
+    out = [plan]
+    if plan.growth < 2.0:
+        out.append(_replace(plan, growth=2.0))
+    for n in range(plan.min_cells_across - 1, 0, -1):
+        out.append(_replace(out[-1], min_cells_across=n))
+    c = plan.cylinder_cells
+    while c > 6:
+        c = max(6, c - 2)
+        out.append(_replace(out[-1], cylinder_cells=c))
+    return out
+
+
 def _replace(plan: GridPlan, **kw) -> GridPlan:
     from dataclasses import replace
     return replace(plan, **kw)
@@ -355,7 +433,10 @@ def _slice(grid: Grid, box: _Box, tol: float) -> tuple[slice, slice, slice] | No
     for i in range(3):
         lo = max(box.lo[i], float(grid.lines[i][0]))
         hi = min(box.hi[i], float(grid.lines[i][-1]))
-        if hi - lo <= tol:
+        # bounds are snapped onto shared planes, so a box that only touches the grid reaches 0
+        # into it; one thicker than the file's precision (tol / PLANE_RUN) is a part, never
+        # dropped for being thinner than the run tolerance
+        if hi - lo <= tol / PLANE_RUN:
             return None
         spans.append((lo, hi))
     idx = []
@@ -393,10 +474,15 @@ def _ellipse_mask(grid: Grid, box: _Box, axis: int, sl: tuple[slice, slice, slic
     return inside
 
 
+#: A run of planes merged one after the other within the file's precision spans at most this many
+#: times it.
+PLANE_RUN = 4.0
+
+
 def plane_tolerance(placement: Placement) -> float:
     """How far a stated bound may sit from the grid plane it was merged into: planes within the
     file's precision were merged one after the other, so a run of them spans a few times it."""
-    return max(4.0 * placement.tol.noise, 1e-12 * placement.size)
+    return max(PLANE_RUN * placement.tol.noise, 1e-12 * placement.size)
 
 
 def paint(placement: Placement, grid: Grid) -> np.ndarray:

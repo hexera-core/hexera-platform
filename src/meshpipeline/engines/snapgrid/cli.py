@@ -5,7 +5,7 @@
     python -m meshpipeline.engines.snapgrid.cli MODEL.ecxml OUT_DIR [--max-cells N]
         [--background-cells N] [--min-cells-across N] [--cylinder-cells N] [--growth G]
         [--no-check] [--check-each-region auto|yes|no] [-j N] [--split-with-openfoam]
-        [--keep-merged] [--ascii] [--dry-run] [--global-grid] [--bashrc PATH]
+        [--keep-merged] [--ascii] [--dry-run] [--global-grid] [--bashrc PATH] [--memory-gb G]
 
 OUT_DIR becomes an OpenFOAM case: constant/<region>/polyMesh for every region (written directly,
 each with its mappedWall interfaces), constant/regionProperties, snapgrid_report.json (grid,
@@ -53,6 +53,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--global-grid", action="store_true",
                     help="one tensor grid over the whole domain (no local refinement)")
     ap.add_argument("--bashrc", default=None, help="OpenFOAM bashrc to source")
+    ap.add_argument("--memory-gb", type=float, default=None,
+                    help="memory the job may use (default: read from the machine and its container)")
     a = ap.parse_args(argv)
     plan = GridPlan(max_cells=a.max_cells, background_cells=a.background_cells,
                     min_cells_across=a.min_cells_across, cylinder_cells=a.cylinder_cells,
@@ -63,7 +65,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         result = mesh_ecxml(a.ecxml, a.out, plan, binary=False if a.ascii else None,
                             dry_run=a.dry_run, local=not a.global_grid,
-                            dialect=dialect_of(a.bashrc))
+                            dialect=dialect_of(a.bashrc),
+                            memory_bytes=a.memory_gb * 1e9 if a.memory_gb else None)
     except OverBudget as exc:
         print(f"NOT MESHED: {exc}", file=sys.stderr)
         return 2

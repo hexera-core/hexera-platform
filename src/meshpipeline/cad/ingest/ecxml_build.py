@@ -74,6 +74,8 @@ PRINT_RESOLUTION_M = 1e-8
 #: Flotherm writes float32 values (0.300000011920929): two writes of one plane differ by a few
 #: units in the last place - 2^-24 of the coordinate each. Four of them are the file's noise.
 FLOAT32_NOISE = 4 * 2.0 ** -24
+#: A location plus a size in float64: a few units in the last place of the sum.
+FLOAT64_NOISE = 64 * 2.0 ** -53
 #: The smallest gap and the thinnest part must be this many times the tolerance used on them.
 GAP_FACTOR = 10.0
 #: How far a vent's cutter reaches past the wall it opens, at least.
@@ -445,14 +447,22 @@ def _noise(model: EcxmlModel, objs: list[Obj]) -> float:
     into it, clipped to it. An object wholly outside the solution domain is never built, and a
     monitor point is no geometry, so neither coarsens the tolerance. (A real Flotherm export
     keeps parts metres outside a 50 mm domain and a probe at z = 33 m; counted, they made the
-    precision 8 um and every 10 um gap of the model unreadable.)"""
+    precision 8 um and every 10 um gap of the model unreadable.)
+
+    Only numbers that carry binary-float noise count (ecxml.number_is_noisy: a float32 value, or a
+    binary float printed in full). A plain decimal is exact to its digits wherever it is: a model
+    written "5.00100000" / "5.00100100" states a 1 um layer 5 m from the origin, and it keeps it
+    (the float32 rule would have made the precision 1.2 um there and dropped the layer)."""
     d = model.domain
     lo_d = hi_d = None
-    largest = 0.0
+    largest = 0.0                  # the largest coordinate stated with binary-float noise
+    anywhere = 0.0                 # ... and stated at all (float64 arithmetic on it)
     if d is not None:
         lo_d = d.location
         hi_d = tuple(d.location[i] + d.size[i] for i in range(3))
-        largest = max(*(abs(v) for v in lo_d), *(abs(v) for v in hi_d))
+        anywhere = max(*(abs(v) for v in lo_d), *(abs(v) for v in hi_d))
+        if getattr(d, "noisy", True):
+            largest = anywhere
     for o in objs:
         if o.location is None or o.size is None or o.kind in (
                 "assembly", "heatsink", "monitorPoint", "externalMcadFile"):
@@ -463,8 +473,11 @@ def _noise(model: EcxmlModel, objs: list[Obj]) -> float:
                 continue                       # wholly outside the domain: never built
             lo = [min(max(lo[i], lo_d[i]), hi_d[i]) for i in range(3)]
             hi = [min(max(hi[i], lo_d[i]), hi_d[i]) for i in range(3)]
-        largest = max(largest, *(abs(v) for v in lo), *(abs(v) for v in hi))
-    return max(PRINT_RESOLUTION_M, FLOAT32_NOISE * largest)
+        here = max(*(abs(v) for v in lo), *(abs(v) for v in hi))
+        anywhere = max(anywhere, here)
+        if getattr(o, "noisy", True):
+            largest = max(largest, here)
+    return max(PRINT_RESOLUTION_M, FLOAT32_NOISE * largest, FLOAT64_NOISE * anywhere)
 
 
 def _snapper(values_per_axis: list[list[float]], noise: float):
