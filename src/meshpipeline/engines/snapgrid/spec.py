@@ -96,8 +96,9 @@ SPEC = EngineSpec(
             "6SigmaET exports and generated boards of 10-2,000 parts, a 1U server) meshes with "
             "every box volume exact to round-off, every layer kept (25 um die attach: 2 cells), "
             "contacts as the file makes them, and checkMesh clean on every region (OpenFOAM 11 "
-            "locally, v2412 on the lab VMs; 3.3M cells for 2,000 parts). Not yet run through a "
-            "full pipeline job."),
+            "locally, v2412 on the lab VMs; 3.3M cells for 2,000 parts). Full pipeline: "
+            "set_top_box.ecxml on dev-areen, job f8542f71 (2026-10-11) - 357,973 cells in 9 "
+            "regions, delivered on attempt 1 and passed the visual review."),
         descriptor=(
             "Placed-parts multi-region meshing for ECXML electronics-cooling models (JEDEC "
             "JEP181: Flotherm, Icepak, 6SigmaET exports). The way those tools mesh: no part is "
