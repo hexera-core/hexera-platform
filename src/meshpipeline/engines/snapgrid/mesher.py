@@ -24,6 +24,7 @@ What the file says and the mesh holds, checked before anything is written:
 from __future__ import annotations
 
 import json
+import math
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -235,7 +236,8 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
             a_b, c_b = C.face_geometry(points, topo.b_off, ids_b)
             vols = C.cell_volumes(topo.n_cells, topo.owner, topo.neighbour, a_i, c_i,
                                   topo.b_owner, a_b, c_b)
-    curved_rows = C.report(curves, points, keys, topo, zone, part_region) if curves else []
+    curved_rows = C.report(curves, points, keys, topo, zone, part_region,
+                           domain=(placement.domain.lo, placement.domain.hi)) if curves else []
     t["snapped"] = time.perf_counter()
     part_vol = np.bincount(zone + 1, weights=vols, minlength=P + 1)[1:]
     air_vol = np.bincount(airs + 1, weights=vols, minlength=n_air + 1)[1:]
@@ -337,6 +339,7 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
     build_report += _report_lines(placement, layout, stats, thin, staircase, records)
     build_report += _flattened_warning(placement, flattened, contacts)
     report["thin_air"] = _thin_air(placement, live)
+    build_report += _physics_warnings(placement, live, part_vol)
     build_report += _thin_air_lines(report["thin_air"])
     build_report += checks
     sidecar = _sidecar(placement, regions, patch_rows, build_report, contacts, stats)
@@ -880,6 +883,96 @@ def _settle_parts(placement: Placement, part_cells: np.ndarray, report: list[str
     return live, flattened
 
 
+def _physics_warnings(placement: Placement, live: list[int], part_vol: np.ndarray) -> list[str]:
+    """What the file asks that is most likely a mistake, said once each - nothing is changed:
+    negative power; a part or a source the domain cuts that keeps its whole power; fans with no
+    flow, a reversed flow, a hub as wide as the fan (or a hundredth of it), an oval fan, a 2D fan
+    with no area, and solids standing in a fan's swept volume."""
+    out: list[str] = []
+    rec = placement.records
+    # negative power: a sink, not a source
+    neg = [f"{placement.parts[k].objects[0].name} ({placement.parts[k].power:g} W)"
+           for k in live if (placement.parts[k].power or 0.0) < 0]
+    for key in ("volume_heat_sources", "surface_heat_sources", "patches"):
+        neg += [f"{r['name']} ({r['power_W']:g} W)" for r in rec[key]
+                if isinstance(r.get("power_W"), int | float) and r["power_W"] < 0]
+    if neg:
+        out.append("WARNING: negative power (heat taken out, not put in) on " + ", ".join(neg[:8])
+                   + ("..." if len(neg) > 8 else "") + "; kept as the file says - check the sign.")
+    # a part or a source the domain cuts keeps the file's whole power
+    cut = []
+    for k in live:
+        p = placement.parts[k]
+        if not p.clipped or not p.power:
+            continue
+        whole = _whole_volume(p)
+        if whole > 0:
+            cut.append(f"{p.objects[0].name} ({100 * float(part_vol[k]) / whole:.3g}% inside, "
+                       f"{p.power:g} W)")
+    for r in rec["volume_heat_sources"]:
+        if r.get("partly_outside_domain") and r.get("power_W"):
+            b, c = r["box_m"], r["box_in_domain_m"]
+            vb = math.prod(b["max"][i] - b["min"][i] for i in range(3))
+            vc = math.prod(c["max"][i] - c["min"][i] for i in range(3))
+            if vb > 0:
+                cut.append(f"{r['name']} ({100 * vc / vb:.3g}% inside, {r['power_W']:g} W)")
+    if cut:
+        out.append("WARNING: the solution domain cuts " + ", ".join(cut[:8])
+                   + ("..." if len(cut) > 8 else "") + "; the file's whole power is applied to "
+                   "the piece inside (not scaled down) - scale it in the solver if only that "
+                   "piece should dissipate.")
+    # fans
+    odd: list[str] = []
+    for r in rec["fans"] + [p for p in rec["patches"] if p.get("role") == "fan"]:
+        name = r["name"]
+        flow = r.get("flow") or {}
+        if flow.get("kind") == "fixed_flow_rate":
+            q = float(flow.get("m3_s") or 0.0)
+            if q == 0.0:
+                odd.append(f"{name}: a fixed flow of zero - it moves no air")
+            elif q < 0:
+                odd.append(f"{name}: a negative flow ({q:g} m3/s) - it blows against the "
+                           "direction its plane gives")
+        if r.get("kind") == "axial_3d":
+            outer = [float(d) for d in r.get("outer_diameter_m") or []]
+            hub = float(r.get("hub_diameter_m") or 0.0)
+            if outer and hub >= min(outer) * (1 - 1e-9):
+                odd.append(f"{name}: its hub ({_um(hub)}) is as wide as the fan "
+                           f"({_um(min(outer))}) or wider - no ring is left for the flow")
+            elif outer and hub < 0.01 * min(outer):
+                odd.append(f"{name}: its hub ({_um(hub)}) is under a hundredth of the fan's "
+                           "diameter - check it (JEP181A: a diameter; Icepak exports a radius)")
+            if len(outer) == 2 and abs(outer[0] - outer[1]) > 0.01 * max(outer):
+                odd.append(f"{name}: its box is not square across the flow ({_um(outer[0])} x "
+                           f"{_um(outer[1])}) - read as an oval fan")
+            fan_box = _Box(r["box_m"]["min"], r["box_m"]["max"])
+            inside = [placement.parts[k].objects[0].name for k in live
+                      if placement.parts[k].box.overlaps(fan_box, 0.0)
+                      and not placement.parts[k].wall]
+            if inside:
+                odd.append(f"{name}: " + ", ".join(inside[:4]) + " stand(s) in its swept volume")
+        elif "size_m" in r and not float(r.get("area_m2") or 0.0) > 0.0:
+            odd.append(f"{name}: a 2D fan with no area (a point or a line) - it can move no air")
+    if odd:
+        out.append("WARNING: fans to check: " + "; ".join(odd[:10])
+                   + ("..." if len(odd) > 10 else "") + ".")
+    return out
+
+
+def _whole_volume(p) -> float:
+    """A part's volume as the file gives it, the domain ignored."""
+    from meshpipeline.cad.ingest.ecxml import axis_of_plane
+    from meshpipeline.cad.ingest.ecxml_build import _union_volume
+
+    if p.kind == "solidCylinder":
+        axis = axis_of_plane(p.objects[0].plane)
+        u, v = [i for i in range(3) if i != axis]
+        return math.pi * (p.box.hi[u] - p.box.lo[u]) * (p.box.hi[v] - p.box.lo[v]) / 4 * (
+            p.box.hi[axis] - p.box.lo[axis])
+    boxes = list(_material(p))
+    return _union_volume(p.box, boxes) if boxes else 0.0
+
+
 #: Air between two parts (or a part and the domain's side) thinner than this is reported: no
 #: package has such a gap on purpose; it is an exporter's round-off or a misplaced part, and it
 #: carries cells (and a thermal resistance) the model did not mean.
@@ -1233,6 +1326,14 @@ def _report_lines(placement: Placement, layout: B.Layout, st: dict, thin: list[d
     for s_ in staircase:
         if "side_area_error_pct" in s_:
             what = "round hole in" if s_.get("kind") == "round hole" else "cylinder"
+            if s_.get("clipped_by_domain"):
+                vol = (f"volume {s_['volume_error_pct']:+.2g}%, "
+                       if "volume_error_pct" in s_ else "")
+                lines.append(f"Curved: {s_['part']} (cylinder, cut by the solution domain) "
+                             f"snapped onto the file's surface: {vol}side area "
+                             f"{s_['side_area_error_pct']:+.2g}% of the piece of it inside the "
+                             "domain.")
+                continue
             vol = (f"volume {s_['error_pct']:+.2g}%, " if "error_pct" in s_ else "")
             lines.append(f"Curved: {s_['part']} ({what}) snapped onto the file's surface: "
                          f"{vol}side area {s_['side_area_error_pct']:+.2g}% of the file's.")

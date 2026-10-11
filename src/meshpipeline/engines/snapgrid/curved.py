@@ -739,9 +739,31 @@ class _Guard:
         return out
 
 
+def _ellipse_in_rect(c: Curve, u: int, v: int, lo, hi, n: int = 20_000) -> tuple[float, float]:
+    """The area of the curve's ellipse inside the rectangle lo..hi (axes u, v), and the length of
+    its outline inside it - numerically, to about 1e-6."""
+    cu, cv = c.centre
+    ru, rv = c.radii
+    # area: the chord inside the rectangle, integrated over u (midpoint rule)
+    a0, a1 = max(cu - ru, lo[u]), min(cu + ru, hi[u])
+    area = 0.0
+    if a1 > a0:
+        x = a0 + (np.arange(n) + 0.5) * (a1 - a0) / n
+        h = rv * np.sqrt(np.clip(1.0 - ((x - cu) / ru) ** 2, 0.0, None))
+        chord = np.clip(np.minimum(cv + h, hi[v]) - np.maximum(cv - h, lo[v]), 0.0, None)
+        area = float(chord.sum() * (a1 - a0) / n)
+    t = np.linspace(0.0, 2 * math.pi, n + 1)
+    pu, pv = cu + ru * np.cos(t), cv + rv * np.sin(t)
+    seg = np.hypot(np.diff(pu), np.diff(pv))
+    mu, mv = (pu[1:] + pu[:-1]) / 2, (pv[1:] + pv[:-1]) / 2
+    inside = (mu >= lo[u]) & (mu <= hi[u]) & (mv >= lo[v]) & (mv <= hi[v])
+    return area, float(seg[inside].sum())
+
+
 def report(curves: list[Curve], points: np.ndarray, keys: np.ndarray, topo, zone: np.ndarray,
-           names_of_part: dict) -> list[dict]:
-    """Per curved part: its side area, end areas and volume in the mesh against the file's."""
+           names_of_part: dict, domain: tuple | None = None) -> list[dict]:
+    """Per curved part: its side area, end areas and volume in the mesh against the file's. With
+    the domain's (lo, hi), a cylinder the domain cuts is held to the piece of it inside."""
     ids_i = np.searchsorted(keys, topo.face_pts)
     ids_b = np.searchsorted(keys, topo.b_pts)
     area, fc = face_geometry(points, topo.face_off, ids_i)
@@ -761,14 +783,28 @@ def report(curves: list[Curve], points: np.ndarray, keys: np.ndarray, topo, zone
         near = _band(fc, u, v, c)
         lat = side & inside & near & (normal != c.axis)
         mesh_side = float(np.linalg.norm(area[lat], axis=1).sum())
+        want = math.pi * ru * rv * L
+        clipped = False
+        if domain is not None and not c.hole:
+            dlo, dhi = domain
+            L_in = max(0.0, min(c.a1, dhi[c.axis]) - max(c.a0, dlo[c.axis]))
+            cu, cv = c.centre
+            if L_in < L * (1 - 1e-9) or cu - ru < dlo[u] or cu + ru > dhi[u] or \
+                    cv - rv < dlo[v] or cv + rv > dhi[v]:
+                clipped = True
+                a_in, p_in = _ellipse_in_rect(c, u, v, dlo, dhi)
+                want, perim, L = a_in * L_in, p_in, L_in
+        file_side = perim * L
         row: dict = {"part": c.name, "kind": "round hole" if c.hole else "cylinder",
-               "file_side_area_m2": perim * L, "mesh_side_area_m2": mesh_side,
-               "side_area_error_pct": 100.0 * (mesh_side - perim * L) / (perim * L)}
+                     "file_side_area_m2": file_side, "mesh_side_area_m2": mesh_side,
+                     "side_area_error_pct": 100.0 * (mesh_side - file_side) / file_side
+                     if file_side > 0 else 0.0}
+        if clipped:
+            row["clipped_by_domain"] = True
         if not c.hole:
-            want = math.pi * ru * rv * L
             got = float(vol[zone == c.part].sum())
             row.update(file_volume_m3=want, mesh_volume_m3=got,
-                       volume_error_pct=100.0 * (got - want) / want)
+                       volume_error_pct=100.0 * (got - want) / want if want > 0 else 0.0)
             # contacts: faces shared with another solid, by the other part
             other = np.where(zo == c.part, zn, np.where(zn == c.part, zo, -1))
             touch = side & (other >= 0)

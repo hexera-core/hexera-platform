@@ -195,6 +195,39 @@ def test_a_model_the_memory_cannot_hold_is_refused_in_one_sentence(tmp_path):
     assert isinstance(exc.value, G.OverBudget)       # the CLI says it as NOT MESHED, exit 2
 
 
+# ------------------------------------------------------------------------------ reporting ------
+def test_what_the_file_most_likely_got_wrong_is_said_and_left_as_the_file_says(tmp_path):
+    doc = _materials(Ecxml("Odd physics"))
+    doc.domain((0, 0, 0), (0.1, 0.06, 0.04))
+    doc.block("Cooler", (0.005, 0.005, 0.005), (0.01, 0.01, 0.01), "Cu", -2.0)
+    doc.block("Half out", (-0.005, 0.03, 0.005), (0.01, 0.01, 0.01), "Cu", 4.0)
+    doc.cylinder("Rod out", (0.095, 0.02, 0.01), (0.01, 0.01, 0.02), "+xy", "Cu")
+    doc.fan3d("Still", (0.03, 0.005, 0.005), (0.01, 0.02, 0.02), "+yz", 0.008, 0.0)
+    doc.fan3d("Backwards", (0.05, 0.005, 0.005), (0.01, 0.02, 0.02), "+yz", 0.008, -0.002)
+    doc.fan3d("All hub", (0.07, 0.03, 0.005), (0.01, 0.02, 0.02), "+yz", 0.02, 0.002)
+    doc.block("In the fan", (0.032, 0.01, 0.01), (0.004, 0.005, 0.005), "Si")
+    doc.fan2d("Dot", (0.05, 0.05, 0.02), (0.0, 0.0, 0.0), "+xy", 0.001)
+    result = _mesh(tmp_path, doc, max_cells=150_000)
+    rep = result.report
+    warn = [ln for ln in rep["build_report"] if ln.startswith("WARNING")]
+    text = "\n".join(warn)
+    assert "negative power" in text and "Cooler (-2 W)" in text
+    assert "domain cuts Half out (50% inside, 4 W)" in text
+    assert "Still: a fixed flow of zero" in text and "Backwards: a negative flow" in text
+    assert "All hub: its hub (20 mm) is as wide as the fan" in text
+    assert "Still: In the fan stand(s) in its swept volume" in text
+    assert "Dot: a 2D fan with no area" in text
+    # a cylinder the domain cuts is held to the piece of it inside, and says so
+    rod = _curved(result, "Rod_out")
+    assert rod["clipped_by_domain"] and abs(rod["side_area_error_pct"]) < 5.0
+    assert abs(rod["volume_error_pct"]) < 5.0
+    assert any(ln.startswith("Curved: Rod_out (cylinder, cut by the solution domain)")
+               for ln in rep["build_report"])
+    # nothing was changed: the powers are the file's
+    side = result.sidecar
+    assert side["total_power_W"] == pytest.approx(2.0)
+
+
 # ------------------------------------------------------------------------------ line contacts --
 def test_cylinders_side_by_side_or_stacked_meet_along_a_line_and_share_no_face(tmp_path):
     doc = _materials(Ecxml("Rods"))
