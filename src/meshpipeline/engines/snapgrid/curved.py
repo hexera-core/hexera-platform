@@ -125,11 +125,56 @@ def cell_volumes(n_cells: int, owner, neighbour, area, fc, b_owner, b_area, b_fc
 
 
 # ------------------------------------------------------------------------------ the snap -----
+def own_plane_faces(fc: np.ndarray, normal: np.ndarray, zo: np.ndarray, zn: np.ndarray,
+              solid_box: np.ndarray, planes: dict[int, tuple[np.ndarray, np.ndarray]] | None,
+              tol: float) -> np.ndarray:
+    """The faces that are a box part's own faces, which must stay where they are: faces between
+    two different zones that lie on a stated plane of a box part on one side (a face of one of its
+    material boxes or of a rectangular vent cut in it, over that box's extent). A face of a box
+    part that lies on no plane of its own - where a cylinder that wins over it is carved out of it
+    (a via in a die, a pin in a block) - is the cylinder's surface, and moves with it. With no
+    planes given, every face with a box part on a side counts (the box's cells never move)."""
+    if planes is None:
+        return ((zo >= 0) & solid_box[np.maximum(zo, 0)]) | \
+            ((zn >= 0) & solid_box[np.maximum(zn, 0)])
+    out = np.zeros(len(zo), dtype=bool)
+    diff = zo != zn
+    for zside in (zo, zn):
+        cand = np.flatnonzero(diff & (zside >= 0) & solid_box[np.maximum(zside, 0)] & ~out)
+        if not len(cand):
+            continue
+        order = np.argsort(zside[cand], kind="stable")
+        cand = cand[order]
+        parts_, starts = np.unique(zside[cand], return_index=True)
+        ends = np.append(starts[1:], len(cand))
+        for q, s0, s1 in zip(parts_.tolist(), starts.tolist(), ends.tolist()):
+            got = planes.get(int(q))
+            if got is None:
+                continue
+            f = cand[s0:s1]
+            lo, hi = got                                # (n, 3) each
+            c = fc[f]
+            n = normal[f]
+            on = np.zeros(len(f), dtype=bool)
+            for b in range(len(lo)):
+                at = np.take_along_axis(c, n[:, None], 1)[:, 0]
+                face = (np.abs(at - lo[b][n]) <= tol) | (np.abs(at - hi[b][n]) <= tol)
+                inside = np.ones(len(f), dtype=bool)
+                for i in range(3):
+                    inside &= (n == i) | ((c[:, i] >= lo[b][i] - tol) & (c[:, i] <= hi[b][i] + tol))
+                on |= face & inside
+            out[f[on]] = True
+    return out
+
+
 def snap(curves: list[Curve], points: np.ndarray, keys: np.ndarray, topo, zone: np.ndarray,
-         solid_box: np.ndarray, wall_keys: np.ndarray) -> Snapped:
+         solid_box: np.ndarray, wall_keys: np.ndarray,
+         planes: dict[int, tuple[np.ndarray, np.ndarray]] | None = None,
+         tol: float = 0.0) -> Snapped:
     """Where each curve's staircase points go. `zone` is each cell's part (-1 air); `solid_box[k]`
-    says part k's faces must stay where they are (every part but a cylinder); `wall_keys` are the
-    points on a wall between two blocks (they never move: they are hanging nodes of a coarser
+    says part k is a box part, whose own faces must stay where they are - the faces on `planes[k]`
+    (its material and rectangular-vent boxes, as (lo, hi) arrays; see box_faces); `wall_keys` are
+    the points on a wall between two blocks (they never move: they are hanging nodes of a coarser
     face)."""
     out = Snapped()
     if not curves:
@@ -144,8 +189,7 @@ def snap(curves: list[Curve], points: np.ndarray, keys: np.ndarray, topo, zone: 
     fc = _face_centres(points, topo.face_off, ids_i)
     fixed = np.zeros(len(points), dtype=bool)
     fixed[np.searchsorted(keys, wall_keys)] = True
-    on_box = ((zo >= 0) & solid_box[np.maximum(zo, 0)]) | \
-        ((zn >= 0) & solid_box[np.maximum(zn, 0)])
+    on_box = own_plane_faces(fc, normal_i, zo, zn, solid_box, planes, tol)
     domain_pts = [np.unique(ids_b[np.isin(fid_b, np.flatnonzero(normal_b == a_))])
                   for a_ in range(3)]
     disp = np.zeros_like(points)                # where each surface point is asked to go
@@ -165,7 +209,7 @@ def snap(curves: list[Curve], points: np.ndarray, keys: np.ndarray, topo, zone: 
         # this curve's staircase sides: against air or another curved part - a face it shares
         # with a box part is that box's face, and holds its points
         other = np.where(zo == c.part, zn, zo)
-        other_box = (other >= 0) & solid_box[np.maximum(other, 0)] & (other != c.part)
+        other_box = (other >= 0) & solid_box[np.maximum(other, 0)] & (other != c.part) & on_box
         own = side & inside & near & (normal_i != c.axis) & ~other_box
         faces = np.flatnonzero(own)
         if not len(faces):
