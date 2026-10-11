@@ -60,7 +60,8 @@ class ConfirmedOpening(BaseModel):
 
 
 class ConfirmIn(BaseModel):
-    input_kind: Literal["body-surface", "fluid-domain", "solid-body"]
+    #: the registry's kinds (contracts/geometry_fields INPUT_KIND_OPTIONS); a test holds them equal
+    input_kind: Literal["body-surface", "fluid-domain", "solid-body", "solid-assembly"]
     flow: Literal["internal", "external"]
     openings: list[ConfirmedOpening] = []
     seed_point_mm: list[float] | None = None
@@ -89,6 +90,13 @@ class ConfirmIn(BaseModel):
     #: that differs from what the session holds (the file's own declaration, or an earlier
     #: answer) is recorded as the user's, exactly as a chat answer is.
     unit: Literal["mm", "cm", "m", "in"] | None = None
+    #: SET BY THE SERVER, never taken from the form: the upload's converter fixed the unit (an
+    #: ECXML model's geometry is millimetres), so the declaration tells the intake never to ask it.
+    unit_fixed: bool = False
+    #: AN ASSEMBLY'S REGIONS, as the check read them from the file (one per solid, and the fluid):
+    #: filled by the server from the check when the form does not send them, and named in the
+    #: declaration so the intake knows each part is its own region.
+    regions: list[str] | None = None
 
     @field_validator("extents")
     @classmethod
@@ -204,6 +212,7 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
         return {"status": STATUS_NONE}
     async with get_db() as db:
         interpretation = await gh.interpretation_payload(db, session, owner_id, organization_id)
+        fixing = await gh.unit_fixing_format(db, session, owner_id, organization_id)
     # the naming starts with the user's first answer: until then the stage must say it is
     # waiting for the chat, not that the model is working
     try:
@@ -235,12 +244,19 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
             if (payload.get("facts") or {}).get("scale_to_m"):
                 payload["proposal"]["scale_to_m"] = float(payload["facts"]["scale_to_m"])
             payload["proposal"]["unit"], payload["proposal"]["unit_basis"] = unit_in_effect(interpretation)
+            if fixing is not None:
+                # THE CONVERTER FIXED IT (an ECXML model's millimetre geometry): the box shows the
+                # unit and offers no other, and no other reading is suggested
+                payload["proposal"]["unit"] = fixing.fixed_unit
+                payload["proposal"]["unit_fixed"] = True
+                payload["proposal"]["unit_fixed_reason"] = fixing.fixed_unit_reason
             # THE OTHER READING, when the part is implausible in the unit in effect - a "117 mm"
             # wind turbine blade, a 1 mm car from a triangle file: both lengths in plain words,
-            # for the user to pick one before Proceed. Never once the user has named the unit.
+            # for the user to pick one before Proceed. Never once the user has named the unit,
+            # and never for a unit the converter fixed.
             from meshpipeline.application.geometry_check import unit_suggestion
-            suggestion = unit_suggestion(payload["proposal"], interpretation,
-                                         purpose_from(getattr(session, "messages", None)))
+            suggestion = None if fixing is not None else unit_suggestion(
+                payload["proposal"], interpretation, purpose_from(getattr(session, "messages", None)))
             if suggestion is not None:
                 payload["proposal"]["unit_suggestion"] = suggestion
         if payload.get("status") == "ready":
@@ -299,6 +315,10 @@ def in_confirmed_unit(body: ConfirmIn, scale_to_metres: float | None) -> Confirm
 UNIT_FIRST = ("Say what unit the file is in first - in the box beside the sizes, or in the chat: "
               "millimetres, centimetres, metres or inches. The sizes cannot be confirmed in a unit "
               "nobody has named.")
+
+
+UNIT_FIXED = ("This file's unit is fixed at {unit}: {reason}. Leave the unit box as it is - the sizes "
+              "are already right.")
 
 
 STILL_RUNNING = ("This geometry check is still running. It can be run again once it reports failed - "
@@ -434,7 +454,24 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
     from meshpipeline.persistence.session import get_db
 
     async with get_db() as db:
-        interpretation = await gh.interpretation_payload(db, session, owner_id, organization_id)
+        # A UNIT THE CONVERTER FIXED (an ECXML model's millimetre geometry) is in force whatever
+        # the box says, and recorded as the file's when the upload could not record it
+        fixing = await gh.unit_fixing_format(db, session, owner_id, organization_id)
+        interpretation = None
+        if fixing is not None:
+            interpretation = await gh.ensure_fixed_unit(db, session, owner_id, organization_id)
+            await db.commit()
+        if interpretation is None:
+            interpretation = await gh.interpretation_payload(db, session, owner_id, organization_id)
+    if fixing is not None and body.unit and body.unit != fixing.fixed_unit:
+        raise HTTPException(409, UNIT_FIXED.format(unit=fixing.fixed_unit, reason=fixing.fixed_unit_reason))
+    body = body.model_copy(update={"unit_fixed": fixing is not None})
+    if body.input_kind == "solid-assembly" and not body.regions:
+        # an assembly's regions are the file's, as the check read them: named in the declaration
+        facts = (_read_json(check_object_key(str(session_id), "scout.json")) or {}).get("facts") or {}
+        names = [str(n) for n in facts.get("source_regions") or [] if str(n).strip()]
+        if names:
+            body = body.model_copy(update={"regions": names})
     current = str(interpretation.get("unit")) if interpretation else None
     corrected = body.unit if body.unit and body.unit != current else None
     if corrected is None and interpretation is None:

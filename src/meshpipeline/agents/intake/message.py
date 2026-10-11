@@ -273,7 +273,8 @@ async def accept(inbound: InboundMessage, *, session_repo, db_factory, logger,
 async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: list,
                   revision: str, session_repo, logger) -> MessageOutcome:
     changed = await _settle_unit_change(inbound, db, locked=locked, messages=messages,
-                                        revision=revision, session_repo=session_repo, logger=logger)
+                                        revision=revision, session_repo=session_repo, logger=logger,
+                                        gate=gate)
     if changed is not None:
         return changed
     approval = gate.get("approval")
@@ -423,7 +424,7 @@ UNIT_CHANGE_FAILED = ("I couldn't switch the file to {unit} just now: the sizes 
 
 
 async def _settle_unit_change(inbound: InboundMessage, db, *, locked, messages: list, revision: str,
-                              session_repo, logger) -> MessageOutcome | None:
+                              session_repo, logger, gate: dict | None = None) -> MessageOutcome | None:
     """A UNIT CHANGED AFTER IT WAS SETTLED. "The file is in metres", said once the sizes were
     confirmed as millimetres, is recorded as the user's unit and every length derived under the
     old one is re-read by the application - the declaration the intake reads, the declared
@@ -436,12 +437,38 @@ async def _settle_unit_change(inbound: InboundMessage, db, *, locked, messages: 
     unit = uc.stated_unit(inbound.content)
     if unit is None:
         return None
-    from meshpipeline.application.unit_change import UnitChangeError, change_unit
+    from meshpipeline.application.unit_change import UnitChangeError, UnitFixed, change_unit
 
     try:
         change = await change_unit(db, locked, owner_id=inbound.owner_id,
                                    organization_id=inbound.organization_id, unit=unit,
                                    session_repo=session_repo, where="chat")
+    except UnitFixed as fixed:
+        # THE CONVERTER FIXED THE UNIT: "metres" is true of an ECXML model's source, never of the
+        # millimetre geometry it was converted into. Nothing changes, and the user is told why.
+        logger.info("intake message: %s named, but the unit is fixed at %s - session=%s",
+                    unit.value, fixed.unit.value, inbound.session_id)
+        if not uc.only_states_unit(inbound.content):
+            # THE MESSAGE ASKS FOR MORE ("... and make the mesh finer"): nothing changed about the
+            # unit, and the rest goes on through the turn as any other request does - a proposed
+            # run included, which the request then corrects
+            return None
+        reply = fixed.reply()
+        # A RUN ALREADY PROPOSED STANDS - nothing it was set up with changed - so it waits one
+        # turn: the "go on" the reply invites is the yes it is still waiting for.
+        current = dict(gate if gate is not None else (getattr(locked, "intake_gate", None) or {}))
+        deferred = ap.is_live(current.get("approval"))
+        if deferred:
+            current["approval"] = ap.defer(current.get("approval"))
+            await session_repo.set_intake_gate(db, inbound.session_id, current)
+        await session_repo.append_message(db, inbound.session_id, "assistant", reply)
+        if deferred:
+            return MessageOutcome(
+                status=MessageStatus.unit_changed, reply=reply, awaiting_confirmation=True,
+                transition=GateTransition(change=GateChange.approval_deferred, revision=revision,
+                                          approval_status=ap.AWAITING))
+        return MessageOutcome(status=MessageStatus.unit_changed, reply=reply,
+                              transition=GateTransition(revision=revision))
     except UnitChangeError as exc:
         # NOTHING WAS CHANGED: the confirmed sizes could not be re-read, and a unit bound over
         # them would be the very mismatch this turn exists to prevent. Said, not guessed.
@@ -482,6 +509,19 @@ async def _settle_unit(inbound: InboundMessage, db, *, gate: dict, locked, revis
     reply that names none is asked the question again rather than let through."""
     if not uc.needs_confirmation(locked):
         return None
+
+    # A UNIT THE CONVERTER FIXED IS NEVER ASKED: an ECXML model's geometry is millimetres by
+    # construction. Asked, the truthful "metres" (the source's SI) was taken for the converted
+    # geometry and the part became a thousand times too long. Recorded as the file's, silently.
+    from meshpipeline.application import geometry_hold as _gh
+
+    if await _gh.ensure_fixed_unit(db, locked, inbound.owner_id, inbound.organization_id) is not None:
+        await session_repo.set_intake_gate(db, inbound.session_id, uc.answered(gate))
+        logger.info("intake message: the converted geometry's unit is fixed - recorded, not asked - "
+                    "session=%s", inbound.session_id)
+        return MessageOutcome(
+            status=MessageStatus.unit_recorded,
+            transition=GateTransition(change=GateChange.unit_answered, revision=revision))
 
     asked_already = uc.already_asked(gate)
     proposal = uc.proposed(gate) if asked_already else None
