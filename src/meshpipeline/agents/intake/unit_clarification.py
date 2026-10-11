@@ -261,6 +261,26 @@ def stated_unit(message: str) -> LengthUnit | None:
     return None
 
 
+#: The words a sentence that only says what unit the file is in is made of, besides the unit.
+_UNIT_SENTENCE_WORDS = _REPLY_FILLER | frozenset({
+    "file", "geometry", "model", "cad", "step", "part", "drawing", "coordinate", "coordinates",
+    "numbers", "dimensions", "sizes", "unit", "units", "scale", "everything", "this", "that",
+    "they", "was", "were", "uses", "used", "drawn", "modelled", "modeled", "exported", "saved",
+    "given", "written", "made", "ecxml", "a", "an", "please", "just", "think", "says", "say",
+    # courtesy carries no request: "the file is in metres, thanks"
+    "thanks", "thank", "you", "cheers", "fyi", "btw", "hi", "hello"})
+
+
+def only_states_unit(message: str) -> bool:
+    """Whether the message says what unit the file is in and nothing else ("metres", "the file
+    is in metres, not mm"). "The file is in metres, and make the mesh finer" asks for more: a
+    turn that answers only the unit must not swallow the rest."""
+    low = _respelled(str(message or "").lower())
+    rest = [w for w in _WORD.findall(low)
+            if w not in _UNIT_SENTENCE_WORDS and not _UNIT_ONLY.fullmatch(w)]
+    return not rest and bool(_UNIT_ANYWHERE.search(low))
+
+
 def asked(intake_gate, proposal: LengthUnit | None = None) -> dict:
     gate = dict(intake_gate or {})
     gate["unit_question"] = {"asked": True, **({"proposed": proposal.value} if proposal else {})}

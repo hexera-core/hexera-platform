@@ -29,14 +29,22 @@ class GeometryField:
     help: str = ""
 
 
+#: WHAT THE FILE CAN BE CONFIRMED AS, in the words the form shows. An assembly of solid parts is
+#: one closed solid per region - each part, and the fluid around them - as a thermal model (ECXML)
+#: arrives: the input a multi-region (conjugate heat transfer) mesh is built from.
+INPUT_KIND_OPTIONS: tuple[tuple[str, str], ...] = (
+    ("body-surface", "the part's wall, hollow inside for the fluid"),
+    ("fluid-domain", "the fluid volume itself"),
+    ("solid-body", "a solid body the fluid flows around"),
+    ("solid-assembly", "an assembly of solid parts, each its own region"),
+)
+
+
 #: THE REGISTRY. Order is display order. Adding a fact the check can fill in starts here; the
 #: tests hold the confirm model and the console form to this list.
 FIELDS: tuple[GeometryField, ...] = (
     GeometryField("part", "The part", "text", help="what the part is, in a few words"),
-    GeometryField("input_kind", "The file is", "select", options=(
-        ("body-surface", "the part's wall, hollow inside for the fluid"),
-        ("fluid-domain", "the fluid volume itself"),
-        ("solid-body", "a solid body the fluid flows around"))),
+    GeometryField("input_kind", "The file is", "select", options=INPUT_KIND_OPTIONS),
     GeometryField("flow", "The fluid flows", "select", options=(
         ("internal", "through the part"), ("external", "around the part"))),
     GeometryField("up_axis", "Up", "select", options=tuple((a, a.upper()) for a in UP_AXES),
@@ -180,7 +188,7 @@ def external_declaration(body) -> list[str]:
 
 
 __all__ = ["AXES", "DEFAULT_EXTENTS", "DEFAULT_UP", "EXTERNAL_KEYS", "FIELD_KEYS", "FIELDS",
-           "GROUND_NEEDS_Z_UP", "GeometryField", "UP_AXES", "axis_of_longest_side",
+           "GROUND_NEEDS_Z_UP", "INPUT_KIND_OPTIONS", "GeometryField", "UP_AXES", "axis_of_longest_side",
            "external_declaration", "external_defaults", "form_spec", "length_along",
            "length_of_another_axis", "same_length", "up_or_default"]
 _ = field  # dataclasses.field is imported for future registry entries with defaults

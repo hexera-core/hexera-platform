@@ -133,6 +133,67 @@ async def interpretation_payload(db, session, owner_id: str, organization_id: st
     return asdict(GeometryInterpretationRef.from_domain(recorded)) if recorded else None
 
 
+async def unit_fixing_format(db, session, owner_id: str, organization_id: str):
+    """The intake format of the session's upload when its converter fixes the unit of the
+    geometry (contracts/intake_formats `fixed_unit`: an ECXML model is written in millimetres),
+    else None. A source that cannot be read is None - the unit is then handled as any other."""
+    sid = getattr(session, "geometry_source_id", None)
+    if not sid or db is None:
+        return None
+    from meshpipeline.contracts.intake_formats import unit_fixing_format as _fixing
+    from meshpipeline.persistence.repositories.geometry_source_repository import GeometrySourceRepository
+
+    try:
+        row = await GeometrySourceRepository().get_for_owner(db, sid, owner_id,
+                                                             organization_id=organization_id)
+    except Exception as exc:  # noqa: BLE001 - a lookup that fails locks nothing
+        logger.warning("geometry unit: the upload's format could not be read (%s) - session_id=%s",
+                       type(exc).__name__, getattr(session, "id", None))
+        return None
+    return _fixing(str(getattr(row, "suffix_hint", "") or "")) if row is not None else None
+
+
+async def ensure_fixed_unit(db, session, owner_id: str, organization_id: str) -> dict | None:
+    """THE UNIT A CONVERTER FIXED, bound to the session when nothing is: an ECXML upload's
+    geometry is millimetres by construction, so it is recorded as the file's (as the upload
+    records any declared unit) rather than asked. Returns the interpretation now in force when
+    the upload's unit is fixed, else None. The upload records it already; this covers an upload
+    whose unit could not be read then - and a session that holds ANOTHER unit (a "metres" taken
+    before the unit was locked): the fixed one is bound back over it, and a run proposed under
+    the wrong one is withdrawn by the intake authority, in the caller's transaction."""
+    import uuid
+    from dataclasses import asdict
+
+    fmt = await unit_fixing_format(db, session, owner_id, organization_id)
+    if fmt is None:
+        return None
+    current = await interpretation_payload(db, session, owner_id, organization_id)
+    if current is not None and str(current.get("unit")) == fmt.fixed_unit:
+        return current
+    from meshpipeline.contracts.geometry_source import GeometryInterpretationRef
+    from meshpipeline.contracts.geometry_units import LengthUnit, ResolutionBasis
+    from meshpipeline.persistence.repositories.geometry_interpretation_repository import (
+        GeometryInterpretationRepository,
+    )
+    from meshpipeline.persistence.repositories.session_repository import SessionRepository
+
+    recorded = await GeometryInterpretationRepository().record(
+        db, owner_id=owner_id, geometry_source_id=session.geometry_source_id,
+        unit=LengthUnit(fmt.fixed_unit), basis=ResolutionBasis.file_declared,
+        evidence=f"fixed by the conversion: {fmt.fixed_unit_reason}"[:256],
+        organization_id=organization_id)
+    await SessionRepository().bind_geometry_interpretation(db, session.id, uuid.UUID(recorded.interpretation_id))
+    logger.info("geometry unit: %s fixed by the %s conversion, recorded%s - session_id=%s",
+                fmt.fixed_unit, fmt.key, f" over {current.get('unit')}" if current else "", session.id)
+    if current is not None:
+        from meshpipeline.agents.intake.message import withdraw_proposal_for_unit_change
+
+        if await withdraw_proposal_for_unit_change(db, session):
+            logger.info("geometry unit: a run proposed under %s was withdrawn - session_id=%s",
+                        current.get("unit"), session.id)
+    return asdict(GeometryInterpretationRef.from_domain(recorded))
+
+
 async def record_unit(db, session, owner_id: str, organization_id: str, unit: str) -> dict:
     """The unit corrected on the stage, recorded exactly as the chat records an answer: a
     user-confirmed interpretation bound to the session. A STEP file that says millimetres for a
@@ -189,6 +250,6 @@ def withdraw_naming(session_id: str) -> None:
     logger.warning("geometry naming request withdrawn after a failed turn - session_id=%s", session_id)
 
 
-__all__ = ["CONTINUE_TEXT", "DRAWING_MARK", "HOLD_REPLY", "WAIT_GRACE_S", "WAIT_REPLY", "hold_applies",
-           "hold_decision", "interpretation_payload", "measured_size_mm", "purpose_from", "queue_naming",
-           "record_unit", "should_hold", "withdraw_naming"]
+__all__ = ["CONTINUE_TEXT", "DRAWING_MARK", "HOLD_REPLY", "WAIT_GRACE_S", "WAIT_REPLY", "ensure_fixed_unit",
+           "hold_applies", "hold_decision", "interpretation_payload", "measured_size_mm", "purpose_from",
+           "queue_naming", "record_unit", "should_hold", "unit_fixing_format", "withdraw_naming"]
