@@ -91,6 +91,16 @@ def check_mesh(workspace, *, bashrc: str = _DEFAULT_BASHRC, region: str = "") ->
     # is fully solvable; this fraction - not the single worst value - is the honest quality signal.
     q.setdefault("skew_faces", 0)
     q["skew_fraction"] = (q["skew_faces"] / q["faces"]) if q.get("faces") else 0.0
+    if not region and any(lbl in _LOCATED_FATAL for lbl in q["fatal"]):
+        # WHERE the mesh is invalid, not only that it is: the snappy driver repairs a pass whose
+        # prism layers folded by leaving layers out next to these spots, instead of cutting them
+        # everywhere (engines/snappy/layer_policy.py). Evidence only - never costs a verdict.
+        try:
+            pts = fatal_points(ws, bashrc=bashrc)
+            if pts:
+                q["fatal_points"] = pts
+        except Exception:  # noqa: BLE001
+            logger.warning("check_mesh: the invalid cells could not be located", exc_info=True)
     mr = re.search(r"Number of regions:\s*(\d+)", out)
     if mr:
         # Region count is INFORMATION, not a hard gate. A disconnected region is a defect
@@ -109,6 +119,70 @@ def check_mesh(workspace, *, bashrc: str = _DEFAULT_BASHRC, region: str = "") ->
         except Exception:
             pass
     return q
+
+
+#: The fatal verdicts checkMesh also writes a set for, and the set each one lands in. These are the
+#: two that folding prism layers produce (layer_policy.is_layer_fatal reads the same labels).
+_LOCATED_FATAL = {"incorrectly oriented faces": ("faceSet", "wrongOrientedFaces"),
+                  "negative-volume cells": ("cellSet", "zeroVolumeCells")}
+
+#: At most this many spots are reported. A few dozen is the shape of a local fold; past this the
+#: mesh is broken everywhere and a sample says so just as well.
+MAX_FATAL_POINTS = 500
+
+
+def _obj_face_centres(text: str) -> list[list[float]]:
+    """The centre of every face record (`f i j k ...`, 1-based) in a writeMeshObj OBJ file; the
+    vertices themselves when the file holds no faces."""
+    verts: list[tuple[float, float, float]] = []
+    centres: list[list[float]] = []
+    for line in text.splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        if parts[0] == "v" and len(parts) >= 4:
+            verts.append((float(parts[1]), float(parts[2]), float(parts[3])))
+        elif parts[0] == "f" and len(parts) >= 3:
+            ids = sorted({int(p.split("/")[0]) - 1 for p in parts[1:]})
+            ids = [i for i in ids if 0 <= i < len(verts)]
+            if ids:
+                centres.append([sum(verts[i][k] for i in ids) / len(ids) for k in range(3)])
+    if not centres:
+        centres = [list(v) for v in verts]
+    return centres
+
+
+def fatal_points(workspace, *, bashrc: str = _DEFAULT_BASHRC, timeout: int = 600,
+                 limit: int = MAX_FATAL_POINTS) -> list[list[float]]:
+    """Centres of the faces and cells checkMesh just wrote to its fatal sets, in mesh coordinates.
+
+    checkMesh names the invalid faces and cells in constant/polyMesh/sets; writeMeshObj turns a
+    set into geometry. Empty when no set was written (a mesh checkMesh did not condemn) or the
+    tool is unavailable - the caller then knows only THAT the mesh is invalid, as before."""
+    ws = Path(workspace)
+    sets = ws / "constant" / "polyMesh" / "sets"
+    points: list[list[float]] = []
+    for kind, name in _LOCATED_FATAL.values():
+        if not (sets / name).is_file():
+            continue
+        before = set(ws.glob("*.obj"))
+        cmd = (f"source {bashrc} >/dev/null 2>&1 && "
+               f"writeMeshObj -constant -{kind} {name}")
+        try:
+            run_guarded(["bash", "-lc", cmd], cwd=str(ws), env=_foam_env(),
+                        capture_output=True, text=True, timeout=timeout)
+        except Exception:  # noqa: BLE001 - a location is evidence, never a verdict
+            logger.warning("fatal_points: writeMeshObj failed for %s", name, exc_info=True)
+            continue
+        for obj in sorted(set(ws.glob("*.obj")) - before):
+            try:
+                points.extend(_obj_face_centres(obj.read_text(errors="replace")))
+            finally:
+                obj.unlink(missing_ok=True)
+    if len(points) > limit:
+        step = len(points) / float(limit)
+        points = [points[int(i * step)] for i in range(limit)]
+    return [[round(float(c), 6) for c in p] for p in points]
 
 
 def export_volume_vtk(workspace, *, bashrc: str = _DEFAULT_BASHRC, timeout: int = 300) -> str | None:
