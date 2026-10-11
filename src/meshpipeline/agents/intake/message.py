@@ -311,6 +311,18 @@ async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: 
             return MessageOutcome(status=MessageStatus.approve,
                                   transition=GateTransition(revision=revision,
                                                             approval_status=ap.AWAITING))
+        if intent == ap.QUESTION_INTENT:
+            # A question about the summary changes nothing: the summary stands, one turn further
+            # on, and the intake answers. The user's next clear yes lands on it; a change after
+            # the answer goes through the intake as always and replaces it.
+            gate["approval"] = ap.defer(approval)
+            await session_repo.set_intake_gate(db, inbound.session_id, gate)
+            logger.info("intake message: a question about the summary - it stands - session=%s",
+                        inbound.session_id)
+            return MessageOutcome(
+                status=MessageStatus.proceed,
+                transition=GateTransition(change=GateChange.approval_deferred, revision=revision,
+                                          approval_status=ap.AWAITING))
         if intent == ap.HEDGE_INTENT:
             # Ambiguous: never dispatch, never silently invalidate - ask once, deterministically,
             # and move the snapshot's expected confirmation turn along with the question so the

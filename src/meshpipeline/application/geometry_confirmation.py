@@ -205,7 +205,12 @@ def unit_sentence(body) -> str:
         # the converter wrote the geometry in this unit: asking would invite the SOURCE's unit
         # ("metres", for an ECXML model) as an answer about the converted geometry. The chat shows
         # these words to the user, so they state a fact; the intake prompt block says what follows.
-        said += " That unit is fixed by the conversion of the uploaded file, so it is settled."
+        said += " That unit is fixed by the conversion of the uploaded file, so it is settled"
+        # ...and WHY, in the format's own words: a user who knows an ECXML model is in metres
+        # read "the file is in millimetres" as a mistake and corrected it at the approval
+        # (dev-areen set_top_box, 2026-10-11) - both are true, and this says so
+        reason = str(getattr(body, "unit_fixed_reason", "") or "").strip().rstrip(".")
+        said += f": {reason}." if reason else "."
     if longest > 0:
         said += " The sizes above are already converted to millimetres; use them as they stand."
     return said
@@ -350,6 +355,24 @@ def replace_declaration(messages: list[dict] | None, message: str) -> list[dict]
     return out if done else [*out, {"role": "assistant", "content": message}]
 
 
+def confirmed_opening_names(session_id) -> tuple[str, ...]:
+    """The boundary patches the uploaded file declares, as the user confirmed them on the geometry
+    stage (the stored confirmation's openings, "not an opening" left out). Empty when nothing was
+    confirmed or the store cannot be read - and then nothing is judged against it."""
+    import json
+
+    from meshpipeline.application.geometry_check import check_object_key
+    from meshpipeline.contracts.object_storage import get_object_store
+
+    try:
+        record = json.loads(get_object_store().get_bytes(
+            object_key=check_object_key(str(session_id), "confirmed.json")))
+    except Exception:  # noqa: BLE001 - unknown, never a refusal
+        return ()
+    return tuple(str(o.get("name")) for o in (record.get("openings") or [])
+                 if isinstance(o, dict) and o.get("name") and o.get("role") != "not_an_opening")
+
+
 def patches_from(body) -> list[dict]:
     """The session's declared patches, in the shape the intake's submit tool already takes:
     name and role, plus the size and location fields the port binding reads."""
@@ -382,7 +405,7 @@ _OPENING_DEFAULTS: dict[str, object] = {"centroid_mm": None, "diameter_mm": None
 _BODY_DEFAULTS: dict[str, object] = {"openings": [], "seed_point_mm": None, "size_mm": None, "part": "",
                                      "flow_axis": None, "reference_length_mm": None, "extents": None,
                                      "grounded": False, "up_axis": None, "scale_to_m": None, "unit": None,
-                                     "unit_fixed": False, "regions": None, "openings_reason": ""}
+                                     "unit_fixed": False, "unit_fixed_reason": "", "regions": None, "openings_reason": ""}
 
 
 def body_of(record: dict) -> SimpleNamespace:

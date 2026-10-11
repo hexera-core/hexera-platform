@@ -93,6 +93,10 @@ class ConfirmIn(BaseModel):
     #: SET BY THE SERVER, never taken from the form: the upload's converter fixed the unit (an
     #: ECXML model's geometry is millimetres), so the declaration tells the intake never to ask it.
     unit_fixed: bool = False
+    #: SET BY THE SERVER with `unit_fixed`: why the converter's unit is the one (an ECXML model
+    #: states its lengths in metres and was converted exactly into millimetres), said in the chat so
+    #: a user who knows the source's unit reads that both are true instead of correcting it.
+    unit_fixed_reason: str = ""
     #: AN ASSEMBLY'S REGIONS, as the check read them from the file (one per solid, and the fluid):
     #: filled by the server from the check when the form does not send them, and named in the
     #: declaration so the intake knows each part is its own region.
@@ -469,7 +473,8 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
             interpretation = await gh.interpretation_payload(db, session, owner_id, organization_id)
     if fixing is not None and body.unit and body.unit != fixing.fixed_unit:
         raise HTTPException(409, UNIT_FIXED.format(unit=fixing.fixed_unit, reason=fixing.fixed_unit_reason))
-    body = body.model_copy(update={"unit_fixed": fixing is not None})
+    body = body.model_copy(update={"unit_fixed": fixing is not None,
+                                   "unit_fixed_reason": fixing.fixed_unit_reason if fixing else ""})
     if body.input_kind == "solid-assembly" and not body.regions:
         # an assembly's regions are the file's, as the check read them: named in the declaration
         facts = (_read_json(check_object_key(str(session_id), "scout.json")) or {}).get("facts") or {}

@@ -114,7 +114,12 @@ def _tokens(engine: str, message: str, *, keep_engine: bool,
         text = text.replace("?", f" {_QUESTION_WORD} ")
         text = _CLAUSE_BREAK.sub(f" {_BREAK_WORD} ", text)
     text = re.sub(r"[^0-9a-z]+", " ", text)
-    for spelling in {engine, engine_label(engine)}:
+    # the engine's own names first, then a sibling's name that is the leading part of its own
+    # ("snappyHexMesh" for "snappyHexMesh multi-region") - what a user shortens it to
+    spellings = sorted({engine, engine_label(engine)}, key=len, reverse=True)
+    for sibling in short_siblings(engine):
+        spellings += sorted({sibling, engine_label(sibling)}, key=len, reverse=True)
+    for spelling in spellings:
         bare = re.sub(r"[^0-9a-z]+", " ", str(spelling or "").casefold()).strip()
         if bare:
             text = re.sub(rf"(?<![0-9a-z]){re.escape(bare)}(?![0-9a-z])",
@@ -234,8 +239,34 @@ def declines(engine: str, message: str) -> bool:
     return False
 
 
+def short_siblings(engine: str) -> frozenset[str]:
+    """Engines whose name is the LEADING PART of `engine`'s own: snappyHexMesh for "snappyHexMesh
+    multi-region". A user answering "I'd mesh this with snappyHexMesh multi-region" with
+    "snappyHexMesh is fine" shortens the name of the engine they were asked about."""
+    from meshpipeline.engines.registry import engine_names
+
+    own = (engine or "").strip().lower()
+    label = _norm(engine_label(own))
+    return frozenset(n for n in engine_names()
+                     if n != own and _norm(engine_label(n))
+                     and label.startswith(_norm(engine_label(n)) + " "))
+
+
+def _only_shortens(engine: str, message: str, named) -> bool:
+    # every engine the message names is a shortening of the proposed one, and the message is
+    # otherwise a plain yes to it: "snappyHexMesh is fine", "yes, use snappyHexMesh" - not "use
+    # plain snappyHexMesh" or "the single-region snappyHexMesh", which choose the sibling
+    short = short_siblings(engine)
+    return bool(named) and set(named) <= short and plain_assent(engine, message)
+
+
 def names_another_engine(engine: str, message: str) -> bool:
-    return bool(_vocab.engines_named_in(message, (engine or "").strip().lower()))
+    # An accepted proposal binds to EXACTLY the engine proposed: a shortened name of it is a yes
+    # to it, never a choice of the sibling the short name also spells (dev-areen set_top_box,
+    # 2026-10-11: "snappyHexMesh is fine" to snappyHexMesh multi-region was taken as plain
+    # snappyHexMesh, refused for heat transfer, and asked again three times).
+    named = _vocab.engines_named_in(message, (engine or "").strip().lower())
+    return bool(named) and not _only_shortens(engine, message, named)
 
 
 def user_chose(engine: str, user_texts) -> bool:
@@ -456,6 +487,8 @@ def choose_listed(sel: dict | None, *, session_id: str, owner_id: str, revision:
     named = _vocab.engines_named_in(str(latest_user_message or ""), "")
     if len(named) != 1 or named[0] not in listed or named[0] == sel.get("engine"):
         return None
+    if _only_shortens(str(sel.get("engine") or ""), str(latest_user_message or ""), named):
+        return None     # a yes to the proposed engine by its short name (confirm_by_assent's)
     engine = named[0]
     message = str(latest_user_message or "")
     if "?" in message or declines(engine, message) or not _chooses_in(engine, message):

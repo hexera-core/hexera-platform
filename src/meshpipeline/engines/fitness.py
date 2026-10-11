@@ -580,11 +580,23 @@ def _heads_up(turf: str, words: Sequence[str]) -> str:
 _TURF_ORDER = {"home": 0, "": 1, "weak": 2, "outside": 3}
 
 
+def reads_own_format(engine: str, source_format: str) -> bool:
+    """Whether `engine` reads files of `source_format` ITSELF (EngineSpec.reads_source_formats):
+    it meshes the model the file describes, not a conversion of it."""
+    spec = _spec(engine)
+    return bool(source_format) and spec is not None and source_format in spec.reads_source_formats
+
+
 def recommend(traits: ShapeTraits, engines: Sequence[str], *, table: Table | None = None,
-              brief: Mapping | None = None) -> Recommendation:
+              brief: Mapping | None = None, source_format: str = "") -> Recommendation:
     """Rank `engines` - those that CAN take this file for this flow - for this geometry. The best
     measured engine that its own declared turf does not put OUTSIDE is recommended; every engine
-    keeps its place on the list, with its reason, for the user to pick."""
+    keeps its place on the list, with its reason, for the user to pick.
+
+    `source_format` is the upload's own format. An engine that reads that format ITSELF ranks
+    ahead of engines that would mesh a conversion of it, measured or not: the conversion is what
+    loses the model (an ECXML's parts, materials and powers), and lab runs of other engines on
+    the converted geometry say nothing about that. Declared by the engine, not named here."""
     from meshpipeline.engines.home_turf import rows_for, verdict
 
     tab = committed_table() if table is None else table
@@ -609,7 +621,8 @@ def recommend(traits: ShapeTraits, engines: Sequence[str], *, table: Table | Non
 
     def key(item):
         name, ev, turf, _, _, score, ladder = item
-        return (turf == "outside", -math.floor(score / TIE_STEP + 1e-9), _TURF_ORDER.get(turf, 1),
+        return (turf == "outside", not reads_own_format(name, source_format),
+                -math.floor(score / TIE_STEP + 1e-9), _TURF_ORDER.get(turf, 1),
                 -(ev.layers_pct if ev.layers_pct is not None else -1.0),
                 ev.seconds if ev.seconds is not None else math.inf, ladder, name)
 

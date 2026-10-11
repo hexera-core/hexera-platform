@@ -67,11 +67,38 @@ def able_engines(engines: Iterable[str], purpose: str, input_kind: str, form: st
                                  geometry_form=form or None).get("verdict") != "impossible"]
 
 
+def source_format_of(*names) -> str:
+    """The format key of the upload (contracts.intake_formats) from the first of `names` - a path,
+    a file name or a suffix - that names one; '' when none does."""
+    from pathlib import PurePath
+
+    from meshpipeline.contracts.intake_formats import format_for_suffix
+
+    for name in names:
+        text = str(name or "").strip()
+        if not text:
+            continue
+        suffix = text.lower() if text.startswith(".") and "/" not in text else PurePath(text).suffix.lower()
+        fmt = format_for_suffix(suffix)
+        if fmt is not None:
+            return fmt.key
+    return ""
+
+
+def own_format_engines(engines: Iterable[str], source_format: str) -> list[str]:
+    """Of `engines`, those that read the upload's own format themselves (fitness.reads_own_format),
+    in the order given."""
+    from meshpipeline.engines.fitness import reads_own_format
+    return [e for e in engines if reads_own_format(e, source_format)]
+
+
 def rank(*, path: str, purpose: str, input_kind: str, form: str, engines: Sequence[str],
-         patches: Sequence[Mapping] = (), said: str = "", region_count: int | None = None):
+         patches: Sequence[Mapping] = (), said: str = "", region_count: int | None = None,
+         source_format: str = ""):
     """The recommendation for this upload and case, or None when nothing can be ranked (no flow,
     no engine that takes the file). An unmeasurable file is still ranked, on its flow alone, and
-    its reasons say how little that is."""
+    its reasons say how little that is. An engine that reads the upload's own format itself ranks
+    first (fitness.recommend); the format is the staged file's, unless the caller states it."""
     from meshpipeline.cad.shape_traits import ShapeTraits, measure_file
     from meshpipeline.engines.capability import flow_of
     from meshpipeline.engines.fitness import brief_facts, recommend
@@ -87,7 +114,8 @@ def rank(*, path: str, purpose: str, input_kind: str, form: str, engines: Sequen
     if not traits.form and form:
         traits = ShapeTraits.from_dict({**traits.as_dict(), "form": form})
     brief = brief_facts(request_txt=said, patches=list(patches), region_count=region_count)
-    return recommend(traits, able, brief=brief)
+    return recommend(traits, able, brief=brief,
+                     source_format=source_format or source_format_of(path))
 
 
 async def rank_in_time(*, timeout_s: float = MEASURE_WAIT_S, **kw):
@@ -225,6 +253,7 @@ def compact(rec) -> dict | None:
     return d
 
 
-__all__ = ["MEASURE_WAIT_S", "able_engines", "choice_payload", "compact", "prompt_block", "rank", "rank_in_time",
+__all__ = ["MEASURE_WAIT_S", "able_engines", "choice_payload", "compact", "own_format_engines",
+           "prompt_block", "rank", "rank_in_time", "source_format_of",
            "ranking_rows", "staged_upload", "upload_form",
            "statement"]
