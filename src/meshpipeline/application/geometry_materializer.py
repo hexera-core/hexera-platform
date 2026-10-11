@@ -61,7 +61,7 @@ async def resolve_row_ref(db, ref: GeometrySourceRef) -> GeometrySourceRef:
 
 def materialize(ref: GeometrySourceRef, interpretation: GeometryInterpretationRef, *,
                 workspace, row_ref: GeometrySourceRef | None = None,
-                job_id: str = "") -> MaterializedGeometry:
+                job_id: str = "", ecxml_form: str = "fused") -> MaterializedGeometry:
     if row_ref is not None:
         drift = ref.disagreements_with(row_ref)
         if drift:
@@ -99,11 +99,24 @@ def materialize(ref: GeometrySourceRef, interpretation: GeometryInterpretationRe
             "the retrieved geometry does not match the approved upload",
             failure_class=FailureClass.DATA_INTEGRITY)
     logger.info("geometry materialize: verified %d bytes - job_id=%s", size, job_id)
-    canonical = canonical_path(dest, job_id=job_id)
+    canonical = canonical_path(dest, job_id=job_id, ecxml_form=ecxml_form)
     return MaterializedGeometry(ref=ref, interpretation=interpretation, local_path=canonical)
 
 
-def canonical_path(verified: Path, *, job_id: str = "") -> Path:
+def ecxml_form_for(engine: str) -> str:
+    """How an ECXML upload is made canonical for `engine`: "placed" (the parts where the file puts
+    them, nothing joined) for an engine that reads the ECXML itself (EngineSpec.reads_source_formats:
+    the snap-grid mesher), "fused" (one STEP of conformal solids) for every other. Joining
+    thousands of parts the run will never read is the cost the placed form exists to avoid."""
+    try:
+        from meshpipeline.engines.registry import get_spec
+
+        return "placed" if "ecxml" in get_spec(engine).reads_source_formats else "fused"
+    except Exception:  # noqa: BLE001 - an unknown engine is refused later, by engine selection
+        return "fused"
+
+
+def canonical_path(verified: Path, *, job_id: str = "", ecxml_form: str = "fused") -> Path:
     """The verified upload in its canonical form (cad/ingest): the bytes themselves for STEP,
     IGES, VTP and a well-formed STL - so every engine reads exactly what it read before - and a
     STEP or STL converted beside them for every other accepted format. Everything downstream
@@ -111,7 +124,8 @@ def canonical_path(verified: Path, *, job_id: str = "") -> Path:
     from meshpipeline.cad.ingest import IngestError, canonicalise
 
     try:
-        canonical = canonicalise(verified, verified.parent, stem=_BASENAME)
+        canonical = canonicalise(verified, verified.parent, stem=_BASENAME,
+                                 ecxml_form=ecxml_form)
     except IngestError as exc:
         # the file was accepted for its name and its first bytes; what is inside cannot be read
         logger.warning("geometry materialize: not readable as geometry - job_id=%s: %s", job_id, exc)
@@ -152,7 +166,7 @@ async def resolve_row_interpretation(db, snapshot: GeometryInterpretationRef,
 
 async def materialize_for_job(db, ref: GeometrySourceRef,
                               interpretation: GeometryInterpretationRef, *, workspace,
-                              job_id: str = "") -> MaterializedGeometry:
+                              job_id: str = "", ecxml_form: str = "fused") -> MaterializedGeometry:
     row_ref = await resolve_row_ref(db, ref)
     verified = await resolve_row_interpretation(db, interpretation, ref.owner_id)
     # BOTH halves are individually valid and owned by this tenant at this point - and that is not
@@ -165,7 +179,8 @@ async def materialize_for_job(db, ref: GeometrySourceRef,
             "the approved geometry interpretation belongs to a different geometry source, so it "
             "does not describe the size of these bytes",
             failure_class=FailureClass.DATA_INTEGRITY)
-    return materialize(ref, verified, workspace=workspace, row_ref=row_ref, job_id=job_id)
+    return materialize(ref, verified, workspace=workspace, row_ref=row_ref, job_id=job_id,
+                       ecxml_form=ecxml_form)
 
 
 async def source_ref_for_session(db, session, owner_id: str) -> GeometrySourceRef | None:
@@ -204,7 +219,7 @@ def execution_workspace(job_id: str):
 
 async def prepare_execution_geometry(ref: GeometrySourceRef | None,
                                      interpretation: GeometryInterpretationRef | None = None,
-                                     *, job_id: str):
+                                     *, job_id: str, engine: str = ""):
     if ref is None:
         return None
     if interpretation is None:
@@ -216,7 +231,8 @@ async def prepare_execution_geometry(ref: GeometrySourceRef | None,
     from meshpipeline.persistence.session import get_db
     async with get_db() as db:
         return await materialize_for_job(db, ref, interpretation,
-                                         workspace=execution_workspace(job_id), job_id=job_id)
+                                         workspace=execution_workspace(job_id), job_id=job_id,
+                                         ecxml_form=ecxml_form_for(engine))
 
 
 # #
@@ -247,7 +263,7 @@ class ExecutionPreparation(NamedTuple):
 async def prepare_for_execution(session_factory, *, job_id: str, geometry_source,
                                 geometry_interpretation, classify_checkpoint,
                                 checkpoint_thread: str, job_repo, jlog,
-                                publish) -> ExecutionPreparation:
+                                publish, engine: str = "") -> ExecutionPreparation:
     from meshpipeline.errors import (
         FailureClass,
         record_dead_letter,
@@ -260,7 +276,7 @@ async def prepare_for_execution(session_factory, *, job_id: str, geometry_source
         materialized = None
         if disposition != "complete":
             materialized = await prepare_execution_geometry(
-                geometry_source, geometry_interpretation, job_id=job_id)
+                geometry_source, geometry_interpretation, job_id=job_id, engine=engine)
         return ExecutionPreparation(materialized, None, disposition)
     except GeometrySourceError as exc:
         jlog.error("Execution preparation REJECT - %s (job_id=%s)", exc, job_id)

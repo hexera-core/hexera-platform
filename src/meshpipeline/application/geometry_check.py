@@ -369,16 +369,23 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
     # skin and picture left behind in /tmp would stay there until the disk was full.
     with tempfile.TemporaryDirectory(prefix=f"geometry_check_{session_id[:8]}_") as tmp:
         work = Path(tmp)
-        # the same canonical form the job materialiser hands the engines (cad/ingest)
+        # the same canonical form the job materialiser hands the engines (cad/ingest) - except a
+        # thermal model, which the check reads as its PLACED parts: each part where the file puts
+        # it, under its own name and colour, in milliseconds and without joining anything (the
+        # joined form, when an engine needs it, is built for the run)
+        fetched = _fetch(ref, work)
         try:
-            canonical = canonicalise(_fetch(ref, work), work, stem="geometry")
+            canonical = canonicalise(fetched, work, stem="geometry", ecxml_form="placed")
         except IngestError as exc:
             raise _Unsupported(str(exc)) from exc
         local_path = canonical.path
+        placed = bool(canonical.physics.get("placed_parts"))
         if canonical.kind is GeometryKind.cad:
             facts, skin = _scout_exact(local_path, work, interp_ref, ref)
         else:
-            facts, skin = _scout_triangles(local_path, work, interp_ref, ref)
+            # placed parts are written in millimetres, the unit ECXML geometry is read in
+            facts, skin = _scout_triangles(local_path, work, interp_ref, ref,
+                                           file_scale=0.001 if placed else None)
         # what kind of geometry this is and what it came from, for whoever decides what to offer
         facts.update(canonical.facts())
         facts.setdefault("notes", []).extend(n for n in canonical.notes if n not in facts["notes"])
@@ -399,7 +406,7 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
 
         # the same skin, stored for the stage the user turns the part in
         skin_key = check_object_key(session_id, "skin.json")
-        _store_json(skin_key, skin_payload(skin))
+        _store_json(skin_key, _placed_skin_payload(fetched) if placed else skin_payload(skin))
         # which way the part stands up, as far as its shape says: the code's half of the up
         # proposal, weighed against the pictures once the model has seen them
         facts["up_evidence"] = read_up_evidence(skin)
@@ -420,6 +427,15 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
     if upright is not None:
         result["upright_sheet"] = upright
     return result
+
+
+def _placed_skin_payload(source: Path) -> dict:
+    """A thermal model's placed parts as the stage draws them: one block per part, its own name
+    and colour (cad/ingest/ecxml_place.placed_skin)."""
+    from meshpipeline.cad.ingest.ecxml import read_ecxml
+    from meshpipeline.cad.ingest.ecxml_place import place, placed_skin
+
+    return placed_skin(place(read_ecxml(source)))
 
 
 def _thermal_sidecar(canonical_path: Path) -> dict | None:
@@ -657,14 +673,18 @@ def skin_holes(skin: Path) -> list[dict]:
         return []
 
 
-def _scout_triangles(local_path: Path, work: Path, interp_ref, ref) -> tuple[dict, Path]:
+def _scout_triangles(local_path: Path, work: Path, interp_ref, ref,
+                     file_scale: float | None = None) -> tuple[dict, Path]:
     """An STL, OBJ or VTP file: triangles only, so the openings are read from loops and flat
-    rings in the mesh - close, not exact - and the unit is whatever the user confirms."""
+    rings in the mesh - close, not exact - and the unit is whatever the user confirms
+    (`file_scale`: the scale a converted file was written at, when its source fixes the unit)."""
     from meshpipeline.cad.scout_mesh import scout_mesh, write_mesh_skin
     from meshpipeline.contracts.geometry_units import LengthUnit, scale_to_metres
 
     if interp_ref is not None:
         scale, note = float(interp_ref.scale_to_metres), ""
+    elif file_scale:
+        scale, note = float(file_scale), ""
     else:
         scale = scale_to_metres(LengthUnit.millimetre)
         note = "a triangle file carries no unit; sizes assume millimetres until the intake confirms"

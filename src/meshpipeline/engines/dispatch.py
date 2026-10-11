@@ -1,6 +1,6 @@
 # Responsibility: Map an engine name to the callable that runs it in-process.
 # Boundaries: dispatch only; every runner it names owns its own native lifecycle.
-# Collaborates with: the five engine runners and adapters/mesh_execution/local.py.
+# Collaborates with: the six engine runners and adapters/mesh_execution/local.py.
 from __future__ import annotations
 
 from typing import Any
@@ -14,6 +14,7 @@ _OPENFOAM_ENGINES = frozenset({"cfmesh", "snappy", "snappy_multiregion"})
 def engine_runners() -> dict:
     from meshpipeline.engines.cfmesh.native import _run_cartesian_mesh_local
     from meshpipeline.engines.gmsh.gmsh_runner import _run_gmsh_local
+    from meshpipeline.engines.snapgrid.runner import _run_snapgrid_local
     from meshpipeline.engines.snappy.snappy_runner import _run_snappy_local
     from meshpipeline.engines.snappy_multiregion.multiregion_runner import _run_snappy_multiregion_local
     from meshpipeline.engines.vmtk.vmtk_runner import _run_vmtk_local
@@ -21,6 +22,7 @@ def engine_runners() -> dict:
         "cfmesh":             _run_cartesian_mesh_local,
         "snappy":             _run_snappy_local,
         "snappy_multiregion": _run_snappy_multiregion_local,
+        "snapgrid":           _run_snapgrid_local,
         "gmsh":               _run_gmsh_local,
         "vmtk":               _run_vmtk_local,
     }

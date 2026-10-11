@@ -187,7 +187,8 @@ def test_dispatch_reaches_the_cfmesh_executor_through_its_owning_module():
     from meshpipeline.engines.dispatch import engine_runners
 
     runners = engine_runners()
-    assert set(runners) == {"cfmesh", "snappy", "snappy_multiregion", "gmsh", "vmtk"}
+    assert set(runners) == {"cfmesh", "snappy", "snappy_multiregion", "gmsh", "vmtk",
+                            "snapgrid"}
     assert runners["cfmesh"] is native._run_cartesian_mesh_local, (
         "dispatch no longer resolves cfMesh's local executor from the module that owns it")
 

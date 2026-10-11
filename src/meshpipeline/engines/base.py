@@ -648,11 +648,23 @@ class EngineSpec:
     #: of them matches would become a patch nobody approved, so admission asks about it. An engine
     #: that assigns surfaces to groups itself (gmsh) leaves such parts to its default group.
     parts_become_walls: bool = False
+    #: Whether this engine writes the input file's OWN boundary patches, under the names the file
+    #: gives them (snapgrid: an ECXML model's domain sides). Each one's ROLE may be set; renaming
+    #: one, merging several or dropping one cannot be delivered, so admission refuses it before
+    #: anything is built (dev-areen set_top_box job 4b173bf0 merged four sides into
+    #: "closed_walls", was approved, and failed the patch contract after meshing).
+    patch_names_from_source: bool = False
     #: Which kinds of region structure this bundle's STAGING keeps apart (cad/regions.py's
     #: region_source: "assembly" and "roots" for a CAD file's named parts, "stl-solids" for an STL's
     #: named solids). A region the staged surface no longer carries is one the mesher never sees, so
     #: the wall-arity rule counts it as merged. Every source by default.
     keeps_regions_from: tuple[str, ...] = ("assembly", "roots", "stl-solids")
+    #: The UPLOADED FORMATS this engine reads itself (contracts/intake_formats keys), not through
+    #: the canonical STEP/STL every other engine reads. Empty = any accepted format (the canonical
+    #: form is what it meshes). Non-empty = only these: the snap-grid mesher reads the ECXML
+    #: thermal model's own boxes and cylinders, so a STEP or an STL gives it nothing to place.
+    #: Admission refuses another format from the upload's facts (cad/regions.py source_format).
+    reads_source_formats: tuple[str, ...] = ()
     #: THE BOUNDARIES THIS BUNDLE'S CASE WRITER CAN BUILD, per flow topology: role -> the most
     #: patches of that role it delivers (0 = none). A role the purpose allows but this engine's path
     #: for that topology cannot build - a second far-field patch on a box that is one surface, a
@@ -872,6 +884,29 @@ class EngineSpec:
                         + "Declare ONE wall patch for the whole body to proceed.",
                 fix_hint="declare a single wall patch for the body"))
 
+        # THE FILE'S OWN PATCHES, on an engine that writes them as the file names them. Roles are
+        # free; every patch the file declares keeps its own name, none is merged away, and no
+        # other name appears (a remainder "wall" for the solid parts aside). Judged from the
+        # confirmed geometry - unknown when the caller passed none, and then nothing is refused.
+        if self.patch_names_from_source and evidence.source_patches and evidence.patches:
+            from meshpipeline.contracts.patch_names import same_patch_name
+            own = list(evidence.source_patches)
+            declared = [p.name for p in evidence.patches]
+            unknown = [d for d in declared
+                       if not any(same_patch_name(d, n) for n in own)
+                       and not same_patch_name(d, "wall")]
+            dropped = [n for n in own if not any(same_patch_name(n, d) for d in declared)]
+            if unknown or dropped:
+                word = "domain sides" if all(n.startswith("domain_") for n in own) else "patches"
+                out.append(Rejection(
+                    code="patch_names_fixed_by_source", phase="declared", field="patches",
+                    actual=declared, expected=own,
+                    message=(f"This mesher keeps the file's {len(own)} {word} as separate patches "
+                             f"({', '.join(own)}). I can set each one's role (inlet, outlet or "
+                             "wall); merging or renaming them isn't possible with it."),
+                    fix_hint=(f"keep the file's {word} ({', '.join(own)}) under their own names "
+                              "and set each one's role")))
+
         # STRUCTURAL patch requirements of a FLOW mesh (purpose-driven, knowable from declared
         # patches) - skipped when no patches are declared yet (intake flags the shape first).
         is_flow = purpose in PURPOSES and PURPOSES[purpose].requires_mesh_kind == "fluid-volume"
@@ -923,7 +958,21 @@ class EngineSpec:
 
     def _admit_measured(self, evidence) -> list:
         from meshpipeline.engines.admission import Rejection
-        reason = self.geometry_unsuitable(evidence.surface_analysis or {})
+        facts = evidence.surface_analysis or {}
+        # A format this engine does not read is a physical impossibility, not a quality call. Only
+        # judged when the facts NAME the upload's format: an older caller that never measured it
+        # says nothing, and the build driver refuses a missing source on its own.
+        fmt = str(facts.get("source_format") or "")
+        if self.reads_source_formats and fmt and fmt not in self.reads_source_formats:
+            wants = " or ".join(self.reads_source_formats).upper()
+            return [Rejection(
+                code="source_format_unsupported", phase="measured", field="geometry",
+                actual=fmt, expected=list(self.reads_source_formats),
+                message=f"{self.name} reads only {wants} files - it meshes the model the file "
+                        f"describes (its parts, their materials and positions), and a "
+                        f"{fmt.upper()} file carries no such model.",
+                fix_hint=f"upload the {wants} export of this model")]
+        reason = self.geometry_unsuitable(facts)
         if reason:
             return [Rejection(code="geometry_unsuitable", phase="measured", field="surface_analysis",
                               message=reason,

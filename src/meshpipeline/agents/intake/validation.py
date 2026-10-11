@@ -46,6 +46,9 @@ _HARD_IMPOSSIBLE_CODES = frozenset({
     "ground_plane_unsupported", "boundary_count_unsupported",
     # the engine cannot take the uploaded file's FORM (CAD solid / surface) for this flow
     "geometry_form_unsupported",
+    "source_format_unsupported",
+    # a rename or merge of the patches the file names, on an engine that writes them as named
+    "patch_names_fixed_by_source",
 })
 
 # The two lines closing every impossible message: they preserve user intent, name NO alternative
@@ -81,13 +84,13 @@ def _impossible_message(hard: list, closing: str = "") -> str:
 
 def preview_admission(engine: str, purpose: str, input_kind: str, dimensionality: str | None = None,
                       patches=None, engine_params=None, geometry_facts=None,
-                      geometry_form: str | None = None) -> dict:
+                      geometry_form: str | None = None, source_patches=None) -> dict:
     # ONE boundary between the keys the system routes on and the words a person reads. Every
     # message below is written with keys, so translating here means no verdict can reach a user in
     # the system's own vocabulary. The declared values keep their keys - callers route on them.
     # `geometry_form` is the uploaded file's canonical form (engines/capability.py), when known.
     result = _admission(engine, purpose, input_kind, dimensionality, patches, engine_params,
-                        geometry_facts, geometry_form)
+                        geometry_facts, geometry_form, source_patches)
     for field in ("safe_user_message", "capability_reason"):
         if result.get(field):
             result[field] = _vocab.humanize(result[field])
@@ -98,7 +101,7 @@ def preview_admission(engine: str, purpose: str, input_kind: str, dimensionality
 
 def _admission(engine: str, purpose: str, input_kind: str, dimensionality: str | None = None,
                patches=None, engine_params=None, geometry_facts=None,
-               geometry_form: str | None = None) -> dict:
+               geometry_form: str | None = None, source_patches=None) -> dict:
     from meshpipeline.engines.admission import AdmissionEvidence, PatchSummary
     from meshpipeline.engines.registry import engine_names, get_spec
 
@@ -136,7 +139,8 @@ def _admission(engine: str, purpose: str, input_kind: str, dimensionality: str |
         engine=_eng, purpose=_pur, input_kind=_ik, dimensionality=_dim,
         patches=tuple(PatchSummary(name=p["name"], type=p["role"]) for p in _patches),
         engine_params=_eparams, surface_analysis=geometry_facts,
-        geometry_form=(geometry_form or None))
+        geometry_form=(geometry_form or None),
+        source_patches=tuple(str(n) for n in (source_patches or ()) if str(n).strip()))
     rejections = get_spec(_eng).admit(ev)
     hard = [r for r in rejections if r.code in _HARD_IMPOSSIBLE_CODES]
     if hard:
@@ -149,7 +153,9 @@ def _admission(engine: str, purpose: str, input_kind: str, dimensionality: str |
                     "ground_plane_unsupported": ["patches", "engine"],
                     "boundary_count_unsupported": ["patches", "engine"],
                     "geometry_unsuitable": ["geometry", "engine"],
-                    "geometry_form_unsupported": ["geometry", "engine"]}
+                    "geometry_form_unsupported": ["geometry", "engine"],
+                    "source_format_unsupported": ["geometry", "engine"],
+                    "patch_names_fixed_by_source": ["patches", "engine"]}
         what_would_pass = [str(r.fix_hint) for r in hard if r.fix_hint]
         closing = ""
         if any(r.code == "geometry_form_unsupported" for r in hard):
