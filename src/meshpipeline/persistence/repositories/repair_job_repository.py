@@ -88,7 +88,8 @@ class RepairJobRepository:
                          blocked_reason: str | None = None,
                          current_strategy: str | None = None,
                          repair_status: str | None = None,
-                         simulation_job_id: uuid.UUID | None = None) -> TransitionResult:
+                         simulation_job_id: uuid.UUID | None = None,
+                         expected_from: RepairJobStatus | None = None) -> TransitionResult:
         """Move the job to `target` if its CURRENT state allows it. One statement, no read first.
 
         THE DATABASE DECIDES, not a prior SELECT. Two operators clicking the same queue item, and
@@ -98,6 +99,12 @@ class RepairJobRepository:
         told which way they lost.
         """
         sources = legal_sources(target)
+        if expected_from is not None:
+            # THE CALLER SAW THIS STATUS AND IS DECIDING ON IT. Narrowing the compare-and-set to
+            # that one source means a job another operator moved in between is REFUSED rather than
+            # moved from a state the caller never saw - which is what let an append-only decision
+            # record name the wrong origin.
+            sources = sources & {expected_from}
         values: dict = {"status": target}
         # Only the fields a caller actually passed: a transition that says nothing about the
         # strategy must not blank the strategy somebody else chose.
@@ -310,10 +317,13 @@ class RepairJobRepository:
             "by_state": by_state,
             "delivered_with_mesh": delivered,
             "delivered_repair_only": repair_only,
-            # THE HEADLINE: the share of jobs that reached something the customer can download.
-            # None rather than 0 when there are no jobs - "we delivered 0% of nothing" is a
-            # sentence that has misled every dashboard that has ever printed it.
-            "delivery_rate": (round((delivered + repair_only) / total, 4) if total else None),
+            # TWO RATES, BECAUSE THEY ANSWER DIFFERENT QUESTIONS. The launch metric is the share
+            # of customer CAD that reaches a downloadable MESH; folding repair-only jobs into it
+            # inflated the number with work that never produced one. Repair-only delivery is real
+            # and is reported beside it, not inside it.
+            "mesh_delivery_rate": (round(delivered / total, 4) if total else None),
+            "any_delivery_rate": (round((delivered + repair_only) / total, 4)
+                                  if total else None),
             "blocked_rate": (round(bucket(BLOCKED) / total, 4) if total else None),
             "awaiting_human": bucket(AWAITING_HUMAN),
             "in_flight": bucket(IN_FLIGHT),

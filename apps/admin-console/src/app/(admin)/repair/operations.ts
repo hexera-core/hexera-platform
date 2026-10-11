@@ -94,6 +94,16 @@ export async function applyRepairAssignment(
     // form: reassigning another person's work is a lead's act and wants its own surface with its
     // own audit, not a text field on the row everybody can see.
     const release = optionalString(form, "release") === "1";
+    // RELEASING IS ONLY EVER YOUR OWN CLAIM. The form offered "Release it" for any held job, and
+    // the API clears an assignment without asking who holds it - so one operator could return
+    // another's work to the queue, and a stale page could undo a reassignment made since it
+    // loaded. The holder travels with the form and has to be the person submitting it.
+    const heldBy = optionalString(form, "assigned_operator");
+    if (release && heldBy && heldBy !== deps.actor.email) {
+      throw new Error(
+        `This job is claimed by ${heldBy}. Only ${heldBy} can release it; ask a lead to reassign.`,
+      );
+    }
     const operator = release ? "" : deps.actor.email;
 
     const result = await assign({ claim: !release, jobId, operator });

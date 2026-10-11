@@ -139,7 +139,9 @@ def inspect_brep_file(path: Path) -> RepairReport:
         # entities, with their size and position (cad/repair/localize.py).
         from meshpipeline.cad.repair.localize import localize, summarise
         try:
-            found = localize(shape)
+            # the validity answer is already in hand; computing it twice doubles the
+            # analyser's cost on every inspection
+            found = localize(shape, valid=is_valid)
         except Exception as exc:  # noqa: BLE001
             # EVIDENCE, NEVER LOAD-BEARING. Localisation reaches deep into the kernel and a shape
             # it cannot walk must still get an inspection: the report then carries no entities,
@@ -147,6 +149,9 @@ def inspect_brep_file(path: Path) -> RepairReport:
             logger.warning("inspect_brep: could not localise defects (%s) - reporting the "
                            "whole-shape result only", exc)
             found = ()
+            localisation_failed = True
+        else:
+            localisation_failed = False
         entities = tuple(d.to_dict() for d in found)
         located = summarise(found)
 
@@ -176,7 +181,23 @@ def inspect_brep_file(path: Path) -> RepairReport:
                 ),
             )
 
-        measurements = {"format": fmt, "is_valid": is_valid, **counts, "located": located}
+        if localisation_failed and not defects:
+            # NOT CLEAN - UNKNOWN. A free boundary can sit on a shape the validity checker is
+            # happy with, so a localisation that fell over leaves us unable to say the part is
+            # sound. Reporting "No repair needed" there is how an opening reaches a mesher
+            # unremarked.
+            defects = (
+                RepairDefect(
+                    code=DefectCode.invalid_brep,
+                    severity=DefectSeverity.warning,
+                    message=("The defect scan did not complete, so this file has not been "
+                             "cleared; it has only not been diagnosed."),
+                    details={"reason": "localisation_failed"},
+                ),
+            )
+
+        measurements = {"format": fmt, "is_valid": is_valid, **counts, "located": located,
+                        "localisation_complete": not localisation_failed}
         if not defects:
             summary = "No repair needed."
         elif counts["faces"] == 0:

@@ -82,12 +82,19 @@ class _Repo:
         return True
 
     async def transition(self, db, job_id, target, *, blocked_reason=None,
-                         current_strategy=None, repair_status=None, simulation_job_id=None):
+                         current_strategy=None, repair_status=None, simulation_job_id=None,
+                         expected_from=None):
         from meshpipeline.persistence.repair_job_state import legal_sources
         job = self.jobs.get(job_id)
         if job is None:
             return TransitionResult.not_found
-        if job.status in legal_sources(target):
+        sources = legal_sources(target)
+        if expected_from is not None:
+            # the real repository narrows the compare-and-set to the status the caller saw, so a
+            # job another operator moved in between is refused rather than moved from a state the
+            # caller never read
+            sources = sources & {expected_from}
+        if job.status in sources:
             job.status = target
             if blocked_reason is not None:
                 job.blocked_reason = blocked_reason or None
@@ -475,3 +482,114 @@ def test_throughput_is_served_from_the_repository_without_reshaping_it(monkeypat
 def test_throughput_needs_the_admin_credential(monkeypatch):
     assert _client(monkeypatch, _Repo([])).get(
         "/api/v1/admin/repair/throughput").status_code == 403
+
+
+# DELIVERY NEEDS SOMETHING DELIVERED, AND A STRATEGY HAS TO BE ONE WE IMPLEMENT
+
+
+def _at(status, **over):
+    return _Job(status=status, **over)
+
+
+def _advance(repo, job, *targets):
+    """Walk a job to a state through legal moves, as an operator would."""
+    import asyncio
+    for target in targets:
+        asyncio.get_event_loop_policy().new_event_loop().run_until_complete(
+            repo.transition(None, job.id, target, expected_from=job.status))
+
+
+def test_delivering_a_mesh_a_job_never_produced_is_refused(monkeypatch):
+    job = _at(S.mesh_review, )          # legal source for `deliver`
+    job.simulation_job_id = None        # but no mesh run ever reached it
+    repo = _Repo([job])
+    client = _client(monkeypatch, repo)
+
+    res = client.post(f"/api/v1/admin/repair/jobs/{job.id}/decide",
+                      json={"decision": "deliver", "actor": "ana"}, headers=HEADERS)
+
+    # a settled job whose status claims delivery over nothing produced is the record nobody can
+    # walk back
+    assert res.status_code == 409
+    assert "has none recorded" in res.json()["detail"]
+    assert job.status is S.mesh_review
+    assert repo.decisions == []
+
+
+def test_delivering_a_mesh_the_job_did_produce_is_allowed(monkeypatch):
+    import uuid as _uuid
+
+    job = _at(S.mesh_review)
+    job.simulation_job_id = _uuid.uuid4()
+    client = _client(monkeypatch, _Repo([job]))
+
+    res = client.post(f"/api/v1/admin/repair/jobs/{job.id}/decide",
+                      json={"decision": "deliver", "actor": "ana"}, headers=HEADERS)
+
+    assert res.status_code == 200
+    assert job.status is S.delivered
+
+
+def test_delivering_repaired_geometry_requires_an_attempt_that_produced_some(monkeypatch):
+    job = _at(S.repair_review)
+    repo = _Repo([job])
+
+    async def _no_output(db, job_id):
+        return [_AttemptRow({})]           # an inspection: it produced no geometry
+
+    repo.attempts_for_job = _no_output
+    client = _client(monkeypatch, repo)
+
+    res = client.post(f"/api/v1/admin/repair/jobs/{job.id}/decide",
+                      json={"decision": "deliver_repair", "actor": "ana"}, headers=HEADERS)
+
+    assert res.status_code == 409 and "repaired geometry" in res.json()["detail"]
+    assert job.status is S.repair_review
+
+
+def test_a_strategy_outside_the_declared_profiles_is_refused(monkeypatch):
+    job = _at(S.inspecting)
+    repo = _Repo([job])
+    client = _client(monkeypatch, repo)
+
+    for bad in ("", "aggressive", "Conservative"):
+        res = client.post(f"/api/v1/admin/repair/jobs/{job.id}/decide",
+                          json={"decision": "choose_strategy", "actor": "ana", "strategy": bad},
+                          headers=HEADERS)
+        assert res.status_code == 422, bad
+    # the job never advanced with a blank or invented strategy recorded against it
+    assert job.status is S.inspecting
+    assert repo.decisions == []
+
+
+def test_a_decision_that_does_not_take_a_strategy_refuses_one(monkeypatch):
+    job = _at(S.received)
+    client = _client(monkeypatch, _Repo([job]))
+    res = client.post(f"/api/v1/admin/repair/jobs/{job.id}/decide",
+                      json={"decision": "inspect", "actor": "ana", "strategy": "conservative"},
+                      headers=HEADERS)
+    assert res.status_code == 422 and "does not take a strategy" in res.json()["detail"]
+
+
+def test_a_job_moved_by_someone_else_refuses_the_decision_rather_than_misrecording_it(monkeypatch):
+    # the operator read `inspecting`; by the time they decide, the job is already in
+    # awaiting_strategy. `choose_strategy` is legal from BOTH, so without a narrowed
+    # compare-and-set the history would record an origin the job had already left.
+    job = _at(S.inspecting)
+    repo = _Repo([job])
+    client = _client(monkeypatch, repo)
+
+    real_transition = repo.transition
+
+    async def _move_then_transition(db, job_id, target, **kw):
+        job.status = S.awaiting_strategy          # another operator, between read and write
+        return await real_transition(db, job_id, target, **kw)
+
+    repo.transition = _move_then_transition
+
+    res = client.post(f"/api/v1/admin/repair/jobs/{job.id}/decide",
+                      json={"decision": "choose_strategy", "actor": "ana",
+                            "strategy": "conservative"}, headers=HEADERS)
+
+    assert res.status_code == 409
+    assert repo.decisions == [], "no decision may be recorded against a status it did not observe"

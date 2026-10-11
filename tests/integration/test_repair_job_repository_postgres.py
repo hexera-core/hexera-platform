@@ -419,7 +419,9 @@ async def test_throughput_counts_delivery_and_tells_the_waits_apart(db):
 
     assert out["jobs_total"] == 4
     assert out["delivered_with_mesh"] == 1 and out["delivered_repair_only"] == 0
-    assert out["delivery_rate"] == 0.25
+    # the MESH rate is the launch metric; a repair-only delivery is real but is not a mesh
+    assert out["mesh_delivery_rate"] == 0.25
+    assert out["any_delivery_rate"] == 0.25
     # A JOB WAITING ON A CUSTOMER IS NOT LATE BECAUSE WE ARE SLOW: the buckets are kept apart
     assert out["awaiting_human"] == 1
     assert out["blocked"] == 1 and out["blocked_rate"] == 0.25
@@ -433,7 +435,8 @@ async def test_throughput_reports_no_rate_rather_than_zero_percent_of_nothing(db
     out = await RepairJobRepository().service_throughput(db)
     # "we delivered 0% of nothing" has misled every dashboard that ever printed it
     assert out["jobs_total"] == 0
-    assert out["delivery_rate"] is None and out["blocked_rate"] is None
+    assert out["mesh_delivery_rate"] is None and out["any_delivery_rate"] is None
+    assert out["blocked_rate"] is None
     assert out["mean_seconds_to_delivery"] is None
 
 

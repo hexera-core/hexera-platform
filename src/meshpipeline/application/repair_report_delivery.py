@@ -6,6 +6,7 @@
 #                    the artifact repository (which own the bytes and the row).
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import tempfile
@@ -52,7 +53,12 @@ async def deliver_repair_report(session_factory, *, job_id: str, report: dict,
     from meshpipeline.persistence.repositories.artifact_repository import ArtifactRepository
 
     payload = {"repair_status": str(repair_status or ""), "report": report}
-    object_key = repair_report_key(str(job_id))
+    body = json.dumps(payload, sort_keys=True, default=str)
+    # CONTENT-ADDRESSED. Two writers can race for one job - a retry, or a worker whose lease was
+    # taken over - and a shared key let the loser overwrite bytes a COMMITTED row already pointed
+    # at. A customer could then download a report that did not match the record.
+    digest = hashlib.sha256(body.encode()).hexdigest()
+    object_key = repair_report_key(str(job_id), digest)
     scratch: Path | None = None
     try:
         from meshpipeline.contracts.object_storage import get_object_store
@@ -63,7 +69,7 @@ async def deliver_repair_report(session_factory, *, job_id: str, report: dict,
         # sort_keys so the same report yields the same bytes, and therefore the same checksum, on
         # a re-delivery of the same attempt - which the repository's CAS reads as idempotent
         # rather than as a conflicting second version of the same evidence.
-        scratch.write_text(json.dumps(payload, sort_keys=True, default=str))
+        scratch.write_text(body)
         stored = get_object_store().upload_file(
             local_path=scratch, object_key=object_key, content_type="application/json")
 
@@ -92,10 +98,29 @@ async def deliver_repair_report(session_factory, *, job_id: str, report: dict,
     except Exception as exc:  # noqa: BLE001 - evidence is never load-bearing for a run
         logger.warning("repair_report_delivery: could not deliver the inspection report (%s) - "
                        "the run is unaffected - job_id=%s", exc, job_id)
+        _discard_orphan(object_key, job_id=job_id)
         return ""
     finally:
         if scratch is not None:
             scratch.unlink(missing_ok=True)
+
+
+def _discard_orphan(object_key: str, *, job_id: str) -> None:
+    """Delete an object whose row never committed, so it does not linger untracked.
+
+    BEST EFFORT, and said so: if the delete also fails the object stays, and the artifact
+    reconciler - which already adopts an object a ready row owns and deletes one nobody owns -
+    is the backstop. What matters here is not leaving a file nobody will ever look for without
+    having tried.
+    """
+    try:
+        from meshpipeline.contracts.object_storage import get_object_store
+        get_object_store().delete_object(object_key=object_key)
+        logger.info("repair_report_delivery: discarded the orphaned object %s - job_id=%s",
+                    object_key, job_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("repair_report_delivery: could not discard the orphaned object %s (%s) "
+                       "- the reconciler is the backstop - job_id=%s", object_key, exc, job_id)
 
 
 async def deliver_repaired_cad(session_factory, *, job_id: str, local_path,
@@ -123,8 +148,12 @@ async def deliver_repaired_cad(session_factory, *, job_id: str, local_path,
         # Nothing to hand back. Not an error: most runs mesh the upload as it arrived.
         return ""
 
+    from meshpipeline.artifact_keys import repaired_cad_key
+    from meshpipeline.contracts.geometry_source import sha256_of
+
     safe = (suffix or src.suffix or ".step").lower()
-    object_key = f"jobs/{job_id}/repaired{safe}"
+    digest, _ = sha256_of(src)
+    object_key = repaired_cad_key(str(job_id), digest, safe)
     try:
         from meshpipeline.contracts.object_storage import get_object_store
         stored = get_object_store().upload_file(
@@ -151,6 +180,12 @@ async def deliver_repaired_cad(session_factory, *, job_id: str, local_path,
                        "- job_id=%s", job_id)
         raise
     except Exception as exc:  # noqa: BLE001 - evidence is never load-bearing for a run
+        # NOT LOAD-BEARING FOR THE MESH, BUT NOT SILENT EITHER. A run that meshed repaired
+        # geometry and cannot hand that geometry back has delivered half of what the repair
+        # promised, so the caller is told - the delivery manifest's `evidence_gaps` is what turns
+        # this into a visible gap rather than a missing file nobody mentions.
         logger.warning("repair_report_delivery: could not deliver the repaired CAD (%s) - the "
-                       "run is unaffected - job_id=%s", exc, job_id)
+                       "mesh is unaffected but the customer cannot download the repair "
+                       "- job_id=%s", exc, job_id)
+        _discard_orphan(object_key, job_id=job_id)
         return ""

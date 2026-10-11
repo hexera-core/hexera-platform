@@ -13,7 +13,6 @@ from meshpipeline.application.repair_report_delivery import (
     REPAIR_REPORT_LOGICAL_KEY,
     deliver_repair_report,
 )
-from meshpipeline.artifact_keys import repair_report_key
 from meshpipeline.contracts.object_storage import set_object_store
 from meshpipeline.persistence.models import ArtifactType
 from meshpipeline.persistence.repositories.artifact_repository import DeliveryOutcome
@@ -68,11 +67,14 @@ def test_the_report_is_stored_and_bound_to_the_job(store, delivered):
 
     assert outcome == DeliveryOutcome.created.value
     assert recorder["committed"] is True
-    stored = json.loads(store.get_bytes(object_key=repair_report_key(job_id)))
+    # CONTENT-ADDRESSED: the key carries the report's own digest, so a racing writer with
+    # different bytes cannot reach the object a committed row points at.
+    key = delivered["storage_key"]
+    assert key.startswith(f"jobs/{job_id}/repair_report-") and key.endswith(".json")
+    stored = json.loads(store.get_bytes(object_key=key))
     assert stored == {"repair_status": "repairable", "report": _REPORT}
     assert delivered["logical_key"] == REPAIR_REPORT_LOGICAL_KEY
     assert delivered["artifact_type"] is ArtifactType.repair_report
-    assert delivered["storage_key"] == repair_report_key(job_id)
     # currency travels with the row, as it does for every other artifact
     assert (delivered["delivery_attempt"], delivered["execution_generation"]) == (2, 3)
 
@@ -80,13 +82,48 @@ def test_the_report_is_stored_and_bound_to_the_job(store, delivered):
 def test_the_same_report_delivered_twice_writes_the_same_bytes(store, delivered):
     job_id = str(uuid.uuid4())
     asyncio.run(deliver_repair_report(_session_factory({}), job_id=job_id, report=_REPORT))
-    first = store.get_bytes(object_key=repair_report_key(job_id))
+    first_key = delivered["storage_key"]
+    first = store.get_bytes(object_key=first_key)
     asyncio.run(deliver_repair_report(_session_factory({}), job_id=job_id,
                                       report=dict(reversed(list(_REPORT.items())))))
 
-    # byte-identical, so the repository's compare-and-set permits a re-delivery of one attempt
-    # instead of calling it a conflicting second version of the same evidence
-    assert store.get_bytes(object_key=repair_report_key(job_id)) == first
+    # the same content hashes to the same key and the same bytes, so a re-delivery of one attempt
+    # is idempotent rather than a conflicting second version of the same evidence
+    assert delivered["storage_key"] == first_key
+    assert store.get_bytes(object_key=first_key) == first
+
+
+def test_a_differing_report_cannot_reach_the_committed_object(store, delivered):
+    job_id = str(uuid.uuid4())
+    asyncio.run(deliver_repair_report(_session_factory({}), job_id=job_id, report=_REPORT))
+    committed_key = delivered["storage_key"]
+
+    asyncio.run(deliver_repair_report(_session_factory({}), job_id=job_id,
+                                      report={"status": "clean", "report": {"summary": "other"}}))
+
+    # THE FAILURE THIS PREVENTS: a losing writer overwriting bytes a committed row points at, so
+    # a customer downloads a report that does not match the record.
+    assert delivered["storage_key"] != committed_key
+    assert json.loads(store.get_bytes(object_key=committed_key))["report"] == _REPORT
+
+
+def test_a_report_whose_row_never_commits_does_not_linger(store, monkeypatch):
+    async def _boom(self, db, **kw):
+        raise RuntimeError("database unreachable")
+
+    monkeypatch.setattr(
+        "meshpipeline.persistence.repositories.artifact_repository."
+        "ArtifactRepository.deliver_artifact", _boom)
+    job_id = str(uuid.uuid4())
+
+    assert asyncio.run(deliver_repair_report(_session_factory({}), job_id=job_id,
+                                             report=_REPORT)) == ""
+
+    # the uploaded object is discarded rather than left untracked in the store
+    from meshpipeline.contracts.object_storage import ObjectNotFound
+    leaked = [k for k in store._objects if job_id in k]
+    assert leaked == [], f"orphaned objects left behind: {leaked}"
+    assert ObjectNotFound
 
 
 def test_no_report_means_nothing_is_stored(store, delivered):

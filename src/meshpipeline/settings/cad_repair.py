@@ -68,8 +68,24 @@ CAD_REPAIR_FILL_PLANAR_HOLES: bool = bool_env("CAD_REPAIR_FILL_PLANAR_HOLES", "f
 CAD_REPAIR_MAX_HOLE_SPAN_RATIO: float = float(
     optional_env("CAD_REPAIR_MAX_HOLE_SPAN_RATIO", "0.75"))
 
-# NO TIMEOUT SETTING HERE, deliberately. ShapeFix on a pathological shape can run for a very long
-# time and a worker holding a lease is not free - but OpenCASCADE offers no interruption point, so
-# a declared timeout would be a number nothing honours. The bound that exists is the run's own
-# deadline (application/pipeline_budget.py). A knob that cannot be enforced is worse than its
-# absence: it reads as a guarantee.
+#: Seconds inspection may spend on one file before the run goes on without it. Inspection is
+#: EVIDENCE and runs on every mesh-intended job, so a pathological part must not spend a run's
+#: deadline proving it is pathological. The work is handed to a thread and abandoned on expiry:
+#: OpenCASCADE offers no interruption point, so the thread finishes in the background while the
+#: run proceeds on the original geometry with an inconclusive report.
+CAD_INSPECT_TIMEOUT_S: float = float(optional_env("CAD_INSPECT_TIMEOUT_S", "25"))
+
+#: Files larger than this are not inspected at all. Reading a very large STEP costs seconds before
+#: anything is measured, and a part that big is one an operator should look at anyway.
+CAD_INSPECT_MAX_BYTES: int = int(optional_env("CAD_INSPECT_MAX_BYTES", str(80 * 1024 * 1024)))
+
+#: Seconds the run will WAIT for a repair before going on without it. Not a limit on the kernel:
+#: OpenCASCADE offers no interruption point, so the thread finishes in the background while the
+#: run proceeds on the original geometry.
+#:
+#: An earlier version of this file argued against having this setting at all, on the grounds that
+#: a timeout nothing can enforce reads as a guarantee. That was half right. What cannot be bounded
+#: is the KERNEL; what can be bounded is how long a run waits on it, and that is the number that
+#: matters - a pathological part must not spend a job's deadline before admission has even judged
+#: the original.
+CAD_REPAIR_TIMEOUT_S: float = float(optional_env("CAD_REPAIR_TIMEOUT_S", "120"))

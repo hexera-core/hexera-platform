@@ -111,3 +111,79 @@ def test_a_geometry_whose_bytes_are_gone_is_not_inspected(tmp_path, monkeypatch)
     (tmp_path / "part.step").unlink()
 
     assert _run(state) == {}
+
+
+# BOUNDS AND LEAKS - inspection is evidence and must never cost a run its deadline or its privacy
+
+
+def test_a_file_too_large_to_inspect_is_not_inspected_and_says_so(tmp_path, monkeypatch):
+    import meshpipeline.settings.cad_repair as rcfg
+
+    monkeypatch.setattr(rcfg, "CAD_INSPECT_MAX_BYTES", 10)
+    monkeypatch.setattr("meshpipeline.cad.repair.inspect.inspect_geometry",
+                        lambda *a, **k: pytest.fail("a file over the bound must not be read"))
+
+    out = _run({"job_id": "t", "engine": "snappy", "geometry": geometry_state(tmp_path)})
+
+    # reporting it clean would be worse than reporting that we did not look
+    assert out["repair_status"] == RepairStatus.inconclusive.value
+    assert out["repair_report"]["service_failure"] == "not_inspected_too_large"
+    assert out["repair_report"]["limit_bytes"] == 10
+
+
+def test_an_inspection_that_runs_too_long_is_abandoned(tmp_path, monkeypatch):
+    import time
+
+    import meshpipeline.settings.cad_repair as rcfg
+
+    monkeypatch.setattr(rcfg, "CAD_INSPECT_TIMEOUT_S", 0.05)
+    monkeypatch.setattr("meshpipeline.cad.repair.inspect.inspect_geometry",
+                        lambda *a, **k: time.sleep(5))
+
+    out = _run({"job_id": "t", "engine": "snappy", "geometry": geometry_state(tmp_path)})
+
+    # the run goes on; a pathological part must not spend the deadline proving it is pathological
+    assert out["repair_status"] == RepairStatus.inconclusive.value
+    assert out["repair_report"]["service_failure"] == "inspection_timed_out"
+
+
+def test_a_failure_never_puts_a_worker_path_in_the_customers_report(tmp_path, monkeypatch):
+    secret = "/srv/workspaces/job-42/private/part.step"
+
+    def _raise(*a, **k):
+        raise FileNotFoundError(secret)
+
+    monkeypatch.setattr("meshpipeline.cad.repair.inspect.inspect_geometry", _raise)
+
+    out = _run({"job_id": "t", "engine": "snappy", "geometry": geometry_state(tmp_path)})
+
+    # THE REPORT IS DOWNLOADABLE BY THE JOB'S OWNER, so it carries a code and the type - never the
+    # kernel's sentence, which names paths on our workers.
+    report = out["repair_report"]
+    assert report["service_failure"] == "inspection_failed"
+    assert report["error_type"] == "FileNotFoundError"
+    assert secret not in str(report)
+    assert "srv" not in str(report)
+
+
+def test_an_inspection_dependency_that_cannot_import_does_not_fail_the_run(tmp_path, monkeypatch):
+    import sys
+
+    import meshpipeline.cad.repair as repair_pkg
+
+    # BOTH the module cache and the package attribute: `from pkg import mod` finds the attribute
+    # the first import left on the package, so clearing sys.modules alone changes nothing. This is
+    # the shape of a worker whose inspection-only dependency is unavailable.
+    monkeypatch.setitem(sys.modules, "meshpipeline.cad.repair.inspect", None)
+    monkeypatch.delattr(repair_pkg, "inspect", raising=False)
+
+    out = _run({"job_id": "t", "engine": "snappy", "geometry": geometry_state(tmp_path)})
+
+    # the inspector is loaded INSIDE the guard, so a worker missing an inspection-only dependency
+    # still meshes sound geometry
+    assert out["repair_status"] == RepairStatus.inconclusive.value
+    # ModuleNotFoundError, which is an ImportError - the point is it was CAUGHT, not which
+    # subclass the interpreter chose
+    assert out["repair_report"]["error_type"].endswith("Error")
+    assert "NotFound" in out["repair_report"]["error_type"] or \
+        out["repair_report"]["error_type"] == "ImportError"

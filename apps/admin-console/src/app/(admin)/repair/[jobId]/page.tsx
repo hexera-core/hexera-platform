@@ -159,6 +159,8 @@ export default async function RepairJobPage({
         <form action={claimRepair}>
           <input name="job_id" type="hidden" value={job.id} />
           <input name="release" type="hidden" value={job.assigned_operator ? "1" : "0"} />
+          {/* who holds it, so a release can be refused unless it is your own claim */}
+          <input name="assigned_operator" type="hidden" value={job.assigned_operator ?? ""} />
           <button type="submit">{job.assigned_operator ? "Release it" : "Claim it"}</button>
         </form>
       </Panel>

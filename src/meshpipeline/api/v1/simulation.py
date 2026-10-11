@@ -311,8 +311,11 @@ async def get_job(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
         # what a customer was given.
         _manifest = None
         try:
+            # ONLY ONCE THERE IS A TERMINAL RECORD. A pending job has no parcel, and an empty
+            # account of one reads as "nothing was delivered" rather than "nothing has finished" -
+            # so clients can rely on the manifest's presence to mean a final parcel exists.
             from meshpipeline.application.delivery_manifest import build as _build_manifest
-            _manifest = _build_manifest(
+            _manifest = None if not _fr_dict else _build_manifest(
                 job_id=str(job.id),
                 artifacts=([] if _is_cancelled(job) else (job.artifacts or [])),
                 final_result=_fr_dict)

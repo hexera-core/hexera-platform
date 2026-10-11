@@ -28,6 +28,9 @@ async def node_repair_inspect(state: PipelineState) -> dict:
         run continues. Accusing a customer's file because our OCCT import raised would send them
         to fix geometry that was never broken.
     """
+    import asyncio
+
+    import meshpipeline.settings.cad_repair as rcfg
     from meshpipeline.cad.repair.contracts import RepairProfile, RepairStatus, RepairTarget
     from meshpipeline.pipeline.geometry_state import materialized as _materialized
 
@@ -38,20 +41,60 @@ async def node_repair_inspect(state: PipelineState) -> dict:
     if geometry is None or not geometry.path or not Path(geometry.path).exists():
         return {}
 
-    from meshpipeline.cad.repair import inspect as _inspect_mod
-    try:
-        result = _inspect_mod.inspect_geometry(
+    source = Path(geometry.path)
+    size = source.stat().st_size
+    if size > rcfg.CAD_INSPECT_MAX_BYTES:
+        # NOT INSPECTED, AND SAID SO. Reading a very large STEP costs seconds before anything is
+        # measured, and a part this big is one an operator should look at anyway. Reporting it as
+        # clean would be worse than reporting that we did not look.
+        logger.info("node_repair_inspect: %d bytes is over the inspection size bound - not "
+                    "inspected - job_id=%s", size, job_id)
+        return {
+            "repair_status": RepairStatus.inconclusive.value,
+            "repair_report": {"service_failure": "not_inspected_too_large",
+                              "size_bytes": size,
+                              "limit_bytes": rcfg.CAD_INSPECT_MAX_BYTES},
+        }
+
+    def _inspect():
+        # IMPORTED INSIDE THE GUARD. An inspection-only dependency that fails to import on a
+        # worker holding sound geometry must not fail the mesh run: it is the same class of
+        # event as the inspection itself raising, and gets the same inconclusive answer.
+        from meshpipeline.cad.repair import inspect as _inspect_mod
+
+        return _inspect_mod.inspect_geometry(
             geometry,
             profile=RepairProfile.conservative,
             target=RepairTarget.meshing,
             engine=state.get("engine", "") or "",
         )
-    except Exception as exc:  # noqa: BLE001 - inspection never decides a run's outcome
-        logger.warning("node_repair_inspect: inspection failed (%s) - recording an inconclusive "
-                       "report and continuing - job_id=%s", exc, job_id)
+
+    try:
+        # OFF THE EVENT LOOP AND ON A CLOCK. The kernel has no await points and no interruption
+        # point, so the work goes to a thread and is ABANDONED on expiry - the thread finishes in
+        # the background while the run proceeds. Evidence must never spend a run's deadline.
+        result = await asyncio.wait_for(asyncio.to_thread(_inspect),
+                                        timeout=rcfg.CAD_INSPECT_TIMEOUT_S)
+    except TimeoutError:
+        logger.warning("node_repair_inspect: inspection exceeded %.1fs - continuing without it "
+                       "- job_id=%s", rcfg.CAD_INSPECT_TIMEOUT_S, job_id)
         return {
             "repair_status": RepairStatus.inconclusive.value,
-            "repair_report": {"service_failure": f"{type(exc).__name__}: {exc}"[:600]},
+            "repair_report": {"service_failure": "inspection_timed_out",
+                              "timeout_seconds": rcfg.CAD_INSPECT_TIMEOUT_S},
+        }
+    except Exception as exc:  # noqa: BLE001 - inspection never decides a run's outcome
+        # THE DETAIL GOES TO THE OPERATOR LOG, NOT THE CUSTOMER'S REPORT. An exception's text can
+        # carry a worker-local path (a vanished file raises FileNotFoundError naming it), and this
+        # report is downloadable by the job's owner. The report carries a code; the log carries
+        # the sentence.
+        logger.warning("node_repair_inspect: inspection failed (%s: %s) - recording an "
+                       "inconclusive report and continuing - job_id=%s",
+                       type(exc).__name__, exc, job_id)
+        return {
+            "repair_status": RepairStatus.inconclusive.value,
+            "repair_report": {"service_failure": "inspection_failed",
+                              "error_type": type(exc).__name__},
         }
 
     payload = result.to_dict()

@@ -71,6 +71,12 @@ class AssignIn(BaseModel):
     claim: bool = True
 
 
+#: Decisions that claim the customer received something. Each needs evidence that the thing
+#: exists, because a settled job whose status says "delivered" over nothing produced is the one
+#: record nobody can walk back.
+_NEEDS_OUTPUT = {"deliver": "mesh", "deliver_repair": "repaired geometry"}
+
+
 class DecideIn(BaseModel):
     decision: str = Field(min_length=1, max_length=32)
     actor: str = Field(min_length=1, max_length=256)
@@ -132,6 +138,19 @@ def _decision_row(d) -> dict:
         "notes": d.notes,
         "created_at": d.created_at.isoformat() if d.created_at else None,
     }
+
+
+async def _has_output(db, jid, job, decision: str) -> bool:
+    """Whether the thing a delivery decision claims actually exists.
+
+    `deliver` needs the mesh run this job reached; `deliver_repair` needs an attempt that produced
+    geometry. Both are read from durable rows rather than inferred from the job's state, because
+    the state is what the decision is about to change.
+    """
+    if decision == "deliver":
+        return job.simulation_job_id is not None
+    attempts = await repo().attempts_for_job(db, jid)
+    return any(a.output_sha256 for a in attempts)
 
 
 def _latest_report(attempts) -> dict:
@@ -258,26 +277,64 @@ async def decide_job(job_id: str, body: DecideIn) -> dict:
         raise HTTPException(status_code=422,
                             detail=f"{name} must state a reason - it stops a customer's job")
 
+    strategy = body.strategy.strip()
+    if name == "choose_strategy":
+        # A BLANK OR INVENTED STRATEGY IS NOT A CHOICE. The job would advance toward repair with
+        # nothing recorded, or with a profile no executor implements.
+        from meshpipeline.cad.repair.contracts import RepairProfile
+
+        allowed = {p.value for p in RepairProfile}
+        if strategy not in allowed:
+            raise HTTPException(
+                status_code=422,
+                detail=f"choose_strategy needs one of {sorted(allowed)}; got {strategy!r}")
+    elif strategy:
+        raise HTTPException(status_code=422,
+                            detail=f"{name} does not take a strategy")
+
     async with get_db() as db:
         job = await repo().operator_job(db, jid)
         if job is None:
             raise HTTPException(status_code=404, detail="repair job not found")
         was = job.status.value
 
+        # LEGALITY FIRST, so the operator is told the move is unavailable from this state rather
+        # than being told what the job lacks for a move it could never have made.
+        if job.status not in legal_sources(target):
+            raise HTTPException(
+                status_code=409,
+                detail=f"{name} is not available from {was} - re-read the job")
+
+        if name in _NEEDS_OUTPUT:
+            produced = await _has_output(db, jid, job, name)
+            if not produced:
+                # 409: the job is in a state that allows the move, but there is nothing to deliver.
+                raise HTTPException(
+                    status_code=409,
+                    detail=(f"{name} claims the customer received {_NEEDS_OUTPUT[name]}, and "
+                            "this job has none recorded"))
+
         outcome = await repo().transition(
             db, jid, target,
             # A blocking decision's reason IS the blocked reason the customer is eventually told;
             # recording it twice in different words is how the two come to disagree.
             blocked_reason=reason if name in _NEEDS_REASON else None,
-            current_strategy=body.strategy or None)
+            current_strategy=strategy or None,
+            # The status this decision was made ON, so the history cannot record an origin the
+            # job had already left.
+            expected_from=job.status)
         if outcome is TransitionResult.not_found:
             raise HTTPException(status_code=404, detail="repair job not found")
-        if outcome is TransitionResult.rejected_current_state:
-            # 409: the job moved under the operator, or the screen offered a button this state
-            # never allowed. Either way the answer is to re-read it, not to retry blindly.
+        if outcome is not TransitionResult.applied:
+            # ONLY `applied` IS A DECISION. The compare-and-set is narrowed to the status this
+            # operator actually read, so every other outcome means the job moved underneath them -
+            # including `already_at_target`, which here means somebody else got there first. An
+            # earlier version recorded that as a confirmation, which put a decision in the
+            # append-only history naming an origin the job had already left.
             raise HTTPException(
                 status_code=409,
-                detail=f"{name} is not available from {was} - re-read the job")
+                detail=(f"{name} could not be applied from {was} - the job moved; re-read it "
+                        f"({outcome.value})"))
 
         # THE DECISION IS RECORDED EVEN WHEN THE JOB WAS ALREADY THERE. A second operator
         # confirming the same move is a real event with its own actor, and the audit is the

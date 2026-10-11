@@ -82,7 +82,12 @@ def test_a_located_defect_is_repaired_and_the_result_is_what_gets_meshed(tmp_pat
     # the run now meshes the repair, not the upload
     assert out["geometry"]["ref"]["sha256"] != before
     assert out["repair_lineage"]["original"]["sha256"] == before
-    assert out["repair_status"] == RepairStatus.repaired.value
+    # `repair_status` is the inspection's verdict on the file the CUSTOMER SENT and is left alone;
+    # what the repair did, and whether it resolved anything, lives in the attempt record beside
+    # the report that justified it.
+    assert "repair_status" not in out
+    assert out["repair_attempt"]["repair_status"] == RepairStatus.repaired.value
+    assert out["repair_attempt"]["resolved"] is True
 
 
 def test_the_repair_is_written_beside_the_materialised_original(tmp_path, repairs):
@@ -272,3 +277,53 @@ def test_the_node_never_refuses_a_run(tmp_path, monkeypatch):
     for forbidden in ("geometry_unsuitable_reason", "executor_success", "retry_count",
                       "api_failure"):
         assert forbidden not in out
+
+
+def test_a_repair_that_leaves_a_hole_is_not_recorded_as_resolved(tmp_path, monkeypatch):
+    # A repair can stay inside every cap and still leave the defect it was run for. Saying
+    # "repaired" over that is how an operator ships a part with a hole in it.
+    def _repair(source, destination, **kw):
+        destination.write_bytes(source.read_bytes() + b"\n/* partial */\n")
+        return _repaired_report(holes_filled=[],
+                                holes_left=[{"reason": "not_planar", "span": 12.0}])
+
+    monkeypatch.setattr("meshpipeline.cad.repair.conservative.repair_step_file", _repair)
+    monkeypatch.setattr("meshpipeline.pipeline.repair_promote.stages_for",
+                        lambda geometry, engine="": (True, ""))
+
+    out = _run(_state(tmp_path))
+
+    assert out["repair_attempt"]["attempted"] is True
+    assert out["repair_attempt"]["resolved"] is False
+    assert out["repair_attempt"]["holes_left"][0]["reason"] == "not_planar"
+
+
+def test_a_repair_that_outlives_its_welcome_leaves_the_run_on_the_original(tmp_path, monkeypatch):
+    import time
+
+    import meshpipeline.settings.cad_repair as cfg
+
+    monkeypatch.setattr(cfg, "CAD_REPAIR_TIMEOUT_S", 0.05)
+    monkeypatch.setattr("meshpipeline.cad.repair.conservative.repair_step_file",
+                        lambda *a, **k: time.sleep(5))
+
+    out = _run(_state(tmp_path))
+
+    assert out["repair_attempt"]["attempted"] is False
+    assert "exceeded" in out["repair_attempt"]["reason"]
+    assert "geometry" not in out
+
+
+def test_an_unreadable_repair_output_does_not_fail_the_run(tmp_path, monkeypatch):
+    def _repair(source, destination, **kw):
+        # reports success but leaves nothing behind - the file is gone when we go to hash it
+        return _repaired_report(holes_filled=[], holes_left=[])
+
+    monkeypatch.setattr("meshpipeline.cad.repair.conservative.repair_step_file", _repair)
+
+    out = _run(_state(tmp_path))
+
+    # hashing a missing file is our problem, not the customer's
+    assert out["repair_attempt"]["attempted"] is False
+    assert "could not be adopted" in out["repair_attempt"]["reason"]
+    assert "geometry" not in out

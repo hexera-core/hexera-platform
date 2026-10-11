@@ -87,6 +87,33 @@ def _max_tolerance_mm(shape) -> float:
     return float(ShapeAnalysis_ShapeTolerance().Tolerance(shape, 1))
 
 
+def _area_and_volume(shape) -> dict:
+    """Surface area and enclosed volume - the two measures that move when something INSIDE moves.
+
+    A bounding box is blind to an internal wall, a reshaped cavity or a sealed passage. These are
+    not: they are what lets the acceptance checks notice a repair that changed the part where a
+    customer would care most and an extent check would see nothing.
+    """
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+
+    out = {"surface_area_mm2": 0.0, "volume_mm3": 0.0}
+    try:
+        surface = GProp_GProps()
+        BRepGProp.SurfaceProperties_s(shape, surface)
+        out["surface_area_mm2"] = abs(float(surface.Mass()))
+    except Exception as exc:  # noqa: BLE001 - a measure we cannot take is reported as zero,
+        logger.debug("conservative: no surface area for this shape (%s)", exc)
+    try:
+        volume = GProp_GProps()
+        BRepGProp.VolumeProperties_s(shape, volume)
+        out["volume_mm3"] = abs(float(volume.Mass()))
+    except Exception as exc:  # noqa: BLE001 - and a zero is skipped by the check rather than
+        # treated as a 100% change, so an unmeasurable shape is never refused for being unmeasurable
+        logger.debug("conservative: no volume for this shape (%s)", exc)
+    return out
+
+
 def _counts(shape) -> dict:
     from meshpipeline.cad.repair.brep import _count_subshapes
 
@@ -100,10 +127,30 @@ def _is_valid(shape) -> bool:
 
 
 def _write_step(shape, destination: Path) -> None:
+    """Write the repaired shape, DECLARING the unit its coordinates are actually in.
+
+    `write.step.unit` is a PROCESS-GLOBAL OpenCASCADE static. Left unset, the writer uses whatever
+    the last caller in this process happened to set - and a file whose header declares inches
+    while its coordinates are millimetres is a part wrong by a factor of 25.4. That is the worst
+    failure class this pipeline has, and it would pass every check here because the shape itself
+    is sound.
+
+    OpenCASCADE transfers a STEP into its own system unit, millimetres, on read. So the shape in
+    hand is in millimetres and the file must say so: then the repaired file and the original are
+    interchangeable to any reader, which is exactly what promotion assumes when it carries the
+    original's interpretation across. The writer is constructed BEFORE the unit is set, because
+    `write.step.unit` is registered by the STEP controller's initialisation and setting it first
+    silently does nothing.
+    """
     from OCP.IFSelect import IFSelect_RetDone
+    from OCP.Interface import Interface_Static
     from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
 
     writer = STEPControl_Writer()
+    if not Interface_Static.SetCVal_s("write.step.unit", "MM"):
+        raise RepairRefused(
+            "OpenCASCADE refused write.step.unit=MM, so the repaired file's declared unit cannot "
+            "be guaranteed - refusing rather than writing a file that may be mis-scaled")
     writer.Transfer(shape, STEPControl_AsIs)
     if writer.Write(str(destination)) != IFSelect_RetDone:
         raise RepairRefused(f"the repaired shape could not be written to {destination.name}")
@@ -207,8 +254,11 @@ def _paired_rims(loops: list) -> set[int]:
             (n2, c2), s2 = planes[right]
             if s1 <= 0 or s2 <= 0:
                 continue
-            if abs(s1 - s2) / max(s1, s2) > _RIM_SPAN_TOLERANCE:
-                continue
+            # SIZE IS NOT THE TEST. A TAPERED through-hole - a countersink, a draft-angled bore -
+            # has rims of different diameters, so requiring congruence let exactly that case
+            # through and sealed a feature the customer drew. What makes two loops the ends of one
+            # passage is that they are parallel and offset ALONG their shared normal; the sizes
+            # may differ by any amount.
             dot = abs(n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2])
             if dot < _RIM_PARALLEL_TOLERANCE:
                 continue
@@ -295,14 +345,18 @@ def _as_solid_if_closed(shape):
 
     try:
         shells = TopExp_Explorer(shape, TopAbs_SHELL)
-        maker = BRepBuilderAPI_MakeSolid()
-        added = 0
+        found = []
         while shells.More():
-            maker.Add(TopoDS.Shell_s(shells.Current()))
-            added += 1
+            found.append(TopoDS.Shell_s(shells.Current()))
             shells.Next()
-        if added == 0:
+        # ONE SHELL ONLY. Adding every shell to one solid fused separate assembly bodies into a
+        # single purported part - and the acceptance checks allow the solid count to RISE, so
+        # nothing downstream caught it. A multi-shell shape is left as it is; whether those shells
+        # are one body is a question about the assembly, not something to assume.
+        if len(found) != 1:
             return shape
+        maker = BRepBuilderAPI_MakeSolid()
+        maker.Add(found[0])
         solid = maker.Solid()
         if solid is None or (hasattr(solid, "IsNull") and solid.IsNull()):
             return shape
@@ -313,20 +367,12 @@ def _as_solid_if_closed(shape):
 
 
 def _fix(shape, *, tolerance_mm: float):
-    """Run the conservative operation set: a ShapeFix pass, and sewing ONLY where it belongs.
+    """Run the conservative operation set. Returns (shape, holes filled, holes left alone).
 
     ShapeFix_Shape is given a tolerance to WORK AT, which is not a promise about what it leaves
     behind - it may raise a sub-shape's tolerance well past this to make the shape close. That is
-    precisely why the caps below are measured on the RESULT rather than trusted from the request.
-
-    SEWING IS FOR SHAPES THAT ARE NOT CLOSED YET. BRepBuilderAPI_Sewing joins coincident face
-    boundaries and returns a shell; handed a shape that already contains a solid it returns the
-    sewn shell and the solid is GONE. A real-kernel test caught exactly that - a sound box went in
-    with one solid and came out with none - which is damage, not repair. So the sewing pass runs
-    only when there is no solid to lose, and the refusal below treats a lost solid as damage
-    whatever produced it.
+    precisely why the caps are measured on the RESULT rather than trusted from the request.
     """
-    from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
     from OCP.ShapeFix import ShapeFix_Shape
 
     fixer = ShapeFix_Shape(shape)
@@ -343,34 +389,42 @@ def _fix(shape, *, tolerance_mm: float):
     fixer.Perform()
     fixed = fixer.Shape()
 
-    if _counts(fixed)["solids"] > 0:
-        # Already closed. ShapeFix has done the conservative work; sewing from here could only
-        # take the solid away.
-        return fixed, [], []
+    # SKIP THE SEWING, NOT THE PATCHING. An earlier version returned early for any shape that had
+    # a solid, which also skipped hole filling - so a part with a solid AND an opening elsewhere
+    # was never patched, and a real corpus came back "no_change" on every such file. Sewing is the
+    # operation that must not run on a closed body, because it returns a shell and the solid is
+    # lost; patching is judged on its own evidence.
+    sewn = fixed if _counts(fixed)["solids"] > 0 else _sew(fixed, tolerance_mm=tolerance_mm)
 
-    sewing = BRepBuilderAPI_Sewing(tolerance_mm)
-    # NON-MANIFOLD MODE OFF: joining three faces along one edge produces a shape no mesher will
-    # accept, and calling that a repair would move the failure downstream rather than fix it.
-    sewing.SetNonManifoldMode(False)
-    sewing.Add(fixed)
-    sewing.Perform()
-    sewn = sewing.SewedShape()
-    if sewn is None or (hasattr(sewn, "IsNull") and sewn.IsNull()):
-        sewn = fixed
-
-    # SEWING CANNOT CLOSE A HOLE. It stitches coincident boundaries, and a face that is simply
-    # missing has nothing to stitch to - so the commonest reason a real part will not mesh
-    # survives every operation above it. Patching is what closes it.
     if not rcfg.CAD_REPAIR_FILL_PLANAR_HOLES:
         # STILL REPORTED. A repair that leaves the defect it was run for must say so: an operator
         # reading "repaired" over a part that still has a hole in it is how a ruined delivery
-        # happens. The loops are enumerated and handed back as left, with the reason.
-        remaining = _free_loops(sewn)
-        return sewn, [], [{"reason": "filling_disabled",
-                           "span": round(_span(wire), 6)} for wire in remaining]
-    patched, filled, left = _fill_planar_holes(
-        sewn, tolerance_mm=tolerance_mm, diagonal=_diagonal_mm(sewn))
-    return patched, filled, left
+        # happens.
+        return sewn, [], [{"reason": "filling_disabled", "span": round(_span(wire), 6)}
+                          for wire in _free_loops(sewn)]
+
+    return _fill_planar_holes(sewn, tolerance_mm=tolerance_mm, diagonal=_diagonal_mm(sewn))
+
+
+def _sew(shape, *, tolerance_mm: float):
+    """Join coincident face boundaries into shells. Only for a shape with no solid to lose.
+
+    BRepBuilderAPI_Sewing returns a SHELL; handed a shape that already contains a solid it hands
+    back the sewn shell and the solid is gone. A real-kernel test caught exactly that - a sound box
+    went in with one solid and came out with none.
+    """
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
+
+    # NON-MANIFOLD MODE OFF: joining three faces along one edge produces a shape no mesher will
+    # accept, and calling that a repair would move the failure downstream rather than fix it.
+    sewing = BRepBuilderAPI_Sewing(tolerance_mm)
+    sewing.SetNonManifoldMode(False)
+    sewing.Add(shape)
+    sewing.Perform()
+    sewn = sewing.SewedShape()
+    if sewn is None or (hasattr(sewn, "IsNull") and sewn.IsNull()):
+        return shape
+    return sewn
 
 
 def repair_step_file(source: Path, destination: Path, *,
@@ -400,6 +454,7 @@ def repair_step_file(source: Path, destination: Path, *,
         "diagonal_mm": _diagonal_mm(before_shape),
         "max_tolerance_mm": _max_tolerance_mm(before_shape),
         **_counts(before_shape),
+        **_area_and_volume(before_shape),
     }
 
     tolerance = min(rcfg.CAD_REPAIR_MAX_TOLERANCE_MM,
@@ -411,6 +466,7 @@ def repair_step_file(source: Path, destination: Path, *,
         "diagonal_mm": _diagonal_mm(fixed_shape),
         "max_tolerance_mm": _max_tolerance_mm(fixed_shape),
         **_counts(fixed_shape),
+        **_area_and_volume(fixed_shape),
     }
     measurements = {"before": before, "after": after, "tolerance_requested_mm": tolerance,
                     "operations": list(_CONSERVATIVE_OPERATIONS),
@@ -425,6 +481,11 @@ def repair_step_file(source: Path, destination: Path, *,
     refusal = _refusal(before, after)
     if refusal:
         raise RepairRefused(refusal, measurements=measurements)
+
+    performed = [op for op in _CONSERVATIVE_OPERATIONS
+                 if op != "sew_shells" or before["solids"] == 0]
+    if "fill_planar_holes" in performed and not filled:
+        performed.remove("fill_planar_holes")
 
     _write_step(fixed_shape, dest)
 
@@ -442,7 +503,10 @@ def repair_step_file(source: Path, destination: Path, *,
     return RepairReport(
         defects=defects,
         measurements=tuple(RepairMeasurement(name=k, value=v) for k, v in measurements.items()),
-        operations=tuple({"name": op, "mutated": True} for op in _CONSERVATIVE_OPERATIONS),
+        # ONLY WHAT RAN. Listing the whole profile as `mutated` claimed a sewing pass on a sound
+        # single-solid part that deliberately skipped it, which is an inaccurate account of a
+        # repair an operator is being asked to approve.
+        operations=tuple({"name": op, "mutated": True} for op in performed),
         summary=("Repaired within the conservative caps."
                  if after["valid"] else
                  "Repaired, but the result is not fully valid - needs review."),
@@ -475,6 +539,21 @@ def _refusal(before: dict, after: dict) -> str:
         if moved > rcfg.CAD_REPAIR_MAX_DEVIATION_RATIO:
             return (f"the repair moved the part's overall size by {moved:.5f} of its diagonal, "
                     f"over the {rcfg.CAD_REPAIR_MAX_DEVIATION_RATIO} cap")
+
+    # THE BOUNDING BOX CANNOT SEE INSIDE. An internal wall moved, a cavity reshaped or a passage
+    # sealed changes nothing about the part's overall extent, so a deviation check that only
+    # measures the box accepted repairs that altered the part where it matters most. Surface area
+    # and volume do move for those, and a patched opening moves them legitimately - which is why
+    # the allowance here is the hole-span cap rather than the far tighter deviation ratio.
+    for name, allowance in (("surface_area_mm2", rcfg.CAD_REPAIR_MAX_HOLE_SPAN_RATIO),
+                            ("volume_mm3", rcfg.CAD_REPAIR_MAX_HOLE_SPAN_RATIO)):
+        was, now = float(before.get(name) or 0.0), float(after.get(name) or 0.0)
+        if was <= 0:
+            continue
+        changed = abs(now - was) / was
+        if changed > allowance:
+            return (f"the repair changed the part's {name.split('_')[0]} by {changed:.4f} of its "
+                    f"original, over the {allowance} allowance - something moved inside the part")
     if before["valid"] and not after["valid"]:
         return "the repair turned a valid shape into an invalid one"
     return ""

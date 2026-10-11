@@ -255,3 +255,37 @@ def test_advice_with_no_located_entities_still_routes_but_aims_at_nothing():
     advice = recommend(repair_status="repairable", report=_report(("wire_gap", "error")))
     assert advice.route == ROUTE_CONSERVATIVE_REPAIR
     assert advice.targets == ()
+
+
+def test_an_invalid_part_whose_defect_we_located_is_repaired_not_escalated():
+    # THE PRECEDENCE THIS PINS: a part can be invalid BECAUSE of the gap we just found. Sending
+    # that to a person is refusing to fix the very thing we diagnosed - and before this, the
+    # blanket invalid_brep branch outranked the located defect.
+    advice = recommend(
+        repair_status="repairable",
+        report={"report": {"defects": [{"code": "invalid_brep", "severity": "error"},
+                                       {"code": "wire_gap", "severity": "error"}],
+                           "entities": [_entity("wire_gap", entity="edge:3")]}})
+
+    assert advice.route == ROUTE_CONSERVATIVE_REPAIR
+    assert advice.targets[0]["entity"] == "edge:3"
+
+
+def test_an_invalid_part_nothing_explains_still_goes_to_a_person():
+    advice = recommend(
+        repair_status="repairable",
+        report={"report": {"defects": [{"code": "invalid_brep", "severity": "error"}],
+                           "entities": []}})
+    assert advice.route == ROUTE_MANUAL_CLEANUP
+
+
+def test_a_judgement_defect_outranks_a_located_repairable_one_even_on_an_invalid_part():
+    advice = recommend(
+        repair_status="repairable",
+        report={"report": {"defects": [{"code": "invalid_brep", "severity": "error"},
+                                       {"code": "wire_gap", "severity": "error"},
+                                       {"code": "self_intersection", "severity": "error"}],
+                           "entities": [_entity("wire_gap", entity="edge:3"),
+                                        _entity("self_intersection", entity="face:9")]}})
+    assert advice.route == ROUTE_MANUAL_CLEANUP
+    assert [t["entity"] for t in advice.targets] == ["face:9"]

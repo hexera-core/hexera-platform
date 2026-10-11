@@ -67,9 +67,15 @@ function ok<T>(data: T): Read<T> {
 function failed<T>(error: unknown): Read<T> {
   if (error instanceof HexeraApiError) {
     if (error.status === 404) {
-      if (apiDetail(error.body).toLowerCase().includes("organisation not found")) {
+      const detail = apiDetail(error.body).toLowerCase();
+      if (detail.includes("organisation not found")) {
         return { data: null, error: "Organization not found." };
       }
+      // A 404 CARRYING A DETAIL IS AN ANSWER, NOT A MISSING SURFACE. The unconfigured-credential
+      // case answers 404 with no detail, deliberately, so it does not advertise the capability -
+      // but a route that says "repair job not found" has answered, and reporting that as a
+      // credential problem sends an operator to investigate the wrong thing entirely.
+      if (detail) return { data: null, error: apiDetail(error.body) };
       return { data: null, error: "ADMIN_API_KEY is not set on the product API." };
     }
     if (error.status === 403) return { data: null, error: "The admin credential was refused." };

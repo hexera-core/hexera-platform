@@ -249,21 +249,6 @@ def recommend(*, repair_status: str = "", report: Mapping | None = None,
             reasons=("the file cannot be read or carries no geometry to mesh",),
             evidence=evidence)
 
-    # INVALID, AND NOT FATAL. One rule for every shape of this, because the distinction that
-    # matters is whether we can POINT at the problem - not how the code happened to be written
-    # down. Nothing to aim a repair at, and nothing diagnosed worth bouncing a customer over, so a
-    # person looks. (Before localisation this case went straight back to the customer, which meant
-    # we asked them for a new file having diagnosed nothing.)
-    if any(c in _CUSTOMER_MUST_ACT for c in codes):
-        _unattributed = _has_unattributed_invalid(payload)
-        return Recommendation(
-            route=ROUTE_MANUAL_CLEANUP, confidence=0.5,
-            reasons=((("OpenCASCADE calls the part invalid but attributes it to no entity, so "
-                       "there is nothing for an automatic repair to aim at"),)
-                     if _unattributed else
-                     ("the part's B-rep is invalid in a way this baseline cannot localise",)),
-            evidence=evidence, profile=RepairProfile.manual_review.value)
-
     judgement = [e for e in entities if e.get("code") in _NEEDS_JUDGEMENT]
     if any(c in _NEEDS_JUDGEMENT for c in codes):
         return Recommendation(
@@ -272,16 +257,42 @@ def recommend(*, repair_status: str = "", report: Mapping | None = None,
             evidence=evidence, profile=RepairProfile.manual_review.value,
             targets=_targets(judgement or entities))
 
+    # A LOCATED REPAIRABLE DEFECT OUTRANKS A BLANKET "INVALID". A part can be invalid BECAUSE of
+    # the gap we just found, and in that case the invalidity is explained rather than mysterious -
+    # so sending it to a person would be refusing to fix the very thing we diagnosed. Only an
+    # invalidity nothing accounts for falls through to the branch below.
+    repairable = [e for e in entities if e.get("code") in _REPAIRABLE]
+    if repairable:
+        return Recommendation(
+            route=ROUTE_CONSERVATIVE_REPAIR, confidence=0.7,
+            reasons=("every located defect is in how the file was written, not in what the part "
+                     "is",),
+            evidence=evidence, profile=RepairProfile.conservative.value,
+            targets=_targets(repairable))
+
+    # INVALID, AND NOTHING EXPLAINS IT. Nothing to aim a repair at, and nothing diagnosed worth
+    # bouncing a customer over, so a person looks. (Before localisation this case went straight
+    # back to the customer, which meant asking them for a new file having diagnosed nothing.)
+    if any(c in _CUSTOMER_MUST_ACT for c in codes):
+        _unattributed = _has_unattributed_invalid(payload)
+        return Recommendation(
+            route=ROUTE_MANUAL_CLEANUP, confidence=0.5,
+            reasons=((("OpenCASCADE calls the part invalid but attributes it to no entity, so "
+                       "there is nothing for an automatic repair to aim at"),)
+                     if _unattributed else
+                     ("the part's B-rep is invalid in a way this baseline cannot localise",)),
+            evidence=evidence, profile=RepairProfile.manual_review.value,
+            targets=_targets(entities))
+
     if codes:
-        repairable = [e for e in entities if e.get("code") in _REPAIRABLE]
+        # Repairable codes with nothing located: the surface path and older reports have no
+        # entities, so the route stands and the absence of targets is the honest signal that
+        # there is nothing to aim at.
         return Recommendation(
             route=ROUTE_CONSERVATIVE_REPAIR, confidence=0.7,
             reasons=("every defect found is in how the file was written, not in what the part is",),
             evidence=evidence, profile=RepairProfile.conservative.value,
-            # WHAT A REPAIR WOULD AIM AT. Without these a recommendation to repair is still just a
-            # verdict on the whole part; with them an executor - or a person - has the entity, its
-            # size and its position.
-            targets=_targets(repairable))
+            targets=())
 
     # A status that reports defects with none listed, or anything else this baseline cannot read.
     return Recommendation(route=ROUTE_ABSTAIN, confidence=0.0, evidence=evidence,

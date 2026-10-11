@@ -137,9 +137,18 @@ async def node_repair_attempt(state: PipelineState) -> dict:
         status_for,
     )
     try:
-        # OFF THE EVENT LOOP. ShapeFix on a real part is seconds of CPU with no await points, and
-        # blocking the loop stalls the heartbeat that keeps this worker's lease alive.
-        repair_report = await asyncio.to_thread(repair_step_file, source, destination)
+        # OFF THE EVENT LOOP AND ON A CLOCK. ShapeFix on a real part is seconds of CPU with no
+        # await points, and on a pathological one it can run past the job's remaining deadline -
+        # delaying a mesh that was viable all along. The thread is abandoned on expiry (the kernel
+        # offers no interruption point) and the run proceeds on the original.
+        repair_report = await asyncio.wait_for(
+            asyncio.to_thread(repair_step_file, source, destination),
+            timeout=rcfg.CAD_REPAIR_TIMEOUT_S)
+    except TimeoutError:
+        logger.warning("node_repair_attempt: the repair exceeded %.1fs - continuing on the "
+                       "original - job_id=%s", rcfg.CAD_REPAIR_TIMEOUT_S, job_id)
+        return _declined(f"the repair exceeded {rcfg.CAD_REPAIR_TIMEOUT_S:.0f}s",
+                         route=advice.route)
     except RepairUnavailable as exc:
         # OUR limitation, never a verdict on the file.
         return _declined(f"the repair could not run here: {exc}", route=advice.route)
@@ -157,6 +166,9 @@ async def node_repair_attempt(state: PipelineState) -> dict:
 
     from meshpipeline.pipeline.repair_promote import PromotionRefused, promote
     try:
+        # HASHING THE WRITTEN FILE CAN FAIL TOO - it may be unreadable, truncated, or gone. That
+        # is our problem, not the customer's, and like every other refusal here it leaves the run
+        # on the original rather than failing a mesh that was viable.
         repaired = _derived_source(original, destination)
         update = promote(state, repaired=repaired, engine=engine,
                          attempt=int(state.get("retry_count", 0) or 0))
@@ -166,6 +178,11 @@ async def node_repair_attempt(state: PipelineState) -> dict:
         logger.info("node_repair_attempt: promotion refused (%s) - continuing on the original "
                     "- job_id=%s", exc, job_id)
         return _declined(f"the repaired geometry was not promoted: {exc}", route=advice.route)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("node_repair_attempt: the repaired file could not be adopted (%s: %s) - "
+                       "continuing on the original - job_id=%s", type(exc).__name__, exc, job_id)
+        return _declined(f"the repaired file could not be adopted: {type(exc).__name__}",
+                         route=advice.route)
 
     operations = [op["name"] for op in repair_report.operations]
     measured = {m.name: m.value for m in repair_report.measurements}
@@ -180,11 +197,21 @@ async def node_repair_attempt(state: PipelineState) -> dict:
     except Exception:  # noqa: BLE001 - the corpus is never load-bearing for a run
         pass
 
+    # `repair_status` IS NOT TOUCHED. It is the inspection's verdict on the file the customer
+    # SENT, and `repair_report` beside it is that inspection - so overwriting it with the repair's
+    # own verdict produced a pairing that read "repaired" next to the original defect list. What
+    # the repair did belongs in `repair_attempt`, and whether it resolved the defects is stated
+    # there rather than implied by a status.
+    _left = measured.get("holes_left")
+    unresolved = list(_left) if isinstance(_left, list) else []
     return {
         **update,
-        "repair_status": status_for(repair_report).value,
         "repair_attempt": {
             "attempted": True,
+            "repair_status": status_for(repair_report).value,
+            # A repair can stay inside every cap and still leave the defect it was run for: an
+            # opening it declined to patch, or a shape it could not make fully valid.
+            "resolved": not unresolved and not repair_report.defects,
             "route": advice.route,
             "operations": operations,
             # WHAT THE REPAIR AIMED AT, kept with what it did: a reviewer approving this reads the

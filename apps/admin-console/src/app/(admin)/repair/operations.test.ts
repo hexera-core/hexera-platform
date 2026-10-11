@@ -164,3 +164,30 @@ test("a lost claim is surfaced as the API's own refusal", async () => {
   assert.equal(result.ok, false);
   assert.match(result.error ?? "", /409/);
 });
+
+test("releasing someone else's claim is refused", async () => {
+  const { assign, calls } = assignSpy();
+
+  const result = await applyRepairAssignment(
+    form({ assigned_operator: "ben@hexera.io", job_id: "job-1", release: "1" }),
+    { actor: ACTOR, assign },
+  );
+
+  // one operator must not return another's work to the queue, and a stale page must not undo a
+  // reassignment made since it loaded
+  assert.equal(result.ok, false);
+  assert.match(result.error ?? "", /claimed by ben@hexera.io/);
+  assert.deepEqual(calls, []);
+});
+
+test("releasing your own claim still works", async () => {
+  const { assign, calls } = assignSpy();
+
+  const result = await applyRepairAssignment(
+    form({ assigned_operator: ACTOR.email, job_id: "job-1", release: "1" }),
+    { actor: ACTOR, assign },
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(calls[0], { claim: false, jobId: "job-1", operator: "" });
+});
