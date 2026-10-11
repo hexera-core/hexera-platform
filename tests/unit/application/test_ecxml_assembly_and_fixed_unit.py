@@ -285,8 +285,12 @@ async def test_a_converted_ecxml_model_with_no_unit_recorded_is_never_asked_for_
 def test_the_declaration_says_the_unit_is_settled_when_the_conversion_fixed_it():
     m = confirmation_message(_confirmed_assembly(unit_fixed=True))
     assert "The file is in millimetres: the part is 18 cm long." in m
-    assert "never ask the user what unit the file is in" in m
-    assert "never ask" not in confirmation_message(_confirmed_assembly())
+    assert "That unit is fixed by the conversion of the uploaded file, so it is settled." in m
+    assert "never ask" not in m                        # an instruction never reaches the chat bubble
+    assert "fixed by the conversion" not in confirmation_message(_confirmed_assembly())
+    from meshpipeline.agents.intake.agent import _block_geometry_check
+
+    assert "unit is fixed by the conversion of the uploaded file" in _block_geometry_check()
 
 
 # ------------------------------------------------- the routes, end to end of the form -----
@@ -350,7 +354,71 @@ async def test_the_confirm_declares_the_assembly_and_refuses_another_unit(served
     out = await route.confirm_check(SID, _confirmed_assembly(regions=None, unit_fixed=False), "alice", "org-1")
     assert "input_kind solid-assembly" in out["message"]
     assert "Its 9 regions, named as in the file: air, Case" in out["message"]     # from the check
-    assert "never ask the user what unit the file is in" in out["message"]          # set by the server
+    assert "fixed by the conversion of the uploaded file" in out["message"]         # set by the server
     assert session.input_kind == "solid-assembly"
     stored = json.loads(store.objects[f"sessions/{SID}/geometry_check/confirmed.json"])
     assert stored["unit_fixed"] is True and stored["regions"] == REGIONS
+
+
+@pytest.mark.asyncio
+async def test_a_refused_unit_keeps_a_proposed_run_waiting_for_the_next_yes(ecxml_source, monkeypatch):
+    """The refusal invites "go on": a run already proposed is moved on one turn, so that yes still
+    lands on it instead of failing the approval's message count."""
+    from meshpipeline.agents.intake import approval as ap
+
+    store = _Store({"scout.json": {"facts": {"size_mm": [180.0, 150.0, 80.0], "scale_to_m": 0.001}}})
+    monkeypatch.setattr(object_storage, "get_object_store", lambda: store)
+
+    async def _interp(db, sess, owner_id, organization_id):
+        return DECLARED_MM
+    monkeypatch.setattr(gh, "interpretation_payload", _interp)
+    live = {"id": "snap", "status": ap.AWAITING, "expires_at": time.time() + 600,
+            "expected_confirmation_msg_count": 7}
+    session = SimpleNamespace(id=SID, geometry_source_id=uuid.uuid4(), geometry_interpretation_id=uuid.uuid4(),
+                              intake_gate={"approval": live}, messages=[])
+    repo = MagicMock(); repo.append_message = AsyncMock(); repo.set_intake_gate = AsyncMock()
+    inbound = msg.InboundMessage(session_id=SID, owner_id="alice", content="the file is in metres",
+                                 organization_id="org")
+    outcome = await msg._settle(inbound, object(), gate={"approval": dict(live)}, locked=session, messages=[],
+                                revision="r1", session_repo=repo, logger=MagicMock())
+    assert outcome.reply.startswith("This file's unit is fixed") and outcome.awaiting_confirmation
+    gate = repo.set_intake_gate.await_args.args[2]
+    assert gate["approval"]["status"] == ap.AWAITING and gate["approval"]["expected_confirmation_msg_count"] == 8
+
+
+@pytest.mark.asyncio
+async def test_a_wrong_unit_taken_before_the_lock_is_replaced_by_the_fixed_one(ecxml_source, monkeypatch):
+    """A session that took "metres" for its ECXML model before this fix: the fixed millimetres are
+    bound back over it, and a run proposed at the wrong size is withdrawn."""
+    from meshpipeline.agents.intake import approval as ap
+    from meshpipeline.persistence.repositories import geometry_interpretation_repository as girmod
+    from meshpipeline.persistence.repositories import session_repository as srmod
+
+    recorded: list = []
+
+    class _Interps:
+        async def record(self, db, *, owner_id, geometry_source_id, unit, basis, evidence, organization_id=""):
+            recorded.append((unit, basis.value))
+            return GeometryInterpretation(interpretation_id=str(uuid.uuid4()), owner_id=owner_id,
+                                          geometry_source_id=str(geometry_source_id), unit=unit,
+                                          scale_to_metres=scale_to_metres(unit), basis=basis, evidence=evidence)
+    monkeypatch.setattr(girmod, "GeometryInterpretationRepository", _Interps)
+    gates: list = []
+
+    class _Sessions:
+        async def bind_geometry_interpretation(self, db, session_id, interpretation_id):
+            pass
+
+        async def set_intake_gate(self, db, session_id, gate):
+            gates.append(gate)
+    monkeypatch.setattr(srmod, "SessionRepository", _Sessions)
+
+    async def _metres(db, sess, owner_id, organization_id):
+        return {**DECLARED_MM, "unit": "m", "scale_to_metres": 1.0, "basis": "user_confirmed"}
+    monkeypatch.setattr(gh, "interpretation_payload", _metres)
+    live = {"id": "snap", "status": ap.AWAITING, "expires_at": time.time() + 600}
+    session = SimpleNamespace(id=SID, geometry_source_id=uuid.uuid4(), geometry_interpretation_id=uuid.uuid4(),
+                              intake_gate={"approval": live}, messages=[])
+    now = await gh.ensure_fixed_unit(object(), session, "alice", "org")
+    assert now["unit"] == "mm" and recorded == [(LengthUnit.millimetre, "file_declared")]
+    assert gates and gates[0]["approval"]["status"] == ap.INVALIDATED

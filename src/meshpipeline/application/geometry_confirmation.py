@@ -160,9 +160,9 @@ def unit_sentence(body) -> str:
     said += f": the part is {length_words(longest / 1000.0)} long." if longest > 0 else "."
     if getattr(body, "unit_fixed", False):
         # the converter wrote the geometry in this unit: asking would invite the SOURCE's unit
-        # ("metres", for an ECXML model) as an answer about the converted geometry
-        said += (" That unit is fixed by the conversion of the uploaded file, so it is settled: "
-                 "never ask the user what unit the file is in.")
+        # ("metres", for an ECXML model) as an answer about the converted geometry. The chat shows
+        # these words to the user, so they state a fact; the intake prompt block says what follows.
+        said += " That unit is fixed by the conversion of the uploaded file, so it is settled."
     if longest > 0:
         said += " The sizes above are already converted to millimetres; use them as they stand."
     return said

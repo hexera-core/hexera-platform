@@ -273,7 +273,8 @@ async def accept(inbound: InboundMessage, *, session_repo, db_factory, logger,
 async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: list,
                   revision: str, session_repo, logger) -> MessageOutcome:
     changed = await _settle_unit_change(inbound, db, locked=locked, messages=messages,
-                                        revision=revision, session_repo=session_repo, logger=logger)
+                                        revision=revision, session_repo=session_repo, logger=logger,
+                                        gate=gate)
     if changed is not None:
         return changed
     approval = gate.get("approval")
@@ -423,7 +424,7 @@ UNIT_CHANGE_FAILED = ("I couldn't switch the file to {unit} just now: the sizes 
 
 
 async def _settle_unit_change(inbound: InboundMessage, db, *, locked, messages: list, revision: str,
-                              session_repo, logger) -> MessageOutcome | None:
+                              session_repo, logger, gate: dict | None = None) -> MessageOutcome | None:
     """A UNIT CHANGED AFTER IT WAS SETTLED. "The file is in metres", said once the sizes were
     confirmed as millimetres, is recorded as the user's unit and every length derived under the
     old one is re-read by the application - the declaration the intake reads, the declared
@@ -448,7 +449,19 @@ async def _settle_unit_change(inbound: InboundMessage, db, *, locked, messages: 
         logger.info("intake message: %s named, but the unit is fixed at %s - session=%s",
                     unit.value, fixed.unit.value, inbound.session_id)
         reply = fixed.reply()
+        # A RUN ALREADY PROPOSED STANDS - nothing it was set up with changed - so it waits one
+        # turn: the "go on" the reply invites is the yes it is still waiting for.
+        current = dict(gate if gate is not None else (getattr(locked, "intake_gate", None) or {}))
+        deferred = ap.is_live(current.get("approval"))
+        if deferred:
+            current["approval"] = ap.defer(current.get("approval"))
+            await session_repo.set_intake_gate(db, inbound.session_id, current)
         await session_repo.append_message(db, inbound.session_id, "assistant", reply)
+        if deferred:
+            return MessageOutcome(
+                status=MessageStatus.unit_changed, reply=reply, awaiting_confirmation=True,
+                transition=GateTransition(change=GateChange.approval_deferred, revision=revision,
+                                          approval_status=ap.AWAITING))
         return MessageOutcome(status=MessageStatus.unit_changed, reply=reply,
                               transition=GateTransition(revision=revision))
     except UnitChangeError as exc:

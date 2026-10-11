@@ -158,7 +158,9 @@ async def ensure_fixed_unit(db, session, owner_id: str, organization_id: str) ->
     geometry is millimetres by construction, so it is recorded as the file's (as the upload
     records any declared unit) rather than asked. Returns the interpretation now in force when
     the upload's unit is fixed, else None. The upload records it already; this covers an upload
-    whose unit could not be read then."""
+    whose unit could not be read then - and a session that holds ANOTHER unit (a "metres" taken
+    before the unit was locked): the fixed one is bound back over it, and a run proposed under
+    the wrong one is withdrawn by the intake authority, in the caller's transaction."""
     import uuid
     from dataclasses import asdict
 
@@ -166,7 +168,7 @@ async def ensure_fixed_unit(db, session, owner_id: str, organization_id: str) ->
     if fmt is None:
         return None
     current = await interpretation_payload(db, session, owner_id, organization_id)
-    if current is not None:
+    if current is not None and str(current.get("unit")) == fmt.fixed_unit:
         return current
     from meshpipeline.contracts.geometry_source import GeometryInterpretationRef
     from meshpipeline.contracts.geometry_units import LengthUnit, ResolutionBasis
@@ -181,8 +183,14 @@ async def ensure_fixed_unit(db, session, owner_id: str, organization_id: str) ->
         evidence=f"fixed by the conversion: {fmt.fixed_unit_reason}"[:256],
         organization_id=organization_id)
     await SessionRepository().bind_geometry_interpretation(db, session.id, uuid.UUID(recorded.interpretation_id))
-    logger.info("geometry unit: %s fixed by the %s conversion, recorded - session_id=%s",
-                fmt.fixed_unit, fmt.key, session.id)
+    logger.info("geometry unit: %s fixed by the %s conversion, recorded%s - session_id=%s",
+                fmt.fixed_unit, fmt.key, f" over {current.get('unit')}" if current else "", session.id)
+    if current is not None:
+        from meshpipeline.agents.intake.message import withdraw_proposal_for_unit_change
+
+        if await withdraw_proposal_for_unit_change(db, session):
+            logger.info("geometry unit: a run proposed under %s was withdrawn - session_id=%s",
+                        current.get("unit"), session.id)
     return asdict(GeometryInterpretationRef.from_domain(recorded))
 
 
