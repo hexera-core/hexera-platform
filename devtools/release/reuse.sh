@@ -69,7 +69,7 @@ trap 'rm -rf "${WORK}"' EXIT
 # repository: a pull_request run executes the pull request's own copy of the workflow, so a record
 # it uploaded proves nothing.
 gh api -X GET "repos/${GITHUB_REPOSITORY}/actions/workflows/deploy.yml/runs" \
-     -f head_sha="${HEAD_SHA}" -f per_page=50 >"${WORK}/runs.json" 2>"${WORK}/gh.err" \
+     -f head_sha="${HEAD_SHA}" -f per_page=100 >"${WORK}/runs.json" 2>"${WORK}/gh.err" \
   || fallback "could not list earlier deploy runs: $(head -c 300 "${WORK}/gh.err")"
 runs="$("${PY}" - "${WORK}/runs.json" "${GITHUB_REPOSITORY}" "${HEAD_SHA}" "${GITHUB_RUN_ID:-}" <<'PY'
 import json, sys
@@ -159,8 +159,10 @@ PY
 done
 [ -n "${found}" ] || fallback "no earlier run of ${HEAD_SHA:0:12} left a record this run can deploy"
 
-mkdir -p "$(dirname "${REC}")"
-cp "${WORK}/${found}/release.json" "${REC}"
+# A record that did not land is no reuse: the next steps would skip Gate C with nothing to deploy.
+mkdir -p "$(dirname "${REC}")" && cp "${WORK}/${found}/release.json" "${REC}" \
+  && cmp -s "${WORK}/${found}/release.json" "${REC}" \
+  || fallback "the adopted record could not be written to ${REC}"
 printf '\n%sREUSED%s - deploying the images run %s validated and published for %s; nothing rebuilt\n\n' \
   "${c_bold}" "${c_off}" "${found}" "${HEAD_SHA:0:12}"
 answer true

@@ -920,14 +920,30 @@ def _reuse_repo(tmp_path: Path) -> dict:
            "RELEASE_PYTHON": sys.executable}
     ctx = {"root": root, "sha": sha, "tree": tree, "env": env, "gh": ghdir, "out": out,
            "manifests": manifests, "docker_log": docker_log}
-    # The happy state: one earlier push run published this commit, and the registry still
-    # serves exactly what its record names.
-    _earlier_run(ctx, 800, make_record(commit=sha, tree=tree))
+    # The happy state: one earlier push run published this commit - all four components the
+    # deploy promotes - and the registry still serves exactly what its record names.
+    _earlier_run(ctx, 800, _full_record(sha, tree))
     _registry(ctx, {f"{REGISTRY}/app@{APP_DIGEST}": APP_ID,
                     f"{REGISTRY}/app:abcdef123456": APP_ID,
                     f"{REGISTRY}/mesh@{MESH_DIGEST}": MESH_ID,
                     f"{REGISTRY}/mesh:abcdef123456": MESH_ID})
     return ctx
+
+
+#: The two components make_record() leaves out, which provision also promotes.
+_EXTRA = {"console": ("sha256:" + "e5" * 32, "sha256:" + "f6" * 32),
+          "admin": ("sha256:" + "a7" * 32, "sha256:" + "b8" * 32)}
+
+
+def _full_record(sha: str, tree: str, **kw) -> dict:
+    rec = make_record(commit=sha, tree=tree, **kw)
+    for name, (image_id, digest) in _EXTRA.items():
+        rec["components"][name] = {
+            "dockerfile_target": name, "local_tag": f"meshpipeline-{name}:abcdef123456",
+            "local_image_id": image_id, "registry_repository": f"{REGISTRY}/{name}",
+            "publication_tag": "abcdef123456", "registry_digest": digest,
+            "reference": f"{REGISTRY}/{name}@{digest}"}
+    return rec
 
 
 def _no_runs(ctx: dict) -> None:
@@ -949,7 +965,10 @@ def _earlier_run(ctx: dict, run_id: int, rec: dict | None, *, event="push",
 
 
 def _registry(ctx: dict, table: dict) -> None:
-    ctx["manifests"].write_text("".join(f"{ref} {cfg}\n" for ref, cfg in table.items()))
+    # console and admin are always served as published; each test varies app and mesh.
+    full = {**{f"{REGISTRY}/{n}@{d}": i for n, (i, d) in _EXTRA.items()},
+            **{f"{REGISTRY}/{n}:abcdef123456": i for n, (i, d) in _EXTRA.items()}, **table}
+    ctx["manifests"].write_text("".join(f"{ref} {cfg}\n" for ref, cfg in full.items()))
 
 
 def _run_reuse(ctx: dict) -> tuple[subprocess.CompletedProcess, str | None]:
@@ -981,6 +1000,7 @@ def test_a_published_commit_is_deployed_from_its_record_without_rebuilding(tmp_p
         "the adopted record must be the published one, unchanged")
     okp, why = promotable(_record_written(ctx))
     assert okp, why
+    assert set(adopted["components"]) == {"app", "mesh", "console", "admin"}
     calls = ctx["docker_log"].read_text().splitlines()
     assert calls and all(c.startswith("manifest inspect") for c in calls), (
         f"reuse may only read the registry - it never builds, tags or pushes:\n{calls}")
@@ -995,7 +1015,7 @@ def test_no_earlier_run_falls_back_to_gate_c(tmp_path):
 def test_this_run_is_never_its_own_source(tmp_path):
     ctx = _reuse_repo(tmp_path)
     _no_runs(ctx)
-    _earlier_run(ctx, 900, make_record(commit=ctx["sha"], tree=ctx["tree"]))
+    _earlier_run(ctx, 900, _full_record(ctx["sha"], ctx["tree"]))
     _assert_not_reused(ctx, "no earlier deploy run")
 
 
@@ -1003,14 +1023,14 @@ def test_this_run_is_never_its_own_source(tmp_path):
 def test_a_record_from_a_pull_request_or_a_fork_is_never_trusted(tmp_path, event, repo):
     ctx = _reuse_repo(tmp_path)
     _no_runs(ctx)
-    _earlier_run(ctx, 801, make_record(commit=ctx["sha"], tree=ctx["tree"]), event=event, repo=repo)
+    _earlier_run(ctx, 801, _full_record(ctx["sha"], ctx["tree"]), event=event, repo=repo)
     _assert_not_reused(ctx, "no earlier deploy run")
 
 
 def test_an_expired_record_falls_back_to_gate_c(tmp_path):
     ctx = _reuse_repo(tmp_path)
     _no_runs(ctx)
-    _earlier_run(ctx, 802, make_record(commit=ctx["sha"], tree=ctx["tree"]), expired=True)
+    _earlier_run(ctx, 802, _full_record(ctx["sha"], ctx["tree"]), expired=True)
     _assert_not_reused(ctx, "left a record this run can deploy")
 
 
@@ -1065,6 +1085,16 @@ def test_a_moved_publication_tag_is_not_adopted(tmp_path):
     _assert_not_reused(ctx, "now points at")
 
 
+def test_a_record_that_cannot_be_written_is_not_a_reuse(tmp_path):
+    ctx = _reuse_repo(tmp_path)
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("x")
+    ctx["env"]["RELEASE_RECORD"] = str(blocker / "release.json")
+    r, answer = _run_reuse(ctx)
+    assert r.returncode == 0 and answer == "false", r.stdout + r.stderr
+    assert "could not be written" in r.stdout
+
+
 def test_a_dirty_checkout_never_reuses(tmp_path):
     ctx = _reuse_repo(tmp_path)
     (ctx["root"] / "README").write_text("edited")
@@ -1075,7 +1105,7 @@ def test_the_newest_usable_record_is_found_past_a_run_that_published_nothing(tmp
     ctx = _reuse_repo(tmp_path)
     _no_runs(ctx)
     _earlier_run(ctx, 810, None)                      # newest: published nothing (Gate C failed)
-    _earlier_run(ctx, 805, make_record(commit=ctx["sha"], tree=ctx["tree"]))
+    _earlier_run(ctx, 805, _full_record(ctx["sha"], ctx["tree"]))
     r, answer = _run_reuse(ctx)
     assert answer == "true", r.stdout + r.stderr
     assert "run 805" in r.stdout
@@ -1087,9 +1117,9 @@ def test_a_newer_failed_run_does_not_hide_the_push_deploy_that_published_the_com
     # record is unusable; the older published one is the answer.
     ctx = _reuse_repo(tmp_path)
     _no_runs(ctx)
-    _earlier_run(ctx, 820, make_record(commit=ctx["sha"], tree=ctx["tree"], state="validated"),
+    _earlier_run(ctx, 820, _full_record(ctx["sha"], ctx["tree"], state="validated"),
                  event="workflow_dispatch")
-    _earlier_run(ctx, 815, make_record(commit=ctx["sha"], tree=ctx["tree"]))
+    _earlier_run(ctx, 815, _full_record(ctx["sha"], ctx["tree"]))
     r, answer = _run_reuse(ctx)
     assert answer == "true", r.stdout + r.stderr
     assert "the record is not promotable" in r.stdout, "the unusable record was not even read"
