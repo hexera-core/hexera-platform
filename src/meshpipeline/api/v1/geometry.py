@@ -101,6 +101,10 @@ class ConfirmIn(BaseModel):
     #: filled by the server from the check when the form does not send them, and named in the
     #: declaration so the intake knows each part is its own region.
     regions: list[str] | None = None
+    #: SET BY THE SERVER, never taken from the form: why the openings have the roles they have,
+    #: when the uploaded file declares them (geometry_check.declared_openings_reason) and the user
+    #: kept those roles - said in the declaration and carried into the brief.
+    openings_reason: str = ""
 
     @field_validator("extents")
     @classmethod
@@ -477,6 +481,13 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
         names = [str(n) for n in facts.get("source_regions") or [] if str(n).strip()]
         if names:
             body = body.model_copy(update={"regions": names})
+    # WHY THE OPENINGS ARE WHAT THEY ARE, when the file declares them - said only while the user
+    # kept the file's roles, so the declaration never claims the file said what the user changed
+    from meshpipeline.application.geometry_confirmation import declared_reason_kept
+    _scout = (_read_json(check_object_key(str(session_id), "scout.json")) or {}).get("facts") or {}
+    _why = declared_reason_kept(_scout, body.openings)
+    if _why:
+        body = body.model_copy(update={"openings_reason": _why})
     current = str(interpretation.get("unit")) if interpretation else None
     corrected = body.unit if body.unit and body.unit != current else None
     if corrected is None and interpretation is None:

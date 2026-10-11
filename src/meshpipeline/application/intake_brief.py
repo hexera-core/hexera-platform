@@ -156,6 +156,11 @@ def build_brief(session: Any) -> dict[str, Any] | None:
         "review_brief_text":    _clean(getattr(session, "review_brief_txt", None)),
         "submitted":            bool(getattr(session, "intake_submitted", False)),
     }
+    # WHY THE BOUNDARIES ARE WHAT THEY ARE, when the uploaded file declares them and the brief
+    # still gives them the file's roles (the geometry declaration's reason, read back here)
+    from meshpipeline.application.geometry_confirmation import roles_reason_of
+    brief["boundaries_reason"] = _clean(roles_reason_of(getattr(session, "messages", None) or [],
+                                                        brief.get("boundary_assignments") or []))
     # absent stays absent: a field Intake never settled is not a blank row
     brief = {k: v for k, v in brief.items() if v is not None}
     brief["submitted"] = bool(getattr(session, "intake_submitted", False))

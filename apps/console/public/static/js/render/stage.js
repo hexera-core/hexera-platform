@@ -103,6 +103,10 @@ export const Stage = {
     (b.boundary_assignments||[]).forEach(p=>{
       rows+=`<div class="rc-row"><div class="rc-k">${esc(p.name)}</div>`
            +`<div class="rc-v">${esc(p.role||'')}</div></div>`;});
+    // why the boundaries have these roles, when the uploaded file declares them
+    if(b.boundaries_reason)
+      rows+=`<div class="rc-row"><div class="rc-k">Why</div>`
+           +`<div class="rc-v">${esc(b.boundaries_reason.charAt(0).toUpperCase()+b.boundaries_reason.slice(1))}</div></div>`;
     const ck=(b.checks||[]).map(c=>{
       const good=c.status==='pass',unknown=c.status==='unknown';
       return `<div class="rc-ck${good?'':(unknown?' unk':' bad')}">`
