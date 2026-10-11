@@ -28,6 +28,14 @@ def _external(**kw) -> dict:
     return s
 
 
+#: The run already tried cfMesh (the other hex engine with layers, the same contract as snappy), so
+#: what is left to offer on snappy is fewer layers or a different kind of mesh.
+_CFMESH_TRIED = {"approved": "cfmesh", "source": lad.SOURCE_SUGGESTED,
+                 "attempts": [{"attempt": 1, "engine": "cfmesh", "kind": lad.ENGINE,
+                               "cause": "finalize"}],
+                 "switches": [{"attempt": 2, "from": "cfmesh", "to": "snappy"}]}
+
+
 def _fluid_domain(**kw) -> dict:
     s = {"job_id": "j", "engine": "gmsh", "engine_source": lad.SOURCE_SUGGESTED,
          "purpose": "internal_cfd", "input_kind": "fluid-domain", "dimensionality": "3D",
@@ -220,18 +228,22 @@ def test_an_engine_that_cannot_build_the_declared_boundaries_is_not_a_rung():
     assert [r.engine for r in lad.ladder(grounded)] == ["snappy"]
 
 
-def test_cfmesh_to_snappy_is_the_same_contract_and_the_reverse_is_not():
+def test_cfmesh_and_snappy_are_the_same_contract_both_ways():
+    # both deliver hex-dominant cells on a body-fitted wall with prism layers (measured: cfMesh's
+    # delivered ports and volumes match the CAD within 1%, its layers cover the wall)
     up = {r.engine: r for r in lad.ladder(_external())}
     assert up["snappy"].same_contract and not up["snappy"].changes
     down = {r.engine: r for r in lad.ladder(_external(engine="snappy"))}
-    assert not down["cfmesh"].same_contract
-    assert any("staircased" in c for c in down["cfmesh"].changes)
+    assert down["cfmesh"].same_contract and not down["cfmesh"].changes
+    assert not down["gmsh"].same_contract
 
 
 def test_asked_for_layers_make_an_engine_without_reliable_layers_a_change():
     layered = _external(engine="snappy", request_txt="External aero, y+ ~1 with 8 prism layers.")
-    cf = {r.engine: r for r in lad.ladder(layered)}["cfmesh"]
-    assert any("prism layers" in c for c in cf.changes)
+    rungs = {r.engine: r for r in lad.ladder(layered)}
+    # gmsh delivers tetrahedra with no prism layers; cfMesh extrudes layers over the whole wall
+    assert any("prism layers" in c for c in rungs["gmsh"].changes)
+    assert not any("prism layers" in c for c in rungs["cfmesh"].changes)
     # ...while moving UP from cfMesh keeps them: snappy delivers layers
     assert {r.engine: r for r in lad.ladder(_external(
         request_txt="8 prism layers please"))}["snappy"].same_contract
@@ -264,9 +276,11 @@ def test_the_run_ends_with_an_offer_that_states_the_change():
     assert "did not switch without asking" in offer["text"]
 
 
-def test_fewer_layers_is_offered_before_another_engine():
-    # the mesh carries the layer-inversion signature: folded prism layers
+def test_fewer_layers_is_offered_before_another_kind_of_engine():
+    # the mesh carries the layer-inversion signature: folded prism layers; the other hex engine
+    # (the same contract) was tried already, so the next rung is a different kind of mesh
     st = _external(engine="snappy", retry_count=2, executor_failed_gate="quality_floor",
+                   engine_ladder=_CFMESH_TRIED,
                    request_txt="External aero around a wing, 8 prism layers, y+ 1.",
                    mesh_manifest={"quality": {"fatal": ["negative-volume cells"]}})
     offer = lad.final_record(st, succeeded=False, system_failure=False)["offer"]
@@ -279,7 +293,7 @@ def test_fewer_layers_is_offered_before_another_engine():
                                         ("solvability", "not_solvable")])
 def test_fewer_layers_needs_evidence_that_the_layers_were_to_blame(gate, cause):
     st = _external(engine="snappy", retry_count=2, executor_failed_gate=gate,
-                   executor_failure_cause=cause,
+                   executor_failure_cause=cause, engine_ladder=_CFMESH_TRIED,
                    request_txt="External aero around a wing, 8 prism layers, y+ 1.",
                    mesh_manifest={"quality": {"fatal": [], "max_non_ortho": 71.0}})
     offer = lad.final_record(st, succeeded=False, system_failure=False)["offer"]
@@ -295,7 +309,7 @@ def test_fewer_layers_is_offered_for_a_review_only_when_the_review_faulted_layer
     base = {"engine": "snappy", "retry_count": 2, "executor_success": True,
             "executor_failed_gate": "", "reviewer_verdict": "FAIL",
             "request_txt": "External aero, 8 prism layers."}
-    layers = lad.final_record(_external(**base, reviewer_axis_findings=[
+    layers = lad.final_record(_external(**base, engine_ladder=_CFMESH_TRIED, reviewer_axis_findings=[
         {"axis_key": "prism_layer_coverage", "passed": False}]),
         succeeded=False, system_failure=False)["offer"]
     assert layers["kind"] == "fewer_layers"
@@ -323,7 +337,7 @@ def test_a_review_offer_names_the_review_never_a_mesher_that_could_not_finish():
     base = {"engine": "snappy", "retry_count": 3, "executor_success": True,
             "executor_failed_gate": "", "reviewer_verdict": "FAIL",
             "request_txt": "Takeoff aero, 5 prism layers, wall functions."}
-    layers = lad.final_record(_external(**base, reviewer_axis_findings=[
+    layers = lad.final_record(_external(**base, engine_ladder=_CFMESH_TRIED, reviewer_axis_findings=[
         {"axis_key": "prism_layer_coverage", "passed": False}]),
         succeeded=False, system_failure=False)["offer"]
     assert layers["kind"] == "fewer_layers" and layers["layers_to"] == 2
@@ -334,6 +348,7 @@ def test_a_review_offer_names_the_review_never_a_mesher_that_could_not_finish():
     # a gate failure keeps the mesher-could-not-finish wording, which is true there
     gate = lad.final_record(_external(
         engine="snappy", retry_count=2, executor_failed_gate="quality_floor",
+        engine_ladder=_CFMESH_TRIED,
         request_txt="External aero around a wing, 8 prism layers, y+ 1.",
         mesh_manifest={"quality": {"fatal": ["negative-volume cells"]}}),
         succeeded=False, system_failure=False)["offer"]
@@ -638,3 +653,13 @@ def test_a_switch_reaches_the_training_trajectory_with_its_reason():
     # a start-of-run selection keeps its old shape
     assert _engine_select_episode({"chosen": "cfmesh", "source": "user"})["decision"] == {
         "chosen": "cfmesh", "source": "user"}
+
+
+def test_a_layer_failure_on_one_hex_engine_offers_the_other_first():
+    # cfMesh extrudes its layers over the whole wall: when snappy's layers fail the review and
+    # cfMesh was not tried, the same mesh from cfMesh is the first offer, before fewer layers
+    st = _external(engine="snappy", retry_count=2, executor_success=True, executor_failed_gate="",
+                   reviewer_verdict="FAIL", request_txt="External aero, 8 prism layers.",
+                   reviewer_axis_findings=[{"axis_key": "prism_layer_coverage", "passed": False}])
+    offer = lad.final_record(st, succeeded=False, system_failure=False)["offer"]
+    assert offer["kind"] == "engine" and offer["engine"] == "cfmesh" and offer["same_contract"]

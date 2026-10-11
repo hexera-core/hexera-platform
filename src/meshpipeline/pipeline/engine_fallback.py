@@ -20,6 +20,11 @@ method. This module is that fallback, with one rule above every other:
 Two more rules:
 * An engine the USER named (engine_source user_direct) is theirs. It is never switched without
   asking - the ladder only offers. A dispute rebuild keeps the engine of the mesh it disputes.
+* THE RUNGS COME IN THE ORDER THAT SUITS THIS GEOMETRY. The run's geometry is measured at the
+  start of the run and the engines that can mesh it are ranked by their lab record on shapes
+  like it (engines/fitness.py, the same ranking the intake recommended from); the ladder walks
+  that order, after the engine the user picked. Only when nothing could be measured does it fall
+  back to the order the engines declare (EngineSpec.ladder_rank).
 * The budgets stay as they are. A switch spends one of the run's existing attempts and needs the
   time for the new engine's own run cap; the retries are shared across rungs rather than spent
   on the first one alone.
@@ -40,15 +45,86 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-def fallback_order(flow: str) -> tuple[str, ...]:
-    """THE LADDER ORDER for a flow: the approved engine first, then every implemented engine
-    designed for that flow, in the order the engines DECLARE (EngineSpec.ladder_rank: most robust
-    input handling first - cfMesh wraps dirty surfaces - then the body-fitted hex mesher, then the
-    tetrahedral engines). Derived, never listed here, so a new engine joins the ladder from its
-    own spec. Only the rungs that pass the approved request's own admission rules - the file's
-    form included - are ever considered."""
+def fallback_order(flow: str, state: Mapping | None = None) -> tuple[str, ...]:
+    """THE LADDER ORDER for a flow: every implemented engine designed for it, in the MEASURED
+    order for this run's geometry when the run has one (measured_ranking: best lab record on
+    shapes like it first), else in the order the engines DECLARE (EngineSpec.ladder_rank: most
+    robust input handling first - cfMesh wraps dirty surfaces - then the body-fitted hex mesher,
+    then the tetrahedral engines). Derived, never listed here, so a new engine joins the ladder
+    from its own spec. The approved engine always stays the first rung (ladder), and only the
+    rungs that pass the approved request's own admission rules - the file's form included - are
+    ever considered."""
     from meshpipeline.engines.capability import ladder_order
-    return ladder_order(flow)
+    order = ladder_order(flow)
+    ranking = measured_ranking(state)
+    if not ranking:
+        return order
+    from meshpipeline.engines.fitness import ranked_engines
+    return tuple(ranked_engines(order, ranking))
+
+
+def measured_ranking(state: Mapping | None) -> list[str]:
+    """The measured engine order the run carries in its ladder record ([] when none)."""
+    order = record_of(state or {}).get("order")
+    return [str(e) for e in order if e] if isinstance(order, list) else []
+
+
+#: How long the start of a run waits for its geometry to be measured and ranked.
+ORDER_WAIT_S = 60.0
+
+
+def measure_order(state: Mapping) -> dict:
+    """THE MEASURED ORDER for this run: its materialised geometry measured (cad/shape_traits.py)
+    and every engine that can build the approved request ranked by its lab record on shapes like
+    it (engines/fitness.py). The ladder record keys it adds - {} when the run carries no geometry
+    or no flow. Pure and synchronous; seed_measured_order runs it off the event loop."""
+    from meshpipeline.cad.shape_traits import measure_file
+    from meshpipeline.engines.capability import flow_of
+    from meshpipeline.engines.fitness import brief_facts, recommend
+    from meshpipeline.pipeline.geometry_state import materialized
+
+    flow = flow_of(state.get("purpose", ""))
+    try:
+        mg = materialized(state)
+    except Exception:  # noqa: BLE001 - no verified geometry, nothing to measure
+        mg = None
+    if mg is None or not flow:
+        return {}
+    able = able_engines(state)
+    if not able:
+        return {}
+    patches = [p for p in (state.get("intake_patches") or []) if isinstance(p, Mapping)]
+    try:
+        unit = float(mg.interpretation.scale_to_metres)
+    except (AttributeError, TypeError, ValueError):
+        unit = None
+    traits = measure_file(mg.path, flow=flow, input_kind=str(state.get("input_kind", "") or ""),
+                          patches=patches, surface_unit_to_m=unit,
+                          flow_axis=str(state.get("flow_axis", "") or ""))
+    brief = brief_facts(request_txt=str(state.get("request_txt", "") or ""),
+                        review_brief_txt=str(state.get("review_brief_txt", "") or ""),
+                        patches=patches)
+    rec = recommend(traits, able, brief=brief)
+    return {"order": rec.ranking,
+            "order_source": "measured" if traits.measured else "flow",
+            "order_recommended": rec.engine, "order_shape": rec.shape,
+            "order_table": rec.table_version,
+            "order_reasons": {f.engine: f.reason for f in rec.fits}}
+
+
+async def seed_measured_order(state: Mapping, *, timeout_s: float = ORDER_WAIT_S) -> dict:
+    """The run's ladder record with its measured order added - {} when it already has one, or
+    when the geometry could not be measured and ranked in time (the declared order then stands).
+    An account, never a verdict: nothing here can fail a run."""
+    import asyncio
+    if measured_ranking(state):
+        return {}
+    try:
+        info = await asyncio.wait_for(asyncio.to_thread(measure_order, state), timeout=timeout_s)
+    except Exception as exc:  # noqa: BLE001 - a timeout or a failure leaves the declared order
+        logger.info("engine ladder: no measured order for this run (%s)", type(exc).__name__)
+        return {}
+    return {**record_of(state), **info} if info else {}
 
 #: Engine provenance values, as the application seeds them (see pipeline_run). `user_direct` and
 #: `suggested_confirmed` are the intake's own words; `dispute` and `system` are the run's.
@@ -248,7 +324,7 @@ def able_engines(state: Mapping, *, form: str | None = None,
     from meshpipeline.engines.capability import flow_of
     from meshpipeline.engines.registry import engine_names, get_spec
     implemented = set(engine_names())
-    return [n for n in fallback_order(flow_of(state.get("purpose", "")))
+    return [n for n in fallback_order(flow_of(state.get("purpose", "")), state)
             if n in implemented and n not in exclude
             and not get_spec(n).admit(_declared_evidence(state, n, form=form))]
 
@@ -326,7 +402,7 @@ def ladder(state: Mapping) -> list[Rung]:
     layers = layer_request(str(state.get("request_txt", "") or ""),
                            str(state.get("review_brief_txt", "") or ""))
     implemented = set(engine_names())
-    for name in fallback_order(flow):
+    for name in fallback_order(flow, state):
         if name == approved or name not in implemented:
             continue
         spec = get_spec(name)
@@ -820,6 +896,11 @@ async def node_engine_fallback(state: PipelineState) -> dict:
     from meshpipeline.pipeline.engine_select import _ladder_facts, _log_selection, _publish
 
     job_id = state.get("job_id", "unknown")
+    # THE ORDER FOR THIS GEOMETRY: measured at the start of the run (node_engine_select); measured
+    # here if the start could not, so the rung chosen next is the best for this shape.
+    seeded = await seed_measured_order(state)
+    if seeded:
+        state = {**state, "engine_ladder": seeded}
     failure = classify(state)
     record = with_attempt(state, failure)
     decision = decide(state, record=record)
@@ -864,7 +945,8 @@ __all__ = ["ENGINE", "FIXABLE", "NEVER", "SOURCE_DISPUTE", "SOURCE_SUGGESTED",
            "SOURCE_SYSTEM", "SOURCE_USER", "Decision", "Failure", "LayerRequest", "Rung",
            "able_engines", "approved_engine", "attempts_made", "classify", "decide",
            "delivered_note", "engine_source", "fallback_order", "fresh_start_brief",
-           "final_record", "ladder", "layer_request", "may_switch_on_its_own", "mesher_started",
+           "final_record", "ladder", "layer_request", "may_switch_on_its_own", "measure_order",
+           "measured_ranking", "mesher_started", "seed_measured_order",
            "node_engine_fallback", "offer", "refused_by_design", "remaining_seconds",
            "rung_seconds", "switch_note", "takers_by_form", "tried_engines", "with_attempt",
            "with_switch"]
