@@ -326,6 +326,32 @@ class IntakeToolExecutor:
             logger.info("Intake: the model proposed %s; the measured recommendation %s is "
                         "proposed instead - job_id=%s", eng, recd.engine, self._job_id)
             eng = recd.engine
+        # THE ENGINE THAT READS THE UPLOAD ITSELF goes first, measured or not (fitness.recommend
+        # ranks it so when the geometry was measured; this is the same rule when it was not). An
+        # ECXML upload was proposed snappyHexMesh multi-region - a conversion of the model - while
+        # the snap-grid mesher, which meshes the model the file describes, went unmentioned
+        # (dev-areen set_top_box, 2026-10-11). Read from the engines' own declarations
+        # (EngineSpec.reads_source_formats) and only among engines that can take the confirmed case.
+        own_reason = ""
+        if not chosen_by_user and es.state_of(sel) != es.CONFIRMED:
+            fmt = measured_choice.source_format_of(
+                self._staged_upload(), getattr(st.source_ref, "suffix_hint", ""),
+                getattr(st.source_ref, "original_filename", ""))
+            native = measured_choice.own_format_engines(self._engines, fmt)
+            if native and st.declared_case:
+                purpose, kind = st.declared_case
+                form = self._geometry_form()
+                native = [e for e in native
+                          if preview_admission(e, purpose, kind, dimensionality="3D",
+                                               geometry_form=form).get("verdict") != "impossible"]
+            if native and eng not in native:
+                logger.info("Intake: %s reads this %s upload itself - proposed instead of %s - "
+                            "job_id=%s", native[0], fmt, eng, self._job_id)
+                eng = native[0]
+            if native and eng == native[0]:
+                from meshpipeline.contracts.intake_formats import format_for_key
+                label = getattr(format_for_key(fmt), "label", "") or fmt.upper()
+                own_reason = f"it reads the {label} itself and meshes the model the file describes"
         if not chosen_by_user and st.declared_case:
             # AN ENGINE THE USER DID NOT NAME MUST BE ABLE TO MESH WHAT THEY CONFIRMED. The model
             # proposed cfMesh for a fluid-volume file on its own; the admission then refused, and
@@ -390,7 +416,8 @@ class IntakeToolExecutor:
         if recd is not None and recd.fit_of(eng) is not None:
             st.selection_prompt = measured_choice.statement(recd, eng)
         else:
-            st.selection_prompt = es.render_selection_statement(eng, str(args.get("reason") or ""))
+            st.selection_prompt = es.render_selection_statement(
+                eng, own_reason or (str(args.get("reason") or "") if model_pick == eng else ""))
         logger.info("Intake: engine selection PROPOSED engine=%s - job_id=%s", eng, self._job_id)
         swapped = (f" You suggested {_vocab.to_display(_vocab.ENGINE, model_pick)}; the measured "
                    f"recommendation for this geometry is {_vocab.to_display(_vocab.ENGINE, eng)}, "

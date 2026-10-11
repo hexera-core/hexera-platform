@@ -152,11 +152,35 @@ def geometry_form_of_state(state: Mapping | None) -> str:
     if not isinstance(geo, Mapping):
         return ""
     ref = geo.get("ref") if isinstance(geo.get("ref"), Mapping) else {}
+    # A MODEL FILE AN ENGINE READS ITSELF (ECXML) is judged as the upload it is, whatever it was
+    # staged as. For the snap-grid mesher the run stages an ECXML upload as its PLACED parts - a
+    # triangle drawing of the file's parts (geometry_materializer.ecxml_form_for) - and reading that
+    # staging's .stl made every snap-grid job "a surface mesh" its own spec refuses, before anything
+    # was built (dev-areen set_top_box, 2026-10-11). The fused staging other engines get is a STEP,
+    # so for them this changes nothing.
+    own = _source_read_form(ref or {})
+    if own:
+        return own
     for candidate in (geo.get("local_path"), (ref or {}).get("suffix_hint"),
                       (ref or {}).get("original_filename")):
         form = geometry_form(candidate)
         if form:
             return form
+    return ""
+
+
+def _source_read_form(ref: Mapping) -> str:
+    """The upload's own form when its format is one some engine reads itself
+    (EngineSpec.reads_source_formats); '' for every other upload."""
+    from meshpipeline.contracts.intake_formats import format_for_suffix
+
+    for name in (ref.get("suffix_hint"), ref.get("original_filename")):
+        fmt = format_for_suffix(_suffix_of(name)) if name else None
+        if fmt is None:
+            continue
+        if any(fmt.key in spec.reads_source_formats for spec in _catalog().values()):
+            return geometry_form(_suffix_of(name))
+        return ""
     return ""
 
 
