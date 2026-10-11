@@ -422,3 +422,31 @@ async def test_a_wrong_unit_taken_before_the_lock_is_replaced_by_the_fixed_one(e
     now = await gh.ensure_fixed_unit(object(), session, "alice", "org")
     assert now["unit"] == "mm" and recorded == [(LengthUnit.millimetre, "file_declared")]
     assert gates and gates[0]["approval"]["status"] == ap.INVALIDATED
+
+
+@pytest.mark.asyncio
+async def test_a_unit_named_beside_another_request_leaves_the_request_to_the_turn(ecxml_source, monkeypatch):
+    """"The file is in metres, and make the mesh finer": the unit stays fixed, but the request is
+    not swallowed - the proposed run is not kept waiting for a yes to the unchanged setup."""
+    from meshpipeline.agents.intake import approval as ap
+    from meshpipeline.agents.intake import unit_clarification as uc
+
+    assert uc.only_states_unit("the file is in metres, not millimetres") is True
+    assert uc.only_states_unit("the file is in metres, and make the mesh finer") is False
+
+    async def _interp(db, sess, owner_id, organization_id):
+        return DECLARED_MM
+    monkeypatch.setattr(gh, "interpretation_payload", _interp)
+    monkeypatch.setattr(object_storage, "get_object_store", lambda: _Store({}))
+    live = {"id": "snap", "status": ap.AWAITING, "expires_at": time.time() + 600,
+            "expected_confirmation_msg_count": 7}
+    session = SimpleNamespace(id=SID, geometry_source_id=uuid.uuid4(), geometry_interpretation_id=uuid.uuid4(),
+                              intake_gate={"approval": live}, messages=[])
+    repo = MagicMock(); repo.append_message = AsyncMock(); repo.set_intake_gate = AsyncMock()
+    inbound = msg.InboundMessage(session_id=SID, owner_id="alice", organization_id="org",
+                                 content="the file is in metres, and make the mesh finer")
+    outcome = await msg._settle(inbound, object(), gate={"approval": dict(live)}, locked=session, messages=[],
+                                revision="r1", session_repo=repo, logger=MagicMock())
+    assert not (outcome.reply or "").startswith("This file's unit is fixed")
+    for call in repo.set_intake_gate.await_args_list:
+        assert call.args[2]["approval"].get("expected_confirmation_msg_count") != 8

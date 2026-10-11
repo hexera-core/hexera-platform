@@ -448,6 +448,11 @@ async def _settle_unit_change(inbound: InboundMessage, db, *, locked, messages: 
         # millimetre geometry it was converted into. Nothing changes, and the user is told why.
         logger.info("intake message: %s named, but the unit is fixed at %s - session=%s",
                     unit.value, fixed.unit.value, inbound.session_id)
+        if not uc.only_states_unit(inbound.content):
+            # THE MESSAGE ASKS FOR MORE ("... and make the mesh finer"): nothing changed about the
+            # unit, and the rest goes on through the turn as any other request does - a proposed
+            # run included, which the request then corrects
+            return None
         reply = fixed.reply()
         # A RUN ALREADY PROPOSED STANDS - nothing it was set up with changed - so it waits one
         # turn: the "go on" the reply invites is the yes it is still waiting for.
