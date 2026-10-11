@@ -156,18 +156,45 @@ def unit_sentence(body) -> str:
         return ""
     size = getattr(body, "size_mm", None)
     longest = max((float(v) for v in size), default=0.0) if size and len(size) == 3 else 0.0
-    if not longest > 0:
-        return f"The file is in {UNIT_WORDS[unit]}."
-    return (f"The file is in {UNIT_WORDS[unit]}: the part is {length_words(longest / 1000.0)} long. "
-            "The sizes above are already converted to millimetres; use them as they stand.")
+    said = f"The file is in {UNIT_WORDS[unit]}"
+    said += f": the part is {length_words(longest / 1000.0)} long." if longest > 0 else "."
+    if getattr(body, "unit_fixed", False):
+        # the converter wrote the geometry in this unit: asking would invite the SOURCE's unit
+        # ("metres", for an ECXML model) as an answer about the converted geometry
+        said += (" That unit is fixed by the conversion of the uploaded file, so it is settled: "
+                 "never ask the user what unit the file is in.")
+    if longest > 0:
+        said += " The sizes above are already converted to millimetres; use them as they stand."
+    return said
+
+
+#: How each kind reads in the declaration.
+_KIND_WORDS = {"body-surface": "the part's wall, hollow inside for the fluid",
+               "fluid-domain": "the fluid volume itself",
+               "solid-body": "a solid body",
+               "solid-assembly": "an assembly of solid parts, each its own region"}
+#: Region names spelled out in an assembly's declaration; the rest are counted.
+_REGIONS_NAMED = 24
+
+
+def assembly_sentence(body) -> str:
+    """What an assembly of solid parts is, for the intake: each part its own solid region, the
+    fluid one more, meshed as they stand - the multi-region (conjugate heat transfer) input."""
+    names = [str(n) for n in (getattr(body, "regions", None) or []) if str(n).strip()]
+    said = ("Each solid part is its own solid region and the fluid around them is one more region; "
+            "together they fill the domain, so the file is meshed as it stands, as a multi-region "
+            "(conjugate heat transfer) case, with no fluid domain built around it.")
+    if names:
+        shown = ", ".join(names[:_REGIONS_NAMED])
+        more = f", and {len(names) - _REGIONS_NAMED} more" if len(names) > _REGIONS_NAMED else ""
+        said += f" Its {len(names)} regions, named as in the file: {shown}{more}."
+    return said
 
 
 def confirmation_message(body) -> str:
     """The sentence the intake reads: everything the user confirmed, in plain words, with the
     numbers the builder needs. Its opening phrase is the one the intake prompt block names."""
-    kind = {"body-surface": "the part's wall, hollow inside for the fluid",
-            "fluid-domain": "the fluid volume itself",
-            "solid-body": "a solid body"}[body.input_kind]
+    kind = _KIND_WORDS[body.input_kind]
     through = "through it" if body.flow == "internal" else "around it"
     # The kind is stated verbatim, in the intake's own enum, and it is the same word the session
     # stores. A solid body the fluid flows around stays "solid-body": the engine gate reads that as
@@ -176,6 +203,8 @@ def confirmation_message(body) -> str:
     parts = [f"{CONFIRMED_MARK} the file is {kind}"
              + (f" ({body.part})" if body.part else "")
              + f", input_kind {body.input_kind}; the fluid flows {through}."]
+    if body.input_kind == "solid-assembly":
+        parts.append(assembly_sentence(body))
     ports = [o for o in body.openings if o.role != "not_an_opening"]
     if body.flow == "external":
         from meshpipeline.contracts.geometry_fields import external_declaration
@@ -215,7 +244,7 @@ def _is_declaration(m: dict) -> bool:
 
 
 _DECLARED = re.compile(
-    r"input_kind (body-surface|fluid-domain|solid-body); the fluid flows (through|around) it\.")
+    r"input_kind (body-surface|fluid-domain|solid-body|solid-assembly); the fluid flows (through|around) it\.")
 
 
 #: A user message that says what the file is or how the fluid moves - after the stage, a correction
@@ -230,7 +259,9 @@ _RESTATES = re.compile(
 
 def declared_case(messages: list[dict] | None) -> tuple[str, str] | None:
     """(purpose, input kind) as the user confirmed them on the stage - read back from this module's
-    own sentence: a fluid flowing through the part is internal CFD, around it external CFD. None
+    own sentence: a fluid flowing through the part is internal CFD, around it external CFD, and an
+    assembly of solid parts with the fluid among them is conjugate heat transfer - the one purpose
+    a multi-region input is meshed for. None
     when nothing was confirmed there, or when a later message of the user's speaks about what the
     file is or how the fluid moves: the chat may have corrected the stage, and then the stage's
     sentence is not the last word. What an engine the model proposes on its own must mesh."""
@@ -245,6 +276,8 @@ def declared_case(messages: list[dict] | None) -> tuple[str, str] | None:
                    and _RESTATES.search(str(later.get("content", ""))) for later in msgs[i + 1:]):
                 return None
             kind, flow = found.groups()
+            if kind == "solid-assembly":
+                return "conjugate_heat_transfer", kind
             return ("internal_cfd" if flow == "through" else "external_cfd"), kind
     return None
 
@@ -302,7 +335,8 @@ _OPENING_DEFAULTS: dict[str, object] = {"centroid_mm": None, "diameter_mm": None
                                          "height_mm": None}
 _BODY_DEFAULTS: dict[str, object] = {"openings": [], "seed_point_mm": None, "size_mm": None, "part": "",
                                      "flow_axis": None, "reference_length_mm": None, "extents": None,
-                                     "grounded": False, "up_axis": None, "scale_to_m": None, "unit": None}
+                                     "grounded": False, "up_axis": None, "scale_to_m": None, "unit": None,
+                                     "unit_fixed": False, "regions": None}
 
 
 def body_of(record: dict) -> SimpleNamespace:
@@ -362,7 +396,7 @@ def sizeless_record(record: dict, *, scale_to_metres: float, unit: str) -> dict:
             **plain, "message": message, "patches": patches_from(body), "reread": {"sizes_dropped": True}}
 
 
-__all__ = ["CONFIRMED_MARK", "body_of", "confirmation_message", "declared_case", "distinct_opening_names",
+__all__ = ["CONFIRMED_MARK", "assembly_sentence", "body_of", "confirmation_message", "declared_case", "distinct_opening_names",
            "renamed_openings_sentence",
            "patches_from", "replace_declaration",
            "reread_record", "sizeless_record", "unit_sentence", "with_declaration"]

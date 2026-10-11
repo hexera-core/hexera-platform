@@ -1018,6 +1018,13 @@ def _facts_text(facts: dict, shots, purpose_text: str) -> str:
                  "the part is, not from them.")
     if facts.get("read_as") == "mesh":
         lines.append("The file is a triangle mesh, so the measurements are close, not exact.")
+    if facts.get("input_kind") == "solid-assembly":
+        regions = facts.get("source_regions") or []
+        lines.append("The file itself declares this: an assembly of "
+                     + (f"{len(regions)} regions (its parts and the air around them)" if regions
+                        else "solid parts and the air around them")
+                     + ", with its openings stated in the file. The kind, the flow and the stickers "
+                     "are settled by the file; say what the part is.")
     if purpose_text:
         lines.append(f"The user said: {purpose_text.strip()[:600]}")
     if facts["openings"]:
@@ -1272,10 +1279,17 @@ def _proposal(facts: dict, vision: dict | None) -> dict:
     if "error" in vision:
         proposal["notes"].append("the picture-naming step was unavailable; names are the measuring step's own")
         return _upright(proposal, facts, None, None)
+    # WHAT THE FILE ITSELF DECLARES IS NOT THE PICTURES' TO OVERRULE. A thermal model (ECXML) names
+    # its parts and says which one is the air, and which sides of its domain are open, fans or
+    # vents: the scout read that as an assembly of regions with its openings. The model, shown a
+    # box, called the set-top box "a solid body the fluid flows around" and marked its six open
+    # sides "not an opening", and the chat then refused the multi-region mesher the file is for.
+    # The model still names the part; the kind, the flow and the declared openings stay the file's.
+    declared_kind = facts.get("input_kind") == "solid-assembly"
     by_id = {o["id"]: o for o in proposal["openings"]}
     for named in vision.get("openings") or []:
         o = by_id.get(int(named.get("id", -1)))
-        if o is None:
+        if o is None or o.get("declared_by"):
             continue
         if named.get("name"):
             o["name"] = str(named["name"]).strip()[:40]
@@ -1291,12 +1305,12 @@ def _proposal(facts: dict, vision: dict | None) -> dict:
     except (TypeError, ValueError):
         pass
     model_conf = float(vision.get("confidence", 0.0) or 0.0)
-    if model_conf >= float(facts.get("confidence", {}).get("input_kind", 0.0)):
+    if not declared_kind and model_conf >= float(facts.get("confidence", {}).get("input_kind", 0.0)):
         if vision.get("input_kind") in ("body-surface", "fluid-domain", "solid-body"):
             proposal["input_kind"] = vision["input_kind"]
         if vision.get("flow") in ("internal", "external"):
             proposal["flow"] = vision["flow"]
-    if vision.get("notes"):
+    if vision.get("notes") and not declared_kind:
         proposal["notes"].append(str(vision["notes"])[:300])
     return _upright(proposal, facts, vision, vision.get("flow_axis"))
 

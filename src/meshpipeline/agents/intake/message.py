@@ -436,12 +436,21 @@ async def _settle_unit_change(inbound: InboundMessage, db, *, locked, messages: 
     unit = uc.stated_unit(inbound.content)
     if unit is None:
         return None
-    from meshpipeline.application.unit_change import UnitChangeError, change_unit
+    from meshpipeline.application.unit_change import UnitChangeError, UnitFixed, change_unit
 
     try:
         change = await change_unit(db, locked, owner_id=inbound.owner_id,
                                    organization_id=inbound.organization_id, unit=unit,
                                    session_repo=session_repo, where="chat")
+    except UnitFixed as fixed:
+        # THE CONVERTER FIXED THE UNIT: "metres" is true of an ECXML model's source, never of the
+        # millimetre geometry it was converted into. Nothing changes, and the user is told why.
+        logger.info("intake message: %s named, but the unit is fixed at %s - session=%s",
+                    unit.value, fixed.unit.value, inbound.session_id)
+        reply = fixed.reply()
+        await session_repo.append_message(db, inbound.session_id, "assistant", reply)
+        return MessageOutcome(status=MessageStatus.unit_changed, reply=reply,
+                              transition=GateTransition(revision=revision))
     except UnitChangeError as exc:
         # NOTHING WAS CHANGED: the confirmed sizes could not be re-read, and a unit bound over
         # them would be the very mismatch this turn exists to prevent. Said, not guessed.
@@ -482,6 +491,19 @@ async def _settle_unit(inbound: InboundMessage, db, *, gate: dict, locked, revis
     reply that names none is asked the question again rather than let through."""
     if not uc.needs_confirmation(locked):
         return None
+
+    # A UNIT THE CONVERTER FIXED IS NEVER ASKED: an ECXML model's geometry is millimetres by
+    # construction. Asked, the truthful "metres" (the source's SI) was taken for the converted
+    # geometry and the part became a thousand times too long. Recorded as the file's, silently.
+    from meshpipeline.application import geometry_hold as _gh
+
+    if await _gh.ensure_fixed_unit(db, locked, inbound.owner_id, inbound.organization_id) is not None:
+        await session_repo.set_intake_gate(db, inbound.session_id, uc.answered(gate))
+        logger.info("intake message: the converted geometry's unit is fixed - recorded, not asked - "
+                    "session=%s", inbound.session_id)
+        return MessageOutcome(
+            status=MessageStatus.unit_recorded,
+            transition=GateTransition(change=GateChange.unit_answered, revision=revision))
 
     asked_already = uc.already_asked(gate)
     proposal = uc.proposed(gate) if asked_already else None

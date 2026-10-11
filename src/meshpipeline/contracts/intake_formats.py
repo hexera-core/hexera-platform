@@ -34,6 +34,14 @@ class IntakeFormat:
     #: True for the formats the rest of the system reads as they are; every other one is
     #: converted to its kind's canonical file before anything downstream sees it.
     canonical: bool = False
+    #: THE UNIT A CONVERTER FIXES. A format whose converter writes the geometry every engine reads
+    #: in one known unit - whatever unit the source states - names it here ("mm"). That unit is a
+    #: fact of the conversion, not a reading of the file: nobody is asked for it, and no later
+    #: answer ("the file is in metres", which is true of the SOURCE) may rescale the converted
+    #: geometry. Empty for every format whose unit is read from the file or asked.
+    fixed_unit: str = ""
+    #: Why the unit is fixed, in plain words a user can read ("" when it is not).
+    fixed_unit_reason: str = ""
 
 
 #: Ordered as the UI lists them: the most common first.
@@ -70,7 +78,11 @@ INTAKE_FORMATS: tuple[IntakeFormat, ...] = (
         # JEP181A 4.1: every ECXML value is SI - lengths in metres - and the schema has no way to
         # say otherwise. Its boxes, cylinders and enclosures are built as exact solids, with the air
         # around them as one more solid, so it is CAD (converted to STEP) like a BREP.
-        declares_units=True, staged_as="input.ecxml", kind=GeometryKind.cad),
+        declares_units=True, staged_as="input.ecxml", kind=GeometryKind.cad,
+        # ... and the solids are written in millimetres (cad/ingest/ecxml_build.UNIT), exactly.
+        fixed_unit="mm",
+        fixed_unit_reason=("an ECXML model states every length in metres by definition (JEDEC "
+                           "JEP181A), and it was converted exactly into millimetres")),
     IntakeFormat(
         key="obj", label="Wavefront OBJ mesh", suffixes=(".obj",),
         media_type="model/obj", declares_units=False, staged_as="input.obj"),
@@ -149,6 +161,13 @@ def staged_name_for(suffix: str) -> str:
 def declares_units(suffix: str) -> bool:
     fmt = format_for_suffix(suffix)
     return bool(fmt and fmt.declares_units)
+
+
+def unit_fixing_format(suffix: str) -> IntakeFormat | None:
+    """The format of an upload whose converter fixes the unit of its geometry (`fixed_unit`), or
+    None when the unit is the file's to state or the user's to name."""
+    fmt = format_for_suffix(_suffix_of(suffix))
+    return fmt if fmt is not None and fmt.fixed_unit else None
 
 
 def _suffix_of(path_or_suffix) -> str:
