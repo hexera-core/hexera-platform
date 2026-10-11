@@ -309,6 +309,24 @@ def replace_declaration(messages: list[dict] | None, message: str) -> list[dict]
     return out if done else [*out, {"role": "assistant", "content": message}]
 
 
+def confirmed_opening_names(session_id) -> tuple[str, ...]:
+    """The boundary patches the uploaded file declares, as the user confirmed them on the geometry
+    stage (the stored confirmation's openings, "not an opening" left out). Empty when nothing was
+    confirmed or the store cannot be read - and then nothing is judged against it."""
+    import json
+
+    from meshpipeline.application.geometry_check import check_object_key
+    from meshpipeline.contracts.object_storage import get_object_store
+
+    try:
+        record = json.loads(get_object_store().get_bytes(
+            object_key=check_object_key(str(session_id), "confirmed.json")))
+    except Exception:  # noqa: BLE001 - unknown, never a refusal
+        return ()
+    return tuple(str(o.get("name")) for o in (record.get("openings") or [])
+                 if isinstance(o, dict) and o.get("name") and o.get("role") != "not_an_opening")
+
+
 def patches_from(body) -> list[dict]:
     """The session's declared patches, in the shape the intake's submit tool already takes:
     name and role, plus the size and location fields the port binding reads."""

@@ -195,6 +195,20 @@ class IntakeToolExecutor:
         # (no upload, or a name that says nothing) claims nothing, and nothing is refused on it.
         return measured_choice.upload_form(self._staged_upload(), self.state.source_ref)
 
+    def _source_patches(self, engine: str) -> tuple[str, ...]:
+        # THE FILE'S OWN PATCHES, for an engine that writes them under the file's names
+        # (EngineSpec.patch_names_from_source): read from the confirmed geometry, so a rename or a
+        # merge is refused at the preview - before the summary is approved - never by the patch
+        # contract after a full mesh. Only read when the engine needs them.
+        try:
+            from meshpipeline.engines.registry import get_spec
+            if not get_spec(engine).patch_names_from_source:
+                return ()
+            from meshpipeline.application.geometry_confirmation import confirmed_opening_names
+            return confirmed_opening_names(str(self.state.session_id or ""))
+        except Exception as exc:  # noqa: BLE001 - unknown claims nothing
+            logger.debug("Intake: confirmed patches unavailable (%s)", exc)
+            return ()
 
     async def run(self, tool: str, args: dict | None) -> IntakeToolResult:
         st = self.state
@@ -479,7 +493,8 @@ class IntakeToolExecutor:
                                  patches=args.get("patches"),
                                  engine_params=args.get("engine_params"),
                                  geometry_facts=self._geometry_facts(),
-                                 geometry_form=self._geometry_form())
+                                 geometry_form=self._geometry_form(),
+                                 source_patches=self._source_patches(eng))
         logger.info("Intake: preview_selected_admission(%s,%s,%s,patches=%d) -> %s(%s) - job_id=%s",
                     eng, args.get("purpose"), args.get("input_kind"),
                     len(args.get("patches") or []), prev["verdict"],

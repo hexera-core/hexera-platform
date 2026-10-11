@@ -144,6 +144,9 @@ SPEC = EngineSpec(
         ),
         reads_source_formats=("ecxml",),
         supports_multiple_wall_patches=True,
+        # the domain sides are written as the file names them: their roles may be set, never
+        # their names, and none is merged with another
+        patch_names_from_source=True,
         validation_coverage=(
             _VC(_VA.INTEGRITY, "checkMesh on the whole mesh and on every region (fatal topology)",
                 "every region is cut from one mesh whose cells and faces checkMesh reads; a fatal "
