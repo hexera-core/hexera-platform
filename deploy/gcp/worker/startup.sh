@@ -60,6 +60,25 @@ chmod 600 /etc/hexera/worker.env
   echo "CELERY_RESULT_BACKEND=${REDIS_URL}"
   echo "REDIS_KEY_PREFIX=${REDIS_KEY_PREFIX}"
 } >> /etc/hexera/worker.env
+# ...and so are the object store and the deployment's own names (create-worker-fleet.sh), because
+# the env object is .env.example in a personal environment: published once, never refreshed, and
+# pointing the store at localhost:9000. Each is appended only when the template states it, so an
+# empty value leaves the env object's own line in force. `|| true`: a template made before these
+# keys existed has no such attribute, and the metadata server answers 404.
+for pair in "deployment-id:DEPLOYMENT_ID" \
+            "minio-endpoint:MINIO_ENDPOINT" \
+            "minio-public-endpoint:MINIO_PUBLIC_ENDPOINT" \
+            "minio-access-key:MINIO_ACCESS_KEY" \
+            "minio-bucket:MINIO_BUCKET" \
+            "minio-region:MINIO_REGION" \
+            "minio-secure:MINIO_SECURE" \
+            "gcp-mesh-bucket:GCP_MESH_BUCKET" \
+            "cloudrun-job:CLOUDRUN_JOB"; do
+  value="$(md "${pair%%:*}" || true)"
+  if [ -n "${value}" ]; then
+    echo "${pair##*:}=${value}" >> /etc/hexera/worker.env
+  fi
+done
 
 # CREDENTIALS are fetched by NAME, under this instance's own identity, and only ever exist in a
 # root-owned file on the instance. Metadata carries the secret's name; the value is never in the
