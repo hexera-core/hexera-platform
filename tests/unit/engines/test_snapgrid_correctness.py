@@ -1,6 +1,7 @@
 # Responsibility: Prove the snap-grid ECXML mesher's corrections from the hard-case sweep: buried cylinders keep their host (no sealed air) and are snapped to their true shape; cylinders that touch along a line share no face.
 from __future__ import annotations
 
+import numpy as np
 import pytest
 from tests.unit.cad.ecxml_models import Ecxml
 
@@ -226,6 +227,44 @@ def test_what_the_file_most_likely_got_wrong_is_said_and_left_as_the_file_says(t
     # nothing was changed: the powers are the file's
     side = result.sidecar
     assert side["total_power_W"] == pytest.approx(2.0)
+
+
+# ------------------------------------------------------------------------------ snapping cost --
+def test_each_curve_finds_the_faces_near_it_through_an_index_not_the_whole_mesh():
+    from meshpipeline.engines.snapgrid.curved import Curve, _FaceIndex
+
+    rng = np.random.default_rng(7)
+    fc = rng.uniform(0.0, 0.1, size=(20_000, 3))
+    curves = [Curve(part=k, name=f"c{k}", axis=2, a0=0.01 * k, a1=0.01 * k + 0.004,
+                    centre=(0.01 + 0.008 * k, 0.05), radii=(0.002, 0.003)) for k in range(8)]
+    index = _FaceIndex(fc, curves)
+    for c in curves:
+        for reach in (0.0, 0.003, 0.02):
+            lo = np.array([c.centre[0] - c.radii[0] - reach, c.centre[1] - c.radii[1] - reach,
+                           c.a0 - reach])
+            hi = np.array([c.centre[0] + c.radii[0] + reach, c.centre[1] + c.radii[1] + reach,
+                           c.a1 + reach])
+            brute = np.flatnonzero(np.all((fc >= lo) & (fc <= hi), axis=1))
+            assert np.array_equal(index.near(c, reach), brute)
+
+
+def test_balls_standing_on_a_board_are_each_snapped_onto_their_circle(tmp_path):
+    # each ball is snapped in its own window of faces, with the same result as before
+    def grid(n):
+        doc = _materials(Ecxml(f"Balls {n}"))
+        doc.domain((-0.002, -0.002, -0.001), (0.004 + n * 0.001, 0.004 + n * 0.001, 0.004))
+        doc.block("Board", (-0.001, -0.001, 0), (0.002 + n * 0.001, 0.002 + n * 0.001, 0.0008),
+                  "Si")
+        for i in range(n):
+            for j in range(n):
+                doc.cylinder(f"Ball {i}_{j}", (0.001 * i + 0.0002, 0.001 * j + 0.0002, 0.0008),
+                             (0.0006, 0.0006, 0.0004), "+xy", "Cu")
+        return doc
+
+    one = _mesh(tmp_path / "a", grid(2), max_cells=150_000, background_cells=20)
+    errs = [abs(s["volume_error_pct"]) for s in one.report["staircased"]]
+    assert len(errs) == 4 and max(errs) < 3.0
+    assert all(abs(s["side_area_error_pct"]) < 3.0 for s in one.report["staircased"])
 
 
 # ------------------------------------------------------------------------------ line contacts --
