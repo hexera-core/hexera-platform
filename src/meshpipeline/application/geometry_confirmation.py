@@ -162,7 +162,12 @@ def unit_sentence(body) -> str:
         # the converter wrote the geometry in this unit: asking would invite the SOURCE's unit
         # ("metres", for an ECXML model) as an answer about the converted geometry. The chat shows
         # these words to the user, so they state a fact; the intake prompt block says what follows.
-        said += " That unit is fixed by the conversion of the uploaded file, so it is settled."
+        said += " That unit is fixed by the conversion of the uploaded file, so it is settled"
+        # ...and WHY, in the format's own words: a user who knows an ECXML model is in metres
+        # read "the file is in millimetres" as a mistake and corrected it at the approval
+        # (dev-areen set_top_box, 2026-10-11) - both are true, and this says so
+        reason = str(getattr(body, "unit_fixed_reason", "") or "").strip().rstrip(".")
+        said += f": {reason}." if reason else "."
     if longest > 0:
         said += " The sizes above are already converted to millimetres; use them as they stand."
     return said
@@ -336,7 +341,7 @@ _OPENING_DEFAULTS: dict[str, object] = {"centroid_mm": None, "diameter_mm": None
 _BODY_DEFAULTS: dict[str, object] = {"openings": [], "seed_point_mm": None, "size_mm": None, "part": "",
                                      "flow_axis": None, "reference_length_mm": None, "extents": None,
                                      "grounded": False, "up_axis": None, "scale_to_m": None, "unit": None,
-                                     "unit_fixed": False, "regions": None}
+                                     "unit_fixed": False, "unit_fixed_reason": "", "regions": None}
 
 
 def body_of(record: dict) -> SimpleNamespace:
