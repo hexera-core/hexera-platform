@@ -440,17 +440,30 @@ def _pair_scan(lo, hi, noise: float, *, rows: int = 256):
 
 # ------------------------------------------------------------------------------ tolerances --
 def _noise(model: EcxmlModel, objs: list[Obj]) -> float:
-    """The file's own number precision at this model's size, metres."""
+    """The file's own number precision at this model's size, metres: float32 noise at the
+    largest coordinate the build uses. That is the domain's and those of the objects that reach
+    into it, clipped to it. An object wholly outside the solution domain is never built, and a
+    monitor point is no geometry, so neither coarsens the tolerance. (A real Flotherm export
+    keeps parts metres outside a 50 mm domain and a probe at z = 33 m; counted, they made the
+    precision 8 um and every 10 um gap of the model unreadable.)"""
+    d = model.domain
+    lo_d = hi_d = None
     largest = 0.0
+    if d is not None:
+        lo_d = d.location
+        hi_d = tuple(d.location[i] + d.size[i] for i in range(3))
+        largest = max(*(abs(v) for v in lo_d), *(abs(v) for v in hi_d))
     for o in objs:
-        if o.location is not None:
-            largest = max(largest, *(abs(v) for v in o.lo))
-            if o.size is not None:
-                largest = max(largest, *(abs(v) for v in _extent(o)[1]))
-    if model.domain is not None:
-        d = model.domain
-        largest = max(largest, *(abs(v) for v in d.location),
-                      *(abs(d.location[i] + d.size[i]) for i in range(3)))
+        if o.location is None or o.size is None or o.kind in (
+                "assembly", "heatsink", "monitorPoint", "externalMcadFile"):
+            continue
+        lo, hi = _extent(o)
+        if lo_d is not None and hi_d is not None:
+            if any(hi[i] < lo_d[i] or lo[i] > hi_d[i] for i in range(3)):
+                continue                       # wholly outside the domain: never built
+            lo = [min(max(lo[i], lo_d[i]), hi_d[i]) for i in range(3)]
+            hi = [min(max(hi[i], lo_d[i]), hi_d[i]) for i in range(3)]
+        largest = max(largest, *(abs(v) for v in lo), *(abs(v) for v in hi))
     return max(PRINT_RESOLUTION_M, FLOAT32_NOISE * largest)
 
 
@@ -534,14 +547,15 @@ def _measure(parts: list[_Part], domain: _Box, noise: float, moved: dict) -> _To
     if len(boxes) > 1:
         lo = np.array([b.lo for b in boxes])
         hi = np.array([b.hi for b in boxes])
-        best, (ia, ib), overlap, touch = _pair_scan(lo, hi, noise)
-        for ia, ib in touch:                   # who carries whose footprint
-            a, b = owner_ix[ia], owner_ix[ib]
+        best, (ga, gb), overlap, touch = _pair_scan(lo, hi, noise)
+        for ta, tb in touch:                   # who carries whose footprint
+            a, b = owner_ix[ta], owner_ix[tb]
             if a != b:
                 touching[a].add(b)
                 touching[b].add(a)
         if best < gap:
-            gap, gap_where = best, f"{owners[ia]} and {owners[ib]}"
+            # the pair the scan found - not the last touching pair of the loop above
+            gap, gap_where = best, f"{owners[ga]} and {owners[gb]}"
         for ia, ib in overlap:                 # what an overlap leaves of the earlier part
             for i in range(3):
                 for t in (abs(boxes[ia].lo[i] - boxes[ib].lo[i]),
@@ -805,6 +819,7 @@ def build(model: EcxmlModel) -> EcxmlBuild:
             fate[o.order] = "flow resistance (air, in the sidecar)"
     for (_path, material), group in heatsink_parts.items():
         parts.append(_heatsink(group, material, snapped))
+    notes += _records_in_domain(records, domain_box, noise)
 
     tol = _measure(parts, domain_box, noise, moved)
     _check_affordable(len(parts), tol)
@@ -841,21 +856,33 @@ def build(model: EcxmlModel) -> EcxmlBuild:
         p.name = namer(raw)
     before = {p.name: _volume(p.shape) for p in parts}
     airs = _air(domain_box, parts, notes, tol)
+    if not airs and parts:
+        if model.domain is None:
+            report.append(
+                "No air: the file sets no solution domain, so the domain is the parts' own "
+                "bounding box, and they fill it. The model is conduction only. To model the air "
+                "around the parts, give the model a solution domain larger than the parts in the "
+                "authoring tool and export it again.")
+        else:
+            report.append("No air: the solids fill the whole solution domain the file sets. The "
+                          "model is conduction only (no air region).")
     named: list[tuple[str, object]] = []
     fluid_rows = []
-    for i, (shape, vol) in enumerate(airs):
+    for i, (shape, vol, sides) in enumerate(airs):
         nm = fluid_base if i == 0 else namer(f"{FLUID_NAME}_{i + 1}")
         named.append((nm, shape))
         before[nm] = vol
         fluid_rows.append({"name": nm, "type": "fluid", "kind": "air",
                            "volume_m3": vol, "centroid_m": _centroid(shape),
-                           "notes": [] if i == 0 else
-                           ["an air space not connected to the main air (a sealed cavity)"]})
+                           "open_to_domain_sides": sides,
+                           "notes": [] if i == 0 else [_air_space_note(sides)]})
     for p in parts:
         named.append((p.name, p.shape))
 
     named, fused = _conformal(named, notes, tol)
     by_name = dict(named)
+    report += _where_sources_land(records["volume_heat_sources"], named,
+                                  {str(r["name"]) for r in fluid_rows}, tol)
     for row in fluid_rows:
         row["surface_area_m2"] = _area(by_name[str(row["name"])])
     regions = list(fluid_rows)
@@ -877,7 +904,7 @@ def build(model: EcxmlModel) -> EcxmlBuild:
 
     checks, contacts = _fidelity(model, objs, parts, regions, named, before, fused, domain_box,
                                  fate, records, tol)
-    report[:0] = _report_head(model, objs, parts, regions, records, tol, notes)
+    report[:0] = _report_head(model, objs, parts, regions, records, tol, notes, thin_gaps)
     report += checks
     domain_patches = _domain_patches(domain_box, records["patches"])
     sidecar = {
@@ -935,12 +962,14 @@ def build(model: EcxmlModel) -> EcxmlBuild:
     if model.ignored_elements:
         notes.append("elements the ECXML schema does not define were skipped: "
                      + ", ".join(f"{k} x{v}" for k, v in sorted(model.ignored_elements.items())[:12]))
-    shown = ("Checked:", "Overlap:", "Switched off", "Not built:", "Not meshed:", "Not read")
+    shown = ("Checked:", "Overlap:", "Switched off", "Not built:", "Not meshed:", "Not read",
+             "No air:", "Heat sources:")
     notes[:0] = [line for line in report if line.startswith(shown)]
     return EcxmlBuild(named=named, sidecar=sidecar, notes=notes, report=report)
 
 
-def _report_head(model, objs, parts, regions, records, tol: _Tol, notes) -> list[str]:
+def _report_head(model, objs, parts, regions, records, tol: _Tol, notes,
+                 thin_gaps: list[dict] | None = None) -> list[str]:
     solids = [r for r in regions if r["type"] == "solid"]
     airs = [r for r in regions if r["type"] == "fluid"]
     lines = [f"Read {len([o for o in objs if o.kind not in ('assembly', 'heatsink')])} active "
@@ -951,6 +980,12 @@ def _report_head(model, objs, parts, regions, records, tol: _Tol, notes) -> list
                      f"({_um(tol.noise)}) of another were read as the same plane; the largest "
                      f"move was {_um(tol.snap_shift)}.")
     gap = _um(tol.gap) + f" ({tol.gap_where})" if math.isfinite(tol.gap) else "none"
+    if thin_gaps and thin_gaps[0]["gap_m"] >= tol.gap * (1 - 1e-9):
+        # the narrowest AIR between parts: two parts' boxes may stand closer with a third part
+        # filling the space between them (a fin's foot between two fins), which is no gap
+        a, b = thin_gaps[0]["between"]
+        gap = (_um(thin_gaps[0]["gap_m"]) + f" (air between {a} and "
+               + ("the domain's side" if b == "domain" else b) + ")")
     lines.append(f"Smallest gap between parts: {gap}; thinnest part: {_um(tol.thick)} "
                  f"({tol.thick_where}); the solids are joined with a tolerance of "
                  f"{_um(tol.fuzzy)}, at most a tenth of both.")
@@ -958,8 +993,7 @@ def _report_head(model, objs, parts, regions, records, tol: _Tol, notes) -> list
         names = ", ".join(r["name"] for r in records["inactive"][:8])
         more = f" and {len(records['inactive']) - 8} more" if len(records["inactive"]) > 8 else ""
         lines.append(f"Switched off in the file, so not meshed: {names}{more}.")
-    for r in records["not_built"]:
-        lines.append(f"Not built: {r['name']} - {r['why']}.")
+    lines += _not_built_lines(records["not_built"])
     for b in records["baffles"]:
         lines.append(f"Not meshed: {b['name']}, a plate without a usable thickness "
                      f"({_um(b['thickness_m'])}): the air flows through it; give it its real "
@@ -1169,6 +1203,104 @@ def _face_object(o: Obj, box: _Box, domain: _Box, noise: float, records: dict) -
                                                                     "rectangle"})
 
 
+#: The sidecar lists that place a device, a source or a probe, and what one entry is called.
+_PLACED_RECORDS = {"fans": "fan", "grilles": "grille", "flow_resistances": "flow resistance",
+                   "volume_heat_sources": "volume heat source",
+                   "surface_heat_sources": "surface heat source", "baffles": "plate",
+                   "monitor_points": "monitor point", "compact_models": "2-resistor model"}
+
+
+def _row_box(row: dict) -> _Box | None:
+    """Where a sidecar entry sits, m: its box, its rectangle (flat along its normal) or its
+    point."""
+    if "box_m" in row:
+        return _Box(row["box_m"]["min"], row["box_m"]["max"])
+    if "location_m" in row:
+        return _Box(row["location_m"], row["location_m"])
+    if "centre_m" in row and "size_m" in row and "size_axes" in row:
+        lo, hi = list(row["centre_m"]), list(row["centre_m"])
+        for k, a in enumerate(row["size_axes"]):
+            i = _AXES.index(a)
+            lo[i] = row["centre_m"][i] - row["size_m"][k] / 2
+            hi[i] = row["centre_m"][i] + row["size_m"][k] / 2
+        return _Box(lo, hi)
+    return None
+
+
+def _records_in_domain(records: dict, domain: _Box, noise: float) -> list[str]:
+    """The devices, sources, plates and probes of the sidecar held against the solution domain,
+    as the parts are: one wholly outside it is not applied - it moves to `not_built` (its power
+    counted there, never as applied) - and one partly outside it gets the box it keeps inside.
+    Real exports carry both (a Flotherm sample keeps a 23 W source and its probes metres outside
+    a 50 mm domain, and a 150 mm fan over it). Returns notes for the user."""
+    notes: list[str] = []
+    for key, what in _PLACED_RECORDS.items():
+        kept = []
+        for row in records[key]:
+            box = _row_box(row)
+            if box is None:
+                kept.append(row)
+                continue
+            solid = all(box.hi[i] - box.lo[i] > noise for i in range(3))
+            if solid:
+                inside = box.common(domain)
+                outside = inside is None
+            else:                              # a rectangle or a point: touching the side counts
+                outside = any(box.hi[i] < domain.lo[i] - noise or box.lo[i] > domain.hi[i] + noise
+                              for i in range(3))
+                inside = None if outside else _Box(
+                    [min(max(box.lo[i], domain.lo[i]), domain.hi[i]) for i in range(3)],
+                    [min(max(box.hi[i], domain.lo[i]), domain.hi[i]) for i in range(3)])
+            name = "/".join(list(row.get("path") or []) + [str(row.get("name"))])
+            if outside:
+                if key != "compact_models":    # its block is listed as not built already
+                    records["not_built"].append({
+                        "name": row.get("name"), "kind": what, "path": list(row.get("path") or []),
+                        "power_W": row.get("power_W"),
+                        "why": "it lies outside the solution domain"})
+                continue
+            assert inside is not None
+            if not box.inside(domain, noise):
+                row["partly_outside_domain"] = True
+                row["box_in_domain_m"] = inside.as_dict()
+                extra = ""
+                if key == "fans" and "box_m" in row and not all(
+                        domain.lo[i] - noise <= c <= domain.hi[i] + noise
+                        for i, c in enumerate(row.get("centre_m") or [])):
+                    extra = "; its centre lies outside, so the domain holds only a piece of it"
+                notes.append(f"{name}: the {what} sticks out of the solution domain - only the part "
+                             f"inside is in the model{extra}")
+            kept.append(row)
+        records[key] = kept
+    kept = []
+    for row in records["patches"]:
+        if float(row.get("area_m2") or 0.0) > 0.0:
+            kept.append(row)
+            continue
+        records["not_built"].append({
+            "name": row.get("name"), "kind": str(row.get("object") or "patch"),
+            "path": list(row.get("path") or []), "power_W": row.get("power_W"),
+            "why": "it lies in the plane of a side of the solution domain, but outside that side"})
+    records["patches"] = kept
+    return notes
+
+
+def _not_built_lines(rows: list[dict]) -> list[str]:
+    """The report's 'Not built' lines: one per object, or one per reason when many share it."""
+    by_why: dict[str, list[str]] = {}
+    for r in rows:
+        by_why.setdefault(str(r["why"]), []).append(str(r["name"]))
+    lines = []
+    for why, names in by_why.items():
+        if len(names) <= 3:
+            lines += [f"Not built: {n} - {why}." for n in names]
+            continue
+        shown = ", ".join(names[:8])
+        more = f" and {len(names) - 8} more" if len(names) > 8 else ""
+        lines.append(f"Not built: {len(names)} objects - {why}: {shown}{more}.")
+    return lines
+
+
 def _heatsink(group: list[Obj], material: str, snapped) -> _Part:
     boxes = [snapped(o) for o in group]
     lo = [min(b.lo[i] for b in boxes) for i in range(3)]
@@ -1320,21 +1452,113 @@ def _resolve_overlaps(parts: list[_Part], producer: str, notes: list[str], repor
         p.shape = _unify(cut)
 
 
+def _air_space_note(sides: list[str]) -> str:
+    """What an air space apart from the main air is, for the user."""
+    if not sides:
+        return "an air space not connected to the main air (a sealed cavity)"
+    return ("an air space not connected to the main air inside the domain; it is open to the "
+            f"domain's {', '.join(sides)} side(s), so it meets the outside there")
+
+
+def _domain_sides_of(shape, domain: _Box, tol: float) -> list[str]:
+    """The sides of the domain ("-x" ... "+z") a shape has a face on: where an air space meets
+    the domain's boundary, i.e. is open to the outside rather than sealed inside the parts."""
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+
+    sides: set[str] = set()
+    exp = TopExp_Explorer(shape, TopAbs_FACE)
+    while exp.More():
+        b = _bounds(exp.Current())
+        for i in range(3):
+            if b.hi[i] - b.lo[i] > tol:
+                continue
+            at = (b.lo[i] + b.hi[i]) / 2
+            if abs(at - domain.lo[i]) <= tol:
+                sides.add("-" + _AXES[i])
+            elif abs(at - domain.hi[i]) <= tol:
+                sides.add("+" + _AXES[i])
+        exp.Next()
+    return sorted(sides, key=lambda s: (_AXES.index(s[1]), s[0] == "+"))
+
+
 def _air(domain: _Box, parts: list[_Part], notes: list[str], tol: _Tol
-         ) -> list[tuple[object, float]]:
+         ) -> list[tuple[object, float, list[str]]]:
+    """The air: the domain minus every solid, one entry per connected space - (shape, volume,
+    the domain sides it is open to). Largest first; spaces of equal volume (a heat sink's
+    channels) in the order of their centroids, so their names do not depend on OpenCASCADE's."""
     box = _occ_box(domain)
     solids = [p.shape for p in parts if p.shape is not None]
     air = _boolean("cut", [box], solids, tol) if solids else box
     pieces = [(s, _volume(s)) for s in _solids(air)]
     pieces = [(s, v) for s, v in pieces if v > 1e-12 * domain.volume()]
-    pieces.sort(key=lambda sv: -sv[1])
     if not pieces:
         notes.append("the parts fill the whole domain: there is no air to mesh")
         return []
-    if len(pieces) > 1:
-        notes.append(f"the air is {len(pieces)} separate spaces (a sealed enclosure keeps its own "
-                     "air); each is its own fluid region")
-    return [(_unify(s), v) for s, v in pieces]
+    keyed = [(-float(f"{v:.9g}"), [round(c / max(tol.noise, 1e-12)) for c in _centroid(s)], s, v)
+             for s, v in pieces]
+    keyed.sort(key=lambda k: (k[0], k[1]))
+    reach = max(tol.noise, tol.fuzzy) * 2
+    out = [(_unify(s), v, _domain_sides_of(s, domain, reach)) for _k, _c, s, v in keyed]
+    if len(out) > 1:
+        sealed = sum(1 for _s, _v, sides in out if not sides)
+        notes.append(f"the air is {len(out)} separate spaces ({len(out) - sealed} open to the "
+                     f"domain's sides, {sealed} sealed inside the parts); each is its own fluid "
+                     "region")
+    return out
+
+
+#: Source x region intersections computed at most (each one boolean on two small shapes).
+MAX_SOURCE_LANDINGS = 2000
+
+
+def _where_sources_land(sources: list[dict], named: list[tuple[str, object]],
+                        fluids: set[str], tol: _Tol) -> list[str]:
+    """Which regions each volume heat source's box lies in, by volume fraction (`lands_in` on its
+    sidecar row) - what a solver needs to apply the power. Flotherm exports put a part's power in
+    a sourceBlock on top of (or inside) the part rather than in the part's own powerDissipation,
+    so most real models carry their heat this way. Returns the report line."""
+    if not sources:
+        return []
+    bounds = [(name, shape, _bounds(shape)) for name, shape in named]
+    work = []
+    for s in sources:
+        b = s.get("box_in_domain_m") or s["box_m"]
+        box = _Box(b["min"], b["max"])
+        if box.volume() <= 0.0:
+            continue
+        work.append((s, box, [(n, sh) for n, sh, bb in bounds if box.overlaps(bb, 0.0)]))
+    if sum(len(c) for _s, _b, c in work) > MAX_SOURCE_LANDINGS:
+        return [f"Heat sources: {len(sources)} volume source(s); where each lands was not worked "
+                "out (too many to intersect); each applies its power in its box."]
+    whole: dict[str, list[str]] = {"solid": [], "air": []}
+    split = 0
+    for s, box, cands in work:
+        occ = _occ_box(box)
+        found: list[tuple[str, float]] = []
+        for name, shape in cands:
+            got = _solids(_boolean("common", [occ], [shape], tol))
+            vol = sum(_volume(x) for x in got)
+            if vol > 1e-9 * box.volume():
+                found.append((name, min(1.0, vol / box.volume())))
+        found.sort(key=lambda nf: -nf[1])
+        s["lands_in"] = [{"region": n, "fraction": f} for n, f in found]
+        if found and found[0][1] >= 1 - 1e-6:
+            whole["air" if found[0][0] in fluids else "solid"].append(found[0][0])
+        else:
+            split += 1
+    total = sum(float(s.get("power_W") or 0.0) for s in sources)
+    bits = []
+    if whole["solid"]:
+        names = sorted(set(whole["solid"]))
+        bits.append(f"{len(whole['solid'])} lie wholly in one solid region ("
+                    + ", ".join(names[:8]) + (", ..." if len(names) > 8 else "") + ")")
+    if whole["air"]:
+        bits.append(f"{len(whole['air'])} lie wholly in air")
+    if split:
+        bits.append(f"{split} span more than one region (fractions in the sidecar)")
+    return [f"Heat sources: {len(sources)} volume source(s), {total:.6g} W; " + "; ".join(bits)
+            + "."]
 
 
 def _conformal(named: list[tuple[str, object]], notes: list[str], tol: _Tol

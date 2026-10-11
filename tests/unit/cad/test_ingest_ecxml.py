@@ -844,3 +844,151 @@ def test_the_size_bound_is_the_measured_cost_not_a_part_count(monkeypatch):
         _grid_board(many, f"Card {k + 1}", 0.005 + (k % 6) * 0.04, 0.005 + (k // 6) * 0.045, 10, 10)
     with pytest.raises(Affordable):
         _build(many)                                                 # 3,030 parts: converted
+
+
+# ------------------------------------------------------------------ what real exports carry ---
+# Shapes seen in public Flotherm 2020.2 exports and other tools' ECXML (the files themselves are
+# third-party and not kept here; each test is a synthetic model with the same trait).
+def _far_away_clutter(doc: Ecxml) -> Ecxml:
+    """What a real Flotherm sample keeps around a 50 mm domain: parts metres away, a probe at
+    z = 33 m, a 2D source written with a 3333 m normal size, a fan three times the domain's
+    width whose centre lies outside it."""
+    doc.block("Far block", (1.1, 2.2, 3.3), (3.0, 2.0, 11.0), "M", 12.5)
+    doc.source2d("Far source", (0.0, 1.0, -0.32), (1.0, 2.0, 3333.0), "+xy", 23.3)
+    doc.monitor("Far probe", (0.0, 0.0, 33.23))
+    doc.fan3d("Big fan", (0.0, 0.0, 0.0), (0.15, 0.15, 0.01), "+xy", 0.05,
+              [(0.0, 200.0), (0.5, 0.0)])
+    return doc
+
+
+def test_objects_far_outside_the_domain_do_not_coarsen_the_files_precision():
+    doc = Ecxml("clutter").domain((0, 0, 0), (0.05, 0.05, 0.05))
+    doc.material("M", 2700, 900, 0.9, ("isotropic", 200.0))
+    doc.block("Board", (0.005, 0.005, 0.02), (0.04, 0.04, 0.0016), "M")
+    doc.block("Chip", (0.02, 0.02, 0.02165), (0.01, 0.01, 0.001), "M", 1.0)   # 50 um above
+    r = _build(_far_away_clutter(doc))
+    tol = r.sidecar["tolerances_m"]
+    # float32 noise at the 50 mm domain, not at the probe 33 m away (that made it 8 um, and a
+    # 50 um gap "could not be told from contact")
+    assert tol["file_precision"] < 2e-8
+    assert tol["smallest_gap"] == pytest.approx(50e-6, rel=1e-6)
+    assert ["Board", "Chip"] not in r.sidecar["solid_contacts"]
+
+
+def test_sources_fans_and_probes_outside_the_domain_are_not_applied():
+    doc = Ecxml("clutter").domain((0, 0, 0), (0.05, 0.05, 0.05))
+    doc.material("M", 2700, 900, 0.9, ("isotropic", 200.0))
+    doc.block("Board", (0.005, 0.005, 0.02), (0.04, 0.04, 0.0016), "M", 2.0)
+    doc.monitor("Probe", (0.025, 0.025, 0.03))
+    doc.source("Half source", (0.04, 0.04, 0.04), (0.02, 0.02, 0.005), 1.0)
+    side = _build(_far_away_clutter(doc)).sidecar
+    gone = {r["name"]: r for r in side["not_built"]}
+    assert {"Far block", "Far source", "Far probe"} <= set(gone)
+    assert gone["Far source"]["why"] == "it lies outside the solution domain"
+    assert [m["name"] for m in side["monitor_points"]] == ["Probe"]
+    assert side["surface_heat_sources"] == []
+    # every watt still accounted for, and none outside the domain counted as applied
+    assert side["power_W"]["in_heat_sources"] == pytest.approx(1.0)
+    assert side["power_W"]["in_parts_not_built"] == pytest.approx(12.5 + 23.3)
+    fan = side["fans"][0]
+    assert fan["partly_outside_domain"] is True
+    assert fan["box_in_domain_m"] == {"min": [0.0, 0.0, 0.0], "max": [0.05, 0.05, 0.01]}
+    src = side["volume_heat_sources"][0]
+    assert src["box_in_domain_m"]["max"] == pytest.approx([0.05, 0.05, 0.045])
+    assert any("Big fan" in n and "centre lies outside" in n for n in side["notes"])
+
+
+def test_many_parts_dropped_for_one_reason_are_one_report_line():
+    doc = Ecxml("far").domain((0, 0, 0), (0.05, 0.05, 0.05))
+    doc.block("Kept", (0.01, 0.01, 0.01), (0.01, 0.01, 0.01), "M")
+    for k in range(12):
+        doc.block(f"Fin {k}", (1.0 + 0.01 * k, 1.0, 1.0), (0.001, 0.02, 0.02), "M")
+    r = _build(doc)
+    lines = [x for x in r.report if x.startswith("Not built:")]
+    assert len(lines) == 1
+    assert lines[0].startswith("Not built: 12 objects - it lies outside the solution domain:")
+    assert lines[0].endswith("and 4 more.")
+
+
+def _channel_heatsink() -> Ecxml:
+    """A heat sink whose domain is its own bounding box (as Flotherm writes a heat-sink
+    sub-model): the fins reach the top and run the full depth, so the air between them is
+    separate channels - open at both ends and the top, not sealed."""
+    doc = Ecxml("channels").domain((0, -0.005, 0), (0.034, 0.02, 0.04))
+    doc.material("Al", 2700, 900, 0.9, ("isotropic", 205.0))
+    with doc.assembly("Heat Sink"):
+        doc.block("Base", (0, -0.005, 0), (0.034, 0.005, 0.04), "Al")
+        for k in range(5):
+            doc.block(f"Fin {k + 1}", (0.008 * k, 0.0, 0.0), (0.002, 0.015, 0.04), "Al")
+    doc.source("Heat Source", (0.0175, -0.005, 0.0175), (0.005, 0.0005, 0.005), 1.0)
+    return doc
+
+
+def test_air_spaces_open_to_the_domain_are_not_called_sealed():
+    r = _build(_channel_heatsink())
+    fluids = [x for x in r.sidecar["regions"] if x["type"] == "fluid"]
+    assert len(fluids) == 4                              # between five fins
+    for f in fluids:
+        assert f["open_to_domain_sides"] == ["+y", "-z", "+z"]
+        assert not any("sealed" in n for n in f["notes"])
+    # equal channels are named in the order they stand, not in OpenCASCADE's
+    xs = [f["centroid_m"][0] for f in fluids]
+    assert xs == sorted(xs)
+    assert any("4 open to the domain's sides, 0 sealed" in n for n in r.notes)
+
+
+def test_a_sealed_enclosure_has_no_side_open_to_the_domain():
+    doc = Ecxml("sealed")
+    doc.domain((-0.01, -0.01, -0.01), (0.07, 0.07, 0.07))
+    doc.enclosure("Box", (0, 0, 0), (0.05, 0.05, 0.05), "M", 0.002)
+    fluids = [x for x in _build(doc).sidecar["regions"] if x["type"] == "fluid"]
+    assert fluids[0]["open_to_domain_sides"] == ["-x", "+x", "-y", "+y", "-z", "+z"]
+    assert fluids[1]["open_to_domain_sides"] == []
+    assert "sealed cavity" in fluids[1]["notes"][0]
+
+
+def test_each_heat_source_says_which_regions_it_lands_in():
+    # Flotherm writes a part's power as a sourceBlock on the part (same box, often the same
+    # name) or inside it, rather than in the part's own powerDissipation
+    doc = _channel_heatsink()
+    doc.block("Chip", (0.003, 0.005, 0.03), (0.004, 0.002, 0.004), "Al")    # on Fin 1's side
+    doc.source("Chip", (0.003, 0.005, 0.03), (0.004, 0.002, 0.004), 0.5)
+    doc.source("Straddle", (0.0, 0.0, 0.0), (0.004, 0.015, 0.04), 0.25)
+    r = _build(doc)
+    lands = {s["name"]: s["lands_in"] for s in r.sidecar["volume_heat_sources"]}
+    assert lands["Heat Source"] == [{"region": "Base", "fraction": pytest.approx(1.0)}]
+    assert lands["Chip"][0]["region"] == "Chip"
+    assert lands["Chip"][0]["fraction"] == pytest.approx(1.0)
+    straddle = {x["region"]: x["fraction"] for x in lands["Straddle"]}
+    assert straddle["Fin_1"] == pytest.approx(0.5)
+    assert sum(straddle.values()) == pytest.approx(1.0)
+    assert any(x.startswith("Heat sources: 3 volume source(s), 1.75 W") for x in r.report)
+
+
+def test_a_model_without_air_says_it_is_conduction_only():
+    die = Ecxml("bare die")                              # no solutionDomain, as PackStudio writes
+    die.material("Si", 2330, 700, 0.0, ("isotropic", 117.5))
+    with die.assembly("package"):
+        die.block("die-part-1", (-0.00245, -0.00245, 0), (0.0049, 0.0049, 0.00022), "Si", 2.0)
+    r = _build(die)
+    assert r.region_names == ("die_part_1",)
+    assert any(x.startswith("No air: the file sets no solution domain") for x in r.notes)
+    full = Ecxml("block in a box").domain((0, 0, 0), (0.1, 0.1, 0.1))
+    full.block("Cuboid", (0, 0, 0), (0.1, 0.1, 0.1), "M")
+    full.block("Cuboid:1", (0.025, 0.025, 0.025), (0.05, 0.05, 0.05), "M")
+    full.source("Cuboid:1", (0.025, 0.025, 0.025), (0.05, 0.05, 0.05), 100.0)
+    r = _build(full)
+    assert r.region_names == ("Cuboid", "Cuboid_1")
+    assert any(x.startswith("No air: the solids fill the whole solution domain") for x in r.notes)
+
+
+def test_the_smallest_gap_names_the_pair_it_was_measured_between():
+    doc = Ecxml("pairs").domain((0, 0, 0), (0.1, 0.1, 0.1))
+    doc.block("A", (0.01, 0.01, 0.01), (0.02, 0.02, 0.02), "M")
+    doc.block("B", (0.03, 0.01, 0.01), (0.02, 0.02, 0.02), "M")          # touches A
+    doc.block("C", (0.01, 0.01, 0.0305), (0.015, 0.02, 0.01), "M")        # 0.5 mm above A
+    doc.block("D", (0.07, 0.07, 0.07), (0.01, 0.01, 0.01), "M")
+    doc.block("E", (0.08, 0.07, 0.07), (0.01, 0.01, 0.01), "M")          # touches D
+    tol = _build(doc).sidecar["tolerances_m"]
+    assert tol["smallest_gap"] == pytest.approx(0.0005, rel=1e-6)
+    assert tol["smallest_gap_between"] == "A and C"
