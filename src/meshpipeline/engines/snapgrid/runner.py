@@ -283,6 +283,7 @@ def finalize(workspace_dir, intake_patches: list, engine: str, domain: str = "",
                 patch_entities, _ = build_review_msh(ws, solids)
     except Exception:  # noqa: BLE001 - the review surface is render-only
         logger.exception("snapgrid finalize: review-mesh build failed (non-fatal)")
+    from meshpipeline.engines.snapgrid.native import review_volume
     ep = dict(engine_params or {})
     ep["_regions"] = [{"name": r["name"], "type": r["type"]} for r in q["regions"]]
     write_manifest(
@@ -292,7 +293,10 @@ def finalize(workspace_dir, intake_patches: list, engine: str, domain: str = "",
         quality=q, domain=domain or "conjugate heat transfer (electronics cooling)",
         body_bbox=(tuple(lo), tuple(hi)),
         mesh_bounds=(lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]),
-        volume_path=str((ws / "constant").resolve()),
+        # the review's VOLUME: the whole mesh as VTK (native.export_volume), which is what the
+        # renderer slices for the interior regions the manifest promises; a constant/ directory
+        # is no VTU, so the review found no volume and could not run at all (job d6a0ac60)
+        volume_path=str((ws / (review_volume(ws) or "constant")).resolve()),
         mesh_units=COMPLETED_MESH_UNIT.value, mesh_mode="snapgrid",
         flow_topology=flow_topology, engine_params=ep)
     out = (f"[SNAPGRID] regions={len(q['regions'])} cells={q['cells']} "

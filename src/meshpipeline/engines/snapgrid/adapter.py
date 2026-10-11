@@ -72,7 +72,9 @@ class ENGINE:
     # review / artifacts
 
     def export_volume_vtk(self, workspace) -> str | None:
-        return None
+        # written by the native check from the whole mesh before it was removed
+        from meshpipeline.engines.snapgrid.native import review_volume
+        return review_volume(workspace)
 
     def build_review_msh(self, workspace, patches_tris: dict):
         from meshpipeline.render.review_artifacts import build_review_msh

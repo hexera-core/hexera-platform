@@ -73,6 +73,46 @@ def _run(case: Path, command: str, log: str, *, bashrc: str, timeout: int) -> tu
     return p.returncode, out
 
 
+#: Where foamToVTK writes the whole mesh's cells, relative to the case.
+VOLUME_GLOB = "VTK/**/internal.vtu"
+
+
+def export_volume(case, *, bashrc: str, timeout: int = 900) -> str | None:
+    """The whole mesh's cells as VTK (foamToVTK), for the review's interior slices: the interfaces
+    between parts are INTERNAL surfaces, seen only by cutting through the volume. Run while the
+    merged mesh still exists (it is removed once the regions are checked). The path is relative
+    to the case; None when foamToVTK did not write one - the mesh is never failed over it.
+
+    Without it the snap-grid review could not run at all: the manifest promises interior slices
+    (snapgrid declares REGION targets), the renderer offers them only over a volume, and every
+    review ended "the mesh did not expose review targets this engine expects" (dev-areen
+    set_top_box job d6a0ac60, 2026-10-11)."""
+    case = Path(case)
+    try:
+        rc, _out = _run(case, "foamToVTK -constant -noFaceZones", "foamToVTK", bashrc=bashrc,
+                        timeout=timeout)
+    except Exception:  # noqa: BLE001 - a review aid, never a reason to fail the mesh
+        logger.exception("snapgrid: foamToVTK failed")
+        return None
+    hits = sorted(case.glob(VOLUME_GLOB))
+    return str(hits[0].relative_to(case)) if rc == 0 and hits else None
+
+
+def review_volume(case) -> str | None:
+    """The volume `export_volume` wrote for this case, relative to it - as the report recorded it,
+    else where foamToVTK puts it; None when there is none. Pure lookup: no OpenFOAM needed."""
+    case = Path(case)
+    try:
+        report = json.loads((case / "snapgrid_report.json").read_text())
+        recorded = (report.get("native") or {}).get("volume_vtu")
+    except (OSError, ValueError, AttributeError):
+        recorded = None
+    if recorded and (case / recorded).is_file():
+        return str(recorded)
+    hits = sorted(case.glob(VOLUME_GLOB))
+    return str(hits[0].relative_to(case)) if hits else None
+
+
 def parse_check_mesh(out: str) -> dict:
     q: dict = {"mesh_ok": "Mesh OK" in out}
     for k, pat in _CM.items():
@@ -181,6 +221,9 @@ def check(case, *, bashrc: str | None = None, timeout: int = 3600, jobs: int = 4
     result["skew_faces"] = whole.get("skew_faces", 0)
     result["skew_fraction"] = (whole.get("skew_faces", 0) / faces) if faces else 0.0
     result["ok"] = not result["problems"]
+    if result["ok"]:
+        # the review's volume, from the whole mesh while it still exists
+        result["volume_vtu"] = export_volume(case, bashrc=bashrc)
     if result["ok"] and not keep_merged:
         # the whole mesh is every region again: the delivered case is the regions
         shutil.rmtree(case / "constant" / "polyMesh", ignore_errors=True)
@@ -247,6 +290,9 @@ def split_and_check(case, *, bashrc: str | None = None, timeout: int = 3600,
             if q.get("max_skewness") is not None]
     result["max_skewness"] = max(skew) if skew else None
     result["ok"] = not result["problems"]
+    if result["ok"]:
+        # the review's volume, from the merged mesh while it still exists
+        result["volume_vtu"] = export_volume(case, bashrc=bashrc)
     if result["ok"] and not keep_merged:
         # the merged mesh is every region again: the delivered case is the split one
         shutil.rmtree(case / "constant" / "polyMesh", ignore_errors=True)
@@ -255,4 +301,5 @@ def split_and_check(case, *, bashrc: str | None = None, timeout: int = 3600,
     return result
 
 
-__all__ = ["SPLIT", "default_bashrc", "parse_check_mesh", "split_and_check"]
+__all__ = ["SPLIT", "VOLUME_GLOB", "default_bashrc", "export_volume", "parse_check_mesh",
+           "review_volume", "split_and_check"]
