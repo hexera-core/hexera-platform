@@ -13,7 +13,6 @@ from meshpipeline.application.repair_report_delivery import (
     REPAIR_REPORT_LOGICAL_KEY,
     deliver_repair_report,
 )
-from meshpipeline.artifact_keys import repair_report_key
 from meshpipeline.persistence.models import ArtifactType, SimulationJob
 
 # THE POINT OF THIS TEST. The report has to reach the two readers who need it most, and both of
@@ -87,7 +86,10 @@ async def test_a_blocked_job_still_has_a_downloadable_inspection_report(SessionL
     assert [r.artifact_type for r in rows] == [ArtifactType.repair_report]
     row = rows[0]
     assert row.logical_key == REPAIR_REPORT_LOGICAL_KEY
-    assert row.storage_key == repair_report_key(str(job_id))
+    # CONTENT-ADDRESSED: the key carries the report's own digest, so a racing writer holding
+    # different bytes cannot reach the object this committed row points at.
+    assert row.storage_key.startswith(f"jobs/{job_id}/repair_report-")
+    assert row.storage_key.endswith(".json")
     assert row.size_bytes > 0
 
     # DOWNLOADABLE, and carrying the defect the operator has to act on
@@ -200,8 +202,11 @@ async def test_a_repaired_delivery_hands_back_the_file_the_report_and_the_mesh(S
             if entry["class"] != "mesh_bundle" else None
         if fetched is not None:
             assert len(fetched) == entry["size_bytes"]
-    stored = real_store.get_bytes(object_key=f"jobs/{job_id}/repaired.step")
-    assert stored == repaired.read_bytes()
+    # read it back through the ROW's key rather than a guessed one: the key is derived from the
+    # content, which is the whole point of the change that made it unguessable
+    cad_row = next(r for r in rows if r.artifact_type is ArtifactType.repaired_cad)
+    assert cad_row.storage_key.startswith(f"jobs/{job_id}/repaired-")
+    assert real_store.get_bytes(object_key=cad_row.storage_key) == repaired.read_bytes()
 
 
 async def test_a_repaired_job_that_cannot_hand_the_file_back_is_reported_as_incomplete(
