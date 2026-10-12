@@ -221,6 +221,11 @@ _KIND_WORDS = {"body-surface": "the part's wall, hollow inside for the fluid",
                "fluid-domain": "the fluid volume itself",
                "solid-body": "a solid body",
                "solid-assembly": "an assembly of solid parts, each its own region"}
+#: What the declaration says of a whole thermal model's air box (check_mode "thermal"): its sides
+#: are the file's, so no boundary is declared and none is asked about. The chat shows it.
+THERMAL_SIDES = ("The sides of the air box are the file's own: open to the room unless the file "
+                 "puts a fan, a vent or a wall there, and kept under the file's names. Nothing about "
+                 "them needs declaring.")
 #: Region names spelled out in an assembly's declaration; the rest are counted.
 _REGIONS_NAMED = 24
 
@@ -273,6 +278,10 @@ def confirmation_message(body) -> str:
         skipped = [str(o.id) for o in body.openings if o.role == "not_an_opening"]
         if skipped:
             parts.append(f"Sticker{'s' if len(skipped) > 1 else ''} {', '.join(skipped)}: not an opening (a hole or a face the fluid does not pass).")
+    elif getattr(body, "check_mode", "") == "thermal":
+        # a whole thermal model: the air box's sides are the file's, so nothing is declared and
+        # nothing is asked about them (contracts/intake_formats check_mode)
+        parts.append(THERMAL_SIDES)
     else:
         # the fluid flows through the part but no port was confirmed: the intake must ask
         parts.append("No openings were confirmed on the picture"
@@ -405,7 +414,8 @@ _OPENING_DEFAULTS: dict[str, object] = {"centroid_mm": None, "diameter_mm": None
 _BODY_DEFAULTS: dict[str, object] = {"openings": [], "seed_point_mm": None, "size_mm": None, "part": "",
                                      "flow_axis": None, "reference_length_mm": None, "extents": None,
                                      "grounded": False, "up_axis": None, "scale_to_m": None, "unit": None,
-                                     "unit_fixed": False, "unit_fixed_reason": "", "regions": None, "openings_reason": ""}
+                                     "unit_fixed": False, "unit_fixed_reason": "", "regions": None, "openings_reason": "",
+                                     "check_mode": ""}
 
 
 def body_of(record: dict) -> SimpleNamespace:

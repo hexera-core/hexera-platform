@@ -105,6 +105,10 @@ class ConfirmIn(BaseModel):
     #: when the uploaded file declares them (geometry_check.declared_openings_reason) and the user
     #: kept those roles - said in the declaration and carried into the brief.
     openings_reason: str = ""
+    #: SET BY THE SERVER from the stored check, never taken from the form: "thermal" when the upload
+    #: is a whole thermal model (contracts/intake_formats check_mode), whose air box's sides are the
+    #: file's - so a confirmation with no openings declares none and asks nothing about them.
+    check_mode: str = ""
 
     @field_validator("extents")
     @classmethod
@@ -234,7 +238,10 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     # a worker that was merely slow still lands its result.
     payload = time_boxed(stored, requested) or stored
     from meshpipeline.contracts.geometry_fields import form_spec
-    payload["fields"] = form_spec()
+    from meshpipeline.contracts.intake_formats import THERMAL_CHECK
+    if payload.get("check_mode") != THERMAL_CHECK:
+        # the generic form's fields; a thermal model is served as its `thermal` view instead
+        payload["fields"] = form_spec()
     payload.setdefault("named", payload.get("status") == "ready")
     payload["naming_requested"] = naming_pending(requested)
     # a triangle file carries no unit: until the chat has settled it, the sizes on the stage are
@@ -475,6 +482,11 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
         raise HTTPException(409, UNIT_FIXED.format(unit=fixing.fixed_unit, reason=fixing.fixed_unit_reason))
     body = body.model_copy(update={"unit_fixed": fixing is not None,
                                    "unit_fixed_reason": fixing.fixed_unit_reason if fixing else ""})
+    # A WHOLE THERMAL MODEL is the stored check's to say, never the form's
+    from meshpipeline.contracts.intake_formats import THERMAL_CHECK
+    _stored_check = _read_json(check_object_key(str(session_id), "scout.json")) or {}
+    body = body.model_copy(update={
+        "check_mode": THERMAL_CHECK if _stored_check.get("check_mode") == THERMAL_CHECK else ""})
     if body.input_kind == "solid-assembly" and not body.regions:
         # an assembly's regions are the file's, as the check read them: named in the declaration
         facts = (_read_json(check_object_key(str(session_id), "scout.json")) or {}).get("facts") or {}

@@ -42,7 +42,16 @@ class IntakeFormat:
     fixed_unit: str = ""
     #: Why the unit is fixed, in plain words a user can read ("" when it is not).
     fixed_unit_reason: str = ""
+    #: HOW THE GEOMETRY CHECK READS THIS FORMAT. "" is the generic check: pictures, a named part,
+    #: openings found on the shape and given roles. "thermal" is an electronics thermal model that
+    #: names every part, material, power, fan and vent itself: the check shows the file's own model
+    #: (application/thermal_view) and asks nothing the file answers - no picture naming, no up
+    #: question, no openings. Every later step branches on this flag, never on the suffix.
+    check_mode: str = ""
 
+
+#: The check mode of a format that is a whole electronics thermal model (IntakeFormat.check_mode).
+THERMAL_CHECK = "thermal"
 
 #: Ordered as the UI lists them: the most common first.
 INTAKE_FORMATS: tuple[IntakeFormat, ...] = (
@@ -82,7 +91,9 @@ INTAKE_FORMATS: tuple[IntakeFormat, ...] = (
         # ... and the solids are written in millimetres (cad/ingest/ecxml_build.UNIT), exactly.
         fixed_unit="mm",
         fixed_unit_reason=("an ECXML model states every length in metres by definition (JEDEC "
-                           "JEP181A), and it was converted exactly into millimetres")),
+                           "JEP181A), and it was converted exactly into millimetres"),
+        # ... and it is a whole thermal model, so the check shows it as one (thermal_view)
+        check_mode=THERMAL_CHECK),
     IntakeFormat(
         key="obj", label="Wavefront OBJ mesh", suffixes=(".obj",),
         media_type="model/obj", declares_units=False, staged_as="input.obj"),
@@ -168,6 +179,13 @@ def unit_fixing_format(suffix: str) -> IntakeFormat | None:
     None when the unit is the file's to state or the user's to name."""
     fmt = format_for_suffix(_suffix_of(suffix))
     return fmt if fmt is not None and fmt.fixed_unit else None
+
+
+def check_mode_of(key: str) -> str:
+    """How the geometry check reads a format, by its key ("" for the generic check, also for a
+    key this product does not know)."""
+    fmt = format_for_key(str(key or ""))
+    return fmt.check_mode if fmt is not None else ""
 
 
 def _suffix_of(path_or_suffix) -> str:
