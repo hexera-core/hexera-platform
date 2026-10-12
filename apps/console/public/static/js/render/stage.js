@@ -92,9 +92,13 @@ export const Stage = {
     const sig=JSON.stringify(b);
     if(this._briefSig===sig)return;
     this._briefSig=sig;
-    const ROWS=[['purpose','Purpose'],['engine','Engine'],['input_kind','Input'],
-                ['dimensionality','Dimensionality'],['mesh_fidelity','Mesh detail preference'],
-                ['label','Case']];
+    // A WHOLE THERMAL MODEL reads as an engineer's job sheet: the job in one paragraph from the
+    // file's own numbers, then only what the sheet does not already say
+    const thermal=b.check_mode==='thermal'&&b.job_sheet;
+    const ROWS=thermal?[['engine','Engine'],['mesh_fidelity','Detail level'],['label','Case']]
+      :[['purpose','Purpose'],['engine','Engine'],['input_kind','Input'],
+        ['dimensionality','Dimensionality'],['mesh_fidelity','Mesh detail preference'],
+        ['label','Case']];
     // Prefer the server's display label. A field may be label-ONLY: the fidelity tier always
     // applies, even when the user stated no preference and there is no raw value.
     let rows=ROWS.filter(([k])=>b[k]||b[k+'_label']).map(([k,l])=>
@@ -116,7 +120,8 @@ export const Stage = {
         +`<span>${esc(c.label)}${c.detail?` <span class="rc-d">${esc(c.detail)}</span>`:''}</span></div>`;}).join('');
     const html=`<div class="who">Requirements · submitted by Hexera</div>
       <div class="req-card${(b.checks||[]).every(c=>c.status==='pass')?' ok':''}">
-        <div class="rc-h">Structured brief</div>${rows}
+        ${thermal?`<div class="rc-h">Job sheet</div><p class="rc-sheet">${esc(b.job_sheet)}</p>`
+          :'<div class="rc-h">Structured brief</div>'}${rows}
         ${ck?`<div class="rc-h rc-h2">Validated by the application</div>${ck}`:''}
       </div>`;
     if(this._briefEl){this._briefEl.innerHTML=html;}

@@ -92,10 +92,18 @@ GARBLED_NUDGE = (
     "addressed to yourself."
 )
 
+#: A whole thermal model's reply that used the generic flow's words (application/thermal_wording).
+THERMAL_WORDS_NUDGE = (
+    "[SYSTEM] Your reply was not sent: this is an electronics thermal model the user confirmed on "
+    "its panel, and the reply used words from another kind of job: inlet, outlet, sticker, sure, "
+    "triangle, far field or 'flows through'. Write it again in an "
+    "electronics-cooling engineer's words - parts, layers, power, room air, the air box, the "
+    "detail level - and ask nothing the file or the panel already settled."
+)
 #: Every user-role line the application writes into a turn. None of them is the user's words, and
 #: the transcript marks them so a reader can tell.
 SYNTHETIC_NUDGES = (BUDGET_NUDGE, REPEAT_NUDGE, DEFAULT_NUDGE, ENGINE_SETTLED_NUDGE,
-                    ENGINE_UNSETTLED_NUDGE, GARBLED_NUDGE)
+                    ENGINE_UNSETTLED_NUDGE, GARBLED_NUDGE, THERMAL_WORDS_NUDGE)
 
 # How a user hands a question back. Phrase-level, like the recommendation gate, and deliberately
 # short: a false negative leaves the model to read the reply itself, while a false positive tells

@@ -24,6 +24,20 @@ WAIT_REPLY = (
     f"{DRAWING_MARK} still drawing your part - it will appear beside this chat in a moment. "
     "Check the openings there and press Proceed; I'll carry on from that."
 )
+#: THE SAME TWO LINES FOR A WHOLE THERMAL MODEL (an ECXML upload, contracts/intake_formats
+#: check_mode "thermal"). Nothing on its panel is an opening to check: the file names every part,
+#: its power and the room air, so the line says what the file is and what to press. The model's
+#: own headline (application/thermal_view.headline) leads once the check has read the file.
+THERMAL_HOLD_REPLY = f"{DRAWING_MARK} {{headline}} Check the parts beside this chat and press Mesh this model."
+#: ...before the check has read the file: there is no headline yet to give.
+THERMAL_OPENING_REPLY = (
+    f"{DRAWING_MARK} opening your thermal model now. It will appear beside this chat in a few "
+    "seconds: check the parts there and press Mesh this model."
+)
+THERMAL_WAIT_REPLY = (
+    f"{DRAWING_MARK} still opening your thermal model - it will appear beside this chat in a "
+    "moment. Check the parts there and press Mesh this model; I'll carry on from that."
+)
 #: What the confirm sends as the user's turn so the intake picks up where the hold left it.
 CONTINUE_TEXT = "I confirmed the geometry check. Go on."
 #: How long after the naming was requested a message is still answered with the wait line. A
@@ -59,6 +73,41 @@ def hold_decision(stored: dict | None, requested: dict | None, confirmed: dict |
 def should_hold(stored: dict | None, requested: dict | None, confirmed: dict | None) -> bool:
     """Whether this chat turn is the one that hands the user's words to the naming."""
     return hold_decision(stored, requested, confirmed) == "queue"
+
+
+def hold_reply(thermal: bool, headline: str = "") -> str:
+    """The holding line for this upload: the generic one (a picture with numbered openings to
+    check), or a thermal model's - its own headline when the check has read the file, else the
+    plain "opening your thermal model" line."""
+    if not thermal:
+        return HOLD_REPLY
+    said = str(headline or "").strip()
+    if not said:
+        return THERMAL_OPENING_REPLY
+    return THERMAL_HOLD_REPLY.format(headline=said if said.endswith(".") else said + ".")
+
+
+def wait_reply(thermal: bool) -> str:
+    """What a message sent while the check is still drawing is answered with."""
+    return THERMAL_WAIT_REPLY if thermal else WAIT_REPLY
+
+
+def stored_thermal(session_id: str) -> tuple[bool, str]:
+    """Whether the stored check reads the upload as a whole thermal model, and its one-line
+    headline as the check read it from the file ("Set-top box, vented: a Flotherm thermal model
+    with 8 parts, 8.7 W in total and 35 °C room air."). (False, "") while the check has not read
+    the file yet - or cannot be read."""
+    from meshpipeline.contracts.intake_formats import THERMAL_CHECK
+
+    try:
+        from meshpipeline.application.geometry_check import read_check
+
+        stored = read_check(session_id) or {}
+    except Exception as exc:  # noqa: BLE001 - a line without the headline is still a true line
+        logger.info("geometry hold: the stored check could not be read (%s)", type(exc).__name__)
+        return False, ""
+    view = stored.get("thermal") if isinstance(stored.get("thermal"), dict) else {}
+    return stored.get("check_mode") == THERMAL_CHECK, str((view or {}).get("headline") or "")
 
 
 def purpose_from(messages: list[dict] | None) -> str:
@@ -137,10 +186,29 @@ async def unit_fixing_format(db, session, owner_id: str, organization_id: str):
     """The intake format of the session's upload when its converter fixes the unit of the
     geometry (contracts/intake_formats `fixed_unit`: an ECXML model is written in millimetres),
     else None. A source that cannot be read is None - the unit is then handled as any other."""
+    from meshpipeline.contracts.intake_formats import unit_fixing_format as _fixing
+
+    suffix = await _upload_suffix(db, session, owner_id, organization_id)
+    return _fixing(suffix) if suffix is not None else None
+
+
+async def upload_check_mode(db, session, owner_id: str, organization_id: str) -> str:
+    """How the geometry check reads the session's upload (contracts/intake_formats check_mode):
+    "thermal" for a whole thermal model, "" for the generic check - and "" when there is no
+    upload or it cannot be read."""
+    from meshpipeline.contracts.intake_formats import format_for_suffix
+
+    suffix = await _upload_suffix(db, session, owner_id, organization_id)
+    fmt = format_for_suffix(suffix) if suffix else None
+    return str(getattr(fmt, "check_mode", "") or "")
+
+
+async def _upload_suffix(db, session, owner_id: str, organization_id: str) -> str | None:
+    """The suffix the session's upload was recorded under; None when there is none or it cannot
+    be read."""
     sid = getattr(session, "geometry_source_id", None)
     if not sid or db is None:
         return None
-    from meshpipeline.contracts.intake_formats import unit_fixing_format as _fixing
     from meshpipeline.persistence.repositories.geometry_source_repository import GeometrySourceRepository
 
     try:
@@ -150,7 +218,7 @@ async def unit_fixing_format(db, session, owner_id: str, organization_id: str):
         logger.warning("geometry unit: the upload's format could not be read (%s) - session_id=%s",
                        type(exc).__name__, getattr(session, "id", None))
         return None
-    return _fixing(str(getattr(row, "suffix_hint", "") or "")) if row is not None else None
+    return str(getattr(row, "suffix_hint", "") or "") if row is not None else None
 
 
 async def ensure_fixed_unit(db, session, owner_id: str, organization_id: str) -> dict | None:
@@ -250,6 +318,8 @@ def withdraw_naming(session_id: str) -> None:
     logger.warning("geometry naming request withdrawn after a failed turn - session_id=%s", session_id)
 
 
-__all__ = ["CONTINUE_TEXT", "DRAWING_MARK", "HOLD_REPLY", "WAIT_GRACE_S", "WAIT_REPLY", "ensure_fixed_unit",
-           "hold_applies", "hold_decision", "interpretation_payload", "measured_size_mm", "purpose_from",
-           "queue_naming", "record_unit", "should_hold", "unit_fixing_format", "withdraw_naming"]
+__all__ = ["CONTINUE_TEXT", "DRAWING_MARK", "HOLD_REPLY", "THERMAL_HOLD_REPLY", "THERMAL_OPENING_REPLY",
+           "THERMAL_WAIT_REPLY", "WAIT_GRACE_S", "WAIT_REPLY", "ensure_fixed_unit", "hold_applies",
+           "hold_decision", "hold_reply", "interpretation_payload", "measured_size_mm", "purpose_from",
+           "queue_naming", "record_unit", "should_hold", "stored_thermal", "unit_fixing_format",
+           "upload_check_mode", "wait_reply", "withdraw_naming"]

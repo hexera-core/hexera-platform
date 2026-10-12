@@ -509,8 +509,9 @@ async def test_the_panel_sends_only_the_detail_level_and_the_server_fills_the_re
     m = out["message"]
     assert THERMAL_SIDES in m and out["patches"] == []
     assert "Detail level: Fine, chosen by the user on the panel (mesh_fidelity max)." in m
-    assert "input_kind solid-assembly" in m and "(Set-top box, vented)" in m
-    assert "Part size: 180 x 150 x 80 mm." in m
+    assert "input_kind solid-assembly, for a conjugate heat-transfer solve." in m
+    assert "the thermal model “Set-top box, vented”" in m
+    assert "Air box: 180 x 150 x 80 mm." in m
     assert not FORBIDDEN.search(m), FORBIDDEN.findall(m)
     assert "ask the user" not in m
     assert session.input_kind == "solid-assembly" and session.intake_patches == []

@@ -145,6 +145,8 @@ th,td{border-color:var(--border)}
 .req-card .rc-row{display:grid;grid-template-columns:168px minmax(0,1fr);gap:12px;padding:5px 16px;
   font-size:var(--fs-md);line-height:1.5;border:0}
 .req-card .rc-k{color:var(--text-faint);font-size:var(--fs-md);letter-spacing:0}
+/* a thermal model's job sheet: the job in one paragraph, above the rows */
+.req-card .rc-sheet{margin:0;padding:2px 16px 8px;font-size:var(--fs-md);line-height:1.55;color:var(--text)}
 .req-card .rc-v{color:var(--text);overflow-wrap:anywhere}
 .req-card .rc-ck{display:flex;align-items:flex-start;gap:10px;padding:4px 16px;
   font-size:var(--fs-md);line-height:1.5;color:var(--text-muted)}

@@ -24,6 +24,9 @@ CONFIRMED = "confirmed_selection"
 # field that will be dispatched.
 VIA_CONVERSATION = "conversation"
 VIA_STRUCTURED_INPUT = "structured_input"
+# A whole thermal model (an ECXML upload confirmed on its panel) is meshed by the engine that reads
+# its file itself, selected without a question: the job sheet the user approves names it.
+VIA_THE_FILE = "the_file"
 
 # A PLAIN YES to the application's own question. The question names the engine ("Do you want to
 # select snappyHexMesh?"), so "yes", "ok", "sure" or "go with that" is a complete answer that binds

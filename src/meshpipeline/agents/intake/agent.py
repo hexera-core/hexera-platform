@@ -854,6 +854,45 @@ def _block_geometry_check() -> str:
     )
 
 
+def _block_thermal_model() -> str:
+    # An ECXML upload names every part, material, power, fan, vent and the room air, and the user
+    # confirmed it on the thermal model panel. The generic flow's questions (openings, which way
+    # the fluid goes, the unit, the engine) are answered by the file; an electronics-cooling
+    # engineer asked them reads a tool that did not understand the model (2026-10-12).
+    return (
+        "\n\nA THERMAL MODEL - EVERYTHING IS SETTLED, ASK NOTHING:\n"
+        "When the 'GEOMETRY CHECK (confirmed by the user):' message continues 'the thermal "
+        "model', the user uploaded an electronics thermal model (ECXML) and confirmed it on the "
+        "thermal model panel. The file states every part, material, power, fan, vent and the "
+        "room air, and the panel settled the detail level. So:\n"
+        "- The case is settled: the purpose and the input kind are the ones the message states "
+        "(conjugate heat transfer of an assembly of solid parts), dimensionality 3D, patches [] "
+        "(an empty list: the air box's sides are the file's own), "
+        "mesh_fidelity as the message states it (standard when it names none).\n"
+        "- The engine is the one that reads the file itself (snapgrid): call "
+        "propose_engine_selection with it and the application selects it without a question. "
+        "Never ask about, offer or compare engines unless the user brings it up.\n"
+        "- In this same turn, call preview_selected_admission and then submit_requirements "
+        "(engine_source suggested_confirmed). The application then shows the user the job sheet "
+        "and asks for approval: that is the only question.\n"
+        "- Never ask about the unit, which way the air flows, openings, vents or fans, the fluid "
+        "(it is air, from the file), the purpose, the up direction, a reference length or the "
+        "size of the air box, or the engine.\n"
+        "- Speak as an electronics-cooling engineer: parts, layers, power, room air, the air box, "
+        "the detail level. Never write inlet, outlet, sticker, sure, triangle, far field or "
+        "'flows through' - except inside a name the file itself gives - in a reply, request_txt "
+        "or review_brief_txt.\n"
+        "- request_txt says: the model by its name, its parts and total power, a conjugate "
+        "heat-transfer solve, a snap-grid hex mesh at the detail level with at least the level's "
+        "cells through every layer, delivered as an OpenFOAM multi-region case plus the thermal "
+        "model. review_brief_txt says: every part present as its own region beside the air, the "
+        "power kept where the file puts it, the thinnest layers meshed with at least the level's "
+        "cells through them, and every region checked clean.\n"
+        "- A user who asks for another solver's format is told plainly that today the delivery "
+        "is an OpenFOAM multi-region case, and that naming their solver helps us add it."
+    )
+
+
 def _block_propose_first() -> str:
     return (
         "\n\nPROPOSE, THEN ASK - every question carries your best proposal:\n"
@@ -948,6 +987,8 @@ INTAKE_PROMPT_BLOCKS: tuple = (
      _block_engine_first),
     ("geometry_check", "facts the user confirmed on the geometry-check picture are declared; never re-asked",
      _block_geometry_check),
+    ("thermal_model", "a whole thermal model confirmed on its panel: the case, engine and level are settled; nothing is asked; no generic-CFD words",
+     _block_thermal_model),
     ("propose_first", "every question carries a proposed answer read from what is known; 'ok' or 'I do not know' accepts it; one unclear reply and the model moves on; no question twice; the engine goes through its one question, the unit is asked",
      _block_propose_first),
     ("ask_plainly", "one clear thing per reply in plain words, a short numbered list when values are confirmed together; nothing settled is restated; no 'assumption' bookkeeping in chat",
@@ -1025,6 +1066,27 @@ async def _measured_recommendation(state, state_messages):
 def _declared_case(state_messages) -> tuple | None:
     from meshpipeline.application.geometry_confirmation import declared_case
     return declared_case(state_messages)
+
+
+def _thermal_declared(state_messages) -> bool:
+    """Whether the user confirmed a whole thermal model on its panel - and the chat has not since
+    restated what the file is (then the declared case no longer stands, and neither does this)."""
+    from meshpipeline.application.geometry_confirmation import thermal_declared
+    return thermal_declared(state_messages) and _declared_case(state_messages) is not None
+
+
+def _thermal_names(session_id: str) -> tuple[str, ...]:
+    """Every name the thermal model's file gives, as the geometry check read it; () when the
+    check cannot be read (the vocabulary check then reads the reply whole)."""
+    from meshpipeline.application.thermal_wording import file_names
+
+    try:
+        from meshpipeline.application.geometry_check import read_check
+
+        view = (read_check(session_id) or {}).get("thermal") if session_id else None
+    except Exception:  # noqa: BLE001 - the check without names is stricter, never looser
+        return ()
+    return tuple(file_names(view)) if isinstance(view, dict) else ()
 
 
 async def node_intake(state: PipelineState) -> dict:
@@ -1107,6 +1169,7 @@ async def node_intake(state: PipelineState) -> dict:
         user_msg_count=_ctx.user_msg_count, latest_user_msg=_ctx.latest_user_msg,
         user_texts=turn.user_texts(state_messages),
         declared_case=_declared_case(state_messages),
+        thermal=_thermal_declared(state_messages),
         source_ref=_ctx.source_ref, rec_authorized=_ctx.rec_authorized,
         pending=_ctx.pending, selection=_ctx.selection, approval=_ctx.approval,
         recommendation=_recommendation)
@@ -1121,6 +1184,8 @@ async def node_intake(state: PipelineState) -> dict:
         limits_=_LoopLimits(max_rounds=icfg.INTAKE_MAX_ROUNDS),
         # What has already been asked, so a reply that asks it again is caught inside the loop.
         prior_questions=turn.prior_assistant_texts(state_messages),
+        # A whole thermal model's own names, which its vocabulary check leaves alone.
+        thermal_names=_thermal_names(str(state.get("session_id") or "")) if _exec_state.thermal else (),
         # The engine is asked once and then left alone - except in the turn after a run has
         # ended, where what the last run's engine did is the subject.
         engine_guard=not (state.get("previous_run") and not _awaiting_confirmation))
