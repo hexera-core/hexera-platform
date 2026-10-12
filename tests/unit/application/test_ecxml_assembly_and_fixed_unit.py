@@ -97,8 +97,11 @@ def test_an_assembly_is_a_kind_the_form_offers_and_the_confirm_accepts():
     assert "solid-assembly" in kinds
     spec = next(s for s in gf.form_spec() if s["key"] == "input_kind")
     assert [o[0] for o in spec["options"]] == kinds
-    # the confirm model takes exactly the registry's kinds
-    assert set(typing.get_args(route.ConfirmIn.model_fields["input_kind"].annotation)) == set(kinds)
+    # the confirm model takes exactly the registry's kinds (or none, for a thermal model, whose
+    # kind the server sets)
+    annotation = route.ConfirmIn.model_fields["input_kind"].annotation
+    literal = next(a for a in typing.get_args(annotation) if typing.get_origin(a) is typing.Literal)
+    assert set(typing.get_args(literal)) == set(kinds)
     # and so does the console's form, in both copies the parity rule keeps identical
     for copy in ("ui/js/render/geometry_form.js", "apps/console/public/static/js/render/geometry_form.js"):
         js = (REPO / copy).read_text(encoding="utf-8")

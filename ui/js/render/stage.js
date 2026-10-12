@@ -21,6 +21,8 @@ import { applyFlow, bindAxis, bindUnit, displayText, followAxis, followSuggestio
   readForm, shown, unitChoiceHint, unitChoiceNeeded, unitOf } from "./geometry_form.js";
 // the card keeps the user's answers through a re-draw and says back what they changed
 import { changedAnswers, editsLine, noteDrawn, servedProposal } from "./geometry_form.js";
+// a thermal model (an ECXML upload) has its own panel, card or stage alike
+import { bindThermalPanel, thermalPanelHtml } from "./thermal_form.js";
 
 /* The lightbox is its own DOM region (#lb) but too small to be its own module. */
 export function openLightbox(src) {
@@ -165,6 +167,7 @@ export const Stage = {
      vision model, not for people - and the form is the same one the stage shows. One card per
      session, replaced if the check is shown again. */
   geometryCheck(d,confirm){
+    if(d&&d.thermal)return this.thermalCheck(d,confirm);
     const p=d.proposal||{},pics=d.pictures||[];
     // what the check proposed, kept apart from the card the user edits: Proceed says back what changed
     this._gcServed=servedProposal(null,p);
@@ -235,6 +238,19 @@ export const Stage = {
   /* THE CARD FOLLOWS THE CHECK IN PLACE: a unit settled in the chat reaches its unit box when the
      user has not set it themselves. The card is never drawn again for that, so what the user
      typed on it stays. A confirmed card is left as it is. */
+  /* A THERMAL MODEL AS A CARD: the same panel the stage shows, without the picture - the parts,
+     the file's numbers, the detail level and "Mesh this model". */
+  thermalCheck(d,confirm){
+    this.clearEmpty();
+    if(this._gcEl)this._gcEl.remove();
+    const g=document.createElement('div');g.className='im assistant';
+    g.innerHTML=`<div class="who">Thermal model · what Hexera read from the file</div>
+      <div class="req-card tm-card">${thermalPanelHtml(d.thermal)}</div>`;
+    this.col().appendChild(g);this._gcEl=g;this._gcP=null;
+    bindThermalPanel(g.querySelector('.tm-card'),d.thermal,{confirm:async(body)=>{
+      await confirm(body,'');g.querySelector('.tm-card').classList.add('ok');this.scrollBottom();}});
+    this.scrollBottom();},
+
   geometryCheckUpdate(d){
     const g=this._gcEl,p=this._gcP;if(!g||!p||g.querySelector('.gc-done'))return;
     const q=(d&&d.proposal)||{};

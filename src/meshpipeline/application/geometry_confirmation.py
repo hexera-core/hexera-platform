@@ -226,6 +226,21 @@ _KIND_WORDS = {"body-surface": "the part's wall, hollow inside for the fluid",
 THERMAL_SIDES = ("The sides of the air box are the file's own: open to the room unless the file "
                  "puts a fan, a vent or a wall there, and kept under the file's names. Nothing about "
                  "them needs declaring.")
+#: The detail levels a thermal model's panel offers, as the panel names them, by the mesher's
+#: fidelity words (the intake's mesh_fidelity).
+DETAIL_WORDS = {"draft": "Quick look", "standard": "Standard", "max": "Fine"}
+
+
+def detail_sentence(body) -> str:
+    """What the declaration says of the detail level the user picked on the panel: the user's own
+    choice of mesh_fidelity, in the panel's word and the intake's. "" when none was picked."""
+    level = str(getattr(body, "detail", "") or "")
+    if level not in DETAIL_WORDS:
+        return ""
+    return (f"Detail level: {DETAIL_WORDS[level]}, chosen by the user on the panel "
+            f"(mesh_fidelity {level}).")
+
+
 #: Region names spelled out in an assembly's declaration; the rest are counted.
 _REGIONS_NAMED = 24
 
@@ -287,6 +302,8 @@ def confirmation_message(body) -> str:
         parts.append("No openings were confirmed on the picture"
                      + (" (every sticker was marked not an opening)" if body.openings else "")
                      + "; ask the user where the fluid enters and leaves.")
+    if detail_sentence(body):
+        parts.append(detail_sentence(body))      # the level picked on a thermal model's panel
     if body.seed_point_mm and len(body.seed_point_mm) == 3:
         p = body.seed_point_mm
         parts.append(f"A point inside the flow: ({p[0]:.0f}, {p[1]:.0f}, {p[2]:.0f}) mm.")
@@ -415,7 +432,7 @@ _BODY_DEFAULTS: dict[str, object] = {"openings": [], "seed_point_mm": None, "siz
                                      "flow_axis": None, "reference_length_mm": None, "extents": None,
                                      "grounded": False, "up_axis": None, "scale_to_m": None, "unit": None,
                                      "unit_fixed": False, "unit_fixed_reason": "", "regions": None, "openings_reason": "",
-                                     "check_mode": ""}
+                                     "check_mode": "", "detail": None}
 
 
 def body_of(record: dict) -> SimpleNamespace:

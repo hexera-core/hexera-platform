@@ -145,8 +145,16 @@ def _domain_block(sidecar: dict) -> dict:
         sides.append({"face": face, "name": str((side or {}).get("name") or f"side {face}"),
                       "state": state, "devices": devices,
                       "plates": [str(p.get("name")) for p in plates]})
-    return {"size_mm": size, "source": "solutionDomain" if from_file else "derived",
+    return {"size_mm": size, "box_mm": _box_mm(box), "source": "solutionDomain" if from_file else "derived",
             "sides": sides, "summary": _domain_summary(size, from_file, sides)}
+
+
+def _box_mm(box: dict | None) -> dict | None:
+    """Where the air box is, in mm (its two corners): the stage draws it around the parts."""
+    try:
+        return {k: [_round(float(box[k][i]) * 1000.0) for i in range(3)] for k in ("min", "max")}  # type: ignore[index]
+    except (KeyError, TypeError, ValueError, IndexError):
+        return None
 
 
 def _domain_summary(size, from_file: bool, sides: list[dict]) -> str:

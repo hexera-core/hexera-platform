@@ -478,3 +478,69 @@ def test_the_check_is_quick_on_a_small_model(tmp_path):
     started = time.perf_counter()
     _view(set_top_box(), tmp_path)
     assert time.perf_counter() - started < 20.0
+
+
+# ------------------------------------------- the panel's confirm: the detail level, nothing else ----
+def test_the_air_box_says_where_it_is_so_the_stage_can_draw_it(tmp_path):
+    view, _ = _view(set_top_box(), tmp_path, sized=False)
+    box = view["domain"]["box_mm"]
+    size = view["domain"]["size_mm"]
+    assert [b - a for a, b in zip(box["min"], box["max"])] == pytest.approx(size)
+
+
+@pytest.mark.asyncio
+async def test_the_panel_sends_only_the_detail_level_and_the_server_fills_the_rest(served, monkeypatch):
+    from meshpipeline.api.v1 import chat as chatmod
+    from meshpipeline.persistence.repositories import session_repository as srmod
+
+    session, store = served
+
+    class _Sessions:
+        async def get_for_owner(self, db, session_id, owner_id, organization_id=""):
+            return session
+    monkeypatch.setattr(srmod, "SessionRepository", _Sessions)
+
+    async def _turn(body, owner_id, organization_id):
+        raise RuntimeError("no model here")
+    monkeypatch.setattr(chatmod, "chat_message", _turn)
+    # exactly what render/thermal_form.js thermalConfirmBody sends
+    body = route.ConfirmIn.model_validate({"detail": "max", "openings": []})
+    out = await route.confirm_check(SID, body, "alice", "org-1")
+    m = out["message"]
+    assert THERMAL_SIDES in m and out["patches"] == []
+    assert "Detail level: Fine, chosen by the user on the panel (mesh_fidelity max)." in m
+    assert "input_kind solid-assembly" in m and "(Set-top box, vented)" in m
+    assert "Part size: 180 x 150 x 80 mm." in m
+    assert not FORBIDDEN.search(m), FORBIDDEN.findall(m)
+    assert "ask the user" not in m
+    assert session.input_kind == "solid-assembly" and session.intake_patches == []
+    stored = json.loads(store.objects[f"sessions/{SID}/geometry_check/confirmed.json"])
+    assert stored["detail"] == "max" and stored["check_mode"] == THERMAL_CHECK and stored["flow"] == "internal"
+    # the intake reads that sentence as the user's own tier, and asks nothing about detail
+    from meshpipeline.agents.intake.agent import _block_geometry_check
+
+    block = _block_geometry_check()
+    assert "mesh_fidelity (Quick look = draft, Standard = standard, Fine = max)" in block
+    assert "never ask about detail" in block
+
+
+@pytest.mark.asyncio
+async def test_a_generic_confirm_still_has_to_say_what_the_file_is(served, monkeypatch):
+    from fastapi import HTTPException
+
+    _session, store = served
+    scout = json.loads(store.objects[f"sessions/{SID}/geometry_check/scout.json"])
+    scout["check_mode"] = ""                          # an ordinary part's check
+    store.objects[f"sessions/{SID}/geometry_check/scout.json"] = json.dumps(scout).encode()
+    with pytest.raises(HTTPException) as err:
+        await route.confirm_check(SID, route.ConfirmIn.model_validate({"detail": "standard"}), "alice", "org-1")
+    assert err.value.status_code == 422 and "input_kind" in err.value.detail
+
+
+def test_the_declaration_names_the_level_only_when_one_was_picked():
+    from meshpipeline.application.geometry_confirmation import detail_sentence
+
+    picked = route.ConfirmIn(input_kind="solid-assembly", flow="internal", check_mode="thermal", detail="draft")
+    assert detail_sentence(picked) == "Detail level: Quick look, chosen by the user on the panel (mesh_fidelity draft)."
+    assert "Detail level" not in confirmation_message(
+        route.ConfirmIn(input_kind="solid-assembly", flow="internal", check_mode="thermal"))
