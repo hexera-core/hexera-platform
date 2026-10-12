@@ -206,3 +206,50 @@ def test_shape_without_faces_is_rejected(monkeypatch, tmp_path):
     assert report.defects[0].details["reason"] == "no_faces"
     assert report.summary == "Automatic repair was not safe for this geometry."
     assert _measurements(report)["edges"] == 12
+
+
+# A PARTIAL DIAGNOSIS MUST NOT CLAIM TO BE A COMPLETE ONE
+
+
+def _stub_shape(monkeypatch, *, valid: bool):
+    monkeypatch.setattr(brep, "_read_shape", lambda _path: object())
+    monkeypatch.setattr(brep, "_count_subshapes", lambda _shape: {
+        "solids": 1, "shells": 1, "faces": 6, "edges": 12, "vertices": 8})
+    monkeypatch.setattr(brep, "_is_valid", lambda _shape: valid)
+
+
+def test_a_status_walk_that_hit_its_budget_is_reported_as_incomplete(monkeypatch, tmp_path):
+    """The failure this prevents: a bounded scan read as the whole story.
+
+    On a very large invalid part the status walk stops at `LOCALIZE_STATUS_BUDGET`. The defects it
+    found are worth having, but an operator who reads the list as a full diagnosis may route a
+    repairable part to manual cleanup, or treat a part with unexamined damage as understood. So a
+    truncated scan says so, exactly as a scan that fell over does.
+    """
+    from meshpipeline.cad.repair import localize as localize_mod
+    from meshpipeline.cad.repair.contracts import DefectSeverity
+    from meshpipeline.cad.repair.localize import EntityDefect
+
+    _stub_shape(monkeypatch, valid=False)
+    found = (EntityDefect(code=DefectCode.open_shell, severity=DefectSeverity.error,
+                          entity_type="face", entity_index=3, message="an opening"),)
+    monkeypatch.setattr(localize_mod, "localize_scan", lambda _s, valid=None: (found, False))
+    path = tmp_path / "huge.step"
+    path.write_text("fixture")
+
+    report = inspect_brep_file(path)
+
+    assert _measurements(report)["localisation_complete"] is False
+    # and the findings it did get are still reported - partial is worth having
+    assert DefectCode.open_shell in _codes(report)
+
+
+def test_a_scan_that_saw_everything_says_so(monkeypatch, tmp_path):
+    from meshpipeline.cad.repair import localize as localize_mod
+
+    _stub_shape(monkeypatch, valid=True)
+    monkeypatch.setattr(localize_mod, "localize_scan", lambda _s, valid=None: ((), True))
+    path = tmp_path / "sound.step"
+    path.write_text("fixture")
+
+    assert _measurements(inspect_brep_file(path))["localisation_complete"] is True

@@ -465,7 +465,8 @@ def test_a_job_with_no_inspection_gets_an_honest_abstention(monkeypatch):
 
 def test_throughput_is_served_from_the_repository_without_reshaping_it(monkeypatch):
     repo = _Repo([])
-    counted = {"jobs_total": 3, "delivery_rate": 0.6667, "by_state": {"delivered": 2}}
+    counted = {"jobs_total": 3, "mesh_delivery_rate": 0.6667, "any_delivery_rate": 1.0,
+               "by_state": {"delivered": 2}}
 
     async def _throughput(db):
         return counted

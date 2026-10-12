@@ -100,8 +100,12 @@ export default async function RepairQueuePage({
             stats={[
               { label: "Jobs", value: String(throughput.data.throughput.jobs_total) },
               {
-                label: "Delivered",
-                value: formatRate(throughput.data.throughput.delivery_rate),
+                label: "Delivered with a mesh",
+                value: formatRate(throughput.data.throughput.mesh_delivery_rate),
+              },
+              {
+                label: "Delivered anything",
+                value: formatRate(throughput.data.throughput.any_delivery_rate),
               },
               {
                 label: "Blocked",

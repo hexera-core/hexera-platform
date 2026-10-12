@@ -98,14 +98,39 @@ async def deliver_repair_report(session_factory, *, job_id: str, report: dict,
     except Exception as exc:  # noqa: BLE001 - evidence is never load-bearing for a run
         logger.warning("repair_report_delivery: could not deliver the inspection report (%s) - "
                        "the run is unaffected - job_id=%s", exc, job_id)
-        _discard_orphan(object_key, job_id=job_id)
+        await _discard_orphan(session_factory, object_key, job_id=job_id)
         return ""
     finally:
         if scratch is not None:
             scratch.unlink(missing_ok=True)
 
 
-def _discard_orphan(object_key: str, *, job_id: str) -> None:
+async def _is_claimed(session_factory, object_key: str, *, job_id: str) -> bool:
+    """Does a COMMITTED artifact row already point at these bytes?
+
+    The keys here are content-addressed, so an identical re-delivery - a retry, or a worker that
+    took the lease over - computes the key an earlier, successful delivery already committed. If
+    that retry's own row then fails, the bytes under the key are not an orphan: they are the
+    object a customer's artifact record names. Deleting them would turn a committed download into
+    a 404.
+
+    FAILING TO ANSWER COUNTS AS CLAIMED. If the database cannot be reached the honest answer is
+    "unknown", and the safe reading of unknown is to keep the object: a leaked file costs storage,
+    a wrongly deleted one costs the customer their deliverable.
+    """
+    from meshpipeline.persistence.repositories.artifact_repository import ArtifactRepository
+
+    try:
+        async with session_factory() as db:
+            rows = await ArtifactRepository().get_by_job(db, uuid.UUID(str(job_id)))
+        return any(getattr(row, "storage_key", None) == object_key for row in rows)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("repair_report_delivery: could not check whether a row owns %s (%s) - "
+                       "keeping the object - job_id=%s", object_key, exc, job_id)
+        return True
+
+
+async def _discard_orphan(session_factory, object_key: str, *, job_id: str) -> None:
     """Delete an object whose row never committed, so it does not linger untracked.
 
     BEST EFFORT, and said so: if the delete also fails the object stays, and the artifact
@@ -113,6 +138,10 @@ def _discard_orphan(object_key: str, *, job_id: str) -> None:
     is the backstop. What matters here is not leaving a file nobody will ever look for without
     having tried.
     """
+    if await _is_claimed(session_factory, object_key, job_id=job_id):
+        logger.info("repair_report_delivery: %s is named by a committed artifact row - leaving "
+                    "it where the customer can download it - job_id=%s", object_key, job_id)
+        return
     try:
         from meshpipeline.contracts.object_storage import get_object_store
         get_object_store().delete_object(object_key=object_key)
@@ -152,9 +181,14 @@ async def deliver_repaired_cad(session_factory, *, job_id: str, local_path,
     from meshpipeline.contracts.geometry_source import sha256_of
 
     safe = (suffix or src.suffix or ".step").lower()
-    digest, _ = sha256_of(src)
-    object_key = repaired_cad_key(str(job_id), digest, safe)
+    object_key = ""
     try:
+        # INSIDE THE GUARD. Hashing reads the file again, and a file that vanished or became
+        # unreadable between the check above and here must not raise out of a best-effort
+        # delivery: the caller is finalising a terminal run and only expects to be fenced, so an
+        # exception here would abandon a mesh the customer can otherwise download.
+        digest, _ = sha256_of(src)
+        object_key = repaired_cad_key(str(job_id), digest, safe)
         from meshpipeline.contracts.object_storage import get_object_store
         stored = get_object_store().upload_file(
             local_path=src, object_key=object_key, content_type="application/octet-stream")
@@ -187,5 +221,6 @@ async def deliver_repaired_cad(session_factory, *, job_id: str, local_path,
         logger.warning("repair_report_delivery: could not deliver the repaired CAD (%s) - the "
                        "mesh is unaffected but the customer cannot download the repair "
                        "- job_id=%s", exc, job_id)
-        _discard_orphan(object_key, job_id=job_id)
+        if object_key:
+            await _discard_orphan(session_factory, object_key, job_id=job_id)
         return ""

@@ -137,11 +137,12 @@ def inspect_brep_file(path: Path) -> RepairReport:
         # WHERE IT IS BROKEN, not just whether. `IsValid()` is one bit about the whole part and
         # cannot be acted on by an operator or aimed at by a repair; this attributes the damage to
         # entities, with their size and position (cad/repair/localize.py).
-        from meshpipeline.cad.repair.localize import localize, summarise
+        from meshpipeline.cad.repair.localize import localize_scan, summarise
+        scan_complete = True
         try:
             # the validity answer is already in hand; computing it twice doubles the
             # analyser's cost on every inspection
-            found = localize(shape, valid=is_valid)
+            found, scan_complete = localize_scan(shape, valid=is_valid)
         except Exception as exc:  # noqa: BLE001
             # EVIDENCE, NEVER LOAD-BEARING. Localisation reaches deep into the kernel and a shape
             # it cannot walk must still get an inspection: the report then carries no entities,
@@ -196,8 +197,13 @@ def inspect_brep_file(path: Path) -> RepairReport:
                 ),
             )
 
+        # COMPLETE MEANS COMPLETE. Localisation can fall short two ways - it can raise, or its
+        # bounded status walk can stop before the last sub-shape on a very large invalid part -
+        # and both leave a defect list that is not a full diagnosis. Only a scan that did neither
+        # may claim it, because an operator reads this flag to decide whether the list is the
+        # whole story.
         measurements = {"format": fmt, "is_valid": is_valid, **counts, "located": located,
-                        "localisation_complete": not localisation_failed}
+                        "localisation_complete": scan_complete and not localisation_failed}
         if not defects:
             summary = "No repair needed."
         elif counts["faces"] == 0:

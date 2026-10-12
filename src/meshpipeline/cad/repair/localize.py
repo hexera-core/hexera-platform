@@ -350,8 +350,13 @@ def _open_boundary_defects(shape, *, diagonal: float, interior: set[int]) -> lis
 LOCALIZE_STATUS_BUDGET = 1200
 
 
-def _status_defects(shape, *, interior: set[int], valid: bool) -> list[EntityDefect]:
+def _status_defects(shape, *, interior: set[int],
+                    valid: bool) -> tuple[list[EntityDefect], bool]:
     """Whatever BRepCheck DOES attribute to a sub-shape, mapped onto the product's vocabulary.
+
+    Returns the findings AND whether the walk saw every sub-shape. The second half matters as much
+    as the first: a walk that stopped at its budget has a defect list nobody may read as a full
+    diagnosis, and the only way a caller can know is for this to say so.
 
     SKIPPED ENTIRELY FOR A VALID SHAPE, which is most of them, and that is not an optimisation
     with a trade-off - it is the definition. BRepCheck attributes a status to a sub-shape only
@@ -369,13 +374,15 @@ def _status_defects(shape, *, interior: set[int], valid: bool) -> list[EntityDef
 
     out: list[EntityDefect] = []
     if valid:
-        return out
+        return out, True
 
     visited = 0
+    truncated = False
     analyzer = BRepCheck_Analyzer(shape, True)
     for kind, label in ((TopAbs_FACE, "face"), (TopAbs_SHELL, "shell"),
                         (TopAbs_WIRE, "wire"), (TopAbs_EDGE, "edge")):
         if visited >= LOCALIZE_STATUS_BUDGET:
+            truncated = True
             break
         indexed = _indexed(shape, kind)
         explorer = TopExp_Explorer(shape, kind)
@@ -386,6 +393,7 @@ def _status_defects(shape, *, interior: set[int], valid: bool) -> list[EntityDef
             if visited > LOCALIZE_STATUS_BUDGET:
                 logger.info("localize: status walk stopped at %d sub-shapes - the report is "
                             "partial", LOCALIZE_STATUS_BUDGET)
+                truncated = True
                 break
             try:
                 statuses = [str(s).rsplit("BRepCheck_", 1)[-1]
@@ -411,7 +419,7 @@ def _status_defects(shape, *, interior: set[int], valid: bool) -> list[EntityDef
                             else REGION_UNKNOWN),
                     location=_centroid_and_box(sub),
                     kernel_status=status))
-    return out
+    return out, not truncated
 
 
 def _size_defects(shape, *, diagonal: float, total_area: float,
@@ -450,12 +458,17 @@ def _size_defects(shape, *, diagonal: float, total_area: float,
     return out
 
 
-def localize(shape, *, valid: bool | None = None) -> tuple[EntityDefect, ...]:
-    """Every located failure point this module can find, in a stable order.
+def localize_scan(shape, *, valid: bool | None = None) -> tuple[tuple[EntityDefect, ...], bool]:
+    """Every located failure point this module can find, and whether the scan was exhaustive.
 
     Order is by entity type then index, NOT by severity: a caller that wants the worst first can
     sort, and a stable order means two inspections of the same bytes produce the same report -
     which is what makes a report comparable before and after a repair.
+
+    THE SECOND RETURN VALUE IS NOT A DETAIL. The status walk is bounded (see
+    `LOCALIZE_STATUS_BUDGET`), so on a very large invalid part the list can be short because the
+    walk stopped, not because the part is nearly sound. Reporting that as a complete diagnosis is
+    how a repairable defect gets missed, so completeness travels with the findings.
     """
     from OCP.TopAbs import TopAbs_FACE
 
@@ -470,11 +483,12 @@ def localize(shape, *, valid: bool | None = None) -> tuple[EntityDefect, ...]:
 
     found: list[EntityDefect] = []
     found.extend(_open_boundary_defects(shape, diagonal=diagonal, interior=interior))
-    found.extend(_status_defects(shape, interior=interior, valid=valid))
+    attributed, complete = _status_defects(shape, interior=interior, valid=valid)
+    found.extend(attributed)
     found.extend(_size_defects(shape, diagonal=diagonal, total_area=total_area,
                                interior=interior))
     found.sort(key=lambda d: (d.entity_type, d.entity_index, d.code.value))
-    return tuple(found)
+    return tuple(found), complete
 
 
 def _diagonal(shape) -> float:

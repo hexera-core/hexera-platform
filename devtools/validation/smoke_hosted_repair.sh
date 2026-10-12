@@ -115,7 +115,7 @@ if [ -n "${ADMIN_KEY}" ]; then
     bad "operator queue with credential -> ${status}"
   fi
   status=$(code "${API}/api/v1/admin/repair/throughput" "${body}" "X-Admin-Key: ${ADMIN_KEY}")
-  if [ "${status}" = "200" ] && grep -q '"delivery_rate"' "${body}"; then
+  if [ "${status}" = "200" ] && grep -q '"mesh_delivery_rate"' "${body}"; then
     ok "throughput answers with the service metrics $(tr -d '\n' < "${body}" | head -c 200)"
   else
     bad "throughput -> ${status}"

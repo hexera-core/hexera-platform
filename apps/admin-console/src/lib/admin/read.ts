@@ -324,6 +324,7 @@ export async function readRepairQueue(query: {
 }
 
 export type RepairThroughput = {
+  any_delivery_rate: number | null;
   attempts_total: number;
   awaiting_human: number;
   blocked: number;
@@ -331,13 +332,15 @@ export type RepairThroughput = {
   by_state: Record<string, number>;
   delivered_repair_only: number;
   delivered_with_mesh: number;
-  // null, not zero, when there are no jobs yet: "0% of nothing" reads as a failure.
-  delivery_rate: number | null;
   in_flight: number;
   jobs_total: number;
   jobs_touched_by_an_operator: number;
   jobs_with_attempts: number;
   mean_seconds_to_delivery: number | null;
+  // TWO RATES, as the repository serves them: the share of jobs that reached a downloadable mesh,
+  // and the share that got anything at all. null, not zero, when there are no jobs yet - "0% of
+  // nothing" reads as a failure.
+  mesh_delivery_rate: number | null;
   operator_decisions_total: number;
   retry_decisions: number;
 };
@@ -346,10 +349,12 @@ export async function readRepairThroughput(): Promise<Read<{ throughput: RepairT
   return request(hexeraApiRoutes.adminRepairThroughput);
 }
 
-export function formatRate(rate: number | null): string {
-  // A missing rate is "—", never "0%": the two mean opposite things to someone reading a launch
-  // dashboard, and printing the wrong one has sunk confidence in better services than this.
-  return rate === null ? "—" : `${Math.round(rate * 100)}%`;
+export function formatRate(rate: number | null | undefined): string {
+  // A missing rate is "—", never "0%" and never "NaN%": they mean opposite things to someone
+  // reading a launch dashboard, and printing the wrong one has sunk confidence in better services
+  // than this. `undefined` is accepted on purpose - a renamed field on the API side should degrade
+  // to "—" rather than to arithmetic on nothing.
+  return rate === null || rate === undefined ? "—" : `${Math.round(rate * 100)}%`;
 }
 
 export function formatDuration(seconds: number | null): string {
