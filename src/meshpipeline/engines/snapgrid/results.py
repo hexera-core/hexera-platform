@@ -405,6 +405,12 @@ def quality_lines(report: dict, rows: list[dict]) -> list[str]:
                          "a layer than asked: " + ", ".join(
                              f"{r['label']} ({r['cells_through']} of {r['cells_asked']})" for r in short[:6])
                          + (f", and {len(short) - 6} more" if len(short) > 6 else "") + ".")
+    rounds = [s for s in report.get("staircased") or [] if isinstance(s, dict) and s.get("part")]
+    if rounds:
+        worst_pct = max(abs(float(s.get("error_pct") or 0.0)) for s in rounds)
+        names = sorted({_label(str(s["part"])) for s in rounds})
+        lines.append(f"Round parts follow the file within {worst_pct:.1f}% of their volume "
+                     f"({', '.join(names[:6])}{', …' if len(names) > 6 else ''}); box parts are exact.")
     films = thin_layer_rows(report)
     if films:
         lines.append(f"{len(films)} layer{'s' if len(films) != 1 else ''} too thin to mesh with sound "
@@ -414,12 +420,6 @@ def quality_lines(report: dict, rows: list[dict]) -> list[str]:
                          f"{f['label']} ({f['thickness_text']}, R = {f['R_m2K_W']:.3g} m²K/W)"
                          for f in films[:6]) + (f", and {len(films) - 6} more" if len(films) > 6 else "")
                      + ". The solver entries are in constant/<region>/thinLayerResistances.")
-    rounds = [s for s in report.get("staircased") or [] if isinstance(s, dict) and s.get("part")]
-    if rounds:
-        worst_pct = max(abs(float(s.get("error_pct") or 0.0)) for s in rounds)
-        names = sorted({_label(str(s["part"])) for s in rounds})
-        lines.append(f"Round parts follow the file within {worst_pct:.1f}% of their volume "
-                     f"({', '.join(names[:6])}{', …' if len(names) > 6 else ''}); box parts are exact.")
     return lines
 
 
