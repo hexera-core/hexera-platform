@@ -24,6 +24,7 @@ What the file says and the mesh holds, checked before anything is written:
 from __future__ import annotations
 
 import json
+import math
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -49,10 +50,12 @@ from meshpipeline.cad.ingest.ecxml_build import (
     physics_summary,
 )
 from meshpipeline.cad.ingest.ecxml_place import (
+    THINNER_WHY,
     Placement,
     describe,
     place,
     placement_sidecar,
+    thinner_why,
 )
 from meshpipeline.engines.snapgrid import blocks as B
 from meshpipeline.engines.snapgrid import boxmesh
@@ -123,29 +126,42 @@ def render_region_properties(fluids: list[str], solids: list[str]) -> str:
 
 # ------------------------------------------------------------------------------ the mesh ------
 def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None = None,
-               dry_run: bool = False, local: bool = True, dialect: str = "esi") -> SnapgridMesh:
+               dry_run: bool = False, local: bool = True, dialect: str = "esi",
+               memory_bytes: float | None = None) -> SnapgridMesh:
     """Read `src` (ECXML), mesh it on a snap grid refined locally (blocks) and write the
     single-region polyMesh with a cellZone per region, constant/regionProperties, the report and
     the physics sidecar into the OpenFOAM case `case`. `dry_run` stops after the grid is sized
     (nothing written but the report); `local=False` meshes one tensor grid over the whole domain.
     Raises EcxmlError (a file that cannot be read or placed), G.OverBudget (a model that needs
     more cells than the budget to keep its layers) or FidelityError (a mesh that would not be the
-    file's model - a bug, never a model fault)."""
+    file's model - a bug, never a model fault). `memory_bytes`: the memory the job may use (None:
+    read from the machine and its container); a budget that would not fit in it is lowered before
+    anything is built, and a model that cannot keep its layers in it raises grid.OutOfMemory."""
     plan = plan or G.GridPlan()
     case = Path(case)
     t = {"start": time.perf_counter()}
     model = read_ecxml(src)
     placement = place(model)
     t["placed"] = time.perf_counter()
-    layout = B.build_layout(placement, plan, local=local)
+    asked = plan
+    plan, memory = _plan_for_memory(plan, memory_bytes)
+    try:
+        layout = B.build_layout(placement, plan, local=local)
+    except G.OverBudget as exc:
+        if plan.max_cells < asked.max_cells and exc.needed <= asked.max_cells:
+            raise G.OutOfMemory(_memory_sentence(exc.needed, memory), exc.needed) from None
+        raise
+    if memory.get("lowered_from"):
+        layout.relaxed = [memory["note"]] + list(layout.relaxed)
     t["gridded"] = time.perf_counter()
     report: dict = {"mesher": MESHER, "report_version": REPORT_VERSION,
                     "input": {"file": Path(src).name, "model_name": model.name,
                               "producer": model.producer,
                               "active_objects": sum(1 for o in model.active_objects
                                                     if o.kind not in ("assembly", "heatsink"))},
-                    "plan": asdict(plan), "plan_used": asdict(layout.plan),
-                    "relaxed": layout.relaxed, "grid": layout_stats(layout)}
+                    "plan": asdict(asked), "plan_used": asdict(layout.plan),
+                    "relaxed": layout.relaxed, "grid": layout_stats(layout),
+                    "memory": {**memory, "estimate_bytes": G.memory_needed(layout.n_cells)}}
     if dry_run:
         report["dry_run"] = True
         report["timings_s"] = _timings(t)
@@ -176,15 +192,28 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
     notes = placement.notes
     records = placement.records
     build_report = describe(placement) + list(placement.report)
-    live = _settle_parts(placement, part_cells, build_report)
+    live, flattened = _settle_parts(placement, part_cells, build_report)
+    report["flattened"] = [placement.parts[k].objects[0].label for k in flattened]
+    report["file_precision_m"] = placement.tol.noise
     names = _name_regions(placement, live, n_air)
     part_region = {k: names["parts"][k] for k in live}
     air_names = names["air"]
     for row in report["line_contacts"]:
-        on = ", ".join(str(placement.parts[o].name) for o in row["others"])
-        build_report.append(f"Line contact: {placement.parts[row['part']].name} lies on {on} "
-                            f"along a line; the {row['cells_released']} staircase cell(s) "
-                            "standing on it are air, so the two share no face.")
+        on = ", ".join("the air" if o < 0 else str(placement.parts[o].name)
+                       for o in row["others"])
+        under = ", ".join("the air" if g < 0 else str(placement.parts[g].name)
+                          for g in row.get("given_to", [G.AIR]))
+        me = placement.parts[row["part"]].name
+        if row.get("inside"):
+            host = ", ".join(str(placement.parts[g].name) for g in row["inside"])
+            build_report.append(f"Line contact: {me} touches the face of {host}, which holds it, "
+                                f"from inside, so it meets {on} beyond that face along a line; "
+                                f"the {row['cells_released']} staircase cell(s) on that face go "
+                                f"to {under}.")
+        else:
+            build_report.append(f"Line contact: {me} lies on {on} along a line; the "
+                                f"{row['cells_released']} staircase cell(s) standing on it go to "
+                                f"what lies under it there ({under}), so the two share no face.")
 
     # curved parts: the staircase pulled onto the file's ellipse (boxes stay exact)
     keys = np.unique(np.concatenate([topo.face_pts, topo.b_pts]))
@@ -194,7 +223,8 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
     if curves:
         solid_box = np.array([p.kind != "solidCylinder" for p in placement.parts], dtype=bool)
         snapped = C.snap(curves, points, keys, topo, zone, solid_box,
-                         _hanging_keys(topo, points, keys))
+                         _hanging_keys(topo, points, keys), planes=_box_planes(placement, live),
+                         tol=G.plane_tolerance(placement))
         if snapped.topo is not None:            # risers collapsed: fewer faces, fewer points
             topo = snapped.topo
             keys = snapped.keys
@@ -206,7 +236,8 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
             a_b, c_b = C.face_geometry(points, topo.b_off, ids_b)
             vols = C.cell_volumes(topo.n_cells, topo.owner, topo.neighbour, a_i, c_i,
                                   topo.b_owner, a_b, c_b)
-    curved_rows = C.report(curves, points, keys, topo, zone, part_region) if curves else []
+    curved_rows = C.report(curves, points, keys, topo, zone, part_region,
+                           domain=(placement.domain.lo, placement.domain.hi)) if curves else []
     t["snapped"] = time.perf_counter()
     part_vol = np.bincount(zone + 1, weights=vols, minlength=P + 1)[1:]
     air_vol = np.bincount(airs + 1, weights=vols, minlength=n_air + 1)[1:]
@@ -306,6 +337,10 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
     stats["interface_skew"] = report.get("interface_skew") or {}
     report["grid"] = stats
     build_report += _report_lines(placement, layout, stats, thin, staircase, records)
+    build_report += _flattened_warning(placement, flattened, contacts)
+    report["thin_air"] = _thin_air(placement, live)
+    build_report += _physics_warnings(placement, live, part_vol)
+    build_report += _thin_air_lines(report["thin_air"])
     build_report += checks
     sidecar = _sidecar(placement, regions, patch_rows, build_report, contacts, stats)
     (case / SIDECAR_NAME).write_text(json.dumps(sidecar, indent=1, default=float))
@@ -330,6 +365,34 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
     return SnapgridMesh(case=case, report=report, sidecar=sidecar,
                         regions=[{"name": r["name"], "type": r["type"], "cells": r["cells"]}
                                  for r in regions])
+
+
+def _plan_for_memory(plan: G.GridPlan, memory_bytes: float | None) -> tuple[G.GridPlan, dict]:
+    """The plan with its cell budget lowered to what the job's memory holds (measured: about
+    3.4 GB per million cells at peak), and what was found - before anything is built."""
+    have = memory_bytes if memory_bytes is not None else G.available_memory()
+    if have is None:
+        return plan, {"available_bytes": None}
+    fit = G.cells_that_fit(have)
+    out: dict = {"available_bytes": have, "cells_that_fit": fit}
+    if fit >= plan.max_cells:
+        return plan, out
+    lowered = max(1000, fit)
+    out["lowered_from"] = plan.max_cells
+    out["note"] = (f"the memory this job has ({have / 1e9:.3g} GB) holds about {fit:,} cells at "
+                   f"{G.BYTES_PER_CELL * 1e3:.3g} GB per million, so the cell budget was lowered "
+                   f"from {plan.max_cells:,} to {lowered:,} before anything was built")
+    return G._replace(plan, max_cells=lowered), out
+
+
+def _memory_sentence(needed: int, memory: dict) -> str:
+    have = memory.get("available_bytes") or 0.0
+    return (f"this model needs at least {needed:,} cells to keep one cell through every part, "
+            f"about {G.memory_needed(needed) / 1e9:.3g} GB of memory, but this job has "
+            f"{have / 1e9:.3g} GB (room for about {memory.get('cells_that_fit', 0):,} cells); it "
+            "is refused before anything is built rather than stopped by the system half way. Run "
+            f"it where at least {G.memory_needed(needed) / G.MEMORY_SHARE / 1e9:.3g} GB is "
+            "free; no layer is merged away to fit.")
 
 
 def _back_within_budget(placement: Placement, plan: G.GridPlan, layout: B.Layout,
@@ -382,25 +445,37 @@ def _zone_at(layout: B.Layout, bounds: tuple[np.ndarray, np.ndarray], pts: np.nd
 
 
 def _release_line_contacts(placement: Placement, layout: B.Layout) -> list[dict]:
-    """A solid cylinder lying on a box part (its side tangent to the box's face) touches it along
-    a line, not over an area. The staircase cells standing on that face (painted by their centre)
-    would share faces with the box; they become air, and the snap then pulls the cylinder's side
-    down onto its circle as far as the air cells under it stay sound. Returns one row per contact
-    released: the parts, and the cells given to the air."""
+    """A solid cylinder lying on another part (its side tangent to a box's face, or to another
+    cylinder) touches it along a line, not over an area. The staircase cells standing on that
+    plane (painted by their centre) would share faces with the other part; they are given back to
+    what lies under the cylinder there - the air, or the part the cylinder is buried in - and the
+    snap then pulls the cylinder's side onto its circle as far as the cells under it stay sound.
+
+    Released only where the other part really lies on that plane from outside the cylinder: a
+    face of one of its boxes on the plane, the box on the far side of it (a cylinder buried in a
+    block is not lying on the block: the block surrounds it, and no cell of it is released), or
+    another cylinder whose box ends on the plane (two cylinders side by side, or one on another,
+    meet along a line or at a point - never over an area). Likewise where the cylinder is buried
+    in a part whose own face is that plane (a via tangent to its die's side from inside): what lies
+    beyond that face touches the via along a line, and the cells there go to the die. Returns one
+    row per contact released: the parts, and the cells given back."""
     from meshpipeline.cad.ingest.ecxml import axis_of_plane
 
     tol = G.plane_tolerance(placement)
     gap = max(4 * tol, 1e-12)
-    box_part = np.array([q.kind != "solidCylinder" for q in placement.parts], dtype=bool)
-    cyl = [k for k, p in enumerate(placement.parts)
-           if not p.dropped and p.kind == "solidCylinder"]
+    parts = placement.parts
+    cyl = [k for k, p in enumerate(parts) if not p.dropped and p.kind == "solidCylinder"]
     if not cyl:
         return []
     blo = np.array([[layout.coords(b, a)[0] for a in range(3)] for b in layout.blocks])
     bhi = np.array([[layout.coords(b, a)[-1] for a in range(3)] for b in layout.blocks])
+    rank = {k: r for r, k in enumerate(placement.paint)}
+    boxes_lo = np.array([q.box.lo for q in parts], dtype=float)
+    boxes_hi = np.array([q.box.hi for q in parts], dtype=float)
+    under_cache: dict[tuple[int, int], np.ndarray] = {}
     rows: list[dict] = []
     for k in cyl:
-        p = placement.parts[k]
+        p = parts[k]
         axis = axis_of_plane(p.objects[0].plane)
         for a_ in (i for i in range(3) if i != axis):
             lat = [i for i in range(3) if i != a_]
@@ -409,10 +484,22 @@ def _release_line_contacts(placement: Placement, layout: B.Layout) -> list[dict]
                 if abs(plane - placement.domain.lo[a_]) <= tol or \
                         abs(plane - placement.domain.hi[a_]) <= tol:
                     continue
+                # what lies on this plane from the far side, over the cylinder's footprint; and
+                # the parts the cylinder is buried in whose own face is this plane (a via tangent
+                # to its die's side touches what is beyond that side along a line only)
+                touching = _lying_on(parts, k, a_, side, plane, tol, boxes_lo, boxes_hi)
+                hosts = _lying_on(parts, k, a_, 1 - side, plane, tol, boxes_lo, boxes_hi,
+                                  before=list(placement.paint[:rank[k]]))
+                hosts = {q: [b for b in bs if (b[1][a_] > plane + tol if side == 0
+                                               else b[0][a_] < plane - tol)]
+                         for q, bs in hosts.items() if parts[q].kind != "solidCylinder"}
+                hosts = {q: bs for q, bs in hosts.items() if bs}
+                if not touching and not hosts:
+                    continue
                 near = np.all([(blo[:, i] < p.box.hi[i] - tol) & (bhi[:, i] > p.box.lo[i] + tol)
                                for i in lat], axis=0)
                 near &= (blo[:, a_] <= plane + tol) & (bhi[:, a_] >= plane - tol)
-                released, others = 0, set()
+                released, others, given, inside = 0, set(), set(), set()
                 for bi in np.flatnonzero(near).tolist():
                     blk = layout.blocks[bi]
                     la = layout.coords(blk, a_)
@@ -441,15 +528,130 @@ def _release_line_contacts(placement: Placement, layout: B.Layout) -> list[dict]
                         pts[:, lat[0]], pts[:, lat[1]] = g0.ravel(), g1.ravel()
                         pts[:, a_] = plane - gap if side == 0 else plane + gap
                         across = _zone_at(layout, (blo, bhi), pts).reshape(cells.shape)
-                    hit = mine & (across >= 0) & (across != k) & box_part[np.maximum(across, 0)]
-                    if hit.any():
-                        cells[hit] = G.AIR
-                        released += int(hit.sum())
-                        others |= {int(x) for x in np.unique(across[hit])}
+                    # the cell across must be a part lying on the plane, at a place where one of
+                    # its touching boxes covers (a host that runs on past the plane never counts)
+                    c0 = layout.coords(blk, lat[0])
+                    c1 = layout.coords(blk, lat[1])
+                    m1, m0 = np.meshgrid((c1[:-1] + c1[1:]) / 2, (c0[:-1] + c0[1:]) / 2,
+                                         indexing="ij")
+                    hit = np.zeros(cells.shape, dtype=bool)
+                    for q, boxes in touching.items():
+                        here = mine & (across == q)
+                        if not here.any():
+                            continue
+                        here &= _footprint(boxes, m0, m1, lat)
+                        if here.any():
+                            hit |= here
+                            others.add(q)
+                    under = None
+                    if hosts:
+                        key = (bi, k)
+                        if key not in under_cache:
+                            under_cache[key] = _paint_under(placement, layout, blk, k, rank)
+                        under = np.take(under_cache[key], layer, axis=2 - a_)
+                        for q, boxes in hosts.items():
+                            here = mine & ~hit & (across != k) & (under == q) & _footprint(boxes, m0, m1, lat)
+                            if here.any():
+                                hit |= here
+                                others |= {int(x) for x in np.unique(across[here])}
+                                inside.add(q)
+                    if not hit.any():
+                        continue
+                    if under is None:
+                        key = (bi, k)
+                        if key not in under_cache:
+                            under_cache[key] = _paint_under(placement, layout, blk, k, rank)
+                        under = np.take(under_cache[key], layer, axis=2 - a_)
+                    cells[hit] = under[hit]
+                    released += int(hit.sum())
+                    given |= {int(x) for x in np.unique(under[hit])}
                 if released:
                     rows.append({"part": k, "others": sorted(others), "axis": _AXES[a_],
-                                 "side": "-+"[side], "cells_released": released})
+                                 "side": "-+"[side], "cells_released": released,
+                                 "given_to": sorted(given), "inside": sorted(inside)})
     return rows
+
+
+def _footprint(boxes, m0: np.ndarray, m1: np.ndarray, lat: list[int]) -> np.ndarray:
+    """The cells (centres m0, m1 on the two axes of a plane) inside any of the boxes."""
+    foot = np.zeros(m0.shape, dtype=bool)
+    for lo_, hi_ in boxes:
+        foot |= ((m0 > lo_[lat[0]]) & (m0 < hi_[lat[0]]) & (m1 > lo_[lat[1]]) & (m1 < hi_[lat[1]]))
+    return foot
+
+
+def _lying_on(parts, k: int, a_: int, side: int, plane: float, tol: float,
+              boxes_lo: np.ndarray, boxes_hi: np.ndarray, before: list[int] | None = None
+              ) -> dict[int, list[tuple[list[float], list[float]]]]:
+    """The parts that lie on cylinder k's bounding plane `plane` (normal `a_`) from outside it -
+    a box of theirs with a face on the plane, wholly on the far side, overlapping the cylinder's
+    footprint; or another cylinder whose box ends on the plane there - each with the boxes that
+    touch (their footprint on the plane). `side` 0: the plane is the cylinder's lower bound (the
+    part lies below it); 1: its upper. `before`: look only at these parts. `boxes_lo/hi`: every
+    part's box, for a quick first cut."""
+    p = parts[k]
+    lat = [i for i in range(3) if i != a_]
+    out: dict[int, list[tuple[list[float], list[float]]]] = {}
+    plo, phi = np.asarray(p.box.lo), np.asarray(p.box.hi)
+    meet = ((np.minimum(boxes_hi, phi) - np.maximum(boxes_lo, plo)) >= -tol).all(axis=1)
+    cand = np.flatnonzero(meet)
+    if before is not None:
+        cand = np.intersect1d(cand, np.asarray(before, dtype=np.int64))
+    for q in cand.tolist():
+        other = parts[q]
+        if q == k or other.dropped:
+            continue
+        boxes = [other.box] if other.kind == "solidCylinder" else list(_material(other))
+        found = []
+        for b in boxes:
+            face = b.hi[a_] if side == 0 else b.lo[a_]
+            if abs(face - plane) > tol:
+                continue
+            if any(min(b.hi[i], p.box.hi[i]) - max(b.lo[i], p.box.lo[i]) <= tol for i in lat):
+                continue
+            found.append((list(b.lo), list(b.hi)))
+        if found:
+            out[q] = found
+    return out
+
+
+def _paint_under(placement: Placement, layout: B.Layout, blk: B.Block, k: int,
+                 rank: dict[int, int]) -> np.ndarray:
+    """Block `blk` painted with the parts that come before part `k` in the paint order (and reach
+    near it): what each of its cells would be if part k were not there."""
+    tol = G.plane_tolerance(placement)
+    lines = [layout.coords(blk, a) for a in range(3)]
+    sub = G.Grid(lines=lines, plan=layout.plan)
+    bb = _Box([lines[a][0] for a in range(3)], [lines[a][-1] for a in range(3)])
+    me = placement.parts[k].box
+    zone = np.full((sub.shape[2], sub.shape[1], sub.shape[0]), G.AIR, dtype=np.int32)
+    for j in placement.paint[:rank[k]]:
+        q = placement.parts[j]
+        if q.dropped or not q.box.overlaps(bb, 0.0) or not q.box.overlaps(me, 0.0):
+            continue
+        G.paint_part(zone, sub, q, j, tol)
+    return zone
+
+
+def _box_planes(placement: Placement, live: list[int]) -> dict[int, tuple[np.ndarray, np.ndarray]]:
+    """Each box part's stated planes, as boxes: its material boxes and the rectangular vents cut
+    in its walls. A face of the part that lies on none of them is a curved part's surface."""
+    out = {}
+    for k in live:
+        p = placement.parts[k]
+        if p.kind == "solidCylinder":
+            continue
+        boxes = list(_material(p))
+        for kind, cut, axis in p.cutters:
+            if kind == "round":
+                continue
+            c = G._within_walls(p, cut, axis)
+            if c is not None:
+                boxes.append(c)
+        if boxes:
+            out[k] = (np.array([b.lo for b in boxes], dtype=float),
+                      np.array([b.hi for b in boxes], dtype=float))
+    return out
 
 
 def _points_of(layout: B.Layout, topo: boxmesh.BoxTopology, keys: np.ndarray) -> np.ndarray:
@@ -636,20 +838,27 @@ def _timings(t: dict) -> dict:
 def _snapped_boxes(placement: Placement):
     from meshpipeline.cad.ingest.ecxml_build import _snap_function
 
+    if placement.snapped is not None:
+        return placement.snapped            # the boxes as placed (round-off merged)
     objs = placement.model.active_objects
     snapped, _moved = _snap_function(placement.model, objs, placement.tol.noise)
     return snapped
 
 
-def _settle_parts(placement: Placement, part_cells: np.ndarray, report: list[str]) -> list[int]:
+def _settle_parts(placement: Placement, part_cells: np.ndarray, report: list[str]
+                  ) -> tuple[list[int], list[int]]:
     """The parts that kept cells (in file order); the others are recorded as not built, with the
-    reason: overwritten by parts that take precedence, or thinner than the file can state."""
-    live = []
+    reason: overwritten by parts that take precedence, or thinner than the file can state. Returns
+    the live parts and the flattened ones (thinner than the file's precision: lost, said loudly)."""
+    live: list[int] = []
+    flattened: list[int] = []
     records = placement.records
     for k, p in enumerate(placement.parts):
         name = p.objects[0].props.get("heatsink") or p.objects[0].name
         if p.dropped:
             why = p.dropped
+            if why.startswith(THINNER_WHY):
+                flattened.append(k)
         elif part_cells[k] > 0:
             live.append(k)
             continue
@@ -663,15 +872,157 @@ def _settle_parts(placement: Placement, part_cells: np.ndarray, report: list[str
                           "not meshed.")
             why = "objects that take precedence overwrite all of it (JEP181A 4.5.1)"
         else:
-            why = (f"it is thinner than the file's own precision ({_um(placement.tol.noise)}) "
-                   "on some axis, so the file cannot place both of its faces")
+            why = thinner_why(placement.tol.noise)
+            flattened.append(k)
         p.dropped = why
         records["not_built"].append({
             "name": name, "kind": p.kind, "path": list(p.objects[0].path),
             "material": p.material, "power_W": p.power, "why": why})
         for o in p.objects:
             placement.fate[o.order] = f"not built ({why})"
-    return live
+    return live, flattened
+
+
+def _physics_warnings(placement: Placement, live: list[int], part_vol: np.ndarray) -> list[str]:
+    """What the file asks that is most likely a mistake, said once each - nothing is changed:
+    negative power; a part or a source the domain cuts that keeps its whole power; fans with no
+    flow, a reversed flow, a hub as wide as the fan (or a hundredth of it), an oval fan, a 2D fan
+    with no area, and solids standing in a fan's swept volume."""
+    out: list[str] = []
+    rec = placement.records
+    # negative power: a sink, not a source
+    neg = [f"{placement.parts[k].objects[0].name} ({placement.parts[k].power:g} W)"
+           for k in live if (placement.parts[k].power or 0.0) < 0]
+    for key in ("volume_heat_sources", "surface_heat_sources", "patches"):
+        neg += [f"{r['name']} ({r['power_W']:g} W)" for r in rec[key]
+                if isinstance(r.get("power_W"), int | float) and r["power_W"] < 0]
+    if neg:
+        out.append("WARNING: negative power (heat taken out, not put in) on " + ", ".join(neg[:8])
+                   + ("..." if len(neg) > 8 else "") + "; kept as the file says - check the sign.")
+    # a part or a source the domain cuts keeps the file's whole power
+    cut = []
+    for k in live:
+        p = placement.parts[k]
+        if not p.clipped or not p.power:
+            continue
+        whole = _whole_volume(p)
+        if whole > 0:
+            cut.append(f"{p.objects[0].name} ({100 * float(part_vol[k]) / whole:.3g}% inside, "
+                       f"{p.power:g} W)")
+    for r in rec["volume_heat_sources"]:
+        if r.get("partly_outside_domain") and r.get("power_W"):
+            b, c = r["box_m"], r["box_in_domain_m"]
+            vb = math.prod(b["max"][i] - b["min"][i] for i in range(3))
+            vc = math.prod(c["max"][i] - c["min"][i] for i in range(3))
+            if vb > 0:
+                cut.append(f"{r['name']} ({100 * vc / vb:.3g}% inside, {r['power_W']:g} W)")
+    if cut:
+        out.append("WARNING: the solution domain cuts " + ", ".join(cut[:8])
+                   + ("..." if len(cut) > 8 else "") + "; the file's whole power is applied to "
+                   "the piece inside (not scaled down) - scale it in the solver if only that "
+                   "piece should dissipate.")
+    # fans
+    odd: list[str] = []
+    for r in rec["fans"] + [p for p in rec["patches"] if p.get("role") == "fan"]:
+        name = r["name"]
+        flow = r.get("flow") or {}
+        if flow.get("kind") == "fixed_flow_rate":
+            q = float(flow.get("m3_s") or 0.0)
+            if q == 0.0:
+                odd.append(f"{name}: a fixed flow of zero - it moves no air")
+            elif q < 0:
+                odd.append(f"{name}: a negative flow ({q:g} m3/s) - it blows against the "
+                           "direction its plane gives")
+        if r.get("kind") == "axial_3d":
+            outer = [float(d) for d in r.get("outer_diameter_m") or []]
+            hub = float(r.get("hub_diameter_m") or 0.0)
+            if outer and hub >= min(outer) * (1 - 1e-9):
+                odd.append(f"{name}: its hub ({_um(hub)}) is as wide as the fan "
+                           f"({_um(min(outer))}) or wider - no ring is left for the flow")
+            elif outer and hub < 0.01 * min(outer):
+                odd.append(f"{name}: its hub ({_um(hub)}) is under a hundredth of the fan's "
+                           "diameter - check it (JEP181A: a diameter; Icepak exports a radius)")
+            if len(outer) == 2 and abs(outer[0] - outer[1]) > 0.01 * max(outer):
+                odd.append(f"{name}: its box is not square across the flow ({_um(outer[0])} x "
+                           f"{_um(outer[1])}) - read as an oval fan")
+            fan_box = _Box(r["box_m"]["min"], r["box_m"]["max"])
+            inside = [placement.parts[k].objects[0].name for k in live
+                      if placement.parts[k].box.overlaps(fan_box, 0.0)
+                      and not placement.parts[k].wall]
+            if inside:
+                odd.append(f"{name}: " + ", ".join(inside[:4]) + " stand(s) in its swept volume")
+        elif "size_m" in r and not float(r.get("area_m2") or 0.0) > 0.0:
+            odd.append(f"{name}: a 2D fan with no area (a point or a line) - it can move no air")
+    if odd:
+        out.append("WARNING: fans to check: " + "; ".join(odd[:10])
+                   + ("..." if len(odd) > 10 else "") + ".")
+    return out
+
+
+def _whole_volume(p) -> float:
+    """A part's volume as the file gives it, the domain ignored."""
+    from meshpipeline.cad.ingest.ecxml import axis_of_plane
+    from meshpipeline.cad.ingest.ecxml_build import _union_volume
+
+    if p.kind == "solidCylinder":
+        axis = axis_of_plane(p.objects[0].plane)
+        u, v = [i for i in range(3) if i != axis]
+        return math.pi * (p.box.hi[u] - p.box.lo[u]) * (p.box.hi[v] - p.box.lo[v]) / 4 * (
+            p.box.hi[axis] - p.box.lo[axis])
+    boxes = list(_material(p))
+    return _union_volume(p.box, boxes) if boxes else 0.0
+
+
+#: Air between two parts (or a part and the domain's side) thinner than this is reported: no
+#: package has such a gap on purpose; it is an exporter's round-off or a misplaced part, and it
+#: carries cells (and a thermal resistance) the model did not mean.
+THIN_AIR_M = 1e-6
+
+
+def _thin_air(placement: Placement, live: list[int]) -> list[dict]:
+    """The air films thinner than THIN_AIR_M the mesh keeps, thinnest first."""
+    from meshpipeline.cad.ingest.ecxml_build import _thin_gaps
+
+    parts = [placement.parts[k] for k in live]
+    if not parts:
+        return []
+    rows = _thin_gaps(parts, placement.domain, placement.tol.noise, THIN_AIR_M)
+    return sorted(rows, key=lambda r: r["gap_m"])
+
+
+def _thin_air_lines(rows: list[dict]) -> list[str]:
+    if not rows:
+        return []
+    return [f"WARNING: {len(rows)} air gap(s) thinner than {_um(THIN_AIR_M)} are kept as air "
+            "(the file states them; check they are meant): " + "; ".join(
+                f"{' and '.join(r['between'])} ({r['gap_m'] * 1e9:.3g} nm)" for r in rows[:8])
+            + ("..." if len(rows) > 8 else "") + "."]
+
+
+def _flattened_warning(placement: Placement, flattened: list[int], contacts: set) -> list[str]:
+    """One WARNING line for the parts the file's precision flattened away, naming the parts that
+    now touch across where each one was (the file keeps them apart by its thickness)."""
+    if not flattened:
+        return []
+    tol = G.plane_tolerance(placement)
+    rows, across = [], set()
+    for d in flattened:
+        p = placement.parts[d]
+        t = min(p.box.hi[i] - p.box.lo[i] for i in range(3))
+        rows.append(f"{p.objects[0].name} ({_um(max(t, 0.0))})")
+        near = [q.name for k, q in enumerate(placement.parts) if k != d and q.name and all(
+            min(q.box.hi[i], p.box.hi[i]) - max(q.box.lo[i], p.box.lo[i]) >= -tol
+            for i in range(3))]
+        for c in contacts:
+            if c <= set(near):
+                across.add(" and ".join(sorted(c)))
+    line = (f"WARNING: {len(flattened)} part(s) are thinner than the file's own number precision "
+            f"({_um(placement.tol.noise)}) and are NOT meshed: " + ", ".join(rows[:12])
+            + (f" and {len(rows) - 12} more" if len(rows) > 12 else "") + ".")
+    if across:
+        line += (" Where they were, " + "; ".join(sorted(across)[:8])
+                 + " now touch, though the file keeps them apart.")
+    return [line + " Export the model with more digits (a finer precision) to keep them."]
 
 
 def _name_regions(placement: Placement, live: list[int], n_air: int) -> dict:
@@ -835,15 +1186,18 @@ def _thin_layers(placement: Placement, layout: B.Layout, live: list[int], names:
             if c is None:
                 continue
             for bi, (blo, bhi) in enumerate(bounds):
-                if not all(min(c.hi[i], bhi[i]) - max(c.lo[i], blo[i]) > tol for i in range(3)):
+                if not all(min(c.hi[i], bhi[i]) - max(c.lo[i], blo[i]) > tol / G.PLANE_RUN
+                           for i in range(3)):
                     continue
                 blk = layout.blocks[bi]
                 for i in range(3):
                     t = c.hi[i] - c.lo[i]
-                    if t <= tol or c.lo[i] < blo[i] - tol or c.hi[i] > bhi[i] + tol:
+                    if t <= tol / G.PLANE_RUN or c.lo[i] < blo[i] - tol or c.hi[i] > bhi[i] + tol:
                         continue                  # the part runs on into the next block
                     lines = layout.coords(blk, i)
-                    n = int(np.count_nonzero((lines > c.lo[i] + tol) & (lines < c.hi[i] - tol))) + 1
+                    inner = min(tol, t / 4)
+                    n = int(np.count_nonzero((lines > c.lo[i] + inner)
+                                             & (lines < c.hi[i] - inner))) + 1
                     if best is None or (t, n) < (best[0], best[1]):
                         best = (t, n, i)
         if best is None:
@@ -919,13 +1273,22 @@ def _fidelity(placement: Placement, topo: boxmesh.BoxTopology, zone: np.ndarray,
         pair = sorted(next(iter(lost)))
         raise FidelityError(f"{pair[0]} and {pair[1]} touch in the file, but the mesh does not "
                             "share the faces between them")
+    # what the check above cannot see: a part that is not meshed takes its contacts with it, so
+    # "none lost" holds between the parts that are meshed - said so whenever one is missing
+    unmeshed = list(placement.records["not_built"])
+    if unmeshed:
+        tail = (f"{len(contacts)} contact(s) between the parts that are meshed share their faces, "
+                f"none invented, none lost between them - but {len(unmeshed)} part(s) of the file "
+                "are not meshed (listed above), and their contacts with them")
+    else:
+        tail = (f"{len(contacts)} contact(s) between solids share their faces, none invented, "
+                "none lost")
     lines = [f"Checked: {exact} of {len(live)} solid volume(s) match the file's numbers to "
              f"round-off, {len(staircase)} are staircased (listed with their volume error), the "
              f"rest are bounded by the file; the cells fill the domain to "
              f"{abs(total - domain.volume()) / domain.volume():.1e}; all "
              f"{len([o for o in objs if o.kind not in ('assembly', 'heatsink')])} active objects "
-             f"are accounted for; {len(contacts)} contact(s) between solids share their faces, "
-             "none invented, none lost."]
+             f"are accounted for; {tail}."]
     return lines, contacts, staircase
 
 
@@ -963,6 +1326,14 @@ def _report_lines(placement: Placement, layout: B.Layout, st: dict, thin: list[d
     for s_ in staircase:
         if "side_area_error_pct" in s_:
             what = "round hole in" if s_.get("kind") == "round hole" else "cylinder"
+            if s_.get("clipped_by_domain"):
+                vol = (f"volume {s_['volume_error_pct']:+.2g}%, "
+                       if "volume_error_pct" in s_ else "")
+                lines.append(f"Curved: {s_['part']} (cylinder, cut by the solution domain) "
+                             f"snapped onto the file's surface: {vol}side area "
+                             f"{s_['side_area_error_pct']:+.2g}% of the piece of it inside the "
+                             "domain.")
+                continue
             vol = (f"volume {s_['error_pct']:+.2g}%, " if "error_pct" in s_ else "")
             lines.append(f"Curved: {s_['part']} ({what}) snapped onto the file's surface: "
                          f"{vol}side area {s_['side_area_error_pct']:+.2g}% of the file's.")

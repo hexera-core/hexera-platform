@@ -656,15 +656,36 @@ def test_each_region_records_its_thinnest_layer_and_the_narrow_air_a_mesh_must_k
     assert area["Die"] == pytest.approx(2 * (4 + 2 * 2 * 0.3) * 1e-6, rel=1e-9)
 
 
-def test_a_gap_the_files_precision_cannot_tell_from_contact_is_refused_with_the_way_on():
-    from meshpipeline.cad.ingest.ecxml_build import FidelityError
+def _as_float32_export(doc: Ecxml) -> bytes:
+    """The model's locations and sizes as a float32 exporter writes them (0.3 ->
+    0.300000011920929): numbers whose digits carry a float32's noise."""
+    import re
+    import struct
 
-    # a 0.3 um bond line in a 1.3 m model: float32 cannot place it to better than ~0.1 um
+    def f32(m: re.Match) -> str:
+        v = struct.unpack("<f", struct.pack("<f", float(m.group(2))))[0]
+        return f"{m.group(1)}{v:.15g}{m.group(3)}"
+
+    return re.sub(r"(<[xyz]>)([-0-9.e]+)(</[xyz]>)", f32, doc.xml().decode()).encode()
+
+
+def test_a_gap_the_files_precision_cannot_tell_from_contact_is_refused_with_the_way_on():
+    from meshpipeline.cad.ingest.ecxml_build import FidelityError, build
+
+    # a 0.3 um bond line in a 1.3 m model written in float32: float32 cannot place it to better
+    # than ~0.1 um there
     with pytest.raises(FidelityError) as err:
-        _build(_die_on_substrate(3e-7, scale=100.0))
+        build(read_ecxml(_as_float32_export(_die_on_substrate(3e-7, scale=100.0))))
     said = str(err.value)
     assert "cannot be told apart from contact" in said and "0.3 um (Substrate and Die)" in said
     assert "sub-assembly" in said
+
+
+def test_a_gap_written_in_plain_decimals_is_as_precise_as_its_digits_wherever_it_is():
+    # the same 0.3 um bond line written "0.00150030": the digits state it, 1.3 m model or not
+    r = _build(_die_on_substrate(3e-7, scale=100.0))
+    assert ["Die", "Substrate"] not in r.sidecar["solid_contacts"]
+    assert r.sidecar["tolerances_m"]["file_precision"] < 1e-7
 
 
 def test_float32_noise_is_read_as_the_contact_it_is():

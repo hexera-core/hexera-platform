@@ -705,13 +705,9 @@ def build_layout(placement: Placement, plan: G.GridPlan, *, local: bool = True) 
     longest = max(dom.hi[i] - dom.lo[i] for i in range(3))
     H0 = longest / plan.background_cells
     leaf = LEAF_CELLS if local else 10 ** 18
-    candidates = [plan]
-    if plan.growth < 2.0:
-        candidates.append(G._replace(plan, growth=2.0))
-    if plan.min_cells_across > 1:
-        candidates.append(G._replace(candidates[-1], min_cells_across=1))
-    if plan.cylinder_cells > 6:
-        candidates.append(G._replace(candidates[-1], cylinder_cells=6))
+    # each step down is taken only when the one before it does not fit even with the coarsest
+    # background: the background coarsens first, then one cell at a time comes out of the layers
+    candidates = G.relaxations(plan)
     needed = 0
     layers_budget = 0             # the fewest cells that keep the asked cells through every layer
     for k, cand in enumerate(candidates):

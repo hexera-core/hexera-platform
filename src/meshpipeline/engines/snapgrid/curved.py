@@ -125,18 +125,62 @@ def cell_volumes(n_cells: int, owner, neighbour, area, fc, b_owner, b_area, b_fc
 
 
 # ------------------------------------------------------------------------------ the snap -----
+def own_plane_faces(fc: np.ndarray, normal: np.ndarray, zo: np.ndarray, zn: np.ndarray,
+              solid_box: np.ndarray, planes: dict[int, tuple[np.ndarray, np.ndarray]] | None,
+              tol: float) -> np.ndarray:
+    """The faces that are a box part's own faces, which must stay where they are: faces between
+    two different zones that lie on a stated plane of a box part on one side (a face of one of its
+    material boxes or of a rectangular vent cut in it, over that box's extent). A face of a box
+    part that lies on no plane of its own - where a cylinder that wins over it is carved out of it
+    (a via in a die, a pin in a block) - is the cylinder's surface, and moves with it. With no
+    planes given, every face with a box part on a side counts (the box's cells never move)."""
+    if planes is None:
+        return ((zo >= 0) & solid_box[np.maximum(zo, 0)]) | \
+            ((zn >= 0) & solid_box[np.maximum(zn, 0)])
+    out = np.zeros(len(zo), dtype=bool)
+    diff = zo != zn
+    for zside in (zo, zn):
+        cand = np.flatnonzero(diff & (zside >= 0) & solid_box[np.maximum(zside, 0)] & ~out)
+        if not len(cand):
+            continue
+        order = np.argsort(zside[cand], kind="stable")
+        cand = cand[order]
+        parts_, starts = np.unique(zside[cand], return_index=True)
+        ends = np.append(starts[1:], len(cand))
+        for q, s0, s1 in zip(parts_.tolist(), starts.tolist(), ends.tolist()):
+            got = planes.get(int(q))
+            if got is None:
+                continue
+            f = cand[s0:s1]
+            lo, hi = got                                # (n, 3) each
+            c = fc[f]
+            n = normal[f]
+            on = np.zeros(len(f), dtype=bool)
+            for b in range(len(lo)):
+                at = np.take_along_axis(c, n[:, None], 1)[:, 0]
+                face = (np.abs(at - lo[b][n]) <= tol) | (np.abs(at - hi[b][n]) <= tol)
+                inside = np.ones(len(f), dtype=bool)
+                for i in range(3):
+                    inside &= (n == i) | ((c[:, i] >= lo[b][i] - tol) & (c[:, i] <= hi[b][i] + tol))
+                on |= face & inside
+            out[f[on]] = True
+    return out
+
+
 def snap(curves: list[Curve], points: np.ndarray, keys: np.ndarray, topo, zone: np.ndarray,
-         solid_box: np.ndarray, wall_keys: np.ndarray) -> Snapped:
+         solid_box: np.ndarray, wall_keys: np.ndarray,
+         planes: dict[int, tuple[np.ndarray, np.ndarray]] | None = None,
+         tol: float = 0.0) -> Snapped:
     """Where each curve's staircase points go. `zone` is each cell's part (-1 air); `solid_box[k]`
-    says part k's faces must stay where they are (every part but a cylinder); `wall_keys` are the
-    points on a wall between two blocks (they never move: they are hanging nodes of a coarser
+    says part k is a box part, whose own faces must stay where they are - the faces on `planes[k]`
+    (its material and rectangular-vent boxes, as (lo, hi) arrays; see box_faces); `wall_keys` are
+    the points on a wall between two blocks (they never move: they are hanging nodes of a coarser
     face)."""
     out = Snapped()
     if not curves:
         return out
     ids_i = np.searchsorted(keys, topo.face_pts)
     ids_b = np.searchsorted(keys, topo.b_pts)
-    fid_i = np.repeat(np.arange(len(topo.face_off) - 1), np.diff(topo.face_off))
     fid_b = np.repeat(np.arange(len(topo.b_off) - 1), np.diff(topo.b_off))
     zo, zn = zone[topo.owner], zone[topo.neighbour]
     normal_i = _normal_axis(points, topo.face_off, ids_i)
@@ -144,8 +188,7 @@ def snap(curves: list[Curve], points: np.ndarray, keys: np.ndarray, topo, zone: 
     fc = _face_centres(points, topo.face_off, ids_i)
     fixed = np.zeros(len(points), dtype=bool)
     fixed[np.searchsorted(keys, wall_keys)] = True
-    on_box = ((zo >= 0) & solid_box[np.maximum(zo, 0)]) | \
-        ((zn >= 0) & solid_box[np.maximum(zn, 0)])
+    on_box = own_plane_faces(fc, normal_i, zo, zn, solid_box, planes, tol)
     domain_pts = [np.unique(ids_b[np.isin(fid_b, np.flatnonzero(normal_b == a_))])
                   for a_ in range(3)]
     disp = np.zeros_like(points)                # where each surface point is asked to go
@@ -153,63 +196,35 @@ def snap(curves: list[Curve], points: np.ndarray, keys: np.ndarray, topo, zone: 
     regions: list[tuple[np.ndarray, np.ndarray, int, int]] = []
     risers: list[np.ndarray] = []
     no_merge = fixed.copy()
+    dom_held = np.zeros((len(points), 3), dtype=bool)
     for a_ in range(3):
         no_merge[domain_pts[a_]] = True
+        dom_held[domain_pts[a_], a_] = True
+    # Each curve looks only at the faces near it - a spatial index for its staircase, the cells'
+    # own faces for the rings around it - and every per-point flag it needs is a shared scratch
+    # array set on its own points and cleared after: the cost of a curve is the size of its
+    # neighbourhood, never the size of the mesh.
+    index = _FaceIndex(fc, curves)
+    cell_faces = _CellFaces(topo)
+    frozen_by_axis = {}
+    for ax in {c.axis for c in curves}:
+        u_, v_ = [i for i in range(3) if i != ax]
+        frozen_by_axis[ax] = fixed | dom_held[:, u_] | dom_held[:, v_]
+    held = np.zeros((len(points), 3), dtype=bool)   # box planes, set per curve, then cleared
+    on_curve = np.zeros(len(points), dtype=bool)    # this curve's surface points, likewise
+    mark = np.zeros(topo.n_cells, dtype=bool)       # scratch for the rings of cells
     for c in curves:
         u, v = [i for i in range(3) if i != c.axis]
-        side = (zo == c.part) ^ (zn == c.part)
-        ru, rv = c.radii
-        cu, cv = c.centre
-        inside = (fc[:, c.axis] > c.a0 - 1e-12) & (fc[:, c.axis] < c.a1 + 1e-12)
-        near = _band(fc, u, v, c)
-        # this curve's staircase sides: against air or another curved part - a face it shares
-        # with a box part is that box's face, and holds its points
-        other = np.where(zo == c.part, zn, zo)
-        other_box = (other >= 0) & solid_box[np.maximum(other, 0)] & (other != c.part)
-        own = side & inside & near & (normal_i != c.axis) & ~other_box
-        faces = np.flatnonzero(own)
-        if not len(faces):
+        # every face of the staircase lies within 1.4 radii of the axis (the band), so in the box
+        found = _one_curve(c, u, v, index.near(c, 0.5 * max(c.radii)), points, ids_i, topo, zo,
+                           zn, fc, normal_i, on_box, solid_box, fixed, dom_held, held, on_curve,
+                           mark, cell_faces, frozen_by_axis[c.axis], no_merge, disp)
+        if not found:
             continue
-        pts = np.unique(ids_i[np.isin(fid_i, faces)])
-        pts = pts[~fixed[pts]]
-        # the planes a point must stay on: faces of box parts that are not this staircase, and
-        # the domain's sides
-        held = np.zeros((len(points), 3), dtype=bool)
-        for a_ in (u, v):
-            box_faces = np.flatnonzero(on_box & ~own & (normal_i == a_))
-            held[ids_i[np.isin(fid_i, box_faces)], a_] = True
-            held[domain_pts[a_], a_] = True
-        on_curve = np.zeros(len(points), dtype=bool)
-        for a_, slide in ((u, v), (v, u)):
-            strip = np.flatnonzero(side & inside & near & other_box & (normal_i == a_))
-            if not len(strip):
-                continue
-            r_held = c.radii[0] if a_ == u else c.radii[1]
-            c_held = c.centre[0] if a_ == u else c.centre[1]
-            c_slide = c.centre[1] if a_ == u else c.centre[0]
-            plane = fc[strip, a_]
-            tangent = np.abs(np.abs(plane - c_held) - r_held) <= TANGENT_TOL * r_held
-            sp = np.unique(ids_i[np.isin(fid_i, strip[tangent])])
-            sp = sp[~fixed[sp]]
-            if len(sp):
-                disp[sp, slide] = TANGENT_SHRINK * (points[sp, slide] - c_slide) \
-                    - (points[sp, slide] - c_slide)
-                on_curve[sp] = True
-        for pi in pts.tolist():
-            if on_curve[pi]:
-                continue
-            target = _target(points[pi], c, u, v, [a_ for a_ in (u, v) if held[pi, a_]])
-            if target is None:
-                continue
-            disp[pi] = target - points[pi]
-            on_curve[pi] = True
-        on_surface |= on_curve
-        risers.append(_risers(points, disp, c, topo, ids_i, faces, on_curve,
-                              no_merge | held[:, u] | held[:, v]))
-        # the cells around the surface follow it, the move fading over a few rings of cells,
-        # so the snapped cells are not left squeezed against unmoved neighbours
-        regions.append(_relax_region(points, c, u, v, topo, ids_i, fid_i, faces, on_curve,
-                                     fixed | held[:, u] | held[:, v]))
+        riser, region, surf = found
+        on_surface[surf] = True
+        risers.append(riser)
+        regions.append(region)
     pairs = np.concatenate(risers) if risers else np.zeros((0, 2), dtype=np.int64)
     # A collapsed riser's merged point stands mid-riser whatever the settle does with its move, so
     # a collapse that leaves a face past a bar is taken back (its riser stays an edge) and the
@@ -242,6 +257,218 @@ def snap(curves: list[Curve], points: np.ndarray, keys: np.ndarray, topo, zone: 
     out.undone = given_up
     out.still_bad = int(bad.sum())
     return out
+
+
+#: Rings of cells walked beyond the followers, so every face around a point that may move is
+#: seen (a cell sharing only a corner with a follower is three faces away).
+WINDOW_PAD_RINGS = 3
+
+
+class _FaceIndex:
+    """The internal faces bucketed by their centres on a uniform grid about a curve's size, so a
+    curve finds the faces near it without looking at the whole mesh."""
+
+    def __init__(self, fc: np.ndarray, curves: list[Curve]) -> None:
+        self.fc = fc
+        self.lo = fc.min(axis=0) if len(fc) else np.zeros(3)
+        hi = fc.max(axis=0) if len(fc) else np.ones(3)
+        self.span = float(np.max(hi - self.lo)) if len(fc) else 1.0
+        sizes = [2.0 * max(c.radii) for c in curves] or [self.span]
+        self.h = max(float(np.median(sizes)), self.span * 1e-6, 1e-300)
+        g = np.floor((fc - self.lo) / self.h).astype(np.int64)
+        self.dims = (g.max(axis=0) + 1) if len(fc) else np.ones(3, dtype=np.int64)
+        key = (g[:, 0] * self.dims[1] + g[:, 1]) * self.dims[2] + g[:, 2]
+        self.order = np.argsort(key, kind="stable")
+        self.keys = key[self.order]
+
+    def box(self, lo: np.ndarray, hi: np.ndarray) -> np.ndarray:
+        """The faces whose centre lies in [lo, hi], sorted."""
+        a = np.clip(np.floor((lo - self.lo) / self.h).astype(np.int64), 0, self.dims - 1)
+        b = np.clip(np.floor((hi - self.lo) / self.h).astype(np.int64), 0, self.dims - 1)
+        found = []
+        for i in range(int(a[0]), int(b[0]) + 1):
+            for j in range(int(a[1]), int(b[1]) + 1):
+                base = (i * self.dims[1] + j) * self.dims[2]
+                s = int(np.searchsorted(self.keys, base + a[2], side="left"))
+                e = int(np.searchsorted(self.keys, base + b[2], side="right"))
+                if e > s:
+                    found.append(self.order[s:e])
+        if not found:
+            return np.zeros(0, dtype=np.int64)
+        F = np.concatenate(found)
+        c = self.fc[F]
+        return np.sort(F[np.all((c >= lo) & (c <= hi), axis=1)])
+
+    def near(self, c: Curve, reach: float) -> np.ndarray:
+        u, v = [i for i in range(3) if i != c.axis]
+        lo, hi = np.zeros(3), np.zeros(3)
+        lo[c.axis], hi[c.axis] = c.a0 - reach, c.a1 + reach
+        lo[u], hi[u] = c.centre[0] - c.radii[0] - reach, c.centre[0] + c.radii[0] + reach
+        lo[v], hi[v] = c.centre[1] - c.radii[1] - reach, c.centre[1] + c.radii[1] + reach
+        return self.box(lo, hi)
+
+
+def _points_of_faces(off: np.ndarray, ids: np.ndarray, faces: np.ndarray) -> np.ndarray:
+    """The point ids of a set of faces, every corner once per face."""
+    if not len(faces):
+        return np.zeros(0, dtype=np.int64)
+    _o, flat = _gather(off, ids, faces)
+    return flat
+
+
+class _CellFaces:
+    """Each cell's internal faces (compressed rows), so the rings of cells around a curve are
+    walked from cell to cell without looking at the rest of the mesh."""
+
+    def __init__(self, topo) -> None:
+        nf = len(topo.owner)
+        cells = np.concatenate([topo.owner, topo.neighbour])
+        order = np.argsort(cells, kind="stable")
+        self.faces = np.concatenate([np.arange(nf), np.arange(nf)])[order]
+        self.off = np.concatenate(([0], np.cumsum(np.bincount(cells, minlength=topo.n_cells))))
+
+    def of(self, cells: np.ndarray) -> np.ndarray:
+        """The internal faces of `cells` (a face of two of them, twice)."""
+        if not len(cells):
+            return np.zeros(0, dtype=np.int64)
+        _o, flat = _gather(self.off, self.faces, cells)
+        return flat
+
+
+def _one_curve(c: Curve, u: int, v: int, S: np.ndarray, points, ids_i, topo, zo, zn, fc,
+               normal_i, on_box, solid_box, fixed, dom_held, held, on_curve, mark,
+               cell_faces: _CellFaces, frozen_axis, no_merge, disp):
+    """One curve's staircase moved onto its surface, looking only at the faces near it: S (from
+    the spatial index) for its staircase, then the faces of the rings of cells around it. Returns
+    () when the curve has no staircase here, else (its riser pairs, its follower region, its
+    surface points). The scratch arrays held, on_curve and mark come back cleared; disp gets this
+    curve's moves."""
+    def classify(F):
+        zoF, znF = zo[F], zn[F]
+        sideF = (zoF == c.part) ^ (znF == c.part)
+        fcF = fc[F]
+        insideF = (fcF[:, c.axis] > c.a0 - 1e-12) & (fcF[:, c.axis] < c.a1 + 1e-12)
+        nearF = _band(fcF, u, v, c)
+        # this curve's staircase sides: against air or another curved part - a face it shares
+        # with a box part on that box's own plane is the box's face, and holds its points
+        otherF = np.where(zoF == c.part, znF, zoF)
+        other_boxF = (otherF >= 0) & solid_box[np.maximum(otherF, 0)] & (otherF != c.part) \
+            & on_box[F]
+        nF = normal_i[F]
+        own = sideF & insideF & nearF & (nF != c.axis) & ~other_boxF
+        return own, sideF & insideF & nearF & other_boxF, nF
+
+    ownS, _strip, _n = classify(S)
+    faces = S[ownS]
+    if not len(faces):
+        return ()
+    off = topo.face_off
+    # the rings of cells around the staircase, walked cell to cell, and a few more so every face
+    # around a point that may move is seen
+    start = np.unique(np.concatenate([topo.owner[faces], topo.neighbour[faces]]))
+    mark[start] = True
+    marked = [start]
+    frontier = start
+    inner = ring_cells = start
+    for ring in range(RELAX_RINGS + WINDOW_PAD_RINGS):
+        fs = cell_faces.of(frontier)
+        nb = np.concatenate([topo.owner[fs], topo.neighbour[fs]])
+        nb = np.unique(nb[~mark[nb]])
+        mark[nb] = True
+        marked.append(nb)
+        frontier = nb
+        if ring == RELAX_RINGS - 2:
+            inner = np.concatenate(marked)
+        if ring == RELAX_RINGS - 1:
+            ring_cells = np.concatenate(marked)
+    allm = np.concatenate(marked)
+    mark[allm] = False
+    F = np.unique(cell_faces.of(allm))
+    ownF, stripF, nF = classify(F)
+    faces = F[ownF]
+    # the faces of the follower rings: all the faces of the cells the rings mark
+    fsel = np.unique(cell_faces.of(ring_cells))
+    fin = np.unique(cell_faces.of(inner))
+
+    pts = np.unique(_points_of_faces(off, ids_i, faces))
+    pts = pts[~fixed[pts]]
+    # the planes a point must stay on: faces of box parts that are not this staircase (and the
+    # domain's sides, in dom_held)
+    held_pts = []
+    for a_ in (u, v):
+        box_faces = F[on_box[F] & ~ownF & (nF == a_)]
+        hp = np.unique(_points_of_faces(off, ids_i, box_faces))
+        held[hp, a_] = True
+        held_pts.append(hp)
+    surf = []
+    for a_, slide in ((u, v), (v, u)):
+        strip = F[stripF & (nF == a_)]
+        if not len(strip):
+            continue
+        r_held = c.radii[0] if a_ == u else c.radii[1]
+        c_held = c.centre[0] if a_ == u else c.centre[1]
+        c_slide = c.centre[1] if a_ == u else c.centre[0]
+        plane = fc[strip, a_]
+        tangent = np.abs(np.abs(plane - c_held) - r_held) <= TANGENT_TOL * r_held
+        sp = np.unique(_points_of_faces(off, ids_i, strip[tangent]))
+        sp = sp[~fixed[sp]]
+        if len(sp):
+            disp[sp, slide] = TANGENT_SHRINK * (points[sp, slide] - c_slide) \
+                - (points[sp, slide] - c_slide)
+            on_curve[sp] = True
+            surf.append(sp)
+    moved = []
+    for pi in pts.tolist():
+        if on_curve[pi]:
+            continue
+        hold = [a_ for a_ in (u, v) if held[pi, a_] or dom_held[pi, a_]]
+        target = _target(points[pi], c, u, v, hold)
+        if target is None:
+            continue
+        disp[pi] = target - points[pi]
+        on_curve[pi] = True
+        moved.append(pi)
+    surf.append(np.asarray(moved, dtype=np.int64))
+    surf_pts = np.unique(np.concatenate(surf))
+    # frozen for this curve: hanging nodes, the domain's sides and the box planes on u and v
+    hp = np.unique(np.concatenate(held_pts))
+    keep_f, keep_m = frozen_axis[hp].copy(), no_merge[hp].copy()
+    frozen_axis[hp] = True
+    no_merge[hp] = True
+    riser = _risers(points, disp, c, topo, ids_i, faces, on_curve, no_merge)
+    no_merge[hp] = keep_m
+    # the cells around the surface follow it, the move fading over a few rings of cells, so the
+    # snapped cells are not left squeezed against unmoved neighbours
+    region = _relax_from(points, c, u, v, topo, ids_i, fsel, fin, on_curve, frozen_axis)
+    frozen_axis[hp] = keep_f
+    held[hp, u] = False
+    held[hp, v] = False
+    on_curve[surf_pts] = False
+    return riser, region, surf_pts
+
+
+def _relax_from(points, c: Curve, u: int, v: int, topo, ids_i, fsel, fin, on_curve,
+                frozen) -> tuple[np.ndarray, np.ndarray, int, int]:
+    """The points that follow a snapped surface - those of the first RELAX_RINGS - 1 rings of
+    cells around its staircase that are free to move (not on a box face, a domain side or a block
+    wall, and within the curve's length) - and the cross-section edges between all points of the
+    rings (the last ring's points hold still: the move fades to nothing there). `fsel`: the faces
+    of all the rings' cells; `fin`: those of all but the outermost ring."""
+    sizes = np.diff(topo.face_off)[fsel]
+    starts = topo.face_off[:-1][fsel]
+    idx = np.repeat(starts, sizes) + (np.arange(int(sizes.sum()))
+                                      - np.repeat(np.cumsum(sizes) - sizes, sizes))
+    nxt = idx + 1
+    nxt = np.where(nxt >= np.repeat(starts + sizes, sizes), np.repeat(starts, sizes), nxt)
+    a_, b_ = ids_i[idx], ids_i[nxt]
+    same = np.abs(points[a_, c.axis] - points[b_, c.axis]) <= 1e-12 * (abs(points[a_, c.axis]) + 1)
+    edges = np.unique(np.concatenate([np.stack([a_[same], b_[same]], 1),
+                                      np.stack([b_[same], a_[same]], 1)]), axis=0)
+    in_pts = np.unique(_points_of_faces(topo.face_off, ids_i, fin))
+    ax = points[in_pts, c.axis]
+    free = in_pts[~frozen[in_pts] & ~on_curve[in_pts]
+                  & (ax >= c.a0 - 1e-12) & (ax <= c.a1 + 1e-12)]
+    return free, edges, u, v
 
 
 #: A staircase riser - an edge between two surface points - whose two ends would land closer than
@@ -299,7 +526,10 @@ def _collapse(pairs, topo, keys, points, disp, on_surface, regions):
         ra, rb = find(a_), find(b_)
         if ra != rb:
             parent[max(ra, rb)] = min(ra, rb)
-    root = np.array([find(x) for x in range(n)]) if len(pairs) else np.arange(n)
+    root = np.arange(n)
+    if len(pairs):                      # only the points of a collapsing riser can have moved
+        nodes = np.unique(pairs)
+        root[nodes] = [find(x) for x in nodes.tolist()]
     target = points + disp
     merged = root != np.arange(n)
     if merged.any():
@@ -337,13 +567,13 @@ def _collapse(pairs, topo, keys, points, disp, on_surface, regions):
     keys2 = np.unique(np.concatenate([topo2.face_pts, topo2.b_pts]))
     at = np.searchsorted(keys, keys2)
     regions2 = []
+    remap = np.full(n, -1, dtype=np.int64)
+    remap[at] = np.arange(len(at))
     for free, edges, u, v in regions:
         e = root[edges]
         e = e[e[:, 0] != e[:, 1]]
         f2 = np.unique(root[free])
         f2 = f2[~on_surface[f2]]
-        remap = np.full(n, -1, dtype=np.int64)
-        remap[at] = np.arange(len(at))
         e2 = remap[e]
         e2 = e2[(e2 >= 0).all(axis=1)]
         f3 = remap[f2]
@@ -446,41 +676,6 @@ SETTLE_ROUNDS = 10
 SETTLE_FINAL_ROUNDS = 10
 
 
-def _relax_region(points, c: Curve, u: int, v: int, topo, ids_i, fid_i, faces, on_curve,
-                  frozen) -> tuple[np.ndarray, np.ndarray, int, int]:
-    """The points that follow a snapped surface - those of the first RELAX_RINGS - 1 rings of
-    cells around its staircase that are free to move (not on a box face, a domain side or a block
-    wall, and within the curve's length) - and the cross-section edges between all points of the
-    rings (the last ring's points hold still: the move fades to nothing there)."""
-    mark = np.zeros(topo.n_cells, dtype=bool)
-    mark[topo.owner[faces]] = True
-    mark[topo.neighbour[faces]] = True
-    inner = mark.copy()
-    for ring in range(RELAX_RINGS):
-        touch = np.flatnonzero(mark[topo.owner] | mark[topo.neighbour])
-        mark[topo.owner[touch]] = True
-        mark[topo.neighbour[touch]] = True
-        if ring == RELAX_RINGS - 2:
-            inner = mark.copy()
-    fsel = np.flatnonzero(mark[topo.owner] | mark[topo.neighbour])
-    fin = np.flatnonzero(inner[topo.owner] | inner[topo.neighbour])
-    sizes = np.diff(topo.face_off)[fsel]
-    starts = topo.face_off[:-1][fsel]
-    idx = np.repeat(starts, sizes) + (np.arange(int(sizes.sum()))
-                                      - np.repeat(np.cumsum(sizes) - sizes, sizes))
-    nxt = idx + 1
-    nxt = np.where(nxt >= np.repeat(starts + sizes, sizes), np.repeat(starts, sizes), nxt)
-    a_, b_ = ids_i[idx], ids_i[nxt]
-    same = np.abs(points[a_, c.axis] - points[b_, c.axis]) <= 1e-12 * (abs(points[a_, c.axis]) + 1)
-    edges = np.unique(np.concatenate([np.stack([a_[same], b_[same]], 1),
-                                      np.stack([b_[same], a_[same]], 1)]), axis=0)
-    in_pts = np.unique(ids_i[np.isin(fid_i, fin)])
-    ax = points[in_pts, c.axis]
-    free = in_pts[~frozen[in_pts] & ~on_curve[in_pts]
-                  & (ax >= c.a0 - 1e-12) & (ax <= c.a1 + 1e-12)]
-    return free, edges, u, v
-
-
 def _diffuse(disp: np.ndarray, regions) -> np.ndarray:
     """The surface points' moves spread over each region's free points (Jacobi sweeps of the mean
     of their cross-section neighbours; points outside the free set keep their move, or none)."""
@@ -488,18 +683,24 @@ def _diffuse(disp: np.ndarray, regions) -> np.ndarray:
     for free, edges, u, v in regions:
         if not len(free) or not len(edges):
             continue
-        is_free = np.zeros(len(out), dtype=bool)
-        is_free[free] = True
-        e = edges[is_free[edges[:, 0]]]
+        e = edges[np.isin(edges[:, 0], free)]
         if not len(e):
             continue
-        count = np.bincount(e[:, 0], minlength=len(out)).astype(float)
+        # the sweeps on the region's own points only (numbered compactly): a region costs its
+        # size, not the mesh's
+        nodes, inv = np.unique(np.concatenate([e[:, 0], e[:, 1], free]), return_inverse=True)
+        e0, e1 = inv[:len(e)], inv[len(e):2 * len(e)]
+        fl = inv[2 * len(e):]
+        count = np.maximum(np.bincount(e0, minlength=len(nodes))[fl], 1).astype(float)
+        val_u = out[nodes, u].copy()
+        val_v = out[nodes, v].copy()
         for _ in range(RELAX_SWEEPS):
-            acc = np.zeros((len(out), 2))
-            np.add.at(acc, e[:, 0], out[e[:, 1]][:, [u, v]])
-            mean = acc[free] / np.maximum(count[free], 1.0)[:, None]
-            out[free, u] = mean[:, 0]
-            out[free, v] = mean[:, 1]
+            acc_u = np.bincount(e0, weights=val_u[e1], minlength=len(nodes))
+            acc_v = np.bincount(e0, weights=val_v[e1], minlength=len(nodes))
+            val_u[fl] = acc_u[fl] / count
+            val_v[fl] = acc_v[fl] / count
+        out[free, u] = val_u[fl]
+        out[free, v] = val_v[fl]
     return out
 
 
@@ -695,41 +896,83 @@ class _Guard:
         return out
 
 
+def _ellipse_in_rect(c: Curve, u: int, v: int, lo, hi, n: int = 20_000) -> tuple[float, float]:
+    """The area of the curve's ellipse inside the rectangle lo..hi (axes u, v), and the length of
+    its outline inside it - numerically, to about 1e-6."""
+    cu, cv = c.centre
+    ru, rv = c.radii
+    # area: the chord inside the rectangle, integrated over u (midpoint rule)
+    a0, a1 = max(cu - ru, lo[u]), min(cu + ru, hi[u])
+    area = 0.0
+    if a1 > a0:
+        x = a0 + (np.arange(n) + 0.5) * (a1 - a0) / n
+        h = rv * np.sqrt(np.clip(1.0 - ((x - cu) / ru) ** 2, 0.0, None))
+        chord = np.clip(np.minimum(cv + h, hi[v]) - np.maximum(cv - h, lo[v]), 0.0, None)
+        area = float(chord.sum() * (a1 - a0) / n)
+    t = np.linspace(0.0, 2 * math.pi, n + 1)
+    pu, pv = cu + ru * np.cos(t), cv + rv * np.sin(t)
+    seg = np.hypot(np.diff(pu), np.diff(pv))
+    mu, mv = (pu[1:] + pu[:-1]) / 2, (pv[1:] + pv[:-1]) / 2
+    inside = (mu >= lo[u]) & (mu <= hi[u]) & (mv >= lo[v]) & (mv <= hi[v])
+    return area, float(seg[inside].sum())
+
+
 def report(curves: list[Curve], points: np.ndarray, keys: np.ndarray, topo, zone: np.ndarray,
-           names_of_part: dict) -> list[dict]:
-    """Per curved part: its side area, end areas and volume in the mesh against the file's."""
+           names_of_part: dict, domain: tuple | None = None) -> list[dict]:
+    """Per curved part: its side area, end areas and volume in the mesh against the file's. With
+    the domain's (lo, hi), a cylinder the domain cuts is held to the piece of it inside."""
     ids_i = np.searchsorted(keys, topo.face_pts)
     ids_b = np.searchsorted(keys, topo.b_pts)
     area, fc = face_geometry(points, topo.face_off, ids_i)
     barea, bfc = face_geometry(points, topo.b_off, ids_b)
     vol = cell_volumes(topo.n_cells, topo.owner, topo.neighbour, area, fc, topo.b_owner, barea,
                        bfc)
-    zo, zn = zone[topo.owner], zone[topo.neighbour]
+    zo_all, zn_all = zone[topo.owner], zone[topo.neighbour]
+    normal_all = np.argmax(np.abs(area), axis=1)
+    part_vol = np.bincount(zone + 1, weights=vol, minlength=int(zone.max(initial=-1)) + 2)
+    index = _FaceIndex(fc, curves)
     rows = []
     for c in curves:
         ru, rv = c.radii
         L = c.a1 - c.a0
         perim = math.pi * (3 * (ru + rv) - math.sqrt((3 * ru + rv) * (ru + 3 * rv)))
+        # the faces near this curve only: every face of its cells lies in its box
+        F = index.near(c, 0.5 * max(ru, rv))
+        zo, zn, fcF, aF = zo_all[F], zn_all[F], fc[F], area[F]
         side = (zo == c.part) ^ (zn == c.part)
-        normal = np.argmax(np.abs(area), axis=1)
+        normal = normal_all[F]
         u, v = [i for i in range(3) if i != c.axis]
-        inside = (fc[:, c.axis] > c.a0 + 1e-12 * L) & (fc[:, c.axis] < c.a1 - 1e-12 * L)
-        near = _band(fc, u, v, c)
+        inside = (fcF[:, c.axis] > c.a0 + 1e-12 * L) & (fcF[:, c.axis] < c.a1 - 1e-12 * L)
+        near = _band(fcF, u, v, c)
         lat = side & inside & near & (normal != c.axis)
-        mesh_side = float(np.linalg.norm(area[lat], axis=1).sum())
+        mesh_side = float(np.linalg.norm(aF[lat], axis=1).sum())
+        want = math.pi * ru * rv * L
+        clipped = False
+        if domain is not None and not c.hole:
+            dlo, dhi = domain
+            L_in = max(0.0, min(c.a1, dhi[c.axis]) - max(c.a0, dlo[c.axis]))
+            cu, cv = c.centre
+            if L_in < L * (1 - 1e-9) or cu - ru < dlo[u] or cu + ru > dhi[u] or \
+                    cv - rv < dlo[v] or cv + rv > dhi[v]:
+                clipped = True
+                a_in, p_in = _ellipse_in_rect(c, u, v, dlo, dhi)
+                want, perim, L = a_in * L_in, p_in, L_in
+        file_side = perim * L
         row: dict = {"part": c.name, "kind": "round hole" if c.hole else "cylinder",
-               "file_side_area_m2": perim * L, "mesh_side_area_m2": mesh_side,
-               "side_area_error_pct": 100.0 * (mesh_side - perim * L) / (perim * L)}
+                     "file_side_area_m2": file_side, "mesh_side_area_m2": mesh_side,
+                     "side_area_error_pct": 100.0 * (mesh_side - file_side) / file_side
+                     if file_side > 0 else 0.0}
+        if clipped:
+            row["clipped_by_domain"] = True
         if not c.hole:
-            want = math.pi * ru * rv * L
-            got = float(vol[zone == c.part].sum())
+            got = float(part_vol[c.part + 1])
             row.update(file_volume_m3=want, mesh_volume_m3=got,
-                       volume_error_pct=100.0 * (got - want) / want)
+                       volume_error_pct=100.0 * (got - want) / want if want > 0 else 0.0)
             # contacts: faces shared with another solid, by the other part
             other = np.where(zo == c.part, zn, np.where(zn == c.part, zo, -1))
             touch = side & (other >= 0)
             contacts: dict[str, float] = {}
-            for o, a_ in zip(other[touch].tolist(), np.linalg.norm(area[touch], axis=1).tolist()):
+            for o, a_ in zip(other[touch].tolist(), np.linalg.norm(aF[touch], axis=1).tolist()):
                 nm = names_of_part.get(o, str(o))
                 contacts[nm] = contacts.get(nm, 0.0) + a_
             row["contacts_m2"] = contacts

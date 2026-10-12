@@ -252,6 +252,10 @@ class Obj:
     material: str = ""
     power: float | None = None     # W
     props: dict = field(default_factory=dict)   # the rest of the object's physics, by schema name
+    #: its location or size carries binary-float noise (a float32 value, or a long binary print):
+    #: its planes are only as precise as a float32 there. False: every one of those numbers is a
+    #: plain decimal, exact to the digits written (see number_is_noisy). Unknown -> True.
+    noisy: bool = True
 
     @property
     def label(self) -> str:
@@ -274,6 +278,41 @@ class Domain:
     location: Vec
     size: Vec
     ambient: dict | None = None    # {"temperature_K", "radiant_temperature_K", "pressure_Pa"}
+    noisy: bool = True             # as Obj.noisy
+
+
+#: A number written with at least this many significant digits whose float32 rounding gives back
+#: the digits written is a float32 value (Flotherm writes 0.3 as 0.300000011920929).
+FLOAT32_DIGITS = 9
+#: ... and with at least this many it is a binary float printed in full, whatever its width.
+BINARY_PRINT_DIGITS = 12
+
+
+def number_is_noisy(text: str) -> bool:
+    """Whether a number as written carries binary-float noise rather than stating a decimal: a
+    float32 value printed in full (its float32 rounding gives back the digits written, with more
+    digits than a float32 holds), or any binary float printed to 12 or more significant digits.
+    A plain decimal ("5.00100000", "0.0025") is exact to its digits: two of them that differ
+    state two different planes, however far from the origin they are."""
+    import struct
+
+    t = text.strip().lower()
+    mant, _, exp = t.partition("e")
+    mant = mant.lstrip("+-")
+    whole, _, frac = mant.partition(".")
+    digits = (whole + frac).lstrip("0").rstrip("0")
+    sig = len(digits)
+    if sig >= BINARY_PRINT_DIGITS:
+        return True
+    if sig < FLOAT32_DIGITS:
+        return False
+    try:
+        value = float(t)
+        place = 10.0 ** ((int(exp) if exp else 0) - len(frac))
+        as32 = struct.unpack("<f", struct.pack("<f", value))[0]
+    except (ValueError, OverflowError, struct.error):
+        return True
+    return abs(as32 - value) <= 0.5 * place * (1 + 1e-9)
 
 
 @dataclass
@@ -307,6 +346,8 @@ class _Reader:
         self.ignored: dict[str, int] = {}
         self.order = 0
         self.notes: list[str] = []
+        #: whether a location or size read since the last reset carried binary-float noise
+        self.noisy = False
 
     # -- values --------------------------------------------------------------------------------
     @staticmethod
@@ -365,6 +406,9 @@ class _Reader:
         x, y, z = (self.number(el, a, here, minimum=minimum, exclusive=exclusive)
                    for a in ("x", "y", "z"))
         self._extensions(el, ("x", "y", "z"))
+        if not self.noisy:
+            self.noisy = any(number_is_noisy(self.child(el, a, here).text)
+                             for a in ("x", "y", "z"))
         return (x, y, z)
 
     def plane(self, node: Node, path) -> str:
@@ -411,8 +455,10 @@ class _Reader:
         if node is None:
             return None
         path = ("solutionDomain",)
+        self.noisy = False
         location = self.vec(node, "location", path)
         size = self.vec(node, "size", path, minimum=0.0, exclusive=True)
+        noisy = self.noisy
         ambient = None
         amb = node.first("ambientConditions")
         if amb is not None:
@@ -422,7 +468,7 @@ class _Reader:
                        "pressure_Pa": self.number(amb, "pressure", here)}
             self._extensions(amb, ("temperature", "radiantTemperature", "pressure"))
         self._extensions(node, ("location", "size", "ambientConditions"))
-        return Domain(location=location, size=size, ambient=ambient)
+        return Domain(location=location, size=size, ambient=ambient, noisy=noisy)
 
     def materials(self, node: Node | None) -> dict[str, Material]:
         out: dict[str, Material] = {}
@@ -530,6 +576,7 @@ class _Reader:
         props: dict = {}
         if kind == "heatsink":
             fields = ("name", "active")         # its <parts> are read by the caller
+        self.noisy = False
         if "location" in fields:
             location = self.vec(el, "location", here)
         if "size" in fields:
@@ -537,6 +584,7 @@ class _Reader:
                 size = self.vec(el, "size", here, minimum=0.0)
             else:
                 size = self.vec(el, "size", here, minimum=0.0, exclusive=True)
+        noisy = self.noisy
         if "plane" in fields:
             plane = self.plane(el, here)
         if "material" in fields:
@@ -575,7 +623,7 @@ class _Reader:
         self._extensions(el, OBJECT_FIELDS[kind])
         return Obj(kind=kind, name=name, path=path, order=self.order, active=active,
                    location=location, size=size, plane=plane, material=material, power=power,
-                   props=props)
+                   props=props, noisy=noisy)
 
     def flow(self, node: Node, path) -> dict:
         here = path + ("flowDefinition",)
