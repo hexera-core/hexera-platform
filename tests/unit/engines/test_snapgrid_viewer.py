@@ -100,13 +100,20 @@ def test_a_region_surface_reads_the_cells_on_its_own_side(tmp_path):
 
 
 def test_a_viewer_file_written_before_the_flags_and_the_heatmap_still_draws(tmp_path):
-    case, _ = _case(tmp_path, tiny_board())
+    # the old file: each region under its name, an air region as its domain sides ("patch")
+    case, result = _case(tmp_path, tiny_board())
+    regions = set(result.report["fluid_regions"]) | set(result.report["solid_regions"])
     with np.load(case / VIEWER_NAME) as z:
-        old = {k: z[k] for k in z.files if k not in ("encloses", "quality")}
+        keep = [k for k, name in enumerate(z["names"].tolist()) if name in regions]
+        old = {"names": z["names"][keep], "types": z["types"][keep],
+               "counts": z["counts"][keep], "cell_size": z["cell_size"]}
+        for i, k in enumerate(keep):
+            old[f"p{i}"], old[f"f{i}"] = z[f"p{k}"], z[f"f{k}"]
     np.savez_compressed(case / VIEWER_NAME, **old)
     resp = snapgrid_viewer(case, roles={}, units="m")
     assert resp and resp["patches"] and "quality_fields" not in resp
-    assert not any(p.get("encloses_domain") for p in resp["patches"])
+    wraps = {p["name"] for p in resp["patches"] if p.get("encloses_domain")}
+    assert wraps == set(result.report["fluid_regions"])
 
 
 def test_a_skipped_surface_takes_its_heatmap_with_it(tmp_path):

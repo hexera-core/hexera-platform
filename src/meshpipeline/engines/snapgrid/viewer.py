@@ -154,12 +154,13 @@ def snapgrid_viewer(workspace, *, roles: dict, units: str,
 
     with np.load(path, allow_pickle=False) as z:
         files = set(z.files)
-        names = z["names"].tolist()
-        # a viewer file written before the flags existed: nothing is said to enclose
-        encloses = z["encloses"].tolist() if "encloses" in files else [False] * len(names)
+        names, types = z["names"].tolist(), z["types"].tolist()
+        # a viewer file written before the flags existed drew each air region as its domain
+        # sides only (typed "patch"): exactly the surfaces that wrap the parts
+        encloses = (z["encloses"].tolist() if "encloses" in files
+                    else [t == "patch" for t in types])
         raw = []
-        for k, (name, ptype, count) in enumerate(zip(names, z["types"].tolist(),
-                                                     z["counts"].tolist())):
+        for k, (name, ptype, count) in enumerate(zip(names, types, z["counts"].tolist())):
             if name in skip_names:
                 continue
             raw.append({"name": name, "type": ptype, "face_count": int(count),
