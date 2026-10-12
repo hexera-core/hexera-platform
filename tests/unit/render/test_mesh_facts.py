@@ -215,3 +215,59 @@ def test_the_part_shape_is_stable():
     assert set(p) == {"id", "label", "kind", "source", "default_visibility",
                       "selectable", "renderable", "metadata"}
     assert p["source"] == "patch_types", "a part cannot say where it came from"
+
+
+# named regions (a multi-region engine lists its regions as rows)
+
+
+def named_regions() -> dict:
+    return {
+        "mesh_mode": "snapgrid", "mesh_units": "m", "cell_count": 1000,
+        "patch_types": {"domain_xmin": "patch", "domain_xmax": "patch"},
+        "quality": {"cells": 1000, "regions": [
+            {"name": "air", "type": "fluid", "cells": 800, "fatal": []},
+            {"name": "PCB", "type": "solid", "cells": 150, "fatal": []},
+            {"name": "SoC", "type": "solid", "cells": 50, "fatal": []}]},
+    }
+
+
+def test_named_regions_become_parts_under_the_files_names():
+    ps = parts(named_regions(), rendered=("air", "PCB", "SoC"))
+    regs = [p for p in ps if p["kind"] == REGION]
+    assert [p["id"] for p in regs] == [f"{REGION}:air", f"{REGION}:PCB", f"{REGION}:SoC"]
+    assert [p["label"] for p in regs] == ["air", "PCB", "SoC"]
+    assert regs[1]["metadata"] == {"name": "PCB", "role": "solid", "cells": 150}
+    assert all(p["renderable"] for p in regs)
+
+
+def test_a_named_region_with_no_surface_is_listed_but_not_drawn():
+    regs = [p for p in parts(named_regions(), rendered=("PCB",)) if p["kind"] == REGION]
+    assert {p["label"]: p["renderable"] for p in regs} == {"air": False, "PCB": True,
+                                                         "SoC": False}
+
+
+def test_the_surfaces_the_engine_says_enclose_open_hidden():
+    ps = parts(named_regions(), rendered=("air", "PCB", "domain_xmin", "domain_xmax"),
+               enclosing=("air", "domain_xmin", "domain_xmax"))
+    vis = {p["id"]: p["default_visibility"] for p in ps}
+    assert vis[f"{REGION}:air"] == HIDDEN and vis[f"{REGION}:PCB"] == VISIBLE
+    assert vis[f"{BOUNDARY}:domain_xmin"] == HIDDEN == vis[f"{BOUNDARY}:domain_xmax"]
+
+
+def test_named_regions_are_counted():
+    assert quality(named_regions())["regions"] == 3
+
+
+def test_a_delivered_surface_nothing_declares_is_still_a_part():
+    ps = parts(named_regions(), rendered=("PCB", "baffle"), enclosing=("baffle",),
+               list_drawn=True)
+    extra = next(p for p in ps if p["id"] == f"{BOUNDARY}:baffle")
+    assert extra["renderable"] and extra["default_visibility"] == HIDDEN
+    assert extra["source"] == "surface"
+    # ...and nothing drawn is listed twice
+    drawn = [p["metadata"]["name"] for p in ps if p["renderable"]]
+    assert sorted(drawn) == ["PCB", "baffle"]
+
+
+def test_an_undeclared_surface_is_not_listed_unless_asked():
+    assert f"{BOUNDARY}:baffle" not in _ids(parts(named_regions(), rendered=("baffle",)))
