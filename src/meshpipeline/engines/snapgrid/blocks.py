@@ -336,11 +336,44 @@ class _Lines:
             jm = np.clip(j - 1, a_ + 1, b_ - 1)
             pick = np.where(np.abs(phi[jm] - t) < np.abs(phi[j] - t), jm, j)
             picks.append(pick)
-        out = np.unique(np.concatenate(picks)) + g0
+        local = _first_cells(np.unique(np.concatenate(picks)), rl, x, h)
+        out = local + g0
         return out.astype(np.int64)
 
     def block(self, lo, hi) -> list[np.ndarray]:
         return [self.axis_lines(lo, hi, a) for a in range(3)]
+
+
+#: The cell next to a stated plane may be at most this many times the size the field asks there
+#: (lines are picked from the global set at equal steps of the field, which can land a cell up
+#: to half a global spacing off; the first cell off a heated face is the one that matters).
+FIRST_CELL_SLACK = 1.2
+
+
+def _first_cells(picks: np.ndarray, required: np.ndarray, x: np.ndarray, h: np.ndarray
+                 ) -> np.ndarray:
+    """`picks` (local indices into x) with, beside each required plane, the global line nearest
+    one field size away added wherever the cell there came out more than FIRST_CELL_SLACK times
+    the size the field asks at the plane."""
+    add = []
+    for r in required.tolist():
+        k = int(np.searchsorted(picks, r))
+        if k >= len(picks) or picks[k] != r:
+            continue
+        for nb, sign in ((k + 1, 1), (k - 1, -1)):
+            if not 0 <= nb < len(picks):
+                continue
+            j = int(picks[nb])
+            if abs(x[j] - x[r]) <= FIRST_CELL_SLACK * h[r] * (1 + 1e-9):
+                continue
+            lo_, hi_ = (r, j) if sign > 0 else (j, r)
+            if hi_ - lo_ < 2:
+                continue
+            target = x[r] + sign * h[r]
+            add.append(lo_ + 1 + int(np.argmin(np.abs(x[lo_ + 1:hi_] - target))))
+    if not add:
+        return picks
+    return np.unique(np.concatenate([picks, np.array(add, dtype=picks.dtype)]))
 
 
 def _cost(lines: list[np.ndarray]) -> int:

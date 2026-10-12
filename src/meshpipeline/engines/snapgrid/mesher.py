@@ -69,6 +69,8 @@ MESHER = "snapgrid"
 REPORT_VERSION = 2
 #: Thin-layer rows the report keeps (thinnest first); the counts cover every part.
 _THIN_ROWS = 200
+#: Resolution shortfalls the report lists by name (worst first); the count covers all.
+_SHORT_ROWS = 2000
 
 
 @dataclass
@@ -1396,7 +1398,8 @@ def _resolution_record(res: dict, asked: G.GridPlan) -> dict:
     return {"measured": bool(res.get("measured")), "error": res.get("error"),
             "rules": TR.describe_plan(asked), "rows": rows, "counts": res.get("counts") or {},
             "short": [{k: plain(r[k]) for k in ("what", "want", "got", "first_m", "first_want_m")
-                       if k in r} for r in res.get("short") or []],
+                       if k in r} for r in (res.get("short") or [])[:_SHORT_ROWS]],
+            "short_count": len(res.get("short") or []),
             "short_lines": TR.short_lines(res), "summary": TR.summary_lines(res),
             "velocity_m_s": res.get("velocity_m_s"), "velocity_from": res.get("velocity_from"),
             "heated_parts": res.get("heated_parts") or []}

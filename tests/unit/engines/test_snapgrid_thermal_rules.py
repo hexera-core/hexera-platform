@@ -167,3 +167,68 @@ def test_the_mesh_report_and_quality_carry_the_measured_rules(tmp_path):
     assert crit.evaluate({}) is None                       # unmeasured: no pass
     assert crit.evaluate({"resolution_short": ["gap between A and B: 2 of 4 cells"]}) is False
     assert crit.evaluate({"resolution_short": []}) is True
+
+
+# ------------------------------------------------------------------------------ the audit -----
+def _surface_heater() -> Ecxml:
+    """A board in open air whose only heat is a 2D surface source on its top face."""
+    doc = standard_materials(Ecxml("Surface heater"))
+    doc.domain((-0.02, -0.02, -0.02), (0.08, 0.06, 0.05), ambient=(308.15, 308.15, 0.0))
+    doc.pcb("Board", (0.0, 0.0, 0.0), (0.04, 0.02, 0.0016), "+xy", "FR4 board")
+    doc.source2d("Hot pad", (0.01, 0.005, 0.0016), (0.01, 0.01, 0.0), "+xy", 2.0)
+    return doc
+
+
+def test_a_surface_heater_is_measured_like_a_heated_part():
+    pl = _place(_surface_heater())
+    f = TR.facts(pl)
+    if not f.heated_rects:
+        pytest.skip("this model places the 2D source on no rectangle record")
+    plan = _level("standard")
+    lay = B.build_layout(pl, plan)
+    res = TR.audit(pl, lay, lay.plan, plan)
+    assert any(r["what"] == "air on heat source Hot pad" for r in res["rows"]["band"])
+    # the plain grid gives the pad no warm-air refinement of its own: held to a much finer layer
+    # than that grid has, it is measured short - never passed
+    bare = B.build_layout(pl, G.GridPlan(max_cells=plan.max_cells, min_cells_across=2))
+    measured = TR.audit(pl, bare, bare.plan, G._replace(plan, band_cells=12))
+    assert any(r["what"] == "air on heat source Hot pad" and not r["ok"]
+               for r in measured["rows"]["band"])
+
+
+def test_every_item_is_measured_however_many_there_are(monkeypatch):
+    pl = _place(_finned(fins=8))
+    plan = _level("standard")
+    lay = B.build_layout(pl, plan)
+    full = TR.audit(pl, lay, lay.plan, plan)
+    monkeypatch.setattr(TR, "MAX_AUDIT_ROWS", 1)      # past it, items are measured at their centre
+    capped = TR.audit(pl, lay, lay.plan, plan)
+    assert len(capped["rows"]["gap"]) == len(full["rows"]["gap"]) == full["counts"]["gap"] > 1
+    assert capped["counts"] == full["counts"]
+
+
+def test_a_coarsened_background_does_not_excuse_an_item_from_being_measured():
+    pl = _place(_finned())
+    plan = _level("standard")
+    lay = B.build_layout(pl, plan)
+    # the same layout read as if the budget had coarsened its background tenfold: items the
+    # asked background resolved are now finer than the final one, and are measured
+    lay.H = lay.H * 10
+    res = TR.audit(pl, lay, lay.plan, plan)
+    assert res["counts"]["gap"] >= TR.audit(pl, B.build_layout(pl, plan), lay.plan,
+                                            plan)["counts"]["gap"]
+
+
+def test_a_level_whose_counts_were_not_measured_promises_nothing(tmp_path, monkeypatch):
+    from meshpipeline.application import thermal_view as TV
+
+    def boom(*_a, **_k):
+        raise RuntimeError("audit down")
+
+    monkeypatch.setattr(TR, "audit", boom)
+    pl = _place(_finned())
+    rows = dict(TV._sized_levels(pl, budget_s=60.0))
+    assert rows["standard"]["est_cells"] and rows["standard"]["rules_measured"] is False
+    monkeypatch.undo()
+    rows = dict(TV._sized_levels(_place(_finned()), budget_s=60.0))
+    assert rows["standard"]["rules_measured"] is True

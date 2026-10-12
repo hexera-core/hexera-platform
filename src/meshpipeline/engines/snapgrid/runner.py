@@ -37,8 +37,8 @@ FIDELITY_PLANS: dict[str, dict] = {
               "hot_cells_across": 2, "gap_cells": 2, "band_cells": 2, "spread_cells": 4,
               "opening_cells": 4, "growth": 1.4, "air_aspect": 20.0},
     "standard": {"max_cells": 4_000_000, "min_cells_across": 2, "cylinder_cells": 12,
-                 "hot_cells_across": 3, "gap_cells": 4, "band_cells": 4, "spread_cells": 6,
-                 "opening_cells": 6, "growth": 1.3, "air_aspect": 10.0},
+                 "hot_cells_across": 3, "gap_cells": 4, "band_cells": 6, "spread_cells": 6,
+                 "opening_cells": 6, "growth": 1.3, "air_aspect": 5.0},
     "max": {"max_cells": 8_000_000, "min_cells_across": 3, "cylinder_cells": 16,
             "hot_cells_across": 4, "gap_cells": 6, "band_cells": 6, "spread_cells": 10,
             "opening_cells": 10, "growth": 1.2, "air_aspect": 5.0},
@@ -246,6 +246,10 @@ def quality_of(ws: Path, report: dict) -> dict:
     return q_out
 
 
+#: Shortfalls the quality dict lists by name (the count covers all of them).
+_SHORT_LIMIT = 200
+
+
 def _resolution_quality(report: dict) -> dict:
     """The resolution audit as the quality dict carries it: what fell short, in words, and the
     budget that would have kept every rule. Nothing when the mesher did not measure it."""
@@ -257,7 +261,9 @@ def _resolution_quality(report: dict) -> dict:
              if r.get("first_m") and (r.get("got") or 0) >= (r.get("want") or 0) else
              f"{r.get('what')}: {r.get('got')} of {r.get('want')} cells"
              for r in res.get("short") or [] if isinstance(r, dict)]
-    return {"resolution_short": short,
+    return {"resolution_short": short[:_SHORT_LIMIT] + (
+                [f"... and {len(short) - _SHORT_LIMIT} more"] if len(short) > _SHORT_LIMIT else []),
+            "resolution_short_count": len(short),
             "resolution_checked": int(sum((res.get("counts") or {}).values())),
             "rules_budget": int(report.get("rules_budget") or 0)}
 

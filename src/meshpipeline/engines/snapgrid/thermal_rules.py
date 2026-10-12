@@ -67,7 +67,8 @@ MIN_GAP_M = 1e-6
 #: line, an exporter's micrometre offset - carries its heat across by conduction, a straight-line
 #: profile one cell resolves: it keeps the cells its planes give it, no more.
 MIN_GAP_LAYER_SHARE = 0.05
-#: Most rows of each rule the audit measures (smallest first); the rest are counted, not measured.
+#: Items of each rule measured at five points over their face (finest first); every further one
+#: is measured at its centre. Every item is measured and every shortfall kept.
 MAX_AUDIT_ROWS = 4000
 
 
@@ -740,26 +741,29 @@ def audit(placement: Placement, layout, plan, asked=None) -> dict:
     loc = _Locator(layout)
     names = placement.names or [p.name for p in placement.parts]
     rows: dict[str, list[dict]] = {"gap": [], "band": [], "spread": [], "opening": []}
-    counts: dict[str, int] = {"gap": 0, "band": 0, "spread": 0, "opening": 0}
-    # what the background alone gives, at the size the plan ASKED for (a budget that coarsened
-    # the background does not excuse a rule from being measured)
+    # what the final grid's background alone gives (a budget that coarsened it is accounted
+    # for): every item finer than that is measured; anything coarser the background resolves
     dom = placement.domain
-    H = max(dom.hi[i] - dom.lo[i] for i in range(3)) / asked.background_cells
+    H = max(max(dom.hi[i] - dom.lo[i] for i in range(3)) / asked.background_cells,
+            float(getattr(layout, "H", 0.0) or 0.0))
 
     def nm(k: int) -> str:
         return "the domain's side" if k < 0 else str(names[k])
 
-    # gaps: cells across, at the centre of the faces' overlap and at four points around it
+    def points(lo, hi, axis: int, n_done: int) -> list[np.ndarray]:
+        """Five points over the rectangle for the first MAX_AUDIT_ROWS items (finest first),
+        its centre for the rest: every item is measured, the many cheaply."""
+        pts = _samples(lo, hi, axis)
+        return pts if n_done < MAX_AUDIT_ROWS else pts[:1]
+
+    # gaps: cells across, at the centre of the faces' overlap (and four points around it)
     if asked.gap_cells > 0:
         for g in f.gaps:
             a, w = g["axis"], g["width"]
             if w < MIN_GAP_M or w / asked.gap_cells >= H:
                 continue                           # the background alone gives it the cells
-            counts["gap"] += 1
-            if len(rows["gap"]) >= MAX_AUDIT_ROWS:
-                continue
             got = min(len(loc.cells_along(pt, a, g["lo"][a], g["hi"][a]))
-                      for pt in _samples(g["lo"], g["hi"], a))
+                      for pt in points(g["lo"], g["hi"], a, len(rows["gap"])))
             a_, b_ = g["parts"]
             rows["gap"].append({"what": (f"gap between {nm(a_)} and {nm(b_)}" if a_ != b_ else
                                          f"gap inside {nm(a_)}"),
@@ -767,42 +771,46 @@ def audit(placement: Placement, layout, plan, asked=None) -> dict:
                                 "want": asked.gap_cells, "got": got,
                                 "ok": got >= asked.gap_cells})
     # heated surfaces: the first air cell, and the cells inside the boundary layer where the air
-    # in front of the face is at least the layer deep
+    # in front of the face is at least the layer deep - every heated part's faces, and every
+    # rectangle that puts heat in (a surface heat source, a heat-flux plate)
     if asked.band_cells > 0:
-        per: dict[int, dict] = {}
+        per: dict[object, dict] = {}
         lo_b, hi_b = f.boxes_lo, f.boxes_hi
-        for face in f.faces:
-            k, a, side = face["part"], face["axis"], face["side"]
-            delta = f.layer_m[k]
+        surfaces: list[tuple] = [(face["part"], f"air on {nm(face['part'])}", face["axis"], (face["side"],),
+                     face["lo"], face["hi"], f.layer_m[face["part"]], face["box"])
+                    for face in f.faces]
+        surfaces += [(("rect", r["name"]), f"air on heat source {r['name']}", r["axis"], (0, 1),
+                      r["lo"], r["hi"], boundary_layer(r["length"], f.velocity_m_s, placement), -1)
+                     for r in f.heated_rects]
+        for key, what, a, sides, s_lo, s_hi, delta, own in surfaces:
             first_want = band_first_cell(delta, asked)
             if first_want >= H:
                 continue
-            plane = face["hi"][a] if side else face["lo"][a]
-            for pt in _samples(face["lo"], face["hi"], a):
-                free = _free_run(pt, a, side, plane, lo_b, hi_b, placement.domain, face["box"])
-                if free <= 0:
-                    continue
-                end = plane + (min(free, delta) if side else -min(free, delta))
-                widths = loc.cells_along(pt, a, plane, end)
-                if not widths:
-                    continue
-                first = widths[0] if side else widths[-1]
-                row = per.setdefault(k, {"what": f"air on {nm(k)}", "parts": [nm(k)],
-                                         "layer_m": delta, "first_want_m": first_want,
-                                         "first_m": 0.0, "want": asked.band_cells,
-                                         "got": None})
-                row["first_m"] = max(row["first_m"], first)
-                if free >= delta:
-                    n = len(widths)
-                    row["got"] = n if row["got"] is None else min(row["got"], n)
+            for side in sides:
+                plane = s_hi[a] if side else s_lo[a]
+                for pt in points(s_lo, s_hi, a, len(per)):
+                    free = _free_run(pt, a, side, plane, lo_b, hi_b, placement.domain, own)
+                    if free <= 0:
+                        continue
+                    end = plane + (min(free, delta) if side else -min(free, delta))
+                    widths = loc.cells_along(pt, a, plane, end)
+                    if not widths:
+                        continue
+                    first = widths[0] if side else widths[-1]
+                    row = per.setdefault(key, {"what": what, "parts": [what[7:]],
+                                               "layer_m": delta, "first_want_m": first_want,
+                                               "first_m": 0.0, "want": asked.band_cells,
+                                               "got": None})
+                    row["first_m"] = max(row["first_m"], first)
+                    if free >= delta:
+                        n = len(widths)
+                        row["got"] = n if row["got"] is None else min(row["got"], n)
         for row in per.values():
-            counts["band"] += 1
             if row["got"] is None:              # every face is in a gap: the gap rule judges
                 row["got"] = row["want"]
                 row["in_gap"] = True
             row["ok"] = row["got"] >= row["want"] and row["first_m"] <= 1.25 * row["first_want_m"]
-            if len(rows["band"]) < MAX_AUDIT_ROWS:
-                rows["band"].append(row)
+            rows["band"].append(row)
     # heat sources: cells across their width
     if asked.spread_cells > 0:
         for hb in f.heat_boxes:
@@ -810,20 +818,16 @@ def audit(placement: Placement, layout, plan, asked=None) -> dict:
             top = float(ext.max())
             centre = (hb["lo"] + hb["hi"]) / 2
             fewest: int | None = None
-            need = False
             for a in range(3):
                 if ext[a] < 0.5 * top or ext[a] / asked.spread_cells >= H:
                     continue
-                need = True
                 n = len(loc.cells_along(centre.copy(), a, hb["lo"][a], hb["hi"][a]))
                 fewest = n if fewest is None else min(fewest, n)
-            if not need or fewest is None:
+            if fewest is None:
                 continue
-            counts["spread"] += 1
-            if len(rows["spread"]) < MAX_AUDIT_ROWS:
-                rows["spread"].append({"what": f"heat source {hb['name']}", "parts": [hb["name"]],
-                                       "want": asked.spread_cells, "got": fewest,
-                                       "ok": fewest >= asked.spread_cells})
+            rows["spread"].append({"what": f"heat source {hb['name']}", "parts": [hb["name"]],
+                                   "want": asked.spread_cells, "got": fewest,
+                                   "ok": fewest >= asked.spread_cells})
     # fans and vents: cells across the opening, on each axis across it
     if asked.opening_cells > 0:
         for op in f.openings:
@@ -842,10 +846,9 @@ def audit(placement: Placement, layout, plan, asked=None) -> dict:
                 fewest = n if fewest is None else min(fewest, n)
             if fewest is None:
                 continue
-            counts["opening"] += 1
-            if len(rows["opening"]) < MAX_AUDIT_ROWS:
-                rows["opening"].append({"what": f"{op['what']} {op['name']}", "parts": [op["name"]],
-                                        "want": want, "got": fewest, "ok": fewest >= want})
+            rows["opening"].append({"what": f"{op['what']} {op['name']}", "parts": [op["name"]],
+                                    "want": want, "got": fewest, "ok": fewest >= want})
+    counts = {key: len(r) for key, r in rows.items()}
     for key in rows:
         rows[key].sort(key=lambda r: (r["ok"], r["got"] - r["want"]))
     short = [r for key in rows for r in rows[key] if not r["ok"]]

@@ -556,7 +556,8 @@ def _level_row(level: str, label: str) -> dict:
             "gap_cells": int(plan.get("gap_cells") or 0),
             "rules": describe_plan(grid_plan(plan)),
             "est_cells": None, "est_seconds": None, "thin_layers_short": [], "relaxed": [],
-            "rules_short": [], "rules_short_count": 0, "estimate": SIZED_AT_RUN}
+            "rules_short": [], "rules_short_count": 0, "rules_measured": False,
+            "estimate": SIZED_AT_RUN}
 
 
 def _sized_levels(placement, *, budget_s: float, clock=time.monotonic):
@@ -599,9 +600,10 @@ def _sized_levels(placement, *, budget_s: float, clock=time.monotonic):
             res = TR.audit(placement, layout, layout.plan, plan)
             row.update(rules_short=TR.short_lines(res, limit=4),
                        rules_short_count=len(res.get("short") or []),
-                       rules_got=TR.summary_lines(res))
+                       rules_got=TR.summary_lines(res), rules_measured=True)
         except Exception:  # noqa: BLE001 - the level then says nothing it did not measure
             logger.exception("thermal view: the resolution audit failed for %s", level)
+            row.update(rules_measured=False)
         row.update(fits=True, est_cells=cells, est_seconds=estimate_seconds(cells, round_parts),
                    relaxed=list(layout.relaxed), estimate="",
                    thin_layers_short=[{"part": r["part"], "thickness_mm": _mm(r["thickness_m"]),

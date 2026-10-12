@@ -204,7 +204,8 @@ export function levelPromise(row, label) {
   // the check sized it and every layer gets its cells: the promise is the check's own result
   const rules = Number(row.rules_short_count || 0);
   if (row.est_cells && rules) return `${aim}; ${plural(rules, "spot")} ${rules === 1 ? "gets" : "get"} fewer.`;
-  if (row.est_cells) return `${label}: up to ${cells(row.max_cells)} cells, at least ${plural(across, "cell")} through every layer${gaps}.`;
+  // the counts were measured off the laid-out grid: the promise is the check's own result
+  if (row.est_cells && row.rules_measured !== false) return `${label}: up to ${cells(row.max_cells)} cells, at least ${plural(across, "cell")} through every layer${gaps}.`;
   return `${aim}.`;
 }
 function sentenceOf(text) {
