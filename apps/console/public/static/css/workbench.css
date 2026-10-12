@@ -72,6 +72,13 @@
 /* the geometry stage's panel holds a form, so it gets a little more room than a parts list -
    on a wide window only; below 900px the stage stacks like every other viewer */
 #workbench .viewer.gc-stage{grid-template-columns:minmax(0,1fr) clamp(340px,30vw,460px)}
+/* a thermal model's panel is a parts table: wider again, and its foot sits on the panel's edge */
+#workbench .viewer.tm-stage{grid-template-columns:minmax(0,1fr) clamp(400px,36vw,560px)}
+#workbench .viewer.tm-stage .v-bar{padding-bottom:0}
 @media(max-width:900px){
   #workbench .viewer.gc-stage{grid-template-columns:minmax(0,1fr)}
+  /* stacked, the model and its panel share the height, so the list and its button stay reachable */
+  #workbench .viewer.tm-stage{grid-template-rows:minmax(150px,1fr) minmax(0,1.3fr)}
+  #workbench .viewer.tm-stage .v-canvas{min-height:0}
+  #workbench .viewer.tm-stage .v-bar{max-height:none}
 }

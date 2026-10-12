@@ -390,10 +390,19 @@ async def _settle_geometry_hold(inbound: InboundMessage, db, *, locked, messages
     decision = gh.hold_applies(session_id)
     if not decision:
         return None
+    # A WHOLE THERMAL MODEL (ECXML) is held in its own words: no openings to check, and its own
+    # headline once the check has read the file. Known from the stored check, or - while the
+    # check is still reading - from the upload's format.
+    thermal, headline = gh.stored_thermal(session_id)
+    if not thermal:
+        from meshpipeline.contracts.intake_formats import THERMAL_CHECK
+
+        thermal = await gh.upload_check_mode(db, locked, inbound.owner_id,
+                                             inbound.organization_id) == THERMAL_CHECK
     if decision == "wait":
         # THE NAMING IS ALREADY RUNNING: a message sent meanwhile is answered with the wait line
         # and nothing else, so the intake cannot ask past the stage. Bounded by WAIT_GRACE_S.
-        reply = gh.WAIT_REPLY
+        reply = gh.wait_reply(thermal)
         await session_repo.append_message(db, inbound.session_id, "assistant", reply)
         logger.info("intake message: still held for the geometry check - session=%s", inbound.session_id)
         return MessageOutcome(status=MessageStatus.geometry_hold, reply=reply,
@@ -402,14 +411,15 @@ async def _settle_geometry_hold(inbound: InboundMessage, db, *, locked, messages
                                                      inbound.organization_id)
     if not gh.queue_naming(session_id, inbound.owner_id, gh.purpose_from(messages), interpretation):
         return None
+    reply = gh.hold_reply(thermal, headline)
     try:
-        await session_repo.append_message(db, inbound.session_id, "assistant", gh.HOLD_REPLY)
+        await session_repo.append_message(db, inbound.session_id, "assistant", reply)
     except Exception:
         # the turn will not be stored: withdraw the marker so the next turn can hold again
         gh.withdraw_naming(session_id)
         raise
     logger.info("intake message: held for the geometry check - session=%s", inbound.session_id)
-    return MessageOutcome(status=MessageStatus.geometry_hold, reply=gh.HOLD_REPLY, queued_naming=True,
+    return MessageOutcome(status=MessageStatus.geometry_hold, reply=reply, queued_naming=True,
                           transition=GateTransition(revision=revision))
 
 

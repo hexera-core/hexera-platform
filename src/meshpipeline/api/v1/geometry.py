@@ -60,9 +60,13 @@ class ConfirmedOpening(BaseModel):
 
 
 class ConfirmIn(BaseModel):
-    #: the registry's kinds (contracts/geometry_fields INPUT_KIND_OPTIONS); a test holds them equal
-    input_kind: Literal["body-surface", "fluid-domain", "solid-body", "solid-assembly"]
-    flow: Literal["internal", "external"]
+    #: the registry's kinds (contracts/geometry_fields INPUT_KIND_OPTIONS); a test holds them equal.
+    #: Required, except for a whole thermal model, whose kind and flow the server sets.
+    input_kind: Literal["body-surface", "fluid-domain", "solid-body", "solid-assembly"] | None = None
+    flow: Literal["internal", "external"] | None = None
+    #: THE DETAIL LEVEL the user picked on a thermal model's panel (Quick look, Standard, Fine), in
+    #: the mesher's fidelity words: said in the declaration as the user's own choice.
+    detail: Literal["draft", "standard", "max"] | None = None
     openings: list[ConfirmedOpening] = []
     seed_point_mm: list[float] | None = None
     size_mm: list[float] | None = None
@@ -105,6 +109,10 @@ class ConfirmIn(BaseModel):
     #: when the uploaded file declares them (geometry_check.declared_openings_reason) and the user
     #: kept those roles - said in the declaration and carried into the brief.
     openings_reason: str = ""
+    #: SET BY THE SERVER from the stored check, never taken from the form: "thermal" when the upload
+    #: is a whole thermal model (contracts/intake_formats check_mode), whose air box's sides are the
+    #: file's - so a confirmation with no openings declares none and asks nothing about them.
+    check_mode: str = ""
 
     @field_validator("extents")
     @classmethod
@@ -234,7 +242,10 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     # a worker that was merely slow still lands its result.
     payload = time_boxed(stored, requested) or stored
     from meshpipeline.contracts.geometry_fields import form_spec
-    payload["fields"] = form_spec()
+    from meshpipeline.contracts.intake_formats import THERMAL_CHECK
+    if payload.get("check_mode") != THERMAL_CHECK:
+        # the generic form's fields; a thermal model is served as its `thermal` view instead
+        payload["fields"] = form_spec()
     payload.setdefault("named", payload.get("status") == "ready")
     payload["naming_requested"] = naming_pending(requested)
     # a triangle file carries no unit: until the chat has settled it, the sizes on the stage are
@@ -475,6 +486,24 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
         raise HTTPException(409, UNIT_FIXED.format(unit=fixing.fixed_unit, reason=fixing.fixed_unit_reason))
     body = body.model_copy(update={"unit_fixed": fixing is not None,
                                    "unit_fixed_reason": fixing.fixed_unit_reason if fixing else ""})
+    # A WHOLE THERMAL MODEL is the stored check's to say, never the form's
+    from meshpipeline.contracts.intake_formats import THERMAL_CHECK
+    _stored_check = _read_json(check_object_key(str(session_id), "scout.json")) or {}
+    body = body.model_copy(update={
+        "check_mode": THERMAL_CHECK if _stored_check.get("check_mode") == THERMAL_CHECK else ""})
+    if body.check_mode == THERMAL_CHECK:
+        # the panel sends only the detail level: a thermal model is always an assembly of solid
+        # parts with the air among them, so its kind and flow are the server's to fill - and its
+        # name and size are the file's, as the check read them
+        proposed = _stored_check.get("proposal") or {}
+        body = body.model_copy(update={
+            "input_kind": "solid-assembly", "flow": "internal",
+            "part": body.part or str(proposed.get("part") or "")[:80],
+            "size_mm": body.size_mm or proposed.get("size_mm"),
+            "scale_to_m": body.scale_to_m or proposed.get("scale_to_m")})
+    elif body.input_kind is None or body.flow is None:
+        raise HTTPException(422, "Say what the file is (input_kind) and whether the fluid flows "
+                                 "through it or around it (flow).")
     if body.input_kind == "solid-assembly" and not body.regions:
         # an assembly's regions are the file's, as the check read them: named in the declaration
         facts = (_read_json(check_object_key(str(session_id), "scout.json")) or {}).get("facts") or {}

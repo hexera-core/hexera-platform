@@ -221,6 +221,26 @@ _KIND_WORDS = {"body-surface": "the part's wall, hollow inside for the fluid",
                "fluid-domain": "the fluid volume itself",
                "solid-body": "a solid body",
                "solid-assembly": "an assembly of solid parts, each its own region"}
+#: What the declaration says of a whole thermal model's air box (check_mode "thermal"): its sides
+#: are the file's, so no boundary is declared and none is asked about. The chat shows it.
+THERMAL_SIDES = ("The sides of the air box are the file's own: open to the room unless the file "
+                 "puts a fan, a vent or a wall there, and kept under the file's names. Nothing about "
+                 "them needs declaring.")
+#: The detail levels a thermal model's panel offers, as the panel names them, by the mesher's
+#: fidelity words (the intake's mesh_fidelity).
+DETAIL_WORDS = {"draft": "Quick look", "standard": "Standard", "max": "Fine"}
+
+
+def detail_sentence(body) -> str:
+    """What the declaration says of the detail level the user picked on the panel: the user's own
+    choice of mesh_fidelity, in the panel's word and the intake's. "" when none was picked."""
+    level = str(getattr(body, "detail", "") or "")
+    if level not in DETAIL_WORDS:
+        return ""
+    return (f"Detail level: {DETAIL_WORDS[level]}, chosen by the user on the panel "
+            f"(mesh_fidelity {level}).")
+
+
 #: Region names spelled out in an assembly's declaration; the rest are counted.
 _REGIONS_NAMED = 24
 
@@ -239,9 +259,59 @@ def assembly_sentence(body) -> str:
     return said
 
 
+#: HOW A THERMAL MODEL'S DECLARATION BEGINS, after the mark: the console says it was confirmed on
+#: the thermal model panel (render/geometry_form.js displayText mirrors this), and the intake reads
+#: the case from it (`declared_case`, `thermal_declared`).
+THERMAL_LEAD = "the thermal model"
+_THERMAL_CASE = "input_kind solid-assembly, for a conjugate heat-transfer solve."
+
+
+def thermal_confirmation_message(body) -> str:
+    """The declaration of a whole thermal model (check_mode "thermal"), in an electronics-cooling
+    engineer's words: the model by the file's name, its parts and the air among them as regions,
+    a conjugate heat-transfer solve, the air box's sides as the file has them, the detail level
+    picked on the panel, and the unit the conversion fixed. Nothing in it speaks of openings, of
+    which way a fluid goes, or of a picture: the panel showed the file's own model."""
+    title = str(getattr(body, "part", "") or "").strip()
+    parts = [f"{CONFIRMED_MARK} {THERMAL_LEAD}" + (f" “{title}”" if title else "")
+             + ", read from the file: its parts and the air among them, each its own region, "
+             + _THERMAL_CASE]
+    names = [str(n) for n in (getattr(body, "regions", None) or []) if str(n).strip()]
+    said = ("Each part is its own solid region and the air among them is one more; together they "
+            "fill the air box, so the model is meshed as it stands.")
+    if names:
+        shown = ", ".join(names[:_REGIONS_NAMED])
+        more = f", and {len(names) - _REGIONS_NAMED} more" if len(names) > _REGIONS_NAMED else ""
+        said += f" Its {len(names)} regions, named as in the file: {shown}{more}."
+    parts.append(said)
+    parts.append(THERMAL_SIDES)
+    if detail_sentence(body):
+        parts.append(detail_sentence(body))
+    size = getattr(body, "size_mm", None)
+    if size and len(size) == 3:
+        parts.append(f"Air box: {size[0]:.0f} x {size[1]:.0f} x {size[2]:.0f} mm.")
+    if getattr(body, "unit", None):
+        # the converter wrote the model in millimetres; the file's own lengths are metres. Both are
+        # true, and the intake prompt reads "fixed by the conversion" as never to be asked again
+        reason = str(getattr(body, "unit_fixed_reason", "") or "").strip().rstrip(".")
+        parts.append("Lengths are in millimetres, fixed by the conversion of the uploaded file"
+                     + (f": {reason}." if reason else "."))
+    return " ".join(parts)
+
+
+def thermal_declared(messages: list[dict] | None) -> bool:
+    """Whether the conversation's declaration is a whole thermal model's (its latest one)."""
+    for m in reversed(list(messages or [])):
+        if isinstance(m, dict) and _is_declaration(m):
+            return str(m.get("content", "")).startswith(f"{CONFIRMED_MARK} {THERMAL_LEAD}")
+    return False
+
+
 def confirmation_message(body) -> str:
     """The sentence the intake reads: everything the user confirmed, in plain words, with the
     numbers the builder needs. Its opening phrase is the one the intake prompt block names."""
+    if getattr(body, "check_mode", "") == "thermal":
+        return thermal_confirmation_message(body)
     kind = _KIND_WORDS[body.input_kind]
     through = "through it" if body.flow == "internal" else "around it"
     # The kind is stated verbatim, in the intake's own enum, and it is the same word the session
@@ -296,6 +366,8 @@ def _is_declaration(m: dict) -> bool:
 
 _DECLARED = re.compile(
     r"input_kind (body-surface|fluid-domain|solid-body|solid-assembly); the fluid flows (through|around) it\.")
+#: A thermal model's case, as `thermal_confirmation_message` states it.
+_THERMAL_DECLARED = re.compile(re.escape(_THERMAL_CASE))
 
 
 #: A user message that says what the file is or how the fluid moves - after the stage, a correction
@@ -320,12 +392,20 @@ def declared_case(messages: list[dict] | None) -> tuple[str, str] | None:
     for i in range(len(msgs) - 1, -1, -1):
         m = msgs[i]
         if isinstance(m, dict) and _is_declaration(m):
-            found = _DECLARED.search(str(m.get("content", "")))
-            if not found:
+            text = str(m.get("content", ""))
+            found = _DECLARED.search(text)
+            # a whole thermal model says its case in its own words: an assembly of parts with the
+            # air among them, for a conjugate heat-transfer solve
+            thermal = found is None and text.startswith(f"{CONFIRMED_MARK} {THERMAL_LEAD}") \
+                and _THERMAL_DECLARED.search(text) is not None
+            if not found and not thermal:
                 return None
             if any(isinstance(later, dict) and later.get("role") == "user"
                    and _RESTATES.search(str(later.get("content", ""))) for later in msgs[i + 1:]):
                 return None
+            if thermal:
+                return "conjugate_heat_transfer", "solid-assembly"
+            assert found is not None
             kind, flow = found.groups()
             if kind == "solid-assembly":
                 return "conjugate_heat_transfer", kind
@@ -405,7 +485,8 @@ _OPENING_DEFAULTS: dict[str, object] = {"centroid_mm": None, "diameter_mm": None
 _BODY_DEFAULTS: dict[str, object] = {"openings": [], "seed_point_mm": None, "size_mm": None, "part": "",
                                      "flow_axis": None, "reference_length_mm": None, "extents": None,
                                      "grounded": False, "up_axis": None, "scale_to_m": None, "unit": None,
-                                     "unit_fixed": False, "unit_fixed_reason": "", "regions": None, "openings_reason": ""}
+                                     "unit_fixed": False, "unit_fixed_reason": "", "regions": None, "openings_reason": "",
+                                     "check_mode": "", "detail": None}
 
 
 def body_of(record: dict) -> SimpleNamespace:
@@ -468,4 +549,5 @@ def sizeless_record(record: dict, *, scale_to_metres: float, unit: str) -> dict:
 __all__ = ["CONFIRMED_MARK", "assembly_sentence", "body_of", "confirmation_message", "declared_case", "distinct_opening_names",
            "renamed_openings_sentence",
            "patches_from", "replace_declaration",
-           "reread_record", "sizeless_record", "unit_sentence", "with_declaration"]
+           "reread_record", "sizeless_record", "thermal_confirmation_message", "thermal_declared",
+           "unit_sentence", "with_declaration"]

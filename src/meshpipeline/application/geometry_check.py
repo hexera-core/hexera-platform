@@ -354,7 +354,12 @@ def _fetch(ref, work: Path) -> Path:
 def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict | None) -> dict:
     from meshpipeline.cad.ingest import IngestError, canonicalise
     from meshpipeline.contracts.geometry_source import GeometryInterpretationRef, GeometrySourceRef
-    from meshpipeline.contracts.intake_formats import GeometryKind, format_for_suffix
+    from meshpipeline.contracts.intake_formats import (
+        THERMAL_CHECK,
+        GeometryKind,
+        check_mode_of,
+        format_for_suffix,
+    )
     from meshpipeline.contracts.object_storage import get_object_store
     from meshpipeline.render.scout_snapshots import render_snapshots
 
@@ -379,6 +384,13 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
         except IngestError as exc:
             raise _Unsupported(str(exc)) from exc
         local_path = canonical.path
+        # A WHOLE THERMAL MODEL (ECXML) IS SHOWN AS ONE: the file names every part, its material
+        # and power, the fans, the vents and the room air, so nothing is pictured, named, turned
+        # upright, measured from triangles or given an opening role - the thermal view is built
+        # from the file instead
+        thermal_sidecar = _thermal_sidecar(canonical.path)
+        if thermal_sidecar is not None and check_mode_of(canonical.source_format) == THERMAL_CHECK:
+            return _scout_thermal(session_id, ref, fetched, canonical, thermal_sidecar)
         placed = bool(canonical.physics.get("placed_parts"))
         if canonical.kind is GeometryKind.cad:
             facts, skin = _scout_exact(local_path, work, interp_ref, ref)
@@ -391,7 +403,7 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
         facts.setdefault("notes", []).extend(n for n in canonical.notes if n not in facts["notes"])
         # a thermal model's physics (ECXML: materials, powers, fans, vents...), kept whole beside
         # the session's check so a later solver step - or the user - has all of it
-        thermal = _thermal_sidecar(canonical.path)
+        thermal = thermal_sidecar
         if thermal is not None:
             thermal_key = check_object_key(session_id, "thermal_model.json")
             _store_json(thermal_key, thermal)
@@ -427,6 +439,54 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
     if upright is not None:
         result["upright_sheet"] = upright
     return result
+
+
+def _scout_thermal(session_id: str, ref, fetched: Path, canonical, sidecar: dict) -> dict:
+    """The check of a whole thermal model (a format whose check_mode is "thermal"): its placed
+    parts as the stage draws them, its physics kept whole beside the check, and the thermal view -
+    the parts tree, totals, room air, air box, fans, vents, sources, probes, warnings and detail
+    levels - built from the file (application/thermal_view). Nothing else is asked of it: no
+    pictures, no picture naming, no up question, no triangle measuring, and no openings - the air
+    box's sides are the file's, described in the view, never given a role."""
+    from meshpipeline.application.thermal_view import detail_levels_bounded, thermal_view
+    from meshpipeline.cad.ingest.ecxml import read_ecxml
+    from meshpipeline.cad.ingest.ecxml_place import place, placed_skin
+    from meshpipeline.contracts.intake_formats import THERMAL_CHECK
+
+    placement = place(read_ecxml(fetched))
+    thermal_key = check_object_key(session_id, "thermal_model.json")
+    _store_json(thermal_key, sidecar)
+    # the grid laid out for each detail level, in a child stopped at its time budget: a level
+    # it could not size in time shows its limits, and is sized when the mesh runs
+    view = thermal_view(sidecar, placement, detail=detail_levels_bounded(fetched))
+    skin_key = check_object_key(session_id, "skin.json")
+    _store_json(skin_key, placed_skin(placement))
+    facts = thermal_facts(view, canonical)
+    facts.setdefault("thermal_model", {})["object_key"] = thermal_key
+    return {"status": STATUS_SCOUTED, "named": False, "facts": facts, "proposal": _proposal(facts, None),
+            "snapshots": [], "skin_key": skin_key, "source": ref.to_payload(),
+            "check_mode": THERMAL_CHECK, "thermal": view}
+
+
+def thermal_facts(view: dict, canonical) -> dict:
+    """What the check records of a thermal model, in the shape every reader of the facts takes:
+    an assembly of regions (each part, and the air), with no openings - and the file's title, the
+    air box's size, and the view's warnings as the notes the form shows until the thermal panel
+    replaces it."""
+    from meshpipeline.contracts.intake_formats import THERMAL_CHECK
+
+    facts: dict = {
+        "check_mode": THERMAL_CHECK, "read_as": "thermal model", "body_kind": "assembly",
+        "input_kind": "solid-assembly", "flow": "internal", "confidence": {"input_kind": 0.95},
+        "openings": [], "faces": [], "holes": [], "seed_point_mm": None,
+        "size_mm": list((view.get("domain") or {}).get("size_mm") or [0.0, 0.0, 0.0]),
+        # the placed parts are written in millimetres, the unit the ECXML geometry is read in
+        "scale_to_m": 0.001, "unit_assumed": False,
+        "title": str(view.get("title") or ""),
+        "notes": [w["text"] for w in view.get("warnings") or [] if w.get("level") == "warn"],
+    }
+    facts.update(canonical.facts())
+    return facts
 
 
 def _placed_skin_payload(source: Path) -> dict:
@@ -876,6 +936,16 @@ def _name(*, session_id: str, owner_id: str, purpose_text: str, interpretation: 
             # only and stay as they are.
             _rescale_skin(session_id, k)
 
+    if _is_thermal(facts):
+        # the file names every part and says which way is up: nothing is asked of a model
+        proposal = _proposal(facts, {})
+        result = {k: v for k, v in stored.items() if k not in _STAMPED_KEYS + _FAILURE_KEYS}
+        result.update(named=True, facts=facts, vision={}, proposal=proposal,
+                      purpose_text=purpose_text[:2000], naming_seconds=round(time.time() - started, 1))
+        landed = store_status(session_id, STATUS_READY, RETRY_NAMING, **result)
+        logger.info("geometry naming %s - session=%s (a thermal model names itself)", landed["status"], session_id)
+        return landed
+
     with tempfile.TemporaryDirectory(prefix=f"geometry_naming_{session_id[:8]}_") as tmp:
         store = get_object_store()
         shots: list[_Shot] = []
@@ -1314,6 +1384,8 @@ def _proposal(facts: dict, vision: dict | None) -> dict:
     """What the user is shown: the code's positions and sizes, the model's names and roles where
     it gave them for a sticker that exists, and the kind and flow from whichever is surer. With
     no vision answer yet (the scout alone) the names are the code's and nothing says otherwise."""
+    if _is_thermal(facts):
+        return _thermal_proposal(facts, vision)
     proposal = {
         "part": (vision or {}).get("part") or "",
         "input_kind": facts["input_kind"], "flow": facts["flow"],
@@ -1381,6 +1453,31 @@ def _upright(proposal: dict, facts: dict, vision: dict | None, flow_axis) -> dic
     proposal.update(external_defaults(facts, flow_axis, up["up_axis"]))
     if up["up_axis"] != DEFAULT_UP:
         proposal["notes"].append(f"Up is {up['up_axis'].upper()}: {up['up_axis_from']}.")
+    return proposal
+
+
+def _is_thermal(facts: dict | None) -> bool:
+    from meshpipeline.contracts.intake_formats import THERMAL_CHECK
+
+    return (facts or {}).get("check_mode") == THERMAL_CHECK
+
+
+def _thermal_proposal(facts: dict, vision: dict | None) -> dict:
+    """A thermal model's proposal: the file's title, an assembly of regions, no openings, and
+    the file's own up (+z, which every thermal tool takes) - what the form shows until the
+    thermal panel replaces it. Nothing in it is a guess for the user to correct."""
+    from meshpipeline.contracts.geometry_fields import DEFAULT_UP, external_defaults
+    from meshpipeline.contracts.intake_formats import THERMAL_CHECK
+
+    proposal = {
+        "part": str(facts.get("title") or ""), "input_kind": "solid-assembly", "flow": "internal",
+        "openings": [], "seed_point_mm": None, "size_mm": facts["size_mm"],
+        "notes": list(facts.get("notes") or []), "openings_reason": "",
+        "read_as": facts.get("read_as", "thermal model"), "faces": [], "holes": [],
+        "named": vision is not None, "vision_available": False, "check_mode": THERMAL_CHECK,
+        "up_axis": DEFAULT_UP, "up_axis_confidence": 1.0, "up_axis_from": "as the file draws it",
+    }
+    proposal.update(external_defaults(facts, None, DEFAULT_UP))
     return proposal
 
 

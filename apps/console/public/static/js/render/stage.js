@@ -21,6 +21,8 @@ import { applyFlow, bindAxis, bindUnit, displayText, followAxis, followSuggestio
   readForm, shown, unitChoiceHint, unitChoiceNeeded, unitOf } from "./geometry_form.js";
 // the card keeps the user's answers through a re-draw and says back what they changed
 import { changedAnswers, editsLine, noteDrawn, servedProposal } from "./geometry_form.js";
+// a thermal model (an ECXML upload) has its own panel, card or stage alike
+import { bindThermalPanel, thermalPanelHtml } from "./thermal_form.js";
 
 /* The lightbox is its own DOM region (#lb) but too small to be its own module. */
 export function openLightbox(src) {
@@ -90,9 +92,13 @@ export const Stage = {
     const sig=JSON.stringify(b);
     if(this._briefSig===sig)return;
     this._briefSig=sig;
-    const ROWS=[['purpose','Purpose'],['engine','Engine'],['input_kind','Input'],
-                ['dimensionality','Dimensionality'],['mesh_fidelity','Mesh detail preference'],
-                ['label','Case']];
+    // A WHOLE THERMAL MODEL reads as an engineer's job sheet: the job in one paragraph from the
+    // file's own numbers, then only what the sheet does not already say
+    const thermal=b.check_mode==='thermal'&&b.job_sheet;
+    const ROWS=thermal?[['engine','Engine'],['mesh_fidelity','Detail level'],['label','Case']]
+      :[['purpose','Purpose'],['engine','Engine'],['input_kind','Input'],
+        ['dimensionality','Dimensionality'],['mesh_fidelity','Mesh detail preference'],
+        ['label','Case']];
     // Prefer the server's display label. A field may be label-ONLY: the fidelity tier always
     // applies, even when the user stated no preference and there is no raw value.
     let rows=ROWS.filter(([k])=>b[k]||b[k+'_label']).map(([k,l])=>
@@ -114,7 +120,8 @@ export const Stage = {
         +`<span>${esc(c.label)}${c.detail?` <span class="rc-d">${esc(c.detail)}</span>`:''}</span></div>`;}).join('');
     const html=`<div class="who">Requirements · submitted by Hexera</div>
       <div class="req-card${(b.checks||[]).every(c=>c.status==='pass')?' ok':''}">
-        <div class="rc-h">Structured brief</div>${rows}
+        ${thermal?`<div class="rc-h">Job sheet</div><p class="rc-sheet">${esc(b.job_sheet)}</p>`
+          :'<div class="rc-h">Structured brief</div>'}${rows}
         ${ck?`<div class="rc-h rc-h2">Validated by the application</div>${ck}`:''}
       </div>`;
     if(this._briefEl){this._briefEl.innerHTML=html;}
@@ -165,6 +172,7 @@ export const Stage = {
      vision model, not for people - and the form is the same one the stage shows. One card per
      session, replaced if the check is shown again. */
   geometryCheck(d,confirm){
+    if(d&&d.thermal)return this.thermalCheck(d,confirm);
     const p=d.proposal||{},pics=d.pictures||[];
     // what the check proposed, kept apart from the card the user edits: Proceed says back what changed
     this._gcServed=servedProposal(null,p);
@@ -235,6 +243,19 @@ export const Stage = {
   /* THE CARD FOLLOWS THE CHECK IN PLACE: a unit settled in the chat reaches its unit box when the
      user has not set it themselves. The card is never drawn again for that, so what the user
      typed on it stays. A confirmed card is left as it is. */
+  /* A THERMAL MODEL AS A CARD: the same panel the stage shows, without the picture - the parts,
+     the file's numbers, the detail level and "Mesh this model". */
+  thermalCheck(d,confirm){
+    this.clearEmpty();
+    if(this._gcEl)this._gcEl.remove();
+    const g=document.createElement('div');g.className='im assistant';
+    g.innerHTML=`<div class="who">Thermal model · what Hexera read from the file</div>
+      <div class="req-card tm-card">${thermalPanelHtml(d.thermal)}</div>`;
+    this.col().appendChild(g);this._gcEl=g;this._gcP=null;
+    bindThermalPanel(g.querySelector('.tm-card'),d.thermal,{confirm:async(body)=>{
+      await confirm(body,'');g.querySelector('.tm-card').classList.add('ok');this.scrollBottom();}});
+    this.scrollBottom();},
+
   geometryCheckUpdate(d){
     const g=this._gcEl,p=this._gcP;if(!g||!p||g.querySelector('.gc-done'))return;
     const q=(d&&d.proposal)||{};

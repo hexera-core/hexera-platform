@@ -101,6 +101,10 @@ class IntakeExecutionState:
     #: (purpose, input kind) the user confirmed on the geometry stage, or None: what an engine the
     #: model proposes on its own must be able to mesh.
     declared_case: tuple | None = None
+    #: Whether that confirmation is a whole thermal model's (an ECXML upload confirmed on its
+    #: panel): its engine is the one that reads the file, selected without a question, and every
+    #: reply is held to the thermal vocabulary (application/thermal_wording).
+    thermal: bool = False
     # The approved SOURCE, not a file. Intake binds which bytes were approved; it never
     # opens them, so it holds the reference and no path.
     source_ref: object | None = None
@@ -416,6 +420,22 @@ class IntakeToolExecutor:
         # proof is in hand and asking again is a question with one answer, so the selection is
         # confirmed here instead of costing the user a round-trip. (A refusal still needs the name
         # in THIS message, above: an earlier naming is what the refusal was about.)
+        if st.thermal and own_reason and not chosen_by_user:
+            # A WHOLE THERMAL MODEL is meshed by the engine that reads its file itself: nothing is
+            # asked about it (the chat after "Mesh this model" asks nothing). The job sheet the
+            # user approves names it, so that approval is where they say yes to it - or name
+            # another engine, which the conversation takes as their choice as always.
+            st.selection = {**st.selection, "state": es.CONFIRMED, "via": es.VIA_THE_FILE,
+                            "confirmed_revision": st.revision,
+                            "expires_at": es.time.time() + es.CONFIRMED_TTL_S}
+            logger.info("Intake: engine selection CONFIRMED for a thermal model - %s reads the "
+                        "file itself - job_id=%s", eng, self._job_id)
+            return IntakeToolResult(
+                tool="propose_engine_selection", accepted=True, advanced=True,
+                content=(f"{_vocab.to_display(_vocab.ENGINE, eng)} is SELECTED: {own_reason}. "
+                         "The job sheet the user approves names it - do not ask about it or "
+                         "mention it. Call preview_selected_admission and submit_requirements "
+                         "now (engine_source suggested_confirmed)."))
         if chosen_by_user:
             st.selection = {**st.selection, "state": es.CONFIRMED,
                             "confirmed_revision": st.revision,

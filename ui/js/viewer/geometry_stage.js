@@ -1,6 +1,8 @@
 // Responsibility: Show the geometry check as a stage the user can orient in - the part in 3D drawn
 // the way a CAD viewer draws it, a numbered sticker on every opening, and the panel beside it
-// where names and roles are confirmed, stickers added or removed.
+// where names and roles are confirmed, stickers added or removed. A whole thermal model (an ECXML
+// upload) gets its own mode instead: the parts in the colours of the panel's list, picked from
+// either side, the case seen through, the file's air box as faint lines - and no stickers.
 // Owns: its vtk.js scene (the skin, its edges, the lights, the sticker balls and the pins that
 // follow them), the naming state of the panel, the measuring ruler, and the takeover of the
 // workbench while the check is open.
@@ -21,7 +23,8 @@ import { esc } from "../core/format.js";
 import { applyFlow, bindAxis, bindUnit, changedAnswers, editsLine, extentAlong, followSuggestion, followUnit, formHtml,
   markConfirmed, noteDrawn, readExternal, readForm, rowHtml, servedProposal, shown, tableHead, unitChoiceHint,
   unitChoiceNeeded, unitOf } from "../render/geometry_form.js";
-import { circleThrough, clickIndex, snapAt } from "./open_ends.js";
+import { bindThermalPanel, partDetails, thermalPanelHtml, watts } from "../render/thermal_form.js";
+import { circleThrough, clickIndex, firstHit, snapAt } from "./open_ends.js";
 import { bindMouse, isUpAxis, orient, saveUp, savedUp, shield, upSelectHtml, upVector } from "./view_controls.js";
 
 let _vtkP = null;
@@ -96,6 +99,9 @@ function leadHtml(p) {
  *  WebGL - so the user still gets the card. */
 export async function openGeometryStage(sessionId, d, confirm, opts) {
   opts = opts || {};
+  // A WHOLE THERMAL MODEL (an ECXML upload) is shown as the file's own model, not as a part with
+  // openings to name: its own panel and scene, below
+  if (d && d.thermal) return openThermalStage(sessionId, d, confirm, opts);
   const p = d.proposal || {};
   // what the check proposed, kept apart from the form the user edits: Proceed says back what changed
   let served = servedProposal(null, p);
@@ -879,5 +885,358 @@ function initScene(sessionId, box, surf, p) {
   return {
     stop: () => { alive = false; ro.disconnect(); clearDecor(); clearMeasure(); document.removeEventListener("keydown", onKey); delete window._vdbg["gstage:" + sessionId]; },
     rebind, refresh: refreshExternal,
+  };
+}
+
+/* ======================================================================================
+ * THE THERMAL MODEL STAGE - an ECXML upload, shown the way a thermal tool opens a model.
+ *
+ * The file already says what every part is, what it is made of, how much heat it gives off and
+ * where the fans and vents sit, so there is nothing here to name, no openings, no flow arrow and
+ * no far-field box. The parts are drawn in the colours the panel's list wears; clicking a row (or
+ * a part) lights that part and fades the rest, hovering says what it is, the case can be seen
+ * through, and the air box the file sets is drawn as faint lines. The one answer is the detail
+ * level, sent with "Mesh this model".
+ * ====================================================================================== */
+const AIRBOX = [0.43, 0.55, 0.69], OUTLINE = [1.0, 0.31, 0.0];
+const FADED = 0.12, XRAY = 0.18;
+
+async function openThermalStage(sessionId, d, confirm, opts) {
+  const t = d.thermal || {};
+  const id = "gstage-" + sessionId;
+  document.getElementById(id)?.remove();
+  const box = document.createElement("div"); box.className = "viewer gc-stage tm-stage"; box.id = id;
+  const hasCase = (t.tree || []).some((r) => r.kind === "enclosure" && r.region);
+  box.innerHTML = `<div class="v-bar gc-panel tm-panel">${thermalPanelHtml(t)}</div>
+    <div class="v-canvas gc-canvas" id="gs-canvas-${sessionId}">
+      <div class="v-loading" id="gs-load-${sessionId}"><div>Loading the model…</div></div>
+      <div class="v-tools">${upSelectHtml("gs-up-" + sessionId, savedUp("session", sessionId) || "+z")}${hasCase ? `<button class="v-btn v-tool on" id="gs-xray-${sessionId}" type="button" aria-pressed="true" title="See through the case to the parts inside">See inside</button>` : ""}<button class="v-btn v-tool" id="gs-all-${sessionId}" type="button" hidden title="Show every part again">Show all</button><button class="v-btn v-tool" id="gs-fit-${sessionId}" type="button" title="Frame the whole model">Fit</button></div>
+      <div class="tm-tip" hidden></div>
+      <svg class="gc-axes" viewBox="0 0 84 84" aria-hidden="true">
+        ${["x", "y", "z"].map((k) => `<line class="ax ax-${k}" x1="42" y1="42" x2="42" y2="42"/><text class="ax-l ax-${k}" x="42" y="42">${k.toUpperCase()}</text>`).join("")}
+      </svg>
+    </div>`;
+  const release = takeOver(box, opts.anchorEl);
+  const panelEl = box.querySelector(".tm-panel");
+  let scene = null, closed = false;
+  const panel = bindThermalPanel(panelEl, t, {
+    select: (region) => scene && scene.select(region),
+    hover: (region) => scene && scene.hover(region),
+    frame: (region) => scene && scene.frame(region),
+    probe: (name) => scene && scene.probe(name),
+    confirm: async (body) => {
+      await confirm(body, "");
+      closed = true;
+      if (scene) scene.stop();
+      release();                         // the workbench goes back; the conversation carries on
+    },
+  });
+  try {
+    await loadVtk();
+    const surf = await getGeometrySkin(sessionId);
+    if (closed) return null;             // confirmed while the model loaded: nothing left to draw
+    scene = initThermalScene(sessionId, box, surf, t, panel);
+    document.getElementById("gs-load-" + sessionId)?.remove();
+  } catch (e) {
+    // the panel works without the picture: the card carries it instead
+    if (closed) return null;             // confirmed already: no card for a model that is done
+    console.warn("thermal stage unavailable, showing the card instead:", e && e.message);
+    release();
+    if (opts.fallback) opts.fallback();
+    return null;
+  }
+  return {
+    release: () => { if (scene) scene.stop(); release(); },
+    // the file's model does not move while the page waits: nothing to follow
+    update: () => {},
+    isNaming: () => false,
+  };
+}
+
+function initThermalScene(sessionId, box, surf, t, panel) {
+  const host = document.getElementById("gs-canvas-" + sessionId);
+  const grw = vtk.Rendering.Misc.vtkGenericRenderWindow.newInstance({ background: BACKGROUND });
+  grw.setContainer(host);
+  const ren = grw.getRenderer(), rw = grw.getRenderWindow();
+  const apiRW = grw.getApiSpecificRenderWindow ? grw.getApiSpecificRenderWindow() : grw.getOpenGLRenderWindow();
+  const DPR = Math.min(window.devicePixelRatio || 1, 2);
+  function setRenderScale() { const r = host.getBoundingClientRect();
+    apiRW.setSize(Math.max(2, Math.round(r.width * DPR)), Math.max(2, Math.round(r.height * DPR))); }
+  grw.resize();
+  host.addEventListener("contextmenu", (e) => e.preventDefault());
+  bindMouse(grw);
+  if (vtk.Rendering.Core.vtkLight) {
+    [[-0.7, 0.9, 1.0, 0.62], [0.9, 0.25, 0.7, 0.28], [0.0, -0.4, -1.0, 0.14]].forEach(([x, y, z, i]) => {
+      const l = vtk.Rendering.Core.vtkLight.newInstance();
+      if (l.setLightTypeToCameraLight) l.setLightTypeToCameraLight();
+      l.setPosition(x, y, z); l.setFocalPoint(0, 0, 0); l.setIntensity(i); l.setColor(1, 1, 1);
+      ren.addLight(l);
+    });
+  }
+  const rows = new Map((t.tree || []).filter((r) => r.region).map((r) => [r.region, r]));
+
+  /* THE PARTS - one actor each, under the region name the list's rows carry */
+  const parts = new Map();
+  (surf.patches || []).forEach((pt) => {
+    let pts, polys, normals = null;
+    if (pt.polys_b64) { pts = b64f32(pt.points_b64); polys = b64u32(pt.polys_b64);
+      if (pt.normals_b64) normals = b64f32(pt.normals_b64); }
+    else { pts = b64f32(pt.positions_b64); const n = pts.length / 9;
+      polys = new Uint32Array(n * 4);
+      for (let q = 0; q < n; q++) { polys[q * 4] = 3; polys[q * 4 + 1] = q * 3; polys[q * 4 + 2] = q * 3 + 1; polys[q * 4 + 3] = q * 3 + 2; } }
+    const pd = vtk.Common.DataModel.vtkPolyData.newInstance();
+    pd.getPoints().setData(pts, 3); pd.getPolys().setData(polys);
+    if (normals && normals.length === pts.length) {
+      pd.getPointData().setNormals(vtk.Common.Core.vtkDataArray.newInstance({ name: "Normals", values: normals, numberOfComponents: 3 }));
+    }
+    const mapper = vtk.Rendering.Core.vtkMapper.newInstance(); mapper.setInputData(pd);
+    const actor = vtk.Rendering.Core.vtkActor.newInstance(); actor.setMapper(mapper);
+    const row = rows.get(pt.name) || {};
+    // the list's colour is the part's colour: the same table on both sides (ecxml_place.PART_COLOURS)
+    const col = Array.isArray(row.color) ? row.color : Array.isArray(pt.color) ? pt.color : BODY;
+    const pr = actor.getProperty();
+    pr.setColor(col[0], col[1], col[2]); pr.setInterpolationToPhong();
+    pr.setAmbient(0.32); pr.setDiffuse(0.76); pr.setSpecular(0.12); pr.setSpecularPower(20);
+    ren.addActor(actor);
+    parts.set(pt.name, { actor, pd, pts, polys, index: null, isCase: (row.kind || "") === "enclosure" || pt.kind === "enclosure", row });
+  });
+  let edges = null;
+  if (surf.edges && surf.edges.lines_b64) {
+    const pd = vtk.Common.DataModel.vtkPolyData.newInstance();
+    pd.getPoints().setData(b64f32(surf.edges.points_b64), 3); pd.getLines().setData(b64u32(surf.edges.lines_b64));
+    const mp = vtk.Rendering.Core.vtkMapper.newInstance(); mp.setInputData(pd);
+    edges = vtk.Rendering.Core.vtkActor.newInstance(); edges.setMapper(mp); edges.setPickable(false);
+    const pp = edges.getProperty(); pp.setColor(...EDGE); pp.setLineWidth(1); pp.setLighting(false); pp.setOpacity(0.9);
+    ren.addActor(edges);
+  }
+  const cam = ren.getActiveCamera();
+  ren.resetCamera(); rw.render();
+  const bs = ren.computeVisiblePropBounds();
+  const partBounds = bs.slice();
+  const diag = Math.max(Math.hypot(bs[1] - bs[0], bs[3] - bs[2], bs[5] - bs[4]), 1e-9);
+  const centre = [(bs[0] + bs[1]) / 2, (bs[2] + bs[3]) / 2, (bs[4] + bs[5]) / 2];
+
+  function lines(P, E, color, width, opacity) {
+    const pd = vtk.Common.DataModel.vtkPolyData.newInstance();
+    pd.getPoints().setData(Float32Array.from(P.flat()), 3);
+    pd.getLines().setData(Uint32Array.from(E.flatMap(([a, b]) => [2, a, b])));
+    const mp = vtk.Rendering.Core.vtkMapper.newInstance(); mp.setInputData(pd);
+    const ac = vtk.Rendering.Core.vtkActor.newInstance(); ac.setMapper(mp); ac.setPickable(false);
+    const pp = ac.getProperty(); pp.setColor(...color); pp.setLineWidth(width); pp.setLighting(false); pp.setOpacity(opacity);
+    ren.addActor(ac); return ac;
+  }
+  const BOX_E = [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6], [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7]];
+  function boxPts(b) {
+    return [[b[0], b[2], b[4]], [b[1], b[2], b[4]], [b[1], b[3], b[4]], [b[0], b[3], b[4]],
+            [b[0], b[2], b[5]], [b[1], b[2], b[5]], [b[1], b[3], b[5]], [b[0], b[3], b[5]]];
+  }
+  /* THE AIR BOX the file sets: faint lines only, so it frames the model without hiding it. A box
+     the file does not set (Hexera's box around the parts) is not drawn: there is no room air. */
+  const dom = t.domain || {};
+  let airbox = null;
+  if (dom.source === "solutionDomain" && dom.box_mm && dom.box_mm.min && dom.box_mm.max) {
+    const lo = dom.box_mm.min.map((v) => v / 1000), hi = dom.box_mm.max.map((v) => v / 1000);
+    airbox = lines(boxPts([lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]]), BOX_E, AIRBOX, 1, 0.55);
+  }
+
+  /* SEE INSIDE: a case is drawn see-through, so the board and the chips in it show, and a click
+     goes through it to them. Its own row still lights it fully. */
+  let xray = [...parts.values()].some((p) => p.isCase);
+  // `selected`: the one part picked; `lit`: every part shown (that part, or a whole group)
+  let selected = null, lit = null, hovered = null, outline = null, touched = false;
+  function paint() {
+    parts.forEach((p, region) => {
+      const pr = p.actor.getProperty();
+      let op = 1;
+      // a faded case is fainter still: its walls are many layers deep between the eye and the part
+      if (lit) op = lit.has(region) ? 1 : (p.isCase ? FADED / 2.5 : FADED);
+      else if (xray && p.isCase) op = XRAY;
+      pr.setOpacity(op);
+      pr.setAmbient(region === hovered || region === selected ? 0.55 : 0.32);
+      p.actor.setPickable(op >= 0.5);
+    });
+    if (edges) edges.getProperty().setOpacity(lit ? 0.12 : (xray ? 0.55 : 0.9));
+    if (outline) { ren.removeActor(outline); outline = null; }
+    if (lit) {
+      // one box around what is shown: the part, or the whole group
+      const b = [Infinity, -Infinity, Infinity, -Infinity, Infinity, -Infinity];
+      lit.forEach((r) => { const q = parts.get(r).pd.getBounds();
+        for (let i = 0; i < 6; i += 2) { b[i] = Math.min(b[i], q[i]); b[i + 1] = Math.max(b[i + 1], q[i + 1]); } });
+      const pad = 0.004 * diag;
+      outline = lines(boxPts([b[0] - pad, b[1] + pad, b[2] - pad, b[3] + pad, b[4] - pad, b[5] + pad]), BOX_E, OUTLINE, 1.5, 1);
+    }
+    const all = box.querySelector("#gs-all-" + sessionId); if (all) all.hidden = !lit;
+    rw.render();
+  }
+  /** Light one part (a region name), a group of them (a list), or none (null). */
+  function select(what) {
+    const list = (Array.isArray(what) ? what : what ? [what] : []).filter((r) => parts.has(r));
+    selected = !Array.isArray(what) && list.length ? list[0] : null;
+    lit = list.length ? new Set(list) : null;
+    paint();
+  }
+  function hover(region) { hovered = region && parts.has(region) ? region : null; paint(); }
+  function frame(region) {
+    const p = parts.get(region); if (!p) return;
+    select(region); panel.select(region);
+    ren.resetCamera(p.pd.getBounds()); cam.zoom(0.7); ren.resetCameraClippingRange(); rw.render();
+    touched = true;
+  }
+
+  /* PICKING: the ray through the pixel, against each part the user can see (a faded or
+     see-through part lets the click through). Parts are boxes and cylinders: a plain ray cast. */
+  function rayAt(clientX, clientY) {
+    const rect = host.getBoundingClientRect(), size = apiRW.getSize();
+    const x = (clientX - rect.left) / rect.width, y = 1 - (clientY - rect.top) / rect.height;
+    const aspect = size[0] / Math.max(size[1], 1);
+    const a = ren.normalizedDisplayToWorld(x, y, 0, aspect), b = ren.normalizedDisplayToWorld(x, y, 1, aspect);
+    const dir = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], L = Math.hypot(dir[0], dir[1], dir[2]) || 1;
+    const cp = cam.getPosition();
+    const back = ((a[0] - cp[0]) * dir[0] + (a[1] - cp[1]) * dir[1] + (a[2] - cp[2]) * dir[2]) / L;
+    return { origin: [a[0] - dir[0] / L * back, a[1] - dir[1] / L * back, a[2] - dir[2] / L * back],
+             dir: [dir[0] / L, dir[1] / L, dir[2] / L] };
+  }
+  function pickAt(clientX, clientY) {
+    const ray = rayAt(clientX, clientY);
+    let best = null, bestT = Infinity;
+    parts.forEach((p, region) => {
+      if (!p.actor.getPickable()) return;
+      if (!p.index) p.index = clickIndex([{ pts: p.pts, polys: p.polys }], []);
+      const hit = firstHit(p.index, ray.origin, ray.dir);
+      if (hit && hit.t < bestT) { bestT = hit.t; best = region; }
+    });
+    return best;
+  }
+  const tip = host.querySelector(".tm-tip");
+  function showTip(region, clientX, clientY) {
+    const r = region && rows.get(region);
+    if (!r) { tip.hidden = true; return; }
+    const rect = host.getBoundingClientRect();
+    tip.innerHTML = `<b>${esc(r.name)}</b><span>${esc([r.kind, r.material || "no material", watts(r.power_W)].filter(Boolean).join(" · "))}</span>`;
+    tip.title = partDetails(r);
+    tip.hidden = false;
+    tip.style.left = Math.max(8, Math.min(clientX - rect.left + 14, rect.width - 240)) + "px";
+    tip.style.top = Math.min(clientY - rect.top + 14, rect.height - 60) + "px";
+  }
+  let downXY = null, moveAt = null;
+  host.addEventListener("pointerdown", (e) => {
+    downXY = [e.clientX, e.clientY];
+    if (!(e.target.closest && e.target.closest(".v-tools"))) touched = true;
+  }, true);
+  host.addEventListener("pointerup", (e) => {
+    if (!downXY || (e.target.closest && e.target.closest(".v-tools,.tm-probe"))) return;
+    if (Math.hypot(e.clientX - downXY[0], e.clientY - downXY[1]) > 6) return;
+    const region = pickAt(e.clientX, e.clientY);
+    const next = region && region === selected ? null : region;
+    select(next); panel.select(next);
+  }, true);
+  host.addEventListener("pointermove", (e) => {
+    if (e.buttons) { tip.hidden = true; return; }      // turning the model: no hover reading
+    const queued = moveAt !== null;
+    moveAt = [e.clientX, e.clientY];
+    if (queued) return;
+    requestAnimationFrame(() => {
+      if (!moveAt) return;
+      const [x, y] = moveAt; moveAt = null;
+      const region = pickAt(x, y);
+      if (region !== hovered) { hovered = region; panel.hover(region); paint(); }
+      showTip(region, x, y);
+    });
+  });
+  host.addEventListener("pointerleave", () => {
+    moveAt = null; tip.hidden = true;
+    if (hovered) { hovered = null; panel.hover(null); paint(); }
+  });
+
+  /* THE PROBES the engineer will read temperatures at: small pins, named on hover */
+  const probes = (t.probes || []).filter((p) => (p.at_mm || []).length === 3).map((p) => {
+    const el = document.createElement("div"); el.className = "tm-probe"; el.title = p.name;
+    el.setAttribute("aria-label", "probe " + p.name);
+    host.appendChild(el);
+    return { name: p.name, c: p.at_mm.map((v) => v / 1000), el };
+  });
+  function probe(name) {
+    probes.forEach((p) => p.el.classList.toggle("sel", p.name === name && !p.el.classList.contains("sel")));
+  }
+
+  /* THE CAMERA - the three-quarter view framed on the parts, re-fitted as the canvas settles */
+  function fit() {
+    ren.resetCamera(partBounds);
+    const [w, h] = apiRW.getSize(), a = w / Math.max(h, 1);
+    if (a < 1) { cam.dolly(a); ren.resetCameraClippingRange(); }
+    rw.render(); }
+  const upSel = box.querySelector("#gs-up-" + sessionId);
+  let upAxis = (upSel && upSel.value) || "+z";
+  function iso() {
+    cam.setPosition(centre[0] - diag, centre[1] - diag, centre[2] + 0.8 * diag);
+    cam.setFocalPoint(...centre); cam.setViewUp(0, 0, 1);
+    orient(cam, upAxis, [-1, -1, 0.8]);
+    fit();
+  }
+  const ro = new ResizeObserver(() => { setRenderScale(); if (!touched) fit(); else rw.render(); });
+  ro.observe(host);
+  const tools = box.querySelector(".v-tools"); shield(tools);
+  if (upSel) upSel.onchange = () => { upAxis = upSel.value; saveUp("session", sessionId, upAxis); iso(); };
+  const fitBtn = box.querySelector("#gs-fit-" + sessionId); if (fitBtn) fitBtn.onclick = () => { touched = false; iso(); };
+  const allBtn = box.querySelector("#gs-all-" + sessionId); if (allBtn) allBtn.onclick = () => { select(null); panel.select(null); };
+  const xrayBtn = box.querySelector("#gs-xray-" + sessionId);
+  if (xrayBtn) xrayBtn.onclick = () => {
+    xray = !xray; xrayBtn.classList.toggle("on", xray); xrayBtn.setAttribute("aria-pressed", xray ? "true" : "false"); paint();
+  };
+
+  const axesEl = box.querySelector(".gc-axes");
+  const axesLines = ["x", "y", "z"].map((k) => [axesEl.querySelector("line.ax-" + k), axesEl.querySelector("text.ax-" + k)]);
+  function drawAxes() {
+    const dir = cam.getDirectionOfProjection(), up = cam.getViewUp();
+    const right = [dir[1] * up[2] - dir[2] * up[1], dir[2] * up[0] - dir[0] * up[2], dir[0] * up[1] - dir[1] * up[0]];
+    const rl = Math.hypot(right[0], right[1], right[2]) || 1;
+    right[0] /= rl; right[1] /= rl; right[2] /= rl;
+    const upp = [right[1] * dir[2] - right[2] * dir[1], right[2] * dir[0] - right[0] * dir[2], right[0] * dir[1] - right[1] * dir[0]];
+    const C = 42, L = 28;
+    ["x", "y", "z"].forEach((k, i) => {
+      const sx = right[i], sy = upp[i], sz = -dir[i];
+      const [line, label] = axesLines[i];
+      line.setAttribute("x2", (C + L * sx).toFixed(1)); line.setAttribute("y2", (C - L * sy).toFixed(1));
+      label.setAttribute("x", (C + (L + 9) * sx).toFixed(1)); label.setAttribute("y", (C - (L + 9) * sy).toFixed(1));
+      line.classList.toggle("back", sz < 0); label.classList.toggle("back", sz < 0);
+    });
+  }
+  let alive = true;
+  (function loop() {
+    if (!alive || !document.body.contains(host)) return;
+    drawAxes();
+    const size = apiRW.getSize(), aspect = size[0] / size[1], rect = host.getBoundingClientRect();
+    probes.forEach((p) => {
+      const nd = ren.worldToNormalizedDisplay(p.c[0], p.c[1], p.c[2], aspect);
+      const ok = nd[2] > 0 && nd[2] < 1 && nd[0] >= 0 && nd[0] <= 1 && nd[1] >= 0 && nd[1] <= 1;
+      p.el.style.display = ok ? "" : "none";
+      if (ok) { p.el.style.left = (nd[0] * rect.width) + "px"; p.el.style.top = ((1 - nd[1]) * rect.height) + "px"; }
+    });
+    requestAnimationFrame(loop);
+  })();
+
+  setRenderScale(); iso(); paint();
+
+  /* support/debug hook - the browser tier drives the stage through it, without pixel picking */
+  window._vdbg = window._vdbg || {};
+  window._vdbg["gstage:" + sessionId] = {
+    thermal: true, parts: () => [...parts.keys()], selected: () => selected, lit: () => (lit ? [...lit] : []),
+    select: (r) => { select(r); panel.select(r); },
+    opacity: (r) => (parts.get(r) ? parts.get(r).actor.getProperty().getOpacity() : null),
+    color: (r) => (parts.get(r) ? parts.get(r).actor.getProperty().getColor() : null),
+    pickAt,
+    screenOf: (pt) => {
+      const size = apiRW.getSize(), rect = host.getBoundingClientRect();
+      const nd = ren.worldToNormalizedDisplay(pt[0], pt[1], pt[2], size[0] / size[1]);
+      return [rect.left + nd[0] * rect.width, rect.top + (1 - nd[1]) * rect.height];
+    },
+    centreOf: (r) => { const b = parts.get(r).pd.getBounds(); return [(b[0] + b[1]) / 2, (b[2] + b[3]) / 2, b[5]]; },
+    airbox: () => !!airbox, xray: () => xray, setXray: (on) => { xray = !!on; paint(); },
+    probes: () => probes.length, pins: () => 0, outline: () => !!outline,
+    iso, frame, cam: () => cam, render: () => rw.render(),
+  };
+  return {
+    select, hover, frame, probe,
+    stop: () => { alive = false; ro.disconnect(); delete window._vdbg["gstage:" + sessionId]; },
   };
 }

@@ -7,12 +7,22 @@ import { esc } from "../core/format.js";
 /* the two prefixes the conversation carries for the intake's sake; people see the words after them */
 export const DRAWING_MARK = "GEOMETRY CHECK (drawing your part):";
 export const CONFIRMED_MARK = "GEOMETRY CHECK (confirmed by the user):";
+/* how a whole thermal model's declaration begins after the mark (application/geometry_confirmation
+   THERMAL_LEAD): it was confirmed on the thermal model panel, not on a picture */
+export const THERMAL_LEAD = "the thermal model";
 
-/** A stored message as a person should read it: the marks the intake reads are taken off. */
+/** A stored message as a person should read it: the marks the intake reads are taken off - and,
+    for a thermal model, the intake's own enum words (input_kind, mesh_fidelity) too. */
 export function displayText(text) {
   const t = String(text == null ? "" : text);
   if (t.startsWith(DRAWING_MARK)) { const r = t.slice(DRAWING_MARK.length).trim(); return r.charAt(0).toUpperCase() + r.slice(1); }
-  if (t.startsWith(CONFIRMED_MARK)) return "Confirmed on the picture: " + t.slice(CONFIRMED_MARK.length).trim();
+  if (t.startsWith(CONFIRMED_MARK)) {
+    const r = t.slice(CONFIRMED_MARK.length).trim();
+    if (r.startsWith(THERMAL_LEAD + " ") || r === THERMAL_LEAD)
+      return "Confirmed on the thermal model panel: " + r.slice(THERMAL_LEAD.length).trim()
+        .replace(/, input_kind [a-z-]+/g, "").replace(/ \(mesh_fidelity [a-z]+\)/g, "");
+    return "Confirmed on the picture: " + r;
+  }
   return t;
 }
 
