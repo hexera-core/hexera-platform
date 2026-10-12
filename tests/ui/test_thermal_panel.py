@@ -21,30 +21,50 @@ SESSION = "thermal-session"
 FORBIDDEN = re.compile(r"(?<![a-z])(?:inlet|outlet|sure|triangle|sticker)", re.I)
 
 
-@pytest.fixture(scope="module")
-def served(tmp_path_factory):
-    """The set-top box's check and skin, as GET /check and /check/skin serve them."""
-    from tests.unit.cad.ecxml_models import set_top_box
-
+def _served(doc, work, sized=True):
+    """One ECXML document's check and skin, as GET /check and /check/skin serve them."""
     from meshpipeline.application import thermal_view as tv
     from meshpipeline.cad.ingest import canonicalise
     from meshpipeline.cad.ingest.ecxml import read_ecxml
     from meshpipeline.cad.ingest.ecxml_build import read_ecxml_sidecar
     from meshpipeline.cad.ingest.ecxml_place import place, placed_skin
 
-    work = tmp_path_factory.mktemp("thermal")
-    src = work / "set_top_box.ecxml"
-    src.write_bytes(set_top_box().xml())
+    src = work / "model.ecxml"
+    src.write_bytes(doc.xml())
     canonical = canonicalise(src, work / "out", stem="geometry", ecxml_form="placed")
     sidecar = read_ecxml_sidecar(canonical.path)
     placement = place(read_ecxml(src))
-    view = tv.thermal_view(sidecar, placement, detail=tv.detail_levels(placement))
+    view = tv.thermal_view(sidecar, placement, detail=tv.detail_levels(placement) if sized else None)
     check = {"status": "ready", "named": True, "skin": True, "pictures": [], "check_mode": "thermal",
              "proposal": {"part": view["title"], "input_kind": "solid-assembly", "flow": "internal",
                           "openings": [], "size_mm": view["domain"]["size_mm"], "up_axis": "+z",
                           "unit": "mm", "unit_fixed": True, "scale_to_m": 0.001},
              "thermal": view}
     return check, placed_skin(placement)
+
+
+@pytest.fixture(scope="module")
+def served(tmp_path_factory):
+    from tests.unit.cad.ecxml_models import set_top_box
+
+    return _served(set_top_box(), tmp_path_factory.mktemp("thermal"))
+
+
+@pytest.fixture(scope="module")
+def balls(tmp_path_factory):
+    """A package with 226 solder balls in one folder - more than a page - the last one named apart."""
+    from tests.unit.cad.ecxml_models import Ecxml, standard_materials
+
+    doc = standard_materials(Ecxml("Ball grid"))
+    doc.domain((0.0, 0.0, 0.0), (0.02, 0.02, 0.004))
+    doc.block("Substrate", (0.001, 0.001, 0.0012), (0.018, 0.018, 0.0004), "FR4 board", 1.0)
+    with doc.assembly("Solder balls"):
+        for i in range(15):
+            for j in range(15):
+                doc.block(f"Ball {i}-{j}", (0.0015 + i * 0.0011, 0.0015 + j * 0.0011, 0.0006),
+                          (0.0005, 0.0005, 0.0006), "Aluminium 6063")
+        doc.block("Corner ball", (0.0185, 0.0185, 0.0006), (0.0004, 0.0004, 0.0006), "Aluminium 6063")
+    return _served(doc, tmp_path_factory.mktemp("balls"), sized=False)
 
 
 def _open(live, served, session=SESSION):
@@ -177,3 +197,33 @@ def test_the_panel_never_speaks_of_openings_roles_or_triangles(live, served):
         text = text.replace(name, " ")
     assert not FORBIDDEN.search(text), FORBIDDEN.findall(text)
     assert "flows through" not in text and "Proceed" not in text
+
+
+def test_a_long_folder_is_searched_whole_and_a_part_is_picked_from_the_keyboard(live, balls):
+    _open(live, balls, session="balls")
+    root = "document.getElementById('gstage-balls')"
+    h = "window._vdbg['gstage:balls']"
+    first = live.evaluate(f"""(() => {{
+      const g = [...{root}.querySelectorAll('.tm-group')].find(x => x.dataset.group === 'Solder balls');
+      return {{folded: g.classList.contains('folded'), drawn: g.querySelectorAll('.tm-row').length,
+               more: g.querySelector('.tm-more')?.textContent, search: !!{root}.querySelector('.tm-search'),
+               promise: {root}.querySelector('.tm-promise').textContent}};
+    }})()""")
+    # 227 parts: folded, searchable, one page drawn, the rest a click away
+    assert first["folded"] is True and first["search"] is True and first["drawn"] == 200, first
+    assert first["more"] == "Show 26 more"
+    # a level the check did not size promises nothing it has not measured
+    assert "aiming for 2 cells through every layer" in first["promise"], first
+    # the part past the first page is found by the search
+    found = live.evaluate(f"""(() => {{
+      const s = {root}.querySelector('.tm-search'); s.value = 'corner'; s.dispatchEvent(new Event('input'));
+      const shown = [...{root}.querySelectorAll('.tm-row')].filter(r => !r.hidden && r.offsetParent !== null);
+      return {{shown: shown.map(r => r.dataset.region), empty: {root}.querySelector('.tm-empty').hidden}};
+    }})()""")
+    assert found == {"shown": ["Corner_ball"], "empty": True}, found
+    # Enter on a row picks it once, and it stays picked
+    live.evaluate(f"{root}.querySelector('.tm-row[data-region=\"Corner_ball\"]').focus()")
+    live.press("Enter", code="Enter", vk=13)
+    live.settle()
+    picked = live.evaluate(f"({{sel: {h}.selected(), row: {root}.querySelector('.tm-row.sel')?.dataset.region}})")
+    assert picked == {"sel": "Corner_ball", "row": "Corner_ball"}, picked

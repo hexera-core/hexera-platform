@@ -193,7 +193,17 @@ export function levelWords(row) {
 export function levelPromise(row, label) {
   if (!row) return "";
   const across = Number(row.min_cells_across || 1);
-  return `${label}: up to ${cells(row.max_cells)} cells, at least ${plural(across, "cell")} through every layer.`;
+  const aim = `${label}: up to ${cells(row.max_cells)} cells, aiming for ${plural(across, "cell")} through every layer`;
+  if (row.fits === false) return `${aim}. ${sentenceOf(row.estimate || "This model needs more cells than that")}`;
+  const short = Number(row.thin_layers_short_count || (row.thin_layers_short || []).length || 0);
+  if (short) return `${aim}; ${plural(short, "thin layer")} ${short === 1 ? "gets" : "get"} fewer.`;
+  // the check sized it and every layer gets its cells: the promise is the check's own result
+  if (row.est_cells) return `${label}: up to ${cells(row.max_cells)} cells, at least ${plural(across, "cell")} through every layer.`;
+  return `${aim}.`;
+}
+function sentenceOf(text) {
+  const t = String(text || "").trim().replace(/\.+$/, "");
+  return t ? t.charAt(0).toUpperCase() + t.slice(1) + "." : "";
 }
 
 function detailHtml(t, chosen) {
@@ -329,6 +339,8 @@ export function bindThermalPanel(root, t, cb) {
   }
   function filter(q) {
     const s = String(q || "").trim().toLowerCase();
+    // a search reads every part, not only the first page of each group: the rest are drawn first
+    if (s) root.querySelectorAll(".tm-more").forEach((m) => m.click());
     let any = false;
     root.querySelectorAll(".tm-group").forEach((g) => {
       let hits = 0;
@@ -363,6 +375,7 @@ export function bindThermalPanel(root, t, cb) {
       const rows = byPower ? g.rows.slice().sort((a, b) => (b.power_W || 0) - (a.power_W || 0)) : g.rows;
       more.insertAdjacentHTML("beforebegin", rows.slice(PAGE_ROWS).map((r) => rowHtml(r, maxW)).join(""));
       more.remove();
+      filter((root.querySelector(".tm-search") || {}).value || "");   // new rows follow the search
       return;
     }
     const row = e.target.closest(".tm-row[data-region], .tm-chip[data-region]");
@@ -389,7 +402,10 @@ export function bindThermalPanel(root, t, cb) {
   });
   root.addEventListener("keydown", (e) => {
     const row = e.target.closest && e.target.closest(".tm-row[data-region]");
-    if (row && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); choose(row.dataset.region); }
+    if (row && (e.key === "Enter" || e.key === " ")) {
+      // the page's own role=button handler would click the row a second time and undo the choice
+      e.preventDefault(); e.stopPropagation(); choose(row.dataset.region);
+    }
   });
   let hovered = null;
   root.addEventListener("pointerover", (e) => {

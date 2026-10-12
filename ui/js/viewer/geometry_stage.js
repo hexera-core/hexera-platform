@@ -918,7 +918,7 @@ async function openThermalStage(sessionId, d, confirm, opts) {
     </div>`;
   const release = takeOver(box, opts.anchorEl);
   const panelEl = box.querySelector(".tm-panel");
-  let scene = null;
+  let scene = null, closed = false;
   const panel = bindThermalPanel(panelEl, t, {
     select: (region) => scene && scene.select(region),
     hover: (region) => scene && scene.hover(region),
@@ -926,6 +926,7 @@ async function openThermalStage(sessionId, d, confirm, opts) {
     probe: (name) => scene && scene.probe(name),
     confirm: async (body) => {
       await confirm(body, "");
+      closed = true;
       if (scene) scene.stop();
       release();                         // the workbench goes back; the conversation carries on
     },
@@ -933,10 +934,12 @@ async function openThermalStage(sessionId, d, confirm, opts) {
   try {
     await loadVtk();
     const surf = await getGeometrySkin(sessionId);
+    if (closed) return null;             // confirmed while the model loaded: nothing left to draw
     scene = initThermalScene(sessionId, box, surf, t, panel);
     document.getElementById("gs-load-" + sessionId)?.remove();
   } catch (e) {
     // the panel works without the picture: the card carries it instead
+    if (closed) return null;             // confirmed already: no card for a model that is done
     console.warn("thermal stage unavailable, showing the card instead:", e && e.message);
     release();
     if (opts.fallback) opts.fallback();
