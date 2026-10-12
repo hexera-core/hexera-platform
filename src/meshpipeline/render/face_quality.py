@@ -65,6 +65,10 @@ class _Patch:
     #: as a run of consecutive face ids - how a volume mesh's boundary arrives (render/
     #: volume_quality). A face may appear more than once (a quad drawn as two triangles).
     face_ids: np.ndarray | None = None
+    #: The cell each of `face_ids` reads, when that is not the face's owner: a multi-region mesh
+    #: draws each region's whole surface, and on an interface the region is as often the
+    #: neighbour as the owner - its surface must show ITS cell, not the one across the interface.
+    cells: np.ndarray | None = None
 
 
 @dataclass
@@ -404,8 +408,9 @@ def _b64(arr: np.ndarray) -> str:
     return base64.b64encode(np.ascontiguousarray(arr).tobytes()).decode("ascii")
 
 
-def _patch_face_ids(mesh: _Mesh, patch: _Patch) -> np.ndarray:
-    """The faces of a patch the viewer actually draws, in the order it draws them.
+def _patch_faces(mesh: _Mesh, patch: _Patch) -> tuple[np.ndarray, np.ndarray]:
+    """The faces of a patch the viewer actually draws, in the order it draws them, and the cell
+    each one reads: its owner, unless the patch names the cells itself.
 
     The surface reader drops faces with fewer than three vertices, so the polygon index in the
     viewer is the index among the patch's faces that survive that filter. Mirror it exactly -
@@ -414,8 +419,18 @@ def _patch_face_ids(mesh: _Mesh, patch: _Patch) -> np.ndarray:
         ids = np.asarray(patch.face_ids, dtype=np.int64)
     else:
         ids = np.arange(patch.start, patch.start + patch.n)
-    ids = ids[(ids >= 0) & (ids < mesh.n_faces)]
-    return ids[np.diff(mesh.face_off)[ids] >= 3]
+    cells = None if patch.cells is None else np.asarray(patch.cells, dtype=np.int64)
+    if cells is not None and len(cells) != len(ids):
+        raise UnreadableMesh(f"patch {patch.name!r}: {len(cells)} cells named for "
+                             f"{len(ids)} faces")
+    keep = (ids >= 0) & (ids < mesh.n_faces)
+    keep[keep] = np.diff(mesh.face_off)[ids[keep]] >= 3
+    ids = ids[keep]
+    return ids, (mesh.owner[ids] if cells is None else cells[keep])
+
+
+def _patch_face_ids(mesh: _Mesh, patch: _Patch) -> np.ndarray:
+    return _patch_faces(mesh, patch)[0]
 
 
 def _hotspots(metric: str, values: np.ndarray, limits: np.ndarray, fCtrs, owner, nfc,
@@ -531,10 +546,9 @@ def quality_fields_of(mesh: _Mesh, *, non_ortho_limit: float,
 
     per_patch: dict[str, dict] = {}
     for p in patches:
-        ids = _patch_face_ids(mesh, p)
+        ids, own = _patch_faces(mesh, p)
         if not len(ids):
             continue
-        own = mesh.owner[ids]
         per_patch[p.name] = {
             "non_ortho_b64": _b64(cell_no[own].astype(np.float32)),
             "skewness_b64": _b64(cell_sk[own].astype(np.float32)),
