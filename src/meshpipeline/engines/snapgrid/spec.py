@@ -105,8 +105,12 @@ SPEC = EngineSpec(
             "glued or joined - each stays where the file puts it, a hexahedral grid is laid with "
             "every part plane on a grid plane (refined only near the parts), and every cell "
             "belongs to one part or air space, so the interfaces are conformal by construction. "
-            "Thin layers (die attach, pads, copper) always keep cells through them; round parts "
-            "are snapped onto their circles. PRODUCES a coupled multi-region OpenFOAM case (one "
+            "The grid follows the published electronics-cooling practice at each detail level: "
+            "cells through every part (more through heat sources and heat sinks), across every "
+            "air gap and fin channel, inside the warm-air layer on heated surfaces, and across "
+            "heat sources, fans and vents - measured and reported per item. Thin layers (die "
+            "attach, pads, copper) always keep cells through them; round parts are snapped onto "
+            "their circles. PRODUCES a coupled multi-region OpenFOAM case (one "
             "region per part and per air space, mappedWall interfaces, regionProperties) plus "
             "the file's physics. Reads ECXML only - it meshes the file's own model."
         ),
@@ -126,6 +130,9 @@ SPEC = EngineSpec(
             "Every thin layer keeps at least one cell through it. When the cell budget cannot "
             "give a layer the cells asked for, the layer is listed in the build report, never "
             "merged away.",
+            "Each detail level sets cells across air gaps and fin channels, in the warm-air layer "
+            "on heated surfaces and across heat sources, fans and vents. What a tight budget "
+            "relaxes is said in plain words, and every shortfall is measured and listed.",
             "It reads ECXML only: a STEP or STL export of the same board carries no parts, "
             "materials or power for it to place.",
         ),

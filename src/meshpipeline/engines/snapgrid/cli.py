@@ -2,8 +2,10 @@
 # Boundaries: argument parsing and a printed summary; the work is engines/snapgrid/mesher.py and native.py.
 """Mesh an ECXML thermal model on a snap grid (Option B: no gluing).
 
-    python -m meshpipeline.engines.snapgrid.cli MODEL.ecxml OUT_DIR [--max-cells N]
-        [--background-cells N] [--min-cells-across N] [--cylinder-cells N] [--growth G]
+    python -m meshpipeline.engines.snapgrid.cli MODEL.ecxml OUT_DIR [--level draft|standard|max]
+        [--max-cells N] [--background-cells N] [--min-cells-across N] [--cylinder-cells N]
+        [--growth G] [--hot-cells-across N] [--gap-cells N] [--band-cells N] [--spread-cells N]
+        [--opening-cells N] [--air-aspect A]
         [--no-check] [--check-each-region auto|yes|no] [-j N] [--split-with-openfoam]
         [--keep-merged] [--ascii] [--dry-run] [--global-grid] [--bashrc PATH] [--memory-gb G]
 
@@ -33,12 +35,26 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="snapgrid", description=__doc__.split("\n\n")[0])
     ap.add_argument("ecxml", type=Path)
     ap.add_argument("out", type=Path)
-    d = GridPlan()
-    ap.add_argument("--max-cells", type=int, default=d.max_cells)
-    ap.add_argument("--background-cells", type=int, default=d.background_cells)
-    ap.add_argument("--min-cells-across", type=int, default=d.min_cells_across)
-    ap.add_argument("--cylinder-cells", type=int, default=d.cylinder_cells)
-    ap.add_argument("--growth", type=float, default=d.growth)
+    ap.add_argument("--level", choices=("draft", "standard", "max"), default=None,
+                    help="start from a detail level's plan (runner.FIDELITY_PLANS); the options "
+                         "below override it (default: a bare grid plan, thermal rules off)")
+    ap.add_argument("--max-cells", type=int, default=None)
+    ap.add_argument("--background-cells", type=int, default=None)
+    ap.add_argument("--min-cells-across", type=int, default=None)
+    ap.add_argument("--cylinder-cells", type=int, default=None)
+    ap.add_argument("--growth", type=float, default=None)
+    ap.add_argument("--hot-cells-across", type=int, default=None,
+                    help="cells through each heated part (0: --min-cells-across)")
+    ap.add_argument("--gap-cells", type=int, default=None,
+                    help="cells across each air gap between two solids (0: off)")
+    ap.add_argument("--band-cells", type=int, default=None,
+                    help="cells inside the boundary layer of each heated surface (0: off)")
+    ap.add_argument("--spread-cells", type=int, default=None,
+                    help="cells across each heat-producing part's width (0: off)")
+    ap.add_argument("--opening-cells", type=int, default=None,
+                    help="cells across each fan, vent and grille (0: off)")
+    ap.add_argument("--air-aspect", type=float, default=None,
+                    help="longest/shortest cell side in gaps and heated bands (0: no limit)")
     ap.add_argument("--no-check", "--no-split", dest="no_check", action="store_true",
                     help="write the mesh, run no OpenFOAM tool")
     ap.add_argument("--check-each-region", choices=("auto", "yes", "no"), default="auto",
@@ -56,9 +72,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--memory-gb", type=float, default=None,
                     help="memory the job may use (default: read from the machine and its container)")
     a = ap.parse_args(argv)
-    plan = GridPlan(max_cells=a.max_cells, background_cells=a.background_cells,
-                    min_cells_across=a.min_cells_across, cylinder_cells=a.cylinder_cells,
-                    growth=a.growth)
+    from meshpipeline.engines.snapgrid.runner import PLAN_FIELDS, grid_plan, plan_for
+
+    asked = dict(plan_for(a.level) or {}) if a.level else {}
+    asked.update({k: getattr(a, k) for k in PLAN_FIELDS if getattr(a, k) is not None})
+    plan = grid_plan(asked) if asked else GridPlan()
     t0 = time.perf_counter()
     from meshpipeline.engines.snapgrid.native import dialect_of
 
