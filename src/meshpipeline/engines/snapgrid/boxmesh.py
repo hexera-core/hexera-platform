@@ -444,13 +444,18 @@ def mapped_entry(other: str, other_patch: str, dialect: str = "esi") -> dict:
 
 def write_regions(case: Path, topo: BoxTopology, points: np.ndarray, *, cell_zone: np.ndarray,
                   zone_names: list[str], chunk_patches: list[np.ndarray], patches: list[Patch],
-                  binary: bool = True, dialect: str = "esi") -> dict:
+                  binary: bool = True, dialect: str = "esi", face_tags: np.ndarray | None = None,
+                  tag_names: list[str] | None = None) -> dict:
     """Every region's own polyMesh, written straight from the topology (what splitMeshRegions
     -cellZonesOnly would write, without reading the whole mesh back): constant/<region>/polyMesh
     with its cells, its internal faces, the patches of the domain sides it touches, and one
     mappedWall patch <region>_to_<other> per region it touches - the same faces as the other
     region's <other>_to_<region>, in the same order, pointing the other way. Vectorised: each face
-    is handled once per region it bounds."""
+    is handled once per region it bounds.
+
+    `face_tags` (one per internal face, -1 for none) splits an interface: the faces tagged t become
+    their own pair <region>_to_<other>_via_<tag_names[t]> - where a thin layer carried as a
+    resistance lies, so a solver sets its resistance on exactly those faces."""
     keys = np.unique(np.concatenate([topo.face_pts, topo.b_pts]))
     ids_i = np.searchsorted(keys, topo.face_pts)
     ids_b = np.searchsorted(keys, topo.b_pts)
@@ -470,8 +475,11 @@ def write_regions(case: Path, topo: BoxTopology, points: np.ndarray, *, cell_zon
     e_s = np.concatenate([rn[cross], ro[cross]])
     e_f = np.concatenate([cross, cross])
     e_flip = np.concatenate([np.zeros(len(cross), bool), np.ones(len(cross), bool)])
-    eo = np.lexsort((e_f, e_s, e_r))
-    e_r, e_s, e_f, e_flip = e_r[eo], e_s[eo], e_f[eo], e_flip[eo]
+    tags = (np.asarray(face_tags, dtype=np.int64) if face_tags is not None
+            else np.full(len(topo.owner), -1, dtype=np.int64))
+    e_t = tags[e_f]
+    eo = np.lexsort((e_f, e_t, e_s, e_r))
+    e_r, e_s, e_f, e_flip, e_t = e_r[eo], e_s[eo], e_f[eo], e_flip[eo], e_t[eo]
     estart = np.searchsorted(e_r, np.arange(R + 1))
     bp = _boundary_patch_ids(topo, chunk_patches)
     br = cz[topo.b_owner]
@@ -482,7 +490,7 @@ def write_regions(case: Path, topo: BoxTopology, points: np.ndarray, *, cell_zon
         fi = same[sstart[r]:sstart[r + 1]]
         fb = bo[bstart[r]:bstart[r + 1]]
         fx = slice(estart[r], estart[r + 1])
-        xf, xs, xflip = e_f[fx], e_s[fx], e_flip[fx]
+        xf, xs, xflip, xt = e_f[fx], e_s[fx], e_flip[fx], e_t[fx]
         o_i, f_i = _loops(topo.face_off, ids_i, fi)
         o_b, f_b = _loops(topo.b_off, ids_b, fb)
         o_x, f_x = _loops(topo.face_off, ids_i, xf, xflip)
@@ -498,19 +506,22 @@ def write_regions(case: Path, topo: BoxTopology, points: np.ndarray, *, cell_zon
         for pid, n in zip(pids.tolist(), pcounts.tolist()):
             entries.append(_entry(patches[pid].name, patches[pid].type, n, start))
             start += n
-        others, ocounts = np.unique(xs, return_counts=True)
-        for s_, n in zip(others.tolist(), ocounts.tolist()):
+        pair_keys, ocounts = np.unique(np.stack([xs, xt], axis=1), axis=0, return_counts=True) \
+            if len(xs) else (np.zeros((0, 2), dtype=np.int64), np.zeros(0, dtype=np.int64))
+        iface_counts: dict[str, int] = {}
+        for (s_, t_), n in zip(pair_keys.tolist(), ocounts.tolist()):
             other = zone_names[s_]
-            entries.append(_entry(f"{name}_to_{other}", "mappedWall", n, start,
-                                  **mapped_entry(other, f"{other}_to_{name}", dialect)))
+            via = f"_via_{(tag_names or [])[t_]}" if t_ >= 0 else ""
+            entries.append(_entry(f"{name}_to_{other}{via}", "mappedWall", n, start,
+                                  **mapped_entry(other, f"{other}_to_{name}{via}", dialect)))
+            iface_counts[f"{name}_to_{other}{via}"] = int(n)
             start += n
         n_cells = int(cstart[r + 1] - cstart[r])
         _write_mesh(Path(case) / "constant" / name / "polyMesh", points[used], off,
                     inv.astype(np.int64), owner, neighbour, entries, n_cells, binary)
         summary[name] = {"cells": n_cells, "faces": int(len(off) - 1),
                          "internal_faces": int(len(fi)), "points": int(len(used)),
-                         "interfaces": {f"{name}_to_{zone_names[s_]}": int(n)
-                                        for s_, n in zip(others.tolist(), ocounts.tolist())},
+                         "interfaces": iface_counts,
                          "patches": {patches[p_].name: int(n)
                                      for p_, n in zip(pids.tolist(), pcounts.tolist())}}
     return summary
