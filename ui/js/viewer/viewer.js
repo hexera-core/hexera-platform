@@ -17,6 +17,8 @@ import { headers } from "../api/client.js";
 import { acceptMesh, flagDispute } from "./dispute.js";
 import { VIEWER_FALLBACK } from "./config.js";
 import { MOUSE_HINT, bindMouse, isUpAxis, orient, saveUp, savedUp, shield, upSelectHtml, upVector } from "./view_controls.js";
+// a delivered thermal model (an ECXML upload) is read part by part, with slices and its own files
+import { bindThermalResults, sliceColour, thermalDownloads, thermalResultsHtml } from "./thermal_results.js";
 
 let _vtkP=null;
 function loadVtk(){if(window.vtk)return Promise.resolve();
@@ -92,6 +94,7 @@ export async function openViewer(job,anchorEl,opts){
         ${opts.reasoning?`<div class="v-reason">${esc(String(opts.reasoning).slice(0,600))}</div>`:''}
         </div>`:''}
       <div class="v-sec v-dl">${_dlHtml}</div>
+      <div class="v-thermal" id="v-thermal-${job}"></div>
       <div class="v-facts" id="v-facts-${job}"></div>
       <!-- MESH PARTS: every selectable entity the loaded case actually declares -
            boundary patches, regions, cell zones, face zones, layer groups. The list
@@ -226,6 +229,10 @@ function initViewer(job,surf,uiCfg){
     totalFaces+=nCells;});
 
   let edgeCol=_EDGE;             // what paint() draws edges with; the heatmap darkens it
+  // A DELIVERED THERMAL MODEL: its parts table shows one part alone through the parts panel
+  // (partsApi), and a ready-made slice replaces the surfaces while it is on (sliceOn)
+  const thermal=surf.thermal||null;
+  let partsApi=null,sliceOn=null;
   // the parts panel's own repaint: the heatmap hands edges back through the panel, so a selected
   // part keeps its selection edge - and a listener on it, so the problem areas follow what is shown
   let repaintParts=null,onPartsPainted=null;
@@ -379,8 +386,13 @@ function initViewer(job,surf,uiCfg){
                 renderable:p.renderable!==false&&!!actorOf[entity],
                 hiddenByDefault:p.default_visibility==='hidden'};});
 
-    const KIND={boundary:'Boundary patches',region:'Regions',cellGroup:'Cell types',
-                inspection:'Inspection structures'};
+    const KIND=thermal
+      // a thermal model's regions are the file's parts, its boundary the sides of the air box
+      ?{boundary:'Sides of the air box',region:'Parts',cellGroup:'Cell types',inspection:'Slices'}
+      :{boundary:'Boundary patches',region:'Regions',cellGroup:'Cell types',
+        inspection:'Inspection structures'};
+    // a thermal model's slices are drawn from the thermal panel, so they are not listed twice
+    if(thermal)parts=parts.filter(p=>p.kind!=='inspection');
     const kindLabel=k=>KIND[k]||String(k).replace(/([A-Z])/g,' $1')
                                          .replace(/^./,c=>c.toUpperCase());
 
@@ -419,7 +431,7 @@ function initViewer(job,surf,uiCfg){
         const p=parts.find(x=>x.renderable&&x.entity===en.patch);
         const s=p?st[p.id]:null;if(!s)return;
         const pr=en.actor.getProperty(),isSel=!!(selPart&&selPart.entity===en.patch);
-        en.actor.setVisibility(!s.hidden&&(!isolated||isSel));
+        en.actor.setVisibility(!sliceOn&&!s.hidden&&(!isolated||isSel));
         pr.setOpacity(s.opacity);
         if(isSel){pr.setColor(_SEL[0],_SEL[1],_SEL[2]);
                   pr.setEdgeColor(_SEL_EDGE[0],_SEL_EDGE[1],_SEL_EDGE[2]);pr.setAmbient(0.40);}
@@ -516,6 +528,12 @@ function initViewer(job,surf,uiCfg){
         g.appendChild(c);});
       chips.appendChild(g);});
 
+    // THE THERMAL TABLE shows a part alone (or the whole model again) through the same state
+    partsApi={isolate:(entity)=>{
+      const p=entity?parts.find(x=>x.renderable&&x.entity===entity):null;
+      if(p){sel=p.id;isolated=true;st[p.id].hidden=false;}else{sel=null;isolated=false;}
+      paint();refit();},
+      repaint:()=>{paint();refit();}};
     bRest.onclick=()=>{sel=null;isolated=false;
                        parts.forEach(p=>{const d=dflt(p);
                          st[p.id].hidden=d.hidden;st[p.id].opacity=d.opacity;});
@@ -820,11 +838,73 @@ function initViewer(job,surf,uiCfg){
   })();
 
   const statusEl=document.getElementById('v-status-'+job);
-  statusEl.textContent=
-    (surf.is_mesh?'your delivered mesh · '
+  statusEl.textContent=thermal&&surf.is_mesh
+    // a thermal model says what it is in its own words: its parts, its cells, its power
+    ?'your delivered thermal mesh · '+(thermal.summary||'')
+    :(surf.is_mesh?'your delivered mesh · '
                 :'input surface - the mesh itself could not be rendered · ')
     +(surf.patches||[]).map(p=>`${p.name}: ${(p.face_count||p.tri_count||0).toLocaleString()} faces`).join(' · ');
   statusEl.title=statusEl.textContent;   // one line on screen; the whole of it on hover
+
+  /* A DELIVERED THERMAL MODEL - its parts table, its quality in words, its ready-made slices
+     and its own files (viewer/thermal_results.js). A slice is the delivered mesh cut by a plane,
+     region by region, as the payload ships it: shown, it stands in for the surfaces, each part in
+     its own colour and the air in grey, the camera square to it. */
+  const sliceActors={};
+  (function thermalResults(){
+    const host=document.getElementById('v-thermal-'+job);
+    if(!thermal||!host)return;
+    (thermal.slices||[]).forEach(s=>{
+      sliceActors[s.name]=(s.pieces||[]).map(pc=>{
+        const pd=vtk.Common.DataModel.vtkPolyData.newInstance();
+        pd.getPoints().setData(b64f32(pc.points_b64),3);
+        pd.getPolys().setData(b64u32(pc.polys_b64));
+        const mapper=vtk.Rendering.Core.vtkMapper.newInstance();mapper.setInputData(pd);
+        const actor=vtk.Rendering.Core.vtkActor.newInstance();actor.setMapper(mapper);
+        const c=sliceColour(thermal,pc.region);
+        const pr=actor.getProperty();pr.setColor(c[0],c[1],c[2]);
+        pr.setEdgeVisibility(true);pr.setEdgeColor(0.16,0.16,0.15);pr.setLineWidth(1);
+        pr.setAmbient(0.55);pr.setDiffuse(0.55);
+        if(pr.setBackfaceCulling)pr.setBackfaceCulling(false);
+        actor.setVisibility(false);if(actor.setPickable)actor.setPickable(false);
+        ren.addActor(actor);
+        return {actor,region:pc.region};});});
+    function showSlice(name){
+      sliceOn=name&&sliceActors[name]?name:null;
+      Object.entries(sliceActors).forEach(([n,list])=>list.forEach(a=>a.actor.setVisibility(n===sliceOn)));
+      if(!sliceOn){
+        // back to the model's own view, framed on what the parts panel shows
+        orient(cam,(upSel&&upSel.value)||'+z',VIEW_DIR);
+        if(partsApi)partsApi.repaint();else rw.render();
+        return;}
+      if(partsApi)partsApi.repaint();
+      const s=(thermal.slices||[]).find(x=>x.name===sliceOn);
+      // square to the cut: looking along its normal, up the model's z (or y for a level cut),
+      // framed on the window the slice was made for (around a hot part), else the whole cut
+      const b=[Infinity,-Infinity,Infinity,-Infinity,Infinity,-Infinity];
+      sliceActors[sliceOn].forEach(a=>{const ab=a.actor.getBounds();
+        for(let k=0;k<6;k+=2){b[k]=Math.min(b[k],ab[k]);b[k+1]=Math.max(b[k+1],ab[k+1]);}});
+      const clip=Array.isArray(s.clip_box)&&s.clip_box.length===6?s.clip_box:null;
+      if(clip)for(let k=0;k<6;k+=2){
+        const lo=Math.max(b[k],clip[k]),hi=Math.min(b[k+1],clip[k+1]);
+        if(hi>lo){b[k]=lo;b[k+1]=hi;}}
+      const c=[(b[0]+b[1])/2,(b[2]+b[3])/2,(b[4]+b[5])/2],n=s.normal||[0,0,1];
+      cam.setFocalPoint(c[0],c[1],c[2]);
+      cam.setPosition(c[0]+n[0],c[1]+n[1],c[2]+n[2]);
+      cam.setViewUp(...(Math.abs(n[2])>0.9?[0,1,0]:[0,0,1]));
+      _clamping=true;ren.resetCamera(b);_clamping=false;rw.render();}
+    host.innerHTML=thermalResultsHtml(job,thermal);
+    thermalDownloads(document.querySelector('#viewer-'+job+' .v-dl'),job,thermal);
+    const api=bindThermalResults(host,job,thermal,{
+      isolate:name=>{if(sliceOn)showSlice(null);if(partsApi)partsApi.isolate(name);},
+      slice:name=>showSlice(name)});
+    window._vdbg=window._vdbg||{};
+    window._vdbg[job+':thermal']={slice:name=>{api&&api.slice(name);showSlice(name);},
+      sliceOn:()=>sliceOn,slices:()=>Object.fromEntries(Object.entries(sliceActors).map(([n,l])=>[n,l.length])),
+      isolate:name=>{if(partsApi)partsApi.isolate(name);api&&api.pick(name);},
+      visible:()=>entries.filter(e=>e.actor.getVisibility()).map(e=>e.patch),
+      text:()=>host.innerText};
+  })();
 
   /* support/debug hook (read-only-ish; used by headless verification) */
   window._vdbg=window._vdbg||{};

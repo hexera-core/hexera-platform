@@ -472,6 +472,56 @@ th,td{border-color:var(--border)}
 .mx td.n{font-variant-numeric:tabular-nums;text-align:right}
 .mx td.nm{font:var(--fs-sm)/1.4 var(--mono)}
 
+/* A DELIVERED THERMAL MODEL: the file's parts as a table, the quality in words, the slices */
+.v-thermal:empty{display:none}
+.tr .v-sec-h{margin-bottom:6px}
+.tr-by{color:var(--text-faint);font-weight:400}
+.tr-sum{color:var(--text-muted);font:var(--fs-sm)/1.5 var(--sans);font-variant-numeric:tabular-nums}
+.tr-q{margin:10px 0 0;padding:0;list-style:none}
+.tr-q li{position:relative;padding:3px 0 3px 14px;color:var(--text);font:var(--fs-md)/1.5 var(--sans)}
+.tr-q li::before{content:'';position:absolute;left:2px;top:.75em;width:5px;height:5px;border-radius:50%;
+  background:var(--steel)}
+.tr-sl-list{display:flex;flex-wrap:wrap;gap:6px}
+.tr-sl{height:30px;padding:0 10px;border:1px solid var(--border);border-radius:var(--r-md);
+  background:var(--surface-1);color:var(--text);font:500 var(--fs-sm)/1 var(--sans);cursor:pointer;
+  transition:background .12s,border-color .12s}
+.tr-sl:hover{border-color:var(--border-strong);background:var(--surface-2)}
+.tr-sl.on{border-color:var(--accent);background:var(--accent-soft);color:var(--text)}
+.tr-sl-why{margin-top:8px;color:var(--text-faint);font:var(--fs-sm)/1.5 var(--sans)}
+.tr-sl-why:empty{display:none}
+.tr-legend{display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:6px}
+.tr-legend span{display:inline-flex;align-items:center;gap:6px;color:var(--text-muted)}
+.tr-legend i{width:10px;height:10px;border-radius:2px}
+.tr-n{margin-left:4px;color:var(--text-faint);font-weight:400;font-variant-numeric:tabular-nums}
+.tr-find{width:100%;height:32px;margin:0 0 8px;padding:0 10px;border:1px solid var(--border);
+  border-radius:var(--r-md);background:var(--surface-1);color:var(--text);font:var(--fs-md)/1 var(--sans)}
+.tr-wrap{max-height:300px;margin:0 -18px;overflow:auto}
+.tr-tab{width:100%;border-collapse:collapse;font:var(--fs-sm)/1.4 var(--sans)}
+.tr-tab th{position:sticky;top:0;z-index:1;padding:6px 6px;border-bottom:1px solid var(--divider);
+  background:var(--background);color:var(--text-faint);font-weight:500;line-height:1.25;text-align:left;
+  vertical-align:bottom;cursor:pointer;user-select:none}
+.tr-tab th:first-child,.tr-tab td:first-child{padding-left:18px}
+.tr-tab th:last-child,.tr-tab td:last-child{padding-right:18px}
+.tr-tab th.n,.tr-tab td.n{text-align:right;font-variant-numeric:tabular-nums}
+.tr-tab th.sorted{color:var(--text)}
+.tr-tab th.sorted::after{content:' ↑'}
+.tr-tab th.sorted.desc::after{content:' ↓'}
+.tr-tab td{padding:6px 6px;border-bottom:1px solid var(--divider);color:var(--text);vertical-align:top;
+  white-space:nowrap}
+.tr-tab td.nm{min-width:118px;max-width:190px;white-space:normal;overflow-wrap:anywhere}
+.tr-tab td small{color:var(--text-faint);font-size:inherit}
+.tr-tab td.nm span{display:block;font:var(--fs-sm)/1.35 var(--mono)}
+.tr-tab td.nm small{display:block;max-width:190px;margin-top:1px;overflow:hidden;font-size:var(--fs-xs);
+  text-overflow:ellipsis;white-space:nowrap}
+.tr-tab td.short{color:var(--warn)}
+.tr-tab td.ok{color:var(--text-muted)}
+.tr-row{cursor:pointer;transition:background .1s}
+.tr-row:hover{background:var(--hover)}
+.tr-row.sel{background:var(--accent-soft);box-shadow:inset 2px 0 0 var(--accent)}
+.tr-row:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.tr-air,.tr-hint{margin-top:8px;color:var(--text-faint);font:var(--fs-sm)/1.5 var(--sans)}
+.tr-hint{margin-top:2px}
+
 /* MESH PARTS - a list, and the one selected part's inspector under it */
 .v-bnd{display:block;padding:16px 0 10px;border-top:1px solid var(--divider);background:transparent}
 .v-bnd-head{display:flex;align-items:center;gap:8px;padding:0 18px 6px;border:0}

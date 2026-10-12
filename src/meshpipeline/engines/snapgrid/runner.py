@@ -286,6 +286,14 @@ def finalize(workspace_dir, intake_patches: list, engine: str, domain: str = "",
     from meshpipeline.engines.snapgrid.native import review_volume
     ep = dict(engine_params or {})
     ep["_regions"] = [{"name": r["name"], "type": r["type"]} for r in q["regions"]]
+    # THE SLICES a thermal model is looked at through - across the board, upright through the
+    # hottest parts: the review inspects them and the console offers them ready-made
+    from meshpipeline.engines.snapgrid.results import slice_planes
+    try:
+        planes = slice_planes(sidecar, report)
+    except Exception:  # noqa: BLE001 - the generic slices stand in
+        logger.exception("snapgrid finalize: thermal slices unavailable - generic slices used")
+        planes = []
     write_manifest(
         ws, patch_types=patch_types,
         patch_entities={**{n: [] for n in patch_types}, **patch_entities},
@@ -298,7 +306,7 @@ def finalize(workspace_dir, intake_patches: list, engine: str, domain: str = "",
         # is no VTU, so the review found no volume and could not run at all (job d6a0ac60)
         volume_path=str((ws / (review_volume(ws) or "constant")).resolve()),
         mesh_units=COMPLETED_MESH_UNIT.value, mesh_mode="snapgrid",
-        flow_topology=flow_topology, engine_params=ep)
+        flow_topology=flow_topology, engine_params=ep, inspection_regions=planes or None)
     out = (f"[SNAPGRID] regions={len(q['regions'])} cells={q['cells']} "
            f"missing={q['regions_missing']} interfaces_ok={q['interface_ok']} fatal={q['fatal']} "
            f"thin_layers_short={len(q['thin_layers_short'])}"

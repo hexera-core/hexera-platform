@@ -102,7 +102,8 @@ def write_manifest(workspace, *, patch_types: dict, patch_entities: dict,
                    requested_box=None, mesh_units: str,
                    mesh_mode: str = "cfmesh",
                    engine_params: dict | None = None, flow_topology: str = "",
-                   reference_length=None, symmetry_faces: list | None = None) -> dict:
+                   reference_length=None, symmetry_faces: list | None = None,
+                   inspection_regions: list | None = None) -> dict:
     # STATED, NOT DEFAULTED. `mesh_units` is keyword-only and has no default, so an engine that
     # forgets it fails here - before any deliverable is announced - rather than writing a manifest
     # whose unit each consumer then guessed differently. Validated at the point of writing because
@@ -184,9 +185,11 @@ def write_manifest(workspace, *, patch_types: dict, patch_entities: dict,
         "patch_types": roles,
         "patch_face_counts": fc, "quality": quality,
         "mesh_paths": {"surface": str((ws / "mesh.msh").resolve()), "volume": volume_path},
-        "inspection_regions": (_inspection_regions(body_bbox)
-                               if body_bbox and _engine_serves_region_slices(mesh_mode)
-                               else []),
+        # the engine's own slices when it names them (a thermal model's: across the board and
+        # through the hottest parts), else the generic ones through the body
+        "inspection_regions": (([dict(r) for r in inspection_regions] if inspection_regions
+                                else _inspection_regions(body_bbox) if body_bbox else [])
+                               if _engine_serves_region_slices(mesh_mode) else []),
         "validation": _validation_block(types, owner, fc, roles),
     }
     (ws / "mesh_manifest.json").write_text(json.dumps(manifest, indent=2, default=str))

@@ -183,4 +183,15 @@ def snapgrid_viewer(workspace, *, roles: dict, units: str,
         except (ValueError, TypeError, AttributeError):
             logger.warning("snapgrid viewer: the stored quality fields are unreadable - "
                            "drawn without a heatmap")
+    if resp:
+        # A THERMAL MODEL'S RESULTS: every part with its cells and layers, the quality in plain
+        # words, ready-made slices and the files to download (engines/snapgrid/results)
+        try:
+            from meshpipeline.engines.snapgrid.results import thermal_results
+
+            thermal = thermal_results(Path(workspace))
+            if thermal:
+                resp["thermal"] = thermal
+        except Exception:  # noqa: BLE001 - the results block is an addition, never worth the mesh
+            logger.exception("snapgrid viewer: the thermal results could not be built")
     return resp
