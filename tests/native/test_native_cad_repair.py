@@ -440,3 +440,44 @@ def test_a_sound_single_solid_is_not_reported_as_sewn(tmp_path):
 
     # the one thing sewing must never touch, and the report must not claim it did
     assert "sew_shells" not in [op["name"] for op in report.operations]
+
+
+def test_sewing_bare_faces_is_reported_even_though_the_shell_count_rises():
+    """The regression: sewing was inferred from a shell count, and bare faces have no shell.
+
+    A body can arrive as individual faces with no shell around them at all. Sewing them produces
+    one shell, so the count goes UP - and a report that decided "did sewing run?" by looking for a
+    count that went down left the operation out, over a repaired file whose topology had changed.
+    """
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.gp import gp_Pnt
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS, TopoDS_Compound
+
+    from meshpipeline.cad.repair.conservative import _counts, _sew_loose_bodies
+
+    builder = BRep_Builder()
+    assembly = TopoDS_Compound()
+    builder.MakeCompound(assembly)
+    builder.Add(assembly, BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape())
+
+    bare = TopoDS_Compound()
+    builder.MakeCompound(bare)
+    loose = BRepPrimAPI_MakeBox(gp_Pnt(20.0, 0.0, 0.0), gp_Pnt(30.0, 10.0, 10.0)).Shape()
+    explorer = TopExp_Explorer(loose, TopAbs_FACE)
+    while explorer.More():
+        builder.Add(bare, TopoDS.Face_s(explorer.Current()))
+        explorer.Next()
+    builder.Add(assembly, bare)
+
+    before = _counts(assembly)
+    assert before["solids"] == 1 and before["shells"] == 1, before   # the solid's own shell only
+
+    joined, sewed = _sew_loose_bodies(assembly, tolerance_mm=0.1)
+    after = _counts(joined)
+
+    assert after["shells"] > before["shells"], "the bare faces were not joined into a shell"
+    assert sewed is True, "a change the operator can see was left out of the report"
+    assert after["solids"] == 1, "sewing cost the assembly its solid"

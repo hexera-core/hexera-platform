@@ -367,7 +367,12 @@ def _as_solid_if_closed(shape):
 
 
 def _fix(shape, *, tolerance_mm: float):
-    """Run the conservative operation set. Returns (shape, holes filled, holes left alone).
+    """Run the conservative operation set.
+
+    Returns (shape, holes filled, holes left alone, whether anything was sewn). The last of those
+    is REPORTED rather than inferred: a loose body can arrive as bare faces with no shell at all,
+    so sewing it makes the shell count go UP, and a report that reads sewing off a count then
+    omits an operation that changed the customer's file.
 
     ShapeFix_Shape is given a tolerance to WORK AT, which is not a promise about what it leaves
     behind - it may raise a sub-shape's tolerance well past this to make the shape close. That is
@@ -394,20 +399,24 @@ def _fix(shape, *, tolerance_mm: float):
     # was never patched, and a real corpus came back "no_change" on every such file. Sewing is the
     # operation that must not run on a closed body, because it returns a shell and the solid is
     # lost; patching is judged on its own evidence.
-    sewn = _sew_loose_bodies(fixed, tolerance_mm=tolerance_mm)
+    sewn, sewed = _sew_loose_bodies(fixed, tolerance_mm=tolerance_mm)
 
     if not rcfg.CAD_REPAIR_FILL_PLANAR_HOLES:
         # STILL REPORTED. A repair that leaves the defect it was run for must say so: an operator
         # reading "repaired" over a part that still has a hole in it is how a ruined delivery
         # happens.
         return sewn, [], [{"reason": "filling_disabled", "span": round(_span(wire), 6)}
-                          for wire in _free_loops(sewn)]
+                          for wire in _free_loops(sewn)], sewed
 
-    return _fill_planar_holes(sewn, tolerance_mm=tolerance_mm, diagonal=_diagonal_mm(sewn))
+    filled_shape, filled, left = _fill_planar_holes(
+        sewn, tolerance_mm=tolerance_mm, diagonal=_diagonal_mm(sewn))
+    return filled_shape, filled, left, sewed
 
 
-def _sew_loose_bodies(shape, *, tolerance_mm: float):
-    """Sew each body that has no solid to lose, and leave every body that does untouched.
+def _sew_loose_bodies(shape, *, tolerance_mm: float) -> tuple:
+    """Sew each body with no solid to lose; leave every body that has one untouched.
+
+    Returns (shape, whether any body was actually joined).
 
     WHY PER BODY. The two whole-shape answers are both wrong on a mixed assembly. Sew it and the
     solids are destroyed, because sewing returns a shell. Skip it and a body that arrived as loose
@@ -420,7 +429,7 @@ def _sew_loose_bodies(shape, *, tolerance_mm: float):
     """
     if _counts(shape)["solids"] == 0:
         # one open body, nothing to lose - sew it whole, as this has always done
-        return _sew(shape, tolerance_mm=tolerance_mm)
+        return _sew(shape, tolerance_mm=tolerance_mm), True
 
     from OCP.BRep import BRep_Builder
     from OCP.TopAbs import TopAbs_COMPOUND
@@ -428,7 +437,7 @@ def _sew_loose_bodies(shape, *, tolerance_mm: float):
 
     if shape.ShapeType() != TopAbs_COMPOUND:
         # a single solid body: sewing has nothing to add and a solid to lose
-        return shape
+        return shape, False
 
     children = []
     iterator = TopoDS_Iterator(shape)
@@ -436,7 +445,7 @@ def _sew_loose_bodies(shape, *, tolerance_mm: float):
         children.append(iterator.Value())
         iterator.Next()
     if not children:
-        return shape
+        return shape, False
 
     builder = BRep_Builder()
     rebuilt = TopoDS_Compound()
@@ -447,12 +456,17 @@ def _sew_loose_bodies(shape, *, tolerance_mm: float):
             builder.Add(rebuilt, child)
             continue
         joined = _sew(child, tolerance_mm=tolerance_mm)
-        sewed_any = sewed_any or _counts(joined)["shells"] != _counts(child)["shells"]
+        # JOINED, judged on this body alone. Bare faces have no shell, so sewing them makes the
+        # count rise; a sewn shell of several faces makes it fall. Either is a change, and "no
+        # change" is only the case where the topology is untouched.
+        before_body, after_body = _counts(child), _counts(joined)
+        sewed_any = sewed_any or (after_body["shells"] != before_body["shells"]
+                                  or after_body["faces"] != before_body["faces"])
         builder.Add(rebuilt, joined)
     # UNCHANGED MEANS UNCHANGED. If no body was actually joined, the original shape is returned
     # rather than a re-wrapped copy of it, so a repair that did nothing cannot look like one that
     # rebuilt the assembly.
-    return rebuilt if sewed_any else shape
+    return (rebuilt, True) if sewed_any else (shape, False)
 
 
 def _sew(shape, *, tolerance_mm: float):
@@ -508,7 +522,7 @@ def repair_step_file(source: Path, destination: Path, *,
 
     tolerance = min(rcfg.CAD_REPAIR_MAX_TOLERANCE_MM,
                     max(before["diagonal_mm"], 1.0) * rcfg.CAD_REPAIR_MAX_DEVIATION_RATIO)
-    fixed_shape, filled, unfilled = _fix(before_shape, tolerance_mm=tolerance)
+    fixed_shape, filled, unfilled, sewed = _fix(before_shape, tolerance_mm=tolerance)
 
     after = {
         "valid": _is_valid(fixed_shape),
@@ -531,10 +545,9 @@ def repair_step_file(source: Path, destination: Path, *,
     if refusal:
         raise RepairRefused(refusal, measurements=measurements)
 
-    # READ OFF THE RESULT, NOT OFF THE REQUEST. Sewing runs per body, so an assembly that carried
-    # a solid may still have had a loose body joined; claiming sewing never ran there, or that it
-    # ran on a sound single solid, both mis-report what the customer's file had done to it.
-    sewed = before["solids"] == 0 or after["shells"] < before["shells"]
+    # REPORTED BY THE OPERATION ITSELF. Sewing runs per body, so neither "the shape had a solid"
+    # nor any shell-count comparison tells you whether it ran: bare faces have no shell to count
+    # down from. The operation says what it did, and the report repeats it.
     performed = [op for op in _CONSERVATIVE_OPERATIONS
                  if op != "sew_shells" or sewed]
     if "fill_planar_holes" in performed and not filled:
