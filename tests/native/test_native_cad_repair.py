@@ -402,3 +402,41 @@ def test_the_customers_upload_is_still_intact_after_an_autonomous_repair(tmp_pat
 
     # THE ONE INVARIANT THIS SERVICE RESTS ON: whatever we did, their bytes are still theirs.
     assert source.read_bytes() == before
+
+
+def test_a_loose_body_beside_a_solid_is_sewn_without_costing_the_solid(tmp_path):
+    """Both whole-shape answers are wrong on a mixed assembly, so sewing is judged per body.
+
+    Sew the assembly and the solid is destroyed - a real-kernel test already caught that. Skip the
+    assembly and the body that arrived as unjoined faces stays unjoined, and the customer gets a
+    file called repaired that still will not mesh. This proves the third answer: the solid is
+    handed back untouched and the loose body is joined.
+    """
+    from tests.cad_fixtures import write_mixed_assembly_step
+
+    source = write_mixed_assembly_step(tmp_path / "mixed.step")
+    report = repair_step_file(source, tmp_path / "mixed-repaired.step")
+
+    measured = {m.name: m.value for m in report.measurements}
+    before, after = measured["before"], measured["after"]
+
+    assert before["solids"] == 1 and before["shells"] == 7, before
+    # the loose body's six single-face shells became one, and the solid body kept its own
+    assert after["shells"] == 2, after
+    assert after["solids"] == 1, "sewing cost the assembly its solid"
+    # NOTHING ELSE MOVED. Sewing joins what is already coincident, so the faces and the measured
+    # geometry are identical - anything else here would be the customer's part being changed.
+    assert after["faces"] == before["faces"]
+    assert abs(after["volume_mm3"] - before["volume_mm3"]) < 1e-6
+    assert abs(after["surface_area_mm2"] - before["surface_area_mm2"]) < 1e-6
+    # and the report says sewing happened, because it did
+    assert "sew_shells" in [op["name"] for op in report.operations]
+
+
+def test_a_sound_single_solid_is_not_reported_as_sewn(tmp_path):
+    source = write_step(tmp_path / "box.step", "MM")
+
+    report = repair_step_file(source, tmp_path / "box-repaired.step")
+
+    # the one thing sewing must never touch, and the report must not claim it did
+    assert "sew_shells" not in [op["name"] for op in report.operations]

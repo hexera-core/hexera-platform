@@ -296,8 +296,10 @@ export function repairRouteLabel(route: string): string {
 }
 
 export function formatPoint(point: number[] | undefined): string {
-  // The part's OWN coordinates, unconverted: an operator types these into their CAD system, and
-  // silently rescaling them would send them to the wrong place.
+  // MILLIMETRES, and the column heading says so. OpenCASCADE transfers a STEP into millimetres on
+  // read, so these are not the customer's authored unit - an operator typing an unlabelled number
+  // into an inch-authored model would look 25.4 times too far from the defect. Unconverted on
+  // purpose: silently rescaling to a guessed unit would be the same mistake with no label at all.
   if (!point || point.length < 3) return "—";
   return point.map((v) => (Math.round(v * 1000) / 1000).toString()).join(", ");
 }

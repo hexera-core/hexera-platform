@@ -212,8 +212,10 @@ export default async function RepairJobPage({
                 <th>Defect</th>
                 <th>Entity</th>
                 <th>Where on the part</th>
-                <th>Position</th>
-                <th>Size</th>
+                {/* The unit is part of the heading, not a detail: these are millimetres after the
+                    kernel's transfer, whatever unit the customer authored in. */}
+                <th>Position (mm)</th>
+                <th>Size (mm)</th>
               </tr>
             </thead>
             <tbody>

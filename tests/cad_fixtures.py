@@ -223,3 +223,54 @@ def write_missing_bore_wall_step(path: Path, unit: str = "MM") -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     writer.Write(str(path))
     return path
+
+
+def write_mixed_assembly_step(path: Path, unit: str = "MM", side: float = SIDE) -> Path:
+    """One sound SOLID body beside a body that is only loose faces, in one STEP assembly.
+
+    THE CASE A WHOLE-SHAPE JUDGEMENT GETS WRONG. Sewing an assembly that already contains a solid
+    hands back a shell and the solid is gone, so the repair must not sew the assembly. But the
+    second body here is what sewing exists for: six faces at the same place as a box, never joined
+    into a shell, which is how surface exports and translated assemblies routinely arrive. Judge
+    the assembly as one shape and you must either destroy the solid or leave the loose body loose.
+
+    Real, not contrived: a fabricated part and a bought-in surface model in the same STEP is an
+    ordinary customer upload.
+    """
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.gp import gp_Pnt
+    from OCP.Interface import Interface_Static
+    from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS, TopoDS_Compound
+
+    solid = BRepPrimAPI_MakeBox(side, side, side).Shape()
+    # the second body, offset so the two do not touch: its faces are added INDIVIDUALLY, so the
+    # body has no shell and no solid - exactly what sewing is for
+    loose = BRepPrimAPI_MakeBox(gp_Pnt(side * 2, 0.0, 0.0),
+                                gp_Pnt(side * 3, side, side)).Shape()
+
+    builder = BRep_Builder()
+    compound = TopoDS_Compound()
+    builder.MakeCompound(compound)
+    builder.Add(compound, solid)
+
+    loose_body = TopoDS_Compound()
+    builder.MakeCompound(loose_body)
+    explorer = TopExp_Explorer(loose, TopAbs_FACE)
+    while explorer.More():
+        builder.Add(loose_body, TopoDS.Face_s(explorer.Current()))
+        explorer.Next()
+    builder.Add(compound, loose_body)
+
+    writer = STEPControl_Writer()
+    if not Interface_Static.SetCVal_s("write.step.unit", unit):
+        raise RuntimeError(
+            f"OCC refused write.step.unit={unit!r}; the STEP controller is not initialised, so "
+            "this fixture would silently emit millimetres instead.")
+    writer.Transfer(compound, STEPControl_AsIs)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    writer.Write(str(path))
+    return path

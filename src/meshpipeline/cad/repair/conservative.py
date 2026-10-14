@@ -394,7 +394,7 @@ def _fix(shape, *, tolerance_mm: float):
     # was never patched, and a real corpus came back "no_change" on every such file. Sewing is the
     # operation that must not run on a closed body, because it returns a shell and the solid is
     # lost; patching is judged on its own evidence.
-    sewn = fixed if _counts(fixed)["solids"] > 0 else _sew(fixed, tolerance_mm=tolerance_mm)
+    sewn = _sew_loose_bodies(fixed, tolerance_mm=tolerance_mm)
 
     if not rcfg.CAD_REPAIR_FILL_PLANAR_HOLES:
         # STILL REPORTED. A repair that leaves the defect it was run for must say so: an operator
@@ -404,6 +404,55 @@ def _fix(shape, *, tolerance_mm: float):
                           for wire in _free_loops(sewn)]
 
     return _fill_planar_holes(sewn, tolerance_mm=tolerance_mm, diagonal=_diagonal_mm(sewn))
+
+
+def _sew_loose_bodies(shape, *, tolerance_mm: float):
+    """Sew each body that has no solid to lose, and leave every body that does untouched.
+
+    WHY PER BODY. The two whole-shape answers are both wrong on a mixed assembly. Sew it and the
+    solids are destroyed, because sewing returns a shell. Skip it and a body that arrived as loose
+    faces - a surface export, a translated assembly - stays loose, and the customer is handed a
+    "repaired" file that still will not mesh. A STEP assembly is a compound of independent bodies,
+    so each one is judged on its own.
+
+    The caps still have the last word: a sewing that cost a solid, a face or volume is refused
+    downstream exactly as before.
+    """
+    if _counts(shape)["solids"] == 0:
+        # one open body, nothing to lose - sew it whole, as this has always done
+        return _sew(shape, tolerance_mm=tolerance_mm)
+
+    from OCP.BRep import BRep_Builder
+    from OCP.TopAbs import TopAbs_COMPOUND
+    from OCP.TopoDS import TopoDS_Compound, TopoDS_Iterator
+
+    if shape.ShapeType() != TopAbs_COMPOUND:
+        # a single solid body: sewing has nothing to add and a solid to lose
+        return shape
+
+    children = []
+    iterator = TopoDS_Iterator(shape)
+    while iterator.More():
+        children.append(iterator.Value())
+        iterator.Next()
+    if not children:
+        return shape
+
+    builder = BRep_Builder()
+    rebuilt = TopoDS_Compound()
+    builder.MakeCompound(rebuilt)
+    sewed_any = False
+    for child in children:
+        if _counts(child)["solids"] > 0:
+            builder.Add(rebuilt, child)
+            continue
+        joined = _sew(child, tolerance_mm=tolerance_mm)
+        sewed_any = sewed_any or _counts(joined)["shells"] != _counts(child)["shells"]
+        builder.Add(rebuilt, joined)
+    # UNCHANGED MEANS UNCHANGED. If no body was actually joined, the original shape is returned
+    # rather than a re-wrapped copy of it, so a repair that did nothing cannot look like one that
+    # rebuilt the assembly.
+    return rebuilt if sewed_any else shape
 
 
 def _sew(shape, *, tolerance_mm: float):
@@ -482,8 +531,12 @@ def repair_step_file(source: Path, destination: Path, *,
     if refusal:
         raise RepairRefused(refusal, measurements=measurements)
 
+    # READ OFF THE RESULT, NOT OFF THE REQUEST. Sewing runs per body, so an assembly that carried
+    # a solid may still have had a loose body joined; claiming sewing never ran there, or that it
+    # ran on a sound single solid, both mis-report what the customer's file had done to it.
+    sewed = before["solids"] == 0 or after["shells"] < before["shells"]
     performed = [op for op in _CONSERVATIVE_OPERATIONS
-                 if op != "sew_shells" or before["solids"] == 0]
+                 if op != "sew_shells" or sewed]
     if "fill_planar_holes" in performed and not filled:
         performed.remove("fill_planar_holes")
 
