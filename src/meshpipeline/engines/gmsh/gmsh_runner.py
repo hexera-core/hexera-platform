@@ -17,7 +17,28 @@ from meshpipeline.sandbox.safe_exec import (
 
 logger = logging.getLogger(__name__)
 
-SICN_FLOOR = 0.1   # single source for the gate + criteria threshold
+SICN_FLOOR = 0.1   # single source for the gate + criteria threshold (the FEA bar)
+
+
+def quality_shortfalls(q: dict) -> list[dict]:
+    """The bars this mesh misses, by the bar its quality report says it is judged by: a FLOW mesh
+    ("cfd") by a near-flat-cell floor and face non-orthogonality (driver.CFD_SICN_FLOOR,
+    driver.CFD_MAX_NON_ORTHO), a solid ("fea", or a report that does not say) by SICN_FLOOR.
+    [] when it clears them; each miss is {key, label, measured, op, threshold}."""
+    from meshpipeline.engines.gmsh.driver import CFD_MAX_NON_ORTHO, CFD_SICN_FLOOR
+    cfd = str(q.get("quality_bar") or "") == "cfd"
+    floor = CFD_SICN_FLOOR if cfd else SICN_FLOOR
+    out = []
+    sicn = q.get("min_sicn")
+    if sicn is None or float(sicn) < floor:
+        out.append({"key": "min_sicn", "label": "element quality (SICN)",
+                    "measured": None if sicn is None else float(sicn), "op": ">=",
+                    "threshold": floor})
+    nonortho = q.get("max_non_ortho")
+    if cfd and nonortho is not None and float(nonortho) > CFD_MAX_NON_ORTHO:
+        out.append({"key": "max_non_ortho", "label": "face non-orthogonality (degrees)",
+                    "measured": float(nonortho), "op": "<=", "threshold": CFD_MAX_NON_ORTHO})
+    return out
 
 
 # geometry staging + inspection
@@ -112,6 +133,8 @@ def stage_declared(workspace, *, geometry_path, prepared, intake_patches: list,
     t = stage_internal_surface(ws / "input.stl", ws / "_internal_stls",
                                intake_patches=intake_patches, input_kind=input_kind)
     shutil.copy2(t["fluid_boundary"], ws / FLUID_BOUNDARY)
+    from meshpipeline.engines.region_check import record_port_openings
+    record_port_openings(ws, t["openings"], intake_patches=intake_patches)
     record = {k: t[k] for k in ("openings", "interior_point", "bbox_min", "bbox_max", "wall_name")}
     record["patches"] = t["facts"]["patches"]
     (ws / "internal_surface.json").write_text(json.dumps(record, indent=1))
@@ -323,11 +346,31 @@ def check_mesh(workspace) -> dict:
         return {"cells": 0, "fatal": ["quality.json missing - run_mesh has not "
                                       "produced a mesh yet"], "mesh_ok": False}
     q = json.loads(qp.read_text())
-    q["mesh_ok"] = (not q.get("fatal")) and q.get("min_sicn", 0.0) >= SICN_FLOOR
+    q["mesh_ok"] = (not q.get("fatal")) and not quality_shortfalls(q)
     return q
 
 
 # finalize: manifest + deliverable check (executor seam)
+
+def _no_deck_reason(ws: Path) -> str:
+    """Why there is no deck: gmsh's own reason when the driver stopped on an error (driver.run
+    writes it), so the user reads what gmsh could not do - not a builder that failed to write."""
+    from meshpipeline.engines.gmsh.driver import STOP_REASON
+    try:
+        why = (ws / STOP_REASON).read_text().strip()
+    except OSError:
+        why = ""
+    if not why:
+        return "[GMSH] no mesh.inp - the Builder did not produce a valid mesh deck"
+    hint = ""
+    low = why.lower()
+    if "plc" in low or "intersect" in low or "recover" in low:
+        hint = (" - two faces of the closed surface cross or touch, so gmsh cannot recover the "
+                "boundary as a volume to fill")
+    elif "no solid" in low or "no volume" in low:
+        hint = " - the surface does not close a volume gmsh can fill"
+    return f"[GMSH] no mesh.inp - gmsh stopped: {why}{hint}"
+
 
 def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str = "",
              internal_flow: bool = False, engine_params: dict | None = None,
@@ -335,7 +378,7 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
     ws = Path(workspace_dir)
     if not (ws / "mesh.inp").exists():
         return {"success": False, "stdout": "", "stderr": "",
-                "output": "[GMSH] no mesh.inp - the Builder did not produce a valid mesh deck"}
+                "output": _no_deck_reason(ws)}
     q = check_mesh(ws)
     groups: dict = dict(q.get("groups", {}))
     # Include the default (unassigned-surfaces) group ONLY when the driver actually

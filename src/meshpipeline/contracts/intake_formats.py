@@ -13,7 +13,8 @@ from pathlib import PurePosixPath
 class GeometryKind(str, Enum):
     """The two canonical forms every accepted file becomes (cad/ingest does the converting).
 
-    cad      an exact B-rep solid OpenCASCADE reads (STEP, IGES; BREP arrives converted to STEP)
+    cad      an exact B-rep solid OpenCASCADE reads (STEP, IGES; BREP and ECXML arrive converted
+             to STEP - an ECXML model as one named solid per part plus the air around them)
     surface  triangles (STL; VTP stays VTP for the engine that reads it natively; every other
              mesh format arrives converted to STL, its named groups kept as named STL solids)
     """
@@ -33,7 +34,24 @@ class IntakeFormat:
     #: True for the formats the rest of the system reads as they are; every other one is
     #: converted to its kind's canonical file before anything downstream sees it.
     canonical: bool = False
+    #: THE UNIT A CONVERTER FIXES. A format whose converter writes the geometry every engine reads
+    #: in one known unit - whatever unit the source states - names it here ("mm"). That unit is a
+    #: fact of the conversion, not a reading of the file: nobody is asked for it, and no later
+    #: answer ("the file is in metres", which is true of the SOURCE) may rescale the converted
+    #: geometry. Empty for every format whose unit is read from the file or asked.
+    fixed_unit: str = ""
+    #: Why the unit is fixed, in plain words a user can read ("" when it is not).
+    fixed_unit_reason: str = ""
+    #: HOW THE GEOMETRY CHECK READS THIS FORMAT. "" is the generic check: pictures, a named part,
+    #: openings found on the shape and given roles. "thermal" is an electronics thermal model that
+    #: names every part, material, power, fan and vent itself: the check shows the file's own model
+    #: (application/thermal_view) and asks nothing the file answers - no picture naming, no up
+    #: question, no openings. Every later step branches on this flag, never on the suffix.
+    check_mode: str = ""
 
+
+#: The check mode of a format that is a whole electronics thermal model (IntakeFormat.check_mode).
+THERMAL_CHECK = "thermal"
 
 #: Ordered as the UI lists them: the most common first.
 INTAKE_FORMATS: tuple[IntakeFormat, ...] = (
@@ -61,6 +79,21 @@ INTAKE_FORMATS: tuple[IntakeFormat, ...] = (
         media_type="",
         # A BREP file is raw OpenCASCADE geometry: it records no unit at all.
         declares_units=False, staged_as="input.brep", kind=GeometryKind.cad),
+    IntakeFormat(
+        # Flotherm writes .ecxml; Icepak names its export <project>_ec.xml. A .xml file is read as
+        # ECXML only when its root element says so (cad/ingest/sniff), and refused otherwise.
+        key="ecxml", label="JEDEC JEP181 ECXML thermal model",
+        suffixes=(".ecxml", ".xml"), media_type="application/xml",
+        # JEP181A 4.1: every ECXML value is SI - lengths in metres - and the schema has no way to
+        # say otherwise. Its boxes, cylinders and enclosures are built as exact solids, with the air
+        # around them as one more solid, so it is CAD (converted to STEP) like a BREP.
+        declares_units=True, staged_as="input.ecxml", kind=GeometryKind.cad,
+        # ... and the solids are written in millimetres (cad/ingest/ecxml_build.UNIT), exactly.
+        fixed_unit="mm",
+        fixed_unit_reason=("an ECXML model states every length in metres by definition (JEDEC "
+                           "JEP181A), and it was converted exactly into millimetres"),
+        # ... and it is a whole thermal model, so the check shows it as one (thermal_view)
+        check_mode=THERMAL_CHECK),
     IntakeFormat(
         key="obj", label="Wavefront OBJ mesh", suffixes=(".obj",),
         media_type="model/obj", declares_units=False, staged_as="input.obj"),
@@ -139,6 +172,20 @@ def staged_name_for(suffix: str) -> str:
 def declares_units(suffix: str) -> bool:
     fmt = format_for_suffix(suffix)
     return bool(fmt and fmt.declares_units)
+
+
+def unit_fixing_format(suffix: str) -> IntakeFormat | None:
+    """The format of an upload whose converter fixes the unit of its geometry (`fixed_unit`), or
+    None when the unit is the file's to state or the user's to name."""
+    fmt = format_for_suffix(_suffix_of(suffix))
+    return fmt if fmt is not None and fmt.fixed_unit else None
+
+
+def check_mode_of(key: str) -> str:
+    """How the geometry check reads a format, by its key ("" for the generic check, also for a
+    key this product does not know)."""
+    fmt = format_for_key(str(key or ""))
+    return fmt.check_mode if fmt is not None else ""
 
 
 def _suffix_of(path_or_suffix) -> str:

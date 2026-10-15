@@ -69,6 +69,9 @@ def quality(manifest: dict | None) -> dict[str, Any]:
         fv = _as_float(q.get(k))
         if fv is not None:
             out[k] = fv
+    named = _region_rows(q)
+    if named:                      # a multi-region engine lists its regions; the count is theirs
+        out["regions"] = len(named)
     authoritative = _as_int(man.get("cell_count"))
     if authoritative:
         out["cells"] = authoritative
@@ -92,9 +95,30 @@ def _part(pid: str, label: str, kind: str, source: str, *,
             "renderable": renderable, "metadata": metadata or {}}
 
 
-def parts(manifest: dict | None, *, rendered: tuple[str, ...] = ()) -> list[dict[str, Any]]:
+def _region_rows(q: dict) -> list[dict]:
+    """The named regions a multi-region engine lists in its quality block (`regions` as rows with
+    a name, a type and a cell count), in its order; [] when it gives a count or nothing."""
+    rows = q.get("regions")
+    if not isinstance(rows, list):
+        return []
+    out, seen = [], set()
+    for r in rows:
+        name = str(r.get("name") or "").strip() if isinstance(r, dict) else ""
+        if name and name not in seen:
+            seen.add(name)
+            out.append(r)
+    return out
+
+
+def parts(manifest: dict | None, *, rendered: tuple[str, ...] = (),
+          enclosing: tuple[str, ...] = (), list_drawn: bool = False) -> list[dict[str, Any]]:
+    """The mesh parts the viewer lists. `rendered` names the surfaces the payload draws;
+    `enclosing` those of them the engine says wrap everything else (they open hidden, like an
+    enclosing role). `list_drawn` - a DELIVERED mesh - also lists every drawn surface no
+    declared part names, so nothing the user sees is a surface they cannot pick."""
     man: dict = manifest or {}
     rendered_set = set(rendered)
+    enclosing_set = set(enclosing)
     out: list[dict[str, Any]] = []
 
     # boundary patches, in manifest order
@@ -115,7 +139,7 @@ def parts(manifest: dict | None, *, rendered: tuple[str, ...] = ()) -> list[dict
         fc = _as_int(faces.get(n))
         if fc is not None:
             bmeta["faces"] = fc
-        encloses = role.lower() in _ENCLOSING_ROLES
+        encloses = role.lower() in _ENCLOSING_ROLES or n in enclosing_set
         if encloses:
             bmeta["encloses_domain"] = True
         out.append(_part(f"{BOUNDARY}:{n}", n, BOUNDARY, "patch_types",
@@ -126,6 +150,23 @@ def parts(manifest: dict | None, *, rendered: tuple[str, ...] = ()) -> list[dict
     _q2 = man.get("quality")
     q: dict = _q2 if isinstance(_q2, dict) else {}
     n_regions = _as_int(q.get("regions"))
+    # a multi-region mesh NAMES its regions (the file's parts, its air spaces): each is a part
+    # under its own name, drawn when the engine drew a surface for it
+    for r in _region_rows(q):
+        name = str(r["name"]).strip()
+        nmeta: dict[str, Any] = {"name": name}
+        rtype = str(r.get("type") or "").strip()
+        if rtype:
+            nmeta["role"] = rtype
+        cells = _as_int(r.get("cells"))
+        if cells is not None:
+            nmeta["cells"] = cells
+        encloses = name in enclosing_set
+        if encloses:
+            nmeta["encloses_domain"] = True
+        out.append(_part(f"{REGION}:{name}", name, REGION, "quality.regions",
+                         visibility=HIDDEN if encloses else VISIBLE,
+                         renderable=name in rendered_set, metadata=nmeta))
     if n_regions:
         for i in range(n_regions):
             rmeta: dict[str, Any] = {"index": i}
@@ -167,5 +208,21 @@ def parts(manifest: dict | None, *, rendered: tuple[str, ...] = ()) -> list[dict
                     imeta[key] = [float(x) for x in seq]
             out.append(_part(f"{INSPECTION}:{name}", name, INSPECTION,
                              "inspection_regions", metadata=imeta))
+
+    # a drawn surface no declared part names is still a part: shown and unpickable it is a wall
+    # the user cannot move out of the way (an engine's region surface the manifest never listed)
+    if list_drawn:
+        named = {p["metadata"].get("name") for p in out if p["renderable"]}
+        for n in rendered:
+            if not isinstance(n, str) or not n or n in named:
+                continue
+            named.add(n)
+            dmeta: dict[str, Any] = {"name": n}
+            encloses = n in enclosing_set
+            if encloses:
+                dmeta["encloses_domain"] = True
+            out.append(_part(f"{BOUNDARY}:{n}", n, BOUNDARY, "surface",
+                             visibility=HIDDEN if encloses else VISIBLE,
+                             renderable=True, metadata=dmeta))
 
     return out

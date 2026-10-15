@@ -126,6 +126,7 @@ configureComposer({
   notice: Notice,
   chat: (role, text) => Stage.chat(role, text),
   brief: (b) => Stage.brief(b),
+  engineChoice: (c, pick) => Stage.engineChoice(c, pick),
   supportedCopy: (t) => Stage.setSupportedCopy(t),
   onJobStarted: (id) => attachJob(id),
   // THE GEOMETRY CHECK TAKES THE STAGE, the way a delivered mesh does: the part in 3D with its

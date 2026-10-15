@@ -79,8 +79,14 @@ def engine_label(name: str) -> str:
 
 
 def catalog_menu() -> str:
+    # Each engine as its own spec declares it: the gist, then what FILE it takes per flow and what
+    # mesh it delivers - lines DERIVED from the declarations (engines/capability.py), so a proposal
+    # is judged against the same facts admission enforces, and a new engine reads correctly here
+    # from its spec alone.
+    from meshpipeline.engines.capability import delivers_line, takes_line
     return "\n\n".join(
-        f"{engine_label(s.name)}\n{s.descriptor}"
+        "\n".join(x for x in (engine_label(s.name), s.descriptor, takes_line(s), delivers_line(s))
+                  if x)
         for s in ENGINE_CATALOG.values() if s.implemented)
 
 

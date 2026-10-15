@@ -21,6 +21,8 @@ import { applyFlow, bindAxis, bindUnit, displayText, followAxis, followSuggestio
   readForm, shown, unitChoiceHint, unitChoiceNeeded, unitOf } from "./geometry_form.js";
 // the card keeps the user's answers through a re-draw and says back what they changed
 import { changedAnswers, editsLine, noteDrawn, servedProposal } from "./geometry_form.js";
+// a thermal model (an ECXML upload) has its own panel, card or stage alike
+import { bindThermalPanel, thermalPanelHtml } from "./thermal_form.js";
 
 /* The lightbox is its own DOM region (#lb) but too small to be its own module. */
 export function openLightbox(src) {
@@ -90,9 +92,13 @@ export const Stage = {
     const sig=JSON.stringify(b);
     if(this._briefSig===sig)return;
     this._briefSig=sig;
-    const ROWS=[['purpose','Purpose'],['engine','Engine'],['input_kind','Input'],
-                ['dimensionality','Dimensionality'],['mesh_fidelity','Mesh detail preference'],
-                ['label','Case']];
+    // A WHOLE THERMAL MODEL reads as an engineer's job sheet: the job in one paragraph from the
+    // file's own numbers, then only what the sheet does not already say
+    const thermal=b.check_mode==='thermal'&&b.job_sheet;
+    const ROWS=thermal?[['engine','Engine'],['mesh_fidelity','Detail level'],['label','Case']]
+      :[['purpose','Purpose'],['engine','Engine'],['input_kind','Input'],
+        ['dimensionality','Dimensionality'],['mesh_fidelity','Mesh detail preference'],
+        ['label','Case']];
     // Prefer the server's display label. A field may be label-ONLY: the fidelity tier always
     // applies, even when the user stated no preference and there is no raw value.
     let rows=ROWS.filter(([k])=>b[k]||b[k+'_label']).map(([k,l])=>
@@ -103,6 +109,10 @@ export const Stage = {
     (b.boundary_assignments||[]).forEach(p=>{
       rows+=`<div class="rc-row"><div class="rc-k">${esc(p.name)}</div>`
            +`<div class="rc-v">${esc(p.role||'')}</div></div>`;});
+    // why the boundaries have these roles, when the uploaded file declares them
+    if(b.boundaries_reason)
+      rows+=`<div class="rc-row"><div class="rc-k">Why</div>`
+           +`<div class="rc-v">${esc(b.boundaries_reason.charAt(0).toUpperCase()+b.boundaries_reason.slice(1))}</div></div>`;
     const ck=(b.checks||[]).map(c=>{
       const good=c.status==='pass',unknown=c.status==='unknown';
       return `<div class="rc-ck${good?'':(unknown?' unk':' bad')}">`
@@ -110,7 +120,8 @@ export const Stage = {
         +`<span>${esc(c.label)}${c.detail?` <span class="rc-d">${esc(c.detail)}</span>`:''}</span></div>`;}).join('');
     const html=`<div class="who">Requirements · submitted by Hexera</div>
       <div class="req-card${(b.checks||[]).every(c=>c.status==='pass')?' ok':''}">
-        <div class="rc-h">Structured brief</div>${rows}
+        ${thermal?`<div class="rc-h">Job sheet</div><p class="rc-sheet">${esc(b.job_sheet)}</p>`
+          :'<div class="rc-h">Structured brief</div>'}${rows}
         ${ck?`<div class="rc-h rc-h2">Validated by the application</div>${ck}`:''}
       </div>`;
     if(this._briefEl){this._briefEl.innerHTML=html;}
@@ -119,11 +130,49 @@ export const Stage = {
       this.col().appendChild(g);this._briefEl=g;}
     this.scrollBottom();},
 
+  /* THE ENGINE CHOICE, under the one engine question. Every engine that can take the uploaded file,
+     best measured fit first: its fit, the plain-words reason (how it did in the lab on shapes measured
+     to be like this one) and a button that picks it. The recommendation is marked, never pre-picked:
+     the user chooses, and the click is sent as their own words ("Use cfMesh") so the conversation
+     records the choice. One card per open question; a turn that closes the question (a reply with
+     no choice) retires the old card's buttons. */
+  engineChoice(c,pick){
+    const old=this._ecEl;
+    const engines=(c&&c.engines)||[];
+    if(!engines.length){
+      if(old){old.querySelectorAll('button').forEach(b=>{b.disabled=true;});
+        old.querySelector('.eng-choice')?.classList.add('done');}
+      return;}
+    if(old)old.remove();
+    this.clearEmpty();
+    const rows=engines.map((e,i)=>{
+      const cls=['ec-row'];if(e.recommended)cls.push('rec');if(e.outside)cls.push('out');
+      const badge=e.recommended?'<span class="ec-badge">Recommended</span>':'';
+      return `<div class="${cls.join(' ')}" data-engine="${esc(e.engine)}">`
+        +`<div class="ec-top"><span class="ec-name">${esc(e.label||e.engine)}</span>${badge}`
+        +`<span class="ec-fit">${esc(e.fit||'')}</span></div>`
+        +`<div class="ec-why">${esc(e.reason||'')}</div>`
+        +(e.heads_up?`<div class="ec-note">Heads-up: ${esc(e.heads_up)}</div>`:'')
+        +`<button type="button" class="ec-pick" data-i="${i}">Use ${esc(e.label||e.engine)}</button></div>`;}).join('');
+    const shape=c.shape?`<div class="ec-shape">This looks like ${esc(c.shape)}.</div>`:'';
+    const g=document.createElement('div');g.className='im assistant';
+    g.innerHTML=`<div class="eng-choice" role="group" aria-label="Choose the mesh engine">`
+      +`<div class="ec-h">Pick the mesh engine</div>${shape}${rows}`
+      +`<div class="ec-foot">Ranked by how each engine did in our lab on shapes measured to be like this one. You choose.</div></div>`;
+    g.querySelectorAll('.ec-pick').forEach(b=>b.addEventListener('click',()=>{
+      const e=engines[Number(b.dataset.i)]||{};
+      g.querySelectorAll('.ec-pick').forEach(x=>{x.disabled=true;});
+      b.closest('.ec-row').classList.add('picked');
+      g.querySelector('.eng-choice').classList.add('done');
+      if(pick)pick(e.reply||('Use '+(e.label||e.engine)));}));
+    this.col().appendChild(g);this._ecEl=g;this.scrollBottom();},
+
   /* THE GEOMETRY CHECK AS A CARD: the fallback when the 3D stage cannot open (no skin stored,
      no WebGL). The hero is the solid angled view - the translucent overview is drawn for the
      vision model, not for people - and the form is the same one the stage shows. One card per
      session, replaced if the check is shown again. */
   geometryCheck(d,confirm){
+    if(d&&d.thermal)return this.thermalCheck(d,confirm);
     const p=d.proposal||{},pics=d.pictures||[];
     // what the check proposed, kept apart from the card the user edits: Proceed says back what changed
     this._gcServed=servedProposal(null,p);
@@ -194,6 +243,19 @@ export const Stage = {
   /* THE CARD FOLLOWS THE CHECK IN PLACE: a unit settled in the chat reaches its unit box when the
      user has not set it themselves. The card is never drawn again for that, so what the user
      typed on it stays. A confirmed card is left as it is. */
+  /* A THERMAL MODEL AS A CARD: the same panel the stage shows, without the picture - the parts,
+     the file's numbers, the detail level and "Mesh this model". */
+  thermalCheck(d,confirm){
+    this.clearEmpty();
+    if(this._gcEl)this._gcEl.remove();
+    const g=document.createElement('div');g.className='im assistant';
+    g.innerHTML=`<div class="who">Thermal model · what Hexera read from the file</div>
+      <div class="req-card tm-card">${thermalPanelHtml(d.thermal)}</div>`;
+    this.col().appendChild(g);this._gcEl=g;this._gcP=null;
+    bindThermalPanel(g.querySelector('.tm-card'),d.thermal,{confirm:async(body)=>{
+      await confirm(body,'');g.querySelector('.tm-card').classList.add('ok');this.scrollBottom();}});
+    this.scrollBottom();},
+
   geometryCheckUpdate(d){
     const g=this._gcEl,p=this._gcP;if(!g||!p||g.querySelector('.gc-done'))return;
     const q=(d&&d.proposal)||{};

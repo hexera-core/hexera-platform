@@ -36,13 +36,34 @@ CRITERIA_ROWS: tuple[Criterion, ...] = (
             evidence_url=_GMSH_DOC,
         ),
         Criterion(
-            key="min_sicn", label="Worst element clears the SICN quality floor",
-            op=">", threshold=0.1, gating=True,
+            key="elements_under_floor", label="No element under its quality floor",
+            op="==", threshold=0, gating=True,
             rationale=(
-                "SICN (signed inverse condition number) is Gmsh's standard "
-                "element-quality measure (1 = ideal, 0 = degenerate); elements "
-                "below ~0.1 are near-degenerate and corrupt FEA conditioning."),
+                "SICN (signed inverse condition number) is Gmsh's standard element-quality "
+                "measure (1 = ideal, 0 = degenerate). A solid for FEA needs every element at "
+                "0.1 or better - below it the stiffness matrix is ill-conditioned. A flow mesh "
+                "is judged as a CFD solver integrates it, over faces (see the non-orthogonality "
+                "bar), and only near-flat cells under 0.01 are refused outright."),
             evidence_url=_GMSH_DOC,
+        ),
+        Criterion(
+            key="min_sicn", label="Worst element's SICN (0.1 is the FEA floor)",
+            op=">", threshold=0.1, gating=False,
+            rationale=(
+                "Advisory: the worst element against the FEA conditioning floor. The gating "
+                "bar is 'No element under its quality floor', which holds a flow mesh to the "
+                "CFD floor instead."),
+            evidence_url=_GMSH_DOC,
+        ),
+        Criterion(
+            key="max_non_ortho", label="Worst face non-orthogonality a CFD solver can correct",
+            op="<=", threshold=85.0, gating=True,
+            rationale=(
+                "Measured on a flow mesh only, with checkMesh's definition: the angle between "
+                "the line joining two cell centres and the face between them. Up to 70 degrees "
+                "needs nothing; 70-85 is handled with non-orthogonal correctors; beyond 85 the "
+                "Laplacian loses diagonal dominance and solvers diverge."),
+            evidence_url="https://doc.cfd.direct/openfoam/user-guide-v12/mesh-description",
         ),
         Criterion(
             key="sicn_low_fraction", label="Low-quality elements are localized",

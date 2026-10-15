@@ -33,6 +33,7 @@ async def _publish(job_id: str, level: str, text: str) -> None:
 
 def _declared_evidence(state, engine: str):
     from meshpipeline.engines.admission import AdmissionEvidence, PatchSummary
+    from meshpipeline.engines.capability import geometry_form_of_state
     _patches = tuple(
         PatchSummary(name=str(p.get("name", "")).strip(), type=str(p.get("type", "")).strip())
         for p in (state.get("intake_patches") or []) if isinstance(p, dict))
@@ -43,7 +44,21 @@ def _declared_evidence(state, engine: str):
         dimensionality=state.get("dimensionality", "") or None,
         patches=_patches,
         engine_params=state.get("engine_params", {}) or {},
+        geometry_form=geometry_form_of_state(state) or None,
     )
+
+
+#: The admission code of an engine refusing the FILE'S FORM for this flow (engines/base.py). It is
+#: a refusal by design: nothing is wrong with the file, and nothing a retry changes.
+FORM_REFUSED = "geometry_form_unsupported"
+
+
+def _form_refusal(state, spec):
+    """The engine's refusal of this file's form for this flow, read from its declaration alone -
+    free (no staging, no probe), so it runs for EVERY engine, before anything else."""
+    rejections = [r for r in spec.admit(_declared_evidence(state, spec.name))
+                  if r.code == FORM_REFUSED]
+    return rejections[0] if rejections else None
 
 
 async def node_geometry_admission(state: PipelineState) -> dict:
@@ -56,6 +71,12 @@ async def node_geometry_admission(state: PipelineState) -> dict:
     job_id = state.get("job_id", "unknown")
     engine = state.get("engine", "")
     spec = get_spec(engine)
+    # THE FILE'S FORM FIRST, for every engine: a surface for internal flow on an engine whose
+    # internal path needs a CAD solid is refused here - nothing staged, nothing built, no attempt
+    # spent - with the engines that CAN take it, or the file to upload instead.
+    _refused_form = _form_refusal(state, spec)
+    if _refused_form is not None:
+        return await _refuse(state, job_id, engine, [_refused_form], analysis=None)
     ic = spec.input_contract
     # Only engines whose contract MEASURES the geometry need this phase; everyone else proceeds
     # instantly (no staging, no probe) - this keeps the gate free for the wrap-then-fill engines.
@@ -105,24 +126,62 @@ async def node_geometry_admission(state: PipelineState) -> dict:
         except Exception:
             pass
         return {}
+    return await _refuse(state, job_id, engine, list(rejections), analysis=analysis)
+
+
+async def _refuse(state, job_id: str, engine: str, rejections: list, *, analysis) -> dict:
+    import dataclasses
+
+    from meshpipeline.engines import capability as cap
 
     reason = "  ".join(r.message for r in rejections)
     _phases = ", ".join(f"{r.phase}:{r.code}" for r in rejections)
     logger.error("geometry_admission: input rejected for %s - job_id=%s [%s]: %s",
                  engine, job_id, _phases, reason)
-    await _publish(job_id, "ERROR",
-                   f"Input rejected - the engine cannot service this request: {reason}")
+    codes = [r.code for r in rejections]
+    by_design = FORM_REFUSED in codes
+    flow, form = cap.flow_of(state.get("purpose")), cap.geometry_form_of_state(state)
+    able: list[str] = []
+    if by_design:
+        # WHO CAN take this very request - its boundaries, its geometry kind - from this file, or
+        # from another form of it: the ladder's own answer, so the note and the closing offer
+        # can never name an engine the ladder would refuse
+        from meshpipeline.pipeline.engine_fallback import able_engines, takers_by_form
+        able = able_engines(state, exclude=(engine,))
+        # the engine's own limit, that nothing was built, and the out - never "rejected" as if
+        # the file were at fault, and never a crash
+        await _publish(job_id, "ERROR", f"{reason} Nothing was built. "
+                                        f"{cap.who_can(flow, form, able=able, takers=takers_by_form(state))}")
+    else:
+        await _publish(job_id, "ERROR",
+                       f"Input rejected - the engine cannot service this request: {reason}")
     try:
         from meshpipeline.capture.logger import TrainingLogger
         TrainingLogger(job_id).log(
             "geometry_admission", op_id="admission:rejected", payload={
             "engine": engine, "admitted": False,
-            "codes": [r.code for r in rejections],
+            "codes": codes,
             "phases": [r.phase for r in rejections], "reason": reason,
             "rejections": [dataclasses.asdict(r) for r in rejections],
             "surface_analysis": analysis})
     except Exception:
         pass
+    facts: dict = {
+        "reason": reason[:600],
+        "phases": sorted({r.phase for r in rejections}),
+        "codes": codes,
+        # each kind's own words, so a refusal of BOTH can name both changes it needs
+        "measured_reason": "  ".join(r.message for r in rejections
+                                     if r.phase == "measured")[:600],
+        "declared_reason": "  ".join(r.message for r in rejections
+                                     if r.phase != "measured")[:600],
+        # nothing ran: the refusal is the attempt's whole story
+        "before_meshing": True}
+    if by_design:
+        # REFUSED BY DESIGN: what was refused, for which flow, and who can take it - the facts the
+        # user's message and the run's one offer are told from
+        facts.update({"refused_by_design": True, "engine": engine, "flow": flow, "form": form,
+                      "able": able})
     # Unfixable by any retry → exhaust the budget and hand the reason to the executor
     # short-circuit (executor_failed_gate='geometry' → FailureSection.GEOMETRY → gate_failed).
     return {
@@ -133,13 +192,5 @@ async def node_geometry_admission(state: PipelineState) -> dict:
         # that self-intersects), a DECLARED one is the setup's (a symmetry patch or a parameter
         # this engine cannot build) - and telling a user to repair a valid file for a setting
         # they chose sends them to fix the wrong thing. The executor carries these facts on.
-        "executor_failure_facts": {
-            "reason": reason[:600],
-            "phases": sorted({r.phase for r in rejections}),
-            "codes": [r.code for r in rejections],
-            # each kind's own words, so a refusal of BOTH can name both changes it needs
-            "measured_reason": "  ".join(r.message for r in rejections
-                                         if r.phase == "measured")[:600],
-            "declared_reason": "  ".join(r.message for r in rejections
-                                         if r.phase != "measured")[:600]},
+        "executor_failure_facts": facts,
     }

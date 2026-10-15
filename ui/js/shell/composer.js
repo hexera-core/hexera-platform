@@ -32,6 +32,9 @@ let deps = {
   geometryCheck() {},
   // the card that stands in when the stage cannot draw, following the check in place
   geometryCard() {},
+  // the open engine question's choice (every engine that can take the file, with its fit), and
+  // the function that sends the user's pick
+  engineChoice() {},
 };
 export function configureComposer(d) { deps = { ...deps, ...d }; }
 
@@ -137,13 +140,19 @@ let _holdTimer = null, _held = false;
 // what the poll last saw of the check, so a chat reply that arrives late installs the hold that
 // matches: none once the check gave up or was confirmed, the stage's once the stage is open
 let _checkState = null;
+// what the stage waits on: the openings of a part, or the detail level of a thermal model
+let _checkMode = "";
+function stageWait() {
+  return _checkMode === "thermal" ? "Check the thermal model beside this chat and press Mesh this model…"
+    : "Check the openings beside this chat and press Proceed…";
+}
 function holdInput(placeholder, ms) {
   _held = true; disableInput(); setPlaceholder(placeholder);
   clearTimeout(_holdTimer); _holdTimer = setTimeout(releaseHold, ms);
 }
 export function holdForDrawing() {
   if (_checkState === "done" || _checkState === "over") return enableInput();
-  if (_checkState === "ready") return holdInput("Check the openings beside this chat and press Proceed…", STAGE_WAIT_MS);
+  if (_checkState === "ready") return holdInput(stageWait(), STAGE_WAIT_MS);
   holdInput("Drawing your part… it will appear beside this chat in a moment", DRAWING_WAIT_MS);
 }
 export function releaseHold() {
@@ -177,6 +186,7 @@ async function watchGeometryCheck(sessionId) {
     if (reply.next) {
       if (reply.continued_with) deps.chat("user", reply.continued_with);
       if (reply.next.reply) deps.chat("assistant", reply.next.reply);
+      deps.engineChoice(reply.next.engine_choice || null, sendText);
       deps.brief(reply.next.brief);
       if (reply.next.done && reply.next.job_id) { disableInput(); deps.onJobStarted(reply.next.job_id); }
     }
@@ -187,6 +197,7 @@ async function watchGeometryCheck(sessionId) {
     let d = null;
     try { d = await getGeometryCheck(sessionId); } catch { /* transient; try again */ }
     const status = d && d.status;
+    if (d) _checkMode = d.check_mode || "";
     if (d && d.confirmed) {
       // answered, on the stage or the card, whatever the naming did afterwards
       _checkState = "done"; releaseHold(); if (stage) stage.release(); return;
@@ -222,7 +233,7 @@ async function watchGeometryCheck(sessionId) {
       // the naming gave up after the stage opened: the code's labels stand, the user proceeds -
       // or runs the naming again from the stage, so the watch goes on
       stage.update(d); _checkState = "ready";
-      if (isHeld()) holdInput("Check the openings beside this chat and press Proceed…", STAGE_WAIT_MS);
+      if (isHeld()) holdInput(stageWait(), STAGE_WAIT_MS);
       if (!d.retry) return;
     } else if (status === "scouted") {
       if (d.skin && !stage && !stageFailed) {
@@ -233,7 +244,7 @@ async function watchGeometryCheck(sessionId) {
       else if (stageFailed) deps.geometryCard(d);   // the card's Proceed follows the unit, in place
     } else if (status === "ready" && d.named !== false) {
       _checkState = "ready";
-      if (isHeld()) holdInput("Check the openings beside this chat and press Proceed…", STAGE_WAIT_MS);
+      if (isHeld()) holdInput(stageWait(), STAGE_WAIT_MS);
       if (stage) stage.update(d); else await deps.geometryCheck(sessionId, d, confirmFn, retryFn);
       return;
     }
@@ -294,6 +305,7 @@ async function sendText(txt) {
   try {
     const d = await sendMessage(sessionId, txt);
     deps.chat("assistant", d.reply);
+    deps.engineChoice(d.engine_choice || null, sendText);
     deps.brief(d.brief);
     if (d.done && d.job_id) deps.onJobStarted(d.job_id);
     else if (String(d.reply || "").startsWith(DRAWING_PREFIX)) holdForDrawing();

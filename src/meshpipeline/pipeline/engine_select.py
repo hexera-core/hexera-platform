@@ -59,6 +59,20 @@ async def _publish(job_id: str, text: str, op_id: str) -> None:
         pass
 
 
+async def _measured_ladder(state, engine: str) -> dict:
+    # THE ORDER THE LADDER WALKS FOR THIS GEOMETRY, measured once at the start of the run
+    # (pipeline/engine_fallback.seed_measured_order): the run's geometry measured and the engines
+    # that can build the approved request ranked by their lab record on shapes like it. {} when
+    # there is no geometry to measure, or it could not be ranked in time - the declared order
+    # stands. Never load-bearing for the selection itself.
+    try:
+        from meshpipeline.pipeline.engine_fallback import seed_measured_order
+        return await seed_measured_order({**state, "engine": engine})
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("engine_select: no measured order (%s)", exc)
+        return {}
+
+
 async def node_engine_select(state: PipelineState) -> dict:
     job_id = state.get("job_id", "unknown")
 
@@ -70,27 +84,43 @@ async def node_engine_select(state: PipelineState) -> dict:
         source = "dispute" if state.get("user_dispute") else "user"
         logger.info("node_engine_select: engine %r pinned (%s) - job_id=%s",
                     state.get("engine"), source, job_id)
+        seeded = await _measured_ladder(state, state["engine"])
+        st = {**state, "engine_ladder": seeded} if seeded else state
         _log_selection(job_id, {"chosen": state.get("engine"), "source": source,
                                 "model": None, "usage": None,
-                                **_ladder_facts(state, state["engine"])})
-        return {}
+                                **_ladder_facts(st, state["engine"])})
+        return {"engine_ladder": seeded} if seeded else {}
 
     # Topology is DERIVED from the declared purpose, not read back out of engine_params
     # (which is where the two could disagree).
     _topology = flow_topology(state.get("purpose", "")) if state.get("purpose") else ""
     if _topology == "internal":
-        candidates = engines_producing_topology("internal")
-        # Prefer the default engine when it qualifies, else the first in a STABLE order.
-        # Was `candidates[0]` - whichever engine happened to come first in the catalog
-        # dict, so opening internal on another engine silently re-pointed this branch.
+        # The engines DECLARED to take this file for internal flow, in their declared ladder
+        # order (engines/capability.py). When none takes it, every internal engine stays a
+        # candidate so admission refuses with the honest account rather than this node guessing.
+        from meshpipeline.engines.capability import engines_for, geometry_form_of_state
+        candidates = (list(engines_for("internal", geometry_form_of_state(state)))
+                      or sorted(engines_producing_topology("internal")))
+        # Prefer the default engine when it qualifies, else the first in a STABLE order (the
+        # declared ladder order, or by name). Was a raw `candidates[0]` - whichever engine
+        # happened to come first in the catalog dict, so opening internal on another engine
+        # silently re-pointed this branch.
         forced = (default_engine() if default_engine() in candidates
-                  else (sorted(candidates)[0] if candidates else default_engine()))
+                  else (candidates[0] if candidates else default_engine()))
+        # A run nobody chose an engine for takes the MEASURED recommendation for its geometry
+        # when there is one (the engine with the best lab record on shapes like it).
+        seeded = await _measured_ladder(state, forced)
+        measured = str(seeded.get("order_recommended") or "") if seeded else ""
+        source = "topology_internal"
+        if measured and measured in candidates:
+            forced, source = measured, "measured"
         logger.info("node_engine_select: topology=internal → %s (spec: %s) - job_id=%s",
                     forced, candidates, job_id)
         await _publish(job_id, f"Mesh engine: {forced}", "forced")
-        _log_selection(job_id, {"chosen": forced, "source": "topology_internal",
-                                "model": None, "usage": None, **_ladder_facts(state, forced)})
-        return {"engine": forced}
+        st = {**state, "engine_ladder": seeded} if seeded else state
+        _log_selection(job_id, {"chosen": forced, "source": source,
+                                "model": None, "usage": None, **_ladder_facts(st, forced)})
+        return {"engine": forced, **({"engine_ladder": seeded} if seeded else {})}
 
     # direct dispatch without any declaration: the deterministic default
     engine = default_engine()

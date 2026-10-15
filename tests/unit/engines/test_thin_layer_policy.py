@@ -303,11 +303,12 @@ GOLDEN_SNAPPY_DICT = (
     '  expansionRatio 1.2; finalLayerThickness 0.35; minThickness 0.05; nGrow 0; featureAngle 130;\n'
     '  slipFeatureAngle 30; nRelaxIter 8; nSmoothSurfaceNormals 2; nSmoothNormals 3; nSmoothThickness 10;\n'
     '  maxFaceThicknessRatio 0.5; maxThicknessToMedialRatio 0.5; minMedialAxisAngle 90;\n'
-    '  nBufferCellsNoExtrude 0; nLayerIter 50; nRelaxedIter 20; }\n'
+    '  layerTerminationAngle -180;\n'
+    '  nBufferCellsNoExtrude 0; nLayerIter 50; nRelaxedIter 0; }\n'
     'meshQualityControls { maxNonOrtho 65; maxBoundarySkewness 20; maxInternalSkewness 4; maxConcave 80;\n'
-    '  minVol 1e-13; minTetQuality -1e30; minArea -1; minTwist 0.02; minDeterminant 0.001;\n'
+    '  minVol 1e-13; minTetQuality 1e-13; minArea -1; minTwist 0.02; minDeterminant 0.001;\n'
     '  minFaceWeight 0.02; minVolRatio 0.01; minTriangleTwist -1; nSmoothScale 4; errorReduction 0.75;\n'
-    '  relaxed { maxNonOrtho 75; maxInternalSkewness 4; } }\n'
+    '  relaxed { maxNonOrtho 65; maxInternalSkewness 4; minTetQuality -1e30; } }\n'
     'mergeTolerance 1e-6; debug 0;\n')
 
 
@@ -318,7 +319,11 @@ def test_no_thin_features_authors_the_byte_identical_historical_dict(tmp_path):
     # Re-captured once when the background grid became cubic (snappy_runner.background_grid):
     # the 11 x 7 x 7 box was 82 x 83 x 83 (cells 1.6x longer along x) at level 3; it is now
     # 66 x 42 x 42 cubic cells at level 4 - the same 0.0104 wall cell the recommender intends,
-    # on every axis instead of only two.
+    # on every axis instead of only two. And once more when layerTerminationAngle -180 joined the
+    # layer controls (snappy_runner.LAYER_TERMINATION_ANGLE): a setting every case gets, measured
+    # to keep layers snappy used to drop before any quality check had looked at them - and when
+    # "balanced" split its bars by stage (snappy_runner.balanced_quality): the snap keeps the tet
+    # check, the layer stage relaxes it from its first iteration.
     ws = _workspace(tmp_path)
     summary = R.render_snappy_case(
         ws, surface_name="body", feature_file="body.eMesh", analysis=ANALYSIS,

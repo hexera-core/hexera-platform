@@ -416,7 +416,7 @@ def _install_thin_feature_double(monkeypatch) -> None:
 def _install_narrow_passage_double(monkeypatch) -> None:
     from meshpipeline.engines.snappy import drivers as D
 
-    def narrow_passage_boxes(field, *, wall_cell, budget_cells):
+    def narrow_passage_boxes(field, *, wall_cell, budget_cells, **_k):
         return [{"min": [-0.02, -0.02, 0.48], "max": [0.02, 0.02, 0.52], "level_bump": 1,
                  "radius_m": 0.004}]
 
@@ -467,6 +467,11 @@ async def _run(monkeypatch, tmp_path, *, body=_full_span_cube, native_double=Non
         # block that box, so the domain pre-flight re-plans every pass and meshes none of them
         st.update({"requested_extents": {"downstream": 20.0}, "reference_length_m": 1.0,
                    "requirements_strict": True, "flow_axis": "+x"})
+        # The driver now builds the box from the confirmed margins, so a short box can no longer
+        # come from the plan. The pre-flight stays the safety net for a box that still misses
+        # the request; hold the plan's margins here so that net is what this scenario exercises.
+        import meshpipeline.engines.snappy.drivers as _drivers
+        monkeypatch.setattr(_drivers, "confirmed_margins", lambda s, _r, _m: s)
     graph = _graph(st)
     monkeypatch.setattr(gm, "build_graph",
                         lambda checkpointer: graph.compile(checkpointer=checkpointer))

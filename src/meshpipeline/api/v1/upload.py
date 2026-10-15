@@ -111,7 +111,7 @@ class StepFileOut(BaseModel):
         "POST /api/v1/upload/direct, PUT the bytes to the `upload_url` it returns, then POST its "
         "`finalize_url` - which answers exactly what this route answers."))
 async def upload_step_file(
-    file:     UploadFile = File(..., description="Geometry file. CAD: .step/.stp, .iges/.igs, .brep. Surface or volume meshes: .stl, .obj, .ply, .off, .3mf, .glb, .gltf (single file), .vtk, .vtp, .vtu, .msh (Gmsh or Fluent), .bdf/.nas, .inp, .mesh, .su2, .3dm (Rhino meshes). The contents decide the format, not the name. A volume mesh is read as its boundary surface; named groups become named regions. Every file becomes a canonical CAD solid or STL surface before an engine sees it. GET /api/v1/client-config lists the formats."),
+    file:     UploadFile = File(..., description="Geometry file. CAD: .step/.stp, .iges/.igs, .brep. Electronics thermal models: .ecxml (JEDEC JEP181 ECXML; also an Icepak _ec.xml), read as one named solid per part plus the air around them, its materials, powers, fans and vents kept beside the geometry. Surface or volume meshes: .stl, .obj, .ply, .off, .3mf, .glb, .gltf (single file), .vtk, .vtp, .vtu, .msh (Gmsh or Fluent), .bdf/.nas, .inp, .mesh, .su2, .3dm (Rhino meshes). The contents decide the format, not the name. A volume mesh is read as its boundary surface; named groups become named regions. Every file becomes a canonical CAD solid or STL surface before an engine sees it. GET /api/v1/client-config lists the formats."),
     owner_id: str        = Depends(owner_dep),
     plan:     str        = Depends(plan_dep),
     organization_id: str = Depends(org_dep),

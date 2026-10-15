@@ -24,6 +24,16 @@ AUTHORING_TOOL: dict = {
                 "surface_level": {"type": "array", "items": {"type": "integer"}, "description": "[min,max] surface refinement (clamped to budget)"},
                 "feature_level": {"type": "integer", "description": "sharp-edge eMesh level (clamped to budget)"},
                 "max_cells": {"type": "integer", "description": "cell budget (default 8e6)"},
+                "wake": {"description": (
+                    "external flow: the refined wake behind the body - graded boxes along the "
+                    "flow, each one level coarser and twice as long as the one inside it. "
+                    "Omitted = on with the defaults; false = no wake refinement (only when the "
+                    "brief asks for none); or {enabled, length (wake lengths downstream, default "
+                    "4), levels_below_surface (finest wake cells this many levels coarser than "
+                    "the wall, default 1), tiers (1-4 boxes, default 3), start (body lengths "
+                    "upstream of the trailing extent it begins, default 0.1)}. Its cells come "
+                    "out of max_cells (at most a quarter); over that it is shortened, then made "
+                    "coarser, and the run note says so.")},
             },
             "required": [],
         },
@@ -31,7 +41,7 @@ AUTHORING_TOOL: dict = {
 }
 
 _STRATEGY = {"domain_margin", "n_layers", "first_layer_rel", "quality",
-             "surface_level", "feature_level", "max_cells"}
+             "surface_level", "feature_level", "max_cells", "wake"}
 _PREAMBLE = {"geometry_file", "domain_min", "domain_max", "wall_patch",
              "farfield_patch", "feature_angle", "strategy"}
 _KNOWN = _STRATEGY | _PREAMBLE
@@ -75,6 +85,9 @@ def validate(strategy: dict) -> list[Diagnostic]:
             d.append(Diagnostic("error", "surface_level", "surface_level must be [min,max], two integers >= 0"))
         elif sl[1] < sl[0]:
             d.append(Diagnostic("error", "surface_level[1]", "surface_level max must be >= min"))
+    if "wake" in strategy:
+        from meshpipeline.engines.wake_region import validate_wake
+        d.extend(Diagnostic("error", path, msg) for path, msg in validate_wake(strategy["wake"]))
     if "domain_margin" in strategy:
         dm = strategy["domain_margin"]
         if not isinstance(dm, dict):

@@ -274,7 +274,8 @@ def test_run_mesh_rejects_a_self_intersecting_input_before_building(tmp_path, mo
     from meshpipeline.engines.vmtk import vmtk_runner
     _stage_runnable_workspace(tmp_path)
     monkeypatch.setattr("meshpipeline.cad.analysis.analyze_surface", lambda *_a, **_k: dict(_SCALES))
-    monkeypatch.setattr("meshpipeline.cad.surface_checks.self_intersects", lambda *_a, **_k: True)
+    monkeypatch.setattr("meshpipeline.cad.surface_checks.self_intersection_report",
+                        lambda *_a, **_k: {"pairs": 1})
     # the expensive off-box mesh dispatch must NEVER be reached for an unmeshable input
     def _boom(*_a, **_k):
         raise AssertionError("run_cartesian_mesh reached despite an unmeshable input")
@@ -292,7 +293,8 @@ def test_run_mesh_lets_a_clean_input_reach_the_mesher(tmp_path, monkeypatch):
     from meshpipeline.engines.vmtk import vmtk_runner
     _stage_runnable_workspace(tmp_path)
     monkeypatch.setattr("meshpipeline.cad.analysis.analyze_surface", lambda *_a, **_k: dict(_SCALES))
-    monkeypatch.setattr("meshpipeline.cad.surface_checks.self_intersects", lambda *_a, **_k: False)
+    monkeypatch.setattr("meshpipeline.cad.surface_checks.self_intersection_report",
+                        lambda *_a, **_k: None)
     reached = {"v": False}
     def _reached(workspace, *, timeout, context=None):
         reached["v"] = True
@@ -312,7 +314,7 @@ def test_run_mesh_gate_is_inert_for_wrap_then_fill_engines(tmp_path, monkeypatch
     def _tripwire(*_a, **_k):
         called["v"] = True
         return True
-    monkeypatch.setattr("meshpipeline.cad.surface_checks.self_intersects", _tripwire)
+    monkeypatch.setattr("meshpipeline.cad.surface_checks.self_intersection_report", _tripwire)
     (tmp_path / "input.stl").write_text("")
     assert tools.input_contract_rejection(ec.get_spec("snappy"), tmp_path) == ""
     assert called["v"] is False

@@ -7,18 +7,35 @@ import { esc } from "../core/format.js";
 /* the two prefixes the conversation carries for the intake's sake; people see the words after them */
 export const DRAWING_MARK = "GEOMETRY CHECK (drawing your part):";
 export const CONFIRMED_MARK = "GEOMETRY CHECK (confirmed by the user):";
+/* how a whole thermal model's declaration begins after the mark (application/geometry_confirmation
+   THERMAL_LEAD): it was confirmed on the thermal model panel, not on a picture */
+export const THERMAL_LEAD = "the thermal model";
 
-/** A stored message as a person should read it: the marks the intake reads are taken off. */
+/** A stored message as a person should read it: the marks the intake reads are taken off - and,
+    for a thermal model, the intake's own enum words (input_kind, mesh_fidelity) too. */
 export function displayText(text) {
   const t = String(text == null ? "" : text);
   if (t.startsWith(DRAWING_MARK)) { const r = t.slice(DRAWING_MARK.length).trim(); return r.charAt(0).toUpperCase() + r.slice(1); }
-  if (t.startsWith(CONFIRMED_MARK)) return "Confirmed on the picture: " + t.slice(CONFIRMED_MARK.length).trim();
+  if (t.startsWith(CONFIRMED_MARK)) {
+    const r = t.slice(CONFIRMED_MARK.length).trim();
+    if (r.startsWith(THERMAL_LEAD + " ") || r === THERMAL_LEAD)
+      return "Confirmed on the thermal model panel: " + r.slice(THERMAL_LEAD.length).trim()
+        .replace(/, input_kind [a-z-]+/g, "").replace(/ \(mesh_fidelity [a-z]+\)/g, "");
+    return "Confirmed on the picture: " + r;
+  }
   return t;
+}
+
+/** A reason the check gives in lower case ("the file declares ...") as a sentence on the stage. */
+export function sentence(text) {
+  const t = String(text == null ? "" : text).trim().replace(/\.+$/, "");
+  return t ? t.charAt(0).toUpperCase() + t.slice(1) + "." : "";
 }
 
 export const KIND = [["body-surface", "the part's wall, hollow inside for the fluid"],
                      ["fluid-domain", "the fluid volume itself"],
-                     ["solid-body", "a solid body the fluid flows around"]];
+                     ["solid-body", "a solid body the fluid flows around"],
+                     ["solid-assembly", "an assembly of solid parts, each its own region"]];
 export const ROLES = [["inlet", "inlet"], ["outlet", "outlet"], ["not_an_opening", "not an opening"]];
 export const AXES = [["+x", "+x"], ["-x", "-x"], ["+y", "+y"], ["-y", "-y"], ["+z", "+z"], ["-z", "-z"],
                      ["unknown", "not sure"]];
@@ -57,13 +74,15 @@ const UNIT_WORDS = Object.fromEntries(UNITS);
  *  unit in effect ("117 mm" for a wind turbine blade) and the user has not picked a unit yet. */
 export function unitChoiceNeeded(p) {
   const s = p && p.unit_suggestion;
-  return !!(s && SCALE[s.unit] && !p.unit_touched && p.unit_basis !== "user_confirmed" && s.unit !== unitOf(p));
+  return !!(s && SCALE[s.unit] && !p.unit_fixed && !p.unit_touched && p.unit_basis !== "user_confirmed" && s.unit !== unitOf(p));
 }
 /** What the unit row says beside the box: on whose word the unit is, and how long the part then
- *  is - and, when the size makes that unit doubtful, how long it would be in the other one. */
+ *  is - and, when the size makes that unit doubtful, how long it would be in the other one. A unit
+ *  the upload's converter fixed (an ECXML model's millimetres) says so, and is never doubted. */
 export function unitHint(p) {
   const longest = Math.max(0, ...(p.size_mm || []).map((v) => raw(v, p)));
-  const basis = { file_declared: "the file says so", user_confirmed: "confirmed", chosen: "your choice" }[p.unit_basis]
+  const basis = p.unit_fixed ? "fixed by the file's conversion"
+    : { file_declared: "the file says so", user_confirmed: "confirmed", chosen: "your choice" }[p.unit_basis]
     || "the file does not say - check the size";
   if (longest > 0 && unitChoiceNeeded(p)) {
     const s = p.unit_suggestion;
@@ -97,8 +116,8 @@ export function unitChoiceHint(p) {
    so a model-given label like 2" inlet neither ends the value early nor smuggles markup in */
 export const attr = (v) => esc(v).replace(/"/g, "&quot;");
 
-function sel(cls, opts, cur) {
-  return `<select class="${cls}">${opts.map(([v, l]) =>
+function sel(cls, opts, cur, disabled) {
+  return `<select class="${cls}"${disabled ? " disabled" : ""}>${opts.map(([v, l]) =>
     `<option value="${v}"${cur === v ? " selected" : ""}>${esc(l)}</option>`).join("")}</select>`;
 }
 
@@ -140,9 +159,10 @@ export function formHtml(p) {
       <div class="rc-row"><div class="rc-k">On the ground</div><div class="rc-v"><label><input class="gc-ground" type="checkbox"${p.grounded ? " checked" : ""}> the part stands on the ground</label></div></div>
     </div>`;
   return `<div class="rc-row"><div class="rc-k">The file is</div><div class="rc-v">${sel("gc-sel gc-kind", KIND, p.input_kind)}</div></div>
-    <div class="rc-row"><div class="rc-k">The file's unit</div><div class="rc-v">${sel("gc-sel gc-unit", UNITS, unitOf(p))}${pickHtml(p)}<span class="gc-unit-hint">${esc(unitHint(p))}</span></div></div>
+    <div class="rc-row"><div class="rc-k">The file's unit</div><div class="rc-v">${sel("gc-sel gc-unit", UNITS, unitOf(p), p.unit_fixed)}${pickHtml(p)}<span class="gc-unit-hint">${esc(unitHint(p))}</span></div></div>
     <div class="rc-row"><div class="rc-k">The fluid flows</div><div class="rc-v">${sel("gc-sel gc-flow", [["internal", "through the part"], ["external", "around the part"]], p.flow)}</div></div>
     <div class="gc-int"${p.flow === "external" ? " hidden" : ""}>
+    ${p.openings_reason ? `<div class="gc-note gc-why">${esc(sentence(p.openings_reason))}</div>` : ""}
     ${rows ? `<table class="gc-table">${tableHead()}<tbody>${rows}</tbody></table>`
            : `<div class="gc-note">No openings found. Add one below if the fluid flows through this part.</div>`}
     <div class="gc-tools"><button class="gc-add v-btn" type="button">Add an opening</button><button class="gc-measure v-btn" type="button" title="measure between two points on the part">Measure</button><span class="gc-tools-hint">then click the part where it is</span></div>
@@ -201,7 +221,7 @@ export function bindUnit(root, p) {
 
 /** A unit settled elsewhere - the chat - reaches a form the user has not set themselves. */
 export function followUnit(root, p, unit, basis) {
-  if (!unit || !SCALE[unit] || p.unit_touched || unit === p.unit) return;
+  if (!unit || !SCALE[unit] || p.unit_fixed || p.unit_touched || unit === p.unit) return;
   p.unit = unit; p.unit_basis = basis || "user_confirmed";
   const unitSel = root.querySelector(".gc-unit"); if (unitSel) unitSel.value = unit;
   showUnit(root, p);
@@ -354,7 +374,8 @@ export function servedProposal(before, next) {
    records it, but the chat only showed the whole declaration afterwards, so an edit read like the
    check's own proposal and nothing said "got it". This is the one line that does: each change
    against what the check proposed, in plain words. "" when nothing was changed. */
-const KIND_WORDS = { "body-surface": "a hollow wall", "fluid-domain": "the fluid volume", "solid-body": "a solid body" };
+const KIND_WORDS = { "body-surface": "a hollow wall", "fluid-domain": "the fluid volume", "solid-body": "a solid body",
+                     "solid-assembly": "an assembly of solid parts" };
 const FLOW_WORDS = { internal: "through the part", external: "around the part" };
 const ROLE_WORDS = { inlet: "an inlet", outlet: "an outlet", not_an_opening: "not an opening" };
 const MAX_EDITS = 6;

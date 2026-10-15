@@ -12,10 +12,12 @@ from meshpipeline.engines.base import (
     DeliveredMesh,
     DownstreamTarget,
     EngineSpec,
+    FlowSupport,
     InputContract,
     MeshCapability,
     ParamSpec,
     RunPolicy,
+    TurfRow,
 )
 from meshpipeline.engines.base import (
     DeliverableMember as M,
@@ -101,6 +103,40 @@ def _criteria():
     return CRITERIA_ROWS
 
 
+
+# WHERE Gmsh IS AT HOME (engines/home_turf.py reads these; thresholds from the HOME-TURF lab
+# sweep, 2026-10-05). A Delaunay/frontal tetrahedral mesher of a CLOSED volume, conformal to the
+# CAD faces, with no prism layers on this path: structural solids, prepared fluid domains for
+# internal flow, and simple bodies in low-Re external flow. High-Re external aerodynamics needs
+# near-wall prism layers it does not make, and very large scale ratios cost it time on one thread.
+HOME_TURF = (
+    TurfRow("flow", "==", "structural", "home",
+            "Its native job: second-order tetrahedra of a solid, with named groups for the loads "
+            "and supports."),
+    TurfRow("input_kind", "==", "fluid-domain", "home",
+            "A prepared fluid volume is meshed exactly as it is, conformal to its CAD faces.",
+            flow="internal"),
+    TurfRow("layers_requested", "is", True, "outside",
+            "It makes tetrahedra without near-wall prism layers, and external flow at speed needs "
+            "them; use a hex-dominant engine with layers.", flow="external"),
+    TurfRow("layers_requested", "is", True, "weak",
+            "It makes tetrahedra without near-wall prism layers: fine for laminar or low-Reynolds "
+            "flow, not for a wall-function or y+ 1 layer stack.", flow="internal"),
+    TurfRow("cells_across_at_budget", "<", 24.0, "weak",
+            "The passages are narrow for the part's size: tetrahedra need about twice the cells of "
+            "hexahedra for the same resolution, and one-thread meshing may run out of time (a tube "
+            "bank, a pump volute with its suction pipe and two aortas did, at 7-24 here).",
+            flow="internal"),
+    TurfRow("thin_wall_fraction", ">", 0.3, "weak",
+            "Much of the body is thin sheet or blade: tetrahedra pinned across its sharp edges come "
+            "out as flat slivers (rotors, propellers, high-lift wings).", flow="external"),
+    TurfRow("sharp_edges", ">", 6.0, "weak",
+            "Many sharp edges: tetrahedra pinned between two faces at a sharp edge come out as flat "
+            "slivers (blade-row passages at 6.5-9.7: worst face 86-88 degrees; rotors, high-lift "
+            "aircraft)."),
+)
+
+
 SPEC = EngineSpec(
 
         name="gmsh",
@@ -174,6 +210,18 @@ SPEC = EngineSpec(
             # triangles (CPS3/CPS6 in the .inp) with boundary groups on curves.
             MeshCapability("planar-domain", "surface-mesh"),
         ),
+        # WHAT FILE IT TAKES, per flow. A CAD B-rep is staged as geometry.step and gmsh meshes the
+        # volume it bounds, for every flow. A surface upload has no B-rep: for EXTERNAL flow the
+        # driver classifies its triangles into faces and cuts the body out of a far-field box
+        # (engines/gmsh/surface_volume.py); for INTERNAL flow it is taken through the staged fluid
+        # boundary, declared once below as input_contract.internal_from_surface. Structural FEA
+        # stays CAD-only (a solid's faces carry its boundary conditions).
+        accepts=(FlowSupport("structural", ("cad",)),
+                 FlowSupport("external", ("cad", "surface")),
+                 FlowSupport("internal", ("cad",))),
+        # a tetrahedral mesher of a prepared volume: last on the flow ladders
+        ladder_rank=40,
+        home_turf=HOME_TURF,
         input_contract=InputContract(
             # internal flow from an STL/OBJ/PLY upload: cad/internal_surface closes it at the
             # confirmed openings (snappy/cfMesh/gmsh/vmtk internal paths read that record)

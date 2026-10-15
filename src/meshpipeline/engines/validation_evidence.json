@@ -205,6 +205,21 @@
           "summary": "Ahmed body 39,871 tets min SICN 0.42; wing_003 349,748 tets min SICN 0.108; all gates passed"
         }
       ]
+    },
+    {
+      "engine": "snapgrid",
+      "input_kind": "solid-assembly",
+      "output_kind": "multiregion-volume",
+      "supported": true,
+      "tier": "T5+T6",
+      "deliveries": [
+        {
+          "purpose": "conjugate_heat_transfer",
+          "job": "f8542f71",
+          "date": "2026-10-11",
+          "summary": "set_top_box.ecxml (FloTHERM ECXML: case, PCB, SoC + heat sink, 2 DDR, PMIC, bulk capacitor, air) on dev-areen, unaided chat take from upload to approval: delivered attempt 1 (3.5 min), 357,973 cells in 9 regions (air, Case, PCB, SoC, DDR_1, DDR_2, PMIC, Bulk_cap, SoC_heat_sink), every region its own mesh with conformal interfaces, max non-ortho 55.2, max skewness 2.73, 0 skew faces; visual review PASS (no concerns); 11.6 MB multi-region OpenFOAM case (commit 44c03f8a)"
+        }
+      ]
     }
   ]
 }

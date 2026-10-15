@@ -41,10 +41,17 @@ _CM = {
     # faces localized at a wing-body junction (out of millions) is normal + solvable; the single
     # worst value is not representative. Absent pattern ⇒ zero skewed faces.
     "skew_faces": re.compile(r"(\d+)\s+highly skew faces"),
+    # "Min volume = 1.2e-12. Max volume = 3.4e-09.  Total volume = 0.00096.  Cell volumes OK."
+    # (the sentence's full stop is not part of the number)
+    "total_volume": re.compile(r"Total volume\s*=\s*([-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)"),
 }
 _FATAL = (("negative volume", "negative-volume cells"),
           ("open cell", "open cells"),
-          ("incorrectly oriented", "incorrectly oriented faces"))
+          ("incorrectly oriented", "incorrectly oriented faces"),
+          # checkMesh: "Total number of faces on empty patches is not divisible by the number of
+          # cells in the mesh. Hence this mesh is not 1D or 2D." An `empty` patch on a 3D mesh
+          # (a background block's unnamed outside) makes every solver refuse the case.
+          ("not 1d or 2d", "empty patches on a 3D mesh"))
 
 
 def check_mesh(workspace, *, bashrc: str = _DEFAULT_BASHRC, region: str = "") -> dict:

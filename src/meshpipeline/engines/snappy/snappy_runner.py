@@ -67,13 +67,20 @@ from meshpipeline.engines.snappy.solvability import check_solvability  # noqa: F
 # the name has to be here even though the native phase is what calls it.
 from meshpipeline.engines.snappy_hexmesh import (  # noqa: F401
     _write_case_skeleton,
+    off_grid_point,
     parse_layer_coverage,
 )
+from meshpipeline.engines.wake_region import WakeRequest, plan_wake
 from meshpipeline.render.review_artifacts import (  # noqa: F401
     build_review_msh,
 )
 
 logger = logging.getLogger(__name__)
+
+#: The wake's refinement boxes are named <_WAKE_BOX><tier> in the dictionary's geometry.
+_WAKE_BOX = "wakeTier"
+#: The workspace record of the wake a pass authored (read into the manifest by finalize).
+WAKE_FACT = "wake_refinement.json"
 
 _HDR = ("FoamFile{{ version 2.0; format ascii; class {cls}; object {obj}; }}\n")
 
@@ -93,6 +100,39 @@ MIN_VOL_HISTORICAL = 1e-13
 #: How far under the thinnest legitimate layer cell's face pyramid minVol sits: far enough that no
 #: real cell trips it, while an inverted (negative) or collapsed one still does.
 MIN_VOL_MARGIN = 1e-3
+
+
+#: addLayersControls layerTerminationAngle: -180 asks snappyHexMesh to TRY every point and let its
+#: own mesh-quality checks decide. Left unset it defaults to half the featureAngle (65 degrees
+#: here), and before the first layer iteration snappy then stops extrusion at every point where a
+#: partly extruded face meets its neighbour at under 65 degrees - 27 170 points on a Camaro, 27 258
+#: on the Supra, 10 240 on an F1 front wing. Those points never reach a quality check, so their
+#: layers are lost whether or not the cells would have been good. Measured on the jobs' own snapped
+#: meshes (production image): Camaro 2.32 -> 2.44 mean layers of 3, F1 wing 2.36 -> 2.53, Supra
+#: 1.83 -> 1.91, with the same maximum non-orthogonality and skewness.
+LAYER_TERMINATION_ANGLE = -180
+
+
+def balanced_quality() -> tuple[str, int, int, float, str]:
+    """The "balanced" quality bars, split by STAGE: (minTetQuality, relaxed maxNonOrtho,
+    nRelaxedIter, maxThicknessToMedialRatio, the extra relaxed entry).
+
+    snappyHexMesh reads one meshQualityControls for castellation, snap and layers, and a
+    `relaxed` sub-set the layer stage switches to after nRelaxedIter iterations - the snap never
+    uses it. "balanced" used to switch the tet check off everywhere (minTetQuality -1e30) to keep
+    layers. That also let the SNAP leave a cell or two turned inside out on a full-size car: the
+    Camaro (job 406c002b, and every replay of it in the lab on the production image) came out of
+    each pass with 1-2 wrongly oriented wall faces, checkMesh called the mesh invalid, and three
+    rounds of cutting layers - whole thin-feature classes, then the spots themselves - never
+    removed them, because no layer made them. A pass with the tet check on throughout was valid,
+    but its layers fell to 1.92 of 3.
+
+    So the bars are split: the snap keeps the tet check (1e-13, the "strict" value), and the layer
+    stage uses the relaxed set from its first iteration (nRelaxedIter 0) with the tet check off
+    there only. maxNonOrtho stays 65 in both, the bar the reviewer judges. Measured (production
+    image, product path): Camaro valid on the first pass, 2.39 of 3 layers (was invalid three
+    times); F1 wing 2.53 (2.52 with the old bars), skewed faces 34 -> 27."""
+    return "1e-13", 65, 0, 0.5, " minTetQuality -1e30;"
 
 
 def layer_min_vol(finest_cell_m: float, *, n_layers: int, min_thickness_rel: float) -> float:
@@ -536,6 +576,39 @@ def background_grid(ext, base: float, *, budget: int = BG_CELL_BUDGET,
     return div, 63
 
 
+#: The castellated mesh of an external body, per unit of what drives it, fitted on eight finished
+#: lab runs on main (castellated cells built / estimated, millions: SAE notchback 1.19 / 1.34,
+#: Windsor 1.12 / 1.42, Ahmed 1.01 / 1.45, ONERA M6 0.89 / 1.14, bluff cylinder 0.77 / 1.04,
+#: Toyota Supra 2.43 / 2.30, F1 front wing 1.12 / 0.70, CRM high-lift 0.93 / 0.65 - within about
+#: 45 %, high on smooth bulky bodies and low on many-element ones): the surface and feature
+#: refinement leave about this many surface-level cells per surface-level cell of wall area ...
+CAST_SURFACE_CELLS = 5.5
+#: ... and the two distance bands come out about this many times the cells of their own volume
+#: on one side of the wall.
+CAST_BAND_GRADING = 2.0
+
+
+def castellated_estimate(*, area: float | None, divisions, base_cell: float, surface_level: int,
+                         near: tuple[float, int], far: tuple[float, int]) -> float | None:
+    """The cells snappyHexMesh's castellation reaches for an external body before any extra
+    region (the count maxGlobalCells is checked against): the background, the wall's surface
+    refinement and its two distance bands. None when the wall area is unknown."""
+    try:
+        a = float(area)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if not (math.isfinite(a) and a > 0.0 and base_cell > 0.0):
+        return None
+    (d0, l0), (d1, l1) = near, far
+    h_s = base_cell / 2.0 ** int(surface_level)
+    h_0 = base_cell / 2.0 ** int(l0)
+    h_1 = base_cell / 2.0 ** int(l1)
+    background = float(math.prod(int(v) for v in divisions))
+    surface = CAST_SURFACE_CELLS * a / h_s ** 2
+    bands = a * (float(d0) / h_0 ** 3 + max(0.0, float(d1) - float(d0)) / h_1 ** 3)
+    return background + surface + CAST_BAND_GRADING * bands
+
+
 def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analysis: dict,
                        recommendation: dict, domain_min, domain_max,
                        strategy: dict | None = None, dimensionality: str = "3D",
@@ -546,7 +619,8 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
                        ground: str | None = None,
                        farfield: str = "farfield",
                        class_regions: bool = True,
-                       outside_points: list | None = None) -> dict:
+                       outside_points: list | None = None,
+                       wake: WakeRequest | None = None) -> dict:
     ws = Path(workspace)
     strategy = strategy or {}
     rec = recommendation
@@ -608,11 +682,11 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
     ang = rec["resolve_feature_angle"]
     max_cells = int(strategy.get("max_cells", 8_000_000))
 
-    # locationInMesh - a far-field corner, GUARANTEED in the fluid (body is centred with margin).
-    loc = [domain_min[i] + 0.02 * ext[i] for i in range(3)]
-
     def vf(p) -> str:
         return f"({p[0]:.6g} {p[1]:.6g} {p[2]:.6g})"
+
+    # locationInMesh - a far-field corner, GUARANTEED in the fluid (body is centred with margin).
+    loc = [domain_min[i] + 0.02 * ext[i] for i in range(3)]
 
     # SEALED SPACES (engines/sealed_cavities.py). A point inside each space the far field reaches
     # only through gaps too narrow to mesh is a place the mesh must NOT reach: snappyHexMesh walks
@@ -676,10 +750,13 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
     # quality vs coverage: "balanced" buys layer coverage with relaxed cell quality (some
     # high-skew cells); "strict" enforces a real tet quality + tighter relaxed bounds so
     # checkMesh passes (skew < 4), trading a few % coverage. The builder flips this on high skew.
+    # "balanced" splits the bars by STAGE (balanced_quality): the snap keeps the tet check, the
+    # layers alone get it relaxed.
     if strategy.get("quality") == "strict":
         min_tet, relaxed_no, n_relaxed, medial = "1e-13", 65, 6, 0.3
+        relaxed_tet = ""
     else:
-        min_tet, relaxed_no, n_relaxed, medial = "-1e30", 75, 20, 0.5
+        min_tet, relaxed_no, n_relaxed, medial, relaxed_tet = balanced_quality()
     _med_override = (layer_overrides or {}).get("max_thickness_to_medial")
     if _med_override is not None:
         medial = float(_med_override)
@@ -708,14 +785,41 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
                / (2 ** max(smax, flevel, near_band_level)))
     _min_vol = layer_min_vol(_finest, n_layers=max([n_layers, *layer_counts.values()]),
                              min_thickness_rel=_min_thick)
+    # THE WAKE (engines/wake_region.py). Graded boxes behind the body, along the flow, each one
+    # level coarser and longer than the one inside it, sized on the background cell the mesher
+    # really uses and held to a share of this run's cell budget. Without them the cells behind
+    # the body coarsened straight back to the background a few wall cells downstream, and a
+    # review that asked for a resolved wake could never be answered by a rebuild (job 679ae2a9).
+    # No request (an internal case, a caller that owns no flow) authors the historical dict.
+    _wake = None
+    if wake is not None:
+        _wake = plan_wake(body_min=analysis["bbox_min"], body_max=analysis["bbox_max"],
+                          domain_min=domain_min, domain_max=domain_max,
+                          flow_axis=wake.flow_axis, base_cell=base_actual, surface_level=smax,
+                          budget_cells=max_cells, knobs=wake.knobs, ruler_m=wake.ruler_m,
+                          grounded=bool(ground),
+                          # what the body itself costs, so the wake never starves the wall's
+                          # refinement of the budget snappyHexMesh stops refining at
+                          body_cells=castellated_estimate(
+                              area=analysis.get("surface_area"), divisions=div,
+                              base_cell=base_actual, surface_level=smax,
+                              near=(b0d, near_band_level), far=(b1d, max(1, smin - 1))))
+        logger.info("render_snappy_case: %s", _wake.summary())
+    _wake_tiers = list(_wake.tiers) if _wake is not None else []
+    _wake_geom = "".join(
+        f" {_WAKE_BOX}{k} {{ type searchableBox; min {vf(t.box_min)}; max {vf(t.box_max)}; }}"
+        for k, t in enumerate(_wake_tiers))
+    _wake_refine = "".join(f" {_WAKE_BOX}{k} {{ mode inside; levels ((1e15 {t.level})); }}"
+                           for k, t in enumerate(_wake_tiers))
+
     (ws / "system" / "snappyHexMeshDict").write_text(
         _HDR.format(cls="dictionary", obj="snappyHexMeshDict") + f"""
 castellatedMesh true; snap true; addLayers {'true' if _any_layers else 'false'};
-geometry {{ {surface_name}.stl {{ type triSurfaceMesh; name {surface_name};{_geo_regions} }} }}
+geometry {{ {surface_name}.stl {{ type triSurfaceMesh; name {surface_name};{_geo_regions} }}{_wake_geom} }}
 castellatedMeshControls {{ maxLocalCells {max_cells}; maxGlobalCells {max_cells}; minRefinementCells 10;
   maxLoadUnbalance 0.10; nCellsBetweenLevels 3; features ( {{ file "{feature_file}"; level {flevel}; }} );
   refinementSurfaces {{ {surface_name} {{ level ({smin} {smax});{_ref_regions} }} }} resolveFeatureAngle {ang:.0f};
-  refinementRegions {{ {surface_name} {{ mode distance; levels (({b0d:.6g} {near_band_level}) ({b1d:.6g} {max(1, smin - 1)})); }} }}
+  refinementRegions {{ {surface_name} {{ mode distance; levels (({b0d:.6g} {near_band_level}) ({b1d:.6g} {max(1, smin - 1)})); }}{_wake_refine} }}
   locationInMesh {vf(loc)}; allowFreeStandingZoneFaces true;{_outside} }}
 snapControls {{ nSmoothPatch 3; tolerance 2.0; nSolveIter 50; nRelaxIter 8; nFeatureSnapIter 15;
   implicitFeatureSnap false; explicitFeatureSnap true; multiRegionFeatureSnap false; }}
@@ -723,11 +827,12 @@ addLayersControls {{ relativeSizes true; layers {{ {_layers} }}
   expansionRatio 1.2; finalLayerThickness {first_rel:g}; minThickness {_min_thick:g}; nGrow 0; featureAngle 130;
   slipFeatureAngle 30; nRelaxIter 8; nSmoothSurfaceNormals 2; nSmoothNormals 3; nSmoothThickness 10;
   maxFaceThicknessRatio 0.5; maxThicknessToMedialRatio {medial}; minMedialAxisAngle 90;
+  layerTerminationAngle {LAYER_TERMINATION_ANGLE};
   nBufferCellsNoExtrude 0; nLayerIter 50; nRelaxedIter {n_relaxed}; }}
 meshQualityControls {{ maxNonOrtho 65; maxBoundarySkewness 20; maxInternalSkewness 4; maxConcave 80;
   minVol {_min_vol:.3g}; minTetQuality {min_tet}; minArea -1; minTwist 0.02; minDeterminant 0.001;
   minFaceWeight 0.02; minVolRatio 0.01; minTriangleTwist -1; nSmoothScale 4; errorReduction 0.75;
-  relaxed {{ maxNonOrtho {relaxed_no}; maxInternalSkewness 4; }} }}
+  relaxed {{ maxNonOrtho {relaxed_no}; maxInternalSkewness 4;{relaxed_tet} }} }}
 mergeTolerance 1e-6; debug 0;
 """)
     # SYNTHETIC CLASS REGIONS ARE A MESHING DEVICE, NOT A DELIVERABLE. The layer policy splits
@@ -741,7 +846,8 @@ mergeTolerance 1e-6; debug 0;
     # they are the user's own patches.
     # Only the layer policy's OWN split is folded back: a user who declared walls "car" and
     # "car_thin" on a multi-part surface meant two patches, and merging them would drop one.
-    _synthetic = ([r for r in _names if r in (f"{surface_name}_thin", f"{surface_name}_razor")]
+    _synthetic = ([r for r in _names if r in (f"{surface_name}_thin", f"{surface_name}_razor",
+                                              f"{surface_name}_repair")]
                   if class_regions else [])
     _cp = ws / "system" / "createPatchDict"
     if _synthetic:
@@ -764,6 +870,15 @@ mergeTolerance 1e-6; debug 0;
         out["ground"] = {"patch": ground, "floor_z": round(float(domain_min[VERTICAL_AXIS]), 6)}
     if _pts:
         out["sealed_points"] = [[round(float(v), 6) for v in p] for p in _pts]
+    # the honest record of the wake this pass authored, beside the case (finalize puts it in the
+    # manifest); a pass without one leaves no stale record behind
+    _wr = ws / WAKE_FACT
+    if _wake is not None:
+        out["wake"] = _wake.record()
+        out["wake_note"] = _wake.summary()
+        _wr.write_text(json.dumps(out["wake"]))
+    elif _wr.exists():
+        _wr.unlink()
     return out
 
 
@@ -795,7 +910,11 @@ def configure_mesh(workspace, *, geometry_file: str, strategy: dict, wall_patch:
         analysis=analysis, recommendation=rec, domain_min=dmin, domain_max=dmax,
         strategy=strategy, dimensionality=args.get("dimensionality", "3D"), ground=ground,
         surface_regions=prep.get("surface_regions") or None, farfield=farfield,
-        class_regions=False)
+        class_regions=False,
+        # no flow axis reaches this tool: the wake goes where the box has the most room behind
+        # the body, which is downstream by every margin this function sizes
+        wake=WakeRequest(knobs=strategy.get("wake"),
+                         ruler_m=strategy.get("reference_length_m")))
     return {"success": True, "wrote": ["system/blockMeshDict", "system/snappyHexMeshDict"],
             **summary,
             "next": "Dicts written (valid + clamped to the budget). Call run_mesh NOW to build "
@@ -830,6 +949,102 @@ def prepare_surface_internal(workspace, *, surfaces_src: dict, feature_angle: fl
     (ws / "system" / "surfaceFeatureExtractDict").write_text(
         _HDR.format(cls="dictionary", obj="surfaceFeatureExtractDict") + body)
     return {"names": names, "features": feats}
+
+
+# #
+# THE NEAR-WALL BAND of an internal case: every cell within its depth of the wall is refined one
+# level past the wall's surface level, so the wall's own cells are HALF the planned wall cell.
+# #
+
+#: The band's depth by default: eight wall cells, or 2% of the part's longest side if deeper.
+NEAR_BAND_WALL_CELLS = 8.0
+NEAR_BAND_EXTENT_FRACTION = 0.02
+#: The share of the run's cell budget the band may spend. The narrow-passage and thin-feature
+#: boxes are each held to half the budget too (drivers.py); what the band costs is estimated by
+#: near_band_cost, and a band over its share is made shallower - or dropped - before the mesher
+#: runs, not cut off by maxGlobalCells part way through a refinement level.
+NEAR_BAND_BUDGET_SHARE = 0.5
+
+
+def default_near_band_depth(wall_cell: float, bbox_min, bbox_max) -> float:
+    """The band depth render_internal_case uses when no other is given (metres)."""
+    maxext = max(float(bbox_max[i]) - float(bbox_min[i]) for i in range(3))
+    return max(NEAR_BAND_WALL_CELLS * float(wall_cell), NEAR_BAND_EXTENT_FRACTION * maxext)
+
+
+def near_band_cost(depth: float, *, wall_cell: float, areas, radius, n_layers: int) -> float:
+    """Cells a near-wall band `depth` deep adds over a mesh without one.
+
+    - The fluid within `depth` of the wall is cut into cells half the wall cell, eight for one:
+      seven more per wall cell of volume. Per point of the wall (its area `areas`, the local
+      passage half-width `radius`) that volume is a tube's: area x min(depth, r) x
+      (1 - min(depth, r) / 2r), which is the whole passage, area x r / 2, once the band is as
+      deep as the passage is wide.
+    - The wall's own faces become a quarter the size, so every prism layer on them costs four
+      faces' worth of cells for one: 3 x n_layers more per wall face. Any band at all costs this.
+    """
+    import numpy as np
+    a = np.asarray(areas, dtype=float)
+    r = np.maximum(np.asarray(radius, dtype=float), 1e-12)
+    h = float(wall_cell)
+    if depth <= 0.0 or h <= 0.0 or not len(a):
+        return 0.0
+    d = np.minimum(float(depth), r)
+    volume = float((a * d * (1.0 - d / (2.0 * r))).sum())
+    return 7.0 * volume / h ** 3 + 3.0 * max(0, int(n_layers)) * float(a.sum()) / h ** 2
+
+
+def plan_near_band(*, wall_cell: float, default_depth: float, budget_cells: float, areas, radius,
+                   n_layers: int, hard_cells: float | None = None,
+                   share: float = NEAR_BAND_BUDGET_SHARE) -> tuple[float, str]:
+    """(depth, note): the near-wall band an internal case can afford.
+
+    THE BAND IS A BAND, NOT A FILL. Eight wall cells (or 2% of the part) deep, one level past the
+    wall: in a round pipe sized at 24 cells across its bore that is the outer two thirds of the
+    radius. In a passage no wider than the band - an annulus, a slot, a long thin branch - it is
+    the WHOLE passage, eight cells for every one planned: annular_001's 13.2 mm gap, 820 mm long,
+    came to ~30 M cells, and the 5 prism layers on its quartered wall faces to ~12 M more, against
+    a 2 M budget. So the band's cost (near_band_cost) is held to `share` of the budget:
+    - within it, the band is the default, as before;
+    - over it, the band is made shallower, to the depth that fits - but never under one wall
+      cell: the wall's own cells, which decide its cells across, are the band's at any depth;
+    - and when even that one wall cell of band would cost more than `share` of the HARD limit
+      (`hard_cells`) - the layers on the finer wall faces alone can be - there is no band, and the
+      wall is meshed at its planned cell. Every passage still gets its cells across from the
+      wall cell, and a passage too narrow for it is refined locally (drivers._narrow_passage_boxes).
+    """
+    h = float(wall_cell)
+    allowance = float(share) * float(budget_cells)
+    hard = float(share) * float(hard_cells) if hard_cells else allowance
+    if h <= 0.0 or default_depth <= 0.0:
+        return 0.0, ""
+
+    def cost(d: float) -> float:
+        return near_band_cost(d, wall_cell=h, areas=areas, radius=radius, n_layers=n_layers)
+
+    full = cost(default_depth)
+    if full <= allowance:
+        return float(default_depth), ""
+    one = cost(min(h, float(default_depth)))
+    if one > max(hard, allowance):
+        return 0.0, (f"no near-wall band: one wall cell of it would cost about {one / 1e6:.2g} M "
+                     f"cells, over the {max(hard, allowance) / 1e6:.2g} M it may spend")
+    if h >= default_depth:
+        return float(default_depth), ""
+    if one > allowance:
+        return h, (f"near-wall band held to one wall cell ({h * 1000:.3g} mm, from "
+                   f"{default_depth * 1000:.3g} mm): the full band would cost about "
+                   f"{full / 1e6:.2g} M cells, over the {allowance / 1e6:.2g} M it may spend")
+    lo, hi = h, float(default_depth)
+    for _ in range(40):
+        mid = 0.5 * (lo + hi)
+        if cost(mid) <= allowance:
+            lo = mid
+        else:
+            hi = mid
+    return lo, (f"near-wall band held to {lo * 1000:.3g} mm deep (from {default_depth * 1000:.3g} "
+                f"mm): the full band would cost about {full / 1e6:.2g} M cells, over the "
+                f"{allowance / 1e6:.2g} M it may spend")
 
 
 #: Minimum castellation cells across a port opening. Below ~4 the octree can seal the
@@ -868,16 +1083,8 @@ def _port_levels(*, base_cell: float, default_level: int, smin: int,
     return out
 
 
-def _off_grid(point, lo, hi, div, levels: int) -> tuple:
-    """The centre of the cell holding `point` in a uniform box grid (corners `lo`/`hi`, `div`
-    cells per axis) refined `levels` times: inside one cell at every coarser level too, since
-    each refinement only halves the cells of the one before."""
-    out = []
-    for i in range(3):
-        h = (hi[i] - lo[i]) / max(div[i], 1) / 2 ** levels
-        k = math.floor((float(point[i]) - lo[i]) / h) if h > 0 else 0
-        out.append(lo[i] + (k + 0.5) * h if h > 0 else float(point[i]))
-    return tuple(out)
+# the seed is placed off the background grid by the rule both snappy engines share
+_off_grid = off_grid_point
 
 
 def render_internal_case(workspace, *, names: dict, features: dict, interior_point,
@@ -886,7 +1093,8 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
                          max_cells: int = 8_000_000, quality: str = "balanced",
                          wall_key: str = "wall", port_sizes: dict[str, float] | None = None,
                          sealed_before: frozenset[str] | set[str] = frozenset(),
-                         thin_regions: list | None = None) -> dict:
+                         thin_regions: list | None = None,
+                         near_band_depth: float | None = None) -> dict:
     ws = Path(workspace)
     ext = [float(bbox_max[i] - bbox_min[i]) for i in range(3)]
     maxext = max(ext)
@@ -926,8 +1134,13 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
     # base_cell made it 3 base cells deep - with an inflated base_cell that was most of
     # the domain at max level (the same detonation). Scale by the actual WALL cell.
     wall_cell_actual = base_actual / (2 ** smin)
-    near_dist = max(8.0 * wall_cell_actual, 0.02 * maxext)
-    near_level = min(_HARD_MAX_LEVEL, smax + 1)
+    # ... unless the caller sized it for the passage and the budget (plan_near_band): a band
+    # deeper than the passage is wide fills it, and 0 means no band at all - the wall at its level
+    near_dist = (default_near_band_depth(wall_cell_actual, bbox_min, bbox_max)
+                 if near_band_depth is None else max(0.0, float(near_band_depth)))
+    near_level = min(_HARD_MAX_LEVEL, smax + 1) if near_dist > 0.0 else smax
+    near_region = (f"{names[wall_key]} {{ mode distance; levels (({near_dist:.6g} {near_level})); }} "
+                   if near_dist > 0.0 else "")
     max_cells = int(max_cells)
     n_layers = max(0, int(n_layers))
     first_rel = float(first_layer_rel)
@@ -1013,8 +1226,9 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
 
     if quality == "strict":
         min_tet, relaxed_no, n_relaxed, medial = "1e-13", 65, 6, 0.3
+        relaxed_tet = ""
     else:
-        min_tet, relaxed_no, n_relaxed, medial = "-1e30", 75, 20, 0.5
+        min_tet, relaxed_no, n_relaxed, medial, relaxed_tet = balanced_quality()
     # minVol from the finest wall cell this case refines to (layer_min_vol): a passage a few
     # millimetres across has layer cells far below the tutorials' absolute 1e-13 m^3
     _top = max([smax, flevel, near_level, *port_lvls.values(),
@@ -1028,7 +1242,7 @@ geometry {{ {geom} }}
 castellatedMeshControls {{ maxLocalCells {max_cells}; maxGlobalCells {max_cells}; minRefinementCells 10;
   maxLoadUnbalance 0.10; nCellsBetweenLevels 3; features ( {feat_entries} );
   refinementSurfaces {{ {refine_surfs} }} resolveFeatureAngle 30;
-  refinementRegions {{ {wall} {{ mode distance; levels (({near_dist:.6g} {near_level})); }} {port_regions}{thin_refine}seedZone {{ mode inside; levels ((1e15 {smin})); }} }}
+  refinementRegions {{ {near_region}{port_regions}{thin_refine}seedZone {{ mode inside; levels ((1e15 {smin})); }} }}
   locationInMesh ({location[0]:.12g} {location[1]:.12g} {location[2]:.12g}); allowFreeStandingZoneFaces true; }}
 snapControls {{ nSmoothPatch 3; tolerance 2.0; nSolveIter 50; nRelaxIter 8; nFeatureSnapIter 15;
   implicitFeatureSnap false; explicitFeatureSnap true; multiRegionFeatureSnap false; }}
@@ -1036,14 +1250,16 @@ addLayersControls {{ relativeSizes true; layers {{ {wall} {{ nSurfaceLayers {n_l
   expansionRatio 1.2; finalLayerThickness {first_rel:g}; minThickness 0.05; nGrow 0; featureAngle 130;
   slipFeatureAngle 30; nRelaxIter 8; nSmoothSurfaceNormals 2; nSmoothNormals 3; nSmoothThickness 10;
   maxFaceThicknessRatio 0.5; maxThicknessToMedialRatio {medial}; minMedialAxisAngle 90;
+  layerTerminationAngle {LAYER_TERMINATION_ANGLE};
   nBufferCellsNoExtrude 0; nLayerIter 50; nRelaxedIter {n_relaxed}; }}
 meshQualityControls {{ maxNonOrtho 65; maxBoundarySkewness 20; maxInternalSkewness 4; maxConcave 80;
   minVol {_min_vol:.3g}; minTetQuality {min_tet}; minArea -1; minTwist 0.02; minDeterminant 0.001;
   minFaceWeight 0.02; minVolRatio 0.01; minTriangleTwist -1; nSmoothScale 4; errorReduction 0.75;
-  relaxed {{ maxNonOrtho {relaxed_no}; maxInternalSkewness 4; }} }}
+  relaxed {{ maxNonOrtho {relaxed_no}; maxInternalSkewness 4;{relaxed_tet} }} }}
 mergeTolerance 1e-6; debug 0;
 """)
     return {"divisions": div, "surface_level": [smin, smax], "feature_level": flevel,
+            "near_band_m": round(near_dist, 6), "near_band_level": near_level,
             "location_in_mesh": [round(x, 9) for x in location], "max_cells": max_cells,
             "n_layers": n_layers, "domain_min": [round(x, 4) for x in dmin],
             "domain_max": [round(x, 4) for x in dmax], "patches": list(names.values()),

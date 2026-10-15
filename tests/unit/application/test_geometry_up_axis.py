@@ -340,9 +340,10 @@ def test_the_scout_stores_each_pictures_camera_the_six_way_picture_and_the_shape
     monkeypatch.setattr(gc, "_prepared_coordinates", lambda path, interp_ref, ref: (None, ""))
     facts = _car_facts()
     facts.pop("up_evidence")
-    monkeypatch.setattr(scout_mod, "scout_cad", lambda path, *, prepared: SimpleNamespace(as_dict=lambda: dict(facts, notes=[])))
+    monkeypatch.setattr(scout_mod, "read_cad", lambda path: None)
+    monkeypatch.setattr(scout_mod, "scout_cad", lambda path, *, prepared, shape=None: SimpleNamespace(as_dict=lambda: dict(facts, notes=[])))
 
-    def _skin(path, dest, *, prepared):
+    def _skin(path, dest, *, prepared, shape=None):
         write_stl_binary(Path(dest), _box_triangles((0, 0, 0), (1, 1, 1)))
         return Path(dest)
     monkeypatch.setattr(scout_mod, "write_view_stl", _skin)

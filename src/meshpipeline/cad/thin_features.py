@@ -422,6 +422,23 @@ def thin_refinement_boxes(tris, *, cell_m: float, cells_across: int = 2,
         return ThinRegions()
     thickness = np.asarray(field.thickness_m, dtype=float)
     finite = np.isfinite(thickness)
+    # A GAP READS THE SAME FROM BOTH FACES. The probe projects the step to an opposing neighbour
+    # on THIS face's normal; a neighbour well round a curved wall, facing nearly back, projects
+    # to almost nothing on it while standing far off its own: annular_001's bore (r 75.6 mm),
+    # paired with the tube's outer skin 21 degrees round (r 81 mm), read 0.42 mm "thick" - on
+    # the partner's normal the same step is 10.5 mm - and 13 boxes the length of the part were
+    # refined for a plate that is not there. A plate's two faces read its thickness on either
+    # normal, so the thickness is the larger of the two.
+    if field.partner is not None and bool(finite.any()):
+        pj = np.asarray(field.partner)
+        pair = finite & (pj >= 0)
+        if bool(pair.any()):
+            c = T.mean(axis=1)
+            fn = np.cross(T[:, 1] - T[:, 0], T[:, 2] - T[:, 0])
+            nn = fn / np.maximum(np.linalg.norm(fn, axis=1), 1e-300)[:, None]
+            back = np.abs(((c[pj[pair]] - c[pair]) * nn[pj[pair]]).sum(axis=1))
+            thickness = thickness.copy()
+            thickness[pair] = np.maximum(thickness[pair], back)
     # FACES LYING ON EACH OTHER ARE NOT A PLATE. A reading is a thickness only when it clears
     # both the size floor (exact or float-noise zero) and the two facets' own tessellation
     # error (two tessellations of one curved face, touching) - see ZERO_THICKNESS_REL and

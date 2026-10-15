@@ -35,6 +35,13 @@ class AdmissionEvidence:
     regions: tuple[RegionSummary, ...] = ()
     engine_params: Mapping[str, Any] = field(default_factory=dict)
     surface_analysis: dict | None = None
+    #: The canonical form of the uploaded file ("cad" | "surface", engines/capability.py), or
+    #: None when the caller does not know it - and then nothing is refused on it.
+    geometry_form: str | None = None
+    #: The boundary patches the uploaded file itself declares, as the user confirmed them on the
+    #: geometry stage (for an engine that writes them under the file's names:
+    #: EngineSpec.patch_names_from_source). Empty when unknown - and then nothing is refused on it.
+    source_patches: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

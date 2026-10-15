@@ -165,6 +165,87 @@ def test_a_ring_shaped_mouth_around_a_centre_rod_is_lidded_as_a_ring():
     assert 0.03 < r < 0.05, "the seed must be in the gap, not in the rod"
 
 
+def _revolved(profile, sides=SIDES, step=0.01):
+    """A closed surface of revolution about +x: the (x, r) polygon of a wall's cross-section swept
+    round, each edge split into rows no longer than `step`, wound to face out of the metal."""
+    tris = []
+    for (x0, r0), (x1, r1) in zip(profile, profile[1:] + profile[:1]):
+        rows = max(1, round(math.hypot(x1 - x0, r1 - r0) / step))
+        for j in range(rows):
+            ta, tb = j / rows, (j + 1) / rows
+            pa = (x0 + ta * (x1 - x0), r0 + ta * (r1 - r0))
+            pb = (x0 + tb * (x1 - x0), r0 + tb * (r1 - r0))
+            for k in range(sides):
+                a0, a1 = 2 * math.pi * k / sides, 2 * math.pi * (k + 1) / sides
+                q = [(x, r * math.cos(a), r * math.sin(a)) for (x, r), a in
+                     ((pa, a0), (pb, a0), (pb, a1), (pa, a1))]
+                for t in ((q[0], q[1], q[2]), (q[0], q[2], q[3])):
+                    if len({tuple(np.round(v, 12)) for v in t}) == 3:
+                        tris.append(t)
+    T = np.asarray(tris, dtype=float)
+    vol = float(np.einsum("ij,ij->i", T[:, 0], np.cross(T[:, 1], T[:, 2])).sum()) / 6.0
+    return T if vol > 0 else T[:, [0, 2, 1]]
+
+
+#: a nozzle wall in metres, like the rocket nozzle: a 28 mm bore flaring through a 50 degree exit cone
+#: to 40 mm, whose lip sits 1 mm below a 60 mm counterbore at the end face
+_L, _LIP = 0.3, 0.299
+_NOZZLE = [(0.0, 0.014), (_LIP - 0.005, 0.014), (_LIP, 0.020), (_LIP, 0.030), (_L, 0.030),
+           (_L, 0.040), (0.0, 0.040)]
+
+
+def _nozzle_ports(exit_x_mm, exit_d_mm):
+    return [{"name": "feed", "type": "inlet", "near_mm": [0, 0, 0], "diameter_mm": 28.0},
+            {"name": "exit", "type": "outlet", "near_mm": [exit_x_mm, 0, 0], "diameter_mm": exit_d_mm},
+            {"name": "pipe", "type": "wall"}]
+
+
+def _nozzle_bore_m3():
+    h, r1, r2 = 0.005, 0.014, 0.020
+    return math.pi * r1 ** 2 * (_LIP - h) + math.pi * h / 3.0 * (r1 * r1 + r1 * r2 + r2 * r2)
+
+
+def test_an_opening_at_the_lip_of_a_cone_behind_a_counterbore_is_that_lip():
+    """The rocket nozzle's STL: the exit is declared at the 40 mm lip of the exit cone, 1 mm below a
+    60 mm counterbore (where the CAD path reads the inner wire of the step's flat face). The lip is
+    not a centre body standing in the counterbore's mouth - the wall runs outward from it - so the
+    opening is the lip itself, never the ring between the two (which left the lip open and held
+    the staging in a loop for the lab's 90 minutes)."""
+    st = stage_triangles(_revolved(_NOZZLE), intake_patches=_nozzle_ports(_LIP * 1000, 40.0))
+    _closed_and_named(st, {"feed", "exit"})
+    assert st.ports["exit"].inner is None
+    assert abs(st.ports["exit"].diameter - 0.040) < 0.002
+    assert abs(st.facts["volume_m3"] - _nozzle_bore_m3()) < 0.03 * _nozzle_bore_m3()
+
+
+def test_an_opening_at_the_counterbores_mouth_takes_the_counterbore_in():
+    """The same wall with the exit where the hole finder proposes it, the 60 mm mouth: a plain bore
+    mouth (no ring around the lip), and the fluid reaches up through the counterbore to it."""
+    st = stage_triangles(_revolved(_NOZZLE), intake_patches=_nozzle_ports(_L * 1000, 60.0))
+    _closed_and_named(st, {"feed", "exit"})
+    assert st.ports["exit"].inner is None and st.ports["exit"].kind == "bore"
+    want = _nozzle_bore_m3() + math.pi * 0.030 ** 2 * (_L - _LIP)
+    assert abs(st.facts["volume_m3"] - want) < 0.03 * want
+
+
+def test_a_conflict_that_sealing_cannot_settle_is_refused_not_read_again(monkeypatch):
+    """When the openings leave the fluid open and no undeclared bore is left to seal, a second
+    reading changes nothing: the staging refuses in words, once."""
+    from meshpipeline.cad import internal_surface as S
+    real, calls = S._fluid_side, []
+
+    def leaking(mesh, lidded, caps):
+        calls.append(len(lidded))
+        if len(calls) > 3:
+            raise AssertionError("the sides were read again and again")
+        pieces, chosen, _ = real(mesh, lidded, caps)
+        return pieces, chosen, True
+    monkeypatch.setattr(S, "_fluid_side", leaking)
+    with pytest.raises(InternalSurfaceError, match="do not close the fluid in"):
+        stage_triangles(_tube(0.05, 0.04), intake_patches=_ports(d_mm=80.0))
+    assert len(calls) == 1, "no undeclared bore: one reading, then the refusal"
+
+
 def test_an_open_end_the_user_did_not_declare_is_sealed_into_the_wall():
     st = stage_triangles(_tube(0.05), intake_patches=_ports()[:1] + _ports()[2:])
     _closed_and_named(st, {"feed"})
