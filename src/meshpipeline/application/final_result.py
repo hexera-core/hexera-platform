@@ -148,6 +148,15 @@ class FinalResult:
     # on a mesh failure the one offer. Added without a schema bump: it defaults to {}, a reader of
     # an older record reads {}, and an older reader ignores a key it does not know.
     engine_ladder: dict = field(default_factory=dict)
+    # WHICH BYTES THIS RESULT WAS BUILT FROM, when they were not the ones the customer uploaded
+    # (pipeline/repair_promote.py): the original upload's identity, the repaired bytes that
+    # replaced it, and the engine the replacement was proved to stage for. Empty on every run that
+    # meshed the upload as it arrived. A delivered mesh has to be able to say this - "we fixed
+    # your file and meshed the fix" is a different claim from "we meshed your file", and a
+    # customer is entitled to know which one they are holding. Added without a schema bump: it
+    # defaults to {}, a reader of an older record reads {}, and an older reader ignores a key it
+    # does not know.
+    repair_lineage: dict = field(default_factory=dict)
 
     optional_warnings: list[str] = field(default_factory=list)
     missing_outputs: list[str] = field(default_factory=list)
@@ -210,6 +219,8 @@ class FinalResult:
             attempts_max=int(d.get("attempts_max", 0)),
             required_ready=bool(d.get("required_ready", False)),
             delivered_types=list(d.get("delivered_types", [])),
+            repair_lineage=(dict(d["repair_lineage"])
+                            if isinstance(d.get("repair_lineage"), Mapping) else {}),
             optional_warnings=list(d.get("optional_warnings", [])),
             missing_outputs=list(d.get("missing_outputs", [])),
             finalized_at=d.get("finalized_at", ""),
@@ -597,6 +608,17 @@ def _render_fidelity(fr: FinalResult) -> str:
 def with_engine_ladder(fr: FinalResult, record: Mapping | None) -> FinalResult:
     import dataclasses
     return dataclasses.replace(fr, engine_ladder=dict(record or {}))
+
+
+def with_repair_lineage(fr: FinalResult, record: Mapping | None) -> FinalResult:
+    """Record that this result was built from repaired bytes rather than the upload.
+
+    Carried onto the result rather than derived from it: by the time a terminal record is built
+    the workspace is gone and the graph state is about to be, so the only place this can come from
+    is the run that promoted the repair.
+    """
+    import dataclasses
+    return dataclasses.replace(fr, repair_lineage=dict(record or {}))
 
 
 def render_message(fr: FinalResult) -> str:
