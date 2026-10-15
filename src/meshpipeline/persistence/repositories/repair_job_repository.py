@@ -198,8 +198,17 @@ class RepairJobRepository:
                              statuses: tuple[RepairJobStatus, ...] = (),
                              assigned_operator: str | None = None,
                              unassigned_only: bool = False,
-                             limit: int = 50) -> list[CadRepairJob]:
-        """The cross-tenant work queue, most urgent first: priority, then oldest."""
+                             limit: int = 50,
+                             offset: int = 0) -> list[CadRepairJob]:
+        """The cross-tenant work queue, most urgent first: priority, then oldest.
+
+        PAGEABLE, because the window is not the whole queue. Without an offset a job that enough
+        others preceded could not be reached from the queue at all, however long it had waited.
+
+        The order ends on the id so that it is TOTAL. Two jobs created in the same transaction
+        share a priority and a timestamp, and paging over an order with ties lets a row appear on
+        two pages or on none.
+        """
         stmt = select(CadRepairJob)
         if statuses:
             stmt = stmt.where(CadRepairJob.status.in_(statuses))
@@ -208,7 +217,8 @@ class RepairJobRepository:
         elif assigned_operator:
             stmt = stmt.where(CadRepairJob.assigned_operator == assigned_operator)
         stmt = stmt.order_by(CadRepairJob.service_priority.asc(),
-                             CadRepairJob.created_at.asc()).limit(int(limit))
+                             CadRepairJob.created_at.asc(),
+                             CadRepairJob.id.asc()).limit(int(limit)).offset(max(0, int(offset)))
         return list((await db.execute(stmt)).scalars().all())
 
     async def assign(self, db: AsyncSession, job_id: uuid.UUID, *, operator: str,

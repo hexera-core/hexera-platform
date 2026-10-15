@@ -456,3 +456,35 @@ async def test_throughput_counts_operator_effort_as_decisions_not_minutes(db):
     assert out["retry_decisions"] == 1
     assert out["attempts_total"] == 1 and out["jobs_with_attempts"] == 1
     assert "operator_minutes" not in out
+
+
+async def test_paging_the_queue_reaches_every_job_exactly_once(db):
+    """The failure this prevents: a job no operator can reach from the queue.
+
+    The window is capped, so a job that enough others precede is only reachable by paging. And
+    paging is only sound if the order is TOTAL - these jobs are created together, so they share a
+    priority and very nearly a timestamp, which is exactly the case where an order with ties lets
+    a row land on two pages or on none.
+    """
+    repo = RepairJobRepository()
+    created = [(await _job(db, _A)).id for _ in range(7)]
+
+    seen: list = []
+    offset = 0
+    while True:
+        page = await repo.operator_queue(db, limit=3, offset=offset)
+        if not page:
+            break
+        seen.extend(j.id for j in page)
+        offset += 3
+
+    mine = [jid for jid in seen if jid in set(created)]
+    assert sorted(map(str, mine)) == sorted(map(str, created)), "a job was skipped or repeated"
+    assert len(mine) == len(set(mine)), "a job appeared on two pages"
+
+
+async def test_an_offset_past_the_end_is_an_empty_page_not_an_error(db):
+    repo = RepairJobRepository()
+    await _job(db, _A)
+
+    assert await repo.operator_queue(db, limit=10, offset=10_000) == []

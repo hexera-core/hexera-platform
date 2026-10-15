@@ -14,9 +14,13 @@ import {
   type RepairDecisionRow,
 } from "@/lib/admin/read";
 
-import { claimRepair, decideRepair } from "../actions";
+import { RepairClaimForm, RepairDecisionForm } from "../forms";
 
 export const dynamic = "force-dynamic";
+
+// The strategies the API accepts for `choose_strategy`; it refuses anything else, so an addition
+// here that the service does not declare is a 422 rather than a silent new behaviour.
+const REPAIR_STRATEGIES = ["conservative", "mesh_ready", "manual_review"] as const;
 export const runtime = "nodejs";
 
 // ONE JOB, AND WHAT MAY BE DONE TO IT.
@@ -156,13 +160,7 @@ export default async function RepairJobPage({
       <Panel title={job.assigned_operator ? "Claimed" : "Unclaimed"}>
         {/* CLAIM FOR MYSELF, RELEASE BACK. The operator is the IAP-verified identity, not a typed
             field, so nobody can decide on somebody else's behalf by editing a form. */}
-        <form action={claimRepair}>
-          <input name="job_id" type="hidden" value={job.id} />
-          <input name="release" type="hidden" value={job.assigned_operator ? "1" : "0"} />
-          {/* who holds it, so a release can be refused unless it is your own claim */}
-          <input name="assigned_operator" type="hidden" value={job.assigned_operator ?? ""} />
-          <button type="submit">{job.assigned_operator ? "Release it" : "Claim it"}</button>
-        </form>
+        <RepairClaimForm holder={job.assigned_operator ?? null} jobId={job.id} />
       </Panel>
 
       {recommendation ? (
@@ -247,31 +245,14 @@ export default async function RepairJobPage({
         ) : (
           <div className="admin-actions">
             {available.map((decision) => (
-              <form action={decideRepair} key={decision}>
-                <input name="job_id" type="hidden" value={job.id} />
-                <input name="decision" type="hidden" value={decision} />
-                {decision === "choose_strategy" ? (
-                  <label>
-                    Strategy
-                    <select name="strategy" defaultValue="conservative">
-                      <option value="conservative">conservative</option>
-                      <option value="mesh_ready">mesh_ready</option>
-                      <option value="manual_review">manual_review</option>
-                    </select>
-                  </label>
-                ) : null}
-                {REPAIR_DECISIONS_NEEDING_REASON.includes(decision) ? (
-                  <label>
-                    Reason (the customer is told this)
-                    <input maxLength={2000} name="reason" required type="text" />
-                  </label>
-                ) : null}
-                <label>
-                  Notes
-                  <input maxLength={4000} name="notes" type="text" />
-                </label>
-                <button type="submit">{repairDecisionLabel(decision)}</button>
-              </form>
+              <RepairDecisionForm
+                decision={decision}
+                jobId={job.id}
+                key={decision}
+                needsReason={REPAIR_DECISIONS_NEEDING_REASON.includes(decision)}
+                strategies={decision === "choose_strategy" ? REPAIR_STRATEGIES : undefined}
+                submitLabel={repairDecisionLabel(decision)}
+              />
             ))}
           </div>
         )}

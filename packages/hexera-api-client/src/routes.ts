@@ -30,13 +30,14 @@ export const hexeraApiRoutes = {
       : `${HEXERA_API_PREFIX}/admin/ops/organizations?limit=${segment(limit)}`,
   // THE OPERATOR REPAIR QUEUE. Cross-tenant like the rest of `admin`: one list over every
   // customer's repair jobs, for this service's own staff.
-  adminRepairQueue: (query: { limit?: number; operator?: string; status?: string;
+  adminRepairQueue: (query: { limit?: number; offset?: number; operator?: string; status?: string;
                               unassigned?: boolean } = {}): ApiPath => {
     const params = new URLSearchParams();
     if (query.status) params.set("status", query.status);
     if (query.operator) params.set("operator", query.operator);
     if (query.unassigned) params.set("unassigned", "true");
     if (query.limit !== undefined) params.set("limit", String(query.limit));
+    if (query.offset) params.set("offset", String(query.offset));
     const suffix = params.toString();
     return `${HEXERA_API_PREFIX}/admin/repair/queue${suffix ? `?${suffix}` : ""}`;
   },

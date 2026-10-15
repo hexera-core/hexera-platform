@@ -74,6 +74,16 @@ test("builds the operator repair queue with only the filters it was given", () =
     hexeraApiRoutes.adminRepairQueue({ operator: "ana lopez" }),
     "/api/v1/admin/repair/queue?operator=ana+lopez",
   );
+  // PAGING past the window, with the filter carried along so a later page cannot widen the list
+  assert.equal(
+    hexeraApiRoutes.adminRepairQueue({ limit: 100, offset: 100, status: "repair_review" }),
+    "/api/v1/admin/repair/queue?status=repair_review&limit=100&offset=100",
+  );
+  // offset 0 is the first page, which is the default - it does not belong in the URL
+  assert.equal(
+    hexeraApiRoutes.adminRepairQueue({ offset: 0 }),
+    "/api/v1/admin/repair/queue",
+  );
 });
 
 test("builds repair job routes with encoded path segments", () => {

@@ -316,12 +316,23 @@ export function describeDefectSize(measurements: Record<string, unknown>): strin
   return "—";
 }
 
+export type RepairQueuePage = {
+  has_more: boolean;
+  limit: number;
+  next_offset: number | null;
+  offset: number;
+  returned: number;
+};
+
 export async function readRepairQueue(query: {
   limit?: number;
+  offset?: number;
   operator?: string;
   status?: string;
   unassigned?: boolean;
-} = {}): Promise<Read<{ filter: Record<string, unknown>; jobs: RepairJobRow[] }>> {
+} = {}): Promise<
+  Read<{ filter: Record<string, unknown>; jobs: RepairJobRow[]; page?: RepairQueuePage }>
+> {
   return request(hexeraApiRoutes.adminRepairQueue(query));
 }
 

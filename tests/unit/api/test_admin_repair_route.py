@@ -48,9 +48,10 @@ class _Repo:
         self.assigned: list[tuple] = []
 
     async def operator_queue(self, db, *, statuses=(), assigned_operator=None,
-                             unassigned_only=False, limit=50):
+                             unassigned_only=False, limit=50, offset=0):
         self.queue_args.append({"statuses": statuses, "operator": assigned_operator,
-                                "unassigned": unassigned_only, "limit": limit})
+                                "unassigned": unassigned_only, "limit": limit,
+                                "offset": offset})
         rows = list(self.jobs.values())
         if statuses:
             rows = [j for j in rows if j.status in statuses]
@@ -59,7 +60,7 @@ class _Repo:
         elif assigned_operator:
             rows = [j for j in rows if j.assigned_operator == assigned_operator]
         rows.sort(key=lambda j: (j.service_priority, j.created_at))
-        return rows[:limit]
+        return rows[offset:offset + limit]
 
     async def operator_job(self, db, job_id):
         # the repository's CROSS-TENANT read, named as such - `get_internal` is the worker's seam
@@ -594,3 +595,57 @@ def test_a_job_moved_by_someone_else_refuses_the_decision_rather_than_misrecordi
 
     assert res.status_code == 409
     assert repo.decisions == [], "no decision may be recorded against a status it did not observe"
+
+
+# PAGING. The window is not the whole queue.
+
+
+def test_the_queue_says_where_the_window_sits_and_whether_there_is_more(monkeypatch):
+    """The failure this prevents: a job nobody can reach from the queue.
+
+    The window is capped, so without an offset a job that enough others precede could not be
+    worked from this screen however long it had waited.
+    """
+    jobs = [_Job(service_priority=i) for i in range(5)]
+    client = _client(monkeypatch, _Repo(jobs))
+
+    first = client.get("/api/v1/admin/repair/queue?limit=2", headers=HEADERS).json()
+
+    assert len(first["jobs"]) == 2
+    assert first["page"] == {"offset": 0, "limit": 2, "returned": 2,
+                             "has_more": True, "next_offset": 2}
+
+    second = client.get(
+        f"/api/v1/admin/repair/queue?limit=2&offset={first['page']['next_offset']}",
+        headers=HEADERS).json()
+
+    # DIFFERENT JOBS, no overlap: a page that repeats the first one is not a second page
+    assert {j["id"] for j in second["jobs"]}.isdisjoint({j["id"] for j in first["jobs"]})
+    assert second["page"]["offset"] == 2 and second["page"]["has_more"] is True
+
+    last = client.get("/api/v1/admin/repair/queue?limit=2&offset=4", headers=HEADERS).json()
+    assert len(last["jobs"]) == 1
+    assert last["page"]["has_more"] is False and last["page"]["next_offset"] is None
+
+
+def test_the_extra_row_read_to_detect_more_is_never_served(monkeypatch):
+    repo = _Repo([_Job(service_priority=i) for i in range(4)])
+    client = _client(monkeypatch, repo)
+
+    body = client.get("/api/v1/admin/repair/queue?limit=2", headers=HEADERS).json()
+
+    # the route asks for one more than the page so `has_more` is observed rather than counted,
+    # and that row must not reach the operator as part of the page
+    assert repo.queue_args[-1]["limit"] == 3
+    assert len(body["jobs"]) == 2 and body["page"]["returned"] == 2
+
+
+def test_a_negative_offset_is_read_as_the_first_page(monkeypatch):
+    repo = _Repo([_Job()])
+    client = _client(monkeypatch, repo)
+
+    body = client.get("/api/v1/admin/repair/queue?offset=-5", headers=HEADERS).json()
+
+    assert repo.queue_args[-1]["offset"] == 0
+    assert body["page"]["offset"] == 0
+    assert body["filter"]["offset"] == 0

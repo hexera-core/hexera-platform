@@ -185,16 +185,27 @@ def _statuses(status: str) -> tuple[RepairJobStatus, ...]:
 
 @router.get("/queue", dependencies=[Depends(admin_dep)])
 async def read_queue(status: str = "", operator: str = "", unassigned: bool = False,
-                     limit: int = 50) -> dict:
+                     limit: int = 50, offset: int = 0) -> dict:
     bounded = max(1, min(int(limit), 200))
+    start = max(0, int(offset))
     wanted = _statuses(status)
     async with get_db() as db:
+        # ONE MORE THAN THE PAGE, so `has_more` is an observation rather than a second count
+        # query that could disagree with the rows just read.
         rows = await repo().operator_queue(db, statuses=wanted, assigned_operator=operator or None,
-                                        unassigned_only=unassigned, limit=bounded)
-    return {"jobs": [_job_row(j) for j in rows],
+                                        unassigned_only=unassigned, limit=bounded + 1,
+                                        offset=start)
+    has_more = len(rows) > bounded
+    page = rows[:bounded]
+    return {"jobs": [_job_row(j) for j in page],
+            # WHERE THE OPERATOR IS IN THE QUEUE. A window with no way past it leaves a job that
+            # enough others precede unreachable, however long it has waited.
+            "page": {"offset": start, "limit": bounded, "returned": len(page),
+                     "has_more": has_more,
+                     "next_offset": (start + bounded) if has_more else None},
             # Echoed so a client can tell an empty queue from a filter that matched nothing.
             "filter": {"status": [s.value for s in wanted], "operator": operator,
-                       "unassigned": unassigned, "limit": bounded}}
+                       "unassigned": unassigned, "limit": bounded, "offset": start}}
 
 
 @router.get("/throughput", dependencies=[Depends(admin_dep)])

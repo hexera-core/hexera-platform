@@ -20,6 +20,19 @@ export const runtime = "nodejs";
 // The grouping comes from the flags the API sends per row, never from this page re-deciding what a
 // status means - that is how a screen and the service metrics come to disagree.
 
+function pageHref(
+  filters: { operator: string; status: string; unassigned: boolean },
+  offset: number,
+): string {
+  const params = new URLSearchParams();
+  if (filters.status) params.set("status", filters.status);
+  if (filters.operator) params.set("operator", filters.operator);
+  if (filters.unassigned) params.set("unassigned", "true");
+  if (offset > 0) params.set("offset", String(offset));
+  const suffix = params.toString();
+  return `/repair${suffix ? `?${suffix}` : ""}`;
+}
+
 function QueueTable({ jobs }: { jobs: readonly RepairJobRow[] }) {
   return (
     <table className="admin-table">
@@ -73,12 +86,16 @@ export default async function RepairQueuePage({
   const status = typeof params.status === "string" ? params.status : "";
   const operator = typeof params.operator === "string" ? params.operator : "";
   const unassigned = params.unassigned === "true";
+  const PAGE = 100;
+  const offset = Math.max(0, Number.parseInt(String(params.offset ?? "0"), 10) || 0);
 
   const [queue, throughput] = await Promise.all([
-    readRepairQueue({ limit: 100, operator, status, unassigned }),
+    readRepairQueue({ limit: PAGE, offset, operator, status, unassigned }),
     readRepairThroughput(),
   ]);
   const jobs = queue.data?.jobs ?? [];
+  const page = queue.data?.page;
+  const filters = { operator, status, unassigned };
   const groups = groupRepairQueue(jobs);
 
   const ours = jobs.filter((j) => !j.settled && !j.blocked && !j.awaiting_human).length;
@@ -161,6 +178,27 @@ export default async function RepairQueuePage({
           <QueueTable jobs={group.jobs} />
         </Panel>
       ))}
+
+      {/* PAST THE WINDOW. The queue is a page, not the whole list, and without this a job that
+          enough others precede could not be reached from here however long it had waited. The
+          filter travels with the page so paging does not silently widen the list. */}
+      {page && (page.has_more || page.offset > 0) ? (
+        <Panel title="More of the queue" heading={`showing ${page.offset + 1}-${page.offset + page.returned}`}>
+          <p className="admin-muted">
+            {page.offset > 0 ? (
+              <Link href={pageHref(filters, Math.max(0, page.offset - page.limit))}>Previous</Link>
+            ) : (
+              <span>Previous</span>
+            )}
+            {" · "}
+            {page.next_offset !== null ? (
+              <Link href={pageHref(filters, page.next_offset)}>Next</Link>
+            ) : (
+              <span>Next</span>
+            )}
+          </p>
+        </Panel>
+      ) : null}
     </>
   );
 }
