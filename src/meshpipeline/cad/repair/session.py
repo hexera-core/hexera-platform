@@ -190,7 +190,7 @@ class RepairSession:
             self.shape, self._defects, self.complete_scan = snapshot
             return self._record(OpVerdict(
                 op=op.name, targets=fingerprints, defect_code=code, status=ROLLED_BACK,
-                reason=f"declined:{declined}", evidence=dict(outcome.evidence), delta=delta))
+                reason=f"declined:{str(declined)[:200]}", evidence=dict(outcome.evidence), delta=delta))
 
         previous = self.defects()
         self._defects = None

@@ -31,6 +31,10 @@ from pathlib import Path
 os.environ.setdefault("CAD_REPAIR_ENABLED", "true")
 os.environ.setdefault("CAD_REPAIR_AUTONOMOUS", "true")
 
+# Imported at the top so that a broken import fails before any output, not after the summaries and
+# before the --json write. It must follow the environment defaults above: settings read them once.
+from meshpipeline.cad.repair.operations import OPERATIONS  # noqa: E402
+
 _SUFFIXES = {".step", ".stp"}
 
 
@@ -245,40 +249,50 @@ def main() -> int:
     # THE PLANNER'S HIT RATE, PER OPERATION. An operation proposed often and kept rarely is
     # either aimed at the wrong defect or missing from the catalogue in its useful form - and it
     # is the baseline a model planner gets scored against.
+    # A DECLINE IS NOT A FAILURE. An operation that said no, with a reason, is recorded as
+    # rolled_back by the session; the `declined:` prefix is what tells the two apart here, so
+    # `rolled_back` below counts only operations that ran and did not repair their target.
     tally: dict[str, dict[str, int]] = {}
     for row in rows:
         for op in row.get("operations", []) or []:
             entry = tally.setdefault(op.get("op", "?"),
-                                     {"kept": 0, "rolled_back": 0, "failed": 0})
+                                     {"kept": 0, "rolled_back": 0, "declined": 0, "failed": 0})
             key = op.get("status", "failed")
+            if key == "rolled_back" and str(op.get("reason", "")).startswith("declined:"):
+                key = "declined"
             entry[key] = entry.get(key, 0) + 1
     for name, counts in sorted(tally.items(), key=lambda kv: -sum(kv[1].values())):
-        print(f"  {name:<22} kept={counts['kept']:<4} "
-              f"rolled_back={counts['rolled_back']:<4} failed={counts['failed']}")
+        print(f"  {name:<22} kept={counts['kept']:<4} rolled_back={counts['rolled_back']:<4} "
+              f"declined={counts['declined']:<4} failed={counts['failed']}")
     if not tally:
         print("  nothing was attempted")
 
+    print("\n== what the planner refused to attempt ==")
     refused = [r for row in rows for r in (row.get("refusals") or [])]
-    if refused:
-        print("\n== what the planner refused to attempt ==")
-        by_reason: dict[str, int] = {}
-        for record in refused:
-            key = str(record.get("reason", "?"))
-            by_reason[key] = by_reason.get(key, 0) + 1
-        for reason, count in sorted(by_reason.items(), key=lambda kv: -kv[1]):
-            print(f"  {count:>4}  {reason}")
+    by_reason: dict[str, int] = {}
+    for record in refused:
+        key = str(record.get("reason", "?"))
+        by_reason[key] = by_reason.get(key, 0) + 1
+    for reason, count in sorted(by_reason.items(), key=lambda kv: -kv[1]):
+        print(f"  {count:>4}  {reason}")
+    if not by_reason:
+        print("  no refusals")
 
     print("\n== operations never exercised on this corpus ==")
-    # THE POINT OF RUNNING THIS AT ALL. Three of the five operations are unprovable on synthetic
-    # fixtures, so a name absent from the tally above is an operation no real file has ever given
-    # this loop a reason to try.
-    from meshpipeline.cad.repair.operations import OPERATIONS
-
+    # Names the catalogue holds that no file gave the loop a reason to try. "Exercised" means the
+    # operation actually ran: one that was proposed but only ever declined never touched a shape,
+    # so it is listed separately below rather than counted as exercised.
     never = [op.name for op in OPERATIONS if op.name not in tally]
     for name in never:
         print(f"        {name}")
     if not never:
         print("  every operation was attempted at least once")
+    only_declined = [name for name, c in tally.items()
+                     if c["declined"] and not (c["kept"] or c["rolled_back"] or c["failed"])]
+    if only_declined:
+        print("  proposed but only ever declined (never ran):")
+        for name in only_declined:
+            print(f"        {name}")
 
     if args.json_out:
         Path(args.json_out).write_text(json.dumps(rows, indent=2, default=str))
