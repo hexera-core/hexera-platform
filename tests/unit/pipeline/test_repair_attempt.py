@@ -410,3 +410,10 @@ def test_the_inspections_verdict_on_the_customers_file_is_still_not_overwritten(
             declared_area_mm2=0.0, declared_volume_mm3=0.0)
 
     assert "repair_status" not in _run(_state(tmp_path))
+
+
+def test_a_report_that_omits_resolved_is_not_recorded_as_resolved(monkeypatch, tmp_path):
+    # Silence must never read as success: if a future report shape drops the key, fail closed.
+    _looped(monkeypatch, stopped_because="resolved")
+
+    assert _run(_state(tmp_path))["repair_attempt"]["resolved"] is False

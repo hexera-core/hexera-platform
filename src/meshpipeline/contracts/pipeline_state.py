@@ -78,6 +78,12 @@ class PipelineState(TypedDict):
     # the route, the targets, the operations - or why it declined. `attempted: False` is the
     # ordinary case and is never an error: every refusal on that path leaves the run on the file
     # the customer sent, which is the same outcome as not having tried.
+    #   repair_status     the capped repair's own verdict on what it produced - NOT a statement that
+    #                     the run succeeded, so it can read "repaired" beside resolved=False. Read
+    #                     `resolved` for that. Distinct from the top-level `repair_status`, the
+    #                     inspection's verdict on the file the customer sent.
+    #   resolved          taken from the loop: complete scan, no error defects, nothing left at a
+    #                     fingerprint a failed attempt targeted. Absent in the report reads False.
     #   operations        every operation the loop TRIED, in order, each with its targets, verdict
     #                     (kept / rolled_back / failed), reason, the basis on which its target's fate
     #                     was judged (kernel history or a geometric inference), its own evidence and

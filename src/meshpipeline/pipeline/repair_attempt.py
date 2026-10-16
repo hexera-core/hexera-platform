@@ -214,6 +214,11 @@ async def node_repair_attempt(state: PipelineState) -> dict:
         **update,
         "repair_attempt": {
             "attempted": True,
+            # NOT A STATEMENT THAT THE RUN SUCCEEDED. This is the capped repair's own verdict on
+            # what it produced ("repaired" = usable output, within the caps), so it can read
+            # "repaired" beside `resolved: False` when the loop stalled with warnings left. Read
+            # `resolved` for whether the defects it aimed at are gone. Not to be confused with the
+            # top-level `repair_status`, which is the inspection's verdict on the customer's file.
             "repair_status": status_for(repair_report).value,
             # TAKEN FROM THE LOOP, NOT INFERRED. It used to be derived from `holes_left`, a key
             # the report no longer carries - which made it read True for any run with no warning
@@ -225,7 +230,8 @@ async def node_repair_attempt(state: PipelineState) -> dict:
             "route": advice.route,
             # EVERY ATTEMPT, with its targets, verdict, reason and measured delta.
             "operations": attempted,
-            # WHAT THE REPAIR AIMED AT, kept with what it did.
+            # WHAT THE REPAIR AIMED AT, kept with what it did: a reviewer approving this reads the
+            # defects that justified it beside the operations that answered them.
             "targets": [dict(t) for t in advice.targets],
             # WHAT WAS DELIBERATELY NOT ATTEMPTED AND WHY - the rims of a missing bore wall above
             # all, which used to be a silent skip inside the fill executor.
