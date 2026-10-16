@@ -128,15 +128,18 @@ def sanity_refusal(before: Measure, after: Measure) -> str:
 def cumulative_refusal(original: Measure, current: Measure, *,
                        declared_area_mm2: float, declared_volume_mm3: float) -> str:
     """Has the RUN moved the part further than it may? Measured against the upload. "" accepts."""
-    # A NON-FINITE MEASUREMENT REFUSES. Every comparison below is `x > cap`, and NaN compares False
-    # against everything, so a NaN would pass every check and the repair would be accepted on a
-    # number that was never taken. An unmeasurable result is not an approvable one.
-    unmeasured = [name for name in ("diagonal_mm", "max_tolerance_mm", "surface_area_mm2",
-                                    "volume_mm3")
-                  if not math.isfinite(getattr(current, name))]
+    # A NON-FINITE MEASUREMENT REFUSES, on either side. Every comparison below is `x > cap` or
+    # `original > 0`, and NaN compares False against everything, so a NaN would skip checks or pass
+    # them and the repair would be accepted on a number that was never taken. An unmeasurable
+    # upload has nothing to bound the run against; an unmeasurable result is not approvable.
+    unmeasured = _unmeasured(original)
     if unmeasured:
-        return (f"a measurement could not be taken ({', '.join(unmeasured)} is not finite), "
-                "so the result cannot be approved")
+        return (f"the upload's own measurement could not be taken ({', '.join(unmeasured)} is not "
+                "finite), so nothing can be bounded against it")
+    unmeasured = _unmeasured(current)
+    if unmeasured:
+        return (f"the run's own measurement could not be taken ({', '.join(unmeasured)} is not "
+                "finite), so the result cannot be approved")
 
     if current.max_tolerance_mm > rcfg.CAD_REPAIR_MAX_TOLERANCE_MM:
         return (f"the run left a tolerance of {current.max_tolerance_mm:.4f} mm, over the "
@@ -167,6 +170,12 @@ def cumulative_refusal(original: Measure, current: Measure, *,
     if volume:
         return f"the run's volume {volume}"
     return ""
+
+
+def _unmeasured(m: Measure) -> list[str]:
+    """The float fields of a measurement that are NaN or infinite. Counts and booleans cannot be."""
+    return [name for name in ("diagonal_mm", "max_tolerance_mm", "surface_area_mm2", "volume_mm3")
+            if not math.isfinite(getattr(m, name))]
 
 
 def _accounted(original: float, current: float, declared: float, residual: float) -> str:

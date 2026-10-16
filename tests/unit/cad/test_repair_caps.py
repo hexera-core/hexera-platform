@@ -163,20 +163,41 @@ def test_a_zero_original_measurement_is_no_opinion_rather_than_infinite_change()
 # NON-FINITE MEASUREMENTS - an unmeasurable result must refuse, never pass
 
 
-@pytest.mark.parametrize("field,value", [
+_NON_FINITE = [
     ("diagonal_mm", float("nan")),
     ("max_tolerance_mm", float("nan")),
     ("surface_area_mm2", float("nan")),
     ("volume_mm3", float("nan")),
     ("surface_area_mm2", float("inf")),
     ("volume_mm3", float("inf")),
-])
-def test_a_non_finite_measurement_is_refused_rather_than_accepted(field, value):
+]
+
+
+@pytest.mark.parametrize("field,value", _NON_FINITE)
+def test_a_non_finite_measurement_of_the_run_is_refused_rather_than_accepted(field, value):
     # NaN compares False against every cap, so without the guard a NaN would sail through.
     reason = cumulative_refusal(_SOUND, _changed(**{field: value}),
                                 declared_area_mm2=0.0, declared_volume_mm3=0.0)
     assert reason != ""
-    assert "could not be taken" in reason
+    assert "the run's own measurement could not be taken" in reason
+
+
+@pytest.mark.parametrize("field,value", _NON_FINITE)
+def test_a_non_finite_measurement_of_the_upload_is_refused_rather_than_accepted(field, value):
+    # A NaN upload makes `original > 0` False, which skips the diagonal check, and makes the
+    # residual NaN, which compares False against the residual. Both would accept.
+    reason = cumulative_refusal(_changed(**{field: value}), _SOUND,
+                                declared_area_mm2=0.0, declared_volume_mm3=0.0)
+    assert reason != ""
+    assert "the upload's own measurement could not be taken" in reason
+
+
+def test_a_non_finite_upload_is_refused_even_when_the_run_is_entirely_finite():
+    # The case the current-side guard alone would miss: every value the run produced is sound, but
+    # the thing it is bounded against was never measured.
+    nan_upload = _changed(diagonal_mm=float("nan"))
+    assert cumulative_refusal(nan_upload, _SOUND, declared_area_mm2=0.0,
+                              declared_volume_mm3=0.0) != ""
 
 
 # SPARSE AND ROUND-TRIPPED MEASUREMENTS
