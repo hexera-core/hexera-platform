@@ -540,6 +540,9 @@ def test_filling_declines_a_loop_that_is_not_planar(tmp_path):
     op = FillPlanarHole()
     outcome = op.apply(shape, op.targets_for(defect), tolerance_mm=0.01)
 
+    # KNOWN GAP, NOT COVERAGE: no fixture in the suite carries a non-planar free loop, and this test
+    # runs with filling switched off, so it only exercises the disabled-decline. The planarity
+    # decline is unproven with the geometry available.
     # Either it patched a genuinely planar loop or it declined - what must NOT happen is a patch
     # over a non-planar loop, so the assertion is on the invariant rather than on which branch ran.
     assert outcome.evidence.get("declined") or outcome.evidence.get("patch_is_planar") is True
@@ -563,3 +566,30 @@ def test_filling_one_rim_of_a_missing_bore_wall_is_possible_which_is_why_the_pla
     outcome = op.apply(shape, op.targets_for(defect), tolerance_mm=0.01)
 
     assert outcome.evidence.get("declined") or outcome.evidence.get("patch_is_planar") is True
+
+
+def test_patching_one_bore_rim_does_not_promote_the_still_open_shell_to_a_solid(
+        tmp_path, _filling_on):
+    # `MakeSolid` wraps any shell without checking closure, so a one-patch-at-a-time loop used to
+    # get a solid-typed shape that was really open. The promotion now verifies closure, and this
+    # pins that: one rim patched leaves the other rim as a free loop, so there must be no solid.
+    from OCP.ShapeAnalysis import ShapeAnalysis_FreeBounds
+    from OCP.TopAbs import TopAbs_WIRE
+    from OCP.TopExp import TopExp_Explorer
+    from tests.cad_fixtures import write_missing_bore_wall_step
+
+    from meshpipeline.cad.repair.caps import measure
+    from meshpipeline.cad.repair.contracts import DefectCode
+    from meshpipeline.cad.repair.operations import FillPlanarHole
+
+    shape, defect = _defect_of(write_missing_bore_wall_step(tmp_path / "bore.step"),
+                               DefectCode.open_shell)
+    op = FillPlanarHole()
+    outcome = op.apply(shape, op.targets_for(defect), tolerance_mm=0.01)
+
+    assert not outcome.evidence.get("declined"), "the rim was not patched, so nothing is proved"
+    assert measure(outcome.shape).faces == measure(shape).faces + 1
+    assert measure(outcome.shape).solids == 0, "an open shell was typed as a solid"
+    remaining = ShapeAnalysis_FreeBounds(outcome.shape).GetClosedWires()
+    assert remaining is not None and TopExp_Explorer(remaining, TopAbs_WIRE).More(), \
+        "no free loop remains, so the shell closed and this test no longer pins the refusal"

@@ -331,15 +331,22 @@ def _fill_planar_holes(shape, *, tolerance_mm: float, diagonal: float) -> tuple:
 
 
 def _as_solid_if_closed(shape):
-    """Promote a now-closed shell back to a solid, or hand back what came in.
+    """Promote a shell to a solid ONLY if it is genuinely closed, else hand back what came in.
 
-    A patched shell is geometrically closed but still typed as a shell, and a shell is not a
-    volume to a mesher. Promotion is attempted and its failure is not an error: the refusal checks
-    compare solid counts afterwards, so a shape that could not be promoted is judged on that
-    rather than on this function's opinion.
+    THE CLOSURE CHECK IS THE POINT. `BRepBuilderAPI_MakeSolid` wraps whatever shell it is given and
+    never looks at whether it is closed. A repair loop that patches one hole at a time can hand it
+    a shell that still has a free boundary (one rim of a missing bore wall patched, the other not),
+    and wrapping that yields a solid-typed shape that is really open - and the type is trusted by
+    everything downstream (solid counts, volume accounting), so it is worse than an honest shell.
+
+    Closed means BOTH `BRep_Tool.IsClosed_s(shell)` and no remaining free boundary
+    (`ShapeAnalysis_FreeBounds`). Not promoting is not an error: the solid-count cap judges the
+    result, so returning the shell unchanged is the conservative outcome.
     """
+    from OCP.BRep import BRep_Tool
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeSolid
-    from OCP.TopAbs import TopAbs_SHELL
+    from OCP.ShapeAnalysis import ShapeAnalysis_FreeBounds
+    from OCP.TopAbs import TopAbs_SHELL, TopAbs_WIRE
     from OCP.TopExp import TopExp_Explorer
     from OCP.TopoDS import TopoDS
 
@@ -355,6 +362,12 @@ def _as_solid_if_closed(shape):
         # are one body is a question about the assembly, not something to assume.
         if len(found) != 1:
             return shape
+        if not BRep_Tool.IsClosed_s(found[0]):
+            return shape
+        bounds = ShapeAnalysis_FreeBounds(found[0])
+        for wires in (bounds.GetClosedWires(), bounds.GetOpenWires()):
+            if wires is not None and TopExp_Explorer(wires, TopAbs_WIRE).More():
+                return shape
         maker = BRepBuilderAPI_MakeSolid()
         maker.Add(found[0])
         solid = maker.Solid()
