@@ -60,6 +60,15 @@ class RunHistory:
 
     ineffective: set[tuple[str, str]] = field(default_factory=set)
     refusals: list[dict] = field(default_factory=list)
+    #: Run-level policy, NOT a trial outcome: why planar filling is off for the rest of this run
+    #: (empty when it is not). Kept apart from `ineffective` because that set means "tried and
+    #: rolled back", and a never-attempted policy ban read as a failure would mislead a model.
+    fill_refused_because: str = ""
+
+    def refuse_filling(self, reason: str) -> None:
+        """Turn planar filling off for the rest of the run. Set once; the first reason stands."""
+        if not self.fill_refused_because:
+            self.fill_refused_because = reason
 
     def mark_ineffective(self, defect_fingerprint: str, op_name: str) -> None:
         self.ineffective.add((defect_fingerprint, op_name))
@@ -147,17 +156,23 @@ class RulesPlanner:
     def propose(self, defects, history: RunHistory, *, shape) -> Candidate | None:
         rims = paired_rim_fingerprints(shape, defects) if shape is not None else frozenset()
 
-        # REFUSE AT DETECTION, AND MAKE THE BAN DURABLE. Recorded now, not when the fill happens to
-        # be reached, so a run stopped early still reports it. And banned per (defect, fill) in the
-        # ledger, because `rims` is recomputed from the CURRENT defects: once a kept operation
-        # closes one rim the other has nothing to pair with, the set empties, and without this
-        # ban the surviving rim would be filled - sealing the customer's through-hole.
+        # REFUSE AT DETECTION, AND REFUSE FILLING FOR THE REST OF THE RUN.
+        # Recorded now, not when the fill happens to be reached, so a run stopped early still
+        # reports it. And the refusal is RUN-LEVEL, not per rim: `rims` is recomputed from the
+        # current defects, so once a kept operation closes one rim (or shifts the other's bounding
+        # box, changing its fingerprint) the survivor has nothing to pair with and a per-rim ban
+        # would miss it - and the targeted fill has no rim check of its own, so that fill would seal
+        # the customer's through-hole.
+        # DELIBERATELY CONSERVATIVE: a part carrying both a missing bore wall and a legitimately
+        # fillable small hole gets the legitimate hole declined too. One missed repair an operator
+        # picks up, against a plate handed back with no bolt hole. Do not "optimise" this to
+        # per-rim.
         for rim in sorted(rims):
             history.refuse(
                 rim, "paired_rim",
                 "this loop pairs with another on a parallel plane - a missing tube wall, "
                 "and patching both would seal a through-hole")
-            history.mark_ineffective(rim, "fill_planar_hole")
+            history.refuse_filling("a missing tube wall was detected: " + rim)
 
         ordered = sorted(
             defects,
@@ -180,7 +195,7 @@ class RulesPlanner:
                 claimed = True
                 if history.was_ineffective(defect.fingerprint, op.name):
                     continue
-                if op.name == "fill_planar_hole" and defect.fingerprint in rims:
+                if op.name == "fill_planar_hole" and history.fill_refused_because:
                     continue
                 targets = op.targets_for(defect)
                 if not targets:

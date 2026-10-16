@@ -180,6 +180,30 @@ def test_the_rim_ban_survives_the_other_rim_being_closed(monkeypatch):
     assert planner.propose((_rim("edge:a", 1),), history, shape=object()) is None
 
 
+def test_the_fill_refusal_holds_for_an_unrelated_loop_with_a_fresh_fingerprint(monkeypatch):
+    # The escape a per-fingerprint ban leaves: an operation closes one rim AND shifts the other's
+    # bounding box, so the survivor reappears under a fingerprint that was never banned.
+    planner = RulesPlanner(ops=(_FILL,))
+    history = RunHistory()
+    monkeypatch.setattr(plan_module, "paired_rim_fingerprints",
+                        lambda shape, defects: frozenset({"edge:a", "edge:b"}))
+    planner.propose((_rim("edge:a", 1), _rim("edge:b", 2)), history, shape=object())
+
+    monkeypatch.setattr(plan_module, "paired_rim_fingerprints", lambda shape, defects: frozenset())
+    assert planner.propose((_rim("edge:fresh", 7),), history, shape=object()) is None
+
+
+def test_a_rim_refusal_is_not_recorded_as_a_failed_attempt(monkeypatch):
+    planner = RulesPlanner(ops=(_FILL,))
+    history = RunHistory()
+    monkeypatch.setattr(plan_module, "paired_rim_fingerprints",
+                        lambda shape, defects: frozenset({"edge:a", "edge:b"}))
+    planner.propose((_rim("edge:a", 1), _rim("edge:b", 2)), history, shape=object())
+
+    assert history.ineffective == set()
+    assert history.fill_refused_because
+
+
 def test_the_rim_refusal_is_recorded_on_the_first_proposal_even_if_another_op_wins(monkeypatch):
     planner = RulesPlanner(ops=(_Op("sew_faces", {DefectCode.open_shell}, 4), _FILL))
     history = RunHistory()
@@ -193,8 +217,19 @@ def test_the_rim_refusal_is_recorded_on_the_first_proposal_even_if_another_op_wi
         "edge:a", "edge:b"}
 
 
-def test_the_rim_question_never_raises_for_a_shape_it_cannot_read():
-    assert paired_rim_fingerprints(object(), (_rim("edge:a", 1), _rim("edge:b", 2))) == frozenset()
+def test_the_rim_question_never_raises_for_a_shape_it_cannot_read(monkeypatch):
+    # The defects carry boundary_edges so they pass the early gate and genuinely reach
+    # free_wire_containing, whose kernel import / lookup on a non-shape is what must not escape.
+    defects = tuple(_defect(DefectCode.open_shell, fingerprint=f"edge:{i}", index=i,
+                            measurements={"boundary_edges": 4}) for i in (1, 2))
+
+    def _no_kernel(shape, index):
+        raise ImportError("no kernel on this host")
+
+    # The real lookup swallows most failures itself; what is pinned here is that one escaping it
+    # (as an ImportError does on a kernel-less host) cannot take the planner down.
+    monkeypatch.setattr("meshpipeline.cad.repair.operations.free_wire_containing", _no_kernel)
+    assert paired_rim_fingerprints(object(), defects) == frozenset()
 
 
 def test_two_different_unlocated_defects_are_two_refusals():
