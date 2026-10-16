@@ -17,7 +17,8 @@ from meshpipeline.cad.repair.session import OpVerdict, RepairSession
 
 logger = logging.getLogger(__name__)
 
-#: Every error defect is gone and the scan that says so was exhaustive.
+#: Every error defect is gone and the scan that says so was exhaustive. Both halves are enforced
+#: in one place (`_terminal`), after every operation as well as before the first.
 RESOLVED = "resolved"
 #: The planner has nothing left to try - every pair tried, or nothing claims what is left.
 NO_CANDIDATE = "no_candidate"
@@ -86,6 +87,21 @@ def _errors_remain(session: RepairSession) -> bool:
     return any(d.severity in _ERRORS for d in session.defects())
 
 
+def _terminal(session: RepairSession, fallback: str) -> str:
+    """What to call a finished run. ONE place, so no break path can disagree with another.
+
+    AN INCOMPLETE SCAN WINS OVER EVERY OTHER REASON. A short list from a stopped walk cannot
+    support any claim of absence, so it does not matter whether we also ran out of operations -
+    what we owe the caller is that we could not see. The attempt count in the op log still says
+    the budget was spent.
+    """
+    if not session.complete_scan:
+        return SCAN_INCOMPLETE
+    if not _errors_remain(session):
+        return RESOLVED
+    return fallback
+
+
 def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: float,
         session: RepairSession | None = None, clock=time.monotonic) -> RepairRun:
     """Repair `shape` by trying one operation at a time, and report everything that happened.
@@ -122,26 +138,30 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
                          original=original, final=original)
 
     consecutive_misses = 0
-    stopped = NO_CANDIDATE
     while True:
         if len(work.log) >= limits.max_ops:
-            stopped = OP_BUDGET
+            stopped = _terminal(work, OP_BUDGET)
             break
         if clock() - started >= limits.timeout_s:
             # THE WHOLE LOOP, not one operation. Applied per operation, a six-operation run could
             # spend six times a job's allowance before admission has judged the original at all.
-            stopped = TIME_BUDGET
+            stopped = _terminal(work, TIME_BUDGET)
             break
 
         candidate = chosen.propose(work.defects(), history, shape=work.shape)
         if candidate is None:
-            stopped = RESOLVED if not _errors_remain(work) else NO_CANDIDATE
+            stopped = _terminal(work, NO_CANDIDATE)
             break
 
         verdict = work.try_op(candidate.op, candidate.targets, candidate.defect_code,
                               tolerance_mm=tolerance_mm)
         if verdict.kept:
             consecutive_misses = 0
+            if not work.complete_scan:
+                # The re-scan after a kept operation was cut short, so the progress rule passed on
+                # a partial list. Nothing further can be judged against it.
+                stopped = SCAN_INCOMPLETE
+                break
             continue
 
         # THE FEEDBACK. Without this the planner proposes the same failing pair until the budget
@@ -150,7 +170,7 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
         history.mark_ineffective(candidate.defect_fingerprint, candidate.op.name)
         consecutive_misses += 1
         if consecutive_misses >= limits.stall_limit:
-            stopped = STALLED
+            stopped = _terminal(work, STALLED)
             break
 
     logger.info("repair loop: stopped=%s attempts=%d kept=%d planner=%s",

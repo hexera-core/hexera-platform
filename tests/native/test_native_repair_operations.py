@@ -27,6 +27,23 @@ def _read(path):
     return _read_shape(path)
 
 
+def _assert_no_geometric_damage(before, after, *, declared_area=0.0):
+    """The damage mode sanity_refusal does NOT cover: the part growing or its tolerance blowing up.
+
+    `sanity_refusal` is counts and validity; the diagonal and max tolerance live in the
+    cumulative half. Asserted directly so a diagonal doubling that preserved validity and counts
+    could not pass.
+    """
+    from meshpipeline.cad.repair.caps import cumulative_refusal, sanity_refusal
+
+    assert sanity_refusal(before, after) == "", sanity_refusal(before, after)
+    assert after.diagonal_mm == pytest.approx(before.diagonal_mm, rel=1e-6)
+    assert after.max_tolerance_mm <= max(before.max_tolerance_mm, 0.1) + 1e-12
+    refusal = cumulative_refusal(before, after, declared_area_mm2=declared_area,
+                                 declared_volume_mm3=0.0)
+    assert refusal == "", refusal
+
+
 def test_the_splice_rebuilds_only_the_ancestors_of_what_was_replaced(tmp_path):
     # WHAT MAKES A TARGETED FIX POSSIBLE. Replacing one face must leave every other face's
     # identity intact - otherwise a "targeted" operation has rewritten the whole part and the
@@ -308,13 +325,13 @@ def test_the_face_boundary_operation_reports_what_it_did_to_its_face(tmp_path):
                                                quantum=quantum_for(_diagonal(shape))),
                     entity_index=1)
 
-    from meshpipeline.cad.repair.caps import measure, sanity_refusal
+    from meshpipeline.cad.repair.caps import measure
 
     before = measure(shape)
     outcome = FixFaceBoundary().apply(shape, (ref,), tolerance_mm=0.01)
 
     assert outcome.shape is not None
-    assert sanity_refusal(before, measure(outcome.shape)) == ""
+    _assert_no_geometric_damage(before, measure(outcome.shape))
     assert outcome.mapping.basis == "kernel"
     assert outcome.evidence["faces_fixed"] == 1
 
@@ -421,7 +438,7 @@ def test_the_face_boundary_operation_leaves_its_input_untouched_for_the_noop_cas
 def test_sewing_joins_loose_faces_into_a_shell_without_losing_one(tmp_path):
     from tests.cad_fixtures import write_loose_faces_step
 
-    from meshpipeline.cad.repair.caps import measure, sanity_refusal
+    from meshpipeline.cad.repair.caps import measure
     from meshpipeline.cad.repair.contracts import DefectCode
     from meshpipeline.cad.repair.operations import SewFaces
 
@@ -438,7 +455,7 @@ def test_sewing_joins_loose_faces_into_a_shell_without_losing_one(tmp_path):
     outcome = op.apply(shape, op.targets_for(defect), tolerance_mm=0.01)
 
     after = measure(outcome.shape)
-    assert sanity_refusal(before, after) == "", sanity_refusal(before, after)
+    _assert_no_geometric_damage(before, after)
     assert after.faces == before.faces, "sewing must not cost a face"
     assert after.shells == 1, f"six one-face shells were not joined into one (got {after.shells})"
     # AND THE SHELL CLOSED INTO A BODY. `_as_solid_if_closed` promotes a single closed shell, so a
@@ -483,7 +500,7 @@ def test_filling_patches_a_small_planar_hole_and_the_patch_area_matches_its_decl
     # plan.py and tested there. At the operation level, filling one named rim is correct.
     from tests.cad_fixtures import write_missing_bore_wall_step
 
-    from meshpipeline.cad.repair.caps import measure, sanity_refusal
+    from meshpipeline.cad.repair.caps import measure
     from meshpipeline.cad.repair.contracts import DefectCode
     from meshpipeline.cad.repair.operations import AREA_DELTA, FillPlanarHole
 
@@ -499,7 +516,7 @@ def test_filling_patches_a_small_planar_hole_and_the_patch_area_matches_its_decl
     assert not outcome.evidence.get("declined"), \
         f"a 0.16-ratio rim was declined: {outcome.evidence.get('declined')}"
     after = measure(outcome.shape)
-    assert sanity_refusal(before, after) == "", sanity_refusal(before, after)
+    _assert_no_geometric_damage(before, after, declared_area=outcome.evidence[AREA_DELTA])
     assert after.faces == before.faces + 1, "the patch did not land"
     # THE DECLARATION IS WHAT THE CUMULATIVE CAP TRUSTS. If it disagrees with the measurement, the
     # accounting is worthless and a real repair would be refused for the operation's bad arithmetic.
@@ -598,6 +615,8 @@ def test_patching_one_bore_rim_does_not_promote_the_still_open_shell_to_a_solid(
     outcome = op.apply(shape, op.targets_for(defect), tolerance_mm=0.01)
 
     assert not outcome.evidence.get("declined"), "the rim was not patched, so nothing is proved"
+    _assert_no_geometric_damage(measure(shape), measure(outcome.shape),
+                                declared_area=outcome.evidence.get("area_delta_mm2", 0.0))
     assert measure(outcome.shape).faces == measure(shape).faces + 1
     assert measure(outcome.shape).solids == 0, "an open shell was typed as a solid"
     remaining = ShapeAnalysis_FreeBounds(outcome.shape).GetClosedWires()

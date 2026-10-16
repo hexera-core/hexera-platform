@@ -41,6 +41,19 @@ def _attempts(result):
     return [(v.op, v.status, v.reason) for v in result.verdicts]
 
 
+def _assert_unchanged(before, after, message):
+    """Every measured quantity equal, floats to a relative 1e-9.
+
+    NOT BIT-EXACT, MEASURED: kernel operations share TShape handles with their input, so a run
+    whose every attempt was rolled back can still move a tolerance by one ulp (1e-07 became
+    1.0000000000000002e-07 on the bore fixture). Nothing a cap or a person could see.
+    """
+    a, b = before.to_dict(), after.to_dict()
+    assert a.keys() == b.keys(), message
+    for key in a:
+        assert b[key] == pytest.approx(a[key], rel=1e-9), f"{message}: {key} {a[key]} -> {b[key]}"
+
+
 def test_a_sound_part_comes_out_of_the_loop_untouched(tmp_path):
     from meshpipeline.cad.repair.caps import measure
 
@@ -59,7 +72,7 @@ def test_the_loop_leaves_the_sliver_fixture_undamaged_and_says_it_did_not_repair
     # WARNINGS (small_edge, small_face), so the planner still proposes `fix_small_edges` (an
     # earlier draft stopped as resolved with zero operations). But the solid's topology forbids
     # removing the sliver, so the operation achieves nothing, the session rolls it back, and the
-    # run stops as `stalled`. The last assertion is the one that would have caught the defect where
+    # run stops after two rolled-back attempts. The last assertion is the one that would have caught the defect where
     # the fixer, run on bare faces, "removed" the sliver by blowing the part up to twice its size
     # (diagonal 141.77 -> 270.00 mm, tolerance 1e-7 -> 80 mm): the shape must come back identical.
     from meshpipeline.cad.repair.caps import measure
@@ -75,10 +88,14 @@ def test_the_loop_leaves_the_sliver_fixture_undamaged_and_says_it_did_not_repair
 
     assert [d for d in result.defects if d.code is DefectCode.small_edge], \
         "the sliver vanished without a kept operation being responsible"
-    assert not result.resolved
     assert not any(v.kept for v in result.verdicts), _attempts(result)
-    assert result.stopped_because == "stalled", f"{result.stopped_because} {_attempts(result)}"
-    assert measure(result.shape).to_dict() == before.to_dict(), "the part was damaged"
+    assert len(result.verdicts) == 2, _attempts(result)
+    # NAMED BY SEVERITY, AS RULED: nothing at ERROR severity remains (the fixture has only
+    # warnings), so `_terminal` calls the stall `resolved`. That label sits beside zero kept
+    # operations and the sliver still reported - `resolved` here means "no errors", not "repaired".
+    # FLAGGED TO THE COORDINATOR: Task 11's summary reads `resolved` as "Repaired within the caps".
+    assert result.stopped_because == "resolved", f"{result.stopped_because} {_attempts(result)}"
+    _assert_unchanged(before, measure(result.shape), "the part was damaged")
 
 
 def test_the_loop_sews_the_loose_faces_fixture(tmp_path):
@@ -118,7 +135,10 @@ def test_the_loop_leaves_a_missing_wall_alone_and_says_why(tmp_path):
     assert not result.resolved
     assert result.stopped_because in ("no_candidate", "stalled", "op_budget")
     # NOTHING WAS LIDDED. A patch here would be a different part handed back to the customer.
-    assert measure(result.shape).faces == before.faces, "a missing wall was lidded over"
+    assert not any(v.kept for v in result.verdicts), _attempts(result)
+    # Every attempt was rolled back, so the shape is byte-identical - which also catches a silent
+    # tolerance or diagonal change that a face count alone would let through.
+    _assert_unchanged(before, measure(result.shape), "a missing wall was lidded over")
 
 
 def test_the_loop_never_seals_a_missing_bore_wall(tmp_path):
@@ -134,11 +154,11 @@ def test_the_loop_never_seals_a_missing_bore_wall(tmp_path):
         f"a rim of the bore was patched: {_attempts(result)}"
     assert any(r["reason"] == "paired_rim" for r in result.refusals), \
         "the refusal reached nothing a report could state"
-    after = measure(result.shape)
-    # Volume rising by the bore's own volume would mean the hole was sealed. The bore is 8 mm
-    # radius through 10 mm of plate: about 2010 mm3, far above any accounted residual.
-    if before.volume_mm3 > 0:
-        assert after.volume_mm3 == pytest.approx(before.volume_mm3, rel=0.05)
+    # Every attempt was rolled back, so the shape is byte-identical. That subsumes the volume check
+    # (the bore is about 2010 mm3; sealing it would show) and also catches a silent tolerance or
+    # diagonal change.
+    assert not any(v.kept for v in result.verdicts), _attempts(result)
+    _assert_unchanged(before, measure(result.shape), "the bore plate was altered")
 
 
 def test_the_loop_is_not_worse_than_the_single_whole_shape_pass_it_replaces(tmp_path):

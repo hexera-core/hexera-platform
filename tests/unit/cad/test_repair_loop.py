@@ -167,6 +167,38 @@ def test_a_truncated_scan_is_never_reported_as_resolved():
     assert result.verdicts == ()
 
 
+def test_a_scan_truncated_after_an_operation_is_never_reported_as_resolved():
+    # The first scan is complete and finds a defect; the RE-scan after the kept operation is cut
+    # short. The truncated list lacks the targeted defect, so the progress rule passes vacuously and
+    # the operation is kept - which must not be read as a clean bill of health.
+    result = run(None, planner=_Planner(_Op()),
+                 session=_session([((_defect(),), True), ((), False)]), tolerance_mm=0.01)
+
+    assert result.stopped_because == SCAN_INCOMPLETE
+    assert not result.resolved and not result.complete_scan
+
+
+def test_a_run_that_clears_the_last_defect_on_its_last_operation_is_resolved():
+    # The budget is spent exactly as the part becomes sound. Labelling that op_budget would be
+    # recorded downstream as "the repair did not finish".
+    result = run(None, planner=_Planner(_Op()),
+                 session=_session([((_defect(),), True), ((), True)]),
+                 budget=LoopBudget(max_ops=1, stall_limit=99, timeout_s=120.0), tolerance_mm=0.01)
+
+    assert result.stopped_because == RESOLVED and result.resolved
+    assert len(result.verdicts) == 1
+
+
+def test_a_run_that_clears_the_last_defect_as_the_time_runs_out_is_resolved():
+    ticks = iter([0.0, 10.0, 200.0, 300.0, 400.0])
+    result = run(None, planner=_Planner(_Op()),
+                 session=_session([((_defect(),), True), ((), True)]),
+                 budget=LoopBudget(max_ops=99, stall_limit=99, timeout_s=120.0),
+                 tolerance_mm=0.01, clock=lambda: next(ticks))
+
+    assert result.stopped_because == RESOLVED and result.resolved
+
+
 def test_an_error_the_planner_cannot_address_stops_the_run_as_no_candidate():
     class _Silent:
         label = "silent"
