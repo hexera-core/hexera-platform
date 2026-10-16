@@ -197,3 +197,27 @@ def test_the_source_file_is_only_ever_read(monkeypatch, tmp_path):
     # whatever happened, the customer's bytes are exactly as they arrived
     assert source.read_bytes() == before
     assert not Path(tmp_path / "out.step").exists()
+
+
+# THE REFUSAL IS NOW THE CAPS MODULE'S, AND MUST NOT HAVE DRIFTED
+
+
+def test_the_old_refusal_entry_point_still_refuses_everything_it_used_to():
+    # `_refusal` is kept as a shim because the native suite and the corpus drive it directly with
+    # recorded measurement payloads. If splitting it into sanity and cumulative changed any
+    # verdict, that is a silent behaviour change to a safety check.
+    assert "no faces" in _refusal(_BEFORE, _after(faces=0))
+    assert "solid" in _refusal(_BEFORE, _after(solids=0))
+    assert "face" in _refusal(_BEFORE, _after(faces=19))
+    assert "tolerance" in _refusal(_BEFORE, _after(max_tolerance_mm=0.5))
+    assert "diagonal" in _refusal(_BEFORE, _after(diagonal_mm=201.0))
+    assert "invalid" in _refusal(_BEFORE, _after(valid=False))
+    assert _refusal(_BEFORE, _BEFORE) == ""
+
+
+def test_the_shim_tolerates_the_measurement_keys_the_old_report_carried():
+    # Recorded pipeline payloads outlive a deploy, and `Measure.from_dict` has to read one written
+    # before area and volume were recorded at all.
+    sparse = {"valid": True, "diagonal_mm": 200.0, "max_tolerance_mm": 0.01,
+              "solids": 1, "shells": 1, "faces": 20, "edges": 60, "vertices": 40}
+    assert _refusal(sparse, dict(sparse)) == ""

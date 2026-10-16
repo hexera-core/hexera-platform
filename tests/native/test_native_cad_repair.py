@@ -41,9 +41,8 @@ def test_a_sound_part_passes_through_repair_without_losing_geometry(tmp_path):
     assert after["solids"] == before["solids"]
     assert after["valid"] is True
     assert abs(after["diagonal_mm"] - before["diagonal_mm"]) / before["diagonal_mm"] < 1e-9
-    # and it says what it did, in operations a reviewer can read
-    assert [op["name"] for op in report.operations]
-    assert all(op["mutated"] for op in report.operations)
+    # and it says what it did: a sound part had nothing to repair, so no operation ran on it
+    assert report.operations == ()
 
 
 def test_the_customers_file_is_not_modified(tmp_path):
@@ -224,9 +223,10 @@ def test_sewing_alone_cannot_close_a_hole_and_the_repair_says_which_it_left(tmp_
     report = repair_step_file(source, out)
 
     measured = {m.name: m.value for m in report.measurements}
-    # filling is off by default, so nothing was patched and the loop is reported as left
-    assert measured["holes_filled"] == []
-    assert measured["holes_left"], "a hole left unfilled must be reported, not dropped"
+    # filling is off by default, so nothing was patched, and the loop says it did not succeed
+    assert measured["resolved"] is False
+    assert not any(op["mutated"] for op in report.operations)
+    assert report.entities, "a hole left unfilled must be reported, not dropped"
     # and the re-inspection still finds it - which is the honest outcome
     after = inspect_brep_file(out)
     assert [d.code.value for d in after.defects] == ["open_shell"]
@@ -246,6 +246,10 @@ def test_with_filling_enabled_a_bounded_hole_is_closed_and_the_patch_is_declared
 
     monkeypatch.setattr(rcfg, "CAD_REPAIR_FILL_PLANAR_HOLES", True)
     monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_HOLE_SPAN_RATIO", 1.0)
+    # The loop's own caps judge the added surface too. Closing a whole cube face moves area and
+    # volume by far more than the default 0.02, so they are raised for the same reason as above.
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_AREA_CHANGE_RATIO", 0.5)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO", 0.5)
 
     source = write_open_shell_step(tmp_path / "holed.step")
     out = tmp_path / "holed-repaired.step"
@@ -253,9 +257,10 @@ def test_with_filling_enabled_a_bounded_hole_is_closed_and_the_patch_is_declared
 
     measured = {m.name: m.value for m in report.measurements}
     # A REVIEWER APPROVING THIS IS APPROVING AN INVENTION, so the patch is declared with its size
-    assert len(measured["holes_filled"]) == 1
-    assert measured["holes_filled"][0]["span_ratio"] > 0
-    assert "fill_planar_holes" in [op["name"] for op in report.operations]
+    kept = [op for op in report.operations if op["name"] == "fill_planar_hole"]
+    assert len(kept) == 1 and kept[0]["status"] == "kept" and kept[0]["mutated"]
+    assert kept[0]["delta"], "the patch was kept without saying how much it added"
+    assert measured["resolved"] is True
 
     after = inspect_brep_file(out)
     # the located defect is gone, proved by re-inspecting the written file rather than by the
@@ -277,8 +282,11 @@ def test_the_span_cap_refuses_to_lid_a_missing_wall(tmp_path, monkeypatch):
                               tmp_path / "out.step")
 
     measured = {m.name: m.value for m in report.measurements}
-    assert measured["holes_filled"] == []
-    assert measured["holes_left"][0]["reason"] == "too_large"
+    # the patch is attempted-and-undone or never made; either way nothing was kept and the wall
+    # is still reported as an open defect
+    assert not any(op["mutated"] and op["name"] == "fill_planar_hole" for op in report.operations)
+    assert measured["resolved"] is False
+    assert [e["code"] for e in report.entities] == ["open_shell"]
 
 
 def test_a_missing_bore_wall_is_never_sealed_shut(tmp_path, monkeypatch):
@@ -297,10 +305,12 @@ def test_a_missing_bore_wall_is_never_sealed_shut(tmp_path, monkeypatch):
     report = repair_step_file(source, tmp_path / "bore-repaired.step")
 
     measured = {m.name: m.value for m in report.measurements}
-    assert measured["holes_filled"] == [], "a through-hole was sealed"
-    reasons = [h["reason"] for h in measured["holes_left"]]
-    assert reasons.count("paired_rims") == 2, measured["holes_left"]
-    assert "seal a through-hole" in measured["holes_left"][0]["detail"]
+    assert not any(op["mutated"] and op["name"] == "fill_planar_hole"
+                   for op in report.operations), "a through-hole was sealed"
+    refusals = measured["refusals"]
+    assert [r["reason"] for r in refusals].count("paired_rim") == 2, refusals
+    assert "seal a through-hole" in refusals[0]["detail"]
+    assert len(report.entities) == 2, "both rims should still be reported as open"
 
 
 def test_the_bore_rims_are_located_as_two_separate_openings(tmp_path):
@@ -343,6 +353,9 @@ def test_a_broken_file_is_inspected_repaired_and_promoted_without_anyone_asking(
     # wall; this test is about the loop, so patching is allowed to reach it
     monkeypatch.setattr(cfg, "CAD_REPAIR_FILL_PLANAR_HOLES", True)
     monkeypatch.setattr(cfg, "CAD_REPAIR_MAX_HOLE_SPAN_RATIO", 1.0)
+    # and the loop's area/volume caps judge the patch, which closes a whole cube face
+    monkeypatch.setattr(cfg, "CAD_REPAIR_MAX_AREA_CHANGE_RATIO", 0.5)
+    monkeypatch.setattr(cfg, "CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO", 0.5)
 
     write_open_shell_step(tmp_path / "part.step")
     state = {"job_id": "native-loop", "engine": "gmsh",
@@ -361,8 +374,7 @@ def test_a_broken_file_is_inspected_repaired_and_promoted_without_anyone_asking(
     out = asyncio.run(node_repair_attempt(state))
 
     assert out["repair_attempt"]["attempted"] is True, out["repair_attempt"]
-    assert "fill_planar_holes" in out["repair_attempt"]["operations"]
-    assert out["repair_attempt"]["holes_filled"], "the opening should have been patched"
+    assert "fill_planar_hole" in out["repair_attempt"]["operations"]
     # THE RUN NOW MESHES THE REPAIR, and can still say which bytes it started from
     assert out["geometry"]["ref"]["sha256"] != original_sha
     assert out["repair_lineage"]["original"]["sha256"] == original_sha
@@ -391,6 +403,8 @@ def test_the_customers_upload_is_still_intact_after_an_autonomous_repair(tmp_pat
     monkeypatch.setattr(cfg, "CAD_REPAIR_AUTONOMOUS", True)
     monkeypatch.setattr(cfg, "CAD_REPAIR_FILL_PLANAR_HOLES", True)
     monkeypatch.setattr(cfg, "CAD_REPAIR_MAX_HOLE_SPAN_RATIO", 1.0)
+    monkeypatch.setattr(cfg, "CAD_REPAIR_MAX_AREA_CHANGE_RATIO", 0.5)
+    monkeypatch.setattr(cfg, "CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO", 0.5)
 
     state = {"job_id": "native-intact", "engine": "gmsh",
              "geometry": geometry_state(tmp_path, filename="part.step")}
@@ -421,16 +435,17 @@ def test_a_loose_body_beside_a_solid_is_sewn_without_costing_the_solid(tmp_path)
     before, after = measured["before"], measured["after"]
 
     assert before["solids"] == 1 and before["shells"] == 7, before
-    # the loose body's six single-face shells became one, and the solid body kept its own
+    # the loose body's six single-face shells became one, and the solid body kept its own. The
+    # loop also PROMOTES the sewn closed shell to a solid, so the assembly ends with two.
     assert after["shells"] == 2, after
-    assert after["solids"] == 1, "sewing cost the assembly its solid"
+    assert after["solids"] == before["solids"] + 1, "the original solid was lost or not promoted"
     # NOTHING ELSE MOVED. Sewing joins what is already coincident, so the faces and the measured
     # geometry are identical - anything else here would be the customer's part being changed.
     assert after["faces"] == before["faces"]
     assert abs(after["volume_mm3"] - before["volume_mm3"]) < 1e-6
     assert abs(after["surface_area_mm2"] - before["surface_area_mm2"]) < 1e-6
     # and the report says sewing happened, because it did
-    assert "sew_shells" in [op["name"] for op in report.operations]
+    assert "sew_faces" in [op["name"] for op in report.operations if op["mutated"]]
 
 
 def test_a_sound_single_solid_is_not_reported_as_sewn(tmp_path):
@@ -439,7 +454,7 @@ def test_a_sound_single_solid_is_not_reported_as_sewn(tmp_path):
     report = repair_step_file(source, tmp_path / "box-repaired.step")
 
     # the one thing sewing must never touch, and the report must not claim it did
-    assert "sew_shells" not in [op["name"] for op in report.operations]
+    assert report.operations == ()
 
 
 def test_sewing_bare_faces_is_reported_even_though_the_shell_count_rises():
@@ -481,3 +496,80 @@ def test_sewing_bare_faces_is_reported_even_though_the_shell_count_rises():
     assert after["shells"] > before["shells"], "the bare faces were not joined into a shell"
     assert sewed is True, "a change the operator can see was left out of the report"
     assert after["solids"] == 1, "sewing cost the assembly its solid"
+
+
+def test_the_report_states_what_the_loop_did_and_why_it_stopped(tmp_path, monkeypatch):
+    from tests.cad_fixtures import write_loose_faces_step
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_AREA_CHANGE_RATIO", 0.02)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO", 0.02)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_OPS", 6)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_STALL_LIMIT", 2)
+
+    # THE LOOSE-FACES FIXTURE, because it is the one fixture this loop actually repairs.
+    source = write_loose_faces_step(tmp_path / "loose.step")
+    report = repair_step_file(source, tmp_path / "out.step")
+
+    measured = {m.name: m.value for m in report.measurements}
+    # WHY THE LOOP STOPPED IS PART OF THE REPORT. An operator approving a repair needs to know
+    # whether it finished or ran out of room, and those look identical without this.
+    assert measured["stopped_because"]
+    assert isinstance(measured["resolved"], bool)
+    assert isinstance(measured["complete_scan"], bool)
+    assert measured["planner"] == "rules-v1"
+    # EVERY ATTEMPT, KEPT OR NOT.
+    assert report.operations, "the report lists no operations"
+    for op in report.operations:
+        assert op["name"] and op["status"] in ("kept", "rolled_back", "failed")
+        assert "targets" in op and "delta" in op and "basis" in op
+    assert measured["operations_attempted"] >= measured["operations_kept"] >= 1
+    # THE OLD KEYS ARE GONE.
+    assert "holes_filled" not in measured and "holes_left" not in measured
+
+
+def test_the_reports_entities_are_what_is_left_rather_than_what_arrived(tmp_path, monkeypatch):
+    from tests.cad_fixtures import write_loose_faces_step
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_AREA_CHANGE_RATIO", 0.02)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO", 0.02)
+
+    from meshpipeline.cad.repair.brep import _read_shape
+    from meshpipeline.cad.repair.localize import localize_scan
+
+    source = write_loose_faces_step(tmp_path / "loose.step")
+    arrived, _ = localize_scan(_read_shape(source))
+    assert arrived, "the fixture is not broken"
+
+    report = repair_step_file(source, tmp_path / "out.step")
+
+    # An operator reading "repaired" over the ORIGINAL defect list is how a ruined delivery
+    # happens. The delivered report states what remains.
+    assert len(report.entities) < len(arrived)
+
+
+def test_a_summary_never_claims_a_repair_the_run_did_not_achieve(tmp_path, monkeypatch):
+    # The sliver fixture ends `stalled` with the sliver still present. The summary must not read
+    # as success - `resolved` is False, and the wording has to follow it.
+    from tests.cad_fixtures import write_small_edge_step
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_AREA_CHANGE_RATIO", 0.02)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO", 0.02)
+
+    report = repair_step_file(write_small_edge_step(tmp_path / "sliver.step"),
+                              tmp_path / "out.step")
+
+    measured = {m.name: m.value for m in report.measurements}
+    assert measured["resolved"] is False
+    assert "Repaired within the conservative caps." not in report.summary
+    assert report.entities, "the remaining defect is not reported"
+
+
+def test_a_sound_part_reports_resolved_with_no_operations(tmp_path, monkeypatch):
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_AREA_CHANGE_RATIO", 0.02)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO", 0.02)
+
+    report = repair_step_file(write_step(tmp_path / "box.step", "MM"), tmp_path / "out.step")
+
+    measured = {m.name: m.value for m in report.measurements}
+    assert measured["resolved"] is True
+    assert report.operations == (), "a sound part had operations run on it"

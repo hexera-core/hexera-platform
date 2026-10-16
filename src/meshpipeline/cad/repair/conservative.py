@@ -50,6 +50,10 @@ class RepairUnavailable(RuntimeError):
 #: WHAT IS DELIBERATELY ABSENT: face removal, defeaturing, and any unbounded tolerance inflation.
 #: Those change what the part IS rather than repairing how it was written, and that is a judgement
 #: about the customer's intent which no automatic pass gets to make.
+#:
+#: SUPERSEDED AS A RECIPE, KEPT AS A POLICY. The loop (cad/repair/loop.py) chooses which of
+#: cad/repair/operations.py's operations to run and in what order, so this tuple no longer
+#: describes a sequence. What it still states is the SET a conservative profile may draw from.
 _CONSERVATIVE_OPERATIONS: tuple[str, ...] = (
     "fix_small_edges",      # degenerate and vanishing edges the writer left behind
     "fix_wireframe",        # wire ordering, gaps between edges of the same wire
@@ -272,64 +276,6 @@ def _paired_rims(loops: list) -> set[int]:
     return paired
 
 
-def _fill_planar_holes(shape, *, tolerance_mm: float, diagonal: float) -> tuple:
-    """Patch every FLAT closed free boundary. Returns (shape, what was filled, what was left).
-
-    PLANAR ONLY, AND SIZE-CAPPED, because this is the one operation here that adds surface the
-    customer never drew. Across a flat loop there is exactly one surface that can go there, so the
-    patch is determined rather than invented. A non-planar loop has infinitely many - that is a
-    judgement about the part's shape, and `BRepBuilderAPI_MakeFace(wire, OnlyPlane=True)` simply
-    declines it, which is the behaviour we want: left alone, reported, and routed to a person.
-    """
-    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_Sewing
-
-    loops = _free_loops(shape)
-    if not loops:
-        return shape, [], []
-
-    filled: list[dict] = []
-    left: list[dict] = []
-    patches = []
-    rims = _paired_rims(loops)
-    for position, wire in enumerate(loops):
-        span = _span(wire)
-        ratio = (span / diagonal) if diagonal > 0 else 0.0
-        if position in rims:
-            # SEALING THIS WOULD DELETE A FEATURE. Two rims of a missing tube wall, not two holes.
-            left.append({"reason": "paired_rims", "span": round(span, 6),
-                         "span_ratio": round(ratio, 6),
-                         "detail": ("this loop pairs with another of the same size on a parallel "
-                                    "plane - a missing tube wall, and patching both would seal a "
-                                    "through-hole")})
-            continue
-        if diagonal > 0 and ratio > rcfg.CAD_REPAIR_MAX_HOLE_SPAN_RATIO:
-            # NOT A HOLE, A MISSING WALL. A flat lid over one is a different part.
-            left.append({"reason": "too_large", "span": round(span, 6),
-                         "span_ratio": round(ratio, 6)})
-            continue
-        maker = BRepBuilderAPI_MakeFace(wire, True)
-        if not maker.IsDone():
-            left.append({"reason": "not_planar", "span": round(span, 6),
-                         "span_ratio": round(ratio, 6)})
-            continue
-        patches.append(maker.Face())
-        filled.append({"span": round(span, 6), "span_ratio": round(ratio, 6)})
-
-    if not patches:
-        return shape, filled, left
-
-    sewing = BRepBuilderAPI_Sewing(tolerance_mm)
-    sewing.SetNonManifoldMode(False)
-    sewing.Add(shape)
-    for patch in patches:
-        sewing.Add(patch)
-    sewing.Perform()
-    sewn = sewing.SewedShape()
-    if sewn is None or (hasattr(sewn, "IsNull") and sewn.IsNull()):
-        return shape, [], left + [{"reason": "sewing_failed"}]
-    return _as_solid_if_closed(sewn), filled, left
-
-
 def _as_solid_if_closed(shape):
     """Promote a shell to a solid ONLY if it is genuinely closed, else hand back what came in.
 
@@ -377,53 +323,6 @@ def _as_solid_if_closed(shape):
     except Exception as exc:  # noqa: BLE001
         logger.debug("conservative: could not promote a closed shell to a solid (%s)", exc)
         return shape
-
-
-def _fix(shape, *, tolerance_mm: float):
-    """Run the conservative operation set.
-
-    Returns (shape, holes filled, holes left alone, whether anything was sewn). The last of those
-    is REPORTED rather than inferred: a loose body can arrive as bare faces with no shell at all,
-    so sewing it makes the shell count go UP, and a report that reads sewing off a count then
-    omits an operation that changed the customer's file.
-
-    ShapeFix_Shape is given a tolerance to WORK AT, which is not a promise about what it leaves
-    behind - it may raise a sub-shape's tolerance well past this to make the shape close. That is
-    precisely why the caps are measured on the RESULT rather than trusted from the request.
-    """
-    from OCP.ShapeFix import ShapeFix_Shape
-
-    fixer = ShapeFix_Shape(shape)
-    fixer.SetPrecision(tolerance_mm)
-    fixer.SetMaxTolerance(tolerance_mm)
-    # TOPOLOGY MAY BE REPAIRED, GEOMETRY MAY NOT BE REWRITTEN. OpenCASCADE can rebuild surfaces
-    # and curves to force a fit; that changes what the customer drew rather than how it was
-    # written down, so the conservative profile leaves it off.
-    fixer.FixSolidMode = 1
-    fixer.FixFreeShellMode = 1
-    fixer.FixFreeFaceMode = 1
-    fixer.FixSameParameterMode = 1
-    fixer.FixVertexPositionMode = 0
-    fixer.Perform()
-    fixed = fixer.Shape()
-
-    # SKIP THE SEWING, NOT THE PATCHING. An earlier version returned early for any shape that had
-    # a solid, which also skipped hole filling - so a part with a solid AND an opening elsewhere
-    # was never patched, and a real corpus came back "no_change" on every such file. Sewing is the
-    # operation that must not run on a closed body, because it returns a shell and the solid is
-    # lost; patching is judged on its own evidence.
-    sewn, sewed = _sew_loose_bodies(fixed, tolerance_mm=tolerance_mm)
-
-    if not rcfg.CAD_REPAIR_FILL_PLANAR_HOLES:
-        # STILL REPORTED. A repair that leaves the defect it was run for must say so: an operator
-        # reading "repaired" over a part that still has a hole in it is how a ruined delivery
-        # happens.
-        return sewn, [], [{"reason": "filling_disabled", "span": round(_span(wire), 6)}
-                          for wire in _free_loops(sewn)], sewed
-
-    filled_shape, filled, left = _fill_planar_holes(
-        sewn, tolerance_mm=tolerance_mm, diagonal=_diagonal_mm(sewn))
-    return filled_shape, filled, left, sewed
 
 
 def _sew_loose_bodies(shape, *, tolerance_mm: float) -> tuple:
@@ -522,54 +421,47 @@ def repair_step_file(source: Path, destination: Path, *,
     _occ()
 
     from meshpipeline.cad.repair.brep import _read_shape
+    from meshpipeline.cad.repair.caps import measure
+    from meshpipeline.cad.repair.loop import run as run_loop
 
     src, dest = Path(source), Path(destination)
     before_shape = _read_shape(src)
-    before = {
-        "valid": _is_valid(before_shape),
-        "diagonal_mm": _diagonal_mm(before_shape),
-        "max_tolerance_mm": _max_tolerance_mm(before_shape),
-        **_counts(before_shape),
-        **_area_and_volume(before_shape),
-    }
+    original = measure(before_shape)
 
     tolerance = min(rcfg.CAD_REPAIR_MAX_TOLERANCE_MM,
-                    max(before["diagonal_mm"], 1.0) * rcfg.CAD_REPAIR_MAX_DEVIATION_RATIO)
-    fixed_shape, filled, unfilled, sewed = _fix(before_shape, tolerance_mm=tolerance)
+                    max(original.diagonal_mm, 1.0) * rcfg.CAD_REPAIR_MAX_DEVIATION_RATIO)
 
-    after = {
-        "valid": _is_valid(fixed_shape),
-        "diagonal_mm": _diagonal_mm(fixed_shape),
-        "max_tolerance_mm": _max_tolerance_mm(fixed_shape),
-        **_counts(fixed_shape),
-        **_area_and_volume(fixed_shape),
+    result = run_loop(before_shape, tolerance_mm=tolerance)
+    final = measure(result.shape)
+
+    measurements = {
+        "before": original.to_dict(), "after": final.to_dict(),
+        "tolerance_requested_mm": tolerance,
+        # WHY IT STOPPED, which is not inferable from the shape. "Every error cleared" and "I ran
+        # out of operations" look identical in the geometry and mean opposite things to a reviewer.
+        "stopped_because": result.stopped_because,
+        "resolved": result.resolved,
+        "complete_scan": result.complete_scan,
+        "planner": result.planner_label,
+        # WHAT WAS DELIBERATELY NOT ATTEMPTED AND WHY - the paired rims of a missing bore wall
+        # above all. This used to be a silent skip inside the fill.
+        "refusals": [dict(r) for r in result.refusals],
+        "operations_attempted": len(result.verdicts),
+        "operations_kept": sum(1 for v in result.verdicts if v.kept),
     }
-    measurements = {"before": before, "after": after, "tolerance_requested_mm": tolerance,
-                    "operations": list(_CONSERVATIVE_OPERATIONS),
-                    # WHAT SURFACE WAS ADDED, and what was left alone and why. A repair that
-                    # invented geometry has to say so and say how much, because a reviewer
-                    # approving it is approving the invention.
-                    "holes_filled": filled,
-                    "holes_left": unfilled}
 
-    # THE AFTER-CHECKS. Each one refuses a specific way a "successful" repair can still be the
-    # wrong answer. They run on the RESULT because an OpenCASCADE tolerance is a request.
-    refusal = _refusal(before, after)
+    # THE AFTER-CHECKS STILL HAVE THE LAST WORD. The session already refused any individual
+    # operation that left the caps, so reaching here with a refusal would mean a bug - but the
+    # customer's part is on the other side of this function, so it is checked again on the result
+    # rather than trusted from the process that produced it.
+    refusal = _refusal(original.to_dict(), final.to_dict())
     if refusal:
         raise RepairRefused(refusal, measurements=measurements)
 
-    # REPORTED BY THE OPERATION ITSELF. Sewing runs per body, so neither "the shape had a solid"
-    # nor any shell-count comparison tells you whether it ran: bare faces have no shell to count
-    # down from. The operation says what it did, and the report repeats it.
-    performed = [op for op in _CONSERVATIVE_OPERATIONS
-                 if op != "sew_shells" or sewed]
-    if "fill_planar_holes" in performed and not filled:
-        performed.remove("fill_planar_holes")
-
-    _write_step(fixed_shape, dest)
+    _write_step(result.shape, dest)
 
     defects: tuple[RepairDefect, ...] = ()
-    if not after["valid"]:
+    if not final.valid:
         # Not a refusal: the shape improved and is honest about not being fully valid. An operator
         # decides whether it is good enough to mesh, with this on the screen.
         defects = (
@@ -579,63 +471,62 @@ def repair_step_file(source: Path, destination: Path, *,
                 message="The repaired shape is still not fully valid; a person should look at it.",
             ),
         )
+
     return RepairReport(
         defects=defects,
         measurements=tuple(RepairMeasurement(name=k, value=v) for k, v in measurements.items()),
-        # ONLY WHAT RAN. Listing the whole profile as `mutated` claimed a sewing pass on a sound
-        # single-solid part that deliberately skipped it, which is an inaccurate account of a
-        # repair an operator is being asked to approve.
-        operations=tuple({"name": op, "mutated": True} for op in performed),
-        summary=("Repaired within the conservative caps."
-                 if after["valid"] else
-                 "Repaired, but the result is not fully valid - needs review."),
+        # EVERY ATTEMPT, KEPT OR NOT, with what it aimed at and what it measured. A rolled-back
+        # operation is evidence an operator wants and the training example a later model planner
+        # needs, so the log is of attempts rather than of successes.
+        operations=tuple({"name": v.op, "mutated": v.kept, **v.to_dict()}
+                         for v in result.verdicts),
+        summary=_summary(result, final),
         diagnostics={"profile": profile.value, "source_suffix": src.suffix.lower()},
+        # WHAT IS LEFT, not what arrived. An operator reading "repaired" over the original defect
+        # list is how a ruined delivery happens.
+        entities=tuple(d.to_dict() for d in result.defects),
     )
 
 
-def _refusal(before: dict, after: dict) -> str:
-    """The one place a repair result is judged. Returns the reason, or "" to accept."""
-    if after["faces"] == 0:
-        return "the repair left no faces to mesh"
-    if after["solids"] < before["solids"]:
-        # A SOLID IS WHAT MAKES A PART A VOLUME. Losing one turns a closed body into a bag of
-        # surfaces, which most meshers will either refuse or quietly mesh as something else. It is
-        # damage however it happened, so it is refused here rather than only prevented upstream.
-        return (f"the repair lost {before['solids'] - after['solids']} solid(s) - a closed body "
-                "became loose surfaces, which is damage rather than repair")
-    if after["faces"] < before["faces"] and not rcfg.CAD_REPAIR_ALLOW_FACE_REMOVAL:
-        # DELETING A FACE IS DEFEATURING, which is a judgement about what the part is for. A
-        # conservative pass that quietly removed one has changed the customer's design.
-        return (f"the repair removed {before['faces'] - after['faces']} face(s); deleting "
-                "geometry is an operator decision, not a conservative repair")
-    if after["max_tolerance_mm"] > rcfg.CAD_REPAIR_MAX_TOLERANCE_MM:
-        return (f"the repair left a tolerance of {after['max_tolerance_mm']:.4f} mm, over the "
-                f"{rcfg.CAD_REPAIR_MAX_TOLERANCE_MM} mm cap - the kernel agreed to stop "
-                "complaining rather than fixing the geometry")
-    diagonal = before["diagonal_mm"]
-    if diagonal > 0:
-        moved = abs(after["diagonal_mm"] - diagonal) / diagonal
-        if moved > rcfg.CAD_REPAIR_MAX_DEVIATION_RATIO:
-            return (f"the repair moved the part's overall size by {moved:.5f} of its diagonal, "
-                    f"over the {rcfg.CAD_REPAIR_MAX_DEVIATION_RATIO} cap")
+def _summary(result, final) -> str:
+    """One sentence an operator reads first. It must not claim more than the run achieved.
 
-    # THE BOUNDING BOX CANNOT SEE INSIDE. An internal wall moved, a cavity reshaped or a passage
-    # sealed changes nothing about the part's overall extent, so a deviation check that only
-    # measures the box accepted repairs that altered the part where it matters most. Surface area
-    # and volume do move for those, and a patched opening moves them legitimately - which is why
-    # the allowance here is the hole-span cap rather than the far tighter deviation ratio.
-    for name, allowance in (("surface_area_mm2", rcfg.CAD_REPAIR_MAX_HOLE_SPAN_RATIO),
-                            ("volume_mm3", rcfg.CAD_REPAIR_MAX_HOLE_SPAN_RATIO)):
-        was, now = float(before.get(name) or 0.0), float(after.get(name) or 0.0)
-        if was <= 0:
-            continue
-        changed = abs(now - was) / was
-        if changed > allowance:
-            return (f"the repair changed the part's {name.split('_')[0]} by {changed:.4f} of its "
-                    f"original, over the {allowance} allowance - something moved inside the part")
-    if before["valid"] and not after["valid"]:
-        return "the repair turned a valid shape into an invalid one"
-    return ""
+    KEYED ON `resolved`, NOT ON THE STOP REASON. `resolved` already means the loop succeeded -
+    complete scan, no error defects, and nothing a failed attempt abandoned - so anything else
+    has to read as partial, whatever the loop happened to stop on.
+    """
+    from meshpipeline.cad.repair.loop import SCAN_INCOMPLETE
+
+    if result.resolved:
+        return ("Repaired within the conservative caps."
+                if final.valid else
+                "Repaired, but the result is not fully valid - needs review.")
+    if result.stopped_because == SCAN_INCOMPLETE:
+        return ("Repaired as far as the inspection could see; the defect scan was partial, so "
+                "this is not a clean bill of health.")
+    if not any(v.kept for v in result.verdicts):
+        return "Nothing could be repaired safely; a person should look at this."
+    return (f"Partially repaired - the run stopped at {result.stopped_because} with "
+            f"{len(result.defects)} defect(s) left.")
+
+
+def _refusal(before: dict, after: dict) -> str:
+    """The one place a repair RESULT is judged. Returns the reason, or "" to accept.
+
+    NOW A SHIM over cad/repair/caps.py, which owns the arithmetic and splits it into the
+    per-operation and cumulative halves the loop needs. Kept because the native suite and
+    `devtools/validation/repair_corpus.py` drive it directly with recorded measurement payloads -
+    including ones written before area and volume were recorded at all, which is why
+    `Measure.from_dict` tolerates a sparse dict.
+
+    Declares no area or volume: a caller holding only two payloads has no operation evidence to
+    account for, so an unexplained change is exactly what it should refuse on.
+    """
+    from meshpipeline.cad.repair.caps import Measure, cumulative_refusal, sanity_refusal
+
+    was, now = Measure.from_dict(before), Measure.from_dict(after)
+    return (sanity_refusal(was, now)
+            or cumulative_refusal(was, now, declared_area_mm2=0.0, declared_volume_mm3=0.0))
 
 
 def status_for(report: RepairReport) -> RepairStatus:
