@@ -293,16 +293,17 @@ def _write_step(shape, path: Path, unit: str) -> Path:
 
 
 def write_small_edge_step(path: Path, unit: str = "MM") -> Path:
-    """A plate with a SLIVER EDGE: a face split by a cut that leaves a near-zero-length edge.
+    """A plate with a SLIVER EDGE: a long thin notch cut into the y=0 face, ending in a 0.002 mm tip.
 
     WHAT A SMALL EDGE ACTUALLY IS AND WHY IT IS NOT CONTRIVED. A mesher sizes its cells off the
-    local feature size, so an edge 0.001 mm long on a 100 mm plate forces cells five orders of
+    local feature size, so an edge 0.002 mm long on a 100 mm plate forces cells five orders of
     magnitude smaller than the part - which is how a mesh job runs for hours and then runs out of
     memory. They arrive from tangent-continuous fillets, from translation round-off, and from
     booleans that just miss: this one is built by cutting a very thin wedge off a corner, which is
-    the boolean case.
+    the boolean case. The notch runs from x=0 to x=20 and narrows to 0.002 mm, so its end face is a
+    sliver 0.002 mm wide whose top and bottom edges (at x=20) are each 0.002 mm long.
 
-    `localize_scan` reports it as `small_edge` because its length is under
+    `localize_scan` reports those two edges as `small_edge` (and the sliver face as `small_face`) because its length is under
     SMALL_EDGE_LENGTH_FRACTION (1e-4) of the part's diagonal. The plate's diagonal is about 141 mm,
     so the threshold is about 0.014 mm and the sliver below is well under it.
     """
@@ -324,7 +325,7 @@ def write_small_edge_step(path: Path, unit: str = "MM") -> Path:
 
 
 def write_loose_faces_step(path: Path, unit: str = "MM") -> Path:
-    """SIX BOX FACES AT THE RIGHT PLACES, NEVER JOINED - no shell, no solid, nothing sewn.
+    """SIX BOX FACES AT THE RIGHT PLACES, NEVER JOINED - no solid, no joined shell, nothing sewn.
 
     HOW THIS DIFFERS FROM THE OPEN SHELL AND THE MIXED ASSEMBLY, both of which already exist.
     `write_open_shell_step` is a sewn shell declared a solid with one face MISSING: the defect is
@@ -335,6 +336,13 @@ def write_loose_faces_step(path: Path, unit: str = "MM") -> Path:
     It is the commonest way a surface export arrives, and it is what sewing exists for - so it is
     the fixture a targeted `sew_faces` has to be proved on. The repair must END with a shell, and
     `_as_solid_if_closed` should then promote it.
+
+    WHAT THE KERNEL AND THE LOCALISER SAY ABOUT IT. After a STEP round trip `measure` reports 0
+    solids and SIX shells (the reader wraps each loose face in a shell of its own, so "unjoined"
+    reads as one shell per face, and sewing makes the shell count FALL from 6 to 1), and `localize_scan` reports six
+    `open_shell` defects from ShapeAnalysis_FreeBounds, each a closed free boundary of four edges:
+    every edge of the box is unshared, so every one is a free boundary. That is the real signature
+    of an unsewn surface export, not a face missing.
     """
     from OCP.BRep import BRep_Builder
     from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
