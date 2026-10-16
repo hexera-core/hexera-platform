@@ -143,6 +143,27 @@ def test_volume_that_appears_where_there_was_none_is_accepted_because_that_is_a_
                               declared_volume_mm3=0.0) == ""
 
 
+def test_an_open_shells_volume_integral_is_not_a_volume_so_closing_it_is_not_compared():
+    # MEASURED, not assumed: OpenCASCADE reports 799.9999999999998 mm3 for the 5-face open box of
+    # the open-shell fixture, which has no solid. That is a divergence integral over an open
+    # surface. Closing it to the 1000 mm3 solid is the repair working, not 25% unexplained.
+    open_box = _changed(solids=0, surface_area_mm2=500.0, volume_mm3=800.0)
+    closed = _changed(solids=1, surface_area_mm2=500.0, volume_mm3=1000.0)
+    assert cumulative_refusal(open_box, closed, declared_area_mm2=0.0,
+                              declared_volume_mm3=0.0) == ""
+
+
+def test_the_volume_of_two_shapes_with_no_solid_is_not_compared_either():
+    before = _changed(solids=0, volume_mm3=800.0)
+    after = _changed(solids=0, volume_mm3=1000.0)
+    assert cumulative_refusal(before, after, declared_area_mm2=0.0,
+                              declared_volume_mm3=0.0) == ""
+
+
+def test_losing_the_solid_is_still_caught_where_the_volume_check_no_longer_looks():
+    assert "solid" in sanity_refusal(_SOUND, _changed(solids=0))
+
+
 def test_volume_that_moved_unaccounted_on_a_part_that_already_had_some_is_refused():
     # Something moved INSIDE the part. The bounding box cannot see it; volume can.
     reason = cumulative_refusal(_SOUND, _changed(volume_mm3=7000.0),

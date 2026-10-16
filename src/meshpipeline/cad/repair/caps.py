@@ -159,11 +159,17 @@ def cumulative_refusal(original: Measure, current: Measure, *,
     if area:
         return f"the run's surface area {area}"
 
-    if original.volume_mm3 <= 0 < current.volume_mm3:
-        # VOLUME WHERE THERE WAS NONE IS ACCEPTED. The upload had no volume (an open shell, say), so
-        # there is no original for the new volume to be a fraction of. It is logged, not compared.
-        logger.info("caps: volume appeared where the upload had none (%.3f mm3); there is no "
-                    "original to compare it with, so it is accepted", current.volume_mm3)
+    if original.solids == 0 or current.solids == 0:
+        # A SHAPE WITH NO SOLID HAS NO INSIDE, so there is no volume for anything to have moved
+        # within. OpenCASCADE's volume integral over an open shell is a number, not a volume:
+        # it reports 799.9999999999998 mm3 for the 5-face open box of the open-shell fixture. A
+        # comparison against it is meaningless in both directions, and closing that shell to its
+        # true 1000 mm3 solid would read as 25% unexplained. A solid LOST is still caught by
+        # `sanity_refusal`'s solid-count check, which is the case that matters. Area stays
+        # compared above, because surface area is meaningful for a shell.
+        logger.info("caps: volume not compared (solids %d -> %d); a shape with no solid has no "
+                    "volume to move (%.3f -> %.3f mm3)", original.solids, current.solids,
+                    original.volume_mm3, current.volume_mm3)
         return ""
     volume = _accounted(original.volume_mm3, current.volume_mm3, declared_volume_mm3,
                         rcfg.CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO)
