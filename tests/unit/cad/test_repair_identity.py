@@ -5,6 +5,7 @@ from meshpipeline.cad.repair.identity import (
     GONE,
     MIN_QUANTUM_MM,
     EntityMapping,
+    EntityRef,
     fingerprint_of,
     quantum_for,
     refs_for,
@@ -125,3 +126,73 @@ def test_an_entity_the_mapping_never_mentions_is_unknown_and_keeps_its_own_name(
 def test_an_empty_mapping_declares_itself_geometric_because_no_kernel_said_anything():
     assert EntityMapping.empty().basis == "geometric"
     assert EntityMapping.empty().fate_of("face:aa") == ("unknown", "face:aa")
+
+
+# THE LIMIT OF THE NAME (documented, not a bug)
+
+
+def test_a_sub_quantum_move_across_a_cell_edge_does_change_the_name_which_is_why_the_mapping_is_authoritative():
+    # A known limit, pinned so it cannot be forgotten. The grid rounds each coordinate, so a box
+    # just below a cell edge and a box just above it get different names even though they moved
+    # by only a fraction of a quantum. Here xmin sits at 0.49q (cell 0) and is nudged by 0.02q to
+    # 0.51q (cell 1). This is ACCEPTABLE: identity across a repair is carried by the kernel mapping,
+    # and a consumer treats a vanished fingerprint with no `gone` entry as unknown, not fixed.
+    q = quantum_for(100.0)
+    before = _box(0.49 * q, 0, 0, 10, 10, 0)
+    after = _box(0.51 * q, 0, 0, 10, 10, 0)
+    assert 0 < (0.51 - 0.49) * q < q
+    assert fingerprint_of("face", before, quantum=q) != fingerprint_of("face", after, quantum=q)
+
+
+# NON-FINITE COORDINATES: NEVER RAISE, NEVER INVENT A NAME
+
+
+def test_a_non_finite_diagonal_falls_back_to_the_floor_quantum():
+    assert quantum_for(float("nan")) == MIN_QUANTUM_MM
+    assert quantum_for(float("inf")) == MIN_QUANTUM_MM
+
+
+def test_a_box_with_a_non_finite_coordinate_has_no_name_and_does_not_raise():
+    q = quantum_for(100.0)
+    assert fingerprint_of("face", _box(float("nan"), 0, 0, 10, 10, 0), quantum=q) == ""
+    assert fingerprint_of("face", _box(0, 0, 0, float("inf"), 10, 0), quantum=q) == ""
+
+
+# THE REF TABLE, REMAINING SURFACE
+
+
+def test_targetable_is_true_only_for_an_entity_with_a_name():
+    assert EntityRef(entity_type="face", fingerprint="face:aa").targetable is True
+    assert EntityRef(entity_type="face", fingerprint="").targetable is False
+
+
+def test_three_entities_sharing_one_box_get_distinct_numbered_keys_and_all_are_ambiguous():
+    q = quantum_for(100.0)
+    base = fingerprint_of("face", _box(0, 0, 0, 10, 10, 0), quantum=q)
+    refs = refs_for([("face", 1, _box(0, 0, 0, 10, 10, 0)),
+                     ("face", 2, _box(0, 0, 0, 10, 10, 0)),
+                     ("face", 3, _box(0, 0, 0, 10, 10, 0))], diagonal_mm=100.0)
+    assert [r.fingerprint for r in refs] == [f"{base}#0", f"{base}#1", f"{base}#2"]
+    assert all(r.ambiguous for r in refs)
+
+
+def test_two_entities_with_empty_boxes_are_not_marked_ambiguous_with_each_other():
+    # Two unmeasurable entities share the empty fingerprint, but that is not a collision: neither
+    # has a name to be confused about, and both stay untargetable.
+    refs = refs_for([("edge", 1, {}), ("edge", 2, {})], diagonal_mm=100.0)
+    assert [r.fingerprint for r in refs] == ["", ""]
+    assert not any(r.ambiguous for r in refs)
+
+
+def test_refs_for_returns_one_ref_per_input_in_input_order_across_a_mixed_list():
+    # Later tasks zip this output against the input by position, so order and count are contract.
+    a = _box(0, 0, 0, 10, 10, 0)
+    b = _box(50, 0, 0, 60, 10, 0)
+    boxes = [("face", 0, a), ("edge", 1, {}), ("face", 2, a), ("face", 3, b), ("face", 4, a)]
+    refs = refs_for(boxes, diagonal_mm=100.0)
+    assert len(refs) == len(boxes)
+    assert [(r.entity_type, r.entity_index) for r in refs] == [(k, i) for k, i, _ in boxes]
+    assert [r.ambiguous for r in refs] == [True, False, True, False, True]
+    assert refs[0].fingerprint.endswith("#0") and refs[2].fingerprint.endswith("#1")
+    assert refs[4].fingerprint.endswith("#2")
+    assert refs[1].fingerprint == "" and refs[3].fingerprint and not refs[3].ambiguous

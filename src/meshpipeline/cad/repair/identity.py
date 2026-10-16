@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 from dataclasses import dataclass, field
 
 # WHY AN ENTITY NEEDS A NAME AT ALL.
@@ -28,9 +29,16 @@ from dataclasses import dataclass, field
 # fingerprints only by coincidence of geometry, and nothing here claims otherwise. It is a name
 # good for the length of one repair run.
 
-#: Fraction of the part's diagonal that two boxes may differ by and still be the same entity. A
-#: repair legitimately nudges a vertex by a tolerance; if that renamed the entity then every
-#: successful operation would look like it had deleted its target and invented a replacement.
+#: The grid is this fraction of the part's diagonal, and each entity's box is rounded onto it.
+#: THIS IS A BEST-EFFORT NAME, NOT AN IDENTITY. Rounding to a grid cannot promise that a small move
+#: keeps the name: two boxes a distance d apart share their cells only when no cell edge falls
+#: between them, which happens with probability about d/q per coordinate. So a sub-quantum nudge
+#: USUALLY keeps the name and occasionally renames the entity. That is still enough, for two
+#: reasons. First, identity across a repair is carried by the operation's kernel mapping
+#: (`EntityMapping`), not by this name. Second, a real repair tolerance is hundreds of quanta on an
+#: ordinary part, so the name changes anyway and the mapping is what answers "what became of this
+#: entity". A consumer must therefore treat a fingerprint that simply vanished, with no `gone`
+#: entry explaining it, as UNKNOWN rather than as FIXED.
 QUANTUM_FRACTION = 1e-6
 
 #: The finest grid used when the part has no measurable extent. An empty compound and a
@@ -43,7 +51,7 @@ GONE = "gone"
 
 def quantum_for(diagonal_mm: float) -> float:
     """The grid an entity's box is rounded onto, scaled to the part."""
-    if not diagonal_mm or diagonal_mm <= 0:
+    if not diagonal_mm or not math.isfinite(diagonal_mm) or diagonal_mm <= 0:
         return MIN_QUANTUM_MM
     return max(float(diagonal_mm) * QUANTUM_FRACTION, MIN_QUANTUM_MM)
 
@@ -59,8 +67,11 @@ def fingerprint_of(entity_type: str, box: dict, *, quantum: float) -> str:
     low, high = box.get("bbox_min"), box.get("bbox_max")
     if not low or not high or len(low) != 3 or len(high) != 3:
         return ""
+    coords = [float(v) for v in (*low, *high)]
+    if not all(math.isfinite(v) for v in coords):
+        return ""
     q = quantum if quantum > 0 else MIN_QUANTUM_MM
-    cells = [int(round(float(v) / q)) for v in (*low, *high)]
+    cells = [int(round(v / q)) for v in coords]
     digest = hashlib.blake2s(
         f"{entity_type}|{'|'.join(str(c) for c in cells)}".encode(), digest_size=8).hexdigest()
     return f"{entity_type}:{digest}"
