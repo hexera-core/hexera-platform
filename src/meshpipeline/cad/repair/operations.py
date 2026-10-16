@@ -254,6 +254,11 @@ class FixSmallEdges:
     `ModeDropSmallEdges = False` DELIBERATELY: dropping an edge rather than merging it removes
     geometry, and removing geometry is an operator's decision. Merging keeps the vertex count
     honest and is what `FixSmallEdges` is for.
+
+    It also calls `FixWireGaps`, closing gaps between edges of the same wire. That is in scope
+    because a gap between neighbouring edges is the other face of a sliver edge - the same writer
+    defect, found on the same faces - but it can move vertices, so any area it shifts is
+    unaccounted for here and is caught by the cumulative cap.
     """
 
     name = "fix_small_edges"
@@ -341,6 +346,9 @@ class FixFaceBoundary:
         for ref in targets:
             sub = sub_shape(shape, "face", ref.entity_index)
             if sub is None:
+                continue
+            # Two targets naming one face must repair it once, as `_owning_faces` does.
+            if any(sub.IsSame(done) for done, _ in replacements):
                 continue
             fixer = ShapeFix_Face(TopoDS.Face_s(sub))
             fixer.SetPrecision(tolerance_mm)

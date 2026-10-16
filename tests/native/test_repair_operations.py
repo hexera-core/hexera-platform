@@ -255,7 +255,6 @@ def test_the_small_edge_operation_removes_the_edge_it_was_aimed_at(tmp_path):
     from tests.cad_fixtures import write_small_edge_step
 
     from meshpipeline.cad.repair.contracts import DefectCode
-    from meshpipeline.cad.repair.identity import GONE
     from meshpipeline.cad.repair.localize import localize_scan
     from meshpipeline.cad.repair.operations import FixSmallEdges
 
@@ -277,7 +276,7 @@ def test_the_small_edge_operation_removes_the_edge_it_was_aimed_at(tmp_path):
     assert not still_there, f"the targeted sliver survived (fate was {fate})"
     # AND THE KERNEL SAID SO, rather than us inferring it from an absence.
     assert outcome.mapping.basis == "kernel"
-    assert fate in (GONE, "moved", "unknown")
+    assert fate == "moved"
 
 
 def test_the_face_boundary_operation_reports_what_it_did_to_its_face(tmp_path):
@@ -319,3 +318,82 @@ def test_an_operation_handed_a_ref_whose_index_does_not_resolve_does_not_crash(t
 
     assert outcome.evidence["faces_fixed"] == 0
     assert outcome.shape is shape, "nothing was fixed, so nothing should have been rebuilt"
+
+
+def test_the_small_edge_operation_with_an_unresolvable_ref_rebuilds_nothing(tmp_path):
+    from meshpipeline.cad.repair.identity import EntityRef
+    from meshpipeline.cad.repair.operations import FixSmallEdges
+
+    shape = _read(write_step(tmp_path / "box.step", "MM"))
+    stale = EntityRef(entity_type="edge", fingerprint="edge:deadbeef", entity_index=9999)
+
+    outcome = FixSmallEdges().apply(shape, (stale,), tolerance_mm=0.01)
+
+    assert outcome.evidence["faces_fixed"] == 0
+    assert outcome.evidence["edges_targeted"] == 1
+    assert outcome.shape is shape
+
+
+def test_two_targets_naming_one_face_repair_it_once(tmp_path):
+    from OCP.TopAbs import TopAbs_FACE
+
+    from meshpipeline.cad.repair.identity import EntityRef, fingerprint_of
+    from meshpipeline.cad.repair.localize import _diagonal, _indexed
+    from meshpipeline.cad.repair.operations import FixFaceBoundary
+
+    shape = _read(write_step(tmp_path / "box.step", "MM"))
+    face = _indexed(shape, TopAbs_FACE).FindKey(1)
+    ref = EntityRef(entity_type="face",
+                    fingerprint=fingerprint_of("face", box_of(face),
+                                               quantum=quantum_for(_diagonal(shape))),
+                    entity_index=1)
+
+    outcome = FixFaceBoundary().apply(shape, (ref, ref), tolerance_mm=0.01)
+
+    assert outcome.evidence["faces_fixed"] == 1
+
+
+def _tolerances(shape):
+    from OCP.BRep import BRep_Tool
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopoDS import TopoDS
+
+    from meshpipeline.cad.repair.localize import _indexed
+
+    edges = _indexed(shape, TopAbs_EDGE)
+    return [BRep_Tool.Tolerance_s(TopoDS.Edge_s(edges.FindKey(i)))
+            for i in range(1, edges.Extent() + 1)]
+
+
+def test_the_face_boundary_operation_leaves_its_input_untouched_for_the_noop_case(tmp_path):
+    # THE SESSION'S ROLLBACK IS A HANDLE SWAP, correct only if no operation mutates its input.
+    # ShapeFix_Face may edit edge tolerances/pcurves in place on sub-shapes shared with the input.
+    #
+    # HONESTY: no face was found on which this operation changes anything, so this test
+    # demonstrates the absence of mutation only for the no-op case. Every face of the sliver,
+    # open-shell, missing-bore-wall and loose-faces fixtures was tried at precision 0.05:
+    # ShapeFix_Face.Perform() returned the face itself (IsSame) and set no DONE status on any.
+    # Whether a face that Perform() really rewrites leaves the input intact remains UNPROVEN.
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from tests.cad_fixtures import write_small_edge_step
+
+    from meshpipeline.cad.repair.identity import EntityRef, fingerprint_of
+    from meshpipeline.cad.repair.localize import _diagonal, _indexed
+    from meshpipeline.cad.repair.operations import FixFaceBoundary
+
+    def snapshot(shape):
+        return (_indexed(shape, TopAbs_EDGE).Extent(), _indexed(shape, TopAbs_FACE).Extent(),
+                _tolerances(shape))
+
+    for name, path in (("sliver", write_small_edge_step(tmp_path / "sliver.step")),
+                       ("open_shell", write_open_shell_step(tmp_path / "open.step"))):
+        shape = _read(path)
+        faces = _indexed(shape, TopAbs_FACE)
+        before = snapshot(shape)
+        for i in range(1, faces.Extent() + 1):
+            ref = EntityRef(entity_type="face",
+                            fingerprint=fingerprint_of("face", box_of(faces.FindKey(i)),
+                                                       quantum=quantum_for(_diagonal(shape))),
+                            entity_index=i)
+            FixFaceBoundary().apply(shape, (ref,), tolerance_mm=0.05)
+            assert snapshot(shape) == before, f"{name} face {i}: the input shape was mutated"
