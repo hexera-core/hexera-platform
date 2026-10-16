@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, replace
 
 import meshpipeline.settings.cad_repair as rcfg
@@ -127,6 +128,16 @@ def sanity_refusal(before: Measure, after: Measure) -> str:
 def cumulative_refusal(original: Measure, current: Measure, *,
                        declared_area_mm2: float, declared_volume_mm3: float) -> str:
     """Has the RUN moved the part further than it may? Measured against the upload. "" accepts."""
+    # A NON-FINITE MEASUREMENT REFUSES. Every comparison below is `x > cap`, and NaN compares False
+    # against everything, so a NaN would pass every check and the repair would be accepted on a
+    # number that was never taken. An unmeasurable result is not an approvable one.
+    unmeasured = [name for name in ("diagonal_mm", "max_tolerance_mm", "surface_area_mm2",
+                                    "volume_mm3")
+                  if not math.isfinite(getattr(current, name))]
+    if unmeasured:
+        return (f"a measurement could not be taken ({', '.join(unmeasured)} is not finite), "
+                "so the result cannot be approved")
+
     if current.max_tolerance_mm > rcfg.CAD_REPAIR_MAX_TOLERANCE_MM:
         return (f"the run left a tolerance of {current.max_tolerance_mm:.4f} mm, over the "
                 f"{rcfg.CAD_REPAIR_MAX_TOLERANCE_MM} mm cap - the kernel agreed to stop "
@@ -146,11 +157,10 @@ def cumulative_refusal(original: Measure, current: Measure, *,
         return f"the run's surface area {area}"
 
     if original.volume_mm3 <= 0 < current.volume_mm3:
-        # VOLUME WHERE THERE WAS NONE IS THE REPAIR WORKING. An open shell has no volume; patching
-        # it and promoting it to a solid creates the part's first. There is no original for the new
-        # volume to be a fraction of, so it is recorded rather than compared.
-        logger.info("caps: the run produced a volume of %.3f mm3 where the upload had none - a "
-                    "shell closed into a solid", current.volume_mm3)
+        # VOLUME WHERE THERE WAS NONE IS ACCEPTED. The upload had no volume (an open shell, say), so
+        # there is no original for the new volume to be a fraction of. It is logged, not compared.
+        logger.info("caps: volume appeared where the upload had none (%.3f mm3); there is no "
+                    "original to compare it with, so it is accepted", current.volume_mm3)
         return ""
     volume = _accounted(original.volume_mm3, current.volume_mm3, declared_volume_mm3,
                         rcfg.CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO)

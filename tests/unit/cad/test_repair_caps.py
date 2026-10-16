@@ -89,11 +89,17 @@ def test_a_part_whose_overall_size_moved_past_the_deviation_cap_is_refused():
 
 
 def test_small_steps_cannot_drift_past_a_cap_together_because_nothing_is_measured_against_the_last():
-    # THE WHOLE POINT OF CUMULATIVE. Six operations each moving the part 0.0009 of its diagonal
-    # are each inside the 0.001 cap; measured against the original they are 0.0054 and refused.
-    drifted = _changed(diagonal_mm=200.0 * 1.0054)
-    assert "diagonal" in cumulative_refusal(_SOUND, drifted, declared_area_mm2=0.0,
-                                            declared_volume_mm3=0.0)
+    # THE WHOLE POINT OF CUMULATIVE. Six operations each move the part 0.0009 of its original
+    # diagonal, so each step is inside the 0.001 cap taken alone. Every iteration is measured against
+    # the SAME original and the drift accumulates: 0.0009, 0.0018, ... 0.0054. The first step is
+    # accepted; from the second on the accumulated drift is past the cap and the run is refused.
+    verdicts = []
+    for step in range(1, 7):
+        current = _changed(diagonal_mm=200.0 * (1.0 + 0.0009 * step))
+        verdicts.append(cumulative_refusal(_SOUND, current, declared_area_mm2=0.0,
+                                           declared_volume_mm3=0.0))
+    assert verdicts[0] == ""
+    assert all("diagonal" in reason for reason in verdicts[1:])
 
 
 # ACCOUNTED AREA AND VOLUME
@@ -121,6 +127,13 @@ def test_area_that_missed_its_own_declaration_by_more_than_the_residual_is_refus
     assert "area" in reason
 
 
+def test_volume_an_operation_declared_is_accepted():
+    # The volume twin of the area acceptance above: a fill that said "I am adding 500 mm3" and
+    # added 500 mm3 is accounted for, not a surprise.
+    assert cumulative_refusal(_SOUND, _changed(volume_mm3=8500.0),
+                              declared_area_mm2=0.0, declared_volume_mm3=500.0) == ""
+
+
 def test_volume_that_appears_where_there_was_none_is_accepted_because_that_is_a_shell_closing():
     # An open shell has no volume. Patching it and promoting it to a solid is the repair working,
     # and there is no original volume for the new one to be a fraction of.
@@ -145,6 +158,55 @@ def test_a_zero_original_measurement_is_no_opinion_rather_than_infinite_change()
                       surface_area_mm2=0.0, volume_mm3=0.0)
     assert cumulative_refusal(nothing, nothing, declared_area_mm2=0.0,
                               declared_volume_mm3=0.0) == ""
+
+
+# NON-FINITE MEASUREMENTS - an unmeasurable result must refuse, never pass
+
+
+@pytest.mark.parametrize("field,value", [
+    ("diagonal_mm", float("nan")),
+    ("max_tolerance_mm", float("nan")),
+    ("surface_area_mm2", float("nan")),
+    ("volume_mm3", float("nan")),
+    ("surface_area_mm2", float("inf")),
+    ("volume_mm3", float("inf")),
+])
+def test_a_non_finite_measurement_is_refused_rather_than_accepted(field, value):
+    # NaN compares False against every cap, so without the guard a NaN would sail through.
+    reason = cumulative_refusal(_SOUND, _changed(**{field: value}),
+                                declared_area_mm2=0.0, declared_volume_mm3=0.0)
+    assert reason != ""
+    assert "could not be taken" in reason
+
+
+# SPARSE AND ROUND-TRIPPED MEASUREMENTS
+
+
+def test_from_dict_of_an_empty_payload_is_a_zeroed_invalid_measure():
+    assert Measure.from_dict({}) == Measure(
+        valid=False, solids=0, shells=0, faces=0, edges=0, vertices=0,
+        diagonal_mm=0.0, max_tolerance_mm=0.0, surface_area_mm2=0.0, volume_mm3=0.0)
+
+
+def test_from_dict_reads_explicit_none_values_as_zero():
+    m = Measure.from_dict({"volume_mm3": None, "surface_area_mm2": None, "solids": None})
+    assert m.volume_mm3 == 0.0
+    assert m.surface_area_mm2 == 0.0
+    assert m.solids == 0
+
+
+def test_from_dict_reads_an_older_payload_that_predates_area_and_volume():
+    payload = {"valid": True, "diagonal_mm": 200.0, "max_tolerance_mm": 0.01,
+               "solids": 1, "shells": 1, "faces": 20, "edges": 60, "vertices": 40}
+    m = Measure.from_dict(payload)
+    assert m.surface_area_mm2 == 0.0
+    assert m.volume_mm3 == 0.0
+    assert m.diagonal_mm == 200.0
+    assert m.faces == 20
+
+
+def test_a_measure_survives_a_round_trip_through_its_dict():
+    assert Measure.from_dict(_SOUND.to_dict()) == _SOUND
 
 
 # THE ACCOUNTING LEDGER
