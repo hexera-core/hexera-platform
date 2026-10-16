@@ -236,3 +236,86 @@ def test_an_ambiguous_ref_that_did_not_move_is_not_reported_moved(tmp_path):
 
     assert mapping.basis == "kernel"
     assert not mapping.moved, f"an unmoved duplicate was reported moved: {mapping.moved}"
+
+
+# THE SCOPED SHAPEFIX OPERATIONS
+
+
+def _defect_of(path, code):
+    from meshpipeline.cad.repair.localize import localize_scan
+
+    shape = _read(path)
+    found, _ = localize_scan(shape)
+    matching = [d for d in found if d.code is code]
+    assert matching, f"the fixture carries no {code.value}; found {[d.code.value for d in found]}"
+    return shape, matching[0]
+
+
+def test_the_small_edge_operation_removes_the_edge_it_was_aimed_at(tmp_path):
+    from tests.cad_fixtures import write_small_edge_step
+
+    from meshpipeline.cad.repair.contracts import DefectCode
+    from meshpipeline.cad.repair.identity import GONE
+    from meshpipeline.cad.repair.localize import localize_scan
+    from meshpipeline.cad.repair.operations import FixSmallEdges
+
+    shape, defect = _defect_of(write_small_edge_step(tmp_path / "sliver.step"),
+                               DefectCode.small_edge)
+    op = FixSmallEdges()
+    targets = op.targets_for(defect)
+    assert targets, "the operation could not aim at a located small edge"
+
+    outcome = op.apply(shape, targets, tolerance_mm=0.05)
+
+    # THE DEFECT, NOT THE COUNT. What is asserted is that the specific sliver's defect is gone
+    # from the new scan - which is the whole question the old code could not answer.
+    after, _ = localize_scan(outcome.shape)
+    fate, successor = outcome.mapping.fate_of(targets[0].fingerprint)
+    still_there = [d for d in after
+                   if d.code is DefectCode.small_edge
+                   and d.fingerprint in {targets[0].fingerprint, successor}]
+    assert not still_there, f"the targeted sliver survived (fate was {fate})"
+    # AND THE KERNEL SAID SO, rather than us inferring it from an absence.
+    assert outcome.mapping.basis == "kernel"
+    assert fate in (GONE, "moved", "unknown")
+
+
+def test_the_face_boundary_operation_reports_what_it_did_to_its_face(tmp_path):
+    from OCP.TopAbs import TopAbs_FACE
+
+    from meshpipeline.cad.repair.identity import EntityRef, fingerprint_of, quantum_for
+    from meshpipeline.cad.repair.localize import _diagonal, _indexed
+    from meshpipeline.cad.repair.operations import FixFaceBoundary
+
+    # A sound face: ShapeFix_Face has nothing to fix, and the operation must still come back with
+    # a shape and a mapping rather than raising. An operation that only works on broken input
+    # cannot be proposed speculatively, and the planner does exactly that.
+    shape = _read(write_step(tmp_path / "box.step", "MM"))
+    face = _indexed(shape, TopAbs_FACE).FindKey(1)
+    ref = EntityRef(entity_type="face",
+                    fingerprint=fingerprint_of("face", box_of(face),
+                                               quantum=quantum_for(_diagonal(shape))),
+                    entity_index=1)
+
+    outcome = FixFaceBoundary().apply(shape, (ref,), tolerance_mm=0.01)
+
+    assert outcome.shape is not None
+    assert outcome.mapping.basis == "kernel"
+    assert outcome.evidence["faces_fixed"] == 1
+
+
+def test_an_operation_handed_a_ref_whose_index_does_not_resolve_does_not_crash(tmp_path):
+    # A ref carries an index into the shape it was built from. The session rebuilds refs after
+    # every kept operation, but a planner bug - or a resumed run - can still hand over a stale
+    # one. The operation reports fixing nothing; it does not raise and does not fix an arbitrary
+    # entity that happens to sit at that index.
+    from meshpipeline.cad.repair.identity import EntityRef
+    from meshpipeline.cad.repair.operations import FixFaceBoundary
+
+    shape = _read(write_step(tmp_path / "box.step", "MM"))
+    stale = EntityRef(entity_type="face", fingerprint="face:deadbeef", entity_index=9999)
+
+    outcome = FixFaceBoundary().apply(shape, (stale,), tolerance_mm=0.01)
+
+    assert outcome.evidence["faces_fixed"] == 0
+    assert outcome.shape is shape, "nothing was fixed, so nothing should have been rebuilt"

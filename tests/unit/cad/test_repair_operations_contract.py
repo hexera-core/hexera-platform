@@ -52,3 +52,45 @@ def test_an_outcome_defaults_to_an_empty_geometric_mapping():
     assert outcome.mapping == EntityMapping.empty()
     assert outcome.mapping.basis == "geometric"
     assert outcome.added == () and outcome.evidence == {}
+
+
+# THE SCOPED OPERATIONS' DECLARATIONS
+
+
+def test_each_scoped_operation_is_narrower_than_the_whole_shape_fallback():
+    glob = next(op for op in OPERATIONS if op.name == "fix_shape_global")
+    for op in OPERATIONS:
+        if op.name != glob.name:
+            assert op.scope < glob.scope, f"{op.name} is not narrower than the fallback"
+
+
+def test_the_small_edge_operation_claims_the_small_and_degenerate_edge_defects():
+    op = next(o for o in OPERATIONS if o.name == "fix_small_edges")
+    assert DefectCode.small_edge in op.answers
+    assert DefectCode.degenerate_edge in op.answers
+    # NOT small_face. A sliver face is a question about the customer's intent - a legitimate
+    # chamfer looks identical - and it routes to a person. An operation that claimed it would let
+    # the planner defeature without anybody deciding to.
+    assert DefectCode.small_face not in op.answers
+
+
+def test_an_operation_asked_about_a_defect_it_does_not_claim_offers_no_targets():
+    from meshpipeline.cad.repair.contracts import DefectSeverity
+    from meshpipeline.cad.repair.localize import EntityDefect
+
+    op = next(o for o in OPERATIONS if o.name == "fix_small_edges")
+    wrong = EntityDefect(code=DefectCode.self_intersection, severity=DefectSeverity.error,
+                         entity_type="face", entity_index=4, message="x")
+    assert op.targets_for(wrong) == ()
+
+
+def test_an_operation_offers_no_targets_for_a_defect_it_cannot_locate():
+    # An unlocated defect has no box, so no fingerprint, so nothing to aim at. The planner reports
+    # skipping it; the operation must not invent a target from an index alone.
+    from meshpipeline.cad.repair.contracts import DefectSeverity
+    from meshpipeline.cad.repair.localize import EntityDefect
+
+    op = next(o for o in OPERATIONS if o.name == "fix_small_edges")
+    unlocated = EntityDefect(code=DefectCode.small_edge, severity=DefectSeverity.warning,
+                             entity_type="edge", entity_index=0, message="x")
+    assert op.targets_for(unlocated) == ()

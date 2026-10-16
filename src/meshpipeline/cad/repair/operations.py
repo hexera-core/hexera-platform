@@ -201,6 +201,169 @@ def mapping_from_context(context, targets: tuple[EntityRef, ...], *,
 # THE OPERATIONS
 
 
+def _owning_faces(shape, refs: tuple[EntityRef, ...]) -> list:
+    """The faces that bound the given edges, deduplicated.
+
+    WHY AN EDGE OPERATION WORKS ON FACES. `ShapeFix_Wireframe` fixes wires, and a wire belongs to
+    a face; there is no kernel call that repairs a bare edge in place. So "fix this edge" becomes
+    "fix the faces this edge bounds", which is still far narrower than the whole shape - two faces
+    out of six hundred - and is what makes the operation's blast radius reviewable.
+    """
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+
+    ancestors = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(shape, TopAbs_EDGE, TopAbs_FACE, ancestors)
+
+    out: list = []
+    seen: list = []
+    for ref in refs:
+        edge = sub_shape(shape, "edge", ref.entity_index)
+        if edge is None or not ancestors.Contains(edge):
+            continue
+        faces = ancestors.FindFromKey(edge)
+        # This OCP build exposes TopTools_ListOfShape as a Python iterable (no cbegin/cend).
+        for face in faces:
+            if not any(face.IsSame(other) for other in seen):
+                seen.append(face)
+                out.append(face)
+    return out
+
+
+def _compound_of(shapes: list):
+    """Wrap several sub-shapes into one compound, so a fixer can be handed exactly them."""
+    from OCP.BRep import BRep_Builder
+    from OCP.TopoDS import TopoDS_Compound
+
+    builder = BRep_Builder()
+    compound = TopoDS_Compound()
+    builder.MakeCompound(compound)
+    for shape in shapes:
+        builder.Add(compound, shape)
+    return compound
+
+
+class FixSmallEdges:
+    """Merge away the sliver edges a writer left behind, on the FACES THOSE EDGES BOUND.
+
+    `ShapeFix_Wireframe` is the kernel's answer for both small edges and the gaps between edges of
+    one wire. Pointed at a compound of just the owning faces it repairs those and leaves the rest
+    of the part alone by identity, which is what `splice` then lands back in the parent.
+
+    `ModeDropSmallEdges = False` DELIBERATELY: dropping an edge rather than merging it removes
+    geometry, and removing geometry is an operator's decision. Merging keeps the vertex count
+    honest and is what `FixSmallEdges` is for.
+    """
+
+    name = "fix_small_edges"
+    answers = frozenset({DefectCode.small_edge, DefectCode.degenerate_edge})
+    scope = 1
+
+    def targets_for(self, defect) -> tuple[EntityRef, ...]:
+        if getattr(defect, "code", None) not in self.answers:
+            return ()
+        if defect.entity_type != "edge" or not getattr(defect, "fingerprint", ""):
+            return ()
+        return (EntityRef(entity_type="edge", fingerprint=defect.fingerprint,
+                          entity_index=int(defect.entity_index)),)
+
+    def apply(self, shape, targets: tuple[EntityRef, ...], *,
+              tolerance_mm: float) -> OpOutcome:
+        from OCP.ShapeFix import ShapeFix_Wireframe
+
+        from meshpipeline.cad.repair.localize import _diagonal
+
+        faces = _owning_faces(shape, targets)
+        if not faces:
+            # NOTHING RESOLVED is not a failure. A stale index, or an edge belonging to no face
+            # (a floating edge), both land here, and the session will roll this back for making no
+            # progress rather than for raising.
+            return OpOutcome(shape=shape, evidence={"edges_targeted": len(targets),
+                                                    "faces_fixed": 0})
+
+        fixer = ShapeFix_Wireframe(_compound_of(faces))
+        fixer.SetPrecision(tolerance_mm)
+        fixer.SetMaxTolerance(tolerance_mm)
+        # MERGE, DO NOT DROP. Dropping removes geometry; the conservative profile may not.
+        fixer.ModeDropSmallEdges = False
+        fixer.FixSmallEdges()
+        fixer.FixWireGaps()
+
+        # The fixer's own context already records what happened to each sub-shape of the compound;
+        # applying it to the WHOLE shape lands those substitutions in the parent. One context, so
+        # the substitution and the record of it cannot disagree.
+        context = fixer.Context()
+        spliced = context.Apply(shape)
+        mapping = mapping_from_context(context, targets, shape_before=shape,
+                                       diagonal_mm=_diagonal(shape))
+        return OpOutcome(shape=spliced, mapping=mapping,
+                         evidence={"edges_targeted": len(targets), "faces_fixed": len(faces),
+                                   "precision_mm": float(tolerance_mm)})
+
+
+class FixFaceBoundary:
+    """Repair one face's own wires: ordering, pcurves, same-parameter, missing seams.
+
+    `ShapeFix_Face` is a per-face fixer, so this is the narrowest real operation in the catalogue
+    after the edge one - and it is the one that answers `curve_inconsistency`, which is the
+    commonest attributed status on a translated part.
+
+    `FixSmallAreaWireMode` and `RemoveSmallAreaFaceMode` are LEFT OFF: both remove geometry.
+    """
+
+    name = "fix_face_boundary"
+    answers = frozenset({DefectCode.curve_inconsistency, DefectCode.wire_gap,
+                         DefectCode.duplicate_surface_data})
+    scope = 2
+
+    def targets_for(self, defect) -> tuple[EntityRef, ...]:
+        if getattr(defect, "code", None) not in self.answers:
+            return ()
+        if defect.entity_type not in ("face", "wire") or not getattr(defect, "fingerprint", ""):
+            return ()
+        if defect.entity_type == "wire":
+            # A wire defect is repaired through its face, and the localiser does not record which
+            # face that is. Rather than guess, decline: the planner then falls through to the
+            # whole-shape fallback, which is the honest wider tool for it.
+            return ()
+        return (EntityRef(entity_type="face", fingerprint=defect.fingerprint,
+                          entity_index=int(defect.entity_index)),)
+
+    def apply(self, shape, targets: tuple[EntityRef, ...], *,
+              tolerance_mm: float) -> OpOutcome:
+        from OCP.ShapeFix import ShapeFix_Face
+        from OCP.TopoDS import TopoDS
+
+        from meshpipeline.cad.repair.localize import _diagonal
+
+        replacements: list[tuple[object, object]] = []
+        for ref in targets:
+            sub = sub_shape(shape, "face", ref.entity_index)
+            if sub is None:
+                continue
+            fixer = ShapeFix_Face(TopoDS.Face_s(sub))
+            fixer.SetPrecision(tolerance_mm)
+            fixer.SetMaxTolerance(tolerance_mm)
+            # REMOVING A SLIVER WIRE OR FACE IS DEFEATURING. Off, like everywhere else here.
+            fixer.FixSmallAreaWireMode = 0
+            fixer.RemoveSmallAreaFaceMode = 0
+            fixer.Perform()
+            replacements.append((sub, fixer.Face()))
+
+        if not replacements:
+            return OpOutcome(shape=shape, evidence={"faces_targeted": len(targets),
+                                                    "faces_fixed": 0})
+
+        spliced, context = splice(shape, replacements)
+        mapping = mapping_from_context(context, targets, shape_before=shape,
+                                       diagonal_mm=_diagonal(shape))
+        return OpOutcome(shape=spliced, mapping=mapping,
+                         evidence={"faces_targeted": len(targets),
+                                   "faces_fixed": len(replacements),
+                                   "precision_mm": float(tolerance_mm)})
+
+
 class FixShapeGlobal:
     """Today's whole-shape `ShapeFix_Shape`, kept as the LAST RESORT.
 
@@ -259,8 +422,11 @@ class FixShapeGlobal:
                                    "modes": "solid,free_shell,free_face,same_parameter"})
 
 
-#: Every operation the loop may run, narrowest first. Task 6 adds the five scoped operations ahead
-#: of the fallback; the ORDER here is documentation, not policy - the planner sorts on `scope`.
+#: Every operation the loop may run, narrowest first. The ORDER here is documentation - the
+#: planner sorts on `scope`, so adding one in the wrong place changes nothing but a reader's
+#: expectations.
 OPERATIONS: tuple[RepairOp, ...] = (
+    FixSmallEdges(),
+    FixFaceBoundary(),
     FixShapeGlobal(),
 )
