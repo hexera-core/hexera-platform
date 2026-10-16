@@ -184,41 +184,53 @@ async def node_repair_attempt(state: PipelineState) -> dict:
         return _declined(f"the repaired file could not be adopted: {type(exc).__name__}",
                          route=advice.route)
 
-    operations = [op["name"] for op in repair_report.operations]
     measured = {m.name: m.value for m in repair_report.measurements}
-    logger.info("node_repair_attempt: repaired and promoted for engine=%s - operations=%s "
-                "- job_id=%s", engine, operations, job_id)
+    attempted = [dict(op) for op in repair_report.operations]
+    logger.info("node_repair_attempt: repaired and promoted for engine=%s - stopped=%s "
+                "- kept=%s/%s - job_id=%s", engine, measured.get("stopped_because"),
+                measured.get("operations_kept"), measured.get("operations_attempted"), job_id)
     try:
         from meshpipeline.capture.logger import TrainingLogger
+        # THE SLICE 8 CORPUS. Every attempt, kept or rolled back, with the defect it aimed at and
+        # the basis on which that was judged. A rolled-back operation is as much a training
+        # example as a kept one - more, arguably - which is why the whole sequence is logged
+        # rather than only what worked. This starts filling the day the deterministic loop is
+        # enabled, which is the reason it had to go in first.
         TrainingLogger(job_id).log("repair_attempt", op_id="repair:attempt", payload={
             "route": advice.route, "targets": [dict(t) for t in advice.targets],
-            "operations": operations, "report": repair_report.to_dict(),
+            "operations": attempted,
+            "stopped_because": measured.get("stopped_because", ""),
+            "refusals": measured.get("refusals", []),
+            "planner": measured.get("planner", ""),
+            "report": repair_report.to_dict(),
             "lineage": update.get("repair_lineage", {})})
     except Exception:  # noqa: BLE001 - the corpus is never load-bearing for a run
         pass
 
     # `repair_status` IS NOT TOUCHED. It is the inspection's verdict on the file the customer
     # SENT, and `repair_report` beside it is that inspection - so overwriting it with the repair's
-    # own verdict produced a pairing that read "repaired" next to the original defect list. What
-    # the repair did belongs in `repair_attempt`, and whether it resolved the defects is stated
-    # there rather than implied by a status.
-    _left = measured.get("holes_left")
-    unresolved = list(_left) if isinstance(_left, list) else []
+    # own verdict produced a pairing that read "repaired" next to the original defect list.
     return {
         **update,
         "repair_attempt": {
             "attempted": True,
             "repair_status": status_for(repair_report).value,
-            # A repair can stay inside every cap and still leave the defect it was run for: an
-            # opening it declined to patch, or a shape it could not make fully valid.
-            "resolved": not unresolved and not repair_report.defects,
+            # TAKEN FROM THE LOOP, NOT INFERRED. It used to be derived from `holes_left`, a key
+            # the report no longer carries - which made it read True for any run with no warning
+            # defect, including a run the loop had explicitly reported as a failure.
+            "resolved": bool(measured.get("resolved", False)),
+            # WHY THE LOOP STOPPED. "Every error cleared" and "I ran out of operations" leave the
+            # same geometry and mean opposite things to the operator reading this.
+            "stopped_because": measured.get("stopped_because", ""),
             "route": advice.route,
-            "operations": operations,
-            # WHAT THE REPAIR AIMED AT, kept with what it did: a reviewer approving this reads the
-            # defects that justified it beside the operations that answered them.
+            # EVERY ATTEMPT, with its targets, verdict, reason and measured delta.
+            "operations": attempted,
+            # WHAT THE REPAIR AIMED AT, kept with what it did.
             "targets": [dict(t) for t in advice.targets],
-            "holes_filled": measured.get("holes_filled", []),
-            "holes_left": measured.get("holes_left", []),
+            # WHAT WAS DELIBERATELY NOT ATTEMPTED AND WHY - the rims of a missing bore wall above
+            # all, which used to be a silent skip inside the fill executor.
+            "refusals": measured.get("refusals", []),
+            "defects_remaining": [dict(e) for e in repair_report.entities],
             "summary": repair_report.summary,
         },
     }

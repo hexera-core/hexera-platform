@@ -38,12 +38,14 @@ def _run(state) -> dict:
     return asyncio.run(node_repair_attempt(state))
 
 
-def _repaired_report(**measured) -> RepairReport:
+def _repaired_report(*, operations=(), defects=(), entities=(), **measured) -> RepairReport:
+    """The report a looped repair returns. `operations` is the ordered attempt list."""
     return RepairReport(
-        defects=(), measurements=tuple(RepairMeasurement(name=k, value=v)
-                                       for k, v in measured.items()),
-        operations=({"name": "fix_wireframe", "mutated": True},),
-        summary="Repaired within the conservative caps.")
+        defects=tuple(defects),
+        measurements=tuple(RepairMeasurement(name=k, value=v) for k, v in measured.items()),
+        operations=tuple(operations),
+        summary="Repaired within the conservative caps.",
+        entities=tuple(entities))
 
 
 @pytest.fixture(autouse=True)
@@ -60,7 +62,14 @@ def repairs(monkeypatch):
     def _repair(source, destination, **kw):
         calls.append((str(source), str(destination)))
         destination.write_bytes(source.read_bytes() + b"\n/* repaired */\n")
-        return _repaired_report(holes_filled=[], holes_left=[])
+        return _repaired_report(
+            operations=({"name": "sew_faces", "mutated": True, "status": "kept",
+                         "basis": "kernel", "targets": ["edge:aaaa"],
+                         "defect_code": "open_shell", "reason": "",
+                         "evidence": {}, "delta": {}},),
+            stopped_because="resolved", resolved=True, complete_scan=True, refusals=[],
+            planner="rules-v1", operations_attempted=1, operations_kept=1,
+            declared_area_mm2=0.0, declared_volume_mm3=0.0)
 
     monkeypatch.setattr("meshpipeline.cad.repair.conservative.repair_step_file", _repair)
     monkeypatch.setattr("meshpipeline.pipeline.repair_promote.stages_for",
@@ -78,7 +87,7 @@ def test_a_located_defect_is_repaired_and_the_result_is_what_gets_meshed(tmp_pat
     out = _run(state)
 
     assert out["repair_attempt"]["attempted"] is True
-    assert out["repair_attempt"]["operations"] == ["fix_wireframe"]
+    assert [op["name"] for op in out["repair_attempt"]["operations"]] == ["sew_faces"]
     # the run now meshes the repair, not the upload
     assert out["geometry"]["ref"]["sha256"] != before
     assert out["repair_lineage"]["original"]["sha256"] == before
@@ -279,25 +288,6 @@ def test_the_node_never_refuses_a_run(tmp_path, monkeypatch):
         assert forbidden not in out
 
 
-def test_a_repair_that_leaves_a_hole_is_not_recorded_as_resolved(tmp_path, monkeypatch):
-    # A repair can stay inside every cap and still leave the defect it was run for. Saying
-    # "repaired" over that is how an operator ships a part with a hole in it.
-    def _repair(source, destination, **kw):
-        destination.write_bytes(source.read_bytes() + b"\n/* partial */\n")
-        return _repaired_report(holes_filled=[],
-                                holes_left=[{"reason": "not_planar", "span": 12.0}])
-
-    monkeypatch.setattr("meshpipeline.cad.repair.conservative.repair_step_file", _repair)
-    monkeypatch.setattr("meshpipeline.pipeline.repair_promote.stages_for",
-                        lambda geometry, engine="": (True, ""))
-
-    out = _run(_state(tmp_path))
-
-    assert out["repair_attempt"]["attempted"] is True
-    assert out["repair_attempt"]["resolved"] is False
-    assert out["repair_attempt"]["holes_left"][0]["reason"] == "not_planar"
-
-
 def test_a_repair_that_outlives_its_welcome_leaves_the_run_on_the_original(tmp_path, monkeypatch):
     import time
 
@@ -317,7 +307,7 @@ def test_a_repair_that_outlives_its_welcome_leaves_the_run_on_the_original(tmp_p
 def test_an_unreadable_repair_output_does_not_fail_the_run(tmp_path, monkeypatch):
     def _repair(source, destination, **kw):
         # reports success but leaves nothing behind - the file is gone when we go to hash it
-        return _repaired_report(holes_filled=[], holes_left=[])
+        return _repaired_report()
 
     monkeypatch.setattr("meshpipeline.cad.repair.conservative.repair_step_file", _repair)
 
@@ -327,3 +317,96 @@ def test_an_unreadable_repair_output_does_not_fail_the_run(tmp_path, monkeypatch
     assert out["repair_attempt"]["attempted"] is False
     assert "could not be adopted" in out["repair_attempt"]["reason"]
     assert "geometry" not in out
+
+
+# WHAT THE RUN RECORDS ABOUT A LOOPED REPAIR
+
+
+def _looped(monkeypatch, *, operations=(), entities=(), **measured):
+    """Stub `repair_step_file` with a looped report, and stub staging so promotion succeeds."""
+    def _repair(source, destination, **kw):
+        destination.write_bytes(source.read_bytes() + b"\n/* repaired */\n")
+        return _repaired_report(operations=operations, entities=entities, **measured)
+
+    monkeypatch.setattr("meshpipeline.cad.repair.conservative.repair_step_file", _repair)
+    monkeypatch.setattr("meshpipeline.pipeline.repair_promote.stages_for",
+                        lambda geometry, engine="": (True, ""))
+
+
+def test_the_run_records_every_operation_the_loop_tried(monkeypatch, tmp_path):
+    # THE SLICE 8 CORPUS STARTS HERE. A rolled-back operation is as much a training example as a
+    # kept one, so what is recorded is attempts, not successes.
+    _looped(monkeypatch,
+            operations=({"name": "fix_small_edges", "mutated": True, "status": "kept",
+                         "basis": "kernel", "targets": ["edge:aaaa"],
+                         "defect_code": "small_edge", "reason": "",
+                         "evidence": {}, "delta": {}},
+                        {"name": "fill_planar_hole", "mutated": False, "status": "rolled_back",
+                         "basis": "kernel", "targets": ["edge:bbbb"],
+                         "defect_code": "open_shell", "reason": "target_remains",
+                         "evidence": {}, "delta": {}}),
+            stopped_because="stalled", resolved=False, complete_scan=True, refusals=[],
+            planner="rules-v1", operations_attempted=2, operations_kept=1,
+            declared_area_mm2=0.0, declared_volume_mm3=0.0)
+
+    attempt = _run(_state(tmp_path))["repair_attempt"]
+
+    assert [op["name"] for op in attempt["operations"]] == \
+           ["fix_small_edges", "fill_planar_hole"]
+    assert attempt["operations"][1]["status"] == "rolled_back"
+    assert attempt["operations"][1]["reason"] == "target_remains"
+    assert attempt["stopped_because"] == "stalled"
+
+
+def test_resolved_is_taken_from_the_loop_not_inferred(monkeypatch, tmp_path):
+    # THE LIVE BUG THIS TASK FIXES. It used to be inferred from `holes_left`, a key the report no
+    # longer carries - so `resolved` read True for any run with no warning defect, including a
+    # run the loop explicitly reported as a failure.
+    _looped(monkeypatch, stopped_because="stalled", resolved=False, complete_scan=True,
+            refusals=[], planner="rules-v1", operations_attempted=2, operations_kept=0,
+            declared_area_mm2=0.0, declared_volume_mm3=0.0,
+            entities=({"code": "small_edge", "severity": "warning", "entity": "edge:9"},))
+
+    attempt = _run(_state(tmp_path))["repair_attempt"]
+
+    assert attempt["resolved"] is False, "the node contradicted the loop"
+    assert attempt["defects_remaining"], "what is left was not recorded"
+
+
+def test_a_run_that_stopped_on_a_partial_scan_is_not_recorded_as_resolved(
+        monkeypatch, tmp_path):
+    _looped(monkeypatch, stopped_because="scan_incomplete", resolved=False, complete_scan=False,
+            refusals=[], planner="rules-v1", operations_attempted=0, operations_kept=0,
+            declared_area_mm2=0.0, declared_volume_mm3=0.0)
+
+    attempt = _run(_state(tmp_path))["repair_attempt"]
+
+    assert attempt["resolved"] is False
+    assert attempt["stopped_because"] == "scan_incomplete"
+
+
+def test_a_planner_refusal_reaches_the_run_so_an_operator_can_read_it(monkeypatch, tmp_path):
+    # The paired-rim case. A silent skip is how "we chose not to seal your bolt hole" stops being
+    # something anybody can see.
+    _looped(monkeypatch, stopped_because="no_candidate", resolved=False, complete_scan=True,
+            refusals=[{"defect": "edge:rim", "reason": "paired_rim",
+                       "detail": "would seal a through-hole"}],
+            planner="rules-v1", operations_attempted=0, operations_kept=0,
+            declared_area_mm2=0.0, declared_volume_mm3=0.0)
+
+    refusals = _run(_state(tmp_path))["repair_attempt"]["refusals"]
+
+    assert refusals[0]["reason"] == "paired_rim"
+    assert refusals[0]["detail"] == "would seal a through-hole"
+
+
+def test_the_inspections_verdict_on_the_customers_file_is_still_not_overwritten(
+        monkeypatch, tmp_path):
+    # `repair_status` is the inspection's verdict on the file the customer SENT, and
+    # `repair_report` beside it is that inspection. Overwriting it with the repair's own verdict
+    # produced a pairing that read "repaired" next to the original defect list.
+    _looped(monkeypatch, stopped_because="resolved", resolved=True, complete_scan=True,
+            refusals=[], planner="rules-v1", operations_attempted=1, operations_kept=1,
+            declared_area_mm2=0.0, declared_volume_mm3=0.0)
+
+    assert "repair_status" not in _run(_state(tmp_path))
