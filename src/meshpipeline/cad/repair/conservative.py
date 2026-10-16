@@ -459,6 +459,13 @@ def repair_step_file(source: Path, destination: Path, *,
     if refusal:
         raise RepairRefused(refusal, measurements=measurements)
 
+    # THE ATTEMPT LIST, in the one shape the node and the corpus read. `name` is what they look
+    # up; `to_dict` also carries it as `op`, so that copy is dropped rather than emitting the same
+    # value under two keys.
+    attempts = tuple({"name": v.op, "mutated": v.kept,
+                      **{k: x for k, x in v.to_dict().items() if k != "op"}}
+                     for v in result.verdicts)
+
     if measurements["operations_kept"] == 0:
         # NOTHING KEPT MEANS NOTHING TO PROMOTE, and writing the file anyway was worse than doing
         # nothing. `promote` refuses only BYTE-IDENTICAL geometry, which a fresh
@@ -468,6 +475,13 @@ def repair_step_file(source: Path, destination: Path, *,
         # fixture arrives as 6 one-face shells and 0 solids). Refused before the write, so there is
         # no artifact for a later step to pick up; the attempt node treats this as a decline and
         # leaves the run on the original, which is the same outcome as not having tried.
+        #
+        # THE ATTEMPTS GO WITH IT, because this refusal is the ONLY record such a run produces.
+        # The success path's report carries them; a decline that dropped them would delete the
+        # training row for every file the loop tried and could not repair - and a rolled-back
+        # sequence is the more valuable example, since it says what did NOT work. The node's
+        # `RepairRefused` handler logs these before returning the decline.
+        measurements["operations"] = [dict(a) for a in attempts]
         raise RepairRefused(
             f"nothing was kept ({measurements['operations_attempted']} operation(s) attempted, "
             f"stopped because {result.stopped_because}), so there is nothing to promote - "
@@ -494,11 +508,9 @@ def repair_step_file(source: Path, destination: Path, *,
         # EVERY ATTEMPT, KEPT OR NOT, with what it aimed at and what it measured. A rolled-back
         # operation is evidence an operator wants and the training example a later model planner
         # needs, so the log is of attempts rather than of successes.
-        # `name` is what the node and the corpus read; `to_dict` also carries it as `op`, so that
-        # copy is dropped rather than emitting the same value under two keys.
-        operations=tuple({"name": v.op, "mutated": v.kept,
-                          **{k: x for k, x in v.to_dict().items() if k != "op"}}
-                         for v in result.verdicts),
+        # Built once, above, so the delivered report and a refusal's measurements cannot disagree
+        # about what was tried.
+        operations=attempts,
         summary=_summary(result, final),
         diagnostics={"profile": profile.value, "source_suffix": src.suffix.lower()},
         # WHAT IS LEFT, not what arrived. An operator reading "repaired" over the original defect

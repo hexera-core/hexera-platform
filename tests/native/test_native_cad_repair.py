@@ -615,6 +615,15 @@ def test_a_run_that_kept_nothing_is_refused_rather_than_delivered(tmp_path):
 
     assert "nothing was kept" in str(refused.value)
     assert refused.value.measurements["operations_kept"] == 0
+    # AND THE ATTEMPTS TRAVEL WITH THE REFUSAL. An attempted-and-rolled-back sequence is the
+    # training signal slice 8 most needs, and this run produces nothing else; a decline that
+    # dropped it would delete the corpus row for every file the loop cannot repair.
+    attempts = refused.value.measurements["operations"]
+    assert len(attempts) == refused.value.measurements["operations_attempted"] >= 1
+    for op in attempts:
+        assert op["name"] and op["mutated"] is False
+        assert op["status"] in ("rolled_back", "failed") and op["reason"]
+        assert "targets" in op and "delta" in op and "basis" in op
     # REFUSED MEANS NOTHING WAS DELIVERED. The node leaves the run on the original upload, which
     # is the same outcome as not having tried.
     assert not out.exists()

@@ -417,3 +417,77 @@ def test_a_report_that_omits_resolved_is_not_recorded_as_resolved(monkeypatch, t
     _looped(monkeypatch, stopped_because="resolved")
 
     assert _run(_state(tmp_path))["repair_attempt"]["resolved"] is False
+
+
+# A DECLINE IS STILL A TRAINING ROW
+
+
+def test_a_refused_zero_kept_run_still_records_what_it_tried(monkeypatch, tmp_path):
+    """THE NEGATIVE EXAMPLES ARE THE VALUABLE ONES, and a decline must not throw them away.
+
+    A run that keeps nothing is now refused before the file is written, so the success path's
+    training log is never reached. An attempted-and-rolled-back sequence is exactly the training
+    signal slice 8 needs - more valuable than a success, because it says what did NOT work - so
+    the refusal carries the attempt list and the decline path logs it.
+    """
+    from meshpipeline.cad.repair.conservative import RepairRefused
+
+    attempts = [{"name": "sew_faces", "mutated": False, "status": "rolled_back",
+                 "reason": "target_remains", "basis": "geometric",
+                 "targets": ["edge:a"], "defect_code": "open_shell",
+                 "evidence": {}, "delta": {}},
+                {"name": "fill_planar_hole", "mutated": False, "status": "rolled_back",
+                 "reason": "declined:too_large (span ratio 0.8165)", "basis": "",
+                 "targets": ["edge:a"], "defect_code": "open_shell",
+                 "evidence": {}, "delta": {}}]
+
+    def _refuse(source, destination, **kw):
+        raise RepairRefused("nothing was kept (2 operation(s) attempted...)",
+                            measurements={"operations": attempts, "operations_attempted": 2,
+                                          "operations_kept": 0, "stopped_because": "stalled",
+                                          "refusals": [], "planner": "rules-v1"})
+
+    logged: list[tuple[str, dict]] = []
+
+    class _Logger:
+        def __init__(self, job_id):
+            self.job_id = job_id
+
+        def log(self, event_type, payload, **kw):
+            logged.append((event_type, payload))
+
+    monkeypatch.setattr("meshpipeline.cad.repair.conservative.repair_step_file", _refuse)
+    monkeypatch.setattr("meshpipeline.capture.logger.TrainingLogger", _Logger)
+
+    out = _run(_state(tmp_path))
+
+    # the decline itself is unchanged: the run carries on with the customer's own file
+    assert out["repair_attempt"]["attempted"] is False
+    assert "geometry" not in out
+
+    assert logged, "a refused run left no training row at all"
+    event, payload = logged[0]
+    assert event == "repair_attempt"
+    assert [op["name"] for op in payload["operations"]] == ["sew_faces", "fill_planar_hole"]
+    assert all(op["mutated"] is False for op in payload["operations"])
+    assert payload["stopped_because"] == "stalled"
+
+
+def test_a_training_logger_that_breaks_cannot_break_a_refused_run(monkeypatch, tmp_path):
+    # The corpus is never load-bearing for a run, on the decline path as on the success one.
+    from meshpipeline.cad.repair.conservative import RepairRefused
+
+    def _refuse(source, destination, **kw):
+        raise RepairRefused("nothing was kept", measurements={"operations": []})
+
+    class _Broken:
+        def __init__(self, job_id):
+            raise RuntimeError("the capture backend is down")
+
+    monkeypatch.setattr("meshpipeline.cad.repair.conservative.repair_step_file", _refuse)
+    monkeypatch.setattr("meshpipeline.capture.logger.TrainingLogger", _Broken)
+
+    out = _run(_state(tmp_path))
+
+    assert out["repair_attempt"]["attempted"] is False
+    assert "geometry" not in out

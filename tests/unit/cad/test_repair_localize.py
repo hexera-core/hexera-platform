@@ -257,3 +257,49 @@ def test_two_codes_on_one_entity_keep_the_unsuffixed_name_so_a_later_scan_can_fi
 
     assert "#" not in stamped[0].fingerprint
     assert stamped[0].fingerprint == stamped[1].fingerprint
+
+
+def test_the_most_severe_duplicate_is_the_one_kept():
+    """A WARNING MUST NEVER SHADOW AN ERROR. `non_manifold_surface` is the one code in
+    `_STATUS_TO_CODE` with mixed severities - `EnclosedRegion` is a warning while
+    `InvalidMultiConnexity` and `InvalidImbricationOfShells` are errors - and all three are
+    shell-level statuses, so both can land on one shell. Keeping whichever the kernel listed first
+    would drop the error record, and `status_for` would then call the run `repaired` with an
+    error-severity defect recorded as a warning.
+    """
+    from meshpipeline.cad.repair.localize import EntityDefect, _deduped
+
+    box = {"unit": "mm", "bbox_min": [0, 0, 0], "bbox_max": [1, 1, 1]}
+    pair = [EntityDefect(code=DefectCode.non_manifold_surface, severity=severity,
+                         entity_type="shell", entity_index=1, message="x", location=box,
+                         kernel_status=status)
+            for severity, status in ((DefectSeverity.warning, "EnclosedRegion"),
+                                     (DefectSeverity.error, "InvalidMultiConnexity"))]
+
+    kept = _deduped(pair)
+
+    assert len(kept) == 1
+    assert kept[0].severity is DefectSeverity.error
+    assert kept[0].kernel_status == "InvalidMultiConnexity"
+
+
+def test_the_survivor_lands_where_the_first_record_did():
+    # THE ORDER IS LOAD-BEARING: `FillPlanarHole.targets_for` only accepts an `open_shell` that
+    # carries `boundary_edges`, which is the free-bound record - so it has to win over a
+    # status-walk record of the same opening, and it does by being listed first at equal severity.
+    from meshpipeline.cad.repair.localize import EntityDefect, _deduped
+
+    box = {"unit": "mm", "bbox_min": [0, 0, 0], "bbox_max": [1, 1, 1]}
+    rich = EntityDefect(code=DefectCode.open_shell, severity=DefectSeverity.error,
+                        entity_type="edge", entity_index=3, message="x", location=box,
+                        measurements={"boundary_edges": [3, 4]}, kernel_status="FreeBounds")
+    thin = EntityDefect(code=DefectCode.open_shell, severity=DefectSeverity.error,
+                        entity_type="edge", entity_index=3, message="x", location=box,
+                        kernel_status="FreeEdge")
+    other = EntityDefect(code=DefectCode.small_edge, severity=DefectSeverity.warning,
+                         entity_type="edge", entity_index=1, message="x", location=box)
+
+    kept = _deduped([other, rich, thin])
+
+    assert [d.kernel_status for d in kept] == ["", "FreeBounds"]
+    assert kept[1].measurements["boundary_edges"] == [3, 4]

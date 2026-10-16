@@ -465,8 +465,13 @@ def _size_defects(shape, *, diagonal: float, total_area: float,
     return out
 
 
+#: Worst-highest, for choosing which of two records of one defect survives.
+_SEVERITY_RANK = {DefectSeverity.info: 0, DefectSeverity.warning: 1,
+                  DefectSeverity.error: 2, DefectSeverity.fatal: 3}
+
+
 def _deduped(found: list[EntityDefect]) -> list[EntityDefect]:
-    """One defect per `(entity_type, entity_index, code)`, keeping the first and the order.
+    """One defect per `(entity_type, entity_index, code)` - the MOST SEVERE, in the first's place.
 
     THE SAME ENTITY REALLY IS REPORTED TWICE. `_status_defects` emits one defect per kernel
     STATUS, and several statuses map to one product code (`NotClosed`, `FreeEdge` and `EmptyShell`
@@ -483,15 +488,34 @@ def _deduped(found: list[EntityDefect]) -> list[EntityDefect]:
 
     Two DIFFERENT codes on one entity stay two defects: an edge can genuinely be both a sliver and
     a broken curve, and the progress rule is asked about one code at a time.
+
+    A WARNING MUST NEVER SHADOW AN ERROR, which is why the survivor is the most severe rather than
+    the first. `non_manifold_surface` is the one code in `_STATUS_TO_CODE` carrying both: a shell's
+    `EnclosedRegion` is a warning while its `InvalidMultiConnexity` and
+    `InvalidImbricationOfShells` are errors, and all three are shell statuses, so one shell can
+    report both. Keeping whichever the kernel listed first would drop the error record, and
+    `status_for` would then call the run `repaired` over an error recorded as a warning.
+
+    THE POSITION IS THE FIRST RECORD'S, AND THAT IS LOAD-BEARING, not neatness. At equal severity
+    the earlier record wins, and `localize_scan` extends the free-bound findings BEFORE the status
+    walk - so the rich `open_shell` record (the one carrying `boundary_edges`) survives a
+    status-walk record of the same opening. `FillPlanarHole.targets_for` accepts only a defect with
+    `boundary_edges`, so reordering those `extend` calls, or making a later duplicate win, would
+    silently disable planar filling.
     """
-    seen: set[tuple[str, int, str]] = set()
+    best: dict[tuple[str, int, str], int] = {}
     out: list[EntityDefect] = []
     for defect in found:
         key = (defect.entity_type, int(defect.entity_index), defect.code.value)
-        if key in seen:
+        slot = best.get(key)
+        if slot is None:
+            best[key] = len(out)
+            out.append(defect)
             continue
-        seen.add(key)
-        out.append(defect)
+        if _SEVERITY_RANK.get(defect.severity, 0) > _SEVERITY_RANK.get(out[slot].severity, 0):
+            # The same defect, reported worse. Replace IN PLACE, so the survivor keeps the
+            # position - and the precedence - the first record had.
+            out[slot] = defect
     return out
 
 
@@ -537,6 +561,10 @@ def localize_scan(shape, *, valid: bool | None = None) -> tuple[tuple[EntityDefe
         valid = bool(BRepCheck_Analyzer(shape, True).IsValid())
 
     found: list[EntityDefect] = []
+    # FREE BOUNDS FIRST, AND `_deduped` DEPENDS ON IT: the free-bound record of an opening is the
+    # only one carrying `boundary_edges`, which is the only `open_shell` record
+    # `FillPlanarHole.targets_for` will aim at. At equal severity the earlier record survives
+    # deduplication, so putting the status walk first would silently disable planar filling.
     found.extend(_open_boundary_defects(shape, diagonal=diagonal, interior=interior))
     attributed, complete = _status_defects(shape, interior=interior, valid=valid)
     found.extend(attributed)

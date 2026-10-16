@@ -157,6 +157,22 @@ async def node_repair_attempt(state: PipelineState) -> dict:
         # and this is the evidence an operator needs to decide what to do instead.
         logger.info("node_repair_attempt: repair refused (%s) - continuing on the original "
                     "- job_id=%s", exc, job_id)
+        try:
+            from meshpipeline.capture.logger import TrainingLogger
+            # A DECLINE IS STILL A TRAINING ROW, and often the most useful one. A run that kept
+            # nothing is refused before anything is written, so the success path below never runs
+            # - and an attempted-and-rolled-back sequence is exactly what slice 8 needs to learn
+            # from. The attempts travel in the refusal's own measurements for this reason.
+            TrainingLogger(job_id).log("repair_attempt", op_id="repair:attempt", payload={
+                "route": advice.route, "targets": [dict(t) for t in advice.targets],
+                "operations": [dict(op) for op in exc.measurements.get("operations", [])],
+                "stopped_because": exc.measurements.get("stopped_because", ""),
+                "refusals": exc.measurements.get("refusals", []),
+                "planner": exc.measurements.get("planner", ""),
+                "refused_because": str(exc),
+                "measurements": dict(exc.measurements)})
+        except Exception:  # noqa: BLE001 - the corpus is never load-bearing for a run
+            pass
         return _declined(f"the repair was refused: {exc}", route=advice.route,
                          detail={"measurements": exc.measurements})
     except Exception as exc:  # noqa: BLE001 - a repair that breaks is never the file's fault
