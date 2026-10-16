@@ -115,6 +115,19 @@ def test_the_loop_sews_the_loose_faces_fixture(tmp_path):
     assert after.shells == 1 and after.solids == 1, \
         f"nothing was joined; stopped {result.stopped_because}, {_attempts(result)}"
     assert any(v.op == "sew_faces" and v.kept for v in result.verdicts)
+    # THE ONE GENUINE REPAIR IN THIS SUITE MUST PROVE IT DID NOT DAMAGE THE PART, not merely that it
+    # joined the shells: a sew that inflated a tolerance or moved the extent would pass the lines
+    # above exactly as an unchecked FixSmallEdges once did. The declared area is summed from the
+    # kept operations' own evidence, so the full cumulative check is available at loop level.
+    from meshpipeline.cad.repair.caps import cumulative_refusal, sanity_refusal
+    from meshpipeline.cad.repair.operations import AREA_DELTA
+
+    declared = sum(v.evidence.get(AREA_DELTA, 0.0) for v in result.verdicts if v.kept)
+    assert sanity_refusal(before, after) == "", sanity_refusal(before, after)
+    assert after.diagonal_mm == pytest.approx(before.diagonal_mm, rel=1e-6)
+    assert after.max_tolerance_mm <= max(before.max_tolerance_mm, rcfg.CAD_REPAIR_MAX_TOLERANCE_MM)
+    refusal = cumulative_refusal(before, after, declared_area_mm2=declared, declared_volume_mm3=0.0)
+    assert refusal == "", refusal
 
 
 def test_the_loop_leaves_a_missing_wall_alone_and_says_why(tmp_path):
