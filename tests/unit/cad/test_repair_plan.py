@@ -249,3 +249,87 @@ def test_the_planner_is_labelled_and_a_candidate_serialises():
     assert isinstance(candidate, Candidate)
     assert candidate.to_dict() == {"op": "narrow", "defect": "edge:a", "defect_code": "small_edge",
                                    "targets": ["edge:a"]}
+
+
+# THE WHOLE-SHAPE FALLBACK, AGAINST THE REAL CATALOGUE
+#
+# The stub-based ordering tests above cannot prove this: `_GLOBAL` is an `_Op`, whose `targets_for`
+# returns a ref for anything it answers. The real `FixShapeGlobal` returned `()` unconditionally,
+# so the planner's `if not targets: continue` skipped it and EVERY defect only it claims got zero
+# attempts - the files that used to get `ShapeFix_Shape` got nothing at all. These tests use
+# `OPERATIONS` itself for that reason.
+
+
+def test_the_real_catalogue_proposes_the_whole_shape_fallback_for_a_defect_only_it_claims():
+    from meshpipeline.cad.repair.operations import OPERATIONS
+
+    planner = RulesPlanner(ops=OPERATIONS)
+    defects = (_defect(DefectCode.invalid_brep, fingerprint="shell:a", kind="shell", index=3),)
+
+    candidate = planner.propose(defects, RunHistory(), shape=None)
+
+    assert candidate is not None, "invalid_brep got no attempt at all"
+    assert candidate.op.name == "fix_shape_global"
+    # IT STILL NAMES WHAT IT AIMED AT, even though it runs whole-shape: the session's
+    # `_carries` check reads the targets, so an empty tuple would be `target_absent`.
+    assert [t.fingerprint for t in candidate.targets] == ["shell:a"]
+    assert [t.entity_type for t in candidate.targets] == ["shell"]
+
+
+def test_an_edge_curve_inconsistency_reaches_the_whole_shape_fallback():
+    # `FixFaceBoundary` takes only faces, and `InvalidCurveOnSurface`, `Invalid3DCurve`,
+    # `NoCurveOnSurface` and `InvalidPointOnCurve` are all EDGE statuses. Before the fallback was
+    # reachable, the commonest attributed status on a translated part got no attempt.
+    from meshpipeline.cad.repair.operations import OPERATIONS
+
+    planner = RulesPlanner(ops=OPERATIONS)
+    defects = (_defect(DefectCode.curve_inconsistency, fingerprint="edge:a", kind="edge"),)
+
+    candidate = planner.propose(defects, RunHistory(), shape=None)
+
+    assert candidate is not None and candidate.op.name == "fix_shape_global"
+
+
+def test_a_wire_attributed_defect_reaches_the_whole_shape_fallback():
+    # `FixFaceBoundary.targets_for` declines a wire because the localiser does not record which
+    # face owns it. Its docstring promises the planner then falls through here.
+    from meshpipeline.cad.repair.operations import OPERATIONS
+
+    planner = RulesPlanner(ops=OPERATIONS)
+    defects = (_defect(DefectCode.wire_gap, fingerprint="wire:a", kind="wire", index=2),)
+
+    candidate = planner.propose(defects, RunHistory(), shape=None)
+
+    assert candidate is not None and candidate.op.name == "fix_shape_global"
+
+
+def test_the_fallback_is_still_last_in_the_real_catalogue():
+    # Reachable must not mean preferred: a scoped operation that claims the defect wins.
+    from meshpipeline.cad.repair.operations import OPERATIONS
+
+    planner = RulesPlanner(ops=OPERATIONS)
+    defects = (_defect(DefectCode.curve_inconsistency, fingerprint="face:a", kind="face"),)
+
+    candidate = planner.propose(defects, RunHistory(), shape=None)
+
+    assert candidate is not None and candidate.op.name == "fix_face_boundary"
+
+
+def test_the_fallback_declines_a_defect_it_does_not_claim_or_cannot_name():
+    from meshpipeline.cad.repair.operations import FixShapeGlobal
+
+    op = FixShapeGlobal()
+    assert op.targets_for(_defect(DefectCode.self_intersection, fingerprint="face:a")) == ()
+    assert op.targets_for(_defect(DefectCode.invalid_brep, fingerprint="")) == ()
+
+
+# THE RIM GUARD IS COMPARED AGAINST THE OPERATION'S OWN NAME
+
+
+def test_exactly_one_catalogued_operation_carries_the_fill_name():
+    # The guard in `RulesPlanner.propose` keys off `FillPlanarHole.name`. A rename that missed a
+    # second holder of the name, or lost the operation from the catalogue, would leave the guard
+    # dead with every test green.
+    from meshpipeline.cad.repair.operations import OPERATIONS, FillPlanarHole
+
+    assert [op.name for op in OPERATIONS].count(FillPlanarHole.name) == 1

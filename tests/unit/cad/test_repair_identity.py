@@ -196,3 +196,41 @@ def test_refs_for_returns_one_ref_per_input_in_input_order_across_a_mixed_list()
     assert refs[0].fingerprint.endswith("#0") and refs[2].fingerprint.endswith("#1")
     assert refs[4].fingerprint.endswith("#2")
     assert refs[1].fingerprint == "" and refs[3].fingerprint and not refs[3].ambiguous
+
+
+# A SHARED BOX IS ONLY A COLLISION BETWEEN DIFFERENT ENTITIES
+
+
+def test_one_entity_listed_twice_is_not_a_collision_and_keeps_its_plain_name():
+    # The localiser reports one defect per CODE, so one edge carrying two statuses appears twice
+    # in this table with the same index and the same box. That is one entity reported twice, not
+    # two entities - and suffixing it `#0`/`#1` made the name unfindable in the next scan, where
+    # the survivor is stamped without a suffix.
+    base = fingerprint_of("edge", _box(0, 0, 0, 10, 0, 0), quantum=quantum_for(100.0))
+
+    refs = refs_for([("edge", 7, _box(0, 0, 0, 10, 0, 0)),
+                     ("edge", 7, _box(0, 0, 0, 10, 0, 0))], diagonal_mm=100.0)
+
+    assert [r.fingerprint for r in refs] == [base, base]
+    assert not any(r.ambiguous for r in refs), "one entity cannot be ambiguous with itself"
+
+
+def test_a_shared_box_across_different_indices_is_still_a_collision():
+    # The case the marking exists for is untouched: a duplicated face really is two entities the
+    # fingerprint cannot tell apart.
+    refs = refs_for([("face", 1, _box(0, 0, 0, 10, 10, 0)),
+                     ("face", 2, _box(0, 0, 0, 10, 10, 0))], diagonal_mm=100.0)
+
+    assert all(r.ambiguous for r in refs)
+    assert refs[0].fingerprint != refs[1].fingerprint
+
+
+def test_a_repeated_entity_beside_a_genuine_twin_marks_only_the_twins():
+    # Both situations at once: edge 7 reported twice, and edge 9 genuinely sharing its box.
+    refs = refs_for([("edge", 7, _box(0, 0, 0, 10, 0, 0)),
+                     ("edge", 7, _box(0, 0, 0, 10, 0, 0)),
+                     ("edge", 9, _box(0, 0, 0, 10, 0, 0))], diagonal_mm=100.0)
+
+    assert [r.ambiguous for r in refs] == [True, True, True]
+    assert refs[0].fingerprint == refs[1].fingerprint
+    assert refs[2].fingerprint != refs[0].fingerprint

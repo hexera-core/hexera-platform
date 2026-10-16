@@ -92,7 +92,9 @@ CAD_REPAIR_TIMEOUT_S: float = float(optional_env("CAD_REPAIR_TIMEOUT_S", "120"))
 
 #: Operations the loop may TRY in one run, kept or rolled back. Not a limit on how many may be
 #: kept: a run that tried six and kept one did six re-inspections, and the re-inspection is what
-#: costs. Six is the length of the operation set, so a run can reach every operation once.
+#: costs. The catalogue is FIVE operations (`operations.OPERATIONS`), so six is every operation
+#: once plus one spare attempt - which is a reasonable budget rather than a derived number, and
+#: saying so is more honest than the arithmetic this comment used to claim.
 CAD_REPAIR_MAX_OPS: int = int(optional_env("CAD_REPAIR_MAX_OPS", "6"))
 
 #: Consecutive operations that were not kept before the loop gives up. A planner that has proposed
@@ -112,8 +114,12 @@ CAD_REPAIR_STALL_LIMIT: int = int(optional_env("CAD_REPAIR_STALL_LIMIT", "2"))
 CAD_REPAIR_MAX_AREA_CHANGE_RATIO: float = float(
     optional_env("CAD_REPAIR_MAX_AREA_CHANGE_RATIO", "0.02"))
 
-#: The same residual, for volume. Volume that appears for the first time when a patched shell
-#: becomes a solid is ACCEPTED AND RECORDED rather than compared: the part had no volume to be a
-#: fraction of, and a closed body where there was an open shell is the repair working.
+#: The same residual, for volume - applied only when the solid count did not RISE. Volume that
+#: appears because a body closed is ACCEPTED AND RECORDED rather than compared, and `caps` skips
+#: the comparison in three cases: the original had no solid, the result has none, or the result has
+#: MORE than the original. The third is the mixed assembly - one solid body beside one sewn closed
+#: and promoted - where the new body's volume is real, undeclarable (whether a shell closed is the
+#: kernel's answer) and not a fraction of anything. A solid LOST is caught by the per-operation
+#: solid-count check instead.
 CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO: float = float(
     optional_env("CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO", "0.02"))

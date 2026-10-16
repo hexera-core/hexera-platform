@@ -148,7 +148,8 @@ def test_a_boxs_face_fingerprints_the_same_before_and_after_a_no_op_splice(tmp_p
     assert first and first == again
 
 
-# mapping_from_context, DIRECTLY - FixShapeGlobal takes no targets so it can never reach the loop body.
+# mapping_from_context, DIRECTLY - the readers have cases (an unrecorded sub-shape, a null
+# replacement, a ref whose box another entity shares) that no fixture reaches reliably.
 
 
 def _face_refs(shape, boxes=None):
@@ -254,7 +255,10 @@ def test_an_ambiguous_ref_that_did_not_move_is_not_reported_moved(tmp_path):
     shape = _box_shape(tmp_path)
     face = TopoDS.Face_s(_indexed(shape, TopAbs_FACE).FindKey(1))
     box = box_of(face)
-    refs = _face_refs(shape, boxes=[("face", 1, box), ("face", 1, box)])
+    # TWO DIFFERENT INDICES sharing one box, which is what a collision now means: the same index
+    # listed twice is one entity reported twice (a defect per code), and suffixing that produced a
+    # name the next scan never generates.
+    refs = _face_refs(shape, boxes=[("face", 1, box), ("face", 2, box)])
     assert all(r.ambiguous and "#" in r.fingerprint for r in refs)
     context = ShapeBuild_ReShape()
     context.Replace(face, BRepBuilderAPI_MakeFace(face).Face())     # recorded, same place

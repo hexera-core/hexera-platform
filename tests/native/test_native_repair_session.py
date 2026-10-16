@@ -120,3 +120,35 @@ def test_the_session_writes_a_step_in_millimetres(tmp_path):
 
     assert out.exists() and out.stat().st_size > 0
     assert "MILLI" in out.read_text(encoding="utf-8", errors="ignore").upper()
+
+
+def test_the_whole_shape_fallback_reaches_the_kernel_through_the_session(tmp_path):
+    """The fallback is REACHABLE, proved through the session rather than from the planner alone.
+
+    It was blocked twice over: `targets_for` returned `()`, which the planner skips, and the
+    session's `_carries` check over an empty target tuple is False, which is `target_absent`. Now
+    it names the defect's own entity, so the operation gets applied, measured and judged like any
+    other - and the honest outcome on this fixture is a ROLLBACK, because `ShapeFix_Shape` on a
+    solid cannot remove the sliver (the solid's own topology forbids it). What matters is that the
+    verdict comes from running the operation, not from refusing to aim it.
+    """
+    from tests.cad_fixtures import write_small_edge_step
+
+    from meshpipeline.cad.repair.brep import _read_shape
+    from meshpipeline.cad.repair.contracts import DefectCode
+    from meshpipeline.cad.repair.operations import FixShapeGlobal
+
+    shape = _read_shape(write_small_edge_step(tmp_path / "sliver.step"))
+    session = RepairSession(shape)
+    sliver = next(d for d in session.defects() if d.code is DefectCode.small_edge)
+
+    op = FixShapeGlobal()
+    targets = op.targets_for(sliver)
+    assert targets, "the fallback could not aim at a located defect"
+
+    verdict = session.try_op(op, targets, sliver.code, tolerance_mm=0.02)
+
+    assert verdict.reason != "target_absent", "the fallback never reached the kernel"
+    assert verdict.op == "fix_shape_global"
+    assert verdict.reason == "target_remains", verdict.reason
+    assert verdict.delta["after"]["faces"] == verdict.delta["before"]["faces"]

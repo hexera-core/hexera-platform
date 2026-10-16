@@ -148,6 +148,35 @@ def splice(shape, replacements: list[tuple[object, object]]):
     return context.Apply(shape), context
 
 
+def _names_its_own_geometry(ref: EntityRef, sub, *, quantum: float) -> bool:
+    """Is this ref's name reproducible from the sub-shape its index resolves to?
+
+    WHY A KERNEL RECORD IS NOT ENOUGH ON ITS OWN. A mapping's successor is computed as
+    `fingerprint_of(ref.entity_type, box_of(<what the sub-shape became>))`, so it is only a name
+    the NEXT SCAN will recognise if the ref's own name was taken from the same geometry. For a
+    free-boundary target it was not: `localize._open_boundary_defects` reports the opening against
+    `loop[0]` - one EDGE - while fingerprinting the whole WIRE's bounding box. Those boxes differ
+    by construction, so trusting the kernel's record of that edge produced a successor denoting
+    nothing, and the verdict then reported `basis: "kernel"` on the strength of it: every
+    successful fill claimed the kernel had said the rim moved.
+
+    A mismatch therefore means NO KERNEL EVIDENCE FOR THIS TARGET, not a successor to invent. The
+    caller skips the ref entirely - including the `consulted` flag - so a mapping built only from
+    such refs stays `geometric`, which is the honest answer: the conclusion came from diffing the
+    two scans.
+
+    The `#n` suffix `identity.refs_for` adds for a genuinely shared box names a slot in that table
+    rather than a place in space, so the comparison is against the base name.
+    """
+    expected = ref.fingerprint.split("#", 1)[0]
+    try:
+        return bool(expected) and fingerprint_of(
+            ref.entity_type, box_of(sub), quantum=quantum) == expected
+    except Exception as exc:  # noqa: BLE001 - an unmeasurable sub-shape is simply no evidence
+        logger.debug("operations: could not re-measure a %s (%s)", ref.entity_type, exc)
+        return False
+
+
 def mapping_from_context(context, targets: tuple[EntityRef, ...], *,
                          shape_before, diagonal_mm: float) -> EntityMapping:
     """Read a ShapeBuild_ReShape's history into a fingerprint mapping.
@@ -156,6 +185,7 @@ def mapping_from_context(context, targets: tuple[EntityRef, ...], *,
     the same class and both answer the same three questions about a sub-shape: was it recorded,
     what did it become, and is the replacement null (which is the kernel saying it is gone).
     """
+    # See `_names_its_own_geometry` for why each ref is checked against the sub-shape first.
     moved: dict[str, str] = {}
     gone: set[str] = set()
     consulted = False
@@ -165,6 +195,8 @@ def mapping_from_context(context, targets: tuple[EntityRef, ...], *,
             continue
         sub = sub_shape(shape_before, ref.entity_type, ref.entity_index)
         if sub is None:
+            continue
+        if not _names_its_own_geometry(ref, sub, quantum=quantum):
             continue
         try:
             recorded = context.IsRecorded(sub)
@@ -291,8 +323,11 @@ class FixFaceBoundary:
             return ()
         if defect.entity_type == "wire":
             # A wire defect is repaired through its face, and the localiser does not record which
-            # face that is. Rather than guess, decline: the planner then falls through to the
-            # whole-shape fallback, which is the honest wider tool for it.
+            # face that is. Rather than guess, decline: the planner falls through to
+            # `fix_shape_global`, which claims `wire_gap` too and names the same entity, so the
+            # defect still gets an attempt from the honest wider tool. (That fall-through was
+            # promised here while `FixShapeGlobal.targets_for` returned `()` unconditionally, which
+            # meant no attempt at all - see that class's docstring.)
             return ()
         return (EntityRef(entity_type="face", fingerprint=defect.fingerprint,
                           entity_index=int(defect.entity_index)),)
@@ -368,6 +403,10 @@ def mapping_from_sewing(sewing, targets: tuple[EntityRef, ...], *,
             continue
         sub = sub_shape(shape_before, ref.entity_type, ref.entity_index)
         if sub is None:
+            continue
+        if not _names_its_own_geometry(ref, sub, quantum=quantum):
+            # Same reason as in `mapping_from_context`: a ref whose name came from other geometry
+            # than the sub-shape being measured cannot be given a successor the next scan knows.
             continue
         try:
             if sewing.IsModified(sub):
@@ -541,6 +580,16 @@ class FillPlanarHole:
     which loop to aim at, so it belongs to the planner (`plan.py`), which refuses to PROPOSE the
     pair and records the refusal. It used to be a silent skip inside this function, where nothing
     downstream could see it.
+
+    READ THIS BEFORE TURNING `CAD_REPAIR_FILL_PLANAR_HOLES` ON. The planner's refusal is not the
+    FIRST line of defence against a sealed through-hole; it is the ONLY one. No cap, sanity check
+    or progress rule can see that case: `sanity_refusal` passes (faces rise, solids do not fall),
+    the volume comparison is skipped because a shape with a free boundary has `solids == 0`, the
+    area is declared by this operation so `_accounted` passes, and the progress rule correctly sees
+    the rim's `open_shell` gone - the part is sealed and every check agrees it was repaired. That is
+    acceptable only while this setting defaults off. Moving the ban behind the planner interface
+    (so a model in the planner's seat cannot propose the pair either) is REQUIRED before filling
+    is enabled by default or a model takes that seat.
     """
 
     name = "fill_planar_hole"
@@ -629,8 +678,16 @@ class FixShapeGlobal:
     repair less than its predecessor on some real file nobody has run yet. It is proposed only
     when no scoped operation claims anything left, which is what `scope = 99` buys.
 
-    It offers a REAL mapping even though it takes no targets: `ShapeFix_Shape.Context()` is a
+    It offers a REAL mapping even though it runs whole-shape: `ShapeFix_Shape.Context()` is a
     ShapeBuild_ReShape, so the session can still ask what became of the entities a defect named.
+
+    IT STILL NAMES WHAT IT AIMED AT, for the same reason `fix_small_edges` does. Returning no
+    targets made this operation UNREACHABLE: the planner skips a candidate with an empty target
+    tuple, and the session's `_carries` check over an empty tuple is False, so it was blocked
+    twice over - and every defect only this operation claims (`invalid_brep`, and any
+    `curve_inconsistency` / `duplicate_surface_data` / `wire_gap` / `degenerate_edge` the status
+    walk attributed to an edge, wire or shell) got zero attempts. Those are the files the
+    whole-shape pass used to repair, which is exactly what this operation exists to preserve.
     """
 
     name = "fix_shape_global"
@@ -642,7 +699,14 @@ class FixShapeGlobal:
     scope = 99
 
     def targets_for(self, defect) -> tuple[EntityRef, ...]:
-        return ()
+        # ANY ENTITY TYPE, because the fixer runs over the whole shape regardless; the ref records
+        # what was aimed at so the progress rule has a name to judge against.
+        if getattr(defect, "code", None) not in self.answers:
+            return ()
+        if not getattr(defect, "fingerprint", ""):
+            return ()
+        return (EntityRef(entity_type=str(defect.entity_type), fingerprint=defect.fingerprint,
+                          entity_index=int(defect.entity_index)),)
 
     def apply(self, shape, targets: tuple[EntityRef, ...], *,
               tolerance_mm: float) -> OpOutcome:

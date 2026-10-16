@@ -135,25 +135,42 @@ def refs_for(boxes: list[tuple[str, int, dict]],
     TWO ENTITIES CAN SHARE A BOX: a duplicated face, two coincident edges a bad export left
     behind. They get distinct keys so the table stays addressable, and both are marked
     `ambiguous` - because what the fingerprint cannot distinguish, no verdict may claim it did.
+
+    ONE ENTITY LISTED TWICE IS NOT THAT CASE. The localiser reports a defect per code, so the same
+    `entity_index` arrives here more than once with the same box, and treating that as a collision
+    was a bug with teeth: the suffixed `edge:abc#0` / `edge:abc#1` are names the NEXT scan will not
+    produce (its survivor is plain `edge:abc`), so the progress rule looked for a defect it could
+    never find and kept an operation that had repaired nothing. A collision is therefore judged on
+    the INDEX as well as the box: same index plus same box is one entity reported twice.
     """
     quantum = quantum_for(diagonal_mm)
     named = [(kind, index, fingerprint_of(kind, box, quantum=quantum))
              for kind, index, box in boxes]
 
-    seen: dict[str, int] = {}
-    for _, _, fingerprint in named:
+    #: Which distinct entities each fingerprint names. More than one is a real collision.
+    owners: dict[str, set[tuple[str, int]]] = {}
+    for kind, index, fingerprint in named:
         if fingerprint:
-            seen[fingerprint] = seen.get(fingerprint, 0) + 1
+            owners.setdefault(fingerprint, set()).add((kind, int(index)))
 
     out: list[EntityRef] = []
+    #: The suffix a genuinely colliding entity gets, kept PER ENTITY so the same entity listed
+    #: twice keeps one key rather than being handed two.
+    assigned: dict[tuple[str, int, str], str] = {}
     used: dict[str, int] = {}
     for kind, index, fingerprint in named:
-        collided = bool(fingerprint) and seen.get(fingerprint, 0) > 1
+        collided = bool(fingerprint) and len(owners.get(fingerprint, ())) > 1
         key = fingerprint
         if collided:
+            entity = (kind, int(index), fingerprint)
+            if entity in assigned:
+                out.append(EntityRef(entity_type=kind, fingerprint=assigned[entity],
+                                     entity_index=int(index), ambiguous=True))
+                continue
             nth = used.get(fingerprint, 0)
             used[fingerprint] = nth + 1
             key = f"{fingerprint}#{nth}"
+            assigned[entity] = key
         out.append(EntityRef(entity_type=kind, fingerprint=key, entity_index=int(index),
                              ambiguous=collided))
     return tuple(out)

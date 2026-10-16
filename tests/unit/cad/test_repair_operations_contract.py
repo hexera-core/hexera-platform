@@ -38,11 +38,22 @@ def test_the_whole_shape_fallback_is_the_widest_scope_in_the_catalogue():
     assert widest.name == "fix_shape_global"
 
 
-def test_the_whole_shape_fallback_takes_no_targets():
-    # It is the operation that exists so the loop is never WORSE than today's single pass, and
-    # today's pass aims at nothing.
+def test_the_whole_shape_fallback_names_what_it_aimed_at_even_though_it_runs_whole_shape():
+    # It exists so the loop is never WORSE than today's single pass, and it RUNS over everything -
+    # but a target tuple is not optional. The planner skips a candidate with no targets and the
+    # session's `_carries` check over an empty tuple is False, so returning `()` here made the
+    # operation unreachable and every defect only it claims got zero attempts.
+    from meshpipeline.cad.repair.contracts import DefectSeverity
+    from meshpipeline.cad.repair.localize import EntityDefect
+
     glob = next(op for op in OPERATIONS if op.name == "fix_shape_global")
-    assert glob.targets_for(object()) == ()
+    assert glob.targets_for(object()) == (), "a non-defect must not produce a target"
+
+    broken = EntityDefect(code=DefectCode.invalid_brep, severity=DefectSeverity.error,
+                          entity_type="shell", entity_index=2, message="x",
+                          fingerprint="shell:abc")
+    assert [(t.entity_type, t.fingerprint) for t in glob.targets_for(broken)] == \
+           [("shell", "shell:abc")]
 
 
 def test_an_outcome_defaults_to_an_empty_geometric_mapping():
@@ -132,3 +143,98 @@ def test_filling_offers_no_target_for_a_defect_the_localiser_did_not_call_a_free
     not_a_loop = EntityDefect(code=DefectCode.open_shell, severity=DefectSeverity.error,
                               entity_type="face", entity_index=2, message="x")
     assert op.targets_for(not_a_loop) == ()
+
+
+# THE KERNEL RECORD IS ONLY TRUSTED FOR A REF THE SAME GEOMETRY NAMES
+#
+# `localize._open_boundary_defects` names a free boundary by its FIRST EDGE but fingerprints the
+# WIRE's bounding box. The mapping readers compute a successor as `fingerprint_of("edge", box of
+# the edge)`, which is a different box by construction - so any kernel record of that edge
+# produced a successor name denoting nothing in the next scan, and the verdict then reported
+# `basis: "kernel"` on the strength of it. Every successful fill claimed "the kernel says this rim
+# moved" when it did not.
+
+
+def _box_payload(xmin, xmax):
+    return {"unit": "mm", "bbox_min": [xmin, 0.0, 0.0], "bbox_max": [xmax, 1.0, 0.0]}
+
+
+class _Recorded:
+    """A ShapeBuild_ReShape that says every sub-shape it is asked about was replaced."""
+
+    def __init__(self, replacement):
+        self._replacement = replacement
+
+    def IsRecorded(self, _sub):  # noqa: N802 - the kernel's own spelling
+        return True
+
+    def Value(self, _sub):  # noqa: N802
+        return self._replacement
+
+
+def test_a_ref_whose_fingerprint_the_sub_shape_does_not_reproduce_gets_no_kernel_evidence(
+        monkeypatch):
+    import meshpipeline.cad.repair.operations as ops
+    from meshpipeline.cad.repair.identity import EntityRef
+
+    before, after = object(), object()
+    boxes = {before: _box_payload(0.0, 1.0), after: _box_payload(5.0, 6.0)}
+    monkeypatch.setattr(ops, "sub_shape", lambda shape, kind, index: before)
+    monkeypatch.setattr(ops, "box_of", lambda sub: boxes[sub])
+
+    # The free-boundary case: the ref's fingerprint came from the WIRE's box, so it cannot be
+    # reproduced from the edge the index resolves to.
+    rim = EntityRef(entity_type="edge", fingerprint="edge:fromthewiresbox", entity_index=3)
+    mapping = ops.mapping_from_context(_Recorded(after), (rim,), shape_before=object(),
+                                       diagonal_mm=100.0)
+
+    assert mapping.moved == {}, "a successor was invented for a name the kernel never named"
+    assert mapping.gone == frozenset()
+    assert mapping.basis == "geometric", "no kernel evidence may still be reported as kernel"
+
+
+def test_a_ref_the_sub_shape_does_reproduce_is_still_read_from_the_kernel(monkeypatch):
+    # The verification must not disable the mapping for the ops that genuinely have one.
+    import meshpipeline.cad.repair.operations as ops
+    from meshpipeline.cad.repair.identity import EntityRef, fingerprint_of, quantum_for
+
+    before, after = object(), object()
+    boxes = {before: _box_payload(0.0, 1.0), after: _box_payload(5.0, 6.0)}
+    monkeypatch.setattr(ops, "sub_shape", lambda shape, kind, index: before)
+    monkeypatch.setattr(ops, "box_of", lambda sub: boxes[sub])
+
+    quantum = quantum_for(100.0)
+    honest = EntityRef(entity_type="edge", entity_index=3,
+                       fingerprint=fingerprint_of("edge", boxes[before], quantum=quantum))
+    mapping = ops.mapping_from_context(_Recorded(after), (honest,), shape_before=object(),
+                                       diagonal_mm=100.0)
+
+    assert mapping.basis == "kernel"
+    assert mapping.moved == {honest.fingerprint:
+                             fingerprint_of("edge", boxes[after], quantum=quantum)}
+
+
+def test_sewing_also_declines_a_ref_its_own_geometry_does_not_name(monkeypatch):
+    import meshpipeline.cad.repair.operations as ops
+    from meshpipeline.cad.repair.identity import EntityRef
+
+    before, after = object(), object()
+    boxes = {before: _box_payload(0.0, 1.0), after: _box_payload(5.0, 6.0)}
+    monkeypatch.setattr(ops, "sub_shape", lambda shape, kind, index: before)
+    monkeypatch.setattr(ops, "box_of", lambda sub: boxes[sub])
+
+    class _Sewing:
+        def DeletedFace(self):  # noqa: N802
+            raise RuntimeError("none")
+
+        def IsModified(self, _sub):  # noqa: N802
+            return True
+
+        def Modified(self, _sub):  # noqa: N802
+            return after
+
+    rim = EntityRef(entity_type="edge", fingerprint="edge:fromthewiresbox", entity_index=3)
+    mapping = ops.mapping_from_sewing(_Sewing(), (rim,), shape_before=object(),
+                                      diagonal_mm=100.0)
+
+    assert mapping.moved == {}

@@ -202,3 +202,58 @@ def test_two_defects_on_entities_sharing_a_box_are_still_distinguishable():
     stamped = _stamped(pair, diagonal_mm=100.0)
 
     assert stamped[0].fingerprint != stamped[1].fingerprint
+
+
+# ONE ENTITY, ONE DEFECT PER CODE
+#
+# `_status_defects` emits one defect per kernel status, and `TopExp_Explorer` enumerates a shared
+# sub-shape once per owning parent - so one edge can be visited twice and two kernel statuses can
+# map to one product code. Left in, the duplicate records make `refs_for` believe two entities
+# share a box, which suffixes both names `#0`/`#1`. After a repair clears one of them the survivor
+# is stamped WITHOUT a suffix, so the progress rule looks for a name that no longer exists and
+# keeps an operation whose targeted defect is still there.
+
+
+def test_the_same_code_reported_twice_on_one_entity_is_one_defect():
+    from meshpipeline.cad.repair.localize import EntityDefect, _deduped
+
+    box = {"unit": "mm", "bbox_min": [0, 0, 0], "bbox_max": [1, 0, 0]}
+    # "NotClosed" and "FreeEdge" are different kernel words for one opening, and the explorer can
+    # hand back the same edge twice. Neither duplicate carries information the first does not.
+    twice = [EntityDefect(code=DefectCode.open_shell, severity=DefectSeverity.error,
+                          entity_type="edge", entity_index=4, message="x", location=box,
+                          kernel_status=status)
+             for status in ("NotClosed", "FreeEdge")]
+
+    assert len(_deduped(twice)) == 1
+    assert _deduped(twice)[0].kernel_status == "NotClosed", "the first record must be the kept one"
+
+
+def test_two_different_codes_on_one_entity_are_two_defects():
+    # Deduplication is per CODE: one edge can genuinely be both a sliver and a broken curve, and
+    # collapsing those would hide one of them.
+    from meshpipeline.cad.repair.localize import EntityDefect, _deduped
+
+    box = {"unit": "mm", "bbox_min": [0, 0, 0], "bbox_max": [1, 0, 0]}
+    pair = [EntityDefect(code=code, severity=DefectSeverity.error, entity_type="edge",
+                         entity_index=4, message="x", location=box)
+            for code in (DefectCode.small_edge, DefectCode.curve_inconsistency)]
+
+    assert len(_deduped(pair)) == 2
+
+
+def test_two_codes_on_one_entity_keep_the_unsuffixed_name_so_a_later_scan_can_find_them():
+    # THE BUG THIS PINS: suffixed `edge:abc#0` / `edge:abc#1` here, then `edge:abc` after the
+    # repair that cleared one of them, so `_progress_refusal` found neither and kept an operation
+    # that had fixed nothing.
+    from meshpipeline.cad.repair.localize import EntityDefect, _stamped
+
+    box = {"unit": "mm", "bbox_min": [0, 0, 0], "bbox_max": [1, 0, 0]}
+    pair = tuple(EntityDefect(code=code, severity=DefectSeverity.error, entity_type="edge",
+                              entity_index=4, message="x", location=box)
+                 for code in (DefectCode.curve_inconsistency, DefectCode.small_edge))
+
+    stamped = _stamped(pair, diagonal_mm=100.0)
+
+    assert "#" not in stamped[0].fingerprint
+    assert stamped[0].fingerprint == stamped[1].fingerprint

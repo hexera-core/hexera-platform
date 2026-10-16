@@ -26,14 +26,20 @@ def _opted_in(monkeypatch):
     monkeypatch.setattr(rcfg, "CAD_REPAIR_ALLOW_FACE_REMOVAL", False)
 
 
-def test_a_sound_part_passes_through_repair_without_losing_geometry(tmp_path):
+def test_a_sound_part_is_left_alone_and_nothing_is_written_for_it(tmp_path):
+    """A sound part has nothing to repair, so it gets no delivery - not a re-export.
+
+    It used to be written out and reported as repaired. Nothing was kept, so those bytes were a
+    STEP round trip of the customer's own file, which changes topology for no repair at all; the
+    run is better off on the upload it already has.
+    """
     source = write_step(tmp_path / "box.step", "MM")
     out = tmp_path / "box-repaired.step"
 
-    report = repair_step_file(source, out)
+    with pytest.raises(RepairRefused) as refused:
+        repair_step_file(source, out)
 
-    assert out.exists() and out.stat().st_size > 0
-    measured = {m.name: m.value for m in report.measurements}
+    measured = refused.value.measurements
     before, after = measured["before"], measured["after"]
     # A VALID PART MUST COME OUT VALID AND WHOLE. A conservative pass over sound geometry has
     # nothing to fix, and anything it changed about the face count or the size would be damage.
@@ -42,14 +48,18 @@ def test_a_sound_part_passes_through_repair_without_losing_geometry(tmp_path):
     assert after["valid"] is True
     assert abs(after["diagonal_mm"] - before["diagonal_mm"]) / before["diagonal_mm"] < 1e-9
     # and it says what it did: a sound part had nothing to repair, so no operation ran on it
-    assert report.operations == ()
+    assert measured["operations_attempted"] == 0 and measured["operations_kept"] == 0
+    assert not out.exists()
 
 
 def test_the_customers_file_is_not_modified(tmp_path):
     source = write_step(tmp_path / "box.step", "MM")
     original = source.read_bytes()
 
-    repair_step_file(source, tmp_path / "out.step")
+    # a sound part is now declined for having nothing to deliver; the invariant below is about
+    # the SOURCE either way, and holds on every path through this function.
+    with pytest.raises(RepairRefused):
+        repair_step_file(source, tmp_path / "out.step")
 
     # THE ONE INVARIANT THIS WHOLE SERVICE RESTS ON: the bytes the customer sent are still theirs.
     assert source.read_bytes() == original
@@ -97,6 +107,8 @@ def test_a_real_repaired_part_can_be_promoted_to_the_runs_geometry(tmp_path):
     construction. Until such a fixture exists (a real customer file, licensed and reduced), the
     honest claim is this one: a repaired part is accepted only because it provably staged.
     """
+    from tests.cad_fixtures import write_loose_faces_step
+
     from meshpipeline.contracts.geometry_source import (
         GeometryInterpretationRef,
         GeometrySourceRef,
@@ -105,7 +117,10 @@ def test_a_real_repaired_part_can_be_promoted_to_the_runs_geometry(tmp_path):
     )
     from meshpipeline.pipeline.repair_promote import derived_interpretation, promote
 
-    source = write_step(tmp_path / "part.step", "MM")
+    # THE LOOSE-FACES FIXTURE, because promotion is only reachable for a run that KEPT something:
+    # a run that repaired nothing is declined before anything is written, so a sound box can no
+    # longer carry this test.
+    source = write_loose_faces_step(tmp_path / "part.step")
     # THE HANDLE IS BUILT FROM THE REAL FILE, not from tests._geometry_support: that helper WRITES
     # placeholder bytes at the path it is given, which would overwrite the STEP this test just
     # authored and leave the kernel parsing a comment. The handle has to describe the bytes that
@@ -220,16 +235,17 @@ def test_sewing_alone_cannot_close_a_hole_and_the_repair_says_which_it_left(tmp_
     assert [d.code.value for d in before.defects] == ["open_shell"]
 
     out = tmp_path / "holed-repaired.step"
-    report = repair_step_file(source, out)
+    with pytest.raises(RepairRefused) as refused:
+        repair_step_file(source, out)
 
-    measured = {m.name: m.value for m in report.measurements}
+    measured = refused.value.measurements
     # filling is off by default, so nothing was patched, and the loop says it did not succeed
     assert measured["resolved"] is False
-    assert not any(op["mutated"] for op in report.operations)
-    assert report.entities, "a hole left unfilled must be reported, not dropped"
-    # and the re-inspection still finds it - which is the honest outcome
-    after = inspect_brep_file(out)
-    assert [d.code.value for d in after.defects] == ["open_shell"]
+    assert measured["operations_kept"] == 0
+    # NOTHING KEPT MEANS NOTHING DELIVERED. The hole is still reported - by the inspection of the
+    # file the customer sent, which is what the run goes on using.
+    assert not out.exists()
+    assert [d.code.value for d in inspect_brep_file(source).defects] == ["open_shell"]
 
 
 def test_with_filling_enabled_a_bounded_hole_is_closed_and_the_patch_is_declared(tmp_path,
@@ -274,15 +290,16 @@ def test_the_span_cap_refuses_to_lid_a_missing_wall(tmp_path, monkeypatch):
     # the default cap: one face of a cube spans more of it than this allows
     monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_HOLE_SPAN_RATIO", 0.75)
 
-    report = repair_step_file(write_open_shell_step(tmp_path / "holed.step"),
-                              tmp_path / "out.step")
+    out = tmp_path / "out.step"
+    with pytest.raises(RepairRefused) as refused:
+        repair_step_file(write_open_shell_step(tmp_path / "holed.step"), out)
 
-    measured = {m.name: m.value for m in report.measurements}
-    # the patch is attempted-and-undone or never made; either way nothing was kept and the wall
-    # is still reported as an open defect
-    assert not any(op["mutated"] and op["name"] == "fill_planar_hole" for op in report.operations)
+    measured = refused.value.measurements
+    # the patch is attempted-and-undone or never made; either way nothing was kept, so the run
+    # stays on the customer's own file with the wall still open
+    assert measured["operations_kept"] == 0
     assert measured["resolved"] is False
-    assert [e["code"] for e in report.entities] == ["open_shell"]
+    assert not out.exists()
 
 
 def test_a_missing_bore_wall_is_never_sealed_shut(tmp_path, monkeypatch):
@@ -298,15 +315,17 @@ def test_a_missing_bore_wall_is_never_sealed_shut(tmp_path, monkeypatch):
     monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_HOLE_SPAN_RATIO", 1.0)
 
     source = write_missing_bore_wall_step(tmp_path / "bore.step")
-    report = repair_step_file(source, tmp_path / "bore-repaired.step")
+    out = tmp_path / "bore-repaired.step"
+    # nothing can be kept once both rims are refused, so the run is declined rather than delivered
+    with pytest.raises(RepairRefused) as refused:
+        repair_step_file(source, out)
 
-    measured = {m.name: m.value for m in report.measurements}
-    assert not any(op["mutated"] and op["name"] == "fill_planar_hole"
-                   for op in report.operations), "a through-hole was sealed"
+    measured = refused.value.measurements
+    assert measured["operations_kept"] == 0, "a through-hole was sealed"
     refusals = measured["refusals"]
     assert [r["reason"] for r in refusals].count("paired_rim") == 2, refusals
     assert "seal a through-hole" in refusals[0]["detail"]
-    assert len(report.entities) == 2, "both rims should still be reported as open"
+    assert not out.exists()
 
 
 def test_the_bore_rims_are_located_as_two_separate_openings(tmp_path):
@@ -444,10 +463,11 @@ def test_a_loose_body_beside_a_solid_is_sewn_without_costing_the_solid(tmp_path)
 def test_a_sound_single_solid_is_not_reported_as_sewn(tmp_path):
     source = write_step(tmp_path / "box.step", "MM")
 
-    report = repair_step_file(source, tmp_path / "box-repaired.step")
+    with pytest.raises(RepairRefused) as refused:
+        repair_step_file(source, tmp_path / "box-repaired.step")
 
-    # the one thing sewing must never touch, and the report must not claim it did
-    assert report.operations == ()
+    # the one thing sewing must never touch, and nothing may claim it did
+    assert refused.value.measurements["operations_attempted"] == 0
 
 
 def test_sewing_bare_faces_is_reported_even_though_the_shell_count_rises():
@@ -548,21 +568,53 @@ def test_a_summary_never_claims_a_repair_the_run_did_not_achieve(tmp_path, monke
     monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_AREA_CHANGE_RATIO", 0.02)
     monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO", 0.02)
 
-    report = repair_step_file(write_small_edge_step(tmp_path / "sliver.step"),
-                              tmp_path / "out.step")
+    out = tmp_path / "out.step"
+    with pytest.raises(RepairRefused) as refused:
+        repair_step_file(write_small_edge_step(tmp_path / "sliver.step"), out)
 
-    measured = {m.name: m.value for m in report.measurements}
+    measured = refused.value.measurements
     assert measured["resolved"] is False
-    assert "Repaired within the conservative caps." not in report.summary
-    assert report.entities, "the remaining defect is not reported"
+    # THE STRONGEST FORM OF "DO NOT CLAIM A REPAIR YOU DID NOT MAKE": with nothing kept there is
+    # no report to word carefully and no file to promote.
+    assert measured["operations_kept"] == 0
+    assert "nothing was kept" in str(refused.value)
+    assert not out.exists()
 
 
 def test_a_sound_part_reports_resolved_with_no_operations(tmp_path, monkeypatch):
     monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_AREA_CHANGE_RATIO", 0.02)
     monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO", 0.02)
 
-    report = repair_step_file(write_step(tmp_path / "box.step", "MM"), tmp_path / "out.step")
+    with pytest.raises(RepairRefused) as refused:
+        repair_step_file(write_step(tmp_path / "box.step", "MM"), tmp_path / "out.step")
 
-    measured = {m.name: m.value for m in report.measurements}
+    # RESOLVED AND REFUSED ARE NOT A CONTRADICTION: the loop had nothing to do and says so, and
+    # the refusal is about there being nothing to DELIVER - the run keeps the customer's file.
+    measured = refused.value.measurements
     assert measured["resolved"] is True
-    assert report.operations == (), "a sound part had operations run on it"
+    assert measured["operations_attempted"] == 0, "a sound part had operations run on it"
+
+
+def test_a_run_that_kept_nothing_is_refused_rather_than_delivered(tmp_path):
+    """Nothing kept means nothing to promote, and a re-export is not a repair.
+
+    The open-shell fixture's opening is a missing WALL (0.8165 of the diagonal, over the 0.75
+    span cap), so filling declines it and no other operation can close it: the run keeps zero
+    operations. Writing the STEP anyway handed the pipeline a freshly exported file - which
+    `promote` accepts, because it refuses only byte-identical geometry - and `status_for` called
+    it `repaired` because no error-severity defect was in the report. A STEP round trip changes
+    topology, so that is the customer's upload replaced by a different shape for no repair at all.
+    """
+    from tests.cad_fixtures import write_open_shell_step
+
+    source = write_open_shell_step(tmp_path / "holed.step")
+    out = tmp_path / "holed-repaired.step"
+
+    with pytest.raises(RepairRefused) as refused:
+        repair_step_file(source, out)
+
+    assert "nothing was kept" in str(refused.value)
+    assert refused.value.measurements["operations_kept"] == 0
+    # REFUSED MEANS NOTHING WAS DELIVERED. The node leaves the run on the original upload, which
+    # is the same outcome as not having tried.
+    assert not out.exists()

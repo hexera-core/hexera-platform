@@ -13,17 +13,31 @@ from typing import Protocol
 
 from meshpipeline.cad.repair.contracts import DefectCode, DefectSeverity
 from meshpipeline.cad.repair.identity import EntityRef
-from meshpipeline.cad.repair.operations import OPERATIONS, RepairOp
+from meshpipeline.cad.repair.operations import OPERATIONS, FillPlanarHole, RepairOp
 
 logger = logging.getLogger(__name__)
 
 # WHY THIS IS A SEPARATE MODULE WITH A PROTOCOL.
 #
-# This is the seat a model takes in slice 8. Everything about safety - the caps, the progress rule,
-# the rollback - lives in the session, so a planner cannot do anything a planner could not do.
-# What a planner chooses is which of six bounded operations to point at which located defect, and
-# nothing more. Keeping that behind one small interface is what makes "a model picks, the rules
-# pick, compare them on the same corpus" an experiment rather than a rewrite.
+# This is the seat a model takes in slice 8. Nearly everything about safety - the caps, the
+# progress rule, the rollback - lives in the session, so a planner choosing badly wastes a budget
+# rather than damaging a part. What a planner chooses is which of FIVE bounded operations
+# (`operations.OPERATIONS`) to point at which located defect, and nothing more. Keeping that behind
+# one small interface is what makes "a model picks, the rules pick, compare them on the same
+# corpus" an experiment rather than a rewrite.
+#
+# THE ONE EXCEPTION, AND IT IS NOT A SMALL ONE. For a SEALED THROUGH-HOLE - both rims of a missing
+# bore wall patched flat - the refusal below is the ONLY defence in the system. Nothing downstream
+# can see that case: `sanity_refusal` passes (faces rise, no solid is lost), the volume comparison
+# is skipped because a shape with a free boundary has `solids == 0`, the patch area is declared by
+# the fill so `_accounted` passes, and the progress rule correctly sees the rim's `open_shell`
+# gone. Every check agrees the part was repaired, and the customer has a plate with no bolt hole.
+# That ships only because `CAD_REPAIR_FILL_PLANAR_HOLES` DEFAULTS OFF, which makes the ban
+# unreachable in a default deployment. Before filling is enabled by default, or before a model
+# takes this seat, the ban has to move BEHIND the planner interface - a planner-independent check
+# the session or the fill enforces - because a planner that can be replaced is not a defence.
+# Do not read the paragraph above as "the session makes a planner harmless"; for this one
+# behaviour it does not.
 #
 # The rules below are deliberately plain. They are the BASELINE a model has to beat.
 
@@ -195,7 +209,11 @@ class RulesPlanner:
                 claimed = True
                 if history.was_ineffective(defect.fingerprint, op.name):
                     continue
-                if op.name == "fill_planar_hole" and history.fill_refused_because:
+                # AGAINST THE OPERATION'S OWN NAME, never a literal: a rename that updated
+                # operations.py and the contract tests but missed a string here would leave this
+                # guard dead with every test green - and the guard is the only thing between the
+                # loop and a sealed through-hole.
+                if op.name == FillPlanarHole.name and history.fill_refused_because:
                     continue
                 targets = op.targets_for(defect)
                 if not targets:

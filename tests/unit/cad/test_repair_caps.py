@@ -273,3 +273,34 @@ def test_a_rolled_back_operations_declaration_is_never_added():
     led = Accounting().plus({"area_delta_mm2": 10.0})
     assert led.plus({"area_delta_mm2": 99.0}).declared_area_mm2 == pytest.approx(109.0)
     assert led.declared_area_mm2 == pytest.approx(10.0)
+
+
+# A BODY THAT CLOSED IS NEW VOLUME NOBODY COULD HAVE DECLARED
+
+
+def test_volume_is_not_compared_when_a_body_closed_inside_an_assembly():
+    # THE MIXED-ASSEMBLY CASE `sew_faces` IS BUILT FOR: one solid body plus one body that arrived
+    # as loose faces. Sewing closes the loose body and it is promoted, so the assembly goes from
+    # one solid to two and gains that body's volume - which no operation can declare, because
+    # whether the shell closed is the kernel's answer. The whole-shape skip ("the shape had no
+    # solid") does not fire here, so this legitimate repair was refused.
+    before = _changed(solids=1, volume_mm3=8000.0)
+    after = _changed(solids=2, volume_mm3=9000.0)
+
+    assert cumulative_refusal(before, after, declared_area_mm2=0.0,
+                              declared_volume_mm3=0.0) == ""
+
+
+def test_a_solid_lost_is_still_caught_even_though_the_volume_check_was_skipped():
+    # The skip is only for a solid APPEARING. Losing one is damage, and it is the per-operation
+    # sanity check - not the volume comparison - that has always caught it.
+    assert "solid" in sanity_refusal(_changed(solids=2), _changed(solids=1, volume_mm3=1.0))
+
+
+def test_volume_is_still_compared_when_the_solid_count_did_not_rise():
+    # The skip must not become a blanket exemption: an equal solid count still gets the comparison.
+    before = _changed(solids=1, volume_mm3=8000.0)
+    after = _changed(solids=1, volume_mm3=9000.0)
+
+    assert "volume" in cumulative_refusal(before, after, declared_area_mm2=0.0,
+                                          declared_volume_mm3=0.0)

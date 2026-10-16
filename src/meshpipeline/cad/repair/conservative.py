@@ -54,6 +54,16 @@ class RepairUnavailable(RuntimeError):
 #: SUPERSEDED AS A RECIPE, KEPT AS A POLICY. The loop (cad/repair/loop.py) chooses which of
 #: cad/repair/operations.py's operations to run and in what order, so this tuple no longer
 #: describes a sequence. What it still states is the SET a conservative profile may draw from.
+#:
+#: THESE ARE POLICY CATEGORIES, NOT OPERATION NAMES. Only `fix_small_edges` happens to match an
+#: operation; `fix_wireframe`, `fix_face_boundaries`, `sew_shells` and `fill_planar_holes` are the
+#: kernel capabilities a conservative pass is permitted to use, and nothing looks any of them up.
+#: `fix_shape_global` is absent for the same reason - it is a whole-shape application of
+#: capabilities already listed here, not a sixth permission. THE CATALOGUE IS
+#: `operations.OPERATIONS`; read it there, and do not extend this tuple expecting the loop to
+#: notice. (A unit test pins these strings, so they are not renamed to match the catalogue either:
+#: what a report has already told operators the profile may do should not change spelling because
+#: an internal class did.)
 _CONSERVATIVE_OPERATIONS: tuple[str, ...] = (
     "fix_small_edges",      # degenerate and vanishing edges the writer left behind
     "fix_wireframe",        # wire ordering, gaps between edges of the same wire
@@ -448,6 +458,21 @@ def repair_step_file(source: Path, destination: Path, *,
                                      declared_volume_mm3=declared_volume))
     if refusal:
         raise RepairRefused(refusal, measurements=measurements)
+
+    if measurements["operations_kept"] == 0:
+        # NOTHING KEPT MEANS NOTHING TO PROMOTE, and writing the file anyway was worse than doing
+        # nothing. `promote` refuses only BYTE-IDENTICAL geometry, which a fresh
+        # `STEPControl_Writer` export never is, and `status_for` calls a report with no
+        # error-severity defect `repaired` - so a run that repaired nothing replaced the customer's
+        # upload with a re-export of it, and a STEP round trip CHANGES TOPOLOGY (the loose-faces
+        # fixture arrives as 6 one-face shells and 0 solids). Refused before the write, so there is
+        # no artifact for a later step to pick up; the attempt node treats this as a decline and
+        # leaves the run on the original, which is the same outcome as not having tried.
+        raise RepairRefused(
+            f"nothing was kept ({measurements['operations_attempted']} operation(s) attempted, "
+            f"stopped because {result.stopped_because}), so there is nothing to promote - "
+            "re-exporting the upload would change its topology without repairing it",
+            measurements=measurements)
 
     _write_step(result.shape, dest)
 

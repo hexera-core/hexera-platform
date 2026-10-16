@@ -465,6 +465,36 @@ def _size_defects(shape, *, diagonal: float, total_area: float,
     return out
 
 
+def _deduped(found: list[EntityDefect]) -> list[EntityDefect]:
+    """One defect per `(entity_type, entity_index, code)`, keeping the first and the order.
+
+    THE SAME ENTITY REALLY IS REPORTED TWICE. `_status_defects` emits one defect per kernel
+    STATUS, and several statuses map to one product code (`NotClosed`, `FreeEdge` and `EmptyShell`
+    are all `open_shell`); `TopExp_Explorer` also enumerates a shared sub-shape once per owning
+    parent, so one edge can be visited from two faces. The duplicate records carry no information
+    the first does not.
+
+    WHY LEAVING THEM IN WAS A CORRECTNESS BUG RATHER THAN NOISE. `identity.refs_for` saw two
+    entries with an identical box, concluded two entities shared it, and keyed them `edge:abc#0`
+    and `edge:abc#1`. After a repair cleared one status the survivor was stamped `edge:abc` with no
+    suffix, so `session._progress_refusal` looked for a name that no longer existed, found neither
+    it nor a mapped successor, and KEPT an operation whose targeted defect was still there -
+    `loop._abandoned` missed it identically, so the run could report `resolved`.
+
+    Two DIFFERENT codes on one entity stay two defects: an edge can genuinely be both a sliver and
+    a broken curve, and the progress rule is asked about one code at a time.
+    """
+    seen: set[tuple[str, int, str]] = set()
+    out: list[EntityDefect] = []
+    for defect in found:
+        key = (defect.entity_type, int(defect.entity_index), defect.code.value)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(defect)
+    return out
+
+
 def _stamped(found: tuple[EntityDefect, ...], *,
              diagonal_mm: float) -> tuple[EntityDefect, ...]:
     """Give every located defect a name that survives a repair.
@@ -513,6 +543,11 @@ def localize_scan(shape, *, valid: bool | None = None) -> tuple[tuple[EntityDefe
     found.extend(_size_defects(shape, diagonal=diagonal, total_area=total_area,
                                interior=interior))
     found.sort(key=lambda d: (d.entity_type, d.entity_index, d.code.value))
+    # DEDUPED BEFORE THE STAMP, and after the sort so the survivor of a pair is chosen in the same
+    # stable order the report is read in. A duplicate record of one entity makes `refs_for` believe
+    # two entities share a box, and the `#n` suffix that follows is not stable across a repair -
+    # see `_deduped`.
+    found = _deduped(found)
     # STAMPED AFTER THE SORT, so the collision suffix a shared box gets is assigned in the same
     # stable order the report is read in - two scans of identical bytes must produce identical
     # names, or nothing can be compared across a repair.
