@@ -158,6 +158,7 @@ def mapping_from_context(context, targets: tuple[EntityRef, ...], *,
     """
     moved: dict[str, str] = {}
     gone: set[str] = set()
+    consulted = False
     quantum = quantum_for(diagonal_mm)
     for ref in targets:
         if not ref.targetable:
@@ -166,7 +167,9 @@ def mapping_from_context(context, targets: tuple[EntityRef, ...], *,
         if sub is None:
             continue
         try:
-            if not context.IsRecorded(sub):
+            recorded = context.IsRecorded(sub)
+            consulted = True                # the kernel ANSWERED, even if the answer is "untouched"
+            if not recorded:
                 continue                    # untouched; `fate_of` will call it unknown
             value = context.Value(sub)
         except Exception as exc:  # noqa: BLE001 - a history API that declines is not a failure
@@ -176,12 +179,22 @@ def mapping_from_context(context, targets: tuple[EntityRef, ...], *,
             gone.add(ref.fingerprint)
             continue
         new = fingerprint_of(ref.entity_type, box_of(value), quantum=quantum)
-        if new and new != ref.fingerprint:
+        # `refs_for` suffixes a ref whose box another entity shares ("face:abc#0") so the table
+        # stays addressable. The suffix names a slot in THAT table, not a place in space, so a box
+        # recomputed from geometry can never carry it: compare against the base name, or every
+        # recorded-but-unmoved duplicate would be reported as moved to a key that matches nothing.
+        # The move is still recorded under the ref's FULL key, which is what the session looks up.
+        base = ref.fingerprint.split("#", 1)[0]
+        if new and new != base:
             moved[ref.fingerprint] = new
         elif not new:
             # Recorded, replaced by something with no measurable extent. Treat as gone: there is
             # nothing left to find it by, which is the same thing from a defect's point of view.
             gone.add(ref.fingerprint)
+    if not consulted:
+        # NOTHING WAS READ FROM THE HISTORY, so nothing is a kernel fact. Claiming `kernel` here
+        # would tell the session the kernel confirmed a fate nobody asked it about.
+        return EntityMapping.empty()
     return EntityMapping(moved=moved, gone=frozenset(gone), basis="kernel")
 
 
@@ -214,6 +227,7 @@ class FixShapeGlobal:
     def apply(self, shape, targets: tuple[EntityRef, ...], *,
               tolerance_mm: float) -> OpOutcome:
         from OCP.ShapeFix import ShapeFix_Shape
+        from OCP.Standard import Standard_Failure
 
         from meshpipeline.cad.repair.localize import _diagonal
 
@@ -235,8 +249,8 @@ class FixShapeGlobal:
         try:
             mapping = mapping_from_context(fixer.Context(), targets, shape_before=shape,
                                            diagonal_mm=_diagonal(shape))
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("fix_shape_global: no usable context (%s)", exc)
+        except (RuntimeError, Standard_Failure) as exc:   # the kernel declining; our own TypeError/AttributeError surface
+            logger.warning("fix_shape_global: no usable context (%s: %s)", type(exc).__name__, exc)
         # DECLARES NOTHING. A ShapeFix pass repairs how the geometry was written down, not what it
         # is, so any area or volume it moves is unaccounted for by design - and the cumulative cap
         # is then the thing that catches it.
