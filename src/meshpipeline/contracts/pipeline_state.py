@@ -78,10 +78,11 @@ class PipelineState(TypedDict):
     # the route, the targets, the operations - or why it declined. `attempted: False` is the
     # ordinary case and is never an error: every refusal on that path leaves the run on the file
     # the customer sent, which is the same outcome as not having tried.
-    #   repair_status     the capped repair's own verdict on what it produced - NOT a statement that
-    #                     the run succeeded, so it can read "repaired" beside resolved=False. Read
-    #                     `resolved` for that. Distinct from the top-level `repair_status`, the
-    #                     inspection's verdict on the file the customer sent.
+    #   repair_status     "repaired" unless the report's DEFECTS include an error or fatal entry
+    #                     (status_for, cad/repair/conservative.py). It checks no caps and ignores
+    #                     warnings, so warnings left behind still read "repaired" - NOT a statement
+    #                     that the run succeeded; read `resolved` for that. Distinct from the
+    #                     top-level `repair_status`, the inspection's verdict on the customer's file.
     #   resolved          taken from the loop: complete scan, no error defects, nothing left at a
     #                     fingerprint a failed attempt targeted. Absent in the report reads False.
     #   operations        every operation the loop TRIED, in order, each with its targets, verdict

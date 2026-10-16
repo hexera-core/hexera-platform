@@ -214,11 +214,12 @@ async def node_repair_attempt(state: PipelineState) -> dict:
         **update,
         "repair_attempt": {
             "attempted": True,
-            # NOT A STATEMENT THAT THE RUN SUCCEEDED. This is the capped repair's own verdict on
-            # what it produced ("repaired" = usable output, within the caps), so it can read
-            # "repaired" beside `resolved: False` when the loop stalled with warnings left. Read
-            # `resolved` for whether the defects it aimed at are gone. Not to be confused with the
-            # top-level `repair_status`, which is the inspection's verdict on the customer's file.
+            # NOT A STATEMENT THAT THE RUN SUCCEEDED. `status_for` (cad/repair/conservative.py)
+            # returns "repaired" unless the report's DEFECTS include an error or fatal entry - it
+            # looks at no caps and at no warnings, so warnings left behind still read "repaired",
+            # even beside `resolved: False`. Read `resolved` for whether the loop succeeded. Not to
+            # be confused with the top-level `repair_status`, the inspection's verdict on the
+            # customer's file.
             "repair_status": status_for(repair_report).value,
             # TAKEN FROM THE LOOP, NOT INFERRED. It used to be derived from `holes_left`, a key
             # the report no longer carries - which made it read True for any run with no warning
