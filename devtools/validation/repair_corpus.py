@@ -107,9 +107,28 @@ def _one(path: Path, scratch: Path) -> dict:
         return row
 
     measured = {m.name: m.value for m in repaired.measurements}
-    row.update(operations=[op["name"] for op in repaired.operations],
-               holes_filled=measured.get("holes_filled", []),
-               holes_left=measured.get("holes_left", []))
+    row.update(
+        # EVERY ATTEMPT, KEPT OR NOT. The rolled-back ones are the interesting half: they are
+        # where the rules planner ran out of ideas, which is exactly what a model later has to
+        # beat, and a corpus run that only listed successes could not show it.
+        operations=[{"op": op.get("name", ""), "status": op.get("status", ""),
+                     "reason": op.get("reason", ""), "basis": op.get("basis", ""),
+                     "defect_code": op.get("defect_code", ""),
+                     "targets": op.get("targets", [])}
+                    for op in repaired.operations],
+        operations_attempted=int(measured.get("operations_attempted", 0) or 0),
+        operations_kept=int(measured.get("operations_kept", 0) or 0),
+        # FINISHED OR OUT OF ROOM. The single most useful number from a corpus run: a corpus full
+        # of `op_budget` says raise the budget, one full of `stalled` says the catalogue is missing
+        # an operation, and one full of `no_candidate` says the planner cannot aim at what real
+        # files actually carry.
+        stopped_because=str(measured.get("stopped_because", "")),
+        resolved=bool(measured.get("resolved", False)),
+        complete_scan=bool(measured.get("complete_scan", True)),
+        planner=str(measured.get("planner", "")),
+        refusals=list(measured.get("refusals", []) or []),
+        declared_area_mm2=float(measured.get("declared_area_mm2", 0.0) or 0.0),
+    )
 
     after = _inspect(destination)
     row.update(valid_after=after["valid"], counts_after=after["counts"],
@@ -132,6 +151,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("directories", nargs="+", help="directories holding .step/.stp files")
     parser.add_argument("--limit", type=int, default=0, help="stop after N files")
+    parser.add_argument("--loop", action="store_true",
+                        help="print each file's operation sequence, not just the summary")
     parser.add_argument("--json", dest="json_out", default="", help="write the rows here")
     args = parser.parse_args()
 
@@ -169,6 +190,18 @@ def main() -> int:
               f"located={row.get('located_before', {})} "
               f"-> fixed={row.get('repaired_defects', {})}"
               + (f" [{row['error'][:90]}]" if row.get("error") else ""))
+        if args.loop:
+            for op in row.get("operations", []) or []:
+                mark = "+" if op.get("status") == "kept" else "-"
+                detail = f" ({op['reason']})" if op.get("reason") else ""
+                print(f"      {mark} {op.get('op', '?'):<20} {op.get('defect_code', ''):<22}"
+                      f"{op.get('status', '')}{detail}")
+            for record in row.get("refusals") or []:
+                print(f"      ! refused {record.get('reason', '?')}: "
+                      f"{record.get('detail', '')[:60]}")
+            if row.get("stopped_because"):
+                print(f"      = stopped: {row['stopped_because']} "
+                      f"(resolved={row.get('resolved')})")
 
     print("\n== summary ==")
     outcomes: dict[str, int] = {}
@@ -197,6 +230,55 @@ def main() -> int:
     print("\n== what triage advised ==")
     for route, count in sorted(routes.items(), key=lambda kv: -kv[1]):
         print(f"  {count:>4}  {route}")
+
+    print("\n== why the loop stopped ==")
+    stops: dict[str, int] = {}
+    for row in rows:
+        if row.get("stopped_because"):
+            stops[row["stopped_because"]] = stops.get(row["stopped_because"], 0) + 1
+    for reason, count in sorted(stops.items(), key=lambda kv: -kv[1]):
+        print(f"  {count:>4}  {reason}")
+    if not stops:
+        print("  no file reached the loop")
+
+    print("\n== operations, kept vs rolled back ==")
+    # THE PLANNER'S HIT RATE, PER OPERATION. An operation proposed often and kept rarely is
+    # either aimed at the wrong defect or missing from the catalogue in its useful form - and it
+    # is the baseline a model planner gets scored against.
+    tally: dict[str, dict[str, int]] = {}
+    for row in rows:
+        for op in row.get("operations", []) or []:
+            entry = tally.setdefault(op.get("op", "?"),
+                                     {"kept": 0, "rolled_back": 0, "failed": 0})
+            key = op.get("status", "failed")
+            entry[key] = entry.get(key, 0) + 1
+    for name, counts in sorted(tally.items(), key=lambda kv: -sum(kv[1].values())):
+        print(f"  {name:<22} kept={counts['kept']:<4} "
+              f"rolled_back={counts['rolled_back']:<4} failed={counts['failed']}")
+    if not tally:
+        print("  nothing was attempted")
+
+    refused = [r for row in rows for r in (row.get("refusals") or [])]
+    if refused:
+        print("\n== what the planner refused to attempt ==")
+        by_reason: dict[str, int] = {}
+        for record in refused:
+            key = str(record.get("reason", "?"))
+            by_reason[key] = by_reason.get(key, 0) + 1
+        for reason, count in sorted(by_reason.items(), key=lambda kv: -kv[1]):
+            print(f"  {count:>4}  {reason}")
+
+    print("\n== operations never exercised on this corpus ==")
+    # THE POINT OF RUNNING THIS AT ALL. Three of the five operations are unprovable on synthetic
+    # fixtures, so a name absent from the tally above is an operation no real file has ever given
+    # this loop a reason to try.
+    from meshpipeline.cad.repair.operations import OPERATIONS
+
+    never = [op.name for op in OPERATIONS if op.name not in tally]
+    for name in never:
+        print(f"        {name}")
+    if not never:
+        print("  every operation was attempted at least once")
 
     if args.json_out:
         Path(args.json_out).write_text(json.dumps(rows, indent=2, default=str))
