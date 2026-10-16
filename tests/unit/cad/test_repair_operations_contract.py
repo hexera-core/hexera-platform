@@ -94,3 +94,41 @@ def test_an_operation_offers_no_targets_for_a_defect_it_cannot_locate():
     unlocated = EntityDefect(code=DefectCode.small_edge, severity=DefectSeverity.warning,
                              entity_type="edge", entity_index=0, message="x")
     assert op.targets_for(unlocated) == ()
+
+
+# THE TWO SEWING OPERATIONS
+
+
+def test_both_sewing_operations_claim_the_open_shell_defect():
+    # They answer the SAME defect by different means - sewing joins boundaries that are already
+    # coincident, filling adds a patch where there is nothing to stitch to - so the planner tries
+    # the cheaper one first and the ineffective-pair ledger remembers if it did not work.
+    names = {op.name for op in OPERATIONS if DefectCode.open_shell in op.answers}
+    assert {"sew_faces", "fill_planar_hole"} <= names
+
+
+def test_sewing_is_proposed_before_filling_because_it_invents_no_geometry():
+    sew = next(o for o in OPERATIONS if o.name == "sew_faces")
+    fill = next(o for o in OPERATIONS if o.name == "fill_planar_hole")
+    assert sew.scope < fill.scope
+
+
+def test_filling_declares_the_area_it_expects_to_add_so_the_cap_can_account_for_it():
+    from meshpipeline.cad.repair.operations import AREA_DELTA
+
+    # Checked as a contract on the key name, because `caps.Accounting` reads exactly this key and
+    # a typo on either side would silently account for nothing.
+    assert AREA_DELTA == "area_delta_mm2"
+
+
+def test_filling_offers_no_target_for_a_defect_the_localiser_did_not_call_a_free_boundary():
+    from meshpipeline.cad.repair.contracts import DefectSeverity
+    from meshpipeline.cad.repair.localize import EntityDefect
+
+    op = next(o for o in OPERATIONS if o.name == "fill_planar_hole")
+    # An `open_shell` the STATUS WALK attributed to a face (NotClosed on a shell, say) is not a
+    # located loop; there is no wire to make a face from. Only the free-bound finding carries one,
+    # and it is the one with `boundary_edges` in its measurements.
+    not_a_loop = EntityDefect(code=DefectCode.open_shell, severity=DefectSeverity.error,
+                              entity_type="face", entity_index=2, message="x")
+    assert op.targets_for(not_a_loop) == ()

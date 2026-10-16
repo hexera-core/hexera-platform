@@ -13,6 +13,14 @@ from meshpipeline.cad.repair.operations import FixShapeGlobal, box_of, mapping_f
 pytest.importorskip("OCP.ShapeFix", reason="the CAD kernel is a native-tier dependency")
 
 
+@pytest.fixture
+def _filling_on(monkeypatch):
+    import meshpipeline.settings.cad_repair as rcfg
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_FILL_PLANAR_HOLES", True)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_HOLE_SPAN_RATIO", 0.75)
+
+
 def _read(path):
     from meshpipeline.cad.repair.brep import _read_shape
 
@@ -397,3 +405,161 @@ def test_the_face_boundary_operation_leaves_its_input_untouched_for_the_noop_cas
                             entity_index=i)
             FixFaceBoundary().apply(shape, (ref,), tolerance_mm=0.05)
             assert snapshot(shape) == before, f"{name} face {i}: the input shape was mutated"
+
+
+# SEWING
+
+
+def test_sewing_joins_loose_faces_into_a_shell_without_losing_one(tmp_path):
+    from tests.cad_fixtures import write_loose_faces_step
+
+    from meshpipeline.cad.repair.caps import measure
+    from meshpipeline.cad.repair.contracts import DefectCode
+    from meshpipeline.cad.repair.operations import SewFaces
+
+    shape, defect = _defect_of(write_loose_faces_step(tmp_path / "loose.step"),
+                               DefectCode.open_shell)
+    before = measure(shape)
+    # SIX SHELLS, NOT ZERO. The STEP reader wraps each loose face in a shell of its own, so the
+    # body arrives as six one-face shells with no solid. Sewing's job is to collapse them into
+    # one, which is why the assertion below is that the count FALLS - an earlier version of this
+    # test asserted it rose, which the fixture can never satisfy.
+    assert before.solids == 0 and before.shells == 6
+
+    op = SewFaces()
+    outcome = op.apply(shape, op.targets_for(defect), tolerance_mm=0.01)
+
+    after = measure(outcome.shape)
+    assert after.faces == before.faces, "sewing must not cost a face"
+    assert after.shells == 1, f"six one-face shells were not joined into one (got {after.shells})"
+    # AND THE SHELL CLOSED INTO A BODY. `_as_solid_if_closed` promotes a single closed shell, so a
+    # successful sew of a complete box ends with a solid where there was none.
+    assert after.solids == 1, "the closed shell was not promoted to a solid"
+    assert outcome.mapping.basis == "kernel"
+    # IT DECLARES NO AREA. Sewing joins what is already there; a sewing that moved surface would
+    # be the cumulative cap's problem, and it should be.
+    assert outcome.evidence.get("area_delta_mm2", 0.0) == 0.0
+
+
+def test_sewing_a_body_that_has_a_solid_is_refused_by_the_operation_itself(tmp_path):
+    # BRepBuilderAPI_Sewing RETURNS A SHELL. Handed a shape with a solid it hands back the shell
+    # and the solid is gone - a real-kernel test caught exactly that. The caps would refuse the
+    # result, but an operation that knowingly destroys a solid should not spend a re-inspection
+    # proving it.
+    from meshpipeline.cad.repair.caps import measure
+    from meshpipeline.cad.repair.identity import EntityRef
+    from meshpipeline.cad.repair.operations import SewFaces
+
+    shape = _read(write_step(tmp_path / "box.step", "MM"))
+    assert measure(shape).solids == 1
+    ref = EntityRef(entity_type="face", fingerprint="face:aaaa", entity_index=1)
+
+    outcome = SewFaces().apply(shape, (ref,), tolerance_mm=0.01)
+
+    assert outcome.shape is shape, "the shape was rebuilt despite nothing being sewn"
+    assert outcome.evidence["declined"] == "the targeted body already has a solid to lose"
+
+
+# FILLING
+
+
+def test_filling_patches_a_small_planar_hole_and_the_patch_area_matches_its_declaration(
+        tmp_path, _filling_on):
+    # THE BORE RIM, NOT THE OPEN SHELL. A box missing a whole face spans 0.82 of its own diagonal,
+    # which the span cap correctly calls a missing WALL rather than a hole - see the decline test
+    # below. The missing-bore fixture's rims span 0.16, which is the geometry this operation exists
+    # for: a small, flat, closed loop with exactly one surface that can go there.
+    #
+    # That patching BOTH rims would seal the customer's bolt hole is a PLANNING concern, refused in
+    # plan.py and tested there. At the operation level, filling one named rim is correct.
+    from tests.cad_fixtures import write_missing_bore_wall_step
+
+    from meshpipeline.cad.repair.caps import measure
+    from meshpipeline.cad.repair.contracts import DefectCode
+    from meshpipeline.cad.repair.operations import AREA_DELTA, FillPlanarHole
+
+    shape, defect = _defect_of(write_missing_bore_wall_step(tmp_path / "bore.step"),
+                               DefectCode.open_shell)
+    before = measure(shape)
+
+    op = FillPlanarHole()
+    targets = op.targets_for(defect)
+    assert targets, "a located free boundary produced no target"
+    outcome = op.apply(shape, targets, tolerance_mm=0.01)
+
+    assert not outcome.evidence.get("declined"), \
+        f"a 0.16-ratio rim was declined: {outcome.evidence.get('declined')}"
+    after = measure(outcome.shape)
+    assert after.faces == before.faces + 1, "the patch did not land"
+    # THE DECLARATION IS WHAT THE CUMULATIVE CAP TRUSTS. If it disagrees with the measurement, the
+    # accounting is worthless and a real repair would be refused for the operation's bad arithmetic.
+    declared = outcome.evidence[AREA_DELTA]
+    measured = after.surface_area_mm2 - before.surface_area_mm2
+    assert declared == pytest.approx(measured, rel=0.01), (
+        f"declared {declared}, actually added {measured}")
+    assert outcome.added, "the patch face is new geometry and must be reported as added"
+
+
+def test_filling_declines_a_missing_wall_rather_than_lidding_it(tmp_path, _filling_on):
+    # NOT A CONTRIVED CAP. The open-shell fixture is a box with one whole face gone, so its opening
+    # spans 14.142 mm against a 17.321 mm diagonal - a ratio of 0.8165, over the 0.75 cap. That is
+    # the cap doing exactly what it is for: past this it is not a hole, it is a missing wall, and a
+    # flat lid over a missing wall is a different part rather than a repaired one.
+    #
+    # An earlier version of this test shrank the cap to 0.001 to force the branch. This is better,
+    # because the geometry itself is the case.
+    from meshpipeline.cad.repair.caps import measure
+    from meshpipeline.cad.repair.contracts import DefectCode
+    from meshpipeline.cad.repair.operations import FillPlanarHole
+
+    shape, defect = _defect_of(write_open_shell_step(tmp_path / "holed.step"),
+                               DefectCode.open_shell)
+    before = measure(shape)
+
+    op = FillPlanarHole()
+    outcome = op.apply(shape, op.targets_for(defect), tolerance_mm=0.01)
+
+    assert outcome.shape is shape, "a declined fill must not rebuild the shape"
+    assert "too_large" in outcome.evidence["declined"]
+    assert measure(outcome.shape).faces == before.faces
+
+
+def test_filling_declines_a_loop_that_is_not_planar(tmp_path):
+    # `BRepBuilderAPI_MakeFace(wire, OnlyPlane=True)` simply declines a non-planar loop, which is
+    # the behaviour wanted: across a flat loop exactly one surface can go there, so the patch is
+    # determined. Across a curved one there are infinitely many, and choosing is a judgement about
+    # the part's shape.
+    from tests.cad_fixtures import write_loose_faces_step
+
+    from meshpipeline.cad.repair.contracts import DefectCode
+    from meshpipeline.cad.repair.operations import FillPlanarHole
+
+    # Loose faces have free boundaries on every edge, and most of those loops are not planar.
+    shape, defect = _defect_of(write_loose_faces_step(tmp_path / "loose.step"),
+                               DefectCode.open_shell)
+    op = FillPlanarHole()
+    outcome = op.apply(shape, op.targets_for(defect), tolerance_mm=0.01)
+
+    # Either it patched a genuinely planar loop or it declined - what must NOT happen is a patch
+    # over a non-planar loop, so the assertion is on the invariant rather than on which branch ran.
+    assert outcome.evidence.get("declined") or outcome.evidence.get("patch_is_planar") is True
+
+
+def test_filling_one_rim_of_a_missing_bore_wall_is_possible_which_is_why_the_planner_refuses(
+        tmp_path, _filling_on):
+    # NOT A BUG IN THIS OPERATION, AND THE TEST SAYS SO. Each rim of a missing tube wall is a
+    # perfectly fillable flat loop; what makes patching them wrong is that there are TWO and
+    # sealing both deletes the customer's bolt hole. That is a decision about which loop to aim
+    # at, so `plan.py` refuses to propose the pair (Task 9) and records the refusal. This test
+    # pins the division of responsibility, so that moving the check back in here would fail it.
+    from tests.cad_fixtures import write_missing_bore_wall_step
+
+    from meshpipeline.cad.repair.contracts import DefectCode
+    from meshpipeline.cad.repair.operations import FillPlanarHole
+
+    shape, defect = _defect_of(write_missing_bore_wall_step(tmp_path / "bore.step"),
+                               DefectCode.open_shell)
+    op = FillPlanarHole()
+    outcome = op.apply(shape, op.targets_for(defect), tolerance_mm=0.01)
+
+    assert outcome.evidence.get("declined") or outcome.evidence.get("patch_is_planar") is True

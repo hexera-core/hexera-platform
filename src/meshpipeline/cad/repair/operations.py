@@ -372,6 +372,293 @@ class FixFaceBoundary:
                                    "precision_mm": float(tolerance_mm)})
 
 
+def mapping_from_sewing(sewing, targets: tuple[EntityRef, ...], *,
+                        shape_before, diagonal_mm: float) -> EntityMapping:
+    """Read `BRepBuilderAPI_Sewing`'s own history into a fingerprint mapping.
+
+    Sewing has no ShapeBuild_ReShape, but it answers the same questions through a different set of
+    calls: `IsModified`/`Modified` for a sub-shape that was replaced, `IsModifiedSubShape` for one
+    that survived inside a modified parent, and the deleted-face list for faces it dropped.
+    """
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+
+    moved: dict[str, str] = {}
+    gone: set[str] = set()
+    quantum = quantum_for(diagonal_mm)
+
+    deleted_boxes: list[dict] = []
+    try:
+        explorer = TopExp_Explorer(sewing.DeletedFace(), TopAbs_FACE)
+        while explorer.More():
+            deleted_boxes.append(box_of(explorer.Current()))
+            explorer.Next()
+    except Exception as exc:  # noqa: BLE001 - no deleted faces is the common case
+        logger.debug("operations: sewing reported no deleted faces (%s)", exc)
+
+    deleted = {fingerprint_of("face", box, quantum=quantum) for box in deleted_boxes}
+
+    for ref in targets:
+        if not ref.targetable:
+            continue
+        if ref.fingerprint in deleted:
+            gone.add(ref.fingerprint)
+            continue
+        sub = sub_shape(shape_before, ref.entity_type, ref.entity_index)
+        if sub is None:
+            continue
+        try:
+            if sewing.IsModified(sub):
+                replacement = sewing.Modified(sub)
+            elif sewing.IsModifiedSubShape(sub):
+                replacement = sewing.ModifiedSubShape(sub)
+            else:
+                continue
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("operations: sewing has no record for a %s (%s)", ref.entity_type, exc)
+            continue
+        if replacement is None or (hasattr(replacement, "IsNull") and replacement.IsNull()):
+            gone.add(ref.fingerprint)
+            continue
+        new = fingerprint_of(ref.entity_type, box_of(replacement), quantum=quantum)
+        if new and new != ref.fingerprint:
+            moved[ref.fingerprint] = new
+    return EntityMapping(moved=moved, gone=frozenset(gone), basis="kernel")
+
+
+def free_wire_containing(shape, edge_index: int):
+    """The free-boundary wire that one edge belongs to, or None.
+
+    PER WIRE, NOT PER COMPOUND, for the same reason `localize._open_boundary_defects` is: free-
+    bound analysis hands back ONE compound holding every boundary it found, so walking its edges
+    directly merges unrelated openings - which is how the two rims of one bore first came back as
+    a single hole.
+    """
+    from OCP.ShapeAnalysis import ShapeAnalysis_FreeBounds
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_WIRE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    target = sub_shape(shape, "edge", edge_index)
+    if target is None:
+        return None
+    try:
+        wires = ShapeAnalysis_FreeBounds(shape).GetClosedWires()
+        if wires is None:
+            return None
+        explorer = TopExp_Explorer(wires, TopAbs_WIRE)
+        while explorer.More():
+            wire = TopoDS.Wire_s(explorer.Current())
+            edges = TopExp_Explorer(wire, TopAbs_EDGE)
+            while edges.More():
+                if edges.Current().IsSame(target):
+                    return wire
+                edges.Next()
+            explorer.Next()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("operations: free-bound analysis unavailable (%s)", exc)
+    return None
+
+
+class SewFaces:
+    """Join coincident face boundaries into a shell, for a body with NO SOLID TO LOSE.
+
+    `BRepBuilderAPI_Sewing` RETURNS A SHELL. Handed a shape that already contains a solid it hands
+    back the sewn shell and the solid is gone - a real-kernel test caught exactly that, a sound box
+    in with one solid and out with none. So this operation declines such a body itself rather than
+    letting the caps refuse the result: the refusal is the same, and declining early costs no
+    re-inspection.
+
+    The judgement is PER BODY, as `conservative._sew_loose_bodies` established: a STEP assembly is
+    a compound of independent bodies, and a loose body beside a solid must be repairable without
+    costing the solid.
+    """
+
+    name = "sew_faces"
+    answers = frozenset({DefectCode.open_shell})
+    scope = 4
+
+    def targets_for(self, defect) -> tuple[EntityRef, ...]:
+        if getattr(defect, "code", None) not in self.answers:
+            return ()
+        if not getattr(defect, "fingerprint", ""):
+            return ()
+        return (EntityRef(entity_type=defect.entity_type, fingerprint=defect.fingerprint,
+                          entity_index=int(defect.entity_index)),)
+
+    def apply(self, shape, targets: tuple[EntityRef, ...], *,
+              tolerance_mm: float) -> OpOutcome:
+        from OCP.BRep import BRep_Builder
+        from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
+        from OCP.TopAbs import TopAbs_COMPOUND
+        from OCP.TopoDS import TopoDS_Compound, TopoDS_Iterator
+
+        from meshpipeline.cad.repair.caps import measure
+        from meshpipeline.cad.repair.conservative import _as_solid_if_closed
+        from meshpipeline.cad.repair.localize import _diagonal
+
+        diagonal = _diagonal(shape)
+
+        def sew_one(body):
+            sewing = BRepBuilderAPI_Sewing(tolerance_mm)
+            # NON-MANIFOLD MODE OFF: joining three faces along one edge produces a shape no mesher
+            # will accept, and calling that a repair moves the failure downstream.
+            sewing.SetNonManifoldMode(False)
+            sewing.Add(body)
+            sewing.Perform()
+            sewn = sewing.SewedShape()
+            if sewn is None or (hasattr(sewn, "IsNull") and sewn.IsNull()):
+                return None, None
+            return _as_solid_if_closed(sewn), sewing
+
+        if measure(shape).solids == 0:
+            sewn, sewing = sew_one(shape)
+            if sewn is None:
+                return OpOutcome(shape=shape, evidence={"declined": "sewing produced nothing"})
+            mapping = mapping_from_sewing(sewing, targets, shape_before=shape,
+                                          diagonal_mm=diagonal)
+            return OpOutcome(shape=sewn, mapping=mapping,
+                             evidence={"bodies_sewn": 1, "tolerance_mm": float(tolerance_mm)})
+
+        if shape.ShapeType() != TopAbs_COMPOUND:
+            return OpOutcome(shape=shape,
+                             evidence={"declined": "the targeted body already has a solid to lose"})
+
+        children = []
+        iterator = TopoDS_Iterator(shape)
+        while iterator.More():
+            children.append(iterator.Value())
+            iterator.Next()
+        if not children:
+            return OpOutcome(shape=shape, evidence={"declined": "the compound is empty"})
+
+        builder = BRep_Builder()
+        rebuilt = TopoDS_Compound()
+        builder.MakeCompound(rebuilt)
+        sewn_count = 0
+        last_sewing = None
+        for child in children:
+            if measure(child).solids > 0:
+                builder.Add(rebuilt, child)
+                continue
+            joined, sewing = sew_one(child)
+            if joined is None:
+                builder.Add(rebuilt, child)
+                continue
+            builder.Add(rebuilt, joined)
+            sewn_count += 1
+            last_sewing = sewing
+
+        if not sewn_count:
+            # UNCHANGED MEANS UNCHANGED. Returning the original rather than a re-wrapped copy, so
+            # an operation that did nothing cannot look like one that rebuilt the assembly.
+            return OpOutcome(shape=shape,
+                             evidence={"declined": "the targeted body already has a solid to lose"})
+
+        mapping = (mapping_from_sewing(last_sewing, targets, shape_before=shape,
+                                       diagonal_mm=diagonal)
+                   if last_sewing is not None else EntityMapping.empty())
+        return OpOutcome(shape=rebuilt, mapping=mapping,
+                         evidence={"bodies_sewn": sewn_count,
+                                   "tolerance_mm": float(tolerance_mm)})
+
+
+class FillPlanarHole:
+    """Patch ONE flat closed free boundary, and say exactly how much surface that added.
+
+    THE ONLY OPERATION HERE THAT ADDS SURFACE THE CUSTOMER NEVER DREW, which is why it is the
+    narrowest-targeted of all of them - one loop, named by the first edge of its boundary - and
+    why it declares its own area so the cumulative cap can account for it rather than allow it.
+
+    PLANAR ONLY: across a flat loop exactly one surface can go there, so the patch is determined
+    rather than invented. `BRepBuilderAPI_MakeFace(wire, OnlyPlane=True)` declines a non-planar
+    loop, which is the behaviour wanted - left alone, reported, routed to a person.
+
+    THE PAIRED-RIM CASE IS NOT CHECKED HERE. Two rims of a missing tube wall are each a perfectly
+    fillable flat loop, and patching both seals a drilled through-hole. That is a decision about
+    which loop to aim at, so it belongs to the planner (`plan.py`), which refuses to PROPOSE the
+    pair and records the refusal. It used to be a silent skip inside this function, where nothing
+    downstream could see it.
+    """
+
+    name = "fill_planar_hole"
+    answers = frozenset({DefectCode.open_shell})
+    scope = 5
+
+    def targets_for(self, defect) -> tuple[EntityRef, ...]:
+        if getattr(defect, "code", None) not in self.answers:
+            return ()
+        if defect.entity_type != "edge" or not getattr(defect, "fingerprint", ""):
+            return ()
+        # ONLY A LOCATED LOOP. The free-bound finding carries `boundary_edges`; an `open_shell`
+        # the status walk attributed to a face or shell carries no wire to make a face from.
+        if not (defect.measurements or {}).get("boundary_edges"):
+            return ()
+        return (EntityRef(entity_type="edge", fingerprint=defect.fingerprint,
+                          entity_index=int(defect.entity_index)),)
+
+    def apply(self, shape, targets: tuple[EntityRef, ...], *,
+              tolerance_mm: float) -> OpOutcome:
+        from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_Sewing
+
+        import meshpipeline.settings.cad_repair as rcfg
+        from meshpipeline.cad.repair.conservative import _as_solid_if_closed, _span
+        from meshpipeline.cad.repair.localize import _diagonal, _face_area
+
+        if not rcfg.CAD_REPAIR_FILL_PLANAR_HOLES:
+            return OpOutcome(shape=shape,
+                             evidence={"declined": "filling_disabled (CAD_REPAIR_FILL_PLANAR_HOLES)"})
+        if not targets:
+            return OpOutcome(shape=shape, evidence={"declined": "no loop was named"})
+
+        wire = free_wire_containing(shape, targets[0].entity_index)
+        if wire is None:
+            return OpOutcome(shape=shape,
+                             evidence={"declined": "the named edge bounds no closed free loop"})
+
+        diagonal = _diagonal(shape)
+        span = _span(wire)
+        ratio = (span / diagonal) if diagonal > 0 else 0.0
+        if diagonal > 0 and ratio > rcfg.CAD_REPAIR_MAX_HOLE_SPAN_RATIO:
+            # NOT A HOLE, A MISSING WALL. A flat lid over one is a different part.
+            return OpOutcome(shape=shape,
+                             evidence={"declined": f"too_large (span ratio {ratio:.4f})",
+                                       "span_mm": round(span, 6)})
+
+        maker = BRepBuilderAPI_MakeFace(wire, True)
+        if not maker.IsDone():
+            return OpOutcome(shape=shape,
+                             evidence={"declined": "not_planar", "span_mm": round(span, 6)})
+        patch = maker.Face()
+        patch_area = _face_area(patch)
+
+        sewing = BRepBuilderAPI_Sewing(tolerance_mm)
+        sewing.SetNonManifoldMode(False)
+        sewing.Add(shape)
+        sewing.Add(patch)
+        sewing.Perform()
+        sewn = sewing.SewedShape()
+        if sewn is None or (hasattr(sewn, "IsNull") and sewn.IsNull()):
+            return OpOutcome(shape=shape, evidence={"declined": "sewing_failed"})
+
+        promoted = _as_solid_if_closed(sewn)
+        quantum = quantum_for(diagonal)
+        patch_fingerprint = fingerprint_of("face", box_of(patch), quantum=quantum)
+        mapping = mapping_from_sewing(sewing, targets, shape_before=shape,
+                                      diagonal_mm=diagonal)
+        return OpOutcome(
+            shape=promoted, mapping=mapping,
+            added=(patch_fingerprint,) if patch_fingerprint else (),
+            # DECLARED, so the cumulative cap compares against `original + this` instead of
+            # allowing 75% of unexplained area. Volume is NOT declared: whether the shell closed
+            # into a solid is the kernel's answer, and `caps.cumulative_refusal` records a volume
+            # that appeared from nothing rather than comparing it.
+            evidence={AREA_DELTA: round(float(patch_area), 6),
+                      "patch_is_planar": True,
+                      "span_mm": round(span, 6), "span_ratio": round(ratio, 6),
+                      "tolerance_mm": float(tolerance_mm)})
+
+
 class FixShapeGlobal:
     """Today's whole-shape `ShapeFix_Shape`, kept as the LAST RESORT.
 
@@ -436,5 +723,7 @@ class FixShapeGlobal:
 OPERATIONS: tuple[RepairOp, ...] = (
     FixSmallEdges(),
     FixFaceBoundary(),
+    SewFaces(),
+    FillPlanarHole(),
     FixShapeGlobal(),
 )
