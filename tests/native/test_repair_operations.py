@@ -37,7 +37,9 @@ def test_the_splice_rebuilds_only_the_ancestors_of_what_was_replaced(tmp_path):
     target = TopoDS.Face_s(faces.FindKey(1))
     # A replacement that is geometrically the same face, rebuilt: the substitution is what is
     # under test, not the geometry.
-    rebuilt = BRepBuilderAPI_MakeFace(target, True).Face()
+    # ONE ARGUMENT. `MakeFace(face, True)` has no overload in this OCP build - the two-argument
+    # form takes a wire plus OnlyPlane, not a face.
+    rebuilt = BRepBuilderAPI_MakeFace(target).Face()
     spliced, context = splice(shape, [(target, rebuilt)])
 
     assert context.IsRecorded(target)
@@ -57,10 +59,20 @@ def test_the_whole_shape_fallback_still_repairs_what_it_always_did(tmp_path):
     # THE FLOOR UNDER THIS WHOLE SLICE. If the fallback stopped working, the loop could repair
     # less than the single pass it replaces, and no amount of targeting would make up for it.
     from meshpipeline.cad.repair.caps import measure
+    from meshpipeline.cad.repair.contracts import DefectCode
+    from meshpipeline.cad.repair.localize import localize_scan
 
     shape = _read(write_open_shell_step(tmp_path / "holed.step"))
     before = measure(shape)
-    assert not before.valid
+    # NOT `assert not before.valid`. `BRepCheck_Analyzer.IsValid()` is TRUE for an open shell -
+    # after the STEP round trip this fixture is a single 5-face shell with no solid, and the
+    # kernel calls that valid B-rep. Validity is not a proxy for "broken", which is the whole
+    # reason localize.py runs free-bound analysis alongside the status walk. The precondition
+    # that matters is that the LOCALISER can point at the defect, because that is what the loop
+    # acts on.
+    found, _ = localize_scan(shape)
+    assert [d for d in found if d.code is DefectCode.open_shell], (
+        f"the fixture carries no located opening; scan reported {[d.code.value for d in found]}")
 
     outcome = FixShapeGlobal().apply(shape, (), tolerance_mm=0.01)
 
