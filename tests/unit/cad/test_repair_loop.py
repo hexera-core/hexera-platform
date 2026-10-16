@@ -55,7 +55,7 @@ class _Op:
 
 
 class _Planner:
-    """Proposes the op for every defect it is shown, until the ledger bans the pair."""
+    """Proposes the op for every defect the op ANSWERS, until the ledger bans the pair."""
 
     label = "double-planner"
 
@@ -66,6 +66,8 @@ class _Planner:
     def propose(self, defects, history, *, shape):
         self.calls += 1
         for defect in defects:
+            if defect.code not in self._op.answers:
+                continue
             if history.was_ineffective(defect.fingerprint, self._op.name):
                 continue
             return Candidate(op=self._op, targets=self._op.targets_for(defect),
@@ -197,6 +199,60 @@ def test_a_run_that_clears_the_last_defect_as_the_time_runs_out_is_resolved():
                  tolerance_mm=0.01, clock=lambda: next(ticks))
 
     assert result.stopped_because == RESOLVED and result.resolved
+
+
+class _Named(_Op):
+    def __init__(self, name):
+        super().__init__()
+        self.name = name
+
+
+class _Ladder:
+    """Offers its operations in order for the first defect, skipping banned pairs."""
+
+    label = "ladder"
+
+    def __init__(self, *ops):
+        self._ops = ops
+
+    def propose(self, defects, history, *, shape):
+        for defect in defects:
+            for op in self._ops:
+                if not history.was_ineffective(defect.fingerprint, op.name):
+                    return Candidate(op=op, targets=op.targets_for(defect),
+                                     defect_code=defect.code, defect_fingerprint=defect.fingerprint)
+        return None
+
+
+def test_a_narrow_attempt_rolled_back_and_a_wider_one_kept_is_still_resolved():
+    # THE CASE THE "ABANDONED" CLAUSE MUST NOT BREAK. The defect is gone from the final list, so
+    # the earlier rollback does not count against the run.
+    result = run(None, planner=_Ladder(_Named("narrow"), _Named("wide")),
+                 session=_session([((_defect(),), True), ((_defect(),), True), ((), True)]),
+                 tolerance_mm=0.01)
+
+    assert [(v.op, v.status) for v in result.verdicts] == [("narrow", "rolled_back"),
+                                                           ("wide", "kept")]
+    assert result.stopped_because == RESOLVED and result.resolved
+
+
+def test_a_rolled_back_attempt_whose_defect_remains_is_not_resolved_even_if_the_planner_ran_dry():
+    # No error remains (a warning), and the planner has nothing left rather than the run stalling.
+    # `resolved` must still refuse: the loop tried, failed, and the defect is still there.
+    warning = _defect(severity=DefectSeverity.warning)
+    result = run(None, planner=_Planner(_Op()), session=_session([((warning,), True)]),
+                 budget=LoopBudget(max_ops=99, stall_limit=99, timeout_s=120.0), tolerance_mm=0.01)
+
+    assert result.stopped_because == NO_CANDIDATE and not result.resolved
+    assert [d.fingerprint for d in result.defects] == ["edge:a"]
+
+
+def test_an_abandoned_warning_stops_as_stalled_not_resolved():
+    warning = _defect(severity=DefectSeverity.warning)
+    result = run(None, planner=_Tireless(_Op()), session=_session([((warning,), True)]),
+                 budget=LoopBudget(max_ops=99, stall_limit=2, timeout_s=120.0), tolerance_mm=0.01)
+
+    assert result.stopped_because == STALLED and not result.resolved
 
 
 def test_an_error_the_planner_cannot_address_stops_the_run_as_no_candidate():

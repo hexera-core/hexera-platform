@@ -17,8 +17,8 @@ from meshpipeline.cad.repair.session import OpVerdict, RepairSession
 
 logger = logging.getLogger(__name__)
 
-#: Every error defect is gone and the scan that says so was exhaustive. Both halves are enforced
-#: in one place (`_terminal`), after every operation as well as before the first.
+#: The loop SUCCEEDED: the scan was exhaustive, no error defect remains, and nothing a rolled-back
+#: attempt aimed at is still there. Decided in one place (`_terminal`) for every way a run ends.
 RESOLVED = "resolved"
 #: The planner has nothing left to try - every pair tried, or nothing claims what is left.
 NO_CANDIDATE = "no_candidate"
@@ -87,6 +87,19 @@ def _errors_remain(session: RepairSession) -> bool:
     return any(d.severity in _ERRORS for d in session.defects())
 
 
+def _abandoned(session: RepairSession) -> bool:
+    """Is a defect still present at a fingerprint that a rolled-back attempt targeted?
+
+    `resolved` MEANS THE LOOP SUCCEEDED, not merely that no error-severity defect remains. Those
+    differ exactly when the loop gave up on a warning (a sliver two attempts failed to remove):
+    calling that resolved would be read downstream as "repaired". A defect a narrow operation
+    failed on but a wider one later cleared is gone from the final list, so its earlier rollback
+    does not count against the run.
+    """
+    tried = {fp for v in session.log if not v.kept for fp in v.targets}
+    return any(d.fingerprint in tried for d in session.defects())
+
+
 def _terminal(session: RepairSession, fallback: str) -> str:
     """What to call a finished run. ONE place, so no break path can disagree with another.
 
@@ -97,7 +110,7 @@ def _terminal(session: RepairSession, fallback: str) -> str:
     """
     if not session.complete_scan:
         return SCAN_INCOMPLETE
-    if not _errors_remain(session):
+    if not _errors_remain(session) and not _abandoned(session):
         return RESOLVED
     return fallback
 

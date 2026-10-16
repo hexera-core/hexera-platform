@@ -72,6 +72,11 @@ class RepairSession:
     ROLLBACK IS O(1) because OpenCASCADE shapes are handle-based and no operation mutates its
     input: restoring a snapshot is restoring three references.
 
+    ROLLBACK RESTORES THE HANDLE, which is exact for topology and counts; but a kernel operation can
+    nudge a shared sub-shape's tolerance in place (measured: 1e-07 became 1.0000000000000002e-07
+    across a fully rolled-back run). The caps are safe from it because `original` is measured once
+    and never re-read - a future change that let the creep grow would silently widen every cap.
+
     `measurer` and `scanner` are injectable so the bookkeeping can be tested without a kernel.
     The ordering of the judgements below is the part most likely to be got subtly wrong, and it is
     pure logic.

@@ -90,11 +90,13 @@ def test_the_loop_leaves_the_sliver_fixture_undamaged_and_says_it_did_not_repair
         "the sliver vanished without a kept operation being responsible"
     assert not any(v.kept for v in result.verdicts), _attempts(result)
     assert len(result.verdicts) == 2, _attempts(result)
-    # NAMED BY SEVERITY, AS RULED: nothing at ERROR severity remains (the fixture has only
-    # warnings), so `_terminal` calls the stall `resolved`. That label sits beside zero kept
-    # operations and the sliver still reported - `resolved` here means "no errors", not "repaired".
-    # FLAGGED TO THE COORDINATOR: Task 11's summary reads `resolved` as "Repaired within the caps".
-    assert result.stopped_because == "resolved", f"{result.stopped_because} {_attempts(result)}"
+    # WHY IT IS UNRESOLVED, not merely that it is: no error-severity defect remains (the fixture
+    # has only warnings), yet the loop ABANDONED the sliver after two rolled-back attempts and it
+    # is still in the final list. `resolved` means the loop succeeded, so this is `stalled`.
+    assert result.stopped_because == "stalled", f"{result.stopped_because} {_attempts(result)}"
+    assert not result.resolved
+    tried = {fp for v in result.verdicts for fp in v.targets}
+    assert tried & {d.fingerprint for d in result.defects}, "no abandoned target is still reported"
     _assert_unchanged(before, measure(result.shape), "the part was damaged")
 
 
