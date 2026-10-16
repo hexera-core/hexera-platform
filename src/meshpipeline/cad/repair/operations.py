@@ -201,64 +201,30 @@ def mapping_from_context(context, targets: tuple[EntityRef, ...], *,
 # THE OPERATIONS
 
 
-def _owning_faces(shape, refs: tuple[EntityRef, ...]) -> list:
-    """The faces that bound the given edges, deduplicated.
-
-    WHY AN EDGE OPERATION WORKS ON FACES. `ShapeFix_Wireframe` fixes wires, and a wire belongs to
-    a face; there is no kernel call that repairs a bare edge in place. So "fix this edge" becomes
-    "fix the faces this edge bounds", which is still far narrower than the whole shape - two faces
-    out of six hundred - and is what makes the operation's blast radius reviewable.
-    """
-    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
-    from OCP.TopExp import TopExp
-    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
-
-    ancestors = TopTools_IndexedDataMapOfShapeListOfShape()
-    TopExp.MapShapesAndAncestors_s(shape, TopAbs_EDGE, TopAbs_FACE, ancestors)
-
-    out: list = []
-    seen: list = []
-    for ref in refs:
-        edge = sub_shape(shape, "edge", ref.entity_index)
-        if edge is None or not ancestors.Contains(edge):
-            continue
-        faces = ancestors.FindFromKey(edge)
-        # This OCP build exposes TopTools_ListOfShape as a Python iterable (no cbegin/cend).
-        for face in faces:
-            if not any(face.IsSame(other) for other in seen):
-                seen.append(face)
-                out.append(face)
-    return out
-
-
-def _compound_of(shapes: list):
-    """Wrap several sub-shapes into one compound, so a fixer can be handed exactly them."""
-    from OCP.BRep import BRep_Builder
-    from OCP.TopoDS import TopoDS_Compound
-
-    builder = BRep_Builder()
-    compound = TopoDS_Compound()
-    builder.MakeCompound(compound)
-    for shape in shapes:
-        builder.Add(compound, shape)
-    return compound
-
-
 class FixSmallEdges:
-    """Merge away the sliver edges a writer left behind, on the FACES THOSE EDGES BOUND.
+    """Merge away the sliver edges a writer left behind, running the fixer on the WHOLE SHAPE.
 
     `ShapeFix_Wireframe` is the kernel's answer for both small edges and the gaps between edges of
-    one wire. Pointed at a compound of just the owning faces it repairs those and leaves the rest
-    of the part alone by identity, which is what `splice` then lands back in the parent.
+    one wire.
+
+    SCOPING IS NOT AVAILABLE FOR THIS OPERATION, unlike `fix_face_boundary`. The fixer needs the
+    surrounding topology to constrain its edits. Handed a compound of just the faces that own the
+    sliver, it has nothing to hold the neighbours in place, and closing the gap left by a removed
+    edge lets it extrapolate: measured on the sliver fixture, a two-face compound went in at
+    diagonal 141.77 mm / max tolerance 1e-7 and came out at diagonal 270.00 mm / max tolerance
+    80 mm (405.10 mm with `FixWireGaps` omitted), and neither `LimitTolerance(0.02)` nor
+    `SetMaxTolerance(0.02)` bounded it. On the whole shape the same calls leave every fixture
+    valid with diagonal and tolerance unchanged - and remove nothing, because the solid's own
+    topology forbids it and the conservative profile may not rebuild surfaces.
+
+    So the targets state what we AIMED at, the session's progress rule judges whether we ACHIEVED
+    it, and the caps bound the damage. An honest outcome on a solid is often "no progress".
 
     `ModeDropSmallEdges = False` DELIBERATELY: dropping an edge rather than merging it removes
-    geometry, and removing geometry is an operator's decision. Merging keeps the vertex count
-    honest and is what `FixSmallEdges` is for.
+    geometry, and removing geometry is an operator's decision.
 
-    It also calls `FixWireGaps`, closing gaps between edges of the same wire. That is in scope
-    because a gap between neighbouring edges is the other face of a sliver edge - the same writer
-    defect, found on the same faces - but it can move vertices, so any area it shifts is
-    unaccounted for here and is caught by the cumulative cap.
+    It also calls `FixWireGaps`, closing gaps between edges of the same wire; it can move
+    vertices, so any area it shifts is unaccounted for here and is caught by the cumulative cap.
     """
 
     name = "fix_small_edges"
@@ -279,15 +245,14 @@ class FixSmallEdges:
 
         from meshpipeline.cad.repair.localize import _diagonal
 
-        faces = _owning_faces(shape, targets)
-        if not faces:
-            # NOTHING RESOLVED is not a failure. A stale index, or an edge belonging to no face
-            # (a floating edge), both land here, and the session will roll this back for making no
-            # progress rather than for raising.
-            return OpOutcome(shape=shape, evidence={"edges_targeted": len(targets),
-                                                    "faces_fixed": 0})
+        if not any(sub_shape(shape, "edge", ref.entity_index) is not None for ref in targets):
+            # NOTHING RESOLVED is not a failure. A stale index lands here, and the session rolls
+            # this back for making no progress rather than for raising.
+            return OpOutcome(shape=shape, evidence={"edges_targeted": len(targets)})
 
-        fixer = ShapeFix_Wireframe(_compound_of(faces))
+        # THE WHOLE SHAPE, never a compound of the owning faces - see the class docstring for the
+        # measured damage that does (diagonal 141.77 -> 270.00 mm, tolerance 1e-7 -> 80 mm).
+        fixer = ShapeFix_Wireframe(shape)
         fixer.SetPrecision(tolerance_mm)
         fixer.SetMaxTolerance(tolerance_mm)
         # MERGE, DO NOT DROP. Dropping removes geometry; the conservative profile may not.
@@ -295,15 +260,12 @@ class FixSmallEdges:
         fixer.FixSmallEdges()
         fixer.FixWireGaps()
 
-        # The fixer's own context already records what happened to each sub-shape of the compound;
-        # applying it to the WHOLE shape lands those substitutions in the parent. One context, so
-        # the substitution and the record of it cannot disagree.
         context = fixer.Context()
-        spliced = context.Apply(shape)
+        result = context.Apply(shape)
         mapping = mapping_from_context(context, targets, shape_before=shape,
                                        diagonal_mm=_diagonal(shape))
-        return OpOutcome(shape=spliced, mapping=mapping,
-                         evidence={"edges_targeted": len(targets), "faces_fixed": len(faces),
+        return OpOutcome(shape=result, mapping=mapping,
+                         evidence={"edges_targeted": len(targets),
                                    "precision_mm": float(tolerance_mm)})
 
 
@@ -347,7 +309,7 @@ class FixFaceBoundary:
             sub = sub_shape(shape, "face", ref.entity_index)
             if sub is None:
                 continue
-            # Two targets naming one face must repair it once, as `_owning_faces` does.
+            # Two targets naming one face must repair it once.
             if any(sub.IsSame(done) for done, _ in replacements):
                 continue
             fixer = ShapeFix_Face(TopoDS.Face_s(sub))

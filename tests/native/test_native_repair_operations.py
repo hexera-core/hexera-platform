@@ -66,7 +66,7 @@ def test_the_splice_rebuilds_only_the_ancestors_of_what_was_replaced(tmp_path):
 def test_the_whole_shape_fallback_still_repairs_what_it_always_did(tmp_path):
     # THE FLOOR UNDER THIS WHOLE SLICE. If the fallback stopped working, the loop could repair
     # less than the single pass it replaces, and no amount of targeting would make up for it.
-    from meshpipeline.cad.repair.caps import measure
+    from meshpipeline.cad.repair.caps import measure, sanity_refusal
     from meshpipeline.cad.repair.contracts import DefectCode
     from meshpipeline.cad.repair.localize import localize_scan
 
@@ -86,6 +86,7 @@ def test_the_whole_shape_fallback_still_repairs_what_it_always_did(tmp_path):
 
     after = measure(outcome.shape)
     assert after.faces >= before.faces, "the fallback lost a face"
+    assert sanity_refusal(before, after) == "", sanity_refusal(before, after)
     # WHAT THE FLOOR ACTUALLY DOES, observed: on this fixture ShapeFix_Shape does NOT close the
     # opening. The scan finds one open_shell at edge 10 before and the same one after. So the
     # fallback is a floor in the sense of "never makes things worse", not "repairs a hole" - patching
@@ -98,7 +99,7 @@ def test_the_whole_shape_fallback_still_repairs_what_it_always_did(tmp_path):
 
 
 def test_a_sound_part_survives_the_fallback_with_its_geometry_intact(tmp_path):
-    from meshpipeline.cad.repair.caps import measure
+    from meshpipeline.cad.repair.caps import measure, sanity_refusal
 
     shape = _read(write_step(tmp_path / "box.step", "MM"))
     before = measure(shape)
@@ -107,6 +108,7 @@ def test_a_sound_part_survives_the_fallback_with_its_geometry_intact(tmp_path):
 
     assert after.faces == before.faces and after.solids == before.solids
     assert after.diagonal_mm == pytest.approx(before.diagonal_mm, rel=1e-9)
+    assert sanity_refusal(before, after) == ""
 
 
 def test_a_boxs_face_fingerprints_the_same_before_and_after_a_no_op_splice(tmp_path):
@@ -259,32 +261,34 @@ def _defect_of(path, code):
     return shape, matching[0]
 
 
-def test_the_small_edge_operation_removes_the_edge_it_was_aimed_at(tmp_path):
+def test_the_small_edge_operation_does_no_damage_and_reports_what_it_aimed_at(tmp_path):
+    # A PROGRESS-ONLY TEST WITH NO CAP ASSERTION CERTIFIES DESTRUCTION. This test used to assert
+    # only that the sliver was gone from the re-scan, which was true - achieved by running the
+    # fixer on a compound of bare faces, which extrapolated the geometry (diagonal 141.77 ->
+    # 270.00 mm, max tolerance 1e-7 -> 80 mm). The fixer now runs on the whole shape, where the
+    # solid's topology forbids removing the sliver: the honest outcome on this fixture is no
+    # progress, and what must hold is that nothing was damaged.
     from tests.cad_fixtures import write_small_edge_step
 
+    from meshpipeline.cad.repair.caps import measure, sanity_refusal
     from meshpipeline.cad.repair.contracts import DefectCode
-    from meshpipeline.cad.repair.localize import localize_scan
     from meshpipeline.cad.repair.operations import FixSmallEdges
 
     shape, defect = _defect_of(write_small_edge_step(tmp_path / "sliver.step"),
                                DefectCode.small_edge)
+    before = measure(shape)
     op = FixSmallEdges()
     targets = op.targets_for(defect)
     assert targets, "the operation could not aim at a located small edge"
 
     outcome = op.apply(shape, targets, tolerance_mm=0.05)
 
-    # THE DEFECT, NOT THE COUNT. What is asserted is that the specific sliver's defect is gone
-    # from the new scan - which is the whole question the old code could not answer.
-    after, _ = localize_scan(outcome.shape)
-    fate, successor = outcome.mapping.fate_of(targets[0].fingerprint)
-    still_there = [d for d in after
-                   if d.code is DefectCode.small_edge
-                   and d.fingerprint in {targets[0].fingerprint, successor}]
-    assert not still_there, f"the targeted sliver survived (fate was {fate})"
-    # AND THE KERNEL SAID SO, rather than us inferring it from an absence.
-    assert outcome.mapping.basis == "kernel"
-    assert fate == "moved"
+    after = measure(outcome.shape)
+    assert sanity_refusal(before, after) == "", sanity_refusal(before, after)
+    assert after.diagonal_mm == pytest.approx(before.diagonal_mm, rel=1e-6)
+    assert after.max_tolerance_mm == pytest.approx(before.max_tolerance_mm, abs=1e-6)
+    assert outcome.evidence["edges_targeted"] == 1
+    assert "faces_fixed" not in outcome.evidence
 
 
 def test_the_face_boundary_operation_reports_what_it_did_to_its_face(tmp_path):
@@ -304,9 +308,13 @@ def test_the_face_boundary_operation_reports_what_it_did_to_its_face(tmp_path):
                                                quantum=quantum_for(_diagonal(shape))),
                     entity_index=1)
 
+    from meshpipeline.cad.repair.caps import measure, sanity_refusal
+
+    before = measure(shape)
     outcome = FixFaceBoundary().apply(shape, (ref,), tolerance_mm=0.01)
 
     assert outcome.shape is not None
+    assert sanity_refusal(before, measure(outcome.shape)) == ""
     assert outcome.mapping.basis == "kernel"
     assert outcome.evidence["faces_fixed"] == 1
 
@@ -337,7 +345,7 @@ def test_the_small_edge_operation_with_an_unresolvable_ref_rebuilds_nothing(tmp_
 
     outcome = FixSmallEdges().apply(shape, (stale,), tolerance_mm=0.01)
 
-    assert outcome.evidence["faces_fixed"] == 0
+    assert "faces_fixed" not in outcome.evidence
     assert outcome.evidence["edges_targeted"] == 1
     assert outcome.shape is shape
 
@@ -413,7 +421,7 @@ def test_the_face_boundary_operation_leaves_its_input_untouched_for_the_noop_cas
 def test_sewing_joins_loose_faces_into_a_shell_without_losing_one(tmp_path):
     from tests.cad_fixtures import write_loose_faces_step
 
-    from meshpipeline.cad.repair.caps import measure
+    from meshpipeline.cad.repair.caps import measure, sanity_refusal
     from meshpipeline.cad.repair.contracts import DefectCode
     from meshpipeline.cad.repair.operations import SewFaces
 
@@ -430,6 +438,7 @@ def test_sewing_joins_loose_faces_into_a_shell_without_losing_one(tmp_path):
     outcome = op.apply(shape, op.targets_for(defect), tolerance_mm=0.01)
 
     after = measure(outcome.shape)
+    assert sanity_refusal(before, after) == "", sanity_refusal(before, after)
     assert after.faces == before.faces, "sewing must not cost a face"
     assert after.shells == 1, f"six one-face shells were not joined into one (got {after.shells})"
     # AND THE SHELL CLOSED INTO A BODY. `_as_solid_if_closed` promotes a single closed shell, so a
@@ -474,7 +483,7 @@ def test_filling_patches_a_small_planar_hole_and_the_patch_area_matches_its_decl
     # plan.py and tested there. At the operation level, filling one named rim is correct.
     from tests.cad_fixtures import write_missing_bore_wall_step
 
-    from meshpipeline.cad.repair.caps import measure
+    from meshpipeline.cad.repair.caps import measure, sanity_refusal
     from meshpipeline.cad.repair.contracts import DefectCode
     from meshpipeline.cad.repair.operations import AREA_DELTA, FillPlanarHole
 
@@ -490,6 +499,7 @@ def test_filling_patches_a_small_planar_hole_and_the_patch_area_matches_its_decl
     assert not outcome.evidence.get("declined"), \
         f"a 0.16-ratio rim was declined: {outcome.evidence.get('declined')}"
     after = measure(outcome.shape)
+    assert sanity_refusal(before, after) == "", sanity_refusal(before, after)
     assert after.faces == before.faces + 1, "the patch did not land"
     # THE DECLARATION IS WHAT THE CUMULATIVE CAP TRUSTS. If it disagrees with the measurement, the
     # accounting is worthless and a real repair would be refused for the operation's bad arithmetic.

@@ -97,6 +97,10 @@ class RepairSession:
             self.complete_scan = bool(complete)
         return self._defects
 
+    def current(self):
+        """The current shape's measurement. Taken fresh: the caller wants the run's end state."""
+        return self._measure(self.shape)
+
     def write(self, destination: Path) -> None:
         """Write the current shape as STEP, in millimetres."""
         from meshpipeline.cad.repair.conservative import _write_step
