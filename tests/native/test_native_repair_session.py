@@ -77,7 +77,10 @@ def test_a_real_repair_of_a_real_hole_is_reported_as_progress(tmp_path, monkeypa
     verdict = session.try_op(op, op.targets_for(holes[0]), holes[0].code, tolerance_mm=0.02)
 
     assert verdict.status == KEPT, f"rolled back because {verdict.reason}"
-    assert verdict.basis == "kernel"
+    # GEOMETRIC, NOT KERNEL. The patch leaves the rim edge where it was and the history records it
+    # unmoved, so nothing in the history explains the rim's fate; the conclusion that the defect is
+    # gone came from diffing the two scans.
+    assert verdict.basis == "geometric"
     remaining = [d for d in session.defects()
                  if d.code is DefectCode.open_shell and d.fingerprint == holes[0].fingerprint]
     assert not remaining, "the rim is still reported at the same entity"

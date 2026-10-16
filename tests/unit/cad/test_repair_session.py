@@ -156,14 +156,21 @@ def test_an_operation_whose_defect_survived_is_rolled_back():
     assert session.shape == "original", "the rollback did not restore the shape"
 
 
-def test_a_rollback_restores_the_defect_list_as_well_as_the_shape():
+def test_a_rollback_restores_the_defect_list_and_scan_completeness():
+    # The post-operation scan is made DISTINGUISHABLE (another fingerprint, and incomplete) so that
+    # a rollback which merely re-scanned, or left the new scan cached, cannot pass.
     op = _Op(outcome=OpOutcome(shape="fixed"))
-    session = _session(scans=[((_defect(),), True), ((_defect(),), True)])
+    leftover = _defect(fingerprint="edge:zzzz", index=9)
+    session = _session(scans=[((_defect(),), True), ((_defect(), leftover), False)])
     before = session.defects()
+    assert session.complete_scan is True
 
-    session.try_op(op, op.targets_for(before[0]), before[0].code, tolerance_mm=0.01)
+    verdict = session.try_op(op, op.targets_for(before[0]), before[0].code, tolerance_mm=0.01)
 
-    assert session.defects() == before
+    assert verdict.status == ROLLED_BACK
+    assert session._defects is before, "the cached tuple was not the pre-operation one"
+    assert session.defects() is before
+    assert session.complete_scan is True, "an incomplete post-operation scan leaked through"
 
 
 def test_a_rolled_back_operation_contributes_nothing_to_the_accounting():
@@ -387,3 +394,54 @@ def test_a_verdict_records_the_measured_delta_and_the_operations_evidence():
     assert payload["evidence"]["faces_fixed"] == 2
     assert "before" in payload["delta"] and "after" in payload["delta"]
     assert payload["defect_code"] == DefectCode.small_edge.value
+
+
+# HISTORY IS A HINT, THE RE-INSPECTION IS THE AUTHORITY
+
+
+def test_a_gone_claim_does_not_override_a_scan_that_still_shows_the_defect():
+    op = _Op(outcome=OpOutcome(shape="fixed",
+                               mapping=EntityMapping(moved={}, gone=frozenset({"edge:aaaa"}),
+                                                     basis="kernel")))
+    session = _session(scans=[((_defect(),), True), ((_defect(),), True)])
+    defect = session.defects()[0]
+
+    verdict = session.try_op(op, op.targets_for(defect), defect.code, tolerance_mm=0.01)
+
+    assert verdict.status == ROLLED_BACK and verdict.reason == "target_remains"
+    assert session.accounting.declared_area_mm2 == 0.0
+
+
+def test_a_fatal_defect_on_declared_added_geometry_is_still_held_against_the_operation():
+    fatal = _defect(DefectCode.self_intersection, fingerprint="face:patch",
+                    severity=DefectSeverity.fatal, kind="face", index=7)
+    op = _Op(outcome=OpOutcome(shape="fixed", added=("face:patch",)))
+    session = _session(scans=[((_defect(),), True), ((fatal,), True)])
+    defect = session.defects()[0]
+
+    verdict = session.try_op(op, op.targets_for(defect), defect.code, tolerance_mm=0.01)
+
+    assert verdict.status == ROLLED_BACK and verdict.reason == "new_defect"
+
+
+def test_a_verdict_is_geometric_when_the_history_recorded_the_targets_as_unmoved():
+    # The mapping was built from a consulted history (basis "kernel") but explains nothing about
+    # these targets, so the conclusion came from diffing the scans.
+    op = _Op(outcome=OpOutcome(shape="fixed",
+                               mapping=EntityMapping(moved={}, gone=frozenset(), basis="kernel")))
+    session = _session(scans=[((_defect(),), True), ((), True)])
+    defect = session.defects()[0]
+
+    verdict = session.try_op(op, op.targets_for(defect), defect.code, tolerance_mm=0.01)
+
+    assert verdict.status == KEPT and verdict.basis == "geometric"
+
+
+def test_a_failed_verdict_keeps_the_measurement_it_already_paid_for():
+    op = _Op(raises=RuntimeError("boom"))
+    session = _session(scans=[((_defect(),), True)])
+    defect = session.defects()[0]
+
+    verdict = session.try_op(op, op.targets_for(defect), defect.code, tolerance_mm=0.01)
+
+    assert verdict.status == FAILED and "before" in verdict.delta

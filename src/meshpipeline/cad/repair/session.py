@@ -149,7 +149,7 @@ class RepairSession:
             self.shape, self._defects, self.complete_scan = snapshot
             return self._record(OpVerdict(
                 op=op.name, targets=fingerprints, defect_code=code, status=FAILED,
-                reason=f"{type(exc).__name__}: {exc}"))
+                reason=f"{type(exc).__name__}: {exc}", delta={"before": before.to_dict()}))
 
         self.shape = outcome.shape
         after = self._measure(self.shape)
@@ -209,9 +209,11 @@ class RepairSession:
         """
         wanted = {getattr(defect_code, "value", str(defect_code))}
         for ref in targets:
-            fate, successor = outcome.mapping.fate_of(ref.fingerprint)
-            if fate == GONE:
-                continue
+            # THE HISTORY IS A HINT ABOUT WHICH NAME TO LOOK FOR, NEVER A LICENCE TO SKIP LOOKING.
+            # The re-inspection is the authority: a mapping that says an entity is gone (an
+            # optimistic or stale record) must not override a scan that still reports the defect
+            # there. A GONE target simply has no defect at its fingerprint when the claim is true.
+            _fate, successor = outcome.mapping.fate_of(ref.fingerprint)
             names = {ref.fingerprint, successor} - {""}
             if any(d.fingerprint in names and d.code.value in wanted for d in found):
                 return "target_remains"
@@ -223,22 +225,31 @@ class RepairSession:
                 continue
             if defect.severity not in _HELD_AGAINST:
                 continue
-            if defect.fingerprint in added:
+            if defect.fingerprint in added and defect.severity is DefectSeverity.warning:
                 # GEOMETRY THE OPERATION SAID IT WAS ADDING. A sliver warning on a patch face is
                 # the expected cost of the repair, not evidence it went wrong - and holding it
-                # against the operation would make every hole fill impossible.
+                # against the operation would make every hole fill impossible. Only a WARNING is
+                # excused: an error or fatal finding (a self-intersecting patch, say) is damage, not
+                # a cost, and no cap would catch it since the caps see only counts and sizes.
                 continue
             return "new_defect"
         return ""
 
     @staticmethod
     def _basis(outcome, targets) -> str:
-        """`kernel` only when the history is BOTH available and unambiguous about these targets."""
+        """`kernel` only when the history is BOTH available and unambiguous about these targets.
+
+        The claim is "the kernel explained this target's fate", which is narrower than "the kernel
+        was consulted": a mapping can be built from a history that recorded every target as
+        unmoved, and then the conclusion came purely from diffing the two scans.
+        """
         if any(ref.ambiguous for ref in targets):
             # Two entities share a box. The kernel's record may be perfect and still be about the
             # other one, so nothing here may be called a kernel fact.
             return "geometric"
-        return outcome.mapping.basis
+        explained = any(outcome.mapping.fate_of(ref.fingerprint)[0] in (GONE, "moved")
+                        for ref in targets)
+        return outcome.mapping.basis if explained else "geometric"
 
     def _record(self, verdict: OpVerdict) -> OpVerdict:
         self.log.append(verdict)
