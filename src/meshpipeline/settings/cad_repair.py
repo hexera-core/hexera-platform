@@ -89,3 +89,31 @@ CAD_INSPECT_MAX_BYTES: int = int(optional_env("CAD_INSPECT_MAX_BYTES", str(80 * 
 #: matters - a pathological part must not spend a job's deadline before admission has even judged
 #: the original.
 CAD_REPAIR_TIMEOUT_S: float = float(optional_env("CAD_REPAIR_TIMEOUT_S", "120"))
+
+#: Operations the loop may TRY in one run, kept or rolled back. Not a limit on how many may be
+#: kept: a run that tried six and kept one did six re-inspections, and the re-inspection is what
+#: costs. Six is the length of the operation set, so a run can reach every operation once.
+CAD_REPAIR_MAX_OPS: int = int(optional_env("CAD_REPAIR_MAX_OPS", "6"))
+
+#: Consecutive operations that were not kept before the loop gives up. A planner that has proposed
+#: two things in a row that did not work has run out of ideas the rules can express, and further
+#: attempts spend a job's deadline rediscovering that.
+CAD_REPAIR_STALL_LIMIT: int = int(optional_env("CAD_REPAIR_STALL_LIMIT", "2"))
+
+#: How far the part's surface area may end up from what the operations ACCOUNTED FOR, as a
+#: fraction of the original.
+#:
+#: WHY THIS IS NOT THE OLD ALLOWANCE. The whole-shape repair compared area and volume against the
+#: original with the hole-span cap (0.75) as the allowance, because patching a hole legitimately
+#: moves both and there was no way to say by how much. An operation that patches a hole now
+#: DECLARES the area it added, so the comparison is against `original + declared` and the residual
+#: can be tight. A 75% allowance on a measurement nobody predicted is not a cap; it is a record of
+#: not knowing.
+CAD_REPAIR_MAX_AREA_CHANGE_RATIO: float = float(
+    optional_env("CAD_REPAIR_MAX_AREA_CHANGE_RATIO", "0.02"))
+
+#: The same residual, for volume. Volume that appears for the first time when a patched shell
+#: becomes a solid is ACCEPTED AND RECORDED rather than compared: the part had no volume to be a
+#: fraction of, and a closed body where there was an open shell is the repair working.
+CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO: float = float(
+    optional_env("CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO", "0.02"))
