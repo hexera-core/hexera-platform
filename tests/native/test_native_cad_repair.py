@@ -367,7 +367,9 @@ def test_a_broken_file_is_inspected_repaired_and_promoted_without_anyone_asking(
     out = asyncio.run(node_repair_attempt(state))
 
     assert out["repair_attempt"]["attempted"] is True, out["repair_attempt"]
-    assert "fill_planar_hole" in out["repair_attempt"]["operations"]
+    # ATTEMPTED AND KEPT, not merely logged: the log also carries rolled-back attempts.
+    fills = [op for op in out["repair_attempt"]["operations"] if op["name"] == "fill_planar_hole"]
+    assert [op["status"] for op in fills] == ["kept"], out["repair_attempt"]["operations"]
     # THE RUN NOW MESHES THE REPAIR, and can still say which bytes it started from
     assert out["geometry"]["ref"]["sha256"] != original_sha
     assert out["repair_lineage"]["original"]["sha256"] == original_sha

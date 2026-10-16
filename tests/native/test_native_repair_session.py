@@ -107,7 +107,10 @@ def test_a_missing_wall_is_rolled_back_rather_than_lidded(tmp_path, monkeypatch)
     op = FillPlanarHole()
     verdict = session.try_op(op, op.targets_for(holes[0]), holes[0].code, tolerance_mm=0.02)
 
-    assert not verdict.kept and verdict.reason == "target_remains"
+    # the operation REFUSED (the span cap), which the verdict says in its own words rather than as
+    # a generic failure. Not pinned character for character: the span ratio is a measurement.
+    assert not verdict.kept
+    assert verdict.reason.startswith("declined:") and "too_large" in verdict.reason, verdict.reason
     assert measure(session.shape).to_dict() == before.to_dict(), "the rollback did not restore"
 
 
