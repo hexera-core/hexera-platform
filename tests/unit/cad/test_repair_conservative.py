@@ -203,8 +203,7 @@ def test_the_source_file_is_only_ever_read(monkeypatch, tmp_path):
 
 
 def test_the_old_refusal_entry_point_still_refuses_everything_it_used_to():
-    # `_refusal` is kept as a shim because the native suite and the corpus drive it directly with
-    # recorded measurement payloads. If splitting it into sanity and cumulative changed any
+    # `_refusal` is kept as a payload-driven shim, exercised here with recorded measurement payloads. If splitting it into sanity and cumulative changed any
     # verdict, that is a silent behaviour change to a safety check.
     assert "no faces" in _refusal(_BEFORE, _after(faces=0))
     assert "solid" in _refusal(_BEFORE, _after(solids=0))
@@ -221,3 +220,28 @@ def test_the_shim_tolerates_the_measurement_keys_the_old_report_carried():
     sparse = {"valid": True, "diagonal_mm": 200.0, "max_tolerance_mm": 0.01,
               "solids": 1, "shells": 1, "faces": 20, "edges": 60, "vertices": 40}
     assert _refusal(sparse, dict(sparse)) == ""
+
+
+def test_the_shim_now_bounds_area_and_volume_by_the_residual_not_the_old_hole_span_allowance():
+    # A DELIBERATE TIGHTENING, not drift. The old `_refusal` allowed area and volume to move by up
+    # to CAD_REPAIR_MAX_HOLE_SPAN_RATIO (0.75). The shim declares no area or volume, so an
+    # unexplained 10% change is now refused at the 0.02 residual.
+    before = {**_BEFORE, "surface_area_mm2": 1000.0, "volume_mm3": 8000.0}
+    assert _refusal(before, {**before, "surface_area_mm2": 1100.0}) != ""
+    assert _refusal(before, {**before, "volume_mm3": 8800.0}) != ""
+    assert _refusal(before, {**before, "surface_area_mm2": 1010.0}) == ""
+
+
+def test_a_resolved_summary_does_not_hide_a_surviving_warning():
+    from types import SimpleNamespace
+
+    from meshpipeline.cad.repair.conservative import _summary
+
+    result = SimpleNamespace(resolved=True, stopped_because="resolved", verdicts=[],
+                             defects=({"code": "duplicate_surface_data"},))
+    text = _summary(result, SimpleNamespace(valid=True))
+    assert text != "Repaired within the conservative caps."
+    assert "1 advisory defect(s)" in text
+
+    clean = SimpleNamespace(resolved=True, stopped_because="resolved", verdicts=[], defects=())
+    assert _summary(clean, SimpleNamespace(valid=True)) == "Repaired within the conservative caps."

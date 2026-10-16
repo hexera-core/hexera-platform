@@ -160,27 +160,6 @@ def _write_step(shape, destination: Path) -> None:
         raise RepairRefused(f"the repaired shape could not be written to {destination.name}")
 
 
-def _free_loops(shape) -> list:
-    """The closed free-boundary wires on a shape - its holes, as loops."""
-    from OCP.ShapeAnalysis import ShapeAnalysis_FreeBounds
-    from OCP.TopAbs import TopAbs_WIRE
-    from OCP.TopExp import TopExp_Explorer
-    from OCP.TopoDS import TopoDS
-
-    out = []
-    try:
-        wires = ShapeAnalysis_FreeBounds(shape).GetClosedWires()
-        if wires is None:
-            return []
-        explorer = TopExp_Explorer(wires, TopAbs_WIRE)
-        while explorer.More():
-            out.append(TopoDS.Wire_s(explorer.Current()))
-            explorer.Next()
-    except Exception as exc:  # noqa: BLE001 - no free bounds is the common case
-        logger.debug("conservative: free-bound analysis unavailable (%s)", exc)
-    return out
-
-
 def _span(shape) -> float:
     from OCP.Bnd import Bnd_Box
     from OCP.BRepBndLib import BRepBndLib
@@ -490,7 +469,10 @@ def repair_step_file(source: Path, destination: Path, *,
         # EVERY ATTEMPT, KEPT OR NOT, with what it aimed at and what it measured. A rolled-back
         # operation is evidence an operator wants and the training example a later model planner
         # needs, so the log is of attempts rather than of successes.
-        operations=tuple({"name": v.op, "mutated": v.kept, **v.to_dict()}
+        # `name` is what the node and the corpus read; `to_dict` also carries it as `op`, so that
+        # copy is dropped rather than emitting the same value under two keys.
+        operations=tuple({"name": v.op, "mutated": v.kept,
+                          **{k: x for k, x in v.to_dict().items() if k != "op"}}
                          for v in result.verdicts),
         summary=_summary(result, final),
         diagnostics={"profile": profile.value, "source_suffix": src.suffix.lower()},
@@ -510,9 +492,16 @@ def _summary(result, final) -> str:
     from meshpipeline.cad.repair.loop import SCAN_INCOMPLETE
 
     if result.resolved:
-        return ("Repaired within the conservative caps."
+        base = ("Repaired within the conservative caps."
                 if final.valid else
                 "Repaired, but the result is not fully valid - needs review.")
+        if result.defects:
+            # `resolved` only means no ERROR-severity defect is left, so a surviving warning can
+            # sit beside a resolved run. An unqualified success sentence over a non-empty defect
+            # list is how an operator is told a part is clean when it is not.
+            return (f"{base} {len(result.defects)} advisory defect(s) remain (warnings, not "
+                    "errors) - see the defect list.")
+        return base
     if result.stopped_because == SCAN_INCOMPLETE:
         return ("Repaired as far as the inspection could see; the defect scan was partial, so "
                 "this is not a clean bill of health.")
@@ -525,11 +514,12 @@ def _summary(result, final) -> str:
 def _refusal(before: dict, after: dict) -> str:
     """The one place a repair RESULT is judged. Returns the reason, or "" to accept.
 
-    NOW A SHIM over cad/repair/caps.py, which owns the arithmetic and splits it into the
-    per-operation and cumulative halves the loop needs. Kept because the native suite and
-    `devtools/validation/repair_corpus.py` drive it directly with recorded measurement payloads -
-    including ones written before area and volume were recorded at all, which is why
-    `Measure.from_dict` tolerates a sparse dict.
+    A SHIM over cad/repair/caps.py, which owns the arithmetic and splits it into the per-operation
+    and cumulative halves the loop needs. `repair_step_file` no longer calls it: it judges the
+    result with the loop's own declarations. What remains is the payload-driven entry point the
+    unit tests exercise with recorded measurement dicts - worth keeping because a two-payload
+    judgement needs no kernel, and `Measure.from_dict` tolerates payloads written before area and
+    volume were recorded at all.
 
     Declares no area or volume: a caller holding only two payloads has no operation evidence to
     account for, so an unexplained change is exactly what it should refuse on.
