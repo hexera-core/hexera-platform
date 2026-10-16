@@ -1,10 +1,11 @@
 # Responsibility: Verify the rules planner's ordering, its refusal to repeat what did not work, and that it reports skipping a defect rather than skipping it silently.
 from __future__ import annotations
 
+import meshpipeline.cad.repair.plan as plan_module
 from meshpipeline.cad.repair.contracts import DefectCode, DefectSeverity
 from meshpipeline.cad.repair.identity import EntityRef
 from meshpipeline.cad.repair.localize import EntityDefect
-from meshpipeline.cad.repair.plan import RulesPlanner, RunHistory
+from meshpipeline.cad.repair.plan import Candidate, RulesPlanner, RunHistory, paired_rim_fingerprints
 
 # THE PLANNER IS THE SEAT A MODEL TAKES IN SLICE 8, so what is pinned here is the INTERFACE and
 # the baseline behaviour a model will be scored against - not an implementation detail. No kernel:
@@ -153,3 +154,63 @@ def test_a_refusal_is_recorded_once_per_defect_and_reason():
     history.refuse("edge:a", "untargetable")
 
     assert len([r for r in history.refusals if r["defect"] == "edge:a"]) == 1
+
+
+# THE RIM BAN MUST OUTLIVE THE PAIRING
+
+
+_FILL = _Op("fill_planar_hole", {DefectCode.open_shell}, 5)
+
+
+def _rim(fp, index):
+    return _defect(DefectCode.open_shell, fingerprint=fp, index=index)
+
+
+def test_the_rim_ban_survives_the_other_rim_being_closed(monkeypatch):
+    # THE PART-RUINING SEQUENCE. The targeted fill has no rim check of its own, so once one rim is
+    # closed by another operation the surviving rim has nothing to pair with. The ban must hold.
+    planner = RulesPlanner(ops=(_FILL,))
+    history = RunHistory()
+    both = (_rim("edge:a", 1), _rim("edge:b", 2))
+    monkeypatch.setattr(plan_module, "paired_rim_fingerprints",
+                        lambda shape, defects: frozenset({"edge:a", "edge:b"}))
+    assert planner.propose(both, history, shape=object()) is None
+
+    monkeypatch.setattr(plan_module, "paired_rim_fingerprints", lambda shape, defects: frozenset())
+    assert planner.propose((_rim("edge:a", 1),), history, shape=object()) is None
+
+
+def test_the_rim_refusal_is_recorded_on_the_first_proposal_even_if_another_op_wins(monkeypatch):
+    planner = RulesPlanner(ops=(_Op("sew_faces", {DefectCode.open_shell}, 4), _FILL))
+    history = RunHistory()
+    monkeypatch.setattr(plan_module, "paired_rim_fingerprints",
+                        lambda shape, defects: frozenset({"edge:a", "edge:b"}))
+
+    candidate = planner.propose((_rim("edge:a", 1), _rim("edge:b", 2)), history, shape=object())
+
+    assert candidate is not None and candidate.op.name == "sew_faces"
+    assert {r["defect"] for r in history.refusals if r["reason"] == "paired_rim"} == {
+        "edge:a", "edge:b"}
+
+
+def test_the_rim_question_never_raises_for_a_shape_it_cannot_read():
+    assert paired_rim_fingerprints(object(), (_rim("edge:a", 1), _rim("edge:b", 2))) == frozenset()
+
+
+def test_two_different_unlocated_defects_are_two_refusals():
+    planner = RulesPlanner(ops=(_NARROW,))
+    history = RunHistory()
+    defects = (_defect(DefectCode.small_edge, fingerprint="", kind="edge", index=1),
+               _defect(DefectCode.small_face, fingerprint="", kind="face", index=2))
+
+    assert planner.propose(defects, history, shape=None) is None
+    assert len([r for r in history.refusals if r["reason"] == "untargetable"]) == 2
+
+
+def test_the_planner_is_labelled_and_a_candidate_serialises():
+    assert RulesPlanner.label == "rules-v1"
+    defect = _defect(DefectCode.small_edge, fingerprint="edge:a")
+    candidate = RulesPlanner(ops=(_NARROW,)).propose((defect,), RunHistory(), shape=None)
+    assert isinstance(candidate, Candidate)
+    assert candidate.to_dict() == {"op": "narrow", "defect": "edge:a", "defect_code": "small_edge",
+                                   "targets": ["edge:a"]}

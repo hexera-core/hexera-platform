@@ -99,32 +99,37 @@ def paired_rim_fingerprints(shape, defects) -> frozenset[str]:
     refusing to propose it is recorded and reaches the report an operator reads.
 
     An empty set is the common and correct answer: an ordinary single opening has nothing to pair
-    with, and the guard must not cost the case filling exists for.
+    with, and the guard must not cost the case filling exists for. It never raises: when the
+    question cannot be answered (no kernel, no resolvable wire) it returns an empty set.
+
+    THIS IS LOAD-BEARING. The targeted fill operation has no rim check of its own, so the planner's
+    refusal is the only thing between the loop and a sealed through-hole. That is why the planner
+    makes the refusal durable (see RulesPlanner.propose) rather than trusting this to be recomputed.
     """
-    from meshpipeline.cad.repair.conservative import _paired_rims
-    from meshpipeline.cad.repair.operations import free_wire_containing
-
-    loops: list = []
-    owners: list[str] = []
-    for defect in defects:
-        if defect.code is not DefectCode.open_shell or not defect.fingerprint:
-            continue
-        if not (defect.measurements or {}).get("boundary_edges"):
-            continue
-        wire = free_wire_containing(shape, int(defect.entity_index))
-        if wire is None:
-            continue
-        loops.append(wire)
-        owners.append(defect.fingerprint)
-
-    if len(loops) < 2:
-        return frozenset()
     try:
+        from meshpipeline.cad.repair.conservative import _paired_rims
+        from meshpipeline.cad.repair.operations import free_wire_containing
+
+        loops: list = []
+        owners: list[str] = []
+        for defect in defects:
+            if defect.code is not DefectCode.open_shell or not defect.fingerprint:
+                continue
+            if not (defect.measurements or {}).get("boundary_edges"):
+                continue
+            wire = free_wire_containing(shape, int(defect.entity_index))
+            if wire is None:
+                continue
+            loops.append(wire)
+            owners.append(defect.fingerprint)
+
+        if len(loops) < 2:
+            return frozenset()
         paired = _paired_rims(loops)
-    except Exception as exc:  # noqa: BLE001 - the discriminator is a guard, never load-bearing
+        return frozenset(owners[i] for i in paired if i < len(owners))
+    except Exception as exc:  # noqa: BLE001 - an unanswerable question must not take the planner down
         logger.debug("plan: the rim discriminator did not run (%s)", exc)
         return frozenset()
-    return frozenset(owners[i] for i in paired if i < len(owners))
 
 
 class RulesPlanner:
@@ -142,6 +147,18 @@ class RulesPlanner:
     def propose(self, defects, history: RunHistory, *, shape) -> Candidate | None:
         rims = paired_rim_fingerprints(shape, defects) if shape is not None else frozenset()
 
+        # REFUSE AT DETECTION, AND MAKE THE BAN DURABLE. Recorded now, not when the fill happens to
+        # be reached, so a run stopped early still reports it. And banned per (defect, fill) in the
+        # ledger, because `rims` is recomputed from the CURRENT defects: once a kept operation
+        # closes one rim the other has nothing to pair with, the set empties, and without this
+        # ban the surviving rim would be filled - sealing the customer's through-hole.
+        for rim in sorted(rims):
+            history.refuse(
+                rim, "paired_rim",
+                "this loop pairs with another on a parallel plane - a missing tube wall, "
+                "and patching both would seal a through-hole")
+            history.mark_ineffective(rim, "fill_planar_hole")
+
         ordered = sorted(
             defects,
             key=lambda d: (_SEVERITY_RANK.get(d.severity, 9), d.entity_type, d.entity_index,
@@ -151,7 +168,7 @@ class RulesPlanner:
             if not defect.fingerprint:
                 # FOUND AND NOT AIMABLE. The case a model most needs to see: an unlocated defect
                 # cannot be verified against, so nothing may be tried on it.
-                history.refuse("", "untargetable",
+                history.refuse(f"{defect.entity_type}:{defect.entity_index}", "untargetable",
                                f"a {defect.code.value} on a {defect.entity_type} with no "
                                "measurable extent")
                 continue
@@ -164,10 +181,6 @@ class RulesPlanner:
                 if history.was_ineffective(defect.fingerprint, op.name):
                     continue
                 if op.name == "fill_planar_hole" and defect.fingerprint in rims:
-                    history.refuse(
-                        defect.fingerprint, "paired_rim",
-                        "this loop pairs with another on a parallel plane - a missing tube wall, "
-                        "and patching both would seal a through-hole")
                     continue
                 targets = op.targets_for(defect)
                 if not targets:
