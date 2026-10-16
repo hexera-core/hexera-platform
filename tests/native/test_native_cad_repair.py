@@ -246,10 +246,6 @@ def test_with_filling_enabled_a_bounded_hole_is_closed_and_the_patch_is_declared
 
     monkeypatch.setattr(rcfg, "CAD_REPAIR_FILL_PLANAR_HOLES", True)
     monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_HOLE_SPAN_RATIO", 1.0)
-    # The loop's own caps judge the added surface too. Closing a whole cube face moves area and
-    # volume by far more than the default 0.02, so they are raised for the same reason as above.
-    monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_AREA_CHANGE_RATIO", 0.5)
-    monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO", 0.5)
 
     source = write_open_shell_step(tmp_path / "holed.step")
     out = tmp_path / "holed-repaired.step"
@@ -353,9 +349,6 @@ def test_a_broken_file_is_inspected_repaired_and_promoted_without_anyone_asking(
     # wall; this test is about the loop, so patching is allowed to reach it
     monkeypatch.setattr(cfg, "CAD_REPAIR_FILL_PLANAR_HOLES", True)
     monkeypatch.setattr(cfg, "CAD_REPAIR_MAX_HOLE_SPAN_RATIO", 1.0)
-    # and the loop's area/volume caps judge the patch, which closes a whole cube face
-    monkeypatch.setattr(cfg, "CAD_REPAIR_MAX_AREA_CHANGE_RATIO", 0.5)
-    monkeypatch.setattr(cfg, "CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO", 0.5)
 
     write_open_shell_step(tmp_path / "part.step")
     state = {"job_id": "native-loop", "engine": "gmsh",
@@ -403,8 +396,6 @@ def test_the_customers_upload_is_still_intact_after_an_autonomous_repair(tmp_pat
     monkeypatch.setattr(cfg, "CAD_REPAIR_AUTONOMOUS", True)
     monkeypatch.setattr(cfg, "CAD_REPAIR_FILL_PLANAR_HOLES", True)
     monkeypatch.setattr(cfg, "CAD_REPAIR_MAX_HOLE_SPAN_RATIO", 1.0)
-    monkeypatch.setattr(cfg, "CAD_REPAIR_MAX_AREA_CHANGE_RATIO", 0.5)
-    monkeypatch.setattr(cfg, "CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO", 0.5)
 
     state = {"job_id": "native-intact", "engine": "gmsh",
              "geometry": geometry_state(tmp_path, filename="part.step")}

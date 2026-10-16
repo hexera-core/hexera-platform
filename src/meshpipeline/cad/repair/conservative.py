@@ -421,7 +421,7 @@ def repair_step_file(source: Path, destination: Path, *,
     _occ()
 
     from meshpipeline.cad.repair.brep import _read_shape
-    from meshpipeline.cad.repair.caps import measure
+    from meshpipeline.cad.repair.caps import cumulative_refusal, measure, sanity_refusal
     from meshpipeline.cad.repair.loop import run as run_loop
 
     src, dest = Path(source), Path(destination)
@@ -454,7 +454,19 @@ def repair_step_file(source: Path, destination: Path, *,
     # operation that left the caps, so reaching here with a refusal would mean a bug - but the
     # customer's part is on the other side of this function, so it is checked again on the result
     # rather than trusted from the process that produced it.
-    refusal = _refusal(original.to_dict(), final.to_dict())
+    #
+    # GIVEN THE LOOP'S OWN DECLARATIONS. A caller holding only two payloads declares nothing, which
+    # is right for `_refusal`; here the kept operations' declared surface is known, and judging the
+    # result without it would refuse every legitimate fill at the last step.
+    declared_area = sum(float(v.evidence.get("area_delta_mm2", 0.0) or 0.0)
+                        for v in result.verdicts if v.kept)
+    declared_volume = sum(float(v.evidence.get("volume_delta_mm3", 0.0) or 0.0)
+                          for v in result.verdicts if v.kept)
+    measurements["declared_area_mm2"] = declared_area
+    measurements["declared_volume_mm3"] = declared_volume
+    refusal = (sanity_refusal(original, final)
+               or cumulative_refusal(original, final, declared_area_mm2=declared_area,
+                                     declared_volume_mm3=declared_volume))
     if refusal:
         raise RepairRefused(refusal, measurements=measurements)
 
