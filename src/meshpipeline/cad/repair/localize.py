@@ -100,6 +100,12 @@ class EntityDefect:
     #: module's reading of the kernel; the raw name is the kernel's, and a support question months
     #: later wants both.
     kernel_status: str = ""
+    #: A name for this entity that SURVIVES A REPAIR (cad/repair/identity.py). `entity_index`
+    #: above is an index into one shape's map, and ShapeFix renumbers everything it touches - so
+    #: after a repair the index cannot answer "did THIS defect go away", only "did the count
+    #: fall". Empty when the entity had no measurable extent, which makes the defect untargetable
+    #: and is reported as such rather than guessed around.
+    fingerprint: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -113,6 +119,7 @@ class EntityDefect:
             "measurements": dict(self.measurements),
             "location": dict(self.location),
             "kernel_status": self.kernel_status,
+            "fingerprint": self.fingerprint,
         }
 
 
@@ -458,6 +465,24 @@ def _size_defects(shape, *, diagonal: float, total_area: float,
     return out
 
 
+def _stamped(found: tuple[EntityDefect, ...], *,
+             diagonal_mm: float) -> tuple[EntityDefect, ...]:
+    """Give every located defect a name that survives a repair.
+
+    Done HERE, in one place, after the whole scan: the fingerprint's grid is a fraction of the
+    PART's diagonal, so it cannot be computed by each defect producer in isolation without each
+    of them re-measuring the shape.
+    """
+    from dataclasses import replace
+
+    from meshpipeline.cad.repair.identity import refs_for
+
+    refs = refs_for([(d.entity_type, d.entity_index, d.location) for d in found],
+                    diagonal_mm=diagonal_mm)
+    return tuple(replace(defect, fingerprint=ref.fingerprint)
+                 for defect, ref in zip(found, refs, strict=True))
+
+
 def localize_scan(shape, *, valid: bool | None = None) -> tuple[tuple[EntityDefect, ...], bool]:
     """Every located failure point this module can find, and whether the scan was exhaustive.
 
@@ -488,7 +513,10 @@ def localize_scan(shape, *, valid: bool | None = None) -> tuple[tuple[EntityDefe
     found.extend(_size_defects(shape, diagonal=diagonal, total_area=total_area,
                                interior=interior))
     found.sort(key=lambda d: (d.entity_type, d.entity_index, d.code.value))
-    return tuple(found), complete
+    # STAMPED AFTER THE SORT, so the collision suffix a shared box gets is assigned in the same
+    # stable order the report is read in - two scans of identical bytes must produce identical
+    # names, or nothing can be compared across a repair.
+    return _stamped(tuple(found), diagonal_mm=diagonal), complete
 
 
 def _diagonal(shape) -> float:

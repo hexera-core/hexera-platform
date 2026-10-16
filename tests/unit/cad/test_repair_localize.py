@@ -145,3 +145,60 @@ def test_an_unplaceable_defect_says_unknown_rather_than_guessing_the_outside():
     # claiming a defect is on the outside when it is in a cavity sends an operator to the wrong
     # place; `unknown` is the honest answer when the shape cannot be classified
     assert _defect(DefectCode.open_shell).to_dict()["region"] == REGION_UNKNOWN
+
+
+# THE FINGERPRINT A DEFECT CARRIES
+
+
+def test_a_defect_carries_a_fingerprint_so_a_repair_can_aim_at_it_and_a_scan_can_look_for_it():
+    # `entity_index` is an index into ONE shape's map and ShapeFix renumbers everything it
+    # touches, so after a repair "is edge 12 fixed?" is unanswerable from the index alone. The
+    # fingerprint is the name that survives the renumbering.
+    defect = _defect(DefectCode.small_edge)
+    assert hasattr(defect, "fingerprint")
+    assert defect.fingerprint == "", "a defect built without one must not invent it"
+
+
+def test_a_defects_fingerprint_reaches_its_payload():
+    from meshpipeline.cad.repair.localize import EntityDefect
+
+    defect = EntityDefect(code=DefectCode.small_edge, severity=DefectSeverity.warning,
+                          entity_type="edge", entity_index=4, message="x",
+                          fingerprint="edge:abcd1234")
+    assert defect.to_dict()["fingerprint"] == "edge:abcd1234"
+
+
+def test_stamping_names_every_defect_that_has_a_box_and_leaves_the_rest_empty():
+    from meshpipeline.cad.repair.localize import EntityDefect, _stamped
+
+    located = EntityDefect(code=DefectCode.small_edge, severity=DefectSeverity.warning,
+                           entity_type="edge", entity_index=1, message="x",
+                           location={"unit": "mm", "bbox_min": [0, 0, 0], "bbox_max": [1, 0, 0]})
+    # UNLOCATED IS A REAL CASE: `_centroid_and_box` returns {} for a degenerate entity, and the
+    # status walk attributes some findings to a sub-shape it cannot index. Such a defect is
+    # UNTARGETABLE, and the planner reports skipping it rather than aiming at a guess.
+    unlocated = EntityDefect(code=DefectCode.invalid_brep, severity=DefectSeverity.error,
+                             entity_type="shell", entity_index=0, message="x")
+
+    stamped = _stamped((located, unlocated), diagonal_mm=100.0)
+
+    assert stamped[0].fingerprint.startswith("edge:")
+    assert stamped[1].fingerprint == ""
+    # Nothing else about the defect changed - the stamp is additive, so a report comparison across
+    # this change sees only the new key.
+    assert stamped[0].code is located.code and stamped[0].entity_index == 1
+
+
+def test_two_defects_on_entities_sharing_a_box_are_still_distinguishable():
+    # A duplicated face carries two defects whose boxes are identical. They must not collapse onto
+    # one name, or the session would think fixing one fixed both.
+    from meshpipeline.cad.repair.localize import EntityDefect, _stamped
+
+    box = {"unit": "mm", "bbox_min": [0, 0, 0], "bbox_max": [1, 1, 0]}
+    pair = tuple(EntityDefect(code=DefectCode.curve_inconsistency, severity=DefectSeverity.error,
+                              entity_type="face", entity_index=i, message="x", location=box)
+                 for i in (3, 4))
+
+    stamped = _stamped(pair, diagonal_mm=100.0)
+
+    assert stamped[0].fingerprint != stamped[1].fingerprint
