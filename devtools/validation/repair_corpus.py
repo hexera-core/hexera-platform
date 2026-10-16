@@ -198,7 +198,7 @@ def main() -> int:
                       f"{op.get('status', '')}{detail}")
             for record in row.get("refusals") or []:
                 print(f"      ! refused {record.get('reason', '?')}: "
-                      f"{record.get('detail', '')[:60]}")
+                      f"{record.get('detail', '')}")
             if row.get("stopped_because"):
                 print(f"      = stopped: {row['stopped_because']} "
                       f"(resolved={row.get('resolved')})")

@@ -121,6 +121,7 @@ class RepairSession:
           2. apply             - an exception here is `failed`, not a crash
           3. per-op sanity     - counts only, CHEAP
           4. cumulative caps   - against the original
+          4b. declined         - the operation said no and why; recorded as such, nothing to check
           5. re-inspect        - EXPENSIVE, so it is paid for last
           6. progress rule     - is the targeted defect gone, and nothing new broken
           7. keep or restore   - either way, it goes in the log
@@ -178,6 +179,18 @@ class RepairSession:
             return self._record(OpVerdict(
                 op=op.name, targets=fingerprints, defect_code=code, status=ROLLED_BACK,
                 reason=f"cap:{refusal}", evidence=dict(outcome.evidence), delta=delta))
+
+        declined = outcome.evidence.get("declined")
+        if declined:
+            # A REFUSAL IS NOT A FAILED ATTEMPT. The operation said no, and why, by returning the
+            # shape unchanged; the progress rule would see no progress and log the generic
+            # `target_remains`, making "declined for a stated reason" indistinguishable from "tried
+            # and it did not work". After the caps, so a declining operation cannot smuggle damage
+            # through; before the re-inspection, which would be paid for to learn nothing.
+            self.shape, self._defects, self.complete_scan = snapshot
+            return self._record(OpVerdict(
+                op=op.name, targets=fingerprints, defect_code=code, status=ROLLED_BACK,
+                reason=f"declined:{declined}", evidence=dict(outcome.evidence), delta=delta))
 
         previous = self.defects()
         self._defects = None

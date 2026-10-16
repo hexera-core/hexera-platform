@@ -156,6 +156,25 @@ def test_an_operation_whose_defect_survived_is_rolled_back():
     assert session.shape == "original", "the rollback did not restore the shape"
 
 
+def test_a_declined_operation_is_recorded_as_a_decline_not_as_a_failed_attempt():
+    # An operation that refuses by returning the shape unchanged with a `declined` reason did not
+    # "try and not work": it said no, and said why. The log must keep those apart, because a planner
+    # reading it next turn needs to know whether to try something else or to try the same thing
+    # differently.
+    declined = OpOutcome(shape="original",
+                         evidence={"declined": "too_large (span ratio 0.8165)"})
+    op = _Op(outcome=declined)
+    session = _session(scans=[((_defect(),), True)])
+    defect = session.defects()[0]
+
+    verdict = session.try_op(op, op.targets_for(defect), defect.code, tolerance_mm=0.01)
+
+    assert verdict.status == ROLLED_BACK
+    assert verdict.reason == "declined:too_large (span ratio 0.8165)"
+    assert verdict.reason != "target_remains"
+    assert session.shape == "original"
+
+
 def test_a_rollback_restores_the_defect_list_and_scan_completeness():
     # The post-operation scan is made DISTINGUISHABLE (another fingerprint, and incomplete) so that
     # a rollback which merely re-scanned, or left the new scan cached, cannot pass.
