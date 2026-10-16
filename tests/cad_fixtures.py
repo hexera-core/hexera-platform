@@ -274,3 +274,82 @@ def write_mixed_assembly_step(path: Path, unit: str = "MM", side: float = SIDE) 
     path.parent.mkdir(parents=True, exist_ok=True)
     writer.Write(str(path))
     return path
+
+
+def _write_step(shape, path: Path, unit: str) -> Path:
+    """Write one shape, refusing rather than silently emitting the wrong unit."""
+    from OCP.Interface import Interface_Static
+    from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
+
+    writer = STEPControl_Writer()
+    if not Interface_Static.SetCVal_s("write.step.unit", unit):
+        raise RuntimeError(
+            f"OCC refused write.step.unit={unit!r}; the STEP controller is not initialised, so "
+            "this fixture would silently emit millimetres instead.")
+    writer.Transfer(shape, STEPControl_AsIs)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    writer.Write(str(path))
+    return path
+
+
+def write_small_edge_step(path: Path, unit: str = "MM") -> Path:
+    """A plate with a SLIVER EDGE: a face split by a cut that leaves a near-zero-length edge.
+
+    WHAT A SMALL EDGE ACTUALLY IS AND WHY IT IS NOT CONTRIVED. A mesher sizes its cells off the
+    local feature size, so an edge 0.001 mm long on a 100 mm plate forces cells five orders of
+    magnitude smaller than the part - which is how a mesh job runs for hours and then runs out of
+    memory. They arrive from tangent-continuous fillets, from translation round-off, and from
+    booleans that just miss: this one is built by cutting a very thin wedge off a corner, which is
+    the boolean case.
+
+    `localize_scan` reports it as `small_edge` because its length is under
+    SMALL_EDGE_LENGTH_FRACTION (1e-4) of the part's diagonal. The plate's diagonal is about 141 mm,
+    so the threshold is about 0.014 mm and the sliver below is well under it.
+    """
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakePrism
+    from OCP.gp import gp_Pnt, gp_Vec
+
+    plate = BRepPrimAPI_MakeBox(100.0, 100.0, 10.0).Shape()
+    # A wedge whose tip is 0.002 mm wide: cutting it leaves an edge of that length at the tip.
+    polygon = BRepBuilderAPI_MakePolygon()
+    for point in (gp_Pnt(0.0, -1.0, -1.0), gp_Pnt(20.0, -1.0, -1.0),
+                  gp_Pnt(20.0, 0.002, -1.0), gp_Pnt(0.0, 0.0, -1.0)):
+        polygon.Add(point)
+    polygon.Close()
+    wedge = BRepPrimAPI_MakePrism(
+        BRepBuilderAPI_MakeFace(polygon.Wire(), True).Face(), gp_Vec(0.0, 0.0, 12.0)).Shape()
+    return _write_step(BRepAlgoAPI_Cut(plate, wedge).Shape(), path, unit)
+
+
+def write_loose_faces_step(path: Path, unit: str = "MM") -> Path:
+    """SIX BOX FACES AT THE RIGHT PLACES, NEVER JOINED - no shell, no solid, nothing sewn.
+
+    HOW THIS DIFFERS FROM THE OPEN SHELL AND THE MIXED ASSEMBLY, both of which already exist.
+    `write_open_shell_step` is a sewn shell declared a solid with one face MISSING: the defect is
+    a hole. `write_mixed_assembly_step` puts a loose body BESIDE a sound solid: the defect is that
+    a whole-shape judgement must not be made. This one is a single body that is complete but
+    unjoined: every face is present, the geometry closes, and the topology says nothing connects.
+
+    It is the commonest way a surface export arrives, and it is what sewing exists for - so it is
+    the fixture a targeted `sew_faces` has to be proved on. The repair must END with a shell, and
+    `_as_solid_if_closed` should then promote it.
+    """
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS, TopoDS_Compound
+
+    box = BRepPrimAPI_MakeBox(SIDE, SIDE, SIDE).Shape()
+    builder = BRep_Builder()
+    loose = TopoDS_Compound()
+    builder.MakeCompound(loose)
+    explorer = TopExp_Explorer(box, TopAbs_FACE)
+    while explorer.More():
+        # EACH FACE ADDED TO A COMPOUND INDIVIDUALLY. Adding the box itself would carry its shell
+        # and its solid along, which is the opposite of this fixture.
+        builder.Add(loose, TopoDS.Face_s(explorer.Current()))
+        explorer.Next()
+    return _write_step(loose, path, unit)
