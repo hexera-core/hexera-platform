@@ -285,6 +285,75 @@ EXTERNAL_SHELL_DEPTH = 4.0
 #: tens of body lengths across still reaches a wall cell sized for the body)
 EXTERNAL_MAX_HALVINGS = 8
 
+#: THE RUN IS PLANNED IN TIME AS WELL AS IN CELLS. The external wall is sized to spend half the
+#: 8M-cell budget, which at cfMesh's slower rates is more than its old fixed 20-minute cap could
+#: fill: the DrivAer cars came to 4.3M cells in 15-18 minutes, the soccer ball ran out of time in
+#: its last step (e2e sweep, 2026-10-17). So the case is timed before it runs and the run is given
+#: the time its plan needs, up to a ceiling - and a plan that would not fit even that is made
+#: coarser before it runs, never left to time out.
+#: cfMesh's fill rate, cautiously: about the tenth percentile of cells per second of the whole
+#: native run (cartesianMesh, checkMesh, the export) over the 71 cfMesh meshes above half a million
+#: cells in that sweep (median 5,600; a tenth under 2,100).
+CELLS_PER_SECOND = 2000.0
+#: the cap a planned run gets: this many times its estimate (never under the base cap, never over
+#: the ceiling)
+RUN_CAP_HEADROOM = 1.25
+#: the case's own record of its plan, read by the run cap (spec.run_policy.planned_timeout)
+RUN_PLAN_FILE = "system/run_plan.json"
+
+
+def run_ceiling_s() -> int:
+    """The longest one cfMesh run may be given: twice the OpenFOAM command budget, at most 50
+    minutes - inside one builder attempt (startup holds BUILDER_LOOP_TIMEOUT >= 2 x
+    OPENFOAM_COMMAND_TIMEOUT, and run_mesh keeps its feedback reserve on top of the cap)."""
+    import meshpipeline.settings.runtime as rtcfg
+    return int(min(3000, 2 * rtcfg.OPENFOAM_COMMAND_TIMEOUT))
+
+
+def base_run_cap_s() -> int:
+    """The cap of a run with no plan on record (spec.run_policy.run_timeout)."""
+    import meshpipeline.settings.runtime as rtcfg
+    return int(min(1200, rtcfg.OPENFOAM_COMMAND_TIMEOUT))
+
+
+def estimate_cells(*, volume: float, max_cell: float, wall_cell: float,
+                   wall_area: float | None, n_layers: int,
+                   shell_depth: float = EXTERNAL_SHELL_DEPTH) -> int | None:
+    """The cells a rendered external case comes to: the background fill, plus the wall's faces
+    times the refined shell and its layers (the model external_wall_cell sizes the wall with). On
+    nine cfMesh meshes of the e2e sweep it read 0.8-1.0 of the cells they made. None when the
+    wall's area is not known."""
+    if not wall_area or wall_area <= 0 or wall_cell <= 0 or max_cell <= 0:
+        return None
+    background = max(float(volume), 0.0) / max_cell ** 3
+    wall = float(wall_area) / wall_cell ** 2 * (shell_depth + max(0, int(n_layers)))
+    return int(background + wall)
+
+
+def run_cap_for(estimated_seconds: float | None) -> int:
+    """The cap of a run planned to take `estimated_seconds`: RUN_CAP_HEADROOM times the estimate,
+    no less than the base cap, no more than the ceiling."""
+    base = base_run_cap_s()
+    if not estimated_seconds or estimated_seconds <= 0:
+        return base
+    return int(min(run_ceiling_s(), max(base, RUN_CAP_HEADROOM * float(estimated_seconds))))
+
+
+def fits_one_run(estimated_seconds: float) -> bool:
+    return RUN_CAP_HEADROOM * float(estimated_seconds) <= run_ceiling_s()
+
+
+def planned_run_cap(workspace) -> int | None:
+    """The cap for the case written in `workspace`, from its run plan (RUN_PLAN_FILE) - None when
+    the case carries no plan, and the base cap stands."""
+    try:
+        plan = json.loads((Path(workspace) / RUN_PLAN_FILE).read_text())
+    except (OSError, ValueError, TypeError):
+        return None
+    cap = plan.get("run_cap_s") if isinstance(plan, dict) else None
+    ok = isinstance(cap, (int, float)) and not isinstance(cap, bool) and cap > 0
+    return int(cap) if ok else None
+
 
 def external_wall_cell(surface_area_m2: float, cell_budget: int, n_layers: int,
                        L: float) -> float:
@@ -309,6 +378,41 @@ def snap_to_octree(max_cell: float, wall_cell: float) -> float:
     return max_cell / (2 ** n) * 1.001
 
 
+def _plan_run(*, volume: float, max_cell: float, wall_cell: float, wall_area: float | None,
+              n_layers: int, coarsest: float, fit: bool) -> dict | None:
+    """The run plan of a case: its estimated cells and time, the cap that gives it, whether it fits
+    one run - and, with `fit`, the wall cell made one octree level coarser at a time (each level
+    a quarter of the wall's cells) while it would not, never past `coarsest`. None when the cells
+    cannot be estimated."""
+    est = estimate_cells(volume=volume, max_cell=max_cell, wall_cell=wall_cell,
+                         wall_area=wall_area, n_layers=n_layers)
+    if est is None:
+        return None
+    asked, levels = est, 0
+    while (fit and not fits_one_run(est / CELLS_PER_SECOND)
+           and wall_cell * 2.0 <= coarsest * (1.0 + 1e-6)):
+        wall_cell *= 2.0
+        levels += 1
+        est = estimate_cells(volume=volume, max_cell=max_cell, wall_cell=wall_cell,
+                             wall_area=wall_area, n_layers=n_layers) or est
+    seconds = est / CELLS_PER_SECOND
+    plan = {"estimated_cells": int(est), "cells_per_second": CELLS_PER_SECOND,
+            "estimated_seconds": round(seconds, 1), "run_cap_s": run_cap_for(seconds),
+            "fits": fits_one_run(seconds), "wall_cell": wall_cell}
+    if levels:
+        plan.update(coarsened_levels=levels, cells_before=int(asked), note=(
+            f"The wall cells were made {levels} level{'s' if levels != 1 else ''} coarser "
+            f"({int(asked):,} -> {int(est):,} cells) so the run fits the "
+            f"{run_ceiling_s() // 60}-minute limit of one cfMesh run."))
+    if not plan["fits"]:
+        plan["note"] = (f"About {int(est):,} cells, about {seconds / 60:.0f} minutes of cfMesh: more "
+                        f"than one run may take ({run_ceiling_s() // 60} minutes), even with the "
+                        "coarsest wall this body allows.")
+    if levels or not plan["fits"]:
+        logger.warning("cfMesh run plan: %s", plan.get("note"))
+    return plan
+
+
 def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
                        patches: list, body_bbox, L: float,
                        domain_min, domain_max, strategy: dict | None = None,
@@ -316,7 +420,9 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
                        default_boundary: bool = True,
                        passage_radius: dict | None = None,
                        passage_field: tuple | None = None,
-                       max_halvings: int = 4, snap_wall: bool = False) -> dict:
+                       max_halvings: int = 4, snap_wall: bool = False,
+                       wall_area: float | None = None, fit_run: bool = False,
+                       wall_ceiling: float | None = None) -> dict:
     ws = Path(workspace)
     strategy = strategy or {}
     ext = [float(domain_max[i] - domain_min[i]) for i in range(3)]
@@ -357,6 +463,15 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
     _floor = float(_caps.get("wall_cell_floor") or 0.0)
     wall_cell = max(wall_cell, _floor)
     _thick = (f" refinementThickness {_caps['refinement_thickness']:.6g};" if _caps else "")
+
+    # THE RUN, TIMED BEFORE IT RUNS (CELLS_PER_SECOND): the cap it gets, and - for a wall the
+    # engine sized itself (fit_run) - one octree level coarser at a time, while the plan would not
+    # fit the longest run allowed, never coarser than `wall_ceiling` (the old L/20 by default)
+    plan = _plan_run(volume=vol, max_cell=max_cell, wall_cell=wall_cell, wall_area=wall_area,
+                     n_layers=max(0, int(strategy.get("n_layers", 0))),
+                     coarsest=(wall_ceiling if wall_ceiling else L / 20.0), fit=fit_run)
+    if plan is not None:
+        wall_cell = plan["wall_cell"]
 
     dict_parts = [
         _MESHDICT_HDR,
@@ -426,11 +541,18 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
 
     (ws / "system").mkdir(parents=True, exist_ok=True)
     (ws / "system" / "meshDict").write_text("".join(dict_parts))
+    _plan_path = ws / RUN_PLAN_FILE
+    if plan is not None:
+        _plan_path.write_text(json.dumps({k: v for k, v in plan.items() if k != "wall_cell"}))
+    else:
+        # a case with no plan runs on the base cap: never on a plan written for another case
+        _plan_path.unlink(missing_ok=True)
 
     est_bg = int(vol / max(max_cell, 1e-30) ** 3)
     return {"max_cell_size": round(max_cell, 6), "wall_cell_size": round(wall_cell, 6),
             "n_layers": n_layers, "features": len(strategy.get("features") or []),
             "est_background_cells": est_bg,
+            **({"run_plan": {k: v for k, v in plan.items() if k != "wall_cell"}} if plan else {}),
             "passage_caps": {k: round(v, 6) for k, v in _caps.items()} or None,
             "narrow_regions": [{"cell_size": round(b["cell_needed_m"], 6),
                                 "radius": round(b["radius_m"], 6)} for b in _narrow] or None,
@@ -631,6 +753,14 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
                      + "Call run_mesh NOW. Reconfigure ONLY on a concrete run_mesh failure.")}
 
 
+def _clear_run_too_long(workspace) -> None:
+    """A case re-planned to fit drops the refusal an earlier, too-long plan of it recorded."""
+    from meshpipeline.engines.preflight import PREFLIGHT_RECORD, read_refusal
+    rec = read_refusal(workspace)
+    if rec is not None and rec.builder_text.startswith("[PREFLIGHT_RUN_TOO_LONG]"):
+        (Path(workspace) / PREFLIGHT_RECORD).unlink(missing_ok=True)
+
+
 def configure_mesh(workspace, *, geometry_file: str, strategy: dict, wall_patch: str,
                    contract_patches: list, args: dict, cell_budget: int,
                    surface=None) -> dict:
@@ -705,7 +835,29 @@ def configure_mesh(workspace, *, geometry_file: str, strategy: dict, wall_patch:
         workspace, surface_file=prep["surface_file"], wall_patch=wall_patch,
         patches=_patches, body_bbox=prep["body_bbox"], L=analysis["L"],
         domain_min=dmin, domain_max=dmax, strategy=strategy, cell_budget=cell_budget,
-        max_halvings=EXTERNAL_MAX_HALVINGS, snap_wall=_sized_here)
+        max_halvings=EXTERNAL_MAX_HALVINGS, snap_wall=_sized_here,
+        wall_area=float(analysis.get("surface_area") or 0.0) or None, fit_run=_sized_here)
+    plan = summary.get("run_plan") or {}
+    if plan and not plan.get("fits"):
+        # A RUN THAT WOULD CLEARLY NOT FINISH is not started: it is refused here, in seconds, with
+        # the numbers - and recorded for the executor, so the run ends on what was decided (and the
+        # fallback ladder offers the next engine) instead of on a time-out 50 minutes later.
+        from meshpipeline.contracts.failure_cause import FailureCause
+        from meshpipeline.engines.preflight import PreflightRefusal
+        _why = str(plan.get("note") or "the planned mesh is too big for one cfMesh run")
+        PreflightRefusal(
+            gate="finalize", cause=FailureCause.NOT_BUILT.value,
+            builder_text=f"[PREFLIGHT_RUN_TOO_LONG] {_why}",
+            facts={"engine": "cfMesh", "reason": _why, "before_meshing": True,
+                   "deterministic": not _sized_here, "meshers_started": 0,
+                   "estimated_cells": plan.get("estimated_cells"),
+                   "estimated_seconds": plan.get("estimated_seconds")}).write(workspace)
+        return {"success": False, "too_long_for_one_run": True, "error": _why, **summary,
+                "next": ("Do NOT run_mesh: this plan cannot finish in one run. "
+                         + ("Raise wall_cell (coarser wall cells) or drop objectRefinements, then "
+                            "configure_mesh again." if not _sized_here else
+                            "No setting of this engine makes it fit - STOP and end your turn."))}
+    _clear_run_too_long(workspace)
     return {"success": True, "wrote": ["system/meshDict"], "topology": "external", **summary,
             "next": "meshDict written (valid + budget-clamped). Call run_mesh NOW. "
                     "Reconfigure ONLY in response to a concrete run_mesh failure."}

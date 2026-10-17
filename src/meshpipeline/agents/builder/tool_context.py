@@ -34,6 +34,11 @@ class BuilderToolContext:
     #: The engineer's flagged regions, when this build is answering a dispute. The
     #: submit tool needs them to know which declarations it must require.
     user_dispute: dict | None = None
+    #: The engine the run moves to if this attempt ends on a BROKEN mesh
+    #: (pipeline/engine_fallback.moves_on_from_broken_mesh) - '' when it would stay on this one.
+    #: run_mesh reads it: a broken mesh is then not re-run here, the attempt ends and the run
+    #: moves on.
+    broken_mesh_moves_to: str = ""
 
     # derived, never stored
     # Properties rather than fields on purpose. A stored `interpretation` could be set to one

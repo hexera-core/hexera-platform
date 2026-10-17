@@ -339,6 +339,17 @@ def prepare_mesh_run(ctx: BuilderToolContext) -> PreparedMeshRun:
     # died at exactly BUILDER_LOOP_TIMEOUT with zero remote returns - the engine's 3000s
     # run budget could never fit a 3600s loop after preamble rounds.)
     _cap = _policy.run_timeout()
+    if _policy.planned_timeout is not None:
+        # the engine TIMED this case when it wrote it (the cells it will make): it gets the time
+        # its plan needs, not the fixed cap - and still only what the loop budget leaves
+        try:
+            _planned = _policy.planned_timeout(workspace)
+        except Exception:  # noqa: BLE001 - a plan that cannot be read leaves the declared cap
+            logger.warning("run_mesh: the engine's run plan could not be read", exc_info=True)
+            _planned = None
+        if _planned:
+            logger.info("run_mesh: the planned case gets %ds (declared cap %ds)", _planned, _cap)
+            _cap = int(_planned)
     if loop_deadline is not None:
         _remaining = int(loop_deadline - _time.monotonic())
         _usable = _remaining - _RUN_MESH_FEEDBACK_RESERVE
@@ -399,6 +410,50 @@ def execute_prepared_mesh_run(ctx: BuilderToolContext, prepared: PreparedMeshRun
     return out
 
 
+def _broken_at_time_out(policy, log_tail) -> list[str]:
+    """The broken cells a timed-out run was still failing to repair (the engine's own reading of
+    its log, RunPolicy.timed_out_defects) - [] for a run that was only slow."""
+    hook = getattr(policy, "timed_out_defects", None)
+    if hook is None:
+        return []
+    try:
+        return [str(x) for x in (hook(str(log_tail or "")) or []) if str(x).strip()]
+    except Exception:  # noqa: BLE001 - a log that cannot be read leaves the plain time-out
+        logger.warning("run_mesh: could not read the timed-out run's log", exc_info=True)
+        return []
+
+
+def _stalled_verdict(ctx: BuilderToolContext, broken: list[str], log_tail) -> dict:
+    """A run that ran out of time still repairing broken cells IS a broken mesh: more time does not
+    mend it. Recorded for the executor as one (the failure the user reads and the fallback ladder
+    moves on from), and said to the builder so it does not buy the same run again."""
+    from meshpipeline.contracts.failure_cause import FailureCause
+    from meshpipeline.engines.preflight import PreflightRefusal
+    from meshpipeline.engines.registry import engine_label
+    what = "; ".join(broken)
+    PreflightRefusal(
+        gate="finalize", cause=FailureCause.MESH_QUALITY.value,
+        builder_text=f"[MESH_STALLED_BROKEN] the mesher ran out of time still repairing broken "
+                     f"cells: {what}",
+        facts={"engine": engine_label(ctx.engine) or ctx.engine, "fatal": list(broken),
+               "timed_out": True, "meshers_started": 1}).write(ctx.workspace)
+    out = {"success": False, "timed_out": True, "fatal_defects": list(broken),
+           "log_tail": log_tail}
+    if ctx.broken_mesh_moves_to:
+        nxt = engine_label(ctx.broken_mesh_moves_to) or ctx.broken_mesh_moves_to
+        out["moves_on_to"] = ctx.broken_mesh_moves_to
+        out["guidance"] = (f"Not valid: the mesher ran out of time still repairing broken cells "
+                           f"({what}) - more time does not mend that. Do NOT run_mesh again and do "
+                           f"NOT reconfigure - end your turn now. The run moves on to {nxt}, "
+                           "which builds the same approved mesh.")
+    else:
+        out["guidance"] = (f"Not valid: the mesher ran out of time still repairing broken cells "
+                           f"({what}) - more time does not mend that. Change the case so the wall "
+                           "is easier to fit (fewer or thinner boundaryLayers, a coarser wall "
+                           "cell) before any run_mesh; if it stalls again, stop.")
+    return out
+
+
 def _run_and_judge(ctx: BuilderToolContext, prepared: PreparedMeshRun) -> dict:
     from meshpipeline.engines.registry import get_spec as _get_spec
     from meshpipeline.engines.runtime import get_engine
@@ -438,6 +493,9 @@ def _run_and_judge(ctx: BuilderToolContext, prepared: PreparedMeshRun) -> dict:
                              "not build the approved patches (an internal error, not your "
                              "strategy). Do NOT reconfigure - STOP and end your turn.")}
     if res["timed_out"]:
+        _stalled = _broken_at_time_out(_policy, res.get("log_tail"))
+        if _stalled:
+            return _stalled_verdict(ctx, _stalled, res.get("log_tail"))
         return {"success": False, "timed_out": True,
                 "guidance": f"meshing exceeded {_cap // 60} min - too fine. {_policy.timeout_hint}",
                 "log_tail": res["log_tail"]}
@@ -479,5 +537,17 @@ def _run_and_judge(ctx: BuilderToolContext, prepared: PreparedMeshRun) -> dict:
     else:
         out["guidance"] = (_policy.ok_guidance if ok else
                            f"Not valid ({fatal or _policy.fail_label}). {_policy.fail_hint}")
+    if not ok and fatal and ctx.broken_mesh_moves_to:
+        # A BROKEN MESH MOVES THE RUN ON (pipeline/engine_fallback.py): this engine's mesh of this
+        # shape has fatal defects, and the run will move to the next engine, which delivers the
+        # same approved mesh. Re-running this engine here would only spend the attempt's time
+        # (cfMesh ran up to 18 minutes a try on the DrivAer cars and broke them every time).
+        from meshpipeline.engines.registry import engine_label
+        nxt = engine_label(ctx.broken_mesh_moves_to) or ctx.broken_mesh_moves_to
+        out["moves_on_to"] = ctx.broken_mesh_moves_to
+        out["guidance"] = (f"Not valid ({', '.join(str(x) for x in fatal)}): this engine's mesh "
+                           f"of this shape is broken. Do NOT run_mesh again and do NOT reconfigure "
+                           f"- end your turn now. The run moves on to {nxt}, which builds the "
+                           "same approved mesh.")
     out["log_tail"] = "" if ok else res["log_tail"]
     return out

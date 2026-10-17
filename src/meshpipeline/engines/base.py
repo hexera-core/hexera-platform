@@ -271,6 +271,13 @@ class RunPolicy:
     submit_marker: str                # physical deliverable gating submit_mesh
     submit_ok_key: str                # key set true in the submit payload
     submit_hint: str                  # coaching when submit is premature
+    #: THE CAP FOR THE CASE WRITTEN IN A WORKSPACE, when the engine planned the run (timed it from
+    #: the cells it will make): seconds, or None to keep run_timeout. run_mesh still fits it into
+    #: the builder loop's remaining budget.
+    planned_timeout: Callable[[Path], int | None] | None = None
+    #: THE BROKEN CELLS A TIMED-OUT RUN WAS STILL FAILING TO REPAIR, read from its log tail ([]
+    #: when the run was merely slow): such a run is a broken mesh, not one that needed more time.
+    timed_out_defects: Callable[[str], list[str]] | None = None
 
 
 def _label(name: str) -> str:

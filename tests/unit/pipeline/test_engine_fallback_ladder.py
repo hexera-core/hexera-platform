@@ -663,3 +663,45 @@ def test_a_layer_failure_on_one_hex_engine_offers_the_other_first():
                    reviewer_axis_findings=[{"axis_key": "prism_layer_coverage", "passed": False}])
     offer = lad.final_record(st, succeeded=False, system_failure=False)["offer"]
     assert offer["kind"] == "engine" and offer["engine"] == "cfmesh" and offer["same_contract"]
+
+
+# a broken mesh moves on (e2e sweep 2026-10-17: cfMesh broke 7 of 8 DrivAer cars)
+
+_BROKEN = {"executor_failure_cause": "mesh_quality",
+           "executor_failure_facts": {"fatal": ["negative-volume cells"], "meshers_started": 1}}
+
+
+def test_a_broken_mesh_is_the_engines_own_failing_and_says_what_broke():
+    f = lad.classify(_external(**_BROKEN))
+    assert f.kind == lad.ENGINE
+    assert "broken" in f.reason and "negative-volume cells" in f.reason
+    # the same cause without broken cells is still a bar a retry might clear
+    assert lad.classify(_external(executor_failure_cause="mesh_quality",
+                                  executor_failure_facts={})).kind == lad.FIXABLE
+
+
+def test_a_broken_mesh_moves_to_the_next_engine_even_with_attempts_to_spare(quiet, monkeypatch):
+    monkeypatch.setattr(bcfg, "MAX_BUILDER_RETRIES", 3)
+    out = _node(_external(**_BROKEN))
+    assert out["engine"] == "snappy", "a broken mesh was given to the same engine again"
+    switch = out["engine_ladder"]["switches"][0]
+    assert switch["why"] == "this engine's mesh of this shape came out broken"
+    said, _ = quiet
+    assert any("negative-volume cells" in s and "snappyHexMesh" in s for s in said), said
+
+
+def test_a_broken_mesh_on_a_user_named_engine_stays_and_is_offered_the_other(quiet):
+    st = _external(engine_source=lad.SOURCE_USER, **_BROKEN)
+    assert "engine" not in _node(st)
+    offer = lad.final_record({**st, "retry_count": 2}, succeeded=False,
+                             system_failure=False)["offer"]
+    assert offer["engine"] == "snappy" and "broken" in offer["text"]
+
+
+def test_the_builder_is_told_before_the_attempt_where_a_broken_mesh_moves_the_run(quiet):
+    fresh = _external(retry_count=0, executor_failed_gate="", executor_success=False)
+    assert lad.moves_on_from_broken_mesh(fresh) == "snappy"
+    assert lad.moves_on_from_broken_mesh({**fresh, "engine_source": lad.SOURCE_USER}) == ""
+    # the last regular attempt has nowhere to move to inside this run
+    last = _external(retry_count=bcfg.MAX_BUILDER_RETRIES + 1)
+    assert lad.moves_on_from_broken_mesh(last) == ""
