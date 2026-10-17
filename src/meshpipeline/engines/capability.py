@@ -60,7 +60,7 @@ _CAD_SUFFIXES = frozenset({".step", ".stp", ".iges", ".igs", ".brep", ".brp"})
 #: Triangle and mesh formats: whatever the reader makes of them, what reaches an engine is a
 #: triangulated surface (a volume mesh contributes its skin).
 _SURFACE_SUFFIXES = frozenset({".stl", ".obj", ".ply", ".off", ".3mf", ".gltf", ".glb", ".vtk",
-                               ".vtp", ".vtu", ".msh", ".bdf", ".nas", ".inp"})
+                               ".vtp", ".vtu", ".msh", ".bdf", ".nas", ".inp", ".dae"})
 
 
 def _suffix_of(source: object) -> str:

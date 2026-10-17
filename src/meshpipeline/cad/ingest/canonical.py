@@ -1,6 +1,6 @@
 # Responsibility: Turn any accepted geometry file into one of the two canonical forms: a CAD solid (STEP/IGES) or a triangle surface (STL).
 # Owns: the format decision by content, the pass-through of formats already canonical, the conversions, and the record of what was converted.
-# Boundaries: one file in, one canonical file out, in the source's own unit; it never scales, repairs or meshes.
+# Boundaries: one file in, one canonical file out, in the source's own unit (a COLLADA unit outside the vocabulary aside: its reader converts it exactly into mm); it never scales, repairs or meshes.
 # Collaborates with: application/geometry_materializer.py and application/geometry_check.py (its two callers), cad/ingest/readers.py, cad/ingest/cad.py.
 from __future__ import annotations
 
