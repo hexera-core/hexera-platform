@@ -96,6 +96,10 @@ class Hole:
     #: how sure the reading is, 0..1: an open edge or a bore wall all round, and how much of the
     #: air outside is clear
     confidence: float = 0.0
+    #: AN ANNULUS: the area of what stands in the hole - the flat end of a centre rod or hub,
+    #: lying in the mouth's plane inside its loop (see WHAT STANDS IN A HOLE) - so the flow
+    #: crosses `area - filled`. 0.0 for a plain bore.
+    filled: float = 0.0
 
     @property
     def equivalent_diameter(self) -> float:
@@ -104,6 +108,10 @@ class Hole:
     @property
     def shape(self) -> str:
         return _shape(self.wh, self.area)
+
+    @property
+    def annular(self) -> bool:
+        return 0.0 < self.filled < self.area
 
     def as_dict(self, mm_per_unit: float = 1000.0) -> dict:
         """The hole as the stage reads it: metres and the reading's millimetres side by side, the
@@ -120,6 +128,9 @@ class Hole:
             out["width_mm"], out["height_mm"] = round(self.wh[0] * mm_per_unit, 2), round(self.wh[1] * mm_per_unit, 2)
         if self.outer is not None:
             out["outer_m"] = [r6(p) for p in _thin(self.outer)]
+        if self.annular:
+            out["inner_diameter_mm"] = round(2.0 * math.sqrt(self.filled / math.pi) * mm_per_unit, 2)
+            out["flow_area_mm2"] = round((self.area - self.filled) * mm_per_unit * mm_per_unit, 2)
         return out
 
 
@@ -464,7 +475,8 @@ class _Mesh:
         # air outside is
         conf = (0.6 if kind == "rim" else 0.5) + 0.35 * clear / (CONE_RAYS + 1)
         hole = Hole(kind=kind, centroid=c, normal=out, area=area, wh=wh, loop=P, outer=outer,
-                    planarity=dev / d, clear=clear, confidence=round(conf, 2))
+                    planarity=dev / d, clear=clear, confidence=round(conf, 2),
+                    filled=self._standing_in(P, c, out, d, dev, area))
         return hole, band
 
     # ---------------------------------------------------------------------------- the caps ----
@@ -666,6 +678,30 @@ class _Mesh:
         hits = self._hits(origins, np.repeat(-out[None, :], len(origins), axis=0), near)
         return bool(np.sum(hits < 2.0 * reach) >= 0.9 * len(origins))
 
+    def _standing_in(self, P, c, out, d, dev, area) -> float:
+        """WHAT STANDS IN A HOLE: the area of the faces lying in the mouth's plane, inside its
+        loop, facing its way - the flat end of a centre rod or hub (an annular mouth), the faces
+        cad_tessellate.stands_in_opening finds on a CAD part. The bore's wall runs back from the
+        loop and the cut wall's end face lies outside it, so neither counts."""
+        R = float(np.max(np.linalg.norm(P - c, axis=1)))
+        near = self._near(c, R)
+        if len(near) == 0:
+            return 0.0
+        tol = dev + 2e-3 * d
+        corners = self.verts[self.faces[near]]                       # (k, 3, 3)
+        flat = np.all(np.abs((corners - c) @ out) <= tol, axis=1)
+        facing = np.abs(self.normal[near] @ out) >= math.cos(math.radians(10.0))
+        cand = near[flat & facing]
+        if len(cand) == 0:
+            return 0.0
+        u = np.cross(out, [0.0, 0.0, 1.0] if abs(out[2]) < 0.9 else [0.0, 1.0, 0.0])
+        u /= np.linalg.norm(u)
+        w = np.cross(out, u)
+        q = self.centre[cand] - c
+        inside = _in_polygon(np.c_[q @ u, q @ w], np.c_[(P - c) @ u, (P - c) @ w])
+        filled = float(self.area[cand[inside]].sum())
+        return filled if filled < area else 0.0
+
     def _end_face(self, c, out, d, dev, seeds) -> tuple[np.ndarray | None, set]:
         """The face around a bore's mouth - the cut wall's end - grown from the faces on the loop
         that lie in its plane, while they face the mouth's way: its outline, and its faces."""
@@ -825,6 +861,27 @@ def _chain(ids, ea, eb, at, V):
             yield np.asarray(path_v), ids[np.asarray(path_e)]
         else:
             used[np.asarray(path_e[1:], dtype=np.int64)] = False
+
+
+#: Points x polygon edges tested at once by _in_polygon: its memory stays a few tens of MB
+#: however detailed the mouth and however many faces lie near it.
+IN_POLYGON_BATCH = 2_000_000
+
+
+def _in_polygon(pts: np.ndarray, poly: np.ndarray) -> np.ndarray:
+    """Which of the 2D points lie inside the closed 2D polygon (even-odd rule), the points taken
+    in batches of IN_POLYGON_BATCH point-edge pairs."""
+    x0, y0 = poly[:, 0][None, :], poly[:, 1][None, :]
+    x1, y1 = np.roll(poly[:, 0], -1)[None, :], np.roll(poly[:, 1], -1)[None, :]
+    out = np.zeros(len(pts), dtype=bool)
+    step = max(1, IN_POLYGON_BATCH // max(len(poly), 1))
+    for k in range(0, len(pts), step):
+        x, y = pts[k:k + step, 0][:, None], pts[k:k + step, 1][:, None]
+        crosses = (y0 > y) != (y1 > y)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            at = x0 + (y - y0) * (x1 - x0) / (y1 - y0)
+        out[k:k + step] = np.count_nonzero(crosses & (x < at), axis=1) % 2 == 1
+    return out
 
 
 def _measure(P: np.ndarray):

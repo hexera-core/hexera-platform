@@ -116,6 +116,8 @@ def scout_mesh(path: Path, *, scale_to_m: float) -> ScoutResult:
         candidates.append(_opening(-1, "rim" if h.kind == "rim" else "ring", h.centroid, h.normal, h.area, h.wh,
                                    bbox_min, bbox_max, diag))
         candidates[-1].confidence = h.confidence
+        # an annular mouth: what stands in it (a centre rod or hub), so the flow area is the ring
+        candidates[-1].filled = h.filled
 
     # FLAT FACES, each measured as a lid might be (cad/open_ends, WHAT A CAP IS). A fluid body's
     # mouths are lids: flat, with a sharp rim all the way round and open air outside - wherever

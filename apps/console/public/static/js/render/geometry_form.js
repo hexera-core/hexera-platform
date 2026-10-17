@@ -318,6 +318,13 @@ export function readForm(root, p) {
     if (dia) { const v = num(dia.value, 0); if (v > 0) body.diameter_mm = typed(v, p); }    // typed in the file's units
     else if (o.shape === "circle") body.diameter_mm = o.diameter_mm;
     else { body.width_mm = o.width_mm; body.height_mm = o.height_mm; body.diameter_mm = o.diameter_mm; }
+    // AN ANNULUS, as the check measured it: the centre body standing in the bore, and the area the
+    // flow crosses round it - sent back so the declaration is the ring, not the whole bore. The
+    // area is the measured one only while the bore is the measured one too.
+    if (Number(o.inner_diameter_mm) > 0) body.inner_diameter_mm = Number(o.inner_diameter_mm);
+    const sameBore = !(body.diameter_mm > 0 && o.diameter_mm > 0)
+      || Math.abs(body.diameter_mm - o.diameter_mm) <= 0.01 * o.diameter_mm;
+    if (Number(o.flow_area_mm2) > 0 && sameBore) body.flow_area_mm2 = Number(o.flow_area_mm2);
     return body;
   });
   const body = { input_kind: root.querySelector(".gc-kind").value, flow, part: p.part || "",
