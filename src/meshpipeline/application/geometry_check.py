@@ -1486,13 +1486,33 @@ def _upright(proposal: dict, facts: dict, vision: dict | None, flow_axis) -> dic
     proposal.update(up)
     flow_axis, overruled = weigh_flow_axis(facts, vision, flow_axis, up["up_axis"])
     proposal.update(external_defaults(facts, flow_axis, up["up_axis"]))
+    from_nose = proposal.get("flow_axis_guessed") is False and (vision or {}).get("flow_from") != "the user's words"
+    if from_nose:
+        proposal.update(nose_sureness(facts, proposal["flow_axis"], up["up_axis"]))
     if overruled:
         proposal["flow_axis_guessed"] = True
     if up["up_axis"] != DEFAULT_UP:
         proposal["notes"].append(f"Up is {up['up_axis'].upper()}: {up['up_axis_from']}.")
-    if proposal["flow"] == "external" and proposal.get("flow_axis_guessed"):
+    if proposal["flow"] == "external" and (proposal.get("flow_axis_guessed") or from_nose):
         proposal["notes"].append(direction_note(proposal, overruled))
     return proposal
+
+
+#: How sure a nose read off the pictures is as the flow direction on its own.
+NOSE_CONFIDENCE = 0.6
+
+
+def nose_sureness(facts: dict, axis: str, up_axis: str) -> dict:
+    """Where a direction from the pictures' nose came from and how sure it is: surer when the
+    shape's own reading runs along the same axis (the nose then only gives the sign)."""
+    from meshpipeline.contracts.geometry_fields import axis_from_reading
+
+    shaped, reading = axis_from_reading(facts.get("flow_axis_reading"), up_axis)
+    if shaped and shaped[1] == axis[1]:
+        sure = max(NOSE_CONFIDENCE, float(reading.get("confidence") or 0.0))
+        return {"flow_axis_confidence": round(sure, 2),
+                "flow_axis_from": f"the nose in the pictures, along the shape's own axis ({reading.get('reason')})"}
+    return {"flow_axis_confidence": NOSE_CONFIDENCE, "flow_axis_from": "the nose in the pictures"}
 
 
 #: How sure the shape's reading of the flow direction must be to stand against the nose the

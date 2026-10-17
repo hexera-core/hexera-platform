@@ -579,9 +579,12 @@ def _wall_round(skin: Skin, o: dict) -> tuple[float, list[float]] | None:
     angles = np.linspace(0.0, 2.0 * math.pi, RAYS, endpoint=False)
     dirs = np.array([math.cos(t) * e1 + math.sin(t) * e2 for t in angles])
     tris = _round_axis(skin, c, n, 3.0 * 2.0 * r0, 4.0 * r0)
+    # depths behind the mouth that lie inside the part, however short it runs along the axis
+    length = float(np.ptp(skin.tris.reshape(-1, 3) @ n))
+    depths = [f * 2.0 * r0 for f in (0.25, 0.75, 1.5) if f * 2.0 * r0 < 0.9 * length] or [0.5 * length]
     best, inside = None, None
-    for depth in (0.25, 0.75, 1.5):
-        p = c - n * depth * 2.0 * r0
+    for depth in depths:
+        p = c - n * depth
         widest, at = None, None
         for d, h in zip(dirs, _hits(tris, p, dirs)):
             k = np.searchsorted(h, 0.9 * r0)

@@ -9,7 +9,7 @@ import math
 
 import numpy as np
 
-from meshpipeline.application.geometry_check import weigh_flow_axis
+from meshpipeline.application.geometry_check import nose_sureness, weigh_flow_axis
 from meshpipeline.cad import flow_reading as fr
 from meshpipeline.cad.stl_io import _box_triangles
 from meshpipeline.contracts.geometry_fields import axis_from_reading, external_defaults
@@ -171,6 +171,14 @@ def test_an_annulus_as_thick_as_a_blade_row_is_the_fluid_and_its_mouths_are_the_
     assert facts["seed_point_mm"] is not None and 120 < math.hypot(*facts["seed_point_mm"][1:]) < 200
 
 
+def test_a_short_annulus_is_read_inside_its_own_length():
+    hole = [_mouth(1, (0, 0, 0), (-1, 0, 0), 240, kind="ring"), _mouth(2, (0.04, 0, 0), (1, 0, 0), 240, kind="ring", role="outlet")]
+    facts = _facts(kind="body-surface", body="pipe_wall", openings=hole)
+    _read(_tube(0.12, 0.2, 0.04), facts)
+    assert facts["input_kind"] == "fluid-domain"
+    assert all(abs(o["diameter_mm"] - 400) < 25 for o in facts["openings"])
+
+
 def test_a_thin_pipe_wall_stays_a_pipe_wall():
     hole = [_mouth(1, (0, 0, 0), (-1, 0, 0), 240, kind="ring"), _mouth(2, (0.6, 0, 0), (1, 0, 0), 240, kind="ring", role="outlet")]
     facts = _facts(kind="body-surface", body="pipe_wall", openings=hole)
@@ -239,6 +247,14 @@ def test_a_sure_shape_axis_stands_against_the_pictures_nose_but_never_against_th
     assert weigh_flow_axis(facts, {"flow_from": "the user's words"}, "-y", "+z") == ("-y", "")
     unsure = {"flow_axis_reading": [{"rule": "across", "axes": ["y"], "confidence": 0.6, "reason": "cut"}]}
     assert weigh_flow_axis(unsure, {"flow_from": "the nose"}, "+y", "+z") == ("+y", "")
+
+
+def test_a_nose_from_the_pictures_says_where_it_came_from_and_how_sure_it_is():
+    rotor = {"flow_axis_reading": [{"rule": "along", "axes": ["x"], "confidence": 0.75, "reason": "rotor"}]}
+    agree = nose_sureness(rotor, "-x", "+z")
+    assert agree["flow_axis_confidence"] == 0.75 and "along the shape's own axis (rotor)" in agree["flow_axis_from"]
+    alone = nose_sureness({}, "-y", "+z")
+    assert alone == {"flow_axis_confidence": 0.6, "flow_axis_from": "the nose in the pictures"}
 
 
 def test_a_shape_too_small_to_read_says_so():
