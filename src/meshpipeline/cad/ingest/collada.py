@@ -23,6 +23,12 @@ MAX_DEPTH = 32
 #: Node visits a scene may ask for. Triangles are paid for as they are placed (limits.MAX_TRIANGLES),
 #: but a node can place empty nodes many times over; this bounds the walk itself.
 MAX_PLACEMENTS = 200_000
+#: CONCAVE POLYGONS are split by ear clipping, whose work grows with the square of the corners.
+#: No exporter writes a concave face this large (a Blender n-gon has tens to hundreds); a face past
+#: it, or a file whose concave faces together cost more than the work budget, is refused with the
+#: way on - a convex face of any size is fanned at no such cost.
+MAX_CONCAVE_CORNERS = 4096
+MAX_EAR_CLIP_WORK = 50_000_000
 
 _ROOT_TAG = re.compile(rb"<(?:[A-Za-z_][\w.-]*:)?COLLADA[\s>/]")
 _DECLARATIONS = (b"<!DOCTYPE", b"<!ENTITY")
@@ -393,9 +399,10 @@ def _polygons(v: np.ndarray, counts: np.ndarray, pts: np.ndarray) -> np.ndarray:
     quads = v[starts[counts == 4][:, None] + np.arange(4)]
     if len(quads):
         parts.append(_quads(quads, pts))
+    work = [MAX_EAR_CLIP_WORK]
     for at, n in zip(starts[counts > 4].tolist(), counts[counts > 4].tolist()):
         ring = v[at:at + n]
-        parts.append(ring[_ear_clip(pts[ring])])
+        parts.append(ring[_ear_clip(pts[ring], work)])
     parts = [t.reshape(-1, 3) for t in parts if len(t)]
     return np.vstack(parts) if parts else np.zeros((0, 3), dtype=np.int64)
 
@@ -421,13 +428,19 @@ def _quads(quads: np.ndarray, pts: np.ndarray) -> np.ndarray:
     return np.concatenate([r[:, [0, 1, 2]], r[:, [0, 2, 3]]])
 
 
-def _ear_clip(P: np.ndarray) -> np.ndarray:
+def _ear_clip(P: np.ndarray, work: list[int]) -> np.ndarray:
     """Triangles (as corner positions in the polygon) covering one planar polygon of n > 4
-    corners: a fan when it is convex, else ears clipped one by one."""
+    corners: a fan when it is convex, else ears clipped one by one - paid for, before it starts,
+    out of `work` (the corner checks the file's concave faces may still cost)."""
     n = len(P)
     turn = _turns(P[None])[0]
     if (turn >= 0).all() or (turn <= 0).all():
         return np.stack([np.zeros(n - 2, dtype=np.int64), np.arange(1, n - 1), np.arange(2, n)], axis=1)
+    work[0] -= n * n
+    if n > MAX_CONCAVE_CORNERS or work[0] < 0:
+        raise SurfaceError(
+            f"the COLLADA file has concave faces too large to split here (one has {n:,} corners) "
+            "- export it again with its faces triangulated, or as an STL")
     # in the polygon's own plane, counter-clockwise
     q = np.roll(P, -1, axis=0)
     normal = np.array([((P[:, 1] - q[:, 1]) * (P[:, 2] + q[:, 2])).sum(),

@@ -370,3 +370,23 @@ def test_a_skin_built_from_itself_is_refused(tmp_path):
                nodes='<node id="n"><instance_controller url="#c"/></node>')
     with pytest.raises(IngestError, match="built from itself"):
         canonicalise(src, tmp_path / "out")
+
+
+def test_a_huge_concave_face_is_refused_before_the_quadratic_split(monkeypatch):
+    from meshpipeline.cad.ingest import collada
+    from meshpipeline.cad.ingest.surface import SurfaceError
+
+    # a 6,000-corner circle with one corner pushed in: concave, and past the corner limit
+    n = 6000
+    a = np.linspace(0.0, 2.0 * np.pi, n, endpoint=False)
+    r = np.ones(n)
+    r[10] = 0.5
+    pts = np.c_[r * np.cos(a), r * np.sin(a), np.zeros(n)]
+    with pytest.raises(SurfaceError, match="triangulated"):
+        collada._polygons(np.arange(n), np.array([n]), pts)
+    # ... and many small concave faces together stop at the work budget
+    monkeypatch.setattr(collada, "MAX_EAR_CLIP_WORK", 100)
+    ring = np.array([(0, 0, 0), (4, 0, 0), (4, 4, 0), (2, 1, 0), (0, 4, 0)], dtype=float)
+    pts = np.vstack([ring] * 10)
+    with pytest.raises(SurfaceError, match="triangulated"):
+        collada._polygons(np.arange(50), np.full(10, 5), pts)
