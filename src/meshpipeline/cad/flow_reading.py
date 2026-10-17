@@ -284,7 +284,10 @@ def direction(skin: Skin, sym: Symmetry) -> list[dict]:
         said.append(_said("along", hub, CONF_ROTOR if top >= 3 else CONF_ROTOR_2,
                           f"it is {top}-fold symmetric about {AXES[hub]}, like blades round a hub: "
                           "the flow runs along that axis"))
-    mirrors = [k for k in range(3) if sym.mirror[k]]
+    # a body in a flow is mirrored across its WIDTH (a car, an aircraft); a part mirrored across its
+    # own length (a connector, a fitting, a heat sink) says nothing about the flow that way
+    longest = int(np.argmax(size))
+    mirrors = [k for k in range(3) if sym.mirror[k] and k != longest]
     if mirrors and not rev:
         said.append(_said("across", mirrors, CONF_MIRROR,
                           "it is mirror-symmetric across a plane square to " + " and ".join(AXES[k] for k in mirrors)
