@@ -76,6 +76,13 @@ MAX_LIDS_PROBED = 256
 #: A flat patch this many times the size of the patches round it is a face the part was drawn
 #: with even where it runs smoothly into a fillet; a facet of a curved wall is their size.
 FACE_OVER_FACETS = 4.0
+#: THE TUBE BEHIND A LID: rays fanned square to the lid from its axis, half a radius and a radius
+#: in, meet the wall at BEHIND_LO..BEHIND_HI of the lid's own radius, varying by at most
+#: BEHIND_SPREAD of their mean - the cross-section a lid closes is the lid's own (a branch's end).
+BEHIND_DEPTHS = (0.5, 1.0)
+BEHIND_RAYS = 8
+BEHIND_LO, BEHIND_HI = 0.6, 1.6
+BEHIND_SPREAD = 0.35
 
 
 @dataclass
@@ -146,6 +153,17 @@ class Cap:
     solidity: float                 # how much of its outline's convex hull it fills
     clear: int
     confidence: float
+    #: THE TUBE BEHIND IT (lids only): the passage's width just behind the lid over the lid's own
+    #: width (1 for the end of a tube of its size), and how much that width varies round it; 0 / inf
+    #: when not looked at or a ray found no wall
+    behind: float = 0.0
+    behind_spread: float = math.inf
+
+    @property
+    def tube_end(self) -> bool:
+        """The lid closes a tube of its own size: just behind it the walls stand about its own width
+        apart all the way round - the end of a branch, not a flat on a body."""
+        return (BEHIND_LO <= self.behind <= BEHIND_HI) and self.behind_spread <= BEHIND_SPREAD
 
     @property
     def face_of_part(self) -> bool:
@@ -596,6 +614,8 @@ class _Mesh:
         lids = sorted((cap for cap in out if cap._rim_ok), key=lambda cap: (round(cap.sharp, 2), cap.area), reverse=True)
         for cap in lids[:MAX_LIDS_PROBED]:
             cap.clear = self._clear(cap.centroid + cap.normal * 0.02 * cap.equivalent_diameter, cap.normal)
+            if cap.clear >= MIN_CLEAR:
+                cap.behind, cap.behind_spread = self._behind(cap)
         # HOW SURE: a rim sharp all the way round, under open air - the share of the rim beyond
         # half that is sharp, times the share of the outside rays that met nothing
         for cap in out:
@@ -653,6 +673,28 @@ class _Mesh:
                                     for a in np.linspace(0, 2 * math.pi, CONE_RAYS, endpoint=False)])
         hits = self._hits(np.repeat(origin[None, :], len(dirs), axis=0), dirs, self._in_cone(origin, axis, CONE_DEG))
         return int(np.sum(~np.isfinite(hits)))
+
+    def _behind(self, cap: Cap) -> tuple[float, float]:
+        """The cross-section a lid closes (see BEHIND_DEPTHS): the walls' mean distance from the
+        lid's axis just behind it, over the lid's radius, and how much it varies round the axis
+        (0.0, inf when a ray meets no wall - the lid closes no tube)."""
+        r = 0.5 * cap.equivalent_diameter
+        n = cap.normal
+        u = np.cross(n, [0.0, 0.0, 1.0] if abs(n[2]) < 0.9 else [0.0, 1.0, 0.0])
+        u /= np.linalg.norm(u)
+        w = np.cross(n, u)
+        angles = np.linspace(0.0, 2.0 * math.pi, BEHIND_RAYS, endpoint=False)
+        dirs = np.asarray([math.cos(a) * u + math.sin(a) * w for a in angles])
+        near = self._near(cap.centroid, (max(BEHIND_DEPTHS) + 3.0) * r)
+        ratios, spreads = [], []
+        for k in BEHIND_DEPTHS:
+            o = cap.centroid - n * (k * r)
+            hits = self._hits(np.repeat(o[None, :], len(dirs), axis=0), dirs, near)
+            if not np.all(np.isfinite(hits)):
+                return 0.0, math.inf
+            ratios.append(float(np.mean(hits)) / r)
+            spreads.append(float(np.std(hits) / max(float(np.mean(hits)), 1e-300)))
+        return float(np.median(ratios)), float(max(spreads))
 
     def _spanned(self, P, c, out, d, dev) -> bool:
         """Whether a surface lies across the loop - its own face, or another set just behind it.

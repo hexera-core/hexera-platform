@@ -210,3 +210,15 @@ async def test_a_caller_that_sends_no_size_is_read_against_the_stored_check(conf
     store = confirming(_scout())
     await route.confirm_check(SID, _external(size_mm=None, scale_to_m=0.0254, unit="in"), "alice", "org-1")
     assert _recorded(store)["reference_length_mm"] == 64593.0
+
+
+@pytest.mark.asyncio
+async def test_a_body_confirmed_around_stores_no_openings_even_when_the_rows_came_along(confirming):
+    """The check keeps the openings a body would have if the fluid flowed through it, so a flip has
+    some to confirm. A caller that confirms "around" with those rows still in hand declares none."""
+    store = confirming(_scout())
+    kept = [{"id": 1, "name": "inlet", "role": "inlet", "diameter_mm": 50.0, "centroid_mm": [0.0, 0.0, 0.0]},
+            {"id": 2, "name": "outlet", "role": "outlet", "diameter_mm": 50.0, "centroid_mm": [900.0, 0.0, 0.0]}]
+    out = await route.confirm_check(SID, _external(scale_to_m=0.0254, unit="in", openings=kept), "alice", "org-1")
+    assert "No openings" in out["message"]
+    assert _recorded(store)["openings"] == [] and _recorded(store)["patches"] == []

@@ -569,6 +569,11 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3, shape=None,
         else:
             body_kind, input_kind, flow = "single_solid", "solid-body", "external"
             confidence_kind = 0.7 if (box_like or machined or not mouths) else 0.6
+            # the openings it has IF the fluid flows through it after all (a blade passage's odd-shaped
+            # ends, a tank's flat top and bottom): its mouths, or else every flat end that faces out
+            # into open air with nothing round its rim and the body running back behind it
+            pool = mouths or [o for o in discs if o.rim_free and not o.inward and id(o) not in walls
+                              and (o.depth <= 0.0 or o.depth_ratio >= MIN_MOUTH_DEPTH)]
             if len(mouths) >= 2 and box_like:
                 notes.append(f"flat faces cover {100 * flat_share:.0f}% of the part's box and the part fills "
                              f"{100 * fill:.0f}% of it, so it reads as a solid body in a flow, not a fluid passage")
@@ -584,16 +589,18 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3, shape=None,
         notes.append(f"{len(pool)} candidate openings found; only the {MAX_OPENINGS} largest are proposed")
         pool = pool[:MAX_OPENINGS]
 
+    # `openings` are the part's openings IF THE FLUID FLOWS THROUGH IT, whatever the reading: a body read
+    # as one the fluid flows around keeps them, so a user who says it is a passage after all has
+    # openings to confirm (the stage shows them only then) - and no point inside the flow is sought
     openings = _name_openings(pool)
     for k, o in enumerate(openings, start=1):
         o.sticker = k                                     # the sticker number is what people see
         o.confidence = 0.85 if (o.on_extremity and o.clear_ahead) else 0.6 if o.clear_ahead else 0.4
-    if flow == "external":
-        openings = []
 
+    internal = flow == "internal"
     seed = _seed_point(openings, inside_any, want_inside=(input_kind == "fluid-domain"),
-                       bbox_min=bbox_min, bbox_max=bbox_max) if openings else None
-    if openings and seed is None:
+                       bbox_min=bbox_min, bbox_max=bbox_max) if openings and internal else None
+    if openings and internal and seed is None:
         notes.append("no point inside the flow could be confirmed; the mesher will look for one itself")
 
     return ScoutResult(
