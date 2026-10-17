@@ -34,9 +34,10 @@ def _frames(path: np.ndarray):
     return t, us, np.cross(t, us)
 
 
-def _swept(path, r=R, n=24, ends="round"):
+def _swept(path, r=R, n=24, ends="round", start=None):
     """The closed skin of a tube of radius r swept along `path`, its two ends closed by rounded caps
-    (a quarter turn of rings shrinking to a point) or flat lids."""
+    (a quarter turn of rings shrinking to a point) or flat lids - `start` closes the first end
+    another way than the last."""
     path = np.asarray(path, dtype=float)
     t, u, w = _frames(path)
     ang = np.linspace(0.0, 2.0 * math.pi, n, endpoint=False)
@@ -56,10 +57,10 @@ def _swept(path, r=R, n=24, ends="round"):
     for a, b in zip(rings, rings[1:]):
         band(a, b)
 
-    def close(k, sign):
+    def close(k, sign, how):
         c, tt, uu, ww = path[k], t[k] * sign, u[k], w[k]
         last = rings[k]
-        if ends == "round":
+        if how == "round":
             steps = 8
             for s in range(1, steps):
                 th = 0.5 * math.pi * s / steps
@@ -73,8 +74,8 @@ def _swept(path, r=R, n=24, ends="round"):
             j = (i + 1) % n
             tris.append([last[i], last[j], tip] if sign > 0 else [last[j], last[i], tip])
 
-    close(len(path) - 1, 1.0)
-    close(0, -1.0)
+    close(len(path) - 1, 1.0, ends)
+    close(0, -1.0, start or ends)
     return [[list(map(float, p)) for p in tri] for tri in tris]
 
 
@@ -123,6 +124,14 @@ def test_a_straight_capsule_is_left_a_body_but_keeps_its_ends_for_a_flip(stl):
     assert res.seed_point is None
     assert len(res.openings) == 2 and {o.kind for o in res.openings} == {"end"}
     assert {o.role for o in res.openings} == {"inlet", "outlet"}
+
+
+def test_a_tube_with_one_lid_and_one_rounded_cap_keeps_both_ends_for_a_flip(stl):
+    """A body reading keeps every opening a flip would need: the flat lid AND the rounded end no lid
+    closes - not the lid alone."""
+    res = scout_mesh(stl("half_capped", _swept(_straight(), start="flat")), scale_to_m=1.0)
+    assert res.flow == "external" and res.seed_point is None
+    assert sorted(o.kind for o in res.openings) == ["disc", "end"]
 
 
 def test_a_blob_and_a_coarse_extruded_wing_are_not_lumens():

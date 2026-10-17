@@ -224,7 +224,8 @@ def scout_mesh(path: Path, *, scale_to_m: float) -> ScoutResult:
             notes.append(f"it reads as the fluid inside {lumen[2]}, so its {len(pool)} tube ends are proposed as the openings")
         else:
             body_kind, input_kind, flow, conf = "single_solid", "solid-body", "external", 0.6
-            pool = discs or (lumen[1] if lumen is not None else [])
+            # its lids, and the tube ends no lid closes (a tube with one flat and one rounded end has both)
+            pool = discs + (lumen[1] if lumen is not None else [])
             if len(discs) >= 2 and box_like:
                 notes.append(f"flat faces cover {100 * flat_share:.0f}% of the part's box and the part fills "
                              f"{100 * fill:.0f}% of it, so it reads as a solid body in a flow, not a fluid passage")
