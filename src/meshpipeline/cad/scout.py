@@ -536,8 +536,12 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3, shape=None,
             body_kind, input_kind, flow = "surface", "solid-body", "external"
             pool = []
             confidence_kind = 0.6
-            notes.append(f"flat faces cover {100 * flat_share:.0f}% of the part's box, so the surfaces in the "
-                         "file close a box and read as the skin of a body in a flow, not an open passage")
+            # THE DEFECT IS NAMED FIRST, then what we made of it. The file not being a closed solid
+            # is the thing the customer has to act on - a note that opened on the flat share read
+            # as a classification remark and buried it.
+            notes.append(f"the file holds surfaces, not a closed solid; its flat faces cover "
+                         f"{100 * flat_share:.0f}% of the part's box, so they close a box and read as the "
+                         "skin of a body in a flow, not an open passage")
         else:
             body_kind, input_kind, flow = "surface", "body-surface", "internal"
             pool = discs
