@@ -1,4 +1,4 @@
-# Responsibility: Read the unit a non-STEP format states, for the few that record one (3MF, Rhino) or fix one by definition (ECXML: SI metres).
+# Responsibility: Read the unit a non-STEP format states, for the few that record one (3MF, Rhino, COLLADA) or fix one by definition (ECXML: SI metres).
 # Owns: each format's unit vocabulary, mapped onto the supported LengthUnit.
 # Boundaries: evidence only, like cad/unit_evidence.py: a unit outside the vocabulary is unresolved (asked), never rounded.
 # Collaborates with: cad/unit_evidence.read_declared_unit (the one entry point callers use).
@@ -28,6 +28,10 @@ def declared_unit(path: Path, key: str):
         return _3mf_unit(path, UnitEvidence)
     if key == "3dm":
         return _3dm_unit(path, UnitEvidence)
+    if key == "dae":
+        from meshpipeline.cad.ingest.collada import declared_unit as collada_unit
+
+        return collada_unit(path, UnitEvidence)
     if key == "ecxml":
         # JEP181A 4.1: "All numeric values are implicitly assumed to be in SI units. The schema
         # does not allow for specification of a non-SI unit." Lengths are metres, always - and

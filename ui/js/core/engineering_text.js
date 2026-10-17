@@ -85,7 +85,7 @@ const GREEK = "\u0391-\u03a9\u03b1-\u03c9";
 const SUPERSCRIPT_DIGITS = "\u2070\u00b9\u00b2\u00b3\u2074-\u2079";
 
 const EXTENSIONS = "step|stp|stl|iges|igs|brep|ecxml|x_t|sat|vtp|vtk|vtu|obj|ply|off|msh|unv|cgns|"
-  + "foam|h5|json|yaml|yml|txt|csv|log|dat|py|sh|zip|gz|tar|png|jpe?g|3mf|gltf|glb";
+  + "foam|h5|json|yaml|yml|txt|csv|log|dat|py|sh|zip|gz|tar|png|jpe?g|3mf|gltf|glb|dae";
 // Never touched: code, links, paths and file names. Order matters - a fence before a backtick.
 const PROTECTED_SOURCE = "```.*?```"
   + "|`[^`\\n]+`"
