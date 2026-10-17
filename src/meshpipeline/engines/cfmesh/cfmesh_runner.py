@@ -7,6 +7,7 @@ import json
 import logging
 import subprocess
 from pathlib import Path
+from typing import Any
 
 from meshpipeline.cad.cad_tessellate import (  # noqa: F401
     tessellate_internal,
@@ -351,8 +352,9 @@ def planned_run_cap(workspace) -> int | None:
     except (OSError, ValueError, TypeError):
         return None
     cap = plan.get("run_cap_s") if isinstance(plan, dict) else None
-    ok = isinstance(cap, (int, float)) and not isinstance(cap, bool) and cap > 0
-    return int(cap) if ok else None
+    if isinstance(cap, bool) or not isinstance(cap, (int, float)) or cap <= 0:
+        return None
+    return int(cap)
 
 
 def external_wall_cell(surface_area_m2: float, cell_budget: int, n_layers: int,
@@ -396,7 +398,7 @@ def _plan_run(*, volume: float, max_cell: float, wall_cell: float, wall_area: fl
         est = estimate_cells(volume=volume, max_cell=max_cell, wall_cell=wall_cell,
                              wall_area=wall_area, n_layers=n_layers) or est
     seconds = est / CELLS_PER_SECOND
-    plan = {"estimated_cells": int(est), "cells_per_second": CELLS_PER_SECOND,
+    plan: dict[str, Any] = {"estimated_cells": int(est), "cells_per_second": CELLS_PER_SECOND,
             "estimated_seconds": round(seconds, 1), "run_cap_s": run_cap_for(seconds),
             "fits": fits_one_run(seconds), "wall_cell": wall_cell}
     if levels:

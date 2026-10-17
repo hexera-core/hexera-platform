@@ -339,11 +339,12 @@ def prepare_mesh_run(ctx: BuilderToolContext) -> PreparedMeshRun:
     # died at exactly BUILDER_LOOP_TIMEOUT with zero remote returns - the engine's 3000s
     # run budget could never fit a 3600s loop after preamble rounds.)
     _cap = _policy.run_timeout()
-    if _policy.planned_timeout is not None:
+    _plan_cap = getattr(_policy, "planned_timeout", None)
+    if _plan_cap is not None:
         # the engine TIMED this case when it wrote it (the cells it will make): it gets the time
         # its plan needs, not the fixed cap - and still only what the loop budget leaves
         try:
-            _planned = _policy.planned_timeout(workspace)
+            _planned = _plan_cap(workspace)
         except Exception:  # noqa: BLE001 - a plan that cannot be read leaves the declared cap
             logger.warning("run_mesh: the engine's run plan could not be read", exc_info=True)
             _planned = None
