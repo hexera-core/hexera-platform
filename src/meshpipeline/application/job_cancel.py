@@ -72,6 +72,7 @@ async def cancel_job(job_id: uuid.UUID, *, owner_id: str, organization_id: str =
         #    its checkpoint writes, its native accept, its artifact delivery, and the row lock at
         #    its atomic terminal transaction. Nothing it does after this reaches the user.
         evicted = await lease_repo.evict_owner(db, row_id)
+        was_parked = row.status == JobStatus.pending_review
 
         # 2. THE TERMINAL CAS, through the one transition table. It is what refuses the worker's
         #    late succeeded/failed afterwards: a terminal state is never a legal source.
@@ -81,6 +82,16 @@ async def cancel_job(job_id: uuid.UUID, *, owner_id: str, organization_id: str =
             # defect in the table; refuse loudly rather than record a cancel that did not apply.
             raise RuntimeError(f"cancel of job {row_id} did not apply (transition={tr.value})")
         row.cancel_reason = reason or None
+        if was_parked:
+            # A cancelled parked run has nothing left to decide: close its park in the same commit
+            # so no decision can land on it afterwards.
+            from meshpipeline.persistence.repositories.repair_review_repository import (
+                RepairReviewRepository,
+            )
+            _reviews = RepairReviewRepository()
+            park = await _reviews.open_park(db, row_id)
+            if park is not None:
+                await _reviews.close_park(db, park.id, "cancel")
 
         # 3. THE DURABLE VERDICT, from what is durable: the approved intent on the dispatch
         #    payload and the row's own attempt counter. Rendered by the same vocabulary the

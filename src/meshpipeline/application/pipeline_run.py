@@ -1026,6 +1026,17 @@ async def _run_async(req: JobRequest) -> dict:
             _decision = apply_delivery(_decision, _delivery)
             final_status, _failed_reason = _decision.status, _decision.failed_reason
 
+        # THE REPAIR REVIEW. A failed run whose repair left things for a person PARKS in
+        # pending_review instead of failing; a delivered run only records its items. The decision
+        # rides into the ONE status commit below (terminal_finalize writes the park beside the
+        # transition), never after it. A cancelled job cannot park: the transition CAS refuses.
+        from meshpipeline.application import repair_review_park as _rrp
+        _review_plan = _rrp.plan_review(final_state, status=final_status)
+        _review_plan = await _rrp.refuse_second_open_park(
+            AsyncSessionLocal, _review_plan, uuid.UUID(job_id), jlog)
+        if _review_plan is not None and _review_plan.park:
+            final_status, _failed_reason = JobStatus.pending_review, None
+
         # THE TERMINAL OUTCOME. Assembly (read the durable artifact rows, apply the readiness
         # policy, render the application-owned verdict) and the ONE atomic fenced commit that
         # persists it both belong to terminal_finalize; this call is the lifecycle step, not the
@@ -1072,6 +1083,7 @@ async def _run_async(req: JobRequest) -> dict:
                                      + ([_review_caveat] if _review_caveat else [])
                                      + ([_narrow_caveat] if _narrow_caveat else [])),
                 review_blocking=list(_review_blocking),
+                review_plan=_review_plan,
                 pre_composed_message=str(final_state.get("outcome_message") or "").strip()),
             ownership=ownership, lease_repo=lease_repo, job_repo=job_repo, jlog=jlog)
         if _publication.fenced:

@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +17,9 @@ from meshpipeline.persistence.lease import ExecutionOwnership, LeaseRepository
 from meshpipeline.persistence.models import FailedReason, JobStatus
 from meshpipeline.persistence.repositories.job_repository import JobRepository
 from meshpipeline.persistence.repositories.terminal_outbox_repository import TerminalOutboxRepository
+
+if TYPE_CHECKING:
+    from meshpipeline.application.repair_review_park import ReviewPlan
 
 log = logging.getLogger(__name__)
 
@@ -32,7 +36,7 @@ async def finalize_terminal_atomic(
     db: AsyncSession, *, ownership: ExecutionOwnership | None, intended_status: JobStatus,
     failed_reason: FailedReason | None, final_result_dict: dict, closing_message: str,
     lease_repo: LeaseRepository | None = None, job_repo: JobRepository | None = None,
-    outbox_repo: TerminalOutboxRepository | None = None,
+    outbox_repo: TerminalOutboxRepository | None = None, review_plan=None, review_repo=None,
 ) -> FinalizeOutcome:
     lease_repo = lease_repo or LeaseRepository()
     job_repo = job_repo or JobRepository()
@@ -72,13 +76,25 @@ async def finalize_terminal_atomic(
         # It writes a ledger row and makes NO network call: reporting the consumption to the
         # provider's meter happens after the commit, from a sweep that can be retried. See
         # 0007_usage_metering for why that split is not optional.
-        if row is not None:
+        # A PARKED RUN IS NOT FINISHED: it is waiting on a person and its re-run is what finishes
+        # it, so it is not charged here.
+        if row is not None and intended_status != JobStatus.pending_review:
             await _charge_fail_open(db, row)
+        # THE REVIEW WRITE sits with the status it belongs to - same transaction, same winner. A
+        # park whose status CAS lost (a cancel got there first) writes nothing.
+        park_id = None
+        if review_plan is not None:
+            from meshpipeline.application.repair_review_park import write_review
+            park_id = await write_review(db, job_id, review_plan, review_repo)
+        # One terminal event per job - except a park, which announces itself under its own key so
+        # the re-run's real ending is not swallowed by the dedup.
+        extra = {"dedup_key": f"terminal:{job_id}:park:{park_id}"} if park_id is not None else {}
         enqueued = await outbox_repo.enqueue(
             db, job_id=job_id, execution_generation=generation,
             terminal_status=durable_status.value,
             final_result_schema_version=int(final_result_dict.get("schema_version", 1)),
-            event_payload={"closing_message": closing_message, "final_result": final_result_dict})
+            event_payload={"closing_message": closing_message, "final_result": final_result_dict},
+            **extra)
     else:
         enqueued = False
 
@@ -183,6 +199,9 @@ class TerminalAssembly:
     #: the concluded review's wrong-problem findings (final_result.review_blocking) - the only
     #: review findings that fail a run; they name, in the failure, which way the mesh is wrong
     review_blocking: list = field(default_factory=list)
+    #: the repair review's items and park (application/repair_review_park.ReviewPlan); None when
+    #: review is off or the run left nothing for a person. status == pending_review means PARK.
+    review_plan: ReviewPlan | None = None
 
 
 @dataclass(frozen=True)
@@ -228,6 +247,8 @@ def build_terminal_result(assembly: TerminalAssembly, *, delivered_types: list) 
         pipeline_timed_out=assembly.pipeline_timed_out)
 
     result = _fr.with_engine_ladder(result, assembly.engine_ladder)
+    if assembly.status == JobStatus.pending_review and assembly.review_plan is not None:
+        result = _fr.with_review_parked(result, len(assembly.review_plan.items))
     # "We fixed your file and meshed the fix" is a different claim from "we meshed your file".
     result = _fr.with_repair_lineage(result, assembly.repair_lineage)
     # The ONLY pre-composed message honoured is the blameless SYSTEM-failure note; any other stale
@@ -280,7 +301,7 @@ async def assemble_and_finalize(session_factory, assembly: TerminalAssembly, *,
             failed_reason=assembly.failed_reason,
             final_result_dict=rendered.result.to_dict(),
             closing_message=rendered.closing_message,
-            lease_repo=lease_repo, job_repo=job_repo)
+            lease_repo=lease_repo, job_repo=job_repo, review_plan=assembly.review_plan)
         await db.commit()
     if outcome.fenced:
         jlog.warning("Worker FENCED at the atomic terminal transaction (generation/token "
