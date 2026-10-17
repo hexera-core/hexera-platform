@@ -149,7 +149,12 @@ def _pairing_keys(shape, rims: list[EntityDefect]) -> dict[str, str]:
         for f, _ in wires:
             members.setdefault(find(f), []).append(f)
         return {f: _digest(sorted(group)) for group in members.values() for f in group}
-    except Exception:  # noqa: BLE001 - an unanswerable pairing falls back to the coarse key
+    except (ImportError, AttributeError, TypeError, ValueError, RuntimeError) as exc:
+        # ImportError/AttributeError/TypeError are a SIGNATURE MISMATCH with plan/conservative/
+        # operations; ValueError/RuntimeError are the kernel failing on a wire. Both degrade to the
+        # coarse key, but loudly: tests/native/test_native_repair_minting.py pins the real signatures.
+        logger.warning("repair review: rim pairing fell back to one key (%s: %s)",
+                       type(exc).__name__, exc)
         return everyone
 
 
