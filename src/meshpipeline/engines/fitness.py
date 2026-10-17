@@ -28,15 +28,23 @@ time). A new geometry is put in a SHAPE CLASS by its traits:
 
 For each engine the evidence is read at four levels, most specific first: the same class from the
 same kind of file, the same class from any file, the same flow from the same kind of file, the same
-flow. Its pass rate is read from the most specific level that has runs, plus two pseudo runs at the
+flow. An EXTERNAL body is first read against bodies with as much fine detail as it has (detailed or
+plain, from the same kind of file, then from any file): a car with mirrors, wheels and 44 handles
+is not a smooth Ahmed body, and an engine's record on smooth bodies says little about it (cfMesh
+passed 23 of 23 smooth thick bodies from surface meshes in the lab, then made broken meshes on 7
+of 8 DrivAer cars - e2e sweep, 2026-10-17).
+Its pass rate is read from the most specific level that has runs, plus two pseudo runs at the
 rate of the next broader group that has more, so a few runs on shapes exactly like this count, but
 only as much as a few runs can.
 Engines rank by a CAUTIOUS score - that rate less one standard error of it - so an engine with a
 long record on shapes like this outranks one that was never tried on them (whose record on other
 kinds of shape is halved toward even odds and weighs no more than the pseudo runs), and three
-passes out of three never outrank thirty out of thirty-two. Scores within 5% tie; then measured layer
-coverage, then time decide. Every number in a reason is a count of real runs; thin evidence says
-so.
+passes out of three never outrank thirty out of thirty-two. Scores within 5% tie; then, BEFORE
+speed, what the meshes were like: the share of runs whose mesh came out INVALID (broken cells),
+then the share of delivered meshes whose cells went past the 70-degree non-orthogonality limit
+(in fifths), then measured layer coverage, and only then time. A fast engine whose meshes come
+out broken or badly shaped never wins a tie on speed. Every number in a reason is a count of
+real runs; thin evidence says so.
 
 Engines may also DECLARE where they are at home (EngineSpec.home_turf, rows of a fact, a test, a
 severity and words). Those rows give the plain "why"; an OUTSIDE row keeps an engine from being
@@ -97,6 +105,18 @@ OBSTACLES_FROM = 3
 BLUNT_FROM = 0.25
 #: feature-edge length per sqrt(area) above this is a detailed body
 DETAILED_EDGES = 12.0
+#: THE CELL-SHAPE LIMIT a tie reads (degrees of non-orthogonality): checkMesh's own "severely
+#: non-orthogonal" threshold, past which OpenFOAM solvers need non-orthogonal correctors to stay
+#: accurate, and the review flags the mesh. A tie reads the SHARE of an engine's delivered meshes
+#: on shapes like this that went past it, in steps of QUALITY_STEP: a few meshes over the line in a
+#: long record (cfMesh: 3 of 37 tubes) is no step, a third of them (cfMesh: 10 of 33 smooth bodies
+#: from CAD, where snappyHexMesh had none) is.
+NON_ORTHO_LIMIT = 70.0
+QUALITY_STEP = 0.2
+
+# how much fine detail an external body carries (its first evidence level)
+DETAILED = "detailed"
+PLAIN = "plain"
 
 _CLASS_WORDS: dict[str, str] = {
     TUBE: "long passages about as wide as their openings",
@@ -142,6 +162,14 @@ def is_detailed(t: ShapeTraits) -> bool:
                 or (t.sharp_edges is not None and t.sharp_edges > DETAILED_EDGES))
 
 
+def detail_of(t: ShapeTraits) -> str:
+    """DETAILED or PLAIN for a measured external body ('' for any other flow, or a body not
+    measured): the first level its evidence is read at."""
+    if t.flow != "external" or t.thickness_ratio is None:
+        return ""
+    return DETAILED if is_detailed(t) else PLAIN
+
+
 def shape_class(t: ShapeTraits) -> str:
     """The class of a measured geometry ('' when the traits cannot place it)."""
     if t.flow == "multi-region":
@@ -174,16 +202,26 @@ def shape_words(t: ShapeTraits) -> str:
     return words
 
 
-def _levels(flow: str, cls: str, form: str) -> list[tuple[tuple[str, str, str], str]]:
-    """The evidence levels, most specific first: (key, plain words for 'similar shapes')."""
+_DETAIL_WORDS = {DETAILED: "with fine detail", PLAIN: "without fine detail"}
+
+
+def _levels(flow: str, cls: str, form: str,
+            detail: str = "") -> list[tuple[tuple[str, str, str, str], str]]:
+    """The evidence levels, most specific first: (key, plain words for 'similar shapes'). A key is
+    (flow, class, form, detail); '' matches anything."""
     out = []
+    if cls and detail:
+        words = f"{_CLASS_WORDS.get(cls, cls)} {_DETAIL_WORDS.get(detail, detail)}"
+        if form:
+            out.append(((flow, cls, form, detail), f"{words}, {_FORM_WORDS.get(form, form)}"))
+        out.append(((flow, cls, "", detail), words))
     if cls and form:
-        out.append(((flow, cls, form), f"{_CLASS_WORDS.get(cls, cls)}, {_FORM_WORDS.get(form, form)}"))
+        out.append(((flow, cls, form, ""), f"{_CLASS_WORDS.get(cls, cls)}, {_FORM_WORDS.get(form, form)}"))
     if cls:
-        out.append(((flow, cls, ""), _CLASS_WORDS.get(cls, cls)))
+        out.append(((flow, cls, "", ""), _CLASS_WORDS.get(cls, cls)))
     if form:
-        out.append(((flow, "", form), f"{_FLOW_WORDS.get(flow, flow)} {_FORM_WORDS.get(form, form)}"))
-    out.append(((flow, "", ""), _FLOW_WORDS.get(flow, flow)))
+        out.append(((flow, "", form, ""), f"{_FLOW_WORDS.get(flow, flow)} {_FORM_WORDS.get(form, form)}"))
+    out.append(((flow, "", "", ""), _FLOW_WORDS.get(flow, flow)))
     return out
 
 
@@ -206,20 +244,28 @@ class Run:
     seconds: float | None = None
     cells_across: float | None = None
     non_ortho: float | None = None
+    detail: str = ""            # DETAILED | PLAIN for an external body
+    #: the run's mesh came out INVALID - checkMesh found broken cells (negative volumes, faces
+    #: pointing the wrong way): not a mesh that missed a bar, a mesh no solver can use
+    invalid: bool = False
 
     @classmethod
     def from_row(cls, row: Mapping) -> Run | None:
         try:
             traits = ShapeTraits.from_dict(row.get("traits"))
+            quality = row.get("quality") or {}
+            passed = row.get("status") == "pass"
             return cls(shape=str(row["shape"]), engine=str(row["engine"]),
                        flow=str(traits.flow or row.get("flow") or ""),
                        form=str(traits.form or row.get("form") or ""),
-                       cls=shape_class(traits), passed=row.get("status") == "pass",
+                       cls=shape_class(traits), passed=passed,
                        layers_pct=_num(row.get("layers_pct")), cells=_int(row.get("cells")),
                        seconds=_num(row.get("seconds")),
                        cells_across=_num(row.get("cells_across_p05")),
-                       non_ortho=_num((row.get("quality") or {}).get("max_non_ortho")))
-        except (KeyError, TypeError, ValueError):
+                       non_ortho=_num(quality.get("max_non_ortho")),
+                       detail=detail_of(traits),
+                       invalid=not passed and bool(row.get("invalid") or quality.get("fatal")))
+        except (KeyError, TypeError, ValueError, AttributeError):
             return None
 
 
@@ -301,6 +347,9 @@ class Evidence:
     seconds: float | None = None
     cells_across: float | None = None
     non_ortho: float | None = None  # median max non-orthogonality (deg) of the passes
+    invalid: int = 0            # runs at the quoted level whose mesh came out invalid
+    shaped: int = 0             # passes at the quoted level whose cell shape was measured
+    over_limit: int = 0         # ...and of those, how many went past NON_ORTHO_LIMIT
     per_form: bool = False      # the level fixes the file's form: one run per shape
     near_runs: int = 0          # the few runs at a more specific level than `level`
     near_passed: int = 0
@@ -311,6 +360,14 @@ class Evidence:
     def low(self) -> bool:
         return self.level != 0 or self.shapes < MIN_SHAPES
 
+    @property
+    def invalid_share(self) -> float:
+        return self.invalid / self.runs if self.runs else 0.0
+
+    @property
+    def over_limit_share(self) -> float:
+        return self.over_limit / self.shaped if self.shaped else 0.0
+
     def as_dict(self) -> dict:
         d = {"runs": self.runs, "passed": self.passed, "shapes": self.shapes,
              "level": self.level, "similar": self.words, "rate": round(self.rate, 3),
@@ -319,6 +376,7 @@ class Evidence:
              "seconds": None if self.seconds is None else round(self.seconds, 1),
              "cells_across": None if self.cells_across is None else round(self.cells_across, 1),
              "max_non_ortho": None if self.non_ortho is None else round(self.non_ortho, 1),
+             "invalid": self.invalid, "over_limit": self.over_limit, "shaped": self.shaped,
              "low_evidence": self.low}
         if self.near_runs:
             d["near"] = {"runs": self.near_runs, "passed": self.near_passed,
@@ -336,16 +394,19 @@ def _median(xs: Sequence[float]) -> float | None:
     return float(statistics.median(xs)) if xs else None
 
 
-def _match(r: Run, key: tuple[str, str, str]) -> bool:
-    flow, cls, form = key
-    return r.flow == flow and (not cls or r.cls == cls) and (not form or r.form == form)
+def _match(r: Run, key: tuple[str, str, str, str]) -> bool:
+    flow, cls, form, detail = key
+    return (r.flow == flow and (not cls or r.cls == cls) and (not form or r.form == form)
+            and (not detail or r.detail == detail))
 
 
-def evidence_for(table: Table, engine: str, *, flow: str, cls: str, form: str) -> Evidence:
-    """The engine's evidence for a shape of this class and form (see Evidence)."""
+def evidence_for(table: Table, engine: str, *, flow: str, cls: str, form: str,
+                 detail: str = "") -> Evidence:
+    """The engine's evidence for a shape of this class, form and (external) detail (see
+    Evidence)."""
     mine = [r for r in table.runs if r.engine == engine]
     stats = [(key, words, [r for r in mine if _match(r, key)])
-             for key, words in _levels(flow, cls, form)]
+             for key, words in _levels(flow, cls, form, detail)]
     with_runs = [i for i, st in enumerate(stats) if st[2]]
     if not with_runs:
         return Evidence()
@@ -381,6 +442,9 @@ def evidence_for(table: Table, engine: str, *, flow: str, cls: str, form: str) -
         seconds=_median([r.seconds for r in ok if r.seconds is not None]),
         cells_across=_median([r.cells_across for r in ok if r.cells_across is not None]),
         non_ortho=_median([r.non_ortho for r in ok if r.non_ortho is not None]),
+        invalid=sum(r.invalid for r in rows),
+        shaped=sum(r.non_ortho is not None for r in ok),
+        over_limit=sum(r.non_ortho is not None and r.non_ortho > NON_ORTHO_LIMIT for r in ok),
         per_form=bool(key[2]), **near)
 
 
@@ -557,8 +621,13 @@ def evidence_words(ev: Evidence) -> str:
 
 
 def _reason(ev: Evidence, *, layers: bool) -> str:
-    """One plain line: the evidence, the layers and the time."""
+    """One plain line: the evidence, what the meshes were like, the layers and the time."""
     parts = [evidence_words(ev)]
+    if ev.invalid:
+        parts.append(f"{ev.invalid} of those {ev.runs} tries made a broken mesh a solver cannot use")
+    if quality_step(ev):
+        parts.append(f"{ev.over_limit} of its {ev.shaped} meshes had cells more than "
+                     f"{NON_ORTHO_LIMIT:.0f} degrees out of square, past the usual limit")
     if not layers:
         parts.append("no reliable near-wall layers")
     elif ev.layers_pct is not None and ev.passed:
@@ -578,6 +647,19 @@ def _heads_up(turf: str, words: Sequence[str]) -> str:
 
 #: Within a tie on measured rate, a declared strength ranks first and a weak spot last.
 _TURF_ORDER = {"home": 0, "": 1, "weak": 2, "outside": 3}
+
+
+def validity_step(ev: Evidence) -> int:
+    """The share of an engine's runs on shapes like this whose mesh came out INVALID, in TIE_STEP
+    steps (0 when none did). A tie reads it before cell shape, layers and time."""
+    return int(math.floor(ev.invalid_share / TIE_STEP + 1e-9)) + 1 if ev.invalid else 0
+
+
+def quality_step(ev: Evidence) -> int:
+    """The share of the engine's delivered meshes on shapes like this whose cells went past the
+    cell-shape limit (NON_ORTHO_LIMIT), in QUALITY_STEP steps: 0 when few or none did, or when
+    none was measured."""
+    return int(math.floor(ev.over_limit_share / QUALITY_STEP + 1e-9)) if ev.shaped else 0
 
 
 def reads_own_format(engine: str, source_format: str) -> bool:
@@ -601,11 +683,12 @@ def recommend(traits: ShapeTraits, engines: Sequence[str], *, table: Table | Non
 
     tab = committed_table() if table is None else table
     cls = shape_class(traits)
+    detail = detail_of(traits)
     facts = facts_of(traits, brief)
     wants_layers = bool(facts.get("layers_requested"))
     scored = []
     for name in dict.fromkeys(engines):
-        ev = evidence_for(tab, name, flow=traits.flow, cls=cls, form=traits.form)
+        ev = evidence_for(tab, name, flow=traits.flow, cls=cls, form=traits.form, detail=detail)
         spec = _spec(name)
         turf: str = ""
         words: tuple[str, ...] = ()
@@ -620,9 +703,14 @@ def recommend(traits: ShapeTraits, engines: Sequence[str], *, table: Table | Non
         scored.append((name, ev, turf, words, layers, score, ladder))
 
     def key(item):
+        # within a tie on the measured rate, what the meshes were like - how many came out broken,
+        # how many of the delivered ones went past the cell-shape limit - and only then the
+        # declared turf, the layers and the time. Measured before declared: cfMesh declares
+        # thick bodies home and made broken meshes on 7 of 8 DrivAer cars.
         name, ev, turf, _, _, score, ladder = item
         return (turf == "outside", not reads_own_format(name, source_format),
-                -math.floor(score / TIE_STEP + 1e-9), _TURF_ORDER.get(turf, 1),
+                -math.floor(score / TIE_STEP + 1e-9), validity_step(ev), quality_step(ev),
+                _TURF_ORDER.get(turf, 1),
                 -(ev.layers_pct if ev.layers_pct is not None else -1.0),
                 ev.seconds if ev.seconds is not None else math.inf, ladder, name)
 
@@ -647,8 +735,10 @@ def ranked_engines(order: Sequence[str], ranking: Sequence[str]) -> list[str]:
     return sorted(known, key=lambda e: pos[e]) + rest
 
 
-__all__ = ["BLUNT", "BRANCHED", "CAUTION", "CHAMBER", "DEFAULT_CELL_BUDGET", "MIN_SHAPES", "MULTI_REGION",
-           "NO_LAYERS_VALUE", "OBSTACLES", "SLENDER", "TABLE_PATH", "THIN_GAP", "TUBE", "EngineFit", "Evidence",
-           "Recommendation", "Run", "Table", "brief_facts", "cautious", "committed_table", "evidence_for",
+__all__ = ["BLUNT", "BRANCHED", "CAUTION", "CHAMBER", "DEFAULT_CELL_BUDGET", "DETAILED", "MIN_SHAPES",
+           "MULTI_REGION", "NON_ORTHO_LIMIT", "NO_LAYERS_VALUE", "OBSTACLES", "PLAIN", "QUALITY_STEP",
+           "SLENDER", "TABLE_PATH", "THIN_GAP", "TUBE", "EngineFit", "Evidence", "Recommendation", "Run",
+           "Table", "brief_facts", "cautious", "committed_table", "detail_of", "evidence_for",
            "evidence_words", "facts_of", "fit_words", "handles_through_fluid", "is_detailed",
-           "ranked_engines", "ranking_of", "recommend", "shape_class", "shape_words", "table_from"]
+           "quality_step", "ranked_engines", "ranking_of", "recommend", "shape_class", "shape_words",
+           "table_from", "validity_step"]

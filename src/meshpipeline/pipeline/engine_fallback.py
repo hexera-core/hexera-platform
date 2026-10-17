@@ -17,7 +17,7 @@ method. This module is that fallback, with one rule above every other:
     no layers where layers were asked for, a staircased wall for a body-fitted one - is OFFERED,
     in plain words, as the run's last sentence, and never delivered silently.
 
-Two more rules:
+More rules:
 * An engine the USER named (engine_source user_direct) is theirs. It is never switched without
   asking - the ladder only offers. A dispute rebuild keeps the engine of the mesh it disputes.
 * THE RUNGS COME IN THE ORDER THAT SUITS THIS GEOMETRY. The run's geometry is measured at the
@@ -28,6 +28,11 @@ Two more rules:
 * The budgets stay as they are. A switch spends one of the run's existing attempts and needs the
   time for the new engine's own run cap; the retries are shared across rungs rather than spent
   on the first one alone.
+* A BROKEN MESH MOVES ON. A mesh with checkMesh's fatal defects (negative-volume cells, faces
+  pointing the wrong way) is the engine's own failing on this shape, so the run moves to the next
+  engine in the measured order at once - never the same engine again, and the builder is told so
+  before it spends the attempt re-running it (moves_on_from_broken_mesh). The switch is said to the
+  user as it happens and again beside the delivered mesh (switch_note, delivered_note).
 """
 from __future__ import annotations
 
@@ -462,11 +467,45 @@ def classify(state: Mapping) -> Failure | None:
         kind = NEVER
     stop = stop_class_of(cause)
     stopped = stop.value if stop is not None else ""
+    broken = broken_cells(facts)
+    if broken and kind != NEVER:
+        # A BROKEN MESH (checkMesh's fatal defects: negative-volume cells, faces pointing the wrong
+        # way) is this engine's own failing on this shape, not a bar a retry might clear: cfMesh
+        # made 7 of 8 DrivAer cars that way while snappyHexMesh meshed the same cars (e2e sweep,
+        # 2026-10-17). The run moves to the next engine at once - never the same engine again.
+        return Failure(ENGINE, cause.value, _broken_reason(broken), stopped)
     if refused_by_design(state):
         # the engine's DECLARED limit, said as that limit - not "it cannot take this geometry as it
         # is", which sends a user to repair a file that is fine
         return Failure(kind, cause.value, _by_design_reason(facts), stopped)
     return Failure(kind, cause.value, _REASON_BY_CAUSE[cause], stopped)
+
+
+def broken_cells(facts: Mapping | None) -> list[str]:
+    """The fatal defects a failed attempt's mesh carries (the quality gate's and finalize's own
+    `fatal` fact) - [] when the mesh was not broken, or there was none."""
+    fatal = facts.get("fatal") if isinstance(facts, Mapping) else None
+    return [str(x) for x in fatal if str(x).strip()] if isinstance(fatal, (list, tuple)) else []
+
+
+def _broken_reason(fatal: list[str]) -> str:
+    return (f"its mesh came out broken ({', '.join(fatal[:3])}), and no solver can use a mesh "
+            "like that")
+
+
+def moves_on_from_broken_mesh(state: Mapping, *, now: float | None = None) -> str:
+    """THE ENGINE THIS RUN MOVES TO if the attempt now being built ends on a BROKEN mesh - '' when
+    it would stay (the user named the engine, no untried engine delivers the approved mesh, no
+    attempt or time is left). It is decide()'s own answer for that failure, asked before the
+    attempt runs, so the builder does not spend the attempt re-running an engine whose mesh of this
+    shape came out broken: the run moves on instead."""
+    from meshpipeline.contracts.failure_cause import FailureCause
+    probe = {**state, "retry_count": int(state.get("retry_count", 0) or 0) + 1,
+             "executor_success": False, "executor_failed_gate": "finalize",
+             "executor_failure_cause": FailureCause.MESH_QUALITY.value,
+             "executor_failure_facts": {"fatal": ["broken cells"], "meshers_started": 1},
+             "requirement_caveats": [], "reviewer_verdict": ""}
+    return decide(probe, record=with_attempt(probe, classify(probe)), now=now).switch_to
 
 
 def mesher_started(state: Mapping) -> bool:
@@ -651,7 +690,10 @@ def decide(state: Mapping, *, record: Mapping, now: float | None = None) -> Deci
     if remaining_seconds(state, now=clock) < rung_seconds(target):
         return Decision(why=f"too little time left for a {engine_label(target)} run",
                         failure=failure)
+    broken = broken_cells(state.get("executor_failure_facts")
+                          if isinstance(state.get("executor_failure_facts"), Mapping) else None)
     return Decision(switch_to=target, why=(
+        "this engine's mesh of this shape came out broken" if failure.kind == ENGINE and broken else
         "this engine could not build a mesh" if failure.kind == ENGINE else
         "the same failure repeated here" if _repeats(record, engine, failure) else
         "the shared attempts go to the untried engine"), failure=failure)
@@ -946,7 +988,8 @@ __all__ = ["ENGINE", "FIXABLE", "NEVER", "SOURCE_DISPUTE", "SOURCE_SUGGESTED",
            "able_engines", "approved_engine", "attempts_made", "classify", "decide",
            "delivered_note", "engine_source", "fallback_order", "fresh_start_brief",
            "final_record", "ladder", "layer_request", "may_switch_on_its_own", "measure_order",
-           "measured_ranking", "mesher_started", "seed_measured_order",
+           "measured_ranking", "mesher_started", "moves_on_from_broken_mesh", "broken_cells",
+           "seed_measured_order",
            "node_engine_fallback", "offer", "refused_by_design", "remaining_seconds",
            "rung_seconds", "switch_note", "takers_by_form", "tried_engines", "with_attempt",
            "with_switch"]

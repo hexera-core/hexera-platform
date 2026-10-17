@@ -206,6 +206,38 @@ def test_a_mesher_that_ran_and_left_no_mesh_is_the_crash_it_is(quiet_executor, t
     assert out["executor_failure_facts"]["meshers_started"] == 1
 
 
+def test_a_mesh_that_came_out_broken_is_told_as_broken_cells_not_a_mesher_that_stopped(
+        quiet_executor, tmp_path, monkeypatch):
+    class _Broken:
+        name = "cfmesh"
+
+        def finalize(self, ws, *a, **k):
+            (Path(ws) / "mesh_manifest.json").write_text(json.dumps(
+                {"quality": {"cells": 1124112, "fatal": ["negative-volume cells"]}}))
+            return {"success": False, "output": "[CFMESH] fatal=['negative-volume cells']",
+                    "stdout": "", "stderr": ""}
+
+    class _Gone:
+        name = "cfmesh"
+
+        def finalize(self, *a, **k):
+            return {"success": False, "output": "no polyMesh", "stdout": "", "stderr": ""}
+
+    monkeypatch.setattr(quiet_executor, "get_engine", lambda n="": _Broken())
+    out = _no_mesh(quiet_executor, tmp_path, "cfmesh", [{"rc": 0, "timed_out": False}])
+    assert out["executor_failure_cause"] == "mesh_quality"
+    assert out["executor_failure_facts"]["fatal"] == ["negative-volume cells"]
+    assert out["executor_failure_facts"]["meshers_started"] == 1
+    what, _ = describe(out["executor_failure_cause"], out["executor_failure_facts"])
+    assert "negative-volume cells" in what and "stopped before it finished" not in what
+    # the ladder moves it on, with the defect in its words
+    assert lad.classify({**out, "retry_count": 1}).kind == lad.ENGINE
+    # a manifest this finalize did not write says nothing about this attempt's mesh
+    monkeypatch.setattr(quiet_executor, "get_engine", lambda n="": _Gone())
+    again = _no_mesh(quiet_executor, tmp_path, "cfmesh", [{"rc": 1, "timed_out": False}])
+    assert again["executor_failure_cause"] == "engine_crashed"
+
+
 def test_an_unknown_record_keeps_the_old_account(quiet_executor, tmp_path):
     out = _no_mesh(quiet_executor, tmp_path, "gmsh", None)
     assert out["executor_failure_cause"] == "engine_crashed"

@@ -192,6 +192,16 @@ def test_the_committed_table_is_readable_and_says_where_it_came_from():
     assert len(table.runs) == len(data["rows"])
     assert {r.engine for r in table.runs} <= known
     assert {r["status"] for r in data["rows"]} <= {"pass", "fail"}
+    # the end-to-end sweeps are in it, counted by their own code rule
+    e2e = prov["e2e"]
+    assert e2e["runs"] == sum(r.get("source") == "e2e" for r in data["rows"]) > 100
+    assert len(e2e["base_commit"]) == 40 and e2e["sweeps"]
+
+
+def test_the_committed_table_sends_a_detailed_car_to_the_engine_that_meshed_detailed_cars():
+    rec = F.recommend(_t(CAR), ["cfmesh", "snappy"], brief={"layers_requested": True})
+    assert rec.engine == "snappy", [f.as_dict() for f in rec.fits]
+    assert rec.fit_of("cfmesh").evidence.invalid > 0
 
 
 def _held_out():
@@ -210,6 +220,108 @@ def test_on_shapes_the_table_never_saw_the_recommendation_beats_the_fixed_order(
     # first engine did, and comes within a few cases of the best any choice could do
     assert res["recommended_passed"] >= res["ladder_passed"], res
     assert res["recommended_passed"] >= 0.9 * res["any_passed"], res
+
+
+# ---------------------------------------------------------------- detail, validity, cell shape ----
+SMOOTH = {"flow": "external", "form": "surface", "input_kind": "body-surface", "n_triangles": 900,
+          "closed": True, "genus": 0, "n_solids": 1, "thickness_ratio": 0.35, "sharp_edges": 3.0}
+CAR = {**SMOOTH, "n_triangles": 750_000, "genus": 44, "sharp_edges": 31.6}
+
+
+def test_an_external_body_is_read_against_bodies_with_as_much_detail_as_it_has():
+    assert F.detail_of(_t(CAR)) == F.DETAILED and F.detail_of(_t(SMOOTH)) == F.PLAIN
+    assert F.detail_of(_t(TUBE)) == ""
+    # cfMesh's long record on smooth bodies, then broken meshes on detailed cars; snappy meshed both
+    rows = [_row(f"s{i}", "cfmesh", SMOOTH, seconds=200.0) for i in range(25)]
+    rows += [_row(f"car{i}", "cfmesh", CAR, "fail", invalid=True) for i in range(5)]
+    rows += [_row(f"car{i}", "cfmesh", CAR, seconds=500.0) for i in range(5, 6)]
+    rows += [_row(f"s{i}", "snappy", SMOOTH, seconds=400.0) for i in range(6)]
+    rows += [_row(f"car{i}", "snappy", CAR, seconds=700.0) for i in range(6)]
+    tab = _table(rows)
+    car = F.recommend(_t(CAR), ["cfmesh", "snappy"], table=tab)
+    assert car.engine == "snappy", [f.as_dict() for f in car.fits]
+    cf = car.fit_of("cfmesh")
+    assert cf.evidence.words == "thick bodies in external flow with fine detail, from surface meshes"
+    assert "5 of those 6 tries made a broken mesh" in cf.reason
+    assert F.shape_words(_t(CAR)) == "a thick body in external flow, with fine detail"
+    # the smooth bodies keep their own record: cfMesh, faster, wins the tie there
+    assert F.recommend(_t(SMOOTH), ["cfmesh", "snappy"], table=tab).engine == "cfmesh"
+
+
+def test_a_tie_is_broken_on_broken_meshes_before_the_declared_turf_layers_or_time():
+    # the same rate either way; the fast engine's failures were broken meshes, the slow one's not
+    rows = [_row(f"b{i}", "cfmesh", SMOOTH, seconds=100.0, layers_pct=100.0) for i in range(19)]
+    rows += [_row("b19", "cfmesh", SMOOTH, "fail", quality={"fatal": ["negative-volume cells"]})]
+    rows += [_row(f"b{i}", "snappy", SMOOTH, seconds=600.0, layers_pct=90.0) for i in range(19)]
+    rows += [_row("b19", "snappy", SMOOTH, "fail", failure_class="mesher_timeout")]
+    rec = F.recommend(_t(SMOOTH), ["cfmesh", "snappy"], table=_table(rows))
+    assert rec.engine == "snappy", [f.as_dict() for f in rec.fits]
+    ev = rec.fit_of("cfmesh").evidence
+    assert ev.invalid == 1 and F.validity_step(ev) >= 1 and F.validity_step(rec.fit_of("snappy").evidence) == 0
+
+
+def test_a_tie_is_broken_on_cells_past_the_shape_limit_before_layers_or_time():
+    rows = [_row(f"w{i}", "cfmesh", SMOOTH, seconds=100.0, layers_pct=100.0,
+                 quality={"max_non_ortho": 84.0 if i < 6 else 60.0}) for i in range(10)]
+    rows += [_row(f"w{i}", "snappy", SMOOTH, seconds=600.0, layers_pct=95.0,
+                  quality={"max_non_ortho": 64.9}) for i in range(10)]
+    rec = F.recommend(_t(SMOOTH), ["cfmesh", "snappy"], table=_table(rows))
+    assert rec.engine == "snappy"
+    cf = rec.fit_of("cfmesh")
+    assert (cf.evidence.over_limit, cf.evidence.shaped) == (6, 10) and F.quality_step(cf.evidence) == 3
+    assert "6 of its 10 meshes had cells more than 70 degrees out of square" in cf.reason
+    # a few meshes over the line in a long record is no step: the faster engine keeps the tie
+    few = [_row(f"t{i}", "cfmesh", TUBE, seconds=30.0,
+                quality={"max_non_ortho": 75.0 if i < 3 else 40.0}) for i in range(37)]
+    few += [_row(f"t{i}", "snappy", TUBE, seconds=300.0, quality={"max_non_ortho": 55.0})
+            for i in range(37)]
+    tube = F.recommend(_t(TUBE), ["cfmesh", "snappy"], table=_table(few))
+    assert tube.engine == "cfmesh" and F.quality_step(tube.fit_of("cfmesh").evidence) == 0
+
+
+def _builder():
+    path = REPO / "devtools" / "fitness" / "build_engine_fitness.py"
+    spec = importlib.util.spec_from_file_location("build_engine_fitness", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _e2e(outcome, stage="done", failure_class="", reason="", **kw):
+    return {"case_id": "cars__drivaerml_run_1__drivaer_1.stl.stl", "category": "cars",
+            "format": "stl", "outcome": outcome, "stage": stage, "failure_class": failure_class,
+            "engine": "cfmesh", "cells": 1124112, "git": {"commit": "aa071f690d17"},
+            "tag": "e2e-baseline-main-x", "intake": {"request_txt": "5 prism layers", "patches": []},
+            "recommend": {"traits": {**CAR, "version": TRAITS_VERSION}},
+            "mesh": {"reason": reason, "quality": {"max_non_ortho": 99.4},
+                     "timings": {"total": 670.5}, "layers": {"layer_coverage_pct": 99.3}}, **kw}
+
+
+def test_the_e2e_sweeps_feed_the_table_with_what_the_engine_did():
+    B = _builder()
+    assert B.shape_id("cars__drivaerml_run_1__drivaer_1.stl.stl") == "cars__drivaerml_run_1__drivaer_1"
+    broken, _ = B.e2e_row(_e2e("failed", "mesh:mesher", "mesher_failed:cfmesh",
+                               "[CFMESH] polyMesh cells=1124112 fatal=['negative-volume cells'] "
+                               "non_ortho=99.4"))
+    assert broken["status"] == "fail" and broken["invalid"] is True
+    assert broken["quality"]["fatal"] == ["negative-volume cells"] and broken["seconds"] == 670.5
+    assert broken["source"] == "e2e" and broken["brief"]["layers_requested"] is True
+    delivered, _ = B.e2e_row(_e2e("concerns"))
+    assert delivered["status"] == "pass" and "invalid" not in delivered
+    timed_out, _ = B.e2e_row(_e2e("timeout", "mesh:mesher", "mesher_timeout"))
+    assert timed_out["status"] == "fail" and "invalid" not in timed_out
+    # nothing an engine did not do counts
+    for d in (_e2e("refused", "intake", "refused:intake_no_openings"),
+              _e2e("failed", "check", "check:scout"),
+              _e2e("failed", "mesh:builder", "no_mesh_run:mesh_run_mesh_failed_workspaceextractionerror"),
+              _e2e("error", "mesh", "harness:Timeout")):
+        row, why = B.e2e_row(d)
+        assert row is None and why, d["failure_class"]
+    stale = _e2e("pass", recommend={"traits": {**CAR, "version": TRAITS_VERSION + 1}})
+    assert B.e2e_row(stale)[0] is None
+    # the table reads the row as a broken run of a detailed body
+    run = F.Run.from_row(broken)
+    assert run.invalid and run.detail == F.DETAILED and run.cls == F.BLUNT
 
 
 def test_an_engine_never_tried_on_this_kind_of_shape_ranks_below_one_tried_and_mostly_passing():
