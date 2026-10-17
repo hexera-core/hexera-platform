@@ -99,6 +99,14 @@ class Opening:
     depth_ratio: float = 0.0
     #: the face looks back at the part's centre (a flange's back face), not away from it
     inward: bool = False
+    #: AN ANNULUS: the area of what stands in a ring's hole - the flat end of a centre rod or hub
+    #: (cad_tessellate.stands_in_opening, the staging's own reading) - so the flow crosses
+    #: `area - filled`, not the whole hole. 0.0 for a plain bore.
+    filled: float = 0.0
+
+    @property
+    def annular(self) -> bool:
+        return 0.0 < self.filled < self.area
 
     @property
     def shape(self) -> str:
@@ -133,6 +141,12 @@ class Opening:
             out["width_mm"] = round(self.wh[0] * mm, 2)
             out["height_mm"] = round(self.wh[1] * mm, 2)
             out["diameter_mm"] = round(self.equivalent_diameter * mm, 2)   # equivalent, for sizing
+        if self.annular:
+            # the bore stays `diameter_mm` (what the user knows the pipe by); the centre body is
+            # `inner_diameter_mm` (its equal-area diameter) and the flow crosses the ring between
+            # them: pi/4 (D^2 - d^2) is exactly `flow_area_mm2`, the area measured
+            out["inner_diameter_mm"] = round(2.0 * math.sqrt(self.filled / math.pi) * mm, 2)
+            out["flow_area_mm2"] = round((self.area - self.filled) * mm * mm, 2)
         return out
 
 
@@ -420,6 +434,7 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3, shape=None,
         fe.Next()
 
     candidates: list[Opening] = []
+    flats: list = []                  # (face index, its own area, centre, outer extent) of every flat
     planar = 0
     for i, f in enumerate(faces):
         surf = BRepAdaptor_Surface(f)
@@ -460,6 +475,7 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3, shape=None,
         candidates.append(Opening(face_index=i, kind=kind, centroid=o_centroid, normal=normal,
                                   area=o_area, wh=o_wh, clear_ahead=False, on_extremity=on_extremity,
                                   outer_wh=outer_wh, inward=inward))
+        flats.append((i, float(area), centroid, outer_wh))
 
     # THE PROBES (clear ahead, rim, depth) cost a ray or a dozen classifier calls each; a boat hull
     # or an assembly has thousands of small flats, so only the candidates that can matter get them -
@@ -481,6 +497,18 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3, shape=None,
             o.depth_ratio = depth / max(math.sqrt(max(o.area, 0.0)), 1e-9)
             probed.append(o)
     candidates = probed
+    # AN ANNULUS'S OPENING is the ring between the bore and what stands in it: the flat end of a
+    # centre rod or hub inside the ring's hole, in its plane - read exactly as the staging reads it
+    # (cad_tessellate.stands_in_opening), so the size the user confirms is the size the port gate
+    # holds the mesh to. annular_001: a 151 mm bore round a 125 mm rod, 5,700 mm2 of flow, not the
+    # bore's 17,900 mm2.
+    from meshpipeline.cad.cad_tessellate import stands_in_opening
+
+    for o in candidates:
+        if o.kind == "ring":
+            hole = {"area_m2": o.area, "centroid": o.centroid, "wh_m": o.wh}
+            o.filled = sum(a for j, a, c, owh in flats
+                           if j != o.face_index and stands_in_opening(hole, o.normal, a, c, owh))
 
     notes: list[str] = []
     decision: dict = {}

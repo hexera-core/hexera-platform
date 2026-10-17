@@ -9,6 +9,7 @@
 # changed later, in the chat or on the stage).
 from __future__ import annotations
 
+import math
 import re
 from types import SimpleNamespace
 from typing import Any
@@ -331,8 +332,13 @@ def confirmation_message(body) -> str:
     elif ports:
         rows = []
         for o in ports:
-            size = (f"{o.diameter_mm:.0f} mm across" if o.diameter_mm
+            inner = _centre_body_mm(o)
+            size = (f"an annulus {o.diameter_mm:.0f} mm across round a {inner:.0f} mm centre body"
+                    if inner else f"{o.diameter_mm:.0f} mm across" if o.diameter_mm
                     else f"{o.width_mm:.0f} x {o.height_mm:.0f} mm" if o.width_mm and o.height_mm else "")
+            flow_area = _num_or_none(getattr(o, "flow_area_mm2", None))
+            if flow_area and (inner or not o.diameter_mm):
+                size += f" ({flow_area:,.0f} mm2 of flow)"
             at = (f" at ({o.centroid_mm[0]:.0f}, {o.centroid_mm[1]:.0f}, {o.centroid_mm[2]:.0f}) mm"
                   if o.centroid_mm and len(o.centroid_mm) == 3 else "")
             rows.append(f"{o.name} ({o.role}){', ' + size if size else ''}{at}")
@@ -463,9 +469,20 @@ def patches_from(body) -> list[dict]:
         if o.role == "not_an_opening":
             continue
         entry: dict = {"name": o.name, "type": o.role}
+        inner = _centre_body_mm(o)
+        flow_area = _num_or_none(getattr(o, "flow_area_mm2", None))
+        # AN ANNULUS - a centre rod or hub standing in the bore - is declared as the bore and the
+        # body in it, which every reader of a declaration takes as the ring between them (the
+        # port binding, the port gate, the hydraulic diameter D - d the mesh is sized by). The
+        # scout measured both, so pi/4 (D^2 - d^2) is the flow area it measured. A ring of
+        # another shape round a body states that area alone (one size form per port).
+        if inner:
+            entry["diameter_mm"], entry["inner_diameter_mm"] = float(o.diameter_mm), inner
+        elif flow_area and o.width_mm and o.height_mm:
+            entry["area_mm2"] = flow_area
         # a rectangle keeps its sides: the form sends width and height only for a rectangular
         # opening (with its equal-area diameter beside them, which would turn it into a circle)
-        if o.width_mm and o.height_mm:
+        elif o.width_mm and o.height_mm:
             entry["width_mm"], entry["height_mm"] = float(o.width_mm), float(o.height_mm)
         elif o.diameter_mm:
             entry["diameter_mm"] = float(o.diameter_mm)
@@ -477,11 +494,30 @@ def patches_from(body) -> list[dict]:
     return patches
 
 
+def _num_or_none(v) -> float | None:
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return None
+    return x if math.isfinite(x) and x > 0 else None
+
+
+def _centre_body_mm(o) -> float | None:
+    """The diameter of the centre body standing in a round opening's bore (the scout's
+    inner_diameter_mm), or None for a plain bore - and for a bore said to be no wider than the
+    body in it, which no annulus can be (a diameter retyped below it on the form)."""
+    if o.width_mm and o.height_mm:
+        return None
+    inner, bore = _num_or_none(getattr(o, "inner_diameter_mm", None)), _num_or_none(o.diameter_mm)
+    return inner if inner and bore and inner < bore else None
+
+
 #: The fields of a stored confirmation that are not the user's body: when it was stored, by whom,
 #: and what was derived from it.
 _RECORD_ONLY = ("confirmed_at", "owner_id", "message", "patches", "reread")
 _OPENING_DEFAULTS: dict[str, object] = {"centroid_mm": None, "diameter_mm": None, "width_mm": None,
-                                         "height_mm": None}
+                                         "height_mm": None, "inner_diameter_mm": None,
+                                         "flow_area_mm2": None}
 _BODY_DEFAULTS: dict[str, object] = {"openings": [], "seed_point_mm": None, "size_mm": None, "part": "",
                                      "flow_axis": None, "reference_length_mm": None, "extents": None,
                                      "grounded": False, "up_axis": None, "scale_to_m": None, "unit": None,
@@ -524,7 +560,8 @@ def reread_record(record: dict, *, scale_to_metres: float, unit: str,
 
 
 #: The lengths a confirmation carries, dropped when they cannot be re-read in a new unit.
-_OPENING_LENGTHS = ("centroid_mm", "diameter_mm", "width_mm", "height_mm")
+_OPENING_LENGTHS = ("centroid_mm", "diameter_mm", "width_mm", "height_mm", "inner_diameter_mm",
+                    "flow_area_mm2")
 _BODY_LENGTHS = ("seed_point_mm", "size_mm", "reference_length_mm")
 
 
