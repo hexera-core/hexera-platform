@@ -148,7 +148,7 @@ def test_a_body_with_more_lids_than_a_passage_has_mouths_is_machined(stl):
     pins = [((0, 0, 0.06 + 0.067 * k), (1, 0, 0), 0.006, 0.08) for k in range(13)]
     tris = _cylinders_fused(((0, 0, 0), (0, 0, 1), 0.05, 1.0), *pins)
     res = scout_mesh(stl("connector", tris), scale_to_m=1.0)
-    assert res.flow == "external" and res.openings == []
+    assert res.flow == "external" and res.seed_point is None
     assert any("more than a passage has mouths" in n for n in res.notes)
 
 
@@ -214,7 +214,8 @@ def test_a_small_hole_beside_a_big_one_is_still_proposed(stl):
 def test_a_box_is_a_solid_body_in_a_flow(stl):
     res = scout_mesh(stl("box", _box_triangles((0, 0, 0), (2.0, 1.0, 0.8))), scale_to_m=1.0)
     assert res.flow == "external" and res.input_kind == "solid-body"
-    assert res.openings == []
+    # nothing proposed, but its flat faces are kept for a user who says the fluid flows through it
+    assert res.seed_point is None and all(o.kind == "disc" for o in res.openings)
     assert res.extra["flow_axis_guess"] == "+x"
 
 

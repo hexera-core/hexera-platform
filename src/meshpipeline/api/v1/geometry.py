@@ -454,6 +454,11 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
     # are not compared at all.
     from meshpipeline.application.geometry_confirmation import distinct_opening_names, renamed_openings_sentence
 
+    # A BODY IN A FLOW HAS NO OPENINGS, whatever rows came with it: the check keeps the openings a part
+    # read as a body would have if the fluid flowed through it (so a flip to "through" has some), and
+    # a client that confirms "around" with them still in hand must not store them as the body's ports
+    if body.flow == "external" and body.openings:
+        body = body.model_copy(update={"openings": []})
     named_apart = distinct_opening_names(body.openings)
     renamed = renamed_openings_sentence(body.openings, named_apart)
     body = body.model_copy(update={"openings": named_apart})
