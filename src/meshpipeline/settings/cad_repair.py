@@ -123,3 +123,23 @@ CAD_REPAIR_MAX_AREA_CHANGE_RATIO: float = float(
 #: solid-count check instead.
 CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO: float = float(
     optional_env("CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO", "0.02"))
+
+#: Whether an UNSURE repair defect is put to an engineer in the console. OFF, and while it is off
+#: the review mints nothing and no run parks: an unsure defect is reported exactly as it was before
+#: this slice existed. Turning it on is what lets a run wait on a person, so it is a deployment's
+#: decision and not a default.
+CAD_REPAIR_REVIEW_ENABLED: bool = bool_env("CAD_REPAIR_REVIEW_ENABLED", "false")
+
+#: How many unsure defects one review may put to a model before the rest go to the engineer
+#: unexamined. A bound on spend per review, not a quality threshold: the sample is what the model
+#: looks at, and it is taken in the order the defects were found.
+CAD_REPAIR_REVIEW_SAMPLE_SIZE: int = int(optional_env("CAD_REPAIR_REVIEW_SAMPLE_SIZE", "3"))
+
+#: The most model calls one review may make, across the sample. A hard ceiling on the review's
+#: cost, independent of how many defects the sample holds.
+CAD_REPAIR_REVIEW_LLM_CALLS_MAX: int = int(optional_env("CAD_REPAIR_REVIEW_LLM_CALLS_MAX", "4"))
+
+#: Seconds one review model call may take before it is abandoned and its defect goes to the
+#: engineer as unexamined. A model that has not answered in this long is not going to answer in
+#: time for a job's deadline.
+CAD_REPAIR_REVIEW_LLM_TIMEOUT_S: float = float(optional_env("CAD_REPAIR_REVIEW_LLM_TIMEOUT_S", "20.0"))
