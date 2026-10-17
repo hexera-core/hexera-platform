@@ -99,6 +99,10 @@ class PipelineState(TypedDict):
     #   defects_remaining the located defects LEFT after the repair, so nothing reads "repaired" next
     #                     to the list the file arrived with.
     repair_attempt: dict
+    # REVIEW ITEMS THE REPAIR NODE MINTED for defects it left to a person (application/
+    # repair_review_minting.py): plain dicts, empty unless CAD_REPAIR_REVIEW_ENABLED. The node mints;
+    # the terminal path persists them.
+    repair_review_candidates: list[dict]
     # SET ONLY WHEN A REPAIR WAS PROMOTED (pipeline/repair_promote.py): the identity of the
     # original upload this run stopped meshing, the repaired bytes that replaced it, and the
     # engine the replacement was proved to stage for. Empty on every run that meshed what the

@@ -405,6 +405,9 @@ STATE_FIELDS: dict[str, str] = {
     "repair_attempt":        "whether the run repaired its own geometry, what it aimed at and "
                              "what it did - or why it declined; a decline leaves the run on the "
                              "customer's own file",
+    "repair_review_candidates": "review items the repair node minted for defects it left to a "
+                             "person; empty unless per-defect review is enabled - the terminal "
+                             "path persists them, the node writes nothing",
     "repair_lineage":        "which upload a promoted repair replaced, and the engine the "
                              "replacement was proved to stage for; empty unless repaired "
                              "geometry became the geometry this run meshes",

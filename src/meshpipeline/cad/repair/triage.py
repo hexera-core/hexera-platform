@@ -9,7 +9,14 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
-from meshpipeline.cad.repair.contracts import DefectCode, RepairProfile, RepairStatus
+import meshpipeline.settings.cad_repair as rcfg
+from meshpipeline.cad.repair.contracts import (
+    DefectCode,
+    DefectSeverity,
+    RepairProfile,
+    RepairStatus,
+)
+from meshpipeline.cad.repair.localize import EntityDefect
 
 # SHADOW MODE, AND WHY IT IS DELIBERATELY NOT A MODEL YET.
 #
@@ -63,6 +70,64 @@ _NEEDS_JUDGEMENT: frozenset[str] = frozenset({
 _CUSTOMER_MUST_ACT: frozenset[str] = frozenset({
     DefectCode.invalid_brep.value,
 })
+
+
+#: Why a defect is a person's call, in the voice the review screen speaks. Keyed by defect code.
+_JUDGEMENT_REASONS: dict[str, str] = {
+    DefectCode.small_face.value: ("a very small face is usually intentional - a chamfer, a logo - "
+                                  "so a person decides"),
+    DefectCode.invalid_brep.value: ("the kernel calls this part invalid, and what to do about it "
+                                    "is a question about intent, so a person decides"),
+    DefectCode.self_intersection.value: ("a self-intersection may be a modelling error or a "
+                                         "deliberate overlap, so a person decides"),
+    DefectCode.non_manifold_surface.value: ("a non-manifold edge may be walls meeting by design "
+                                            "or a mistake, so a person decides"),
+}
+
+
+@dataclass(frozen=True, slots=True)
+class DefectSplit:
+    """A report cut per defect: what the repair catalogue answers, and what a person decides."""
+
+    repairable: tuple[EntityDefect, ...] = ()
+    judgement: tuple[tuple[EntityDefect, str], ...] = ()
+
+
+def defect_from_entity(entity: Mapping) -> EntityDefect | None:
+    """An EntityDefect from a stored entity dict, or None when it is not readable as one."""
+    try:
+        code = DefectCode(str(entity.get("code")))
+        severity = DefectSeverity(str(entity.get("severity") or DefectSeverity.warning.value))
+        kind, index = entity.get("entity_type"), entity.get("entity_index")
+        if kind is None or index is None:
+            kind, _, tail = str(entity.get("entity", "")).partition(":")
+            index = tail or 0
+        return EntityDefect(
+            code=code, severity=severity, entity_type=str(kind or ""), entity_index=int(index),
+            message=str(entity.get("message", "")), region=str(entity.get("region", "unknown")),
+            measurements=dict(entity.get("measurements") or {}),
+            location=dict(entity.get("location") or {}),
+            kernel_status=str(entity.get("kernel_status", "")),
+            fingerprint=str(entity.get("fingerprint", "")))
+    except (ValueError, TypeError):
+        return None
+
+
+def split(report: Mapping) -> DefectSplit:
+    """Cut a stored report per located defect. Defects without an entity are not in it."""
+    repairable: list[EntityDefect] = []
+    judgement: list[tuple[EntityDefect, str]] = []
+    for entity in _entities(dict(report or {})):
+        defect = defect_from_entity(entity)
+        if defect is None:
+            continue
+        code = defect.code.value
+        if code in _REPAIRABLE:
+            repairable.append(defect)
+        elif code in _NEEDS_JUDGEMENT or code in _CUSTOMER_MUST_ACT:
+            judgement.append((defect, _JUDGEMENT_REASONS.get(
+                code, "this is a question about intent, so a person decides")))
+    return DefectSplit(repairable=tuple(repairable), judgement=tuple(judgement))
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,7 +315,11 @@ def recommend(*, repair_status: str = "", report: Mapping | None = None,
             evidence=evidence)
 
     judgement = [e for e in entities if e.get("code") in _NEEDS_JUDGEMENT]
-    if any(c in _NEEDS_JUDGEMENT for c in codes):
+    # PER-DEFECT REVIEW: with it on, a defect a person decides no longer takes the repairable ones
+    # down with it. The repairables run, and the judgement defects become review items.
+    parts = split(payload)
+    review = bool(rcfg.CAD_REPAIR_REVIEW_ENABLED and parts.judgement)
+    if any(c in _NEEDS_JUDGEMENT for c in codes) and not review:
         return Recommendation(
             route=ROUTE_MANUAL_CLEANUP, confidence=0.6,
             reasons=("the defects found are questions about intent that no cap can answer",),
@@ -262,7 +331,7 @@ def recommend(*, repair_status: str = "", report: Mapping | None = None,
     # so sending it to a person would be refusing to fix the very thing we diagnosed. Only an
     # invalidity nothing accounts for falls through to the branch below.
     repairable = [e for e in entities if e.get("code") in _REPAIRABLE]
-    if repairable:
+    if repairable or review:
         return Recommendation(
             route=ROUTE_CONSERVATIVE_REPAIR, confidence=0.7,
             reasons=("every located defect is in how the file was written, not in what the part "
