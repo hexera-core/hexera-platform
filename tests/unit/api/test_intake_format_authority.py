@@ -24,7 +24,7 @@ SRC = Path(__file__).resolve().parents[3] / "src" / "meshpipeline"
 @pytest.mark.parametrize("suffix", [
     ".stl", ".step", ".stp", ".iges", ".igs", ".vtp", ".brep", ".brp", ".obj", ".ply", ".off",
     ".3mf", ".glb", ".gltf", ".vtk", ".vtu", ".msh", ".bdf", ".nas", ".inp", ".mesh", ".su2",
-    ".3dm", ".ecxml", ".xml"])
+    ".3dm", ".ecxml", ".xml", ".dae"])
 def test_every_currently_implemented_format_is_declared(suffix):
     assert suffix in ACCEPTED_SUFFIXES
     assert format_for_suffix(suffix) is not None
@@ -59,7 +59,7 @@ def test_every_format_names_its_kind_in_the_capability_payload():
 def test_only_formats_that_record_a_unit_in_the_file_declare_one():
     by_key = {f.key: f.declares_units for f in INTAKE_FORMATS}
     # ECXML records no unit, but its standard fixes one: every length is metres (JEP181A 4.1)
-    assert {k for k, v in by_key.items() if v} == {"step", "iges", "3mf", "3dm", "ecxml"}
+    assert {k for k, v in by_key.items() if v} == {"step", "iges", "3mf", "3dm", "ecxml", "dae"}
     # glTF's spec says metres but the file records nothing, and real files break the rule
     assert by_key["glb"] is False and by_key["gltf"] is False and by_key["brep"] is False
 

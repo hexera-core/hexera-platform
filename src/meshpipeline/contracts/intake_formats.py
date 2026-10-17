@@ -140,6 +140,12 @@ INTAKE_FORMATS: tuple[IntakeFormat, ...] = (
         key="su2", label="SU2 mesh", suffixes=(".su2",),
         media_type="", declares_units=False, staged_as="input.su2"),
     IntakeFormat(
+        key="dae", label="COLLADA model", suffixes=(".dae",),
+        media_type="model/vnd.collada+xml",
+        # A COLLADA file states its unit (<unit meter=...>) and its up axis in its <asset>; one that
+        # leaves the unit out is asked, not taken as the spec's default metre (cad/ingest/collada).
+        declares_units=True, staged_as="input.dae"),
+    IntakeFormat(
         key="3dm", label="Rhino 3DM (its meshes)", suffixes=(".3dm",),
         media_type="",
         # A Rhino model states its unit system in the file's settings.

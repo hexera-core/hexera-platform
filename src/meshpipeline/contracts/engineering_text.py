@@ -118,7 +118,7 @@ _SUPERSCRIPT_DIGITS: Final = "\u2070\u00b9\u00b2\u00b3\u2074-\u2079"
 
 # Never touched: code, links, paths and file names. Order matters - a fence before a backtick.
 _EXTENSIONS: Final = ("step|stp|stl|iges|igs|brep|x_t|sat|vtp|vtk|vtu|obj|ply|off|msh|unv|cgns|"
-                      "foam|h5|json|yaml|yml|txt|csv|log|dat|py|sh|zip|gz|tar|png|jpe?g|3mf|gltf|glb")
+                      "foam|h5|json|yaml|yml|txt|csv|log|dat|py|sh|zip|gz|tar|png|jpe?g|3mf|gltf|glb|dae")
 _PROTECTED = re.compile(
     r"```.*?```"                                             # fenced code
     r"|`[^`\n]+`"                                            # inline code - patch and file names
