@@ -64,13 +64,17 @@ class JobRepository:
         # (MembershipRole is owner|member and no route reads it), so the actor is the owner alone.
         # The tenant predicate stays too, so a job re-homed to another organisation is out of reach
         # even of the person who started it. A foreign job and a missing one still read the same.
+        #
+        # REFRESHED, not just locked: a row this session already read comes back from the identity
+        # map with its pre-lock attributes otherwise - see persistence/lease.py::_locked_job.
         res = await db.execute(
             select(SimulationJob)
             .where(SimulationJob.id == job_id,
                    SimulationJob.owner_id == owner_id,
                    tenant_scope.scope(SimulationJob, owner_id=owner_id,
                                       organization_id=organization_id))
-            .with_for_update())
+            .with_for_update()
+            .execution_options(populate_existing=True))
         return res.scalar_one_or_none()
 
     async def list_for_owner(self, db: AsyncSession, owner_id: str, *,

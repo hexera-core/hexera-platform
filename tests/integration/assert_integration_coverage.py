@@ -18,6 +18,9 @@ REQUIRED = {
         "test_geometry_source_providers", "test_a_snapshot_naming_another_tenant_is_not_authorized"),
     "checkpoint ownership fencing": (
         "test_checkpoint_restart_postgres", "test_the_abandoned_worker_is_fenced_at_each_point"),
+    "a cancel beats the worker's claim": (
+        "test_claim_sees_cancel_postgres",
+        "test_a_cancel_that_lands_after_the_workers_first_read_stops_the_delivery"),
 }
 
 #: The ONLY skips a correctly provisioned run may contain. Both are genuinely optional inputs a
