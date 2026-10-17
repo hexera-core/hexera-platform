@@ -186,6 +186,10 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
             stopped = _terminal(work, STALLED)
             break
 
+    # DIRECTIVES THAT COULD NOT BE PLAYED reach the report; none is dropped silently.
+    for skipped in getattr(chosen, "unplayable", ()):
+        history.refusals.append({"refusal": "directive_unplayable", **skipped})
+
     logger.info("repair loop: stopped=%s attempts=%d kept=%d planner=%s",
                 stopped, len(work.log), sum(1 for v in work.log if v.kept),
                 getattr(chosen, "label", ""))

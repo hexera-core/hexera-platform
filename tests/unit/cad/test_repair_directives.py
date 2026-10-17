@@ -1,0 +1,153 @@
+# Responsibility: Verify directives are proposed before the rules planner, that an unplayable one is reported rather than dropped, and that a directive never bypasses the session's judgement.
+from __future__ import annotations
+
+import pytest
+
+import meshpipeline.settings.cad_repair as rcfg
+from meshpipeline.cad.repair.caps import Measure
+from meshpipeline.cad.repair.contracts import DefectCode, DefectSeverity
+from meshpipeline.cad.repair.directives import DirectedPlanner
+from meshpipeline.cad.repair.identity import EntityRef
+from meshpipeline.cad.repair.localize import EntityDefect
+from meshpipeline.cad.repair.loop import run
+from meshpipeline.cad.repair.operations import OpOutcome
+from meshpipeline.cad.repair.plan import Candidate
+from meshpipeline.cad.repair.session import RepairSession
+
+_SOUND = Measure(valid=True, solids=1, shells=1, faces=20, edges=60, vertices=40,
+                 diagonal_mm=200.0, max_tolerance_mm=0.01,
+                 surface_area_mm2=1000.0, volume_mm3=8000.0)
+
+
+def _defect(fingerprint="edge:a", index=1) -> EntityDefect:
+    return EntityDefect(code=DefectCode.small_edge, severity=DefectSeverity.error,
+                        entity_type="edge", entity_index=index, message="x",
+                        fingerprint=fingerprint)
+
+
+class _Op:
+    answers = frozenset({DefectCode.small_edge})
+    scope = 1
+
+    def __init__(self, name):
+        self.name = name
+        self.calls = 0
+
+    def targets_for(self, defect):
+        return (EntityRef(entity_type="edge", fingerprint=defect.fingerprint,
+                          entity_index=defect.entity_index),)
+
+    def apply(self, shape, targets, *, tolerance_mm):
+        self.calls += 1
+        return OpOutcome(shape=f"{self.name}-{self.calls}")
+
+
+class _Fallback:
+    label = "fallback"
+
+    def __init__(self, op):
+        self._op = op
+        self.calls = 0
+
+    def propose(self, defects, history, *, shape):
+        self.calls += 1
+        for d in defects:
+            if not history.was_ineffective(d.fingerprint, self._op.name):
+                return Candidate(op=self._op, targets=self._op.targets_for(d),
+                                 defect_code=d.code, defect_fingerprint=d.fingerprint)
+        return None
+
+
+def _directive(op="directed_op", targets=("edge:a",), source="engineer", item_id="i1"):
+    return {"op": op, "targets": list(targets), "defect_code": "small_edge",
+            "defect_fingerprint": targets[0], "source": source, "item_id": item_id}
+
+
+def _session(scans):
+    queue = list(scans)
+
+    def scanner(_shape, valid=None):
+        return queue.pop(0) if len(queue) > 1 else queue[0]
+
+    return RepairSession("original", measurer=lambda _s: _SOUND, scanner=scanner)
+
+
+@pytest.fixture(autouse=True)
+def _caps(monkeypatch):
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_DEVIATION_RATIO", 0.001)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_TOLERANCE_MM", 0.1)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_ALLOW_FACE_REMOVAL", False)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_AREA_CHANGE_RATIO", 0.02)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO", 0.02)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_OPS", 6)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_STALL_LIMIT", 2)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_TIMEOUT_S", 120.0)
+
+
+def test_directives_are_proposed_before_the_rules_planner():
+    directed, rules = _Op("directed_op"), _Op("rules_op")
+    fallback = _Fallback(rules)
+    planner = DirectedPlanner([_directive()], fallback, ops=(directed, rules))
+
+    result = run(None, planner=planner, session=_session([((_defect(),), True), ((), True)]),
+                 tolerance_mm=0.01)
+
+    assert [v.op for v in result.verdicts] == ["directed_op"]
+    assert directed.calls == 1 and rules.calls == 0
+    assert result.planner_label == "directed-v1"
+
+
+def test_an_unplayable_directive_is_recorded_not_skipped_silently():
+    directed, rules = _Op("directed_op"), _Op("rules_op")
+    gone = _directive(targets=("edge:vanished",), item_id="gone")
+    unknown = _directive(op="no_such_op", item_id="odd")
+    planner = DirectedPlanner([gone, unknown], _Fallback(rules), ops=(directed, rules))
+
+    result = run(None, planner=planner, session=_session([((_defect(),), True), ((), True)]),
+                 tolerance_mm=0.01)
+
+    played = [r for r in result.refusals if r.get("refusal") == "directive_unplayable"]
+    assert {(r["directive"]["item_id"], r["reason"]) for r in played} == {
+        ("gone", "target_absent"), ("odd", "unknown_op")}
+    assert directed.calls == 0
+    assert [v.op for v in result.verdicts] == ["rules_op"]
+
+
+def test_exhausted_directives_fall_back_to_rules():
+    directed, rules = _Op("directed_op"), _Op("rules_op")
+    fallback = _Fallback(rules)
+    planner = DirectedPlanner([_directive()], fallback, ops=(directed, rules))
+
+    result = run(None, planner=planner,
+                 session=_session([((_defect(),), True), ((_defect("edge:b", 2),), True),
+                                   ((), True)]),
+                 tolerance_mm=0.01)
+
+    assert [v.op for v in result.verdicts] == ["directed_op", "rules_op"]
+    assert fallback.calls >= 1
+
+
+def test_a_replay_directive_and_an_engineer_directive_keep_their_source():
+    directed, rules = _Op("directed_op"), _Op("rules_op")
+    replay = _directive(targets=("edge:gone",), source="replay", item_id="")
+    engineer = _directive(op="no_such_op", source="engineer", item_id="e1")
+    planner = DirectedPlanner([replay, engineer], _Fallback(rules), ops=(directed, rules))
+
+    result = run(None, planner=planner, session=_session([((_defect(),), True), ((), True)]),
+                 tolerance_mm=0.01)
+
+    sources = {r["directive"]["item_id"]: r["directive"]["source"] for r in result.refusals
+               if r.get("refusal") == "directive_unplayable"}
+    assert sources == {"": "replay", "e1": "engineer"}
+
+
+def test_a_directive_is_not_a_cap_waiver_a_worsening_directive_is_rolled_back():
+    # The session judges a directed candidate exactly as it judges a rules candidate: the defect
+    # persists, so the progress rule rolls the operation back.
+    directed, rules = _Op("directed_op"), _Op("rules_op")
+    planner = DirectedPlanner([_directive()], _Fallback(rules), ops=(directed, rules))
+
+    result = run(None, planner=planner, session=_session([((_defect(),), True)]),
+                 tolerance_mm=0.01)
+
+    assert result.verdicts[0].op == "directed_op" and not result.verdicts[0].kept

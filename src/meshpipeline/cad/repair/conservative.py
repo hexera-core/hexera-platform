@@ -392,7 +392,8 @@ def _sew(shape, *, tolerance_mm: float):
 
 
 def repair_step_file(source: Path, destination: Path, *,
-                     profile: RepairProfile = RepairProfile.conservative) -> RepairReport:
+                     profile: RepairProfile = RepairProfile.conservative,
+                     directives: tuple[dict, ...] = ()) -> RepairReport:
     """Repair `source` into `destination`, or refuse. The input is never modified.
 
     Raises RepairUnavailable when repair is switched off or the kernel is missing, and
@@ -420,7 +421,13 @@ def repair_step_file(source: Path, destination: Path, *,
     tolerance = min(rcfg.CAD_REPAIR_MAX_TOLERANCE_MM,
                     max(original.diagonal_mm, 1.0) * rcfg.CAD_REPAIR_MAX_DEVIATION_RATIO)
 
-    result = run_loop(before_shape, tolerance_mm=tolerance)
+    planner = None
+    if directives:
+        from meshpipeline.cad.repair.directives import DirectedPlanner
+        from meshpipeline.cad.repair.plan import RulesPlanner
+
+        planner = DirectedPlanner(directives, RulesPlanner())
+    result = run_loop(before_shape, planner=planner, tolerance_mm=tolerance)
     final = measure(result.shape)
 
     measurements = {
