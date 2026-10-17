@@ -285,9 +285,13 @@ def direction(skin: Skin, sym: Symmetry) -> list[dict]:
                           f"it is {top}-fold symmetric about {AXES[hub]}, like blades round a hub: "
                           "the flow runs along that axis"))
     # a body in a flow is mirrored across its WIDTH (a car, an aircraft); a part mirrored across its
-    # own length (a connector, a fitting, a heat sink) says nothing about the flow that way
+    # own length (a connector, a fitting, a heat sink) says nothing about the flow that way - except
+    # a LIFTING SURFACE (thin against its plan): a whole wing is mirrored across its span, which is
+    # often its longest side
+    thin = int(np.argmin(size))
+    lifting = size[thin] <= THIN_BODY * sorted(size)[1]
     longest = int(np.argmax(size))
-    mirrors = [k for k in range(3) if sym.mirror[k] and k != longest]
+    mirrors = [k for k in range(3) if sym.mirror[k] and (k != longest or lifting)]
     if mirrors and not rev:
         said.append(_said("across", mirrors, CONF_MIRROR,
                           "it is mirror-symmetric across a plane square to " + " and ".join(AXES[k] for k in mirrors)
@@ -297,12 +301,9 @@ def direction(skin: Skin, sym: Symmetry) -> list[dict]:
         said.append(_said("across", bars[0], CONF_EXTRUSION,
                           f"a straight section along {AXES[bars[0]]}: the flow crosses it"))
     cut = _cut_faces(skin)
-    thin = int(np.argmin(size))
     flat_ends = [k for k in range(3) if max(cut[2 * k], cut[2 * k + 1]) >= CUT_FACE]
-    # a LIFTING SURFACE - a wing, a fin, a blade, thin against its plan - ends in flat root and tip
-    # sections on its span; the flow runs along them, across the span (a plate cut square on every
-    # edge says nothing)
-    lifting = size[thin] <= THIN_BODY * sorted(size)[1]
+    # a lifting surface - a wing, a fin, a blade - ends in flat root and tip sections on its span;
+    # the flow runs along them, across the span (a plate cut square on every edge says nothing)
     span = [k for k in flat_ends if k != thin]
     if lifting and len(span) == 1 and not sym.mirror[span[0]]:
         k = span[0]

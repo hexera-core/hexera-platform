@@ -161,6 +161,25 @@ def test_a_half_wing_flows_along_its_root_across_its_span():
     assert axis_from_reading(reading["direction"], "+z")[0] == "+x"  # the longest side would say +y
 
 
+def test_a_whole_wing_wider_than_long_flows_in_its_mirror_plane():
+    root = _airfoil(0.3, 0.12, 0.04)
+    tip = [(0.08 + 0.6 * x, 0.6 * z) for x, z in root]
+    half = _loft(root, tip, 1.0)
+    other = half.copy()
+    other[..., 1] *= -1.0
+    reading = fr.read_flow(np.concatenate([half, other[:, ::-1]]), _facts(flow="external", kind="solid-body"))
+    assert reading["symmetry"]["mirror"][1]                        # mirrored across its 2 m span, its longest side
+    assert axis_from_reading(reading["direction"], "+z")[0] == "+x"
+
+
+def test_a_part_mirrored_across_its_own_length_says_nothing_about_the_flow():
+    connector = np.asarray(_box_triangles((-0.02, -0.006, 0.0), (0.02, 0.006, 0.012)), dtype=float)
+    pin = np.asarray(_box_triangles((-0.001, 0.006, 0.002), (0.001, 0.009, 0.004)), dtype=float)
+    reading = fr.read_flow(np.concatenate([connector, pin]), _facts(flow="external", kind="solid-body"))
+    assert reading["symmetry"]["mirror"][0]
+    assert not any(d["rule"] == "across" and d["axes"] == ["x"] and "mirror" in d["reason"] for d in reading["direction"])
+
+
 def test_an_annulus_as_thick_as_a_blade_row_is_the_fluid_and_its_mouths_are_the_ring_faces():
     hole = [_mouth(1, (0, 0, 0), (-1, 0, 0), 240, kind="ring"), _mouth(2, (0.2, 0, 0), (1, 0, 0), 240, kind="ring", role="outlet")]
     facts = _facts(kind="body-surface", body="pipe_wall", openings=hole)
