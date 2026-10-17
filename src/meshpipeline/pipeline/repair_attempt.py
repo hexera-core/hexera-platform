@@ -91,27 +91,46 @@ def _declined(reason: str, *, route: str = "", detail: dict | None = None) -> di
     return {"repair_attempt": record}
 
 
-def _mint(*, report: dict, measured: dict, source: Path, survivors_path: Path | None) -> list[dict]:
-    """Review items for what the run left unsure. Never raises: a lost item is logged, not fatal.
+def _mint(*, report: dict, measured: dict, source: Path,
+          survivors_path: Path | None) -> dict:
+    """Review items for what the run left unsure, as the state keys to merge in. Never raises: a
+    lost item is logged, not fatal.
 
-    THE NODE MINTS, THE TERMINAL PATH PERSISTS - this touches no database.
+    THE NODE MINTS, THE TERMINAL PATH PERSISTS - this touches no database. Empty when review is off.
     """
     if not rcfg.CAD_REPAIR_REVIEW_ENABLED:
-        return []
+        return {"repair_review_candidates": []}
     try:
-        from meshpipeline.application.repair_review_minting import mint_items
+        from meshpipeline.application.repair_review_minting import mint_with_overflow
         from meshpipeline.cad.repair.brep import _read_shape
         from meshpipeline.cad.repair.triage import split
 
-        parts = split(report)
-        try:
-            shape = _read_shape(survivors_path or source)
-        except Exception:  # noqa: BLE001 - the camera falls back to a default without a shape
-            shape = None
-        return mint_items(shape=shape, report=report, repair_run_measured=measured, split=parts)
+        def _shape(path: Path):
+            try:
+                return _read_shape(path)
+            except Exception:  # noqa: BLE001 - the camera falls back to a default without a shape
+                return None
+
+        original = _shape(source)
+        shape = _shape(survivors_path) if survivors_path else original
+        items, dropped = mint_with_overflow(
+            shape=shape, report=report, repair_run_measured=measured, split=split(report),
+            original_shape=original)
     except Exception:  # noqa: BLE001
         logger.warning("node_repair_attempt: review items could not be minted", exc_info=True)
-        return []
+        return {"repair_review_candidates": []}
+    out: dict = {"repair_review_candidates": items}
+    if dropped:
+        out["repair_review_truncated"] = dropped
+    return out
+
+
+async def _triage_only(report: dict, source: Path) -> dict:
+    """Items for what a person decides, when the run stays on the original and the repair's
+    survivors describe a file nobody will mesh (or nothing was repaired at all)."""
+    import asyncio
+    return await asyncio.to_thread(_mint, report=report, measured={"survivors": []},
+                                   source=source, survivors_path=None)
 
 
 async def node_repair_attempt(state: PipelineState) -> dict:
@@ -171,11 +190,11 @@ async def node_repair_attempt(state: PipelineState) -> dict:
         logger.warning("node_repair_attempt: the repair exceeded %.1fs - continuing on the "
                        "original - job_id=%s", rcfg.CAD_REPAIR_TIMEOUT_S, job_id)
         return {**_declined(f"the repair exceeded {rcfg.CAD_REPAIR_TIMEOUT_S:.0f}s",
-                            route=advice.route), "repair_review_candidates": []}
+                            route=advice.route), **await _triage_only(report, source)}
     except RepairUnavailable as exc:
         # OUR limitation, never a verdict on the file.
         return {**_declined(f"the repair could not run here: {exc}", route=advice.route),
-                "repair_review_candidates": []}
+                **await _triage_only(report, source)}
     except RepairRefused as exc:
         # The kernel produced something and the caps declined it. The customer's file is unharmed
         # and this is the evidence an operator needs to decide what to do instead.
@@ -197,17 +216,17 @@ async def node_repair_attempt(state: PipelineState) -> dict:
                 "measurements": dict(exc.measurements)})
         except Exception:  # noqa: BLE001 - the corpus is never load-bearing for a run
             pass
-        candidates = await asyncio.to_thread(
+        minted = await asyncio.to_thread(
             _mint, report=report, measured=dict(exc.measurements), source=source,
             survivors_path=None)
         return {**_declined(f"the repair was refused: {exc}", route=advice.route,
                             detail={"measurements": exc.measurements}),
-                "repair_review_candidates": candidates}
+                **minted}
     except Exception as exc:  # noqa: BLE001 - a repair that breaks is never the file's fault
         logger.warning("node_repair_attempt: the repair failed (%s) - continuing on the original "
                        "- job_id=%s", type(exc).__name__, job_id)
         return {**_declined(f"the repair failed: {type(exc).__name__}", route=advice.route),
-                "repair_review_candidates": []}
+                **await _triage_only(report, source)}
 
     from meshpipeline.pipeline.repair_promote import PromotionRefused, promote
     try:
@@ -224,16 +243,14 @@ async def node_repair_attempt(state: PipelineState) -> dict:
                     "- job_id=%s", exc, job_id)
         # THE RUN STAYS ON THE ORIGINAL, so only what a person decides is minted: the repair's
         # survivors describe a file nobody will mesh.
-        triage_only = await asyncio.to_thread(
-            _mint, report=report, measured={"survivors": []}, source=source, survivors_path=None)
         return {**_declined(f"the repaired geometry was not promoted: {exc}", route=advice.route),
-                "repair_review_candidates": triage_only}
+                **await _triage_only(report, source)}
     except Exception as exc:  # noqa: BLE001
         logger.warning("node_repair_attempt: the repaired file could not be adopted (%s: %s) - "
                        "continuing on the original - job_id=%s", type(exc).__name__, exc, job_id)
         return {**_declined(f"the repaired file could not be adopted: {type(exc).__name__}",
                             route=advice.route),
-                "repair_review_candidates": []}
+                **await _triage_only(report, source)}
 
     measured = {m.name: m.value for m in repair_report.measurements}
     attempted = [dict(op) for op in repair_report.operations]
@@ -258,7 +275,7 @@ async def node_repair_attempt(state: PipelineState) -> dict:
     except Exception:  # noqa: BLE001 - the corpus is never load-bearing for a run
         pass
 
-    candidates = await asyncio.to_thread(
+    minted = await asyncio.to_thread(
         _mint, report=report,
         measured={**measured, "operations": attempted,
                   "survivors": [dict(e) for e in repair_report.entities]},
@@ -269,7 +286,7 @@ async def node_repair_attempt(state: PipelineState) -> dict:
     # own verdict produced a pairing that read "repaired" next to the original defect list.
     return {
         **update,
-        "repair_review_candidates": candidates,
+        **minted,
         "repair_attempt": {
             "attempted": True,
             # NOT A STATEMENT THAT THE RUN SUCCEEDED. `status_for` (cad/repair/conservative.py)

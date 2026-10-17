@@ -85,7 +85,7 @@ def test_with_review_off_a_small_face_still_sends_the_whole_part_to_manual_clean
 def test_with_review_on_repairables_run_and_judgement_defects_mint(tmp_path, monkeypatch):
     monkeypatch.setattr(rcfg, "CAD_REPAIR_REVIEW_ENABLED", True)
     calls = _scripted(monkeypatch, _report(
-        operations=(_op("sew_faces", "kept", "open_shell", "edge:eb"),),
+        operations=(_op("sew_faces", "kept", "open_shell", "eb"),),
         entities=(_entity("small_face", "warning", "face", 3, "fa"),),
         stopped_because="no_candidate", resolved=False, refusals=[], planner="rules-v1",
         operations_attempted=1, operations_kept=1))
@@ -113,7 +113,7 @@ def test_review_on_with_judgement_only_does_not_decline_and_still_mints(tmp_path
 
 def test_a_stalled_run_mints_every_survivor_with_what_was_tried(tmp_path, monkeypatch):
     monkeypatch.setattr(rcfg, "CAD_REPAIR_REVIEW_ENABLED", True)
-    tried = _op("sew_faces", "rolled_back", "open_shell", "edge:eb")
+    tried = _op("sew_faces", "rolled_back", "open_shell", "eb")
     _scripted(monkeypatch, raises=RepairRefused(
         "nothing was kept", measurements={
             "operations": [tried], "stopped_because": "stalled", "refusals": [],
@@ -135,7 +135,7 @@ def test_paired_rim_refusals_mint_with_a_pairing_key(tmp_path, monkeypatch):
     refusals = [{"defect": "r1", "reason": "paired_rim", "detail": "tube"},
                 {"defect": "r2", "reason": "paired_rim", "detail": "tube"}]
     _scripted(monkeypatch, _report(
-        operations=(_op("sew_faces", "kept", "open_shell", "edge:zz"),),
+        operations=(_op("sew_faces", "kept", "open_shell", "zz"),),
         entities=(rim_a, rim_b), stopped_because="no_candidate", resolved=False,
         refusals=refusals, planner="rules-v1", operations_attempted=1, operations_kept=1))
     out = _run(_state(tmp_path, rim_a, rim_b, _entity("wire_gap", "error", "edge", 9, "zz")))
@@ -149,10 +149,39 @@ def test_paired_rim_refusals_mint_with_a_pairing_key(tmp_path, monkeypatch):
 def test_review_off_mints_nothing_even_when_a_run_leaves_survivors(tmp_path, monkeypatch):
     monkeypatch.setattr(rcfg, "CAD_REPAIR_REVIEW_ENABLED", False)
     _scripted(monkeypatch, _report(
-        operations=(_op("sew_faces", "kept", "open_shell", "edge:eb"),),
+        operations=(_op("sew_faces", "kept", "open_shell", "eb"),),
         entities=(_entity("wire_gap", "error", "edge", 9, "ec"),),
         stopped_because="stalled", resolved=False, refusals=[], planner="rules-v1",
         operations_attempted=2, operations_kept=1))
     out = _run(_state(tmp_path, _entity("open_shell", "error", "edge", 8, "eb"),
                       _entity("wire_gap", "error", "edge", 9, "ec")))
     assert out["repair_review_candidates"] == []
+
+
+@pytest.mark.parametrize("failure", [TimeoutError(), RuntimeError("boom")])
+def test_a_timeout_or_crash_still_mints_what_a_person_decides(tmp_path, monkeypatch, failure):
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_REVIEW_ENABLED", True)
+    _scripted(monkeypatch, raises=failure)
+    out = _run(_small_and_open(tmp_path))
+    assert out["repair_attempt"]["attempted"] is False
+    assert [(i["defect_code"], i["origin"]) for i in out["repair_review_candidates"]] == [
+        ("small_face", "triage")]
+
+
+def test_a_repair_that_cannot_run_still_mints_triage_items(tmp_path, monkeypatch):
+    from meshpipeline.cad.repair.conservative import RepairUnavailable
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_REVIEW_ENABLED", True)
+    _scripted(monkeypatch, raises=RepairUnavailable("no kernel"))
+    out = _run(_small_and_open(tmp_path))
+    assert [i["origin"] for i in out["repair_review_candidates"]] == ["triage"]
+
+
+def test_the_node_reports_truncation_beside_the_candidates(tmp_path, monkeypatch):
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_REVIEW_ENABLED", True)
+    entities = [_entity("wire_gap", "error", "edge", i, f"w{i}") for i in range(1, 502)]
+    _scripted(monkeypatch, raises=RepairRefused(
+        "nothing was kept", measurements={"operations": [], "stopped_because": "no_candidate",
+                                          "refusals": [], "operations_kept": 0}))
+    out = _run(_state(tmp_path, *entities))
+    assert len(out["repair_review_candidates"]) == 500
+    assert out["repair_review_truncated"] == 1

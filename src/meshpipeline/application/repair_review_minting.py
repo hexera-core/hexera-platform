@@ -21,21 +21,30 @@ ORIGIN_REFUSAL = "refusal"
 ORIGIN_SURVIVOR = "survivor"
 _STALLED = "stalled"
 
+#: The most items one park may mint. A part with thousands of sliver faces would otherwise flood
+#: the review queue; the dropped count travels beside the candidates so nothing is silent.
+MINT_CAP = 500
+
 
 def _key(defect: EntityDefect) -> str:
     return defect.fingerprint or f"{defect.entity_type}:{defect.entity_index}:{defect.code.value}"
 
 
 def _tried(defect: EntityDefect, operations) -> list[str]:
+    """Operations aimed at THIS defect: by fingerprint when the op names its targets, by code only
+    for an op that names none (so two same-code defects are never credited with each other's work)."""
     names: list[str] = []
     for op in operations or ():
-        if not isinstance(op, dict):
+        if not isinstance(op, dict) or not op.get("name"):
             continue
-        hit = (op.get("defect_code") == defect.code.value
-               or (defect.fingerprint and any(str(t).endswith(defect.fingerprint)
-                                              or t == defect.fingerprint
-                                              for t in op.get("targets") or ())))
-        if hit and op.get("name") and op["name"] not in names:
+        targets = [str(t) for t in op.get("targets") or ()]
+        if op.get("defect"):
+            targets.append(str(op["defect"]))
+        if targets:
+            hit = bool(defect.fingerprint) and defect.fingerprint in targets
+        else:
+            hit = op.get("defect_code") == defect.code.value
+        if hit and op["name"] not in names:
             names.append(str(op["name"]))
     return names
 
@@ -59,7 +68,7 @@ def _proposal(shape, defect: EntityDefect, tried: list[str]) -> dict | None:
 
 
 def _item(shape, defect: EntityDefect, *, origin: str, message: str = "", extra: dict | None = None,
-          tried: list[str] | None = None, pairing_key: str = "") -> dict:
+          tried: list[str] | None = None, pairing_key: str = "", camera_shape=None) -> dict:
     tried = tried or []
     proposal = _proposal(shape, defect, tried)
     op = proposal["op"] if proposal else None
@@ -79,17 +88,99 @@ def _item(shape, defect: EntityDefect, *, origin: str, message: str = "", extra:
         "origin": origin,
         "pairing_key": pairing_key,
         "proposal": proposal,
-        "camera": camera_for(shape, defect),
+        "camera": camera_for(shape if camera_shape is None else camera_shape, defect),
     }
 
 
-def mint_items(*, shape, report, repair_run_measured: dict, split: DefectSplit) -> list[dict]:
-    """One item per defect the run left for a person.
+def _measure(item: dict) -> float:
+    values = [abs(float(v)) for v in (item.get("measurements") or {}).values()
+              if isinstance(v, (int, float)) and not isinstance(v, bool)]
+    return max(values, default=0.0)
+
+
+def _cap(items: list[dict]) -> tuple[list[dict], int]:
+    """Keep MINT_CAP items: largest measurement first within each group, groups interleaved so a
+    flood in one group cannot crowd the rest out."""
+    if len(items) <= MINT_CAP:
+        return items, 0
+    groups: dict[str, list[dict]] = {}
+    for item in items:
+        groups.setdefault(item["group_key"], []).append(item)
+    ranked: list[tuple[int, int, dict]] = []
+    for order, members in enumerate(groups.values()):
+        for rank, item in enumerate(sorted(members, key=lambda i: -_measure(i))):
+            ranked.append((rank, order, item))
+    ranked.sort(key=lambda r: (r[0], r[1]))
+    kept = [item for _, _, item in ranked[:MINT_CAP]]
+    return kept, len(items) - len(kept)
+
+
+def _pairing_keys(shape, rims: list[EntityDefect]) -> dict[str, str]:
+    """`{rim fingerprint: key}`, one key per PAIR of rims (the two ends of one missing tube).
+
+    The planner's refusal names only its own rim, so the partner is recovered geometrically with the
+    same discriminator the planner used. When that cannot be answered (no shape, unresolvable wire)
+    every refused rim shares one key - coarser, never lost.
+    """
+    fingerprints = sorted(r.fingerprint for r in rims if r.fingerprint)
+    everyone = {f: _digest(fingerprints) for f in fingerprints}
+    if shape is None or len(rims) < 2:
+        return everyone
+    try:
+        from meshpipeline.cad.repair.conservative import _paired_rims
+        from meshpipeline.cad.repair.operations import free_wire_containing
+
+        wires = [(r.fingerprint, free_wire_containing(shape, int(r.entity_index))) for r in rims
+                 if r.fingerprint]
+        if any(w is None for _, w in wires):
+            return everyone
+        parent = {f: f for f, _ in wires}
+
+        def find(x: str) -> str:
+            while parent[x] != x:
+                x = parent[x]
+            return x
+
+        for i, (fa, wa) in enumerate(wires):
+            for fb, wb in wires[i + 1:]:
+                if _paired_rims([wa, wb]):
+                    parent[find(fa)] = find(fb)
+        members: dict[str, list[str]] = {}
+        for f, _ in wires:
+            members.setdefault(find(f), []).append(f)
+        return {f: _digest(sorted(group)) for group in members.values() for f in group}
+    except Exception:  # noqa: BLE001 - an unanswerable pairing falls back to the coarse key
+        return everyone
+
+
+def _digest(fingerprints: list[str]) -> str:
+    key = ",".join(fingerprints)
+    if len(key) <= 120:
+        return key
+    import hashlib
+    return "pair:" + hashlib.sha1(key.encode()).hexdigest()  # noqa: S324 - an id, not security
+
+
+def mint_items(*, shape, report, repair_run_measured: dict, split: DefectSplit,
+               original_shape=None) -> list[dict]:
+    """The items only; see `mint_with_overflow` for the dropped count."""
+    return mint_with_overflow(shape=shape, report=report, repair_run_measured=repair_run_measured,
+                              split=split, original_shape=original_shape)[0]
+
+
+def mint_with_overflow(*, shape, report, repair_run_measured: dict, split: DefectSplit,
+                       original_shape=None) -> tuple[list[dict], int]:
+    """`(items, dropped)`: one item per defect the run left for a person, capped at MINT_CAP.
 
     `repair_run_measured` is the loop's measurements (`stopped_because`, `operations`,
     `refusals`, `operations_kept`) plus, for a kept run, `survivors`: the entity dicts still
-    present after the repair. Without `survivors` nothing changed, so the pool is the original
-    repairable defects. A defect is minted once, by the first source that claims it.
+    present after the repair, indexed against `shape` (the repaired shape). Without `survivors`
+    nothing changed, so `shape` is the original and the pool is the original repairable defects.
+    A defect is minted once, by the first source that claims it.
+
+    A judgement defect on a kept run is RE-LOCATED by fingerprint on the survivors, because the
+    repair renumbers entities and the original index would frame the wrong one; with no fingerprint
+    match its camera is computed on `original_shape`, where its index is still true.
     """
     measured = dict(repair_run_measured or {})
     operations = [dict(o) for o in measured.get("operations") or () if isinstance(o, dict)]
@@ -98,9 +189,13 @@ def mint_items(*, shape, report, repair_run_measured: dict, split: DefectSplit) 
     kept = int(measured.get("operations_kept", 0) or 0)
     judgement_codes = {d.code for d, _ in split.judgement}
 
+    relocated: dict[str, EntityDefect] = {}
     if "survivors" in measured:
         found = [defect_from_entity(e) for e in measured["survivors"] or ()]
-        pool = [d for d in found if d is not None and d.code not in judgement_codes]
+        scanned = [d for d in found if d is not None]
+        pool = [d for d in scanned if d.code not in judgement_codes]
+        relocated = {d.fingerprint: d for d in scanned
+                     if d.code in judgement_codes and d.fingerprint}
     else:
         pool = list(split.repairable)
 
@@ -109,12 +204,19 @@ def mint_items(*, shape, report, repair_run_measured: dict, split: DefectSplit) 
 
     for defect, reason in split.judgement:
         seen.add(_key(defect))
-        items.append(_item(shape, defect, origin=ORIGIN_TRIAGE, message=reason))
+        again = relocated.get(defect.fingerprint) if defect.fingerprint else None
+        if again is not None:
+            items.append(_item(shape, again, origin=ORIGIN_TRIAGE, message=reason))
+        elif "survivors" in measured and original_shape is not None:
+            items.append(_item(shape, defect, origin=ORIGIN_TRIAGE, message=reason,
+                               camera_shape=original_shape))
+        else:
+            items.append(_item(shape, defect, origin=ORIGIN_TRIAGE, message=reason))
 
-    rims = sorted({str(r["defect"]) for r in refusals if r.get("reason") == "paired_rim"
-                   and r.get("defect")})
-    pairing = ",".join(rims)
     by_fingerprint = {d.fingerprint: d for d in pool if d.fingerprint}
+    paired = [by_fingerprint[str(r["defect"])] for r in refusals
+              if r.get("reason") == "paired_rim" and str(r.get("defect", "")) in by_fingerprint]
+    pairing = _pairing_keys(shape, paired) if paired else {}
     for refusal in refusals:
         refused = by_fingerprint.get(str(refusal.get("defect", "")))
         if refused is None or _key(refused) in seen:
@@ -126,7 +228,8 @@ def mint_items(*, shape, report, repair_run_measured: dict, split: DefectSplit) 
             extra["refusal_detail"] = refusal["detail"]
         items.append(_item(shape, refused, origin=ORIGIN_REFUSAL, extra=extra,
                            tried=_tried(refused, operations),
-                           pairing_key=pairing if reason == "paired_rim" else ""))
+                           pairing_key=pairing.get(refused.fingerprint, "")
+                           if reason == "paired_rim" else ""))
 
     stalled = stopped == _STALLED or (kept == 0 and bool(operations))
     for defect in pool:
@@ -136,4 +239,4 @@ def mint_items(*, shape, report, repair_run_measured: dict, split: DefectSplit) 
         items.append(_item(shape, defect, origin=ORIGIN_STALL if stalled else ORIGIN_SURVIVOR,
                            extra={"stopped_because": stopped} if stopped else None,
                            tried=_tried(defect, operations)))
-    return items
+    return _cap(items)
