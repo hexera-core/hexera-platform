@@ -9,7 +9,7 @@ from meshpipeline.cad.repair.contracts import DefectCode, DefectSeverity
 from meshpipeline.cad.repair.directives import DirectedPlanner
 from meshpipeline.cad.repair.identity import EntityRef
 from meshpipeline.cad.repair.localize import EntityDefect
-from meshpipeline.cad.repair.loop import run
+from meshpipeline.cad.repair.loop import LoopBudget, run
 from meshpipeline.cad.repair.operations import OpOutcome
 from meshpipeline.cad.repair.plan import Candidate
 from meshpipeline.cad.repair.session import RepairSession
@@ -106,8 +106,8 @@ def test_an_unplayable_directive_is_recorded_not_skipped_silently():
     result = run(None, planner=planner, session=_session([((_defect(),), True), ((), True)]),
                  tolerance_mm=0.01)
 
-    played = [r for r in result.refusals if r.get("refusal") == "directive_unplayable"]
-    assert {(r["directive"]["item_id"], r["reason"]) for r in played} == {
+    unplayable = [r for r in result.refusals if r.get("refusal") == "directive_unplayable"]
+    assert {(r["directive"]["item_id"], r["reason"]) for r in unplayable} == {
         ("gone", "target_absent"), ("odd", "unknown_op")}
     assert directed.calls == 0
     assert [v.op for v in result.verdicts] == ["rules_op"]
@@ -151,3 +151,46 @@ def test_a_directive_is_not_a_cap_waiver_a_worsening_directive_is_rolled_back():
                  tolerance_mm=0.01)
 
     assert result.verdicts[0].op == "directed_op" and not result.verdicts[0].kept
+
+
+def test_a_directive_left_queued_by_an_exhausted_budget_is_reported_not_reached():
+    directed, rules = _Op("directed_op"), _Op("rules_op")
+    planner = DirectedPlanner([_directive(item_id="a"), _directive(item_id="b")],
+                              _Fallback(rules), ops=(directed, rules))
+
+    result = run(None, planner=planner, session=_session([((_defect(),), True), ((_defect(),), True)]),
+                 budget=LoopBudget(max_ops=1, stall_limit=99, timeout_s=120.0), tolerance_mm=0.01)
+
+    left = [r for r in result.refusals if r.get("reason") == "not_reached"]
+    assert [r["directive"]["item_id"] for r in left] == ["b"]
+    assert left[0]["refusal"] == "directive_unplayable"
+
+
+def test_directives_are_reported_not_reached_when_the_first_scan_is_incomplete():
+    directed, rules = _Op("directed_op"), _Op("rules_op")
+    planner = DirectedPlanner([_directive(item_id="a")], _Fallback(rules), ops=(directed, rules))
+
+    result = run(None, planner=planner, session=_session([((), False)]), tolerance_mm=0.01)
+
+    assert [r["directive"]["item_id"] for r in result.refusals
+            if r.get("reason") == "not_reached"] == ["a"]
+
+
+def test_a_malformed_defect_code_is_reported_malformed():
+    directed, rules = _Op("directed_op"), _Op("rules_op")
+    bad = {**_directive(item_id="m"), "defect_code": "not_a_code"}
+    planner = DirectedPlanner([bad], _Fallback(rules), ops=(directed, rules))
+
+    planner.propose((_defect(),), __import__("meshpipeline").cad.repair.plan.RunHistory(),
+                    shape=None)
+
+    assert [u["reason"] for u in planner.unplayable] == ["malformed"]
+
+
+def test_a_bare_string_target_is_one_fingerprint_not_its_characters():
+    directed, rules = _Op("directed_op"), _Op("rules_op")
+    d = {**_directive(), "targets": "edge:a"}
+    candidate = DirectedPlanner([d], _Fallback(rules), ops=(directed, rules)).propose(
+        (_defect(),), __import__("meshpipeline").cad.repair.plan.RunHistory(), shape=None)
+
+    assert [t.fingerprint for t in candidate.targets] == ["edge:a"]

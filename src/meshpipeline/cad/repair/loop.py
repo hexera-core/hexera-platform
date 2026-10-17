@@ -115,6 +115,12 @@ def _terminal(session: RepairSession, fallback: str) -> str:
     return fallback
 
 
+def _unreached(chosen) -> list[dict]:
+    """Directives still queued when the run ended: reported, never silently dropped."""
+    return [{"refusal": "directive_unplayable", "reason": "not_reached", "directive": d}
+            for d in getattr(chosen, "pending", ())]
+
+
 def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: float,
         session: RepairSession | None = None, clock=time.monotonic) -> RepairRun:
     """Repair `shape` by trying one operation at a time, and report everything that happened.
@@ -145,6 +151,7 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
     if not work.complete_scan:
         # A SHORT LIST FROM A STOPPED WALK IS NOT AN ABSENCE OF DEFECTS. Reporting it as resolved
         # is how a repairable defect gets delivered as a clean bill of health.
+        history.refusals.extend(_unreached(chosen))
         return RepairRun(shape=work.shape, verdicts=(), refusals=tuple(history.refusals),
                          defects=work.defects(), stopped_because=SCAN_INCOMPLETE,
                          complete_scan=False, planner_label=getattr(chosen, "label", ""),
@@ -189,6 +196,7 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
     # DIRECTIVES THAT COULD NOT BE PLAYED reach the report; none is dropped silently.
     for skipped in getattr(chosen, "unplayable", ()):
         history.refusals.append({"refusal": "directive_unplayable", **skipped})
+    history.refusals.extend(_unreached(chosen))
 
     logger.info("repair loop: stopped=%s attempts=%d kept=%d planner=%s",
                 stopped, len(work.log), sum(1 for v in work.log if v.kept),

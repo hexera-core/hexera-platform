@@ -31,6 +31,11 @@ class DirectedPlanner:
         #: Directive + reason for every directive that was skipped. Nothing is dropped silently.
         self.unplayable: list[dict] = []
 
+    @property
+    def pending(self) -> tuple[dict, ...]:
+        """Directives not yet consumed. A run that stops early leaves some here."""
+        return tuple(dict(d) for d in self._pending)
+
     def _skip(self, directive: dict, reason: str) -> None:
         self.unplayable.append({"directive": directive, "reason": reason})
 
@@ -55,7 +60,10 @@ class DirectedPlanner:
 
         by_fingerprint = {d.fingerprint: d for d in defects if d.fingerprint}
         refs = []
-        for fingerprint in directive.get("targets") or ():
+        raw = directive.get("targets") or ()
+        if isinstance(raw, str):
+            raw = (raw,)
+        for fingerprint in raw:
             defect = by_fingerprint.get(fingerprint)
             if defect is not None:
                 refs.append(EntityRef(entity_type=defect.entity_type, fingerprint=fingerprint,
@@ -64,16 +72,14 @@ class DirectedPlanner:
             self._skip(directive, TARGET_ABSENT)
             return None
 
-        if op.name == FillPlanarHole.name:
-            # THE SEALED-THROUGH-HOLE GUARD LIVES IN THE PLANNER, so a directive may not walk
-            # around it: an engineer approving one rim must not seal the bore.
+        if op.name == FillPlanarHole.name and directive.get("source") != "engineer":
+            # A REPLAYED FILL ON A PAIRED RIM IS CORRUPT STATE: the autonomous pass could never
+            # have kept one. An ENGINEER's approval may override the planner's refusal - a human
+            # looking at the hole is the authority the guard lacks - and the caps still judge it.
+            # Read-only: a skipped directive must not touch the sticky history (refuse_filling,
+            # paired_rim entries), or it would block the rules planner's later fills.
             rims = paired_rim_fingerprints(shape, defects) if shape is not None else frozenset()
-            for rim in sorted(rims):
-                history.refuse(rim, "paired_rim",
-                               "this loop pairs with another on a parallel plane - a missing "
-                               "tube wall, and patching both would seal a through-hole")
-                history.refuse_filling("a missing tube wall was detected: " + rim)
-            if history.fill_refused_because:
+            if history.fill_refused_because or any(r.fingerprint in rims for r in refs):
                 self._skip(directive, FILL_REFUSED)
                 return None
 

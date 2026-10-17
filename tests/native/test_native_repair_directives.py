@@ -42,3 +42,49 @@ def test_replayed_sew_then_rules_leaves_nothing_behind(tmp_path):
     assert measured["planner"] == "directed-v1"
     assert measured["operations_kept"] >= 1
     assert len(directed.entities) == len(plain.entities)
+
+
+def _paired_rim_case(tmp_path):
+    from tests.cad_fixtures import write_missing_bore_wall_step
+
+    from meshpipeline.cad.repair.brep import _read_shape
+    from meshpipeline.cad.repair.localize import localize_scan
+    from meshpipeline.cad.repair.plan import RunHistory, paired_rim_fingerprints
+
+    shape = _read_shape(write_missing_bore_wall_step(tmp_path / "bore.step"))
+    defects, _ = localize_scan(shape)
+    rims = sorted(paired_rim_fingerprints(shape, defects))
+    assert len(rims) >= 2
+    return shape, defects, rims, RunHistory()
+
+
+def _fill(rim, source):
+    return {"op": "fill_planar_hole", "targets": [rim], "defect_code": "open_shell",
+            "defect_fingerprint": rim, "source": source, "item_id": "x"}
+
+
+def test_an_engineer_fill_on_a_paired_rim_is_proposed(monkeypatch, tmp_path):
+    from meshpipeline.cad.repair.directives import DirectedPlanner
+    from meshpipeline.cad.repair.plan import RulesPlanner
+
+    shape, defects, rims, history = _paired_rim_case(tmp_path)
+    candidate = DirectedPlanner([_fill(rims[0], "engineer")], RulesPlanner()).propose(
+        defects, history, shape=shape)
+
+    assert candidate is not None and candidate.op.name == "fill_planar_hole"
+    assert candidate.defect_fingerprint == rims[0]
+
+
+def test_a_replay_fill_on_a_paired_rim_is_skipped_and_history_is_untouched(tmp_path):
+    from meshpipeline.cad.repair.directives import DirectedPlanner
+
+    class _Nothing:
+        def propose(self, *a, **k):
+            return None
+
+    shape, defects, rims, history = _paired_rim_case(tmp_path)
+    planner = DirectedPlanner([_fill(rims[0], "replay")], _Nothing())
+    assert planner.propose(defects, history, shape=shape) is None
+
+    assert [u["reason"] for u in planner.unplayable] == ["fill_refused"]
+    assert history.fill_refused_because == "" and history.refusals == []
