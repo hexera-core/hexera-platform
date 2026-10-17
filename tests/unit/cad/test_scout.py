@@ -106,7 +106,9 @@ def test_the_point_inside_the_flow_is_in_the_fluid_and_out_of_the_metal(tmp_path
 def test_a_box_is_a_body_in_a_flow_with_no_openings(tmp_path):
     r = _scout(_write(BRepPrimAPI_MakeBox(100.0, 50.0, 30.0).Shape(), tmp_path / "box.step"))
     assert (r.input_kind, r.flow) == ("solid-body", "external")
-    assert r.openings == [] and r.seed_point is None
+    # nothing proposed - no point inside a flow is sought - but its flat ends are kept, so a user who
+    # says the fluid flows through it after all has openings to confirm
+    assert r.seed_point is None and all(o.kind == "disc" for o in r.openings)
     assert any("solid body" in n for n in r.notes)
 
 
@@ -293,7 +295,8 @@ def test_an_elliptical_extrusion_is_a_body_not_a_fluid_passage(tmp_path):
     wing = BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(wire).Face(), gp_Vec(0, 400, 0)).Shape()
     r = _scout(_write(wing, tmp_path / "wing.step"))
     assert (r.input_kind, r.flow) == ("solid-body", "external")
-    assert r.openings == []
+    # its two flat ends are what it would open at if the fluid flowed through it: kept, not proposed
+    assert r.seed_point is None and len(r.openings) == 2
 
 
 def test_a_rectangular_fluid_elbow_keeps_its_two_mouths_and_drops_its_side_walls(tmp_path):
@@ -375,7 +378,7 @@ def test_small_open_tubes_on_a_body_do_not_make_it_a_pipe_wall(tmp_path):
     solids: tubes on a body, not the ends of a passage. Read as a body in a flow, with a note."""
     body = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 200.0, 100.0, 60.0).Shape()
     r = _scout(_write(_compound(body, _small_tube(25.0), _small_tube(75.0)), tmp_path / "car.step"))
-    assert r.flow == "external" and r.openings == []
+    assert r.flow == "external" and r.seed_point is None
     assert any("small open tubes" in n for n in r.notes)
 
 
@@ -452,4 +455,5 @@ def test_flats_on_a_thin_skin_are_not_the_mouths_of_a_fluid_body(tmp_path):
         part = BRepAlgoAPI_Fuse(part, pad).Shape()
     r = _scout(_write(part, tmp_path / "skin.step"))
     assert r.input_kind != "fluid-domain"
+    # the pads have the skin's half millimetre behind them: not even kept as openings for a flip
     assert r.flow == "external" and r.openings == []
