@@ -523,10 +523,26 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3, shape=None,
         pool = rings or discs
         confidence_kind = 0.75
     elif not solids:
-        body_kind, input_kind, flow = "surface", "body-surface", "internal"
-        pool = discs
-        confidence_kind = 0.4
-        notes.append("the file holds surfaces, not a closed solid; the openings are read from its flat faces")
+        # LOOSE SURFACES say nothing of their own about what they enclose, so the SET is read: flats
+        # that cover the part's whole box close that box, and a closed box is a body's skin, not a
+        # passage with six mouths - the same flat-share reading the closed-solid branch makes below.
+        # The kernel's volume is not consulted here, however tempting: with no solid it is a
+        # divergence integral over open surfaces, and it returns a figure for a shape that encloses
+        # nothing (the 10 mm box of six loose faces reports about 800 mm3 off zero solids), so it
+        # cannot tell a closed set from an open one.
+        box_skin = 2.0 * (sx * sy + sy * sz + sz * sx) or 1.0
+        flat_share = sum(o.area for o in candidates) / box_skin
+        if flat_share >= FINNED_FLAT_SHARE:
+            body_kind, input_kind, flow = "surface", "solid-body", "external"
+            pool = []
+            confidence_kind = 0.6
+            notes.append(f"flat faces cover {100 * flat_share:.0f}% of the part's box, so the surfaces in the "
+                         "file close a box and read as the skin of a body in a flow, not an open passage")
+        else:
+            body_kind, input_kind, flow = "surface", "body-surface", "internal"
+            pool = discs
+            confidence_kind = 0.4
+            notes.append("the file holds surfaces, not a closed solid; the openings are read from its flat faces")
     else:
         # A closed single solid is EITHER a fluid body (its mouths are the flat ends of a swept
         # passage) or a solid body in a flow (a car, a hub, a wing). Geometry alone cannot always
