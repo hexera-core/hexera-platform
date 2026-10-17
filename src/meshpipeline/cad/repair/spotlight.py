@@ -9,6 +9,10 @@ from __future__ import annotations
 
 import logging
 import math
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from meshpipeline.cad.repair.localize import EntityDefect
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +21,7 @@ _FALLBACK_EXTENT_FRACTION = 1.0 / 20.0
 _DEFAULT_NORMAL = [0.0, 0.0, 1.0]
 
 
-def camera_for(shape, defect) -> dict:
+def camera_for(shape, defect: EntityDefect) -> dict:
     """`{"centroid_mm": [x,y,z], "normal": [x,y,z] (unit), "extent_mm": float}` for one defect."""
     try:
         return _camera(shape, defect)
@@ -61,7 +65,7 @@ def _unit(v) -> list[float] | None:
     return [c / length for c in v]
 
 
-def _camera(shape, defect) -> dict:
+def _camera(shape, defect: EntityDefect) -> dict:
     from meshpipeline.cad.repair.operations import box_of, sub_shape
 
     centre, diagonal = _part_bounds(shape)
@@ -72,14 +76,14 @@ def _camera(shape, defect) -> dict:
 
     centroid = [float(c) for c in box["centroid"]]
     span = math.dist(box["bbox_min"], box["bbox_max"])
-    normal = _face_normal(shape, defect.entity_type, sub)
+    normal = _face_normal(shape, defect.entity_type, sub, centroid)
     if normal is None:
         normal = _unit([c - m for c, m in zip(centroid, centre, strict=True)])
     return {"centroid_mm": centroid, "normal": normal or list(_DEFAULT_NORMAL),
             "extent_mm": _extent(span, diagonal)}
 
 
-def _face_normal(shape, entity_type: str, sub) -> list[float] | None:
+def _face_normal(shape, entity_type: str, sub, near: list[float]) -> list[float] | None:
     """The outward normal of the entity's own face, or of the first face that carries it."""
     from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
     from OCP.TopExp import TopExp, TopExp_Explorer
@@ -87,12 +91,12 @@ def _face_normal(shape, entity_type: str, sub) -> list[float] | None:
     from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
 
     if entity_type == "face":
-        return _normal_of_face(TopoDS.Face_s(sub))
+        return _normal_of_face(TopoDS.Face_s(sub), near)
 
     parent = sub
     if entity_type == "shell":
         explorer = TopExp_Explorer(sub, TopAbs_FACE)
-        return _normal_of_face(TopoDS.Face_s(explorer.Current())) if explorer.More() else None
+        return _normal_of_face(TopoDS.Face_s(explorer.Current()), near) if explorer.More() else None
     if entity_type == "wire":
         explorer = TopExp_Explorer(sub, TopAbs_EDGE)
         if not explorer.More():
@@ -103,20 +107,35 @@ def _face_normal(shape, entity_type: str, sub) -> list[float] | None:
     if not ancestors.Contains(parent):
         return None
     for face in ancestors.FindFromKey(parent):
-        normal = _normal_of_face(TopoDS.Face_s(face))
+        normal = _normal_of_face(TopoDS.Face_s(face), near)
         if normal is not None:
             return normal
     return None
 
 
-def _normal_of_face(face) -> list[float] | None:
+def _normal_of_face(face, near: list[float]) -> list[float] | None:
+    """The face's outward normal at the point of the face closest to `near`.
+
+    Sampling at the entity matters on a curved face: a cylinder's normal turns with the angle, so
+    the parameter-space midpoint would give an arbitrary radial direction. If the projection
+    fails, the midpoint is used.
+    """
+    from OCP.BRep import BRep_Tool
     from OCP.BRepAdaptor import BRepAdaptor_Surface
     from OCP.BRepLProp import BRepLProp_SLProps
+    from OCP.GeomAPI import GeomAPI_ProjectPointOnSurf
+    from OCP.gp import gp_Pnt
     from OCP.TopAbs import TopAbs_REVERSED
 
     surface = BRepAdaptor_Surface(face, True)
     u = (surface.FirstUParameter() + surface.LastUParameter()) / 2
     v = (surface.FirstVParameter() + surface.LastVParameter()) / 2
+    try:
+        projector = GeomAPI_ProjectPointOnSurf(gp_Pnt(*near), BRep_Tool.Surface_s(face))
+        if projector.NbPoints() > 0:
+            u, v = projector.LowerDistanceParameters()
+    except Exception:  # noqa: BLE001 - keep the midpoint
+        pass
     props = BRepLProp_SLProps(surface, u, v, 1, 1e-9)
     if not props.IsNormalDefined():
         return None
