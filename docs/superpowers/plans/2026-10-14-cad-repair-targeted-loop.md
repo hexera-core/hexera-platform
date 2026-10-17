@@ -738,3 +738,776 @@ git commit -m "The repair runs as a loop with a budget, and says why it stopped"
 ```
 
 ---
+
+### Task 11: `repair_step_file` becomes the loop
+
+**Files:**
+- Modify: `src/meshpipeline/cad/repair/conservative.py` (`repair_step_file`'s body, and `_refusal` as a shim over `caps`)
+- Modify: `tests/unit/cad/test_repair_conservative.py` (append)
+- Modify: `tests/native/test_native_cad_repair.py` (append)
+
+**Interfaces:**
+- Consumes: `loop.run`, `loop.RESOLVED`, `loop.SCAN_INCOMPLETE`; `caps.measure`, `caps.Measure`, `caps.sanity_refusal`, `caps.cumulative_refusal`.
+- Produces: `repair_step_file(source, destination, *, profile=RepairProfile.conservative) -> RepairReport` — **same signature**. `RepairReport.operations` entries gain `targets`, `status`, `reason`, `basis`, `delta`, `evidence`; `RepairReport.entities` becomes the final defect list; `RepairReport.measurements` gains `stopped_because`, `resolved`, `complete_scan`, `planner`, `refusals`, `operations_attempted`, `operations_kept`. The old `holes_filled` / `holes_left` keys are **removed**.
+- `RepairRefused.measurements` keeps its shape, so the node's existing handler is untouched.
+
+**This is the task that makes the slice live.** Until now nothing calls the loop; `repair_step_file` still runs the old whole-shape `_fix`. The signature is unchanged on purpose, so `devtools/validation/repair_corpus.py`, the native suite and the pipeline node all keep working, and the risk is confined to one function body.
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to `tests/unit/cad/test_repair_conservative.py`:
+
+```python
+# THE REFUSAL IS NOW THE CAPS MODULE'S, AND MUST NOT HAVE DRIFTED
+
+
+def test_the_old_refusal_entry_point_still_refuses_everything_it_used_to():
+    # `_refusal` is kept as a shim because the native suite and the corpus drive it directly with
+    # recorded measurement payloads. If splitting it into sanity and cumulative changed any
+    # verdict, that is a silent behaviour change to a safety check.
+    assert "no faces" in _refusal(_BEFORE, _after(faces=0))
+    assert "solid" in _refusal(_BEFORE, _after(solids=0))
+    assert "face" in _refusal(_BEFORE, _after(faces=19))
+    assert "tolerance" in _refusal(_BEFORE, _after(max_tolerance_mm=0.5))
+    assert "diagonal" in _refusal(_BEFORE, _after(diagonal_mm=201.0))
+    assert "invalid" in _refusal(_BEFORE, _after(valid=False))
+    assert _refusal(_BEFORE, _BEFORE) == ""
+
+
+def test_the_shim_tolerates_the_measurement_keys_the_old_report_carried():
+    # Recorded pipeline payloads outlive a deploy, and `Measure.from_dict` has to read one written
+    # before area and volume were recorded at all.
+    sparse = {"valid": True, "diagonal_mm": 200.0, "max_tolerance_mm": 0.01,
+              "solids": 1, "shells": 1, "faces": 20, "edges": 60, "vertices": 40}
+    assert _refusal(sparse, dict(sparse)) == ""
+```
+
+Append to `tests/native/test_native_cad_repair.py`:
+
+```python
+def test_the_report_states_what_the_loop_did_and_why_it_stopped(tmp_path, monkeypatch):
+    from tests.cad_fixtures import write_loose_faces_step
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_AREA_CHANGE_RATIO", 0.02)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO", 0.02)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_OPS", 6)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_STALL_LIMIT", 2)
+
+    # THE LOOSE-FACES FIXTURE, because it is the one fixture this loop actually repairs.
+    source = write_loose_faces_step(tmp_path / "loose.step")
+    report = repair_step_file(source, tmp_path / "out.step")
+
+    measured = {m.name: m.value for m in report.measurements}
+    # WHY THE LOOP STOPPED IS PART OF THE REPORT. An operator approving a repair needs to know
+    # whether it finished or ran out of room, and those look identical without this.
+    assert measured["stopped_because"]
+    assert isinstance(measured["resolved"], bool)
+    assert isinstance(measured["complete_scan"], bool)
+    assert measured["planner"] == "rules-v1"
+    # EVERY ATTEMPT, KEPT OR NOT.
+    assert report.operations, "the report lists no operations"
+    for op in report.operations:
+        assert op["name"] and op["status"] in ("kept", "rolled_back", "failed")
+        assert "targets" in op and "delta" in op and "basis" in op
+    assert measured["operations_attempted"] >= measured["operations_kept"] >= 1
+    # THE OLD KEYS ARE GONE.
+    assert "holes_filled" not in measured and "holes_left" not in measured
+
+
+def test_the_reports_entities_are_what_is_left_rather_than_what_arrived(tmp_path, monkeypatch):
+    from tests.cad_fixtures import write_loose_faces_step
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_AREA_CHANGE_RATIO", 0.02)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO", 0.02)
+
+    from meshpipeline.cad.repair.brep import _read_shape
+    from meshpipeline.cad.repair.localize import localize_scan
+
+    source = write_loose_faces_step(tmp_path / "loose.step")
+    arrived, _ = localize_scan(_read_shape(source))
+    assert arrived, "the fixture is not broken"
+
+    report = repair_step_file(source, tmp_path / "out.step")
+
+    # An operator reading "repaired" over the ORIGINAL defect list is how a ruined delivery
+    # happens. The delivered report states what remains.
+    assert len(report.entities) < len(arrived)
+
+
+def test_a_summary_never_claims_a_repair_the_run_did_not_achieve(tmp_path, monkeypatch):
+    # The sliver fixture ends `stalled` with the sliver still present. The summary must not read
+    # as success - `resolved` is False, and the wording has to follow it.
+    from tests.cad_fixtures import write_small_edge_step
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_AREA_CHANGE_RATIO", 0.02)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO", 0.02)
+
+    report = repair_step_file(write_small_edge_step(tmp_path / "sliver.step"),
+                              tmp_path / "out.step")
+
+    measured = {m.name: m.value for m in report.measurements}
+    assert measured["resolved"] is False
+    assert "Repaired within the conservative caps." not in report.summary
+    assert report.entities, "the remaining defect is not reported"
+
+
+def test_a_sound_part_reports_resolved_with_no_operations(tmp_path, monkeypatch):
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_AREA_CHANGE_RATIO", 0.02)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO", 0.02)
+
+    report = repair_step_file(write_step(tmp_path / "box.step", "MM"), tmp_path / "out.step")
+
+    measured = {m.name: m.value for m in report.measurements}
+    assert measured["resolved"] is True
+    assert report.operations == (), "a sound part had operations run on it"
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `.venv/bin/python -m pytest tests/native/test_native_cad_repair.py -q`
+Expected: FAIL — `KeyError: 'stopped_because'`, and `op["status"]` missing.
+
+- [ ] **Step 3: Rewrite `repair_step_file`**
+
+Replace everything in `repair_step_file` from `_occ()` onward with:
+
+```python
+    _occ()
+
+    from meshpipeline.cad.repair.brep import _read_shape
+    from meshpipeline.cad.repair.caps import measure
+    from meshpipeline.cad.repair.loop import run as run_loop
+
+    src, dest = Path(source), Path(destination)
+    before_shape = _read_shape(src)
+    original = measure(before_shape)
+
+    tolerance = min(rcfg.CAD_REPAIR_MAX_TOLERANCE_MM,
+                    max(original.diagonal_mm, 1.0) * rcfg.CAD_REPAIR_MAX_DEVIATION_RATIO)
+
+    result = run_loop(before_shape, tolerance_mm=tolerance)
+    final = measure(result.shape)
+
+    measurements = {
+        "before": original.to_dict(), "after": final.to_dict(),
+        "tolerance_requested_mm": tolerance,
+        # WHY IT STOPPED, which is not inferable from the shape. "Every error cleared" and "I ran
+        # out of operations" look identical in the geometry and mean opposite things to a reviewer.
+        "stopped_because": result.stopped_because,
+        "resolved": result.resolved,
+        "complete_scan": result.complete_scan,
+        "planner": result.planner_label,
+        # WHAT WAS DELIBERATELY NOT ATTEMPTED AND WHY - the paired rims of a missing bore wall
+        # above all. This used to be a silent skip inside the fill.
+        "refusals": [dict(r) for r in result.refusals],
+        "operations_attempted": len(result.verdicts),
+        "operations_kept": sum(1 for v in result.verdicts if v.kept),
+    }
+
+    # THE AFTER-CHECKS STILL HAVE THE LAST WORD. The session already refused any individual
+    # operation that left the caps, so reaching here with a refusal would mean a bug - but the
+    # customer's part is on the other side of this function, so it is checked again on the result
+    # rather than trusted from the process that produced it.
+    refusal = _refusal(original.to_dict(), final.to_dict())
+    if refusal:
+        raise RepairRefused(refusal, measurements=measurements)
+
+    _write_step(result.shape, dest)
+
+    defects: tuple[RepairDefect, ...] = ()
+    if not final.valid:
+        # Not a refusal: the shape improved and is honest about not being fully valid. An operator
+        # decides whether it is good enough to mesh, with this on the screen.
+        defects = (
+            RepairDefect(
+                code=DefectCode.invalid_brep,
+                severity=DefectSeverity.warning,
+                message="The repaired shape is still not fully valid; a person should look at it.",
+            ),
+        )
+
+    return RepairReport(
+        defects=defects,
+        measurements=tuple(RepairMeasurement(name=k, value=v) for k, v in measurements.items()),
+        # EVERY ATTEMPT, KEPT OR NOT, with what it aimed at and what it measured. A rolled-back
+        # operation is evidence an operator wants and the training example a later model planner
+        # needs, so the log is of attempts rather than of successes.
+        operations=tuple({"name": v.op, "mutated": v.kept, **v.to_dict()}
+                         for v in result.verdicts),
+        summary=_summary(result, final),
+        diagnostics={"profile": profile.value, "source_suffix": src.suffix.lower()},
+        # WHAT IS LEFT, not what arrived. An operator reading "repaired" over the original defect
+        # list is how a ruined delivery happens.
+        entities=tuple(d.to_dict() for d in result.defects),
+    )
+
+
+def _summary(result, final) -> str:
+    """One sentence an operator reads first. It must not claim more than the run achieved.
+
+    KEYED ON `resolved`, NOT ON THE STOP REASON. `resolved` already means the loop succeeded -
+    complete scan, no error defects, and nothing a failed attempt abandoned - so anything else
+    has to read as partial, whatever the loop happened to stop on.
+    """
+    from meshpipeline.cad.repair.loop import SCAN_INCOMPLETE
+
+    if result.resolved:
+        return ("Repaired within the conservative caps."
+                if final.valid else
+                "Repaired, but the result is not fully valid - needs review.")
+    if result.stopped_because == SCAN_INCOMPLETE:
+        return ("Repaired as far as the inspection could see; the defect scan was partial, so "
+                "this is not a clean bill of health.")
+    if not any(v.kept for v in result.verdicts):
+        return "Nothing could be repaired safely; a person should look at this."
+    return (f"Partially repaired - the run stopped at {result.stopped_because} with "
+            f"{len(result.defects)} defect(s) left.")
+```
+
+Keep `_CONSERVATIVE_OPERATIONS` — the existing unit test imports it, and it is still the honest statement of what a conservative profile may draw from. Add to its comment:
+
+```python
+#: SUPERSEDED AS A RECIPE, KEPT AS A POLICY. The loop (cad/repair/loop.py) chooses which of
+#: cad/repair/operations.py's operations to run and in what order, so this tuple no longer
+#: describes a sequence. What it still states is the SET a conservative profile may draw from.
+```
+
+- [ ] **Step 4: Rewrite `_refusal` as a shim over `caps`**
+
+```python
+def _refusal(before: dict, after: dict) -> str:
+    """The one place a repair RESULT is judged. Returns the reason, or "" to accept.
+
+    NOW A SHIM over cad/repair/caps.py, which owns the arithmetic and splits it into the
+    per-operation and cumulative halves the loop needs. Kept because the native suite and
+    `devtools/validation/repair_corpus.py` drive it directly with recorded measurement payloads -
+    including ones written before area and volume were recorded at all, which is why
+    `Measure.from_dict` tolerates a sparse dict.
+
+    Declares no area or volume: a caller holding only two payloads has no operation evidence to
+    account for, so an unexplained change is exactly what it should refuse on.
+    """
+    from meshpipeline.cad.repair.caps import Measure, cumulative_refusal, sanity_refusal
+
+    was, now = Measure.from_dict(before), Measure.from_dict(after)
+    return (sanity_refusal(was, now)
+            or cumulative_refusal(was, now, declared_area_mm2=0.0, declared_volume_mm3=0.0))
+```
+
+Remove the now-unused `_fix`, `_fill_planar_holes`, `_sew_loose_bodies`, `_sew` and `_paired_rims` **only if nothing else imports them**. `plan.py` imports `_paired_rims` and `operations.py` imports `_as_solid_if_closed` and `_span`, so check each with grep before deleting, and leave anything still referenced.
+
+- [ ] **Step 5: Run every repair test**
+
+Run: `.venv/bin/python -m pytest tests/unit/cad tests/unit/pipeline -q`
+Expected: the pre-existing `test_bore_staging` failure only. Any test asserting `measured["operations"]` as a list of names, or `holes_filled`/`holes_left`, needs updating — those keys are gone, replaced by `operations_attempted`/`operations_kept` and the per-operation detail on `report.operations`. Fix them in place and say which in the report.
+
+Run: `.venv/bin/python -m pytest tests/native -k "repair or fixture" -q`
+Expected: PASS.
+
+- [ ] **Step 6: Lint, typecheck, and commit**
+
+Run: `make lint && make typecheck`
+
+```bash
+git add src/meshpipeline/cad/repair/conservative.py \
+        tests/unit/cad/test_repair_conservative.py tests/native/test_native_cad_repair.py
+git commit -m "A conservative repair is the loop, and the report says what it tried and what is left"
+```
+
+---
+
+### Task 12: The pipeline node records the op sequence
+
+**Files:**
+- Modify: `src/meshpipeline/pipeline/repair_attempt.py` (the success return and the training-log call)
+- Modify: `src/meshpipeline/contracts/pipeline_state.py` (the `repair_attempt` record's documented shape)
+- Modify: `tests/unit/pipeline/test_repair_attempt.py`
+
+**Interfaces:**
+- Consumes: `repair_step_file`'s report as reshaped by Task 11 — `measurements` now carries `stopped_because`, `resolved`, `complete_scan`, `planner`, `refusals`, `operations_attempted`, `operations_kept`, `declared_area_mm2`, `declared_volume_mm3`, and **no longer carries `holes_filled` or `holes_left`**.
+- Produces: the `repair_attempt` state record gains `operations` (the ordered attempt list), `stopped_because`, `refusals` and `defects_remaining`; `resolved` is taken from the report instead of inferred. `repair_status` stays untouched.
+
+**This task fixes a live bug.** After Task 11 the node still reads the removed `holes_left` key, so `repair_attempt["resolved"]` is true whenever no warning defect exists — *even when the loop reported `resolved=False`* — and its `operations` list silently includes rolled-back attempts. The node's unit tests mock the report, which is why they do not catch it. Nothing may ship in that state.
+
+- [ ] **Step 1: Update the existing harness, then write the failing tests**
+
+`tests/unit/pipeline/test_repair_attempt.py` already has `_state(tmp_path, **over)`, `_run(state)`, `_repaired_report(**measured)` and a `repairs` fixture. **Two of those must change first**, because they still speak the old report's language.
+
+Replace `_repaired_report`:
+
+```python
+def _repaired_report(*, operations=(), defects=(), entities=(), **measured) -> RepairReport:
+    """The report a looped repair returns. `operations` is the ordered attempt list."""
+    return RepairReport(
+        defects=tuple(defects),
+        measurements=tuple(RepairMeasurement(name=k, value=v) for k, v in measured.items()),
+        operations=tuple(operations),
+        summary="Repaired within the conservative caps.",
+        entities=tuple(entities))
+```
+
+and in the `repairs` fixture's `_repair`, return:
+
+```python
+        return _repaired_report(
+            operations=({"name": "sew_faces", "mutated": True, "status": "kept",
+                         "basis": "kernel", "targets": ["edge:aaaa"],
+                         "defect_code": "open_shell", "reason": "",
+                         "evidence": {}, "delta": {}},),
+            stopped_because="resolved", resolved=True, complete_scan=True, refusals=[],
+            planner="rules-v1", operations_attempted=1, operations_kept=1,
+            declared_area_mm2=0.0, declared_volume_mm3=0.0)
+```
+
+Then append the new tests:
+
+```python
+# WHAT THE RUN RECORDS ABOUT A LOOPED REPAIR
+
+
+def _looped(monkeypatch, *, operations=(), entities=(), **measured):
+    """Stub `repair_step_file` with a looped report, and stub staging so promotion succeeds."""
+    def _repair(source, destination, **kw):
+        destination.write_bytes(source.read_bytes() + b"\n/* repaired */\n")
+        return _repaired_report(operations=operations, entities=entities, **measured)
+
+    monkeypatch.setattr("meshpipeline.cad.repair.conservative.repair_step_file", _repair)
+    monkeypatch.setattr("meshpipeline.pipeline.repair_promote.stages_for",
+                        lambda geometry, engine="": (True, ""))
+
+
+def test_the_run_records_every_operation_the_loop_tried(monkeypatch, tmp_path):
+    # THE SLICE 8 CORPUS STARTS HERE. A rolled-back operation is as much a training example as a
+    # kept one, so what is recorded is attempts, not successes.
+    _looped(monkeypatch,
+            operations=({"name": "fix_small_edges", "mutated": True, "status": "kept",
+                         "basis": "kernel", "targets": ["edge:aaaa"],
+                         "defect_code": "small_edge", "reason": "",
+                         "evidence": {}, "delta": {}},
+                        {"name": "fill_planar_hole", "mutated": False, "status": "rolled_back",
+                         "basis": "kernel", "targets": ["edge:bbbb"],
+                         "defect_code": "open_shell", "reason": "target_remains",
+                         "evidence": {}, "delta": {}}),
+            stopped_because="stalled", resolved=False, complete_scan=True, refusals=[],
+            planner="rules-v1", operations_attempted=2, operations_kept=1,
+            declared_area_mm2=0.0, declared_volume_mm3=0.0)
+
+    attempt = _run(_state(tmp_path))["repair_attempt"]
+
+    assert [op["name"] for op in attempt["operations"]] == \
+           ["fix_small_edges", "fill_planar_hole"]
+    assert attempt["operations"][1]["status"] == "rolled_back"
+    assert attempt["operations"][1]["reason"] == "target_remains"
+    assert attempt["stopped_because"] == "stalled"
+
+
+def test_resolved_is_taken_from_the_loop_not_inferred(monkeypatch, tmp_path):
+    # THE LIVE BUG THIS TASK FIXES. It used to be inferred from `holes_left`, a key the report no
+    # longer carries - so `resolved` read True for any run with no warning defect, including a
+    # run the loop explicitly reported as a failure.
+    _looped(monkeypatch, stopped_because="stalled", resolved=False, complete_scan=True,
+            refusals=[], planner="rules-v1", operations_attempted=2, operations_kept=0,
+            declared_area_mm2=0.0, declared_volume_mm3=0.0,
+            entities=({"code": "small_edge", "severity": "warning", "entity": "edge:9"},))
+
+    attempt = _run(_state(tmp_path))["repair_attempt"]
+
+    assert attempt["resolved"] is False, "the node contradicted the loop"
+    assert attempt["defects_remaining"], "what is left was not recorded"
+
+
+def test_a_run_that_stopped_on_a_partial_scan_is_not_recorded_as_resolved(
+        monkeypatch, tmp_path):
+    _looped(monkeypatch, stopped_because="scan_incomplete", resolved=False, complete_scan=False,
+            refusals=[], planner="rules-v1", operations_attempted=0, operations_kept=0,
+            declared_area_mm2=0.0, declared_volume_mm3=0.0)
+
+    attempt = _run(_state(tmp_path))["repair_attempt"]
+
+    assert attempt["resolved"] is False
+    assert attempt["stopped_because"] == "scan_incomplete"
+
+
+def test_a_planner_refusal_reaches_the_run_so_an_operator_can_read_it(monkeypatch, tmp_path):
+    # The paired-rim case. A silent skip is how "we chose not to seal your bolt hole" stops being
+    # something anybody can see.
+    _looped(monkeypatch, stopped_because="no_candidate", resolved=False, complete_scan=True,
+            refusals=[{"defect": "edge:rim", "reason": "paired_rim",
+                       "detail": "would seal a through-hole"}],
+            planner="rules-v1", operations_attempted=0, operations_kept=0,
+            declared_area_mm2=0.0, declared_volume_mm3=0.0)
+
+    refusals = _run(_state(tmp_path))["repair_attempt"]["refusals"]
+
+    assert refusals[0]["reason"] == "paired_rim"
+    assert refusals[0]["detail"] == "would seal a through-hole"
+
+
+def test_the_inspections_verdict_on_the_customers_file_is_still_not_overwritten(
+        monkeypatch, tmp_path):
+    # `repair_status` is the inspection's verdict on the file the customer SENT, and
+    # `repair_report` beside it is that inspection. Overwriting it with the repair's own verdict
+    # produced a pairing that read "repaired" next to the original defect list.
+    _looped(monkeypatch, stopped_because="resolved", resolved=True, complete_scan=True,
+            refusals=[], planner="rules-v1", operations_attempted=1, operations_kept=1,
+            declared_area_mm2=0.0, declared_volume_mm3=0.0)
+
+    assert "repair_status" not in _run(_state(tmp_path))
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `.venv/bin/python -m pytest tests/unit/pipeline/test_repair_attempt.py -q`
+Expected: FAIL — `KeyError` on the new record keys, and `test_resolved_is_taken_from_the_loop_not_inferred` failing because the node still infers from `holes_left`.
+
+- [ ] **Step 3: Rewrite the node's success return**
+
+In `src/meshpipeline/pipeline/repair_attempt.py`, replace everything from `operations = [op["name"] for op in repair_report.operations]` to the end of the function with:
+
+```python
+    measured = {m.name: m.value for m in repair_report.measurements}
+    attempted = [dict(op) for op in repair_report.operations]
+    logger.info("node_repair_attempt: repaired and promoted for engine=%s - stopped=%s "
+                "- kept=%s/%s - job_id=%s", engine, measured.get("stopped_because"),
+                measured.get("operations_kept"), measured.get("operations_attempted"), job_id)
+    try:
+        from meshpipeline.capture.logger import TrainingLogger
+        # THE SLICE 8 CORPUS. Every attempt, kept or rolled back, with the defect it aimed at and
+        # the basis on which that was judged. A rolled-back operation is as much a training
+        # example as a kept one - more, arguably - which is why the whole sequence is logged
+        # rather than only what worked. This starts filling the day the deterministic loop is
+        # enabled, which is the reason it had to go in first.
+        TrainingLogger(job_id).log("repair_attempt", op_id="repair:attempt", payload={
+            "route": advice.route, "targets": [dict(t) for t in advice.targets],
+            "operations": attempted,
+            "stopped_because": measured.get("stopped_because", ""),
+            "refusals": measured.get("refusals", []),
+            "planner": measured.get("planner", ""),
+            "report": repair_report.to_dict(),
+            "lineage": update.get("repair_lineage", {})})
+    except Exception:  # noqa: BLE001 - the corpus is never load-bearing for a run
+        pass
+
+    # `repair_status` IS NOT TOUCHED. It is the inspection's verdict on the file the customer
+    # SENT, and `repair_report` beside it is that inspection - so overwriting it with the repair's
+    # own verdict produced a pairing that read "repaired" next to the original defect list.
+    return {
+        **update,
+        "repair_attempt": {
+            "attempted": True,
+            "repair_status": status_for(repair_report).value,
+            # TAKEN FROM THE LOOP, NOT INFERRED. It used to be derived from `holes_left`, a key
+            # the report no longer carries - which made it read True for any run with no warning
+            # defect, including a run the loop had explicitly reported as a failure.
+            "resolved": bool(measured.get("resolved", False)),
+            # WHY THE LOOP STOPPED. "Every error cleared" and "I ran out of operations" leave the
+            # same geometry and mean opposite things to the operator reading this.
+            "stopped_because": measured.get("stopped_because", ""),
+            "route": advice.route,
+            # EVERY ATTEMPT, with its targets, verdict, reason and measured delta.
+            "operations": attempted,
+            # WHAT THE REPAIR AIMED AT, kept with what it did.
+            "targets": [dict(t) for t in advice.targets],
+            # WHAT WAS DELIBERATELY NOT ATTEMPTED AND WHY - the rims of a missing bore wall above
+            # all, which used to be a silent skip inside the fill executor.
+            "refusals": measured.get("refusals", []),
+            "defects_remaining": [dict(e) for e in repair_report.entities],
+            "summary": repair_report.summary,
+        },
+    }
+```
+
+- [ ] **Step 4: Update the state contract's documentation**
+
+In `src/meshpipeline/contracts/pipeline_state.py`, replace the part of the `repair_attempt` comment describing `holes_filled`/`holes_left` with:
+
+```python
+#:   operations        every operation the loop TRIED, in order, each with its targets, verdict
+#:                     (kept / rolled_back / failed), reason, the basis on which its target's fate
+#:                     was judged (kernel history or a geometric inference), its own evidence and
+#:                     the measured before/after. Attempts, not successes: a rolled-back operation
+#:                     is the evidence an operator wants and the training example a later model
+#:                     planner needs.
+#:   stopped_because   why the loop ended - resolved, no_candidate, op_budget, time_budget,
+#:                     stalled, scan_incomplete. NOT inferable from the geometry: a run that
+#:                     cleared every error and one that ran out of operations leave the same shape.
+#:   refusals          what was deliberately not attempted, and why. The paired rims of a missing
+#:                     bore wall are the case this exists for.
+#:   defects_remaining the located defects LEFT after the repair, so nothing reads "repaired" next
+#:                     to the list the file arrived with.
+```
+
+- [ ] **Step 5: Run the tests and the proportionate check**
+
+Run: `.venv/bin/python -m pytest tests/unit/pipeline -q`
+Expected: PASS.
+
+Run: `.venv/bin/python -m pytest tests/unit/cad tests/unit/pipeline -q`
+Expected: the pre-existing `test_bore_staging` failure only.
+
+Run: `make check-fast`
+Expected: PASS — it includes the graph-wiring check, so a node-shape change that broke the graph surfaces here.
+
+- [ ] **Step 6: Lint, typecheck, and commit**
+
+Run: `make lint && make typecheck`
+
+```bash
+git add src/meshpipeline/pipeline/repair_attempt.py src/meshpipeline/contracts/pipeline_state.py \
+        tests/unit/pipeline/test_repair_attempt.py
+git commit -m "The run records every repair the loop tried, why it stopped, and what it refused"
+```
+
+---
+
+### Task 13: The corpus tool reports the op sequence
+
+**Files:**
+- Modify: `devtools/validation/repair_corpus.py` (the row builder's repair branch, and `main`'s output)
+
+**Interfaces:**
+- Consumes: `repair_step_file`'s report as reshaped by Task 11.
+- Produces: each row gains `operations` as the full attempt list plus `stopped_because`, `operations_attempted`, `operations_kept`, `refusals` and `planner`; the dead `holes_filled`/`holes_left` columns are dropped. New summary sections: why runs stopped, which operations were kept versus rolled back, and what the planner refused. A `--loop` flag prints each file's sequence.
+
+**Why this task matters more than it looks.** This is the only thing that answers "what does the repair actually do to a real part". Three of the five operations are unexercised or unprovable on synthetic fixtures — `fix_face_boundary` has no fixture producing its defects at all — so a corpus run on real files is the only validation they will get. It also carries the evidence for the two decisions still open: whether planar filling should default on, and whether small faces stay routed to a person.
+
+- [ ] **Step 1: Replace the row's repair-result block**
+
+In `devtools/validation/repair_corpus.py`, the repair branch currently reads:
+
+```python
+    measured = {m.name: m.value for m in repaired.measurements}
+    row.update(operations=[op["name"] for op in repaired.operations],
+               holes_filled=measured.get("holes_filled", []),
+               holes_left=measured.get("holes_left", []))
+```
+
+Those last two keys no longer exist, so they silently record empty lists. Replace the whole block with:
+
+```python
+    measured = {m.name: m.value for m in repaired.measurements}
+    row.update(
+        # EVERY ATTEMPT, KEPT OR NOT. The rolled-back ones are the interesting half: they are
+        # where the rules planner ran out of ideas, which is exactly what a model later has to
+        # beat, and a corpus run that only listed successes could not show it.
+        operations=[{"op": op.get("name", ""), "status": op.get("status", ""),
+                     "reason": op.get("reason", ""), "basis": op.get("basis", ""),
+                     "defect_code": op.get("defect_code", ""),
+                     "targets": op.get("targets", [])}
+                    for op in repaired.operations],
+        operations_attempted=int(measured.get("operations_attempted", 0) or 0),
+        operations_kept=int(measured.get("operations_kept", 0) or 0),
+        # FINISHED OR OUT OF ROOM. The single most useful number from a corpus run: a corpus full
+        # of `op_budget` says raise the budget, one full of `stalled` says the catalogue is missing
+        # an operation, and one full of `no_candidate` says the planner cannot aim at what real
+        # files actually carry.
+        stopped_because=str(measured.get("stopped_because", "")),
+        resolved=bool(measured.get("resolved", False)),
+        complete_scan=bool(measured.get("complete_scan", True)),
+        planner=str(measured.get("planner", "")),
+        refusals=list(measured.get("refusals", []) or []),
+        declared_area_mm2=float(measured.get("declared_area_mm2", 0.0) or 0.0),
+    )
+```
+
+- [ ] **Step 2: Add the new summary sections**
+
+In `main`, after the existing `== what triage advised ==` section:
+
+```python
+    print("\n== why the loop stopped ==")
+    stops: dict[str, int] = {}
+    for row in rows:
+        if row.get("stopped_because"):
+            stops[row["stopped_because"]] = stops.get(row["stopped_because"], 0) + 1
+    for reason, count in sorted(stops.items(), key=lambda kv: -kv[1]):
+        print(f"  {count:>4}  {reason}")
+    if not stops:
+        print("  no file reached the loop")
+
+    print("\n== operations, kept vs rolled back ==")
+    # THE PLANNER'S HIT RATE, PER OPERATION. An operation proposed often and kept rarely is
+    # either aimed at the wrong defect or missing from the catalogue in its useful form - and it
+    # is the baseline a model planner gets scored against.
+    tally: dict[str, dict[str, int]] = {}
+    for row in rows:
+        for op in row.get("operations", []) or []:
+            entry = tally.setdefault(op.get("op", "?"),
+                                     {"kept": 0, "rolled_back": 0, "failed": 0})
+            key = op.get("status", "failed")
+            entry[key] = entry.get(key, 0) + 1
+    for name, counts in sorted(tally.items(), key=lambda kv: -sum(kv[1].values())):
+        print(f"  {name:<22} kept={counts['kept']:<4} "
+              f"rolled_back={counts['rolled_back']:<4} failed={counts['failed']}")
+    if not tally:
+        print("  nothing was attempted")
+
+    refused = [r for row in rows for r in (row.get("refusals") or [])]
+    if refused:
+        print("\n== what the planner refused to attempt ==")
+        by_reason: dict[str, int] = {}
+        for record in refused:
+            key = str(record.get("reason", "?"))
+            by_reason[key] = by_reason.get(key, 0) + 1
+        for reason, count in sorted(by_reason.items(), key=lambda kv: -kv[1]):
+            print(f"  {count:>4}  {reason}")
+
+    print("\n== operations never exercised on this corpus ==")
+    # THE POINT OF RUNNING THIS AT ALL. Three of the five operations are unprovable on synthetic
+    # fixtures, so a name absent from the tally above is an operation no real file has ever given
+    # this loop a reason to try.
+    from meshpipeline.cad.repair.operations import OPERATIONS
+
+    never = [op.name for op in OPERATIONS if op.name not in tally]
+    for name in never:
+        print(f"        {name}")
+    if not never:
+        print("  every operation was attempted at least once")
+```
+
+- [ ] **Step 3: Add a `--loop` flag that prints each file's sequence**
+
+Beside the existing arguments:
+
+```python
+    parser.add_argument("--loop", action="store_true",
+                        help="print each file's operation sequence, not just the summary")
+```
+
+and in the per-row print loop, after the existing `print(f"{row['outcome']:<28} ...")` line:
+
+```python
+        if args.loop:
+            for op in row.get("operations", []) or []:
+                mark = "+" if op.get("status") == "kept" else "-"
+                detail = f" ({op['reason']})" if op.get("reason") else ""
+                print(f"      {mark} {op.get('op', '?'):<20} {op.get('defect_code', ''):<22}"
+                      f"{op.get('status', '')}{detail}")
+            for record in row.get("refusals") or []:
+                print(f"      ! refused {record.get('reason', '?')}: "
+                      f"{record.get('detail', '')[:60]}")
+            if row.get("stopped_because"):
+                print(f"      = stopped: {row['stopped_because']} "
+                      f"(resolved={row.get('resolved')})")
+```
+
+- [ ] **Step 4: Verify the tool on the fixtures it can generate itself**
+
+There is no licensed corpus on this host, so prove the tool on generated fixtures:
+
+```bash
+cd /Users/kitts/archductor/workspaces/Hexera/apache
+rm -rf /tmp/repair-corpus-check && mkdir -p /tmp/repair-corpus-check
+.venv/bin/python - <<'PY'
+import sys
+sys.path.insert(0, ".")
+from pathlib import Path
+from tests.cad_fixtures import (write_open_shell_step, write_missing_bore_wall_step,
+                                write_loose_faces_step, write_small_edge_step,
+                                write_mixed_assembly_step, write_step)
+out = Path("/tmp/repair-corpus-check")
+write_open_shell_step(out / "open_shell.step")
+write_missing_bore_wall_step(out / "missing_bore.step")
+write_loose_faces_step(out / "loose_faces.step")
+write_small_edge_step(out / "small_edge.step")
+write_mixed_assembly_step(out / "mixed_assembly.step")
+write_step(out / "sound_box.step", "MM")
+print("wrote", sorted(p.name for p in out.glob("*.step")))
+PY
+CAD_REPAIR_ENABLED=true CAD_REPAIR_FILL_PLANAR_HOLES=true \
+  .venv/bin/python devtools/validation/repair_corpus.py /tmp/repair-corpus-check --loop
+```
+
+Expected: a row per file, each repaired file's operation sequence beneath it, and the four new summary sections. Check specifically that `missing_bore.step` shows a `paired_rim` entry under "what the planner refused to attempt" — that is the corpus-level proof of the safety claim.
+
+- [ ] **Step 5: Record what the run reported**
+
+Paste the run's output into the report file. A corpus run nobody wrote down is a claim rather than a result, and the next person comparing a model planner against this baseline needs the numbers. Note in particular which operations appear under "never exercised".
+
+- [ ] **Step 6: Lint and commit**
+
+Run: `make lint`
+
+```bash
+git add devtools/validation/repair_corpus.py
+git commit -m "The corpus tool prints each file's operation sequence and why the loop stopped"
+```
+
+---
+
+### Task 14: Prove it in a personal environment
+
+**Files:** no source changes. This task's deliverable is evidence.
+
+**Interfaces:** consumes everything above. Produces a named request, a log line and a state record that together make the node change claimable. Per AGENTS.md the host tiers cover the library code; the node change wants a dev deploy before anyone says it works.
+
+**The user has explicitly authorized `CAD_REPAIR_ENABLED` in the `pranav` environment for this proof.** Deploying a personal slug is already authorized by AGENTS.md; that approval adds the config switch.
+
+- [ ] **Step 1: Run the full host gate**
+
+```bash
+cd /Users/kitts/archductor/workspaces/Hexera/apache
+make lint && make typecheck && make check-fast
+.venv/bin/python -m pytest tests/unit/cad tests/unit/pipeline -q
+```
+Expected: lint, typecheck and check-fast pass; the unit run shows only the pre-existing `test_bore_staging` failure. Deploying to discover that ruff is unhappy wastes twenty minutes for an answer that took two seconds.
+
+- [ ] **Step 2: Run the whole native repair tier**
+
+```bash
+.venv/bin/python -m pytest tests/native -k "repair or fixture" -q
+```
+Expected: PASS, none skipped. If these skip for want of a kernel they prove nothing, and they must then run inside the mesh image via `make test-native-all` before this task is complete.
+
+- [ ] **Step 3: Deploy to the owned slug**
+
+The slug this task owns is `pranav`. Do not guess another.
+
+```bash
+gh workflow run deploy.yml --ref "$(git branch --show-current)" \
+  -f slug=pranav -f app=true -f console=true
+gh run watch
+```
+Expected: a green run.
+
+- [ ] **Step 4: Confirm repair is switched on in that environment**
+
+Repair is dormant unless `CAD_REPAIR_ENABLED` is set. Confirm it before concluding anything from a run that reported `attempted: false`:
+
+```bash
+gcloud run services describe dev-pranav-api --region us-central1 \
+  --format='value(spec.template.spec.containers[0].env)' | tr ',' '\n' | grep -i cad_repair
+```
+
+If it is absent, set it per the personal-environments doc and redeploy. `CAD_REPAIR_FILL_PLANAR_HOLES` stays at its default unless the user decides otherwise — that decision is still open.
+
+- [ ] **Step 5: Run a broken file through the real pipeline, and read the record**
+
+Upload the loose-faces fixture through the normal simulation flow against that API and start a mesh job. It is the fixture the loop demonstrably repairs, so it is the one that proves the path end to end.
+
+```bash
+API=$(gcloud run services describe dev-pranav-api --region us-central1 --format='value(status.url)')
+echo "$API"
+gcloud logging read \
+  'resource.labels.service_name="dev-pranav-api" AND textPayload:"node_repair_attempt"' \
+  --limit 20 --freshness 30m
+```
+Expected: a `node_repair_attempt: repaired and promoted` line naming `stopped=` and `kept=N/M`.
+
+Then fetch the job's state through the admin repair API (`src/meshpipeline/api/v1/admin_repair.py`) and confirm `repair_attempt` carries `operations` with per-operation `status` and `targets`, plus `stopped_because` and `resolved`. A green deploy with an unexercised code path is an untested change; this is the request and the record that make the claim.
+
+Write down the job id, the `stopped_because`, and how many operations were kept out of how many tried.
+
+- [ ] **Step 6: Leave the environment standing**
+
+Do **not** run `make destroy-env`. The branch is not merged, the proof may need repeating, and the user owns that environment. Report its URL and what is running there.
+
+---
+
+## Notes for the executor
+
+**What this plan deliberately does not do.** Slice 7's entity context (surface type, adjacency, the paired-bore finding as its own defect), slice 8's model planner, and slice 9's operator-queue writer are sketched in the spec and are **not** in this plan. If a task seems to want one of them, it does not.
+
+**The two open questions stay open.** Whether `CAD_REPAIR_FILL_PLANAR_HOLES` should default on is to be decided after Task 13's corpus run, not during implementation — and the evidence now cuts both ways, because the rim discriminator false-positives readily. Whether small faces become advisory is a separate question; no task here adds an operation for them.
+
+**`wire_gap`, `tolerance_outlier` and `bad_orientation`** are all claimed somewhere and produced by nothing. That is slice 7's to resolve — emit them or delete them. Do not delete them from `DefectCode` here; `triage.py` reads them and the change belongs with the decision.
