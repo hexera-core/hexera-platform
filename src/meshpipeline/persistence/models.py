@@ -543,6 +543,86 @@ class CadRepairDecision(Base):
     )
 
 
+class RepairReviewPark(Base):
+    """ONE PARKED REPAIR RUN, waiting on an engineer's judgement of its unsure defects.
+
+    A park is closed exactly once, by the run that resumed it or by a cancel; after that no item
+    under it accepts a decision. kept_operations is the work already settled when the run parked,
+    so the resumed run starts from it and not from scratch.
+    """
+
+    __tablename__ = "repair_review_parks"
+
+    id:                  Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True,
+                                                           default=uuid.uuid4)
+    job_id:              Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("simulation_jobs.id", ondelete="CASCADE"),
+        nullable=False, index=True)
+    created_at:          Mapped[datetime]  = mapped_column(DateTime(timezone=True),
+                                                           server_default=func.now())
+    status:              Mapped[str]       = mapped_column(String(16), nullable=False,
+                                                           default="open", server_default="open")
+    closed_at:           Mapped[datetime | None] = mapped_column(DateTime(timezone=True),
+                                                                 nullable=True)
+    closed_by:           Mapped[str | None] = mapped_column(String(16), nullable=True)
+    kept_operations:     Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    source_sha256:       Mapped[str]       = mapped_column(String(64), nullable=False)
+    geometry_session_id: Mapped[str]       = mapped_column(String(128), nullable=False)
+
+    __table_args__: tuple = (
+        CheckConstraint("status IN ('open', 'closed')", name="ck_repair_review_parks_status"),
+        CheckConstraint("closed_by IS NULL OR closed_by IN ('run', 'cancel')",
+                        name="ck_repair_review_parks_closed_by"),
+    )
+
+
+class RepairReviewItem(Base):
+    """ONE UNSURE DEFECT put to an engineer.
+
+    park_id is NULL for items minted on a delivered run, which never parks. pairing_key is
+    non-empty for a defect that only makes sense with its partner (a bolt hole and its mate): such
+    an item is decided on its own and NEVER by a group decision.
+    """
+
+    __tablename__ = "repair_review_items"
+
+    id:           Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True,
+                                                    default=uuid.uuid4)
+    park_id:      Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("repair_review_parks.id", ondelete="CASCADE"),
+        nullable=True, index=True)
+    job_id:       Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("simulation_jobs.id", ondelete="CASCADE"),
+        nullable=False, index=True)
+    group_key:    Mapped[str]       = mapped_column(String(128), nullable=False)
+    defect_code:  Mapped[str]       = mapped_column(String(64), nullable=False)
+    severity:     Mapped[str]       = mapped_column(String(32), nullable=False)
+    entity_type:  Mapped[str]       = mapped_column(String(32), nullable=False)
+    entity_index: Mapped[int]       = mapped_column(Integer, nullable=False)
+    fingerprint:  Mapped[str]       = mapped_column(String(128), nullable=False)
+    measurements: Mapped[dict]      = mapped_column(JSONB, nullable=False, default=dict)
+    message:      Mapped[str]       = mapped_column(Text, nullable=False)
+    origin:       Mapped[str]       = mapped_column(String(16), nullable=False)
+    pairing_key:  Mapped[str]       = mapped_column(String(128), nullable=False, default="",
+                                                    server_default="")
+    # {"op", "targets", "rationale", "provenance"}, or NULL when nothing could be proposed
+    proposal:     Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # {"centroid_mm", "normal", "extent_mm"}
+    camera:       Mapped[dict]      = mapped_column(JSONB, nullable=False, default=dict)
+    state:        Mapped[str]       = mapped_column(String(16), nullable=False, default="open",
+                                                    server_default="open")
+    decision:     Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    decided_at:   Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__: tuple = (
+        CheckConstraint("origin IN ('triage', 'stall', 'refusal', 'survivor')",
+                        name="ck_repair_review_items_origin"),
+        CheckConstraint("state IN ('open', 'accepted', 'left', 'redirected', 'unreviewed')",
+                        name="ck_repair_review_items_state"),
+        Index("ix_repair_review_items_group", "job_id", "group_key"),
+    )
+
+
 class TerminalOutbox(Base):
     __tablename__ = "terminal_outbox"
 
