@@ -346,19 +346,17 @@ class _Doc:
                 return pts, None
             v = corners(p)
             counts = _ints(vc.text) if vc is not None else np.full(len(v) // 3, 3, dtype=np.int64)
-            tris = _fans(v, counts)
+            tris = _polygons(v, counts, pts)
         elif kind == "polygons":
-            rings = []
-            holes = 0
-            for c in prim:
-                t = _local(c.tag)
-                if t == "p":
-                    rings.append(corners(c))
-                elif t == "ph":
-                    holes += 1
-            if holes:
-                self.skipped["polygons with holes"] = self.skipped.get("polygons with holes", 0) + holes
-            tris = np.vstack([_fans(r, np.asarray([len(r)])) for r in rings]) if rings else None
+            if _children(prim, "ph"):
+                # a polygon with holes is its outline AND the holes cut from it; cutting them is
+                # not done here, and dropping either would hand on a different surface
+                raise SurfaceError(
+                    "the COLLADA file has polygons with holes in them (<ph>), which Hexera does not "
+                    "cut - export it again with its faces triangulated, or as an STL")
+            rings = [corners(c) for c in _children(prim, "p")]
+            tris = (_polygons(np.concatenate(rings), np.asarray([len(r) for r in rings]), pts)
+                    if rings else None)
         else:
             parts = [_strip_or_fan(corners(c), kind) for c in _children(prim, "p")]
             parts = [t for t in parts if len(t)]
@@ -373,22 +371,98 @@ class _Doc:
         return pts, tris
 
 
-def _fans(v: np.ndarray, counts: np.ndarray) -> np.ndarray:
-    """Polygons of `counts` corners each, laid end to end in `v`, fanned into triangles."""
-    counts = np.asarray(counts, dtype=np.int64)
-    total = int(counts.sum())
-    if total > len(v):
+def _polygons(v: np.ndarray, counts: np.ndarray, pts: np.ndarray) -> np.ndarray:
+    """Polygons of `counts` corners each, laid end to end in `v` (indices into `pts`), split into
+    triangles that cover each polygon exactly: a triangle as it is, a quad along the diagonal from
+    its reflex corner when it has one, a larger polygon by fanning when it is convex and by ear
+    clipping when it is not - a fan from a corner of a concave polygon lays triangles outside it."""
+    counts = np.asarray(counts, dtype=np.int64).reshape(-1)
+    if len(counts) and int(counts.min()) < 0:
+        raise SurfaceError("the COLLADA file gives a polygon a negative number of corners")
+    if int(counts.sum()) > len(v):
         raise SurfaceError("the COLLADA file's polygon list is shorter than its counts say")
-    starts = np.concatenate([[0], np.cumsum(counts)[:-1]]) if len(counts) else np.zeros(0, np.int64)
-    keep = counts >= 3
-    starts, counts = starts[keep], counts[keep]
-    n_tri = counts - 2
-    if n_tri.sum() == 0:
-        return np.zeros((0, 3), dtype=np.int64)
-    base = np.repeat(starts, n_tri)
-    # k = 1 .. n-2 within each polygon
-    k = np.arange(int(n_tri.sum())) - np.repeat(np.cumsum(n_tri) - n_tri, n_tri) + 1
-    return np.stack([v[base], v[base + k], v[base + k + 1]], axis=1)
+    # every triangle is paid for before one is made: a few bytes of counts can ask for billions
+    if int(np.maximum(counts - 2, 0).sum()) > limits.MAX_TRIANGLES:
+        raise SurfaceError(limits.too_many_triangles())
+    v = np.asarray(v, dtype=np.int64)[:int(counts.sum())]
+    if len(v) and (int(v.min()) < 0 or int(v.max()) >= len(pts)):
+        raise SurfaceError("the COLLADA file indexes a vertex it does not hold")
+    starts = np.concatenate([[0], np.cumsum(counts)[:-1]]).astype(np.int64) if len(counts) \
+        else np.zeros(0, np.int64)
+    parts = [v[starts[counts == 3][:, None] + np.arange(3)]]
+    quads = v[starts[counts == 4][:, None] + np.arange(4)]
+    if len(quads):
+        parts.append(_quads(quads, pts))
+    for at, n in zip(starts[counts > 4].tolist(), counts[counts > 4].tolist()):
+        ring = v[at:at + n]
+        parts.append(ring[_ear_clip(pts[ring])])
+    parts = [t.reshape(-1, 3) for t in parts if len(t)]
+    return np.vstack(parts) if parts else np.zeros((0, 3), dtype=np.int64)
+
+
+def _turns(P: np.ndarray) -> np.ndarray:
+    """How each corner of each polygon (k, n, 3) turns about the polygon's own normal (Newell):
+    positive at a convex corner, negative at a reflex one."""
+    q = np.roll(P, -1, axis=1)
+    normal = np.stack([((P[..., 1] - q[..., 1]) * (P[..., 2] + q[..., 2])).sum(axis=1),
+                       ((P[..., 2] - q[..., 2]) * (P[..., 0] + q[..., 0])).sum(axis=1),
+                       ((P[..., 0] - q[..., 0]) * (P[..., 1] + q[..., 1])).sum(axis=1)], axis=1)
+    e_in, e_out = P - np.roll(P, 1, axis=1), q - P
+    return np.einsum("knj,kj->kn", np.cross(e_in, e_out), normal)
+
+
+def _quads(quads: np.ndarray, pts: np.ndarray) -> np.ndarray:
+    """Quads (k, 4) split along the diagonal from their reflex corner (corner 0 for a convex one),
+    so neither triangle leaves the quad."""
+    turn = _turns(pts[quads])
+    at = np.where((turn < 0).any(axis=1), np.argmin(turn, axis=1), 0)
+    order = (at[:, None] + np.arange(4)) % 4
+    r = np.take_along_axis(quads, order, axis=1)
+    return np.concatenate([r[:, [0, 1, 2]], r[:, [0, 2, 3]]])
+
+
+def _ear_clip(P: np.ndarray) -> np.ndarray:
+    """Triangles (as corner positions in the polygon) covering one planar polygon of n > 4
+    corners: a fan when it is convex, else ears clipped one by one."""
+    n = len(P)
+    turn = _turns(P[None])[0]
+    if (turn >= 0).all() or (turn <= 0).all():
+        return np.stack([np.zeros(n - 2, dtype=np.int64), np.arange(1, n - 1), np.arange(2, n)], axis=1)
+    # in the polygon's own plane, counter-clockwise
+    q = np.roll(P, -1, axis=0)
+    normal = np.array([((P[:, 1] - q[:, 1]) * (P[:, 2] + q[:, 2])).sum(),
+                       ((P[:, 2] - q[:, 2]) * (P[:, 0] + q[:, 0])).sum(),
+                       ((P[:, 0] - q[:, 0]) * (P[:, 1] + q[:, 1])).sum()])
+    normal = normal / (np.linalg.norm(normal) or 1.0)
+    u = np.cross(normal, [0.0, 0.0, 1.0] if abs(normal[2]) < 0.9 else [0.0, 1.0, 0.0])
+    u /= np.linalg.norm(u)
+    w = np.cross(normal, u)
+    xy = np.c_[P @ u, P @ w]
+
+    def cross(o, a, b) -> float:
+        return float((a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]))
+
+    idx = list(range(n))
+    out: list[tuple[int, int, int]] = []
+    while len(idx) > 3:
+        for j in range(len(idx)):
+            a, b, c = idx[j - 1], idx[j], idx[(j + 1) % len(idx)]
+            if cross(xy[a], xy[b], xy[c]) <= 0:
+                continue                                   # a reflex (or flat) corner is no ear
+            if any(cross(xy[a], xy[b], xy[o]) >= 0 and cross(xy[b], xy[c], xy[o]) >= 0
+                   and cross(xy[c], xy[a], xy[o]) >= 0 for o in idx if o not in (a, b, c)):
+                continue                                   # another corner lies in it
+            out.append((a, b, c))
+            idx.pop(j)
+            break
+        else:
+            # no ear: a polygon that crosses itself - the rest is fanned, as a reader must
+            out.extend((idx[0], idx[k], idx[k + 1]) for k in range(1, len(idx) - 1))
+            idx = []
+            break
+    if len(idx) == 3:
+        out.append((idx[0], idx[1], idx[2]))
+    return np.asarray(out, dtype=np.int64).reshape(-1, 3)
 
 
 def _strip_or_fan(v: np.ndarray, kind: str) -> np.ndarray:
@@ -499,10 +573,12 @@ class _Walk:
             elif t == "node":
                 self.node(c, m, here, inner)
 
-    def controller(self, ctrl, m: np.ndarray, name: str) -> None:
+    def controller(self, ctrl, m: np.ndarray, name: str, stack: tuple[int, ...] = ()) -> None:
         """A skinned or morphed mesh, as its source geometry in its bind pose."""
         if ctrl is None:
             return
+        if id(ctrl) in stack or len(stack) > MAX_DEPTH:
+            raise SurfaceError("the COLLADA file has a skin or morph that is built from itself")
         for kind in ("skin", "morph"):
             el = _child(ctrl, kind)
             if el is None:
@@ -515,7 +591,7 @@ class _Walk:
                     bind = v.reshape(4, 4)
             target = self.doc.ref(el.get("source"))
             if target is not None and _local(target.tag) == "controller":
-                self.controller(target, m @ bind, name)
+                self.controller(target, m @ bind, name, stack + (id(ctrl),))
             else:
                 self.place(target, m @ bind, name)
             return
@@ -561,20 +637,19 @@ def read_collada(path: Path) -> SurfaceMesh:
         for lib in _children(root, "library_geometries"):
             for g in _children(lib, "geometry"):
                 walk.place(g, np.eye(4), "")
+    if doc.outside:
+        # a part kept in another file never arrives with the upload: the model would be read with
+        # it missing, so it is refused rather than meshed short
+        raise SurfaceError(
+            "the COLLADA file keeps some of its geometry in separate files "
+            f"({sorted(doc.outside)[0]}), which an upload does not carry - export one .dae "
+            "with all the geometry inside it, or an STL")
     if not walk.parts:
-        if doc.outside:
-            raise SurfaceError(
-                "the COLLADA file keeps its geometry in separate files "
-                f"({sorted(doc.outside)[0]}), which an upload does not carry - export one .dae "
-                "with the geometry inside it, or an STL")
         raise SurfaceError("the COLLADA file places no triangle meshes")
     out = concat(walk.parts)
     world = np.eye(4)
     world[:3, :3] = frame.rotation * frame.scale
     out.points = (np.c_[out.points, np.ones(len(out.points))] @ world.T)[:, :3]
-    if doc.outside:
-        notes.append(f"{len(doc.outside)} reference(s) to other files were left out "
-                     f"({sorted(doc.outside)[0]})")
     for what, n in sorted(doc.skipped.items()):
         notes.append(f"{n} COLLADA {what} element(s) hold no surface triangles and were left out")
     out.notes = frame.notes() + notes + list(out.notes)

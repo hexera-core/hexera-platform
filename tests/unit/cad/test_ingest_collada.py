@@ -302,3 +302,71 @@ def test_a_dae_whose_bytes_are_not_collada_is_refused_at_upload(tmp_path):
 def test_a_good_dae_passes_the_upload_check(tmp_path):
     verdict = check_upload(_one_box(tmp_path / "input.dae"), ".dae")
     assert verdict.ok and verdict.suffix == ".dae"
+
+
+# polygons are split so the triangles cover each one exactly
+
+def _signed_areas(pts, tris, normal=(0.0, 0.0, 1.0)):
+    a, b, c = (pts[tris[:, k]] for k in range(3))
+    return np.cross(b - a, c - a) @ np.asarray(normal) / 2.0
+
+
+def _shoelace(xy):
+    x, y = np.asarray(xy).T
+    return 0.5 * float(np.sum(x * np.roll(y, -1) - np.roll(x, -1) * y))
+
+
+@pytest.mark.parametrize("ring", [
+    [(0, 0), (4, 0), (4, 4), (2, 1), (0, 4)],                    # a notch: fanned, it overlaps
+    [(0, 0), (4, 0), (4, 1), (1, 1), (1, 4), (0, 4)],            # an L
+    [(0, 0), (2, 1), (4, 0), (2, 4)],                            # a dart (a concave quad)
+    [(1, 0), (0, 0), (0, 1), (1, 1)][::-1],                      # a convex quad
+])
+def test_a_concave_polygon_is_covered_exactly_with_no_triangle_outside_it(ring):
+    from meshpipeline.cad.ingest.collada import _polygons
+
+    pts = np.array([(x, y, 0.0) for x, y in ring], dtype=float)
+    tris = _polygons(np.arange(len(ring)), np.array([len(ring)]), pts)
+    assert len(tris) == len(ring) - 2
+    signed = _signed_areas(pts, tris)
+    # every triangle faces the same way as the polygon, and together they are its area exactly
+    assert (signed > 0).all()
+    assert signed.sum() == pytest.approx(_shoelace(ring))
+
+
+def test_a_negative_corner_count_is_refused_before_anything_is_built():
+    from meshpipeline.cad.ingest.collada import _polygons
+    from meshpipeline.cad.ingest.surface import SurfaceError
+
+    pts = np.zeros((3, 3))
+    with pytest.raises(SurfaceError, match="negative"):
+        _polygons(np.array([0, 1, 2]), np.array([1_000_000_000, -1_000_000_000]), pts)
+    with pytest.raises(SurfaceError, match="shorter"):
+        _polygons(np.array([0, 1, 2]), np.array([2_000_000_000]), pts)
+
+
+def test_polygons_with_holes_are_refused_with_the_way_on(tmp_path):
+    geom = _geometry("g", prim="polygons").replace(
+        "</polygons>", "<ph><p>0 0 1 0 3 0</p><h>0 0 1 0 3 0</h></ph></polygons>")
+    src = _dae(tmp_path / "box.dae", geometries=geom,
+               nodes='<node id="n"><instance_geometry url="#g"/></node>')
+    with pytest.raises(IngestError, match="triangulated"):
+        canonicalise(src, tmp_path / "out")
+
+
+def test_an_assembly_with_one_part_in_another_file_is_refused_not_read_short(tmp_path):
+    nodes = ('<node id="a"><instance_geometry url="#g"/></node>'
+             '<node id="b"><instance_geometry url="wheel.dae#w"/></node>')
+    src = _dae(tmp_path / "box.dae", geometries=_geometry("g"), nodes=nodes)
+    with pytest.raises(IngestError, match="separate files"):
+        canonicalise(src, tmp_path / "out")
+
+
+def test_a_skin_built_from_itself_is_refused(tmp_path):
+    ctrl = ('<library_controllers><controller id="c"><skin source="#c"/></controller>'
+            '</library_controllers>')
+    src = _dae(tmp_path / "box.dae", geometries=_geometry("g") + "</library_geometries>" + ctrl
+               + "<library_geometries>",
+               nodes='<node id="n"><instance_controller url="#c"/></node>')
+    with pytest.raises(IngestError, match="built from itself"):
+        canonicalise(src, tmp_path / "out")
