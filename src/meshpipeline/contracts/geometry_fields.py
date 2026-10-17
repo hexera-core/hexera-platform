@@ -139,15 +139,51 @@ def external_defaults(facts: dict, flow_axis: str | None, up_axis: str = DEFAULT
     unused, so the form never meets a missing key."""
     size = facts.get("size_mm") or [0.0, 0.0, 0.0]
     upright = up_or_default(up_axis) == DEFAULT_UP
-    guess = (facts.get("flow_axis_guess") if upright else None) or axis_of_longest_side(size, up_axis)
+    shaped, reading = axis_from_reading(facts.get("flow_axis_reading"), up_axis)
+    guess = shaped or (facts.get("flow_axis_guess") if upright else None) or axis_of_longest_side(size, up_axis)
     axis = flow_axis if flow_axis in AXES else guess
+    if flow_axis in AXES:
+        sure, why = 1.0, "chosen"
+    elif shaped:
+        sure, why = float(reading.get("confidence") or 0.0), str(reading.get("reason") or "")
+    else:
+        sure, why = LONGEST_SIDE_CONFIDENCE, "the longest side across the up axis; nothing in the shape says more"
     return {
         "flow_axis": axis,
         "flow_axis_guessed": flow_axis not in AXES,
+        "flow_axis_confidence": round(sure, 2),
+        "flow_axis_from": why,
         "reference_length_mm": round(length_along(size, axis), 2),
         "extents": dict(DEFAULT_EXTENTS),
         "grounded": bool(facts.get("grounded", False)) and upright,
     }
+
+
+#: How sure the longest side is as the flow direction when the shape says nothing else.
+LONGEST_SIDE_CONFIDENCE = 0.3
+
+
+def axis_from_reading(readings, up_axis: str = DEFAULT_UP) -> tuple[str | None, dict]:
+    """The flow axis the shape's own reading gives (cad/flow_reading.direction: its readings,
+    surest first), across the up axis, and the reading that gave it: ALONG an axis is that axis;
+    ACROSS one or more is the one horizontal axis square to them all. A reading that leaves a
+    choice (across the up axis alone, a body symmetric both ways) gives way to the next; none
+    left: (None, {}) - the longest side and the user settle it then. The sign is +: which end the
+    flow meets first is for the pictures and the user."""
+    if isinstance(readings, dict):
+        readings = [readings]
+    up = up_or_default(up_axis)[1]
+    for reading in readings or []:
+        if not isinstance(reading, dict):
+            continue
+        axes = [a for a in (reading.get("axes") or []) if a in ("x", "y", "z")]
+        if reading.get("rule") == "along" and len(axes) == 1:
+            return "+" + axes[0], reading
+        if reading.get("rule") == "across" and axes:
+            left = [a for a in "xyz" if a != up and a not in axes]
+            if len(left) == 1:
+                return "+" + left[0], reading
+    return None, {}
 
 
 #: WHY A GROUNDED PART DRAWN ANOTHER WAY UP IS MESHED FREE IN THE FLOW. The mesher lays the ground
@@ -187,7 +223,7 @@ def external_declaration(body) -> list[str]:
     return lines
 
 
-__all__ = ["AXES", "DEFAULT_EXTENTS", "DEFAULT_UP", "EXTERNAL_KEYS", "FIELD_KEYS", "FIELDS",
+__all__ = ["AXES", "DEFAULT_EXTENTS", "LONGEST_SIDE_CONFIDENCE", "axis_from_reading", "DEFAULT_UP", "EXTERNAL_KEYS", "FIELD_KEYS", "FIELDS",
            "GROUND_NEEDS_Z_UP", "INPUT_KIND_OPTIONS", "GeometryField", "UP_AXES", "axis_of_longest_side",
            "external_declaration", "external_defaults", "form_spec", "length_along",
            "length_of_another_axis", "same_length", "up_or_default"]
