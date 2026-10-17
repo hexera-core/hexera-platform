@@ -108,6 +108,32 @@ def _meshers_started(workspace) -> int | None:
     return meshers_started(native_runs(workspace))
 
 
+def _manifest_stamp(workspace) -> tuple[int, int] | None:
+    """(mtime_ns, size) of the workspace's mesh manifest, or None when there is none - so the
+    executor can tell a manifest THIS finalize wrote from one left by an earlier pass."""
+    try:
+        st = (Path(workspace) / "mesh_manifest.json").stat()
+    except (OSError, TypeError, ValueError):
+        return None
+    return st.st_mtime_ns, st.st_size
+
+
+def _broken_mesh(workspace, before: tuple[int, int] | None) -> list[str]:
+    """The fatal checkMesh defects of the mesh this finalize just judged - read from the manifest
+    it wrote, and only when it wrote one (a manifest left from before says nothing about this
+    mesh). [] when there is no such manifest or the mesh had no fatal defect."""
+    now = _manifest_stamp(workspace)
+    if now is None or now == before:
+        return []
+    try:
+        quality = (json.loads((Path(workspace) / "mesh_manifest.json").read_text()) or {}).get(
+            "quality") or {}
+    except (OSError, ValueError, AttributeError):
+        return []
+    fatal = quality.get("fatal") if isinstance(quality, dict) else None
+    return [str(x) for x in fatal if str(x).strip()] if isinstance(fatal, list) else []
+
+
 def _no_mesh_cause(state, workspace, cause: str, facts: dict) -> tuple[str, dict]:
     """(cause, facts) for an attempt that ended with no mesh and no refusal on record, read from
     the attempt's record of native runs (contracts/mesh_execution.native_runs):
@@ -223,6 +249,7 @@ async def node_executor(state: PipelineState) -> dict:
     # internal jobs bypassing intake (programmatic submits) can arrive with no domain label;
     # give the reviewer a non-empty flow context rather than an empty field.
     _mfst_domain = _domain or ("internal flow" if _internal else "")
+    _manifest_before = _manifest_stamp(workspace)
     # ENGINE-ADAPTER seam: each engine declares its own finalize (flow engines →
     # each flow bundle's finalize clone; gmsh → its own finalize).
     result: dict = ({"success": False, "output": _refusal.builder_text, "stdout": "", "stderr": ""}
@@ -255,6 +282,18 @@ async def node_executor(state: PipelineState) -> dict:
             # counted by (engine_fallback.mesher_started)
             failure_facts["meshers_started"] = _started
         await _pub.acheck(_gate_statement(state.get("engine", ""), _refusal.gate), ok=False)
+    elif not executor_success and (_broken := _broken_mesh(workspace, _manifest_before)):
+        # A MESH CAME OUT, AND IT IS BROKEN: finalize wrote its manifest and checkMesh's fatal
+        # defects are in it. That is a mesh that failed its quality check, not a mesher that
+        # "stopped before it finished writing the mesh" (every cfMesh DrivAer car was told that,
+        # e2e sweep 2026-10-17). The fatal list travels as a fact: the user's sentence names the
+        # defects, and the fallback ladder moves a broken mesh to the next engine at once.
+        from meshpipeline.contracts.failure_cause import FailureCause
+        failure_cause = FailureCause.MESH_QUALITY.value
+        failure_facts = {**failure_facts, "fatal": _broken}
+        _started = _meshers_started(workspace)
+        if _started is not None:
+            failure_facts["meshers_started"] = _started
     elif not executor_success:
         # NO MESH, AND NOTHING REFUSED IT: say which of the four it was, from the attempt's record
         # of native runs - not "the mesher stopped" for every one of them (job d20ad762 was told

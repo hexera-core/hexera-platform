@@ -61,6 +61,16 @@ def _recommend():
     return recommend
 
 
+def _planned_timeout(workspace):
+    from meshpipeline.engines.cfmesh.cfmesh_runner import planned_run_cap
+    return planned_run_cap(workspace)
+
+
+def _timed_out_defects(log_tail):
+    from meshpipeline.engines.cfmesh.native import untangle_stall
+    return untangle_stall(log_tail)
+
+
 def _review_rubric():
     from meshpipeline.engines.cfmesh.criteria import REVIEW_AXES
     return REVIEW_AXES
@@ -293,10 +303,22 @@ SPEC = EngineSpec(
             # for draft meshes, where a too-fine dict was meant to fail fast so the builder
             # coarsens - coarsening is now bounded by the floor. Snappy's budget is 2400 s.
             run_timeout=lambda: min(1200, rtcfg.OPENFOAM_COMMAND_TIMEOUT),
-            timeout_hint=("The wall band and background are held at ~13 cells across the passage "
-                          "by the passage caps, so a fill that does not finish in 20 min is a domain "
-                          "too large for that density or an objectRefinement that is far too fine: "
-                          "drop or widen the objectRefinements first, then run_mesh again."),
+            # A PLANNED CASE GETS THE TIME ITS PLAN NEEDS: configure_mesh times the external case
+            # from the cells it will make (cfmesh_runner.estimate_cells at a cautious fill rate)
+            # and records the cap - up to 50 minutes - or makes the wall coarser until it fits.
+            # The fixed 20 minutes timed out the soccer ball in its last step, and sized the
+            # DrivAer cars' 4.3M cells to finish with three minutes to spare (e2e, 2026-10-17).
+            planned_timeout=_planned_timeout,
+            # a run that timed out while cartesianMesh was still untangling faces that point the
+            # wrong way is a broken mesh, not a slow one: the BlendedNet wings ran out of time with
+            # 43,771 bad faces left, the SAE notchback with 182 - on plans of 1-3M cells that fit
+            # the cap with room to spare (e2e, 2026-10-17). More time does not mend that.
+            timed_out_defects=_timed_out_defects,
+            timeout_hint=("The run outlasted the time its plan was given: the wall band and the "
+                          "background are sized for this body, so a fill that does not finish is "
+                          "an objectRefinement that is far too fine, or a surface cfMesh cannot "
+                          "untangle - drop or widen the objectRefinements first, then run_mesh "
+                          "again; if it times out again, stop."),
             ok_guidance="Valid mesh (no fatal defects) - call submit_mesh.",
             fail_label="cartesianMesh failed",
             fail_hint=("Adjust the meshDict (fewer/thinner boundaryLayers, or "
