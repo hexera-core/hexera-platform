@@ -111,7 +111,7 @@ async def test_closing_a_park_is_a_compare_and_set_on_open():
     db = _Db()
     await repo.close_park(db, uuid.uuid4(), "run")
     (stmt,) = _updates(db)
-    assert "status = 'open'" in _sql(stmt.whereclause)
+    assert "status IN ('open')" in _sql(stmt.whereclause)
     with pytest.raises(ValueError):
         await repo.close_park(db, uuid.uuid4(), "nobody")
 
