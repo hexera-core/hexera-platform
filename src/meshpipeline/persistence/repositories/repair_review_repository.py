@@ -68,19 +68,21 @@ class RepairReviewRepository:
     async def record_decision(self, db: AsyncSession, item_id: uuid.UUID, state: str,
                               decision: dict) -> RepairReviewItem:
         _check_state(state)
+        # ONE conditional UPDATE: the park's open status is part of the write's own WHERE, so a
+        # close_park committing concurrently cannot land a decision on a closed park.
+        open_parks = select(RepairReviewPark.id).where(RepairReviewPark.status == "open")
+        res = await db.execute(
+            update(RepairReviewItem)
+            .where(RepairReviewItem.id == item_id,
+                   RepairReviewItem.park_id.is_(None) | RepairReviewItem.park_id.in_(open_parks))
+            .values(state=state, decision=dict(decision), decided_at=datetime.now(UTC)))
         item = (await db.execute(
-            select(RepairReviewItem).where(RepairReviewItem.id == item_id))).scalar_one_or_none()
+            select(RepairReviewItem).where(RepairReviewItem.id == item_id)
+            .execution_options(populate_existing=True))).scalar_one_or_none()
         if item is None:
             raise LookupError(f"no repair review item {item_id}")
-        if item.park_id is not None:
-            park = (await db.execute(select(RepairReviewPark)
-                                     .where(RepairReviewPark.id == item.park_id))).scalar_one()
-            if park.status != "open":
-                raise ParkClosedError(f"park {park.id} is closed; item {item_id} is final")
-        item.state = state
-        item.decision = dict(decision)
-        item.decided_at = datetime.now(UTC)
-        await db.flush()
+        if not res.rowcount:
+            raise ParkClosedError(f"park {item.park_id} is closed; item {item_id} is final")
         return item
 
     async def record_group_decision(self, db: AsyncSession, job_id: uuid.UUID, group_key: str,
@@ -109,7 +111,7 @@ class RepairReviewRepository:
             raise ValueError("closed_by must be 'run' or 'cancel'")
         await db.execute(
             update(RepairReviewPark)
-            .where(RepairReviewPark.id == park_id, RepairReviewPark.status.in_(("open",)))
+            .where(RepairReviewPark.id == park_id, RepairReviewPark.status.in_(("open",)))   # CAS shape the architecture fitness test requires
             .values(status="closed", closed_by=closed_by, closed_at=datetime.now(UTC)))
 
 
