@@ -80,6 +80,18 @@ for pair in "deployment-id:DEPLOYMENT_ID" \
   fi
 done
 
+# THE PROJECT, asked of the metadata server for the same reason the secrets block asks it: it is a
+# fact about where this instance runs, so nothing has to state it and nothing can state it wrongly.
+# It has no metadata attribute and the env object is .env.example, where the line is EMPTY - so
+# without this a personal fleet has no project at all, and every mesh dispatch was refused with
+# "Cloud Run compute is required for meshing but is not configured - missing: GCP_PROJECT_ID"
+# while the fleet looked healthy. The job name and the exchange bucket beside it came through the
+# loop above, which is why that one name was the only thing missing.
+project="$(md_project || true)"
+if [ -n "${project}" ]; then
+  echo "GCP_PROJECT_ID=${project}" >> /etc/hexera/worker.env
+fi
+
 # CREDENTIALS are fetched by NAME, under this instance's own identity, and only ever exist in a
 # root-owned file on the instance. Metadata carries the secret's name; the value is never in the
 # template, never in an object in a bucket, and never in `gcloud compute instances describe`.
