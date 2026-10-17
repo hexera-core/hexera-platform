@@ -159,7 +159,8 @@
  "snapgrid": {
   "axes": [
    "interface_continuity",
-   "placed_part_capture"
+   "placed_part_capture",
+   "thermal_resolution"
   ],
   "criteria": [
    "fatal",
@@ -167,6 +168,7 @@
    "max_non_ortho",
    "rc",
    "regions_missing",
+   "resolution_short",
    "skew_fraction",
    "thin_layers_short",
    "timed_out"

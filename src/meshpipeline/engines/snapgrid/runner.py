@@ -23,13 +23,37 @@ REPORT_NAME = "snapgrid_report.json"
 SIDECAR_NAME = "thermal_model.json"
 
 #: Mesh fidelity -> the grid plan. Every layer always keeps at least one cell through it; the
-#: plan sets how many more are asked for, how round a cylinder is, and the cell budget.
+#: plan sets the electronics-cooling resolution rules (engines/snapgrid/thermal_rules.py), how
+#: round a cylinder is, and the cell budget. The numbers follow the tools' published practice:
+#: Flotherm puts 3 cells across a fin gap by default and 5 for pressure drop, 1-2 through a fin
+#: and 2-3 through a heat-sink base, and at least 3 cells across a small heat source; Icepak asks
+#: 2-3 elements in every gap, 4-5 on every fan, vent and grille, and neighbouring cells within 2x
+#: (general CFD practice: within 1.3x, aspect under 20-50 away from walls). Standard's budget
+#: keeps every rule on the real packages of the test set (they need 3-4M cells; at 2M most rules
+#: had to relax); the job's memory still lowers it before anything is built.
 FIDELITY_ORDER: tuple[str, ...] = ("draft", "standard", "max")
 FIDELITY_PLANS: dict[str, dict] = {
-    "draft": {"max_cells": 500_000, "min_cells_across": 1, "cylinder_cells": 8},
-    "standard": {"max_cells": 2_000_000, "min_cells_across": 2, "cylinder_cells": 12},
-    "max": {"max_cells": 6_000_000, "min_cells_across": 3, "cylinder_cells": 16},
+    "draft": {"max_cells": 500_000, "min_cells_across": 1, "cylinder_cells": 8,
+              "hot_cells_across": 2, "gap_cells": 2, "band_cells": 2, "spread_cells": 4,
+              "opening_cells": 4, "growth": 1.4, "air_aspect": 20.0},
+    "standard": {"max_cells": 4_000_000, "min_cells_across": 2, "cylinder_cells": 12,
+                 "hot_cells_across": 3, "gap_cells": 4, "band_cells": 6, "spread_cells": 6,
+                 "opening_cells": 6, "growth": 1.3, "air_aspect": 5.0},
+    "max": {"max_cells": 8_000_000, "min_cells_across": 3, "cylinder_cells": 16,
+            "hot_cells_across": 4, "gap_cells": 6, "band_cells": 6, "spread_cells": 10,
+            "opening_cells": 10, "growth": 1.2, "air_aspect": 5.0},
 }
+#: The plan keys that are grid.GridPlan fields (the rest - "fidelity" - are the run's own).
+PLAN_FIELDS: tuple[str, ...] = ("max_cells", "background_cells", "min_cells_across",
+                                "cylinder_cells", "growth", "hot_cells_across", "gap_cells",
+                                "band_cells", "spread_cells", "opening_cells", "air_aspect")
+
+
+def grid_plan(plan: dict):
+    """The grid.GridPlan a plan dict asks for (unknown keys ignored, missing ones defaulted)."""
+    from meshpipeline.engines.snapgrid.grid import GridPlan
+
+    return GridPlan(**{k: plan[k] for k in PLAN_FIELDS if plan.get(k) is not None})
 
 
 def plan_for(fidelity: str = "", step: int = 0) -> dict | None:
@@ -64,11 +88,9 @@ def read_plan(workspace) -> dict:
 
 def cli_args(plan: dict) -> list[str]:
     """The CLI options a plan sets (engines/snapgrid/cli.py); unknown keys are ignored."""
-    flags = {"max_cells": "--max-cells", "min_cells_across": "--min-cells-across",
-             "cylinder_cells": "--cylinder-cells", "background_cells": "--background-cells",
-             "growth": "--growth"}
     out: list[str] = []
-    for key, flag in flags.items():
+    for key in PLAN_FIELDS:
+        flag = "--" + key.replace("_", "-")
         if plan.get(key) is not None:
             out += [flag, str(plan[key])]
     return out
@@ -211,6 +233,9 @@ def quality_of(ws: Path, report: dict) -> dict:
         "interface_mismatch": mismatch,
         "thin_layers_short": short,
         "layers_budget": int(report.get("layers_budget") or 0),
+        # the thermal rules, measured off the grid lines: every gap, heated surface, heat source
+        # and opening short of what the level asks (absent - never a pass - when not measured)
+        **_resolution_quality(report),
         "staircased": list(report.get("staircased") or []),
         "file_checked": any(str(line).startswith("Checked:")
                             for line in report.get("build_report") or []),
@@ -219,6 +244,28 @@ def quality_of(ws: Path, report: dict) -> dict:
     q_out["mesh_ok"] = bool(native.get("ok")) and not q_out["regions_missing"] \
         and not q_out["regions_undeclared"] and q_out["interface_ok"]
     return q_out
+
+
+#: Shortfalls the quality dict lists by name (the count covers all of them).
+_SHORT_LIMIT = 200
+
+
+def _resolution_quality(report: dict) -> dict:
+    """The resolution audit as the quality dict carries it: what fell short, in words, and the
+    budget that would have kept every rule. Nothing when the mesher did not measure it."""
+    res = report.get("resolution") or {}
+    if not res.get("measured"):
+        return {}
+    short = [(f"{r.get('what')}: first cell {float(r['first_m']) * 1e3:.2g} mm, asked "
+              f"{float(r['first_want_m']) * 1e3:.2g} mm")
+             if r.get("first_m") and (r.get("got") or 0) >= (r.get("want") or 0) else
+             f"{r.get('what')}: {r.get('got')} of {r.get('want')} cells"
+             for r in res.get("short") or [] if isinstance(r, dict)]
+    return {"resolution_short": short[:_SHORT_LIMIT] + (
+                [f"... and {len(short) - _SHORT_LIMIT} more"] if len(short) > _SHORT_LIMIT else []),
+            "resolution_short_count": len(short),
+            "resolution_checked": int(sum((res.get("counts") or {}).values())),
+            "rules_budget": int(report.get("rules_budget") or 0)}
 
 
 _OF_TYPE_TO_ROLE = {"wall": "wall", "symmetryplane": "symmetry", "symmetry": "symmetry",

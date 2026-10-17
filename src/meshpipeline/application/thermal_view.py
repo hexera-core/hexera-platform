@@ -522,6 +522,13 @@ def _warnings(sidecar: dict, placement, tree: list[dict], detail: dict | None) -
                                  + _names((f"{r['part']} ({_num(r['thickness_mm'])} mm, {r['cells_across']} "
                                           f"cell{'s' if r['cells_across'] != 1 else ''})" for r in short), n)
                                  + ". Fine gives more.", [r["part"] for r in short]))
+    rules_short = std.get("rules_short") or []
+    if rules_short:
+        out.append(_warn("warn", "At Standard, the cell budget does not reach every rule: "
+                                 + "; ".join(str(x) for x in rules_short) + ". Fine gives more."))
+    relaxed = [str(r) for r in std.get("relaxed") or [] if "background cell size" not in str(r)]
+    if relaxed:
+        out.append(_warn("info", "At Standard, to fit the cell budget: " + "; ".join(relaxed) + "."))
     return out
 
 
@@ -539,13 +546,17 @@ SIZED_AT_RUN = "sized when the mesh runs"
 
 
 def _level_row(level: str, label: str) -> dict:
-    from meshpipeline.engines.snapgrid.runner import plan_for
+    from meshpipeline.engines.snapgrid.runner import grid_plan, plan_for
+    from meshpipeline.engines.snapgrid.thermal_rules import describe_plan
 
     plan = plan_for(level) or {}
     return {"label": label, "max_cells": int(plan.get("max_cells") or 0),
             "min_cells_across": int(plan.get("min_cells_across") or 1),
             "cylinder_cells": int(plan.get("cylinder_cells") or 12),
+            "gap_cells": int(plan.get("gap_cells") or 0),
+            "rules": describe_plan(grid_plan(plan)),
             "est_cells": None, "est_seconds": None, "thin_layers_short": [], "relaxed": [],
+            "rules_short": [], "rules_short_count": 0, "rules_measured": False,
             "estimate": SIZED_AT_RUN}
 
 
@@ -556,7 +567,9 @@ def _sized_levels(placement, *, budget_s: float, clock=time.monotonic):
     A level not started within `budget_s` of the first keeps its limits only."""
     from meshpipeline.engines.snapgrid import blocks as B
     from meshpipeline.engines.snapgrid import grid as G
+    from meshpipeline.engines.snapgrid import thermal_rules as TR
     from meshpipeline.engines.snapgrid.mesher import _thin_layers
+    from meshpipeline.engines.snapgrid.runner import grid_plan, plan_for
 
     live = [k for k, p in enumerate(placement.parts) if not p.dropped]
     names = {k: placement.names[k] for k in live}
@@ -568,8 +581,8 @@ def _sized_levels(placement, *, budget_s: float, clock=time.monotonic):
         if clock() - started > budget_s:
             yield level, row
             continue
-        plan = G.GridPlan(max_cells=row["max_cells"], min_cells_across=row["min_cells_across"],
-                          cylinder_cells=row["cylinder_cells"])
+        # the plan the mesher will run: every rule of the level, not just its budget
+        plan = grid_plan(plan_for(level) or {})
         try:
             layout = B.build_layout(placement, plan)
         except G.OverBudget as exc:
@@ -579,8 +592,18 @@ def _sized_levels(placement, *, budget_s: float, clock=time.monotonic):
             yield level, row
             continue
         cells = int(layout.n_cells)
-        thin = _thin_layers(placement, layout, live, names, row["min_cells_across"])
+        thin = _thin_layers(placement, layout, live, names,
+                            {k: TR.part_cells(placement, plan, k) for k in live})
         short = [r for r in thin if not r["ok"]]
+        # what the grid gives each thermal rule, measured off the laid-out lines
+        try:
+            res = TR.audit(placement, layout, layout.plan, plan)
+            row.update(rules_short=TR.short_lines(res, limit=4),
+                       rules_short_count=len(res.get("short") or []),
+                       rules_got=TR.summary_lines(res), rules_measured=True)
+        except Exception:  # noqa: BLE001 - the level then says nothing it did not measure
+            logger.exception("thermal view: the resolution audit failed for %s", level)
+            row.update(rules_measured=False)
         row.update(fits=True, est_cells=cells, est_seconds=estimate_seconds(cells, round_parts),
                    relaxed=list(layout.relaxed), estimate="",
                    thin_layers_short=[{"part": r["part"], "thickness_mm": _mm(r["thickness_m"]),

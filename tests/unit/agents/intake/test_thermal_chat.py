@@ -175,10 +175,11 @@ def test_the_generic_declaration_and_its_parser_are_unchanged():
 def test_the_job_sheet_reads_like_an_engineers(view):
     assert job_sheet(view, level="standard", engine="snapgrid") == (
         "Mesh “Set-top box, vented” (Flotherm, 8 parts + air, 8.7 W, 35 °C ambient) for a conjugate "
-        "heat-transfer solve. Snap-grid hex mesh, Standard: up to 2M cells, at least 2 cells through every "
-        "layer. Delivered as an OpenFOAM multi-region case plus the thermal model.")
+        "heat-transfer solve. Snap-grid hex mesh, Standard: up to 4M cells, at least 2 cells through every "
+        "layer, 4 across every air gap and a fine warm-air layer on every heated surface. Delivered as an "
+        "OpenFOAM multi-region case plus the thermal model.")
     assert "Quick look: up to 500k cells, at least 1 cell through" in job_sheet(view, level="draft")
-    assert "Fine: up to 6M cells, at least 3 cells through" in job_sheet(view, level="max")
+    assert "Fine: up to 8M cells, at least 3 cells through" in job_sheet(view, level="max")
     # an engine the user named instead is said by its name and the level
     other = job_sheet(view, level="standard", engine="snappy_multiregion")
     assert "Snap-grid" not in other and other.endswith("mesh, Standard detail.")
@@ -204,7 +205,7 @@ def test_the_brief_of_a_thermal_model_is_its_job_sheet(view, monkeypatch):
     brief = build_brief(_session(view))
     assert brief["check_mode"] == "thermal"
     # the level the user picked on the panel, until the submission records its own
-    assert "Snap-grid hex mesh, Fine: up to 6M cells" in brief["job_sheet"]
+    assert "Snap-grid hex mesh, Fine: up to 8M cells" in brief["job_sheet"]
     assert "Standard" in build_brief(_session(view, requested_mesh_fidelity="standard"))["job_sheet"]
     sides = next(c for c in brief["checks"] if c["id"] == "boundary_roles_valid")
     assert sides["status"] == "pass" and "file" in sides["label"]

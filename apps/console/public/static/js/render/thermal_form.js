@@ -184,6 +184,8 @@ export function levelWords(row) {
     let s = `${cells(row.est_cells)} cells · ${duration(row.est_seconds)}`;
     const short = Number(row.thin_layers_short_count || (row.thin_layers_short || []).length || 0);
     if (short) s += ` · ${plural(short, "layer")} short`;
+    const rules = Number(row.rules_short_count || 0);
+    if (rules) s += ` · ${plural(rules, "spot")} coarser than asked`;
     return s;
   }
   return `up to ${cells(row.max_cells)} cells · ${row.estimate || "sized when the mesh runs"}`;
@@ -193,12 +195,17 @@ export function levelWords(row) {
 export function levelPromise(row, label) {
   if (!row) return "";
   const across = Number(row.min_cells_across || 1);
-  const aim = `${label}: up to ${cells(row.max_cells)} cells, aiming for ${plural(across, "cell")} through every layer`;
+  const gap = Number(row.gap_cells || 0);
+  const gaps = gap ? ` and ${gap} across every air gap` : "";
+  const aim = `${label}: up to ${cells(row.max_cells)} cells, aiming for ${plural(across, "cell")} through every layer${gaps}`;
   if (row.fits === false) return `${aim}. ${sentenceOf(row.estimate || "This model needs more cells than that")}`;
   const short = Number(row.thin_layers_short_count || (row.thin_layers_short || []).length || 0);
   if (short) return `${aim}; ${plural(short, "thin layer")} ${short === 1 ? "gets" : "get"} fewer.`;
   // the check sized it and every layer gets its cells: the promise is the check's own result
-  if (row.est_cells) return `${label}: up to ${cells(row.max_cells)} cells, at least ${plural(across, "cell")} through every layer.`;
+  const rules = Number(row.rules_short_count || 0);
+  if (row.est_cells && rules) return `${aim}; ${plural(rules, "spot")} ${rules === 1 ? "gets" : "get"} fewer.`;
+  // the counts were measured off the laid-out grid: the promise is the check's own result
+  if (row.est_cells && row.rules_measured !== false) return `${label}: up to ${cells(row.max_cells)} cells, at least ${plural(across, "cell")} through every layer${gaps}.`;
   return `${aim}.`;
 }
 function sentenceOf(text) {

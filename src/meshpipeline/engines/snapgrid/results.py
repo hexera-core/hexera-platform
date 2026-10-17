@@ -364,6 +364,11 @@ def quality_lines(report: dict, rows: list[dict]) -> list[str]:
                          "a layer than asked: " + ", ".join(
                              f"{r['label']} ({r['cells_through']} of {r['cells_asked']})" for r in short[:6])
                          + (f", and {len(short) - 6} more" if len(short) > 6 else "") + ".")
+    # the thermal rules, as the mesher measured them off the grid lines
+    res = report.get("resolution") or {}
+    if res.get("measured"):
+        lines += [str(x) for x in res.get("summary") or []]
+        lines += [f"Coarser than asked: {x}." for x in res.get("short_lines") or []]
     rounds = [s for s in report.get("staircased") or [] if isinstance(s, dict) and s.get("part")]
     if rounds:
         worst_pct = max(abs(float(s.get("error_pct") or 0.0)) for s in rounds)

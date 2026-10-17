@@ -101,6 +101,8 @@ class Layout:
     #: when the budget took cells out of the thin layers (fewer through them than the plan asks):
     #: the fewest cells that would have kept the asked number through every layer; else 0
     layers_budget: int = 0
+    #: when the budget relaxed any rule: the fewest cells that keep every rule as asked; else 0
+    rules_budget: int = 0
 
     @property
     def n_cells(self) -> int:
@@ -130,19 +132,22 @@ def geometry_of(placement: Placement, plan: G.GridPlan) -> Geometry:
         j = int(np.searchsorted(a, v))
         return min((c for c in (j - 1, j) if 0 <= c < len(a)), key=lambda c: abs(a[c] - v))
 
+    from meshpipeline.engines.snapgrid import thermal_rules as TR
+
     boxes: list[tuple[_Box, bool, int]] = []        # (box, closed, skip axis)
     src: list[tuple[_Box, tuple[float, ...]]] = []
-    for p in placement.parts:
+    for pk, p in enumerate(placement.parts):
         if p.dropped:
             continue
         cyl = axis_of_plane(p.objects[0].plane) if p.kind == "solidCylinder" else None
+        through = TR.part_cells(placement, plan, pk)
         for b in _material(p):
             c = b.common(dom)
             if c is None:
                 continue
             boxes.append((c, False, -1))
             size = tuple((c.hi[i] - c.lo[i]) / (plan.cylinder_cells if (cyl is not None and i != cyl)
-                                                 else plan.min_cells_across) for i in range(3))
+                                                 else through) for i in range(3))
             src.append((c, size))
         for kind, cut, axis in p.cutters:
             # along the wall's normal the cutter reaches past the wall on purpose; what it opens
@@ -179,6 +184,10 @@ def geometry_of(placement: Placement, plan: G.GridPlan) -> Geometry:
             c = _clip(_Box(r["box_m"]["min"], r["box_m"]["max"]), dom)
             if c is not None:
                 boxes.append((c, True, -1))
+    # the thermal rules: gaps, heated surfaces, heat sources, fans and vents (none at 0)
+    background = max(dom.hi[i] - dom.lo[i] for i in range(3)) / plan.background_cells
+    for lo_, hi_, size_ in TR.sources(placement, plan, background):
+        src.append((_Box(lo_, hi_), size_))
     curved = []
     for p in placement.parts:
         if p.dropped:
@@ -327,11 +336,44 @@ class _Lines:
             jm = np.clip(j - 1, a_ + 1, b_ - 1)
             pick = np.where(np.abs(phi[jm] - t) < np.abs(phi[j] - t), jm, j)
             picks.append(pick)
-        out = np.unique(np.concatenate(picks)) + g0
+        local = _first_cells(np.unique(np.concatenate(picks)), rl, x, h)
+        out = local + g0
         return out.astype(np.int64)
 
     def block(self, lo, hi) -> list[np.ndarray]:
         return [self.axis_lines(lo, hi, a) for a in range(3)]
+
+
+#: The cell next to a stated plane may be at most this many times the size the field asks there
+#: (lines are picked from the global set at equal steps of the field, which can land a cell up
+#: to half a global spacing off; the first cell off a heated face is the one that matters).
+FIRST_CELL_SLACK = 1.2
+
+
+def _first_cells(picks: np.ndarray, required: np.ndarray, x: np.ndarray, h: np.ndarray
+                 ) -> np.ndarray:
+    """`picks` (local indices into x) with, beside each required plane, the global line nearest
+    one field size away added wherever the cell there came out more than FIRST_CELL_SLACK times
+    the size the field asks at the plane."""
+    add = []
+    for r in required.tolist():
+        k = int(np.searchsorted(picks, r))
+        if k >= len(picks) or picks[k] != r:
+            continue
+        for nb, sign in ((k + 1, 1), (k - 1, -1)):
+            if not 0 <= nb < len(picks):
+                continue
+            j = int(picks[nb])
+            if abs(x[j] - x[r]) <= FIRST_CELL_SLACK * h[r] * (1 + 1e-9):
+                continue
+            lo_, hi_ = (r, j) if sign > 0 else (j, r)
+            if hi_ - lo_ < 2:
+                continue
+            target = x[r] + sign * h[r]
+            add.append(lo_ + 1 + int(np.argmin(np.abs(x[lo_ + 1:hi_] - target))))
+    if not add:
+        return picks
+    return np.unique(np.concatenate([picks, np.array(add, dtype=picks.dtype)]))
 
 
 def _cost(lines: list[np.ndarray]) -> int:
@@ -343,11 +385,18 @@ def _global(geo: Geometry, plan: G.GridPlan, H: float) -> tuple[list[np.ndarray]
     source (the finest any block can ask for), per axis."""
     m = math.log(plan.growth)
     lines, k2g = [], []
+    span = max(geo.domain.hi[i] - geo.domain.lo[i] for i in range(3))
     for a in range(3):
         planes = geo.keys[a]
         covers = []
         for lo, hi, s in zip(geo.src_lo[:, a], geo.src_hi[:, a], geo.src_size[:, a]):
             if not math.isfinite(s):
+                continue
+            if hi - lo <= 1e-12 * span:
+                # a face: a source on the stated plane it lies on (sized there, grown away)
+                j = int(np.argmin(np.abs(planes - lo)))
+                if abs(planes[j] - lo) <= 1e-9 * span:
+                    covers.append((j, j, float(s)))
                 continue
             ia = int(np.searchsorted(planes, lo - 1e-15))
             ib = int(np.searchsorted(planes, hi + 1e-15)) - 1
@@ -706,46 +755,72 @@ def build_layout(placement: Placement, plan: G.GridPlan, *, local: bool = True) 
     H0 = longest / plan.background_cells
     leaf = LEAF_CELLS if local else 10 ** 18
     # each step down is taken only when the one before it does not fit even with the coarsest
-    # background: the background coarsens first, then one cell at a time comes out of the layers
+    # background: the background coarsens first, then the rules relax in their order
+    # (grid.relaxations). Whether a step fits only gets likelier down the list, so the first one
+    # that fits is found by bisection - a few layouts, however long the list.
+    from meshpipeline.engines.snapgrid import thermal_rules as TR
+
     candidates = G.relaxations(plan)
-    needed = 0
-    layers_budget = 0             # the fewest cells that keep the asked cells through every layer
-    for k, cand in enumerate(candidates):
-        geo_k = geometry_of(placement, cand) if cand is not plan else geo
-        layout = decompose(geo_k, cand, H0, leaf_cells=leaf)
-        if layout.n_cells <= plan.max_cells:
-            layout.relaxed = G._relaxed_words(plan, cand) if k else []
-            if cand.min_cells_across < plan.min_cells_across:
-                layout.layers_budget = layers_budget
-            return layout
-        coarsest = relayout(layout, cand, longest)
-        needed = coarsest.n_cells
-        if cand.min_cells_across == plan.min_cells_across:
-            layers_budget = needed if not layers_budget else min(layers_budget, needed)
-        if needed > plan.max_cells:
-            continue
-        lo_h, hi_h, best = H0, longest, coarsest
-        for _ in range(30):
-            mid = math.sqrt(lo_h * hi_h)
-            trial = relayout(layout, cand, mid)
-            if trial.n_cells <= plan.max_cells:
-                hi_h, best = mid, trial
+    first = decompose(geo, plan, H0, leaf_cells=leaf)
+    if first.n_cells <= plan.max_cells:
+        first.relaxed = []
+        return first
+    coarse: dict[int, Layout] = {}
+
+    def coarsest_of(k: int) -> Layout:
+        if k not in coarse:
+            cand = candidates[k]
+            geo_k = geometry_of(placement, cand) if cand is not plan else geo
+            coarse[k] = decompose(geo_k, cand, longest, leaf_cells=leaf)
+        return coarse[k]
+
+    if coarsest_of(0).n_cells <= plan.max_cells:
+        k = 0
+    else:
+        last = len(candidates) - 1
+        if coarsest_of(last).n_cells > plan.max_cells:
+            needed = coarsest_of(last).n_cells
+            raise G.OverBudget(
+                f"this model needs at least {needed:,} cells to keep one cell through every part "
+                f"(its thinnest parts and narrowest gaps set the grid planes, refined locally), "
+                f"more than the budget of {plan.max_cells:,}. Raise the cell budget to at least "
+                f"{needed:,}; no layer is merged away to fit.", needed)
+        lo_k, hi_k = 0, last                  # lo does not fit, hi fits
+        while hi_k - lo_k > 1:
+            mid_k = (lo_k + hi_k) // 2
+            if coarsest_of(mid_k).n_cells <= plan.max_cells:
+                hi_k = mid_k
             else:
-                lo_h = mid
-            if hi_h / lo_h < 1.08:
-                break
-        best.relaxed = [f"the cell budget ({plan.max_cells:,}) set the background cell size to "
-                        f"{hi_h * 1e3:.4g} mm instead of {H0 * 1e3:.4g} mm"]
-        if k:
-            best.relaxed += G._relaxed_words(plan, cand)
-        if cand.min_cells_across < plan.min_cells_across:
-            best.layers_budget = layers_budget
-        return best
-    raise G.OverBudget(
-        f"this model needs at least {needed:,} cells to keep one cell through every part (its "
-        f"thinnest parts and narrowest gaps set the grid planes, refined locally), more than the "
-        f"budget of {plan.max_cells:,}. Raise the cell budget to at least {needed:,}; no layer is "
-        "merged away to fit.", needed)
+                lo_k = mid_k
+        k = hi_k
+    cand = candidates[k]
+    geo_k = geometry_of(placement, cand) if cand is not plan else geo
+    layout = decompose(geo_k, cand, H0, leaf_cells=leaf) if k else first
+    # the fewest cells that keep every rule as asked, and every layer as asked
+    rules_budget = coarsest_of(0).n_cells if k else 0
+    layers_budget = 0
+    if cand.min_cells_across < plan.min_cells_across:
+        keep = max(j for j in range(k) if candidates[j].min_cells_across == plan.min_cells_across)
+        layers_budget = coarsest_of(keep).n_cells
+    if layout.n_cells <= plan.max_cells:
+        layout.relaxed = G._relaxed_words(plan, cand, TR.applicable(placement))
+        layout.layers_budget, layout.rules_budget = layers_budget, rules_budget
+        return layout
+    lo_h, hi_h, best = H0, longest, coarsest_of(k)
+    for _ in range(30):
+        mid = math.sqrt(lo_h * hi_h)
+        trial = relayout(layout, cand, mid)
+        if trial.n_cells <= plan.max_cells:
+            hi_h, best = mid, trial
+        else:
+            lo_h = mid
+        if hi_h / lo_h < 1.08:
+            break
+    best.relaxed = [f"the cell budget ({plan.max_cells:,}) set the background cell size to "
+                    f"{hi_h * 1e3:.4g} mm instead of {H0 * 1e3:.4g} mm"]
+    best.relaxed += G._relaxed_words(plan, cand, TR.applicable(placement))
+    best.layers_budget, best.rules_budget = layers_budget, rules_budget
+    return best
 
 
 # ------------------------------------------------------------------------------ the paint ----

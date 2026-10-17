@@ -69,6 +69,8 @@ MESHER = "snapgrid"
 REPORT_VERSION = 2
 #: Thin-layer rows the report keeps (thinnest first); the counts cover every part.
 _THIN_ROWS = 200
+#: Resolution shortfalls the report lists by name (worst first); the count covers all.
+_SHORT_ROWS = 2000
 
 
 @dataclass
@@ -163,7 +165,11 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
                     "relaxed": layout.relaxed, "grid": layout_stats(layout),
                     "memory": {**memory, "estimate_bytes": G.memory_needed(layout.n_cells)}}
     if dry_run:
+        from meshpipeline.engines.snapgrid import thermal_rules as TR
         report["dry_run"] = True
+        report["resolution"] = _resolution_record(TR.audit(placement, layout, layout.plan, asked),
+                                                  asked)
+        report["rules_budget"] = layout.rules_budget
         report["timings_s"] = _timings(t)
         return SnapgridMesh(case=case, report=report, sidecar={})
 
@@ -283,7 +289,15 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
     checks, contacts, staircase = _fidelity(placement, topo, zone, part_vol, live, part_region,
                                             regions, vols)
     staircase = _curved_rows(staircase, curved_rows, snapped)
-    thin = _thin_layers(placement, layout, live, part_region, plan.min_cells_across)
+    from meshpipeline.engines.snapgrid import thermal_rules as TR
+    thin = _thin_layers(placement, layout, live, part_region,
+                        {k: TR.part_cells(placement, asked, k) for k in live})
+    # what the grid gives every thermal rule, measured off its lines against what was asked
+    try:
+        resolution = TR.audit(placement, layout, layout.plan, asked)
+    except Exception as exc:  # noqa: BLE001 - never a fake pass: the report says it was not measured
+        resolution = {"measured": False, "error": f"{type(exc).__name__}: {exc}"[:300],
+                      "rows": {}, "short": []}
     interfaces = _interfaces(topo, cell_zone, zone_names, n_air)
     patches, chunk_ids, patch_rows = _boundary(placement, layout, topo, zone_names)
     t["checked"] = time.perf_counter()
@@ -338,6 +352,7 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
     stats["interface_skew"] = report.get("interface_skew") or {}
     report["grid"] = stats
     build_report += _report_lines(placement, layout, stats, thin, staircase, records)
+    build_report += _resolution_lines(resolution, layout)
     build_report += _flattened_warning(placement, flattened, contacts)
     report["thin_air"] = _thin_air(placement, live)
     build_report += _physics_warnings(placement, live, part_vol)
@@ -352,6 +367,7 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
                     for r in regions],
         "fluid_regions": fluids, "solid_regions": solids,
         "thin_layers": thin[:_THIN_ROWS], "thin_layers_short": [r for r in thin if not r["ok"]],
+        "resolution": _resolution_record(resolution, asked), "rules_budget": layout.rules_budget,
         "staircased": staircase,
         "interfaces": interfaces, "patches": written["patches"],
         "solid_contacts": sorted(sorted(c) for c in contacts),
@@ -381,7 +397,7 @@ def _plan_for_memory(plan: G.GridPlan, memory_bytes: float | None) -> tuple[G.Gr
     lowered = max(1000, fit)
     out["lowered_from"] = plan.max_cells
     out["note"] = (f"the memory this job has ({have / 1e9:.3g} GB) holds about {fit:,} cells at "
-                   f"{G.BYTES_PER_CELL * 1e3:.3g} GB per million, so the cell budget was lowered "
+                   f"{G.BYTES_PER_CELL * 1e-3:.3g} GB per million, so the cell budget was lowered "
                    f"from {plan.max_cells:,} to {lowered:,} before anything was built")
     return G._replace(plan, max_cells=lowered), out
 
@@ -1168,7 +1184,7 @@ def _interfaces(topo: boxmesh.BoxTopology, cell_zone: np.ndarray, names: list[st
 
 
 def _thin_layers(placement: Placement, layout: B.Layout, live: list[int], names: dict,
-                 want: int) -> list[dict]:
+                 want: int | dict[int, int]) -> list[dict]:
     """Each part's thinnest extent and the cells through it (thinnest first): how every thin layer
     - a thermal interface, a die attach, a board - is resolved. A part always has at least one
     cell through each of its boxes on each axis: the blocks it reaches into hold both of its faces.
@@ -1204,8 +1220,9 @@ def _thin_layers(placement: Placement, layout: B.Layout, live: list[int], names:
         if best is None:
             continue
         t, n, i = best
+        w = want.get(k, 1) if isinstance(want, dict) else want
         rows.append({"part": names[k], "axis": _AXES[i], "thickness_m": t, "cells_across": int(n),
-                     "wanted": want, "ok": n >= want})
+                     "wanted": w, "ok": n >= w})
     rows.sort(key=lambda r: (r["thickness_m"], r["cells_across"]))
     return rows
 
@@ -1362,6 +1379,47 @@ def _report_lines(placement: Placement, layout: B.Layout, st: dict, thin: list[d
             f"{k} x{v}" for k, v in sorted(model.ignored_elements.items())[:12]) + ".")
     lines += [n for n in placement.notes if "opened where" in n]
     return lines
+
+
+def _resolution_record(res: dict, asked: G.GridPlan) -> dict:
+    """The resolution audit as the report keeps it: the rules asked, each rule's measured rows
+    (capped), the counts and every shortfall."""
+    from meshpipeline.engines.snapgrid import thermal_rules as TR
+
+    def plain(v):
+        if isinstance(v, np.generic):
+            return v.item()
+        if isinstance(v, np.ndarray):
+            return v.tolist()
+        return v
+
+    rows = {k: [{kk: plain(v) for kk, v in r.items()} for r in rs[:_THIN_ROWS]]
+            for k, rs in (res.get("rows") or {}).items()}
+    return {"measured": bool(res.get("measured")), "error": res.get("error"),
+            "rules": TR.describe_plan(asked), "rows": rows, "counts": res.get("counts") or {},
+            "short": [{k: plain(r[k]) for k in ("what", "want", "got", "first_m", "first_want_m")
+                       if k in r} for r in (res.get("short") or [])[:_SHORT_ROWS]],
+            "short_count": len(res.get("short") or []),
+            "short_lines": TR.short_lines(res), "summary": TR.summary_lines(res),
+            "velocity_m_s": res.get("velocity_m_s"), "velocity_from": res.get("velocity_from"),
+            "heated_parts": res.get("heated_parts") or []}
+
+
+def _resolution_lines(res: dict, layout: B.Layout) -> list[str]:
+    """The build report's lines on the thermal rules: what each got, and any shortfall."""
+    from meshpipeline.engines.snapgrid import thermal_rules as TR
+
+    if not res.get("measured"):
+        return ["WARNING: the cells across gaps, heated surfaces, heat sources and openings were "
+                f"not measured ({res.get('error') or 'unknown error'})."]
+    out = [f"Resolution: {line}" for line in TR.summary_lines(res)]
+    short = TR.short_lines(res)
+    if short:
+        out += [f"WARNING: {line}." for line in short]
+        if layout.rules_budget:
+            out.append(f"A cell budget of at least {layout.rules_budget:,} keeps every rule as "
+                       "asked.")
+    return out
 
 
 def _sidecar(placement: Placement, regions: list[dict], patches: list[dict],

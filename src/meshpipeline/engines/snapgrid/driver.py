@@ -22,10 +22,16 @@ BUILD_FAILED = "snapgrid_build_failed"
 
 def thin_layer_warning(report: dict) -> str:
     """What the user is told when the cell budget left a thin layer fewer cells through it than
-    the plan asks for - the layers, and the budget that would keep them - or "" when none."""
+    the plan asks for - the layers, and the budget that would keep them - or when a gap, heated
+    surface, heat source or opening came out coarser than asked; "" when none."""
     short = report.get("thin_layers_short") or []
+    rules = (report.get("resolution") or {}).get("short_lines") or []
+    need_all = int(report.get("rules_budget") or 0)
+    tail = ((" " if short else "") + "Coarser than asked: " + "; ".join(str(r) for r in rules)
+            + "." + (f" A budget of at least {need_all:,} cells keeps every rule." if need_all
+                     else "")) if rules else ""
     if not short:
-        return ""
+        return tail
     asked = short[0].get("wanted")
     names = ", ".join(str(r.get("part")) for r in short[:5]) + (" and more" if len(short) > 5
                                                                  else "")
@@ -34,7 +40,7 @@ def thin_layer_warning(report: dict) -> str:
             "them this fidelity asks for, to fit the cell budget. No layer is lost - each keeps "
             "at least one cell."
             + (f" A budget of at least {need:,} cells keeps {asked} through every layer."
-               if need else ""))
+               if need else "") + tail)
 
 
 def _last_line(text: str) -> str:

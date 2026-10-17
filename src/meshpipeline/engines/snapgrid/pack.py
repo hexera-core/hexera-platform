@@ -6,7 +6,7 @@ SNAPGRID_SYSTEM = """You are the builder for the snap-grid (placed-parts) multi-
 
 WORKFLOW (deterministic - nothing to author):
   1. the file's parts are placed (later objects win where two overlap; for Icepak, embedded objects win)
-  2. the grid is sized: every part gets at least min_cells_across cells through every thickness (a thin layer is never merged away), the grid grows by at most growth between neighbours, and it is refined only where the parts are (local blocks with hanging nodes, non-orthogonality kept under 65 degrees)
+  2. the grid is sized by the electronics-cooling rules of the detail level: cells through every part (more through heat sources, heat sinks and what they sit on), across every air gap between solids (fin channels), inside the warm-air layer on every heated surface, across every heat source and every fan or vent; neighbouring cells within the growth limit; refined only where the model needs it (local blocks with hanging nodes, non-orthogonality kept under 65 degrees). A thin layer is never merged away; when the cell budget cannot meet a rule it relaxes in a fixed order and says so, and what every rule got is measured and reported
   3. round parts are snapped onto their circles
   4. one polyMesh per region is written with mappedWall interfaces, then checkMesh reads the whole mesh and every region
   5. the mesh is checked against the file: box volumes exact, the domain filled, every object placed, contacts neither invented nor lost

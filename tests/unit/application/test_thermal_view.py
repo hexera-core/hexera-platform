@@ -155,7 +155,14 @@ def test_the_detail_levels_show_cells_time_and_the_thinnest_layer(tmp_path):
     cells = [d[k]["est_cells"] for k in ("draft", "standard", "max")]
     assert cells[0] < cells[1] < cells[2] <= d["max"]["max_cells"]
     assert all(d[k]["est_seconds"] > 0 and d[k]["thin_layers_short"] == [] for k in ("draft", "standard", "max"))
-    assert d["standard"]["thinnest"] == {"part": "PMIC", "thickness_mm": 1.0, "cells_across": 2}
+    # the PMIC makes heat: Standard asks 3 cells through it (2 through every other part)
+    thinnest = d["standard"]["thinnest"]
+    assert thinnest["part"] == "PMIC" and thinnest["thickness_mm"] == 1.0
+    assert thinnest["cells_across"] >= 3
+    # every thermal rule of the level is listed, and the grid meets them all on this model
+    assert any("across every air gap" in r for r in d["standard"]["rules"])
+    assert all(d[k]["rules_short"] == [] and d[k]["rules_short_count"] == 0
+               for k in ("draft", "standard", "max"))
     # a clean model raises no warning (a Flotherm file's fan hub is a diameter, as the standard says)
     assert view["warnings"] == []
 
