@@ -284,14 +284,19 @@ class Domain:
 #: A number written with at least this many significant digits whose float32 rounding gives back
 #: the digits written is a float32 value (Flotherm writes 0.3 as 0.300000011920929).
 FLOAT32_DIGITS = 9
-#: ... and with at least this many it is a binary float printed in full, whatever its width.
+#: ... and with at least this many it is a binary float printed in full, whatever its width -
 BINARY_PRINT_DIGITS = 12
+#: ... up to this many: from here on it is a float64 printed in full (Python's repr, %.17g), exact
+#: to float64 unless it is a float32 value. A file whose numbers state nanometre films exactly is
+#: written this way, and reading it as float32 noise would drop every film under ~10 nm.
+FLOAT64_PRINT_DIGITS = 16
 
 
 def number_is_noisy(text: str) -> bool:
     """Whether a number as written carries binary-float noise rather than stating a decimal: a
     float32 value printed in full (its float32 rounding gives back the digits written, with more
-    digits than a float32 holds), or any binary float printed to 12 or more significant digits.
+    digits than a float32 holds), or any binary float printed to 12 to 15 significant digits
+    (from 16 on it is a float64 printed in full, exact unless it is a float32 value).
     A plain decimal ("5.00100000", "0.0025") is exact to its digits: two of them that differ
     state two different planes, however far from the origin they are."""
     import struct
@@ -302,7 +307,7 @@ def number_is_noisy(text: str) -> bool:
     whole, _, frac = mant.partition(".")
     digits = (whole + frac).lstrip("0").rstrip("0")
     sig = len(digits)
-    if sig >= BINARY_PRINT_DIGITS:
+    if BINARY_PRINT_DIGITS <= sig < FLOAT64_PRINT_DIGITS:
         return True
     if sig < FLOAT32_DIGITS:
         return False
@@ -312,7 +317,50 @@ def number_is_noisy(text: str) -> bool:
         as32 = struct.unpack("<f", struct.pack("<f", value))[0]
     except (ValueError, OverflowError, struct.error):
         return True
+    # (16 or more digits: a float64 printed in full - "0.0019000500000000001", what a double
+    # exporter writes for 1.9 mm + 50 nm - is exact to float64; only a float32 value is noise)
     return abs(as32 - value) <= 0.5 * place * (1 + 1e-9)
+
+
+def written_places(text: str) -> tuple[int, bool, bool] | None:
+    """How a number is written: (digits after the point, exponent form, padded with a trailing
+    zero), or None when it has no point. See print_limit."""
+    t = text.strip().lower()
+    mant, _, exp = t.partition("e")
+    _whole, dot, frac = mant.lstrip("+-").partition(".")
+    if not dot:
+        return None
+    return len(frac), bool(exp), len(frac) >= 2 and frac.endswith("0")
+
+
+#: A file prints to a fixed number of places when at least this share of its numbers (of one form)
+#: carry exactly that many - and some are padded with zeros to reach it.
+FIXED_SHARE = 0.9
+
+
+def print_limit(places: dict[tuple[int, bool, bool], int], exponent: bool) -> float:
+    """THE FILE'S PRINT LIMIT for one number form, from how its location and size numbers are
+    written: one unit of the last place a FIXED-FORMAT writer prints (fixed point: metres, %.8f ->
+    1e-8; exponent form: relative to the number, %e -> 1e-6), or 0.0 when the numbers are exact
+    decimals.
+
+    A fixed-format writer pads with zeros ("0.00160000", "1.600000e-03") and gives every number
+    the same count of places: every plane it writes is rounded to that place, so two planes meant
+    to be one can differ by a unit or a few there. A shortest-form writer ("0.0016", "1.6e-03",
+    Python's repr) never pads, and a person typing "0.050" next to "0.0016" is no fixed writer:
+    their numbers are exact decimals that say nothing about a print limit."""
+    rows = {k: n for k, n in places.items() if k[1] == exponent}
+    total = sum(rows.values())
+    if not total:
+        return 0.0
+    by_len: dict[int, int] = {}
+    for (length, _e, _p), n in rows.items():
+        by_len[length] = by_len.get(length, 0) + n
+    length = max(by_len, key=lambda k: (by_len[k], k))
+    padded = rows.get((length, exponent, True), 0)
+    if length < 2 or not padded or by_len[length] < FIXED_SHARE * total:
+        return 0.0
+    return 10.0 ** -length
 
 
 @dataclass
@@ -324,6 +372,11 @@ class EcxmlModel:
     objects: list[Obj]                      # every object, depth-first in file order
     notes: list[str] = field(default_factory=list)
     ignored_elements: dict[str, int] = field(default_factory=dict)   # vendor extensions, by tag
+    #: THE FILE'S PRINT LIMIT, from the location and size numbers it writes (see print_limit): a
+    #: fixed-point writer's last place (metres; %.8f -> 1e-8), or 0.0 for exact decimals.
+    print_unit_m: float = 0.0
+    #: ... an exponent writer's last mantissa place, relative to the number (%e -> 1e-6), or 0.0.
+    print_relative: float = 0.0
 
     @property
     def active_objects(self) -> list[Obj]:
@@ -348,6 +401,8 @@ class _Reader:
         self.notes: list[str] = []
         #: whether a location or size read since the last reset carried binary-float noise
         self.noisy = False
+        #: how the location and size numbers are written: (places, exponent, padded) -> count
+        self.places: dict[tuple[int, bool, bool], int] = {}
 
     # -- values --------------------------------------------------------------------------------
     @staticmethod
@@ -406,6 +461,10 @@ class _Reader:
         x, y, z = (self.number(el, a, here, minimum=minimum, exclusive=exclusive)
                    for a in ("x", "y", "z"))
         self._extensions(el, ("x", "y", "z"))
+        for a in ("x", "y", "z"):
+            form = written_places(self.child(el, a, here).text)
+            if form is not None:
+                self.places[form] = self.places.get(form, 0) + 1
         if not self.noisy:
             self.noisy = any(number_is_noisy(self.child(el, a, here).text)
                              for a in ("x", "y", "z"))
@@ -443,7 +502,9 @@ class _Reader:
         self.geometry(self.child(root, "geometry", ()), (), objects)
         self._extensions(root, ("name", "producer", "solutionDomain", "materials", "geometry"))
         model = EcxmlModel(name=name, producer=producer, domain=domain, materials=materials,
-                           objects=objects, notes=self.notes, ignored_elements=dict(self.ignored))
+                           objects=objects, notes=self.notes, ignored_elements=dict(self.ignored),
+                           print_unit_m=print_limit(self.places, exponent=False),
+                           print_relative=print_limit(self.places, exponent=True))
         missing = sorted({o.material for o in model.active_objects
                           if o.material and o.material not in materials})
         for m in missing:

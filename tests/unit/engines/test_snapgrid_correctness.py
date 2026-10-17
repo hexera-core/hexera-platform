@@ -81,7 +81,13 @@ def _far_sandwich(offset: float = 5.0) -> Ecxml:
 
 
 def test_micron_layers_far_from_the_origin_written_as_decimals_are_kept(tmp_path):
-    result = _mesh(tmp_path, _far_sandwich(), max_cells=100_000)
+    # every layer meshed: this is about the precision (a 1 um layer 5 m out is otherwise thin
+    # enough to be a thin-layer resistance - tests/unit/cad/test_ecxml_nanometre.py)
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    src = tmp_path / "model.ecxml"
+    src.write_bytes(_far_sandwich().xml())
+    result = mesh_ecxml(src, tmp_path / "case", G.GridPlan(max_cells=100_000), binary=False,
+                        thin_layers=False)
     rep = result.report
     assert {"Layer_0", "Layer_1"} <= set(rep["solid_regions"])
     assert not rep["flattened"] and rep["file_precision_m"] < 1e-7

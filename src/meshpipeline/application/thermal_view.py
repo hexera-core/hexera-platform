@@ -64,6 +64,16 @@ def _size_mm(box: dict | None) -> list[float] | None:
         return None
 
 
+def _len_mm(v) -> str:
+    """A length given in mm, in the unit that reads it (nm / µm / mm)."""
+    from meshpipeline.cad.ingest.ecxml_build import length_words
+
+    try:
+        return length_words(float(v) / 1000.0)
+    except (TypeError, ValueError):
+        return str(v)
+
+
 def _dims(size_mm) -> str:
     return " × ".join(_num(v) for v in size_mm) + " mm" if size_mm else ""
 
@@ -239,7 +249,25 @@ def _tree(placement) -> list[dict]:
         elif p.clipped:
             row["clipped"] = True
         rows.append(row)
+    # the layers carried as thin-layer resistances have no cells, but they are parts of the file
+    for r in (placement.records.get("thin_layers") or []):
+        box = r.get("box_m")
+        rows.append({"name": str(r.get("name")), "path": [str(x) for x in r.get("path") or []],
+                     "kind": "Thin layer", "detail": thin_layer_words(r),
+                     "material": r.get("material"), "power_W": 0.0, "size_mm": _size_mm(box),
+                     "thinnest_mm": _mm(r.get("thickness_m")), "color": None, "region": None,
+                     "thin_layer": thin_layer_words(r)})
     return rows
+
+
+def thin_layer_words(r: dict) -> str:
+    """A layer carried as a resistance, in plain words: what it is and where it sits."""
+    from meshpipeline.cad.ingest.ecxml_build import length_words
+
+    between = " and ".join(x for x in (", ".join(r.get("below") or []) or "the air",
+                                       ", ".join(r.get("above") or []) or "the air"))
+    return (f"{length_words(float(r.get('thickness_m') or 0.0))} thick: a thermal resistance "
+            f"R = t/k = {float(r.get('R_m2K_W') or 0.0):.3g} m²K/W between {between}")
 
 
 def _tree_from_sidecar(sidecar: dict) -> list[dict]:
@@ -443,6 +471,32 @@ def _warnings(sidecar: dict, placement, tree: list[dict], detail: dict | None) -
                                  f"precision{prec} on some side, so the file cannot place both faces and "
                                  f"{'they are' if n != 1 else 'it is'} left out: {_names(r['name'] for r in flat)}.",
                          [r["name"] for r in flat]))
+    films = (placement.records.get("thin_layers") if placement is not None
+             else sidecar.get("thin_layers")) or []
+    if films:
+        n = len(films)
+        out.append(_warn("info", f"{n} layer{'s are' if n != 1 else ' is'} too thin to mesh with "
+                                 "sound cells (the cells would be over 1000 times wider than "
+                                 f"thick) and {'carry' if n != 1 else 'carries'} under 1% of the "
+                                 "sideways conduction beside "
+                                 + ("them" if n != 1 else "it") + ", so "
+                                 + ("each is" if n != 1 else "it is") + " a thin-layer thermal "
+                                 "resistance on the interface between its neighbours, as "
+                                 "Flotherm and Icepak model such layers: "
+                                 + _names(f"{f.get('name')} ({thin_layer_words(f)})" for f in films)
+                                 + ".", [f.get("name") for f in films]))
+    flat_kept = (placement.records.get("thin_layers_meshed") if placement is not None
+                 else sidecar.get("thin_layers_meshed")) or []
+    if flat_kept:
+        from meshpipeline.cad.ingest.ecxml_build import length_words
+
+        n = len(flat_kept)
+        out.append(_warn("info", f"{n} very thin layer{'s keep' if n != 1 else ' keeps'} cells "
+                                 "through " + ("them" if n != 1 else "it") + " although the cells "
+                                 "are very flat: " + _names(
+                                     f"{f.get('name')} ({length_words(float(f.get('thickness_m') or 0.0))}: "
+                                     f"{f.get('why')})" for f in flat_kept) + ".",
+                         [f.get("name") for f in flat_kept]))
     not_built = sidecar.get("not_built") or []
     mcad = [r for r in not_built if r.get("kind") == "externalMcadFile"]
     if mcad:
@@ -519,7 +573,7 @@ def _warnings(sidecar: dict, placement, tree: list[dict], detail: dict | None) -
         n = int(std.get("thin_layers_short_count") or len(short))
         out.append(_warn("warn", f"At Standard, {n} thin layer{'s get' if n != 1 else ' gets'} "
                                  f"fewer than {want} cells through {'them' if n != 1 else 'it'}: "
-                                 + _names((f"{r['part']} ({_num(r['thickness_mm'])} mm, {r['cells_across']} "
+                                 + _names((f"{r['part']} ({_len_mm(r['thickness_mm'])}, {r['cells_across']} "
                                           f"cell{'s' if r['cells_across'] != 1 else ''})" for r in short), n)
                                  + ". Fine gives more.", [r["part"] for r in short]))
     rules_short = std.get("rules_short") or []

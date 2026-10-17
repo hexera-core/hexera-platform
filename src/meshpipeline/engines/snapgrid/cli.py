@@ -69,6 +69,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--global-grid", action="store_true",
                     help="one tensor grid over the whole domain (no local refinement)")
     ap.add_argument("--bashrc", default=None, help="OpenFOAM bashrc to source")
+    ap.add_argument("--mesh-every-layer", action="store_true",
+                    help="mesh every thin layer with cells through it, however flat (default: a "
+                         "layer too thin to mesh soundly is a thin-layer thermal resistance)")
     ap.add_argument("--memory-gb", type=float, default=None,
                     help="memory the job may use (default: read from the machine and its container)")
     a = ap.parse_args(argv)
@@ -84,7 +87,8 @@ def main(argv: list[str] | None = None) -> int:
         result = mesh_ecxml(a.ecxml, a.out, plan, binary=False if a.ascii else None,
                             dry_run=a.dry_run, local=not a.global_grid,
                             dialect=dialect_of(a.bashrc),
-                            memory_bytes=a.memory_gb * 1e9 if a.memory_gb else None)
+                            memory_bytes=a.memory_gb * 1e9 if a.memory_gb else None,
+                            thin_layers=not a.mesh_every_layer)
     except OverBudget as exc:
         print(f"NOT MESHED: {exc}", file=sys.stderr)
         return 2

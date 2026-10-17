@@ -94,7 +94,10 @@ SPEC = EngineSpec(
         validation_notes=(
             "ecxml solid-assembly->multiregion-volume: the ECXML test set (Flotherm, Icepak, "
             "6SigmaET exports and generated boards of 10-2,000 parts, a 1U server) meshes with "
-            "every box volume exact to round-off, every layer kept (25 um die attach: 2 cells), "
+            "every box volume exact to round-off, every layer kept (25 um die attach: 2 cells; "
+            "films of 1 nm to 1 um kept at 0, 5 cm and 5 m from the origin - meshed, or a "
+            "thin-layer resistance R = t/k on their interface whose temperature drop an OpenFOAM "
+            "11 conduction solve matches to 1e-6), "
             "contacts as the file makes them, and checkMesh clean on every region (OpenFOAM 11 "
             "locally, v2412 on the lab VMs; 3.3M cells for 2,000 parts). Full pipeline: "
             "set_top_box.ecxml on dev-areen, job f8542f71 (2026-10-11) - 357,973 cells in 9 "

@@ -113,6 +113,32 @@ def review_volume(case) -> str | None:
     return str(hits[0].relative_to(case)) if hits else None
 
 
+#: A thin layer carried as a resistance gets its own interface patch over its footprint:
+#: <a>_to_<b>_via_<layer> beside the plain <a>_to_<b> (engines/snapgrid/mesher._thin_layer_faces).
+VIA = "_via_"
+
+
+def _is_interface_patch(name: str, a: str, b: str) -> bool:
+    plain = f"{a}_to_{b}"
+    return name == plain or name.startswith(plain + VIA)
+
+
+def interface_faces(counts: dict, a: str, b: str) -> int | None:
+    """The faces region `a` shares with `b`: its plain interface patch plus every thin-layer one
+    (None when it has none)."""
+    hits = [int(n) for name, n in counts.items() if _is_interface_patch(name, a, b)]
+    return sum(hits) if hits else None
+
+
+def _interface_patch(bounds: dict, a: str, b: str) -> tuple[str, int] | None:
+    """(type, faces) of a's interface patches with b, summed, or None; the type when they agree."""
+    hits = [v for name, v in bounds.items() if _is_interface_patch(name, a, b)]
+    if not hits:
+        return None
+    types = {t for t, _n in hits}
+    return (types.pop() if len(types) == 1 else "mixed", sum(n for _t, n in hits))
+
+
 def parse_check_mesh(out: str) -> dict:
     q: dict = {"mesh_ok": "Mesh OK" in out}
     for k, pat in _CM.items():
@@ -201,10 +227,12 @@ def check(case, *, bashrc: str | None = None, timeout: int = 3600, jobs: int = 4
                                   f"{whole.get('cells')}")
     for row in report["interfaces"]:
         a, b, want = row["a"], row["b"], row["faces"]
-        ab = (meshes.get(a) or {}).get("interfaces", {}).get(f"{a}_to_{b}")
-        ba = (meshes.get(b) or {}).get("interfaces", {}).get(f"{b}_to_{a}")
-        files = (_boundary_counts(case / "constant" / a / "polyMesh" / "boundary").get(f"{a}_to_{b}"),
-                 _boundary_counts(case / "constant" / b / "polyMesh" / "boundary").get(f"{b}_to_{a}"))
+        ab = interface_faces((meshes.get(a) or {}).get("interfaces", {}), a, b)
+        ba = interface_faces((meshes.get(b) or {}).get("interfaces", {}), b, a)
+        files = (_interface_patch(_boundary_counts(case / "constant" / a / "polyMesh" / "boundary"),
+                                  a, b),
+                 _interface_patch(_boundary_counts(case / "constant" / b / "polyMesh" / "boundary"),
+                                  b, a))
         rec = {"a": a, "b": b, "kind": row["kind"], "grid_faces": want, "faces_a": ab,
                "faces_b": ba, "type_a": (files[0] or ("", 0))[0], "type_b": (files[1] or ("", 0))[0]}
         rec["ok"] = ab == want and ba == want and all(f is not None and f[1] == want for f in files)

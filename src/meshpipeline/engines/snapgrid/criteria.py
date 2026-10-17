@@ -69,7 +69,8 @@ CRITERIA_ROWS: tuple[Criterion, ...] = (
         key="thin_layers_short", label="Every thin layer has the cells across it that were asked",
         op="empty", threshold=None, gating=False,
         rationale=("Every layer always has at least one cell through it (a layer is never merged "
-                   "away). A layer listed here has fewer cells across it than the plan asked for, "
+                   "away; one too thin to mesh with sound cells is carried as a thin-layer thermal "
+                   "resistance on its interface instead, and listed as such). A layer listed here has fewer cells across it than the plan asked for, "
                    "usually because the cell budget ran out; the temperature drop across it is "
                    "resolved more coarsely. Advisory - the mesh is still the file's model."),
         evidence_url=_JEP181,

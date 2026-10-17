@@ -31,7 +31,8 @@ are then 0.1 nanometre, far below any feature of an electronics model - and ever
 before it is written:
 
 * tolerances come from the file: coordinates closer than the file's own number precision (float32
-  at the model's size, at least the 10 nm an 8-decimal value can say) are one plane; the booleans'
+  at the model's size, or the last place a fixed-format writer prints: 10 nm for 8 decimals, no
+  floor at all for exact decimals) are one plane; the booleans'
   fuzzy value stays at least ten times below the smallest real gap and the thinnest part; a model
   whose smallest gap the file's precision cannot tell from contact is refused;
 * every solid's volume is the file's, exactly where it can be computed independently (boxes,
@@ -69,8 +70,9 @@ SIDECAR_VERSION = 2
 
 #: OpenCASCADE builds and the STEP is written in millimetres (model units per metre).
 UNIT = 1000.0
-#: The finest length an 8-decimal ECXML value (JEP181A's examples) can state.
-PRINT_RESOLUTION_M = 1e-8
+#: (There is no fixed floor on the precision: an 8-decimal file - JEP181A's examples - measures
+#: 1e-8 m from its own digits (ecxml.print_limit), and a file written with more digits keeps its
+#: nanometre layers.)
 #: Flotherm writes float32 values (0.300000011920929): two writes of one plane differ by a few
 #: units in the last place - 2^-24 of the coordinate each. Four of them are the file's noise.
 FLOAT32_NOISE = 4 * 2.0 ** -24
@@ -375,9 +377,24 @@ def _unique_namer() -> Callable[..., str]:
     return name
 
 
+def length_words(m: float, *, micro: str = "µm") -> str:
+    """A length for a person, in the unit that reads it: nanometres below a micrometre,
+    micrometres below a millimetre, millimetres above (a 10 nm film is "10 nm", never "0 mm" or
+    "1e-05 mm")."""
+    a = abs(m)
+    if a == 0:
+        return "0 mm"
+    if a * 1e6 < 0.9995:
+        return f"{m * 1e9:.3g} nm"
+    if a * 1e6 < 999.5:
+        return f"{m * 1e6:.3g} {micro}"
+    return f"{m * 1e3:.4g} mm"
+
+
 def _um(m: float) -> str:
-    """A length for a person: micrometres below a millimetre, millimetres above."""
-    return f"{m * 1e6:.3g} um" if m * 1e6 < 999.5 else f"{m * 1e3:.4g} mm"
+    """A length for a person: nanometres below a micrometre, micrometres below a millimetre,
+    millimetres above (ASCII "um", as the build report has always written it)."""
+    return length_words(m, micro="um")
 
 
 def _material(p: _Part) -> list[_Box]:
@@ -441,18 +458,47 @@ def _pair_scan(lo, hi, noise: float, *, rows: int = 256):
 
 
 # ------------------------------------------------------------------------------ tolerances --
-def _noise(model: EcxmlModel, objs: list[Obj]) -> float:
-    """The file's own number precision at this model's size, metres: float32 noise at the
-    largest coordinate the build uses. That is the domain's and those of the objects that reach
-    into it, clipped to it. An object wholly outside the solution domain is never built, and a
-    monitor point is no geometry, so neither coarsens the tolerance. (A real Flotherm export
-    keeps parts metres outside a 50 mm domain and a probe at z = 33 m; counted, they made the
-    precision 8 um and every 10 um gap of the model unreadable.)
+@dataclass(frozen=True)
+class Precision:
+    """What the file's numbers can tell apart at this model's size, metres, by where the limit
+    comes from. `noise` is the largest: planes closer than it are one plane."""
+    printed: float          # a fixed-format writer's last place (at the largest coordinate, %e)
+    float32: float          # binary-float noise of float32 values at the largest one stating it
+    float64: float          # float64 arithmetic on the largest coordinate (location + size)
 
-    Only numbers that carry binary-float noise count (ecxml.number_is_noisy: a float32 value, or a
-    binary float printed in full). A plain decimal is exact to its digits wherever it is: a model
-    written "5.00100000" / "5.00100100" states a 1 um layer 5 m from the origin, and it keeps it
-    (the float32 rule would have made the precision 1.2 um there and dropped the layer)."""
+    @property
+    def noise(self) -> float:
+        """Two numbers a fixed-format writer prints differently differ by at least one unit of its
+        last place, so half a unit tells them apart: a 10 nm film written to 8 places is two
+        planes (round-off steps of a unit or a few between DIFFERENT objects are read as one by
+        ecxml_place.roundoff_reach)."""
+        return max(0.5 * self.printed, self.float32, self.float64)
+
+    @property
+    def whole_unit(self) -> float:
+        """The fused build's tolerance: a whole unit of the print limit. OpenCASCADE joins the
+        parts face to face, so a one-unit step between two parts of an 8-place file is closed
+        as the contact it most likely is (the placed-parts path reads such steps between
+        DIFFERENT objects as round-off and keeps a part's own unit-thin faces apart)."""
+        return max(self.printed, self.float32, self.float64)
+
+
+def _precision(model: EcxmlModel, objs: list[Obj]) -> Precision:
+    """The file's own number precision at this model's size: what its writer rounds to
+    (ecxml.print_limit - a fixed-point writer's last place, or an exponent writer's relative one at
+    the largest coordinate), float32 noise at the largest coordinate written with binary-float
+    noise, and float64 round-off at the largest coordinate. The coordinates counted are the
+    domain's and those of the objects that reach into it, clipped to it. An object wholly outside
+    the solution domain is never built, and a monitor point is no geometry, so neither coarsens
+    the tolerance. (A real Flotherm export keeps parts metres outside a 50 mm domain and a probe at
+    z = 33 m; counted, they made the precision 8 um and every 10 um gap of the model unreadable.)
+
+    Only numbers that carry binary-float noise count as float32 (ecxml.number_is_noisy: a float32
+    value, or a binary float printed in full). A plain decimal is exact to its digits wherever it
+    is: a model written "5.00100000" / "5.00100100" states a 1 um layer 5 m from the origin, and it
+    keeps it (the float32 rule would have made the precision 1.2 um there and dropped the layer).
+    There is no fixed floor: a file whose numbers state a 10 nm film exactly keeps it (an 8-place
+    file, JEP181A's own examples, measures 1e-8 m - the floor this replaced)."""
     d = model.domain
     lo_d = hi_d = None
     largest = 0.0                  # the largest coordinate stated with binary-float noise
@@ -477,7 +523,10 @@ def _noise(model: EcxmlModel, objs: list[Obj]) -> float:
         anywhere = max(anywhere, here)
         if getattr(o, "noisy", True):
             largest = max(largest, here)
-    return max(PRINT_RESOLUTION_M, FLOAT32_NOISE * largest, FLOAT64_NOISE * anywhere)
+    printed = max(float(getattr(model, "print_unit_m", 0.0) or 0.0),
+                  float(getattr(model, "print_relative", 0.0) or 0.0) * anywhere)
+    return Precision(printed=printed, float32=FLOAT32_NOISE * largest,
+                     float64=FLOAT64_NOISE * anywhere)
 
 
 def _snapper(values_per_axis: list[list[float]], noise: float):
@@ -718,7 +767,7 @@ def build(model: EcxmlModel) -> EcxmlBuild:
     objs = model.active_objects
     notes: list[str] = list(model.notes)
     report: list[str] = []
-    noise = _noise(model, objs)
+    noise = _precision(model, objs).whole_unit
     snapped, moved = _snap_function(model, objs, noise)
     domain_box, domain_source = _domain(model.domain, objs, snapped, noise)
     if domain_box is None:
@@ -1858,7 +1907,7 @@ def plan_region_names(model: EcxmlModel) -> tuple[str, ...]:
     the lists may differ: a part hidden by several parts together or inside a cylinder, a sealed
     space that solids fill, or an enclosure the domain cuts."""
     objs = model.active_objects
-    noise = _noise(model, objs)
+    noise = _precision(model, objs).whole_unit
     snapped, _moved = _snap_function(model, objs, noise)
     domain_box, _source = _domain(model.domain, objs, snapped, noise)
     if domain_box is None:
