@@ -863,15 +863,25 @@ def _chain(ids, ea, eb, at, V):
             used[np.asarray(path_e[1:], dtype=np.int64)] = False
 
 
+#: Points x polygon edges tested at once by _in_polygon: its memory stays a few tens of MB
+#: however detailed the mouth and however many faces lie near it.
+IN_POLYGON_BATCH = 2_000_000
+
+
 def _in_polygon(pts: np.ndarray, poly: np.ndarray) -> np.ndarray:
-    """Which of the 2D points lie inside the closed 2D polygon (even-odd rule)."""
-    x, y = pts[:, 0][:, None], pts[:, 1][:, None]
+    """Which of the 2D points lie inside the closed 2D polygon (even-odd rule), the points taken
+    in batches of IN_POLYGON_BATCH point-edge pairs."""
     x0, y0 = poly[:, 0][None, :], poly[:, 1][None, :]
     x1, y1 = np.roll(poly[:, 0], -1)[None, :], np.roll(poly[:, 1], -1)[None, :]
-    crosses = (y0 > y) != (y1 > y)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        at = x0 + (y - y0) * (x1 - x0) / (y1 - y0)
-    return np.count_nonzero(crosses & (x < at), axis=1) % 2 == 1
+    out = np.zeros(len(pts), dtype=bool)
+    step = max(1, IN_POLYGON_BATCH // max(len(poly), 1))
+    for k in range(0, len(pts), step):
+        x, y = pts[k:k + step, 0][:, None], pts[k:k + step, 1][:, None]
+        crosses = (y0 > y) != (y1 > y)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            at = x0 + (y - y0) * (x1 - x0) / (y1 - y0)
+        out[k:k + step] = np.count_nonzero(crosses & (x < at), axis=1) % 2 == 1
+    return out
 
 
 def _measure(P: np.ndarray):

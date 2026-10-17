@@ -715,6 +715,10 @@ def measured_faces(candidates: list[Opening]) -> list[dict]:
              "inward": bool(c.inward), "depth_ratio": round(float(c.depth_ratio), 2)}
         if c.shape != "circle":
             d["width_mm"], d["height_mm"] = round(c.wh[0] * mm, 2), round(c.wh[1] * mm, 2)
+        if c.annular:
+            # an annular mouth added by a click is the ring, as a proposed one is (Opening.as_dict)
+            d["inner_diameter_mm"] = round(2.0 * math.sqrt(c.filled / math.pi) * mm, 2)
+            d["flow_area_mm2"] = round((c.area - c.filled) * mm * mm, 2)
         out.append(d)
     return out
 

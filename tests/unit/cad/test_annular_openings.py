@@ -36,6 +36,24 @@ def test_a_flange_band_round_the_same_hole_does_not():
     assert not stands_in_opening(_hole(), (1, 0, 0), band, (0.0, 0.0, 0.0), (0.14, 0.14))
 
 
+def test_a_long_bar_in_a_long_duct_still_stands_in_it():
+    duct = {"area_m2": 0.4 * 0.04, "centroid": (0.0, 0.0, 0.0), "wh_m": (0.04, 0.4)}
+    assert stands_in_opening(duct, (1, 0, 0), 0.38 * 0.03, (0.0, 0.0, 0.0), (0.38, 0.03))
+    # turned across the duct it could not be in it
+    assert not stands_in_opening(duct, (1, 0, 0), 0.38 * 0.03, (0.0, 0.0, 0.0), (0.38, 0.045))
+
+
+def test_the_point_in_polygon_test_reads_the_same_in_batches(monkeypatch):
+    from meshpipeline.cad import open_ends
+    a = np.linspace(0.0, 2.0 * np.pi, 200, endpoint=False)
+    poly = np.c_[np.cos(a), np.sin(a)]
+    pts = np.random.default_rng(1).uniform(-1.2, 1.2, (5000, 2))
+    whole = open_ends._in_polygon(pts, poly)
+    monkeypatch.setattr(open_ends, "IN_POLYGON_BATCH", 1000)
+    assert (open_ends._in_polygon(pts, poly) == whole).all()
+    assert (whole == (np.hypot(pts[:, 0], pts[:, 1]) < np.cos(np.pi / 200))).mean() > 0.99
+
+
 def test_a_face_out_of_the_plane_or_off_the_hole_does_not():
     rod = math.pi * 0.03 ** 2
     assert not stands_in_opening(_hole(), (1, 0, 0), rod, (0.01, 0.0, 0.0), (0.06, 0.06))
@@ -114,6 +132,16 @@ def test_the_scout_carries_the_rod_in_an_annular_mouth(tmp_path):
         # ... and they agree exactly: pi/4 (D^2 - d^2) is the measured ring
         ring = math.pi / 4 * (d["diameter_mm"] ** 2 - d["inner_diameter_mm"] ** 2)
         assert ring == pytest.approx(d["flow_area_mm2"], rel=1e-3)
+
+
+@needs_ocp
+def test_a_face_added_by_a_click_is_the_ring_too(tmp_path):
+    r = _scout(_step(_annulus_shape(), tmp_path / "annulus.step"))
+    rings = [f for f in r.faces if f.get("kind") == "ring"]
+    assert rings
+    for f in rings:
+        assert f["inner_diameter_mm"] == pytest.approx(2 * R_ROD, rel=0.01)
+        assert f["flow_area_mm2"] == pytest.approx(RING_MM2, rel=0.01)
 
 
 @needs_ocp

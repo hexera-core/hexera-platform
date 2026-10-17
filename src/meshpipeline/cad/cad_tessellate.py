@@ -349,8 +349,10 @@ def stands_in_opening(opening: dict, normal, area: float, centroid, outer_wh=Non
     the centre rod or hub of an annular passage, often a solid of its own - shows a flat end face
     inside that wire, in the same plane. Such a face is smaller than the opening, lies in its
     plane, has its centre within the opening and, when the extent of its own outer rim
-    (`outer_wh`) is known, fits inside it: a flange band round the same hole is centred on it and
-    coplanar too, but wider than the hole. The flow crosses the opening less these faces."""
+    (`outer_wh`) is known, fits inside it - its rim's short and long sides inside the opening's
+    short and long sides (a 380 x 30 mm bar in a 400 x 40 mm duct fits): a flange band round the
+    same hole is centred on it and coplanar too, but wider than the hole. The flow crosses the
+    opening less these faces."""
     try:
         o_area = float(opening["area_m2"])
         oc = tuple(float(v) for v in opening["centroid"])
@@ -366,7 +368,8 @@ def stands_in_opening(opening: dict, normal, area: float, centroid, outer_wh=Non
     if math.sqrt(sum(v * v for v in off)) >= reach:
         return False
     if outer_wh is not None and len(wh) == 2 and min(wh) > 0 and max(outer_wh) > 0:
-        return max(float(v) for v in outer_wh) < min(float(v) for v in wh)
+        (a, b), (p, q) = sorted(float(v) for v in outer_wh), sorted(float(v) for v in wh)
+        return a < p and b < q
     return True
 
 
