@@ -18,6 +18,7 @@ import { dispatch, resultSurface } from "./core/events.js";
 import { beginRun, get as getState, isTerminalStatus, set as setState, waitingCopy }
   from "./core/state.js";
 import { Notice } from "./render/notice.js";
+import { openRepairPanel } from "./render/repair.js";
 import { Stage, closeLightbox, openLightbox, setCancelHandler, setResultHandler }
   from "./render/stage.js";
 import { configure as configureStream, replay, start as startStream, terminalResult }
@@ -93,10 +94,16 @@ setResultHandler((data, anchor) => {
     openViewer(job, anchor,
       { metrics: { attempts: data.attempts, pass: false }, files: data.files || [],
         unreviewed: true, findings: data.findings || [], reasoning: data.reasoning || "" });
+  } else {
+    // A TERMINAL failure - no valid mesh was ever produced. Any mesh file left in the workspace
+    // is structurally INVALID; showing it as "your mesh" would be a lie, and the outcome message
+    // has already explained what happened.
+    //
+    // BUT A REPAIR IS NOT THE MESH. If we fixed the customer's geometry on the way, that file is
+    // a deliverable in its own right and it exists whatever the mesher went on to do - so it is
+    // handed over here rather than withheld because a later stage failed.
+    openRepairPanel(job, anchor, data);
   }
-  // else: a TERMINAL failure - no valid mesh was ever produced. Any mesh file left in the
-  // workspace is structurally INVALID; showing it as "your mesh" would be a lie. The outcome
-  // message already explains what happened - that is the whole result.
 });
 
 /* what "start a new run" means: one definition, used by three callers. `origin` is the
