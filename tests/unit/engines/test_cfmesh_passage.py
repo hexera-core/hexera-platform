@@ -203,6 +203,18 @@ def test_the_band_costs_the_fewest_cells_that_hold_its_cells_across():
     assert B(0.03, 0.0102, 0.08) == (0.03, 0.0102)
 
 
+def test_a_band_put_on_an_octree_level_does_not_box_its_own_walls(tmp_path):
+    # a 31.5 mm background (1.26 m / 40) and a band whose 14.5 across is exactly the 15.75 mm
+    # level: the band takes that level, nudged 0.1% up - 14.49 across its own walls, which must
+    # not then read as narrow and be refined one level finer again
+    b = 0.0315 / 2 * R.CFMESH_MIN_CELLS_ACROSS / 2
+    pts = np.stack([np.linspace(0, 1, 200), np.zeros(200), np.zeros(200)], axis=1)
+    out = _render(tmp_path, passage_radius={"p05": b, "median": 0.3, "band": b},
+                  passage_field=(pts, np.full(200, b), np.full(200, 1e-3)))
+    assert np.isclose(out["wall_cell_size"], 0.01575 * 1.001, rtol=1e-3)
+    assert not out["narrow_regions"], out["narrow_regions"]
+
+
 def test_the_passage_radius_caps_the_wall_band_and_the_background(tmp_path):
     base = _render(tmp_path)
     assert base["passage_caps"] is None

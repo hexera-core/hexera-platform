@@ -440,6 +440,8 @@ CFMESH_MIN_CELLS_ACROSS = CFMESH_CELLS_ACROSS - 0.5
 #: is made that little finer (at most twice its cells) rather than the band a whole level finer
 #: (eight times the cells over a band that, in a tube, is most of the fluid).
 BAND_BACKGROUND_SHRINK = 2.0 ** (1.0 / 3.0)
+#: Narrow passages are detected this far under CFMESH_MIN_CELLS_ACROSS (see the call).
+NARROW_DETECT_FACTOR = 0.99
 
 
 def internal_band_cells(max_cell: float, wall_cell: float, band_radius: float, *,
@@ -559,7 +561,10 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
         _narrow = narrow_passage_regions(
             passage_field[0], passage_field[1], cell_m=wall_cell,
             areas=(passage_field[2] if len(passage_field) > 2 else None),
-            target=CFMESH_CELLS_ACROSS, detect=CFMESH_MIN_CELLS_ACROSS,
+            # 1% under the band's own minimum: a band put on an octree level is nudged 0.1% up
+            # (internal_band_cells), and its own walls must not read as narrow and be boxed one
+            # level finer - the very level the band just saved
+            target=CFMESH_CELLS_ACROSS, detect=NARROW_DETECT_FACTOR * CFMESH_MIN_CELLS_ACROSS,
             budget_cells=(0.5 * cell_budget if cell_budget else None))
         _narrow_note = str(getattr(_narrow, "note", "") or "")
     # the builder's own regions stop at the ceiling; a narrow passage's box is sized for it
