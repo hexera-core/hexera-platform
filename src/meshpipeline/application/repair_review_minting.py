@@ -27,7 +27,11 @@ MINT_CAP = 500
 
 
 def _key(defect: EntityDefect) -> str:
-    return defect.fingerprint or f"{defect.entity_type}:{defect.entity_index}:{defect.code.value}"
+    """One review item per (entity, problem). The fingerprint names the ENTITY, and one entity can
+    carry several defect codes - keyed by the fingerprint alone, a judgement item hid a repairable
+    defect on the same face, and two codes on one edge collapsed to the first."""
+    where = defect.fingerprint or f"{defect.entity_type}:{defect.entity_index}"
+    return f"{where}|{defect.code.value}"
 
 
 def _tried(defect: EntityDefect, operations) -> list[str]:
@@ -194,12 +198,12 @@ def mint_with_overflow(*, shape, report, repair_run_measured: dict, split: Defec
     kept = int(measured.get("operations_kept", 0) or 0)
     judgement_codes = {d.code for d, _ in split.judgement}
 
-    relocated: dict[str, EntityDefect] = {}
+    relocated: dict[tuple, EntityDefect] = {}
     if "survivors" in measured:
         found = [defect_from_entity(e) for e in measured["survivors"] or ()]
         scanned = [d for d in found if d is not None]
         pool = [d for d in scanned if d.code not in judgement_codes]
-        relocated = {d.fingerprint: d for d in scanned
+        relocated = {(d.fingerprint, d.code): d for d in scanned
                      if d.code in judgement_codes and d.fingerprint}
     else:
         pool = list(split.repairable)
@@ -209,7 +213,7 @@ def mint_with_overflow(*, shape, report, repair_run_measured: dict, split: Defec
 
     for defect, reason in split.judgement:
         seen.add(_key(defect))
-        again = relocated.get(defect.fingerprint) if defect.fingerprint else None
+        again = relocated.get((defect.fingerprint, defect.code)) if defect.fingerprint else None
         if again is not None:
             items.append(_item(shape, again, origin=ORIGIN_TRIAGE, message=reason))
         elif "survivors" in measured and original_shape is not None:

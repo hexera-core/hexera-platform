@@ -137,3 +137,27 @@ def test_rims_a_kept_operation_renamed_are_still_paired_at_mint(cameras, monkeyp
     keys = {i["fingerprint"]: i["pairing_key"] for i in items}
     assert keys == {"rim:a": "pair:ab", "rim:b": "pair:ab", "gap:c": ""}, keys
     assert asked and "gap:c" in asked[0]             # computed over the whole minted pool
+
+
+def test_one_entity_with_two_problems_mints_each_of_them(cameras):
+    """One face can carry several defect codes under one fingerprint. Keyed by the fingerprint
+    alone, the judgement item hid the repairable defect on the same face and two survivor codes
+    on one edge collapsed to the first."""
+    items, _ = _mint([_entity("small_face", "face", 3, "fa", "warning"),
+                      _entity("curve_inconsistency", "face", 3, "fa"),
+                      _entity("small_edge", "edge", 5, "eb"),
+                      _entity("degenerate_edge", "edge", 5, "eb")])
+    assert sorted((i["fingerprint"], i["defect_code"]) for i in items) == [
+        ("eb", "degenerate_edge"), ("eb", "small_edge"),
+        ("fa", "curve_inconsistency"), ("fa", "small_face")]
+
+
+def test_a_relocated_judgement_defect_is_matched_on_its_code_too(cameras):
+    repaired = object()
+    items, _ = _mint([_entity("self_intersection", "face", 3, "fa"),
+                      _entity("small_face", "face", 3, "fa", "warning")],
+                     {"survivors": [_entity("self_intersection", "face", 9, "fa"),
+                                    _entity("small_face", "face", 7, "fa", "warning")],
+                      "operations_kept": 1}, shape=repaired)
+    assert sorted((i["defect_code"], i["entity_index"]) for i in items) == [
+        ("self_intersection", 9), ("small_face", 7)]
