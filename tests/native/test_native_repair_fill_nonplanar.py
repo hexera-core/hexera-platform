@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 import pytest
-from tests.cad_fixtures import write_cylinder_cap_hole_step
+from tests.cad_fixtures import (
+    write_cylinder_cap_hole_step,
+    write_missing_bore_wall_step,
+    write_open_shell_step,
+)
 
 import meshpipeline.settings.cad_repair as rcfg
 from meshpipeline.cad.repair import loop
@@ -148,3 +152,20 @@ def test_a_declined_plate_patch_leaves_the_input_shape_byte_identical(tmp_path, 
     assert out.evidence["builder"] == "GeomPlate"
     assert _max_tolerance(shape) == tolerance_before
     assert _brep_dump(shape, tmp_path / "after.brep") == dump_before
+
+
+@pytest.mark.parametrize("writer", [write_cylinder_cap_hole_step, write_open_shell_step,
+                                    write_missing_bore_wall_step])
+def test_with_the_nonplanar_flag_off_the_run_is_todays_run(tmp_path, monkeypatch, writer):
+    from meshpipeline.cad.repair.operations import OPERATIONS
+    from meshpipeline.cad.repair.plan import RulesPlanner
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_FILL_PLANAR_HOLES", True)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_FILL_NONPLANAR_HOLES", False)
+    shape = _read(writer(tmp_path / "part.step"))
+    with_op = loop.run(shape, tolerance_mm=0.01)
+    without = loop.run(shape, planner=RulesPlanner(ops=tuple(
+        o for o in OPERATIONS if o.name != "fill_nonplanar_hole")), tolerance_mm=0.01)
+    assert [v.to_dict() for v in with_op.verdicts] == [v.to_dict() for v in without.verdicts]
+    assert with_op.refusals == without.refusals
+    assert with_op.stopped_because == without.stopped_because
