@@ -234,10 +234,12 @@ RulesPlanner / DirectedPlanner(llm-planner | engineer | replay)
 - **Self-intersection: corpus parts, not committed fixtures.** The kernel's builders do not
   readily produce a self-intersecting face on purpose, and a hand-forged one proves only the
   forgery. The builder tries a synthetic fixture first and keeps it if it is real; otherwise the
-  native proof is ec_turbine-A and any corpus part the new detection locates, read from disk by
-  path (skipped, with a reason, when the path is absent). Because ec_turbine-A triages to
-  `manual_cleanup`, its proof is a directed run (an engineer-source directive aimed at the located
-  faces), stated as such.
+  native proof is a corpus part the new detection locates, read from disk by path (skipped, with a
+  reason, when the path is absent). ec_turbine-A turned out NOT to be one: the face analyzer
+  completes on it and finds no face crossing (its self-intersection is mesh-level), so its test
+  skips with that reason. The replacement proof is bm2_ec_exhaust-A, a directed run (an
+  engineer-source directive aimed at the located faces, stated as such) that reaches the rebuild
+  and is judged by the caps.
 - Unit, hermetic: the declare-before-write ordering, every decline reason, the `FILL_OPS` guard
   for both names, the `_wire` catalogue pinned to `OPERATIONS`, the grow-beyond-targets check with
   op doubles.

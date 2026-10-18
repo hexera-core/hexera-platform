@@ -1,5 +1,5 @@
 # Responsibility: Verify on the real kernel that heal_self_intersections reads the real face scan, declines a tangle it cannot isolate or uncross, and never changes the shape it was handed.
-# Boundaries: a forged self-interfering solid, two overlapping boxes and a sound box, plus one directed run on ec_turbine-A from the OCCT corpus (on disk only, never committed; skipped when absent).
+# Boundaries: a forged self-interfering solid, two overlapping boxes and a sound box, plus directed runs on OCCT corpus parts (on disk only, never committed; skipped when absent).
 from __future__ import annotations
 
 import os
@@ -18,7 +18,6 @@ from meshpipeline.cad.repair.operations import MAX_HEAL_FACES, HealSelfIntersect
 pytest.importorskip("OCP.BOPAlgo", reason="the CAD kernel is a native-tier dependency")
 
 DEFAULT_CORPUS = "/tmp/cadcorpus/occt/opencascade-dataset-7.8.0/step"  # noqa: S108 - a read-only dataset location
-TURBINE = Path(os.environ.get("HEXERA_OCCT_CORPUS", DEFAULT_CORPUS)) / "ec_turbine-A.stp"
 
 
 @pytest.fixture(autouse=True)
@@ -345,23 +344,29 @@ def test_an_engineer_directive_on_the_forged_tangle_ends_honestly(tmp_path, monk
     _assert_honest(verdict, run, target)
 
 
-@pytest.mark.skipif(not TURBINE.exists(),
-                    reason="OCCT corpus not on disk (licence: never committed)")
-def test_the_turbine_crossing_is_located_and_healed_by_an_engineer_directive(monkeypatch):
+CORPUS = Path(os.environ.get("HEXERA_OCCT_CORPUS", DEFAULT_CORPUS))
+
+
+@pytest.mark.parametrize("name", ["ec_turbine-A.stp", "bm2_ec_exhaust-A.stp"])
+def test_a_corpus_crossing_is_located_and_healed_by_an_engineer_directive(name, monkeypatch):
+    # ec_turbine-A: the analyzer completes and finds no face crossing - its self-intersection is
+    # mesh-level, so that file skips. bm2_ec_exhaust-A is the real-part proof: a located crossing
+    # whose directive reaches the rebuild and is judged by the caps.
+    path = CORPUS / name
+    if not path.exists():
+        pytest.skip("OCCT corpus not on disk (licence: never committed)")
     _run_config(monkeypatch)
-    shape = _read(TURBINE)
+    shape = _read(path)
     found, _ = localize_scan(shape, face_scan_s=30.0)
     located = [d for d in found if d.code is DefectCode.self_intersection
                and d.measurements.get("crossing_faces")]
     if not located:
-        # The analyzer ran to completion inside its budget (~5 s; a timeout is silence too, but
-        # 120 s gave the same empty answer) and found no face crossing another: there is nothing
-        # for the heal to aim at, and forcing a directive would prove nothing.
-        pytest.skip("ec_turbine-A: the face scan completed and located no self-crossing face")
+        pytest.skip(f"{name}: the analyzer completes and finds no face crossing; "
+                    "its self-intersection is mesh-level")
     target = located[0]
-    run = _directed_heal(shape, target, "turbine-proof")
+    run = _directed_heal(shape, target, "corpus-proof")
     verdict = run.verdicts[0]
-    print(f"TURBINE component={1 + len(target.measurements['crossing_faces'])} "
+    print(f"CORPUS {name} component={1 + len(target.measurements['crossing_faces'])} "
           f"kept={verdict.kept} basis={verdict.basis!r} reason={verdict.reason!r}")
     assert verdict.op == "heal_self_intersections"
     _assert_honest(verdict, run, target)
