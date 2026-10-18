@@ -342,3 +342,26 @@ def test_a_run_whose_artifacts_could_not_be_delivered_never_parks_for_geometry_r
     state = {"repair_review_candidates": [{"fingerprint": "f", "defect_code": "small_face"}]}
     assert plan_review(state, status=JobStatus.failed, system_failure=is_system_failure(
         api_failure=False, timed_out=False, delivery=failed_delivery)) is None
+
+
+def test_a_promotion_refusal_keeps_what_the_operations_did_and_says_promotion_refused(
+        tmp_path, monkeypatch, logged):
+    """Promotion refusing a COMPLETED repair is a later refusal: the operations ran, and one the
+    session rolled back is still a rolled-back operation. Calling every directive not_reached told
+    the training log and the review history they were never tried."""
+    monkeypatch.setattr("meshpipeline.pipeline.repair_promote.stages_for",
+                        lambda geometry, engine="": (False, "RuntimeError: empty shape"))
+    other = str(uuid.uuid4())
+    out = _run(tmp_path, monkeypatch, _report(
+        operations=[_directed("merge_faces", "kept", "small_face", "fa"),
+                    _directed("sew_faces", "rolled_back", "open_shell", "eb", item_id=other,
+                              reason="target_remains")],
+        operations_kept=1),
+        [_directive(), {**_directive(item_id=other, target="eb"), "op": "sew_faces"}])
+    assert "not promoted" in out["repair_attempt"]["reason"]
+    outcomes = {o["item_id"]: (o["outcome"], o["reason"]) for o in out["repair_directive_outcomes"]}
+    # kept inside a result that was not promoted: nothing reached the part the run meshes
+    assert outcomes[ITEM] == ("not_reached", "not_promoted")
+    assert outcomes[other] == ("rolled_back", "target_remains")
+    row = logged[-1]
+    assert row["operations"] and "promot" in row["refused_because"]

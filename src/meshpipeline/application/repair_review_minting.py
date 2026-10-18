@@ -275,9 +275,13 @@ OUTCOME_NOT_REACHED = "not_reached"
 #: Why a directive the session kept is still `not_reached`: the after-check threw the whole result
 #: away (cad/repair/conservative.py), so nothing it did reached the part.
 DISCARDED_WITH_RESULT = "discarded_with_result"
+#: Why a directive the session kept is still `not_reached`: the repair completed, but promotion
+#: refused the result (pipeline/repair_promote.py), so the run meshes the original.
+NOT_PROMOTED = "not_promoted"
 
 
-def directive_outcomes(directives, operations, refusals, *, discarded: bool = False) -> list[dict]:
+def directive_outcomes(directives, operations, refusals, *, discarded: bool = False,
+                       discarded_reason: str = DISCARDED_WITH_RESULT) -> list[dict]:
     """`[{item_id, source, outcome, reason}]`, one per directive, in the order they were given.
 
     THE JOIN IS EXACT WHERE IT CAN BE. The planner stamps a proposed operation with the directive's
@@ -337,7 +341,7 @@ def directive_outcomes(directives, operations, refusals, *, discarded: bool = Fa
             op = ops[match]
             if op.get("status") == "kept" and discarded:
                 out.append({**row, "outcome": OUTCOME_NOT_REACHED,
-                            "reason": DISCARDED_WITH_RESULT})
+                            "reason": discarded_reason})
             elif op.get("status") == "kept":
                 out.append({**row, "outcome": OUTCOME_KEPT, "reason": ""})
             else:

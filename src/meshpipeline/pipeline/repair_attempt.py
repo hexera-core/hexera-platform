@@ -126,7 +126,7 @@ def _mint(*, report: dict, measured: dict, source: Path,
 
 
 def _outcomes(state, operations, refusals, *, discarded: bool = False,
-              directives=None) -> list[dict]:
+              directives=None, discarded_reason: str = "") -> list[dict]:
     """What became of each directive this run was given. Never raises; empty when review is off.
 
     `directives` is what the kernel was handed (the state's, plus the live LLM planner's); it
@@ -138,6 +138,9 @@ def _outcomes(state, operations, refusals, *, discarded: bool = False,
         return []
     try:
         from meshpipeline.application.repair_review_minting import directive_outcomes
+        if discarded_reason:
+            return directive_outcomes(directives, operations, refusals, discarded=discarded,
+                                      discarded_reason=discarded_reason)
         return directive_outcomes(directives, operations, refusals, discarded=discarded)
     except Exception:  # noqa: BLE001 - the corpus and the loop-closing are never load-bearing
         logger.warning("node_repair_attempt: directive outcomes could not be joined", exc_info=True)
@@ -162,6 +165,33 @@ def _not_reached(state, job_id, route: str, directives=None) -> dict:
         TrainingLogger(job_id).log("repair_attempt", op_id="repair:attempt", payload={
             "route": route, "operations": [], "refusals": [], "directives": outcomes,
             "refused_because": "the run ended before the directives were tried"})
+    except Exception:  # noqa: BLE001 - the corpus is never load-bearing for a run
+        pass
+    return _outcome_state(outcomes)
+
+
+def _not_promoted(state, job_id, route: str, directives, repair_report, why: str) -> dict:
+    """A COMPLETED repair whose result was not adopted still answers its directives with what the
+    operations did: a rolled-back one stays rolled back, and one the session kept is `not_reached`
+    with NOT_PROMOTED, because the run meshes the original. The refusal is recorded beside them -
+    never folded into "never tried". Never raises."""
+    try:
+        from meshpipeline.application.repair_review_minting import NOT_PROMOTED
+        measured = {m.name: m.value for m in repair_report.measurements}
+        attempted = [dict(op) for op in repair_report.operations]
+        refusals = measured.get("refusals", []) or []
+        outcomes = _outcomes(state, attempted, refusals, discarded=True, directives=directives,
+                             discarded_reason=NOT_PROMOTED)
+    except Exception:  # noqa: BLE001 - the corpus and the loop-closing are never load-bearing
+        logger.warning("node_repair_attempt: promotion-refusal outcomes failed", exc_info=True)
+        return {}
+    try:
+        from meshpipeline.capture.logger import TrainingLogger
+        TrainingLogger(job_id).log("repair_attempt", op_id="repair:attempt", payload={
+            "route": route, "operations": attempted, "refusals": refusals,
+            "stopped_because": measured.get("stopped_because", ""),
+            "planner": measured.get("planner", ""), "directives": outcomes,
+            "refused_because": f"the repaired geometry was not promoted: {why}"})
     except Exception:  # noqa: BLE001 - the corpus is never load-bearing for a run
         pass
     return _outcome_state(outcomes)
@@ -377,7 +407,7 @@ async def node_repair_attempt(state: PipelineState) -> dict:
         # survivors describe a file nobody will mesh.
         return {**_declined(f"the repaired geometry was not promoted: {exc}", route=advice.route),
                 **await _triage_only(report, source),
-                **_not_reached(state, job_id, advice.route, directives)}
+                **_not_promoted(state, job_id, advice.route, directives, repair_report, str(exc))}
     except Exception as exc:  # noqa: BLE001
         logger.warning("node_repair_attempt: the repaired file could not be adopted (%s: %s) - "
                        "continuing on the original - job_id=%s", type(exc).__name__, exc, job_id)
@@ -385,7 +415,8 @@ async def node_repair_attempt(state: PipelineState) -> dict:
         return {**_declined(f"the repaired file could not be adopted: {type(exc).__name__}",
                             route=advice.route),
                 **await _triage_only(report, source),
-                **_not_reached(state, job_id, advice.route, directives)}
+                **_not_promoted(state, job_id, advice.route, directives, repair_report,
+                                type(exc).__name__)}
 
     measured = {m.name: m.value for m in repair_report.measurements}
     attempted = [dict(op) for op in repair_report.operations]
