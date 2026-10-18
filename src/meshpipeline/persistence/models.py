@@ -613,6 +613,9 @@ class RepairReviewItem(Base):
                                                     server_default="open")
     decision:     Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     decided_at:   Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Prior decisions (with their outcomes) on a defect at this fingerprint, oldest first; NULL
+    # when the defect is new to the job.
+    decision_history: Mapped[list | None] = mapped_column(JSONB, nullable=True)
 
     __table_args__: tuple = (
         CheckConstraint("origin IN ('triage', 'stall', 'refusal', 'survivor')",

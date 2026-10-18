@@ -125,6 +125,24 @@ def _mint(*, report: dict, measured: dict, source: Path,
     return out
 
 
+def _outcomes(state, operations, refusals) -> list[dict]:
+    """What became of each directive this run was given. Never raises; empty when review is off."""
+    directives = state.get("repair_directives") or ()
+    if not directives or not rcfg.CAD_REPAIR_REVIEW_ENABLED:
+        return []
+    try:
+        from meshpipeline.application.repair_review_minting import directive_outcomes
+        return directive_outcomes(directives, operations, refusals)
+    except Exception:  # noqa: BLE001 - the corpus and the loop-closing are never load-bearing
+        logger.warning("node_repair_attempt: directive outcomes could not be joined", exc_info=True)
+        return []
+
+
+def _outcome_state(outcomes: list[dict]) -> dict:
+    """The outcomes the terminal path writes back onto their items (only those with an item)."""
+    return {"repair_directive_outcomes": [o for o in outcomes if o.get("item_id")]} if outcomes else {}
+
+
 async def _triage_only(report: dict, source: Path) -> dict:
     """Items for what a person decides, when the run stays on the original and the repair's
     survivors describe a file nobody will mesh (or nothing was repaired at all)."""
@@ -201,6 +219,8 @@ async def node_repair_attempt(state: PipelineState) -> dict:
         # and this is the evidence an operator needs to decide what to do instead.
         logger.info("node_repair_attempt: repair refused (%s) - continuing on the original "
                     "- job_id=%s", exc, job_id)
+        outcomes = _outcomes(state, exc.measurements.get("operations", []),
+                             exc.measurements.get("refusals", []))
         try:
             from meshpipeline.capture.logger import TrainingLogger
             # A DECLINE IS STILL A TRAINING ROW, and often the most useful one. A run that kept
@@ -214,6 +234,7 @@ async def node_repair_attempt(state: PipelineState) -> dict:
                 "refusals": exc.measurements.get("refusals", []),
                 "planner": exc.measurements.get("planner", ""),
                 "refused_because": str(exc),
+                "directives": outcomes,
                 "measurements": dict(exc.measurements)})
         except Exception:  # noqa: BLE001 - the corpus is never load-bearing for a run
             pass
@@ -222,7 +243,7 @@ async def node_repair_attempt(state: PipelineState) -> dict:
             survivors_path=None)
         return {**_declined(f"the repair was refused: {exc}", route=advice.route,
                             detail={"measurements": exc.measurements}),
-                **minted}
+                **minted, **_outcome_state(outcomes)}
     except Exception as exc:  # noqa: BLE001 - a repair that breaks is never the file's fault
         logger.warning("node_repair_attempt: the repair failed (%s) - continuing on the original "
                        "- job_id=%s", type(exc).__name__, job_id)
@@ -255,6 +276,7 @@ async def node_repair_attempt(state: PipelineState) -> dict:
 
     measured = {m.name: m.value for m in repair_report.measurements}
     attempted = [dict(op) for op in repair_report.operations]
+    outcomes = _outcomes(state, attempted, measured.get("refusals", []))
     logger.info("node_repair_attempt: repaired and promoted for engine=%s - stopped=%s "
                 "- kept=%s/%s - job_id=%s", engine, measured.get("stopped_because"),
                 measured.get("operations_kept"), measured.get("operations_attempted"), job_id)
@@ -271,6 +293,7 @@ async def node_repair_attempt(state: PipelineState) -> dict:
             "stopped_because": measured.get("stopped_because", ""),
             "refusals": measured.get("refusals", []),
             "planner": measured.get("planner", ""),
+            "directives": outcomes,
             "report": repair_report.to_dict(),
             "lineage": update.get("repair_lineage", {})})
     except Exception:  # noqa: BLE001 - the corpus is never load-bearing for a run
@@ -288,6 +311,7 @@ async def node_repair_attempt(state: PipelineState) -> dict:
     return {
         **update,
         **minted,
+        **_outcome_state(outcomes),
         "repair_attempt": {
             "attempted": True,
             # NOT A STATEMENT THAT THE RUN SUCCEEDED. `status_for` (cad/repair/conservative.py)

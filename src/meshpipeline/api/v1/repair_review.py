@@ -93,6 +93,7 @@ def _item_dict(item) -> dict:
         "origin": item.origin, "pairing_key": item.pairing_key or "",
         "proposal": item.proposal, "camera": item.camera or {}, "state": item.state,
         "decision": item.decision,
+        "decision_history": item.decision_history or [],
         "decided_at": item.decided_at.isoformat() if item.decided_at else None,
     }
 

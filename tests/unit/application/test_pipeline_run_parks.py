@@ -72,6 +72,12 @@ class _Repo:
     async def add_items(self, db, job_id, park_id, items):
         self.items.append((park_id, list(items)))
 
+    async def decided_items(self, db, job_id):
+        return []
+
+    async def record_outcome(self, db, item_id, outcome):
+        return True
+
     async def open_park(self, db, job_id):
         return next((p for p in self.parks if p.status == "open"), None)
 

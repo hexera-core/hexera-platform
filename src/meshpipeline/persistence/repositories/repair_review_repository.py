@@ -7,14 +7,15 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import select, update
+from sqlalchemy import cast, select, update
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from meshpipeline.persistence.models import RepairReviewItem, RepairReviewPark
 
 _ITEM_FIELDS = (
     "group_key", "defect_code", "severity", "entity_type", "entity_index", "fingerprint",
-    "measurements", "message", "origin", "pairing_key", "proposal", "camera",
+    "measurements", "message", "origin", "pairing_key", "proposal", "camera", "decision_history",
 )
 _DECIDED = frozenset({"accepted", "left", "redirected", "unreviewed"})
 
@@ -90,6 +91,30 @@ class RepairReviewRepository:
         if not res.rowcount:
             raise ParkClosedError(f"park {item.park_id} is closed; item {item_id} is final")
         return item
+
+    async def record_outcome(self, db: AsyncSession, item_id: uuid.UUID, outcome: dict) -> bool:
+        """Note what became of a decided item's directive. Allowed under a CLOSED park.
+
+        An outcome is a fact about what happened AFTER the review, not a decision, so it is the
+        one write that may land on a closed park. It touches only the item's `decision` JSON
+        (merging `outcome` and `outcome_reason` into it), only when a decision exists, and never
+        its state.
+        """
+        patch = {"outcome": str(outcome["outcome"]),
+                 "outcome_reason": str(outcome.get("reason", "") or "")}
+        res = await db.execute(
+            update(RepairReviewItem)
+            .where(RepairReviewItem.id == item_id, RepairReviewItem.decision.is_not(None))
+            .values(decision=RepairReviewItem.decision.op("||")(cast(patch, JSONB))))
+        return bool(res.rowcount)
+
+    async def decided_items(self, db: AsyncSession, job_id: uuid.UUID) -> list[RepairReviewItem]:
+        """Every item of the job that was ever decided, oldest decision first."""
+        res = await db.execute(
+            select(RepairReviewItem)
+            .where(RepairReviewItem.job_id == job_id, RepairReviewItem.decision.is_not(None))
+            .order_by(RepairReviewItem.decided_at, RepairReviewItem.id))
+        return list(res.scalars().all())
 
     async def record_group_decision(self, db: AsyncSession, job_id: uuid.UUID, group_key: str,
                                     state: str, decision: dict) -> int:

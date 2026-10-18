@@ -245,3 +245,63 @@ def mint_with_overflow(*, shape, report, repair_run_measured: dict, split: Defec
                            extra={"stopped_because": stopped} if stopped else None,
                            tried=_tried(defect, operations)))
     return _cap(items)
+
+
+# ---------------------------------------------------------------------------------------------
+# DIRECTIVE OUTCOMES - what became of each thing an engineer told the repair to do.
+
+OUTCOME_KEPT = "kept"
+OUTCOME_ROLLED_BACK = "rolled_back"
+OUTCOME_UNPLAYABLE = "unplayable"
+
+
+def directive_outcomes(directives, operations, refusals) -> list[dict]:
+    """`[{item_id, source, outcome, reason}]`, one per directive, in the order they were given.
+
+    THE JOIN. An operation entry does not carry the directive that proposed it, so an entry is
+    matched to a directive by what the directive named: the operation's name AND at least one
+    target fingerprint in common. Each entry answers at most one directive (a repeated directive
+    consumes entries in order), so two directives on the same defect are not both credited with
+    one run. A directive the loop could not play is matched exactly: its refusal carries the
+    directive dict itself. A directive in neither list was never reached.
+    """
+    ops = [o for o in operations or () if isinstance(o, dict)]
+    skipped = [r for r in refusals or ()
+               if isinstance(r, dict) and r.get("refusal") == "directive_unplayable"]
+    used: set[int] = set()
+    out: list[dict] = []
+    for directive in directives or ():
+        if not isinstance(directive, dict):
+            continue
+        row = {"item_id": directive.get("item_id"), "source": directive.get("source", "")}
+        refusal = next((r for r in skipped if r.get("directive") == directive), None)
+        if refusal is not None:
+            skipped.remove(refusal)
+            out.append({**row, "outcome": OUTCOME_UNPLAYABLE,
+                        "reason": str(refusal.get("reason", ""))})
+            continue
+        wanted = directive.get("targets") or ()
+        wanted = {wanted} if isinstance(wanted, str) else {str(t) for t in wanted}
+        match = next((i for i, o in enumerate(ops)
+                      if i not in used and o.get("name") == directive.get("op")
+                      and wanted & {str(t) for t in o.get("targets") or ()}), None)
+        if match is None:
+            out.append({**row, "outcome": OUTCOME_UNPLAYABLE, "reason": "not_reached"})
+            continue
+        used.add(match)
+        op = ops[match]
+        if op.get("status") == "kept":
+            out.append({**row, "outcome": OUTCOME_KEPT, "reason": ""})
+        else:
+            out.append({**row, "outcome": OUTCOME_ROLLED_BACK,
+                        "reason": str(op.get("reason", "") or op.get("status", ""))})
+    return out
+
+
+def attach_history(items: list[dict], prior: dict[str, list[dict]]) -> list[dict]:
+    """Items whose fingerprint was decided before carry `decision_history` (oldest first)."""
+    out = []
+    for item in items:
+        history = prior.get(item.get("fingerprint") or "")
+        out.append({**item, "decision_history": list(history)} if history else item)
+    return out

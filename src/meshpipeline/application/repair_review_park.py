@@ -27,6 +27,8 @@ class ReviewPlan:
     kept_operations: list = field(default_factory=list)
     source_sha256: str = ""
     geometry_session_id: str = ""
+    #: `[{item_id, outcome, reason}]` for directives that ran this time, written back onto their items.
+    outcomes: list = field(default_factory=list)
 
 
 def kept_operations(state: dict) -> list[dict]:
@@ -57,13 +59,14 @@ def plan_review(state: dict, *, status: JobStatus,
     if not rcfg.CAD_REPAIR_REVIEW_ENABLED:
         return None
     items = list(state.get("repair_review_candidates") or [])
+    outcomes = list(state.get("repair_directive_outcomes") or [])
     if status == JobStatus.failed and system_failure:
         return None
-    if not items or status not in (JobStatus.failed, JobStatus.succeeded):
+    if (not items and not outcomes) or status not in (JobStatus.failed, JobStatus.succeeded):
         return None
-    if status == JobStatus.succeeded:
-        return ReviewPlan(items=items)
-    return ReviewPlan(items=items, park=True, kept_operations=kept_operations(state),
+    if status == JobStatus.succeeded or not items:
+        return ReviewPlan(items=items, outcomes=outcomes)
+    return ReviewPlan(items=items, outcomes=outcomes, park=True, kept_operations=kept_operations(state),
                       source_sha256=source_sha256(state),
                       # THE CHAT SESSION id: the same id the console's
                       # GET /geometry/{session_id}/check/skin route (api/v1/geometry.py) serves
@@ -112,5 +115,44 @@ async def write_review(db, job_id: uuid.UUID, plan: ReviewPlan, repo=None) -> uu
         park = await repo.create_park(db, job_id, plan.kept_operations, plan.source_sha256,
                                       plan.geometry_session_id)
         park_id = park.id
-    await repo.add_items(db, job_id, park_id, plan.items)
+    items = await _close_the_loop(db, job_id, plan, repo)
+    await repo.add_items(db, job_id, park_id, items)
     return park_id
+
+
+async def _close_the_loop(db, job_id: uuid.UUID, plan: ReviewPlan, repo) -> list[dict]:
+    """Record what became of the last review's directives, and give re-minted items their history.
+
+    FAIL-OPEN, in its own savepoint: the park matters more than its history, and a failed
+    statement must not poison the caller's transaction.
+    """
+    if not (rcfg.CAD_REPAIR_REVIEW_ENABLED and (plan.outcomes or plan.items)):
+        return plan.items
+    from meshpipeline.application.repair_review_minting import attach_history
+    sp = None
+    try:
+        sp = await db.begin_nested()
+        for outcome in plan.outcomes:
+            try:
+                item_id = uuid.UUID(str(outcome["item_id"]))
+            except (KeyError, ValueError):
+                continue
+            await repo.record_outcome(db, item_id, outcome)
+        prior: dict[str, list[dict]] = {}
+        for row in await repo.decided_items(db, job_id):
+            if row.fingerprint:
+                prior.setdefault(row.fingerprint, []).append(
+                    {**dict(row.decision or {}), "state": row.state,
+                     "decided_at": row.decided_at.isoformat() if row.decided_at else None})
+        items = attach_history(plan.items, prior)
+        await sp.commit()
+        return items
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("repair review: outcomes/history skipped for job %s: %s", job_id,
+                       type(exc).__name__)
+        if sp is not None:
+            try:
+                await sp.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+        return plan.items
