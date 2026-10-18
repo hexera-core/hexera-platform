@@ -96,8 +96,20 @@ def rank(q: dict | None) -> tuple:
             int(_num(q.get("skew_faces")) or 0))
 
 
+def measured(q: dict | None) -> bool:
+    """Whether `q` is a COMPLETE checkMesh reading: a cell count and a worst angle. checkMesh
+    that died early still comes back as a record with no fatal defect listed - and an absent
+    defect is no proof the mesh has none."""
+    q = q or {}
+    cells, no = _num(q.get("cells")), _num(q.get("max_non_ortho"))
+    return bool(cells and cells > 0 and no is not None)
+
+
 def better(cand: dict | None, best: dict | None) -> bool:
-    """Whether `cand` measures better than `best` by a margin worth a swap."""
+    """Whether `cand` measures better than `best` by a margin worth a swap. A candidate without a
+    complete reading never wins."""
+    if not measured(cand):
+        return False
     a, b = rank(cand), rank(best)
     if a[0] != b[0]:
         return a[0] < b[0]
@@ -136,13 +148,15 @@ def protective_meshdict(text: str) -> str | None:
 
 
 def rescue(workspace, q: dict, *, bashrc: str, deadline: float, mesher_seconds: float,
+           check_seconds: float = 60.0,
            measure: Callable[..., dict] | None = None,
            runner: Callable[..., Any] | None = None, env: dict | None = None,
            is_2d: bool = False) -> dict:
     """The quality record of the mesh left in `workspace` after the rescue: `q` itself when the
     mesh is not near its edge (or there is no time or room to try), else the best measured
     candidate's record, with `rescue` saying what was tried and kept. `deadline` is the monotonic
-    time no lever may run past; `mesher_seconds` is the first cartesianMesh run's wall time."""
+    time no lever - nor the checkMesh that measures it - may run past; `mesher_seconds` and
+    `check_seconds` are the first cartesianMesh's and the first checkMesh's wall times."""
     why = near_edge(q)
     if not why:
         return q
@@ -163,21 +177,29 @@ def rescue(workspace, q: dict, *, bashrc: str, deadline: float, mesher_seconds: 
     if env is None:
         env = _foam_env()
 
+    meshdict = ws / "system" / "meshDict"
+    try:
+        asked_dict = meshdict.read_text() if meshdict.exists() else ""
+    except OSError:
+        return q                       # nothing is moved before the case can be read back
+    kept_dict = asked_dict
     scratch = ws / SCRATCH
     shutil.rmtree(scratch, ignore_errors=True)
     scratch.mkdir(parents=True)
     best_q, best_dir, best_name = q, scratch / "as_built", "as built"
-    (ws / _POLYMESH).rename(best_dir)
-    meshdict = ws / "system" / "meshDict"
-    asked_dict = meshdict.read_text() if meshdict.exists() else ""
-    kept_dict = asked_dict
+    #: what one measurement of a candidate may take: a checkMesh like the first, with room
+    check_s = 1.5 * max(float(check_seconds or 0.0), 10.0) + 15.0
     logger.warning("cfMesh mesh at its validity edge (%s) - trying the engine's own levers", why)
 
     def _left() -> float:
-        return deadline - time.monotonic()
+        """Seconds a lever may still run: to the deadline, less the check that must follow it."""
+        return deadline - time.monotonic() - check_s
 
     def _measure(name: str) -> dict | None:
         (ws / "mesh_quality.json").unlink(missing_ok=True)     # never a cached figure
+        if deadline - time.monotonic() < check_s:
+            logger.warning("rescue: no time left to measure the %s mesh - not a candidate", name)
+            return None
         try:
             return check(ws, bashrc=bashrc) or None
         except Exception:  # noqa: BLE001 - an unmeasured candidate is no candidate
@@ -215,7 +237,11 @@ def rescue(workspace, q: dict, *, bashrc: str, deadline: float, mesher_seconds: 
             return
         _consider(name, _measure(name), step)
 
+    moved = False
     try:
+        # the mesh as built is the first candidate, kept aside while the others are made
+        (ws / _POLYMESH).rename(best_dir)
+        moved = True
         # 1. the engine's optimiser on the mesh as built
         _optimise(best_dir, "optimised")
         # 2. a protective re-mesh, when the best is still near the edge and the time holds a run
@@ -255,11 +281,12 @@ def rescue(workspace, q: dict, *, bashrc: str, deadline: float, mesher_seconds: 
         logger.warning("cfMesh rescue failed part-way - keeping the best mesh so far",
                        exc_info=True)
     finally:
-        shutil.rmtree(ws / _POLYMESH, ignore_errors=True)
-        best_dir.rename(ws / _POLYMESH)
-        if meshdict.exists() or kept_dict:
-            # the meshDict beside the mesh is the one that built it
-            meshdict.write_text(kept_dict)
+        if moved:
+            shutil.rmtree(ws / _POLYMESH, ignore_errors=True)
+            best_dir.rename(ws / _POLYMESH)
+            if meshdict.exists() or kept_dict:
+                # the meshDict beside the mesh is the one that built it
+                meshdict.write_text(kept_dict)
         shutil.rmtree(scratch, ignore_errors=True)
     record["kept"] = best_name
     return _done(ws, best_q, record)
