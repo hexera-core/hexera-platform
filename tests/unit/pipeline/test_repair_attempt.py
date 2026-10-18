@@ -509,3 +509,39 @@ def test_the_runs_repair_directives_reach_the_repair_step(monkeypatch, tmp_path,
     seen.clear()
     _run(_state(tmp_path))
     assert seen["directives"] == ()
+
+
+def test_the_staging_proof_runs_off_the_event_loop_and_on_a_clock(tmp_path, monkeypatch, repairs):
+    """Promotion's staging proof is a tessellation. Run synchronously on the loop it blocked the
+    job's heartbeat and cancellation checks for as long as it took, outside the repair's timeout.
+    Now it runs in a thread, the loop keeps beating, and a proof past the bound is a refusal."""
+    import time
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_TIMEOUT_S", 0.3)
+
+    def _slow(geometry, engine=""):
+        time.sleep(1.0)
+        return True, ""
+
+    monkeypatch.setattr("meshpipeline.pipeline.repair_promote.stages_for", _slow)
+
+    async def _both():
+        beats = 0
+
+        async def _heartbeat():
+            nonlocal beats
+            while True:
+                await asyncio.sleep(0.05)
+                beats += 1
+
+        ticker = asyncio.create_task(_heartbeat())
+        try:
+            return await node_repair_attempt(_state(tmp_path)), beats
+        finally:
+            ticker.cancel()
+
+    out, beats = asyncio.run(_both())
+    assert beats >= 3, "the event loop was blocked while staging"
+    assert out["repair_attempt"]["attempted"] is False
+    assert "not promoted" in out["repair_attempt"]["reason"]
+    assert "geometry" not in out

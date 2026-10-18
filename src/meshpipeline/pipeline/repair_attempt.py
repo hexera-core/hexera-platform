@@ -395,8 +395,18 @@ async def node_repair_attempt(state: PipelineState) -> dict:
         # is our problem, not the customer's, and like every other refusal here it leaves the run
         # on the original rather than failing a mesh that was viable.
         repaired = _derived_source(original, destination)
-        update = promote(state, repaired=repaired, engine=engine,
-                         attempt=int(state.get("retry_count", 0) or 0))
+        # OFF THE EVENT LOOP AND ON A CLOCK, like the repair itself: the staging proof is a
+        # tessellation, and run here synchronously it held the job's heartbeat and cancellation
+        # checks for as long as it took. A proof past the bound is a refusal (the thread is
+        # abandoned, as the repair's is) and the run stays on the original.
+        try:
+            update = await asyncio.wait_for(
+                asyncio.to_thread(promote, state, repaired=repaired, engine=engine,
+                                  attempt=int(state.get("retry_count", 0) or 0)),
+                timeout=rcfg.CAD_REPAIR_TIMEOUT_S)
+        except TimeoutError as exc:
+            raise PromotionRefused(
+                f"the staging proof exceeded {rcfg.CAD_REPAIR_TIMEOUT_S:.0f}s") from exc
     except PromotionRefused as exc:
         # It repaired, but the result is not something the mesher can use - so the run stays on the
         # original and the repair becomes evidence rather than geometry.
