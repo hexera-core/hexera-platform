@@ -471,3 +471,58 @@ def test_a_scoped_model_directive_at_an_entity_held_for_review_stays_refused():
     engineer = DirectedPlanner([_directive(targets=("face:b",))], _Nothing(), ops=(directed,),
                                reserved=frozenset({DefectCode.invalid_brep}))
     assert engineer.propose(shared, RunHistory(), shape=None) is not None
+
+
+# THE SELF-INTERSECTION HEAL UNDER THE JUDGEMENT HOLD
+#
+# `self_intersection` is in REVIEW_RESERVED_CODES. With review on, the heal plays only through
+# the engineer's own directive; a model's is refused before its targets are looked at. With review
+# off nothing is held and a model's heal plays like any other directive.
+
+def _crossing_face(fingerprint="face:f3", index=3, partners=((7, "face:f7"),)):
+    return EntityDefect(
+        code=DefectCode.self_intersection, severity=DefectSeverity.error, entity_type="face",
+        entity_index=index, message="crosses", fingerprint=fingerprint,
+        kernel_status="SelfInterference",
+        measurements={"crossing_face_indices": [i for i, _ in partners],
+                      "crossing_faces": [f for _, f in partners]})
+
+
+def _heal_on(targets, source):
+    return {"op": "heal_self_intersections", "targets": list(targets),
+            "defect_code": "self_intersection", "defect_fingerprint": targets[0],
+            "source": source, "item_id": "i-heal" if source == "engineer" else ""}
+
+
+_CROSSING = (_crossing_face(), _crossing_face("face:f7", 7, ((3, "face:f3"),)))
+
+
+def test_an_engineer_heal_directive_on_a_held_face_plays():
+    from meshpipeline.cad.repair.plan import RunHistory
+    from meshpipeline.cad.repair.triage import REVIEW_RESERVED_CODES
+
+    planner = DirectedPlanner([_heal_on(["face:f3", "face:f7"], "engineer")], _Nothing(),
+                              reserved=REVIEW_RESERVED_CODES)
+    candidate = planner.propose(_CROSSING, RunHistory(), shape=None)
+    assert candidate is not None and candidate.op.name == "heal_self_intersections"
+    assert candidate.source == "engineer"
+    assert [(t.fingerprint, t.entity_index) for t in candidate.targets] == [
+        ("face:f3", 3), ("face:f7", 7)]
+    assert planner.unplayable == []
+
+
+@pytest.mark.parametrize("review_on, played", [(True, False), (False, True)])
+def test_a_model_heal_directive_is_held_only_while_review_is_on(review_on, played):
+    from meshpipeline.cad.repair.plan import RunHistory
+    from meshpipeline.cad.repair.triage import REVIEW_RESERVED_CODES
+
+    reserved = REVIEW_RESERVED_CODES if review_on else frozenset()
+    planner = DirectedPlanner([_heal_on(["face:f3", "face:f7"], "llm-planner")], _Nothing(),
+                              reserved=reserved)
+    candidate = planner.propose(_CROSSING, RunHistory(), shape=None)
+    if played:
+        assert candidate is not None and candidate.op.name == "heal_self_intersections"
+        assert candidate.source == "llm-planner" and planner.unplayable == []
+    else:
+        assert candidate is None
+        assert [u["reason"] for u in planner.unplayable] == ["reserved_for_review"]

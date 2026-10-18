@@ -1009,6 +1009,366 @@ class FillNonplanarHole:
                       **fit, **measured, "tolerance_mm": float(tolerance_mm)})
 
 
+#: How many faces one heal may re-trim: the defect's face and its crossing partners together. A
+#: tangle wider than this is not an isolated crossing but a region of the part, and re-trimming a
+#: region is a rewrite (`fix_shape_global`'s job) or a person's. A module constant, not a setting
+#: (catalogue-growth ruling 1): it is the operation's own isolation bound, not a cap.
+MAX_HEAL_FACES = 4
+
+#: The longest a heal's own face analysis may run, before or after the fix. Over at most
+#: MAX_HEAL_FACES faces it is normally milliseconds; the bound exists for the pathological surface,
+#: and is the face scan's own ceiling so a heal never waits longer than a scan would.
+HEAL_ANALYSIS_BUDGET_S = 30.0
+
+
+def _crossing_pairs(compound) -> list[tuple[int, int]]:
+    """Face pairs that cross inside `compound`, as 1-based indices into ITS face map.
+
+    The face scan's analyzer (`localize._kernel_face_pairs`), so a heal judges a crossing by
+    exactly the test that reported it.
+    """
+    from meshpipeline.cad.repair.localize import _kernel_face_pairs
+
+    return _kernel_face_pairs(compound)
+
+
+def _analyze_faces(shape, faces) -> list[tuple[int, int]] | None:
+    """Which of `faces` cross each other, as pairs of 1-based face indices into `shape`.
+
+    Only the given faces are analysed, as one compound: their shared edges are still shared
+    there, so a legitimate seam is not a crossing, while a crossing with a face outside the set
+    is deliberately not looked for - the question is whether THESE faces still cross.
+
+    NONE MEANS NO ANSWER - the bounded analysis timed out, crashed, or could not run - and is
+    never read as "no crossing". Before the fix it proves no crossing worth healing; after it, it
+    proves nothing healed. In a forked child (`localize._bounded`), like the face scan, so a
+    kernel that runs away or writes into the faces it analyses does it to the child's copy.
+    """
+    from OCP.BRep import BRep_Builder
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopoDS import TopoDS_Compound
+
+    from meshpipeline.cad.repair.localize import _bounded, _indexed
+
+    builder = BRep_Builder()
+    compound = TopoDS_Compound()
+    builder.MakeCompound(compound)
+    for face in faces:
+        builder.Add(compound, face)
+    local = _bounded(_crossing_pairs, compound, budget_s=HEAL_ANALYSIS_BUDGET_S)
+    if local is None:
+        return None
+    inside = _indexed(compound, TopAbs_FACE)
+    whole = _indexed(shape, TopAbs_FACE)
+    pairs: set[tuple[int, int]] = set()
+    for a, b in local:
+        if not (0 < int(a) <= inside.Extent() and 0 < int(b) <= inside.Extent()):
+            return None
+        i, j = (int(whole.FindIndex(inside.FindKey(int(k)))) for k in (a, b))
+        if i <= 0 or j <= 0:
+            # A CROSSING THAT CANNOT BE PLACED IS STILL A CROSSING. Dropping it would read "none
+            # left" after a fix that left one, so the answer becomes "no answer" instead.
+            return None
+        if i != j:
+            pairs.add((min(i, j), max(i, j)))
+    return sorted(pairs)
+
+
+def _owners(shape, faces) -> set:
+    """The bodies the faces belong to: solid indices, or shell indices when there is no solid.
+
+    A face no such body contains is a body of its own (a loose face), so it gets a key of its
+    own - two loose faces crossing are two bodies, not one.
+    """
+    from OCP.TopAbs import TopAbs_FACE, TopAbs_SHELL, TopAbs_SOLID
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+
+    from meshpipeline.cad.repair.localize import _indexed
+
+    kind = TopAbs_SOLID if _indexed(shape, TopAbs_SOLID).Extent() else TopAbs_SHELL
+    bodies = _indexed(shape, kind)
+    ancestors = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(shape, TopAbs_FACE, kind, ancestors)
+    owners: set = set()
+    for n, face in enumerate(faces):
+        found = ancestors.FindFromKey(face) if ancestors.Contains(face) else None
+        if found is None or found.Size() == 0:
+            owners.add(("loose", n))
+            continue
+        for body in found:
+            owners.add(int(bodies.FindIndex(body)))
+    return owners
+
+
+def _total_face_area(shape) -> float:
+    """The summed area of every face of `shape` - the base `too_much_surface` is judged against."""
+    from OCP.TopAbs import TopAbs_FACE
+
+    from meshpipeline.cad.repair.localize import _face_area, _indexed
+
+    faces = _indexed(shape, TopAbs_FACE)
+    return sum(_face_area(faces.FindKey(i)) for i in range(1, faces.Extent() + 1))
+
+
+def _copied(shape):
+    """A deep copy of `shape`: same structure and indices, no TShape in common with the input."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Copy
+
+    return BRepBuilderAPI_Copy(shape, True, False).Shape()
+
+
+def _rebuild_face(face, *, tolerance_mm: float) -> object:
+    """One face re-trimmed: its wires' self-intersections and intersecting wires fixed.
+
+    `ShapeFix_Face` with its wire tool's intersection fixes on (`FixSelfIntersectionMode`,
+    `FixIntersectingEdgesMode`, `FixNonAdjacentIntersectingEdgesMode`, and the face's
+    `FixIntersectingWiresMode`). There is no `ShapeFix_IntersectionWire` in the kernel; these
+    modes are what re-trims a face.
+
+    REMOVAL IS OFF, as in `fix_face_boundary`: no small-area wire or face is dropped, no small
+    edge removed, no loop cut away, and no face split - each of those removes or invents geometry
+    rather than re-trimming it.
+
+    IT WRITES INTO THE FACE IT IS HANDED. ShapeFix adds pcurves and raises tolerances on the
+    face's edges in place, and those edges are shared with the neighbours. So the heal hands it
+    only faces of its OWN COPY of the shape (`_copied`), never the caller's.
+    """
+    from OCP.ShapeFix import ShapeFix_Face
+    from OCP.TopoDS import TopoDS
+
+    fixer = ShapeFix_Face(TopoDS.Face_s(face))
+    fixer.SetPrecision(tolerance_mm)
+    fixer.SetMaxTolerance(tolerance_mm)
+    fixer.FixSmallAreaWireMode = 0
+    fixer.RemoveSmallAreaFaceMode = 0
+    fixer.FixSplitFaceMode = 0
+    fixer.FixLoopWiresMode = 0
+    fixer.FixIntersectingWiresMode = 1
+    fixer.FixWireMode = 1
+    wire = fixer.FixWireTool()
+    wire.FixSmallMode = 0
+    wire.ModifyRemoveLoopMode = 0
+    wire.FixSelfIntersectionMode = 1
+    wire.FixSelfIntersectingEdgeMode = 1
+    wire.FixIntersectingEdgesMode = 1
+    wire.FixNonAdjacentIntersectingEdgesMode = 1
+    fixer.Perform()
+    return fixer.Face()
+
+
+def _face_edge_owners(shape):
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+
+    ancestors = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(shape, TopAbs_EDGE, TopAbs_FACE, ancestors)
+    return ancestors
+
+
+def _outside_identities(shape, target_faces) -> frozenset:
+    """The TShapes the heal must not change: every non-target face, and every edge no target owns.
+
+    Identity, not geometry: an untouched sub-shape keeps its TShape through a splice, and a
+    rebuilt one does not, so a set comparison says exactly whether anything outside was rebuilt.
+    Edges a target owns are excluded - re-trimming a face may legitimately rewrite those.
+    """
+    from OCP.TopAbs import TopAbs_FACE
+
+    from meshpipeline.cad.repair.localize import _indexed
+
+    targets = [t.TShape() for t in target_faces]
+    out = set()
+    faces = _indexed(shape, TopAbs_FACE)
+    for i in range(1, faces.Extent() + 1):
+        tshape = faces.FindKey(i).TShape()
+        if tshape not in targets:
+            out.add(tshape)
+    ancestors = _face_edge_owners(shape)
+    for i in range(1, ancestors.Extent() + 1):
+        if not any(owner.TShape() in targets for owner in ancestors.FindFromIndex(i)):
+            out.add(ancestors.FindKey(i).TShape())
+    return frozenset(out)
+
+
+def _seams(shape, target_faces) -> frozenset:
+    """The TShapes of the edges a target shares with a NON-target face.
+
+    The other half of "never grow": a target that let go of such an edge (the fixer replaced it)
+    leaves the neighbour holding the old one, so nothing outside changes identity and yet the
+    shell is torn open along it. Every seam before the fix must still be a seam after it.
+    """
+    targets = [t.TShape() for t in target_faces]
+    ancestors = _face_edge_owners(shape)
+    out = set()
+    for i in range(1, ancestors.Extent() + 1):
+        owners = [owner.TShape() for owner in ancestors.FindFromIndex(i)]
+        if any(o in targets for o in owners) and any(o not in targets for o in owners):
+            out.add(ancestors.FindKey(i).TShape())
+    return frozenset(out)
+
+
+def _grew(before: frozenset, after: frozenset) -> bool:
+    """True when anything in `before` is missing from `after` - an identity outside was rewritten."""
+    return not before <= after
+
+
+class HealSelfIntersections:
+    """Re-trim ONLY the faces the kernel's analysis says cross each other, and nothing else.
+
+    WHAT IT MAY TOUCH: the target faces - a face-level `self_intersection` finding's face and the
+    partners the analyzer named in `crossing_faces` - and the edges they own. Every other face,
+    and every edge no target owns, must come out the same TShape it went in, and every edge a
+    target shared with an outside face must still be shared. Anything else is a decline. It is
+    never a whole-shape pass: that is `fix_shape_global`, and a heal that quietly became one would
+    be a second global fixer nobody chose.
+
+    WHAT IT DECLARES: the summed area of the rebuilt faces minus that of the originals, measured
+    BEFORE the splice, as AREA_DELTA. Volume is not declared; the cumulative cap's residual judges
+    it.
+
+    IT NEVER MUTATES THE INPUT, even on a decline. ShapeFix writes into the edges of the face it
+    fixes, and those edges are shared with the rest of the caller's shape (and the session's
+    rollback snapshot). So everything is rebuilt on `_copied(shape)`, whose indices match the
+    input's, and a decline hands back the input object itself.
+
+    WHY EACH DECLINE EXISTS, in the order they are checked:
+      healing_disabled  - CAD_REPAIR_HEAL_SELF_INTERSECTIONS, the consent, is absent.
+      not_isolated      - no target resolves; or more than MAX_HEAL_FACES faces (a region, not a
+                          crossing); or the analysis over the target faces finds no crossing
+                          among them (or gave no answer). The last is what a directive aimed at a
+                          face without the analyzer's evidence meets (ruling 6): healing a face
+                          nothing says crosses is changing it for no reason.
+      multi_body        - the targets belong to more than one solid (more than one shell when the
+                          shape has none). Two bodies overlapping is an assembly question - which
+                          one gives way is a design decision - not a heal.
+      too_much_surface  - |declared area| > CAD_REPAIR_MAX_AREA_CHANGE_RATIO x the total face
+                          area of the shape handed in (Plan ruling 3). A re-trim that moves more
+                          surface than the cumulative residual allows is not a heal, and an
+                          unbounded declaration would let it walk past the cumulative cap.
+      grew_beyond_targets - an outside identity changed, or a seam with an outside face was lost.
+                          ENFORCED, NOT HOPED FOR: the fixer is scoped to the target faces, but
+                          the splice rebuilds every ancestor and ShapeFix may replace an edge, so
+                          "it only touched the targets" is checked by identity after the fact
+                          rather than trusted from the call. Nothing else in the loop would see
+                          it: the caps measure totals, and a neighbour quietly rebuilt within
+                          tolerance passes all of them.
+      crossing_remains  - the same analysis over the rebuilt faces still reports a crossing (or
+                          gives no answer). A heal that did not uncross anything is a change with
+                          no repair in it.
+    """
+
+    name = "heal_self_intersections"
+    answers = frozenset({DefectCode.self_intersection})
+    scope = 7
+
+    def targets_for(self, defect) -> tuple[EntityRef, ...]:
+        import meshpipeline.settings.cad_repair as rcfg
+
+        if not rcfg.CAD_REPAIR_HEAL_SELF_INTERSECTIONS:
+            return ()
+        if getattr(defect, "code", None) not in self.answers:
+            return ()
+        if defect.entity_type != "face" or not getattr(defect, "fingerprint", ""):
+            return ()
+        # ONLY THE ANALYZER'S FINDING (ruling 6). A wire-level SelfIntersectingWire carries no
+        # partners and stays `fix_face_boundary`'s territory, unclaimed here.
+        measurements = defect.measurements or {}
+        names = list(measurements.get("crossing_faces") or ())
+        indices = list(measurements.get("crossing_face_indices") or ())
+        # LINED UP OR NOTHING: `_linked` drops a partner it has no fingerprint for, and then the
+        # n-th name is no longer the n-th index's - pairing them would aim at the wrong face.
+        if not names or len(names) != len(indices) or not all(names):
+            return ()
+        refs = [EntityRef(entity_type="face", fingerprint=defect.fingerprint,
+                          entity_index=int(defect.entity_index),
+                          ambiguous=bool(getattr(defect, "ambiguous", False)))]
+        for name, index in zip(names, indices):
+            if any(r.entity_index == int(index) for r in refs):
+                continue
+            refs.append(EntityRef(entity_type="face", fingerprint=str(name),
+                                  entity_index=int(index)))
+        return tuple(refs)
+
+    def apply(self, shape, targets: tuple[EntityRef, ...], *,
+              tolerance_mm: float) -> OpOutcome:
+        import meshpipeline.cad.repair.localize as localize
+        import meshpipeline.settings.cad_repair as rcfg
+
+        def declined(reason: str, **measured) -> OpOutcome:
+            return OpOutcome(shape=shape, evidence={"declined": reason,
+                                                    "faces_targeted": len(targets), **measured})
+
+        if not rcfg.CAD_REPAIR_HEAL_SELF_INTERSECTIONS:
+            return declined("healing_disabled (CAD_REPAIR_HEAL_SELF_INTERSECTIONS)")
+
+        # ONE FACE PER INDEX: a face named twice is healed once.
+        indices: list[int] = []
+        for ref in targets:
+            if ref.entity_type == "face" and ref.entity_index not in indices:
+                indices.append(int(ref.entity_index))
+        resolved = [(i, face) for i in indices
+                    if (face := sub_shape(shape, "face", i)) is not None]
+        if not resolved:
+            return declined("not_isolated (no target face resolves in this shape)")
+        if len(resolved) > MAX_HEAL_FACES:
+            return declined(f"not_isolated ({len(resolved)} faces, more than the "
+                            f"{MAX_HEAL_FACES} one heal may re-trim)")
+        faces = [face for _, face in resolved]
+        before_pairs = _analyze_faces(shape, faces)
+        if not before_pairs:
+            return declined("not_isolated (the analysis shows no crossing among the targets)"
+                            if before_pairs is not None else
+                            "not_isolated (the crossing analysis gave no answer)")
+        if len(_owners(shape, faces)) > 1:
+            return declined("multi_body (the crossing faces belong to more than one body)")
+        total_area = _total_face_area(shape)
+
+        # EVERYTHING FROM HERE ON IS DONE TO A COPY: see the class docstring.
+        work = _copied(shape)
+        originals = [sub_shape(work, "face", i) for i, _ in resolved]
+        outside_before = _outside_identities(work, originals)
+        seams_before = _seams(work, originals)
+        original_area = sum(localize._face_area(face) for face in originals)
+        rebuilt = [_rebuild_face(face, tolerance_mm=tolerance_mm) for face in originals]
+        # MEASURED BEFORE THE SPLICE: the declaration is the rebuilt faces' own area.
+        delta = sum(localize._face_area(face) for face in rebuilt) - original_area
+        measured = {AREA_DELTA: round(float(delta), 6), "crossings_before": len(before_pairs)}
+        limit = rcfg.CAD_REPAIR_MAX_AREA_CHANGE_RATIO * total_area
+        if abs(delta) > limit:
+            return declined(f"too_much_surface (declared {delta:.6g} mm2 against a "
+                            f"{limit:.6g} mm2 allowance)", **measured)
+
+        spliced, context = splice(work, list(zip(originals, rebuilt)))
+        if _grew(outside_before, _outside_identities(spliced, rebuilt)):
+            return declined("grew_beyond_targets (a face or edge outside the targets was "
+                            "rebuilt)", **measured)
+        if _grew(seams_before, _seams(spliced, rebuilt)):
+            return declined("grew_beyond_targets (a target let go of an edge it shared with an "
+                            "outside face)", **measured)
+        after_pairs = _analyze_faces(spliced, rebuilt)
+        if after_pairs is None or after_pairs:
+            return declined("crossing_remains (" + (
+                "the analysis of the rebuilt faces gave no answer" if after_pairs is None
+                else f"{len(after_pairs)} crossing(s) among the rebuilt faces") + ")",
+                **measured)
+
+        diagonal = localize._diagonal(work)
+        quantum = quantum_for(diagonal)
+        added: list[str] = []
+        for old, new in zip(originals, rebuilt):
+            fingerprint = fingerprint_of("face", box_of(new), quantum=quantum)
+            if (fingerprint and fingerprint != fingerprint_of("face", box_of(old), quantum=quantum)
+                    and fingerprint not in added):
+                added.append(fingerprint)
+        mapping = mapping_from_context(context, targets, shape_before=work, diagonal_mm=diagonal)
+        return OpOutcome(shape=spliced, mapping=mapping, added=tuple(added),
+                         evidence={**measured, "faces_targeted": len(targets),
+                                   "faces_rebuilt": len(rebuilt),
+                                   "precision_mm": float(tolerance_mm)})
+
+
 class FixShapeGlobal:
     """Today's whole-shape `ShapeFix_Shape`, kept as the LAST RESORT.
 
@@ -1092,6 +1452,7 @@ OPERATIONS: tuple[RepairOp, ...] = (
     SewFaces(),
     FillPlanarHole(),
     FillNonplanarHole(),
+    HealSelfIntersections(),
     FixShapeGlobal(),
 )
 

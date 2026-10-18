@@ -268,22 +268,29 @@ class RulesPlanner:
                                "measurable extent")
                 continue
 
+            # A CLAIM IS AN OFFER OF TARGETS, or an operation the run's history skipped (tried and
+            # rolled back, or a fill the run refused) - not merely answering the code. The heal
+            # answers `self_intersection` but aims only at a face finding with the analyzer's
+            # partner evidence, and a wire-level finding it offers nothing for must still read
+            # `no_operation_claims_it`, as it did before the heal existed (Plan ruling 5).
             claimed = False
             for op in self._ops:
                 if defect.code not in op.answers:
                     continue
-                claimed = True
                 if history.was_ineffective(defect.fingerprint, op.name):
+                    claimed = True
                     continue
                 # AGAINST THE OPERATION'S OWN NAME, never a literal: a rename that updated
                 # operations.py and the contract tests but missed a string here would leave this
                 # guard dead with every test green - and the guard is the only thing between the
                 # loop and a sealed through-hole.
                 if op.name in FILL_OPS and history.fill_refused_because:
+                    claimed = True
                     continue
                 targets = op.targets_for(defect)
                 if not targets:
                     continue
+                claimed = True
                 if any(t.fingerprint in held for t in targets):
                     # AIMED AT A HELD ENTITY, by an operation answering some OTHER code on it: the
                     # same refusal DirectedPlanner gives a model's directive. Filtering by code

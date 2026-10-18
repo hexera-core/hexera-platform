@@ -445,3 +445,102 @@ def test_the_rules_planner_does_not_aim_another_codes_fix_at_an_entity_held_for_
                  _defect(DefectCode.invalid_brep, fingerprint="face:b", kind="face", index=2))
     candidate = planner.propose(elsewhere, RunHistory(), shape=None)
     assert candidate is not None and candidate.defect_fingerprint == "face:c"
+
+
+# THE SELF-INTERSECTION HEAL'S CLAIM (Plan ruling 5)
+#
+# `heal_self_intersections` answers `self_intersection`, but it aims only at a FACE finding that
+# carries the analyzer's partner evidence. Counting every op that merely answers a code as a claim
+# would silence the refusal a wire-level finding has always produced, so a claim is an operation
+# that offered targets - or one the run's history skipped (tried and rolled back, or a fill the
+# run has refused).
+
+WIRE_LEVEL_SELF_INTERSECTION = EntityDefect(
+    code=DefectCode.self_intersection, severity=DefectSeverity.error, entity_type="wire",
+    entity_index=4, message="SelfIntersectingWire", fingerprint="wire:w4",
+    kernel_status="SelfIntersectingWire")
+FACE_FINDING_WITH_PARTNERS = EntityDefect(
+    code=DefectCode.self_intersection, severity=DefectSeverity.error, entity_type="face",
+    entity_index=3, message="crosses 2", fingerprint="face:f3", kernel_status="SelfInterference",
+    measurements={"crossing_face_indices": [7, 9], "crossing_faces": ["face:f7", "face:f9"]})
+
+
+def test_a_wire_level_self_intersection_is_still_reported_unclaimed(monkeypatch):
+    import meshpipeline.settings.cad_repair as rcfg
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_HEAL_SELF_INTERSECTIONS", True)
+    planner = RulesPlanner()                 # real catalogue
+    history = RunHistory()
+    assert planner.propose([WIRE_LEVEL_SELF_INTERSECTION], history, shape=None) is None
+    assert [r["reason"] for r in history.refusals] == ["no_operation_claims_it"]
+
+
+def test_a_held_self_intersection_is_not_proposed_by_the_rules_planner():
+    from meshpipeline.cad.repair.triage import REVIEW_RESERVED_CODES
+
+    planner = RulesPlanner(reserved=REVIEW_RESERVED_CODES)
+    assert planner.propose([FACE_FINDING_WITH_PARTNERS], RunHistory(), shape=None) is None
+
+
+def test_a_held_self_intersection_stays_held_with_the_heal_enabled(monkeypatch):
+    import meshpipeline.settings.cad_repair as rcfg
+    from meshpipeline.cad.repair.triage import REVIEW_RESERVED_CODES
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_HEAL_SELF_INTERSECTIONS", True)
+    planner = RulesPlanner(reserved=REVIEW_RESERVED_CODES)
+    history = RunHistory()
+    assert planner.propose([FACE_FINDING_WITH_PARTNERS], history, shape=None) is None
+    assert history.refusals == []
+
+
+def test_with_review_off_the_rules_planner_proposes_the_heal_for_a_crossing_face(monkeypatch):
+    import meshpipeline.settings.cad_repair as rcfg
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_HEAL_SELF_INTERSECTIONS", True)
+    candidate = RulesPlanner().propose([FACE_FINDING_WITH_PARTNERS], RunHistory(), shape=None)
+    assert candidate is not None and candidate.op.name == "heal_self_intersections"
+    assert [t.fingerprint for t in candidate.targets] == ["face:f3", "face:f7", "face:f9"]
+
+
+def test_with_the_heal_disabled_a_crossing_face_is_unclaimed_as_before(monkeypatch):
+    import meshpipeline.settings.cad_repair as rcfg
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_HEAL_SELF_INTERSECTIONS", False)
+    history = RunHistory()
+    assert RulesPlanner().propose([FACE_FINDING_WITH_PARTNERS], history, shape=None) is None
+    assert [r["reason"] for r in history.refusals] == ["no_operation_claims_it"]
+
+
+def test_a_heal_that_was_rolled_back_still_counts_as_a_claim(monkeypatch):
+    # Tried and failed is not "nothing claims it": the refusal would tell a reader no operation
+    # exists for a defect one just attempted.
+    import meshpipeline.settings.cad_repair as rcfg
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_HEAL_SELF_INTERSECTIONS", True)
+    history = RunHistory()
+    history.mark_ineffective("face:f3", "heal_self_intersections")
+    assert RulesPlanner().propose([FACE_FINDING_WITH_PARTNERS], history, shape=None) is None
+    assert history.refusals == []
+
+
+def test_a_refused_fill_still_counts_as_a_claim():
+    # The run-level fill refusal skips a fill before its targets are asked for; that defect is
+    # claimed (and refused for a reason already recorded), not unclaimed.
+    fill = _Op("fill_planar_hole", {DefectCode.open_shell}, 5)
+    history = RunHistory()
+    history.refuse_filling("paired_rim")
+    loop = _defect(DefectCode.open_shell, fingerprint="edge:rim")
+    assert RulesPlanner(ops=(fill,)).propose((loop,), history, shape=None) is None
+    assert history.refusals == []
+
+
+def test_an_operation_that_answers_but_offers_nothing_is_not_a_claim():
+    class _Silent(_Op):
+        def targets_for(self, defect):
+            return ()
+
+    history = RunHistory()
+    silent = _Silent("silent", {DefectCode.small_edge}, 1)
+    assert RulesPlanner(ops=(silent,)).propose(
+        (_defect(DefectCode.small_edge, fingerprint="edge:a"),), history, shape=None) is None
+    assert [r["reason"] for r in history.refusals] == ["no_operation_claims_it"]

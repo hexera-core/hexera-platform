@@ -665,3 +665,48 @@ def write_loose_faces_step(path: Path, unit: str = "MM") -> Path:
         builder.Add(loose, TopoDS.Face_s(explorer.Current()))
         explorer.Next()
     return _write_step(loose, path, unit)
+
+
+def write_pierced_floor_step(path: Path, unit: str = "MM") -> Path:
+    """A SOLID WHOSE FACES CROSS: a 10 mm cube with its top corner pulled through its own floor.
+
+    The cube's corner (10, 10, 10) is moved to (5, 5, -5), below the middle of the floor. The
+    three faces that met there no longer fit as quads, so they are split into triangles, and the
+    four triangles that reach the moved corner from a vertex above z=0 pass through the floor's
+    interior on their way down. Sewn and closed, it is one shell and one solid.
+
+    `BRepCheck_Analyzer` CALLS IT VALID. It tests each face and edge on its own and never asks
+    whether two faces cross, which is why a part like this reaches a mesher and fails there. The
+    face scan's analyzer (`BOPAlgo_ArgumentAnalyzer`, self-interference only) reports the floor
+    crossing four triangles - a five-face tangle, one more than MAX_HEAL_FACES. Every face is
+    planar, so re-trimming cannot uncross any of them: the honest outcomes are `not_isolated` for
+    the whole tangle and `crossing_remains` for any part of it a directive names.
+    """
+    from OCP.BRepBuilderAPI import (
+        BRepBuilderAPI_MakeFace,
+        BRepBuilderAPI_MakePolygon,
+        BRepBuilderAPI_MakeSolid,
+        BRepBuilderAPI_Sewing,
+    )
+    from OCP.gp import gp_Pnt
+    from OCP.TopoDS import TopoDS
+
+    def flat(*points):
+        polygon = BRepBuilderAPI_MakePolygon()
+        for point in points:
+            polygon.Add(gp_Pnt(*point))
+        polygon.Close()
+        return BRepBuilderAPI_MakeFace(polygon.Wire(), True).Face()
+
+    v = [(0, 0, 0), (10, 0, 0), (10, 10, 0), (0, 10, 0),
+         (0, 0, 10), (10, 0, 10), (5, 5, -5), (0, 10, 10)]
+    faces = [flat(v[0], v[1], v[2], v[3]), flat(v[0], v[1], v[5], v[4]),
+             flat(v[3], v[0], v[4], v[7]),
+             flat(v[1], v[2], v[6]), flat(v[1], v[6], v[5]), flat(v[2], v[3], v[6]),
+             flat(v[3], v[7], v[6]), flat(v[4], v[5], v[6]), flat(v[4], v[6], v[7])]
+    sewing = BRepBuilderAPI_Sewing(1e-6)
+    for face in faces:
+        sewing.Add(face)
+    sewing.Perform()
+    solid = BRepBuilderAPI_MakeSolid(TopoDS.Shell_s(sewing.SewedShape())).Solid()
+    return _write_step(solid, path, unit)

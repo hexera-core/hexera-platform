@@ -176,7 +176,10 @@ def test_with_its_flag_on_it_aims_at_the_located_loop_like_the_planar_fill(monke
 def test_it_sits_after_the_planar_fill_and_before_the_whole_shape_fix():
     names = [op.name for op in operations.OPERATIONS]
     assert names.index("fill_planar_hole") + 1 == names.index("fill_nonplanar_hole")
-    assert names.index("fill_nonplanar_hole") + 1 == names.index("fix_shape_global")
+    assert names.index("fill_nonplanar_hole") < names.index("fix_shape_global")
+    # Only the self-intersection heal (scope 7) sits between it and the whole-shape fix.
+    assert names[names.index("fill_nonplanar_hole") + 1:names.index("fix_shape_global")] == [
+        "heal_self_intersections"]
     assert operations.FillPlanarHole.scope < FillNonplanarHole.scope < operations.FixShapeGlobal.scope
 
 
