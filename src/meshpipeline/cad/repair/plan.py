@@ -32,12 +32,12 @@ logger = logging.getLogger(__name__)
 # is skipped because a shape with a free boundary has `solids == 0`, the patch area is declared by
 # the fill so `_accounted` passes, and the progress rule correctly sees the rim's `open_shell`
 # gone. Every check agrees the part was repaired, and the customer has a plate with no bolt hole.
-# That ships only because `CAD_REPAIR_FILL_PLANAR_HOLES` DEFAULTS OFF, which makes the ban
-# unreachable in a default deployment. Before filling is enabled by default, or before a model
-# takes this seat, the ban has to move BEHIND the planner interface - a planner-independent check
-# the session or the fill enforces - because a planner that can be replaced is not a defence.
-# Do not read the paragraph above as "the session makes a planner harmless"; for this one
-# behaviour it does not.
+# So the decision is carried by the PAIRED-RIM GUARD (`paired_rim_fingerprints`): RulesPlanner
+# refuses filling for the run once any pair is seen, DirectedPlanner applies the same guard to
+# every directive fill except one engineer's single-rim approval, and a check that cannot run
+# fails closed. The fill operation itself still has no rim check, so a NEW planner must call this
+# guard too - a planner that can be replaced is only as safe as the guard it consults. Do not read
+# the paragraph above as "the session makes a planner harmless"; for this one behaviour it does not.
 #
 # The rules below are deliberately plain. They are the BASELINE a model has to beat.
 

@@ -1401,8 +1401,9 @@ jobs:
       # shipped defaults stay in force.
       CAD_REPAIR_ENABLED: ${{ inputs.cad_repair && 'true' || '' }}
       CAD_REPAIR_REVIEW_ENABLED: ${{ inputs.cad_repair && 'true' || '' }}
-      # Planar hole filling rides the same tick: the paired-rim discriminator now asks for bore-like
-      # evidence, and every fill is still judged by the session caps and rolled back past them.
+      # Planar hole filling rides the same tick. What protects a through-hole is the paired-rim
+      # guard (both ends of a missing passage, any cross-section, refuse filling for the run); the
+      # session caps only bound the size and volume drift of a fill that is kept.
       CAD_REPAIR_FILL_PLANAR_HOLES: ${{ inputs.cad_repair && 'true' || '' }}
       # The planner posture, stated only when it is not "off"; empty means "not stated".
       CAD_REPAIR_LLM_PLANNER: ${{ inputs.llm_planner != 'off' && inputs.llm_planner || '' }}

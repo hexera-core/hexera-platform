@@ -52,14 +52,17 @@ CAD_REPAIR_ALLOW_FACE_REMOVAL: bool = bool_env("CAD_REPAIR_ALLOW_FACE_REMOVAL", 
 #: hole - sewing stitches coincident boundaries, and a face that is simply missing has nothing to
 #: stitch to - so the commonest reason a real part will not mesh survives every other operation.
 #:
-#: WHY IT IS NOT ON BY DEFAULT. A flat patch across a flat loop looks determined, and across an
-#: isolated opening it is. But the two rims of a DRILLED THROUGH-HOLE are also flat closed loops,
-#: and patching them seals the hole - turning a part with a bolt hole into a part without one,
-#: which is a ruined part rather than a repaired one. Telling those two cases apart needs a
-#: discriminator this code does not have yet (paired, parallel, congruent loops offset along their
-#: normal are a missing tube wall, not two holes). Until it does, filling is an operator's
-#: decision on evidence, not an autonomous one, and the unfilled loops are reported with their
-#: reasons so that evidence exists.
+#: WHAT GUARDS IT. A flat patch across a flat loop looks determined, and across an isolated
+#: opening it is. But the two rims of a THROUGH-HOLE whose wall is missing are also flat closed
+#: loops, and patching them seals the hole - a part with a bolt hole handed back without one. The
+#: PAIRED-RIM GUARD (`plan.paired_rim_fingerprints` over `conservative._paired_rims`) is what
+#: tells the two apart: any loop that is not a lone face's whole outer wire, parallel to and
+#: co-axial with another and offset along its normal, is a rim of one passage of ANY cross-section,
+#: and the planner then refuses filling for the whole run and reports the rims for review. A check
+#: that cannot run fails closed. The session caps bound how much area and volume a kept fill may
+#: add; they do not see a sealed hole, so the guard - not the caps - is what protects one. Off by
+#: default because it adds geometry the customer never drew; the deploy's `cad_repair` tick turns
+#: it on.
 CAD_REPAIR_FILL_PLANAR_HOLES: bool = bool_env("CAD_REPAIR_FILL_PLANAR_HOLES", "false")
 
 #: The largest hole that may be patched, as a fraction of the part's diagonal measured across the
