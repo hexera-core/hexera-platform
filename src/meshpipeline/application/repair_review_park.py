@@ -136,11 +136,14 @@ async def settle_left(plan: ReviewPlan | None, session_factory, job_id: str,
         logger.warning("repair review: decision history unreadable for job %s (%s) - parking on "
                        "every item", job_id, type(exc).__name__)
         return plan, {}
-    latest: dict[str, str] = {}
+    # PER (ENTITY, PROBLEM), the mint's own key: one face can carry two items, and "leave it" on
+    # one code must not retire the other, unanswered, code on the same face.
+    latest: dict[tuple[str, str], str] = {}
     for row in rows:                       # oldest decision first: the last one written wins
         if row.fingerprint:
-            latest[row.fingerprint] = row.state
-    left = [i for i in plan.items if latest.get(i.get("fingerprint") or "") == "left"]
+            latest[(row.fingerprint, str(getattr(row, "defect_code", "") or ""))] = row.state
+    left = [i for i in plan.items
+            if latest.get((i.get("fingerprint") or "", str(i.get("defect_code") or ""))) == "left"]
     if not left:
         return plan, {}
     fresh = [i for i in plan.items if i not in left]
@@ -198,10 +201,11 @@ async def _close_the_loop(db, job_id: uuid.UUID, plan: ReviewPlan, repo) -> list
             except (KeyError, ValueError):
                 continue
             await repo.record_outcome(db, item_id, outcome)
-        prior: dict[str, list[dict]] = {}
+        prior: dict[tuple[str, str], list[dict]] = {}
         for row in await repo.decided_items(db, job_id):
             if row.fingerprint:
-                prior.setdefault(row.fingerprint, []).append(
+                key = (row.fingerprint, str(getattr(row, "defect_code", "") or ""))
+                prior.setdefault(key, []).append(
                     {**dict(row.decision or {}), "state": row.state,
                      "decided_at": row.decided_at.isoformat() if row.decided_at else None})
         items = attach_history(plan.items, prior)

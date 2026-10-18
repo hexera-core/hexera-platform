@@ -365,3 +365,15 @@ def test_a_promotion_refusal_keeps_what_the_operations_did_and_says_promotion_re
     assert outcomes[other] == ("rolled_back", "target_remains")
     row = logged[-1]
     assert row["operations"] and "promot" in row["refused_because"]
+
+
+def test_history_attaches_per_code_not_per_face():
+    prior = SimpleNamespace(fingerprint="fa", defect_code="small_face", state="left",
+                            decided_at=datetime.now(UTC), decision={"action": "leave"})
+    repo = _Repo([prior])
+    plan = ReviewPlan(items=[{"fingerprint": "fa", "defect_code": "small_face"},
+                             {"fingerprint": "fa", "defect_code": "open_shell"}])
+    asyncio.run(write_review(_Db(), uuid.uuid4(), plan, repo))
+    small, shell = repo.added
+    assert small["decision_history"][0]["action"] == "leave"
+    assert "decision_history" not in shell, "another problem on the face has no history yet"

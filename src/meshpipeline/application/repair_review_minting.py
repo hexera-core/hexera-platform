@@ -354,10 +354,11 @@ def directive_outcomes(directives, operations, refusals, *, discarded: bool = Fa
     return out
 
 
-def attach_history(items: list[dict], prior: dict[str, list[dict]]) -> list[dict]:
-    """Items whose fingerprint was decided before carry `decision_history` (oldest first)."""
+def attach_history(items: list[dict], prior: dict[tuple[str, str], list[dict]]) -> list[dict]:
+    """Items whose (fingerprint, defect code) was decided before carry `decision_history` (oldest
+    first) - per code, as minted: another problem on the same entity has a history of its own."""
     out = []
     for item in items:
-        history = prior.get(item.get("fingerprint") or "")
+        history = prior.get((item.get("fingerprint") or "", str(item.get("defect_code") or "")))
         out.append({**item, "decision_history": list(history)} if history else item)
     return out

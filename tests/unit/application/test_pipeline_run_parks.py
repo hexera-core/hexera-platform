@@ -341,7 +341,9 @@ class _History:
     """The job's decided items, as the repository returns them (oldest decision first)."""
     def __init__(self, decided): self.decided = decided
     async def decided_items(self, db, job_id):
-        return [SimpleNamespace(fingerprint=fp, state=state) for fp, state in self.decided]
+        return [SimpleNamespace(fingerprint=d[0], state=d[1],
+                                defect_code=d[2] if len(d) > 2 else "small_face")
+                for d in self.decided]
 
 
 class _Sessions:
@@ -388,6 +390,20 @@ async def test_a_later_answer_replaces_an_earlier_leave_and_an_unreadable_histor
         async def decided_items(self, db, job_id): raise RuntimeError("db down")
     settled, left = await rrp.settle_left(plan, _Sessions(), str(JOB), repo=_Broken())
     assert settled is plan and left == {}
+
+
+async def test_leave_it_on_one_code_never_retires_another_code_on_the_same_face():
+    """One face can carry two items (the mint keys by fingerprint AND code). Leaving the small face
+    must not settle the open shell on that face, which nobody answered."""
+    items = [{"group_key": "small_face:none", "defect_code": "small_face", "entity_index": 1,
+              "fingerprint": "face:1"},
+             {"group_key": "open_shell:sew_faces", "defect_code": "open_shell", "entity_index": 1,
+              "fingerprint": "face:1"}]
+    plan = rrp.plan_review({**STATE, "repair_review_candidates": items}, status=JobStatus.failed)
+    history = _History([("face:1", "left", "small_face")])
+    settled, left = await rrp.settle_left(plan, _Sessions(), str(JOB), repo=history)
+    assert left == {} and settled.park
+    assert [i["defect_code"] for i in settled.items] == ["open_shell"]
 
 
 async def test_a_delivered_run_still_records_every_item_whatever_was_left_before():
