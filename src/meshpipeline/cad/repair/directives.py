@@ -19,6 +19,8 @@ MALFORMED = "malformed"
 FILL_REFUSED = "fill_refused"
 #: An automatic (LLM or replayed) directive aimed at a defect held for the engineer's review.
 RESERVED_FOR_REVIEW = "reserved_for_review"
+#: An operation at or beyond this scope runs over the whole shape (operations.FixShapeGlobal).
+WHOLE_SHAPE_SCOPE = 99
 
 
 class DirectedPlanner:
@@ -62,7 +64,16 @@ class DirectedPlanner:
         except ValueError:
             self._skip(directive, MALFORMED)
             return None
-        if code in self._reserved and directive.get("source") != "engineer":
+        # HOLDS AIM AT RESERVED ENTITIES; A WHOLE-SHAPE HEAL IS NOT AIM. A whole-shape operation
+        # (fix_shape_global) runs over every entity whatever it names - the targets it carries
+        # are bookkeeping for the progress rule, not a choice of what to change - so it is not
+        # aimed at a held defect and is not refused merely because its code is a judgement code.
+        # Refusing it removed the last resort the rules planner used to have. A SCOPED operation
+        # does aim, and a non-engineer one is refused when its code is held or when any target
+        # carries a held defect. Semantics changed from "refuse by code" (the earlier wave).
+        whole_shape = op.scope >= WHOLE_SHAPE_SCOPE
+        engineer = directive.get("source") == "engineer"
+        if code in self._reserved and not engineer and not whole_shape:
             # A person has not answered this one yet; a model's guess is not that answer.
             self._skip(directive, RESERVED_FOR_REVIEW)
             return None
@@ -72,6 +83,11 @@ class DirectedPlanner:
         raw = directive.get("targets") or ()
         if isinstance(raw, str):
             raw = (raw,)
+        if not raw and whole_shape:
+            # TARGET-LESS WHOLE-SHAPE HEAL: name every current defect carrying its code, so the
+            # session can judge whether the code went away (it refuses a candidate whose targets
+            # carry nothing). Naming is not aiming: the fixer touches the whole shape regardless.
+            raw = tuple(d.fingerprint for d in defects if d.fingerprint and d.code is code)
         for fingerprint in raw:
             defect = by_fingerprint.get(fingerprint)
             if defect is not None:
@@ -81,6 +97,11 @@ class DirectedPlanner:
         if not refs:
             self._skip(directive, TARGET_ABSENT)
             return None
+        if self._reserved and not engineer and not whole_shape:
+            held = {d.fingerprint for d in defects if d.fingerprint and d.code in self._reserved}
+            if any(r.fingerprint in held for r in refs):
+                self._skip(directive, RESERVED_FOR_REVIEW)
+                return None
 
         # `group` marks one hole of a group fill (api/v1/repair_review._engineer_directives): a
         # single target, but from one decision over many, so it is not a person's look at it.
