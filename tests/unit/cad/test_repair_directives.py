@@ -259,3 +259,55 @@ def test_one_hole_of_a_group_fill_still_meets_the_rim_guard(monkeypatch):
     grouped = DirectedPlanner([{**_fill_on(["rim:a"]), "group": True}], _Nothing())
     assert grouped.propose(rims, RunHistory(), shape="shape") is None
     assert [u["reason"] for u in grouped.unplayable] == ["fill_refused"]
+
+
+class _Captured(Exception):
+    pass
+
+
+@pytest.mark.parametrize("review, expected", [
+    (True, {DefectCode.invalid_brep, DefectCode.self_intersection,
+            DefectCode.non_manifold_surface, DefectCode.small_face}),
+    (False, set())])
+def test_repair_step_file_reserves_the_judgement_codes_only_when_review_is_on(
+        monkeypatch, tmp_path, review, expected):
+    """The hold-back is review's: with review off the loop aims at every code as it always did."""
+    pytest.importorskip("OCP.BRep", reason="repair_step_file checks the kernel is present")
+    import meshpipeline.cad.repair.brep as brep
+    import meshpipeline.cad.repair.caps as caps
+    import meshpipeline.cad.repair.loop as loop
+    from meshpipeline.cad.repair.conservative import repair_step_file
+    from meshpipeline.cad.repair.plan import RulesPlanner
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_ENABLED", True)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_REVIEW_ENABLED", review)
+    monkeypatch.setattr(brep, "_read_shape", lambda path: "shape")
+    monkeypatch.setattr(caps, "measure", lambda shape: _SOUND)
+    seen = []
+
+    def _run(shape, *, planner=None, **kw):
+        seen.append(planner)
+        raise _Captured
+
+    monkeypatch.setattr(loop, "run", _run)
+    for directives in ((), (_directive(source="llm-planner", item_id=""),)):
+        with pytest.raises(_Captured):
+            repair_step_file(tmp_path / "in.step", tmp_path / "out.step", directives=directives)
+    rules, directed = seen
+    assert isinstance(rules, RulesPlanner) and rules._reserved == expected
+    assert isinstance(directed, DirectedPlanner) and directed._reserved == expected
+    assert directed._fallback._reserved == expected
+
+
+def test_a_model_directive_on_a_code_nobody_holds_back_still_plays_under_reservation():
+    """The reservation is per code, not a ban on the model: an llm-planner directive aimed at a
+    repairable defect plays first while the judgement codes are held."""
+    from meshpipeline.cad.repair.plan import RunHistory
+
+    directed = _Op("directed_op")
+    planner = DirectedPlanner([_directive(source="llm-planner", item_id="")],
+                              _Fallback(directed), ops=(directed,),
+                              reserved=frozenset({DefectCode.invalid_brep}))
+    candidate = planner.propose((_defect(),), RunHistory(), shape=None)
+    assert candidate is not None and candidate.source == "llm-planner"
+    assert planner.unplayable == []
