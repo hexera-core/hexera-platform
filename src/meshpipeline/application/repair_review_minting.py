@@ -322,6 +322,7 @@ def directive_outcomes(directives, operations, refusals, *, discarded: bool = Fa
             wanted = {wanted} if isinstance(wanted, str) else {str(t) for t in wanted}
             match = next((i for i, o in enumerate(ops)
                           if i not in used and o.get("source") and not o.get("item_id")
+                          and not o.get("directive_id")
                           and o.get("name") == directive.get("op")
                           and wanted & {str(t) for t in o.get("targets") or ()}), None)
         if refusal is not None:

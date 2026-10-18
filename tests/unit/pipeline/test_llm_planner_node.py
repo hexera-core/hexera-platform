@@ -102,19 +102,45 @@ def _engineer():
 
 
 def test_off_is_byte_for_byte_and_never_consults_the_model(tmp_path, monkeypatch, rows, kernel):
+    import subprocess
+    import sys
+    # a clean interpreter: an off run must not even import the planner module
+    code = (
+        "import sys\n"
+        "import meshpipeline.settings.cad_repair as rcfg\n"
+        "from meshpipeline.pipeline.repair_attempt import node_repair_attempt\n"
+        "assert rcfg.CAD_REPAIR_LLM_PLANNER == 'off'\n"
+        "assert 'meshpipeline.agents.repair_review.planner' not in sys.modules\n")
+    subprocess.run([sys.executable, "-c", code], check=True)
+
     router = _Router(_proposals(("sew_faces", "eb")))
     model_inference.set_model_router(router)
     monkeypatch.setattr(rcfg, "CAD_REPAIR_LLM_PLANNER", "off")
+    monkeypatch.delitem(sys.modules, "meshpipeline.agents.repair_review.planner", raising=False)
     kernel.report = _good_report()
     out = _run(tmp_path, [_engineer()])
     assert router.calls == 0
+    assert "meshpipeline.agents.repair_review.planner" not in sys.modules
     assert kernel.directives == [[_engineer()]]
-    assert not [r for r in rows if r[0] == "planner_shadow"]
-    assert out["repair_attempt"]["attempted"] is True
     assert [r[0] for r in rows] == ["repair_attempt"]
+    expected = {
+        "geometry": out["geometry"], "repair_lineage": out["repair_lineage"],
+        "repair_review_candidates": out["repair_review_candidates"],
+        "repair_directive_outcomes": [
+            {"item_id": ITEM, "source": "engineer", "outcome": "not_reached",
+             "reason": "not_reached"}],
+        "repair_attempt": {
+            "attempted": True, "repair_status": "repaired", "resolved": False,
+            "stopped_because": "no_candidate", "route": out["repair_attempt"]["route"],
+            "operations": [_kept("sew_faces", "open_shell", "eb")],
+            "targets": out["repair_attempt"]["targets"], "refusals": [],
+            "defects_remaining": [],
+            "summary": "Repaired within the conservative caps."},
+    }
+    assert out == expected
 
 
-@pytest.mark.parametrize("exit_", ["success", "refusal", "early_decline"])
+@pytest.mark.parametrize("exit_", ["success", "refusal", "timeout", "unavailable", "generic", "promotion", "adopt"])
 def test_shadow_logs_one_row_on_success_refusal_and_early_decline(
         tmp_path, monkeypatch, rows, kernel, exit_):
     router = _Router(_proposals(("sew_faces", "eb")))
@@ -126,8 +152,25 @@ def test_shadow_logs_one_row_on_success_refusal_and_early_decline(
         kernel.raises = RepairRefused("nothing was kept", measurements={
             "operations": [_op_base("sew_faces", "rolled_back", "open_shell", "eb")],
             "stopped_because": "stalled", "refusals": []})
-    else:
+    elif exit_ == "timeout":
+        kernel.raises = TimeoutError()
+    elif exit_ == "unavailable":
+        from meshpipeline.cad.repair.conservative import RepairUnavailable
+        kernel.raises = RepairUnavailable("no kernel")
+    elif exit_ == "generic":
         kernel.raises = RuntimeError("boom")
+    else:
+        kernel.report = _good_report()
+        if exit_ == "promotion":
+            from meshpipeline.pipeline.repair_promote import PromotionRefused
+
+            def _refuse(*a, **kw):
+                raise PromotionRefused("nope")
+            monkeypatch.setattr("meshpipeline.pipeline.repair_promote.promote", _refuse)
+        else:
+            def _boom(*a, **kw):
+                raise OSError("unreadable")
+            monkeypatch.setattr("meshpipeline.pipeline.repair_attempt._derived_source", _boom)
     _run(tmp_path)
 
     assert router.calls >= 1
@@ -137,7 +180,7 @@ def test_shadow_logs_one_row_on_success_refusal_and_early_decline(
     payload = shadow[0][2]
     assert [p["op"] for p in payload["proposals"]] == ["sew_faces"]
     assert payload["declines"] == [] and payload["call_failures"] == []
-    if exit_ == "early_decline":
+    if exit_ not in ("success", "refusal"):
         assert payload["outcome"] == "not_executed" and payload["operations"] == []
     elif exit_ == "refusal":
         assert payload["outcome"] == "refused" and payload["stopped_because"] == "stalled"
@@ -210,3 +253,15 @@ def test_a_rolled_back_llm_directive_never_touches_review_items():
     plan = ReviewPlan(items=[], outcomes=outcomes + [{"item_id": "llm:0", "outcome": "kept"}])
     asyncio.run(write_review(_Db(), uuid.uuid4(), plan, repo))
     assert repo.outcomes == []
+
+
+def test_a_replay_cannot_steal_an_llm_operations_row():
+    from meshpipeline.application.repair_review_minting import directive_outcomes
+    replay = {"item_id": "", "source": "replay", "op": "sew_faces", "targets": ["eb"]}
+    llm = {"item_id": "", "source": "llm-planner", "directive_id": "llm:0", "op": "sew_faces",
+           "targets": ["eb"], "planner_confidence": 0.8}
+    ran = {**_op_base("sew_faces", "kept", "open_shell", "eb"), "source": "llm-planner",
+           "directive_id": "llm:0"}
+    out = directive_outcomes([replay, llm], [ran], [])
+    assert out[0]["outcome"] == "not_reached"
+    assert (out[1]["directive_id"], out[1]["outcome"]) == ("llm:0", "kept")
