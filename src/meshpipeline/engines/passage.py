@@ -394,6 +394,14 @@ class _RayCaster:
         self._loc.BuildLocator()
         self._reach = float(reach)
         self._step = 1e-7 * float(reach)
+        # A HIT ON A FLAT, AXIS-ALIGNED CAP NEEDS A TOLERANCE. Such a cap's bounds have zero
+        # thickness along its normal, and over a ray this long the computed hit lands a rounding
+        # error outside them (x = -1.7e-18 on a cap at x = 0): with tolerance 0 the locator
+        # dropped it, so a ray from inside transition_013's bore "escaped" through its inlet cap,
+        # no wall piece read as the cavity's, the bore-only staging was skipped without a word and
+        # cfMesh meshed the metal (4.9 cells across a "passage" that was the 27 mm wall,
+        # 2026-10-18). A billionth of the reach is far under any wall and the step past a hit.
+        self._tol = 1e-9 * float(reach)
         self._dirs = _ENCLOSURE_DIRS / np.linalg.norm(_ENCLOSURE_DIRS, axis=1, keepdims=True)
         import vtk as _vtk
         self._t = _vtk.reference(0.0)
@@ -406,7 +414,8 @@ class _RayCaster:
         o = np.asarray(p, dtype=float)
         end = o + self._reach * d
         while n < limit:
-            hit = self._loc.IntersectWithLine(o, end, 0.0, self._t, self._x, self._pc, self._sub)
+            hit = self._loc.IntersectWithLine(o, end, self._tol, self._t, self._x, self._pc,
+                                              self._sub)
             if not hit:
                 break
             n += 1
@@ -844,7 +853,8 @@ def weighted_percentile(values, weights, q: float) -> float:
 
 
 def passage_field_of_stls(paths, *, interior_point=None, cap_paths=(), port_centroids=(),
-                          max_points: int = FIELD_MAX_POINTS, hollow_wall: bool = True):
+                          max_points: int = FIELD_MAX_POINTS, hollow_wall: bool = True,
+                          read_sharp_edges: bool = False):
     """(points, faces, radius at each point) of the staged WALL (open at the ports) BEFORE
     meshing, read the way VMTK's staging reads them (a ray leaving through a port borrows its
     neighbour). The chords are oriented from a point deep in the cavity found from the port
@@ -863,7 +873,13 @@ def passage_field_of_stls(paths, *, interior_point=None, cap_paths=(), port_cent
     faces), so only the cavity's own skin is read (cavity_skin). A wall that is the fluid's own
     boundary - a fluid domain, or a surface staged from its fluid side - is read whole: split at
     its sharp edges and kept where it touches a port, a heat exchanger's shell side lost its shell,
-    its 19 tubes and its baffles, and read the 60 mm nozzle pipes everywhere."""
+    its 19 tubes and its baffles, and read the 60 mm nozzle pipes everywhere.
+
+    `read_sharp_edges`: also read each face meeting a sharp edge along its own normal
+    (radius_field.local_radius) - the only reading a SHORT narrow passage gets. An orifice plate's
+    bore carries vertices on its two rims alone, each on a 90-degree edge, so without it
+    venturi_orifice_007's 26 mm orifice read as its 53 mm pipe at every point and was sized for
+    the pipe (2026-10-18)."""
     import pyvista as pv
 
     from meshpipeline.engines.vmtk.lumen_staging import local_radius
@@ -921,7 +937,8 @@ def passage_field_of_stls(paths, *, interior_point=None, cap_paths=(), port_cent
             # each piece by where the fluid is, not by the nearest port axis (an obstacle in the
             # flow faces away from it) - after the edge halving, which does not keep the winding
             pts, faces = orient_fluid_boundary(pts, faces, caps)
-        r = local_radius(pts, faces, deep, diag * 1e-5, diag / 2.0, oriented=oriented)
+        r = local_radius(pts, faces, deep, diag * 1e-5, diag / 2.0, oriented=oriented,
+                         read_sharp_edges=read_sharp_edges)
         return pts, faces, np.asarray(r, dtype=float)
     except Exception:  # noqa: BLE001 - sizing aid, not a verdict
         logger.warning("passage radius of the staged surface failed", exc_info=True)
@@ -1063,13 +1080,13 @@ def lid_hydraulic_diameters(srcs: dict, wall_key: str) -> dict:
 
 
 def staged_passage_field(t: dict, srcs: dict, wall_key: str, declaration, *,
-                         corrected: bool = True, field=None):
+                         corrected: bool = True, field=None, read_sharp_edges: bool = False):
     """(points, faces, radius) of an internal-flow staging's cavity wall - the record
     tessellate_internal returns (`openings` with their centroids) and its surfaces by patch
     (`srcs`: the wall under `wall_key`, the port caps the rest) - with the radius held near each
     declared port to that port's half flow-width (port_corrected_radius) unless `corrected` is
     False. A `field` already read (uncorrected) is corrected rather than read again. None when
-    the wall cannot be read."""
+    the wall cannot be read. `read_sharp_edges` as in passage_field_of_stls."""
     openings = t.get("openings") or {}
     if field is None:
         wall_src = srcs.get(wall_key) or []
@@ -1080,7 +1097,8 @@ def staged_passage_field(t: dict, srcs: dict, wall_key: str, declaration, *,
                      if isinstance(o, dict) and o.get("centroid")]
         # a record that does not say is read as a hollow wall, as before
         field = passage_field_of_stls(wall_paths, cap_paths=cap_paths, port_centroids=centroids,
-                                      hollow_wall=not t.get("wall_bounds_fluid"))
+                                      hollow_wall=not t.get("wall_bounds_fluid"),
+                                      read_sharp_edges=read_sharp_edges)
     if field is None:
         return None
     pts, faces, r = field
