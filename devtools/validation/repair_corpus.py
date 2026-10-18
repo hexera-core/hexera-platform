@@ -76,6 +76,10 @@ def prompt_key(messages) -> str:
     return hashlib.sha256(canon.encode("utf-8")).hexdigest()
 
 
+class CacheError(Exception):
+    """The reply cache file cannot be used; the message names the path."""
+
+
 class CachingRouter:
     """A model router that answers from a JSON file of recorded replies before asking `inner`.
 
@@ -88,8 +92,13 @@ class CachingRouter:
         self.hits = self.misses = 0
         self.table: dict[str, str] = {}
         if self.path is not None and self.path.exists():
-            loaded = json.loads(self.path.read_text() or "{}")
-            self.table = {str(k): str(v) for k, v in loaded.items()}
+            try:
+                loaded = json.loads(self.path.read_text() or "{}")
+                if not isinstance(loaded, dict):
+                    raise ValueError("not a JSON object")
+                self.table = {str(k): str(v) for k, v in loaded.items()}
+            except (ValueError, OSError) as exc:
+                raise CacheError(f"reply cache {self.path} is unreadable: {exc}") from exc
 
     async def call_repair_review_model(self, messages, job_id="", name="RepairReview"):
         key = prompt_key(messages)
@@ -104,6 +113,8 @@ class CachingRouter:
         if getattr(result, "ok", True) and text:
             self.table[key] = text
             if self.path is not None:
+                # Not atomic on purpose: this is a scratch cache; a torn write is reported by
+                # CacheError on the next load and the file is simply deleted.
                 self.path.write_text(json.dumps(self.table, indent=2, sort_keys=True))
         return result
 
@@ -191,11 +202,14 @@ def planner_summary(rows: list[dict], mode: str) -> dict:
             for op in r.get("operations") or []:
                 if op.get("source") != PLANNER_SOURCE:
                     continue
-                e = per_op.setdefault(op.get("op", "?"), {"kept": 0, "rolled_back": 0})
-                if op.get("status") == "kept":
-                    e["kept"] += 1
-                else:
-                    e["rolled_back"] += 1
+                e = per_op.setdefault(op.get("op", "?"), {"kept": 0, "rolled_back": 0,
+                                                          "declined": 0, "failed": 0})
+                key = op.get("status", "failed")
+                if key == "rolled_back" and str(op.get("reason", "")).startswith("declined:"):
+                    key = "declined"
+                if key not in e:
+                    key = "failed"
+                e[key] += 1
         out["llm_ops"] = per_op
     return out
 
@@ -321,7 +335,9 @@ def _print_planner(summary: dict, cache: CachingRouter | None) -> None:
         print(f"  defects repaired, live:       {summary['live_total']} "
               f"{summary['live_repaired']}")
         for name, c in sorted(summary["llm_ops"].items()):
-            print(f"  llm-planner {name:<20} kept={c['kept']:<4} rolled_back={c['rolled_back']}")
+            print(f"  llm-planner {name:<20} kept={c['kept']:<4} "
+                  f"rolled_back={c['rolled_back']:<4} declined={c['declined']:<4} "
+                  f"failed={c['failed']}")
         if not summary["llm_ops"]:
             print("  no llm-planner directive was attempted")
 
@@ -367,7 +383,11 @@ def main() -> int:
 
     cache = None
     if args.planner != "off":
-        cache, note = install_planner_router(args.reply_cache)
+        try:
+            cache, note = install_planner_router(args.reply_cache)
+        except CacheError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
         print(f"planner={args.planner}  {note}")
 
     rows = []

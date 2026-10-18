@@ -133,4 +133,47 @@ def test_live_reports_aggregate_against_rules_only(kernel, tmp_path):
     assert kernel.seen[-1] and kernel.seen[-1][0]["source"] == "llm-planner"
     summary = rc.planner_summary([live_row], "live")
     assert summary["rules_only_total"] == 0 and summary["live_total"] == 2
-    assert summary["llm_ops"] == {"fix_small_edges": {"kept": 1, "rolled_back": 0}}
+    assert summary["llm_ops"] == {"fix_small_edges": {"kept": 1, "rolled_back": 0, "declined": 0, "failed": 0}}
+
+
+def test_per_op_outcomes_keep_declined_and_failed_apart():
+    ops = [{"op": "sew_faces", "status": s, "reason": r, "source": "llm-planner"}
+           for s, r in (("kept", ""), ("rolled_back", "no gain"),
+                        ("rolled_back", "declined: not applicable"), ("failed", "boom"))]
+    row = {"plan": {"proposals": [], "declines": 0, "call_failures": 0, "called": 1},
+           "operations": ops, "rules_only": {}}
+    got = rc.planner_summary([row], "live")["llm_ops"]["sew_faces"]
+    assert got == {"kept": 1, "rolled_back": 1, "declined": 1, "failed": 1}
+
+
+def test_live_worse_than_rules_only_is_reported_truthfully():
+    rules = {"repaired_defects": {"small_edge": 3}}
+    live = {"repaired_defects": {"small_edge": 1}, "operations": [], "rules_only": rules}
+    s = rc.planner_summary([live], "live")
+    assert (s["rules_only_total"], s["live_total"]) == (3, 1)
+    assert s["rules_only_repaired"] == {"small_edge": 3} and s["live_repaired"] == {"small_edge": 1}
+
+
+def test_agreement_true_path_and_mismatch():
+    props = [{"op": "sew_faces", "targets": ["b", "a"]}]
+    assert rc.agreement(props, [{"op": "sew_faces", "targets": ["a", "b"]}]) is True
+    assert rc.agreement(props, [{"op": "sew_faces", "targets": ["a"]}]) is False
+    row = {"plan": {"proposals": props, "declines": 0, "call_failures": 0, "called": 1},
+           "operations": [{"op": "sew_faces", "targets": ["a", "b"]}]}
+    assert rc.planner_summary([row], "shadow")["agreed"] == 1
+
+
+def test_no_model_path_never_raises_and_says_so(capsys):
+    model_inference.set_model_router(None)
+    plan = rc.plan_for(_entities())
+    assert plan.directives == [] and plan.called == 0
+    rc._print_planner(rc.planner_summary([{"plan": {"proposals": [], "declines": 0,
+                      "call_failures": 0, "called": 0}}], "shadow"), None)
+    assert "no model was available" in capsys.readouterr().out
+
+
+def test_corrupt_cache_is_a_one_line_error_naming_the_path(tmp_path):
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json")
+    with pytest.raises(rc.CacheError, match=str(bad)):
+        rc.CachingRouter(bad)
