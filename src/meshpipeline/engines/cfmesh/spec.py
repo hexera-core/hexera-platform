@@ -280,6 +280,10 @@ SPEC = EngineSpec(
                 # cfMesh's intermediate feature-edge surface: written only when the
                 # surface-with-features path runs, so its absence is not a broken case.
                 M("geom.fms", required=False),
+                # a case of several separate passages: the record and every further passage's
+                # case (its surface and dicts), which native.mesh_passages meshed and merged in
+                M("passages.json", required=False),
+                M("_passages", kind="dir", required=False),
             ),
         ),
         downstream=DownstreamTarget(

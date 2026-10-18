@@ -13,9 +13,11 @@
    "timed_out"
   ],
   "deliverable": [
+   "_passages",
    "constant/polyMesh",
    "geom.fms",
    "geom.stl",
+   "passages.json",
    "system/meshDict"
   ],
   "deliverable_kind": "Deliverable",
