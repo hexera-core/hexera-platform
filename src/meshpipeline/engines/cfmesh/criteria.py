@@ -43,6 +43,22 @@ CRITERIA_ROWS: tuple[Criterion, ...] = (
         ),
         _FATAL_TOPOLOGY,
         _MAX_NON_ORTHO,
+        Criterion(
+            # THE SAME ROW SNAPPY DECLARES (engines/snappy/criteria.py), on the same manifest key.
+            # cfMesh prints no layer report, so finalize COUNTS the layers on the mesh
+            # (engines/layer_census.py) against the layers the request asked for; without this row
+            # a cfMesh mesh's layers were never on its report card and the reviewer's layer axis
+            # was a render judgement on a band too thin to see.
+            key="layer_coverage_pct", label="Prism boundary layers inflated", op=">",
+            threshold=0.0,
+            gating=False,
+            rationale=(
+                "boundaryLayers extrudes prism layers off the wall for near-wall resolution; "
+                "coverage % is the share of the REQUESTED layer cells the wall actually got, "
+                "counted on the delivered mesh (cfMesh reports none itself). Advisory - the "
+                "target coverage depends on the case's y+ requirement."),
+            evidence_url=_CFMESH_HOME,
+        ),
 )
 
 # The SEMANTIC review layer - what cfMesh's wrap-and-fill CUT-CELL mesh can fail at
@@ -108,17 +124,24 @@ REVIEW_AXES: tuple[ReviewAxis, ...] = (
     ),
     ReviewAxis(
         name="near_wall_layers_generated", validation_axis="quality",
-        guidance=("If the workflow calls for near-wall layers, confirm from a near-wall "
-                  "slice that they were generated and are continuous along the wall - "
-                  "cut-cell layer insertion is fragile and can silently produce none."),
+        guidance=("If the workflow calls for near-wall layers, judge this from the MEASURED "
+                  "layer figures in the mesh info - the layers COUNTED on the delivered mesh "
+                  "against the number the request asked for (coverage %, mean layers per wall "
+                  "face, the share of the wall with all of them). Those numbers are ground truth; "
+                  "the layer band is far too thin to count in a render. Fewer layers than "
+                  "requested is a shortfall even where the stack that exists is clean. Use a "
+                  "near-wall slice to see WHERE layers are missing, and only judge from the "
+                  "slice alone when the mesh info says the count could not be measured."),
         concern="The near-wall cells needed to resolve flow at the surface are missing",
-        failure_signals=("no near-wall layers where the workflow expects them",
+        failure_signals=("measured layers well short of the number the request asked for",
+                         "no near-wall layers where the workflow expects them",
                          "layers present on part of the wall only, or collapsed into slivers"),
-        evidence=("inspect_region", "render"),
-        # cfMesh emits NO layer-coverage metric (that is a snappy hook), so this stays visual_only -
-        # but "layers were generated along the wall" must be shown by WALL-PATCH-specific evidence,
-        # never a generic opening image. Require a PATCH inspection; no metric is required, since
-        # cfMesh does not emit one on every output path.
+        evidence=("layer_report", "inspect_region", "render"),
+        # The finalize step COUNTS the layers on the mesh (engines/layer_census.py) and writes
+        # layer_coverage_pct, as snappy's log parse does - but not on every path (a mesh with no
+        # layers asked, a binary or oversized polyMesh), so the metric is cited when present and
+        # not required; "layers were generated along the wall" must still be shown by
+        # WALL-PATCH-specific evidence, never a generic opening image.
         visual_only=True,
         requires=(RenderTargetRequirement(TargetKind.PATCH, "patch:*"),),
         evidence_url=_OF_SNAPPY_GUIDE,

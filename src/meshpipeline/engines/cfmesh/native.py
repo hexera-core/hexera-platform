@@ -137,6 +137,17 @@ def _run_cartesian_mesh_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
                         timing["passage_measure_s"] = round(time.monotonic() - t2, 1)
                 except Exception:  # noqa: BLE001 - evidence, not a verdict
                     logger.warning("passage measure after meshing failed; omitted", exc_info=True)
+                # the LAYERS cfMesh does not report, counted on the mesh where it was built: the
+                # builder's run_mesh result then shows "2.0 of 5 requested", and the finalize step
+                # reads the same figures back from the quality file
+                try:
+                    from meshpipeline.engines.cfmesh.finalize import census_quality
+                    from meshpipeline.engines.workspace_facts import contract_patches
+                    t4 = time.monotonic()
+                    q.update(census_quality(ws, contract_patches(ws)))
+                    timing["layer_census_s"] = round(time.monotonic() - t4, 1)
+                except Exception:  # noqa: BLE001 - evidence, not a verdict
+                    logger.warning("layer census after meshing failed; omitted", exc_info=True)
                 out["quality"] = q
                 (ws / QUALITY_FILE).write_text(json.dumps(q, default=str))
         except Exception:  # noqa: BLE001 - a measurement must never lose a finished mesh

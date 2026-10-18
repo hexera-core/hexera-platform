@@ -88,6 +88,63 @@ def test_one_of_two_asked_layers(tmp_path):
     assert out["coverage_pct"] == 50.0 and out["area_with_full_layers"] == 0.0
 
 
+def test_a_flat_background_cell_past_one_layer_is_not_a_second_layer(tmp_path):
+    # ONE thin layer, then the first background cell - flat enough (0.5 of the face width) and
+    # parallel, but ten times the layer's height: a single layer, not the two that were asked
+    pm = tmp_path / "polyMesh"
+    _write_column_mesh(pm, [0.05, 0.5, 1.0, 1.0])
+    out = layer_census(pm, 2, ["wall"])["wall"]
+    assert out["mean_layers"] == 1.0 and out["coverage_pct"] == 50.0
+    assert out["layers_by_area"] == {1: 1.0}
+    assert out["area_with_full_layers"] == 0.0
+
+
+def test_a_growing_stack_is_counted_with_its_heights(tmp_path):
+    pm = tmp_path / "polyMesh"
+    _write_column_mesh(pm, [0.02, 0.024, 0.0288, 0.03456, 0.041472, 1.0, 1.0])
+    out = layer_census(pm, 5, ["wall"])["wall"]
+    assert out["mean_layers"] == 5.0 and out["mean_layers_found"] == 5.0
+    assert abs(out["first_layer_m"] - 0.02) < 1e-9
+    assert abs(out["growth"] - 1.2) < 1e-6
+    assert abs(out["stack_m"] - 0.148832) < 1e-6
+
+
+def test_layers_short_of_the_request_read_as_short(tmp_path):
+    # two layers where five were asked: 40% of the requested layer cells, and the figures say so
+    pm = tmp_path / "polyMesh"
+    _write_column_mesh(pm, [0.05, 0.06, 1.0, 1.0])
+    out = layer_census(pm, 5, ["wall"])["wall"]
+    assert out["mean_layers"] == 2.0 and out["coverage_pct"] == 40.0
+
+
+def test_why_a_mesh_is_not_measured_is_said(tmp_path, monkeypatch):
+    from meshpipeline.engines import layer_census as lc
+    pm = tmp_path / "polyMesh"
+    _write_column_mesh(pm, [0.05, 1.0])
+    monkeypatch.setattr(lc, "CENSUS_MAX_CELLS", 3)
+    out, why = lc.census(pm, 2, ["wall"])
+    assert out == {} and "above the census limit" in why
+    monkeypatch.undo()
+    (pm / "owner").write_text((pm / "owner").read_text().replace("format ascii", "format binary"))
+    out, why = lc.census(pm, 2, ["wall"])
+    assert out == {} and "ascii" in why
+
+
+def test_the_requested_count_is_the_users(tmp_path):
+    from meshpipeline.engines.layer_census import requested_layers_for, stated_layers
+    assert stated_layers("Resolve the near-wall flow with 5 prism layers (expansion ratio 1.2).") == 5
+    assert stated_layers("Near-wall: wall functions, five boundary layers, growth 1.2") == 5
+    assert stated_layers("n_layers = 8") == 8
+    assert stated_layers("Use 3 layers on the wall for y+.") == 3
+    assert stated_layers("a 3 layers deep stack of plates") == 0     # no near-wall layer word
+    assert stated_layers("Standard mesh fidelity, 2 inlets.") == 0
+    (tmp_path / "system").mkdir()
+    (tmp_path / "system" / "meshDict").write_text("boundaryLayers { patchBoundaryLayers { wall { nLayers 2; } } }")
+    assert requested_layers_for(tmp_path) == (2, 0, 2)
+    (tmp_path / "request.txt").write_text("Internal CFD mesh ... 5 prism layers (expansion ratio 1.2).")
+    assert requested_layers_for(tmp_path) == (5, 5, 2)
+
+
 def test_nothing_is_claimed_without_a_mesh_or_layers(tmp_path):
     assert layer_census(tmp_path / "nope", 3, ["wall"]) == {}
     pm = tmp_path / "polyMesh"
