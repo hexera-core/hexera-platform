@@ -258,7 +258,12 @@ OUTCOME_UNPLAYABLE = "unplayable"
 OUTCOME_NOT_REACHED = "not_reached"
 
 
-def directive_outcomes(directives, operations, refusals) -> list[dict]:
+#: Why a directive the session kept is still `not_reached`: the after-check threw the whole result
+#: away (cad/repair/conservative.py), so nothing it did reached the part.
+DISCARDED_WITH_RESULT = "discarded_with_result"
+
+
+def directive_outcomes(directives, operations, refusals, *, discarded: bool = False) -> list[dict]:
     """`[{item_id, source, outcome, reason}]`, one per directive, in the order they were given.
 
     THE JOIN IS EXACT WHERE IT CAN BE. The planner stamps a proposed operation with the directive's
@@ -266,7 +271,8 @@ def directive_outcomes(directives, operations, refusals) -> list[dict]:
     item_id, and a `directive_unplayable` refusal answers it by the item_id on its directive.
     Only a directive with NO item_id (a replayed one) falls back to matching a directed,
     unclaimed operation by name and a shared target fingerprint - an autonomous operation is never
-    claimed. A directive found nowhere was not reached.
+    claimed. A directive found nowhere was not reached. `discarded` (the after-check refused the
+    whole result) turns what the session kept into `not_reached` with DISCARDED_WITH_RESULT.
     """
     ops = [o for o in operations or () if isinstance(o, dict)]
     skipped = [r for r in refusals or ()
@@ -301,7 +307,10 @@ def directive_outcomes(directives, operations, refusals) -> list[dict]:
         else:
             used.add(match)
             op = ops[match]
-            if op.get("status") == "kept":
+            if op.get("status") == "kept" and discarded:
+                out.append({**row, "outcome": OUTCOME_NOT_REACHED,
+                            "reason": DISCARDED_WITH_RESULT})
+            elif op.get("status") == "kept":
                 out.append({**row, "outcome": OUTCOME_KEPT, "reason": ""})
             else:
                 out.append({**row, "outcome": OUTCOME_ROLLED_BACK,

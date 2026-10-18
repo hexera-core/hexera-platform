@@ -460,18 +460,24 @@ def repair_step_file(source: Path, destination: Path, *,
                           for v in result.verdicts if v.kept)
     measurements["declared_area_mm2"] = declared_area
     measurements["declared_volume_mm3"] = declared_volume
-    refusal = (sanity_refusal(original, final)
-               or cumulative_refusal(original, final, declared_area_mm2=declared_area,
-                                     declared_volume_mm3=declared_volume))
-    if refusal:
-        raise RepairRefused(refusal, measurements=measurements)
-
     # THE ATTEMPT LIST, in the one shape the node and the corpus read. `name` is what they look
     # up; `to_dict` also carries it as `op`, so that copy is dropped rather than emitting the same
     # value under two keys.
     attempts = tuple({"name": v.op, "mutated": v.kept,
                       **{k: x for k, x in v.to_dict().items() if k != "op"}}
                      for v in result.verdicts)
+
+    refusal = (sanity_refusal(original, final)
+               or cumulative_refusal(original, final, declared_area_mm2=declared_area,
+                                     declared_volume_mm3=declared_volume))
+    if refusal:
+        # THE ATTEMPTS GO WITH THIS REFUSAL TOO, marked as a result thrown away whole: an
+        # operation the session kept is NOT kept once the after-check discards the result, so a
+        # directive answered by one is reported `not_reached` (discarded_with_result), never as
+        # done - and never silently dropped either.
+        measurements.setdefault("operations", [dict(a) for a in attempts])
+        measurements["result_discarded"] = True
+        raise RepairRefused(refusal, measurements=measurements)
 
     if measurements["operations_kept"] == 0:
         # NOTHING KEPT MEANS NOTHING TO PROMOTE, and writing the file anyway was worse than doing

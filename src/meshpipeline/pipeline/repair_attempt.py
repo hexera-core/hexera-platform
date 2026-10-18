@@ -125,14 +125,14 @@ def _mint(*, report: dict, measured: dict, source: Path,
     return out
 
 
-def _outcomes(state, operations, refusals) -> list[dict]:
+def _outcomes(state, operations, refusals, *, discarded: bool = False) -> list[dict]:
     """What became of each directive this run was given. Never raises; empty when review is off."""
     directives = state.get("repair_directives") or ()
     if not directives or not rcfg.CAD_REPAIR_REVIEW_ENABLED:
         return []
     try:
         from meshpipeline.application.repair_review_minting import directive_outcomes
-        return directive_outcomes(directives, operations, refusals)
+        return directive_outcomes(directives, operations, refusals, discarded=discarded)
     except Exception:  # noqa: BLE001 - the corpus and the loop-closing are never load-bearing
         logger.warning("node_repair_attempt: directive outcomes could not be joined", exc_info=True)
         return []
@@ -239,7 +239,8 @@ async def node_repair_attempt(state: PipelineState) -> dict:
         logger.info("node_repair_attempt: repair refused (%s) - continuing on the original "
                     "- job_id=%s", exc, job_id)
         outcomes = _outcomes(state, exc.measurements.get("operations", []),
-                             exc.measurements.get("refusals", []))
+                             exc.measurements.get("refusals", []),
+                             discarded=bool(exc.measurements.get("result_discarded")))
         try:
             from meshpipeline.capture.logger import TrainingLogger
             # A DECLINE IS STILL A TRAINING ROW, and often the most useful one. A run that kept

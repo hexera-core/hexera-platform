@@ -253,3 +253,21 @@ def test_outcomes_without_items_on_a_failed_run_leave_the_status_alone():
     assert plan.park is False and plan.items == []
     assert plan_review({"repair_directive_outcomes": [{"item_id": ITEM}]},
                        status=JobStatus.failed, system_failure=True) is None
+
+
+def test_a_directive_kept_inside_a_result_the_after_check_discarded_is_not_reached(
+        tmp_path, monkeypatch, logged):
+    # the session kept the engineer's operation, then the after-check threw the WHOLE result away:
+    # nothing reached the part, so the item must not read as done
+    from meshpipeline.cad.repair.conservative import RepairRefused
+    refused = RepairRefused("the result moved the part too far", measurements={
+        "operations": [_directed("merge_faces", "kept", "small_face", "fa")],
+        "refusals": [], "result_discarded": True})
+    _scripted(monkeypatch, raises=refused)
+    state = _state(tmp_path, _entity("small_face", "warning", "face", 3, "fa"),
+                   _entity("open_shell", "error", "edge", 8, "eb"))
+    state["repair_directives"] = [_directive()]
+    out = asyncio.run(node_repair_attempt(state))
+    (outcome,) = out["repair_directive_outcomes"]
+    assert (outcome["outcome"], outcome["reason"]) == ("not_reached", "discarded_with_result")
+    assert logged[-1]["directives"][0]["reason"] == "discarded_with_result"

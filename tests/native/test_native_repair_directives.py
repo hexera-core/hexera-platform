@@ -88,3 +88,20 @@ def test_a_replay_fill_on_a_paired_rim_is_skipped_and_history_is_untouched(tmp_p
 
     assert [u["reason"] for u in planner.unplayable] == ["fill_refused"]
     assert history.fill_refused_because == "" and history.refusals == []
+
+
+def test_a_result_the_after_check_discards_carries_its_attempts_and_says_so(tmp_path, monkeypatch):
+    # the after-check is the last word on the result: when it refuses, the attempts (with the
+    # session's kept verdicts) still travel, marked discarded, so no directive reads as done
+    import meshpipeline.cad.repair.caps as caps
+    import meshpipeline.cad.repair.loop  # noqa: F401 - bound BEFORE the patch: the session's
+    import meshpipeline.cad.repair.session  # noqa: F401 - own per-op check must stay real
+    from meshpipeline.cad.repair.conservative import RepairRefused
+    monkeypatch.setattr(caps, "sanity_refusal", lambda original, final: "the part moved too far")
+    source = write_loose_faces_step(tmp_path / "loose.step")
+    with pytest.raises(RepairRefused) as refused:
+        repair_step_file(source, tmp_path / "out.step")
+    measured = refused.value.measurements
+    assert measured["result_discarded"] is True
+    assert any(op.get("mutated") for op in measured["operations"]), measured["operations"]
+    assert not (tmp_path / "out.step").exists()
