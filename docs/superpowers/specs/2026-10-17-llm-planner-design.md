@@ -118,3 +118,31 @@ deployed shadow proof (a pranav run whose capture carries planner_shadow rows); 
 
 Prompt wording; the exact shadow-row schema; where the corpus report tables print; the native
 stub-model fixture shape; `llm_planner` input plumbing details (mirror `cad_repair`).
+
+## Builder-check answers (controller rulings, binding on the plan)
+
+1. **Never-worse is AGGREGATE over the corpus**, and corpus model replies are CACHED to a JSON
+   file keyed by prompt hash, so a run is reproducible and a re-run is free. Evidence tiers,
+   honestly labelled: a real-model corpus run when a provider key is present in the host env;
+   otherwise a scripted-stub live run proves the plumbing and the aggregate bound, and the
+   deployed pranav shadow rows are the real-model proof.
+2. **The pre-pass sits OUTSIDE the kernel timeout**, bounded by its own per-call `wait_for`;
+   `off` adds zero, `shadow`/`live` add at most ~40s to runs that reach the loop — stated, not
+   hidden.
+3. **One call for the whole part** (report clipped by the slice-7 `_wire` helpers, ≤40 defects),
+   returning the ordered sequence; the second budgeted call is one retry on a malformed reply or
+   timeout. The model's order is preserved.
+4. **`defect_code` derives from the scan entry matching `defect_fingerprint`**; a proposal whose
+   targets span different codes is dropped as a logged decline. Multi-target is allowed for the
+   four non-fill operations (matching rules-planner semantics); fill keeps the machine rim guard.
+5. **LLM directives carry a generated `directive_id` (`llm:<n>`), `planner_confidence`, and
+   `source="llm-planner"`,** are appended AFTER engineer/replay directives, and join outcomes
+   through the same stamped-at-proposal mechanism as slice 7; the review-item outcome writer
+   ignores non-UUID ids. Engineer intent always precedes the model's; the preemption of cap
+   budget by earlier directives is accepted and visible in outcomes.
+6. **Live is model-first on every run that reaches the loop** (engineer → llm → rules fallback) —
+   that is the product intent, not an accident; triage and review semantics unchanged.
+7. **One shadow-row writer used by every node exit path**: success and refusal paths log
+   proposals + rules ops + verdicts + stopped_because; early declines log the proposals with
+   outcome `not_executed`. The pranav proof cannot be flaky on path choice.
+8. Missing, non-numeric or out-of-range confidence ⇒ decline.
