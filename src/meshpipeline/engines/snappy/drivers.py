@@ -1424,6 +1424,19 @@ async def _separate_fluid(R, workspace: Path, state, source_path: str, *, job_id
         return t
 
 
+def _meshes_them(n: int) -> str:
+    """'Mesh it with <the engines declared to mesh n separate passages in one job>, which mesh
+    separate passages side by side, or ' - read from their declarations; 'Or ' when none does."""
+    from meshpipeline.engines.capability import engine_words, engines_covering, ladder_order
+    takers = engines_covering(ladder_order("internal"), "internal", n)
+    if not takers:
+        return "Or "
+    names = [engine_words(e) for e in takers]
+    joined = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " or " + names[-1]
+    return (f"Mesh it with {joined}, which {'meshes' if len(names) == 1 else 'mesh'} separate "
+            "passages side by side, or ")
+
+
 def _one_passage(workspace: Path, srcs: dict, wall_key: str, declaration: list) -> dict:
     """THE PASSAGE THE SEED FILLS, read before the run (cad/fluid_passages): snappyHexMesh keeps the
     one region its seed is in, so a declared opening on any other passage came back with no faces.
@@ -1438,11 +1451,13 @@ def _one_passage(workspace: Path, srcs: dict, wall_key: str, declaration: list) 
         return srcs
     why = plan.refusal()
     if not why and plan.several:
+        # (the declaration says the same: FlowSupport.max_passages is 1 for this engine, so the
+        # recommender and the fallback ladder never send it a case of several)
         why = (f"the confirmed openings lie on {len(plan.meshed)} separate passages that do not connect ("
                + "; ".join(f"passage {k + 1}: {', '.join(p.ports)}" for k, p in enumerate(plan.meshed))
                + "), and this mesher fills the one passage its seed point is in - the openings on the others "
-               "would come back empty. Mesh it with cfMesh, which meshes separate passages side by side, "
-               "or mesh each passage as a file of its own.")
+               f"would come back empty. {_meshes_them(len(plan.meshed))}"
+               "mesh each passage as a file of its own.")
     if why:
         raise InternalSurfaceError(why)
     if not plan.left_out:
