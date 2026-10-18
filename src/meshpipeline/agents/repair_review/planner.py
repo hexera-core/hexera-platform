@@ -104,8 +104,8 @@ def _validate(proposal: object, codes_of: dict[str, list[str]]) -> tuple[dict | 
         return None, "confidence must be between 0 and 1"
     if confidence < float(rcfg.CAD_REPAIR_LLM_PLANNER_MIN_CONFIDENCE):
         return None, f"confidence {confidence:g} is below the minimum"
-    if op == "fill_planar_hole" and len(targets) != 1:
-        return None, "fill_planar_hole takes exactly one target"
+    if op in _wire.FILL_CATALOGUE and len(targets) != 1:
+        return None, f"{op} takes exactly one target"
     return {"op": op, "targets": targets, "defect_code": code, "defect_fingerprint": fp,
             "source": SOURCE, "item_id": "", "planner_confidence": confidence}, ""
 

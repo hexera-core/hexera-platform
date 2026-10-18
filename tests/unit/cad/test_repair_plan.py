@@ -374,12 +374,14 @@ def test_the_fallback_declines_a_defect_it_does_not_claim_or_cannot_name():
 
 
 def test_exactly_one_catalogued_operation_carries_the_fill_name():
-    # The guard in `RulesPlanner.propose` keys off `FillPlanarHole.name`. A rename that missed a
-    # second holder of the name, or lost the operation from the catalogue, would leave the guard
-    # dead with every test green.
-    from meshpipeline.cad.repair.operations import OPERATIONS, FillPlanarHole
+    # The guard in `RulesPlanner.propose` keys off `FILL_OPS`. A rename that missed a second
+    # holder of a name, or lost the operation from the catalogue, would leave the guard dead
+    # with every test green.
+    from meshpipeline.cad.repair.operations import FILL_OPS, OPERATIONS
 
-    assert [op.name for op in OPERATIONS].count(FillPlanarHole.name) == 1
+    assert FILL_OPS
+    for name in FILL_OPS:
+        assert [op.name for op in OPERATIONS].count(name) == 1
 
 
 # A DEFECT RESERVED FOR A PERSON

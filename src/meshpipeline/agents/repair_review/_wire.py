@@ -11,6 +11,10 @@ logger = logging.getLogger(__name__)
 CATALOGUE: tuple[str, ...] = (
     "fix_small_edges", "fix_face_boundary", "sew_faces", "fill_planar_hole", "fix_shape_global")
 
+#: The catalogue names that fill a hole, as strings so this layer does not import `cad.repair`.
+#: Pinned to `operations.FILL_OPS` by tests/unit/agents/test_catalogue_pinned_to_operations.py.
+FILL_CATALOGUE: tuple[str, ...] = ("fill_planar_hole",)
+
 CATALOGUE_LIMITS = (
     "the repair catalogue can only merge small edges, fix a face boundary, sew faces, fill a "
     "planar hole, or run a whole-shape fix; it cannot move, redraw or delete geometry, change "

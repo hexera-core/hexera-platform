@@ -13,7 +13,7 @@ from typing import Protocol
 
 from meshpipeline.cad.repair.contracts import DefectCode, DefectSeverity
 from meshpipeline.cad.repair.identity import EntityRef
-from meshpipeline.cad.repair.operations import OPERATIONS, FillPlanarHole, RepairOp
+from meshpipeline.cad.repair.operations import FILL_OPS, OPERATIONS, RepairOp
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 #
 # This is the seat a model takes in slice 8. Nearly everything about safety - the caps, the
 # progress rule, the rollback - lives in the session, so a planner choosing badly wastes a budget
-# rather than damaging a part. What a planner chooses is which of FIVE bounded operations
+# rather than damaging a part. What a planner chooses is which of the bounded operations
 # (`operations.OPERATIONS`) to point at which located defect, and nothing more. Keeping that behind
 # one small interface is what makes "a model picks, the rules pick, compare them on the same
 # corpus" an experiment rather than a rewrite.
@@ -276,7 +276,7 @@ class RulesPlanner:
                 # operations.py and the contract tests but missed a string here would leave this
                 # guard dead with every test green - and the guard is the only thing between the
                 # loop and a sealed through-hole.
-                if op.name == FillPlanarHole.name and history.fill_refused_because:
+                if op.name in FILL_OPS and history.fill_refused_because:
                     continue
                 targets = op.targets_for(defect)
                 if not targets:

@@ -760,3 +760,7 @@ OPERATIONS: tuple[RepairOp, ...] = (
     FillPlanarHole(),
     FixShapeGlobal(),
 )
+
+#: Names of the operations that FILL a hole. Every one of them is held back by the through-hole
+#: (paired rim) guard, so a new fill operation joins this set or it runs unguarded.
+FILL_OPS: frozenset[str] = frozenset({FillPlanarHole.name})

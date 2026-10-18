@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from meshpipeline.cad.repair.contracts import DefectCode
 from meshpipeline.cad.repair.identity import EntityRef
-from meshpipeline.cad.repair.operations import OPERATIONS, FillPlanarHole
+from meshpipeline.cad.repair.operations import FILL_OPS, OPERATIONS
 from meshpipeline.cad.repair.plan import (
     Candidate,
     RulesPlanner,
@@ -119,7 +119,7 @@ class DirectedPlanner:
         # single target, but from one decision over many, so it is not a person's look at it.
         individual = (directive.get("source") == "engineer" and len(refs) == 1
                       and not directive.get("group"))
-        if op.name == FillPlanarHole.name and not individual:
+        if op.name in FILL_OPS and not individual:
             # A REPLAYED FILL ON A PAIRED RIM IS CORRUPT STATE: the autonomous pass could never
             # have kept one. An ENGINEER's approval may override the planner's refusal - a human
             # looking at the hole is the authority the guard lacks - and the caps still judge it.

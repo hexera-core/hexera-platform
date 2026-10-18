@@ -106,9 +106,8 @@ CAD_REPAIR_TIMEOUT_S: float = float(optional_env("CAD_REPAIR_TIMEOUT_S", "120"))
 
 #: Operations the loop may TRY in one run, kept or rolled back. Not a limit on how many may be
 #: kept: a run that tried six and kept one did six re-inspections, and the re-inspection is what
-#: costs. The catalogue is FIVE operations (`operations.OPERATIONS`), so six is every operation
-#: once plus one spare attempt - which is a reasonable budget rather than a derived number, and
-#: saying so is more honest than the arithmetic this comment used to claim.
+#: costs. Six is a budget, not a derived number: it is not tied to how many operations
+#: `operations.OPERATIONS` holds, which grows, and is sized to leave room for retries.
 CAD_REPAIR_MAX_OPS: int = int(optional_env("CAD_REPAIR_MAX_OPS", "6"))
 
 #: Consecutive operations that were not kept before the loop gives up. A planner that has proposed
