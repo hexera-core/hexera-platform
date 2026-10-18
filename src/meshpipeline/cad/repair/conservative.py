@@ -352,6 +352,15 @@ def _lone_face_boundaries(shape, loops: list) -> set[int]:
     return lone
 
 
+class RimsUndecidable(ValueError):
+    """A candidate rim the pairing check cannot judge sits beside another candidate rim.
+
+    A ValueError so every caller's existing kernel-failure handling already treats it as "the
+    question could not be answered": the planner fails closed (`plan.RimsUnknown`) and the review
+    minting falls back to one coarse pairing key.
+    """
+
+
 def _paired_rims(loops: list, shape=None) -> set[int]:
     """Indices of loops that are the two ENDS OF A MISSING TUBE, not two separate holes.
 
@@ -366,6 +375,9 @@ def _paired_rims(loops: list, shape=None) -> set[int]:
     an unsewn box's faces are each their own free outer wire. Without `shape` (bare wires, nothing
     to ask the topology) every loop is a candidate - the guard fails toward refusing a fill.
 
+    A CANDIDATE IT CANNOT JUDGE - a non-planar (saddle) loop - beside any other candidate raises
+    `RimsUndecidable`, so the guard fails closed rather than leaving the other rim fillable.
+
     WHICH CANDIDATES PAIR. Two planar candidate loops apart, whose centroid-to-centroid line - the
     passage - leaves through each rim no steeper than 70 deg from that rim's normal. No
     parallel-planes test, no on-one-normal test, no roundness, no size ratio, no depth ceiling -
@@ -377,16 +389,29 @@ def _paired_rims(loops: list, shape=None) -> set[int]:
     function, so there is one definition of a bore pair.
     """
     lone = _lone_face_boundaries(shape, loops) if shape is not None else set()
+    candidates = [index for index in range(len(loops)) if index not in lone]
     rims = {}
-    for index, wire in enumerate(loops):
-        if index in lone:
-            continue
+    unjudged: list[int] = []
+    for index in candidates:
+        wire = loops[index]
         plane = _loop_plane(wire)
-        if plane is None:
+        axis_point = _rim_axis_point(wire, plane[0]) if plane is not None else None
+        if axis_point is None:
+            unjudged.append(index)
             continue
-        axis_point = _rim_axis_point(wire, plane[0])
-        if axis_point is not None:
-            rims[index] = (plane[0], axis_point)
+        rims[index] = (plane[0], axis_point)
+
+    if unjudged and len(candidates) >= 2:
+        # A CURVED RIM CANNOT BE JUDGED, SO IT CANNOT BE RULED OUT. A hole drilled through a round
+        # bar leaves a saddle-shaped rim on the curved side and a flat one on the other; skipping
+        # the saddle left the flat rim with nothing to pair with, and it was filled - a 50 mm2 disc
+        # sealing the end of a through-hole, delivered at default config (only the face ORDER in
+        # the file decided whether the stall limit happened to stop it first). Until saddle rims
+        # are paired properly, a candidate that cannot be judged beside any other candidate makes
+        # the whole answer unknown. One loop alone has no partner and is still answered.
+        raise RimsUndecidable(
+            f"{len(unjudged)} candidate rim(s) are not planar loops, beside "
+            f"{len(candidates) - len(unjudged)} other candidate(s)")
 
     paired: set[int] = set()
     indices = sorted(rims)

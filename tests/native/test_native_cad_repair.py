@@ -353,6 +353,33 @@ def test_a_through_passage_of_any_shape_angle_or_draft_is_never_sealed(tmp_path,
     assert not out.exists()
 
 
+@pytest.mark.parametrize("reverse", [False, True], ids=["file-order", "reversed-order"])
+@pytest.mark.parametrize("kind", ["dbar0", "dbar10", "flipbar0", "flipbar10"])
+def test_a_through_hole_with_one_curved_rim_is_never_sealed_in_either_face_order(
+        tmp_path, monkeypatch, kind, reverse):
+    """ONE RIM A SADDLE, THE OTHER FLAT. The saddle cannot be judged, and skipping it left the flat
+    rim with nothing to pair with: on the reversed face order its fill was KEPT (a 50 mm2 disc
+    sealing the hole) and on the file order only the stall limit stopped the run first. The check
+    must fail closed on the curved candidate, whatever order the faces arrive in."""
+    from tests.cad_fixtures import write_missing_passage_wall_step
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_FILL_PLANAR_HOLES", True)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_STALL_LIMIT", 6)   # not saved by stopping early
+
+    source = write_missing_passage_wall_step(tmp_path / f"{kind}.step", kind, reverse=reverse)
+    out = tmp_path / f"{kind}-repaired.step"
+    with pytest.raises(RepairRefused) as refused:
+        repair_step_file(source, out)
+
+    measured = refused.value.measurements
+    assert measured["operations_kept"] == 0, f"the {kind} through-hole was sealed"
+    assert not any(o.get("name") == "fill_planar_hole" for o in measured["operations"]), (
+        "a fill was attempted on one rim of a through-hole")
+    rims = [r for r in measured["refusals"] if r["reason"] == "paired_rim"]
+    assert len(rims) == 2 and all("could not run" in r["detail"] for r in rims), rims
+    assert not out.exists()
+
+
 def test_the_bore_rims_are_located_as_two_separate_openings(tmp_path):
     from tests.cad_fixtures import write_missing_bore_wall_step
 

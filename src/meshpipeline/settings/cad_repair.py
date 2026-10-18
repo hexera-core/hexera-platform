@@ -60,7 +60,7 @@ CAD_REPAIR_ALLOW_FACE_REMOVAL: bool = bool_env("CAD_REPAIR_ALLOW_FACE_REMOVAL", 
 #: other end of a straight passage from another (no steeper than 70 deg to either rim's normal) is
 #: a rim of one passage - of ANY cross-section, angle or draft - and the planner then refuses
 #: filling for the whole run and reports the rims for review. A check that cannot run, or that
-#: cannot resolve a candidate rim's free wire, fails closed. The session caps bound how much area and volume a kept fill may
+#: cannot resolve or judge (a non-planar loop) a candidate rim, fails closed. The session caps bound how much area and volume a kept fill may
 #: add; they do not see a sealed hole, so the guard - not the caps - is what protects one. Off by
 #: default because it adds geometry the customer never drew; the deploy's `cad_repair` tick turns
 #: it on.

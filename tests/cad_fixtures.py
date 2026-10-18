@@ -255,7 +255,8 @@ def write_missing_bore_wall_step(path: Path, unit: str = "MM", profile: str = "r
     return path
 
 
-def write_missing_passage_wall_step(path: Path, kind: str, unit: str = "MM") -> Path:
+def write_missing_passage_wall_step(path: Path, kind: str, unit: str = "MM",
+                                   reverse: bool = False) -> Path:
     """A plate with ONE THROUGH-PASSAGE whose walls are missing, in any of the shapes that sealed.
 
     The adversarial re-review's builder, as a fixture: cut the passage with a tool, then drop
@@ -268,6 +269,12 @@ def write_missing_passage_wall_step(path: Path, kind: str, unit: str = "MM") -> 
     hole through a plate whose top face is tilted that many degrees - the two rims not parallel).
     Every one of the angled and wedge cases was delivered "Repaired within the conservative caps"
     with the hole sealed while the guard demanded parallel rims on one normal.
+
+    `dbar<offset>` (a D-section bar - flat top, round bottom) and `flipbar<offset>` (round top,
+    flat bottom) take a 4 mm-radius vertical hole `offset` mm off the bar's axis, so ONE RIM IS A
+    SADDLE on the curved side and the other is flat. `reverse=True` sews the faces in the opposite
+    order: the same part, and on that order the flat rim's fill was KEPT and the hole sealed, while
+    the original order was saved only by the stall limit stopping the run first.
     """
     import math
 
@@ -333,6 +340,14 @@ def write_missing_passage_wall_step(path: Path, kind: str, unit: str = "MM") -> 
         tool = prism(slot())
     elif kind.startswith("angled"):
         tool = rotated(cylinder(4.0, 80.0, at=(50, 50, -35)), float(kind[len("angled"):]))
+    elif kind.startswith(("dbar", "flipbar")):
+        bar = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 50, 30), gp_Dir(1, 0, 0)), 30, 100).Shape()
+        flat_top = kind.startswith("dbar")
+        offset = float(kind[len("dbar" if flat_top else "flipbar"):])
+        trim = BRepPrimAPI_MakeBox(gp_Pnt(-1, 0, 50 if flat_top else -10), 102, 100,
+                                   40 if flat_top else 20).Shape()
+        plate = BRepAlgoAPI_Cut(bar, trim).Shape()
+        tool = cylinder(4.0, 80.0, at=(50, 50 + offset, -10))
     elif kind.startswith("wedge"):
         slab = BRepPrimAPI_MakeBox(gp_Pnt(-50, -50, 10.0), 200, 200, 60).Shape()
         cutter = rotated(slab, float(kind[len("wedge"):]), about=(50, 50, 10.0))
@@ -353,12 +368,15 @@ def write_missing_passage_wall_step(path: Path, kind: str, unit: str = "MM") -> 
         if not cut.IsDeleted(face) and modified.Size() == 0:
             walls.Add(face)
 
-    sewing = BRepBuilderAPI_Sewing(1e-6)
+    keep = []
     explorer = TopExp_Explorer(cut.Shape(), TopAbs_FACE)
     while explorer.More():
         if not walls.Contains(explorer.Current()):
-            sewing.Add(explorer.Current())   # every face except the passage's walls
+            keep.append(explorer.Current())   # every face except the passage's walls
         explorer.Next()
+    sewing = BRepBuilderAPI_Sewing(1e-6)
+    for face in (reversed(keep) if reverse else keep):
+        sewing.Add(face)
     sewing.Perform()
 
     writer = STEPControl_Writer()

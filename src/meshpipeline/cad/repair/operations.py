@@ -592,8 +592,8 @@ class FillPlanarHole:
     part is sealed and every check agrees it was repaired. So every path that proposes a fill
     consults `plan.paired_rim_fingerprints`: RulesPlanner refuses filling for the run once a pair
     is seen, and DirectedPlanner (where a model's directives play) applies the same guard to every
-    fill except one engineer's single-rim approval. The guard fails closed when it cannot run or
-    cannot resolve a candidate rim. A new planner that proposes fills without it would bypass the
+    fill except one engineer's single-rim approval. The guard fails closed when it cannot run, or
+    cannot resolve or judge (a non-planar loop) a candidate rim. A new planner that proposes fills without it would bypass the
     only defence.
     """
 

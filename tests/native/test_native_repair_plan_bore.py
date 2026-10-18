@@ -183,3 +183,50 @@ def test_the_hex_plate_reproduction_refuses_the_fill_as_a_paired_rim(tmp_path):
         assert candidate.op.name != "fill_planar_hole", "the hex through-hole would be sealed"
         history.mark_ineffective(candidate.defect_fingerprint, candidate.op.name)
     assert {r["defect"] for r in history.refusals if r["reason"] == "paired_rim"} == set(rims)
+
+
+def _saddle(z=10.0, radius=4.0, sag=2.0):
+    """A closed loop that lies on no plane: the rim a hole leaves on a curved face."""
+    import math
+
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakePolygon
+    from OCP.gp import gp_Pnt
+
+    polygon = BRepBuilderAPI_MakePolygon()
+    for k in range(16):
+        a = 2 * math.pi * k / 16
+        polygon.Add(gp_Pnt(radius * math.cos(a), radius * math.sin(a),
+                           z + sag * math.cos(a) ** 2))
+    polygon.Close()
+    return polygon.Wire()
+
+
+def test_a_curved_candidate_rim_beside_another_fails_closed_and_alone_is_answered():
+    # The flat rim of a hole through a round bar has a saddle for a partner. Skipping the saddle
+    # left the flat rim fillable; the check must instead say it cannot answer.
+    from meshpipeline.cad.repair.conservative import RimsUndecidable, _paired_rims
+
+    with pytest.raises(RimsUndecidable):
+        _paired_rims([_circle(4.0, 0.0), _saddle()])
+    # one loop alone has no partner, curved or not
+    assert _paired_rims([_saddle()]) == set()
+    assert _paired_rims([_circle(4.0, 0.0)]) == set()
+
+
+def test_the_planner_refuses_every_fill_when_a_candidate_rim_is_curved(monkeypatch):
+    # Through the real discriminator: RimsUndecidable reaches paired_rim_fingerprints as the
+    # fail-closed RimsUnknown, holding every candidate.
+    import meshpipeline.cad.repair.operations as operations
+    from meshpipeline.cad.repair.contracts import DefectCode, DefectSeverity
+    from meshpipeline.cad.repair.localize import EntityDefect
+    from meshpipeline.cad.repair.plan import paired_rim_fingerprints
+
+    wires = {1: _circle(4.0, 0.0), 2: _saddle()}
+    monkeypatch.setattr(operations, "free_wire_containing", lambda shape, index: wires[index])
+    defects = tuple(EntityDefect(code=DefectCode.open_shell, severity=DefectSeverity.error,
+                                 entity_type="edge", entity_index=i, message="rim",
+                                 fingerprint=f"edge:{i}", measurements={"boundary_edges": 16})
+                    for i in (1, 2))
+    rims = paired_rim_fingerprints(None, defects)
+    assert getattr(rims, "unknown", False) is True
+    assert rims == frozenset({"edge:1", "edge:2"})

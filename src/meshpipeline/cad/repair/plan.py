@@ -34,8 +34,8 @@ logger = logging.getLogger(__name__)
 # gone. Every check agrees the part was repaired, and the customer has a plate with no bolt hole.
 # So the decision is carried by the PAIRED-RIM GUARD (`paired_rim_fingerprints`): RulesPlanner
 # refuses filling for the run once any pair is seen, DirectedPlanner applies the same guard to
-# every directive fill except one engineer's single-rim approval, and a check that cannot run or
-# cannot resolve a candidate rim fails closed. The fill operation itself still has no rim check, so a NEW planner must call this
+# every directive fill except one engineer's single-rim approval, and a check that cannot run, or
+# cannot resolve or judge (a non-planar loop) a candidate rim, fails closed. The fill operation itself still has no rim check, so a NEW planner must call this
 # guard too - a planner that can be replaced is only as safe as the guard it consults. Do not read
 # the paragraph above as "the session makes a planner harmless"; for this one behaviour it does not.
 #
@@ -142,7 +142,8 @@ def paired_rim_fingerprints(shape, defects) -> frozenset[str]:
     An empty set is the common and correct answer: an ordinary single opening has nothing to pair
     with, and the guard must not cost the case filling exists for. It never raises. When the
     question cannot be answered - the kernel or the discriminator fails, or any candidate rim's
-    free wire cannot be resolved while another candidate exists - it FAILS CLOSED: a
+    free wire cannot be resolved, or is not planar (`conservative.RimsUndecidable`), while another
+    candidate exists - it FAILS CLOSED: a
     `RimsUnknown` holding every candidate rim, so no fill is proposed on a guess.
 
     THIS IS LOAD-BEARING. The targeted fill operation has no rim check of its own, so the planner's
