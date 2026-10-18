@@ -395,3 +395,18 @@ async def test_a_delivered_run_still_records_every_item_whatever_was_left_before
     history = _History([(f"face:{i}", "left") for i in range(3)])
     settled, left = await rrp.settle_left(plan, _Sessions(), str(JOB), repo=history)
     assert settled is plan and len(settled.items) == 3 and left == {}
+
+
+async def test_the_mint_caps_dropped_count_survives_the_state_merge_into_the_parks_record():
+    import typing
+
+    from meshpipeline.contracts.pipeline_state import PipelineState
+    from meshpipeline.pipeline.data_contract import STATE_FIELDS
+    assert "repair_review_truncated" in typing.get_type_hints(PipelineState)
+    assert "repair_review_truncated" in STATE_FIELDS
+    plan = rrp.plan_review({**STATE, "repair_review_truncated": 1200}, status=JobStatus.failed)
+    assert plan.park and plan.truncated == 1200
+    asm = TerminalAssembly(job_id=str(JOB), owner_id="o", status=JobStatus.pending_review,
+                           failed_reason=FailedReason.unhandled, engine="cfmesh", review_plan=plan)
+    record = build_terminal_result(asm, delivered_types=[]).result.to_dict()
+    assert record["review_truncated"] == 1200 and record["review_parked"] == 3

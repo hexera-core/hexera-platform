@@ -182,6 +182,9 @@ class FinalResult:
     # (repair review): {"count": n, "codes": {defect_code: n}}. The run then ends as an ordinary
     # failure - never another park on the same questions - and the message says what was left.
     review_left: dict = field(default_factory=dict)
+    # HOW MANY UNSURE DEFECTS THE MINT CAP DROPPED (repair_review_minting.MINT_CAP), so the review
+    # can say "showing the largest N of M" instead of presenting a capped queue as the whole part.
+    review_truncated: int = 0
 
     def __post_init__(self) -> None:
         # THE invariant, enforced at construction so no path can violate it.
@@ -239,7 +242,8 @@ class FinalResult:
             retry_skipped=bool(d.get("retry_skipped", False)),
             review_parked=int(d.get("review_parked", 0) or 0),
             review_left=(dict(d["review_left"])
-                         if isinstance(d.get("review_left"), Mapping) else {}))
+                         if isinstance(d.get("review_left"), Mapping) else {}),
+            review_truncated=int(d.get("review_truncated", 0) or 0))
 
 
 # WHAT A CRASH STILL KNOWS.
@@ -643,6 +647,11 @@ def with_review_left(fr: FinalResult, left: Mapping | None) -> FinalResult:
     """Mark this failure as one whose only questions the engineer already answered "leave it"."""
     import dataclasses
     return dataclasses.replace(fr, review_left=dict(left or {}))
+
+
+def with_review_truncated(fr: FinalResult, dropped: int) -> FinalResult:
+    import dataclasses
+    return dataclasses.replace(fr, review_truncated=max(int(dropped or 0), 0))
 
 
 def _render_left(left: Mapping) -> str:

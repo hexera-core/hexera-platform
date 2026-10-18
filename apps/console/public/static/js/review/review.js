@@ -54,6 +54,14 @@ export function sizeOf(item) {
 const unanswered = (groups) => groups.reduce(
   (n, g) => n + g.items.filter((i) => i.state === "open").length, 0);
 
+/** The mint cap's honesty line: the review holds the largest of a larger number. "" when not capped. */
+export function truncatedCopy(review) {
+  const cut = Number((review || {}).truncated || 0);
+  if (!(cut > 0)) return "";
+  const total = Number(review.total || 0), shown = Math.max(total - cut, 0);
+  return `showing the ${shown} largest of ${total} - the other ${cut} were too many to put to you one by one.`;
+}
+
 const STANDING = '<p class="rv-standing">your earlier answer stays recorded until you replace it.</p>';
 
 function unansweredLine(n) {
@@ -165,6 +173,7 @@ export async function openReview(jobId, opts = {}) {
   root.innerHTML = `<header class="rv-head">
       <b class="rv-title">Review before the repair runs</b>
       <span class="rv-unanswered"></span>
+      ${truncatedCopy(review) ? `<span class="rv-truncated">${esc(truncatedCopy(review))}</span>` : ""}
       <button type="button" class="rv-back">Back to the run</button>
       ${readonly ? "" : '<button type="button" class="rv-run">Run it</button>'}
     </header>

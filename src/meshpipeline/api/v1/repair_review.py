@@ -146,9 +146,14 @@ async def get_review(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     else:
         status = "closed"
     decided = sum(1 for i in items if i.state != "open")
+    # THE MINT CAP'S DROPPED COUNT rides the run's own final result (written with the park), so
+    # the review can say it shows the largest of a larger number - no column for one integer.
+    truncated = max(int((getattr(job, "final_result", None) or {}).get("review_truncated")
+                        or 0), 0)
     return {"job_id": str(job_id), "status": status,
             "geometry_session_id": session_id,
-            "groups": _groups(items), "decided": decided, "open": len(items) - decided}
+            "groups": _groups(items), "decided": decided, "open": len(items) - decided,
+            "truncated": truncated, "total": len(items) + truncated}
 
 
 def _log_decision(job_id: uuid.UUID, *, item_id, group_key, action: str, proposal,

@@ -29,6 +29,8 @@ class ReviewPlan:
     geometry_session_id: str = ""
     #: `[{item_id, outcome, reason}]` for directives that ran this time, written back onto their items.
     outcomes: list = field(default_factory=list)
+    #: how many items the mint cap dropped (state `repair_review_truncated`); 0 when none were
+    truncated: int = 0
 
 
 def kept_operations(state: dict) -> list[dict]:
@@ -64,9 +66,11 @@ def plan_review(state: dict, *, status: JobStatus,
         return None
     if (not items and not outcomes) or status not in (JobStatus.failed, JobStatus.succeeded):
         return None
+    truncated = max(int(state.get("repair_review_truncated") or 0), 0)
     if status == JobStatus.succeeded or not items:
-        return ReviewPlan(items=items, outcomes=outcomes)
-    return ReviewPlan(items=items, outcomes=outcomes, park=True, kept_operations=kept_operations(state),
+        return ReviewPlan(items=items, outcomes=outcomes, truncated=truncated)
+    return ReviewPlan(items=items, outcomes=outcomes, park=True, truncated=truncated,
+                      kept_operations=kept_operations(state),
                       source_sha256=source_sha256(state),
                       # THE CHAT SESSION id: the same id the console's
                       # GET /geometry/{session_id}/check/skin route (api/v1/geometry.py) serves

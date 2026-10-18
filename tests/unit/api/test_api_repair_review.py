@@ -499,3 +499,12 @@ async def test_a_run_delivered_after_a_park_serves_its_offered_items_not_the_clo
     assert asked == [None]
     assert body["status"] == "offered" and body["open"] == 1
     assert body["groups"][0]["items"][0]["id"] == str(uuid.UUID(int=9))
+
+
+async def test_the_review_says_how_many_the_mint_cap_left_out():
+    world = World([_item(1), _item(2)])
+    world.job.final_result = {"review_parked": 2, "review_truncated": 700}
+    body = (await world.call("GET", "/review")).json()
+    assert (body["truncated"], body["total"]) == (700, 702)
+    plain = (await World([_item(1)]).call("GET", "/review")).json()
+    assert (plain["truncated"], plain["total"]) == (0, 1)

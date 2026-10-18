@@ -103,6 +103,10 @@ class PipelineState(TypedDict):
     # repair_review_minting.py): plain dicts, empty unless CAD_REPAIR_REVIEW_ENABLED. The node mints;
     # the terminal path persists them.
     repair_review_candidates: list[dict]
+    # HOW MANY UNSURE DEFECTS THE MINT CAP DROPPED (application/repair_review_minting.MINT_CAP):
+    # absent or 0 unless the part had more than the cap. Declared, or the graph drops it between
+    # the node and the terminal path - and the review would present a capped queue as the part.
+    repair_review_truncated: int
     # DIRECTIVES A PARKED RUN'S RE-RUN PLAYS FIRST (cad/repair/directives.py): the kept operations
     # replayed, then the engineer's decisions. Empty on every run that did not resume from a park.
     repair_directives: list[dict]

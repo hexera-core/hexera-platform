@@ -425,6 +425,9 @@ STATE_FIELDS: dict[str, str] = {
     "repair_review_candidates": "review items the repair node minted for defects it left to a "
                              "person; empty unless per-defect review is enabled - the terminal "
                              "path persists them, the node writes nothing",
+    "repair_review_truncated": "how many review items the mint cap dropped, so the review says "
+                             "it shows the largest of a larger number; 0 unless the part had "
+                             "more unsure defects than the cap",
     "repair_directives":     "the repair directives a parked run's re-run plays before its rules "
                              "planner: kept operations replayed, then the engineer's decisions; "
                              "empty unless the run resumed from a repair review",

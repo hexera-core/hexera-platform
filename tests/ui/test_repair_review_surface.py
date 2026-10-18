@@ -337,3 +337,11 @@ def test_a_group_redirect_marks_what_it_covered_answered_and_does_not_ask_it_aga
     # item 2 was covered: the sample is over, and the rest are the two still open
     assert "defect 2 message" not in _text(live, ".rv-panel")
     assert "6 defects still unanswered" in _text(live, ".rv-unanswered"), _text(live, ".rv-unanswered")
+
+
+def test_a_capped_review_says_it_shows_the_largest_of_how_many(live):
+    _open(live, review={**_review(), "truncated": 492, "total": 500})
+    assert "showing the 8 largest of 500" in _text(live, ".rv-truncated")
+    live.evaluate("window.__rv.close()")
+    _open(live)
+    assert live.evaluate("!document.querySelector('.rv-truncated')")
