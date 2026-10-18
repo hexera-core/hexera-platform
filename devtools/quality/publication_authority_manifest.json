@@ -2416,6 +2416,32 @@
   ]
  },
  {
+  "context": "application/terminal_finalize.py::finalize_terminal_atomic::error#1|NotAPublisher|not-a-publisher|",
+  "path": "application/terminal_finalize.py",
+  "qualname": "finalize_terminal_atomic",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "log",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "application/terminal_finalize.py::finalize_terminal_atomic::error#2|NotAPublisher|not-a-publisher|",
+  "path": "application/terminal_finalize.py",
+  "qualname": "finalize_terminal_atomic",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 2,
+  "receiver": "log",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "application/thermal_wording.py::forbidden_words::search#1|NotAPublisher|not-a-publisher|",
   "path": "application/thermal_wording.py",
   "qualname": "forbidden_words",
