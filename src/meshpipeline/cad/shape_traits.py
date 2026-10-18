@@ -40,6 +40,9 @@ What is measured, on the welded triangles of the surface:
       more;
     - `gap_share` (external): the share of the body that faces another wall within 5% of its
       length (wheel arches, slat gaps, blades close together).
+* `passages` (internal, two or more declared openings): how many separate fluid passages the
+  openings lie on, through the internal meshers' own staging - one engine meshes several side by
+  side, another only the one its seed point is in (FlowSupport.max_passages).
 
 A fact that cannot be measured is None, never a guess: an open or non-manifold surface has no
 genus, a body with no fluid chords has no passage. Nothing here fails a run - a file it cannot
@@ -50,7 +53,7 @@ from __future__ import annotations
 import logging
 import math
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -106,6 +109,10 @@ class ShapeTraits:
     thin_wall_fraction: float | None = None
     thickness_ratio: float | None = None
     gap_share: float | None = None
+    #: internal flow: how many SEPARATE fluid passages the confirmed openings lie on, by the very
+    #: staging the internal meshers use (cad/fluid_passages.passage_count) - the count an engine's
+    #: declared capability is held to (FlowSupport.max_passages). None when it was not counted.
+    passages: int | None = None
     notes: tuple[str, ...] = field(default_factory=tuple)
 
     @property
@@ -505,6 +512,15 @@ def measure_file(path, *, flow: str = "", input_kind: str = "", patches: Sequenc
                       and str(x.get("type") or x.get("role") or "").lower() in ("inlet", "outlet"))
         traits = measure(tris, flow=flow, input_kind=input_kind, form=form, port_diameters=dh,
                          n_ports=n_ports or None, flow_axis=flow_axis, scale_to_m=unit_to_m)
+        if flow == "internal" and n_ports >= 2:
+            # THE PASSAGES, counted on the metre surface the staging binds the openings on (a
+            # triangle file of unknown unit read as millimetres, as the port ratio above is)
+            from meshpipeline.cad.fluid_passages import passage_count
+            n = passage_count(tris * (unit_to_m or 0.001),
+                              [dict(x) for x in patches if isinstance(x, Mapping)],
+                              input_kind=input_kind)
+            if n is not None:
+                traits = replace(traits, passages=n)
     except Exception as exc:  # noqa: BLE001 - a measurement is advice, never a failure
         logger.warning("shape traits: %s could not be measured (%s: %s)", p.name,
                        type(exc).__name__, str(exc)[:200])

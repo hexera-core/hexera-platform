@@ -189,6 +189,13 @@ class FlowSupport:
     #: The shapes this flow's method is BUILT for, in plain words ("tubular passages: vessels,
     #: pipes, ducts"). A heads-up the proposal and the offers say out loud; never a gate.
     designed_for: str = ""
+    #: HOW MANY SEPARATE FLUID PASSAGES one job of this engine meshes for this flow - passages that
+    #: do not connect, each with its own confirmed openings (cad/fluid_passages reads them off the
+    #: staged surface). A hard limit of the engine's DRIVER, not a weak spot: snappyHexMesh fills
+    #: the one region its seed point is in and refuses the rest before it runs. 1 unless the driver
+    #: is proven to mesh several; the recommender, the fallback ladder and its offers read it
+    #: (engines/capability.covers_passages). Only internal flow is ever counted.
+    max_passages: int = 1
 
 
 #: HOME TURF verdicts, best first. A row's severity says what its condition, when it HOLDS,
@@ -517,6 +524,11 @@ class EngineSpec:
                     forms = (*forms, "surface")
                 return forms
         return None
+
+    def max_passages_for(self, flow: str) -> int | None:
+        """How many separate fluid passages one job of this engine meshes for `flow`
+        (FlowSupport.max_passages), or None when it is not designed for that flow at all."""
+        return next((int(fs.max_passages) for fs in self.accepts if fs.flow == flow), None)
     # THE THREE AUDIT SEAMS (stage C): builder briefing fragments, the user
     # deliverable recipe, and the run/submit tool policy. Implemented rows
     # must declare all three (enforced); planned rows leave them None.

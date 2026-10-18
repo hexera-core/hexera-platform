@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import meshpipeline.settings.runtime as rtcfg
+from meshpipeline.cad.fluid_passages import MAX_PASSAGES
 from meshpipeline.contracts.review_evidence import (
     TargetKind,
 )
@@ -207,8 +208,11 @@ SPEC = EngineSpec(
         # first) and a surface mesh both reach it. INTERNAL carves the fluid out of the CAD solid
         # (geometry.step + tessellate_internal); a surface upload is taken for internal flow too,
         # declared once below as input_contract.internal_from_surface (cad/internal_surface).
+        # SEVERAL PASSAGES: cartesianMesh has no seed point, so the driver meshes every passage
+        # that carries a confirmed opening as its own run and merges them (cfmesh_runner.
+        # _stage_passages, native.mesh_passages) - up to the MAX_PASSAGES one mesh holds.
         accepts=(FlowSupport("external", ("cad", "surface")),
-                 FlowSupport("internal", ("cad",))),
+                 FlowSupport("internal", ("cad",), max_passages=MAX_PASSAGES)),
         # the most forgiving input handling (it wraps dirty surfaces): first on the ladder
         ladder_rank=10,
         home_turf=HOME_TURF,
