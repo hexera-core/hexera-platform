@@ -9,7 +9,8 @@ from types import SimpleNamespace
 
 import pytest
 from tests.unit.pipeline.test_repair_attempt_minting import (
-    _entity,  # noqa: F401 - _on is an autouse fixture
+    _entity,
+    _on,
     _op,
     _report,
     _scripted,
@@ -19,6 +20,8 @@ from tests.unit.pipeline.test_repair_attempt_minting import (
 import meshpipeline.settings.cad_repair as rcfg
 from meshpipeline.application.repair_review_park import ReviewPlan, write_review
 from meshpipeline.pipeline.repair_attempt import node_repair_attempt
+
+_AUTOUSE = _on  # the autouse fixture that switches repair on, reused as is
 
 ITEM = str(uuid.uuid4())
 

@@ -52,9 +52,17 @@ class _Savepoint:
     async def rollback(self): self.db.log.append("sp_rollback")
 
 
+class _Quiet:
+    async def commit(self): ...
+    async def rollback(self): ...
+
+
 class _Db:
-    def __init__(self): self.log = []
-    async def begin_nested(self): return _Savepoint(self)
+    """The FIRST savepoint is the review write's (logged); later ones are the history lookup's own."""
+    def __init__(self): self.log, self.opened = [], 0
+    async def begin_nested(self):
+        self.opened += 1
+        return _Savepoint(self) if self.opened == 1 else _Quiet()
 
 
 class _Repo:
