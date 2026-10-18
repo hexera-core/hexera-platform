@@ -201,19 +201,40 @@ def _saddle(z=10.0, radius=4.0, sag=2.0):
     return polygon.Wire()
 
 
-def test_a_curved_candidate_rim_beside_another_fails_closed_and_alone_is_answered():
+def _seam(radius=4.0):
+    """A closed loop as deep as it is wide (a tennis-ball seam): no best-fit normal to judge by."""
+    import math
+
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakePolygon
+    from OCP.gp import gp_Pnt
+
+    polygon = BRepBuilderAPI_MakePolygon()
+    for k in range(16):
+        a = 2 * math.pi * k / 16
+        polygon.Add(gp_Pnt(radius * math.cos(a), radius * math.sin(a),
+                           radius * 1.5 * math.cos(2 * a)))
+    polygon.Close()
+    return polygon.Wire()
+
+
+def test_a_curved_candidate_rim_is_paired_by_its_fit_and_an_unfittable_one_fails_closed():
     # The flat rim of a hole through a round bar has a saddle for a partner. Skipping the saddle
-    # left the flat rim fillable; the check must instead say it cannot answer.
+    # left the flat rim fillable; the saddle is now judged on its best-fit axis and pairs. A loop
+    # with no usable normal still cannot be ruled out, so beside another candidate it fails closed.
     from meshpipeline.cad.repair.conservative import RimsUndecidable, _paired_rims
 
+    assert _paired_rims([_circle(4.0, 0.0), _saddle()]) == {0, 1}
+    # side by side in one face's plane, the saddle is a second hole, not the far end of this one
+    assert _paired_rims([_circle(4.0, 10.0, x=40.0), _saddle()]) == set()
     with pytest.raises(RimsUndecidable):
-        _paired_rims([_circle(4.0, 0.0), _saddle()])
+        _paired_rims([_circle(4.0, 0.0), _seam()])
     # one loop alone has no partner, curved or not
     assert _paired_rims([_saddle()]) == set()
+    assert _paired_rims([_seam()]) == set()
     assert _paired_rims([_circle(4.0, 0.0)]) == set()
 
 
-def test_the_planner_refuses_every_fill_when_a_candidate_rim_is_curved(monkeypatch):
+def test_the_planner_refuses_every_fill_when_a_candidate_rim_cannot_be_judged(monkeypatch):
     # Through the real discriminator: RimsUndecidable reaches paired_rim_fingerprints as the
     # fail-closed RimsUnknown, holding every candidate.
     import meshpipeline.cad.repair.operations as operations
@@ -221,7 +242,7 @@ def test_the_planner_refuses_every_fill_when_a_candidate_rim_is_curved(monkeypat
     from meshpipeline.cad.repair.localize import EntityDefect
     from meshpipeline.cad.repair.plan import paired_rim_fingerprints
 
-    wires = {1: _circle(4.0, 0.0), 2: _saddle()}
+    wires = {1: _circle(4.0, 0.0), 2: _seam()}
     monkeypatch.setattr(operations, "free_wire_containing", lambda shape, index: wires[index])
     defects = tuple(EntityDefect(code=DefectCode.open_shell, severity=DefectSeverity.error,
                                  entity_type="edge", entity_index=i, message="rim",

@@ -357,10 +357,12 @@ def test_a_through_passage_of_any_shape_angle_or_draft_is_never_sealed(tmp_path,
 @pytest.mark.parametrize("kind", ["dbar0", "dbar10", "flipbar0", "flipbar10"])
 def test_a_through_hole_with_one_curved_rim_is_never_sealed_in_either_face_order(
         tmp_path, monkeypatch, kind, reverse):
-    """ONE RIM A SADDLE, THE OTHER FLAT. The saddle cannot be judged, and skipping it left the flat
-    rim with nothing to pair with: on the reversed face order its fill was KEPT (a 50 mm2 disc
-    sealing the hole) and on the file order only the stall limit stopped the run first. The check
-    must fail closed on the curved candidate, whatever order the faces arrive in."""
+    """ONE RIM A SADDLE, THE OTHER FLAT. Skipping the saddle left the flat rim with nothing to pair
+    with: on the reversed face order its fill was KEPT (a 50 mm2 disc sealing the hole) and on the
+    file order only the stall limit stopped the run first. The saddle is now judged on its best-fit
+    axis and the two rims PAIR - a real answer, not the "could not run" fail-closed stopgap - in
+    whatever order the faces arrive. (dbar10/flipbar10 tilt the saddle 19.6 deg: past the coaxial
+    rule, paired by the passage rule.)"""
     from tests.cad_fixtures import write_missing_passage_wall_step
 
     monkeypatch.setattr(rcfg, "CAD_REPAIR_FILL_PLANAR_HOLES", True)
@@ -376,7 +378,7 @@ def test_a_through_hole_with_one_curved_rim_is_never_sealed_in_either_face_order
     assert not any(o.get("name") == "fill_planar_hole" for o in measured["operations"]), (
         "a fill was attempted on one rim of a through-hole")
     rims = [r for r in measured["refusals"] if r["reason"] == "paired_rim"]
-    assert len(rims) == 2 and all("could not run" in r["detail"] for r in rims), rims
+    assert len(rims) == 2 and not any("could not run" in r["detail"] for r in rims), rims
     assert not out.exists()
 
 

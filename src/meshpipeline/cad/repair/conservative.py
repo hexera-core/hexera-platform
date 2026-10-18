@@ -361,6 +361,131 @@ class RimsUndecidable(ValueError):
     """
 
 
+# SADDLE RIMS. A hole through a curved wall leaves a loop on no plane, so it has no plane normal
+# for the passage rule. It is given a BEST-FIT one: the smallest principal component of its
+# sampled points. Every number below was fixed from the synthetic fixtures (the cross-drilled
+# Ø40 bar, the D-bars, the 60-degree cylinder window), never from a corpus, and each errs toward
+# PAIRING, because the two mistakes do not cost the same: a false pair refuses one fill an
+# operator then picks up, a missed pair seals a customer's hole.
+#
+#: Axes this parallel (|cos|, about 11.5 deg) may be one bore's two ends. The cross-drilled bar's
+#: two saddles fit z to 1e-6; a D-bar's offset hole tilts its saddle 19.6 deg, which this rejects
+#: and the passage rule (`_RIM_PASSAGE_COSINE`) still pairs.
+_SADDLE_AXIS_PARALLEL = 0.98
+#: The farthest the second centroid may sit OFF the first's axis, in units of the smaller radius.
+#: Half a radius: a bore whose two ends' fitted centres miss by more than that is not one straight
+#: bore - but the passage rule can still pair it, so this only bounds what the coaxial rule adds.
+_SADDLE_AXIS_OFFSET = 0.5
+#: Larger mean radius over smaller: 2.5. A counterbore on a round bar is about 2x its bore.
+_SADDLE_RADIUS_RATIO = 2.5
+#: The gap ALONG the axis, in units of the larger radius: below 1e-3 it is one opening seen twice,
+#: above 40 radii (160 mm for an Ø8 bore) the coaxial rule does not vouch for it.
+_SADDLE_GAP = (1e-3, 40.0)
+#: When the smallest principal variance is more than this fraction of the middle one, the loop is
+#: nearly as deep as it is wide and has NO normal to judge it by - the fit fails and the check
+#: fails closed. The deepest fixture loop (the 60-degree x 20 mm cylinder window) is 0.017 and
+#: the cross-drilled saddles 0.003; 0.25 means an out-of-plane spread half the in-plane one.
+_SADDLE_FLATNESS = 0.25
+
+
+def _rim_fit(wire):
+    """A loop's best-fit (centroid, unit axis, mean radius), or None when it has no usable normal.
+
+    The axis is the smallest principal component of `_loop_points(wire)`; the radius is the mean
+    distance of those points from the centroid perpendicular to it. None - the loop cannot be
+    judged - when there are fewer than three points, no extent, or no clearly smallest component
+    (`_SADDLE_FLATNESS`).
+    """
+    import numpy as np
+
+    points = np.asarray(_loop_points(wire), dtype=float)
+    if points.ndim != 2 or len(points) < 3:
+        return None
+    centre = points.mean(axis=0)
+    rel = points - centre
+    values, vectors = np.linalg.eigh(rel.T @ rel / len(points))
+    if values[1] <= 0 or values[0] > _SADDLE_FLATNESS * values[1]:
+        return None
+    axis = vectors[:, 0] / np.linalg.norm(vectors[:, 0])
+    radius = float(np.mean(np.linalg.norm(rel - np.outer(rel @ axis, axis), axis=1)))
+    if not radius > 0:
+        return None
+    return (centre, axis, radius)
+
+
+def _saddle_coaxial(left, right) -> bool:
+    """Two fitted loops on ONE AXIS - the two ends of a straight bore, curved walls or not."""
+    import numpy as np
+
+    c1, a1, r1 = left
+    c2, a2, r2 = right
+    cosine = float(a1 @ a2)
+    if abs(cosine) < _SADDLE_AXIS_PARALLEL:
+        return False
+    axis = a1 + (a2 if cosine >= 0 else -a2)
+    axis = axis / np.linalg.norm(axis)
+    small, large = min(r1, r2), max(r1, r2)
+    if large > _SADDLE_RADIUS_RATIO * small:
+        return False
+    delta = c2 - c1
+    projected = float(delta @ axis)
+    along = abs(projected)
+    off = float(np.linalg.norm(delta - projected * axis))
+    if off > _SADDLE_AXIS_OFFSET * small:
+        return False
+    return _SADDLE_GAP[0] * large <= along <= _SADDLE_GAP[1] * large
+
+
+def _passage_leaves_both(c1, n1, s1, c2, n2, s2) -> bool:
+    """THE PASSAGE RULE: the centroid line leaves through each rim no steeper than 70 deg from its
+    normal (`_RIM_PASSAGE_COSINE`), and the rims are apart (`_RIM_MIN_GAP`)."""
+    delta = [c2[k] - c1[k] for k in range(3)]
+    gap = sum(d * d for d in delta) ** 0.5
+    if gap <= _RIM_MIN_GAP * max(s1, s2):
+        return False
+    axis = [d / gap for d in delta]
+    # The passage must leave through BOTH rims, not run along either face: coplanar holes
+    # (axis in the plane) are two holes and must stay fillable.
+    steep_1 = abs(sum(axis[k] * n1[k] for k in range(3)))
+    steep_2 = abs(sum(axis[k] * n2[k] for k in range(3)))
+    return steep_1 >= _RIM_PASSAGE_COSINE and steep_2 >= _RIM_PASSAGE_COSINE
+
+
+def _fits_pair(left, right) -> bool:
+    """Two fitted loops (at least one curved) are one passage's two ends.
+
+    EITHER RULE PAIRS THEM. The coaxial rule is the saddle-specific one; the passage rule is the
+    landed planar one with the fitted axis for a normal. A curved rim is held to the planar rule
+    too, so nothing the planar guard would refuse becomes fillable because its rim is curved: an
+    offset hole through a D-bar (saddle tilted 19.6 deg), a spot-face three times its bore, an
+    angled hole - all fail the coaxial limits and all still pair here.
+    """
+    c1, a1, r1 = left
+    c2, a2, r2 = right
+    return _saddle_coaxial(left, right) or _passage_leaves_both(c1, a1, r1, c2, a2, r2)
+
+
+def _paired_nonplanar_rims(loops: list) -> set[int]:
+    """Indices of loops that pair, judged by their BEST-FIT axes - for loops that lie on no plane.
+
+    `_paired_rims` uses this for every pair in which at least one loop is non-planar. A loop with
+    no usable fit (`_rim_fit` is None) beside another raises `RimsUndecidable`: it cannot be ruled
+    out, so the guard fails closed exactly as it did before saddles were paired. One loop alone has
+    no partner and is answered. A false pair costs one missed repair; a missed pair costs a
+    customer's hole - see the constants above for where each number came from.
+    """
+    fits = [_rim_fit(wire) for wire in loops]
+    if len(loops) >= 2 and any(fit is None for fit in fits):
+        raise RimsUndecidable(
+            f"{sum(fit is None for fit in fits)} non-planar loop(s) have no best-fit normal")
+    paired: set[int] = set()
+    for i in range(len(loops)):
+        for j in range(i + 1, len(loops)):
+            if _fits_pair(fits[i], fits[j]):
+                paired.update((i, j))
+    return paired
+
+
 def _paired_rims(loops: list, shape=None) -> set[int]:
     """Indices of loops that are the two ENDS OF A MISSING TUBE, not two separate holes.
 
@@ -375,14 +500,17 @@ def _paired_rims(loops: list, shape=None) -> set[int]:
     an unsewn box's faces are each their own free outer wire. Without `shape` (bare wires, nothing
     to ask the topology) every loop is a candidate - the guard fails toward refusing a fill.
 
-    A CANDIDATE IT CANNOT JUDGE - a non-planar (saddle) loop - beside any other candidate raises
-    `RimsUndecidable`, so the guard fails closed rather than leaving the other rim fillable.
-
     WHICH CANDIDATES PAIR. Two planar candidate loops apart, whose centroid-to-centroid line - the
     passage - leaves through each rim no steeper than 70 deg from that rim's normal. No
     parallel-planes test, no on-one-normal test, no roundness, no size ratio, no depth ceiling -
     each of those once let a genuine through-hole be sealed (the constants above say which):
     angled holes, a drafted plate's tilted top, hex and slot passages, deep holes, spot-faces.
+
+    A NON-PLANAR (SADDLE) CANDIDATE - a hole's rim on a curved wall - is judged by its best-fit
+    axis (`_paired_nonplanar_rims`): any pair with at least one such loop pairs when the two are
+    coaxial OR the passage rule holds with the fitted axis for a normal. One whose fit fails (no
+    clear normal) beside any other candidate still raises `RimsUndecidable`, so the guard fails
+    closed rather than leaving the other rim fillable.
 
     What the right repair is for them - rebuild the wall, or ask - is a judgement, so they are
     reported and left rather than guessed at. Both the planner and the review minting call THIS
@@ -391,44 +519,48 @@ def _paired_rims(loops: list, shape=None) -> set[int]:
     lone = _lone_face_boundaries(shape, loops) if shape is not None else set()
     candidates = [index for index in range(len(loops)) if index not in lone]
     rims = {}
-    unjudged: list[int] = []
+    curved: list[int] = []
     for index in candidates:
         wire = loops[index]
         plane = _loop_plane(wire)
         axis_point = _rim_axis_point(wire, plane[0]) if plane is not None else None
         if axis_point is None:
-            unjudged.append(index)
+            curved.append(index)
             continue
         rims[index] = (plane[0], axis_point)
 
-    if unjudged and len(candidates) >= 2:
-        # A CURVED RIM CANNOT BE JUDGED, SO IT CANNOT BE RULED OUT. A hole drilled through a round
-        # bar leaves a saddle-shaped rim on the curved side and a flat one on the other; skipping
-        # the saddle left the flat rim with nothing to pair with, and it was filled - a 50 mm2 disc
-        # sealing the end of a through-hole, delivered at default config (only the face ORDER in
-        # the file decided whether the stall limit happened to stop it first). Until saddle rims
-        # are paired properly, a candidate that cannot be judged beside any other candidate makes
-        # the whole answer unknown. One loop alone has no partner and is still answered.
-        raise RimsUndecidable(
-            f"{len(unjudged)} candidate rim(s) are not planar loops, beside "
-            f"{len(candidates) - len(unjudged)} other candidate(s)")
-
     paired: set[int] = set()
+    if curved and len(candidates) >= 2:
+        # A CURVED RIM MUST BE JUDGED, NOT SKIPPED. A hole drilled through a round bar leaves a
+        # saddle-shaped rim on the curved side and a flat one on the other; skipping the saddle
+        # left the flat rim with nothing to pair with, and it was filled - a 50 mm2 disc sealing
+        # the end of a through-hole. Every pair with a curved member is judged on best-fit axes;
+        # a curved loop with no usable fit raises RimsUndecidable (fail closed), checked for every
+        # curved candidate BEFORE any pair is answered.
+        fits = {index: _rim_fit(loops[index]) for index in curved}
+        unfit = [index for index, fit in fits.items() if fit is None]
+        if unfit:
+            raise RimsUndecidable(
+                f"{len(unfit)} candidate rim(s) are not planar loops and have no best-fit normal, "
+                f"beside {len(candidates) - len(unfit)} other candidate(s)")
+        for index in candidates:
+            if index not in fits:
+                fit = _rim_fit(loops[index])
+                if fit is None:
+                    # a planar loop always fits; if it somehow does not, it cannot be ruled out
+                    raise RimsUndecidable("a planar candidate rim has no best-fit normal")
+                fits[index] = fit
+        for i, left in enumerate(candidates):
+            for right in candidates[i + 1:]:
+                if (left in curved or right in curved) and _fits_pair(fits[left], fits[right]):
+                    paired.update((left, right))
+
     indices = sorted(rims)
     for i, left in enumerate(indices):
         for right in indices[i + 1:]:
             n1, (c1, s1) = rims[left]
             n2, (c2, s2) = rims[right]
-            delta = [c2[k] - c1[k] for k in range(3)]
-            gap = sum(d * d for d in delta) ** 0.5
-            if gap <= _RIM_MIN_GAP * max(s1, s2):
-                continue
-            axis = [d / gap for d in delta]
-            # The passage must leave through BOTH rims, not run along either face: coplanar holes
-            # (axis in the plane) are two holes and must stay fillable.
-            steep_1 = abs(sum(axis[k] * n1[k] for k in range(3)))
-            steep_2 = abs(sum(axis[k] * n2[k] for k in range(3)))
-            if steep_1 >= _RIM_PASSAGE_COSINE and steep_2 >= _RIM_PASSAGE_COSINE:
+            if _passage_leaves_both(c1, n1, s1, c2, n2, s2):
                 paired.add(left)
                 paired.add(right)
     return paired

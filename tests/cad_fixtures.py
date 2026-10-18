@@ -530,6 +530,84 @@ def write_cylinder_cap_hole_step(path: Path, unit: str = "MM") -> Path:
     return _write_step(sewing.SewedShape(), path, unit)
 
 
+def _bar_with_tool_walls_dropped(tools: list, path: Path, unit: str) -> Path:
+    """A Ø40 x 100 mm bar on the x axis, cut by `tools`, with EVERY face a tool contributed dropped.
+
+    The walls are read from the boolean's own history (as `write_missing_passage_wall_step` does),
+    so what is left is the bar's own faces with the openings the tools left in them, and nothing
+    joining those openings.
+    """
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp, TopExp_Explorer
+    from OCP.TopoDS import TopoDS_Compound
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    bar = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(1, 0, 0)), 20.0, 100.0).Shape()
+    builder = BRep_Builder()
+    tool = TopoDS_Compound()
+    builder.MakeCompound(tool)
+    for piece in tools:
+        builder.Add(tool, piece)
+    cut = BRepAlgoAPI_Cut(bar, tool)
+    walls = TopTools_IndexedMapOfShape()
+    tool_faces = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(tool, TopAbs_FACE, tool_faces)
+    for i in range(1, tool_faces.Extent() + 1):
+        face = tool_faces.FindKey(i)
+        modified = cut.Modified(face)
+        for piece in modified:
+            walls.Add(piece)
+        if not cut.IsDeleted(face) and modified.Size() == 0:
+            walls.Add(face)
+
+    sewing = BRepBuilderAPI_Sewing(1e-6)
+    explorer = TopExp_Explorer(cut.Shape(), TopAbs_FACE)
+    while explorer.More():
+        if not walls.Contains(explorer.Current()):
+            sewing.Add(explorer.Current())   # every face except what the tools contributed
+        explorer.Next()
+    sewing.Perform()
+    return _write_step(sewing.SewedShape(), path, unit)
+
+
+def write_cross_drilled_cylinder_step(path: Path, unit: str = "MM") -> Path:
+    """A Ø40 x 100 mm bar (axis x) CROSS-DRILLED Ø8 along z through its axis at x = 50, bore wall gone.
+
+    TWO SADDLES, NO FLAT RIM. The bore leaves the bar's lateral face twice, at z = ±(19.6..20), and
+    each opening is a closed free loop that lies on the cylinder rather than in any plane - so the
+    planar pairing rule cannot see either of them, and the non-planar fill would close both,
+    sealing the customer's cross-hole end to end. Each loop is an inner boundary of the lateral
+    face, never a lone face's outer wire, so both are candidate rims.
+    """
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+
+    bore = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(50, 0, -30), gp_Dir(0, 0, 1)), 4.0, 60.0).Shape()
+    return _bar_with_tool_walls_dropped([bore], path, unit)
+
+
+def write_two_unrelated_curved_holes_step(path: Path, unit: str = "MM") -> Path:
+    """The same Ø40 x 100 mm bar with TWO Ø8 WINDOWS in its top, at x = 30 and x = 70 - not one hole.
+
+    Each window is a blind Ø8 pocket 10 mm into the bar's top (z from 10 up through the surface)
+    with its wall and floor dropped, so the openings are two saddle loops on the lateral face 40 mm
+    apart ALONG the bar, on no common axis. No passage joins them: the line between them runs along
+    the skin, so they must not pair, and each stays a small curved hole the non-planar fill may
+    close.
+    """
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+
+    windows = [BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(x, 0, 10), gp_Dir(0, 0, 1)), 4.0,
+                                        20.0).Shape() for x in (30.0, 70.0)]
+    return _bar_with_tool_walls_dropped(windows, path, unit)
+
+
 def write_loose_faces_step(path: Path, unit: str = "MM") -> Path:
     """SIX BOX FACES AT THE RIGHT PLACES, NEVER JOINED - no solid, no joined shell, nothing sewn.
 
