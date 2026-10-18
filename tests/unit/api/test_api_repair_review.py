@@ -447,3 +447,39 @@ async def test_apply_all_after_an_accepted_sample_accepts_the_proposal_and_needs
                               json={"action": "apply_all", "group_key": items[0].group_key})
     assert r.status_code == 409
     unanswered.repo.record_group_decision.assert_not_called()
+
+
+def test_an_approved_fill_survives_the_next_cycles_replay(monkeypatch):
+    # cycle 1: the engineer approved a fill on one rim of a pairing and it was kept. cycle 2
+    # replays the park's kept operations first - the fill must replay as the engineer's.
+    import meshpipeline.cad.repair.directives as directives
+    from meshpipeline.application.repair_review_minting import directive_outcomes
+    from meshpipeline.cad.repair.contracts import DefectCode, DefectSeverity
+    from meshpipeline.cad.repair.localize import EntityDefect
+    from meshpipeline.cad.repair.plan import RunHistory
+    approved = str(uuid.UUID(int=7))
+    kept = [{"name": "fill_planar_hole", "status": "kept", "targets": ["rim:a"],
+             "defect_code": "open_shell", "source": "engineer", "item_id": approved},
+            {"name": "sew_faces", "status": "kept", "targets": ["edge:x"],
+             "defect_code": "open_shell", "source": "directive"}]
+    replayed = rr._replay_directives(kept)
+    assert [(d["source"], d["item_id"]) for d in replayed] == [("engineer", approved),
+                                                               ("replay", "")]
+    monkeypatch.setattr(directives, "paired_rim_fingerprints",
+                        lambda shape, defects: frozenset({"rim:a", "rim:b"}))
+    rims = tuple(EntityDefect(code=DefectCode.open_shell, severity=DefectSeverity.error,
+                              entity_type="edge", entity_index=i, message="rim",
+                              fingerprint=fp, measurements={"boundary_edges": 4})
+                 for i, fp in enumerate(("rim:a", "rim:b")))
+
+    class _Nothing:
+        def propose(self, *a, **k): return None
+    planner = directives.DirectedPlanner(replayed[:1], _Nothing())
+    candidate = planner.propose(rims, RunHistory(), shape="shape")
+    assert candidate is not None and planner.unplayable == [], planner.unplayable
+    assert candidate.item_id == approved and candidate.source == "engineer"
+    # and its outcome writes back onto the item that approved it
+    ops = [{"name": "fill_planar_hole", "status": "kept", "targets": ["rim:a"],
+            "item_id": approved, "source": "engineer"}]
+    (outcome,) = directive_outcomes(replayed[:1], ops, [])
+    assert outcome["item_id"] == approved and outcome["outcome"] == "kept"

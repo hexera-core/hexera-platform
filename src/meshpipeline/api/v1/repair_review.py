@@ -357,8 +357,14 @@ def _replay_directives(kept: list) -> list[dict]:
         targets = [t for t in (op.get("targets") or []) if t]
         if not name or not targets:
             continue
+        # AN ENGINEER-APPROVED OPERATION REPLAYS AS THE ENGINEER'S, with its item: re-labelled
+        # "replay" it would meet the rim guard as corrupt state (an approved fill came back
+        # fill_refused next cycle) and its outcome would never reach the item it answers.
+        engineer = op.get("source") == "engineer" and bool(op.get("item_id"))
         out.append({"op": name, "targets": targets, "defect_code": op.get("defect_code", ""),
-                    "defect_fingerprint": targets[0], "source": "replay", "item_id": ""})
+                    "defect_fingerprint": targets[0],
+                    "source": "engineer" if engineer else "replay",
+                    "item_id": str(op["item_id"]) if engineer else ""})
     return out
 
 
