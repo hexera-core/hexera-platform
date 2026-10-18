@@ -1,7 +1,10 @@
 # Catalogue growth: the two operations the traces demand
 
-**Date:** 2026-10-18 · **Status:** approved by the user's go-ahead in the running conversation
-**Builds on:** slices 6–8 (all shipped on this branch). Same safety machinery, two new instruments.
+**Date:** 2026-10-18 · **Status:** approved by the user's go-ahead in the running conversation;
+amended in place by the builder-check rulings of the same day
+**Builds on:** slices 6–8 (all shipped on this branch) and the inner-wire rework of the paired-rim
+refusal now landing on this branch. Same safety machinery, two new instruments. Implementation
+starts only after that rework's commits land, because both touch `conservative.py` and `plan.py`.
 
 ## Intent
 
@@ -37,26 +40,44 @@ before it runs, executes through the session, and lives or dies by the caps and 
   ineffective, the non-planar fill is the next claimant.
 - Target-taking: one loop, named by the first edge of its boundary, exactly the planar fill's
   `targets_for`. Multi-target is refused, as for the planar fill.
-- The patch must not bulge: its bounding box stays within the loop's own box inflated by the
-  repair tolerance, and its boundary deviation from the loop edges (the filler's G0 error) is at or
-  under `tolerance_mm`. Either failing is a decline (`patch_bulges`, `boundary_error`), not a write.
-  G1 to the neighbouring faces is attempted and recorded in `evidence`, never required.
+- The patch must not bulge: its bounding box stays within the loop's own box inflated on every
+  side by HALF THE LOOP BOX'S DIAGONAL, in mm — not by the repair tolerance, because a non-planar
+  patch must be allowed its sagitta, and the cylindrical-cap fixture must pass the check as
+  written. The inflation fraction (0.5) is a constant beside the op with a comment saying why. Its
+  boundary deviation from the loop edges (the filler's G0 error) is at or under `tolerance_mm`.
+  Either failing is a decline (`patch_bulges`, `boundary_error`), not a write. G1 to the
+  neighbouring faces is attempted and recorded in `evidence`, never required.
 - Gated by its own setting, `CAD_REPAIR_FILL_NONPLANAR_HOLES` (default `false`), riding the same
   deploy/env-pair/metadata/startup path as `CAD_REPAIR_FILL_PLANAR_HOLES` (commit c2217d4), so
-  ticking `cad_repair` enables both and an unticked redeploy drops both.
+  ticking `cad_repair` enables all three geometry-adding flags — planar fill, non-planar fill and
+  the heal's `CAD_REPAIR_HEAL_SELF_INTERSECTIONS` — and an unticked redeploy drops all three.
 
 ### `heal_self_intersections` (scope between the fills and fix_shape_global)
 - Targets FACES whose surface self-intersects or interferes with a neighbour — the class both
   meshers reject with coordinates, the ec_turbine-A sample being the named case. `answers` is
   `self_intersection`, `scope = 7`.
+- Gated by its own setting, `CAD_REPAIR_HEAL_SELF_INTERSECTIONS` (default `false`), plumbed
+  identically to `CAD_REPAIR_FILL_PLANAR_HOLES`: the `deploy.yml` export, the API service's env pair
+  and droppable opt-in, the worker fleet's template metadata, and `startup.sh`'s injection.
 - Detection is the kernel's own analysis, not ours: `BOPAlgo_ArgumentAnalyzer` (self-interference
   mode) or `BRepAlgoAPI_Check` over the shape, its faulty pairs localised to face entities and
   emitted by `localize_scan` as `self_intersection` at error severity, with the partner face
   fingerprints in `measurements["crossing_faces"]`. Today the code is emitted only from wire-level
   `BRepCheck` statuses (`SelfIntersectingWire`, `IntersectingWires`); the face-level finding is new
-  and is what the turbine needs. The analysis runs inside `CAD_REPAIR_TIMEOUT_S`; a stopped
-  analysis returns the scan as not exhaustive, so the loop stops `scan_incomplete` rather than
-  reading a short list as a clean part.
+  and is what the turbine needs.
+- **The face-level scan runs only when the heal is enabled.** With
+  `CAD_REPAIR_HEAL_SELF_INTERSECTIONS=false` the analyzer is never called and no new defect is
+  emitted: baseline files reach triage exactly as today, byte-for-byte.
+- **The analysis gets a per-scan slice of the whole-run budget**: at most
+  `min(0.25 × remaining CAD_REPAIR_TIMEOUT_S, 30 s)`. Past that slice the face scan is skipped
+  silently — no new defect, no failure, and the scan's completeness is whatever the status walk
+  says — so the file proceeds exactly as today. A slow analysis may cost a missed heal; it never
+  costs a file that currently finishes, and it never turns one into `scan_incomplete`.
+- **The heal claims only face-level defects carrying the analyzer's `crossing_faces` evidence.**
+  Wire-level `SelfIntersectingWire` findings stay out of its reach: wire repair is
+  `fix_face_boundary`'s territory, and this slice does not change how those findings are planned
+  for. When `crossing_faces` is absent, `targets_for` returns nothing, and a directive that aims the
+  heal at such a face anyway is declined `not_isolated`.
 - Repair rebuilds or re-trims ONLY the offending faces — wire self-intersection fixing and
   face re-trimming through `ShapeFix_Wire`/`ShapeFix_Face`/`ShapeFix_IntersectionWire`, scoped to
   the target faces, spliced back through the shared `ShapeBuild_ReShape` like every scoped op.
@@ -65,7 +86,9 @@ before it runs, executes through the session, and lives or dies by the caps and 
   other than those it shares with a target) is the same `TShape` it was before. Anything else
   touched is a decline (`grew_beyond_targets`), and the input shape is returned unchanged.
 - **Declines honestly when the crossing cannot be isolated:** when the analyzer's interfering set,
-  closed over `crossing_faces`, exceeds `CAD_REPAIR_MAX_HEAL_FACES` (default 4) faces, spans more
+  closed over `crossing_faces`, exceeds `MAX_HEAL_FACES` faces (a module constant beside the op,
+  default 4 — not a setting: no inventory entry, no `.env.example` line, no deploy plumbing, no
+  docs regeneration), spans more
   than one solid (two bodies overlapping is an assembly question, not a heal), or re-analysis of
   the fixed faces still reports the crossing. Declines read `not_isolated`, `multi_body` and
   `crossing_remains`, never a silent no-op.
@@ -106,17 +129,20 @@ From `/tmp/planner-evidence/discriminator-validation.json` (331 OCCT files, loop
    one-line descriptions) gains both, and a new unit test pins that tuple to `OPERATIONS`' names so
    the two can never drift again. `llm_plan`'s validator treats `fill_nonplanar_hole` as it treats
    `fill_planar_hole`: exactly one target.
-2. **The pairing guard covers every fill, by the operations' own names.** `plan.py`'s
+2. **The paired-rim refusal covers every fill, by the operations' own names.** `plan.py`'s
    `op.name == FillPlanarHole.name` and `directives.py`'s fill check become membership in one
    `FILL_OPS` set holding both names; the run-level `refuse_filling` blocks both. A model or rules
    proposal of either fill on a paired rim is refused; only an engineer's individual approval
-   plays one, exactly as today.
-3. **Non-planar rims need their own bore evidence.** `_paired_rims` reads planar, round rims; a
-   bore drilled through a curved wall leaves two SADDLE-shaped rims it cannot see, and the
-   non-planar fill would seal it — the same sealed-through-hole failure no cap can see. The guard
-   gains a non-planar branch: two free loops whose best-fit axes are collinear within tolerance,
-   with comparable mean radii and a drillable gap, pair. A false pair costs one missed repair; a
-   missed pair costs a customer's hole, so the branch errs toward pairing.
+   plays one, exactly as today. This slice consumes the paired-rim refusal through its interface
+   (which loops pair) and does not depend on how a pair is recognised — that evidence is being
+   reworked on this branch (inner-wire evidence instead of roundness) and lands first.
+3. **Non-planar rims need their own bore evidence.** The paired-rim refusal reads planar rims; a
+   bore drilled through a curved wall leaves two SADDLE-shaped rims it may not see, and the
+   non-planar fill would seal it — the same sealed-through-hole failure no cap can see. If the
+   landed refusal does not already pair the saddle fixture, it gains a non-planar branch: two free
+   loops whose best-fit axes are collinear within tolerance, with comparable mean radii and a
+   drillable gap, pair. A false pair costs one missed repair; a missed pair costs a customer's
+   hole, so the branch errs toward pairing.
 4. **The judgement hold stands.** `self_intersection` is in `REVIEW_RESERVED_CODES` and stays
    there. With per-defect review on, `heal_self_intersections` plays only through an engineer's
    directive (the slice-7 path); with review off, the rules and model planners propose it freely.
@@ -136,14 +162,16 @@ From `/tmp/planner-evidence/discriminator-validation.json` (331 OCCT files, loop
 localize_scan(shape)
   ├─ BRepCheck statuses (today)                → wire-level self_intersection, open_shell, …
   └─ self-interference analysis (new, bounded) → face-level self_intersection + crossing_faces
-                                                  (not exhaustive if stopped → scan_incomplete)
+                                                  (only with CAD_REPAIR_HEAL_SELF_INTERSECTIONS on;
+                                                   ≤ min(0.25 × remaining run budget, 30 s), else
+                                                   skipped silently - no defect, no failure)
 
 OPERATIONS (scope order)
   1 fix_small_edges · 2 fix_face_boundary · 4 sew_faces · 5 fill_planar_hole
   6 fill_nonplanar_hole (new) · 7 heal_self_intersections (new) · 99 fix_shape_global
 
 RulesPlanner / DirectedPlanner(llm-planner | engineer | replay)
-  └─ FILL_OPS guard (planar + non-planar paired rims) · REVIEW_RESERVED_CODES hold (unchanged)
+  └─ paired-rim refusal over FILL_OPS (planar + non-planar rims) · REVIEW_RESERVED_CODES hold (unchanged)
         → RepairSession.try_op → sanity caps → cumulative caps (declared area) → re-inspect → keep/roll back
 ```
 
@@ -154,11 +182,16 @@ RulesPlanner / DirectedPlanner(llm-planner | engineer | replay)
 
 ## Goals
 
-1. **Corpus-measured, strictly more:** on the same 331 OCCT files with the same settings plus the
-   two new flags on, repaired defects credited by re-inspection is strictly greater than 430.
-2. **No new cap violations:** every file kept in the baseline is kept again, and no new kept
-   operation trips a cap after the fact (the run's final cumulative check passes on every
-   promoted file).
+1. **Corpus-measured: 430 is a floor gate, "strictly more" is the success claim.** On the same 331
+   OCCT files with the same settings plus the two new flags on, the hard acceptance is repaired
+   defects credited by re-inspection ≥ 430 AND every bore/pairing pin passing. Strictly greater
+   than 430 is the claim the slice hopes to make, not a tuning licence: every threshold (bulge
+   inflation, pairing numbers, heal face bound) is fixed from the synthetic fixtures alone and never
+   adjusted against corpus outcomes. If the corpus stays at 430, the builder stops and reports, and
+   "strictly more" is simply not claimed.
+2. **No new violations of the EXISTING caps:** every file kept in the baseline is kept again, and
+   no new kept operation trips a cap after the fact (the run's final cumulative check passes on
+   every promoted file). No cap is added; `MAX_HEAL_FACES` is an operation's own isolation bound.
 3. **Bore protection untouched:** `paired_rim` refusals are ≥ the baseline's 64 (the non-planar
    branch may add; it may never remove), and no file the baseline refused as paired is filled.
 4. Each new operation fixes its targeted defect on a real-kernel fixture or corpus part, with the
@@ -194,8 +227,10 @@ RulesPlanner / DirectedPlanner(llm-planner | engineer | replay)
   plus a cross-drilled cylinder with its bore wall missing (two saddle rims) for the guard. The
   builder proves both on the real kernel **red-first**: the fill test fails on today's catalogue
   (`declined:not_planar`, nothing kept) before the operation exists, and the guard test fails
-  with the operation present and the non-planar branch absent — i.e. it shows the hole sealed —
-  before the branch is written.
+  with the operation present and no non-planar handling in the paired-rim refusal — i.e. it shows
+  the hole sealed — before the branch is written. (Should the landed inner-wire refusal already pair
+  the saddle rims, the guard test is green on first run; the builder says so, keeps it as the pin,
+  and writes no branch.)
 - **Self-intersection: corpus parts, not committed fixtures.** The kernel's builders do not
   readily produce a self-intersecting face on purpose, and a hand-forged one proves only the
   forgery. The builder tries a synthetic fixture first and keeps it if it is real; otherwise the
@@ -218,6 +253,7 @@ green; a personal-environment run with both flags on, naming the job and the op 
 
 `BRepFill_Filling` vs `GeomPlate` (justified in the docstring); `BOPAlgo_ArgumentAnalyzer` vs
 `BRepAlgoAPI_Check` and the exact ShapeFix classes for the re-trim; the non-planar pairing
-thresholds (stated as numbers and pinned by the saddle fixture); decline-reason wording beyond the
+thresholds (stated as numbers, fixed from and pinned by the synthetic saddle fixture, never tuned
+against the corpus); decline-reason wording beyond the
 names above; the model-catalogue one-liners for the two ops; where the corpus tool prints the
 triangle-check corroboration.
