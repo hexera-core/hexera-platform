@@ -42,8 +42,10 @@ def review_rerun_reset(*, started_at: datetime | None, ended_at: datetime | None
 
     - its LEASE (`active_worker_token`, `lease_expires_at`): the park releases nothing, so a
       Run-it inside the lease window made the re-run's claim an `active_lease_conflict` and the job
-      died as "worker lost". Cleared, with no release mark (`lease_expires_at` NULL), so the
-      stalled-job reaper does not read the unowned pending job as released-but-unqueued.
+      died as "worker lost". The token is cleared and `lease_expires_at` becomes `now` - the
+      existing "released but not confirmed queued" mark (persistence/lease.hand_back). A crash
+      before the dispatch is then relaunched by the stalled-job reaper; the route clears the mark
+      with `confirm_requeued` once the launcher took the run.
     - its EXECUTION ID: a worker process keeps one for its life, and the claim reads a matching id
       as the SAME execution resuming - the old generation and its finished checkpoint thread.
     - its DEADLINE, anchored once at the first claim: a park answered hours later left the re-run
@@ -53,7 +55,7 @@ def review_rerun_reset(*, started_at: datetime | None, ended_at: datetime | None
       `ended_at`. `started_at` moves forward by exactly the parked wait, so the one charge at the
       re-run's ending covers the two execution spans and nothing of the time a person took.
     """
-    values: dict = {"active_worker_token": None, "lease_expires_at": None,
+    values: dict = {"active_worker_token": None, "lease_expires_at": now,
                     "pipeline_execution_id": None, "pipeline_deadline_at": None, "ended_at": None}
     if started_at is not None and ended_at is not None:
         waited = _aware(now) - _aware(ended_at)

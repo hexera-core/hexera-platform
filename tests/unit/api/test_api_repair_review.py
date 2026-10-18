@@ -67,6 +67,9 @@ class World:
         self.job_repo = MagicMock()
         self.job_repo.transition = AsyncMock(return_value=TransitionResult.applied)
         self.job_repo.reset_for_review_rerun = AsyncMock()
+        self.job_repo.set_dispatch_payload = AsyncMock()
+        self.lease_repo = MagicMock()
+        self.lease_repo.confirm_requeued = AsyncMock(return_value=True)
         self.dispatch = AsyncMock()
         self.repo.reopen_park = AsyncMock(return_value=True)
         self.repo.restore_open = AsyncMock(return_value=0)
@@ -79,6 +82,7 @@ class World:
         stack = [
             patch.object(rr, "get_db", _db), patch.object(rr, "repo", self.repo),
             patch.object(rr, "job_repo", self.job_repo),
+            patch.object(rr, "lease_repo", self.lease_repo),
             patch.object(rr.svc, "get_job", new=self.get_job),
             patch("meshpipeline.application.pipeline_run.dispatch", self.dispatch),
             patch("meshpipeline.agents.repair_review.interpreter.interpret", self.interpret),
@@ -508,3 +512,24 @@ async def test_the_review_says_how_many_the_mint_cap_left_out():
     assert (body["truncated"], body["total"]) == (700, 702)
     plain = (await World([_item(1)]).call("GET", "/review")).json()
     assert (plain["truncated"], plain["total"]) == (0, 1)
+
+
+async def test_run_it_writes_the_reruns_payload_with_the_cas_and_confirms_after_dispatch():
+    world = World([_item(1, state="accepted", decided=1)])
+    order = []
+    world.job_repo.set_dispatch_payload.side_effect = lambda *a: order.append("payload")
+    world.dispatch.side_effect = lambda *a: order.append("dispatch")
+    world.lease_repo.confirm_requeued.side_effect = lambda *a: order.append("confirm") or True
+    assert (await world.call("POST", "/review/run")).status_code == 202
+    assert order == ["payload", "dispatch", "confirm"]
+    written = world.job_repo.set_dispatch_payload.call_args.args[2]
+    assert written["review_continuation"] is True and written["repair_directives"]
+    released = world.job_repo.reset_for_review_rerun.call_args.kwargs["now"]
+    assert world.lease_repo.confirm_requeued.call_args.args[1:] == (_JOB, released)
+
+
+async def test_a_failed_dispatch_confirms_nothing():
+    world = World([_item(1, state="accepted", decided=1)])
+    world.dispatch.side_effect = RuntimeError("broker down")
+    assert (await world.call("POST", "/review/run")).status_code == 503
+    world.lease_repo.confirm_requeued.assert_not_called()

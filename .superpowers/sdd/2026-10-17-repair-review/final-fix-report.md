@@ -147,3 +147,25 @@ nothing-proposed group now offers Leave the rest after a leave.
   will show the shifted time.
 - A crash between the Run-it commit and the dispatch still strands the job (ledgered window,
   unchanged); with the deadline now NULL the reaper does not pick it up either.
+
+## Re-review residual — the Run-it crash window escaped every reaper rule
+**Cause (introduced by 949c762):** the reset left a pending, unowned job with `started_at` set,
+NULL deadline and NULL lease expiry; no stalled-job rule selects that shape, so a crash between
+the Run-it commit and the dispatch stranded it behind a closed park.
+**What changed (mitigation exactly as recommended):** (1) the Run-it transaction writes the
+re-run payload (`set_dispatch_payload`: directives + `review_continuation`) beside the CAS;
+(2) `review_rerun_reset` sets `lease_expires_at = now` — the existing "released but not confirmed
+queued" mark — instead of NULL; (3) after a successful dispatch the route calls
+`LeaseRepository.confirm_requeued(job_id, released_at)` (best effort, logged on failure); a
+failed dispatch confirms nothing and compensates as before.
+**Tests:** `test_the_reset_leaves_no_release_mark_for_the_reaper` rewritten as
+`test_the_reset_leaves_the_release_mark_until_the_dispatch_confirms_it` (mark == Run-it's moment,
+`rerun_eligible` accepts the row) + `test_a_confirmed_dispatch_clears_the_release_mark` (the
+confirm UPDATE sets the mark NULL, matching on that exact mark); new
+`test_a_run_it_that_crashed_before_its_dispatch_is_relaunchable_with_its_directives` (pending,
+no token, expiry=now, payload with directives, NULL deadline => `rerun_eligible`). API:
+payload -> dispatch -> confirm order with the reset's own timestamp; a failed dispatch confirms
+nothing. Claim tests unchanged and green (no token, so the mark is not a live lease).
+**Command:** `pytest tests/unit/persistence tests/unit/api tests/unit/application -q`;
+`make lint && make typecheck`.
+**Output:** `2238 passed`; ruff all checks passed; mypy 0 new (28 baseline).

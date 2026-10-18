@@ -1,0 +1,6 @@
+Metadata-Version: 2.4
+Name: meshpipeline
+Version: 0.1
+Classifier: Private :: Do Not Upload
+Classifier: Programming Language :: Python :: 3.11
+Requires-Python: >=3.11

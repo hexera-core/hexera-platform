@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -50,7 +51,13 @@ def _job_repo():
 
 
 repo = _Lazy(_review_repo)
+def _lease_repo():
+    from meshpipeline.persistence.lease import LeaseRepository
+    return LeaseRepository()
+
+
 job_repo = _Lazy(_job_repo)
+lease_repo = _Lazy(_lease_repo)
 
 _BLOCKING = frozenset({"error", "fatal"})
 
@@ -417,9 +424,13 @@ async def run_review(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
         # THE RE-RUN REUSES THIS ROW: the parked execution's lease, execution id, deadline and
         # billed span are reset beside the CAS, so the re-run claims cleanly, gets its own budget
         # and is charged for execution time only (job_repository.review_rerun_reset).
+        # `released_at` is the release mark the reset leaves (lease_expires_at): the stalled-job
+        # reaper relaunches a pending job still carrying it, and a confirmed dispatch clears it.
+        released_at = datetime.now(UTC)
         await job_repo.reset_for_review_rerun(db, job_id,
                                               started_at=getattr(job, "started_at", None),
-                                              ended_at=getattr(job, "ended_at", None))
+                                              ended_at=getattr(job, "ended_at", None),
+                                              now=released_at)
         unanswered = [i.id for i in items if i.state == "open"]
         try:
             for item_id in unanswered:
@@ -429,6 +440,9 @@ async def run_review(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
         await repo.close_park(db, park.id, "run")
         payload = {**dict(job.dispatch_payload or {}), "repair_directives": directives,
                    "review_continuation": True}
+        # THE RE-RUN'S PAYLOAD IS WRITTEN IN THIS TRANSACTION, so a reaper relaunch after a crash
+        # before the dispatch carries the directives, not the original payload.
+        await job_repo.set_dispatch_payload(db, job_id, payload)
         await db.commit()
 
     # NOT admitted again: this is the parked run's own purchase, and the park deliberately did
@@ -436,8 +450,9 @@ async def run_review(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     #
     # THE STATUS FLIP COMMITS BEFORE THE DISPATCH, on purpose: dispatching first would let the
     # worker race a still-pending_review row into an illegal pending_review -> running. So a failed
-    # dispatch is COMPENSATED below instead. KNOWN WINDOW (ledgered): a crash between the commit
-    # above and the dispatch leaves the job pending with a closed park and nothing launched.
+    # dispatch is COMPENSATED below instead. A CRASH between the commit above and the dispatch
+    # leaves a pending, unowned job carrying the release mark and the re-run's payload - the
+    # stalled-job reaper's "released but never confirmed queued" rule relaunches it.
     from meshpipeline.application import pipeline_run
     try:
         async with get_db() as db:
@@ -447,6 +462,14 @@ async def run_review(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
         await _compensate(job_id, park.id, unanswered)
         raise HTTPException(503, "The repair run could not be resumed just now. Your decisions "
                                  "are kept; try again in a moment.") from exc
+    # THE LAUNCHER TOOK IT: clear the release mark so the reaper does not launch it a second
+    # time. Best effort - a mark left behind costs at most one refused duplicate claim.
+    try:
+        async with get_db() as db:
+            await lease_repo.confirm_requeued(db, job_id, released_at)
+            await db.commit()
+    except Exception:  # noqa: BLE001 - the run is launched; this is bookkeeping
+        logger.warning("review re-run of job %s: release mark not cleared", job_id, exc_info=True)
     return {"job_id": str(job_id), "status": "pending", "directives": len(directives)}
 
 

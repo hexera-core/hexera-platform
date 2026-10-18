@@ -96,9 +96,41 @@ async def test_park_review_rerun_is_charged_for_the_two_execution_spans_only(mon
     assert charged == 5 + 2 * 30, "the parked wait was billed as mesh time"
 
 
-def test_the_reset_leaves_no_release_mark_for_the_reaper():
-    values = review_rerun_reset(started_at=T0, ended_at=T0 + FIRST_SPAN,
-                                now=T0 + timedelta(hours=1))
-    assert values["lease_expires_at"] is None and values["active_worker_token"] is None
-    assert values["pipeline_deadline_at"] is None and values["pipeline_execution_id"] is None
-    assert values["ended_at"] is None
+class _Updated:
+    def __init__(self, rowcount): self.rowcount = rowcount
+
+
+def test_the_reset_leaves_the_release_mark_until_the_dispatch_confirms_it():
+    from meshpipeline.application.maintenance.cleanup import rerun_eligible
+    row, now = _parked_row(), T0 + timedelta(hours=1)
+    _run_it(row, now)
+    row.dispatch_payload = {"job_id": str(row.id), "repair_directives": [{"op": "sew_faces"}]}
+    assert row.lease_expires_at == now and row.active_worker_token is None
+    assert row.pipeline_deadline_at is None and row.pipeline_execution_id is None
+    assert row.ended_at is None
+    # until confirmed, the reaper's released-but-unqueued rule may relaunch it
+    assert rerun_eligible(row, now + timedelta(hours=1)) is True
+
+
+async def test_a_confirmed_dispatch_clears_the_release_mark():
+    now = T0 + timedelta(hours=1)
+    db = SimpleNamespace(execute=AsyncMock(return_value=_Updated(1)))
+    assert await LeaseRepository().confirm_requeued(db, uuid.uuid4(), now) is True
+    from sqlalchemy.dialects import postgresql
+    stmt = db.execute.call_args.args[0]
+    sql = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+    assert "lease_expires_at=NULL WHERE" in sql, sql                  # the mark is what it clears
+    assert "simulation_jobs.lease_expires_at = '2026-10-17 10:00:00+00:00'" in sql, sql
+
+
+def test_a_run_it_that_crashed_before_its_dispatch_is_relaunchable_with_its_directives():
+    # pending, unowned, release mark = Run-it's own moment, the re-run's payload, NULL deadline
+    from meshpipeline.application.maintenance.cleanup import rerun_eligible
+    crashed_at = T0 + timedelta(hours=2)
+    row = SimpleNamespace(
+        id=uuid.uuid4(), status=JobStatus.pending, active_worker_token=None,
+        lease_expires_at=crashed_at, started_at=T0 + timedelta(hours=1, minutes=40),
+        pipeline_deadline_at=None, pipeline_dispatch_state="submitted",
+        dispatch_payload={"job_id": "j", "review_continuation": True,
+                          "repair_directives": [{"op": "fill_planar_hole", "source": "engineer"}]})
+    assert rerun_eligible(row, crashed_at + timedelta(hours=1)) is True
