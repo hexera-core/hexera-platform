@@ -400,6 +400,9 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
                                            file_scale=0.001 if placed else None)
         # what kind of geometry this is and what it came from, for whoever decides what to offer
         facts.update(canonical.facts())
+        # the name the user's file came with: words a unit-less file's unit is read from
+        # ("cyclone.stl", "SU0248_mm.vtp") when nothing else names the part
+        facts["file_name"] = file_name_of(ref)
         facts.setdefault("notes", []).extend(n for n in canonical.notes if n not in facts["notes"])
         # a thermal model's physics (ECXML: materials, powers, fans, vents...), kept whole beside
         # the session's check so a later solver step - or the user - has all of it
@@ -1463,18 +1466,28 @@ def _upright(proposal: dict, facts: dict, vision: dict | None, flow_axis) -> dic
     return proposal
 
 
+def file_name_of(ref) -> str:
+    """The uploaded file's own name (no folders), as the user saved it - "" when there is none."""
+    name = str(getattr(ref, "original_filename", "") or "").replace("\\", "/").rsplit("/", 1)[-1]
+    return name.strip()[:200]
+
+
 def unit_inference(proposal: dict, facts: dict | None = None, words: str = "") -> dict | None:
     """The unit a file that states none most likely is in (contracts/unit_plausibility.infer_unit),
     as a dict, or None when the part has no measured size. What the part is comes, best first,
     from the naming model's estimate of a real one's length, then the words for it (its name, the
-    user's own words), then the measured shape and the flow. The file's numbers are read back
-    through the scale the proposal was measured under."""
+    user's own words), then the file's name ("cyclone.stl"), then the measured shape and the
+    flow. A unit the file's name states as a word ("SU0248_mm.vtp") is the user's own label and
+    is read as such. The file's numbers are read back through the scale the proposal was
+    measured under."""
     from meshpipeline.contracts.unit_plausibility import (
         FORMAT_UNIT,
         expected_from_estimate,
         expected_from_words,
         infer_unit,
+        name_words,
         shape_kind,
+        unit_named_in,
     )
 
     size, scale = proposal.get("size_mm"), proposal.get("scale_to_m") or (facts or {}).get("scale_to_m")
@@ -1485,12 +1498,15 @@ def unit_inference(proposal: dict, facts: dict | None = None, words: str = "") -
     except (TypeError, ValueError, ZeroDivisionError):
         return None
     part = str(proposal.get("part") or "")
+    file_name = str((facts or {}).get("file_name") or "")
     expected = (expected_from_estimate(part, proposal.get("real_length_m"))
-                or expected_from_words(f"{part}\n{words or ''}"))
+                or expected_from_words(f"{part}\n{words or ''}")
+                or expected_from_words(name_words(file_name)))
     shape = shape_kind(str(proposal.get("flow") or ""), size, grounded=bool(proposal.get("grounded")),
                        up_axis=proposal.get("up_axis"))
     fmt = str((facts or {}).get("source_format") or "").lower().lstrip(".")
-    inferred = infer_unit(longest_file, expected=expected, shape=shape, format_unit=FORMAT_UNIT.get(fmt))
+    inferred = infer_unit(longest_file, expected=expected, shape=shape, format_unit=FORMAT_UNIT.get(fmt),
+                          named_unit=unit_named_in(file_name))
     return inferred.as_dict() if inferred is not None else None
 
 
@@ -1544,20 +1560,23 @@ def stored_up_axis(session_id: str, *, confirmed: bool = True) -> str | None:
     return None
 
 
-def unit_suggestion(proposal: dict, interpretation: dict | None, words: str = "") -> dict | None:
+def unit_suggestion(proposal: dict, interpretation: dict | None, words: str = "",
+                    facts: dict | None = None) -> dict | None:
     """The other unit to show beside the part's size on the stage, or None when the part is
     believable in the unit in effect - or the user has already named the unit, which settles it.
 
     The part's longest side in the file's own numbers comes from the proposal's size, read back
     through the scale it was measured under. What the part is comes, best first, from the naming
     model's estimate of how long a real one is, else from the words for it (the model's name for
-    the part, the user's own words). A declared unit is only doubted on those words or on a wild
-    size; a unit nothing declared (a triangle file) is only a reading, and yields to either."""
+    the part, the user's own words, the file's name). A declared unit is only doubted on those
+    words or on a wild size; a unit nothing declared (a triangle file) is only a reading, and
+    yields to either."""
     from meshpipeline.contracts.geometry_units import LengthUnit
     from meshpipeline.contracts.unit_plausibility import (
         EXTERNAL_BODY,
         expected_from_estimate,
         expected_from_words,
+        name_words,
         shape_kind,
         suggest,
     )
@@ -1575,6 +1594,9 @@ def unit_suggestion(proposal: dict, interpretation: dict | None, words: str = ""
     part = str(proposal.get("part") or "")
     expected = (expected_from_estimate(part, proposal.get("real_length_m"))
                 or expected_from_words(f"{part}\n{words or ''}"))
+    if expected is None and interpretation is None:
+        # the file's own name, when it names what the part is ("cyclone.stl", "naca0012_wing.obj")
+        expected = expected_from_words(name_words(str((facts or {}).get("file_name") or "")))
     if expected is None and interpretation is None:
         # nothing names the part and the file states no unit: what its SHAPE and FLOW say it is
         # (a car-like body on the ground, a flat wing-like body, a passage) - a 4.7-unit car is

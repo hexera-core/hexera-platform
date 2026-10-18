@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from meshpipeline.contracts.geometry_units import LengthUnit, scale_to_metres
 
@@ -73,22 +73,30 @@ class ExpectedSize:
 #: the full-size article both belong in a row, so a row only speaks when a unit is out by a
 #: factor no model scale explains.
 _KINDS: tuple[tuple[str, str, float, float], ...] = (
-    (r"wind[\s-]*turbine|\biea[\s-]*\d|\bnrel\b|\b\d+(?:\.\d+)?\s*mw\b", "a wind turbine blade", 0.3, 150.0),
+    # a whole turbine stands far taller than its blade is long: the IEA 15 MW rotor, tower and
+    # monopile reach about 290 m
+    (r"wind[\s-]*turbine|\biea[\s-]*\d|\bnrel\b|\b\d+(?:\.\d+)?\s*mw\b", "a wind turbine or its blade", 0.3, 350.0),
     (r"air(?:craft|liner|plane)|aeroplane|\bjet\b|fuselage|nacelle|glider|\bdrone\b|\buav\b", "an aircraft", 0.1, 100.0),
     # a file that carries its wind tunnel (the ANSA DrivAer export is a 172 m box around a 4.6 m car)
     (r"wind[\s-]*tunnel", "a wind tunnel", 1.0, 500.0),
-    (r"\bwings?\b|airfoil|aerofoil", "a wing", 0.05, 100.0),
+    # a NACA designation (NACA 0012, NACA 23015) names an aerofoil section whatever else is said
+    (r"\bwings?\b|airfoil|aerofoil|hydrofoil|\bnaca[\s-]*\d{4,5}\b", "a wing", 0.05, 100.0),
     (r"\bcars?\b|vehicle|automobile|\btrucks?\b|\blorry\b|\bbus\b|\bahmed\b|drivaer|windsor|notchback|"
-     r"fastback|squareback", "a car", 0.1, 25.0),
-    (r"buildings?|skyscraper|\bcity\b|urban|\bstreets?\b|\btown\b|stadium|\bbridge\b", "a building", 2.0, 5000.0),
+     r"fastback|squareback|\btrailers?\b|\btractors?\b|\bvans?\b|\bcab\b", "a car", 0.1, 25.0),
+    # "bldg" and a CityGML level of detail ("LoD2") are how city-model exports name a building
+    (r"buildings?|\bbldgs?\b|\blod\s*[0-4](?:\.?\d)?\b|skyscraper|\bcity\b|urban|\bstreets?\b|\btown\b|stadium|"
+     r"\bbridge\b", "a building", 2.0, 5000.0),
     (r"\bships?\b|\bhull\b|\bboat\b|\byacht\b|submarine|\btanker\b|\bferry\b", "a ship", 0.3, 500.0),
     (r"motor ?bike|motorcycle|bicycle|\bcyclist\b", "a bike", 0.2, 4.0),
     (r"\bpipes?\b|\belbow|\btee\b|\bwye\b|reducer|fitting|\bvalves?\b|\bducts?\b|manifold|nozzle|venturi|"
      r"orifice|diffuser|plenum", "a pipe or duct part", 0.002, 30.0),
     (r"\bpumps?\b|impeller|volute|compressor|\bfan\b|blower", "a pump or fan part", 0.005, 10.0),
-    (r"propell?er", "a propeller", 0.01, 10.0),
+    (r"propell?er|\bprops?\b", "a propeller", 0.01, 10.0),
     (r"heat ?sink|\bpcb\b|circuit board|connector", "an electronics part", 0.001, 1.0),
-    (r"artery|aorta|aneurysm|\bstent|carotid|coronary|airway|trachea|bronch", "a blood vessel or airway", 0.001, 0.5),
+    # an aorta is itself 2-3.5 cm across, so a model of one is longer than 5 cm: "aorta" alone
+    # tells 22 mm from 22 cm, where "a blood vessel" cannot
+    (r"\baort", "an aorta", 0.05, 1.0),
+    (r"artery|arteries|aneurysm|\bstent|carotid|coronary|airway|trachea|bronch", "a blood vessel or airway", 0.001, 0.5),
     (r"cyclone", "a cyclone separator", 0.05, 20.0),
     (r"rocket|missile", "a rocket", 0.02, 120.0),
 )
@@ -102,6 +110,48 @@ def expected_from_words(text: str) -> ExpectedSize | None:
     if not hits:
         return None
     return ExpectedSize(what=hits[0][0], lo_m=min(h[1] for h in hits), hi_m=max(h[2] for h in hits))
+
+
+_CAMEL = re.compile(r"(?<=[a-z])(?=[A-Z][a-z])")
+_NAME_SEPARATORS = re.compile(r"[\s_\-.+,;()\[\]{}]+")
+_STEM_SUFFIX = re.compile(r"(?i)(?:\.[a-z][a-z0-9]{0,4})+$")
+
+
+def name_words(file_name: str) -> str:
+    """A file's name as words the kind table can read: "IEA-15-240-RWT_blade.stl" -> "IEA 15 240
+    RWT blade", "AeratedStirredTank.obj" -> "Aerated Stirred Tank". Underscores, dashes and dots
+    are word characters to a regex, so "rotor_fan" would never match "fan" unsplit."""
+    base = str(file_name or "").replace("\\", "/").rsplit("/", 1)[-1]
+    stem = _STEM_SUFFIX.sub("", base) or base
+    return " ".join(w for w in _NAME_SEPARATORS.split(_CAMEL.sub(" ", stem)) if w)
+
+
+#: A unit written in a file's name as its own word ("SU0248_mm.vtp", "bracket-inches.stl"). "m"
+#: and "in" alone are left out: they are too often something else ("model_m", "air_in").
+_NAME_UNITS = {
+    "mm": LengthUnit.millimetre, "millimetre": LengthUnit.millimetre, "millimetres": LengthUnit.millimetre,
+    "millimeter": LengthUnit.millimetre, "millimeters": LengthUnit.millimetre,
+    "cm": LengthUnit.centimetre, "centimetre": LengthUnit.centimetre, "centimetres": LengthUnit.centimetre,
+    "centimeter": LengthUnit.centimetre, "centimeters": LengthUnit.centimetre,
+    "metres": LengthUnit.metre, "meters": LengthUnit.metre,
+    "inch": LengthUnit.inch, "inches": LengthUnit.inch,
+}
+
+
+def unit_named_in(file_name: str) -> LengthUnit | None:
+    """The unit a file's name states as a word of its own, or None. A unit right after a number
+    is a dimension ("pipe_50_mm", "8 inch elbow"), not the drawing's unit; two different units
+    named say nothing."""
+    words = name_words(file_name).split()
+    found = set()
+    for i, w in enumerate(words):
+        unit = _NAME_UNITS.get(w.lower())
+        if unit is None:
+            continue
+        if i > 0 and re.fullmatch(r"\d+(?:\.\d+)?", words[i - 1]):
+            continue
+        found.add(unit)
+    return found.pop() if len(found) == 1 else None
 
 
 def expected_from_estimate(what: str, typical_m) -> ExpectedSize | None:
@@ -304,24 +354,40 @@ def _log_gap(metres: float, target: float) -> float:
 
 
 def infer_unit(longest_file_units: float, *, expected: ExpectedSize | None = None,
-               shape: ExpectedSize | None = None, format_unit: LengthUnit | None = None) -> UnitInference | None:
+               shape: ExpectedSize | None = None, format_unit: LengthUnit | None = None,
+               named_unit: LengthUnit | None = None) -> UnitInference | None:
     """The unit a file that declares none is most likely in, from what the part is.
 
-    What the part is comes, best first, from `expected` (the user's words or the naming model's
-    estimate), else from `shape` (shape_kind: the measured proportions and the flow). The first
+    What the part is comes, best first, from `expected` (the user's words, the naming model's
+    estimate, the file's name), else from `shape` (shape_kind: the measured proportions and the
+    flow). A unit the file's NAME states (`named_unit`: "SU0248_mm.vtp") is the user's own label
+    and is the reading whenever it makes the part believable for what it is. Otherwise the first
     reading is the format's own unit when it has one (glTF), else millimetres - what nearly every
     CAD file is drawn in. It stands while the part is believable in it; otherwise the reading
     that makes the part believable for what it is - nearest its usual size - is proposed instead.
 
     Confidence: high when one reading alone fits (or one fits a decade closer to the usual size
     than any other); medium when several fit; low when nothing says what the part is, or no
-    reading fits. None only for a size that is not a size."""
+    reading fits. A named unit raises it one step when it fits, and a named unit the size rules
+    out leaves the reading low - the name and the shape disagree. None only for a size that is
+    not a size."""
     try:
         longest = float(longest_file_units)
     except (TypeError, ValueError):
         return None
     if not (longest > 0 and math.isfinite(longest)):
         return None
+    inferred = _infer(longest, expected=expected, shape=shape, format_unit=format_unit,
+                      named_unit=named_unit)
+    if named_unit is not None and inferred.unit is not named_unit and inferred.confidence != "low":
+        # the file's name says one unit and the part's size another: said, and asked
+        inferred = replace(inferred, confidence="low",
+                           why=f"{inferred.why} (the file's name says {UNIT_WORDS[named_unit]})")
+    return inferred
+
+
+def _infer(longest: float, *, expected: ExpectedSize | None, shape: ExpectedSize | None,
+           format_unit: LengthUnit | None, named_unit: LengthUnit | None) -> UnitInference:
     kind = expected or shape
     # a body or a passage the shape reads as nothing more particular spans four to six decades:
     # it rules out the absurd, never makes a reading sure
@@ -344,6 +410,15 @@ def infer_unit(longest_file_units: float, *, expected: ExpectedSize | None = Non
         order = _PASSAGE_PREFERENCE if kind is INTERNAL_PASSAGE else _PREFERENCE
         return sorted(units, key=order.index)
 
+    if named_unit is not None and named_unit in fits:
+        # the file's own name states the unit and the part is believable in it: the reading
+        others = ranked([u for u in fits if u is not named_unit])
+        alt = others[0] if others else None
+        conf = "high" if (known or not others) else "medium"
+        why = (f"the file's name says {UNIT_WORDS[named_unit]}, and "
+               f"{length_in(lengths[named_unit], named_unit)} is a believable size for {kind.what}")
+        return UnitInference(named_unit, conf, lengths[named_unit], kind.what, why,
+                             alt, lengths[alt] if alt else None)
     if not fits:
         # nothing makes it believable as what it reads as: the size alone decides, and says so
         unit = proposed_unit(longest)
@@ -448,4 +523,5 @@ __all__ = ["CANDIDATES", "COMFORTABLE_M", "CONFIDENCE", "DECLARED_BELIEVABLE_M",
            "FLAT_LIFTING", "FORMAT_UNIT", "GROUND_VEHICLE", "INTERNAL_PASSAGE", "SCALE_MARGIN",
            "UNDECLARED_FLOOR_M", "UNIT_WORDS", "ExpectedSize", "ScaleConcern", "UnitInference",
            "UnitSuggestion", "expected_from_estimate", "expected_from_words", "infer_unit",
-           "length_in", "length_words", "proposed_unit", "scale_concern", "shape_kind", "suggest"]
+           "length_in", "length_words", "name_words", "proposed_unit", "scale_concern", "shape_kind",
+           "suggest", "unit_named_in"]

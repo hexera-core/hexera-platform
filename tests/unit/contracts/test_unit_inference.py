@@ -95,3 +95,70 @@ def test_a_delivered_car_4_7_mm_long_carries_a_concern_naming_the_unit():
     assert scale_concern(0.0005, kind=INTERNAL_PASSAGE) is not None
     assert scale_concern(0.4, kind=INTERNAL_PASSAGE) is None
     assert scale_concern(0.001, kind=None) is None
+
+
+# ------------------------------------------------------------- what the file's name says ----
+def test_a_file_name_is_read_as_words():
+    from meshpipeline.contracts.unit_plausibility import name_words
+
+    assert name_words("IEA-15-240-RWT_blade.stl") == "IEA 15 240 RWT blade"
+    assert name_words("AeratedStirredTank.obj.obj") == "Aerated Stirred Tank"
+    assert name_words("9-588-304-LoD12-3D.obj") == "9 588 304 LoD12 3D"     # "LoD12" stays one word
+    assert name_words(r"C:\parts\rotor_fan.stl") == "rotor fan"
+    assert name_words("") == ""
+
+
+def test_a_unit_written_in_the_file_name_is_read_but_not_a_dimension():
+    from meshpipeline.contracts.unit_plausibility import unit_named_in
+
+    assert unit_named_in("SU0248_mm.vtp") is MM
+    assert unit_named_in("SU0248_mm_uncapped.vtp") is MM
+    assert unit_named_in("SU0248_cm-trim.vtp") is CM
+    assert unit_named_in("bracket-inches.stl") is IN and unit_named_in("hull_metres.stl") is M
+    # a number before it makes it a dimension; "m" and "in" alone are too often something else
+    assert unit_named_in("pipe_50_mm.stl") is None and unit_named_in("elbow 8 inch.stl") is None
+    assert unit_named_in("model_m.stl") is None and unit_named_in("air_in.stl") is None
+    # two different units named say nothing
+    assert unit_named_in("adapter_mm_to_inch.stl") is None
+
+
+def test_a_cyclone_named_by_its_file_is_metres_not_centimetres():
+    # the OpenFOAM cyclone tutorial's surface, 2.1 units tall, internal: as a bare passage it read
+    # as 2.1 cm (centimetres before metres for small passages, the arteries' rule); its file's name
+    # says what it is, and no cyclone separator is 2 cm tall
+    from meshpipeline.contracts.unit_plausibility import name_words
+
+    bare = infer_unit(2.1, shape=INTERNAL_PASSAGE)
+    assert bare.unit is CM and bare.confidence == "low"
+    named = infer_unit(2.1, expected=expected_from_words(name_words("cyclone.stl")), shape=INTERNAL_PASSAGE)
+    assert named.unit is M and named.confidence in ("medium", "high")
+
+
+def test_a_unit_the_file_name_states_is_the_reading_when_the_part_is_believable_in_it():
+    # the same pulmonary model shipped as SU0248_cm (12.9 units) and SU0248_mm (129 units)
+    r = infer_unit(129.2, shape=INTERNAL_PASSAGE, named_unit=MM)
+    assert r.unit is MM and r.confidence == "medium" and "name says millimetres" in r.why
+    assert infer_unit(12.9, shape=INTERNAL_PASSAGE, named_unit=CM).unit is CM
+    # a car named "_mm" that would be 4.7 mm long: the name and the size disagree - said, and low
+    r = infer_unit(4.7, shape=GROUND_VEHICLE, named_unit=MM)
+    assert r.unit is M and r.confidence == "low" and "name says millimetres" in r.why
+
+
+def test_named_kinds_with_their_physical_sizes():
+    from meshpipeline.contracts.unit_plausibility import name_words
+
+    def read(raw, name, shape=EXTERNAL_BODY):
+        return infer_unit(raw, expected=expected_from_words(name_words(name)), shape=shape)
+
+    # a whole wind turbine (rotor, tower, monopile) stands about 290 m: metres, not 2.9 m in cm
+    assert read(289.5, "IEA-15-240-RWT_full_monopile.stl").unit is M
+    assert read(117.0, "IEA-15-240-RWT_blade.stl").unit is M
+    # an aorta is 2-3.5 cm across, so a 22-unit aorta model is 22 cm, not 22 mm
+    r = read(22.2, "0187_0002_aorta.vtp", INTERNAL_PASSAGE)
+    assert r.unit is CM and r.confidence == "medium"           # 22 inches (56 cm) is one too
+    # city-model exports name their buildings "bldg" and their level of detail "LoD2"/"LoD12"
+    assert read(1075.0, "LoD2_32_356_5645_1_NW.obj").unit is M
+    assert read(1072.0, "9-588-304-LoD12-3D.obj").unit is M
+    assert read(1190.0, "53394525_bldg_6697_op_clean.stl").unit is M
+    # a NACA section is an aerofoil whatever flow the shape was read with
+    assert read(1.0, "NACA0012.obj", INTERNAL_PASSAGE).unit is M

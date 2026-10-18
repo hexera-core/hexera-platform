@@ -205,3 +205,22 @@ async def test_a_unit_changed_on_the_stage_withdraws_a_live_proposal_in_the_same
     # the stored copy says the scale its sizes are in, for any later change to re-read from
     stored = json.loads(store.objects[f"sessions/{SID}/geometry_check/confirmed.json"])
     assert stored["scale_to_m"] == 1.0 and stored["unit"] == "m" and stored["reference_length_mm"] == 117000.0
+
+
+async def test_the_file_name_names_the_part_when_nothing_else_does():
+    """The OpenFOAM cyclone tutorial surface: 2.1 units tall, internal, no unit, no naming yet. As
+    a bare passage it read as 2.1 cm; its name says it is a cyclone, and the reading is metres.
+    A unit the name states as a word is read too (the same model ships as SU0248_cm and _mm)."""
+    facts = {"input_kind": "body-surface", "flow": "internal", "openings": [], "size_mm": [1.05, 1.0, 2.1],
+             "notes": [], "unit_assumed": True, "scale_to_m": 0.001, "source_format": "stl"}
+    assert gc._proposal(facts, None)["unit_inference"]["unit"] == "cm"
+    named = gc._proposal({**facts, "file_name": "cyclone.stl"}, None)["unit_inference"]
+    assert named["unit"] == "m" and named["confidence"] != "low"
+    vessel = {**facts, "size_mm": [129.2, 80.0, 60.0], "source_format": "vtp", "file_name": "SU0248_mm.vtp"}
+    assert gc._proposal(vessel, None)["unit_inference"]["unit"] == "mm"
+    # the stage's other reading listens to the same name
+    s = gc.unit_suggestion({"size_mm": [1.05, 1.0, 2.1], "scale_to_m": 0.001, "flow": "internal"}, None, "",
+                           facts={"file_name": "cyclone.stl"})
+    assert s is not None and s["unit"] == "m"
+    assert gc.file_name_of(SimpleNamespace(original_filename="C:/runs/cyclone.stl")) == "cyclone.stl"
+    assert gc.file_name_of(SimpleNamespace(original_filename=None)) == ""

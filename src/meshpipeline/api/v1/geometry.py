@@ -275,7 +275,8 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
             # and never for a unit the converter fixed.
             from meshpipeline.application.geometry_check import unit_suggestion
             suggestion = None if fixing is not None else unit_suggestion(
-                payload["proposal"], interpretation, purpose_from(getattr(session, "messages", None)))
+                payload["proposal"], interpretation, purpose_from(getattr(session, "messages", None)),
+                facts=payload.get("facts"))
             if suggestion is not None:
                 payload["proposal"]["unit_suggestion"] = suggestion
         if payload.get("status") == "ready":

@@ -25,7 +25,7 @@ def test_a_117_mm_wind_turbine_blade_is_offered_as_117_m():
     s = suggest(117.0, MM, declared=True, expected=words)
     assert s is not None and s.unit is M and s.instead_of is MM
     assert s.words == "117 mm long - or 117 m if the file is in metres"
-    assert s.why == "117 mm is small for a wind turbine blade"
+    assert s.why == "117 mm is small for a wind turbine or its blade"
     assert s.as_dict()["sizes"] == {"mm": "117 mm", "m": "117 m"}
     assert suggest(117.0, MM, declared=True) is None                 # size alone cannot tell
     # the naming model's own estimate says the same, and picks the closest reading
