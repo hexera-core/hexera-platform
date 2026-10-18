@@ -97,3 +97,20 @@ def trim_rationale(text: object, limit: int = 200) -> str:
     cut = out[:limit]
     head = cut.rsplit(" ", 1)[0] if " " in cut and out[limit] != " " else cut
     return head.rstrip(" ,;:-")
+
+
+DEFECTS_MAX = 40
+
+
+def clip_defects(entities: list[dict] | tuple[dict, ...] | None, limit: int = DEFECTS_MAX) -> list[dict]:
+    """The scan's located defects, bounded: at most `limit` entries, each with clipped text."""
+    out: list[dict] = []
+    for e in list(entities or ())[:limit]:
+        if not isinstance(e, dict):
+            continue
+        out.append({"fingerprint": str(e.get("fingerprint") or ""), "code": str(e.get("code") or ""),
+                    "entity": f"{e.get('entity_type')}#{e.get('entity_index')}",
+                    "severity": e.get("severity"), "region": e.get("region"),
+                    "message": clip_text(e.get("message")),
+                    "measurements": clip_measurements(e.get("measurements"))})
+    return out
