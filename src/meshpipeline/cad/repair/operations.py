@@ -269,7 +269,8 @@ class FixSmallEdges:
         if defect.entity_type != "edge" or not getattr(defect, "fingerprint", ""):
             return ()
         return (EntityRef(entity_type="edge", fingerprint=defect.fingerprint,
-                          entity_index=int(defect.entity_index)),)
+                          entity_index=int(defect.entity_index),
+                          ambiguous=bool(getattr(defect, "ambiguous", False))),)
 
     def apply(self, shape, targets: tuple[EntityRef, ...], *,
               tolerance_mm: float) -> OpOutcome:
@@ -330,7 +331,8 @@ class FixFaceBoundary:
             # meant no attempt at all - see that class's docstring.)
             return ()
         return (EntityRef(entity_type="face", fingerprint=defect.fingerprint,
-                          entity_index=int(defect.entity_index)),)
+                          entity_index=int(defect.entity_index),
+                          ambiguous=bool(getattr(defect, "ambiguous", False))),)
 
     def apply(self, shape, targets: tuple[EntityRef, ...], *,
               tolerance_mm: float) -> OpOutcome:
@@ -485,7 +487,8 @@ class SewFaces:
         if not getattr(defect, "fingerprint", ""):
             return ()
         return (EntityRef(entity_type=defect.entity_type, fingerprint=defect.fingerprint,
-                          entity_index=int(defect.entity_index)),)
+                          entity_index=int(defect.entity_index),
+                          ambiguous=bool(getattr(defect, "ambiguous", False))),)
 
     def apply(self, shape, targets: tuple[EntityRef, ...], *,
               tolerance_mm: float) -> OpOutcome:
@@ -606,7 +609,8 @@ class FillPlanarHole:
         if not (defect.measurements or {}).get("boundary_edges"):
             return ()
         return (EntityRef(entity_type="edge", fingerprint=defect.fingerprint,
-                          entity_index=int(defect.entity_index)),)
+                          entity_index=int(defect.entity_index),
+                          ambiguous=bool(getattr(defect, "ambiguous", False))),)
 
     def apply(self, shape, targets: tuple[EntityRef, ...], *,
               tolerance_mm: float) -> OpOutcome:
@@ -706,7 +710,8 @@ class FixShapeGlobal:
         if not getattr(defect, "fingerprint", ""):
             return ()
         return (EntityRef(entity_type=str(defect.entity_type), fingerprint=defect.fingerprint,
-                          entity_index=int(defect.entity_index)),)
+                          entity_index=int(defect.entity_index),
+                          ambiguous=bool(getattr(defect, "ambiguous", False))),)
 
     def apply(self, shape, targets: tuple[EntityRef, ...], *,
               tolerance_mm: float) -> OpOutcome:

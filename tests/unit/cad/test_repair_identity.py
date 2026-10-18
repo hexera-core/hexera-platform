@@ -234,3 +234,26 @@ def test_a_repeated_entity_beside_a_genuine_twin_marks_only_the_twins():
     assert [r.ambiguous for r in refs] == [True, True, True]
     assert refs[0].fingerprint == refs[1].fingerprint
     assert refs[2].fingerprint != refs[0].fingerprint
+
+
+def test_a_collision_survives_stamping_and_reaches_every_operations_targets():
+    """The collision check lives in the session's basis rule, which reads `ref.ambiguous` on the
+    OPERATION's targets. `_stamped` used to keep only the fingerprint and each `targets_for` built a
+    fresh ref, so the real planner path always handed the session `ambiguous=False`."""
+    from meshpipeline.cad.repair.contracts import DefectCode, DefectSeverity
+    from meshpipeline.cad.repair.localize import EntityDefect, _stamped
+    from meshpipeline.cad.repair.operations import OPERATIONS
+    from meshpipeline.cad.repair.triage import defect_from_entity
+
+    box = _box(0, 0, 0, 10, 10, 0)
+    found = tuple(EntityDefect(code=DefectCode.curve_inconsistency, severity=DefectSeverity.error,
+                               entity_type="face", entity_index=i, message="m", location=box)
+                  for i in (1, 2))
+    stamped = _stamped(found, diagonal_mm=100.0)
+    assert all(d.ambiguous for d in stamped)
+    # and it survives the report round trip the node and the minting read
+    assert all(defect_from_entity(d.to_dict()).ambiguous for d in stamped)
+
+    aimed = [ref for op in OPERATIONS for ref in op.targets_for(stamped[0])]
+    assert aimed, "some operation must claim a curve_inconsistency on a face"
+    assert all(ref.ambiguous for ref in aimed)

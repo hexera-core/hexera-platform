@@ -114,7 +114,8 @@ def defect_from_entity(entity: Mapping) -> EntityDefect | None:
             measurements=dict(entity.get("measurements") or {}),
             location=dict(entity.get("location") or {}),
             kernel_status=str(entity.get("kernel_status", "")),
-            fingerprint=str(entity.get("fingerprint", "")))
+            fingerprint=str(entity.get("fingerprint", "")),
+            ambiguous=bool(entity.get("ambiguous", False)))
     except (ValueError, TypeError):
         return None
 

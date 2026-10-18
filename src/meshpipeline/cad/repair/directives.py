@@ -76,7 +76,8 @@ class DirectedPlanner:
             defect = by_fingerprint.get(fingerprint)
             if defect is not None:
                 refs.append(EntityRef(entity_type=defect.entity_type, fingerprint=fingerprint,
-                                      entity_index=int(defect.entity_index)))
+                                      entity_index=int(defect.entity_index),
+                                      ambiguous=bool(getattr(defect, "ambiguous", False))))
         if not refs:
             self._skip(directive, TARGET_ABSENT)
             return None

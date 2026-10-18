@@ -106,9 +106,13 @@ class EntityDefect:
     #: fall". Empty when the entity had no measurable extent, which makes the defect untargetable
     #: and is reported as such rather than guessed around.
     fingerprint: str = ""
+    #: Another entity shares this one's box, so `fingerprint` cannot tell them apart
+    #: (identity.refs_for). Carried onto every operation target, so the session's basis rule can
+    #: refuse to call a verdict about it kernel-confirmed.
+    ambiguous: bool = False
 
     def to_dict(self) -> dict:
-        return {
+        out = {
             "code": self.code.value,
             "severity": self.severity.value,
             "entity": f"{self.entity_type}:{self.entity_index}",
@@ -121,6 +125,9 @@ class EntityDefect:
             "kernel_status": self.kernel_status,
             "fingerprint": self.fingerprint,
         }
+        if self.ambiguous:
+            out["ambiguous"] = True
+        return out
 
 
 def _indexed(shape, kind):
@@ -533,7 +540,7 @@ def _stamped(found: tuple[EntityDefect, ...], *,
 
     refs = refs_for([(d.entity_type, d.entity_index, d.location) for d in found],
                     diagonal_mm=diagonal_mm)
-    return tuple(replace(defect, fingerprint=ref.fingerprint)
+    return tuple(replace(defect, fingerprint=ref.fingerprint, ambiguous=ref.ambiguous)
                  for defect, ref in zip(found, refs, strict=True))
 
 
