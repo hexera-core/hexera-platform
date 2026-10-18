@@ -275,6 +275,11 @@ def write_missing_passage_wall_step(path: Path, kind: str, unit: str = "MM",
     SADDLE on the curved side and the other is flat. `reverse=True` sews the faces in the opposite
     order: the same part, and on that order the flat rim's fill was KEPT and the hole sealed, while
     the original order was saved only by the stall limit stopping the run first.
+
+    `cotter<w>` (a slot `w` mm wide through an R=20 solid bar) and `tubeslot<w>` (the same slot
+    through the top wall of a tube with a 16 mm bore) leave two NARROW rims wrapped around curved
+    walls. A best-fit plane through such a loop is the slot's width direction, not the wall's
+    normal, and trusting it let both fills seal the slot.
     """
     import math
 
@@ -348,6 +353,21 @@ def write_missing_passage_wall_step(path: Path, kind: str, unit: str = "MM",
                                    40 if flat_top else 20).Shape()
         plate = BRepAlgoAPI_Cut(bar, trim).Shape()
         tool = cylinder(4.0, 80.0, at=(50, 50 + offset, -10))
+    elif kind.startswith(("cotter", "tubeslot")):
+        # a slot `w` wide (along the bar) and 30 mm across, cut straight down through an R=20 bar
+        # on the x axis: a cotter slot through the solid, or through only the top wall of a tube
+        # with a 16 mm bore. Each rim is a narrow loop WRAPPED around the curved wall, whose
+        # smallest spread is the slot's width, not the surface normal.
+        tube = kind.startswith("tubeslot")
+        w = float(kind[len("tubeslot" if tube else "cotter"):])
+        plate = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 50, 50), gp_Dir(1, 0, 0)), 20,
+                                         100).Shape()
+        if tube:
+            bore = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(-1, 50, 50), gp_Dir(1, 0, 0)), 16,
+                                            102).Shape()
+            plate = BRepAlgoAPI_Cut(plate, bore).Shape()
+        tool = BRepPrimAPI_MakeBox(gp_Pnt(50 - w / 2, 35, 50 if tube else 20), w, 30,
+                                   40 if tube else 60).Shape()
     elif kind.startswith("wedge"):
         slab = BRepPrimAPI_MakeBox(gp_Pnt(-50, -50, 10.0), 200, 200, 60).Shape()
         cutter = rotated(slab, float(kind[len("wedge"):]), about=(50, 50, 10.0))

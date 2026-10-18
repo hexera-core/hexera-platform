@@ -104,3 +104,48 @@ def test_a_loop_with_no_normal_beside_another_is_undecidable():
         conservative._paired_nonplanar_rims([_seam(), _saddle(z=10.0, x=30.0)])
     assert conservative._rim_fit(_seam()) is None
     assert conservative._rim_fit([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)]) is None
+
+
+# WITH A SHAPE, THE AXIS IS THE WALL'S NORMAL, NOT A BEST-FIT PLANE
+
+
+def _wrapped_slot(radius=20.0, width=2.0, half=15.0, below=False, n=24):
+    """A narrow slot's rim wrapped over a bar on the x axis, with the bar's normal at each point."""
+    sign = -1.0 if below else 1.0
+    points, normals = [], []
+    for x in (-width / 2, width / 2):
+        for k in range(n):
+            y = -half + 2 * half * k / (n - 1)
+            z = sign * math.sqrt(radius * radius - y * y)
+            points.append((x, y, z))
+            normals.append((0.0, y / radius, z / radius))
+    return points, normals
+
+
+def test_a_narrow_slot_wrapped_round_a_bar_is_judged_by_the_walls_normal(monkeypatch):
+    # The reviewer's cotter slot: its smallest spread is the slot's WIDTH (x), so a best-fit plane
+    # says the rim faces along the bar and neither rule pairs top with bottom. The wall says z.
+    top, below = _wrapped_slot(), _wrapped_slot(below=True)
+    normals = {id(top[0]): top[1], id(below[0]): below[1]}
+    monkeypatch.setattr(conservative, "_loop_wall_normals",
+                        lambda wire, ancestors, per_edge=24: normals[id(wire)])
+    monkeypatch.setattr(conservative, "_edge_faces", lambda shape: object())
+
+    assert abs(conservative._rim_fit(top[0])[1][0]) > 0.99          # bare: the wrong axis, x
+    assert abs(conservative._rim_fit(top[0], object())[1][2]) > 0.99  # the wall's: z
+    assert conservative._paired_nonplanar_rims([top[0], below[0]]) == set()
+    assert conservative._paired_nonplanar_rims([top[0], below[0]], shape=object()) == {0, 1}
+
+
+def test_a_rim_whose_wall_turns_too_far_under_it_cannot_be_judged(monkeypatch):
+    ring = _ring()
+    spread = [(math.cos(a), math.sin(a), 0.0) for a in (2 * math.pi * k / 48 for k in range(48))]
+    monkeypatch.setattr(conservative, "_loop_wall_normals",
+                        lambda wire, ancestors, per_edge=24: spread)
+    monkeypatch.setattr(conservative, "_edge_faces", lambda shape: object())
+    assert conservative._rim_fit(ring, object()) is None
+    with pytest.raises(conservative.RimsUndecidable):
+        conservative._paired_nonplanar_rims([ring, _saddle(z=10.0)], shape=object())
+    # an edge with no owning face is the same: no wall, no judgement
+    monkeypatch.setattr(conservative, "_loop_wall_normals", lambda wire, ancestors, per_edge=24: None)
+    assert conservative._rim_fit(ring, object()) is None

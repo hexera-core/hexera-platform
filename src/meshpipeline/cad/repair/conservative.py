@@ -362,11 +362,17 @@ class RimsUndecidable(ValueError):
 
 
 # SADDLE RIMS. A hole through a curved wall leaves a loop on no plane, so it has no plane normal
-# for the passage rule. It is given a BEST-FIT one: the smallest principal component of its
-# sampled points. Every number below was fixed from the synthetic fixtures (the cross-drilled
-# Ø40 bar, the D-bars, the 60-degree cylinder window), never from a corpus, and each errs toward
-# PAIRING, because the two mistakes do not cost the same: a false pair refuses one fill an
-# operator then picks up, a missed pair seals a customer's hole.
+# for the passage rule. It is given one from THE WALL IT IS CUT IN: the mean surface normal of the
+# face(s) owning its edges, sampled where its points are sampled. NOT a best-fit plane through the
+# points: a narrow slot wrapped around a bar has its smallest spread along the slot's WIDTH, so the
+# best-fit "normal" ran along the bar, both rules missed the pair, and a cotter slot and a slot
+# through a tube's wall were sealed end to end. Only bare wires with no shape to ask (the hermetic
+# tier) fall back to the smallest principal component.
+#
+# Every number below was fixed from the synthetic fixtures (the cross-drilled Ø40 bar, the
+# D-bars, the cotter and tube slots, the 60-degree cylinder window), never from a corpus, and each
+# errs toward PAIRING, because the two mistakes do not cost the same: a false pair refuses one fill
+# an operator then picks up, a missed pair seals a customer's hole.
 #
 #: Axes this parallel (|cos|, about 11.5 deg) may be one bore's two ends. The cross-drilled bar's
 #: two saddles fit z to 1e-6; a D-bar's offset hole tilts its saddle 19.6 deg, which this rejects
@@ -381,20 +387,88 @@ _SADDLE_RADIUS_RATIO = 2.5
 #: The gap ALONG the axis, in units of the larger radius: below 1e-3 it is one opening seen twice,
 #: above 40 radii (160 mm for an Ø8 bore) the coaxial rule does not vouch for it.
 _SADDLE_GAP = (1e-3, 40.0)
-#: When the smallest principal variance is more than this fraction of the middle one, the loop is
-#: nearly as deep as it is wide and has NO normal to judge it by - the fit fails and the check
-#: fails closed. The deepest fixture loop (the 60-degree x 20 mm cylinder window) is 0.017 and
-#: the cross-drilled saddles 0.003; 0.25 means an out-of-plane spread half the in-plane one.
+#: The mean of a rim's unit wall normals (24 samples per edge) is shorter the more the wall turns
+#: under it. Below 0.5 no one direction is the way a passage leaves the rim - it wraps too far
+#: round its wall - so the fit fails and the check fails closed. The fixtures run 0.63 (the tube
+#: slot's inner rim, +-70 deg on R16) through 0.77-0.81 (the cotter slot), 0.91 (the 60-degree
+#: window) and 0.99 (the cross-drilled saddles) to 1.0 (a flat rim); a wider wrap fails closed.
+_SADDLE_NORMAL_RESULTANT = 0.5
+#: BARE-WIRE FALLBACK ONLY (no shape, so no wall to ask): when the smallest principal variance is
+#: more than this fraction of the middle one the loop is nearly as deep as it is wide and has no
+#: normal - the fit fails. The deepest fixture loop (the 60-degree x 20 mm cylinder window) is
+#: 0.017 and the cross-drilled saddles 0.003; 0.25 means an out-of-plane spread half the in-plane.
 _SADDLE_FLATNESS = 0.25
 
 
-def _rim_fit(wire):
-    """A loop's best-fit (centroid, unit axis, mean radius), or None when it has no usable normal.
+def _edge_faces(shape):
+    """Edge -> owning faces, the map `_rim_fit` reads wall normals from."""
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
 
-    The axis is the smallest principal component of `_loop_points(wire)`; the radius is the mean
-    distance of those points from the centroid perpendicular to it. None - the loop cannot be
-    judged - when there are fewer than three points, no extent, or no clearly smallest component
-    (`_SADDLE_FLATNESS`).
+    ancestors = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(shape, TopAbs_EDGE, TopAbs_FACE, ancestors)
+    return ancestors
+
+
+def _loop_wall_normals(wire, ancestors, per_edge: int = 24):
+    """Unit outward normals of the wall each edge of the loop belongs to, sampled as
+    `_loop_points` samples the edge; None when any edge has no owning face, or fewer than half
+    the samples have a normal.
+
+    A sample AT A SINGULAR POINT (a patch's pole, the apex of a triangular patch) has no normal
+    and is skipped, as is a degenerated edge, which is one such point: surface exports are full of
+    them, and refusing the whole loop for one apex sent every curved rim of a skin back to the
+    fail-closed answer. The half floor keeps a loop whose wall is mostly singular from being
+    judged on a few stray samples."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepAdaptor import BRepAdaptor_Curve2d, BRepAdaptor_Surface
+    from OCP.BRepLProp import BRepLProp_SLProps
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_REVERSED
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    normals = []
+    samples = 0
+    explorer = TopExp_Explorer(wire, TopAbs_EDGE)
+    while explorer.More():
+        edge = TopoDS.Edge_s(explorer.Current())
+        explorer.Next()
+        if BRep_Tool.Degenerated_s(edge):
+            continue
+        if not ancestors.Contains(edge):
+            return None
+        owners = ancestors.FindFromKey(edge)
+        if owners.Size() == 0:
+            return None
+        face = TopoDS.Face_s(owners.First())
+        flip = -1.0 if face.Orientation() == TopAbs_REVERSED else 1.0
+        curve = BRepAdaptor_Curve2d(edge, face)
+        surface = BRepAdaptor_Surface(face)
+        first, last = curve.FirstParameter(), curve.LastParameter()
+        for k in range(per_edge):
+            samples += 1
+            uv = curve.Value(first + (last - first) * k / per_edge)
+            props = BRepLProp_SLProps(surface, uv.X(), uv.Y(), 1, 1e-9)
+            if not props.IsNormalDefined():
+                continue
+            n = props.Normal()
+            normals.append((flip * n.X(), flip * n.Y(), flip * n.Z()))
+    if not normals or 2 * len(normals) < samples:
+        return None
+    return normals
+
+
+def _rim_fit(wire, ancestors=None, normal=None):
+    """A loop's (centroid, unit axis, mean radius), or None when it has no usable normal.
+
+    With `ancestors` (`_edge_faces(shape)`), the axis is the mean wall normal under the loop
+    (`_loop_wall_normals`); None when an edge has no wall or the normals spread too far to have a
+    mean direction (`_SADDLE_NORMAL_RESULTANT`). Without it (bare wires), the axis is the smallest
+    principal component of `_loop_points(wire)`; None when there is no clearly smallest component
+    (`_SADDLE_FLATNESS`). The radius is the mean distance of the points from the centroid
+    perpendicular to the axis; None too for fewer than three points or no extent. A planar loop
+    passes its own plane `normal`, which is exact and needs neither.
     """
     import numpy as np
 
@@ -403,10 +477,23 @@ def _rim_fit(wire):
         return None
     centre = points.mean(axis=0)
     rel = points - centre
-    values, vectors = np.linalg.eigh(rel.T @ rel / len(points))
-    if values[1] <= 0 or values[0] > _SADDLE_FLATNESS * values[1]:
-        return None
-    axis = vectors[:, 0] / np.linalg.norm(vectors[:, 0])
+    if normal is not None:
+        axis = np.asarray(normal, dtype=float)
+        axis = axis / np.linalg.norm(axis)
+    elif ancestors is not None:
+        normals = _loop_wall_normals(wire, ancestors)
+        if normals is None:
+            return None
+        mean = np.asarray(normals, dtype=float).mean(axis=0)
+        length = float(np.linalg.norm(mean))
+        if length < _SADDLE_NORMAL_RESULTANT:
+            return None
+        axis = mean / length
+    else:
+        values, vectors = np.linalg.eigh(rel.T @ rel / len(points))
+        if values[1] <= 0 or values[0] > _SADDLE_FLATNESS * values[1]:
+            return None
+        axis = vectors[:, 0] / np.linalg.norm(vectors[:, 0])
     radius = float(np.mean(np.linalg.norm(rel - np.outer(rel @ axis, axis), axis=1)))
     if not radius > 0:
         return None
@@ -465,16 +552,18 @@ def _fits_pair(left, right) -> bool:
     return _saddle_coaxial(left, right) or _passage_leaves_both(c1, a1, r1, c2, a2, r2)
 
 
-def _paired_nonplanar_rims(loops: list) -> set[int]:
-    """Indices of loops that pair, judged by their BEST-FIT axes - for loops that lie on no plane.
+def _paired_nonplanar_rims(loops: list, shape=None) -> set[int]:
+    """Indices of loops that pair, judged by their fitted axes - for loops that lie on no plane.
 
-    `_paired_rims` uses this for every pair in which at least one loop is non-planar. A loop with
+    With `shape`, each axis is the mean normal of the wall under the loop; bare wires fall back to
+    a best-fit plane (`_rim_fit`). `_paired_rims` uses this for every pair in which at least one loop is non-planar. A loop with
     no usable fit (`_rim_fit` is None) beside another raises `RimsUndecidable`: it cannot be ruled
     out, so the guard fails closed exactly as it did before saddles were paired. One loop alone has
     no partner and is answered. A false pair costs one missed repair; a missed pair costs a
     customer's hole - see the constants above for where each number came from.
     """
-    fits = [_rim_fit(wire) for wire in loops]
+    ancestors = _edge_faces(shape) if shape is not None else None
+    fits = [_rim_fit(wire, ancestors) for wire in loops]
     if len(loops) >= 2 and any(fit is None for fit in fits):
         raise RimsUndecidable(
             f"{sum(fit is None for fit in fits)} non-planar loop(s) have no best-fit normal")
@@ -506,8 +595,8 @@ def _paired_rims(loops: list, shape=None) -> set[int]:
     each of those once let a genuine through-hole be sealed (the constants above say which):
     angled holes, a drafted plate's tilted top, hex and slot passages, deep holes, spot-faces.
 
-    A NON-PLANAR (SADDLE) CANDIDATE - a hole's rim on a curved wall - is judged by its best-fit
-    axis (`_paired_nonplanar_rims`): any pair with at least one such loop pairs when the two are
+    A NON-PLANAR (SADDLE) CANDIDATE - a hole's rim on a curved wall - is judged by its fitted axis,
+    the mean normal of the wall it is cut in (`_rim_fit`, `_paired_nonplanar_rims`): any pair with at least one such loop pairs when the two are
     coaxial OR the passage rule holds with the fitted axis for a normal. One whose fit fails (no
     clear normal) beside any other candidate still raises `RimsUndecidable`, so the guard fails
     closed rather than leaving the other rim fillable.
@@ -537,7 +626,8 @@ def _paired_rims(loops: list, shape=None) -> set[int]:
         # the end of a through-hole. Every pair with a curved member is judged on best-fit axes;
         # a curved loop with no usable fit raises RimsUndecidable (fail closed), checked for every
         # curved candidate BEFORE any pair is answered.
-        fits = {index: _rim_fit(loops[index]) for index in curved}
+        ancestors = _edge_faces(shape) if shape is not None else None
+        fits = {index: _rim_fit(loops[index], ancestors) for index in curved}
         unfit = [index for index, fit in fits.items() if fit is None]
         if unfit:
             raise RimsUndecidable(
@@ -545,10 +635,10 @@ def _paired_rims(loops: list, shape=None) -> set[int]:
                 f"beside {len(candidates) - len(unfit)} other candidate(s)")
         for index in candidates:
             if index not in fits:
-                fit = _rim_fit(loops[index])
+                # a planar rim keeps its exact plane normal
+                fit = _rim_fit(loops[index], normal=rims[index][0])
                 if fit is None:
-                    # a planar loop always fits; if it somehow does not, it cannot be ruled out
-                    raise RimsUndecidable("a planar candidate rim has no best-fit normal")
+                    raise RimsUndecidable("a planar candidate rim has no extent to fit")
                 fits[index] = fit
         for i, left in enumerate(candidates):
             for right in candidates[i + 1:]:

@@ -73,7 +73,7 @@ def test_a_triage_defect_missing_from_the_post_pass_scan_falls_back_to_the_origi
 
 def _refusal(fingerprint) -> dict:
     history = RunHistory()
-    history.refuse(fingerprint, "paired_rim", "this loop pairs with another on a parallel plane")
+    history.refuse(fingerprint, "paired_rim", "this loop pairs with another as the two ends of one passage")
     return history.refusals[0]
 
 

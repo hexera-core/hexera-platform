@@ -73,3 +73,71 @@ def test_two_curved_holes_off_one_axis_do_not_pair(tmp_path, monkeypatch):
     assert not [r for r in run.refusals if r.get("reason") == "paired_rim"], run.refusals
     assert any(v.op == "fill_nonplanar_hole" for v in run.verdicts), (
         [(v.op, v.status, v.reason) for v in run.verdicts])
+
+
+SLOTS = ["cotter1", "cotter2", "tubeslot1", "tubeslot2"]
+
+
+@pytest.mark.parametrize("kind", SLOTS)
+def test_a_slot_wrapped_around_a_curved_wall_is_one_passage(tmp_path, kind):
+    # A NARROW RIM ON A CURVED WALL. The loop's smallest spread is the slot's width (along the
+    # bar), so a best-fit plane through its points points the wrong way and both rules missed the
+    # pair. Its normal is the WALL's, read from the face that owns its edges.
+    from tests.cad_fixtures import write_missing_passage_wall_step
+
+    shape = _read(write_missing_passage_wall_step(tmp_path / f"{kind}.step", kind))
+    found, _ = localize_scan(shape)
+    rims = _rims(found)
+    assert len(rims) == 2
+    paired = paired_rim_fingerprints(shape, found)
+    assert not getattr(paired, "unknown", False), "the slot was not judged, only refused"
+    assert paired == {r.fingerprint for r in rims}
+
+
+@pytest.mark.parametrize("kind", SLOTS)
+def test_a_slot_through_a_curved_wall_is_never_sealed_by_the_rules(tmp_path, monkeypatch, kind):
+    from tests.cad_fixtures import write_missing_passage_wall_step
+
+    from meshpipeline.cad.repair.conservative import RepairRefused, repair_step_file
+
+    for flag in ("CAD_REPAIR_FILL_PLANAR_HOLES", "CAD_REPAIR_FILL_NONPLANAR_HOLES"):
+        monkeypatch.setattr(rcfg, flag, True)
+    source = write_missing_passage_wall_step(tmp_path / f"{kind}.step", kind)
+    out = tmp_path / f"{kind}-repaired.step"
+    with pytest.raises(RepairRefused) as refused:
+        repair_step_file(source, out)
+    measured = refused.value.measurements
+    assert measured["operations_kept"] == 0, f"the {kind} slot was sealed"
+    rims = [r for r in measured["refusals"] if r.get("reason") == "paired_rim"]
+    assert len(rims) == 2 and not any("could not run" in r["detail"] for r in rims), rims
+    assert not out.exists()
+
+
+@pytest.mark.parametrize("kind", SLOTS)
+def test_a_directive_cannot_seal_a_slot_through_a_curved_wall(tmp_path, monkeypatch, kind):
+    # A model directive aimed at each rim, at the shipped stall limit: the directive's fill meets
+    # the same rim guard, so neither end of the slot is patched.
+    from tests.cad_fixtures import write_missing_passage_wall_step
+
+    from meshpipeline.cad.repair.conservative import RepairRefused, repair_step_file
+
+    monkeypatch.undo()
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_ENABLED", True)
+    for flag in ("CAD_REPAIR_FILL_PLANAR_HOLES", "CAD_REPAIR_FILL_NONPLANAR_HOLES"):
+        monkeypatch.setattr(rcfg, flag, True)
+    source = write_missing_passage_wall_step(tmp_path / f"{kind}.step", kind)
+    found, _ = localize_scan(_read(source))
+    directives = tuple(
+        {"op": "fill_nonplanar_hole", "targets": [d.fingerprint], "defect_code": "open_shell",
+         "defect_fingerprint": d.fingerprint, "source": "llm-planner", "item_id": "",
+         "planner_confidence": 0.9}
+        for d in _rims(found))
+    out = tmp_path / f"{kind}-directed.step"
+    try:
+        report = repair_step_file(source, out, directives=directives)
+    except RepairRefused as refused:
+        operations = refused.measurements["operations"]
+    else:
+        operations = report.operations
+    kept = [o for o in operations if o["name"] in FILL_OPS and o["status"] == "kept"]
+    assert not kept, f"a directive sealed one rim of the {kind} slot: {kept}"

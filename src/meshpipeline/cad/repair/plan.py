@@ -131,7 +131,8 @@ def paired_rim_fingerprints(shape, defects) -> frozenset[str]:
     """Fingerprints of the open-boundary defects that are THE TWO ENDS OF A MISSING TUBE.
 
     MOVED HERE OUT OF THE FILL EXECUTOR, and the move is the point. A through-hole whose wall is
-    missing leaves two rims: planar, parallel, offset along their own normal. Each looks exactly
+    missing leaves two rims, one at each end of the passage - flat, or saddles on a curved wall
+    (`conservative._paired_rims` says which pairs count). Each looks exactly
     like a small fillable hole, and patching both SEALS the hole - handing back a plate with no
     bolt hole, which is a ruined part rather than a repaired one. Demonstrated on a 100x100x10
     plate with an 8 mm bore and with an 8 mm hex: two loops, both far inside the size cap.
@@ -243,8 +244,10 @@ class RulesPlanner:
             for rim in sorted(rims):
                 history.refuse(
                     rim, "paired_rim",
-                    "this loop pairs with another on a parallel plane - a missing tube wall, "
-                    "and patching both would seal a through-hole")
+                    "this loop pairs with another as the two ends of one passage (the line "
+                    "between them leaves each no steeper than 70 degrees from its wall's normal, "
+                    "or a curved rim lies on the other's axis) - a missing tube wall, and "
+                    "patching both would seal a through-hole")
                 history.refuse_filling("a missing tube wall was detected: " + rim)
 
         ordered = sorted(
