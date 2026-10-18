@@ -384,6 +384,27 @@ def test_exactly_one_catalogued_operation_carries_the_fill_name():
         assert [op.name for op in OPERATIONS].count(name) == 1
 
 
+def test_a_refused_run_proposes_neither_fill(monkeypatch):
+    # The run-level fill refusal (a paired or undecidable rim) keys off FILL_OPS, so the curved
+    # fill is barred with the flat one: the real catalogue then has nothing left for a free loop
+    # but sewing.
+    import meshpipeline.settings.cad_repair as rcfg
+    from meshpipeline.cad.repair.operations import OPERATIONS
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_FILL_NONPLANAR_HOLES", True)
+    loop = _defect(DefectCode.open_shell, fingerprint="edge:rim",
+                   measurements={"boundary_edges": 4})
+    history = RunHistory()
+    history.refuse_filling("paired_rim")
+    planner = RulesPlanner(ops=OPERATIONS)
+    proposed = []
+    while (candidate := planner.propose((loop,), history, shape=None)) is not None:
+        proposed.append(candidate.op.name)
+        history.mark_ineffective(candidate.defect_fingerprint, candidate.op.name)
+    assert "fill_planar_hole" not in proposed and "fill_nonplanar_hole" not in proposed
+    assert proposed, "the refusal barred every operation, not just the fills"
+
+
 # A DEFECT RESERVED FOR A PERSON
 
 

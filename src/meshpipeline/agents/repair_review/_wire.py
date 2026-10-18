@@ -9,22 +9,24 @@ import logging
 logger = logging.getLogger(__name__)
 
 CATALOGUE: tuple[str, ...] = (
-    "fix_small_edges", "fix_face_boundary", "sew_faces", "fill_planar_hole", "fix_shape_global")
+    "fix_small_edges", "fix_face_boundary", "sew_faces", "fill_planar_hole",
+    "fill_nonplanar_hole", "fix_shape_global")
 
 #: The catalogue names that fill a hole, as strings so this layer does not import `cad.repair`.
 #: Pinned to `operations.FILL_OPS` by tests/unit/agents/test_catalogue_pinned_to_operations.py.
-FILL_CATALOGUE: tuple[str, ...] = ("fill_planar_hole",)
+FILL_CATALOGUE: tuple[str, ...] = ("fill_planar_hole", "fill_nonplanar_hole")
 
 CATALOGUE_LIMITS = (
     "the repair catalogue can only merge small edges, fix a face boundary, sew faces, fill a "
-    "planar hole, or run a whole-shape fix; it cannot move, redraw or delete geometry, change "
-    "dimensions, or edit the part by hand")
+    "planar hole, cap a small curved hole with a constrained patch, or run a whole-shape fix; it "
+    "cannot move, redraw or delete geometry, change dimensions, or edit the part by hand")
 
 CATALOGUE_TEXT = (
     "- fix_small_edges: merge edges too short to keep\n"
     "- fix_face_boundary: repair a face whose boundary is broken or open\n"
     "- sew_faces: stitch faces that should share an edge\n"
     "- fill_planar_hole: cap a flat hole\n"
+    "- fill_nonplanar_hole: cap a small curved hole with a constrained patch\n"
     "- fix_shape_global: run the whole-shape healing pass")
 
 

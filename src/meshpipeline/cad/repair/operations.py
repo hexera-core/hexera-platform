@@ -570,13 +570,14 @@ class SewFaces:
 class FillPlanarHole:
     """Patch ONE flat closed free boundary, and say exactly how much surface that added.
 
-    THE ONLY OPERATION HERE THAT ADDS SURFACE THE CUSTOMER NEVER DREW, which is why it is the
-    narrowest-targeted of all of them - one loop, named by the first edge of its boundary - and
+    ONE OF THE TWO OPERATIONS HERE THAT ADD SURFACE THE CUSTOMER NEVER DREW (with
+    `fill_nonplanar_hole`), which is why it is among the narrowest-targeted of all of them - one loop, named by the first edge of its boundary - and
     why it declares its own area so the cumulative cap can account for it rather than allow it.
 
     PLANAR ONLY: across a flat loop exactly one surface can go there, so the patch is determined
     rather than invented. `BRepBuilderAPI_MakeFace(wire, OnlyPlane=True)` declines a non-planar
-    loop, which is the behaviour wanted - left alone, reported, routed to a person.
+    loop, which is the behaviour wanted - left alone and reported, for `fill_nonplanar_hole`
+    (behind its own flag) or a person.
 
     THE PAIRED-RIM CASE IS NOT CHECKED HERE. Two rims of a missing tube wall are each a perfectly
     fillable flat loop, and patching both seals a drilled through-hole. That is a decision about
@@ -676,6 +677,299 @@ class FillPlanarHole:
                       "tolerance_mm": float(tolerance_mm)})
 
 
+#: How far a curved patch may stray outside the loop it closes, as a fraction of the loop's own box
+#: diagonal added on every side. A patch that leaves that box has invented a bulge, not a surface.
+PATCH_BULGE_INFLATION = 0.5
+
+#: The angle (radians) under which the patch counts as tangent-continuous with its neighbours.
+#: BRepFill_Filling's own default angular tolerance.
+_G1_TOLERANCE_RAD = 0.01
+
+
+def _is_planar_loop(wire) -> bool:
+    """True when one flat face spans the loop - the planar fill's question, asked the same way."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+
+    return bool(BRepBuilderAPI_MakeFace(wire, True).IsDone())
+
+
+def _wire_edges(wire) -> list:
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    edges = []
+    explorer = TopExp_Explorer(wire, TopAbs_EDGE)
+    while explorer.More():
+        edges.append(TopoDS.Edge_s(explorer.Current()))
+        explorer.Next()
+    return edges
+
+
+def _support_faces(shape, edges) -> list | None:
+    """The one face beside each free edge, or None when any edge has not exactly one."""
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from OCP.TopExp import TopExp
+    from OCP.TopoDS import TopoDS
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+
+    ancestors = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(shape, TopAbs_EDGE, TopAbs_FACE, ancestors)
+    faces = []
+    for edge in edges:
+        if not ancestors.Contains(edge):
+            return None
+        owners = ancestors.FindFromKey(edge)
+        if owners.Size() != 1:
+            return None
+        faces.append(TopoDS.Face_s(owners.First()))
+    return faces
+
+
+def _filling(edges, supports):
+    """One BRepFill_Filling attempt: G1 against `supports` when given, G0 on the edges otherwise."""
+    from OCP.BRepFill import BRepFill_Filling
+    from OCP.GeomAbs import GeomAbs_C0, GeomAbs_G1
+
+    filling = BRepFill_Filling()
+    for k, edge in enumerate(edges):
+        if supports is None:
+            filling.Add(edge, GeomAbs_C0, True)
+        else:
+            filling.Add(edge, supports[k], GeomAbs_G1, True)
+    filling.Build()
+    if not filling.IsDone():
+        return None
+    face = filling.Face()
+    if face is None or face.IsNull():
+        return None
+    g1 = supports is not None and float(filling.G1Error()) <= _G1_TOLERANCE_RAD
+    return face, float(filling.G0Error()), g1
+
+
+def _plate(wire, edges):
+    """The GeomPlate fallback: a plate through the edges, approximated, trimmed to the wire."""
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCP.GeomPlate import (
+        GeomPlate_BuildPlateSurface,
+        GeomPlate_CurveConstraint,
+        GeomPlate_MakeApprox,
+    )
+    from OCP.ShapeFix import ShapeFix_Face
+
+    plate = GeomPlate_BuildPlateSurface(3, 15, 2)
+    for edge in edges:
+        plate.Add(GeomPlate_CurveConstraint(BRepAdaptor_Curve(edge), 0))
+    plate.Perform()
+    if not plate.IsDone():
+        return None
+    surface = GeomPlate_MakeApprox(plate.Surface(), 1e-4, 8, 8, 1e-3, 0).Surface()
+    maker = BRepBuilderAPI_MakeFace(surface, wire, True)
+    if not maker.IsDone():
+        return None
+    fixer = ShapeFix_Face(maker.Face())    # the wire's edges carry no pcurve on the new surface
+    fixer.Perform()
+    return fixer.Face(), float(plate.G0Error()), False
+
+
+def _build_patch(wire, *, tolerance_mm: float, shape=None) -> tuple[object, float, bool, str]:
+    """The patch across a non-planar loop: (face, G0 error mm, G1 achieved, builder name).
+
+    A face of None means nothing could be built. Tries, in order, and keeps the first whose G0
+    error is within `tolerance_mm`: BRepFill_Filling with G1 against the face beside each edge
+    (needs `shape`, and exactly one such face per edge), BRepFill_Filling with G0 only, GeomPlate.
+    Past tolerance on every builder, the closest attempt is returned for the caller to decline.
+    """
+    from OCP.Standard import Standard_Failure
+
+    edges = _wire_edges(wire)
+    if not edges:
+        return None, float("inf"), False, ""
+    attempts = []
+    supports = _support_faces(shape, edges) if shape is not None else None
+    if supports is not None:
+        attempts.append(("BRepFill_Filling", lambda: _filling(edges, supports)))
+    attempts.append(("BRepFill_Filling", lambda: _filling(edges, None)))
+    attempts.append(("GeomPlate", lambda: _plate(wire, edges)))
+
+    best: tuple[object, float, bool, str] = (None, float("inf"), False, "")
+    for builder, attempt in attempts:
+        try:
+            built = attempt()
+        except (RuntimeError, Standard_Failure) as exc:   # the kernel declining; our bugs surface
+            logger.debug("fill_nonplanar_hole: %s raised (%s)", builder, exc)
+            continue
+        if built is None:
+            continue
+        face, g0, g1 = built
+        if g0 <= tolerance_mm:
+            return face, g0, g1, builder
+        if g0 < best[1]:
+            best = (face, g0, g1, builder)
+    return best
+
+
+def _bulges(patch, wire) -> bool:
+    """True when the patch leaves the loop's box inflated by PATCH_BULGE_INFLATION on every side."""
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+
+    def bounds(sub):
+        box = Bnd_Box()
+        BRepBndLib.Add_s(sub, box)
+        return None if box.IsVoid() else box.Get()
+
+    loop, made = bounds(wire), bounds(patch)
+    if loop is None or made is None:
+        return True                           # an unmeasurable patch is not shown to stay put
+    lo, hi = loop[:3], loop[3:]
+    margin = PATCH_BULGE_INFLATION * sum((b - a) ** 2 for a, b in zip(lo, hi)) ** 0.5
+    return (any(m < a - margin for m, a in zip(made[:3], lo))
+            or any(m > b + margin for m, b in zip(made[3:], hi)))
+
+
+def _sew_patch(shape, patch, *, tolerance_mm: float) -> tuple[object, object] | None:
+    """Sew the patch into the shape and promote a closed shell: (new shape, sewing) or None."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
+
+    from meshpipeline.cad.repair.conservative import _as_solid_if_closed
+
+    sewing = BRepBuilderAPI_Sewing(tolerance_mm)
+    sewing.SetNonManifoldMode(False)
+    sewing.Add(shape)
+    sewing.Add(patch)
+    sewing.Perform()
+    sewn = sewing.SewedShape()
+    if sewn is None or (hasattr(sewn, "IsNull") and sewn.IsNull()):
+        return None
+    return _as_solid_if_closed(sewn), sewing
+
+
+class FillNonplanarHole:
+    """Close ONE small closed free loop that is NOT flat with a patch constrained to its edges.
+
+    WHAT IT MAY TOUCH: one loop, named by an edge of its boundary, exactly as `fill_planar_hole`
+    names one. It adds one face and sews it in; it moves nothing the customer drew. It runs after
+    the planar fill (scope 6 against 5), so a flat loop always gets the determined flat lid and
+    this operation only ever sees what that one declined.
+
+    WHAT IT DECLARES: the patch's area as AREA_DELTA, measured BEFORE sewing, so the cumulative cap
+    compares against `original + this` - exactly the planar fill's contract. Volume is not
+    declared, for the planar fill's reason: whether the shell closes into a solid is the kernel's
+    answer. The evidence also says how well the patch fits: its G0 (gap) error, whether G1
+    (tangent) continuity with the neighbouring faces held, and which builder made it.
+
+    WHY IT IS GATED ON ITS OWN FLAG. A flat lid across a flat loop is determined; a curved patch
+    is INVENTED - the kernel chooses a curvature the customer never drew. So
+    `CAD_REPAIR_FILL_NONPLANAR_HOLES` is separate from the planar flag, and `targets_for` answers
+    () while it is off, so the rules planner never even proposes it.
+
+    WHY EACH DECLINE EXISTS, in the order they are checked:
+      filling_disabled  - the consent above is absent.
+      no loop was named - nothing to aim at.
+      one_loop_only     - a patch closes one loop; aimed at two it would close the first, leave
+                          the second, and the progress rule would roll the whole attempt back.
+                          A group fill is split into one directive per hole before it gets here.
+      bounds no closed free loop - the named edge is not on an open boundary any more.
+      too_large         - span ratio over CAD_REPAIR_MAX_HOLE_SPAN_RATIO: a missing wall, not a
+                          hole. Checked BEFORE planarity so a big flat opening is declined for
+                          its size rather than handed back to the planar fill's question.
+      planar            - a flat loop belongs to `fill_planar_hole`, whose lid is determined.
+      boundary_error    - the patch's G0 error exceeds tolerance_mm: sewing at that tolerance
+                          would leave the gap open, or worse, close it by moving the boundary.
+      patch_bulges      - the patch leaves the loop's box inflated by PATCH_BULGE_INFLATION of
+                          the loop diagonal: an unconstrained interior ballooned, which no
+                          boundary check sees.
+      sewing_failed     - the kernel could not sew the patch in.
+
+    BRepFill_Filling, NOT GeomPlate, IS THE PRIMARY BUILDER. BRepFill_Filling is GeomPlate
+    underneath, but it takes topological constraints - an edge, optionally with the face beside it
+    for G1 - and hands back a FACE already bounded by edges that sit on the originals, along with
+    the G0/G1 errors it achieved. Raw GeomPlate yields an untrimmed surface that then has to be cut
+    by the wire and given pcurves by ShapeFix, two more steps that can each drift the boundary.
+    G1 is attempted first, against the one face beside each free edge, because a tangent patch is
+    the least invented; where G1 cannot be met (no unique neighbour, or the build fails or misses
+    tolerance) a G0-only filling is tried, and GeomPlate is the last resort.
+
+    THE PAIRED-RIM GUARD STILL STANDS IN FRONT OF IT. This operation is in FILL_OPS, so the
+    planner's through-hole guard (which fails closed, run-wide, whenever any candidate rim is
+    non-planar or unresolvable beside another candidate) refuses it with the planar fill. It is
+    reached only for a lone loop the guard allowed, or an individual engineer's directive.
+    """
+
+    name = "fill_nonplanar_hole"
+    answers = frozenset({DefectCode.open_shell})
+    scope = 6
+
+    def targets_for(self, defect) -> tuple[EntityRef, ...]:
+        import meshpipeline.settings.cad_repair as rcfg
+
+        if not rcfg.CAD_REPAIR_FILL_NONPLANAR_HOLES:
+            return ()
+        return FillPlanarHole().targets_for(defect)      # the same located loop, aimed the same way
+
+    def apply(self, shape, targets: tuple[EntityRef, ...], *,
+              tolerance_mm: float) -> OpOutcome:
+        import meshpipeline.cad.repair.conservative as conservative
+        import meshpipeline.cad.repair.localize as localize
+        import meshpipeline.settings.cad_repair as rcfg
+
+        if not rcfg.CAD_REPAIR_FILL_NONPLANAR_HOLES:
+            return OpOutcome(shape=shape, evidence={
+                "declined": "filling_disabled (CAD_REPAIR_FILL_NONPLANAR_HOLES)"})
+        if not targets:
+            return OpOutcome(shape=shape, evidence={"declined": "no loop was named"})
+        if len(targets) > 1:
+            return OpOutcome(shape=shape, evidence={
+                "declined": f"one_loop_only ({len(targets)} targets named)"})
+
+        wire = free_wire_containing(shape, targets[0].entity_index)
+        if wire is None:
+            return OpOutcome(shape=shape,
+                             evidence={"declined": "the named edge bounds no closed free loop"})
+
+        diagonal = localize._diagonal(shape)
+        span = conservative._span(wire)
+        ratio = (span / diagonal) if diagonal > 0 else 0.0
+        measured = {"span_mm": round(span, 6), "span_ratio": round(ratio, 6)}
+        if diagonal > 0 and ratio > rcfg.CAD_REPAIR_MAX_HOLE_SPAN_RATIO:
+            return OpOutcome(shape=shape, evidence={
+                "declined": f"too_large (span ratio {ratio:.4f})", **measured})
+        if _is_planar_loop(wire):
+            return OpOutcome(shape=shape, evidence={
+                "declined": "planar (fill_planar_hole's loop)", **measured})
+
+        patch, g0, g1, builder = _build_patch(wire, tolerance_mm=tolerance_mm, shape=shape)
+        if patch is None or g0 > tolerance_mm:
+            detail = ("no patch could be built" if patch is None
+                      else f"G0 {g0:.6g} mm over tolerance {tolerance_mm:g} mm")
+            return OpOutcome(shape=shape, evidence={
+                "declined": f"boundary_error ({detail})", **measured,
+                **({"g0_error_mm": round(g0, 9), "builder": builder} if patch is not None
+                   else {})})
+        fit = {"g0_error_mm": round(float(g0), 9), "g1_achieved": bool(g1), "builder": builder}
+        if _bulges(patch, wire):
+            return OpOutcome(shape=shape, evidence={"declined": "patch_bulges", **measured, **fit})
+
+        # MEASURED BEFORE ANYTHING IS SEWN: the declaration is the patch's own area, not whatever
+        # sewing later makes of it.
+        patch_area = localize._face_area(patch)
+        sewn = _sew_patch(shape, patch, tolerance_mm=tolerance_mm)
+        if sewn is None:
+            return OpOutcome(shape=shape, evidence={"declined": "sewing_failed", **measured, **fit})
+        promoted, sewing = sewn
+
+        quantum = quantum_for(diagonal)
+        patch_fingerprint = fingerprint_of("face", box_of(patch), quantum=quantum)
+        mapping = mapping_from_sewing(sewing, targets, shape_before=shape, diagonal_mm=diagonal)
+        return OpOutcome(
+            shape=promoted, mapping=mapping,
+            added=(patch_fingerprint,) if patch_fingerprint else (),
+            evidence={AREA_DELTA: round(float(patch_area), 6), "patch_is_planar": False,
+                      **fit, **measured, "tolerance_mm": float(tolerance_mm)})
+
+
 class FixShapeGlobal:
     """Today's whole-shape `ShapeFix_Shape`, kept as the LAST RESORT.
 
@@ -758,9 +1052,10 @@ OPERATIONS: tuple[RepairOp, ...] = (
     FixFaceBoundary(),
     SewFaces(),
     FillPlanarHole(),
+    FillNonplanarHole(),
     FixShapeGlobal(),
 )
 
 #: Names of the operations that FILL a hole. Every one of them is held back by the through-hole
 #: (paired rim) guard, so a new fill operation joins this set or it runs unguarded.
-FILL_OPS: frozenset[str] = frozenset({FillPlanarHole.name})
+FILL_OPS: frozenset[str] = frozenset({FillPlanarHole.name, FillNonplanarHole.name})

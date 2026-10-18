@@ -565,11 +565,13 @@ async def test_a_decision_takes_the_parks_lock_and_a_park_closed_meanwhile_is_a_
     world.repo.record_decision.assert_not_called()
 
 
-async def test_a_group_fill_runs_as_one_fill_per_hole_each_owned_by_its_member():
-    """fill_planar_hole patches exactly one hole and the progress rule needs every target gone, so
-    one fill aimed at two separate holes left the second open and rolled back whole."""
-    g = "open_shell:fill_planar_hole"
-    redirect = {"op": "fill_planar_hole", "targets": ["edge:0001", "edge:0002"],
+@pytest.mark.parametrize("fill", ["fill_planar_hole", "fill_nonplanar_hole"])
+async def test_a_group_fill_runs_as_one_fill_per_hole_each_owned_by_its_member(fill):
+    """Each fill patches exactly one hole and the progress rule needs every target gone, so one
+    fill aimed at two separate holes left the second open and rolled back whole. The curved fill
+    is split the same way: it declines a second loop outright (`one_loop_only`)."""
+    g = f"open_shell:{fill}"
+    redirect = {"op": fill, "targets": ["edge:0001", "edge:0002"],
                 "defect_code": "open_shell", "defect_fingerprint": "edge:0001",
                 "source": "engineer", "item_id": str(uuid.UUID(int=1))}
     items = [_item(1, group=g, state="redirected", decided=1,
@@ -582,7 +584,7 @@ async def test_a_group_fill_runs_as_one_fill_per_hole_each_owned_by_its_member()
     assert [(d["targets"], d["item_id"]) for d in directives] == [
         (["edge:0001"], str(uuid.UUID(int=1))), (["edge:0002"], str(uuid.UUID(int=2)))]
     # one decision over many is not a person's look at each hole: the rim guard still applies
-    assert all(d["group"] and d["op"] == "fill_planar_hole" for d in directives)
+    assert all(d["group"] and d["op"] == fill for d in directives)
 
 
 async def test_replacing_a_group_answer_with_another_keeps_the_members_it_covered():

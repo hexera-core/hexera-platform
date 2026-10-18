@@ -73,6 +73,26 @@ async def test_a_mixed_reply_plays_the_valid_and_declines_each_invalid_alone(dec
 
 
 @pytest.mark.asyncio
+async def test_a_multi_target_nonplanar_fill_is_declined_like_the_planar_one(declines):
+    model_inference.set_model_router(_Router({"proposals": [
+        _p(op="fill_nonplanar_hole", fp="fa", targets=["fa", "fb"])]}))
+    out = await llm_plan(_report(), story={}, job_id="j")
+    assert out.directives == []
+    assert [d["reason"] for d in out.declines] == ["fill_nonplanar_hole takes exactly one target"]
+
+
+def test_the_prompt_names_every_fill_as_single_target():
+    from meshpipeline.agents.repair_review import _wire
+    from meshpipeline.agents.repair_review.planner import PLANNER_SYSTEM
+
+    assert len(_wire.FILL_CATALOGUE) == 2
+    for name in _wire.FILL_CATALOGUE:
+        assert name in PLANNER_SYSTEM.split("never invent", 1)[1]
+    assert "takes exactly one target" not in PLANNER_SYSTEM
+    assert "take exactly one target" in PLANNER_SYSTEM
+
+
+@pytest.mark.asyncio
 async def test_confidence_at_the_threshold_plays_and_below_declines(declines):
     t = rcfg.CAD_REPAIR_LLM_PLANNER_MIN_CONFIDENCE
     model_inference.set_model_router(_Router({"proposals": [

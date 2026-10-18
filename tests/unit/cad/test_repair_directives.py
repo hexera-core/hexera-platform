@@ -261,6 +261,33 @@ def test_one_hole_of_a_group_fill_still_meets_the_rim_guard(monkeypatch):
     assert [u["reason"] for u in grouped.unplayable] == ["fill_refused"]
 
 
+def test_the_nonplanar_fill_meets_the_same_rim_guard_as_the_planar_one(monkeypatch):
+    """A curved patch over one rim of a missing passage seals it exactly as a flat one would, so
+    a model's or a group's `fill_nonplanar_hole` on a paired rim is refused; an engineer's
+    individual look at that one rim still plays."""
+    import meshpipeline.cad.repair.directives as directives
+    from meshpipeline.cad.repair.plan import RunHistory
+    monkeypatch.setattr(directives, "paired_rim_fingerprints",
+                        lambda shape, defects: frozenset({"rim:a", "rim:b"}))
+    rims = (_rim("rim:a", 1), _rim("rim:b", 2))
+
+    class _Nothing:
+        def propose(self, *a, **k): return None
+
+    def nonplanar(**extra):
+        return {**_fill_on(["rim:a"]), "op": "fill_nonplanar_hole", **extra}
+
+    for refused in (nonplanar(source="llm-planner", item_id=""), nonplanar(group=True)):
+        planner = DirectedPlanner([refused], _Nothing())
+        assert planner.propose(rims, RunHistory(), shape="shape") is None
+        assert [u["reason"] for u in planner.unplayable] == ["fill_refused"]
+
+    individual = DirectedPlanner([nonplanar()], _Nothing())
+    candidate = individual.propose(rims, RunHistory(), shape="shape")
+    assert candidate is not None and candidate.op.name == "fill_nonplanar_hole"
+    assert [t.fingerprint for t in candidate.targets] == ["rim:a"]
+
+
 def test_an_automatic_fill_is_refused_when_the_rim_check_could_not_run(monkeypatch):
     """FAIL CLOSED. An unanswered pairing question is not "this rim has no partner", so a model's
     or a replay's fill is refused rather than played on a guess - even when the unknown answer

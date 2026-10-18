@@ -28,7 +28,8 @@ PLANNER_SYSTEM = (
     'defects>", "defect_code": "<the code of the defect at that fingerprint it answers>", '
     '"targets": ["<fingerprints, all of one kind>"], "confidence": <number from 0 '
     'to 1>, "rationale": "<one lowercase sentence, under 200 characters>"}]}. never invent an '
-    "operation outside the catalogue; fill_planar_hole takes exactly one target; reply with an "
+    f"operation outside the catalogue; {' and '.join(_wire.FILL_CATALOGUE)} "
+    "each take exactly one target; reply with an "
     'empty "proposals" list when nothing fits.')
 
 

@@ -58,10 +58,14 @@ def test_the_fixture_has_one_small_curved_opening_no_flat_lid_fits(tmp_path):
     assert _span(loops[0]) / _diagonal(shape) < 0.75
 
 
-@pytest.mark.xfail(strict=True, reason="fill_nonplanar_hole not yet implemented")
 def test_a_curved_opening_is_closed_by_the_nonplanar_fill(tmp_path, monkeypatch):
     monkeypatch.setattr(rcfg, "CAD_REPAIR_FILL_PLANAR_HOLES", True)
     monkeypatch.setattr(rcfg, "CAD_REPAIR_FILL_NONPLANAR_HOLES", True)
+    # THREE MISSES, NOT THE SHIPPED TWO. On this bare shell the rules planner tries sew_faces
+    # (rolled back: target_remains) and fill_planar_hole (declined: not_planar) first, and at
+    # CAD_REPAIR_STALL_LIMIT=2 the run stalls before the curved fill is ever proposed. The plan
+    # keeps the default at 2, so this test opts in to reach the operation it is about.
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_STALL_LIMIT", 3)
     shape = _read(write_cylinder_cap_hole_step(tmp_path / "cap.step"))
     run = loop.run(shape, tolerance_mm=0.01)
     ops = [(v.op, v.status, v.reason) for v in run.verdicts]
@@ -71,3 +75,25 @@ def test_a_curved_opening_is_closed_by_the_nonplanar_fill(tmp_path, monkeypatch)
     assert kept[0].basis in ("geometric", "kernel")
     assert not any(d.code is DefectCode.open_shell for d in run.defects)
     assert 0 < kept[0].evidence["area_delta_mm2"] < 2 * 418.9   # 20 * 60deg arc of r=20
+
+
+@pytest.mark.parametrize("builder", ["g1", "g0", "plate"])
+def test_every_builder_closes_the_curved_opening_within_tolerance(tmp_path, builder):
+    # The fallbacks are reached only when the builder before them fails, which the fixture never
+    # makes happen - so each is driven directly here, or it would ship untested.
+    import meshpipeline.cad.repair.operations as operations
+    from meshpipeline.cad.repair.localize import _face_area
+
+    shape = _read(write_cylinder_cap_hole_step(tmp_path / "cap.step"))
+    wire = _closed_free_loops(shape)[0]
+    edges = operations._wire_edges(wire)
+    if builder == "plate":
+        face, g0, g1 = operations._plate(wire, edges)
+    else:
+        supports = operations._support_faces(shape, edges) if builder == "g1" else None
+        face, g0, g1 = operations._filling(edges, supports)
+    assert g0 <= 0.01 and g1 is (builder == "g1")
+    assert not operations._bulges(face, wire)
+    assert 0.9 * 418.9 < _face_area(face) < 1.1 * 418.9
+    sewn = operations._sew_patch(shape, face, tolerance_mm=0.01)
+    assert sewn is not None and _closed_free_loops(sewn[0]) == []
