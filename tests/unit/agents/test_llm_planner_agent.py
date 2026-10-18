@@ -90,15 +90,17 @@ async def test_no_router_returns_empty_without_raising(declines):
 
 
 @pytest.mark.asyncio
-async def test_one_retry_then_fail_open(declines):
+async def test_one_retry_then_fail_open(monkeypatch, declines):
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_LLM_PLANNER_CALLS_MAX", 2)
     router = _Router("not json", {"proposals": [_p()]})
     model_inference.set_model_router(router)
     out = await llm_plan(_report(), story={}, job_id="j")
     assert router.calls == out.called == 2 and len(out.directives) == 1
+    assert len(out.call_failures) == 1 and out.declines == []
     router = _Router("not json", "still not json", {"proposals": [_p()]})
     model_inference.set_model_router(router)
     out = await llm_plan(_report(), story={}, job_id="j")
-    assert router.calls == 2 and out.directives == [] and out.declines
+    assert router.calls == 2 and out.directives == [] and len(out.call_failures) == 2
 
 
 @pytest.mark.asyncio
@@ -120,3 +122,31 @@ async def test_the_model_order_is_preserved_and_ids_are_stamped(declines):
     d = out.directives[0]
     assert d["source"] == "llm-planner" and d["item_id"] == "" and d["targets"] == ["fc"]
     assert d["defect_code"] == "open_wire" and d["planner_confidence"] == 0.9
+
+
+@pytest.mark.asyncio
+async def test_a_target_of_another_code_than_the_defect_fingerprint_declines(declines):
+    model_inference.set_model_router(_Router({"proposals": [_p(fp="fa", targets=["fc"])]}))
+    out = await llm_plan(_report(), story={}, job_id="j")
+    assert out.directives == [] and len(out.declines) == 1
+
+
+@pytest.mark.asyncio
+async def test_nan_inf_and_malformed_targets_decline_and_duplicates_collapse(declines):
+    bad = [_p(conf=float("nan")), _p(conf=float("inf")), _p(targets="fa"),
+           {**_p(), "targets": []}, {**_p(), "targets": None}]
+    ok = _p(targets=["fa", "fa", "fb"])
+    model_inference.set_model_router(_Router('{"proposals": ' + json.dumps(bad + [ok]).replace(
+        "NaN", "NaN") + "}"))
+    out = await llm_plan(_report(), story={}, job_id="j")
+    assert len(out.declines) == 5 and out.directives[0]["targets"] == ["fa", "fb"]
+
+
+@pytest.mark.asyncio
+async def test_an_empty_list_is_one_logged_decline_and_no_entities_makes_no_call(declines):
+    router = _Router({"proposals": []})
+    model_inference.set_model_router(router)
+    out = await llm_plan(_report(), story={}, job_id="j")
+    assert out.directives == [] and len(out.declines) == 1 and len(declines) == 1
+    out = await llm_plan({"entities": []}, story={}, job_id="j")
+    assert router.calls == 1 and out.called == 0

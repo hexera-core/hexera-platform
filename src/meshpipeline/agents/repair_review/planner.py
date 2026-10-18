@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from dataclasses import dataclass, field
 
 from meshpipeline.agents.repair_review import _wire
@@ -34,6 +35,7 @@ PLANNER_SYSTEM = (
 class PlanResult:
     directives: list[dict] = field(default_factory=list)
     declines: list[dict] = field(default_factory=list)
+    call_failures: list[dict] = field(default_factory=list)
     called: int = 0
     model_reply_cached: bool = False
 
@@ -58,7 +60,7 @@ def _log_decline(job_id: str, reason: str, proposal: object) -> dict:
 def _confidence(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    return float(value)
+    return float(value) if math.isfinite(value) else None
 
 
 def _validate(proposal: object, code_of: dict[str, str]) -> tuple[dict | None, str]:
@@ -70,13 +72,17 @@ def _validate(proposal: object, code_of: dict[str, str]) -> tuple[dict | None, s
     fp = str(proposal.get("defect_fingerprint") or "")
     if fp not in code_of:
         return None, "defect fingerprint is not in the scan"
-    raw = proposal.get("targets")
-    targets = [str(t) for t in raw] if isinstance(raw, list) and raw else [fp]
-    unknown = [t for t in targets if t not in code_of]
-    if unknown:
+    if "targets" in proposal:
+        raw = proposal["targets"]
+        if not isinstance(raw, list) or not raw:
+            return None, "targets must be a non-empty list"
+        targets = list(dict.fromkeys(str(t) for t in raw))
+    else:
+        targets = [fp]
+    if any(t not in code_of for t in targets):
         return None, "a target fingerprint is not in the scan"
-    if len({code_of[t] for t in targets}) > 1:
-        return None, "targets span different defect codes"
+    if any(code_of[t] != code_of[fp] for t in targets):
+        return None, "targets do not share the defect fingerprint's code"
     confidence = _confidence(proposal.get("confidence"))
     if confidence is None:
         return None, "confidence missing or not a number"
@@ -96,7 +102,7 @@ async def _ask(user: str, job_id: str, result: PlanResult) -> list | None:
                                 timeout_s=float(rcfg.CAD_REPAIR_LLM_PLANNER_TIMEOUT_S))
         if reply is not None and isinstance(reply.get("proposals"), list):
             return reply["proposals"]
-        result.declines.append(_log_decline(job_id, "no usable reply", reply))
+        result.call_failures.append(_log_decline(job_id, "no usable reply", reply))
     return None
 
 
@@ -105,11 +111,15 @@ async def llm_plan(report: dict, *, story: dict, job_id: str = "") -> PlanResult
     try:
         if not _wire.configured():
             return result
+        if not (report or {}).get("entities"):
+            return result
         user = _context(report or {}, story or {})
         code_of = {str(e["fingerprint"]): str(e.get("code") or "")
                    for e in (report or {}).get("entities") or ()
                    if isinstance(e, dict) and e.get("fingerprint")}
         proposals = await _ask(user, job_id, result)
+        if proposals == []:
+            result.declines.append(_log_decline(job_id, "model declined", proposals))
         for proposal in proposals or []:
             directive, reason = _validate(proposal, code_of)
             if directive is None:
