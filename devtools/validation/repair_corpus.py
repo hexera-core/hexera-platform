@@ -258,9 +258,21 @@ def heal_corroborated(shape) -> bool | None:
     (ec_turbine-A's), so a kept heal is only believed once this agrees; a heal counts toward the
     turbine class only when this is True."""
     from meshpipeline.cad import surface_checks
+    # surface_checks answers None both for "no crossing" and "could not tell", so the second is
+    # ruled out here first: the render stack must import, and a tessellation that exists must hold
+    # a checkable number of triangles. True is only ever returned for a check that actually ran.
+    try:
+        import pyvista as pv
+        from vtkmodules.vtkCommonDataModel import vtkTriangle  # noqa: F401
+    except Exception:  # noqa: BLE001
+        return None
     try:
         with tempfile.TemporaryDirectory() as tmp:
             stl = _tessellate_to_stl(shape, Path(tmp) / "healed.stl")
+            if Path(stl).exists():
+                cells = pv.read(str(stl)).n_cells
+                if cells == 0 or cells > 400_000:  # surface_checks' own max_faces default
+                    return None
             return surface_checks.self_intersection_report(stl) is None
     except Exception:  # noqa: BLE001 - an unrunnable check is "unknown", not "failed"
         return None
@@ -583,10 +595,13 @@ def main() -> int:
     print("\n== heals corroborated by the triangle check ==")
     kept_heals = [r for r in rows if "heal_corroborated" in r]
     corroborated = [r for r in kept_heals if r["heal_corroborated"] is True]
-    print(f"  {len(corroborated)} / {len(kept_heals)}")
+    unknown = [r for r in kept_heals if r["heal_corroborated"] is None]
+    print(f"  corroborated {len(corroborated)} / kept {len(kept_heals)}, unknown {len(unknown)}")
     for r in kept_heals:
-        if r["heal_corroborated"] is not True:
-            print(f"        uncorroborated: {r['file']} ({r['heal_corroborated']})")
+        if r["heal_corroborated"] is False:
+            print(f"        uncorroborated: {r['file']}")
+        elif r["heal_corroborated"] is None:
+            print(f"        unknown (check could not run): {r['file']}")
 
     if args.planner != "off":
         _print_planner(planner_summary(rows, args.planner), cache)

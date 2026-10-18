@@ -48,3 +48,17 @@ def test_a_check_that_cannot_run_is_none(monkeypatch):
         raise RuntimeError("no kernel")
     monkeypatch.setattr(corpus, "_tessellate_to_stl", boom)
     assert corpus.heal_corroborated(object()) is None
+
+
+def test_an_unavailable_checker_is_unknown_not_corroborated(monkeypatch):
+    import builtins
+    real = builtins.__import__
+
+    def no_pyvista(name, *a, **kw):
+        if name == "pyvista":
+            raise ImportError("no pyvista")
+        return real(name, *a, **kw)
+    monkeypatch.setattr(builtins, "__import__", no_pyvista)
+    monkeypatch.setattr(corpus, "_tessellate_to_stl", lambda shape, path: path)
+    monkeypatch.setattr(surface_checks, "self_intersection_report", lambda p, **kw: None)
+    assert corpus.heal_corroborated(object()) is None
