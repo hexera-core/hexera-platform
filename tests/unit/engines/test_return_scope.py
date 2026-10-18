@@ -34,10 +34,20 @@ def _archive_bytes(ws: Path) -> int:
     return len(buf.getvalue())
 
 
-def test_the_estimate_is_close_to_the_real_archive(tmp_path):
-    ws = _ws(tmp_path, volume_bytes=6_000_000)          # over the whole-file threshold: sampled
+def test_the_measure_matches_the_real_archive_and_never_reads_low(tmp_path):
+    ws = _ws(tmp_path, volume_bytes=6_000_000)
     est, real = RS.estimate_archive_bytes(ws), _archive_bytes(ws)
-    assert 0.8 * real <= est <= 1.25 * real, (est, real)
+    assert 0.99 * real <= est <= 1.15 * real, (est, real)
+
+
+def test_a_file_that_compresses_unevenly_is_measured_whole(tmp_path):
+    # compressible at its start, middle and end, random between: a sample of three would read it
+    # as almost nothing
+    rnd = os.urandom(3_000_000)
+    p = tmp_path / "uneven.bin"
+    p.write_bytes(b"\0" * 1_100_000 + rnd + b"\0" * 1_100_000 + rnd + b"\0" * 1_100_000)
+    real = len(gzip.compress(p.read_bytes(), 9))
+    assert real <= RS.compressed_size(p) <= 1.05 * real + 1024
 
 
 def test_nothing_is_left_out_of_an_archive_that_fits(tmp_path):
@@ -92,5 +102,5 @@ def test_every_engine_run_is_scoped_before_it_goes_home(tmp_path, monkeypatch):
 def test_an_empty_file_still_costs_its_archive_header(tmp_path):
     p = tmp_path / "empty"
     p.write_bytes(b"")
-    assert RS.compressed_size(p) == 512
-    assert RS.compressed_size(Path(gzip.__file__)) > 512
+    assert 512 <= RS.compressed_size(p) <= 600
+    assert RS.compressed_size(Path(gzip.__file__)) > 600

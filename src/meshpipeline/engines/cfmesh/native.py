@@ -84,7 +84,7 @@ def _rescued(ws: Path, q: dict, *, bashrc: str, timing: dict, t0: float, timeout
     mesher_s = float(timing.get(f"{CARTESIAN_2D_MESH if is_2d else CARTESIAN_MESH}_s") or 0.0)
     try:
         out = rescue(ws, q, bashrc=bashrc, deadline=deadline, mesher_seconds=mesher_s,
-                     is_2d=is_2d)
+                     check_seconds=float(timing.get("checkMesh_s") or 0.0), is_2d=is_2d)
     except Exception:  # noqa: BLE001 - a second chance must never lose the first mesh
         logger.warning("cfMesh rescue errored; the mesh as built stands", exc_info=True)
         return q

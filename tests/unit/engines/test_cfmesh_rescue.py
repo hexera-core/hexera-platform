@@ -88,10 +88,13 @@ def test_the_edge_is_a_fatal_defect_or_cells_past_75_degrees():
 
 
 def test_no_fatal_defect_beats_any_angle_then_the_lowest_angle_wins():
-    assert RS.better({"max_non_ortho": 88.0, "fatal": []}, {"max_non_ortho": 60.0, "fatal": ["x"]})
-    assert not RS.better({"max_non_ortho": 60.0, "fatal": ["x"]}, {"max_non_ortho": 88.0})
-    assert RS.better({"max_non_ortho": 79.0}, {"max_non_ortho": 84.3})
-    assert not RS.better({"max_non_ortho": 84.0}, {"max_non_ortho": 84.3}), "noise is no gain"
+    c = {"cells": 1000}
+    assert RS.better({**c, "max_non_ortho": 88.0, "fatal": []},
+                     {**c, "max_non_ortho": 60.0, "fatal": ["x"]})
+    assert not RS.better({**c, "max_non_ortho": 60.0, "fatal": ["x"]}, {**c, "max_non_ortho": 88.0})
+    assert RS.better({**c, "max_non_ortho": 79.0}, {**c, "max_non_ortho": 84.3})
+    assert not RS.better({**c, "max_non_ortho": 84.0}, {**c, "max_non_ortho": 84.3}), \
+        "noise is no gain"
 
 
 def test_the_optimiser_fixes_a_broken_mesh_and_its_mesh_is_kept(tmp_path):
@@ -140,7 +143,7 @@ def test_when_nothing_measures_better_the_mesh_as_built_is_kept(tmp_path):
 def test_a_missing_optimiser_binary_costs_nothing(tmp_path):
     ws = _ws(tmp_path)
     calls: list = []
-    table = {"remeshed": {"max_non_ortho": 71.0, "fatal": []}}
+    table = {"remeshed": {"cells": 980_000, "max_non_ortho": 71.0, "fatal": []}}
     out = _rescue(ws, dict(_BROKEN), table, calls, optimise_rc=127)
     assert out["rescue"]["kept"] == "re-meshed protecting the layers"
     assert out["rescue"]["tried"][0]["rc"] == 127
@@ -155,6 +158,42 @@ def test_no_re_mesh_when_the_cap_does_not_hold_another_run(tmp_path):
     assert calls[0]["timeout"] <= 400
     assert any("no time left" in str(s.get("skipped")) for s in out["rescue"]["tried"])
     assert (ws / "constant" / "polyMesh" / "owner").read_text() == "as built"
+
+
+def test_a_check_that_died_early_never_wins(tmp_path):
+    # checkMesh that stopped before reporting still comes back with no fatal defect listed
+    ws = _ws(tmp_path)
+    calls: list = []
+    table = {"optimised(as built)": {"mesh_ok": False, "fatal": [], "skew_faces": 0},
+             "remeshed": {"mesh_ok": False, "fatal": []},
+             "optimised(remeshed)": {"mesh_ok": False, "fatal": []}}
+    out = _rescue(ws, dict(_BROKEN), table, calls)
+    assert out["rescue"]["kept"] == "as built"
+    assert (ws / "constant" / "polyMesh" / "owner").read_text() == "as built"
+    assert not RS.better({"fatal": []}, dict(_BROKEN))
+
+
+def test_a_candidate_with_no_time_left_to_measure_it_is_none(tmp_path, monkeypatch):
+    ws = _ws(tmp_path)
+    calls: list = []
+    table = {"optimised(as built)": {"cells": 9, "max_non_ortho": 60.0, "fatal": []}}
+    clock = iter([0.0, 0.0] + [1e6] * 50)          # the optimiser runs, then the cap is spent
+    monkeypatch.setattr(RS.time, "monotonic", lambda: next(clock))
+    out = RS.rescue(ws, dict(_BROKEN), bashrc="b", deadline=500.0, mesher_seconds=30.0,
+                    check_seconds=10.0, measure=_measure(table), runner=_runner(calls), env={})
+    assert out["rescue"]["kept"] == "as built"
+    assert (ws / "constant" / "polyMesh" / "owner").read_text() == "as built"
+
+
+def test_a_case_that_cannot_be_read_back_is_not_touched(tmp_path):
+    ws = _ws(tmp_path)
+    (ws / "system" / "meshDict").unlink()
+    (ws / "system" / "meshDict").mkdir()            # reading it fails
+    calls: list = []
+    out = _rescue(ws, dict(_BROKEN), {}, calls)
+    assert out == _BROKEN and calls == []
+    assert (ws / "constant" / "polyMesh" / "owner").read_text() == "as built"
+    assert not (ws / RS.SCRATCH).exists()
 
 
 def test_a_mesh_too_big_to_copy_is_not_rescued(tmp_path):

@@ -35,31 +35,34 @@ RETURN_SCOPE_FILE = "return_scope.json"
 SCRATCH_DIRS = ("_rescue",)
 #: Files the delivery can do without, in the order they are given up: the volume exports.
 OPTIONAL_GLOBS = ("VTK/**/internal.vtu",)
-#: The archive is kept this far under the ceiling (the estimate is a sample, not the archive).
+#: The archive is kept this far under the ceiling.
 HEADROOM = 0.9
-#: Files above this size are estimated by compressing a sample of them; smaller ones count whole.
-_SAMPLE_OVER = 4 * 1024 * 1024
-_SAMPLE_BYTES = 2 * 1024 * 1024
+#: How the archive's size is measured: every file compressed whole. Level 6 is a little LARGER than
+#: the archive's own level 9 (tarfile's gzip default) and three times as fast, so the measure errs
+#: on the side of leaving the volume out. No sampling: a file can compress unevenly.
+MEASURE_LEVEL = 6
+#: tar's header and padding per member
+_MEMBER_BYTES = 512
+_CHUNK = 4 * 1024 * 1024
 
 
 def compressed_size(path: Path) -> int:
-    """About what `path` adds to a gzip archive: small files compressed whole, large ones by a
-    sample from their middle (a mesh file is the same few kinds of line from end to end)."""
-    size = path.stat().st_size
-    if size == 0:
-        return 512
+    """What `path` adds to a gzip archive, measured by compressing it whole."""
+    z = zlib.compressobj(MEASURE_LEVEL)
+    out = 0
     with path.open("rb") as fh:
-        if size <= _SAMPLE_OVER:
-            return len(zlib.compress(fh.read(), 6)) + 512
-        fh.seek(max(0, size // 2 - _SAMPLE_BYTES // 2))
-        chunk = fh.read(_SAMPLE_BYTES)
-    ratio = len(zlib.compress(chunk, 6)) / max(1, len(chunk))
-    return int(size * ratio) + 512
+        while chunk := fh.read(_CHUNK):
+            out += len(z.compress(chunk))
+    return out + len(z.flush()) + _MEMBER_BYTES
 
 
 def estimate_archive_bytes(workspace) -> int:
-    """About how large the gzip archive of `workspace` will be."""
+    """How large the gzip archive of `workspace` will be (compressed_size of every file)."""
     return sum(compressed_size(p) for p in Path(workspace).rglob("*") if p.is_file())
+
+
+def raw_bytes(workspace) -> int:
+    return sum(p.stat().st_size for p in Path(workspace).rglob("*") if p.is_file())
 
 
 def archive_ceiling() -> int:
@@ -81,8 +84,12 @@ def scope_return(workspace, *, ceiling: int | None = None) -> dict | None:
             shutil.rmtree(d, ignore_errors=True)
             removed.append(name + "/")
     cap = int(ceiling if ceiling is not None else archive_ceiling())
-    estimate = estimate_archive_bytes(ws)
     left_out: list[dict] = []
+    # a workspace whose raw bytes fit can never compress past the ceiling: nothing to measure.
+    # One that does not is measured file by file (about a minute for a few GB of mesh files).
+    estimate = raw_bytes(ws)
+    if estimate > HEADROOM * cap:
+        estimate = estimate_archive_bytes(ws)
     if estimate > HEADROOM * cap:
         optional = sorted({p for g in OPTIONAL_GLOBS for p in ws.glob(g) if p.is_file()},
                           key=lambda p: -p.stat().st_size)
@@ -117,5 +124,6 @@ def scope_return(workspace, *, ceiling: int | None = None) -> dict | None:
     return record
 
 
-__all__ = ["HEADROOM", "OPTIONAL_GLOBS", "RETURN_SCOPE_FILE", "SCRATCH_DIRS", "archive_ceiling",
-           "compressed_size", "estimate_archive_bytes", "scope_return"]
+__all__ = ["HEADROOM", "MEASURE_LEVEL", "OPTIONAL_GLOBS", "RETURN_SCOPE_FILE", "SCRATCH_DIRS",
+           "archive_ceiling", "compressed_size", "estimate_archive_bytes", "raw_bytes",
+           "scope_return"]
