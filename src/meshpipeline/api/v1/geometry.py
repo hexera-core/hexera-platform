@@ -44,6 +44,11 @@ class ConfirmedOpening(BaseModel):
     diameter_mm: float | None = None
     width_mm: float | None = None
     height_mm: float | None = None
+    #: AN ANNULUS, as the check measured it (cad/scout): the diameter of the centre rod or hub
+    #: standing in the bore, and the area the flow crosses between them. Sent back as the
+    #: proposal carried them; anything that is no positive length or area is dropped.
+    inner_diameter_mm: float | None = None
+    flow_area_mm2: float | None = None
     #: Which way the mouth faces, out of the part: the check's own measurement, for an opening it
     #: proposed and for one the user added on an open end alike. Unit-free, so a change of unit
     #: leaves it as it is. Stored as a unit vector; three numbers that are no direction are dropped.
@@ -57,6 +62,12 @@ class ConfirmedOpening(BaseModel):
             return None
         length = math.sqrt(sum(x * x for x in v))
         return [x / length for x in v] if length > 0 else None
+
+    @field_validator("inner_diameter_mm", "flow_area_mm2")
+    @classmethod
+    def _a_positive_size(cls, v):
+        import math
+        return v if v is not None and math.isfinite(v) and v > 0 else None
 
 
 class ConfirmIn(BaseModel):

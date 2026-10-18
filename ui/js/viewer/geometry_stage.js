@@ -531,7 +531,10 @@ function initScene(sessionId, box, surf, p) {
     const id = nextId();
     return place({ id, name: `opening_${id}`, role: "outlet", shape: h.shape, kind: h.kind, confidence: 0.5,
       centroid_m: h.centroid_m, centroid_mm: h.centroid_mm, normal: h.normal,
-      diameter_mm: h.diameter_mm, width_mm: h.width_mm, height_mm: h.height_mm, added: true, snapped: true, open_end: true });
+      diameter_mm: h.diameter_mm, width_mm: h.width_mm, height_mm: h.height_mm,
+      // an annular mouth: the centre body standing in it, so the opening confirmed is the ring
+      inner_diameter_mm: h.inner_diameter_mm, flow_area_mm2: h.flow_area_mm2,
+      added: true, snapped: true, open_end: true });
   }
   /** What a click does, along the ray through the clicked pixel (see above): the opening it
    *  added, or null - nothing met, or the stage now asking for the hole's edge. */
@@ -590,7 +593,9 @@ function initScene(sessionId, box, surf, p) {
     const id = nextId();
     return { id, name: `opening_${id}`, role: "outlet", shape: f.shape, kind: f.kind, confidence: 0.5,
       centroid_m: f.centroid_m, centroid_mm: f.centroid_mm, normal: f.normal,
-      diameter_mm: f.diameter_mm, width_mm: f.width_mm, height_mm: f.height_mm, added: true, snapped: true, ...extra };
+      diameter_mm: f.diameter_mm, width_mm: f.width_mm, height_mm: f.height_mm,
+      inner_diameter_mm: f.inner_diameter_mm, flow_area_mm2: f.flow_area_mm2,
+      added: true, snapped: true, ...extra };
   }
   /** The measured flat face a point on the part lies on, or null. Of concentric faces - a coaxial
    *  fitting's inner and outer port share a centre - the smallest one that still reaches the

@@ -342,6 +342,37 @@ def _rim_measure(pts: list) -> dict | None:
     return {"area_m2": 0.5 * norm, "centroid": c, "wh_m": _min_rect_wh(p2)}
 
 
+def stands_in_opening(opening: dict, normal, area: float, centroid, outer_wh=None) -> bool:
+    """WHAT FILLS A RING'S OPENING, the one definition the geometry check's scout and the
+    internal-flow staging both use. A ring face's inner wire (`opening`: {"area_m2",
+    "centroid", "wh_m"}, as _rim_measure gives it) encloses a bore; a body standing in the bore -
+    the centre rod or hub of an annular passage, often a solid of its own - shows a flat end face
+    inside that wire, in the same plane. Such a face is smaller than the opening, lies in its
+    plane, has its centre within the opening and, when the extent of its own outer rim
+    (`outer_wh`) is known, fits inside it - its rim's short and long sides inside the opening's
+    short and long sides (a 380 x 30 mm bar in a 400 x 40 mm duct fits): a flange band round the
+    same hole is centred on it and coplanar too, but wider than the hole. The flow crosses the
+    opening less these faces."""
+    try:
+        o_area = float(opening["area_m2"])
+        oc = tuple(float(v) for v in opening["centroid"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    if len(oc) != 3 or not 0.0 < float(area) < o_area:
+        return False
+    wh = opening.get("wh_m") or ()
+    reach = 0.5 * min(wh) if len(wh) == 2 and min(wh) > 0 else math.sqrt(o_area / math.pi)
+    off = [float(centroid[k]) - oc[k] for k in range(3)]
+    if abs(sum(off[k] * float(normal[k]) for k in range(3))) > 1e-3 * reach:
+        return False
+    if math.sqrt(sum(v * v for v in off)) >= reach:
+        return False
+    if outer_wh is not None and len(wh) == 2 and min(wh) > 0 and max(outer_wh) > 0:
+        (a, b), (p, q) = sorted(float(v) for v in outer_wh), sorted(float(v) for v in wh)
+        return a < p and b < q
+    return True
+
+
 def _ring_membrane(ring: list) -> list:
     """Membrane triangles spanning one closed rim ring.
 
@@ -1481,11 +1512,8 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
         return rec
 
     def _filled_area(pi, prof) -> float:
-        """Area of the other flat faces lying inside a ring face's inner wire, in its plane."""
-        oc = prof["centroid"]
-        wh = prof.get("wh_m") or ()
-        reach = (0.5 * min(wh) if len(wh) == 2 and min(wh) > 0
-                 else _m.sqrt(float(prof["area_m2"]) / _m.pi))
+        """Area of the other flat faces standing in a ring face's inner wire, in its plane
+        (stands_in_opening: the geometry check's scout reads an opening the same way)."""
         ax = BRepAdaptor_Surface(faces[pi]).Plane().Axis().Direction()
         n = (ax.X(), ax.Y(), ax.Z())
         total = 0.0
@@ -1493,11 +1521,11 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
             if j == pi or BRepAdaptor_Surface(fj).GetType() != GeomAbs_Plane:
                 continue
             a, c = _face_props(fj)
-            if a >= float(prof["area_m2"]):
+            if not stands_in_opening(prof, n, a, c):
                 continue
-            off = [c[k] - oc[k] for k in range(3)]
-            if (abs(sum(off[k] * n[k] for k in range(3))) <= 1e-3 * reach
-                    and _m.sqrt(sum(v * v for v in off)) < reach):
+            # the cheap tests passed: does the face's own outer rim fit inside the opening?
+            rim = _rim_measure(_rim_polyline(fj, BRepTools.OuterWire_s(fj)))
+            if stands_in_opening(prof, n, a, c, rim["wh_m"] if rim else None):
                 total += a
         return total
 
