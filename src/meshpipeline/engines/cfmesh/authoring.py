@@ -112,4 +112,6 @@ def recommend(analysis: dict, *, fidelity: str = "standard") -> dict:
             "cell_sizes_m": {"base": round(base, 6), "feature": round(feature, 6)},
             "note": ("Set the background coarseness (max_cell_factor) so the largest cell ≈ "
                      "base, and add localRefinement/features at ≈ feature size for edges and "
-                     "thin regions.")}
+                     "thin regions. n_layers_hint is for a request that names no layer count: "
+                     "when the request states one (\"5 prism layers\"), use that count - the "
+                     "delivered layers are counted on the mesh and measured against it.")}

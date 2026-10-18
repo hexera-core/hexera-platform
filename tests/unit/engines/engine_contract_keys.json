@@ -8,14 +8,17 @@
   ],
   "criteria": [
    "fatal",
+   "layer_coverage_pct",
    "max_non_ortho",
    "rc",
    "timed_out"
   ],
   "deliverable": [
+   "_passages",
    "constant/polyMesh",
    "geom.fms",
    "geom.stl",
+   "passages.json",
    "system/meshDict"
   ],
   "deliverable_kind": "Deliverable",

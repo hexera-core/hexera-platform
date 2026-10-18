@@ -576,7 +576,9 @@ async def _settle_unit(inbound: InboundMessage, db, *, gate: dict, locked, revis
         pure = _turn.defers_to_default(inbound.content) and not uc.mentions_unit(inbound.content)
         size = gh.measured_size_mm(str(inbound.session_id)) if pure else None
         if size:
-            unit = proposal or uc.proposal_for(size, gh.purpose_from(getattr(locked, "messages", None)))
+            _words = gh.purpose_from(getattr(locked, "messages", None))
+            unit = proposal or uc.proposal_for(
+                size, _words, gh.measured_unit_inference(str(inbound.session_id), _words))
             logger.info("intake message: the user left the unit to us - taking the proposed %s - "
                         "session=%s", unit.value, inbound.session_id)
     if unit is not None:
@@ -604,18 +606,24 @@ async def _settle_unit(inbound: InboundMessage, db, *, gate: dict, locked, revis
         # because the run cannot start without it.
         return None
 
-    # THE QUESTION PROPOSES when the part has been measured: millimetres, with the part's size
-    # in every candidate unit beside it, so the user can see which one is theirs and "ok" is an
-    # answer. Without a measurement it is the plain question, and nothing is proposed that the
-    # user could not check.
+    # THE QUESTION PROPOSES when the part has been measured: the unit the check reads it in
+    # from what the part is - its shape and flow, its name, the user's words ("This reads as a
+    # car-like body on the ground, 4.7 m long - metres?") - with the part's size in every
+    # candidate unit beside it, so the user can see which one is theirs and "ok" is an answer.
+    # Without a measurement it is the plain question, and nothing is proposed that the user
+    # could not check.
     from meshpipeline.application import geometry_hold as gh
 
     size = gh.measured_size_mm(str(inbound.session_id))
+    inference = None
     if size:
-        # millimetres unless the part would then be implausible - by its size, or by what the
-        # user has said it is (a 1.04-unit car, a 229-unit city block)
-        proposal = uc.proposal_for(size, gh.purpose_from(getattr(locked, "messages", None)))
-    reply = uc.before_run(size, proposal) if insist else uc.question_for(size, proposal)
+        # the check's reading, else millimetres unless the part would then be implausible - by
+        # its size, or by what the user has said it is (a 1.04-unit car, a 229-unit city block)
+        _words = gh.purpose_from(getattr(locked, "messages", None))
+        inference = gh.measured_unit_inference(str(inbound.session_id), _words)
+        proposal = uc.proposal_for(size, _words, inference)
+    reply = (uc.before_run(size, proposal, inference) if insist
+             else uc.question_for(size, proposal, inference))
     if insist and ap.is_live(gate.get("approval")):
         # the approval waits one turn on the question: the next clear yes still lands on it
         gate = dict(gate, approval=ap.defer(gate.get("approval")))

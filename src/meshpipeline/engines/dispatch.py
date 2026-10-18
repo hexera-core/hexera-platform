@@ -41,4 +41,18 @@ def run_engine_local(workspace: Any, *, engine: str, timeout: int) -> dict:
     if reason:
         return {"rc": -2, "timed_out": False, "log_tail": f"REJECTED: {reason}"}
     from meshpipeline.engines.cfmesh.foam_exec import _DEFAULT_BASHRC  # identical across the clones
-    return runners[engine](workspace, bashrc=_DEFAULT_BASHRC, timeout=int(timeout))
+    out = runners[engine](workspace, bashrc=_DEFAULT_BASHRC, timeout=int(timeout))
+    # WHAT RIDES HOME (engines/return_scope.py): the workspace is archived and extracted under a
+    # size ceiling after this; scratch and, when it would not fit, the optional volume export stay
+    # behind - a built mesh is never lost on the way back for a file the delivery can do without
+    try:
+        from meshpipeline.engines.return_scope import scope_return
+        scope = scope_return(workspace)
+    except Exception:  # noqa: BLE001 - trimming is an economy, never a reason to fail a run
+        import logging
+        logging.getLogger(__name__).warning("return scope failed; the workspace goes as it is",
+                                            exc_info=True)
+        scope = None
+    if scope and isinstance(out, dict):
+        out["return_scope"] = scope
+    return out

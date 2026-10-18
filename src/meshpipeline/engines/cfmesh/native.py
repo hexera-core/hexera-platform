@@ -5,10 +5,13 @@ from __future__ import annotations
 import json
 import logging
 import re
+import shlex
+import shutil
 import subprocess
 import time
 from pathlib import Path
 
+from meshpipeline.cad.fluid_passages import PASSAGES_FILE
 from meshpipeline.engines.cfmesh.foam_exec import (
     _DEFAULT_BASHRC,
     _foam_env,
@@ -43,6 +46,11 @@ QUALITY_FILE = "mesh_quality.json"
 #: written beside the mesh and carried in the result as `timing`.
 TIMING_FILE = "mesh_timing.json"
 
+#: PASSAGES_FILE (cad/fluid_passages) is written by cfmesh_runner._stage_passages when the
+#: confirmed openings lie on several separate passages: every passage after the first is a case
+#: directory of its own (its surface only), meshed here with the same meshDict and merged in.
+_SURFACE_FILE = re.compile(r'surfaceFile\s+"[^"]*"\s*;')
+
 _BAD_FACES = re.compile(r"Number of bad faces is\s+(\d+)")
 _WRONG_WAY = re.compile(r"(\d+)\s+faces pointing the wrong way")
 _UNTANGLED = ("Finished untangling the mesh", "Finished renaming boundary patches")
@@ -65,6 +73,33 @@ def untangle_stall(log_tail: str) -> list[str]:
             + (f", {wrong[-1]:,} of them pointing the wrong way" if wrong else "")]
 
 
+#: What the run keeps back from its cap for the steps after the mesher (passage measure, layer
+#: census, foamToVTK), beyond twice the first checkMesh's time: a rescue never eats into them.
+POST_MESH_RESERVE_S = 120.0
+
+
+def _rescued(ws: Path, q: dict, *, bashrc: str, timing: dict, t0: float, timeout: int,
+             is_2d: bool) -> dict:
+    """The quality record after a near-edge rescue (engines/cfmesh/rescue.py) - `q` unchanged
+    when the mesh is not near its validity edge. The rescue runs inside the run's own cap, less
+    what the steps after it need, so the run still returns inside the time it was given."""
+    from meshpipeline.engines.cfmesh.rescue import near_edge, rescue
+    if not near_edge(q):
+        return q
+    t = time.monotonic()
+    deadline = t0 + float(timeout) - (2.0 * float(timing.get("checkMesh_s") or 0.0)
+                                      + POST_MESH_RESERVE_S)
+    mesher_s = float(timing.get(f"{CARTESIAN_2D_MESH if is_2d else CARTESIAN_MESH}_s") or 0.0)
+    try:
+        out = rescue(ws, q, bashrc=bashrc, deadline=deadline, mesher_seconds=mesher_s,
+                     check_seconds=float(timing.get("checkMesh_s") or 0.0), is_2d=is_2d)
+    except Exception:  # noqa: BLE001 - a second chance must never lose the first mesh
+        logger.warning("cfMesh rescue errored; the mesh as built stands", exc_info=True)
+        return q
+    timing["rescue_s"] = round(time.monotonic() - t, 1)
+    return out
+
+
 def run_cartesian_mesh(workspace, *, context=None, bashrc: str = _DEFAULT_BASHRC,
                        timeout: int = 1800) -> dict:
     reason = scan_case_dicts(workspace)
@@ -72,6 +107,55 @@ def run_cartesian_mesh(workspace, *, context=None, bashrc: str = _DEFAULT_BASHRC
         return {"rc": RC_DICTS_REJECTED, "timed_out": False, "log_tail": f"REJECTED: {reason}"}
     from meshpipeline.contracts.mesh_execution import run_mesh
     return run_mesh(workspace, engine="cfmesh", timeout=timeout)
+
+
+def mesh_passages(ws: Path, *, bashrc: str = _DEFAULT_BASHRC, timeout: float = 1800.0) -> tuple[int, bool, str]:
+    """THE OTHER PASSAGES of a case whose confirmed openings lie on several that do not connect
+    (PASSAGES_FILE). cartesianMesh keeps the largest closed region it finds, so each passage is
+    meshed in a case of its own - its surface, the case's own meshDict and controls - and merged
+    into the case's mesh (mergeMeshes; patches of one name are one patch). Returns (rc, timed out,
+    what went wrong in words, or ""): a passage that does not mesh fails the run, since its
+    openings would otherwise come back with no faces."""
+    try:
+        spec = json.loads((ws / PASSAGES_FILE).read_text())
+    except (OSError, ValueError) as exc:
+        return 1, False, f"[CFMESH] the passages record could not be read: {exc}"
+    deadline = time.monotonic() + float(timeout)
+    angle = float(spec.get("feature_angle", 30.0))
+    for k, rel in enumerate(spec.get("runs") or [], start=2):
+        sub = (ws / str(rel)).resolve()
+        if ws.resolve() not in sub.parents or not (sub / "geom.stl").exists():
+            return 1, False, f"[CFMESH] passage {k}: its surface is missing ({rel})"
+        shutil.rmtree(sub / "system", ignore_errors=True)
+        shutil.rmtree(sub / "constant", ignore_errors=True)
+        shutil.copytree(ws / "system", sub / "system")
+        (sub / "constant").mkdir(exist_ok=True)
+
+        def _left() -> float:
+            return max(1.0, deadline - time.monotonic())
+
+        def _run(cmd: str, cwd: Path, log_name: str) -> int:
+            with (cwd / log_name).open("w") as fh:
+                return run_guarded(["bash", "-lc", f"source {bashrc} >/dev/null 2>&1 && {cmd}"], cwd=str(cwd),
+                                   env=_foam_env(), stdout=fh, stderr=subprocess.STDOUT, timeout=_left()).returncode
+
+        try:
+            surface = "geom.fms" if _run(f"surfaceFeatureEdges -angle {angle:g} geom.stl geom.fms", sub,
+                                         "surfaceFeatureEdges.log") == 0 and (sub / "geom.fms").exists() else "geom.stl"
+            md = sub / "system" / "meshDict"
+            md.write_text(_SURFACE_FILE.sub(f'surfaceFile "{surface}";', md.read_text(), count=1))
+            if _run(CARTESIAN_MESH, sub, "cartesianMesh.log") != 0 or not (sub / "constant" / "polyMesh" / "owner").exists():
+                tail = "\n".join((sub / "cartesianMesh.log").read_text(errors="replace").splitlines()[-LOG_TAIL_LINES:])
+                return 1, False, f"[CFMESH] passage {k} ({', '.join(spec.get('ports', [[]] * k)[k - 1])}) did not mesh:\n{tail}"
+            if _run(f"mergeMeshes -overwrite . {shlex.quote(str(rel))}", ws, f"mergeMeshes_p{k}.log") != 0:
+                tail = "\n".join((ws / f"mergeMeshes_p{k}.log").read_text(errors="replace").splitlines()[-LOG_TAIL_LINES:])
+                return 1, False, f"[CFMESH] passage {k} could not be merged into the mesh:\n{tail}"
+        except subprocess.TimeoutExpired:
+            return -1, True, f"[CFMESH] passage {k} ran out of time"
+        # the merged mesh is the case's; the passage's own copy only fills the returned archive
+        shutil.rmtree(sub / "constant" / "polyMesh", ignore_errors=True)
+    logger.info("cfMesh: %d further passage(s) meshed and merged", len(spec.get("runs") or []))
+    return 0, False, ""
 
 
 def _run_cartesian_mesh_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
@@ -106,6 +190,13 @@ def _run_cartesian_mesh_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
     tail = ""
     if log.exists():
         tail = "\n".join(log.read_text(errors="replace").splitlines()[-LOG_TAIL_LINES:])
+    if rc == 0 and not timed_out and not is_2d and (ws / PASSAGES_FILE).exists():
+        t_p = time.monotonic()
+        rc, timed_out, why = mesh_passages(ws, bashrc=bashrc,
+                                           timeout=max(60.0, timeout - (time.monotonic() - t0)))
+        timing["passages_s"] = round(time.monotonic() - t_p, 1)
+        if why:
+            tail = (tail + "\n" + why).strip()
     # The SHARED reading of a native result - signal vs ordinary failure vs timeout - so this
     # bundle does not carry its own interpretation of a negative return code.
     out = describe_native_result(
@@ -125,6 +216,8 @@ def _run_cartesian_mesh_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
             q = check_mesh(ws, bashrc=bashrc)
             timing["checkMesh_s"] = round(time.monotonic() - t1, 1)
             if q:
+                q = _rescued(ws, q, bashrc=bashrc, timing=timing, t0=t0, timeout=timeout,
+                             is_2d=is_2d)
                 # the passage measure beside the mesh too: cells across the local passage at
                 # every boundary point (flow_gates.resolution_floor holds 12 at the narrowest).
                 # It reads the boundary files only and gives up past its own budget.
@@ -137,6 +230,17 @@ def _run_cartesian_mesh_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
                         timing["passage_measure_s"] = round(time.monotonic() - t2, 1)
                 except Exception:  # noqa: BLE001 - evidence, not a verdict
                     logger.warning("passage measure after meshing failed; omitted", exc_info=True)
+                # the LAYERS cfMesh does not report, counted on the mesh where it was built: the
+                # builder's run_mesh result then shows "2.0 of 5 requested", and the finalize step
+                # reads the same figures back from the quality file
+                try:
+                    from meshpipeline.engines.cfmesh.finalize import census_quality
+                    from meshpipeline.engines.workspace_facts import contract_patches
+                    t4 = time.monotonic()
+                    q.update(census_quality(ws, contract_patches(ws)))
+                    timing["layer_census_s"] = round(time.monotonic() - t4, 1)
+                except Exception:  # noqa: BLE001 - evidence, not a verdict
+                    logger.warning("layer census after meshing failed; omitted", exc_info=True)
                 out["quality"] = q
                 (ws / QUALITY_FILE).write_text(json.dumps(q, default=str))
         except Exception:  # noqa: BLE001 - a measurement must never lose a finished mesh
@@ -160,5 +264,5 @@ def _run_cartesian_mesh_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
 
 
 __all__ = ["CARTESIAN_2D_MESH", "CARTESIAN_MESH", "CREATE_PATCH_TIMEOUT_S", "LOG_TAIL_LINES",
-           "QUALITY_FILE", "RC_DICTS_REJECTED", "TWO_D_MARKER", "run_cartesian_mesh",
+           "PASSAGES_FILE", "QUALITY_FILE", "mesh_passages", "RC_DICTS_REJECTED", "TWO_D_MARKER", "run_cartesian_mesh",
            "untangle_stall"]

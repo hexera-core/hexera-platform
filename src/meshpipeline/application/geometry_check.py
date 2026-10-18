@@ -753,7 +753,62 @@ def _scout_exact(local_path: Path, work: Path, interp_ref, ref) -> tuple[dict, P
         facts["notes"].append(unit_note)
     skin = write_view_stl(local_path, work / "skin.stl", prepared=prepared, shape=shape)
     facts["holes"] = skin_holes(skin)
+    if not declared:
+        read_whole_shape(facts, skin)
     return facts, skin
+
+
+def read_whole_shape(facts: dict, skin: Path) -> None:
+    """What the WHOLE skin says, folded into the scout's facts (cad/flow_reading): a body in a
+    flow the face-by-face reading took for a passage (blades round a hub, a straight bar, a file of
+    surfaces with nowhere for a fluid to go), an annular fluid body taken for a pipe wall, the
+    inlet a diffuser names, and the shape's own reading of which way the flow goes past a body -
+    each with its reason in the notes. A thermal model's file states all of that itself and is
+    not read. Never fails the scout: a skin it cannot read leaves the facts as they were."""
+    from meshpipeline.cad.flow_reading import MAX_TRIANGLES, apply_reading, read_flow, skin_triangles
+
+    try:
+        # THE BOUND, before a byte is read (read_up_evidence's): 84 bytes and 50 per triangle
+        if (Path(skin).stat().st_size - 84) // 50 > MAX_TRIANGLES:
+            facts["reading"] = {"read": False, "reason": "too many triangles to read quickly"}
+            return
+        apply_reading(facts, read_flow(skin_triangles(skin), facts))
+    except Exception as exc:  # noqa: BLE001 - the face-by-face reading still stands
+        logger.warning("geometry check: the whole shape could not be read (%s: %s)",
+                       type(exc).__name__, str(exc)[:200])
+        facts["reading"] = {"read": False, "reason": f"the shape could not be read ({type(exc).__name__})"}
+
+
+def vet_openings(facts: dict, skin: Path) -> None:
+    """THE PROPOSAL HELD TO THE STAGING THE MESHER WILL USE (cad/fluid_passages.stranded_openings):
+    an opening the scout found that opens into no passage - a bolt hole through a flange, a slot
+    through a plate, a dimple closed into a pocket - would come back from the mesher as a patch
+    with no faces. It is proposed as not an opening, with the reason in the notes; the user can
+    still make it one. A proposal left without an inlet takes its largest remaining opening. Run
+    for every reading: a body in a flow keeps its openings for a flip to internal flow too. A CAD
+    file is staged on its B-rep, not on this skin, so only a triangle file is vetted this way."""
+    from meshpipeline.application.geometry_confirmation import body_of, patches_from
+    from meshpipeline.cad.fluid_passages import stranded_openings
+
+    ops = [o for o in facts.get("openings") or [] if o.get("role") in ("inlet", "outlet")]
+    if len(ops) < 2:
+        return
+    try:
+        patches = patches_from(body_of({"flow": "internal", "input_kind": facts.get("input_kind") or "",
+                                        "openings": [dict(o) for o in ops]}))
+    except Exception:  # noqa: BLE001 - openings the declaration cannot be made from are not vetted
+        return
+    stranded = stranded_openings(skin, patches)
+    if not stranded or len(stranded) >= len(ops) - 1:
+        return                   # at least two openings must stay: a vetting cannot empty a part
+    for o in ops:
+        if o.get("name") in stranded:
+            o["role"] = "not_an_opening"
+            facts.setdefault("notes", []).append(
+                f"opening {o.get('id')} ({o.get('name')}) is proposed as not an opening: {stranded[o['name']]}")
+    kept = [o for o in ops if o.get("role") != "not_an_opening"]
+    if kept and not any(o.get("role") == "inlet" for o in kept):
+        max(kept, key=lambda o: float(o.get("area_mm2") or 0.0))["role"] = "inlet"
 
 
 def skin_holes(skin: Path) -> list[dict]:
@@ -798,6 +853,10 @@ def _scout_triangles(local_path: Path, work: Path, interp_ref, ref,
     if note:
         facts["notes"].append(note)
     skin = write_mesh_skin(local_path, work / "skin.stl", scale_to_m=scale)
+    if not file_scale:
+        # a thermal model's placed parts (file_scale) state their regions and openings themselves
+        read_whole_shape(facts, skin)
+        vet_openings(facts, skin)
     return facts, skin
 
 
@@ -1169,9 +1228,15 @@ def _facts_text(facts: dict, shots, purpose_text: str) -> str:
         lines.append("The measuring step reads this as a body in a flow, so no stickers are drawn.")
     else:
         lines.append("The measuring step found no openings.")
-    if facts.get("flow") == "external" and facts.get("flow_axis_guess"):
-        lines.append(f"Measuring step's guess for the flow direction: along {facts['flow_axis_guess']} "
-                     "(its longest horizontal side); the sign is yours to decide from how the part faces.")
+    if facts.get("flow") == "external":
+        from meshpipeline.contracts.geometry_fields import axis_from_reading
+        shaped, reading = axis_from_reading(facts.get("flow_axis_reading"))
+        if shaped:
+            lines.append(f"Measuring step's reading of the flow direction: along {shaped[1]} ({reading.get('reason')}); "
+                         "the sign is yours to decide from how the part faces.")
+        elif facts.get("flow_axis_guess"):
+            lines.append(f"Measuring step's guess for the flow direction: along {facts['flow_axis_guess']} "
+                         "(its longest horizontal side); the sign is yours to decide from how the part faces.")
     lines.append("Axis marker in every picture: red +X, green +Y, blue +Z.")
     lines.append("Pictures, in order: " + "; ".join(
         f"{s.name} (stickers facing the camera: {', '.join(map(str, s.facing)) or 'none'})"
@@ -1454,16 +1519,117 @@ def _proposal(facts: dict, vision: dict | None) -> dict:
 
 def _upright(proposal: dict, facts: dict, vision: dict | None, flow_axis) -> dict:
     """The proposal with which way is up decided (decide_up), and the external-flow facts read
-    across it: the flow's guess along the longest horizontal side, and the ground only where the
-    measuring step looked for it. A part drawn another way up says so in the notes."""
+    across it: the flow's direction - the user's words, else the shape's own reading or the nose
+    the pictures show (weigh_flow_axis), else the longest horizontal side - and the ground only
+    where the measuring step looked for it. A part drawn another way up says so in the notes, and
+    a body in a flow says where its direction came from and how sure that is."""
     from meshpipeline.contracts.geometry_fields import DEFAULT_UP, external_defaults
 
     up = decide_up(proposal["flow"], facts.get("up_evidence"), vision)
     proposal.update(up)
+    flow_axis, overruled = weigh_flow_axis(facts, vision, flow_axis, up["up_axis"])
     proposal.update(external_defaults(facts, flow_axis, up["up_axis"]))
+    from_nose = proposal.get("flow_axis_guessed") is False and (vision or {}).get("flow_from") != "the user's words"
+    if from_nose:
+        proposal.update(nose_sureness(facts, proposal["flow_axis"], up["up_axis"]))
+    if overruled:
+        proposal["flow_axis_guessed"] = True
     if up["up_axis"] != DEFAULT_UP:
         proposal["notes"].append(f"Up is {up['up_axis'].upper()}: {up['up_axis_from']}.")
+    if proposal["flow"] == "external" and (proposal.get("flow_axis_guessed") or from_nose):
+        proposal["notes"].append(direction_note(proposal, overruled))
+    if facts.get("unit_assumed"):
+        # A FILE THAT STATES NO UNIT gets a proposed one, read from what the part is (its shape
+        # and flow, and the naming's estimate once there is one) - shown with how sure it is and
+        # the other reading, for the user to confirm. Never applied: the sizes stay as measured.
+        inferred = unit_inference(proposal, facts)
+        if inferred is not None:
+            proposal["unit_inference"] = inferred
     return proposal
+
+
+#: How sure a nose read off the pictures is as the flow direction on its own.
+NOSE_CONFIDENCE = 0.6
+
+
+def nose_sureness(facts: dict, axis: str, up_axis: str) -> dict:
+    """Where a direction from the pictures' nose came from and how sure it is: surer when the
+    shape's own reading runs along the same axis (the nose then only gives the sign)."""
+    from meshpipeline.contracts.geometry_fields import axis_from_reading
+
+    shaped, reading = axis_from_reading(facts.get("flow_axis_reading"), up_axis)
+    if shaped and shaped[1] == axis[1]:
+        sure = max(NOSE_CONFIDENCE, float(reading.get("confidence") or 0.0))
+        return {"flow_axis_confidence": round(sure, 2),
+                "flow_axis_from": f"the nose in the pictures, along the shape's own axis ({reading.get('reason')})"}
+    return {"flow_axis_confidence": NOSE_CONFIDENCE, "flow_axis_from": "the nose in the pictures"}
+
+
+#: How sure the shape's reading of the flow direction must be to stand against the nose the
+#: pictures show (a rotor's axis, a body of revolution's, a mirror plane are; a cut face, a
+#: straight bar's span and the longest side are not - there the nose speaks).
+SHAPE_OUTRANKS_NOSE = 0.7
+#: Below this, the direction is said to be a guess the user should check on the picture.
+DIRECTION_SURE = 0.6
+
+
+def weigh_flow_axis(facts: dict, vision: dict | None, flow_axis, up_axis: str) -> tuple[str | None, str]:
+    """THE FLOW DIRECTION, weighed: the user's own words decide. A nose read off the pictures
+    gives the sign along the shape's axis, but where the shape is sure of another axis - blades
+    round a hub turn the flow along their axis, whichever end the model took for a nose - the
+    shape's axis stands. Returns the axis to propose (None: the shape's or the longest side's) and
+    what was overruled, if anything."""
+    from meshpipeline.contracts.geometry_fields import AXES, axis_from_reading
+
+    if flow_axis not in AXES or (vision or {}).get("flow_from") == "the user's words":
+        return flow_axis, ""
+    shaped, reading = axis_from_reading(facts.get("flow_axis_reading"), up_axis)
+    if shaped and float(reading.get("confidence") or 0.0) >= SHAPE_OUTRANKS_NOSE and shaped[1] != flow_axis[1]:
+        return None, f"the pictures' nose said {flow_axis}"
+    return flow_axis, ""
+
+
+def direction_note(proposal: dict, overruled: str = "") -> str:
+    """The flow direction as the user reads it on the form: where it came from and how sure."""
+    axis = proposal.get("flow_axis")
+    why = str(proposal.get("flow_axis_from") or "")
+    sure = float(proposal.get("flow_axis_confidence") or 0.0)
+    words = f"The flow is proposed along {axis}: {why}"
+    if overruled:
+        words += f" ({overruled}; the shape's axis is surer)"
+    return words + (". Please confirm it on the picture." if sure < DIRECTION_SURE else ".")
+
+
+
+def unit_inference(proposal: dict, facts: dict | None = None, words: str = "") -> dict | None:
+    """The unit a file that states none most likely is in (contracts/unit_plausibility.infer_unit),
+    as a dict, or None when the part has no measured size. What the part is comes, best first,
+    from the naming model's estimate of a real one's length, then the words for it (its name, the
+    user's own words), then the measured shape and the flow. The file's numbers are read back
+    through the scale the proposal was measured under."""
+    from meshpipeline.contracts.unit_plausibility import (
+        FORMAT_UNIT,
+        expected_from_estimate,
+        expected_from_words,
+        infer_unit,
+        shape_kind,
+    )
+
+    size, scale = proposal.get("size_mm"), proposal.get("scale_to_m") or (facts or {}).get("scale_to_m")
+    try:
+        if not size or len(size) != 3:
+            return None
+        longest_file = max(float(v) for v in size) * 0.001 / float(scale or 0.001)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+    part = str(proposal.get("part") or "")
+    expected = (expected_from_estimate(part, proposal.get("real_length_m"))
+                or expected_from_words(f"{part}\n{words or ''}"))
+    shape = shape_kind(str(proposal.get("flow") or ""), size, grounded=bool(proposal.get("grounded")),
+                       up_axis=proposal.get("up_axis"))
+    fmt = str((facts or {}).get("source_format") or "").lower().lstrip(".")
+    inferred = infer_unit(longest_file, expected=expected, shape=shape, format_unit=FORMAT_UNIT.get(fmt))
+    return inferred.as_dict() if inferred is not None else None
 
 
 def _is_thermal(facts: dict | None) -> bool:
@@ -1526,7 +1692,13 @@ def unit_suggestion(proposal: dict, interpretation: dict | None, words: str = ""
     the part, the user's own words). A declared unit is only doubted on those words or on a wild
     size; a unit nothing declared (a triangle file) is only a reading, and yields to either."""
     from meshpipeline.contracts.geometry_units import LengthUnit
-    from meshpipeline.contracts.unit_plausibility import expected_from_estimate, expected_from_words, suggest
+    from meshpipeline.contracts.unit_plausibility import (
+        EXTERNAL_BODY,
+        expected_from_estimate,
+        expected_from_words,
+        shape_kind,
+        suggest,
+    )
 
     if interpretation and str(interpretation.get("basis")) == "user_confirmed":
         return None
@@ -1541,5 +1713,12 @@ def unit_suggestion(proposal: dict, interpretation: dict | None, words: str = ""
     part = str(proposal.get("part") or "")
     expected = (expected_from_estimate(part, proposal.get("real_length_m"))
                 or expected_from_words(f"{part}\n{words or ''}"))
+    if expected is None and interpretation is None:
+        # nothing names the part and the file states no unit: what its SHAPE and FLOW say it is
+        # (a car-like body on the ground, a flat wing-like body, a passage) - a 4.7-unit car is
+        # 4.7 m, not 4.7 mm. A declared unit is not doubted on the shape alone.
+        shape = shape_kind(str(proposal.get("flow") or ""), size,
+                           grounded=bool(proposal.get("grounded")), up_axis=proposal.get("up_axis"))
+        expected = shape if shape is not EXTERNAL_BODY else None
     s = suggest(longest_file, in_effect, declared=interpretation is not None, expected=expected)
     return s.as_dict() if s is not None else None

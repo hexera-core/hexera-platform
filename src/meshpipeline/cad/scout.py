@@ -146,7 +146,10 @@ class Opening:
             # `inner_diameter_mm` (its equal-area diameter) and the flow crosses the ring between
             # them: pi/4 (D^2 - d^2) is exactly `flow_area_mm2`, the area measured
             out["inner_diameter_mm"] = round(2.0 * math.sqrt(self.filled / math.pi) * mm, 2)
-            out["flow_area_mm2"] = round((self.area - self.filled) * mm * mm, 2)
+        # the area the flow crosses, as measured, for a ring and for any mouth that is no circle:
+        # the declaration carries it, so nobody re-derives it from a box (open_ends)
+        from meshpipeline.cad.open_ends import measured_flow_area
+        out.update(measured_flow_area(self.area, self.filled, self.shape, mm))
         return out
 
 
@@ -725,7 +728,8 @@ def measured_faces(candidates: list[Opening]) -> list[dict]:
         if c.annular:
             # an annular mouth added by a click is the ring, as a proposed one is (Opening.as_dict)
             d["inner_diameter_mm"] = round(2.0 * math.sqrt(c.filled / math.pi) * mm, 2)
-            d["flow_area_mm2"] = round((c.area - c.filled) * mm * mm, 2)
+        from meshpipeline.cad.open_ends import measured_flow_area
+        d.update(measured_flow_area(c.area, c.filled, c.shape, mm))
         out.append(d)
     return out
 

@@ -229,20 +229,43 @@ def _timed_out(engine: str, deadline_s: float,
 #: 560 MB (lab, 2026-10-04) - both past the generic 512 MiB extraction ceiling, so meshes the cell
 #: budget allows were built, paid for and lost on the way back.
 RESULT_BYTES_PER_CELL = 100
+#: ...and per cell the RESULT DOCUMENT says the mesh has, measured on what came back: compressed,
+#: the whole workspace; raw, all of it and its largest single file. A 6.7 M-cell cfMesh polyMesh is
+#: 1,236 MB raw (its faces file 699 MB) and 218 MB gzipped (cf_lab tw011_v3); the volume export
+#: beside it is most of the rest - the verify-7fix layered lumens came back at 566-696 MB. Each
+#: with room: these bound a mesh the run has already built and paid for, not a guess.
+RESULT_ARCHIVE_BYTES_PER_MEASURED_CELL = 200
+RESULT_RAW_BYTES_PER_MEASURED_CELL = 800
+RESULT_FILE_BYTES_PER_MEASURED_CELL = 400
 
 
-def result_extraction_limits():
+def result_extraction_limits(result: dict | None = None):
     """The extraction limits for a RETURNED mesh workspace: the generic limits, with the archive
     ceiling sized from the cell budget - CELL_HARD_LIMIT cells at RESULT_BYTES_PER_CELL (800 MB
-    at the default 8 M) - never below the generic one. Every other bound (entries, expanded
-    size, per-file size, ratio, member types) is unchanged."""
+    at the default 8 M) - and, when the remote's result document says how many cells the mesh
+    has, from that count too (the archive, the expanded total and the largest file each at their
+    RESULT_*_PER_MEASURED_CELL). Never below the generic limits; entries, depth, ratio and member
+    types are unchanged."""
     from dataclasses import replace
 
     import meshpipeline.settings.policy as polcfg
     from meshpipeline.sandbox.safe_extract import default_limits
     base = default_limits()
     by_budget = int(polcfg.CELL_HARD_LIMIT) * RESULT_BYTES_PER_CELL
-    return replace(base, max_archive_bytes=max(base.max_archive_bytes, by_budget))
+    q = (result or {}).get("quality") if isinstance(result, dict) else None
+    try:
+        cells = max(0, int((q or {}).get("cells") or 0)) if isinstance(q, dict) else 0
+    except (TypeError, ValueError):
+        cells = 0
+    # the count is the remote's word: bounded, so no document can lift the limits without end
+    cells = min(cells, 2 * int(polcfg.CELL_HARD_LIMIT))
+    return replace(
+        base,
+        max_archive_bytes=max(base.max_archive_bytes, by_budget,
+                              cells * RESULT_ARCHIVE_BYTES_PER_MEASURED_CELL),
+        max_total_uncompressed_bytes=max(base.max_total_uncompressed_bytes,
+                                         cells * RESULT_RAW_BYTES_PER_MEASURED_CELL),
+        max_file_bytes=max(base.max_file_bytes, cells * RESULT_FILE_BYTES_PER_MEASURED_CELL))
 
 
 #: one spelling, owned by the contract the executor's account reads it through
@@ -343,7 +366,7 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
         with tempfile.TemporaryDirectory(prefix="mesh_result_", dir=str(ws.parent)) as _tmp:
             _archive = Path(_tmp) / "result.tar.gz"
             bucket.blob(out_key).download_to_filename(str(_archive))
-            safe_extract_tar(path=_archive, dest=str(ws), limits=result_extraction_limits())
+            safe_extract_tar(path=_archive, dest=str(ws), limits=result_extraction_limits(result))
         # Built BEFORE the exchange is released: this is the last thing that can raise, so the
         # objects must still exist while it happens.
         # The reference travels back so the submission authority can record what was accepted.

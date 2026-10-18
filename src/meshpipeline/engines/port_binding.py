@@ -21,6 +21,15 @@ MIN_CLASS_SEPARATION = AREA_RATIO_HI / AREA_RATIO_LO
 # than to the runner-up; otherwise a datum offset or wrong axis convention picks silently.
 HINT_MAX_BBOX_FRACTION = 0.25
 HINT_MARGIN = 0.5
+# BIND BY LOCATION FIRST, THE AREA AS A CHECK. A port whose location decisively picks its opening
+# is that opening; its declared size only has to be the same opening's size, not the same
+# measurement of it - the band the staging's own match uses (cad/internal_surface.MATCH_RATIO, a
+# factor of 2 either way). The 25% band above stays for binding by size alone (rule 3), where
+# size is the only evidence. Within 2x a disagreement is two ways of measuring one opening (an
+# aorta root's 922 mm2 polygon against its 1,290 mm2 box; a 0.17 mm vessel rounded to 0.01 mm) and
+# it is said in the binding's size notes; beyond it the location or the size is wrong.
+LOCATED_RATIO_LO = 0.5
+LOCATED_RATIO_HI = 2.0
 _EPS = 1e-9  # so exact boundary ratios (0.75, 1.25) compare inclusively despite float noise
 
 
@@ -146,6 +155,15 @@ def _size_agrees(area: float, opening: dict | None, declared: float) -> bool:
     return any(_ratio_ok(m, declared) for m in _measures(area, opening))
 
 
+def _located_size_agrees(area: float, opening: dict | None, declared: float) -> bool:
+    """The size check on a port its location already picked: the opening's own measured area
+    within LOCATED_RATIO_LO/HI of the declared one, or any of a ring's other measures (its bore,
+    its bore less a centre body, its outer disc) within the tight band - a ring offers four
+    numbers, and a loose band on all of them would let an invented size through."""
+    return ((LOCATED_RATIO_LO - _EPS) <= float(area) / declared <= (LOCATED_RATIO_HI + _EPS)
+            or _size_agrees(area, opening, declared))
+
+
 def _frame(t: dict) -> str:
     return (f"engine frame (metres): bbox_min={t['bbox_min']} bbox_max={t['bbox_max']} - "
             f"state locations in these coordinates")
@@ -210,6 +228,24 @@ def bind_ports(declared: list[DeclaredPatch], t: dict) -> Binding:
         hint = p.near_mm
         assert hint is not None  # the filter above guarantees it; mypy cannot see through sorted
         hint_m = tuple(v / 1000.0 for v in hint)
+        declared_area = p.declared_area_m2()
+        if p.name in pool and t["openings"][p.name].get("declared"):
+            # THE STAGING ALREADY BOUND IT: the surface staging matched this very declaration to
+            # its opening by the same location (and size) and keyed the opening by the port's
+            # name (cad/internal_surface.write_staged marks it `declared`). Re-picking it by the
+            # nearest centroid could only swap two coaxial mouths.
+            key = p.name
+            area, centroid, opening = pool[key]
+            if declared_area is not None and not _located_size_agrees(area, opening, declared_area):
+                raise BindError(
+                    f"port '{p.name}' was matched to its opening by location, but that opening "
+                    f"measures {area * 1e6:.1f} mm2 (equivalent diameter {_equiv_d_mm(area):.1f} mm) "
+                    f"while the port declares {declared_area * 1e6:.1f} mm2 - the location and the "
+                    f"size disagree by more than two measurements of one opening can, so one of "
+                    f"them is wrong.\nDetected openings:\n{_listing(openings)}\n{frame}")
+            bound[p.name] = key
+            del pool[key]
+            continue
         ranked = sorted(pool.items(), key=lambda kv: _dist(hint_m, kv[1][1]))
         key, (area, centroid, opening) = ranked[0]
         d1 = _dist(hint_m, centroid)
@@ -228,14 +264,14 @@ def bind_ports(declared: list[DeclaredPatch], t: dict) -> Binding:
                 f"{centroid[2]:.4f}) m is {d1:.4f} m away and {k2} at ({c2[0]:.4f}, "
                 f"{c2[1]:.4f}, {c2[2]:.4f}) m is {d2:.4f} m away - state a location nearer "
                 f"the intended opening.\n{frame}")
-        declared_area = p.declared_area_m2()
-        if declared_area is not None and not _size_agrees(area, opening, declared_area):
+        if declared_area is not None and not _located_size_agrees(area, opening, declared_area):
             raise BindError(
                 f"port '{p.name}' points at opening {key} by location, but that opening "
                 f"measures {area * 1e6:.1f} mm2 (equivalent diameter "
                 f"{_equiv_d_mm(area):.1f} mm) while the port declares "
-                f"{declared_area * 1e6:.1f} mm2 - the location and the size disagree, so "
-                f"one of them is wrong.\nDetected openings:\n{_listing(openings)}\n{frame}")
+                f"{declared_area * 1e6:.1f} mm2 - the location and the size disagree by more "
+                f"than two measurements of one opening can, so one of them is wrong."
+                f"\nDetected openings:\n{_listing(openings)}\n{frame}")
         bound[p.name] = key
         del pool[key]
 
