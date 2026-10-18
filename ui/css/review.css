@@ -1,0 +1,41 @@
+/* Responsibility: Lay out the full-screen review of a parked repair run.
+   Boundaries: it styles review.js's markup only and reuses the page's tokens. */
+.rv{position:fixed;inset:0;z-index:900;display:grid;grid-template-columns:220px 1fr;grid-template-rows:auto 1fr auto;
+  background:var(--background,#131312);color:var(--text,#ede9e0);font:var(--fs-base,14px)/1.45 var(--sans,system-ui)}
+.rv-head{grid-column:1/3;display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--border,#333)}
+.rv-title{font-family:var(--display,inherit);font-size:16px;flex:0 0 auto}
+.rv-unanswered{flex:1;color:var(--text-muted,#b9b6ae);font-size:var(--fs-sm,12px)}
+.rv button{padding:7px 14px;border:1px solid var(--border-strong,#555);border-radius:var(--radius,4px);
+  background:var(--surface-raised,#232321);color:inherit;font:inherit;cursor:pointer}
+.rv button:hover{border-color:var(--accent-line,#ff4f0080)}
+.rv button:focus-visible{outline:2px solid var(--focus,#ff4f00);outline-offset:2px}
+.rv-run,.rv-do,.rv-fixall,.rv-confirm{background:var(--accent,#ff4f00)!important;border-color:var(--accent,#ff4f00)!important;
+  color:var(--accent-ink,#1a0a02)!important;font-weight:600}
+.rv-rail{border-right:1px solid var(--border,#333);padding:12px;overflow:auto}
+.rv-rail ol{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.rv-rail li{display:flex;flex-direction:column;padding:8px 10px;border:1px solid var(--border,#333);border-radius:var(--radius,4px);
+  color:var(--text-faint,#8a8884)}
+.rv-rail li span{font-size:var(--fs-xs,11px)}
+.rv-rail li.current{border-color:var(--accent,#ff4f00);color:var(--text,#ede9e0);background:var(--accent-soft,#ff4f0024)}
+.rv-rail li.done{color:var(--ok,#61d49a);border-color:var(--ok-soft,#61d49a1c)}
+.rv-main{display:grid;grid-template-columns:1fr 380px;min-height:0}
+.rv-view{position:relative;min-height:0;background:var(--viewer-canvas,#0d0d0c)}
+.rv-view canvas{display:block}
+.rv-noview{padding:24px;color:var(--text-muted,#b9b6ae)}
+.rv-pin{position:absolute;width:18px;height:18px;margin:-9px 0 0 -9px;border-radius:50%;background:var(--accent,#ff4f00);
+  border:2px solid #fff;pointer-events:none;box-shadow:0 0 0 4px rgba(255,79,0,.3)}
+.rv-panel{padding:18px 20px;overflow:auto;border-left:1px solid var(--border,#333)}
+.rv-panel h2{margin:0 0 8px;font-family:var(--display,inherit);font-size:18px}
+.rv-panel h2 small{color:var(--text-faint,#8a8884);font-size:var(--fs-sm,12px)}
+.rv-step{color:var(--text-faint,#8a8884);font-size:var(--fs-sm,12px);margin-bottom:6px}
+.rv-meas{list-style:none;padding:0;margin:8px 0;display:flex;flex-wrap:wrap;gap:4px 14px;color:var(--text-muted,#b9b6ae);font-family:var(--mono,monospace);font-size:var(--fs-sm,12px)}
+.rv-paired,.rv-why{color:var(--warn,#f1bd63)}
+.rv-controls{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0}
+.rv-redirect textarea{display:block;width:100%;margin:6px 0;box-sizing:border-box;background:var(--surface-raised,#232321);
+  color:inherit;border:1px solid var(--border-strong,#555);border-radius:var(--radius,4px);padding:8px;font:inherit}
+.rv-playback{margin-top:10px;padding:10px;border:1px solid var(--steel-muted,#57708f);border-radius:var(--radius,4px);background:var(--steel-soft,#6d8baf24)}
+.rv-playback.rv-refused{border-color:var(--danger,#ff6b5e)}
+.rv-recorded{color:var(--text-muted,#b9b6ae);font-size:var(--fs-sm,12px)}
+.rv-note{grid-column:1/3;min-height:20px;padding:6px 16px;border-top:1px solid var(--border,#333);color:var(--warn,#f1bd63);font-size:var(--fs-sm,12px)}
+.rv-parked,.rv-offer{display:flex;align-items:center;gap:12px;margin:10px 0;color:var(--text-muted,#b9b6ae);font-size:var(--fs-sm,12px)}
+.rv-parked p{margin:0}

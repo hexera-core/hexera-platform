@@ -28,6 +28,7 @@ import { clearNewRunOffer, configureComposer, disableInput, enableInput, mountCo
   offerNewRun, setPlaceholder, showRunFile } from "./shell/composer.js";
 import { refreshHealth } from "./shell/settings.js";
 import { configureDispute } from "./viewer/dispute.js";
+import { offerReview, openParked } from "./review/review.js";
 import { openGeometryStage } from "./viewer/geometry_stage.js";
 import { openViewer } from "./viewer/viewer.js";
 
@@ -72,11 +73,26 @@ configureStream({
   // WHILE THE JOB WAITS FOR A WORKER the header says so, with the backend's estimate; once a
   // worker has it the line goes back to "working…" and the timeline takes over.
   // The run's clock follows the server's: it counts from when the job was created.
-  onStatus: (job) => { Stage.waiting(waitingCopy(job)); Stage.clock(job.created_at); },
+  onStatus: (job) => {
+    Stage.waiting(waitingCopy(job)); Stage.clock(job.created_at);
+    parkedRun(job);
+  },
   onPollTrouble: () => Notice.hold("poll",
     "Having trouble reaching the server for status updates - still retrying.", "warn"),
   onPollRecovered: () => Notice.release("poll"),
 });
+
+/* A RUN PARKED FOR REVIEW. The repair stopped on defects the rules were unsure about: the run
+   page says how many and that nothing was changed without the engineer, and opens the review. The
+   review's "Run it" resumes the SAME job, so the stream carries on from here. */
+const _parkedShown = new Set();
+function parkedRun(job) {
+  if (!job || job.status !== "pending_review" || _parkedShown.has(job.job_id || job.id || getState.jobId())) return;
+  const id = job.job_id || job.id || getState.jobId();
+  _parkedShown.add(id);
+  const opts = { onRun: (r) => { _parkedShown.delete(id); Stage.chat("assistant", r.said); } };
+  openParked(id, Stage.col(), opts).then((el) => { el?.querySelector("button")?.click(); });
+}
 
 /* what "a run finished" means: attach the viewer, or do not */
 setResultHandler((data, anchor) => {
@@ -104,6 +120,9 @@ setResultHandler((data, anchor) => {
     // handed over here rather than withheld because a later stage failed.
     openRepairPanel(job, anchor, data);
   }
+  // A QUIET WAY BACK to the defects the repair was unsure about, only when the run was delivered
+  // and the server says it holds an offered review (it answers nothing otherwise).
+  offerReview(job, anchor, { onRun: (r) => Stage.chat("assistant", r.said) });
 });
 
 /* what "start a new run" means: one definition, used by three callers. `origin` is the

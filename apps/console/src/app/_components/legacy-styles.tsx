@@ -43,6 +43,7 @@ const DASHBOARD_SHEETS = [
   "/static/css/result.css",
   "/static/css/viewer.css",
   "/static/css/workbench.css",
+  "/static/css/review.css",
   "/static/css/a11y.css",
   "/static/css/theme.css",
 ];
