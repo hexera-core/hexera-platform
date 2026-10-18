@@ -337,6 +337,9 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
         # limits) - never unbounded extractall, even for our own tar. Streamed to a file beside
         # the workspace, not held in memory: the archive of a mesh at the cell budget is most of
         # a gigabyte, and holding it (twice, as bytes and as a buffer) was the worker's peak.
+        # ws holds the staged inputs, the plan and the builder's records, so a refused archive
+        # must leave it untouched: safe_extract stages the members beside it and moves them over
+        # only after the whole archive extracted, and an uncollected result keeps the workspace.
         import tempfile
 
         from meshpipeline.sandbox.safe_extract import safe_extract_tar
