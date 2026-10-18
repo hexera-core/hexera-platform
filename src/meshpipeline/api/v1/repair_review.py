@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -317,7 +317,7 @@ async def decide(job_id: uuid.UUID, body: DecisionIn, owner_id: str = Depends(ow
 _DIRECTIONS = {"accepted": "accept", "redirected": "redirect", "left": "leave"}
 
 
-def _settled_direction(members: list) -> tuple[str | None, object]:
+def _settled_direction(members: list) -> tuple[str | None, Any]:
     """`(direction, the item it was read from)`: what the engineer settled on in the sample.
 
     The sample is the group's first SAMPLE_SIZE members (what _groups serves as sampled). Only

@@ -656,7 +656,8 @@ def with_review_truncated(fr: FinalResult, dropped: int) -> FinalResult:
 
 def _render_left(left: Mapping) -> str:
     count = int(left.get("count", 0) or 0)
-    codes = left.get("codes") if isinstance(left.get("codes"), Mapping) else {}
+    raw = left.get("codes")
+    codes: Mapping = raw if isinstance(raw, Mapping) else {}
     what = ", ".join(f"{n} {str(code).replace('_', ' ')}" for code, n in sorted(codes.items()))
     things = "1 thing" if count == 1 else f"{count} things"
     return (f"You chose to leave {things} as {'it was' if count == 1 else 'they were'}"
