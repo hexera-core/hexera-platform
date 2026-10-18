@@ -945,6 +945,7 @@ async def _run_async(req: JobRequest) -> dict:
                         AsyncSessionLocal, job_id=job_id,
                         report=dict(final_state.get("repair_report") or {}),
                         repair_status=str(final_state.get("repair_status", "") or ""),
+                        owner_id=owner_id,
                         delivery_attempt=int(final_state.get("retry_count", 0) or 0),
                         execution_generation=_generation,
                         fence_commit=_fence_report)
@@ -965,6 +966,7 @@ async def _run_async(req: JobRequest) -> dict:
                                 AsyncSessionLocal, job_id=job_id,
                                 local_path=_repaired.path,
                                 suffix=_repaired.ref.suffix_hint or ".step",
+                                owner_id=owner_id,
                                 delivery_attempt=int(final_state.get("retry_count", 0) or 0),
                                 execution_generation=_generation,
                                 fence_commit=_fence_report)
