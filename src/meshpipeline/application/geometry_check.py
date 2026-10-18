@@ -422,7 +422,7 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
         # which way the part stands up, as far as its shape says: the code's half of the up
         # proposal, weighed against the pictures once the model has seen them
         facts["up_evidence"] = read_up_evidence(skin)
-        shots = render_snapshots(skin, facts["openings"], work / "pictures")
+        shots = render_snapshots(skin, stickered(facts), work / "pictures")
 
         store = get_object_store()
         snapshots = []
@@ -439,6 +439,14 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
     if upright is not None:
         result["upright_sheet"] = upright
     return result
+
+
+def stickered(facts: dict) -> list[dict]:
+    """The openings the pictures carry stickers for: the scout's, when it reads the fluid as flowing
+    through the part. A part it reads as a body in a flow still keeps the openings it would have if
+    the fluid flowed through it - so a user who says so has openings to confirm - but they are not
+    drawn: the pictures (and the model naming them) see the body as before."""
+    return list(facts.get("openings") or []) if facts.get("flow") != "external" else []
 
 
 def _scout_thermal(session_id: str, ref, fetched: Path, canonical, sidecar: dict) -> dict:
@@ -1150,15 +1158,17 @@ def _facts_text(facts: dict, shots, purpose_text: str) -> str:
                      "are settled by the file; say what the part is.")
     if purpose_text:
         lines.append(f"The user said: {purpose_text.strip()[:600]}")
-    if facts["openings"]:
+    if stickered(facts):
         lines.append("Stickers:")
-        for o in facts["openings"]:
+        for o in stickered(facts):
             size = f"{o['diameter_mm']:.0f} mm across" if o["shape"] == "circle" \
                 else f"{o.get('width_mm', 0):.0f} x {o.get('height_mm', 0):.0f} mm"
             lines.append(f"  {o['id']}: {o['shape']} opening, {size}, at ({o['centroid_mm'][0]:.0f}, "
                          f"{o['centroid_mm'][1]:.0f}, {o['centroid_mm'][2]:.0f}) mm; guessed {o['role']}")
+    elif facts.get("flow") == "external":
+        lines.append("The measuring step reads this as a body in a flow, so no stickers are drawn.")
     else:
-        lines.append("The measuring step found no openings (it reads this as a body in a flow).")
+        lines.append("The measuring step found no openings.")
     if facts.get("flow") == "external" and facts.get("flow_axis_guess"):
         lines.append(f"Measuring step's guess for the flow direction: along {facts['flow_axis_guess']} "
                      "(its longest horizontal side); the sign is yours to decide from how the part faces.")

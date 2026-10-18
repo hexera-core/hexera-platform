@@ -7,6 +7,7 @@
 # cad/scout so the two roads meet the same stage.
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import numpy as np
@@ -34,6 +35,16 @@ from meshpipeline.cad.scout import (
 MANY_BODIES = 6
 #: A flat region smaller than this share of the part's box is trim, not a mouth.
 MIN_REGION_SHARE = 1e-4
+#: A LUMEN (cad/lumen) - the fluid of a tube network - fills at most this much of its box (a
+#: pulmonary tree 3-5%, a coronary tree under 1%; a car 50-95%), has at least this share of its lids
+#: closing tubes of their own size, and, read from its lids alone, points them this many ways.
+LUMEN_FILL = 0.2
+LUMEN_CAPPED_SHARE = 0.75
+LUMEN_DIRECTIONS = 3
+#: ...and proposes every end it has, up to this many (a pulmonary tree has 30).
+MAX_LUMEN_ENDS = 64
+#: How sure a rounded tube end reads as an opening (a lid's is its rim's and its air's).
+END_CONFIDENCE = 0.6
 
 
 def read_triangles(path: Path) -> np.ndarray:
@@ -126,6 +137,7 @@ def scout_mesh(path: Path, *, scale_to_m: float) -> ScoutResult:
     box_skin = 2.0 * (sx * sy + sy * sz + sz * sx) or 1.0
     caps = find_caps(mesh=mesh, min_area=MIN_REGION_SHARE * box_skin)
     lids: set[int] = set()
+    tube_lids: set[int] = set()       # lids that close a tube of their own size (a branch's end)
     ground_area = 0.0
     # how much of the part is flat faces as its CAD model had them (Cap.face_of_part). A coarse
     # tessellation's facets of a curved wall - an elbow's torus drawn in flat quads - are flat
@@ -148,6 +160,8 @@ def scout_mesh(path: Path, *, scale_to_m: float) -> ScoutResult:
             drawn_flat += cap.area
         if cap.likely:
             lids.add(id(candidates[-1]))
+            if cap.tube_end:
+                tube_lids.add(id(candidates[-1]))
 
     measured = measured_faces(candidates)
     rings = [c for c in candidates if c.kind == "ring"]
@@ -169,8 +183,13 @@ def scout_mesh(path: Path, *, scale_to_m: float) -> ScoutResult:
     footprint = float(size[0] * size[1]) or 1.0
     grounded = ground_area >= 0.3 * footprint or _most_touch_ground(verts, faces, components, bbox_min, diag)
 
+    # `pool` is the openings the part has IF THE FLUID FLOWS THROUGH IT, whatever the reading: a body
+    # read as one the fluid flows around keeps them too, so a user (or the picture naming) who says
+    # it is a passage after all has openings to confirm instead of none
+    lumen = None
     if n_components >= MANY_BODIES:
-        body_kind, input_kind, flow, pool, conf = "scene", "solid-body", "external", [], 0.7
+        body_kind, input_kind, flow, conf = "scene", "solid-body", "external", 0.7
+        pool = rings + rim_openings + discs
         notes.append(f"{n_components} separate pieces: this reads as a scene the fluid flows around, not a part with openings")
     elif len(rings) >= 2:
         body_kind, input_kind, flow, pool, conf = "pipe_wall", "body-surface", "internal", rings, 0.75
@@ -178,7 +197,7 @@ def scout_mesh(path: Path, *, scale_to_m: float) -> ScoutResult:
         body_kind, input_kind, flow, pool, conf = "surface", "body-surface", "internal", rim_openings + rings, 0.55
         notes.append("the mesh is open; its rims are read as the openings")
     elif rim_openings:
-        body_kind, input_kind, flow, pool, conf = "surface", "solid-body", "external", [], 0.45
+        body_kind, input_kind, flow, pool, conf = "surface", "solid-body", "external", rim_openings, 0.45
         notes.append("the mesh is open on one side only, so it reads as a body in a flow; say if it is a passage")
     else:
         # as cad/scout reads a closed solid: a body whose flat faces cover much of its box AND which
@@ -196,8 +215,17 @@ def scout_mesh(path: Path, *, scale_to_m: float) -> ScoutResult:
         mouthed = bool(discs) and max(o.equivalent_diameter for o in discs) >= MIN_MOUTH_OF_THICKNESS * thinnest
         if len(discs) >= 2 and mouthed and not box_like and not machined:
             body_kind, input_kind, flow, pool, conf = "single_solid", "fluid-domain", "internal", discs, 0.6
+        elif not box_like and (lumen := _lumen(mesh, discs, tube_lids, fill, bbox_min, bbox_max, diag))[0]:
+            # A LUMEN: the fluid of a tube network, its ends closed by lids or by rounded caps - an
+            # artery tree's two dozen outlets are no machined part, and its 2 mm branches are mouths
+            # however big the tree's box
+            body_kind, input_kind, flow, conf = "single_solid", "fluid-domain", "internal", 0.65
+            pool = lumen[1]
+            notes.append(f"it reads as the fluid inside {lumen[2]}, so its {len(pool)} tube ends are proposed as the openings")
         else:
-            body_kind, input_kind, flow, pool, conf = "single_solid", "solid-body", "external", [], 0.6
+            body_kind, input_kind, flow, conf = "single_solid", "solid-body", "external", 0.6
+            # its lids, and the tube ends no lid closes (a tube with one flat and one rounded end has both)
+            pool = discs + (lumen[1] if lumen is not None else [])
             if len(discs) >= 2 and box_like:
                 notes.append(f"flat faces cover {100 * flat_share:.0f}% of the part's box and the part fills "
                              f"{100 * fill:.0f}% of it, so it reads as a solid body in a flow, not a fluid passage")
@@ -216,20 +244,24 @@ def scout_mesh(path: Path, *, scale_to_m: float) -> ScoutResult:
     if pool:
         largest = pool[0].area
         # a hole is an opening however small (an aorta's 3.7 mm branch beside its 27.7 mm root),
-        # and so is a lid (its 1.6 mm side branch's); any other flat face has to be a real share
-        # of the largest to be one
-        pool = [o for o in pool if o.kind in ("ring", "rim") or id(o) in lids or o.area >= MIN_OPENING_FRACTION * largest]
-    if len(pool) > MAX_OPENINGS:
-        notes.append(f"{len(pool)} candidate openings found; only the {MAX_OPENINGS} largest are proposed")
-        pool = pool[:MAX_OPENINGS]
+        # and so is a lid (its 1.6 mm side branch's) and a tube's end; any other flat face has to be
+        # a real share of the largest to be one
+        pool = [o for o in pool if o.kind in ("ring", "rim", "end") or id(o) in lids
+                or o.area >= MIN_OPENING_FRACTION * largest]
+    # a tube network has as many openings as it has ends (a pulmonary tree has 30): every one is
+    # proposed, up to MAX_LUMEN_ENDS; anything else past MAX_OPENINGS is a perforated face
+    most = MAX_LUMEN_ENDS if lumen is not None and lumen[0] and flow == "internal" else MAX_OPENINGS
+    if len(pool) > most:
+        notes.append(f"{len(pool)} candidate openings found; only the {most} largest are proposed")
+        pool = pool[:most]
     openings = _name_openings(pool)
     for k, o in enumerate(openings, start=1):
         o.sticker = k                 # its confidence is the finder's: how surely its shape reads as one
-    if flow == "external":
-        openings = []
+    # read as a body in a flow, the openings are kept but not proposed: the stage shows them only once
+    # the user says the fluid flows through it after all, and no point inside the flow is sought
 
     seed = None
-    if openings:
+    if openings and flow == "internal":
         big = max(openings, key=lambda o: o.area)
         inward = -np.asarray(big.normal)
         p = np.asarray(big.centroid) + inward * 0.5 * big.equivalent_diameter
@@ -254,6 +286,50 @@ def scout_mesh(path: Path, *, scale_to_m: float) -> ScoutResult:
         "holes": [h.as_dict() for h in holes],
     }
     return result
+
+
+# ------------------------------------------------------------------------------ the lumen ----
+def _lumen(mesh, discs: list[Opening], tube_lids: set[int], fill: float, bbox_min, bbox_max,
+           diag: float) -> tuple[bool, list[Opening], str]:
+    """Whether a closed body the mouth rules read as a body in a flow is the fluid inside a tube
+    network after all (cad/lumen) - (yes, its openings, what it is) - and, either way, the openings it
+    has if the fluid flows through it: its lids, and the tube ends no lid closes. It is a lumen when it
+    is sparse and EITHER a tree of capped tubes (three or more lids each closing a tube of its own
+    size, pointing three or more ways, and most of its lids are such) OR a network of round, thin,
+    long tubes that branches or winds (its ends rounded, or closed by lids that close its tubes)."""
+    from meshpipeline.cad.lumen import read_lumen
+
+    try:
+        reading = read_lumen(mesh)
+    except Exception:  # noqa: BLE001 - a reading that fails is no evidence; the mouth rules stand
+        reading = None
+    ends: list[Opening] = []
+    for e in (reading.ends if reading is not None else []):
+        # an end a lid closes is that lid's opening
+        if any(float(np.linalg.norm(np.asarray(o.centroid) - e.apex)) <= 1.5 * max(e.radius, 0.5 * o.equivalent_diameter)
+               for o in discs):
+            continue
+        r = e.radius
+        ends.append(_opening(-1, "end", e.apex, e.normal, math.pi * r * r, (2.0 * r, 2.0 * r), bbox_min, bbox_max, diag))
+        ends[-1].confidence = END_CONFIDENCE
+    capped = [o for o in discs if id(o) in tube_lids]
+    sparse = fill <= LUMEN_FILL
+    mostly_tubes = len(capped) >= LUMEN_CAPPED_SHARE * len(discs)
+    if sparse and mostly_tubes and len(capped) >= 3 and _directions(capped) >= LUMEN_DIRECTIONS:
+        return True, discs + ends, f"a tree of {len(capped)} capped tubes"
+    if sparse and mostly_tubes and reading is not None and reading.lumen:
+        return True, discs + ends, "a network of thin round tubes"
+    return False, ends, ""
+
+
+def _directions(openings: list[Opening]) -> int:
+    """How many ways the openings point: normals within ~25 degrees of each other point one way."""
+    axes: list[np.ndarray] = []
+    for o in openings:
+        n = np.asarray(o.normal, dtype=float)
+        if all(float(n @ a) < 0.9 for a in axes):
+            axes.append(n)
+    return len(axes)
 
 
 # ---------------------------------------------------------------------------- the geometry ----
