@@ -128,8 +128,13 @@ def test_a_straight_round_bar_is_a_body_in_cross_flow_not_a_pipe_full_of_fluid()
     facts = _facts(openings=[_mouth(1, (0, 0.0, 0), (0, -1, 0), 200), _mouth(2, (0, 0.6, 0), (0, 1, 0), 200, role="outlet")])
     reading = _read(bar, facts)
     assert reading["symmetry"]["revolution"][1] and reading["symmetry"]["extruded"][1]
-    assert facts["flow"] == "external" and facts["input_kind"] == "solid-body" and facts["openings"] == []
+    assert facts["flow"] == "external" and facts["input_kind"] == "solid-body"
     assert any("straight convex bar" in n for n in facts["notes"])
+    # a body in a flow keeps its two flat ends for a flip to "the fluid flows through it" (a
+    # stirred tank's rotating zone, a shaft), drawn nowhere and sought no point inside
+    assert [o["id"] for o in facts["openings"]] == [1, 2] and facts["seed_point_m"] is None
+    from meshpipeline.application.geometry_check import stickered
+    assert stickered(facts) == []
     assert axis_from_reading(facts["flow_axis_reading"], "+z")[0] == "+x"        # across its span
 
 
