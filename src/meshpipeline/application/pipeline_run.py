@@ -352,6 +352,19 @@ def _ladder_record(final_state, *, succeeded: bool, system_failure: bool, jlog) 
         return {}
 
 
+def _attempts_shown(final_state, retry_count: int, *, jlog) -> int:
+    # How many attempts started a mesher (pipeline/engine_fallback.attempts_made). An account, so
+    # anything that goes wrong reading it falls back to the retry counter, as before.
+    try:
+        from meshpipeline.pipeline.engine_fallback import attempts_made
+        return attempts_made(final_state,
+                             succeeded=bool(final_state.get("executor_success")))
+    except Exception as exc:  # noqa: BLE001
+        jlog.warning("attempts: could not count the attempts that meshed (%s) - showing the "
+                     "retry counter", exc)
+        return int(retry_count)
+
+
 def _emit_intake_events(job_id: str, intake_events: list) -> None:
     from meshpipeline.capture.logger import TrainingLogger
     tlogger = TrainingLogger(job_id)
@@ -583,7 +596,9 @@ async def _run_async(req: JobRequest) -> dict:
             geometry_interpretation=req.geometry_interpretation,
             classify_checkpoint=_classify_checkpoint, checkpoint_thread=_ckpt_thread,
             job_repo=job_repo, jlog=jlog,
-            publish=lambda msg: _pub(job_id).closing(msg, _terminal_event_id(job_id)))
+            publish=lambda msg: _pub(job_id).closing(msg, _terminal_event_id(job_id)),
+            # an engine that reads the ECXML itself gets its parts placed, never fused
+            engine=req.mesh_engine or "")
         if _prep.refusal is not None:
             await _worker_engine.dispose()
             return _prep.refusal
@@ -851,12 +866,27 @@ async def _run_async(req: JobRequest) -> dict:
         # and the review-inconclusive caveat, from the predicate that grants its delivery
         from meshpipeline.application.final_result import review_inconclusive_caveat
         _review_caveat = review_inconclusive_caveat(_run_outcome)
+        # and the narrow-gap note, from the verdict the resolution floor gave the delivered mesh:
+        # side passages under the floor are told, never a failure (engines/passage_flow). Like the
+        # review caveats it never enters the graph state, so it can never start a retry.
+        from meshpipeline.application.final_result import narrow_passage_caveat
+        _narrow_caveat = narrow_passage_caveat(_run_outcome)
+        # and the size note: a sound mesh that is not a believable size for what it is (a car
+        # 4.7 mm long) is delivered with the concern said, never as a clean pass - the unit of a
+        # file that states none is the likely cause, and only the user can say which it is
+        from meshpipeline.application.final_result import physical_scale_caveat
+        _scale_caveat = physical_scale_caveat(_run_outcome)
         verdict, api_failure = _run_outcome.reviewer_verdict, _run_outcome.api_failure
 
         retry_count = _run_outcome.retry_count
+        # THE ATTEMPTS A USER IS SHOWN are the attempts that started a mesher - not the retry
+        # counter, which also counts a refusal before building and an attempt that stopped before
+        # its mesher (jobs d20ad762 / 26f5429a read "2 attempts" with nothing built). The job row
+        # and the terminal record carry the same number.
+        _attempts_made = _attempts_shown(final_state, retry_count, jlog=jlog)
         if retry_count > 0:
             async with AsyncSessionLocal() as db:
-                await job_repo.update_current_attempt(db, uuid.UUID(job_id), retry_count)
+                await job_repo.update_current_attempt(db, uuid.UUID(job_id), _attempts_made)
                 await db.commit()
 
         _uploaded_artifacts: list[dict] = []
@@ -877,6 +907,64 @@ async def _run_async(req: JobRequest) -> dict:
             if not _still_owner:
                 jlog.warning("Worker FENCED before finalize (generation/token superseded) - producing "
                              "no terminal side effects; the current owner finalizes. job_id=%s", job_id)
+                await _worker_engine.dispose()
+                return {"job_id": job_id, "status": "fenced", "skipped": "not_owner"}
+
+        # THE INSPECTION REPORT, on EVERY terminal outcome. Artifact delivery below runs only on a
+        # genuine success and only from an engine workspace, but the report's most important
+        # readers are on the runs that produced no mesh at all: the operator deciding whether the
+        # file is worth repairing, and the customer being told why it was refused. It is evidence,
+        # so it cannot change `final_status` and its own failures are swallowed (see
+        # application/repair_report_delivery.py); only being FENCED stops this worker, for the
+        # same reason it stops artifact registration.
+        if final_state.get("repair_report"):
+            from meshpipeline.application.execution_fence import (
+                StaleWorkerFenced as _StaleFenced,
+            )
+            from meshpipeline.application.execution_fence import (
+                execution_ownership as _own_ctx,
+            )
+            from meshpipeline.application.execution_fence import (
+                lock_ownership_for_commit as _lock_owner,
+            )
+            from meshpipeline.application.repair_report_delivery import deliver_repair_report
+
+            async def _fence_report(db):
+                await _lock_owner(db, "repair report registration")
+
+            try:
+                with _own_ctx(ownership, session_factory=AsyncSessionLocal):
+                    await deliver_repair_report(
+                        AsyncSessionLocal, job_id=job_id,
+                        report=dict(final_state.get("repair_report") or {}),
+                        repair_status=str(final_state.get("repair_status", "") or ""),
+                        delivery_attempt=int(final_state.get("retry_count", 0) or 0),
+                        execution_generation=_generation,
+                        fence_commit=_fence_report)
+                    # AND THE REPAIRED FILE ITSELF, when a repair was promoted: `geometry` names
+                    # the repaired bytes from that moment on, and repair_lineage is the record
+                    # that they ARE repaired rather than the upload. A customer whose CAD we fixed
+                    # paid for the fixed CAD as much as for the mesh built from it.
+                    if final_state.get("repair_lineage"):
+                        from meshpipeline.application.repair_report_delivery import (
+                            deliver_repaired_cad,
+                        )
+                        from meshpipeline.pipeline.geometry_state import (
+                            materialized as _mat,
+                        )
+                        _repaired = _mat(final_state)
+                        if _repaired is not None:
+                            await deliver_repaired_cad(
+                                AsyncSessionLocal, job_id=job_id,
+                                local_path=_repaired.path,
+                                suffix=_repaired.ref.suffix_hint or ".step",
+                                delivery_attempt=int(final_state.get("retry_count", 0) or 0),
+                                execution_generation=_generation,
+                                fence_commit=_fence_report)
+            except _StaleFenced:
+                jlog.warning("Worker FENCED at repair report registration (the job was cancelled "
+                             "or taken over) - producing no terminal side effects. job_id=%s",
+                             job_id)
                 await _worker_engine.dispose()
                 return {"job_id": job_id, "status": "fenced", "skipped": "not_owner"}
 
@@ -975,16 +1063,20 @@ async def _run_async(req: JobRequest) -> dict:
                 api_failure=api_failure,
                 review_reruns=int(final_state.get("review_rerun_count", 0) or 0),
                 attempts=int(final_state.get("retry_count", 0) or 0),
+                attempts_made=_attempts_made,
                 attempts_max=int(bcfg.BUILDER_MAX_TOTAL_ATTEMPTS),
                 pipeline_timed_out=_timed_out,
                 # THE FALLBACK LADDER'S ACCOUNT: which engines ran, why the run moved, and - when
                 # no mesh came out - the one offer the user can accept in a sentence
+                repair_lineage=dict(final_state.get("repair_lineage") or {}),
                 engine_ladder=_ladder_record(
                     final_state, succeeded=final_status == JobStatus.succeeded,
                     system_failure=bool(api_failure) or _timed_out, jlog=jlog),
                 requirement_caveats=(list(final_state.get("requirement_caveats") or [])
                                      + ([_concerns_caveat] if _concerns_caveat else [])
-                                     + ([_review_caveat] if _review_caveat else [])),
+                                     + ([_review_caveat] if _review_caveat else [])
+                                     + ([_narrow_caveat] if _narrow_caveat else [])
+                                     + ([_scale_caveat] if _scale_caveat else [])),
                 review_blocking=list(_review_blocking),
                 pre_composed_message=str(final_state.get("outcome_message") or "").strip()),
             ownership=ownership, lease_repo=lease_repo, job_repo=job_repo, jlog=jlog)

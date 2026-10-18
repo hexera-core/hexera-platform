@@ -132,23 +132,25 @@ def _confirmed(kind: str, flow: str) -> dict:
 
 
 def test_the_model_never_proposes_an_engine_that_cannot_mesh_the_confirmed_geometry():
-    # the soak (straight_reducer_015_fluid, "your call"): cfMesh proposed for a fluid volume, then
-    # refused, then "change the input to a body surface?" to a user who had confirmed a fluid volume
-    messages = [_confirmed("fluid-domain", "through"),
+    # the soak (straight_reducer_015_fluid, "your call"): an engine proposed for a fluid volume, then
+    # refused, then "change the input to a body surface?" to a user who had confirmed a fluid volume.
+    # cfMesh now fills a fluid domain from the inside for INTERNAL flow; an EXTERNAL fluid domain (the
+    # air box itself) is still not something it meshes - its far field is a box around a body
+    messages = [_confirmed("fluid-domain", "around"),
                 {"role": "user", "content": "Your call, pick the normal thing."}]
     out, seen = _run(messages, [
         _resp([_tool_call("propose_engine_selection", json.dumps({"engine": "cfmesh"}))]),
-        _resp([_tool_call("propose_engine_selection", json.dumps({"engine": "snappy"}))]),
+        _resp([_tool_call("propose_engine_selection", json.dumps({"engine": "gmsh"}))]),
         _resp(content="unreached"),
     ])
     assert "Not proposed: cfMesh cannot mesh what the user confirmed" in seen[0]["content"]
-    assert "snappyHexMesh" in seen[0]["content"] and "cfMesh" not in seen[0]["content"].split("Engines that can:")[1]
-    assert out["intake_gate"]["selection"]["engine"] == "snappy"
+    assert "Gmsh" in seen[0]["content"] and "cfMesh" not in seen[0]["content"].split("Engines that can:")[1]
+    assert out["intake_gate"]["selection"]["engine"] == "gmsh"
 
 
 def test_an_engine_the_user_named_is_theirs_even_when_it_cannot_mesh_it():
     # their choice goes forward to the admission, which says why and what would pass
-    messages = [_confirmed("fluid-domain", "through"), {"role": "user", "content": "use cfMesh"}]
+    messages = [_confirmed("fluid-domain", "around"), {"role": "user", "content": "use cfMesh"}]
     out, seen = _run(messages, [
         _resp([_tool_call("propose_engine_selection", json.dumps({"engine": "cfmesh"}))]),
         _resp(content="cfMesh it is - checking it against your file next."),

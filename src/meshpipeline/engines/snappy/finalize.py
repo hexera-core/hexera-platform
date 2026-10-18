@@ -51,7 +51,7 @@ def folded_class_regions(ws: Path, layer_policy: dict | None) -> dict:
     out: dict = {}
     for r in regions:
         base, _, cls = str(r).rpartition("_")
-        if cls in ("thin", "razor") and base and r not in present:
+        if cls in ("thin", "razor", "repair") and base and r not in present:
             out[str(r)] = base
     return out
 
@@ -127,6 +127,13 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
                              "timed-out or cancelled run leaves a partial polyMesh); "
                              "re-run the mesh.")}
     q = R.check_mesh(ws)
+    if internal_flow:
+        # WHICH under-resolved passages the flow can go round (engines/passage_flow.py): read here,
+        # on the mesh that came home, only when the measure beside it put the narrowest wall under
+        # the floor - so the resolution floor judges the passages the flow must go through, and a
+        # tube bank's gaps are told on the delivered mesh instead of refusing it (job 02ed0d14).
+        from meshpipeline.engines.passage_flow import passage_flow_of_polymesh
+        q.update(passage_flow_of_polymesh(ws, q))
     # NEAR-WALL PRISM LAYER COVERAGE - a MEASURED number, not a visual: a ~1e-4 m layer band
     # on a metre-scale body is invisible in any whole-body render, so the reviewer must judge
     # the layer axis from this figure (it otherwise mistook an unresolvable near-wall region
@@ -184,6 +191,18 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
                 q["layer_policy"] = _pol
         except Exception:
             logger.exception("finalize: layer-policy record unreadable (non-fatal)")
+    # THE WAKE REFINEMENT the case authored (engines/wake_region.py): the boxes behind the body
+    # and their cells, and what the cell budget cut - so the reviewer judging the wake reads
+    # what was asked of the mesher, not a guess from the render.
+    _wk = ws / "wake_refinement.json"
+    if _wk.exists():
+        try:
+            import json as _json
+            _w = _json.loads(_wk.read_text())
+            if isinstance(_w, dict):
+                q["wake_refinement"] = _w
+        except Exception:
+            logger.exception("finalize: wake-refinement record unreadable (non-fatal)")
     patch_entities, bbox = {}, (0.0,) * 6
     _review_tris: dict = {}   # per-patch triangles → precomputed reviewer camera views
     # The review surface the vision reviewer renders is built from the geometry THIS ENGINE
@@ -269,6 +288,20 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
         build_surface_msh(ws)
     except Exception:
         logger.exception("Executor: surface deliverable export failed (non-fatal)")
+    # each boundary's AREA, off the same VTK boundary: the shared port-area gate holds every
+    # inlet/outlet to the opening the user declared (engines/region_check.py)
+    try:
+        from meshpipeline.engines.region_check import patch_areas_from_vtk, recorded_port_openings
+        _areas = patch_areas_from_vtk(ws)
+        if _areas:
+            q["patch_areas_m2"] = {k: round(v, 10) for k, v in _areas.items()}
+        # ...and the openings the staging measured on the geometry: the sizes the gate holds
+        # them to (a typed size only where nothing was measured)
+        _openings = recorded_port_openings(ws)
+        if _openings:
+            q["port_openings_m2"] = _openings
+    except Exception:
+        logger.exception("Executor: patch areas not measured (non-fatal)")
     body_bbox = None
     try:
         _bi = R.inspect_stl(ws)
@@ -309,7 +342,9 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
     # metric just measures the deviation. Engines that do not body-fit a reference simply
     # don't define the hook, so there is NO engine-name list here (capability by declaration).
     _ref_fn = getattr(R, "surface_capture_reference", None)
-    if callable(_ref_fn) and volume_path:
+    # the boundary .vtp is what is measured, not the volume: a volume export left behind for size
+    # (engines/return_scope.py) must not cost the wall its capture figure
+    if callable(_ref_fn):
         try:
             from meshpipeline.cad.surface_checks import surface_deviation
             _pair = _ref_fn(ws, patch_types)

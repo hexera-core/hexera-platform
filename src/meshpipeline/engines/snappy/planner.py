@@ -31,11 +31,14 @@ Reply with ONLY a JSON object (no prose, no markdown fences) - the plan the buil
   "first_layer_rel": <float>,
   "quality": "balanced" | "strict",
   "max_cells": <int>,
+  "wake": {"enabled": true, "length": <wake lengths downstream>, "levels_below_surface": <int>, "tiers": <int>},
   "focus": "<where resolution/attention must go>",
   "risks": "<the likely failure mode + the ONE strategy change to make if it happens>"
 }
 
 Guidance: reference_length_m REPORTS the metres value of ONE of the user's quoted units - if they sized the far-field in 'chords' and stated the chord, this is that chord in metres; null when they quoted no reference length. When a reference length is stated, domain_margin is in THAT unit - the number the user asked for is the number you write ('5 diameters upstream' is up: 5), the box is built as multiples of it from the body's bounding box, and the delivered box is judged in it; with no stated reference, domain_margin is in body-lengths L (the streamwise extent), measured from the body's bounding box. Each key names a DIRECTION - do not guess them: 'up' is UPSTREAM and 'down' is DOWNSTREAM along the flow; 'vert' is ABOVE AND BELOW the body, perpendicular to the flow - this is where a lifting body needs room and it must never be 0; 'side' is SPANWISE, and it is the only one that may be 0, for a slab whose symmetry planes sit on its own end faces. Size the far-field from your own knowledge of standard external-aero practice so the outer boundaries never disturb the flow around the body. It scales with the regime (a compressible/transonic case needs a MUCH larger domain than a low-speed one, to avoid blockage and wave reflection) and a lifting body needs extra length downstream for its wake. Do NOT under-size it - a cramped far-field is a common failure the reviewer rejects. n_layers 3-5. first_layer_rel 0.25-0.5. Quality: START WITH 'balanced'. Choose 'strict' only when a PREVIOUS attempt of this job MEASURED widespread skew (the critique will say so) - strict enforces checkMesh skew<4 but its mechanics suppress prism-layer inflation on small or sharp geometry, so defaulting to it trades a failure you might get for a layer failure you will get.
+
+wake is the refined region BEHIND the body, built along the declared flow as nested boxes - each one level coarser and twice as long as the one inside it, so the mesh grades from the wall back to the far field instead of dropping straight to background cells. It is standard external-aero practice and it is ON by default; write "wake": false ONLY when the user's brief explicitly asks for no wake refinement. length is in wake lengths (the reference length, or the body's length along the flow, whichever is larger): 4 is the default; 2-3 for a streamlined body where only the near wake matters, 4-8 for a bluff body, a car, or a lifting body whose wake and tip vortices matter downstream. levels_below_surface: the finest wake cells are this many levels coarser than the wall (default 1; 2 for a cheaper mesh). tiers: 1-4 boxes (default 3). The wake's cells come out of max_cells (at most a quarter of it): when it does not fit it is shortened, then made coarser, automatically - so a long fine wake on a big body needs a larger max_cells. If a review says the wake is not resolved, make it longer and/or keep levels_below_surface at 1, and raise max_cells to pay for it.
 
 max_cells is YOURS to set and it is a real lever: a large far-field WITH a well-resolved body legitimately needs more cells, so RAISE it when the physics demands (a cramped budget forces either an under-resolved wall or a too-small domain - both get rejected). BUT never exceed max_cells_HARD_CEILING (shown in the metrics - the compute limit); a mesh above it cannot be built. If the ideal job would need more than the ceiling, spend that ceiling wisely - the far-field must be big enough that the reviewer accepts it, so if you must trade, keep the domain adequate and let the far-field cells be coarser rather than cramping the domain.
 
@@ -166,6 +169,85 @@ def coarsen_after_timeout(timed_out: dict, proposed: dict, *, ceiling: int,
     if budget < t_budget:
         out["max_cells"] = budget
         changes.append(f"cell budget cut from {t_budget / 1e6:.2g} M to {budget / 1e6:.2g} M")
+    return out, changes
+
+
+#: The headroom a refined plan's cell budget keeps over the least the refinement costs (the count
+#: grown by the square of the factor): snappy's maxGlobalCells stops refining at the budget, so a
+#: plan asked for more cells across under its old budget would come out as coarse as before.
+REFINE_BUDGET_HEADROOM = 1.5
+#: The share of the hard cell limit a refined attempt's projected count (the count grown by the
+#: square of the factor) may reach before the factor is held back to fit it.
+REFINE_CEILING_SHARE = 0.95
+
+
+def refine_after_under_resolved(gated: dict | None, proposed: dict, *, measured: object,
+                                needed: object, cells: object = None,
+                                ceiling: int) -> tuple[dict, list[str]]:
+    """The internal plan for the attempt after a mesh too coarse across its passage - one that
+    actually puts the floor (plus one) across it.
+
+    The internal wall cell is bore / cells_across_diameter, whatever the surface level. Job
+    02ed0d14's re-plan was told to "refine the wall surface level", raised it expecting twice the
+    cells across, and moved cells_across only 24 -> 28: the narrowest passage went 8.3 -> 9.8 and
+    the attempt was spent. So the number is set here, by arithmetic, against the plan whose mesh
+    `measured` cells across where `needed` were: cells across x (needed + 1) / measured, never
+    fewer than proposed. The cell budget follows (the least the refinement costs, with headroom,
+    up to `ceiling`), or snappy would stop refining at the old one.
+
+    Returns (strategy, changes) - `changes` in plain words, empty when the proposal already asks
+    for enough (or nothing is known to refine against)."""
+    import math
+
+    def _finite(v: object) -> float | None:
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            return None
+        return float(v) if math.isfinite(float(v)) else None
+
+    out = dict(proposed or {})
+    m, n = _finite(measured), _finite(needed)
+    if not gated or m is None or n is None or m <= 0.0 or m >= n:
+        return out, []
+
+    def _ca(plan: dict) -> int:
+        try:
+            return max(_MIN_CELLS_ACROSS, int(plan.get("cells_across_diameter", 24)))
+        except (TypeError, ValueError):
+            return 24
+
+    factor = (n + 1.0) / m
+    c = _finite(cells)
+    # ... WITHIN THE HARD LIMIT. A wall-bound mesh grows with the square of the factor (its wall
+    # cells and the prism layers on them), and a rebuild projected past `ceiling` is refused at
+    # the manifest gate after a full run: annular_001 at 5.45 M cells and 10 across was sent to
+    # x1.3 (~9 M). Over it, the factor is held to the limit, though never below what puts the
+    # floor itself across (needed / measured) - past THAT, no rebuild can help, and the retry
+    # policy does not start one (failure_cause.retry_can_help).
+    held = c is not None and c > 0.0 and c * factor ** 2 > REFINE_CEILING_SHARE * float(ceiling)
+    if held and c is not None:
+        factor = max(n / m, min(factor, math.sqrt(REFINE_CEILING_SHARE * float(ceiling) / c)))
+        # rounded DOWN to a whole count, never under the floor's own: rounding up put
+        # annular_001's rebuild at 8.005 M cells against the 8 M limit
+        want = max(int(math.ceil(_ca(gated) * n / m)), int(math.floor(_ca(gated) * factor)))
+    else:
+        want = int(math.ceil(_ca(gated) * factor))
+    have = _ca(out)
+    changes: list[str] = []
+    if have < want:
+        out["cells_across_diameter"] = want
+        changes.append(f"cells across the bore raised from {have} to {want}")
+    elif held and have > want:
+        # a re-plan cannot ask for a rebuild the hard limit would refuse after a full run
+        out["cells_across_diameter"] = want
+        changes.append(f"cells across the bore held to {want} (asked {have}) by the "
+                       f"{float(ceiling) / 1e6:.2g} M cell limit")
+    if c is not None and c > 0.0:
+        floor_budget = min(int(ceiling), int(REFINE_BUDGET_HEADROOM * c * factor ** 2))
+        p_budget = clamp_cell_budget(out.get("max_cells"), ceiling=ceiling)
+        if p_budget < floor_budget:
+            out["max_cells"] = floor_budget
+            changes.append(f"cell budget raised from {p_budget / 1e6:.2g} M to "
+                           f"{floor_budget / 1e6:.2g} M")
     return out, changes
 
 

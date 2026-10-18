@@ -143,8 +143,10 @@
 .gc-naming .gc-table{opacity:.75}
 .gc-proceed:disabled{opacity:.5;cursor:not-allowed}
 .gc-tools{display:flex;align-items:center;gap:8px;padding:6px 0 2px}
-.gc-tools .gc-add{padding:5px 10px;font-size:12px}
-.gc-tools .gc-add.armed{background:#ff4f00;border-color:#ff4f00;color:#fff}
+.gc-tools .gc-add,.gc-tools .gc-measure{padding:5px 10px;font-size:12px}
+.gc-tools .gc-add.armed,.gc-tools .gc-measure.armed{background:#ff4f00;border-color:#ff4f00;color:#fff}
+.gc-mlabel{position:absolute;transform:translate(-50%,-140%);padding:2px 7px;border-radius:5px;pointer-events:none;
+  background:rgba(14,19,26,.85);border:1px solid #ff4f00;color:#fff;font-size:11.5px;font-variant-numeric:tabular-nums;white-space:nowrap}
 .gc-tools-hint{font-size:11.5px;color:#79839b}
 .gc-card .gc-tools{display:none}
 .gc-del{width:22px;text-align:center}

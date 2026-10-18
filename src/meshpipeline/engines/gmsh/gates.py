@@ -9,7 +9,8 @@ from pathlib import Path
 import meshpipeline.settings.policy as polcfg
 from meshpipeline.contracts.failure_cause import FailureCause
 from meshpipeline.engines.gates import GateCtx, GateSpec, refuse
-from meshpipeline.engines.gmsh.gmsh_runner import SICN_FLOOR
+from meshpipeline.engines.gmsh.gmsh_runner import quality_shortfalls
+from meshpipeline.engines.region_check import gate_port_areas
 
 logger = logging.getLogger(__name__)
 
@@ -66,17 +67,21 @@ def _gate_sicn_floor(ctx: GateCtx) -> tuple[bool, str]:
         return False, refuse("[QUALITY] min_sicn missing from quality report - the mesh "
                              "was not quality-checked; run_mesh again",
                              FailureCause.MESH_QUALITY, unmeasured=["element quality (SICN)"])
-    if float(sicn) < SICN_FLOOR:
-        return False, refuse(
-            f"[QUALITY] min SICN {sicn} is below the {SICN_FLOOR} floor - near-"
-            "degenerate elements. Fix in gmsh_spec.json: reduce size.value near "
-            "small features (or lower curvature_nodes), keep optimize=true, and "
-            "consider element_order 1 to isolate whether high-order snapping is "
-            "the cause; then run_mesh again.",
-            FailureCause.MESH_QUALITY, checks=[{
-                "key": "min_sicn", "label": "element quality (SICN)", "measured": float(sicn),
-                "op": ">=", "threshold": SICN_FLOOR}])
-    return True, ""
+    misses = quality_shortfalls(q)
+    if not misses:
+        return True, ""
+    cfd = str(q.get("quality_bar") or "") == "cfd"
+    said = "; ".join(
+        f"{m['label']} {m['measured']:g} must be {m['op']} {m['threshold']:g}" for m in misses)
+    what = ("a flow mesh is judged as a CFD solver sees it: no near-flat cells and no face "
+            "beyond the non-orthogonality a solver can correct" if cfd else
+            "near-degenerate elements corrupt FEA conditioning")
+    return False, refuse(
+        f"[QUALITY] {said} - {what}. These cells sit where two CAD faces meet at a sharp edge "
+        "with too few elements across it. Fix in gmsh_spec.json: reduce size.value near small "
+        "features (or lower curvature_nodes), keep optimize=true, and consider element_order 1 "
+        "to isolate whether high-order snapping is the cause; then run_mesh again.",
+        FailureCause.MESH_QUALITY, checks=misses)
 
 
 def _gate_resolution_floor(ctx: GateCtx) -> tuple[bool, str]:
@@ -184,4 +189,10 @@ GMSH_GATES: tuple[GateSpec, ...] = (
     GateSpec(key="patch_contract", check=_gate_gmsh_region_contract, section="GROUPS",
              proves="Every named group you asked for exists in the deck",
              cause=FailureCause.CONTRACT_MISMATCH),
+    # SHARED with every engine (engines/region_check.py): each declared inlet/outlet delivered at
+    # about the size declared - a port that swept in the wall round it, or a mesh of another
+    # region, is refused here though every other gate passes
+    GateSpec(key="port_areas", check=gate_port_areas, section="GROUPS",
+             proves="Every inlet and outlet is the opening you declared, at its size",
+             cause=FailureCause.PATCH_NOT_CAPTURED),
 )

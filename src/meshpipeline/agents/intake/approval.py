@@ -27,6 +27,39 @@ DISPATCHED = "dispatched"
 APPROVE_INTENT = "approve"
 HEDGE_INTENT = "ambiguous"
 CORRECTION_INTENT = "correction"
+#: A QUESTION ABOUT THE SUMMARY ("which mesher will you use?"), which changes nothing. It used to be
+#: read as a correction: the summary was thrown away, the model answered without submitting a new
+#: one, and the user's "Yes, go ahead." that followed had no summary to land on - so it was asked
+#: to confirm the same requirements again, and only a second yes started the run (dev-areen
+#: set_top_box, 2026-10-11). A question keeps the summary standing, one turn further on, while the
+#: intake answers it.
+QUESTION_INTENT = "question"
+
+#: Words that make a question a request for a change ("can you make it finer?", "could we use
+#: cfMesh instead?"): such a message is a correction, as before, and the summary is redone.
+_CHANGE_WORDS = frozenset({
+    "make", "change", "set", "switch", "increase", "decrease", "raise", "lower", "add",
+    "remove", "drop", "refine", "finer", "coarser", "instead", "rather", "replace", "move",
+    "rename", "turn", "enable", "disable", "include", "exclude", "more", "less", "fewer",
+    "bigger", "smaller", "larger", "different", "another", "other", "try", "redo", "edit",
+})
+
+
+def is_question(message: str, engine: str = "") -> bool:
+    """Whether the answer to a summary only ASKS something about it: it has a question mark, no
+    word that asks for something to be different, and names no engine but the summary's own
+    ("which mesher will you use?" asks; "could we use cfMesh?" changes)."""
+    import re
+
+    from meshpipeline.agents.intake import vocabulary as _vocab
+
+    text = str(message or "")
+    if "?" not in text:
+        return False
+    words = re.findall(r"[a-z]+", text.casefold())
+    if not words or any(w in _CHANGE_WORDS for w in words):
+        return False
+    return not _vocab.engines_named_in(text, (engine or "").strip().lower())
 
 
 def classify(message: str, engine: str = "") -> str:
@@ -40,8 +73,11 @@ def classify(message: str, engine: str = "") -> str:
     if reading == _consent.APPROVE:
         return APPROVE_INTENT
     if reading == _consent.HEDGE:
-        # consent diluted by a hedge ("maybe. proceed"), a bare hedge, or nothing at all: ask
+        # consent diluted by a hedge ("maybe. proceed"), a bare hedge, a yes asked back ("ok?"),
+        # or nothing at all: ask
         return HEDGE_INTENT
+    if is_question(message, engine):
+        return QUESTION_INTENT
     return CORRECTION_INTENT
 
 

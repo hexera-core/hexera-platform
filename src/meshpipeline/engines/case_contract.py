@@ -267,6 +267,16 @@ def _snappy_boundary(ws: Path) -> CaseBoundary | None:
                         engine_owned=frozenset(box) if internal else frozenset())
 
 
+def _passage_solids(ws: Path) -> list[str]:
+    """The solids of every further passage's surface a cfMesh case lists in its passages record."""
+    from meshpipeline.cad.fluid_passages import passage_surface_files
+    try:
+        surfaces = passage_surface_files(ws)
+    except ValueError as exc:
+        raise CaseUnreadable(str(exc)) from exc
+    return [name for surf in surfaces for name in stl_solid_names(surf)]
+
+
 def _cfmesh_boundary(ws: Path) -> CaseBoundary | None:
     """Every solid of the assembled surface (geom.stl) renamed and retyped by the meshDict's
     renameBoundary - a solid it does not list lands in its defaultName - plus, in 2D, the front and
@@ -283,6 +293,9 @@ def _cfmesh_boundary(ws: Path) -> CaseBoundary | None:
     solids = stl_solid_names(surf)
     if not solids:
         raise CaseUnreadable("geom.stl names no solids (empty, or not ASCII)")
+    # a case of several separate passages meshes each further one from its own surface and merges
+    # it in (engines/cfmesh/native.mesh_passages): their solids are the case's boundary too
+    solids = [*solids, *_passage_solids(ws)]
     patches: dict[str, str] = {}
     for s in solids:
         if s in renames:
@@ -308,11 +321,44 @@ def _gmsh_boundary(ws: Path) -> CaseBoundary | None:
         spec = json.loads(f.read_text())
     except (OSError, ValueError) as exc:
         raise CaseUnreadable(f"gmsh_spec.json is missing or not JSON ({exc})") from exc
+    from meshpipeline.engines.workspace_facts import (
+        port_declaration,
+        read_flow_topology,
+        read_input_kind,
+    )
+    declared = [p for p in port_declaration(ws) if isinstance(p, dict) and p.get("name")]
     groups = spec.get("groups") if isinstance(spec, dict) else None
+    # WITHOUT BUILDER GROUPS THE ENGINE NAMES THEM (engines/gmsh/driver.py): an external body is
+    # cut out of a far-field box and its groups are the declared wall and far field; ports are
+    # bound to their faces and the rest walled. The builder's groups, when written, are carried
+    # through the cut and stand.
+    if not groups and read_flow_topology(ws) == "external" \
+            and read_input_kind(ws) in ("solid-body", "body-surface"):
+        wall = next((p["name"] for p in declared if p.get("type") == "wall"), "body")
+        far = next((p["name"] for p in declared if p.get("type") == "farfield"), "farfield")
+        return CaseBoundary(patches={str(wall): "wall", str(far): "farfield"}, kind="roles",
+                            authored_by=RENDERER)
+    if not groups and any(p.get("type") in ("inlet", "outlet") for p in declared):
+        wall = next((p["name"] for p in declared if p.get("type") == "wall"), "wall")
+        patches = {str(p["name"]): str(p["type"]) for p in declared
+                   if p.get("type") in ("inlet", "outlet")}
+        patches[str(wall)] = "wall"
+        return CaseBoundary(patches=patches, kind="roles", authored_by=RENDERER)
     if not isinstance(groups, list):
         raise CaseUnreadable("gmsh_spec.json has no groups list")
     patches = {str(g.get("name") or "").strip(): str(g.get("role") or "free").strip()
                for g in groups if isinstance(g, dict) and str(g.get("name") or "").strip()}
+    _ports = [p for p in declared if p.get("type") in ("inlet", "outlet")]
+    _wall = next((p["name"] for p in declared if p.get("type") == "wall"), None)
+    if _ports and _wall and str(_wall) not in patches:
+        # the engine holds each port group to its declared opening and walls the faces a port
+        # group swept in (driver._checked_port_groups): the declared wall is the engine's to build
+        patches[str(_wall)] = "wall"
+    if read_flow_topology(ws) == "external"             and read_input_kind(ws) in ("solid-body", "body-surface")             and "farfield" not in patches.values():
+        # the far-field box is cut around the body after the builder named its faces: the
+        # engine adds the declared far field when the builder named none (driver._external_groups)
+        far = next((p["name"] for p in declared if p.get("type") == "farfield"), "farfield")
+        patches[str(far)] = "farfield"
     return CaseBoundary(patches=patches, kind="roles", authored_by=BUILDER,
                         undeclared_ok_roles=frozenset({"free"}))
 

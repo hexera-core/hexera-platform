@@ -37,6 +37,23 @@ _OFFLOADED_TOOLS = frozenset({
 })
 
 
+def _run_mesh_failure_words(parsed: dict) -> str:
+    """What a user is told when an ANNOUNCED run_mesh did not give a usable mesh, by what the
+    run actually came back with ('' when it succeeded). Only a mesh that came back and failed is
+    "a mesh with defects"; a launch the last check refused, a run that ran out of time and a run
+    our infrastructure dropped are each said as what they were."""
+    if parsed.get("success"):
+        return ""
+    if parsed.get("patch_contract_mismatch"):
+        return ("The mesher was not started: the case did not build the boundaries you approved "
+                "- correcting it")
+    if parsed.get("timed_out"):
+        return "The mesher ran out of time before it finished - reworking it smaller"
+    if parsed.get("system_failure"):
+        return "The mesh run did not complete on our side - trying it again"
+    return "The mesh came back with defects - reworking it"
+
+
 @dataclass(frozen=True)
 class BuilderToolResult:
 
@@ -73,6 +90,9 @@ class BuilderToolExecutor:
         # `_pub_seq`: the executor is rebuilt when the node re-runs, so a replay recounts from one
         # and republishes under the identity the first run used.
         self._mesh_seq = 0
+        # Whether the LAST run_mesh call announced a mesher (published `meshing`). A call refused
+        # before the announcement started nothing, so nothing about a mesh is published for it.
+        self._mesh_announced = False
 
     def capture_reasoning(self, reasoning: str) -> None:
         if not reasoning:
@@ -151,11 +171,13 @@ class BuilderToolExecutor:
             changed_domain_state=tool in SIDE_EFFECTING_TOOLS)
 
     async def _run_announced_mesh(self) -> str:
+        self._mesh_announced = False
         prepared = await asyncio.to_thread(prepare_mesh_run, self._context)
         if prepared.refusal is not None:
             # Declined before the announcement boundary, exactly as before: the model is told
             # why, nothing is published and the mesher is never submitted.
             return _serialized("run_mesh", self._context.job_id, prepared.refusal)
+        self._mesh_announced = True
         if self._publish is not None:
             # The announcement the run used to make for itself: same engine, same cap, same
             # measured estimate, published before the mesher starts. A lost claim raises here
@@ -182,12 +204,15 @@ class BuilderToolExecutor:
         _n = self._pub_seq
         try:
             if tool == "run_mesh":
+                if not self._mesh_announced:
+                    # refused before any mesher started: there is no bar to close and no mesh to
+                    # judge - "came back with defects" described a mesh that never existed
+                    return
                 # closes the meshing progress bar the run_mesh tool opened
                 await self._publish.ameshed(parsed.get("cells"), op_id=f"meshed:{_n}")
-                if not parsed.get("success"):
-                    await self._publish.awarn(
-                        "The mesh came back with defects - reworking it",
-                        op_id=f"defects:{_n}")
+                failed = _run_mesh_failure_words(parsed)
+                if failed:
+                    await self._publish.awarn(failed, op_id=f"defects:{_n}")
             elif tool == "write_file":
                 # only a write that ACTUALLY landed: the failure shape carries `error`
                 # and no `written`, so a blocked or escaped path emits nothing here.

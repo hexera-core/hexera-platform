@@ -24,6 +24,20 @@ WAIT_REPLY = (
     f"{DRAWING_MARK} still drawing your part - it will appear beside this chat in a moment. "
     "Check the openings there and press Proceed; I'll carry on from that."
 )
+#: THE SAME TWO LINES FOR A WHOLE THERMAL MODEL (an ECXML upload, contracts/intake_formats
+#: check_mode "thermal"). Nothing on its panel is an opening to check: the file names every part,
+#: its power and the room air, so the line says what the file is and what to press. The model's
+#: own headline (application/thermal_view.headline) leads once the check has read the file.
+THERMAL_HOLD_REPLY = f"{DRAWING_MARK} {{headline}} Check the parts beside this chat and press Mesh this model."
+#: ...before the check has read the file: there is no headline yet to give.
+THERMAL_OPENING_REPLY = (
+    f"{DRAWING_MARK} opening your thermal model now. It will appear beside this chat in a few "
+    "seconds: check the parts there and press Mesh this model."
+)
+THERMAL_WAIT_REPLY = (
+    f"{DRAWING_MARK} still opening your thermal model - it will appear beside this chat in a "
+    "moment. Check the parts there and press Mesh this model; I'll carry on from that."
+)
 #: What the confirm sends as the user's turn so the intake picks up where the hold left it.
 CONTINUE_TEXT = "I confirmed the geometry check. Go on."
 #: How long after the naming was requested a message is still answered with the wait line. A
@@ -59,6 +73,41 @@ def hold_decision(stored: dict | None, requested: dict | None, confirmed: dict |
 def should_hold(stored: dict | None, requested: dict | None, confirmed: dict | None) -> bool:
     """Whether this chat turn is the one that hands the user's words to the naming."""
     return hold_decision(stored, requested, confirmed) == "queue"
+
+
+def hold_reply(thermal: bool, headline: str = "") -> str:
+    """The holding line for this upload: the generic one (a picture with numbered openings to
+    check), or a thermal model's - its own headline when the check has read the file, else the
+    plain "opening your thermal model" line."""
+    if not thermal:
+        return HOLD_REPLY
+    said = str(headline or "").strip()
+    if not said:
+        return THERMAL_OPENING_REPLY
+    return THERMAL_HOLD_REPLY.format(headline=said if said.endswith(".") else said + ".")
+
+
+def wait_reply(thermal: bool) -> str:
+    """What a message sent while the check is still drawing is answered with."""
+    return THERMAL_WAIT_REPLY if thermal else WAIT_REPLY
+
+
+def stored_thermal(session_id: str) -> tuple[bool, str]:
+    """Whether the stored check reads the upload as a whole thermal model, and its one-line
+    headline as the check read it from the file ("Set-top box, vented: a Flotherm thermal model
+    with 8 parts, 8.7 W in total and 35 °C room air."). (False, "") while the check has not read
+    the file yet - or cannot be read."""
+    from meshpipeline.contracts.intake_formats import THERMAL_CHECK
+
+    try:
+        from meshpipeline.application.geometry_check import read_check
+
+        stored = read_check(session_id) or {}
+    except Exception as exc:  # noqa: BLE001 - a line without the headline is still a true line
+        logger.info("geometry hold: the stored check could not be read (%s)", type(exc).__name__)
+        return False, ""
+    view = stored.get("thermal") if isinstance(stored.get("thermal"), dict) else {}
+    return stored.get("check_mode") == THERMAL_CHECK, str((view or {}).get("headline") or "")
 
 
 def purpose_from(messages: list[dict] | None) -> str:
@@ -116,6 +165,44 @@ def measured_size_mm(session_id: str) -> list[float] | None:
         return None
 
 
+def measured_unit_inference(session_id: str, words: str = "") -> dict | None:
+    """The unit the check reads a unit-less file as - from what the part is (its shape and flow,
+    the naming's name and estimate, the user's words) - with how sure that is and the other
+    reading (application/geometry_check.unit_inference). The confirmed form wins over the scout's
+    guess for the flow, the ground and the part's name. None when there is nothing measured to
+    read, or the file stated its unit."""
+    import meshpipeline.settings.geometry_check as gcfg
+
+    if not gcfg.GEOMETRY_CHECK_ENABLED:
+        return None
+    import json
+
+    from meshpipeline.application.geometry_check import check_object_key, read_check, unit_inference
+    from meshpipeline.contracts.object_storage import ObjectNotFound, get_object_store
+
+    try:
+        stored = read_check(session_id) or {}
+        facts = stored.get("facts") or {}
+        if not facts.get("unit_assumed", True):
+            return None
+        proposal = dict(stored.get("proposal") or {})
+        if not proposal.get("size_mm"):
+            proposal["size_mm"] = facts.get("size_mm")
+        try:
+            confirmed = json.loads(get_object_store().get_bytes(
+                object_key=check_object_key(session_id, "confirmed.json")))
+        except ObjectNotFound:
+            confirmed = None
+        if isinstance(confirmed, dict):
+            for key in ("flow", "grounded", "up_axis", "part"):
+                if confirmed.get(key) not in (None, ""):
+                    proposal[key] = confirmed[key]
+        return unit_inference(proposal, facts, words)
+    except Exception as exc:  # noqa: BLE001 - a reading we cannot make is a question without one
+        logger.info("geometry check: unit reading unavailable for the unit question (%s)", exc)
+        return None
+
+
 async def interpretation_payload(db, session, owner_id: str, organization_id: str) -> dict | None:
     """The unit the user confirmed for this session's file, as the worker reads it, or None."""
     iid = getattr(session, "geometry_interpretation_id", None)
@@ -131,6 +218,86 @@ async def interpretation_payload(db, session, owner_id: str, organization_id: st
     recorded = await GeometryInterpretationRepository().get_for_owner(
         db, iid, owner_id, organization_id=organization_id)
     return asdict(GeometryInterpretationRef.from_domain(recorded)) if recorded else None
+
+
+async def unit_fixing_format(db, session, owner_id: str, organization_id: str):
+    """The intake format of the session's upload when its converter fixes the unit of the
+    geometry (contracts/intake_formats `fixed_unit`: an ECXML model is written in millimetres),
+    else None. A source that cannot be read is None - the unit is then handled as any other."""
+    from meshpipeline.contracts.intake_formats import unit_fixing_format as _fixing
+
+    suffix = await _upload_suffix(db, session, owner_id, organization_id)
+    return _fixing(suffix) if suffix is not None else None
+
+
+async def upload_check_mode(db, session, owner_id: str, organization_id: str) -> str:
+    """How the geometry check reads the session's upload (contracts/intake_formats check_mode):
+    "thermal" for a whole thermal model, "" for the generic check - and "" when there is no
+    upload or it cannot be read."""
+    from meshpipeline.contracts.intake_formats import format_for_suffix
+
+    suffix = await _upload_suffix(db, session, owner_id, organization_id)
+    fmt = format_for_suffix(suffix) if suffix else None
+    return str(getattr(fmt, "check_mode", "") or "")
+
+
+async def _upload_suffix(db, session, owner_id: str, organization_id: str) -> str | None:
+    """The suffix the session's upload was recorded under; None when there is none or it cannot
+    be read."""
+    sid = getattr(session, "geometry_source_id", None)
+    if not sid or db is None:
+        return None
+    from meshpipeline.persistence.repositories.geometry_source_repository import GeometrySourceRepository
+
+    try:
+        row = await GeometrySourceRepository().get_for_owner(db, sid, owner_id,
+                                                             organization_id=organization_id)
+    except Exception as exc:  # noqa: BLE001 - a lookup that fails locks nothing
+        logger.warning("geometry unit: the upload's format could not be read (%s) - session_id=%s",
+                       type(exc).__name__, getattr(session, "id", None))
+        return None
+    return str(getattr(row, "suffix_hint", "") or "") if row is not None else None
+
+
+async def ensure_fixed_unit(db, session, owner_id: str, organization_id: str) -> dict | None:
+    """THE UNIT A CONVERTER FIXED, bound to the session when nothing is: an ECXML upload's
+    geometry is millimetres by construction, so it is recorded as the file's (as the upload
+    records any declared unit) rather than asked. Returns the interpretation now in force when
+    the upload's unit is fixed, else None. The upload records it already; this covers an upload
+    whose unit could not be read then - and a session that holds ANOTHER unit (a "metres" taken
+    before the unit was locked): the fixed one is bound back over it, and a run proposed under
+    the wrong one is withdrawn by the intake authority, in the caller's transaction."""
+    import uuid
+    from dataclasses import asdict
+
+    fmt = await unit_fixing_format(db, session, owner_id, organization_id)
+    if fmt is None:
+        return None
+    current = await interpretation_payload(db, session, owner_id, organization_id)
+    if current is not None and str(current.get("unit")) == fmt.fixed_unit:
+        return current
+    from meshpipeline.contracts.geometry_source import GeometryInterpretationRef
+    from meshpipeline.contracts.geometry_units import LengthUnit, ResolutionBasis
+    from meshpipeline.persistence.repositories.geometry_interpretation_repository import (
+        GeometryInterpretationRepository,
+    )
+    from meshpipeline.persistence.repositories.session_repository import SessionRepository
+
+    recorded = await GeometryInterpretationRepository().record(
+        db, owner_id=owner_id, geometry_source_id=session.geometry_source_id,
+        unit=LengthUnit(fmt.fixed_unit), basis=ResolutionBasis.file_declared,
+        evidence=f"fixed by the conversion: {fmt.fixed_unit_reason}"[:256],
+        organization_id=organization_id)
+    await SessionRepository().bind_geometry_interpretation(db, session.id, uuid.UUID(recorded.interpretation_id))
+    logger.info("geometry unit: %s fixed by the %s conversion, recorded%s - session_id=%s",
+                fmt.fixed_unit, fmt.key, f" over {current.get('unit')}" if current else "", session.id)
+    if current is not None:
+        from meshpipeline.agents.intake.message import withdraw_proposal_for_unit_change
+
+        if await withdraw_proposal_for_unit_change(db, session):
+            logger.info("geometry unit: a run proposed under %s was withdrawn - session_id=%s",
+                        current.get("unit"), session.id)
+    return asdict(GeometryInterpretationRef.from_domain(recorded))
 
 
 async def record_unit(db, session, owner_id: str, organization_id: str, unit: str) -> dict:
@@ -189,6 +356,8 @@ def withdraw_naming(session_id: str) -> None:
     logger.warning("geometry naming request withdrawn after a failed turn - session_id=%s", session_id)
 
 
-__all__ = ["CONTINUE_TEXT", "DRAWING_MARK", "HOLD_REPLY", "WAIT_GRACE_S", "WAIT_REPLY", "hold_applies",
-           "hold_decision", "interpretation_payload", "measured_size_mm", "purpose_from", "queue_naming",
-           "record_unit", "should_hold", "withdraw_naming"]
+__all__ = ["CONTINUE_TEXT", "DRAWING_MARK", "HOLD_REPLY", "THERMAL_HOLD_REPLY", "THERMAL_OPENING_REPLY",
+           "THERMAL_WAIT_REPLY", "WAIT_GRACE_S", "WAIT_REPLY", "ensure_fixed_unit", "hold_applies",
+           "hold_decision", "hold_reply", "interpretation_payload", "measured_size_mm", "purpose_from",
+           "queue_naming", "record_unit", "should_hold", "stored_thermal", "unit_fixing_format",
+           "upload_check_mode", "wait_reply", "withdraw_naming"]

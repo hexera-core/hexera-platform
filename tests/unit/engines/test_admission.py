@@ -34,9 +34,18 @@ def test_gmsh_produces_structural_from_a_solid_body():
     assert "purpose_incompatible" not in codes and "input_kind_incompatible" not in codes
 
 
-def test_cfd_from_a_bare_solid_is_rejected_no_fluid_prep():
+def test_gmsh_builds_the_fluid_around_a_body_for_external_cfd():
+    # the driver cuts the body out of a far-field box (engines/gmsh/surface_volume.py)
     codes = _codes("gmsh", purpose="external_cfd", input_kind="solid-body", dim="3D",
                    patches=[("body", "wall"), ("ff", "farfield")], params={"element_order": "2"})
+    assert "input_kind_incompatible" not in codes and "purpose_incompatible" not in codes
+
+
+def test_internal_cfd_from_a_bare_solid_is_still_rejected_no_cavity_prep():
+    # gmsh does not carve the cavity out of a hollow part; it meshes a fluid domain it is given
+    codes = _codes("gmsh", purpose="internal_cfd", input_kind="solid-body", dim="3D",
+                   patches=[("in", "inlet"), ("out", "outlet"), ("w", "wall")],
+                   params={"element_order": "2"})
     assert "input_kind_incompatible" in codes and "purpose_incompatible" not in codes
 
 

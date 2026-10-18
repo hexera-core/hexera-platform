@@ -8,6 +8,7 @@ waiting without collecting - given up (cancel, takeover, drain) or past the work
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 import pytest
 import requests
@@ -163,6 +164,10 @@ class _Blob:
 
     def download_as_bytes(self):
         return self._b.objects[self.key]
+
+    def download_to_filename(self, filename):
+        # the result workspace is streamed to a file since #149
+        Path(filename).write_bytes(self._b.objects[self.key])
 
     def upload_from_string(self, data, content_type=None, timeout=None):
         self._b.objects[self.key] = data

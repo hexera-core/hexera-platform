@@ -435,6 +435,8 @@ def world(monkeypatch, tmp_path):
                         lambda *_a, **_k: [])
     for fn in ("passage_of_stls", "choose_passage_radius", "port_radius_stats"):
         monkeypatch.setattr(f"meshpipeline.engines.passage.{fn}", lambda *_a, **_k: {})
+    monkeypatch.setattr("meshpipeline.engines.passage.staged_passage_field",
+                        lambda *_a, **_k: None)
     return SimpleNamespace(mesher=mesher, root=tmp_path, monkeypatch=monkeypatch)
 
 

@@ -148,6 +148,15 @@ class FinalResult:
     # on a mesh failure the one offer. Added without a schema bump: it defaults to {}, a reader of
     # an older record reads {}, and an older reader ignores a key it does not know.
     engine_ladder: dict = field(default_factory=dict)
+    # WHICH BYTES THIS RESULT WAS BUILT FROM, when they were not the ones the customer uploaded
+    # (pipeline/repair_promote.py): the original upload's identity, the repaired bytes that
+    # replaced it, and the engine the replacement was proved to stage for. Empty on every run that
+    # meshed the upload as it arrived. A delivered mesh has to be able to say this - "we fixed
+    # your file and meshed the fix" is a different claim from "we meshed your file", and a
+    # customer is entitled to know which one they are holding. Added without a schema bump: it
+    # defaults to {}, a reader of an older record reads {}, and an older reader ignores a key it
+    # does not know.
+    repair_lineage: dict = field(default_factory=dict)
 
     optional_warnings: list[str] = field(default_factory=list)
     missing_outputs: list[str] = field(default_factory=list)
@@ -210,6 +219,8 @@ class FinalResult:
             attempts_max=int(d.get("attempts_max", 0)),
             required_ready=bool(d.get("required_ready", False)),
             delivered_types=list(d.get("delivered_types", [])),
+            repair_lineage=(dict(d["repair_lineage"])
+                            if isinstance(d.get("repair_lineage"), Mapping) else {}),
             optional_warnings=list(d.get("optional_warnings", [])),
             missing_outputs=list(d.get("missing_outputs", [])),
             finalized_at=d.get("finalized_at", ""),
@@ -280,7 +291,12 @@ def build_final_result(*, job_id: str, owner_id: str, status: TerminalStatus, en
                        failure_cause: str = "",
                        failure_facts: Mapping | None = None,
                        review_reruns: int = 0,
-                       review_blocking: list | None = None) -> FinalResult:
+                       review_blocking: list | None = None,
+                       attempts_made: int | None = None) -> FinalResult:
+    # `attempts` is the run's retry counter - the budget the category is judged against.
+    # `attempts_made`, when the run knows it, is what the record SAYS was used: the attempts that
+    # started a mesher (pipeline/engine_fallback.attempts_made), the same number the job row shows.
+    _shown = attempts if attempts_made is None else max(0, int(attempts_made))
     _verdict = (reviewer_verdict or "").strip().upper()
 
     # REVIEW-COMPLETION INVARIANT.
@@ -349,7 +365,7 @@ def build_final_result(*, job_id: str, owner_id: str, status: TerminalStatus, en
             approved_snapshot_id=approved_snapshot_id, executor_success=True,
             reviewer_verdict=verdict, review_execution=execution,
             failed_gate="", patch_contract_ok=True, outcome_code="success", failure_category=None,
-            attempts=attempts, attempts_max=attempts_max, required_ready=required_ready,
+            attempts=_shown, attempts_max=attempts_max, required_ready=required_ready,
             delivered_types=list(delivered_types), optional_warnings=list(optional_warnings),
             missing_outputs=[], finalized_at=datetime.now(UTC).isoformat())
 
@@ -403,7 +419,7 @@ def build_final_result(*, job_id: str, owner_id: str, status: TerminalStatus, en
         approved_snapshot_id=approved_snapshot_id, executor_success=executor_success,
         reviewer_verdict=verdict, review_execution=execution,
         failed_gate=failed_gate, patch_contract_ok=patch_ok, outcome_code=cat.value,
-        failure_category=cat.value, attempts=attempts, attempts_max=attempts_max,
+        failure_category=cat.value, attempts=_shown, attempts_max=attempts_max,
         required_ready=False, delivered_types=[], optional_warnings=list(optional_warnings),
         # Derived from the ONE artifact policy, never named here: a literal list silently
         # disagreed with the policy the moment a second required class was added.
@@ -544,6 +560,13 @@ def _admission_account(failure_facts: Mapping | None,
     phases = {str(p) for p in (facts.get("phases") or [])}
     reason = clean_reason(facts.get("reason"))
     declared_reason = clean_reason(facts.get("declared_reason"))
+    if facts.get("refused_by_design") and declared_reason:
+        # REFUSED BY DESIGN: the engine cannot take this FORM of file for this flow - its declared
+        # limit, not a defect in the file and not a crash. Said as exactly that, with the fact that
+        # nothing was built; the run's one offer (engine_fallback.offer) carries the way on - the
+        # engines that can take the file, or the file every engine for this flow takes.
+        return (FailureCategory.incompatible_requirements, FailureCause.GEOMETRY_REJECTED.value,
+                f"{declared_reason}. Nothing was built, and no attempt was used.", "")
     if phases and "measured" not in phases:
         reason = declared_reason or reason
         label = engine
@@ -587,6 +610,17 @@ def with_engine_ladder(fr: FinalResult, record: Mapping | None) -> FinalResult:
     return dataclasses.replace(fr, engine_ladder=dict(record or {}))
 
 
+def with_repair_lineage(fr: FinalResult, record: Mapping | None) -> FinalResult:
+    """Record that this result was built from repaired bytes rather than the upload.
+
+    Carried onto the result rather than derived from it: by the time a terminal record is built
+    the workspace is gone and the graph state is about to be, so the only place this can come from
+    is the run that promoted the repair.
+    """
+    import dataclasses
+    return dataclasses.replace(fr, repair_lineage=dict(record or {}))
+
+
 def render_message(fr: FinalResult) -> str:
     """The closing message: the account of the outcome, then the fallback ladder's line - on a
     success that another engine built, which one and why; on a mesh failure, the one offer."""
@@ -620,6 +654,10 @@ def _render_outcome(fr: FinalResult) -> str:
                          if kinds == {"domain_extent"} else
                          "Delivered with a stated caveat:" if kinds == {REVIEW_INCONCLUSIVE} else
                          "Delivered with the reviewer's concerns:" if kinds == {REVIEW_CONCERNS}
+                         else "Delivered with a note on its narrowest gaps:"
+                         if kinds == {NARROW_PASSAGES}
+                         else "Delivered with a concern about its size:"
+                         if kinds == {PHYSICAL_SCALE}
                          else "Delivered with stated deviations:")
             for c in fr.requirement_caveats:
                 kind = (c or {}).get("kind") or "domain_extent"
@@ -659,22 +697,29 @@ def _render_outcome(fr: FinalResult) -> str:
                     lines.append(_review_caveat_line(c))
                 elif kind == REVIEW_CONCERNS:
                     lines.extend(_concern_lines(c))
+                elif kind == NARROW_PASSAGES:
+                    lines.extend(_narrow_passage_lines(c))
+                elif kind == PHYSICAL_SCALE:
+                    lines.extend(_physical_scale_lines(c))
                 else:
                     lines.append("  - a stated deviation of an unrecognized kind "
                                  "(see the result record)")
-            if kinds == {"domain_extent"}:
+            # the narrow-gap note says everything it needs in its own lines; the closing speaks
+            # for the rest
+            core = kinds - {NARROW_PASSAGES, PHYSICAL_SCALE}
+            if core == {"domain_extent"}:
                 lines.append("Every mesh-quality check passed; only the margins above fell "
                              "short of the request. Rebuild with relaxed constraints if "
                              "they matter for your analysis.")
-            elif kinds == {REVIEW_INCONCLUSIVE}:
+            elif core == {REVIEW_INCONCLUSIVE}:
                 # true by construction: the caveat is granted only on a mesh the executor
                 # validated with no gate failed (review_inconclusive_caveat)
                 lines.append(REVIEW_INCONCLUSIVE_CLOSING)
-            elif REVIEW_CONCERNS in kinds and "layer_coverage" not in kinds:
+            elif REVIEW_CONCERNS in core and "layer_coverage" not in core:
                 # true by construction, as above (review_concerns_caveat); the margins, if any,
                 # are listed above it in their own words
                 lines.append(REVIEW_CONCERNS_CLOSING)
-            else:
+            elif core:
                 # NEVER claim every check passed when a layer caveat exists: the pipeline's
                 # own quality review judged layer coverage short of its bar. 'Solver-ready'
                 # is scoped to what was actually measured.
@@ -823,6 +868,14 @@ class RunOutcome:
     review_reruns: int = 0
     #: the workflow - it names the review axes the concerns are told in
     purpose: str = ""
+    #: the delivered body's three sides in metres (the passage's, for an internal flow), read off
+    #: the mesh manifest - what the size note judges (physical_scale_caveat). () when unknown.
+    body_size_m: tuple = ()
+    #: what the request calls the part (the task label and the request text), and the unit the
+    #: file was read in - what the size note judges the size against, and the other reading it names
+    words: str = ""
+    unit: str = ""
+    grounded: bool = False
 
     @classmethod
     def from_graph_state(cls, state: Mapping) -> RunOutcome:
@@ -830,7 +883,13 @@ class RunOutcome:
         if raw.startswith("<<API_FAILURE:") and raw.endswith(">>"):
             raw = raw[len("<<API_FAILURE:"):-2]
         manifest = state.get("mesh_manifest") or {}
-        return cls(api_failure=raw,
+        geometry = state.get("geometry") if isinstance(state.get("geometry"), Mapping) else {}
+        interp = (geometry or {}).get("interpretation") if isinstance(geometry, Mapping) else None
+        return cls(body_size_m=delivered_size_m(manifest, str(state.get("flow_topology", "") or "")),
+                   words=" ".join(str(state.get(k, "") or "") for k in ("domain", "request_txt"))[:4000],
+                   unit=str((interp or {}).get("unit") or "") if isinstance(interp, Mapping) else "",
+                   grounded=_grounded(manifest, state.get("intake_patches")),
+                   api_failure=raw,
                    reviewer_verdict=state.get("reviewer_verdict", "") or "",
                    executor_success=bool(state.get("executor_success", False)),
                    retry_count=int(state.get("retry_count", 0) or 0),
@@ -1040,6 +1099,146 @@ def review_concerns_caveat(outcome: RunOutcome) -> dict | None:
     if not items:
         return None
     return {"kind": REVIEW_CONCERNS, "items": items}
+
+
+#: The caveat kind a delivery carries when the resolution floor set narrow SIDE passages aside:
+#: gaps the flow can go round (engines/passage_flow) that have fewer cells across them than the
+#: floor. Job 02ed0d14's tube bank: its 20 mm gaps between tubes held 8 to 10 cells across, and a
+#: sound mesh was refused twice although the flow goes round the bundle (on the same part's other
+#: meshes the rest of the passage held 19 to 25 or more). Now such a mesh is delivered, and the
+#: delivery says which gaps fell short and by how much.
+NARROW_PASSAGES = "narrow_passages"
+
+
+def narrow_passage_caveat(outcome: RunOutcome) -> dict | None:
+    """THE one predicate for the narrow-gap note, read at terminal assembly from the delivered
+    mesh's own quality record through the same verdict the gate gave
+    (passage_flow.judge_resolution), so the note and the gate can never disagree. None unless the
+    executor validated the mesh with no gate failed and the floor passed by setting side passages
+    aside."""
+    if not outcome.executor_success or outcome.failed_gate:
+        return None
+    q = outcome.quality if isinstance(outcome.quality, Mapping) else {}
+    from meshpipeline.engines.passage_flow import judge_resolution
+    v = judge_resolution(dict(q))
+    if not (v.ok and v.scope == "main" and v.side):
+        return None
+    raw = v.side.get("cells_across")
+    cells: Mapping = raw if isinstance(raw, Mapping) else {}
+    return {"kind": NARROW_PASSAGES, "floor": v.floor,
+            "cells_across": cells.get("p05"), "cells_across_min": cells.get("min"),
+            "width_m": v.side.get("width_m"),
+            "narrowest_width_m": v.side.get("narrowest_width_m"),
+            "share": v.side.get("under_floor_share"),
+            "main_cells_across": v.cells_across, "main_way_width_m": v.main_way_width_m}
+
+
+#: The caveat kind a delivery carries when the mesh is not a believable size for what it is: the
+#: DrivAer car meshed 4.7 mm long and the BlendedNet aircraft 1 mm long, both from triangle files
+#: that state no unit, were counted as clean passes. The mesh is sound, so it is delivered - and
+#: the delivery says plainly that its size is wrong for what it is, and that the unit is the
+#: likely cause.
+PHYSICAL_SCALE = "physical_scale"
+
+
+def delivered_size_m(manifest: object, flow_topology: str = "") -> tuple:
+    """The delivered body's three sides in metres, off the mesh manifest: the body's own box (the
+    wall the user named), else - for an internal flow, whose mesh IS the passage - the mesh's
+    bounds. () when the manifest says neither (an external mesh's bounds are its far field)."""
+    if not isinstance(manifest, Mapping):
+        return ()
+    geo = manifest.get("geometry")
+    if not isinstance(geo, Mapping):
+        return ()
+    if str(manifest.get("mesh_units") or "m") != "m":
+        return ()
+    try:
+        box = geo.get("body_box")
+        if isinstance(box, Mapping):
+            return tuple(float(box[f"{a}max"]) - float(box[f"{a}min"]) for a in "xyz")
+        if flow_topology == "internal":
+            return tuple(float(geo[f"box_{a}max"]) - float(geo[f"box_{a}min"]) for a in "xyz")
+    except (KeyError, TypeError, ValueError):
+        return ()
+    return ()
+
+
+def _grounded(manifest: object, intake_patches: object) -> bool:
+    """Whether the body stands on a ground the run modelled: a patch the intake named for it."""
+    rows = intake_patches if isinstance(intake_patches, (list, tuple)) else []
+    names = [str(p.get("name") or "") for p in rows if isinstance(p, Mapping)]
+    if isinstance(manifest, Mapping) and isinstance(manifest.get("patch_types"), Mapping):
+        names += [str(n) for n in manifest["patch_types"]]
+    return any(n.lower() in ("ground", "floor", "road") for n in names)
+
+
+def physical_scale_caveat(outcome: RunOutcome) -> dict | None:
+    """THE one predicate for the size note, read at terminal assembly from the delivered mesh's own
+    box (delivered_size_m): None unless the executor validated the mesh with no gate failed and
+    the mesh is far outside the believable size of what it is - by the request's words for it
+    (a car, an aircraft, an artery), else by its shape and flow (contracts/unit_plausibility).
+    Like the narrow-gap note it never enters the graph state, so it can never start a retry: a
+    rebuild cannot fix a unit."""
+    if not outcome.executor_success or outcome.failed_gate:
+        return None
+    sides = [abs(float(v)) for v in (outcome.body_size_m or ()) if isinstance(v, (int, float))]
+    if len(sides) != 3 or max(sides) <= 0:
+        return None
+    from meshpipeline.contracts.geometry_units import LengthUnit
+    from meshpipeline.contracts.unit_plausibility import expected_from_words, scale_concern, shape_kind
+
+    kind = (expected_from_words(outcome.words)
+            or shape_kind(outcome.flow_topology, sides, grounded=outcome.grounded))
+    try:
+        unit = LengthUnit(outcome.unit) if outcome.unit else None
+    except ValueError:
+        unit = None
+    concern = scale_concern(max(sides), kind=kind, unit_in_effect=unit)
+    if concern is None:
+        return None
+    return {"kind": PHYSICAL_SCALE, **concern.as_dict(), "unit": unit.value if unit else None}
+
+
+def _physical_scale_lines(c: Mapping) -> list[str]:
+    words = str(c.get("words") or "").strip()
+    if not words:
+        return ["  - The mesh is not a believable size for what it is. Check the unit of the file."]
+    return [f"  - {words}",
+            "    Every check on the mesh itself passed, but a mesh at the wrong scale gives wrong "
+            "results. If the unit is wrong, say which one the file is in and run it again."]
+
+
+def _mm_text(metres: object) -> str | None:
+    if not isinstance(metres, (int, float)) or isinstance(metres, bool) or metres <= 0:
+        return None
+    mm = float(metres) * 1000.0
+    return f"{mm:.0f} mm" if mm >= 10 else f"{mm:.2g} mm"
+
+
+def _narrow_passage_lines(c: Mapping) -> list[str]:
+    """The narrow-gap note in plain words: how wide the gaps are, how much of the wall they line,
+    how many cells cross them against the floor, and the way round them that holds it."""
+    def n(v: object) -> float | None:
+        return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+    width, share, x = _mm_text(c.get("width_m")), n(c.get("share")), n(c.get("cells_across"))
+    floor = n(c.get("floor")) or 12.0
+    main_w, main_x = _mm_text(c.get("main_way_width_m")), n(c.get("main_cells_across"))
+    first = "  - The narrowest gaps" + (f" are about {width} across" if width else "")
+    if share is not None:
+        first += (" and" if width else "") + f" cover about {max(share * 100, 0.1):.2g}% of the wall"
+    lines = [first + "."]
+    lines.append("    They have about "
+                 + (f"{x:.1f}" if x is not None else "too few")
+                 + f" cells across them. Our floor is {floor:g}, and 20 to 40 is common practice.")
+    way = "    The flow can go round these gaps"
+    if main_w:
+        way += f": its main way through is at least {main_w} across"
+        if main_x is not None:
+            way += f", with about {main_x:.1f} or more cells across it"
+    lines.append(way + ". So the mesh is delivered.")
+    lines.append("    If the flow in these gaps matters to you, ask for a finer mesh.")
+    return lines
 
 
 def _concern_lines(c: Mapping) -> list[str]:

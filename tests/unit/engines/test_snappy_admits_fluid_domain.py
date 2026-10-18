@@ -35,6 +35,9 @@ def test_the_declared_admission_no_longer_rejects_the_input_kind():
     assert "input_kind_incompatible" not in codes and "purpose_incompatible" not in codes
 
 
-def test_cfmesh_is_unchanged_body_surface_only():
+def test_cfmesh_admits_a_fluid_domain_for_internal_flow_only():
+    # cartesianMesh fills a closed surface from the inside: a fluid domain's skin is exactly that
+    # (tests/unit/engines/test_cfmesh_fluid_domain.py proves the staging delivers it)
     cfmesh = ec.get_spec("cfmesh")
-    assert not is_compatible(cfmesh, "internal_cfd", input_kind="fluid-domain")
+    assert is_compatible(cfmesh, "internal_cfd", input_kind="fluid-domain")
+    assert not is_compatible(cfmesh, "external_cfd", input_kind="fluid-domain")

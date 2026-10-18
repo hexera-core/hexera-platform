@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 import meshpipeline.settings.policy as polcfg
 from meshpipeline.agents.intake import engine_selection as es
-from meshpipeline.agents.intake import refusal, turn
+from meshpipeline.agents.intake import measured_choice, refusal, turn
 from meshpipeline.agents.intake import settings as icfg
 from meshpipeline.agents.intake import vocabulary as _vocab
 from meshpipeline.agents.intake.executor import (
@@ -733,8 +733,17 @@ def _block_engine_first() -> str:
         "     fits the mesh to the nozzle's curved walls and grows thin layers along them'). The "
         "     application asks the user 'I'd mesh this with X: <reason>. OK, or do you use a "
         "     different mesher?' and the turn ends there. Their 'ok' (or 'your call') confirms it "
-        "     (engine_source=suggested_confirmed); naming another engine replaces it. Pick from "
-        "     this catalog, judged against the purpose, the geometry check and what the user said:\n"
+        "     (engine_source=suggested_confirmed); naming another engine replaces it. When a "
+        "     MEASURED ENGINE RECOMMENDATION block follows, the application measured the upload "
+        "     and ranked the engines on lab evidence: propose ITS recommended engine - the question "
+        "     then carries that evidence and lists the alternatives with their fit, and the user "
+        "     picks. Without one, pick from "
+        "     this catalog, judged against the purpose, the geometry check and what the user said. "
+        "     Each engine's 'Takes' line is a hard limit: propose only one that takes the uploaded "
+        "     file (a CAD solid, or a surface mesh such as an STL) for this flow - the application "
+        "     refuses any other. Its 'Delivers' line is what the user gets: when the case needs the "
+        "     wall resolved (forces, wall shear, heat transfer, a y+ target), prefer an engine that "
+        "     delivers a body-fitted wall with near-wall prism layers:\n"
         + catalog_menu() + "\n"
         "  4. Ask only ONE substantive question per turn; if a prerequisite (e.g. the purpose) is "
         "     needed to explain a compatibility conflict, ask the minimum necessary question.\n"
@@ -817,7 +826,19 @@ def _block_geometry_check() -> str:
         "convert a number the user quoted from the old reading. The picture's openings, axes and "
         "flow direction stand - they do not depend on the unit. That is not a conflict, and never "
         "a reason to ask the flow axis, the unit, or anything else the check settled, again; "
-        "re-propose with the new sizes when a run was withdrawn.\n"
+        "re-propose with the new sizes when a run was withdrawn. When the message says the unit "
+        "is fixed by the conversion of the uploaded file (an ECXML thermal model), it never "
+        "changes: never ask what unit the file or the model is in. Where your requirements name "
+        "the unit, say both facts as the message does: the model's own lengths (metres, for "
+        "ECXML) were converted exactly into the geometry's unit.\n"
+        "When the message says the file is an assembly of solid parts, each its own region, the "
+        "fluid is one more region: it is the multi-region input for conjugate heat transfer, "
+        "already confirmed - never ask the user to supply or verify it again. When it also says "
+        "the sides of the air box are the file's own, the thermal model sets them itself: send no "
+        "patches for them, and never ask about openings, inlets, outlets or which way the air "
+        "flows. When it names a detail level the user chose on the panel, that is the user's own "
+        "mesh_fidelity (Quick look = draft, Standard = standard, Fine = max): record it as stated "
+        "and never ask about detail.\n"
         "An assistant message beginning 'GEOMETRY CHECK (drawing your part):' is a holding line "
         "while the picture is made: nothing in it is declared, and you never repeat it. A user "
         "message saying they confirmed the geometry check is your cue to continue with the next "
@@ -830,6 +851,45 @@ def _block_geometry_check() -> str:
         "the file distinguishes - a one-region body on the ground is still one body wall. "
         "The name `ground` is kept for that floor: do not give it to anything else. A part the "
         "message calls free in the flow gets no ground patch."
+    )
+
+
+def _block_thermal_model() -> str:
+    # An ECXML upload names every part, material, power, fan, vent and the room air, and the user
+    # confirmed it on the thermal model panel. The generic flow's questions (openings, which way
+    # the fluid goes, the unit, the engine) are answered by the file; an electronics-cooling
+    # engineer asked them reads a tool that did not understand the model (2026-10-12).
+    return (
+        "\n\nA THERMAL MODEL - EVERYTHING IS SETTLED, ASK NOTHING:\n"
+        "When the 'GEOMETRY CHECK (confirmed by the user):' message continues 'the thermal "
+        "model', the user uploaded an electronics thermal model (ECXML) and confirmed it on the "
+        "thermal model panel. The file states every part, material, power, fan, vent and the "
+        "room air, and the panel settled the detail level. So:\n"
+        "- The case is settled: the purpose and the input kind are the ones the message states "
+        "(conjugate heat transfer of an assembly of solid parts), dimensionality 3D, patches [] "
+        "(an empty list: the air box's sides are the file's own), "
+        "mesh_fidelity as the message states it (standard when it names none).\n"
+        "- The engine is the one that reads the file itself (snapgrid): call "
+        "propose_engine_selection with it and the application selects it without a question. "
+        "Never ask about, offer or compare engines unless the user brings it up.\n"
+        "- In this same turn, call preview_selected_admission and then submit_requirements "
+        "(engine_source suggested_confirmed). The application then shows the user the job sheet "
+        "and asks for approval: that is the only question.\n"
+        "- Never ask about the unit, which way the air flows, openings, vents or fans, the fluid "
+        "(it is air, from the file), the purpose, the up direction, a reference length or the "
+        "size of the air box, or the engine.\n"
+        "- Speak as an electronics-cooling engineer: parts, layers, power, room air, the air box, "
+        "the detail level. Never write inlet, outlet, sticker, sure, triangle, far field or "
+        "'flows through' - except inside a name the file itself gives - in a reply, request_txt "
+        "or review_brief_txt.\n"
+        "- request_txt says: the model by its name, its parts and total power, a conjugate "
+        "heat-transfer solve, a snap-grid hex mesh at the detail level with at least the level's "
+        "cells through every layer, delivered as an OpenFOAM multi-region case plus the thermal "
+        "model. review_brief_txt says: every part present as its own region beside the air, the "
+        "power kept where the file puts it, the thinnest layers meshed with at least the level's "
+        "cells through them, and every region checked clean.\n"
+        "- A user who asks for another solver's format is told plainly that today the delivery "
+        "is an OpenFOAM multi-region case, and that naming their solver helps us add it."
     )
 
 
@@ -927,6 +987,8 @@ INTAKE_PROMPT_BLOCKS: tuple = (
      _block_engine_first),
     ("geometry_check", "facts the user confirmed on the geometry-check picture are declared; never re-asked",
      _block_geometry_check),
+    ("thermal_model", "a whole thermal model confirmed on its panel: the case, engine and level are settled; nothing is asked; no generic-CFD words",
+     _block_thermal_model),
     ("propose_first", "every question carries a proposed answer read from what is known; 'ok' or 'I do not know' accepts it; one unclear reply and the model moves on; no question twice; the engine goes through its one question, the unit is asked",
      _block_propose_first),
     ("ask_plainly", "one clear thing per reply in plain words, a short numbered list when values are confirmed together; nothing settled is restated; no 'assumption' bookkeeping in chat",
@@ -976,9 +1038,55 @@ def _extract_reply(result: dict) -> str:
 
 
 
+async def _measured_recommendation(state, state_messages):
+    """The measured engine recommendation for this conversation's upload, or None: when the engine
+    is already settled (pinned on the session, or confirmed), when no flow is known yet, or when no
+    uploaded file is staged to measure (nothing to compare with the lab's shapes)."""
+    if state.get("engine"):
+        return None
+    gate = state.get("intake_gate") if isinstance(state.get("intake_gate"), Mapping) else {}
+    if es.state_of((gate or {}).get("selection")) == es.CONFIRMED:
+        return None
+    declared = _declared_case(state_messages)
+    purpose = declared[0] if declared else str(state.get("purpose") or "")
+    kind = declared[1] if declared else str(state.get("input_kind") or "")
+    if not purpose:
+        return None
+    staged = measured_choice.staged_upload(str(state.get("session_id") or ""))
+    if not staged:
+        return None
+    from meshpipeline.pipeline.geometry_state import geometry_ref
+    form = measured_choice.upload_form(staged, geometry_ref(state))
+    return await measured_choice.rank_in_time(
+        path=staged, purpose=purpose, input_kind=kind, form=form, engines=_IMPLEMENTED_ENGINES,
+        patches=list(state.get("intake_patches") or []),
+        said="\n".join(turn.user_texts(state_messages)))
+
+
 def _declared_case(state_messages) -> tuple | None:
     from meshpipeline.application.geometry_confirmation import declared_case
     return declared_case(state_messages)
+
+
+def _thermal_declared(state_messages) -> bool:
+    """Whether the user confirmed a whole thermal model on its panel - and the chat has not since
+    restated what the file is (then the declared case no longer stands, and neither does this)."""
+    from meshpipeline.application.geometry_confirmation import thermal_declared
+    return thermal_declared(state_messages) and _declared_case(state_messages) is not None
+
+
+def _thermal_names(session_id: str) -> tuple[str, ...]:
+    """Every name the thermal model's file gives, as the geometry check read it; () when the
+    check cannot be read (the vocabulary check then reads the reply whole)."""
+    from meshpipeline.application.thermal_wording import file_names
+
+    try:
+        from meshpipeline.application.geometry_check import read_check
+
+        view = (read_check(session_id) or {}).get("thermal") if session_id else None
+    except Exception:  # noqa: BLE001 - the check without names is stricter, never looser
+        return ()
+    return tuple(file_names(view)) if isinstance(view, dict) else ()
 
 
 async def node_intake(state: PipelineState) -> dict:
@@ -1004,6 +1112,11 @@ async def node_intake(state: PipelineState) -> dict:
         # the conversation's run has ended and this turn starts another; once the new
         # requirements are submitted the confirmation block above takes over
         system += _previous_run_block(state)
+    # THE MEASURED RECOMMENDATION. While the engine is unsettled, the uploaded geometry is measured
+    # and every engine that can take it is ranked by its lab record on shapes like it; the model
+    # reads the ranking, and the one engine question proposes its best engine with the evidence.
+    _recommendation = await _measured_recommendation(state, state.get("messages", []))
+    system += measured_choice.prompt_block(_recommendation, settled=False)
     state_messages = state.get("messages", [])
     llm_messages = _build_llm_messages(system=system, state_messages=state_messages)
 
@@ -1034,6 +1147,18 @@ async def node_intake(state: PipelineState) -> dict:
         logger.info("Intake: engine selection CONFIRMED by the user's plain yes engine=%s - "
                     "job_id=%s", _assented["engine"], job_id)
         _ctx = dataclasses.replace(_ctx, selection=_assented)
+    else:
+        # THE USER PICKS. The question listed every engine that can take the file; naming one of
+        # them plainly ("use cfMesh" - what the console's engine buttons send) selects it here,
+        # before the model runs, the way a plain yes selects the proposed one.
+        _picked = es.choose_listed(
+            _ctx.selection, session_id=_ctx.session_id, owner_id=_ctx.owner_id,
+            revision=_ctx.revision, latest_user_message=_ctx.latest_user_msg,
+            user_msg_count=_ctx.user_msg_count)
+        if _picked is not None:
+            logger.info("Intake: engine selection CONFIRMED - the user picked %s from the list "
+                        "- job_id=%s", _picked["engine"], job_id)
+            _ctx = dataclasses.replace(_ctx, selection=_picked)
     # A JobPublisher only exists once a job does - and Intake runs BEFORE one. Rather than mint a
     # fake job id or instantiate a worker-owned publisher in the request path, the turn collects
     # the same typed events through a sink and returns them with the response.
@@ -1044,8 +1169,10 @@ async def node_intake(state: PipelineState) -> dict:
         user_msg_count=_ctx.user_msg_count, latest_user_msg=_ctx.latest_user_msg,
         user_texts=turn.user_texts(state_messages),
         declared_case=_declared_case(state_messages),
+        thermal=_thermal_declared(state_messages),
         source_ref=_ctx.source_ref, rec_authorized=_ctx.rec_authorized,
-        pending=_ctx.pending, selection=_ctx.selection, approval=_ctx.approval)
+        pending=_ctx.pending, selection=_ctx.selection, approval=_ctx.approval,
+        recommendation=_recommendation)
     _executor = IntakeToolExecutor(
         state=_exec_state, job_id=str(job_id), implemented_engines=_IMPLEMENTED_ENGINES,
         search_tool=_execute_intake_tool, trace=_trace_publisher)
@@ -1057,6 +1184,8 @@ async def node_intake(state: PipelineState) -> dict:
         limits_=_LoopLimits(max_rounds=icfg.INTAKE_MAX_ROUNDS),
         # What has already been asked, so a reply that asks it again is caught inside the loop.
         prior_questions=turn.prior_assistant_texts(state_messages),
+        # A whole thermal model's own names, which its vocabulary check leaves alone.
+        thermal_names=_thermal_names(str(state.get("session_id") or "")) if _exec_state.thermal else (),
         # The engine is asked once and then left alone - except in the turn after a run has
         # ended, where what the last run's engine did is the subject.
         engine_guard=not (state.get("previous_run") and not _awaiting_confirmation))

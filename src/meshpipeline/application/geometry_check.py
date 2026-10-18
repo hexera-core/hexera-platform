@@ -23,8 +23,6 @@ logger = logging.getLogger(__name__)
 #: failed and unsupported are terminal and say why.
 STATUS_PENDING, STATUS_SCOUTED, STATUS_READY = "pending", "scouted", "ready"
 STATUS_FAILED, STATUS_UNSUPPORTED = "failed", "unsupported"
-_CAD_SUFFIXES = (".step", ".stp", ".igs", ".iges")
-_MESH_SUFFIXES = (".stl", ".obj", ".vtp")
 #: THE WORKER'S LIMITS for the two steps, in seconds. Past the soft one the task is told to stop
 #: and stores `failed` itself; past the hard one it is killed and stores nothing - and a worker
 #: whose VM is deleted mid-task stores nothing either. The Celery tasks take these same numbers,
@@ -354,14 +352,21 @@ def _fetch(ref, work: Path) -> Path:
 
 
 def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict | None) -> dict:
+    from meshpipeline.cad.ingest import IngestError, canonicalise
     from meshpipeline.contracts.geometry_source import GeometryInterpretationRef, GeometrySourceRef
+    from meshpipeline.contracts.intake_formats import (
+        THERMAL_CHECK,
+        GeometryKind,
+        check_mode_of,
+        format_for_suffix,
+    )
     from meshpipeline.contracts.object_storage import get_object_store
     from meshpipeline.render.scout_snapshots import render_snapshots
 
     ref = GeometrySourceRef.from_payload(source)
     suffix = (ref.suffix_hint or "").lower()
-    if suffix not in _CAD_SUFFIXES + _MESH_SUFFIXES:
-        raise _Unsupported("the geometry check reads STEP, IGES, STL, OBJ and VTP files; this upload "
+    if format_for_suffix(suffix) is None:
+        raise _Unsupported("the geometry check reads the accepted geometry formats; this upload "
                            f"is a {suffix or 'nameless'} file, so the intake will ask about its openings")
     interp_ref = GeometryInterpretationRef.from_payload(interpretation) if interpretation else None
 
@@ -369,19 +374,55 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
     # skin and picture left behind in /tmp would stay there until the disk was full.
     with tempfile.TemporaryDirectory(prefix=f"geometry_check_{session_id[:8]}_") as tmp:
         work = Path(tmp)
-        local_path = _fetch(ref, work)
-        if suffix in _CAD_SUFFIXES:
+        # the same canonical form the job materialiser hands the engines (cad/ingest) - except a
+        # thermal model, which the check reads as its PLACED parts: each part where the file puts
+        # it, under its own name and colour, in milliseconds and without joining anything (the
+        # joined form, when an engine needs it, is built for the run)
+        fetched = _fetch(ref, work)
+        try:
+            canonical = canonicalise(fetched, work, stem="geometry", ecxml_form="placed")
+        except IngestError as exc:
+            raise _Unsupported(str(exc)) from exc
+        local_path = canonical.path
+        # A WHOLE THERMAL MODEL (ECXML) IS SHOWN AS ONE: the file names every part, its material
+        # and power, the fans, the vents and the room air, so nothing is pictured, named, turned
+        # upright, measured from triangles or given an opening role - the thermal view is built
+        # from the file instead
+        thermal_sidecar = _thermal_sidecar(canonical.path)
+        if thermal_sidecar is not None and check_mode_of(canonical.source_format) == THERMAL_CHECK:
+            return _scout_thermal(session_id, ref, fetched, canonical, thermal_sidecar)
+        placed = bool(canonical.physics.get("placed_parts"))
+        if canonical.kind is GeometryKind.cad:
             facts, skin = _scout_exact(local_path, work, interp_ref, ref)
         else:
-            facts, skin = _scout_triangles(local_path, work, interp_ref, ref)
+            # placed parts are written in millimetres, the unit ECXML geometry is read in
+            facts, skin = _scout_triangles(local_path, work, interp_ref, ref,
+                                           file_scale=0.001 if placed else None)
+        # what kind of geometry this is and what it came from, for whoever decides what to offer
+        facts.update(canonical.facts())
+        facts.setdefault("notes", []).extend(n for n in canonical.notes if n not in facts["notes"])
+        # a thermal model's physics (ECXML: materials, powers, fans, vents...), kept whole beside
+        # the session's check so a later solver step - or the user - has all of it
+        thermal = thermal_sidecar
+        if thermal is not None:
+            thermal_key = check_object_key(session_id, "thermal_model.json")
+            _store_json(thermal_key, thermal)
+            facts.setdefault("thermal_model", {})["object_key"] = thermal_key
+            # the file names its parts and which one is the air: an assembly of regions whose air
+            # fills the domain box, not a body to guess about
+            facts["input_kind"] = "solid-assembly"
+            facts["flow"] = "internal"
+            if isinstance(facts.get("confidence"), dict):
+                facts["confidence"]["input_kind"] = 0.95
+            declared_openings(facts, thermal)
 
         # the same skin, stored for the stage the user turns the part in
         skin_key = check_object_key(session_id, "skin.json")
-        _store_json(skin_key, skin_payload(skin))
+        _store_json(skin_key, _placed_skin_payload(fetched) if placed else skin_payload(skin))
         # which way the part stands up, as far as its shape says: the code's half of the up
         # proposal, weighed against the pictures once the model has seen them
         facts["up_evidence"] = read_up_evidence(skin)
-        shots = render_snapshots(skin, facts["openings"], work / "pictures")
+        shots = render_snapshots(skin, stickered(facts), work / "pictures")
 
         store = get_object_store()
         snapshots = []
@@ -398,6 +439,282 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
     if upright is not None:
         result["upright_sheet"] = upright
     return result
+
+
+def stickered(facts: dict) -> list[dict]:
+    """The openings the pictures carry stickers for: the scout's, when it reads the fluid as flowing
+    through the part. A part it reads as a body in a flow still keeps the openings it would have if
+    the fluid flowed through it - so a user who says so has openings to confirm - but they are not
+    drawn: the pictures (and the model naming them) see the body as before."""
+    return list(facts.get("openings") or []) if facts.get("flow") != "external" else []
+
+
+def _scout_thermal(session_id: str, ref, fetched: Path, canonical, sidecar: dict) -> dict:
+    """The check of a whole thermal model (a format whose check_mode is "thermal"): its placed
+    parts as the stage draws them, its physics kept whole beside the check, and the thermal view -
+    the parts tree, totals, room air, air box, fans, vents, sources, probes, warnings and detail
+    levels - built from the file (application/thermal_view). Nothing else is asked of it: no
+    pictures, no picture naming, no up question, no triangle measuring, and no openings - the air
+    box's sides are the file's, described in the view, never given a role."""
+    from meshpipeline.application.thermal_view import detail_levels_bounded, thermal_view
+    from meshpipeline.cad.ingest.ecxml import read_ecxml
+    from meshpipeline.cad.ingest.ecxml_place import place, placed_skin
+    from meshpipeline.contracts.intake_formats import THERMAL_CHECK
+
+    placement = place(read_ecxml(fetched))
+    thermal_key = check_object_key(session_id, "thermal_model.json")
+    _store_json(thermal_key, sidecar)
+    # the grid laid out for each detail level, in a child stopped at its time budget: a level
+    # it could not size in time shows its limits, and is sized when the mesh runs
+    view = thermal_view(sidecar, placement, detail=detail_levels_bounded(fetched))
+    skin_key = check_object_key(session_id, "skin.json")
+    _store_json(skin_key, placed_skin(placement))
+    facts = thermal_facts(view, canonical)
+    facts.setdefault("thermal_model", {})["object_key"] = thermal_key
+    return {"status": STATUS_SCOUTED, "named": False, "facts": facts, "proposal": _proposal(facts, None),
+            "snapshots": [], "skin_key": skin_key, "source": ref.to_payload(),
+            "check_mode": THERMAL_CHECK, "thermal": view}
+
+
+def thermal_facts(view: dict, canonical) -> dict:
+    """What the check records of a thermal model, in the shape every reader of the facts takes:
+    an assembly of regions (each part, and the air), with no openings - and the file's title, the
+    air box's size, and the view's warnings as the notes the form shows until the thermal panel
+    replaces it."""
+    from meshpipeline.contracts.intake_formats import THERMAL_CHECK
+
+    facts: dict = {
+        "check_mode": THERMAL_CHECK, "read_as": "thermal model", "body_kind": "assembly",
+        "input_kind": "solid-assembly", "flow": "internal", "confidence": {"input_kind": 0.95},
+        "openings": [], "faces": [], "holes": [], "seed_point_mm": None,
+        "size_mm": list((view.get("domain") or {}).get("size_mm") or [0.0, 0.0, 0.0]),
+        # the placed parts are written in millimetres, the unit the ECXML geometry is read in
+        "scale_to_m": 0.001, "unit_assumed": False,
+        "title": str(view.get("title") or ""),
+        "notes": [w["text"] for w in view.get("warnings") or [] if w.get("level") == "warn"],
+    }
+    facts.update(canonical.facts())
+    return facts
+
+
+def _placed_skin_payload(source: Path) -> dict:
+    """A thermal model's placed parts as the stage draws them: one block per part, its own name
+    and colour (cad/ingest/ecxml_place.placed_skin)."""
+    from meshpipeline.cad.ingest.ecxml import read_ecxml
+    from meshpipeline.cad.ingest.ecxml_place import place, placed_skin
+
+    return placed_skin(place(read_ecxml(source)))
+
+
+def _thermal_sidecar(canonical_path: Path) -> dict | None:
+    """The physics a thermal-model upload carried, as cad/ingest wrote it beside the canonical
+    geometry; None for every other file."""
+    from meshpipeline.cad.ingest.ecxml_build import read_ecxml_sidecar
+
+    return read_ecxml_sidecar(canonical_path)
+
+
+#: A side counts as walled off when its wall plates cover this much of it.
+_WALLED = 0.99
+_OPENING_ROLES = ("fan", "vent")
+
+
+def declared_openings(facts: dict, thermal: dict) -> None:
+    """A thermal model SAYS what each side of its solution domain is - a fan, a vent, a wall, or
+    open air - so its openings are the file's, not a guess from the shape of the air box (which
+    is a plain box, and reads as six openings, or none for an external flow):
+
+    * each fan and each vent on a side is an opening, at its own rectangle, under its own name;
+      a fan blowing in is an inlet, one blowing out an outlet, and a vent takes the other role;
+    * a side with neither, not walled off, is an opening the size of the side, named for it;
+    * a side the file's plates wall off offers nothing.
+
+    Positions are metres: the thermal model states them in SI (JEP181A 4.1), whatever unit its
+    solids are built in."""
+    from meshpipeline.contracts.patch_names import mesh_safe
+
+    patches = [p for p in thermal.get("patches") or [] if p.get("domain_face")]
+    if not patches:
+        return
+    scale = 1.0
+    fans_in = sum(1 for p in patches if p["role"] == "fan" and p.get("suggested_type") == "inlet")
+    fans_out = sum(1 for p in patches if p["role"] == "fan" and p.get("suggested_type") == "outlet")
+    vent_role = "inlet" if fans_out and not fans_in else "outlet"
+    box = (thermal.get("domain") or {}).get("box_m") or {}
+    openings, walled = [], []
+    open_sides: list[str] = []          # sides the file leaves open (all or in part)
+    declared_devices: list[dict] = []   # fans and vents the file puts on its domain sides
+    for axis in range(3):
+        for sign in ("-", "+"):
+            face = sign + "xyz"[axis]
+            on_face = [p for p in patches if p["domain_face"] == face]
+            side = next((p for p in on_face if p["role"] == "domain_boundary"), None)
+            side_area = _side_area(box, axis)
+            walls = sum(float(p.get("area_m2") or 0.0) for p in on_face if p["role"] == "wall")
+            devices = [p for p in on_face if p["role"] in _OPENING_ROLES]
+            if devices:
+                for p in devices:
+                    role = p.get("suggested_type") if p["role"] == "fan" else vent_role
+                    opening = _declared_opening(p, face, role, scale, mesh_safe)
+                    openings.append(opening)
+                    # named as the stage shows it (mesh-safe), not as the file spells it
+                    declared_devices.append({"name": str(opening.get("name") or face),
+                                             "role": p["role"], "flow": p.get("suggested_type") or role})
+            elif side is not None and not (side_area > 0 and walls >= _WALLED * side_area):
+                plates = [p for p in on_face if p["role"] in ("wall", "heat_flux")]
+                if len(plates) > _MAX_SIDE_PLATES:
+                    facts.setdefault("notes", []).append(
+                        f"the domain's {face} side carries {len(plates)} plates, too many to read "
+                        "its open part from; add its opening on the stage")
+                    continue
+                parts = _open_rects(side, plates) if plates else [side]
+                if not parts:
+                    walled.append(face)
+                    continue
+                open_sides.append(str(side.get("name") or face))
+                if len(parts) > _MAX_SIDE_OPENINGS:
+                    facts.setdefault("notes", []).append(
+                        f"the plates on the domain's {face} side leave {len(parts)} separate gaps; "
+                        f"the {_MAX_SIDE_OPENINGS} largest are offered - add any other on the stage")
+                    parts = parts[:_MAX_SIDE_OPENINGS]
+                for k, part in enumerate(parts, 1):
+                    if len(parts) > 1:
+                        part = {**part, "name": f"{side['name']}_{k}"}
+                    opening = _declared_opening(part, face, vent_role, scale, mesh_safe)
+                    opening["confidence"] = 0.6   # open air: which way it flows is the user's
+                    if plates:
+                        opening["notes"] = [
+                            "an open part of the side: "
+                            f"{', '.join(p['name'] for p in plates[:6])} close(s) the rest"]
+                    openings.append(opening)
+            else:
+                walled.append(face)
+    for i, o in enumerate(openings, 1):
+        o["id"] = i
+    facts["openings"] = openings
+    reason = declared_openings_reason(open_sides, declared_devices, walled)
+    if reason:
+        facts["openings_reason"] = reason
+    if walled:
+        facts.setdefault("notes", []).append(
+            "the thermal model closes the domain's " + ", ".join(walled)
+            + " side(s) with walls, so they are not offered as openings")
+
+
+def declared_openings_reason(open_sides: list[str], devices: list[dict], walled: list[str]) -> str:
+    """WHY the openings are what they are, in the file's own terms - for a converter that declares
+    its boundary roles (here: a thermal model's domain sides, fans and vents). Shown on the form,
+    said in the declaration and carried into the brief, so the roles read as the file's and not
+    as a guess: a set-top box whose six domain sides all came up "outlet" was corrected three
+    times by a user who knew it had a vent and a fan inside (dev-areen, 2026-10-11) - the file
+    declares every side of its solution domain open, and the stage never said so. '' when the
+    file declares nothing about its sides."""
+    if open_sides and not devices and not walled and len(open_sides) == 6:
+        return "the file declares every side of its solution domain open"
+    said: list[str] = []
+    if open_sides:
+        said.append(f"its solution domain open at {', '.join(open_sides)}")
+    for d in devices:
+        if d["role"] == "fan":
+            said.append(f"{d['name']}, a fan blowing {'in' if d['flow'] == 'inlet' else 'out'}")
+        else:
+            said.append(f"{d['name']}, a vent")
+    if walled:
+        said.append(f"its {', '.join(walled)} side{'s' if len(walled) > 1 else ''} walled")
+    return ("the file declares " + "; ".join(said)) if said else ""
+
+
+#: Plates on one domain side the open-part reading takes (each adds two grid lines per axis).
+_MAX_SIDE_PLATES = 256
+#: Open rectangles offered for one side; the largest are kept, and a note says how many more.
+_MAX_SIDE_OPENINGS = 8
+
+
+def _open_rects(side: dict, plates: list[dict]) -> list[dict]:
+    """What is left open of a domain side its plates partly close, as rectangles that tile the
+    open area exactly - one for a strip, two for an L - largest first; [] when nothing is left.
+    The side is cut on every plate edge into a grid; covered cells are marked plate by plate
+    (one array slice each), and the open cells are merged row by row into rectangles."""
+    import numpy as np
+
+    def rect(p):
+        c, s = p["centre_m"], p["size_m"]
+        axes = ["xyz".index(a) for a in p["size_axes"]]
+        return [(c[axes[k]] - s[k] / 2, c[axes[k]] + s[k] / 2) for k in range(2)], axes
+
+    (su, sv), axes = rect(side)
+    covers = []
+    for p in plates:
+        (pu, pv), paxes = rect(p)
+        if paxes == axes:
+            covers.append(((max(pu[0], su[0]), min(pu[1], su[1])),
+                           (max(pv[0], sv[0]), min(pv[1], sv[1]))))
+    us = sorted({su[0], su[1], *(v for c in covers for v in c[0] if su[0] < v < su[1])})
+    vs = sorted({sv[0], sv[1], *(v for c in covers for v in c[1] if sv[0] < v < sv[1])})
+    iu, iv = {v: i for i, v in enumerate(us)}, {v: j for j, v in enumerate(vs)}
+    covered = np.zeros((len(vs) - 1, len(us) - 1), dtype=bool)
+    for (cu0, cu1), (cv0, cv1) in covers:
+        if cu1 > cu0 and cv1 > cv0:
+            covered[iv[cv0]:iv[cv1], iu[cu0]:iu[cu1]] = True
+    rects: list[tuple[int, int, int, int]] = []          # (i0, i1, j0, j1) in grid indices
+    active: dict[tuple[int, int], int] = {}
+    for j in range(covered.shape[0] + 1):
+        runs: list[tuple[int, int]] = []
+        if j < covered.shape[0]:
+            open_row = ~covered[j]
+            i = 0
+            while i < len(open_row):
+                if open_row[i]:
+                    start = i
+                    while i < len(open_row) and open_row[i]:
+                        i += 1
+                    runs.append((start, i))
+                else:
+                    i += 1
+        nxt = {run: active.pop(run, j) for run in runs}
+        rects += [(r[0], r[1], j0, j) for r, j0 in active.items()]
+        active = nxt
+    side_area = (su[1] - su[0]) * (sv[1] - sv[0])
+    out = []
+    for i0, i1, j0, j1 in rects:
+        u0, u1, v0, v1 = us[i0], us[i1], vs[j0], vs[j1]
+        if (u1 - u0) * (v1 - v0) <= 1e-6 * side_area:
+            continue
+        centre = list(side["centre_m"])
+        centre[axes[0]], centre[axes[1]] = (u0 + u1) / 2, (v0 + v1) / 2
+        out.append({**side, "centre_m": centre, "size_m": [u1 - u0, v1 - v0]})
+    out.sort(key=lambda p: -p["size_m"][0] * p["size_m"][1])
+    return out
+
+
+def _side_area(box: dict, axis: int) -> float:
+    try:
+        lo, hi = box["min"], box["max"]
+        a, b = (hi[i] - lo[i] for i in range(3) if i != axis)
+        return float(a * b)
+    except (KeyError, TypeError, ValueError):
+        return 0.0
+
+
+def _declared_opening(patch: dict, face: str, role, scale: float, mesh_safe) -> dict:
+    """An opening as the geometry stage draws it, from a patch the thermal model declares."""
+    import math
+
+    axis = "xyz".index(face[1])
+    normal = [0.0, 0.0, 0.0]
+    normal[axis] = 1.0 if face[0] == "+" else -1.0         # out of the air, like every opening
+    centre = [float(v) * scale for v in patch["centre_m"]]
+    w, h = (float(v) * scale for v in patch["size_m"])
+    area = w * h
+    return {"id": 0, "face": None, "name": mesh_safe(patch["name"], fallback=f"side_{face[1]}"),
+            "role": role if role in ("inlet", "outlet") else "outlet", "kind": "disc",
+            "shape": "rectangle", "confidence": 0.95, "centroid_m": centre,
+            "centroid_mm": [c * 1000.0 for c in centre], "normal": normal, "area_m2": area,
+            "area_mm2": area * 1e6, "on_extremity": True, "clear_ahead": True,
+            "width_mm": w * 1000.0, "height_mm": h * 1000.0,
+            "diameter_mm": math.sqrt(4.0 * area / math.pi) * 1000.0,
+            "declared_by": {"object": patch.get("object"), "role": patch.get("role"),
+                            "name": patch.get("name")}}
 
 
 def _store_upright_sheet(session_id: str, skin: Path, work: Path, store) -> dict | None:
@@ -419,28 +736,111 @@ def _store_upright_sheet(session_id: str, skin: Path, work: Path, store) -> dict
 
 def _scout_exact(local_path: Path, work: Path, interp_ref, ref) -> tuple[dict, Path]:
     """A STEP or IGES file: OpenCASCADE reads real faces, so the openings come out exact."""
-    from meshpipeline.cad.scout import scout_cad, write_view_stl
+    from meshpipeline.cad.scout import read_cad, scout_cad, write_view_stl
 
     prepared, unit_note = _prepared_coordinates(local_path, interp_ref, ref)
-    facts = scout_cad(local_path, prepared=prepared).as_dict()
+    # read once: the scout and the view skin each work on their own scaled copy of it
+    shape = read_cad(local_path)
+    # a thermal model states its openings (declared_openings, below); its many solids are not
+    # searched for them
+    declared = {"declared_openings": True} if _thermal_sidecar(local_path) is not None else {}
+    facts = scout_cad(local_path, prepared=prepared, shape=shape, **declared).as_dict()
     facts["read_as"] = "cad"
     facts["unit_assumed"] = bool(unit_note)
     interp = getattr(prepared, "interpretation", None)
     facts["scale_to_m"] = float(interp.scale_to_metres) if interp is not None else 0.001
     if unit_note:
         facts["notes"].append(unit_note)
-    skin = write_view_stl(local_path, work / "skin.stl", prepared=prepared)
+    skin = write_view_stl(local_path, work / "skin.stl", prepared=prepared, shape=shape)
+    facts["holes"] = skin_holes(skin)
+    if not declared:
+        read_whole_shape(facts, skin)
     return facts, skin
 
 
-def _scout_triangles(local_path: Path, work: Path, interp_ref, ref) -> tuple[dict, Path]:
+def read_whole_shape(facts: dict, skin: Path) -> None:
+    """What the WHOLE skin says, folded into the scout's facts (cad/flow_reading): a body in a
+    flow the face-by-face reading took for a passage (blades round a hub, a straight bar, a file of
+    surfaces with nowhere for a fluid to go), an annular fluid body taken for a pipe wall, the
+    inlet a diffuser names, and the shape's own reading of which way the flow goes past a body -
+    each with its reason in the notes. A thermal model's file states all of that itself and is
+    not read. Never fails the scout: a skin it cannot read leaves the facts as they were."""
+    from meshpipeline.cad.flow_reading import MAX_TRIANGLES, apply_reading, read_flow, skin_triangles
+
+    try:
+        # THE BOUND, before a byte is read (read_up_evidence's): 84 bytes and 50 per triangle
+        if (Path(skin).stat().st_size - 84) // 50 > MAX_TRIANGLES:
+            facts["reading"] = {"read": False, "reason": "too many triangles to read quickly"}
+            return
+        apply_reading(facts, read_flow(skin_triangles(skin), facts))
+    except Exception as exc:  # noqa: BLE001 - the face-by-face reading still stands
+        logger.warning("geometry check: the whole shape could not be read (%s: %s)",
+                       type(exc).__name__, str(exc)[:200])
+        facts["reading"] = {"read": False, "reason": f"the shape could not be read ({type(exc).__name__})"}
+
+
+def vet_openings(facts: dict, skin: Path) -> None:
+    """THE PROPOSAL HELD TO THE STAGING THE MESHER WILL USE (cad/fluid_passages.stranded_openings):
+    an opening the scout found that opens into no passage - a bolt hole through a flange, a slot
+    through a plate, a dimple closed into a pocket - would come back from the mesher as a patch
+    with no faces. It is proposed as not an opening, with the reason in the notes; the user can
+    still make it one. A proposal left without an inlet takes its largest remaining opening. Run
+    for every reading: a body in a flow keeps its openings for a flip to internal flow too. A CAD
+    file is staged on its B-rep, not on this skin, so only a triangle file is vetted this way."""
+    from meshpipeline.application.geometry_confirmation import body_of, patches_from
+    from meshpipeline.cad.fluid_passages import stranded_openings
+
+    ops = [o for o in facts.get("openings") or [] if o.get("role") in ("inlet", "outlet")]
+    if len(ops) < 2:
+        return
+    try:
+        patches = patches_from(body_of({"flow": "internal", "input_kind": facts.get("input_kind") or "",
+                                        "openings": [dict(o) for o in ops]}))
+    except Exception:  # noqa: BLE001 - openings the declaration cannot be made from are not vetted
+        return
+    stranded = stranded_openings(skin, patches)
+    if not stranded or len(stranded) >= len(ops) - 1:
+        return                   # at least two openings must stay: a vetting cannot empty a part
+    for o in ops:
+        if o.get("name") in stranded:
+            o["role"] = "not_an_opening"
+            facts.setdefault("notes", []).append(
+                f"opening {o.get('id')} ({o.get('name')}) is proposed as not an opening: {stranded[o['name']]}")
+    kept = [o for o in ops if o.get("role") != "not_an_opening"]
+    if kept and not any(o.get("role") == "inlet" for o in kept):
+        max(kept, key=lambda o: float(o.get("area_mm2") or 0.0))["role"] = "inlet"
+
+
+def skin_holes(skin: Path) -> list[dict]:
+    """The holes of the skin the stage draws, by the one definition the triangle scout uses
+    (cad/open_ends) - what "Add an opening" snaps to. A STEP file's openings are measured exactly
+    from its faces; these are for the click, on the same triangles the user clicks. Never fails
+    the scout: a skin it cannot read has no holes to snap to, and the click falls back."""
+    import numpy as np
+
+    from meshpipeline.cad.open_ends import find_holes
+    from meshpipeline.cad.stl_io import read_stl_triangles
+
+    try:
+        tris = np.asarray(read_stl_triangles(Path(skin)), dtype=float).reshape(-1, 3, 3)
+        return [h.as_dict() for h in find_holes(tris)]
+    except Exception as exc:  # noqa: BLE001 - a click aid, never a reason to fail the check
+        logger.warning("geometry check: the skin's holes could not be read (%s: %s)", type(exc).__name__, exc)
+        return []
+
+
+def _scout_triangles(local_path: Path, work: Path, interp_ref, ref,
+                     file_scale: float | None = None) -> tuple[dict, Path]:
     """An STL, OBJ or VTP file: triangles only, so the openings are read from loops and flat
-    rings in the mesh - close, not exact - and the unit is whatever the user confirms."""
+    rings in the mesh - close, not exact - and the unit is whatever the user confirms
+    (`file_scale`: the scale a converted file was written at, when its source fixes the unit)."""
     from meshpipeline.cad.scout_mesh import scout_mesh, write_mesh_skin
     from meshpipeline.contracts.geometry_units import LengthUnit, scale_to_metres
 
     if interp_ref is not None:
         scale, note = float(interp_ref.scale_to_metres), ""
+    elif file_scale:
+        scale, note = float(file_scale), ""
     else:
         scale = scale_to_metres(LengthUnit.millimetre)
         note = "a triangle file carries no unit; sizes assume millimetres until the intake confirms"
@@ -453,6 +853,10 @@ def _scout_triangles(local_path: Path, work: Path, interp_ref, ref) -> tuple[dic
     if note:
         facts["notes"].append(note)
     skin = write_mesh_skin(local_path, work / "skin.stl", scale_to_m=scale)
+    if not file_scale:
+        # a thermal model's placed parts (file_scale) state their regions and openings themselves
+        read_whole_shape(facts, skin)
+        vet_openings(facts, skin)
     return facts, skin
 
 
@@ -598,6 +1002,16 @@ def _name(*, session_id: str, owner_id: str, purpose_text: str, interpretation: 
             # the stored skin, so the skin is re-read in the same unit. The pictures show shape
             # only and stay as they are.
             _rescale_skin(session_id, k)
+
+    if _is_thermal(facts):
+        # the file names every part and says which way is up: nothing is asked of a model
+        proposal = _proposal(facts, {})
+        result = {k: v for k, v in stored.items() if k not in _STAMPED_KEYS + _FAILURE_KEYS}
+        result.update(named=True, facts=facts, vision={}, proposal=proposal,
+                      purpose_text=purpose_text[:2000], naming_seconds=round(time.time() - started, 1))
+        landed = store_status(session_id, STATUS_READY, RETRY_NAMING, **result)
+        logger.info("geometry naming %s - session=%s (a thermal model names itself)", landed["status"], session_id)
+        return landed
 
     with tempfile.TemporaryDirectory(prefix=f"geometry_naming_{session_id[:8]}_") as tmp:
         store = get_object_store()
@@ -794,20 +1208,35 @@ def _facts_text(facts: dict, shots, purpose_text: str) -> str:
                  "the part is, not from them.")
     if facts.get("read_as") == "mesh":
         lines.append("The file is a triangle mesh, so the measurements are close, not exact.")
+    if facts.get("input_kind") == "solid-assembly":
+        regions = facts.get("source_regions") or []
+        lines.append("The file itself declares this: an assembly of "
+                     + (f"{len(regions)} regions (its parts and the air around them)" if regions
+                        else "solid parts and the air around them")
+                     + ", with its openings stated in the file. The kind, the flow and the stickers "
+                     "are settled by the file; say what the part is.")
     if purpose_text:
         lines.append(f"The user said: {purpose_text.strip()[:600]}")
-    if facts["openings"]:
+    if stickered(facts):
         lines.append("Stickers:")
-        for o in facts["openings"]:
+        for o in stickered(facts):
             size = f"{o['diameter_mm']:.0f} mm across" if o["shape"] == "circle" \
                 else f"{o.get('width_mm', 0):.0f} x {o.get('height_mm', 0):.0f} mm"
             lines.append(f"  {o['id']}: {o['shape']} opening, {size}, at ({o['centroid_mm'][0]:.0f}, "
                          f"{o['centroid_mm'][1]:.0f}, {o['centroid_mm'][2]:.0f}) mm; guessed {o['role']}")
+    elif facts.get("flow") == "external":
+        lines.append("The measuring step reads this as a body in a flow, so no stickers are drawn.")
     else:
-        lines.append("The measuring step found no openings (it reads this as a body in a flow).")
-    if facts.get("flow") == "external" and facts.get("flow_axis_guess"):
-        lines.append(f"Measuring step's guess for the flow direction: along {facts['flow_axis_guess']} "
-                     "(its longest horizontal side); the sign is yours to decide from how the part faces.")
+        lines.append("The measuring step found no openings.")
+    if facts.get("flow") == "external":
+        from meshpipeline.contracts.geometry_fields import axis_from_reading
+        shaped, reading = axis_from_reading(facts.get("flow_axis_reading"))
+        if shaped:
+            lines.append(f"Measuring step's reading of the flow direction: along {shaped[1]} ({reading.get('reason')}); "
+                         "the sign is yours to decide from how the part faces.")
+        elif facts.get("flow_axis_guess"):
+            lines.append(f"Measuring step's guess for the flow direction: along {facts['flow_axis_guess']} "
+                         "(its longest horizontal side); the sign is yours to decide from how the part faces.")
     lines.append("Axis marker in every picture: red +X, green +Y, blue +Z.")
     lines.append("Pictures, in order: " + "; ".join(
         f"{s.name} (stickers facing the camera: {', '.join(map(str, s.facing)) or 'none'})"
@@ -1030,6 +1459,8 @@ def _proposal(facts: dict, vision: dict | None) -> dict:
     """What the user is shown: the code's positions and sizes, the model's names and roles where
     it gave them for a sticker that exists, and the kind and flow from whichever is surer. With
     no vision answer yet (the scout alone) the names are the code's and nothing says otherwise."""
+    if _is_thermal(facts):
+        return _thermal_proposal(facts, vision)
     proposal = {
         "part": (vision or {}).get("part") or "",
         "input_kind": facts["input_kind"], "flow": facts["flow"],
@@ -1037,8 +1468,11 @@ def _proposal(facts: dict, vision: dict | None) -> dict:
         "seed_point_mm": facts.get("seed_point_mm"),
         "size_mm": facts["size_mm"],
         "notes": list(facts.get("notes") or []),
+        # why the openings are what they are, when the file itself declares them (declared_openings)
+        "openings_reason": str(facts.get("openings_reason") or ""),
         "read_as": facts.get("read_as", "cad"),
         "faces": list(facts.get("faces") or []),      # every flat face measured: what "add an opening" snaps to
+        "holes": list(facts.get("holes") or []),      # every hole in the skin: what a click into one snaps to
         "named": vision is not None,
         "vision_available": bool(vision) and "error" not in (vision or {}),
     }
@@ -1047,10 +1481,17 @@ def _proposal(facts: dict, vision: dict | None) -> dict:
     if "error" in vision:
         proposal["notes"].append("the picture-naming step was unavailable; names are the measuring step's own")
         return _upright(proposal, facts, None, None)
+    # WHAT THE FILE ITSELF DECLARES IS NOT THE PICTURES' TO OVERRULE. A thermal model (ECXML) names
+    # its parts and says which one is the air, and which sides of its domain are open, fans or
+    # vents: the scout read that as an assembly of regions with its openings. The model, shown a
+    # box, called the set-top box "a solid body the fluid flows around" and marked its six open
+    # sides "not an opening", and the chat then refused the multi-region mesher the file is for.
+    # The model still names the part; the kind, the flow and the declared openings stay the file's.
+    declared_kind = facts.get("input_kind") == "solid-assembly"
     by_id = {o["id"]: o for o in proposal["openings"]}
     for named in vision.get("openings") or []:
         o = by_id.get(int(named.get("id", -1)))
-        if o is None:
+        if o is None or o.get("declared_by"):
             continue
         if named.get("name"):
             o["name"] = str(named["name"]).strip()[:40]
@@ -1066,27 +1507,153 @@ def _proposal(facts: dict, vision: dict | None) -> dict:
     except (TypeError, ValueError):
         pass
     model_conf = float(vision.get("confidence", 0.0) or 0.0)
-    if model_conf >= float(facts.get("confidence", {}).get("input_kind", 0.0)):
+    if not declared_kind and model_conf >= float(facts.get("confidence", {}).get("input_kind", 0.0)):
         if vision.get("input_kind") in ("body-surface", "fluid-domain", "solid-body"):
             proposal["input_kind"] = vision["input_kind"]
         if vision.get("flow") in ("internal", "external"):
             proposal["flow"] = vision["flow"]
-    if vision.get("notes"):
+    if vision.get("notes") and not declared_kind:
         proposal["notes"].append(str(vision["notes"])[:300])
     return _upright(proposal, facts, vision, vision.get("flow_axis"))
 
 
 def _upright(proposal: dict, facts: dict, vision: dict | None, flow_axis) -> dict:
     """The proposal with which way is up decided (decide_up), and the external-flow facts read
-    across it: the flow's guess along the longest horizontal side, and the ground only where the
-    measuring step looked for it. A part drawn another way up says so in the notes."""
+    across it: the flow's direction - the user's words, else the shape's own reading or the nose
+    the pictures show (weigh_flow_axis), else the longest horizontal side - and the ground only
+    where the measuring step looked for it. A part drawn another way up says so in the notes, and
+    a body in a flow says where its direction came from and how sure that is."""
     from meshpipeline.contracts.geometry_fields import DEFAULT_UP, external_defaults
 
     up = decide_up(proposal["flow"], facts.get("up_evidence"), vision)
     proposal.update(up)
+    flow_axis, overruled = weigh_flow_axis(facts, vision, flow_axis, up["up_axis"])
     proposal.update(external_defaults(facts, flow_axis, up["up_axis"]))
+    from_nose = proposal.get("flow_axis_guessed") is False and (vision or {}).get("flow_from") != "the user's words"
+    if from_nose:
+        proposal.update(nose_sureness(facts, proposal["flow_axis"], up["up_axis"]))
+    if overruled:
+        proposal["flow_axis_guessed"] = True
     if up["up_axis"] != DEFAULT_UP:
         proposal["notes"].append(f"Up is {up['up_axis'].upper()}: {up['up_axis_from']}.")
+    if proposal["flow"] == "external" and (proposal.get("flow_axis_guessed") or from_nose):
+        proposal["notes"].append(direction_note(proposal, overruled))
+    if facts.get("unit_assumed"):
+        # A FILE THAT STATES NO UNIT gets a proposed one, read from what the part is (its shape
+        # and flow, and the naming's estimate once there is one) - shown with how sure it is and
+        # the other reading, for the user to confirm. Never applied: the sizes stay as measured.
+        inferred = unit_inference(proposal, facts)
+        if inferred is not None:
+            proposal["unit_inference"] = inferred
+    return proposal
+
+
+#: How sure a nose read off the pictures is as the flow direction on its own.
+NOSE_CONFIDENCE = 0.6
+
+
+def nose_sureness(facts: dict, axis: str, up_axis: str) -> dict:
+    """Where a direction from the pictures' nose came from and how sure it is: surer when the
+    shape's own reading runs along the same axis (the nose then only gives the sign)."""
+    from meshpipeline.contracts.geometry_fields import axis_from_reading
+
+    shaped, reading = axis_from_reading(facts.get("flow_axis_reading"), up_axis)
+    if shaped and shaped[1] == axis[1]:
+        sure = max(NOSE_CONFIDENCE, float(reading.get("confidence") or 0.0))
+        return {"flow_axis_confidence": round(sure, 2),
+                "flow_axis_from": f"the nose in the pictures, along the shape's own axis ({reading.get('reason')})"}
+    return {"flow_axis_confidence": NOSE_CONFIDENCE, "flow_axis_from": "the nose in the pictures"}
+
+
+#: How sure the shape's reading of the flow direction must be to stand against the nose the
+#: pictures show (a rotor's axis, a body of revolution's, a mirror plane are; a cut face, a
+#: straight bar's span and the longest side are not - there the nose speaks).
+SHAPE_OUTRANKS_NOSE = 0.7
+#: Below this, the direction is said to be a guess the user should check on the picture.
+DIRECTION_SURE = 0.6
+
+
+def weigh_flow_axis(facts: dict, vision: dict | None, flow_axis, up_axis: str) -> tuple[str | None, str]:
+    """THE FLOW DIRECTION, weighed: the user's own words decide. A nose read off the pictures
+    gives the sign along the shape's axis, but where the shape is sure of another axis - blades
+    round a hub turn the flow along their axis, whichever end the model took for a nose - the
+    shape's axis stands. Returns the axis to propose (None: the shape's or the longest side's) and
+    what was overruled, if anything."""
+    from meshpipeline.contracts.geometry_fields import AXES, axis_from_reading
+
+    if flow_axis not in AXES or (vision or {}).get("flow_from") == "the user's words":
+        return flow_axis, ""
+    shaped, reading = axis_from_reading(facts.get("flow_axis_reading"), up_axis)
+    if shaped and float(reading.get("confidence") or 0.0) >= SHAPE_OUTRANKS_NOSE and shaped[1] != flow_axis[1]:
+        return None, f"the pictures' nose said {flow_axis}"
+    return flow_axis, ""
+
+
+def direction_note(proposal: dict, overruled: str = "") -> str:
+    """The flow direction as the user reads it on the form: where it came from and how sure."""
+    axis = proposal.get("flow_axis")
+    why = str(proposal.get("flow_axis_from") or "")
+    sure = float(proposal.get("flow_axis_confidence") or 0.0)
+    words = f"The flow is proposed along {axis}: {why}"
+    if overruled:
+        words += f" ({overruled}; the shape's axis is surer)"
+    return words + (". Please confirm it on the picture." if sure < DIRECTION_SURE else ".")
+
+
+
+def unit_inference(proposal: dict, facts: dict | None = None, words: str = "") -> dict | None:
+    """The unit a file that states none most likely is in (contracts/unit_plausibility.infer_unit),
+    as a dict, or None when the part has no measured size. What the part is comes, best first,
+    from the naming model's estimate of a real one's length, then the words for it (its name, the
+    user's own words), then the measured shape and the flow. The file's numbers are read back
+    through the scale the proposal was measured under."""
+    from meshpipeline.contracts.unit_plausibility import (
+        FORMAT_UNIT,
+        expected_from_estimate,
+        expected_from_words,
+        infer_unit,
+        shape_kind,
+    )
+
+    size, scale = proposal.get("size_mm"), proposal.get("scale_to_m") or (facts or {}).get("scale_to_m")
+    try:
+        if not size or len(size) != 3:
+            return None
+        longest_file = max(float(v) for v in size) * 0.001 / float(scale or 0.001)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+    part = str(proposal.get("part") or "")
+    expected = (expected_from_estimate(part, proposal.get("real_length_m"))
+                or expected_from_words(f"{part}\n{words or ''}"))
+    shape = shape_kind(str(proposal.get("flow") or ""), size, grounded=bool(proposal.get("grounded")),
+                       up_axis=proposal.get("up_axis"))
+    fmt = str((facts or {}).get("source_format") or "").lower().lstrip(".")
+    inferred = infer_unit(longest_file, expected=expected, shape=shape, format_unit=FORMAT_UNIT.get(fmt))
+    return inferred.as_dict() if inferred is not None else None
+
+
+def _is_thermal(facts: dict | None) -> bool:
+    from meshpipeline.contracts.intake_formats import THERMAL_CHECK
+
+    return (facts or {}).get("check_mode") == THERMAL_CHECK
+
+
+def _thermal_proposal(facts: dict, vision: dict | None) -> dict:
+    """A thermal model's proposal: the file's title, an assembly of regions, no openings, and
+    the file's own up (+z, which every thermal tool takes) - what the form shows until the
+    thermal panel replaces it. Nothing in it is a guess for the user to correct."""
+    from meshpipeline.contracts.geometry_fields import DEFAULT_UP, external_defaults
+    from meshpipeline.contracts.intake_formats import THERMAL_CHECK
+
+    proposal = {
+        "part": str(facts.get("title") or ""), "input_kind": "solid-assembly", "flow": "internal",
+        "openings": [], "seed_point_mm": None, "size_mm": facts["size_mm"],
+        "notes": list(facts.get("notes") or []), "openings_reason": "",
+        "read_as": facts.get("read_as", "thermal model"), "faces": [], "holes": [],
+        "named": vision is not None, "vision_available": False, "check_mode": THERMAL_CHECK,
+        "up_axis": DEFAULT_UP, "up_axis_confidence": 1.0, "up_axis_from": "as the file draws it",
+    }
+    proposal.update(external_defaults(facts, None, DEFAULT_UP))
     return proposal
 
 
@@ -1125,7 +1692,13 @@ def unit_suggestion(proposal: dict, interpretation: dict | None, words: str = ""
     the part, the user's own words). A declared unit is only doubted on those words or on a wild
     size; a unit nothing declared (a triangle file) is only a reading, and yields to either."""
     from meshpipeline.contracts.geometry_units import LengthUnit
-    from meshpipeline.contracts.unit_plausibility import expected_from_estimate, expected_from_words, suggest
+    from meshpipeline.contracts.unit_plausibility import (
+        EXTERNAL_BODY,
+        expected_from_estimate,
+        expected_from_words,
+        shape_kind,
+        suggest,
+    )
 
     if interpretation and str(interpretation.get("basis")) == "user_confirmed":
         return None
@@ -1140,5 +1713,12 @@ def unit_suggestion(proposal: dict, interpretation: dict | None, words: str = ""
     part = str(proposal.get("part") or "")
     expected = (expected_from_estimate(part, proposal.get("real_length_m"))
                 or expected_from_words(f"{part}\n{words or ''}"))
+    if expected is None and interpretation is None:
+        # nothing names the part and the file states no unit: what its SHAPE and FLOW say it is
+        # (a car-like body on the ground, a flat wing-like body, a passage) - a 4.7-unit car is
+        # 4.7 m, not 4.7 mm. A declared unit is not doubted on the shape alone.
+        shape = shape_kind(str(proposal.get("flow") or ""), size,
+                           grounded=bool(proposal.get("grounded")), up_axis=proposal.get("up_axis"))
+        expected = shape if shape is not EXTERNAL_BODY else None
     s = suggest(longest_file, in_effect, declared=interpretation is not None, expected=expected)
     return s.as_dict() if s is not None else None

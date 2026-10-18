@@ -34,4 +34,7 @@ def polymesh_response(raw: list, cell_stats: Any, roles: dict, units: str) -> di
                 "face_count": p["face_count"],
                 "points_b64": base64.b64encode(p["points"]).decode("ascii"),
                 "polys_b64": base64.b64encode(p["polys"]).decode("ascii"),
+                # the engine says when a surface wraps everything else (a domain side, an air
+                # region reaching it); the part roster opens those out of the way
+                **({"encloses_domain": True} if p.get("encloses_domain") else {}),
             } for p in raw]}

@@ -234,7 +234,7 @@ def test_the_propose_first_block_reads_a_plain_yes_and_moves_on_after_one_unclea
 
 def test_the_prompt_blocks_are_the_registered_ones():
     assert [b[0] for b in intake.INTAKE_PROMPT_BLOCKS] == [
-        "quality_criteria", "engine_first", "geometry_check", "propose_first", "ask_plainly",
+        "quality_criteria", "engine_first", "geometry_check", "thermal_model", "propose_first", "ask_plainly",
         "plain_text"]
     assert "propose_first" in {b[0] for b in intake.INTAKE_PROMPT_BLOCKS}
     assert intake._block_propose_first() in intake.compose_intake_system()

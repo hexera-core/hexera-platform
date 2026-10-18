@@ -228,6 +228,8 @@ async def run_committed_scenarios(mp, tmp, jobs: list, seen: list | None = None,
                                                   "unbindable_patches": True}),
                      ("internal-thin-feature", {"internal": True, "native_double": False,
                                                 "thin_feature": True}),
+                     ("internal-narrow-passage", {"internal": True, "native_double": False,
+                                                  "narrow_passage": True}),
                      ("domain-preflight", {"body": S._half_model, "native_double": False,
                                          "domain_refused": True})):
         jobs.append((await step(f"snappy-driver:{name}",

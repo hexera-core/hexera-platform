@@ -247,7 +247,7 @@ software, never anything a user's job depends on. One directory per capability; 
 |---|---|---|
 | `env/` | `setup.sh`, `doctor.sh` | `make setup`, `make dev-doctor` |
 | `quality/` | `check_dependency_drift.py`, `check_gcloud_flags.py`, `mypy_ratchet.py` + `mypy_baseline.txt` | `make check`, `make gcloud-flags`, CI |
-| `release/` | `validate.sh`, `publish.sh`, `record.py` | `make release-validate`, `make release-publish`, the deploy scripts |
+| `release/` | `validate.sh`, `publish.sh`, `reuse.sh`, `record.py` | `make release-validate`, `make release-publish`, the deploy workflow (`reuse.sh`), the deploy scripts |
 
 These quality gates are the ones a machine runs and a human reads only when they fail:
 
@@ -281,7 +281,7 @@ present in a runtime image.
 |---|---|---|
 | `env/` | host-tool detection, `.venv`, local dirs, `.env`, images (`setup.sh`); read-only preflight of the hybrid dev config (`doctor.sh`) | `make setup` · `make dev-doctor` |
 | `quality/` | the repository gates CI enforces: one dependency source of truth, and the mypy ratchet with its `mypy_baseline.txt` | `make dependencies` · `make typecheck` (both inside `make check`) |
-| `release/` | Gate C: prove a commit is releasable (`validate.sh`), push what was proven (`publish.sh`), and the release-record schema both share (`record.py`, also read by the deploy scripts) | `make release-validate` · `make release-publish` |
+| `release/` | Gate C: prove a commit is releasable (`validate.sh`), push what was proven (`publish.sh`), deploy a commit that is already published from its record instead of rebuilding it (`reuse.sh`, run by the deploy workflow), and the release-record schema both share (`record.py`, also read by the deploy scripts) | `make release-validate` · `make release-publish` |
 
 All three are wired into `make` and CI. A script no gate runs does not belong here.
 

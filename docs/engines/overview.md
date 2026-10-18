@@ -34,7 +34,7 @@ Two standing rules:
 
 | Engine | Capability | Notes |
 |---|---|---|
-| cfmesh | body-surface → fluid-volume | internal + external 3D; the true-2D engine (external profiles via native `cartesian2DMesh`); 2D internal rejects |
+| cfmesh | body-surface → fluid-volume; fluid-domain → fluid-volume (internal) | internal + external 3D; the true-2D engine (external profiles via native `cartesian2DMesh`); 2D internal rejects |
 | snappy | body-surface → fluid-volume | body-fitted + prism layers, internal or external, **3D only**; near-wall layer coverage on severe wing-body junctions may sit in the partial band (documented envelope limit) |
 | gmsh | solid-body → solid-volume | second-order tet FEA (Abaqus `.inp`) |
 | gmsh | fluid-domain → fluid-volume | mesh a supplied fluid domain for CFD |

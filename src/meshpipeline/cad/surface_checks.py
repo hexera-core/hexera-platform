@@ -25,7 +25,11 @@ def surface_analysis_for(spec, surface) -> dict | None:
                        "evidence, deferring", exc)
         return None
     if ic.require_no_self_intersection:
-        a["self_intersecting"] = self_intersects(stl_path)
+        # ONE scan answers whether AND where: the refusal names the place, so the user can find it
+        report = self_intersection_report(stl_path)
+        a["self_intersecting"] = report is not None
+        if report is not None:
+            a["self_intersection"] = report
     return a
 
 
@@ -56,13 +60,29 @@ def surface_deviation(snapped_surface_path, reference_stl_path) -> dict | None:
         return None
 
 
+#: a face covering more cells than this is kept out of the self-intersection grid and tested
+#: against the faces its box overlaps directly (see self_intersection_report)
+LONG_FACE_CELLS = 64
+
+
 def self_intersects(surface_path, *, max_faces: int = 400_000) -> bool:
+    return self_intersection_report(surface_path, max_faces=max_faces, max_pairs=1) is not None
+
+
+def self_intersection_report(surface_path, *, max_faces: int = 400_000,
+                             max_pairs: int = 50) -> dict | None:
+    """Where the surface passes through itself, or None when it does not (or cannot be told).
+
+    {"pairs": crossing triangle pairs found (at most max_pairs; "more" when the search stopped
+    there), "first_at_m": the first crossing's centre, "region_m": the size of the box holding
+    every crossing found, "triangle_m": the typical triangle size there} - in the staged surface's
+    metres, so a refusal can say where to look and how big the damage is."""
     try:
         import pyvista as pv
         from vtkmodules.vtkCommonDataModel import vtkTriangle
     except Exception as exc:  # noqa: BLE001 - never let a probe crash the build
         logger.warning("self_intersects: render stack unavailable (%s) - skipping check", exc)
-        return False
+        return None
 
     try:
         # clean() MERGES coincident points so a shared vertex is a shared INDEX - the only
@@ -70,12 +90,12 @@ def self_intersects(surface_path, *, max_faces: int = 400_000) -> bool:
         surf = pv.read(str(Path(surface_path))).extract_surface().triangulate().clean()
         n = surf.n_cells
         if n == 0:
-            return False
+            return None
         if n > max_faces:
             # the broad phase is ~linear in faces; guard a pathological input rather than hang
             logger.warning("self_intersects: %d faces exceeds %d - skipping (too large to "
                            "check cheaply)", n, max_faces)
-            return False
+            return None
         tris = surf.faces.reshape(-1, 4)[:, 1:]
         pts = np.asarray(surf.points, dtype=float)
         tp = pts[tris]                                   # (n,3,3)
@@ -87,9 +107,19 @@ def self_intersects(surface_path, *, max_faces: int = 400_000) -> bool:
         cell = max(cell, 1e-9)
         gl = np.floor(lo / cell).astype(np.int64)
         gh = np.floor(hi / cell).astype(np.int64)
+        # LONG SLIVERS GO THEIR OWN WAY: a swept CAD tube tessellates into slivers as long as the
+        # tube, each spanning hundreds of median-sized cells per axis - a diagonal one millions -
+        # and bucketing them filled the container's memory (a vessel tree STEP: killed, rc 137,
+        # at admission) or ran past the hour (a helical coil). A face covering more than
+        # LONG_FACE_CELLS cells is tested against every face whose box it overlaps, found in one
+        # vectorised pass instead of through the grid.
+        reach = np.prod((gh - gl + 1).astype(float), axis=1)
+        long_faces = np.flatnonzero(reach > LONG_FACE_CELLS)
+        is_long = np.zeros(n, dtype=bool)
+        is_long[long_faces] = True
 
         buckets: dict[tuple, list] = defaultdict(list)
-        for i in range(len(tris)):
+        for i in np.flatnonzero(~is_long).tolist():
             for x in range(gl[i, 0], gh[i, 0] + 1):
                 for y in range(gl[i, 1], gh[i, 1] + 1):
                     for z in range(gl[i, 2], gh[i, 2] + 1):
@@ -97,26 +127,46 @@ def self_intersects(surface_path, *, max_faces: int = 400_000) -> bool:
 
         triset = [frozenset(t.tolist()) for t in tris]
         tested: set[tuple[int, int]] = set()
-        for ids in buckets.values():
-            m = len(ids)
-            if m < 2:
+        found: list[tuple[int, int]] = []
+
+        def _pairs():
+            for ids in buckets.values():
+                m = len(ids)
+                for a in range(m):
+                    for b in range(a + 1, m):
+                        yield ids[a], ids[b]
+            for i in long_faces.tolist():
+                hit = np.flatnonzero(np.all(lo <= hi[i], axis=1) & np.all(hi >= lo[i], axis=1))
+                for j in hit.tolist():
+                    if j != i and not (is_long[j] and j < i):
+                        yield i, j
+
+        for i, j in _pairs():
+            key = (i, j) if i < j else (j, i)
+            if key in tested:
                 continue
-            for a in range(m):
-                i = ids[a]
-                for b in range(a + 1, m):
-                    j = ids[b]
-                    key = (i, j) if i < j else (j, i)
-                    if key in tested:
-                        continue
-                    tested.add(key)
-                    if triset[i] & triset[j]:            # shares a vertex → adjacency, not a defect
-                        continue
-                    if (lo[i] > hi[j]).any() or (lo[j] > hi[i]).any():
-                        continue                          # AABBs miss
-                    if vtkTriangle.TrianglesIntersect(tp[i][0], tp[i][1], tp[i][2],
-                                                      tp[j][0], tp[j][1], tp[j][2]):
-                        return True
-        return False
+            tested.add(key)
+            if triset[i] & triset[j]:            # shares a vertex → adjacency, not a defect
+                continue
+            if (lo[i] > hi[j]).any() or (lo[j] > hi[i]).any():
+                continue                          # AABBs miss
+            if vtkTriangle.TrianglesIntersect(tp[i][0], tp[i][1], tp[i][2],
+                                              tp[j][0], tp[j][1], tp[j][2]):
+                found.append(key)
+                if len(found) >= max_pairs:
+                    return _crossing_report(found, tp, more=True)
+        return _crossing_report(found, tp, more=False) if found else None
     except Exception as exc:  # noqa: BLE001 - a probe must never be the reason a build dies
         logger.warning("self_intersects: check failed (%s) - treating as inconclusive", exc)
-        return False
+        return None
+
+
+def _crossing_report(pairs: list[tuple[int, int]], tp, *, more: bool) -> dict:
+    idx = sorted({i for p in pairs for i in p})
+    pts = tp[idx].reshape(-1, 3)
+    first = tp[list(pairs[0])].reshape(-1, 3).mean(axis=0)
+    spans = (tp[idx].max(axis=1) - tp[idx].min(axis=1)).max(axis=1)
+    return {"pairs": len(pairs), "more": bool(more),
+            "first_at_m": [round(float(v), 6) for v in first],
+            "region_m": [round(float(v), 6) for v in (pts.max(axis=0) - pts.min(axis=0))],
+            "triangle_m": round(float(np.median(spans)), 6)}

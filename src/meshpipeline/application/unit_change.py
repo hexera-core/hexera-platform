@@ -95,6 +95,23 @@ class UnitChangeError(RuntimeError):
     over old sizes is exactly the mismatch this module exists to prevent."""
 
 
+class UnitFixed(RuntimeError):
+    """The upload's converter fixed the unit of its geometry (contracts/intake_formats
+    `fixed_unit`), so no unit the user names changes it. "Metres" is true of an ECXML model's
+    SOURCE; applied to its millimetre geometry it made a 180 mm box 180 m long."""
+
+    def __init__(self, unit: LengthUnit, reason: str, longest_m: float | None = None):
+        super().__init__(f"the unit is fixed at {unit.value}")
+        self.unit, self.reason, self.longest_m = unit, reason, longest_m
+
+    def reply(self) -> str:
+        """What the chat says: nothing changed, why, and how long the part is as it stands."""
+        said = f"This file's unit is fixed, so I changed nothing: {self.reason}."
+        if self.longest_m:
+            said += f" The sizes are already right: the part is {length_in(self.longest_m, self.unit)} long."
+        return said + " Say go on when you're ready."
+
+
 def _confirmed_scale(record: dict) -> float | None:
     """The scale a stored confirmation's sizes are in: its own `scale_to_m`, else the scale of
     the unit it records. Never the session's current unit - after an earlier change that is not
@@ -157,6 +174,15 @@ async def change_unit(db, session, *, owner_id: str, organization_id: str, unit:
 
     if not getattr(session, "geometry_source_id", None):
         return None
+    # A UNIT THE CONVERTER FIXED IS NOT THE USER'S TO CHANGE: the geometry every engine reads was
+    # written in it, whatever unit the uploaded source states. Refused before anything is read
+    # or written.
+    fixing = await gh.unit_fixing_format(db, session, owner_id, organization_id)
+    if fixing is not None and unit.value != fixing.fixed_unit:
+        fixed = LengthUnit(fixing.fixed_unit)
+        longest = _longest_file_units(str(session.id))
+        raise UnitFixed(fixed, fixing.fixed_unit_reason,
+                        longest * scale_to_metres(fixed) if longest else None)
     current = await gh.interpretation_payload(db, session, owner_id, organization_id)
     old_unit = str(current["unit"]) if current else None
     if old_unit == unit.value and current and str(current.get("basis")) == ResolutionBasis.user_confirmed.value:
@@ -215,4 +241,5 @@ async def change_unit(db, session, *, owner_id: str, organization_id: str, unit:
     return change
 
 
-__all__ = ["WITHDRAWN_REASON", "UnitChange", "UnitChangeError", "change_unit", "withdraw_live_approval"]
+__all__ = ["WITHDRAWN_REASON", "UnitChange", "UnitChangeError", "UnitFixed", "change_unit",
+           "withdraw_live_approval"]

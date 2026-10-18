@@ -223,7 +223,10 @@ CONTRACT: tuple[ContractVar, ...] = (
         purpose="the fallback ladder's durable record (pipeline/engine_fallback.py): the "
                 "approved engine, every attempt's engine and failure class, each switch and "
                 "why, the engine that built the delivered mesh, and - on a mesh failure - the "
-                "one offer the run ends with. Carried into the terminal result verbatim",
+                "one offer the run ends with; plus the MEASURED order its rungs are walked in for "
+                "this geometry (order, order_source, order_recommended, order_reasons - "
+                "engines/fitness.py, seeded by node_engine_select). Carried into the terminal "
+                "result verbatim",
         state_field="engine_ladder",
         corpus="qa: which shapes need which rung - every engine a run tried and why it "
                "left each one",
@@ -358,6 +361,12 @@ EVENT_TYPES: dict[str, str] = {
     "geometry_admission": "qa: input-contract admission verdict - when an engine's "
                           "measured input contract (e.g. self-intersection) rejected the "
                           "geometry before any build; deterministic, no model",
+    "repair_attempt":     "training+qa: what an automatic repair aimed at and what it did - the "
+                          "targets triage named, the operations the kernel ran, and the lineage of "
+                          "the geometry that replaced the upload; deterministic, no model",
+    "repair_inspect":     "training+qa: what CAD repair inspection measured on the verified "
+                          "input before admission judged it - the defect taxonomy an operator's "
+                          "repair decision is later learned from; deterministic, no model",
     "planner_run":        "training: the planner LLM's system, input, raw "
                           "response, parsed plan and usage",
     "builder_attempt":    "training: the builder's full trajectory per attempt",
@@ -381,13 +390,24 @@ STATE_FIELDS: dict[str, str] = {
     "engine":                "the RESOLVED engine that runs (see 'engine (resolved)' above)",
     "engine_source":         "who chose the engine: user_direct | suggested_confirmed | dispute | "
                              "system (see 'engine choice provenance'); gates the fallback ladder",
-    "engine_ladder":         "the fallback ladder's record: attempts, switches, the closing offer "
-                             "(see 'engine fallback ladder record')",
+    "engine_ladder":         "the fallback ladder's record: the measured rung order, attempts, "
+                             "switches, the closing offer (see 'engine fallback ladder record')",
     "messages":              "LangGraph message accumulator for the intake node",
     "job_id":                "job identity (see contract)",
     "user_id":               "owner identity (see contract; alias of owner_id)",
     "session_id":            "session identity (see contract)",
     "geometry":              "verified input geometry handle (see contract)",
+    "repair_status":         "what CAD repair inspection concluded about the verified input "
+                             "(RepairStatus); evidence for the operator and the corpus, never "
+                             "a decision, and never a reason to move the geometry",
+    "repair_report":         "the typed RepairResult payload behind repair_status: defects, "
+                             "measurements and the inspect operation that produced them",
+    "repair_attempt":        "whether the run repaired its own geometry, what it aimed at and "
+                             "what it did - or why it declined; a decline leaves the run on the "
+                             "customer's own file",
+    "repair_lineage":        "which upload a promoted repair replaced, and the engine the "
+                             "replacement was proved to stage for; empty unless repaired "
+                             "geometry became the geometry this run meshes",
     "domain":                "descriptive task label (see contract)",
     "engine_params":         "engine-native declared parameters (see contract)",
     "openfoam_workspace":    "the attempt workspace directory the builder/executor share",

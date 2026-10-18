@@ -109,7 +109,8 @@ def test_every_engine_runner_returns_the_shared_contract():
     from meshpipeline.engines.dispatch import engine_runners
 
     runners = engine_runners()
-    assert set(runners) == {"cfmesh", "snappy", "gmsh", "snappy_multiregion", "vmtk"}, runners
+    assert set(runners) == {"cfmesh", "snappy", "gmsh", "snappy_multiregion", "vmtk",
+                            "snapgrid"}, runners
     shared = {"rc", "timed_out", "signalled", "outcome", "signal", "command", "stage", "log_tail"}
     for engine in sorted(runners):
         # The seam must be CALLED, not merely imported. A substring check passed a module that
@@ -133,6 +134,7 @@ _NATIVE_MODULE = {
     "gmsh": "meshpipeline.engines.gmsh.gmsh_runner",
     "vmtk": "meshpipeline.engines.vmtk.vmtk_runner",
     "snappy_multiregion": "meshpipeline.engines.snappy_multiregion.native",
+    "snapgrid": "meshpipeline.engines.snapgrid.runner",
 }
 
 

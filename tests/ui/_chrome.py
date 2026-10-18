@@ -251,6 +251,13 @@ class Page:
         self._send("Input.dispatchKeyEvent", down)
         self._send("Input.dispatchKeyEvent", dict(base, type="keyUp"))
 
+    def click(self, x: float, y: float) -> None:
+        """A left click at a point of the page (CSS pixels), made by the browser's own mouse - so
+        every listener sees the real pointer, as it would a user's."""
+        self._send("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y})
+        for kind in ("mousePressed", "mouseReleased"):
+            self._send("Input.dispatchMouseEvent", {"type": kind, "x": x, "y": y, "button": "left", "clickCount": 1})
+
     def settle(self, seconds: float = 0.3) -> None:
         self._b.drain(self.frames, seconds)
 

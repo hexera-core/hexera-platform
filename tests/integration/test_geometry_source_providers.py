@@ -73,16 +73,18 @@ async def test_the_live_schema_has_no_path_column(db):
     assert rows.fetchall() == []
 
 
-async def test_both_owners_of_geometry_reference_the_catalog(db):
+async def test_every_owner_of_geometry_references_the_catalog(db):
     from sqlalchemy import text
     rows = await db.execute(text(
         "select table_name from information_schema.columns "
         "where column_name = 'geometry_source_id' order by table_name"))
     # A session and a job reference the geometry they are meshing; an interpretation references
-    # the geometry whose physical scale it records. All three point AT the catalog, and none of
-    # them holds a copy of the bytes or a path to them.
+    # the geometry whose physical scale it records; a repair job references the customer file the
+    # whole engagement is ABOUT. Every one of them points AT the catalog, and none holds a copy of
+    # the bytes or a path to them - which is the property this test exists to keep. A new table
+    # here is only correct if it, too, merely references.
     assert [r[0] for r in rows.fetchall()] == [
-        "chat_sessions", "geometry_interpretations", "simulation_jobs"]
+        "cad_repair_jobs", "chat_sessions", "geometry_interpretations", "simulation_jobs"]
 
 
 async def test_a_source_round_trips_through_the_real_repository(db, store):

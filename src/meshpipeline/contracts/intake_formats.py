@@ -1,12 +1,25 @@
 # Responsibility: Hold the one description of what geometry this product accepts.
-# Owns: the accepted-format table, the suffix mapping, the staged filename, whether a format declares its own units, and the refusal a user reads for anything else.
-# Boundaries: it answers what is accepted and what that implies; it opens no file and converts nothing.
-# Collaborates with: api/v1/upload.py, agents/intake/ and every engine's staging seam.
+# Owns: the accepted-format table, the suffix mapping, the staged filename, whether a format declares its own units, the CAD-or-surface answer every consumer asks, and the refusal a user reads for anything else.
+# Boundaries: it answers what is accepted and what that implies; it opens no file and converts nothing (cad/ingest reads and converts).
+# Collaborates with: api/v1/upload.py, cad/ingest/, agents/intake/ and every engine's staging seam.
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import PurePosixPath
+
+
+class GeometryKind(str, Enum):
+    """The two canonical forms every accepted file becomes (cad/ingest does the converting).
+
+    cad      an exact B-rep solid OpenCASCADE reads (STEP, IGES; BREP and ECXML arrive converted
+             to STEP - an ECXML model as one named solid per part plus the air around them)
+    surface  triangles (STL; VTP stays VTP for the engine that reads it natively; every other
+             mesh format arrives converted to STL, its named groups kept as named STL solids)
+    """
+    cad = "cad"
+    surface = "surface"
 
 
 @dataclass(frozen=True)
@@ -17,7 +30,28 @@ class IntakeFormat:
     media_type: str                # best-known media type ("" when there is no registered one)
     declares_units: bool           # does the FORMAT itself state its physical unit?
     staged_as: str                 # the representation staged into the workspace
+    kind: GeometryKind = GeometryKind.surface   # what it becomes: an exact solid or triangles
+    #: True for the formats the rest of the system reads as they are; every other one is
+    #: converted to its kind's canonical file before anything downstream sees it.
+    canonical: bool = False
+    #: THE UNIT A CONVERTER FIXES. A format whose converter writes the geometry every engine reads
+    #: in one known unit - whatever unit the source states - names it here ("mm"). That unit is a
+    #: fact of the conversion, not a reading of the file: nobody is asked for it, and no later
+    #: answer ("the file is in metres", which is true of the SOURCE) may rescale the converted
+    #: geometry. Empty for every format whose unit is read from the file or asked.
+    fixed_unit: str = ""
+    #: Why the unit is fixed, in plain words a user can read ("" when it is not).
+    fixed_unit_reason: str = ""
+    #: HOW THE GEOMETRY CHECK READS THIS FORMAT. "" is the generic check: pictures, a named part,
+    #: openings found on the shape and given roles. "thermal" is an electronics thermal model that
+    #: names every part, material, power, fan and vent itself: the check shows the file's own model
+    #: (application/thermal_view) and asks nothing the file answers - no picture naming, no up
+    #: question, no openings. Every later step branches on this flag, never on the suffix.
+    check_mode: str = ""
 
+
+#: The check mode of a format that is a whole electronics thermal model (IntakeFormat.check_mode).
+THERMAL_CHECK = "thermal"
 
 #: Ordered as the UI lists them: the most common first.
 INTAKE_FORMATS: tuple[IntakeFormat, ...] = (
@@ -25,31 +59,115 @@ INTAKE_FORMATS: tuple[IntakeFormat, ...] = (
         key="stl", label="STL surface mesh", suffixes=(".stl",),
         media_type="model/stl",
         # STL is a bare triangle soup - no unit is recorded anywhere in the file.
-        declares_units=False, staged_as="input.stl"),
+        declares_units=False, staged_as="input.stl", canonical=True),
     IntakeFormat(
         key="step", label="STEP solid (AP203/AP214)", suffixes=(".step", ".stp"),
         media_type="model/step",
         # STEP carries a unit context, which OpenCASCADE normalises on read.
-        declares_units=True, staged_as="input.step"),
+        declares_units=True, staged_as="input.step", kind=GeometryKind.cad, canonical=True),
     IntakeFormat(
         key="iges", label="IGES surface/solid", suffixes=(".iges", ".igs"),
         media_type="model/iges",
-        declares_units=True, staged_as="input.iges"),
+        declares_units=True, staged_as="input.iges", kind=GeometryKind.cad, canonical=True),
     IntakeFormat(
         key="vtp", label="VTK PolyData surface", suffixes=(".vtp",),
         media_type="application/vnd.vtk.polydata",
         # VTK PolyData stores raw coordinates with no unit declaration.
-        declares_units=False, staged_as="input.vtp"),
+        declares_units=False, staged_as="input.vtp", canonical=True),
+    IntakeFormat(
+        key="brep", label="OpenCASCADE BREP solid", suffixes=(".brep", ".brp"),
+        media_type="",
+        # A BREP file is raw OpenCASCADE geometry: it records no unit at all.
+        declares_units=False, staged_as="input.brep", kind=GeometryKind.cad),
+    IntakeFormat(
+        # Flotherm writes .ecxml; Icepak names its export <project>_ec.xml. A .xml file is read as
+        # ECXML only when its root element says so (cad/ingest/sniff), and refused otherwise.
+        key="ecxml", label="JEDEC JEP181 ECXML thermal model",
+        suffixes=(".ecxml", ".xml"), media_type="application/xml",
+        # JEP181A 4.1: every ECXML value is SI - lengths in metres - and the schema has no way to
+        # say otherwise. Its boxes, cylinders and enclosures are built as exact solids, with the air
+        # around them as one more solid, so it is CAD (converted to STEP) like a BREP.
+        declares_units=True, staged_as="input.ecxml", kind=GeometryKind.cad,
+        # ... and the solids are written in millimetres (cad/ingest/ecxml_build.UNIT), exactly.
+        fixed_unit="mm",
+        fixed_unit_reason=("an ECXML model states every length in metres by definition (JEDEC "
+                           "JEP181A), and it was converted exactly into millimetres"),
+        # ... and it is a whole thermal model, so the check shows it as one (thermal_view)
+        check_mode=THERMAL_CHECK),
+    IntakeFormat(
+        key="obj", label="Wavefront OBJ mesh", suffixes=(".obj",),
+        media_type="model/obj", declares_units=False, staged_as="input.obj"),
+    IntakeFormat(
+        key="ply", label="PLY mesh", suffixes=(".ply",),
+        media_type="", declares_units=False, staged_as="input.ply"),
+    IntakeFormat(
+        key="off", label="OFF mesh", suffixes=(".off",),
+        media_type="", declares_units=False, staged_as="input.off"),
+    IntakeFormat(
+        key="3mf", label="3MF model", suffixes=(".3mf",),
+        media_type="model/3mf",
+        # Every 3MF model states its unit (the spec's default, when absent, is the millimetre).
+        declares_units=True, staged_as="input.3mf"),
+    IntakeFormat(
+        key="glb", label="glTF binary (GLB)", suffixes=(".glb",),
+        media_type="model/gltf-binary",
+        # The glTF specification says metres, but nothing in a file records it, and mesh tools
+        # routinely write a millimetre model's numbers unchanged (a 200 mm part would read as
+        # 200 m). So the unit is asked, as for STL, rather than taken from the spec.
+        declares_units=False, staged_as="input.glb"),
+    IntakeFormat(
+        key="gltf", label="glTF (single file, embedded data)", suffixes=(".gltf",),
+        media_type="model/gltf+json", declares_units=False, staged_as="input.gltf"),
+    IntakeFormat(
+        key="vtk", label="VTK legacy mesh (surface or volume)", suffixes=(".vtk",),
+        media_type="", declares_units=False, staged_as="input.vtk"),
+    IntakeFormat(
+        key="vtu", label="VTK unstructured grid (surface or volume)", suffixes=(".vtu",),
+        media_type="", declares_units=False, staged_as="input.vtu"),
+    IntakeFormat(
+        key="msh", label="Gmsh or Fluent mesh", suffixes=(".msh",),
+        media_type="", declares_units=False, staged_as="input.msh"),
+    IntakeFormat(
+        key="nastran", label="Nastran bulk data", suffixes=(".bdf", ".nas"),
+        media_type="", declares_units=False, staged_as="input.bdf"),
+    IntakeFormat(
+        key="abaqus", label="Abaqus input", suffixes=(".inp",),
+        media_type="", declares_units=False, staged_as="input.inp"),
+    IntakeFormat(
+        key="medit", label="Medit mesh", suffixes=(".mesh",),
+        media_type="", declares_units=False, staged_as="input.mesh"),
+    IntakeFormat(
+        key="su2", label="SU2 mesh", suffixes=(".su2",),
+        media_type="", declares_units=False, staged_as="input.su2"),
+    IntakeFormat(
+        key="dae", label="COLLADA model", suffixes=(".dae",),
+        media_type="model/vnd.collada+xml",
+        # A COLLADA file states its unit (<unit meter=...>) and its up axis in its <asset>; one that
+        # leaves the unit out is asked, not taken as the spec's default metre (cad/ingest/collada).
+        declares_units=True, staged_as="input.dae"),
+    IntakeFormat(
+        key="3dm", label="Rhino 3DM (its meshes)", suffixes=(".3dm",),
+        media_type="",
+        # A Rhino model states its unit system in the file's settings.
+        declares_units=True, staged_as="input.3dm"),
 )
 
 #: Every accepted suffix. The server's validation predicate, and the picker's advisory list.
 ACCEPTED_SUFFIXES: frozenset[str] = frozenset(
     s for f in INTAKE_FORMATS for s in f.suffixes)
 
+#: The file each kind is turned into, when the source is not already a canonical format.
+CANONICAL_SUFFIX: dict[GeometryKind, str] = {GeometryKind.cad: ".step",
+                                             GeometryKind.surface: ".stl"}
+
 
 def format_for_suffix(suffix: str) -> IntakeFormat | None:
     s = (suffix or "").lower()
     return next((f for f in INTAKE_FORMATS if s in f.suffixes), None)
+
+
+def format_for_key(key: str) -> IntakeFormat | None:
+    return next((f for f in INTAKE_FORMATS if f.key == key), None)
 
 
 def staged_name_for(suffix: str) -> str:
@@ -60,6 +178,47 @@ def staged_name_for(suffix: str) -> str:
 def declares_units(suffix: str) -> bool:
     fmt = format_for_suffix(suffix)
     return bool(fmt and fmt.declares_units)
+
+
+def unit_fixing_format(suffix: str) -> IntakeFormat | None:
+    """The format of an upload whose converter fixes the unit of its geometry (`fixed_unit`), or
+    None when the unit is the file's to state or the user's to name."""
+    fmt = format_for_suffix(_suffix_of(suffix))
+    return fmt if fmt is not None and fmt.fixed_unit else None
+
+
+def check_mode_of(key: str) -> str:
+    """How the geometry check reads a format, by its key ("" for the generic check, also for a
+    key this product does not know)."""
+    fmt = format_for_key(str(key or ""))
+    return fmt.check_mode if fmt is not None else ""
+
+
+def _suffix_of(path_or_suffix) -> str:
+    text = str(path_or_suffix or "").strip()
+    # a bare suffix (".stl", "stl") is asked about as often as a path is
+    if text and "/" not in text and "\\" not in text and text.count(".") <= 1 \
+            and (text.startswith(".") or "." not in text):
+        return "." + text.lstrip(".").lower()
+    return PurePosixPath(text.replace("\\", "/")).suffix.lower()
+
+
+def geometry_kind(path_or_suffix) -> GeometryKind | None:
+    """THE one answer to "is this CAD or a surface?", for a path or a bare suffix.
+
+    Every format-dependent decision downstream asks this instead of comparing suffixes, so a new
+    format is declared once, above, and every engine treats it the same way. None for a file this
+    product does not read at all."""
+    fmt = format_for_suffix(_suffix_of(path_or_suffix))
+    return fmt.kind if fmt else None
+
+
+def is_cad(path_or_suffix) -> bool:
+    return geometry_kind(path_or_suffix) is GeometryKind.cad
+
+
+def is_surface(path_or_suffix) -> bool:
+    return geometry_kind(path_or_suffix) is GeometryKind.surface
 
 
 @dataclass(frozen=True)
@@ -90,8 +249,6 @@ NATIVE_CAD_FORMATS: tuple[NativeCadFormat, ...] = (
     NativeCadFormat("Parasolid", (".x_t", ".x_b"),
                     "Open it in a CAD tool that reads Parasolid (SolidWorks, NX, Solid Edge or "
                     "Onshape) and export a STEP"),
-    NativeCadFormat("Rhino", (".3dm",),
-                    "In Rhino, select the part and use File > Export Selected, type STEP (*.stp)"),
     NativeCadFormat("Fusion 360", (".f3d",),
                     "In Fusion 360, use File > Export, type STEP (*.stp)"),
     NativeCadFormat("Solid Edge", (".par", ".psm"),
@@ -101,11 +258,28 @@ NATIVE_CAD_FORMATS: tuple[NativeCadFormat, ...] = (
     NativeCadFormat("ACIS", (".sat", ".sab"),
                     "Open it in a CAD tool that reads ACIS (SpaceClaim, Inventor, Fusion 360 or "
                     "Onshape) and export a STEP"),
+    NativeCadFormat("FreeCAD", (".fcstd",),
+                    "In FreeCAD, select the body and use File > Export, type STEP with colors "
+                    "(*.step *.stp)"),
+    NativeCadFormat("SpaceClaim", (".scdoc",),
+                    "In SpaceClaim, use File > Save As, type STEP (*.stp)"),
 )
+
+#: What a user reads when the bytes are a native CAD container whose tool cannot be told apart:
+#: SolidWorks (before 2015), Inventor and Solid Edge all store parts in the same OLE container.
+NATIVE_UNKNOWN_TOOL = ("Hexera can't open this file: it is a native CAD part (SolidWorks, Inventor "
+                       "and Solid Edge save parts this way), whatever its name says. Export a STEP "
+                       "from the tool that made it (File > Save As or File > Export, type STEP), "
+                       "then upload the STEP file: it keeps the exact surfaces and the units (STL "
+                       "also works, but loses the units).")
 
 #: Every recognised native suffix. The picker offers these too, so picking one explains itself.
 NATIVE_CAD_SUFFIXES: frozenset[str] = frozenset(
     s for n in NATIVE_CAD_FORMATS for s in n.suffixes)
+
+#: Rhino's own export path. A .3dm IS read here, but only the triangles it stores (its meshes, and
+#: the render meshes Rhino saves with each surface); a model saved without them has none to read.
+RHINO_EXPORT = "In Rhino, select the part and use File > Export Selected, type STEP (*.stp)"
 
 # Creo numbers every save: bracket.prt.3 is the third save of bracket.prt.
 _CREO_SAVE_NUMBER = re.compile(r"(\.(?:prt|asm))\.\d+$")
@@ -142,7 +316,8 @@ def capability_payload() -> dict:
     return {
         "formats": [
             {"key": f.key, "label": f.label, "suffixes": list(f.suffixes),
-             "media_type": f.media_type, "declares_units": f.declares_units}
+             "media_type": f.media_type, "declares_units": f.declares_units,
+             "kind": f.kind.value}
             for f in INTAKE_FORMATS
         ],
         "accept": ",".join(sorted(ACCEPTED_SUFFIXES)),

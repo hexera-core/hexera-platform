@@ -79,6 +79,36 @@ def patches_line(patch_names: list[str], renderable: list[str] | None) -> str:
             "boundary")
 
 
+def wake_refinement_line(wake: dict) -> str:
+    """The wake refinement the mesher was ASKED for (engines/wake_region.py), in the reviewer's
+    terms: where the graded boxes run and how fine their cells are - or why there are none. A
+    review that judged the wake from a slice framed on the body saw only its first lengths."""
+    tiers = [t for t in (wake.get("tiers") or []) if isinstance(t, dict)]
+    if not wake.get("enabled") or not tiers:
+        why = str(wake.get("reason") or "").strip()
+        return ("Wake refinement: NONE was authored" + (f" - {why}" if why else "")
+                + ". Behind the body the cells grade back to the background mesh.")
+
+    def _len(m: object) -> str:
+        try:
+            v = float(m)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return "?"
+        return f"{v * 1000:.3g} mm" if v < 1.0 else f"{v:.3g} m"
+    reach = tiers[-1].get("reach_wake_lengths")
+    line = (f"Wake refinement (AUTHORED - what the mesher was asked to build, not a measurement): "
+            f"{len(tiers)} graded box{'es' if len(tiers) > 1 else ''} behind the body along "
+            f"{wake.get('sign', '+')}{wake.get('axis', 'x')}, reaching {reach} wake lengths "
+            f"(wake length {_len(wake.get('wake_length_m'))}) past its trailing extent, cells "
+            + " / ".join(_len(t.get("cell_m")) for t in tiers)
+            + " from the body outwards. The centre slices frame only the first lengths of it; "
+              "judge wake resolution against this and the brief.")
+    cut = [str(c) for c in (wake.get("reduced") or [])]
+    if cut:
+        line += " To fit the cell budget it was " + ", then ".join(cut) + "."
+    return line
+
+
 def layer_policy_line(pol: dict) -> str:
     """The thin-feature layer policy, stated as what was actually AUTHORED.
 
@@ -112,6 +142,14 @@ def layer_policy_line(pol: dict) -> str:
             f"stage {pol.get('escalation_stage', 0)}): ")
     sharp = round(_pct("thin") + _pct("razor"), 1)
     dominant = next(iter((pol.get("region_patches") or {}).values()), "")
+    if "repair" in classes:
+        rep = classes["repair"]
+        return ("Local layer repair (measured): an earlier pass's prism layers folded into invalid "
+                f"cells at {rep.get('points', 'some')} spot(s) on the wall, so this pass leaves the "
+                f"layers out within {round(float(rep.get('radius_m') or 0) * 1e3, 1)} mm of them - "
+                f"{_pct('repair')}% of the wall area, with no layers there by design. Every other "
+                f"face was asked for the full {req} layers; coverage missing outside that "
+                "repaired area is a real finding.")
     if pol.get("mode") == "global" and dominant in classes and req and _n(dominant) < req:
         return (head + f"almost the whole wall is locally thin or razor-sharp ({cls}), so the "
                 f"WHOLE wall carries the {dominant} count of {_n(dominant)} layers instead of the "
@@ -300,9 +338,30 @@ def build_review_prompt(
             f"conclude 'no layers' from a slice where the near-wall looks like a dense/black region "
             f"- judge coverage from THIS number. (Rough guide: >=70% is good, 40-70% partial, <40% "
             f"poor; weigh it against the workflow's y+ target.)")
+        if _q.get("layer_coverage_source") == "census" and _q.get("layers_requested"):
+            # a mesher with no layer report of its own (cfMesh): counted on the mesh, and the
+            # target is what the REQUEST asked for, not only what the mesher was told
+            _told = _q.get("layers_in_meshdict")
+            _meta.append(
+                f"These layers were COUNTED on the mesh itself (wall-adjacent cell stacks), against "
+                f"the {_q['layers_requested']} layers requested"
+                + (f" (the mesher was told {_told})" if _told and _told != _q["layers_requested"] else "")
+                + f": mean {_q.get('layers_mean')} layers per wall face, all {_q['layers_requested']} "
+                f"on {_q.get('layer_area_full_pct')}% of the wall area, at least one on "
+                f"{_q.get('layer_area_any_pct')}%. Fewer layers than requested is a shortfall on the "
+                f"layer axis, however clean the stack that exists.")
+    elif _q.get("layer_coverage_source") == "unmeasured" and _q.get("layers_requested"):
+        _meta.append(
+            f"Near-wall prism layers: {_q['layers_requested']} were requested, but the delivered "
+            f"layers could NOT be measured ({_q.get('layer_census_note') or 'no reason recorded'}). "
+            f"No figure exists for the prism-layer axis: judge it only from a near-wall inspection, "
+            f"and say that the count is unmeasured.")
     _lpol = _q.get("layer_policy")
     if isinstance(_lpol, dict) and _lpol.get("classes"):
         _meta.append(layer_policy_line(_lpol))
+    _wake = _q.get("wake_refinement")
+    if isinstance(_wake, dict):
+        _meta.append(wake_refinement_line(_wake))
     mesh_meta = "  " + "\n  ".join(_meta)
 
     _gb = (manifest.get("geometry", {}) or {}).get("body_box")

@@ -177,6 +177,10 @@ class IntakeLoopPolicy:
     garbled_replies: int = 0                   # replies sent back for a planning note or a hole
     repeated_questions: int = 0                # replies sent back for asking the same thing again
     engine_nudges: int = 0                     # replies sent back for how they spoke of the engine
+    thermal_nudges: int = 0                    # thermal-model replies sent back for generic words
+    #: The names a thermal model's file gives (its parts, fans, vents...): its own words, which the
+    #: thermal vocabulary check leaves alone (application/thermal_wording.forbidden_words).
+    thermal_names: tuple[str, ...] = ()
     plaintext_text: str = ""                   # the model's reply, returned - never diagnosed
     finish_reason: str = ""
     input_tokens: int = 0
@@ -239,6 +243,19 @@ class IntakeLoopPolicy:
                 logger.info("Intake: the reply is not fit to send (%s: %s) - sent back once for a "
                             "clean rewrite", found.kind, found.rule)
                 return RoundDecision(message=turn.GARBLED_NUDGE, complete=False)
+        # A WHOLE THERMAL MODEL IS SPOKEN OF IN ITS OWN WORDS. A reply that says inlet, outlet,
+        # sticker, sure, triangle, far field or "flows through" (outside the file's own names) is
+        # the generic flow leaking into an electronics-cooling job; it goes back ONCE for a
+        # rewrite, while another round may start, like the checks above and below.
+        if self.exec_state.thermal and self.thermal_nudges == 0 and (rounds_left is None or rounds_left > 0):
+            from meshpipeline.application.thermal_wording import forbidden_words
+
+            said = forbidden_words(self.plaintext_text, self.thermal_names)
+            if said:
+                self.thermal_nudges += 1
+                logger.info("Intake: a thermal model's reply used generic words (%s) - sent back "
+                            "once for a rewrite", ", ".join(said))
+                return RoundDecision(message=turn.THERMAL_WORDS_NUDGE, complete=False)
         # THE SAME QUESTION IS NEVER ASKED TWICE - enforced here, not left to the prompt. A reply
         # that asks what the user was already asked is sent back ONCE, inside the turn, with the
         # rule: their reply was their answer, take your own proposal and move on. Once, so a model

@@ -46,7 +46,7 @@ UNAUTHORIZED_GUIDANCE = (
 
 def recommend_compatible_engines(purpose: str, input_kind: str, dimensionality: str | None = None,
                                  patches=None, engine_params=None, geometry_facts=None,
-                                 *, authorized: bool) -> dict:
+                                 *, authorized: bool, geometry_form: str | None = None) -> dict:
     if not authorized:
         return {"recommendation_authorized": False, "candidates": [], "compatible_engines": [],
                 "authorizes_selection": False, "authorizes_submission": False,
@@ -59,7 +59,7 @@ def recommend_compatible_engines(purpose: str, input_kind: str, dimensionality: 
     for name in engine_names():
         r = preview_admission(name, purpose, input_kind, dimensionality=dimensionality,
                               patches=patches, engine_params=engine_params,
-                              geometry_facts=geometry_facts)
+                              geometry_facts=geometry_facts, geometry_form=geometry_form)
         verdict = r["verdict"]
         code = str(r.get("blocking_rule_code") or "")
         # An engine the catalog calls physically incapable of this PURPOSE is not an option and no
@@ -77,9 +77,11 @@ def recommend_compatible_engines(purpose: str, input_kind: str, dimensionality: 
             # Catalog/engine-authored text only - the model must not invent compatibility reasons.
             "reason": r.get("capability_reason") or r.get("safe_user_message", ""),
         })
-        # CAN do this purpose, but not from the geometry as declared - and the catalog's reason
-        # already names the geometry that would work. That is the compromise to put to the user.
-        if verdict == ADMIT_IMPOSSIBLE and code == "input_kind_incompatible":
+        # CAN do this purpose, but not from the geometry as declared (or not from this KIND of
+        # file) - and the catalog's reason already names the geometry that would work. That is
+        # the compromise to put to the user.
+        if verdict == ADMIT_IMPOSSIBLE and code in ("input_kind_incompatible",
+                                                    "geometry_form_unsupported"):
             needs_other_input.append(name)
 
     compatible = [c["engine"] for c in candidates if c["supported"]]

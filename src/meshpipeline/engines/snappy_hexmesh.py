@@ -3,6 +3,7 @@
 # Collaborates with: engines/snappy/ and engines/snappy_multiregion/.
 from __future__ import annotations
 
+import math
 import re
 from pathlib import Path
 
@@ -95,4 +96,30 @@ def parse_layer_coverage(snappy_log: str) -> dict:
     return out
 
 
-__all__ = ["_write_case_skeleton", "parse_layer_coverage"]
+#: The finest octree level either snappy engine refines to (snappy's own internal cases cap every
+#: level at 10): a point kept off every face of a level-10 cell is off every coarser one too.
+SEED_OFF_GRID_LEVEL = 10
+
+
+def off_grid_point(point, lo, hi, div, levels: int = SEED_OFF_GRID_LEVEL) -> tuple:
+    """The centre of the cell holding `point` in a uniform box grid (corners `lo`/`hi`, `div`
+    cells per axis) refined `levels` times: inside one cell at every coarser level too, since
+    each refinement only halves the cells of the one before.
+
+    THE SEED OFF THE GRID. A part symmetric about a plane has its seed on that plane, and the
+    background box, built round the part, is symmetric about it too: the plane is a cell face
+    whenever the cell count across it is even, and a face of every refined cell whenever it is
+    odd. snappyHexMesh cannot then say which cell holds locationInMesh ("is not inside the mesh or
+    on a face or edge") and stops before it carves. `lo`/`hi` must be the box AS WRITTEN (the
+    blockMeshDict's rounded numbers), or the faces are not where the mesher puts them. The point
+    moves at most half a finest cell."""
+    out = []
+    for i in range(3):
+        h = (hi[i] - lo[i]) / max(div[i], 1) / 2 ** levels
+        k = math.floor((float(point[i]) - lo[i]) / h) if h > 0 else 0
+        out.append(lo[i] + (k + 0.5) * h if h > 0 else float(point[i]))
+    return tuple(out)
+
+
+__all__ = ["SEED_OFF_GRID_LEVEL", "_write_case_skeleton", "off_grid_point",
+           "parse_layer_coverage"]

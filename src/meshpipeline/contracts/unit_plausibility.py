@@ -196,6 +196,256 @@ def proposed_unit(longest_file_units: float, expected: ExpectedSize | None = Non
     return s.unit if s is not None else LengthUnit.millimetre
 
 
-__all__ = ["CANDIDATES", "COMFORTABLE_M", "DECLARED_BELIEVABLE_M", "UNDECLARED_FLOOR_M", "UNIT_WORDS",
-           "ExpectedSize", "UnitSuggestion", "expected_from_estimate", "expected_from_words",
-           "length_in", "length_words", "proposed_unit", "suggest"]
+# ------------------------------------------------------------------ what the shape says ----
+# A file with no unit and no name still has a SHAPE and a FLOW. A closed body in an external
+# flow, sitting on the ground and two to five times as long as it is wide, is a car or something
+# like one; a thin flat body out in the free stream is a wing or an aircraft; a passage the
+# fluid flows through is a pipe, a duct or a vessel. Each has a believable size, and the unit is
+# the reading that makes the part that size. The DrivAer car (4.7 units long) and the BlendedNet
+# blended wing (1.0 unit) were meshed as a 4.7 mm car and a 1 mm aircraft because nothing asked
+# what a part of that shape is usually like.
+
+#: A body in an external flow that the shape reads as nothing more particular.
+EXTERNAL_BODY = ExpectedSize("a body in an external flow", 0.005, 5000.0)
+#: A passage the fluid flows through: a microfluidic chip (a few mm) up to plant piping.
+INTERNAL_PASSAGE = ExpectedSize("a flow passage (pipe, duct or vessel)", 0.01, 100.0)
+#: A closed body on the ground, longer than it is wide and not taller than wide: a car, a van, a
+#: truck, an Ahmed or Windsor body - from a 1:10 model to an articulated lorry.
+GROUND_VEHICLE = ExpectedSize("a car-like body on the ground", 0.1, 30.0, typical_m=4.5)
+#: A thin, flat body out in the free stream: a wing, a blended wing, a small aircraft.
+FLAT_LIFTING = ExpectedSize("a thin flat body like a wing or aircraft", 0.03, 100.0)
+
+#: How the part's proportions are read: car-like is 1.5-6 times as long as wide, at most 1.6
+#: times as tall as wide; flat is no thicker than 0.35 of its length, with a middle side at least
+#: 0.2 of it (so a slender rod is not "flat").
+CAR_LENGTH_TO_WIDTH = (1.5, 6.0)
+CAR_HEIGHT_TO_WIDTH_MAX = 1.6
+FLAT_THICKNESS_MAX = 0.35
+FLAT_MIDDLE_MIN = 0.2
+
+
+def _up_index(up_axis: str | None) -> int:
+    a = str(up_axis or "+z").strip().lower()
+    return "xyz".index(a[-1]) if a and a[-1] in "xyz" else 2
+
+
+def shape_kind(flow: str, size, *, grounded: bool = False, up_axis: str | None = None) -> ExpectedSize | None:
+    """What the measured shape and the flow say the part is, with no name for it: a car-like body
+    on the ground, a thin flat body in the free stream, a flow passage, or just a body in an
+    external flow. `size` is the part's three sides in any one unit (only their ratios are read).
+    None when the flow is not known."""
+    try:
+        sides = [abs(float(v)) for v in size]
+    except (TypeError, ValueError):
+        return None
+    if len(sides) != 3 or max(sides) <= 0 or not all(math.isfinite(v) for v in sides):
+        return None
+    flow = str(flow or "").lower()
+    if flow == "internal":
+        return INTERNAL_PASSAGE
+    if flow != "external":
+        return None
+    up = _up_index(up_axis)
+    height = sides[up]
+    flat = sorted((sides[i] for i in range(3) if i != up), reverse=True)
+    length, width = flat[0], flat[1]
+    if grounded and width > 0 and length >= height:
+        ratio = length / width
+        if CAR_LENGTH_TO_WIDTH[0] <= ratio <= CAR_LENGTH_TO_WIDTH[1] and height <= CAR_HEIGHT_TO_WIDTH_MAX * width:
+            return GROUND_VEHICLE
+    a, b, c = sorted(sides, reverse=True)
+    if not grounded and c <= FLAT_THICKNESS_MAX * a and b >= FLAT_MIDDLE_MIN * a:
+        return FLAT_LIFTING
+    return EXTERNAL_BODY
+
+
+#: The unit a file format states by its own specification, when the format has one. glTF 2.0:
+#: "the units for all linear distances are meters" - a strong first reading, still only a reading
+#: (an artist's model is often drawn at any size), so the shape can overrule it.
+FORMAT_UNIT = {"glb": LengthUnit.metre, "gltf": LengthUnit.metre}
+
+CONFIDENCE = ("low", "medium", "high")
+_PREFERENCE = (LengthUnit.metre, LengthUnit.millimetre, LengthUnit.centimetre, LengthUnit.inch)
+_PASSAGE_PREFERENCE = (LengthUnit.millimetre, LengthUnit.centimetre, LengthUnit.metre, LengthUnit.inch)
+
+
+@dataclass(frozen=True)
+class UnitInference:
+    """The unit a file that states none most likely is in, how sure that is, and the other reading
+    worth naming beside it - what the stage and the unit question propose. Never applied on its
+    own: the user confirms it, or names another."""
+
+    unit: LengthUnit
+    confidence: str                     # "high" | "medium" | "low"
+    longest_m: float                    # the part's longest side under `unit`
+    what: str                           # what the part reads as: "a car-like body on the ground"
+    why: str
+    alternative: LengthUnit | None = None
+    alternative_longest_m: float | None = None
+
+    @property
+    def words(self) -> str:
+        """One plain sentence: "This reads as a car-like body on the ground, 4.7 m long - metres?"."""
+        said = f"This reads as {self.what}, {length_words(self.longest_m)} long - {UNIT_WORDS[self.unit]}?"
+        if self.alternative is not None and self.alternative_longest_m is not None:
+            said += (f" (In {UNIT_WORDS[self.alternative]} it would be "
+                     f"{length_in(self.alternative_longest_m, self.alternative)} long.)")
+        return said
+
+    def as_dict(self) -> dict:
+        return {"unit": self.unit.value, "confidence": self.confidence, "longest_m": self.longest_m,
+                "what": self.what, "why": self.why,
+                "alternative": self.alternative.value if self.alternative else None,
+                "alternative_longest_m": self.alternative_longest_m, "words": self.words}
+
+
+def _log_gap(metres: float, target: float) -> float:
+    return abs(math.log10(metres / target))
+
+
+def infer_unit(longest_file_units: float, *, expected: ExpectedSize | None = None,
+               shape: ExpectedSize | None = None, format_unit: LengthUnit | None = None) -> UnitInference | None:
+    """The unit a file that declares none is most likely in, from what the part is.
+
+    What the part is comes, best first, from `expected` (the user's words or the naming model's
+    estimate), else from `shape` (shape_kind: the measured proportions and the flow). The first
+    reading is the format's own unit when it has one (glTF), else millimetres - what nearly every
+    CAD file is drawn in. It stands while the part is believable in it; otherwise the reading
+    that makes the part believable for what it is - nearest its usual size - is proposed instead.
+
+    Confidence: high when one reading alone fits (or one fits a decade closer to the usual size
+    than any other); medium when several fit; low when nothing says what the part is, or no
+    reading fits. None only for a size that is not a size."""
+    try:
+        longest = float(longest_file_units)
+    except (TypeError, ValueError):
+        return None
+    if not (longest > 0 and math.isfinite(longest)):
+        return None
+    kind = expected or shape
+    # a body or a passage the shape reads as nothing more particular spans four to six decades:
+    # it rules out the absurd, never makes a reading sure
+    known = kind is not None and kind not in (EXTERNAL_BODY, INTERNAL_PASSAGE)
+    kind = kind or ExpectedSize("a part", COMFORTABLE_M[0], COMFORTABLE_M[1])
+    # the format's own unit leads only when the part is recognised: a glTF copy of a CAD part is
+    # often still in the CAD's millimetres (a 1,054-unit Windsor body is not a 1 km body)
+    first = format_unit if (format_unit is not None and known) else LengthUnit.millimetre
+    lengths = {u: longest * scale_to_metres(u) for u in CANDIDATES}
+    fits = [u for u in CANDIDATES if kind.holds(lengths[u])]
+
+    def ranked(units):
+        if kind.typical_m:
+            return sorted(units, key=lambda u: _log_gap(lengths[u], kind.typical_m))
+        # no usual size to go by: metres and millimetres first (the commonest slip), then the
+        # other metric unit before inches. A PASSAGE too small in millimetres reads in
+        # centimetres next: small flow devices (vessels, chips) are drawn in cm - the VMR
+        # arteries, 1.6-5.5 units long, all are - far more often than a duct under ten units
+        # is drawn in metres
+        order = _PASSAGE_PREFERENCE if kind is INTERNAL_PASSAGE else _PREFERENCE
+        return sorted(units, key=order.index)
+
+    if not fits:
+        # nothing makes it believable as what it reads as: the size alone decides, and says so
+        unit = proposed_unit(longest)
+        alt = first if unit is not first else None
+        return UnitInference(unit, "low", lengths[unit], kind.what,
+                             f"no unit makes it a believable size for {kind.what}",
+                             alt, lengths[alt] if alt else None)
+    if first in fits:
+        others = ranked([u for u in fits if u is not first])
+        alt = others[0] if others else None
+        if not others:
+            conf = "high" if known else "medium"
+        else:
+            conf = "medium" if known else "low"
+        why = (f"{length_in(lengths[first], first)} is a believable size for {kind.what}"
+               + (f"; so is {length_in(lengths[alt], alt)}" if alt else ""))
+        return UnitInference(first, conf, lengths[first], kind.what, why,
+                             alt, lengths[alt] if alt else None)
+    best = ranked(fits)
+    if first is not LengthUnit.millimetre and LengthUnit.millimetre in best:
+        # the format's unit does not fit: the CAD convention is the next reading, before any
+        # other unit that happens to land nearer the usual size
+        best.remove(LengthUnit.millimetre)
+        best.insert(0, LengthUnit.millimetre)
+    unit = best[0]
+    if len(best) == 1:
+        conf = "high" if known else "medium"
+    elif kind.typical_m and (_log_gap(lengths[best[1]], kind.typical_m)
+                             - _log_gap(lengths[unit], kind.typical_m)) >= 1.0:
+        conf = "high" if known else "medium"
+    else:
+        conf = "medium" if known else "low"
+    small = lengths[first] < kind.lo_m
+    why = (f"{length_in(lengths[first], first)} is too {'small' if small else 'large'} for {kind.what}; "
+           f"{length_in(lengths[unit], unit)} is believable")
+    # the other reading named beside it: on a sure reading, the first one and why it was set
+    # aside ("in millimetres it would be 4.7 mm"); on an unsure one, the next believable reading
+    alt = best[1] if (conf == "low" and len(best) > 1) else first
+    return UnitInference(unit, conf, lengths[unit], kind.what, why, alt, lengths[alt])
+
+
+# ------------------------------------------------------------------ the delivered mesh ------
+@dataclass(frozen=True)
+class ScaleConcern:
+    """A delivered mesh whose physical size is not believable for what it is meant to be: a car
+    4.7 mm long. Said beside the mesh - the unit is the likely cause, and only the user can say."""
+
+    longest_m: float
+    what: str
+    too: str                            # "small" | "large"
+    other_unit: LengthUnit | None = None
+    other_longest_m: float | None = None
+
+    @property
+    def words(self) -> str:
+        said = (f"This mesh is {length_words(self.longest_m)} long, which is far too {self.too} for "
+                f"{self.what}. Check the unit of the file")
+        if self.other_unit is not None and self.other_longest_m is not None:
+            said += (f": in {UNIT_WORDS[self.other_unit]} it would be "
+                     f"{length_words(self.other_longest_m)} long")
+        return said + "."
+
+    def as_dict(self) -> dict:
+        return {"longest_m": self.longest_m, "what": self.what, "too": self.too,
+                "other_unit": self.other_unit.value if self.other_unit else None,
+                "other_longest_m": self.other_longest_m, "words": self.words}
+
+
+#: How far outside the believable span a delivered mesh must be before it is told: a factor of
+#: three either way, so a large model or a small one is never doubted for being unusual.
+SCALE_MARGIN = 3.0
+
+
+def scale_concern(longest_m: float, *, kind: ExpectedSize | None,
+                  unit_in_effect: LengthUnit | None = None) -> ScaleConcern | None:
+    """The concern a delivered mesh carries when it is not a believable size for `kind` (from the
+    request's words, else the shape and the flow), or None. `unit_in_effect`, when known, names
+    the other reading that would make it believable."""
+    try:
+        L = float(longest_m)
+    except (TypeError, ValueError):
+        return None
+    if kind is None or not (L > 0 and math.isfinite(L)):
+        return None
+    if kind.lo_m / SCALE_MARGIN <= L <= kind.hi_m * SCALE_MARGIN:
+        return None
+    too = "small" if L < kind.lo_m else "large"
+    other = other_m = None
+    if unit_in_effect is not None:
+        file_units = L / scale_to_metres(unit_in_effect)
+        fits = [u for u in CANDIDATES if u is not unit_in_effect
+                and kind.holds(file_units * scale_to_metres(u))]
+        typical = kind.typical_m
+        if fits:
+            other = (min(fits, key=lambda u: _log_gap(file_units * scale_to_metres(u), typical))
+                     if typical else fits[0])
+            other_m = file_units * scale_to_metres(other)
+    return ScaleConcern(L, kind.what, too, other, other_m)
+
+
+__all__ = ["CANDIDATES", "COMFORTABLE_M", "CONFIDENCE", "DECLARED_BELIEVABLE_M", "EXTERNAL_BODY",
+           "FLAT_LIFTING", "FORMAT_UNIT", "GROUND_VEHICLE", "INTERNAL_PASSAGE", "SCALE_MARGIN",
+           "UNDECLARED_FLOOR_M", "UNIT_WORDS", "ExpectedSize", "ScaleConcern", "UnitInference",
+           "UnitSuggestion", "expected_from_estimate", "expected_from_words", "infer_unit",
+           "length_in", "length_words", "proposed_unit", "scale_concern", "shape_kind", "suggest"]

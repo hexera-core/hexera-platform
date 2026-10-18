@@ -47,10 +47,20 @@ def test_gmsh_cfd_from_fluid_domain_passes_the_gate():
     assert e == [], e   # fully valid: gmsh meshes the supplied fluid domain for CFD
 
 
-def test_gmsh_cfd_from_solid_body_is_rejected_no_fluid_prep():
+def test_gmsh_external_cfd_from_a_solid_body_builds_the_fluid_around_it():
+    # gmsh cuts the body out of a far-field box itself (engines/gmsh/surface_volume.py)
     e = _errs(mesh_engine="gmsh", purpose="external_cfd", input_kind="solid-body",
               engine_params={"element_order": "2"},
               patches=[{"name": "body", "type": "wall"}, {"name": "ff", "type": "farfield"}])
+    assert e == [], e
+
+
+def test_gmsh_internal_cfd_from_solid_body_is_rejected_no_fluid_prep():
+    e = _errs(mesh_engine="gmsh", purpose="internal_cfd", input_kind="solid-body",
+              engine_params={"element_order": "2"},
+              patches=[{"name": "wall", "type": "wall"},
+                       {"name": "in", "type": "inlet", "diameter_mm": 40},
+                       {"name": "out", "type": "outlet", "diameter_mm": 40}])
     assert any("from a 'solid-body' geometry" in x for x in e), e
     assert any("fluid-domain" in x for x in e)   # tells the user what input would work
 

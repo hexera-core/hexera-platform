@@ -383,6 +383,38 @@ for secret_name in ${WORKER_SECRET_NAMES[@]+"${WORKER_SECRET_NAMES[@]}"}; do
   fi
 done
 
+# 2b) THE MESH EXECUTOR'S CALLER. The worker hands every mesh to the environment's Cloud Run job:
+#    it uploads the workspace to the exchange bucket and starts the job with an override naming it.
+#    apply-iam.sh grants that caller only when MESH_INVOKER is set, and no deploy sets it, so a
+#    personal environment's fleet - the project's default compute account - could start nothing:
+#    dev-areen job c337ad32 failed in 6 s, "the service that runs the mesher failed to take the
+#    job", with no execution created (2026-10-11). Shared dev's bindings had been made by hand.
+#    Scoped to this environment's job and bucket; a failure is reported with the command, since no
+#    worker would notice it until its first mesh.
+if [ -n "${CLOUDRUN_MESH_JOB:-}" ] && [ -n "${GCP_MESH_BUCKET:-}" ]; then
+  if gc run jobs add-iam-policy-binding "${CLOUDRUN_MESH_JOB}" --region "${GCP_REGION}" \
+       --member "serviceAccount:${WORKER_SA_EMAIL}" --role roles/run.jobsExecutorWithOverrides >/dev/null; then
+    log "job/${CLOUDRUN_MESH_JOB} += roles/run.jobsExecutorWithOverrides -> ${WORKER_SA_EMAIL}"
+  else
+    warn "could not let ${WORKER_SA_EMAIL} start ${CLOUDRUN_MESH_JOB}. Every mesh this fleet runs
+       fails at dispatch until it can; this is the command:
+         gcloud run jobs add-iam-policy-binding ${CLOUDRUN_MESH_JOB} --project ${GCP_PROJECT_ID} \\
+           --region ${GCP_REGION} --member serviceAccount:${WORKER_SA_EMAIL} \\
+           --role roles/run.jobsExecutorWithOverrides"
+  fi
+  if gc storage buckets add-iam-policy-binding "gs://${GCP_MESH_BUCKET}" \
+       --member "serviceAccount:${WORKER_SA_EMAIL}" --role roles/storage.objectUser >/dev/null; then
+    log "gs://${GCP_MESH_BUCKET} += roles/storage.objectUser -> ${WORKER_SA_EMAIL}"
+  else
+    warn "could not let ${WORKER_SA_EMAIL} use gs://${GCP_MESH_BUCKET}, where every mesh's workspace
+       is exchanged; this is the command:
+         gcloud storage buckets add-iam-policy-binding gs://${GCP_MESH_BUCKET} --project ${GCP_PROJECT_ID} \\
+           --member serviceAccount:${WORKER_SA_EMAIL} --role roles/storage.objectUser"
+  fi
+else
+  warn "CLOUDRUN_MESH_JOB or GCP_MESH_BUCKET is unset - no mesh executor to let the fleet call"
+fi
+
 # 3) the metadata the instance reads. Names in the clear, credentials never - the values were
 #    checked above, before anything was created.
 WORKER_METADATA=(
@@ -393,6 +425,23 @@ WORKER_METADATA=(
   "redis-key-prefix=${REDIS_KEY_PREFIX:-}"
   "database-url=${WORKER_DATABASE_URL}"
   "env-uri=${WORKER_ENV_URI}"
+  # THE OBJECT STORE AND THE DEPLOYMENT'S OWN NAMES, from the same variables create-api-service.sh
+  # gives the API. The env object above is published once, from .env.example, the first time a
+  # personal environment's fleet is created and never again - so without these a dev-<slug> worker
+  # dialled localhost:9000: it took each geometry check off the queue, could not fetch the upload,
+  # could not store the failure either, and the check stayed "pending" until the API gave up
+  # (dev-areen, 2026-10-11). startup.sh appends each non-empty one to the worker's env, exactly as it
+  # does the database and the broker. The ACCESS KEY ID is the public half of the HMAC pair, a plain
+  # value on the API service too; the secret half stays a Secret Manager NAME (minio-secret-key-secret).
+  "deployment-id=${DEPLOYMENT_ID:-}"
+  "minio-endpoint=${MINIO_ENDPOINT:-}"
+  "minio-public-endpoint=${MINIO_PUBLIC_ENDPOINT:-${MINIO_ENDPOINT:-}}"
+  "minio-access-key=${MINIO_ACCESS_KEY:-}"
+  "minio-bucket=${MINIO_BUCKET:-}"
+  "minio-region=${MINIO_REGION:-}"
+  "minio-secure=${MINIO_SECURE:-${MINIO_ENDPOINT:+true}}"
+  "gcp-mesh-bucket=${GCP_MESH_BUCKET:-}"
+  "cloudrun-job=${CLOUDRUN_MESH_JOB:-}"
 )
 WORKER_METADATA+=(${WORKER_SECRET_METADATA[@]+"${WORKER_SECRET_METADATA[@]}"})
 

@@ -23,14 +23,21 @@ class CadRegions:
     names: tuple[str, ...] = ()
     #: How the structure was found: "assembly", "roots", "stl-solids", or "" when there is none.
     source: str = ""
+    #: The upload's format (contracts/intake_formats key: "step", "stl", "ecxml", ...), "" when
+    #: unknown. An engine that reads one format itself (EngineSpec.reads_source_formats) is
+    #: admitted from this.
+    source_format: str = ""
 
     @property
     def count(self) -> int:
         return len(self.names)
 
     def as_facts(self) -> dict:
-        return {"region_names": list(self.names), "region_count": self.count,
-                "region_source": self.source}
+        facts: dict = {"region_names": list(self.names), "region_count": self.count,
+                       "region_source": self.source}
+        if self.source_format:
+            facts["source_format"] = self.source_format
+        return facts
 
 
 def _meaningful(name: str) -> bool:
@@ -113,14 +120,35 @@ def _cad_regions(path: Path) -> CadRegions:
 def regions_of(path) -> CadRegions:
     # Never fatal: a file this cannot describe is reported as carrying no regions, which is what
     # the caller would otherwise have assumed anyway.
+    from dataclasses import replace
+
+    from meshpipeline.contracts.intake_formats import format_for_suffix, is_cad
+
     p = Path(path)
+    fmt = format_for_suffix(p.suffix.lower())
+    key = fmt.key if fmt is not None else ""
     try:
-        if p.suffix.lower() == ".stl":
-            return _stl_regions(p)
-        if p.suffix.lower() in (".step", ".stp", ".igs", ".iges"):
-            return _cad_regions(p)
+        if p.suffix.lower() == ".stl":       # the canonical surface: its named solids
+            return replace(_stl_regions(p), source_format=key)
+        if is_cad(p):
+            if key == "ecxml":
+                return replace(_ecxml_regions(p), source_format=key)
+            return replace(_cad_regions(p), source_format=key)
     except Exception as exc:
         logger.info("cad regions: %s could not be described (%s)", p.name, exc)
+    return CadRegions(source_format=key)
+
+
+def _ecxml_regions(path: Path) -> CadRegions:
+    """An ECXML thermal model's regions - the air and each part - under the names its conversion
+    writes into the canonical STEP, read from the XML alone: the intake asks while a person waits,
+    and the solids themselves are built later, on a worker."""
+    from meshpipeline.cad.ingest.ecxml import read_ecxml
+    from meshpipeline.cad.ingest.ecxml_build import plan_region_names
+
+    names = plan_region_names(read_ecxml(path))
+    if len(set(names)) > 1:
+        return CadRegions(names=names, source="roots")
     return CadRegions()
 
 

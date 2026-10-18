@@ -160,10 +160,16 @@ class TerminalAssembly:
     api_failure: str = ""
     attempts: int = 0
     attempts_max: int = 0
+    #: the attempts that started a mesher (pipeline/engine_fallback.attempts_made), when the run
+    #: counted them - what the record says was used; None keeps `attempts`
+    attempts_made: int | None = None
     pipeline_timed_out: bool = False
     #: the fallback ladder's closing record (pipeline/engine_fallback.final_record) - carried into
     #: the final result verbatim; {} when the run never classified a failure
     engine_ladder: dict = field(default_factory=dict)
+    #: which upload a promoted repair replaced (pipeline/repair_promote.py) - carried into the
+    #: final result verbatim; {} on every run that meshed the customer's bytes as they arrived
+    repair_lineage: dict = field(default_factory=dict)
 
     #: node_failure_handler's blameless SYSTEM-failure note, honoured only when api_failure is set
     pre_composed_message: str = ""
@@ -210,6 +216,7 @@ def build_terminal_result(assembly: TerminalAssembly, *, delivered_types: list) 
         failed_gate=assembly.failed_gate,
         api_failure=assembly.api_failure,
         attempts=assembly.attempts, attempts_max=assembly.attempts_max,
+        attempts_made=assembly.attempts_made,
         required_ready=ready, delivered_types=delivered_types, optional_warnings=warnings,
         requirement_caveats=list(assembly.requirement_caveats or []),
         failure_cause=assembly.failure_cause,
@@ -221,6 +228,8 @@ def build_terminal_result(assembly: TerminalAssembly, *, delivered_types: list) 
         pipeline_timed_out=assembly.pipeline_timed_out)
 
     result = _fr.with_engine_ladder(result, assembly.engine_ladder)
+    # "We fixed your file and meshed the fix" is a different claim from "we meshed your file".
+    result = _fr.with_repair_lineage(result, assembly.repair_lineage)
     # The ONLY pre-composed message honoured is the blameless SYSTEM-failure note; any other stale
     # draft (e.g. a pre-delivery outcome_message) is discarded so one renderer owns the closing.
     # When the result itself names what failed (a review that did not conclude says which way it
