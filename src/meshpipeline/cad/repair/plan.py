@@ -115,26 +115,41 @@ class Planner(Protocol):
         ...
 
 
+class RimsUnknown(frozenset):
+    """The pairing question COULD NOT BE ANSWERED: every candidate rim, with `unknown` set.
+
+    FAIL CLOSED. An empty answer would read as "no bore here" and leave the fill free to seal a
+    through-hole the check never looked at. Holding every candidate rim instead means every caller
+    that already refuses a paired rim (the rules planner, a directive's fill, the review minting)
+    refuses these too, with no special case of its own; `unknown` lets the planner say why.
+    """
+
+    unknown = True
+
+
 def paired_rim_fingerprints(shape, defects) -> frozenset[str]:
     """Fingerprints of the open-boundary defects that are THE TWO ENDS OF A MISSING TUBE.
 
-    MOVED HERE OUT OF THE FILL EXECUTOR, and the move is the point. A drilled through-hole whose
-    bore wall is missing leaves two rims: planar, parallel, offset along their own normal. Each
-    looks exactly like a small fillable hole, and patching both SEALS the hole - handing back a
-    plate with no bolt hole, which is a ruined part rather than a repaired one. Demonstrated on a
-    100x100x10 plate with an 8 mm bore: two loops, both far inside the size cap.
+    MOVED HERE OUT OF THE FILL EXECUTOR, and the move is the point. A through-hole whose wall is
+    missing leaves two rims: planar, parallel, offset along their own normal. Each looks exactly
+    like a small fillable hole, and patching both SEALS the hole - handing back a plate with no
+    bolt hole, which is a ruined part rather than a repaired one. Demonstrated on a 100x100x10
+    plate with an 8 mm bore and with an 8 mm hex: two loops, both far inside the size cap.
 
     As a silent skip inside the fill, nothing downstream could report it. As a PLANNING decision,
     refusing to propose it is recorded and reaches the report an operator reads.
 
     An empty set is the common and correct answer: an ordinary single opening has nothing to pair
-    with, and the guard must not cost the case filling exists for. It never raises: when the
-    question cannot be answered (no kernel, no resolvable wire) it returns an empty set.
+    with, and the guard must not cost the case filling exists for. It never raises. When the
+    question cannot be answered - the kernel or the discriminator fails - it FAILS CLOSED: a
+    `RimsUnknown` holding every candidate rim, so no fill is proposed on a guess.
 
     THIS IS LOAD-BEARING. The targeted fill operation has no rim check of its own, so the planner's
     refusal is the only thing between the loop and a sealed through-hole. That is why the planner
     makes the refusal durable (see RulesPlanner.propose) rather than trusting this to be recomputed.
     """
+    candidates = [d.fingerprint for d in defects
+                  if d.code is DefectCode.open_shell and d.fingerprint]
     try:
         from meshpipeline.cad.repair.conservative import _paired_rims
         from meshpipeline.cad.repair.operations import free_wire_containing
@@ -154,11 +169,12 @@ def paired_rim_fingerprints(shape, defects) -> frozenset[str]:
 
         if len(loops) < 2:
             return frozenset()
-        paired = _paired_rims(loops)
+        paired = _paired_rims(loops, shape=shape)
         return frozenset(owners[i] for i in paired if i < len(owners))
     except Exception as exc:  # noqa: BLE001 - an unanswerable question must not take the planner down
-        logger.debug("plan: the rim discriminator did not run (%s)", exc)
-        return frozenset()
+        logger.warning("plan: the rim discriminator failed (%s: %s); refusing every fill this "
+                       "pass rather than guessing there is no through-hole", type(exc).__name__, exc)
+        return RimsUnknown(candidates)
 
 
 class RulesPlanner:
@@ -191,12 +207,21 @@ class RulesPlanner:
         # fillable small hole gets the legitimate hole declined too. One missed repair an operator
         # picks up, against a plate handed back with no bolt hole. Do not "optimise" this to
         # per-rim.
-        for rim in sorted(rims):
-            history.refuse(
-                rim, "paired_rim",
-                "this loop pairs with another on a parallel plane - a missing tube wall, "
-                "and patching both would seal a through-hole")
-            history.refuse_filling("a missing tube wall was detected: " + rim)
+        if getattr(rims, "unknown", False):
+            # FAIL CLOSED: the pairing check could not run, so no loop is known not to be a rim.
+            for rim in sorted(rims):
+                history.refuse(
+                    rim, "paired_rim",
+                    "the through-hole check could not run on this shape, so this loop may be one "
+                    "end of a missing tube wall and is not filled")
+            history.refuse_filling("the through-hole (paired rim) check could not run")
+        else:
+            for rim in sorted(rims):
+                history.refuse(
+                    rim, "paired_rim",
+                    "this loop pairs with another on a parallel plane - a missing tube wall, "
+                    "and patching both would seal a through-hole")
+                history.refuse_filling("a missing tube wall was detected: " + rim)
 
         ordered = sorted(
             defects,

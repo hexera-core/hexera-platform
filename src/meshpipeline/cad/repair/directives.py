@@ -117,7 +117,8 @@ class DirectedPlanner:
             # Read-only: a skipped directive must not touch the sticky history (refuse_filling,
             # paired_rim entries), or it would block the rules planner's later fills.
             rims = paired_rim_fingerprints(shape, defects) if shape is not None else frozenset()
-            if history.fill_refused_because or any(r.fingerprint in rims for r in refs):
+            if (history.fill_refused_because or getattr(rims, "unknown", False)
+                    or any(r.fingerprint in rims for r in refs)):
                 self._skip(directive, FILL_REFUSED)
                 return None
 

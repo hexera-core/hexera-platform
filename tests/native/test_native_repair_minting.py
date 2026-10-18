@@ -42,8 +42,8 @@ def test_the_two_rims_of_a_real_missing_bore_wall_share_one_geometric_pairing_ke
         wires.append(found)
         return found
 
-    def _pairs(loops):
-        found = real_paired(loops)
+    def _pairs(loops, shape=None):
+        found = real_paired(loops, shape=shape)
         paired.append((len(loops), found))
         return found
 

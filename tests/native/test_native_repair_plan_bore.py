@@ -90,21 +90,34 @@ def test_loose_box_faces_are_not_a_bore_pair(tmp_path):
     assert paired_rim_fingerprints(shape, defects) == frozenset()
 
 
-def test_square_loops_stacked_on_one_axis_are_not_a_bore_pair():
-    # Co-axial, parallel, the right gap - and still not a bore, because neither loop is round.
+def _polygon(sides, radius, z, x=0.0):
+    import math
+
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakePolygon
     from OCP.gp import gp_Pnt
 
-    from meshpipeline.cad.repair.conservative import _paired_rims
+    polygon = BRepBuilderAPI_MakePolygon()
+    for k in range(sides):
+        a = 2 * math.pi * k / sides
+        polygon.Add(gp_Pnt(x + radius * math.cos(a), radius * math.sin(a), z))
+    polygon.Close()
+    return polygon.Wire()
 
-    def square(z):
-        polygon = BRepBuilderAPI_MakePolygon()
-        for x, y in ((0, 0), (8, 0), (8, 8), (0, 8)):
-            polygon.Add(gp_Pnt(x, y, z))
-        polygon.Close()
-        return polygon.Wire()
 
-    assert _paired_rims([square(0.0), square(10.0)]) == set()
+def _slot(z, length=10.0, radius=3.0):
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire
+    from OCP.GC import GC_MakeArcOfCircle
+    from OCP.gp import gp_Pnt
+
+    h = length / 2
+    wire = BRepBuilderAPI_MakeWire()
+    wire.Add(BRepBuilderAPI_MakeEdge(gp_Pnt(-h, -radius, z), gp_Pnt(h, -radius, z)).Edge())
+    wire.Add(BRepBuilderAPI_MakeEdge(GC_MakeArcOfCircle(
+        gp_Pnt(h, -radius, z), gp_Pnt(h + radius, 0, z), gp_Pnt(h, radius, z)).Value()).Edge())
+    wire.Add(BRepBuilderAPI_MakeEdge(gp_Pnt(h, radius, z), gp_Pnt(-h, radius, z)).Edge())
+    wire.Add(BRepBuilderAPI_MakeEdge(GC_MakeArcOfCircle(
+        gp_Pnt(-h, radius, z), gp_Pnt(-h - radius, 0, z), gp_Pnt(-h, -radius, z)).Value()).Edge())
+    return wire.Wire()
 
 
 def _circle(radius, z, x=0.0):
@@ -115,7 +128,26 @@ def _circle(radius, z, x=0.0):
     return BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(circle).Edge()).Wire()
 
 
-def test_two_round_rims_on_one_axis_pair_and_offset_or_unequal_ones_do_not():
+@pytest.mark.parametrize("case", [
+    "hex", "obround_slot", "square_pocket", "deep_1mm_in_25mm", "spot_face_3x", "16_gon"])
+def test_a_through_hole_of_any_cross_section_pairs(case):
+    # EVERY ONE OF THESE WAS SEALED. A roundness test, a 2.5x size-ratio cap and a 40-radius depth
+    # cap each dropped a genuine through-hole from the check, and the fill patched both ends. The
+    # cross-section, the flare and the depth of a passage do not change what sealing it does.
+    from meshpipeline.cad.repair.conservative import _paired_rims
+
+    loops = {
+        "hex": [_polygon(6, 5.0, 0.0), _polygon(6, 5.0, 10.0)],
+        "obround_slot": [_slot(0.0), _slot(10.0)],
+        "square_pocket": [_polygon(4, 5.0, 0.0), _polygon(4, 5.0, 10.0)],
+        "deep_1mm_in_25mm": [_circle(0.5, 0.0), _circle(0.5, 25.0)],
+        "spot_face_3x": [_circle(3.0, 0.0), _circle(9.0, 10.0)],
+        "16_gon": [_polygon(16, 5.0, 0.0), _polygon(16, 5.0, 10.0)],
+    }[case]
+    assert _paired_rims(loops) == {0, 1}
+
+
+def test_two_round_rims_on_one_axis_pair_and_offset_or_coplanar_ones_do_not():
     from meshpipeline.cad.repair.conservative import _paired_rims
 
     assert _paired_rims([_circle(8.0, 0.0), _circle(8.0, 10.0)]) == {0, 1}
@@ -125,7 +157,29 @@ def test_two_round_rims_on_one_axis_pair_and_offset_or_unequal_ones_do_not():
     assert _paired_rims([_circle(4.0, 0.0), _circle(8.0, 10.0)]) == {0, 1}
     # two holes in two parallel faces, not on one axis
     assert _paired_rims([_circle(8.0, 0.0), _circle(8.0, 10.0, x=40.0)]) == set()
+    assert _paired_rims([_polygon(6, 5.0, 0.0), _polygon(6, 5.0, 10.0, x=40.0)]) == set()
     # coplanar: two holes in one face
     assert _paired_rims([_circle(8.0, 0.0), _circle(8.0, 0.0, x=40.0)]) == set()
-    # far apart along the axis relative to their size: not one drilled passage
-    assert _paired_rims([_circle(1.0, 0.0), _circle(1.0, 500.0)]) == set()
+
+
+def test_the_hex_plate_reproduction_refuses_the_fill_as_a_paired_rim(tmp_path):
+    # THE REVIEWER'S END-TO-END REPRODUCTION. A 100x100x10 plate with an 8 mm hex through-hole and
+    # its six walls missing: before the inner-wire test the planner proposed fill_planar_hole, the
+    # session kept it, and the hole was gone. Both rims are inner wires of the plate's faces.
+    from meshpipeline.cad.repair.localize import localize_scan
+    from meshpipeline.cad.repair.plan import RulesPlanner, RunHistory, paired_rim_fingerprints
+
+    shape = _read(write_missing_bore_wall_step(tmp_path / "hex.step", profile="hex"))
+    defects, _ = localize_scan(shape)
+
+    rims = paired_rim_fingerprints(shape, defects)
+    assert len(rims) == 2, f"the discriminator found {len(rims)} rims of the hex, expected 2"
+
+    planner, history = RulesPlanner(), RunHistory()
+    for _ in range(10):
+        candidate = planner.propose(defects, history, shape=shape)
+        if candidate is None:
+            break
+        assert candidate.op.name != "fill_planar_hole", "the hex through-hole would be sealed"
+        history.mark_ineffective(candidate.defect_fingerprint, candidate.op.name)
+    assert {r["defect"] for r in history.refusals if r["reason"] == "paired_rim"} == set(rims)

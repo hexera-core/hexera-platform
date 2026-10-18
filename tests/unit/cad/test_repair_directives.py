@@ -261,6 +261,24 @@ def test_one_hole_of_a_group_fill_still_meets_the_rim_guard(monkeypatch):
     assert [u["reason"] for u in grouped.unplayable] == ["fill_refused"]
 
 
+def test_an_automatic_fill_is_refused_when_the_rim_check_could_not_run(monkeypatch):
+    """FAIL CLOSED. An unanswered pairing question is not "this rim has no partner", so a model's
+    or a replay's fill is refused rather than played on a guess - even when the unknown answer
+    names no rim at all. (An engineer's single-rim fill is a person's look at that hole and keeps
+    its override.)"""
+    import meshpipeline.cad.repair.directives as directives
+    from meshpipeline.cad.repair.plan import RimsUnknown, RunHistory
+    monkeypatch.setattr(directives, "paired_rim_fingerprints",
+                        lambda shape, defects: RimsUnknown())
+
+    class _Nothing:
+        def propose(self, *a, **k): return None
+    for source in ("llm-planner", "replay"):
+        planner = DirectedPlanner([_fill_on(["rim:a"], source=source)], _Nothing())
+        assert planner.propose((_rim("rim:a", 1),), RunHistory(), shape="shape") is None
+        assert [u["reason"] for u in planner.unplayable] == ["fill_refused"]
+
+
 class _Captured(Exception):
     pass
 

@@ -229,7 +229,24 @@ def test_the_rim_question_never_raises_for_a_shape_it_cannot_read(monkeypatch):
     # The real lookup swallows most failures itself; what is pinned here is that one escaping it
     # (as an ImportError does on a kernel-less host) cannot take the planner down.
     monkeypatch.setattr("meshpipeline.cad.repair.operations.free_wire_containing", _no_kernel)
-    assert paired_rim_fingerprints(object(), defects) == frozenset()
+    rims = paired_rim_fingerprints(object(), defects)
+    # FAIL CLOSED: an unanswered question is not "no bore here". Every candidate rim is held.
+    assert rims == frozenset({"edge:1", "edge:2"})
+    assert getattr(rims, "unknown", False) is True
+
+
+def test_a_rim_check_that_could_not_run_refuses_every_fill(monkeypatch):
+    # The planner must not fill on a guess: the unknown answer bars filling for the run, and each
+    # loop is reported as a possible rim rather than as a demonstrated pair.
+    planner = RulesPlanner(ops=(_FILL,))
+    history = RunHistory()
+    monkeypatch.setattr(plan_module, "paired_rim_fingerprints",
+                        lambda shape, defects: plan_module.RimsUnknown({"edge:a"}))
+
+    assert planner.propose((_rim("edge:a", 1),), history, shape=object()) is None
+    assert "could not run" in history.fill_refused_because
+    refusal = next(r for r in history.refusals if r["reason"] == "paired_rim")
+    assert refusal["defect"] == "edge:a" and "could not run" in refusal["detail"]
 
 
 def test_two_different_unlocated_defects_are_two_refusals():

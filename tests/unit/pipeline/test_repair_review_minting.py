@@ -84,7 +84,7 @@ def test_two_separate_bores_get_two_distinct_pairing_keys(cameras, monkeypatch):
     monkeypatch.setattr("meshpipeline.cad.repair.operations.free_wire_containing",
                         lambda shape, index: rims[index - 1]["fingerprint"])
     monkeypatch.setattr("meshpipeline.cad.repair.conservative._paired_rims",
-                        lambda loops: {0, 1} if group[loops[0]] == group[loops[1]] else set())
+                        lambda loops, shape=None: {0, 1} if group[loops[0]] == group[loops[1]] else set())
     items, _ = _mint(rims, {"survivors": rims, "operations_kept": 1,
                             "refusals": [_refusal(r["fingerprint"]) for r in rims]},
                      shape=object())

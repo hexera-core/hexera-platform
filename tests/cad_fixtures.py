@@ -173,7 +173,7 @@ def write_open_shell_step(path: Path, unit: str = "MM", side: float = SIDE) -> P
     return path
 
 
-def write_missing_bore_wall_step(path: Path, unit: str = "MM") -> Path:
+def write_missing_bore_wall_step(path: Path, unit: str = "MM", profile: str = "round") -> Path:
     """A drilled plate whose BORE WALL is missing: two rims, and a trap for a hole-filler.
 
     THE PART-RUINING CASE, as a fixture. A 100x100x10 plate with an 8 mm through-hole, exported
@@ -183,6 +183,10 @@ def write_missing_bore_wall_step(path: Path, unit: str = "MM") -> Path:
 
     It exists so that the discriminator protecting against exactly that is tested on the real
     geometry rather than on a description of it.
+
+    `profile="hex"` cuts an 8 mm HEXAGONAL through-hole instead and drops its six flat walls: the
+    reviewer's reproduction of a fill sealing a non-round passage end to end, which a roundness
+    test let through. The cross-section of a through-hole does not change what sealing it does.
     """
     from OCP.BRepAdaptor import BRepAdaptor_Surface
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
@@ -197,15 +201,41 @@ def write_missing_bore_wall_step(path: Path, unit: str = "MM") -> Path:
     from OCP.TopoDS import TopoDS
 
     plate = BRepPrimAPI_MakeBox(100.0, 100.0, 10.0).Shape()
-    bore = BRepPrimAPI_MakeCylinder(
-        gp_Ax2(gp_Pnt(50, 50, -1), gp_Dir(0, 0, 1)), 8.0, 12.0).Shape()
+    if profile == "hex":
+        import math
+
+        from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+        from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+        from OCP.gp import gp_Vec
+
+        polygon = BRepBuilderAPI_MakePolygon()
+        for k in range(6):
+            a = 2 * math.pi * k / 6
+            polygon.Add(gp_Pnt(50 + 8 * math.cos(a), 50 + 8 * math.sin(a), -1))
+        polygon.Close()
+        bore = BRepPrimAPI_MakePrism(
+            BRepBuilderAPI_MakeFace(polygon.Wire()).Face(), gp_Vec(0, 0, 12)).Shape()
+    else:
+        bore = BRepPrimAPI_MakeCylinder(
+            gp_Ax2(gp_Pnt(50, 50, -1), gp_Dir(0, 0, 1)), 8.0, 12.0).Shape()
     drilled = BRepAlgoAPI_Cut(plate, bore).Shape()
+
+    def _is_bore_wall(face) -> bool:
+        if profile != "hex":
+            return BRepAdaptor_Surface(face).GetType() == GeomAbs_Cylinder
+        from OCP.BRepGProp import BRepGProp
+        from OCP.GProp import GProp_GProps
+
+        props = GProp_GProps()
+        BRepGProp.SurfaceProperties_s(face, props)
+        c = props.CentreOfMass()
+        return abs(c.X() - 50) < 20 and abs(c.Y() - 50) < 20 and 0 < c.Z() < 10
 
     keep = []
     explorer = TopExp_Explorer(drilled, TopAbs_FACE)
     while explorer.More():
         face = TopoDS.Face_s(explorer.Current())
-        if BRepAdaptor_Surface(face).GetType() != GeomAbs_Cylinder:
+        if not _is_bore_wall(face):
             keep.append(face)          # every face except the bore wall
         explorer.Next()
 

@@ -147,7 +147,7 @@ def _pairing_keys(shape, rims: list[EntityDefect]) -> dict[str, str]:
 
         for i, (fa, wa) in enumerate(wires):
             for fb, wb in wires[i + 1:]:
-                if _paired_rims([wa, wb]):
+                if _paired_rims([wa, wb], shape=shape):
                     parent[find(fa)] = find(fb)
         members: dict[str, list[str]] = {}
         for f, _ in wires:

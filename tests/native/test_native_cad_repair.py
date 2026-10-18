@@ -302,19 +302,21 @@ def test_the_span_cap_refuses_to_lid_a_missing_wall(tmp_path, monkeypatch):
     assert not out.exists()
 
 
-def test_a_missing_bore_wall_is_never_sealed_shut(tmp_path, monkeypatch):
-    """The part-ruining case, refused on the real geometry.
+@pytest.mark.parametrize("profile", ["round", "hex"])
+def test_a_missing_bore_wall_is_never_sealed_shut(tmp_path, monkeypatch, profile):
+    """The part-ruining case, refused on the real geometry - for a round bore AND a hex hole.
 
     Both rims are planar, congruent and far inside the size cap, so every other guard in this
     module would let them through. Patching them would hand the customer a plate with no bolt
-    hole - so the discriminator refuses, and says which loops and why.
+    hole - so the discriminator refuses, and says which loops and why. The hex case is the
+    reviewer's reproduction: a roundness test let its fill be kept and the hole was sealed.
     """
     from tests.cad_fixtures import write_missing_bore_wall_step
 
     monkeypatch.setattr(rcfg, "CAD_REPAIR_FILL_PLANAR_HOLES", True)
     monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_HOLE_SPAN_RATIO", 1.0)
 
-    source = write_missing_bore_wall_step(tmp_path / "bore.step")
+    source = write_missing_bore_wall_step(tmp_path / "bore.step", profile=profile)
     out = tmp_path / "bore-repaired.step"
     # nothing can be kept once both rims are refused, so the run is declined rather than delivered
     with pytest.raises(RepairRefused) as refused:
