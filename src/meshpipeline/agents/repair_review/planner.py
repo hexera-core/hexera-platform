@@ -25,7 +25,8 @@ PLANNER_SYSTEM = (
     f"{_wire.CATALOGUE_TEXT}\n"
     "reply with one JSON object and nothing else: "
     '{"proposals": [{"op": "<catalogue name>", "defect_fingerprint": "<fingerprint from the '
-    'defects>", "targets": ["<fingerprints, all of one kind>"], "confidence": <number from 0 '
+    'defects>", "defect_code": "<the code of the defect at that fingerprint it answers>", '
+    '"targets": ["<fingerprints, all of one kind>"], "confidence": <number from 0 '
     'to 1>, "rationale": "<one lowercase sentence, under 200 characters>"}]}. never invent an '
     "operation outside the catalogue; fill_planar_hole takes exactly one target; reply with an "
     'empty "proposals" list when nothing fits.')
@@ -63,15 +64,28 @@ def _confidence(value: object) -> float | None:
     return float(value) if math.isfinite(value) else None
 
 
-def _validate(proposal: object, code_of: dict[str, str]) -> tuple[dict | None, str]:
+def _validate(proposal: object, codes_of: dict[str, list[str]]) -> tuple[dict | None, str]:
+    """One proposal, checked alone. `codes_of` is every defect code the scan lists per fingerprint:
+    a fingerprint names an ENTITY, and one entity can carry several problems."""
     if not isinstance(proposal, dict):
         return None, "proposal is not an object"
     op = str(proposal.get("op") or "")
     if op not in _wire.CATALOGUE:
         return None, f"unknown operation {op!r}"
     fp = str(proposal.get("defect_fingerprint") or "")
-    if fp not in code_of:
+    if fp not in codes_of:
         return None, "defect fingerprint is not in the scan"
+    # WHICH OF THE ENTITY'S PROBLEMS. Named by the reply and checked against the scan; with no name
+    # the entity must carry exactly one, rather than silently taking whichever the scan listed last.
+    named = str(proposal.get("defect_code") or "")
+    if named:
+        if named not in codes_of[fp]:
+            return None, f"the defect fingerprint does not carry {named!r}"
+        code = named
+    elif len(codes_of[fp]) == 1:
+        code = codes_of[fp][0]
+    else:
+        return None, "this entity carries several defects; name the defect_code it answers"
     if "targets" in proposal:
         raw = proposal["targets"]
         if not isinstance(raw, list) or not raw:
@@ -79,18 +93,20 @@ def _validate(proposal: object, code_of: dict[str, str]) -> tuple[dict | None, s
         targets = list(dict.fromkeys(str(t) for t in raw))
     else:
         targets = [fp]
-    if any(t not in code_of for t in targets):
+    if any(t not in codes_of for t in targets):
         return None, "a target fingerprint is not in the scan"
-    if any(code_of[t] != code_of[fp] for t in targets):
+    if any(code not in codes_of[t] for t in targets):
         return None, "targets do not share the defect fingerprint's code"
     confidence = _confidence(proposal.get("confidence"))
     if confidence is None:
         return None, "confidence missing or not a number"
+    if not 0.0 <= confidence <= 1.0:
+        return None, "confidence must be between 0 and 1"
     if confidence < float(rcfg.CAD_REPAIR_LLM_PLANNER_MIN_CONFIDENCE):
         return None, f"confidence {confidence:g} is below the minimum"
     if op == "fill_planar_hole" and len(targets) != 1:
         return None, "fill_planar_hole takes exactly one target"
-    return {"op": op, "targets": targets, "defect_code": code_of[fp], "defect_fingerprint": fp,
+    return {"op": op, "targets": targets, "defect_code": code, "defect_fingerprint": fp,
             "source": SOURCE, "item_id": "", "planner_confidence": confidence}, ""
 
 
@@ -114,14 +130,17 @@ async def llm_plan(report: dict, *, story: dict, job_id: str = "") -> PlanResult
         if not (report or {}).get("entities"):
             return result
         user = _context(report or {}, story or {})
-        code_of = {str(e["fingerprint"]): str(e.get("code") or "")
-                   for e in (report or {}).get("entities") or ()
-                   if isinstance(e, dict) and e.get("fingerprint")}
+        codes_of: dict[str, list[str]] = {}
+        for e in (report or {}).get("entities") or ():
+            if isinstance(e, dict) and e.get("fingerprint"):
+                codes = codes_of.setdefault(str(e["fingerprint"]), [])
+                if str(e.get("code") or "") not in codes:
+                    codes.append(str(e.get("code") or ""))
         proposals = await _ask(user, job_id, result)
         if proposals == []:
             result.declines.append(_log_decline(job_id, "model declined", proposals))
         for proposal in proposals or []:
-            directive, reason = _validate(proposal, code_of)
+            directive, reason = _validate(proposal, codes_of)
             if directive is None:
                 result.declines.append(_log_decline(job_id, reason, proposal))
                 continue

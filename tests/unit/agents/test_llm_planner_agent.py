@@ -150,3 +150,44 @@ async def test_an_empty_list_is_one_logged_decline_and_no_entities_makes_no_call
     assert out.directives == [] and len(out.declines) == 1 and len(declines) == 1
     out = await llm_plan({"entities": []}, story={}, job_id="j")
     assert router.calls == 1 and out.called == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("conf", [80, 1.5, -0.1])
+async def test_a_confidence_outside_zero_to_one_declines(declines, conf):
+    """The planner asks for a number from 0 to 1; `80` passed the minimum check, ran live and went
+    into training records as a valid confidence."""
+    model_inference.set_model_router(_Router({"proposals": [_p(conf=conf)]}))
+    out = await llm_plan(_report(), story={}, job_id="j")
+    assert out.directives == []
+    assert any("between 0 and 1" in d["reason"] for d in out.declines)
+
+
+def _two_codes_on_one_edge() -> dict:
+    report = _report()
+    report["entities"].append(
+        {"code": "degenerate_edge", "fingerprint": "fa", "entity_type": "edge",
+         "entity_index": 1, "severity": "error", "message": "m", "measurements": {}})
+    return report
+
+
+@pytest.mark.asyncio
+async def test_a_proposal_names_which_of_an_entitys_problems_it_answers(declines):
+    """One entity can carry several codes under one fingerprint; the label used to be whichever
+    code the scan listed last. The reply names the code and the pair is checked."""
+    model_inference.set_model_router(_Router({"proposals": [
+        {**_p(), "defect_code": "small_edge"},
+        {**_p(), "defect_code": "degenerate_edge"},
+        {**_p(), "defect_code": "open_wire"}]}))
+    out = await llm_plan(_two_codes_on_one_edge(), story={}, job_id="j")
+    assert [d["defect_code"] for d in out.directives] == ["small_edge", "degenerate_edge"]
+    assert any("does not carry" in d["reason"] for d in out.declines)
+
+
+@pytest.mark.asyncio
+async def test_an_entity_with_several_problems_and_no_named_code_declines(declines):
+    model_inference.set_model_router(_Router({"proposals": [_p(), _p(fp="fb")]}))
+    out = await llm_plan(_two_codes_on_one_edge(), story={}, job_id="j")
+    # fb carries one code, so naming it is optional; fa carries two, so the reply must say which
+    assert [d["defect_fingerprint"] for d in out.directives] == ["fb"]
+    assert any("name the defect_code" in d["reason"] for d in out.declines)
