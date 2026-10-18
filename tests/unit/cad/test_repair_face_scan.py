@@ -42,6 +42,38 @@ def test_a_non_positive_budget_never_calls_the_analysis():
     assert _bounded(lambda: called.append(1), budget_s=0.0) is None and called == []
 
 
+@pytest.mark.parametrize("budget", [float("nan"), float("inf")])
+def test_a_non_finite_budget_is_silence_without_waiting_for_the_analysis(budget):
+    def slow():
+        time.sleep(2.0)
+        return [(1, 2)]
+    started = time.monotonic()
+    assert _bounded(slow, budget_s=budget) is None
+    assert time.monotonic() - started < 1.0
+
+
+def test_a_failed_fork_leaks_no_pipe(monkeypatch):
+    import os
+
+    opened = []
+    real_pipe = os.pipe
+
+    def pipe():
+        ends = real_pipe()
+        opened.extend(ends)
+        return ends
+
+    def no_fork():
+        raise BlockingIOError("EAGAIN")
+
+    monkeypatch.setattr(os, "pipe", pipe)
+    monkeypatch.setattr(os, "fork", no_fork)
+    assert _bounded(lambda: [(1, 2)], budget_s=1.0) is None
+    for fd in opened:
+        with pytest.raises(OSError):
+            os.fstat(fd)
+
+
 def test_pairs_close_into_components_and_each_face_lists_its_partners():
     assert _components([(1, 2), (2, 3), (5, 6)]) == {1: [2, 3], 2: [1, 3], 3: [1, 2], 5: [6], 6: [5]}
     assert _components([]) == {}

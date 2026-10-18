@@ -602,8 +602,21 @@ def _in_child(fn, args, budget_s: float):
         return None
 
     read_end, write_end = os.pipe()
-    pid = os.fork()
+    try:
+        pid = os.fork()
+    except BaseException:
+        # EAGAIN or ENOMEM: no child, so neither end has an owner. Closed here or they leak once
+        # per failed call.
+        os.close(read_end)
+        os.close(write_end)
+        raise
     if pid == 0:  # pragma: no cover - runs in the child, whose coverage nobody collects
+        # NO GARBAGE COLLECTION IN THE CHILD, first of all. A cyclic object inherited from the
+        # parent - a DB session, say - would have its `__del__` run here and write (a ROLLBACK)
+        # onto a socket the parent still owns.
+        import gc
+
+        gc.disable()
         # THE CHILD TOUCHES NOTHING BUT `fn` AND THE PIPE, and always leaves through `_exit`: it
         # holds a copy of the parent's every lock and handler (pytest's, Celery's, logging's), and
         # running any of them here is how a forked child deadlocks or double-flushes.
@@ -623,6 +636,7 @@ def _in_child(fn, args, budget_s: float):
     deadline = time.monotonic() + budget_s
     chunks: list[bytes] = []
     expired = False
+    finished = False
     try:
         while True:
             left = deadline - time.monotonic()
@@ -631,11 +645,15 @@ def _in_child(fn, args, budget_s: float):
                 break
             chunk = os.read(read_end, 1 << 16)
             if not chunk:
+                finished = True
                 break
             chunks.append(chunk)
     finally:
         os.close(read_end)
-        if expired:
+        # KILLED UNLESS IT FINISHED, not only on expiry: a NaN or infinite budget makes `select`
+        # raise, and a KeyboardInterrupt can land mid-wait - either way the reap below would
+        # otherwise wait out the whole analysis.
+        if not finished:
             try:
                 os.kill(pid, signal.SIGKILL)
             except ProcessLookupError:
