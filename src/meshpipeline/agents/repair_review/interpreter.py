@@ -59,22 +59,27 @@ def _honest(reason: object) -> str:
     return f"{text}; {_wire.CATALOGUE_LIMITS}"
 
 
-async def interpret(text: str, item: dict, group: list[dict], *, job_id: str) -> Interpretation:
+async def interpret(text: str, item: dict, group: list[dict], *, job_id: str,
+                    stopped_because: str = "") -> Interpretation:
     try:
-        return await _interpret(text, item, group, job_id)
+        return await _interpret(text, item, group, job_id, stopped_because)
     except Exception as exc:  # noqa: BLE001 - total
         logger.warning("repair review interpreter failed: %s", type(exc).__name__)
         return _refusal(_honest("i could not read that redirect"))
 
 
-async def _interpret(text: str, item: dict, group: list[dict], job_id: str) -> Interpretation:
+async def _interpret(text: str, item: dict, group: list[dict], job_id: str,
+                     stopped_because: str) -> Interpretation:
     if not _wire.configured():
         return _refusal(NO_MODEL)
     user = json.dumps({
-        "note": text, "defect_code": item.get("defect_code"),
+        "note": _wire.clip_text(text, 600), "defect_code": item.get("defect_code") or "",
         "entity": f"{item.get('entity_type')}#{item.get('entity_index')}",
-        "measurements": item.get("measurements") or {}, "message": item.get("message"),
-        "current_proposal": item.get("proposal"), "group_size": len(group)}, default=str)
+        "measurements": _wire.clip_measurements(item.get("measurements")),
+        "tried": _wire.tried_of([item]),
+        "message": _wire.clip_text(item.get("message")),
+        "current_proposal": item.get("proposal"), "group_size": len(group),
+        "story": _wire.story_of(group or [item], stopped_because)}, default=str)
     reply = await _wire.ask(INTERPRETER_SYSTEM, user, job_id=job_id,
                             timeout_s=float(rcfg.CAD_REPAIR_REVIEW_LLM_TIMEOUT_S))
     if reply is None:
@@ -87,7 +92,9 @@ async def _interpret(text: str, item: dict, group: list[dict], job_id: str) -> I
     scope = "group" if reply.get("scope") == "group" else "item"
     members = group if scope == "group" else [item]
     targets = [m["fingerprint"] for m in members if m.get("fingerprint")]
-    playback = " ".join(str(reply.get("playback") or "").split()).lower() or (
+    if not targets:
+        return _refusal(_honest("that defect has no identity i can target"))
+    playback = " ".join(str(reply.get("playback") or "").split()) or (
         f"i will try {op} on {'every defect in this group' if scope == 'group' else 'this defect'}")
     return Interpretation(
         kind="directive", playback=playback, op=op, scope=scope, targets=targets,

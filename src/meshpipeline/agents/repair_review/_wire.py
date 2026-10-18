@@ -53,3 +53,47 @@ def parse_object(text: str) -> dict | None:
     except ValueError:
         return None
     return value if isinstance(value, dict) else None
+
+
+MEASURE_KEYS_MAX = 12
+TEXT_MAX = 300
+
+
+def clip_text(value: object, limit: int = TEXT_MAX) -> str:
+    text = " ".join(str(value or "").split())
+    return text if len(text) <= limit else text[:limit].rstrip() + "..."
+
+
+def clip_measurements(measurements: dict | None) -> dict:
+    """The measurements, bounded: at most MEASURE_KEYS_MAX keys, long values clipped."""
+    out: dict = {}
+    for key, value in list((measurements or {}).items())[:MEASURE_KEYS_MAX]:
+        out[str(key)[:60]] = value if isinstance(value, (int, float, bool)) else clip_text(value, 80)
+    return out
+
+
+def tried_of(members: list[dict]) -> list[str]:
+    return sorted({str(t) for m in members
+                   for t in ((m.get("measurements") or {}).get("tried") or [])})[:10]
+
+
+def story_of(items: list[dict], stopped_because: str = "") -> dict:
+    """A short story of the part: how many defects of each code are waiting, and why the run stopped."""
+    counts: dict[str, int] = {}
+    for item in items:
+        code = item.get("defect_code")
+        if code:
+            counts[str(code)] = counts.get(str(code), 0) + 1
+    story: dict = {"defects_by_code": dict(sorted(counts.items(), key=lambda kv: -kv[1])[:10])}
+    if stopped_because:
+        story["run_stopped_because"] = clip_text(stopped_because, 60)
+    return story
+
+
+def trim_rationale(text: object, limit: int = 200) -> str:
+    out = " ".join(str(text or "").split())
+    if len(out) <= limit:
+        return out
+    cut = out[:limit]
+    head = cut.rsplit(" ", 1)[0] if " " in cut and out[limit] != " " else cut
+    return head.rstrip(" ,;:-")

@@ -26,20 +26,15 @@ PROPOSER_SYSTEM = (
     "when none fits.")
 
 
-def _context(code: str, members: list[dict]) -> str:
+def _context(code: str, members: list[dict], story: dict) -> str:
     sample = [{"entity": f"{m.get('entity_type')}#{m.get('entity_index')}",
-               "severity": m.get("severity"), "message": m.get("message"),
-               "measurements": m.get("measurements") or {}} for m in members[:SAMPLE_PER_GROUP]]
-    tried = sorted({str(t) for m in members
-                    for t in ((m.get("measurements") or {}).get("tried") or [])})
-    origins = sorted({str(m.get("origin")) for m in members})
-    return json.dumps({"defect_code": code, "count": len(members), "tried": tried,
-                       "story": {"origins": origins}, "samples": sample}, default=str)
-
-
-def _rationale(text: object) -> str:
-    out = " ".join(str(text or "").split()).lower()
-    return out[:RATIONALE_MAX]
+               "severity": m.get("severity"), "message": _wire.clip_text(m.get("message")),
+               "measurements": _wire.clip_measurements(m.get("measurements"))}
+              for m in members[:SAMPLE_PER_GROUP]]
+    origins = sorted({str(m["origin"]) for m in members if m.get("origin")})
+    return json.dumps({"defect_code": code, "count": len(members),
+                       "tried": _wire.tried_of(members),
+                       "story": {**story, "origins": origins}, "samples": sample}, default=str)
 
 
 def _decline(job_id: str, code: str, reason: str, count: int) -> None:
@@ -49,26 +44,28 @@ def _decline(job_id: str, code: str, reason: str, count: int) -> None:
                           "items": count}, op_id="review:propose")
 
 
-async def propose_for_groups(items: list[dict], *, job_id: str) -> list[dict]:
+async def propose_for_groups(items: list[dict], *, job_id: str,
+                             stopped_because: str = "") -> list[dict]:
     try:
-        return await _propose(items, job_id)
+        return await _propose(items, job_id, stopped_because)
     except Exception as exc:  # noqa: BLE001 - total
         logger.warning("repair review proposer failed: %s", type(exc).__name__)
         return items
 
 
-async def _propose(items: list[dict], job_id: str) -> list[dict]:
+async def _propose(items: list[dict], job_id: str, stopped_because: str) -> list[dict]:
     if not _wire.configured():
         return items
     groups: dict[str, list[dict]] = {}
     for item in items:
-        if item.get("proposal") is None:
-            groups.setdefault(str(item.get("defect_code")), []).append(item)
+        if item.get("proposal") is None and item.get("defect_code"):
+            groups.setdefault(str(item["defect_code"]), []).append(item)
+    story = _wire.story_of(items, stopped_because)
     ranked = sorted(groups.items(), key=lambda kv: -len(kv[1]))
     ranked = ranked[:max(0, int(rcfg.CAD_REPAIR_REVIEW_LLM_CALLS_MAX))]
     filled: dict[int, dict] = {}
     for code, members in ranked:
-        reply = await _wire.ask(PROPOSER_SYSTEM, _context(code, members), job_id=job_id,
+        reply = await _wire.ask(PROPOSER_SYSTEM, _context(code, members, story), job_id=job_id,
                                 timeout_s=float(rcfg.CAD_REPAIR_REVIEW_LLM_TIMEOUT_S))
         if reply is None:
             _decline(job_id, code, "no usable reply", len(members))
@@ -78,7 +75,10 @@ async def _propose(items: list[dict], job_id: str) -> list[dict]:
             _decline(job_id, code, "declined" if op == "decline" else f"unknown operation {op!r}",
                      len(members))
             continue
-        rationale = _rationale(reply.get("rationale"))
+        rationale = _wire.trim_rationale(reply.get("rationale"), RATIONALE_MAX)
+        if not rationale:
+            _decline(job_id, code, "no rationale given", len(members))
+            continue
         for member in members:
             filled[id(member)] = {
                 "source": "llm", "provenance": "llm", "op": op, "defect_code": code,

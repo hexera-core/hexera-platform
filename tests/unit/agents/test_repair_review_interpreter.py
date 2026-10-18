@@ -31,7 +31,7 @@ async def test_a_redirect_becomes_a_group_scoped_directive_with_playback():
          "playback": "I will cap every one of these holes."}))
     got = await interpret("fill all of these", GROUP[0], GROUP, job_id="j")
     assert got.kind == "directive" and got.scope == "group"
-    assert got.playback == "i will cap every one of these holes."
+    assert got.playback == "I will cap every one of these holes."
     assert got.directive == {
         "op": "fill_planar_hole", "targets": ["fp0", "fp1", "fp2"],
         "defect_code": "open_boundary", "defect_fingerprint": "fp0",
@@ -54,3 +54,12 @@ async def test_an_operation_outside_the_catalogue_is_a_refusal():
         {"kind": "directive", "op": "delete_face", "scope": "item", "playback": "x"}))
     got = await interpret("delete it", GROUP[0], GROUP, job_id="j")
     assert got.kind == "refusal" and "delete_face" in got.reason
+
+
+@pytest.mark.asyncio
+async def test_a_directive_with_nothing_to_target_is_a_refusal():
+    model_inference.set_model_router(_Router(
+        {"kind": "directive", "op": "sew_faces", "scope": "item", "playback": "x"}))
+    bare = {**GROUP[0], "fingerprint": ""}
+    got = await interpret("sew it", bare, [bare], job_id="j")
+    assert got.kind == "refusal"

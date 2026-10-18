@@ -33,6 +33,19 @@ def review_on(monkeypatch):
     monkeypatch.setattr(rcfg, "CAD_REPAIR_REVIEW_ENABLED", True)
 
 
+@pytest.fixture(autouse=True)
+def no_real_model_call():
+    """The unit tier installs the REAL router; a park test must never be able to dial it."""
+    from meshpipeline.contracts import model_inference
+
+    class _Refuses:
+        async def call_repair_review_model(self, *a, **k):
+            raise AssertionError("a park test must not reach the model")
+    model_inference.set_model_router(_Refuses())
+    yield
+    model_inference.set_model_router(None)
+
+
 class _Savepoint:
     def __init__(self, db): self.db = db
     async def commit(self): self.db.log.append("sp_commit")

@@ -53,7 +53,7 @@ async def test_proposals_are_batched_per_group_and_capped(monkeypatch, declines)
     assert {i["defect_code"] for i in filled} == {"c1", "c3", "c5", "c7"}
     p = filled[0]["proposal"]
     assert p["provenance"] == "llm" and p["op"] == "sew_faces"
-    assert p["rationale"] == "the faces look unstitched." and len(p["rationale"]) <= 200
+    assert p["rationale"] == "The Faces Look Unstitched." and len(p["rationale"]) <= 200
 
 
 @pytest.mark.asyncio
@@ -116,3 +116,44 @@ async def test_parking_fills_missing_proposals_before_persisting(monkeypatch, de
     model_inference.set_model_router(Boom())
     same = await rrp.with_proposals(rrp.plan_review(state, status=JobStatus.failed), "j")
     assert same.park and all(i["proposal"] is None for i in same.items)
+
+
+@pytest.mark.asyncio
+async def test_a_succeeded_plan_never_reaches_the_proposer(monkeypatch):
+    from meshpipeline.application import repair_review_park as rrp
+    from meshpipeline.persistence.models import JobStatus
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_REVIEW_ENABLED", True)
+    router = _Router({"op": "sew_faces", "rationale": "r"})
+    model_inference.set_model_router(router)
+    plan = rrp.plan_review({"repair_review_candidates": _items(2)}, status=JobStatus.succeeded)
+    out = await rrp.with_proposals(plan, "j")
+    assert router.calls == 0 and out is plan
+
+
+@pytest.mark.asyncio
+async def test_the_prompt_carries_measurements_tried_and_the_story(declines):
+    seen = []
+
+    class Spy(_Router):
+        async def call_repair_review_model(self, messages, job_id="", name="RepairReview"):
+            seen.append(messages[1]["content"])
+            return await super().call_repair_review_model(messages, job_id, name)
+    model_inference.set_model_router(Spy({"op": "decline"}))
+    items = _items(2)
+    items[1]["measurements"] = {"length": 0.01, "tried": ["sew_faces"]}
+    await propose_for_groups(items, job_id="j", stopped_because="no_candidate")
+    body = json.loads(seen[0])
+    assert body["tried"] == ["sew_faces"] and body["samples"][0]["measurements"]["length"] == 0.01
+    assert body["story"]["run_stopped_because"] == "no_candidate"
+    assert "c1" in body["story"]["defects_by_code"]
+
+
+@pytest.mark.asyncio
+async def test_an_empty_rationale_is_a_decline_and_a_long_one_cuts_at_a_word(declines):
+    model_inference.set_model_router(_Router({"op": "sew_faces", "rationale": "  "}))
+    out = await propose_for_groups(_items(1), job_id="j")
+    assert all(i["proposal"] is None for i in out) and declines
+    model_inference.set_model_router(_Router({"op": "sew_faces", "rationale": "word " * 80}))
+    out = await propose_for_groups(_items(1), job_id="j")
+    r = out[0]["proposal"]["rationale"]
+    assert len(r) <= 200 and r.endswith("word")
