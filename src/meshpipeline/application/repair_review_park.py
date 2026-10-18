@@ -95,6 +95,51 @@ async def with_proposals(plan: ReviewPlan | None, job_id: str,
         return plan
 
 
+async def settle_left(plan: ReviewPlan | None, session_factory, job_id: str,
+                      repo=None) -> tuple[ReviewPlan | None, dict]:
+    """`(plan, left)`: a park never re-asks what the engineer already answered "leave it".
+
+    "Leave it" is an answer: this defect is fine, mesh the part with it. A re-run that fails again
+    and mints the same defects would otherwise park on the same questions forever. So an item whose
+    fingerprint's LATEST decision on this job was `left` is not put to the engineer again. When
+    nothing else is left to ask, the park is withdrawn and the run fails as an ordinary failure;
+    `left` (`{"count", "codes"}`) is what its message says was left. Items the engineer did not
+    answer (`unreviewed`), or whose fix could not be done safely, are asked again as before.
+
+    Only a park is touched: a delivered run's offered items are recorded as they are. FAIL-OPEN:
+    a history that cannot be read leaves the plan as it was.
+    """
+    if plan is None or not plan.park or not plan.items:
+        return plan, {}
+    try:
+        from meshpipeline.persistence.repositories.repair_review_repository import (
+            RepairReviewRepository,
+        )
+        async with session_factory() as db:
+            rows = await (repo or RepairReviewRepository()).decided_items(db, uuid.UUID(job_id))
+    except Exception as exc:  # noqa: BLE001 - a park that re-asks beats a run that loses its park
+        logger.warning("repair review: decision history unreadable for job %s (%s) - parking on "
+                       "every item", job_id, type(exc).__name__)
+        return plan, {}
+    latest: dict[str, str] = {}
+    for row in rows:                       # oldest decision first: the last one written wins
+        if row.fingerprint:
+            latest[row.fingerprint] = row.state
+    left = [i for i in plan.items if latest.get(i.get("fingerprint") or "") == "left"]
+    if not left:
+        return plan, {}
+    fresh = [i for i in plan.items if i not in left]
+    from dataclasses import replace
+    if fresh:
+        return replace(plan, items=fresh), {}
+    codes: dict[str, int] = {}
+    for item in left:
+        code = str(item.get("defect_code") or "defect")
+        codes[code] = codes.get(code, 0) + 1
+    ended = (ReviewPlan(outcomes=list(plan.outcomes)) if plan.outcomes else None)
+    return ended, {"count": len(left), "codes": codes}
+
+
 async def open_park_exists(db, job_id: uuid.UUID, repo=None) -> bool:
     from meshpipeline.persistence.repositories.repair_review_repository import (
         RepairReviewRepository,

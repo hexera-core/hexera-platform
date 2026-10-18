@@ -178,6 +178,10 @@ class FinalResult:
     # than that it failed. Added without a schema bump: it defaults to 0 and an older reader
     # ignores the key.
     review_parked: int = 0
+    # WHAT THE ENGINEER ALREADY SAID TO LEAVE, on a re-run that failed with nothing new to ask
+    # (repair review): {"count": n, "codes": {defect_code: n}}. The run then ends as an ordinary
+    # failure - never another park on the same questions - and the message says what was left.
+    review_left: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         # THE invariant, enforced at construction so no path can violate it.
@@ -233,7 +237,9 @@ class FinalResult:
             failure_detail=str(d.get("failure_detail") or ""),
             failure_next_step=str(d.get("failure_next_step") or ""),
             retry_skipped=bool(d.get("retry_skipped", False)),
-            review_parked=int(d.get("review_parked", 0) or 0))
+            review_parked=int(d.get("review_parked", 0) or 0),
+            review_left=(dict(d["review_left"])
+                         if isinstance(d.get("review_left"), Mapping) else {}))
 
 
 # WHAT A CRASH STILL KNOWS.
@@ -633,6 +639,23 @@ def with_review_parked(fr: FinalResult, count: int) -> FinalResult:
     return dataclasses.replace(fr, review_parked=int(count))
 
 
+def with_review_left(fr: FinalResult, left: Mapping | None) -> FinalResult:
+    """Mark this failure as one whose only questions the engineer already answered "leave it"."""
+    import dataclasses
+    return dataclasses.replace(fr, review_left=dict(left or {}))
+
+
+def _render_left(left: Mapping) -> str:
+    count = int(left.get("count", 0) or 0)
+    codes = left.get("codes") if isinstance(left.get("codes"), Mapping) else {}
+    what = ", ".join(f"{n} {str(code).replace('_', ' ')}" for code, n in sorted(codes.items()))
+    things = "1 thing" if count == 1 else f"{count} things"
+    return (f"You chose to leave {things} as {'it was' if count == 1 else 'they were'}"
+            f"{f' ({what})' if what else ''}, so the run went on with the part as it stands. It "
+            "still failed, and there is nothing new to ask you about, so the run ends here rather "
+            "than asking you the same questions again.")
+
+
 def _render_parked(count: int) -> str:
     things = "1 thing" if count == 1 else f"{count} things"
     return (f"The repair is waiting on you. It left {things} for you to decide, and nothing was "
@@ -655,6 +678,8 @@ def render_message(fr: FinalResult) -> str:
         if isinstance(offer, Mapping) and offer.get("optional"):
             extra.append(str(offer.get("text") or "").strip())
         return "\n".join([text, *(e for e in extra if e)])
+    if fr.status == TerminalStatus.failed and fr.review_left:
+        text = "\n".join((text, _render_left(fr.review_left)))
     offer = ladder.get("offer")
     if (fr.status == TerminalStatus.failed and isinstance(offer, Mapping)
             and str(offer.get("text") or "").strip()):

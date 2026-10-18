@@ -237,6 +237,9 @@ class TerminalAssembly:
     #: the repair review's items and park (application/repair_review_park.ReviewPlan); None when
     #: review is off or the run left nothing for a person. status == pending_review means PARK.
     review_plan: ReviewPlan | None = None
+    #: what the engineer already answered "leave it" to, on a failed re-run with nothing new to
+    #: ask (application/repair_review_park.settle_left) - said in the failure's message
+    review_left: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -284,6 +287,8 @@ def build_terminal_result(assembly: TerminalAssembly, *, delivered_types: list) 
     result = _fr.with_engine_ladder(result, assembly.engine_ladder)
     if assembly.status == JobStatus.pending_review and assembly.review_plan is not None:
         result = _fr.with_review_parked(result, len(assembly.review_plan.items))
+    if assembly.status == JobStatus.failed and assembly.review_left:
+        result = _fr.with_review_left(result, assembly.review_left)
     # "We fixed your file and meshed the fix" is a different claim from "we meshed your file".
     result = _fr.with_repair_lineage(result, assembly.repair_lineage)
     # The ONLY pre-composed message honoured is the blameless SYSTEM-failure note; any other stale

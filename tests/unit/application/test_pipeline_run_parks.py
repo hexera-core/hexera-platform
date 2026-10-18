@@ -305,3 +305,70 @@ async def test_a_parked_ending_charges_nothing_and_the_reruns_real_ending_charge
 
     await _finalize(JobStatus.succeeded, None, _Repo())      # the re-run's real ending
     assert len(charges) == 1
+
+
+# ---- "leave it" is an answer: a re-run never parks on the same questions again ----------------
+
+FP_ITEMS = [{"group_key": "small_face:none", "defect_code": "small_face", "entity_index": i,
+             "fingerprint": f"face:{i}"} for i in range(3)]
+FP_STATE = {**STATE, "repair_review_candidates": FP_ITEMS}
+
+
+class _History:
+    """The job's decided items, as the repository returns them (oldest decision first)."""
+    def __init__(self, decided): self.decided = decided
+    async def decided_items(self, db, job_id):
+        return [SimpleNamespace(fingerprint=fp, state=state) for fp, state in self.decided]
+
+
+class _Sessions:
+    def __call__(self): return self
+    async def __aenter__(self): return object()
+    async def __aexit__(self, *a): return False
+
+
+async def test_park_leave_all_run_fail_ends_as_an_ordinary_failure_that_says_what_was_left():
+    plan = rrp.plan_review(FP_STATE, status=JobStatus.failed)
+    assert plan.park
+    history = _History([(f"face:{i}", "left") for i in range(3)])
+    settled, left = await rrp.settle_left(plan, _Sessions(), str(JOB), repo=history)
+    assert settled is None and left == {"count": 3, "codes": {"small_face": 3}}
+    asm = TerminalAssembly(job_id=str(JOB), owner_id="o", status=JobStatus.failed,
+                           failed_reason=FailedReason.unhandled, engine="cfmesh",
+                           review_plan=settled, review_left=left)
+    out = build_terminal_result(asm, delivered_types=[])
+    assert out.result.review_parked == 0 and "waiting" not in out.closing_message
+    assert "leave 3 things" in out.closing_message and "3 small face" in out.closing_message
+    assert "same questions" in out.closing_message
+    assert out.result.to_dict()["review_left"] == left
+    repo = _Repo()
+    _, jobs, _ = await _finalize(JobStatus.failed, settled, repo)
+    assert repo.parks == [] and jobs.log[0] == ("transition", JobStatus.failed)
+
+
+async def test_leave_some_approve_some_parks_again_only_on_what_was_not_left():
+    plan = rrp.plan_review(FP_STATE, status=JobStatus.failed)
+    # face:0 left; face:1 accepted but its fix was rolled back; face:2 never answered
+    history = _History([("face:0", "left"), ("face:1", "accepted"), ("face:2", "unreviewed")])
+    settled, left = await rrp.settle_left(plan, _Sessions(), str(JOB), repo=history)
+    assert left == {} and settled.park
+    assert [i["fingerprint"] for i in settled.items] == ["face:1", "face:2"]
+
+
+async def test_a_later_answer_replaces_an_earlier_leave_and_an_unreadable_history_parks_as_before():
+    plan = rrp.plan_review(FP_STATE, status=JobStatus.failed)
+    history = _History([("face:0", "left"), ("face:0", "redirected")])
+    settled, _ = await rrp.settle_left(plan, _Sessions(), str(JOB), repo=history)
+    assert len(settled.items) == 3
+
+    class _Broken:
+        async def decided_items(self, db, job_id): raise RuntimeError("db down")
+    settled, left = await rrp.settle_left(plan, _Sessions(), str(JOB), repo=_Broken())
+    assert settled is plan and left == {}
+
+
+async def test_a_delivered_run_still_records_every_item_whatever_was_left_before():
+    plan = rrp.plan_review(FP_STATE, status=JobStatus.succeeded)
+    history = _History([(f"face:{i}", "left") for i in range(3)])
+    settled, left = await rrp.settle_left(plan, _Sessions(), str(JOB), repo=history)
+    assert settled is plan and len(settled.items) == 3 and left == {}

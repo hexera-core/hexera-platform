@@ -1048,6 +1048,10 @@ async def _run_async(req: JobRequest) -> dict:
         _timed_out = _pb.is_exhausted(_pipeline_deadline)
         _review_plan = _rrp.plan_review(final_state, status=final_status,
                                         system_failure=bool(api_failure) or _timed_out)
+        # a park never re-asks what the engineer already answered "leave it": with nothing new
+        # to ask, the re-run ends as an ordinary failure that says what was left
+        _review_plan, _review_left = await _rrp.settle_left(_review_plan, AsyncSessionLocal,
+                                                            job_id)
         # items the rules had no direction for get the model's proposal BEFORE they are written,
         # but only on a park: a delivered run has nobody waiting on them
         _review_plan = await _rrp.with_proposals(
@@ -1102,6 +1106,7 @@ async def _run_async(req: JobRequest) -> dict:
                                      + ([_narrow_caveat] if _narrow_caveat else [])),
                 review_blocking=list(_review_blocking),
                 review_plan=_review_plan,
+                review_left=_review_left,
                 pre_composed_message=str(final_state.get("outcome_message") or "").strip()),
             ownership=ownership, lease_repo=lease_repo, job_repo=job_repo, jlog=jlog)
         if _publication.fenced:
