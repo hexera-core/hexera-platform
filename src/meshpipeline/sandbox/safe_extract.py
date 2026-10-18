@@ -7,7 +7,7 @@ import stat
 import tarfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO, NoReturn
+from typing import BinaryIO, NoReturn, cast
 
 from meshpipeline.settings.env import optional_env
 
@@ -116,6 +116,19 @@ def _validate_members(members: list[tarfile.TarInfo], dest: Path, limits: Extrac
 NAME_MEMBERS_BUDGET_S = 60.0
 
 
+class _Deadlined:
+    """A read-only stream that stops (raises TimeoutError) once `deadline` (monotonic) passes."""
+
+    def __init__(self, src: BinaryIO, deadline: float):
+        self._src, self._deadline = src, deadline
+
+    def read(self, n: int = -1) -> bytes:
+        import time
+        if time.monotonic() > self._deadline:
+            raise TimeoutError("archive header scan past its budget")
+        return self._src.read(n)
+
+
 def largest_members(*, path: str | Path | None = None, fileobj: BinaryIO | None = None,
                     n: int = 5, budget_s: float = NAME_MEMBERS_BUDGET_S) -> str:
     """'; largest files ...: a 410 MB, b 120 MB, ...' for an archive refused for its size - the
@@ -135,14 +148,13 @@ def largest_members(*, path: str | Path | None = None, fileobj: BinaryIO | None 
             fileobj.seek(0)
         else:
             return ""
-        t0 = time.monotonic()
-        with tarfile.open(fileobj=src, mode="r|gz") as tf:
+        # the deadline is held on every READ of the compressed stream, not between members: one
+        # huge, highly compressed member is skipped by inflating it, and that must stop on time too
+        deadline = time.monotonic() + budget_s
+        with tarfile.open(fileobj=cast(BinaryIO, _Deadlined(src, deadline)), mode="r|gz") as tf:
             for m in tf:
                 if m.isreg():
                     sizes.append((int(m.size), m.name[:80]))
-                if time.monotonic() - t0 > budget_s:
-                    partial = True
-                    break
     except Exception:  # noqa: BLE001 - a better message, never a different failure
         if not sizes:
             return ""

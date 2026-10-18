@@ -70,3 +70,25 @@ def test_an_archive_refused_for_its_size_names_its_largest_files(tmp_path):
     assert "over the 1000 cap" in msg and "largest files" in msg
     assert msg.index("VTK/case_0/internal.vtu") < msg.index("constant/polyMesh/faces")
     assert buf.tell() == 0, "the archive is left where it was"
+
+
+def test_naming_the_files_stops_on_time_inside_a_huge_member(tmp_path):
+    # one highly compressed member: skipping it means inflating it, and the budget holds there too
+    import io
+    import tarfile
+    import time
+
+    from meshpipeline.sandbox.safe_extract import largest_members
+    path = tmp_path / "bomb.tar.gz"
+    with tarfile.open(path, mode="w:gz") as tf:
+        ti = tarfile.TarInfo("zeros.bin")
+        ti.size = 300_000_000
+        tf.addfile(ti, io.BytesIO(b"\0" * ti.size))
+        ti2 = tarfile.TarInfo("after.bin")
+        ti2.size = 3
+        tf.addfile(ti2, io.BytesIO(b"abc"))
+    t = time.monotonic()
+    out = largest_members(path=path, budget_s=0.05)
+    assert time.monotonic() - t < 2.0
+    assert "after.bin" not in out
+    assert largest_members(path=path, budget_s=60.0).count("MB") >= 2
