@@ -239,6 +239,33 @@ async def test_unknown_patch_preserves_the_exact_legacy_text(runtime, fake_backe
     assert not any(c[0] == "toggle_patch" for c in fake_backend[0].calls)
 
 
+async def test_framing_a_patch_with_no_review_geometry_is_refused_with_the_way_out(
+        runtime, fake_backend, tmp_path):
+    # job 53bbce4b: the reviewer asked to frame 'farfield' - a boundary the manifest names and no
+    # review geometry reaches. The refusal names what CAN be shown and how to judge the rest,
+    # and the renderer is never asked for a view it cannot draw.
+    async with await _open(runtime) as rt:
+        r = await rt.execute_viewer_tool(
+            "go_to_coordinates", {"x": -5.9, "y": 0.0, "z": 0.0, "span": 2.0,
+                                  "preset": "front", "patch_name": "farfield"})
+        typed = await rt.execute_typed(
+            "go_to_coordinates", {"x": 0.0, "y": 0.0, "z": 0.0, "span": 2.0,
+                                  "patch_name": "farfield"})
+    assert isinstance(r, str) and "no view was taken" in r
+    assert "Renderable patches: inlet, outlet, wall" in r
+    assert "Domain bbox" in r and "without patch_name" in r
+    assert not any(c[0] == "go_to_coordinates" for c in fake_backend[0].calls)
+    assert typed.is_viewer_tool and typed.evidence is None, "a refusal must carry no evidence"
+
+
+async def test_framing_a_renderable_patch_still_renders(runtime, fake_backend, tmp_path):
+    async with await _open(runtime) as rt:
+        r = await rt.execute_viewer_tool(
+            "go_to_coordinates", {"x": 1.0, "y": 2.0, "z": 3.0, "span": 10.0,
+                                  "patch_name": "wall"})
+    assert isinstance(r, list) and r[1]["type"] == "image_url"
+
+
 async def test_configuration_is_text_only_and_byte_identical(runtime, fake_backend, tmp_path):
     async with await _open(runtime) as rt:
         r = await rt.execute_viewer_tool(

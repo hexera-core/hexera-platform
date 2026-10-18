@@ -23,12 +23,15 @@ def _attach_facts(resp: dict, manifest: dict) -> None:
     from meshpipeline.render.mesh_facts import parts as _parts
     from meshpipeline.render.mesh_facts import quality as _quality
     try:
-        rendered = tuple(str(p.get("name")) for p in (resp.get("patches") or [])
-                         if isinstance(p, dict) and p.get("name"))
+        drawn = [p for p in (resp.get("patches") or []) if isinstance(p, dict) and p.get("name")]
+        rendered = tuple(str(p.get("name")) for p in drawn)
+        enclosing = tuple(str(p.get("name")) for p in drawn if p.get("encloses_domain"))
         q = _quality(manifest) if resp.get("is_mesh") else {}
         if q:
             resp["quality"] = q
-        resp["parts"] = _parts(manifest, rendered=rendered)
+        # a DELIVERED mesh lists every surface it draws; an input skin only what is declared
+        resp["parts"] = _parts(manifest, rendered=rendered, enclosing=enclosing,
+                               list_drawn=bool(resp.get("is_mesh")))
     except Exception as exc:      # a malformed manifest must not cost the user their mesh
         logger.warning("surface: mesh facts unavailable (%s)", exc)
         resp.setdefault("parts", [])

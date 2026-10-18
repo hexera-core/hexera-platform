@@ -130,6 +130,15 @@ _EXACT_MARKER_CLASS: dict[str, FailureClass] = {
     # incomplete/blocked review, not a provider outage. Zero tool calls and exhaustion are evidence
     # conditions, never provider-down.
     "reviewer_exhausted": FailureClass.REVIEW_EVIDENCE_MISSING,
+    # The review loop ran and stopped making progress (the no-progress threshold). Same class -
+    # "we could not judge it" - but its own marker, because a fresh review of the same mesh can
+    # get past a stall and cannot get past the pre-loop refusals reviewer_evidence_missing names.
+    # Without this entry the substring cascade below would call it a provider outage.
+    "reviewer_stalled": FailureClass.REVIEW_EVIDENCE_MISSING,
+    # An engine could not prepare its input because of OUR side - a disk write, memory, a time
+    # limit (agents/builder/attempt.STAGING_SYSTEM_FAILURE). Not the file's fault and possibly
+    # gone on a second pass, so it is transient: the same attempt is replayed after a wait.
+    "builder_staging_system": FailureClass.PROVIDER_TRANSIENT,
 }
 
 
@@ -233,7 +242,9 @@ _DOMAIN_MESSAGES: dict[FailureClass, tuple[str, str]] = {
         "Upload the file again and start a new run.",
     ),
     FailureClass.DOMAIN_REJECTED: (
-        "This geometry cannot be meshed as it is - the problem is in the CAD file, not our "
+        # "the CAD file" was untrue for every STL it was said about: the file the user uploaded
+        # is what has the problem, whatever kind of file it is
+        "This geometry cannot be meshed as it is - the problem is in the geometry file, not our "
         "systems",
         "Fix the geometry and upload it again.",
     ),

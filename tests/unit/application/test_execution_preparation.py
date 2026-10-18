@@ -37,7 +37,7 @@ class _Repo:
 async def _prep(monkeypatch, *, disposition="pending", raises=None, published=None, repo=None):
     async def _classify(thread): return disposition
 
-    async def _materialize(src, interp, *, job_id):
+    async def _materialize(src, interp, *, job_id, engine=""):
         if raises is not None:
             raise raises
         return object()

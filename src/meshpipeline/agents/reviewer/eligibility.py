@@ -35,6 +35,16 @@ class AxisFinding:
     # covers the whole mesh and exists only once eligibility accepts the submission. A `False`
     # must be GROUNDED, or the submission is rejected.
     passed: bool = True
+    # WHAT A FINDING THAT DID NOT PASS CLAIMS AND ASKS FOR (agents/reviewer/review_policy.py): the
+    # brief requirement or confirmed fact it misses, quoted; the wrong-problem class it claims, if
+    # any; the builder lever that changes it and the change itself; and how prominent a concern it
+    # is. The APPLICATION decides what each may do - only a confirmed wrong-problem class can fail a
+    # job, only a cited, actionable finding can ask for a rebuild, everything else is a concern.
+    brief_requirement: str = ""
+    wrong_problem: str = ""
+    builder_change: str = ""
+    change_request: str = ""
+    severity: str = ""
 
 
 class Eligibility(str, Enum):
@@ -263,8 +273,20 @@ def _check_obligation(o, ledger: EvidenceLedger) -> list[str]:
     have = len(ledger.usable_inspections_of_kind(o.kind))
     need = max(o.min_count, 1)
     if have < need:
-        reasons.append(f"expected {need} {o.kind.value} inspection(s), have {have}{prov}")
+        # Say HOW, as the exact-id order above does. Framing a patch with go_to_coordinates is
+        # not an inspection of it; toggling it is - and the reviewer is steered to the framing
+        # call first (PATCH VIEWS), so without the tool named it cannot tell why it was refused.
+        how = _HOW_TO_INSPECT.get(o.kind.value, "")
+        reasons.append(f"expected {need} {o.kind.value} inspection(s), have {have}{prov}"
+                       + (f" - {how}, then cite the t- id it returns" if how else ""))
     return reasons
+
+
+#: How an inspection of a target kind is produced, for the obligation reasons above.
+_HOW_TO_INSPECT = {
+    "patch": "inspect one with toggle_patch on a patch the viewer can show",
+    "region": "inspect one with inspect_region on a declared slice",
+}
 
 
 def missing_target_obligations(obligations, discovered_ids: dict) -> list[str]:

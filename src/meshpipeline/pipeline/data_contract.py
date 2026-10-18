@@ -195,20 +195,41 @@ CONTRACT: tuple[ContractVar, ...] = (
     ContractVar(
         concept="engine choice provenance",
         purpose="whether the engine was user_direct or suggested_confirmed - "
-                "audits that inferred choices are proposed, never applied",
-        intake_field="engine_source",
+                "audits that inferred choices are proposed, never applied - and, in the "
+                "run, WHO chose it (plus dispute | system for a run the pipeline resolved): "
+                "the fallback ladder moves only an engine the user did not name. It reaches "
+                "the run inside the dispatched intake events (an engine_provenance event the "
+                "approval appends in every data-collection mode), read once by the "
+                "application at seeding",
+        intake_field="engine_source", state_field="engine_source",
         corpus="qa: verifies the propose-and-confirm contract; training signal "
-               "for intake's fallback behaviour. Capture-only: rides the "
-               "intake_complete event payload, no session/state carrier needed",
+               "for intake's fallback behaviour; rides the intake_complete event "
+               "payload and every engine_select_run event",
     ),
     ContractVar(
         concept="engine (resolved)",
         purpose="the engine that actually RUNS - resolution of dispute pin > "
                 "user choice > declared-capability lookup > default; keys the "
-                "builder prompt/tools/runner/validator downstream",
+                "builder prompt/tools/runner/validator downstream. Mid-run the fallback "
+                "ladder may move it to an engine that delivers the SAME approved mesh "
+                "(never a user-named or dispute engine), so the delivered engine is "
+                "this field at the end of the run",
         state_field="engine",
         corpus="training+qa: engine_select_run event records chosen + source; "
                "record.json/labels.json carry it per sample",
+    ),
+    ContractVar(
+        concept="engine fallback ladder record",
+        purpose="the fallback ladder's durable record (pipeline/engine_fallback.py): the "
+                "approved engine, every attempt's engine and failure class, each switch and "
+                "why, the engine that built the delivered mesh, and - on a mesh failure - the "
+                "one offer the run ends with; plus the MEASURED order its rungs are walked in for "
+                "this geometry (order, order_source, order_recommended, order_reasons - "
+                "engines/fitness.py, seeded by node_engine_select). Carried into the terminal "
+                "result verbatim",
+        state_field="engine_ladder",
+        corpus="qa: which shapes need which rung - every engine a run tried and why it "
+               "left each one",
     ),
     ContractVar(
         concept="user dispute",
@@ -325,15 +346,27 @@ CONTRACT: tuple[ContractVar, ...] = (
 # corpus event registry: every event type + which corpus purpose it serves
 EVENT_TYPES: dict[str, str] = {
     "intake_turn":        "training: one intake conversation turn",
+    "engine_provenance":  "qa: who chose the approved engine (user_direct | suggested_confirmed), "
+                          "appended to the dispatched intake events by the approval in every "
+                          "data-collection mode; the run reads it to decide whether the fallback "
+                          "ladder may move the engine",
     "intake_complete":    "training: intake's full structured handoff (incl. "
                           "engine_source provenance)",
     "web_search":         "training+qa: the search sub-agent's query, provider, "
                           "distilled answer and usage",
     "engine_select_run":  "qa: which engine ran and WHY (user/dispute/internal/"
-                          "default) - deterministic, no model",
+                          "default, or fallback: a ladder switch, with the engine it left and "
+                          "the failure that moved it) plus who chose it and the ladder of "
+                          "rungs - deterministic, no model",
     "geometry_admission": "qa: input-contract admission verdict - when an engine's "
                           "measured input contract (e.g. self-intersection) rejected the "
                           "geometry before any build; deterministic, no model",
+    "repair_attempt":     "training+qa: what an automatic repair aimed at and what it did - the "
+                          "targets triage named, the operations the kernel ran, and the lineage of "
+                          "the geometry that replaced the upload; deterministic, no model",
+    "repair_inspect":     "training+qa: what CAD repair inspection measured on the verified "
+                          "input before admission judged it - the defect taxonomy an operator's "
+                          "repair decision is later learned from; deterministic, no model",
     "planner_run":        "training: the planner LLM's system, input, raw "
                           "response, parsed plan and usage",
     "builder_attempt":    "training: the builder's full trajectory per attempt",
@@ -355,15 +388,35 @@ EVENT_TYPES: dict[str, str] = {
 STATE_FIELDS: dict[str, str] = {
     "schema_version":        "state schema version stamped by the worker (STATE_SCHEMA_VERSION)",
     "engine":                "the RESOLVED engine that runs (see 'engine (resolved)' above)",
+    "engine_source":         "who chose the engine: user_direct | suggested_confirmed | dispute | "
+                             "system (see 'engine choice provenance'); gates the fallback ladder",
+    "engine_ladder":         "the fallback ladder's record: the measured rung order, attempts, "
+                             "switches, the closing offer (see 'engine fallback ladder record')",
     "messages":              "LangGraph message accumulator for the intake node",
     "job_id":                "job identity (see contract)",
     "user_id":               "owner identity (see contract; alias of owner_id)",
     "session_id":            "session identity (see contract)",
     "geometry":              "verified input geometry handle (see contract)",
+    "repair_status":         "what CAD repair inspection concluded about the verified input "
+                             "(RepairStatus); evidence for the operator and the corpus, never "
+                             "a decision, and never a reason to move the geometry",
+    "repair_report":         "the typed RepairResult payload behind repair_status: defects, "
+                             "measurements and the inspect operation that produced them",
+    "repair_attempt":        "whether the run repaired its own geometry, what it aimed at and "
+                             "what it did - or why it declined; a decline leaves the run on the "
+                             "customer's own file",
+    "repair_lineage":        "which upload a promoted repair replaced, and the engine the "
+                             "replacement was proved to stage for; empty unless repaired "
+                             "geometry became the geometry this run meshes",
     "domain":                "descriptive task label (see contract)",
     "engine_params":         "engine-native declared parameters (see contract)",
     "openfoam_workspace":    "the attempt workspace directory the builder/executor share",
     "executor_failed_gate":  "the declared gate key that rejected the mesh (drives classification)",
+    "executor_failure_cause": "WHAT the failed gate says failed (contracts.failure_cause): names "
+                              "the cause in the user's message and lets the retry policy skip "
+                              "attempts that cannot change it",
+    "executor_failure_facts": "the plain facts behind that cause (names, counts, measured vs "
+                              "limit) the user's sentence is built from",
     "geometry_unsuitable_reason": "node_geometry_admission's reject reason: the input surface is "
                                   "unmeshable for the engine (e.g. self-intersecting) - routes to "
                                   "the executor short-circuit and the outcome turn",
@@ -397,6 +450,7 @@ STATE_FIELDS: dict[str, str] = {
     "solvability_failed":    "cheap solvability gate outcome (deterministic guardrail)",
     "api_failure":           "provider failure marker for honest failure taxonomy",
     "infra_retry_count":     "transient-infra replay counter: same mesh attempt re-run after a provider/dependency brownout (node_infra_retry)",
+    "review_rerun_count":    "reviews of the same validated mesh started again after one ended without a verdict (node_review_retry); not a mesh attempt",
     "request_txt":           "user requirements (see contract)",
     "review_brief_txt":      "acceptance criteria (see contract)",
     "intake_patches":        "patch contract (see contract)",
@@ -407,6 +461,13 @@ STATE_FIELDS: dict[str, str] = {
     "effective_mesh_fidelity": "the deterministic operational tier actually used (draft/standard/max); soft engine-owned authoring input only, never a gate or a cell target",
     "mesh_fidelity_source":    "user | default - which of the two produced the effective tier, so a system default is never presented as a user choice",
     "builder_noop_count":    "no-op builder rounds counter (retry-storm guard)",
+    "builder_stop":          "the Builder's declared stop (driver_run.STOP_*): it built nothing because "
+                             "another attempt cannot change the outcome (a review retry that wrote the "
+                             "rejected case again); the graph ends on the verdict already reached",
+    "review_history":        "the run's concluded reviews, one per reviewed mesh (attempt, workspace, "
+                             "evidence identity, verdict, judged findings); append-only, so an "
+                             "identical mesh keeps its review and the best gate-passing mesh is "
+                             "delivered",
     "builder_deadline_epoch": "aggregate Builder wall-clock deadline (epoch) across ALL attempts of one run (B-4); set once, carried, never reset",
     "pipeline_deadline_epoch": "TOP-LEVEL pipeline wall-clock deadline (epoch) for the WHOLE job (O-4, from the durable pipeline_deadline_at anchored once at execution start); child budgets cap at what remains; never reset",
     "execution_generation":  "O-3 durable execution generation owning this run; side effects namespace on it (workspace generation_<g>/, artifact binding) so a superseded generation never clobbers the current one",
@@ -448,6 +509,9 @@ MANIFEST_KEYS: dict[str, str] = {
     "geometry.box_zmin":     "actual meshed extent",
     "geometry.box_zmax":     "actual meshed extent",
     "geometry.domain_box":   "REQUESTED far-field box - what the A1 extent gate measures",
+    "geometry.symmetry_faces": "the box faces that are symmetry planes, [{patch, axis, side}] "
+                               "(a half model's cut; a slab's two sweep ends) - they lie on "
+                               "the body by design, so the extent gate owes them no margin",
     "geometry.reference_length": "the ruler the extent gate divides by: the USER's stated "
                                  "reference length in metres, else the streamwise body extent",
     "geometry.reference_length_source": "user_stated | body_streamwise_extent - which of the "

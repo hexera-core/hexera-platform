@@ -40,6 +40,21 @@ def ground_patch_name(patches) -> str | None:
     return None
 
 
+def ground_rule():
+    """The rule the intake applies where a declaration enters, for an EXTERNAL flow: a wall named
+    or typed with any ground word ("ground plane", "floor", "road") is this floor, and carries its
+    one name - so no layer has to recognise a synonym, and "ground plane" never becomes a second
+    body wall with zero faces."""
+    from meshpipeline.contracts.patch_names import GroundRule
+    return GroundRule(name=GROUND_PATCH)
+
+
+def is_ground_word(name) -> bool:
+    """Whether a name is one of the words people use for the ground (ground, floor, road ...)."""
+    from meshpipeline.contracts.patch_names import is_ground_word as _word
+    return _word(name)
+
+
 def body_walls(patches) -> list[str]:
     """The declared wall patches the GEOMETRY has to supply: every wall except the ground, which
     the domain builds. This is the count the wall-arity rule measures against the file's regions."""
@@ -61,4 +76,4 @@ def manifest_is_grounded(manifest: dict | None) -> bool:
 
 
 __all__ = ["GROUND_PATCH", "GROUND_ROLE", "VERTICAL_AXIS", "body_walls", "ground_patch_name",
-           "is_ground", "manifest_is_grounded"]
+           "ground_rule", "is_ground", "is_ground_word", "manifest_is_grounded"]

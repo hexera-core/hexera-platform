@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 import meshpipeline.settings.policy as polcfg
 from meshpipeline.application.execution_publisher import execution_publisher
 from meshpipeline.capture.logger import TrainingLogger
+from meshpipeline.contracts.failure_cause import SEAM_CAUSES
 from meshpipeline.engines.runtime import get_engine
 
 logger = logging.getLogger(__name__)
@@ -20,6 +21,158 @@ logger = logging.getLogger(__name__)
 # without a runtime import (which would cycle: graph imports these node modules).
 if TYPE_CHECKING:
     from meshpipeline.contracts.pipeline_state import PipelineState
+
+
+def _mesh_on_disk(engine: str, workspace) -> bool:
+    """Whether the engine's declared deliverable marker exists - asked of the spec, never a path
+    guessed here. An engine that cannot be resolved counts as having no mesh."""
+    try:
+        from meshpipeline.engines.registry import get_spec
+        d = get_spec(engine).deliverable
+        return d is not None and (Path(workspace) / d.marker).exists()
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _case_contract_refusal(workspace, job_id: str):
+    """The patch-contract launch check's recorded refusal (engines/case_contract.py), as the one
+    pre-flight record the executor reports - gate patch_contract, cause contract_mismatch, its
+    own problem list as the facts. The operator record it always carried is kept: a dead letter
+    naming the mismatch as an INTERNAL defect, because the renderer that wrote the case is ours."""
+    from meshpipeline.engines.case_contract import refusal_of
+    refused = refusal_of(workspace)
+    if not refused:
+        return None
+    from meshpipeline.contracts.failure_cause import FailureCause
+    from meshpipeline.engines.preflight import PreflightRefusal
+    from meshpipeline.errors import FailureClass, record_dead_letter
+    problems = [str(p) for p in refused.get("problems") or []]
+    detail = "; ".join(problems)
+    logger.error("Executor: the written case does not match the approved patches - no mesh was "
+                 "run - job_id=%s: %s", job_id, detail)
+    record_dead_letter(job_id, FailureClass.INTERNAL, "case_contract",
+                       f"{refused.get('engine', '')} case written against the approved patch "
+                       f"contract does not match it: {detail}")
+    written = refused.get("written")
+    return PreflightRefusal(
+        gate="patch_contract", cause=FailureCause.CONTRACT_MISMATCH,
+        builder_text=f"[CASE_CONTRACT_MISMATCH] {detail}",
+        facts={"problems": problems,
+               "present": sorted(written) if isinstance(written, dict) else [],
+               "before_meshing": True})
+
+
+def _engine_label(state) -> str:
+    try:
+        from meshpipeline.engines.registry import engine_label
+        return engine_label(state.get("engine", "")) or ""
+    except Exception:  # noqa: BLE001
+        return str(state.get("engine", "") or "")
+
+
+def _gate_statement(engine: str, gate_key: str) -> str:
+    """What a gate proves, in the engineer's words (GateSpec.proves) - never the internal key."""
+    try:
+        from meshpipeline.engines.registry import get_spec
+        for g in get_spec(engine).gates:
+            if g.key == gate_key:
+                return g.proves or g.key
+    except Exception:  # noqa: BLE001
+        pass
+    return {"domain_extent": "The far-field domain is the size you asked for",
+            # agents/builder/attempt.STAGING_GATE: the engine's own preparation of the file
+            "staging": "The engine prepared its input from your file"}.get(
+        gate_key, "The mesh setup matches what you approved")
+
+
+def _gate_cause(engine: str, gate_key: str, feedback: object) -> str:
+    """The cause a failed gate reports: the one its check named (a GateFeedback), else the one
+    its GateSpec declares, else a seam's. '' when nothing names one - then no cause is claimed."""
+    from meshpipeline.engines.gates import cause_of
+    named = cause_of(feedback)
+    if named:
+        return named
+    try:
+        from meshpipeline.engines.registry import get_spec
+        for g in get_spec(engine).gates:
+            if g.key == gate_key and g.cause:
+                return str(g.cause)
+    except Exception:  # noqa: BLE001
+        pass
+    seam = SEAM_CAUSES.get(gate_key)
+    return seam.value if seam is not None else ""
+
+
+def _meshers_started(workspace) -> int | None:
+    from meshpipeline.contracts.mesh_execution import meshers_started, native_runs
+    return meshers_started(native_runs(workspace))
+
+
+def _manifest_stamp(workspace) -> tuple[int, int] | None:
+    """(mtime_ns, size) of the workspace's mesh manifest, or None when there is none - so the
+    executor can tell a manifest THIS finalize wrote from one left by an earlier pass."""
+    try:
+        st = (Path(workspace) / "mesh_manifest.json").stat()
+    except (OSError, TypeError, ValueError):
+        return None
+    return st.st_mtime_ns, st.st_size
+
+
+def _broken_mesh(workspace, before: tuple[int, int] | None) -> list[str]:
+    """The fatal checkMesh defects of the mesh this finalize just judged - read from the manifest
+    it wrote, and only when it wrote one (a manifest left from before says nothing about this
+    mesh). [] when there is no such manifest or the mesh had no fatal defect."""
+    now = _manifest_stamp(workspace)
+    if now is None or now == before:
+        return []
+    try:
+        quality = (json.loads((Path(workspace) / "mesh_manifest.json").read_text()) or {}).get(
+            "quality") or {}
+    except (OSError, ValueError, AttributeError):
+        return []
+    fatal = quality.get("fatal") if isinstance(quality, dict) else None
+    return [str(x) for x in fatal if str(x).strip()] if isinstance(fatal, list) else []
+
+
+def _no_mesh_cause(state, workspace, cause: str, facts: dict) -> tuple[str, dict]:
+    """(cause, facts) for an attempt that ended with no mesh and no refusal on record, read from
+    the attempt's record of native runs (contracts/mesh_execution.native_runs):
+
+    * no mesher started at all          -> NOT_BUILT (the engine stopped while preparing);
+    * the last run ran out of time      -> ENGINE_TIMED_OUT;
+    * the last run never started        -> RUN_INFRASTRUCTURE (never a statement about the input)
+      - positively: it raised, or its log carries the never-started tag;
+    * the last run ran, and its result could not be brought back (the uncollected tag)
+                                        -> RUN_INFRASTRUCTURE, said as a run that RAN;
+    * a mesher ran and left no mesh     -> the finalize seam's cause (the mesher crashed). An
+      RC_INFRASTRUCTURE result with neither tag is snappy's own stage verdict: it ran, and left
+      no valid mesh.
+
+    A workspace whose record this process never opened says nothing, and the seam's cause stands
+    exactly as before."""
+    from meshpipeline.contracts.failure_cause import FailureCause
+    from meshpipeline.contracts.mesh_execution import meshers_started, native_runs
+    runs = native_runs(workspace)
+    if runs is None:
+        return cause, facts
+    started = meshers_started(runs) or 0
+    facts = {**facts, "meshers_started": started}
+    launched = [r for r in runs if not r.get("refused_before_launch")]
+    if started == 0:
+        try:
+            from meshpipeline.engines.registry import get_spec
+            deterministic = get_spec(state.get("engine", "")).build_driver is not None
+        except Exception:  # noqa: BLE001 - an unknown engine claims nothing
+            deterministic = False
+        return FailureCause.NOT_BUILT.value, {**facts, "deterministic": deterministic}
+    last = launched[-1]
+    if last.get("timed_out"):
+        return FailureCause.ENGINE_TIMED_OUT.value, facts
+    if last.get("never_started"):
+        return FailureCause.RUN_INFRASTRUCTURE.value, facts
+    if last.get("uncollected"):
+        return FailureCause.RUN_INFRASTRUCTURE.value, {**facts, "result_uncollected": True}
+    return cause, facts
 
 
 async def node_executor(state: PipelineState) -> dict:
@@ -53,6 +206,10 @@ async def node_executor(state: PipelineState) -> dict:
             "executor_success":     False,
             "executor_output":      _geom_reject,
             "executor_failed_gate": "geometry",
+            "executor_failure_cause": SEAM_CAUSES["geometry"].value,
+            # admission's own facts (which KIND of refusal - the CAD's or the setup's) carried on
+            "executor_failure_facts": {**dict(state.get("executor_failure_facts") or {}),
+                                       "reason": str(_geom_reject)[:600]},
         }
 
     if not workspace:
@@ -60,7 +217,28 @@ async def node_executor(state: PipelineState) -> dict:
         return {
             "executor_success": False,
             "executor_output":  "[EXECUTOR_ERROR] No workspace path in state",
+            "executor_failure_cause": "",
+            "executor_failure_facts": {},
         }
+
+    # A PRE-FLIGHT REFUSAL: the builder found, before the mesher ran, that what it was about to
+    # mesh could not pass, and stopped - no mesh exists. Two pre-flights record one:
+    #   * engines/preflight.py - a far-field box the extent gate would block on every pass, or an
+    #     approved name no mesher can write (the builder's run_mesh name check);
+    #   * engines/case_contract.py - the patch-contract launch check: the case OUR renderer wrote
+    #     does not build the patches the user approved. That is our defect, never the user's
+    #     input and never a mesh-quality verdict, and re-rendering writes the same case.
+    # Each is reported as the gate it stands in for, with its cause, so the user reads what was
+    # wrong and the retry policy skips what a retry cannot change - finalizing the empty
+    # workspace would report a mesher that "did not finish". Honoured only while no mesh exists:
+    # a mesh on disk was built after the refusal was written and is judged as usual.
+    from meshpipeline.engines.preflight import read_refusal
+    _refusal = read_refusal(workspace) or _case_contract_refusal(workspace, job_id)
+    if _refusal is not None and _mesh_on_disk(state.get("engine", ""), workspace):
+        _refusal = None
+    if _refusal is not None:
+        logger.warning("Executor: pre-flight refused the case before meshing - gate=%s cause=%s "
+                       "- job_id=%s", _refusal.gate, _refusal.cause, job_id)
 
     # cfMesh-native: the Builder already built constant/polyMesh via run_mesh.
     # The executor validates it + writes the manifest/review-mesh; no meshing here.
@@ -71,12 +249,15 @@ async def node_executor(state: PipelineState) -> dict:
     # internal jobs bypassing intake (programmatic submits) can arrive with no domain label;
     # give the reviewer a non-empty flow context rather than an empty field.
     _mfst_domain = _domain or ("internal flow" if _internal else "")
+    _manifest_before = _manifest_stamp(workspace)
     # ENGINE-ADAPTER seam: each engine declares its own finalize (flow engines →
     # each flow bundle's finalize clone; gmsh → its own finalize).
-    result = await asyncio.to_thread(
-        get_engine(state.get("engine", "")).finalize, workspace,
-        state.get("intake_patches", []) or [], state.get("engine", ""), _mfst_domain,
-        _internal, state.get("engine_params", {}) or {}, _flow_topology)
+    result: dict = ({"success": False, "output": _refusal.builder_text, "stdout": "", "stderr": ""}
+              if _refusal is not None else
+              await asyncio.to_thread(
+                  get_engine(state.get("engine", "")).finalize, workspace,
+                  state.get("intake_patches", []) or [], state.get("engine", ""), _mfst_domain,
+                  _internal, state.get("engine_params", {}) or {}, _flow_topology))
 
     executor_success = result["success"]
     solvability_failed = False
@@ -85,6 +266,40 @@ async def node_executor(state: PipelineState) -> dict:
     # WHICH rejection source spoke. The classifier looks the section up from this key
     # (a declared GateSpec, or one of the non-gate seams) instead of regexing the prose.
     failed_gate = "" if executor_success else "finalize"
+    # WHAT that source says failed (contracts/failure_cause.py), and the facts the user's sentence
+    # is built from. Written beside the gate key so the terminal message can name the cause -
+    # 'car wall' came out as 'car_wall' - instead of one sentence for every gate.
+    failure_cause = "" if executor_success else _gate_cause(state.get("engine", ""), "finalize",
+                                                            None)
+    failure_facts: dict = {} if executor_success else {"engine": _engine_label(state)}
+    if _refusal is not None:
+        # the refused gate speaks for itself, and the user sees which check it was
+        failed_gate, failure_cause = _refusal.gate, _refusal.cause
+        failure_facts = dict(_refusal.facts)
+        _started = _meshers_started(workspace)
+        if _started is not None:
+            # whether an earlier pass of this attempt did start a mesher: what the attempt is
+            # counted by (engine_fallback.mesher_started)
+            failure_facts["meshers_started"] = _started
+        await _pub.acheck(_gate_statement(state.get("engine", ""), _refusal.gate), ok=False)
+    elif not executor_success and (_broken := _broken_mesh(workspace, _manifest_before)):
+        # A MESH CAME OUT, AND IT IS BROKEN: finalize wrote its manifest and checkMesh's fatal
+        # defects are in it. That is a mesh that failed its quality check, not a mesher that
+        # "stopped before it finished writing the mesh" (every cfMesh DrivAer car was told that,
+        # e2e sweep 2026-10-17). The fatal list travels as a fact: the user's sentence names the
+        # defects, and the fallback ladder moves a broken mesh to the next engine at once.
+        from meshpipeline.contracts.failure_cause import FailureCause
+        failure_cause = FailureCause.MESH_QUALITY.value
+        failure_facts = {**failure_facts, "fatal": _broken}
+        _started = _meshers_started(workspace)
+        if _started is not None:
+            failure_facts["meshers_started"] = _started
+    elif not executor_success:
+        # NO MESH, AND NOTHING REFUSED IT: say which of the four it was, from the attempt's record
+        # of native runs - not "the mesher stopped" for every one of them (job d20ad762 was told
+        # its mesher crashed when no mesher had started)
+        failure_cause, failure_facts = _no_mesh_cause(state, workspace, failure_cause,
+                                                      failure_facts)
     executor_output  = result.get("output", "")
     mesh_manifest: dict = {}
     solvability_metrics: dict = {}  # residual/iters/n_cells/info
@@ -94,7 +309,7 @@ async def node_executor(state: PipelineState) -> dict:
         # whatever the catalog row declares - no per-engine branches here. Crash
         # semantics (gate crash = SystemFailure, never a mesh rejection) live in
         # run_gates, written once.
-        from meshpipeline.engines.gates import GateCtx, run_gates
+        from meshpipeline.engines.gates import GateCtx, facts_of, run_gates
         from meshpipeline.engines.registry import get_spec
         _ctx = GateCtx(
             workspace=Path(workspace),
@@ -125,6 +340,10 @@ async def node_executor(state: PipelineState) -> dict:
             executor_success = False
             failed_gate = _gate_key
             contract_failed = (_gate_key == "patch_contract")
+            failure_cause = _gate_cause(state.get("engine", ""), _gate_key, _gate_feedback)
+            failure_facts = facts_of(_gate_feedback)
+            if failure_cause == SEAM_CAUSES["finalize"].value and not failure_facts:
+                failure_facts = {"engine": _engine_label(state)}
             executor_output += f"\n{_gate_feedback}"
             logger.warning(
                 "Executor: gate %s REJECTED mesh - job_id=%s - %s",
@@ -149,7 +368,13 @@ async def node_executor(state: PipelineState) -> dict:
 
         if executor_success:
             _domain_check_failed = False
-            if executor_success and not contract_failed and mesh_manifest and polcfg.DOMAIN_EXTENT_GATE_ENABLED:
+            from meshpipeline.engines.domain_extent_gate import far_field_exists
+            # the far-field extent is judged only where a far field exists: never on an internal
+            # flow, whose box is the mesher's background around the passage, not room the user
+            # asked for (the gate itself says the same from the manifest)
+            if (executor_success and not contract_failed and mesh_manifest
+                    and polcfg.DOMAIN_EXTENT_GATE_ENABLED
+                    and far_field_exists(state.get("flow_topology"), mesh_manifest)):
                 _typed_req = state.get("requested_extents")
                 _typed_ruler = state.get("reference_length_m")
                 if _typed_req and _typed_ruler:
@@ -188,6 +413,8 @@ async def node_executor(state: PipelineState) -> dict:
                     elif _v.status in ("miss", "block", "unmeasured"):
                         executor_success = False
                         failed_gate = "domain_extent"
+                        failure_cause = SEAM_CAUSES["domain_extent"].value
+                        failure_facts = {"misses": list(getattr(_v, "misses", []) or [])}
                         contract_failed = True
                         executor_output += f"\n{_v.detail}"
                         logger.warning(
@@ -205,6 +432,8 @@ async def node_executor(state: PipelineState) -> dict:
                         if _ext is not None and not _ext[0]:
                             executor_success = False
                             failed_gate = "domain_extent"
+                            failure_cause = SEAM_CAUSES["domain_extent"].value
+                            failure_facts = {}
                             contract_failed = True
                             executor_output += f"\n{_ext[1]}"
                             logger.warning(
@@ -243,6 +472,8 @@ async def node_executor(state: PipelineState) -> dict:
                     elif not _result[0]:
                         executor_success = False
                         failed_gate = "solvability"
+                        failure_cause = SEAM_CAUSES["solvability"].value
+                        failure_facts = {}
                         solvability_failed = True
                         executor_output += f"\n{_result[1]}"
                         logger.warning(
@@ -293,6 +524,7 @@ async def node_executor(state: PipelineState) -> dict:
     TrainingLogger(job_id).log("executor_run", op_id=f"executor:{_n}", payload={
         "success":    executor_success,
         "failed_gate": "" if executor_success else failed_gate,
+        "failure_cause": "" if executor_success else failure_cause,
         "output_len": len(executor_output),
         "workspace":  workspace,
         "executor_stdouts":      result.get("stdout", ""),
@@ -305,6 +537,8 @@ async def node_executor(state: PipelineState) -> dict:
         "executor_success":     executor_success,
         "executor_output":      executor_output,
         "executor_failed_gate": "" if executor_success else failed_gate,
+        "executor_failure_cause": "" if executor_success else failure_cause,
+        "executor_failure_facts": {} if executor_success else dict(failure_facts),
         "mesh_manifest":        mesh_manifest,
         "solvability_failed":   solvability_failed,
         # machine-measured requirement near-misses for THIS attempt ([] when none): the

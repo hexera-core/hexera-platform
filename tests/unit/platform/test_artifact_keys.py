@@ -38,14 +38,22 @@ def test_the_runner_derived_marker_equals_the_pipeline_built_marker(job):
 
 # behavioural: the mesh runner writes to those keys
 class _FakeBlob:
-    def __init__(self, sink, key): self._sink, self._key = sink, key
+    def __init__(self, sink, key, chunk_size=None):
+        self._sink, self._key, self.chunk_size = sink, key, chunk_size
+
     def upload_from_string(self, data, content_type=None):
         self._sink[self._key] = (data, content_type)
+
+    def upload_from_filename(self, path, content_type=None, timeout=None):
+        # the archive goes up chunked, with a deadline per chunk (gcs_exchange)
+        assert self.chunk_size and timeout, "a returned archive must go up chunked"
+        with open(path, "rb") as fh:
+            self._sink[self._key] = (fh.read(), content_type)
 
 
 class _FakeBucket:
     def __init__(self, sink): self._sink = sink
-    def blob(self, key): return _FakeBlob(self._sink, key)
+    def blob(self, key, chunk_size=None): return _FakeBlob(self._sink, key, chunk_size)
 
 
 class _FakeGcsClient:

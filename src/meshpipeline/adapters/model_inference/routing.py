@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import re
 import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -246,7 +247,7 @@ async def _attempt_target(route, target, invoke, classify, budget: _Budget):
             detail = f"timeout after {attempt_timeout:.1f}s"
         except BaseException as exc:  # noqa: BLE001 - classified, then retried or surfaced
             category, cause = classify(exc), exc
-            detail = f"{type(exc).__name__}"
+            detail = describe_failure(exc)
         if category not in _RETRYABLE:
             # Terminal for this target: our defect, or a category retrying cannot help.
             return (None, category, detail, attempt + 1, usage, time.monotonic() - t0, started,
@@ -258,6 +259,35 @@ async def _attempt_target(route, target, invoke, classify, budget: _Budget):
             await asyncio.sleep(delay)
     return (None, category or FailureCategory.SERVICE_UNAVAILABLE, detail,
             attempt + 1, usage, time.monotonic() - t0, started, cause)
+
+
+#: Anything in a provider's message shaped like a credential: a prefixed key (sk-..., pk-...),
+#: the "Bearer ..." an echo of our own header would carry, or any long unbroken token.
+_CREDENTIAL_SHAPED = re.compile(
+    r"\b(?:sk|pk|rk)-[A-Za-z0-9*._\-]{8,}|(?i:bearer)\s+[A-Za-z0-9*._\-]{8,}"
+    r"|[A-Za-z0-9_\-]{32,}")
+
+
+def describe_failure(exc: BaseException, *, limit: int = 240) -> str:
+    """What a failed attempt was, in words an operator can act on: the exception type, the HTTP
+    status the provider answered with (when it answered), and the provider's own message -
+    trimmed, and with anything shaped like a credential masked.
+
+    This used to be the type name alone. Job 4f18812f's review died on DeepInfra's HTTP 402 "You
+    need positive balance to do inference" - the account had run dry - and everything past the
+    category was reduced to "APIStatusError". A 4xx is terminal and never retried, so its message
+    is the only account of what the provider refused, and it has to survive into the log."""
+    name = type(exc).__name__
+    status = getattr(exc, "status_code", None)
+    head = f"{name} {status}" if isinstance(status, int) else name
+    message = getattr(exc, "message", None)
+    text = " ".join(str(message if isinstance(message, str) and message else exc).split())
+    if not text or text == name:
+        return head
+    text = _CREDENTIAL_SHAPED.sub("***", text)
+    if len(text) > limit:
+        text = text[:limit - 3] + "..."
+    return f"{head}: {text}"
 
 
 _RETRYABLE: frozenset[FailureCategory] = frozenset({

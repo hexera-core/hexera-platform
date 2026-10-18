@@ -84,6 +84,47 @@ def test_the_delivery_guard_counts_atomically_under_the_preserved_key_and_ttl(mo
     assert g.record_attempt("job-y") == 1, "counts must be per job"
 
 
+def test_a_handed_back_delivery_is_taken_back_under_the_same_key(monkeypatch):
+    # A job handed back because its machine was shut down killed nothing; its delivery must not
+    # count toward the poison-job cap. The take-back is one script (never below zero, never a new
+    # key), addressed to the very key record_attempt counts under.
+    calls: list = []
+
+    class _Fake(FakeSyncRedis):
+        def eval(self, script, numkeys, *keys):
+            calls.append((script, numkeys, keys))
+            n = int(self.kv.get(keys[0], 0))
+            if n > 0:
+                self.kv[keys[0]] = n - 1
+            return self.kv.get(keys[0], 0)
+
+    fake = _Fake()
+    monkeypatch.setattr(guard_mod, "sync_client", lambda **k: fake)
+    g = guard_mod.RedisDeliveryGuard()
+    g.record_attempt("job-x")
+    g.record_attempt("job-x")
+    g.forgive_attempt("job-x")
+    assert fake.kv["job:job-x:deliveries"] == 1
+    g.forgive_attempt("job-never-counted")
+    assert "job:job-never-counted:deliveries" not in fake.kv
+    assert calls and all(numkeys == 1 and "DECR" in script for script, numkeys, _k in calls)
+
+
+def test_forgiving_a_delivery_never_fails_the_hand_back(monkeypatch):
+    from meshpipeline.contracts import delivery_guard
+
+    class _Down:
+        def record_attempt(self, job_id): return 1
+        def forgive_attempt(self, job_id): raise ConnectionError("redis down")
+
+    class _Old:                               # a guard with no take-back at all
+        def record_attempt(self, job_id): return 1
+
+    for guard in (_Down(), _Old(), None):
+        monkeypatch.setattr(delivery_guard, "_guard", guard)
+        delivery_guard.forgive_attempt("job-x")     # never raises
+
+
 # rate limit: the fixed-window counter
 @pytest.mark.asyncio
 async def test_the_rate_limit_store_counts_per_identity_window_under_the_preserved_key(monkeypatch):

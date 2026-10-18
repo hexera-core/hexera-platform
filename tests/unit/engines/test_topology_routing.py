@@ -21,9 +21,26 @@ def test_internal_purpose_resolves_to_a_capable_engine(monkeypatch, tmp_path):
     assert out == {"engine": default_engine()}
 
 
-def test_internal_pick_is_stable_not_positional(monkeypatch, tmp_path):
+def test_internal_pick_follows_the_declared_ladder_not_catalog_position(monkeypatch, tmp_path):
+    # the candidates are the engines DECLARED to take this file for internal flow, in their
+    # declared ladder order (engines/capability.py) - the first of them, never a dict position
     monkeypatch.setattr(rtcfg, "CORPUS_DIR", str(tmp_path))
+    import meshpipeline.engines.capability as cap
     import meshpipeline.pipeline.engine_select as es
+    monkeypatch.setattr(cap, "engines_for", lambda *_a, **_k: ["zeta", "alpha"])
+    monkeypatch.setattr(es, "default_engine", lambda: "not_a_candidate")
+    out = asyncio.run(node_engine_select({"job_id": "t", "purpose": "internal_cfd"}))
+    assert out == {"engine": "zeta"}
+
+
+def test_internal_pick_with_no_engine_for_the_file_is_stable_not_positional(monkeypatch,
+                                                                             tmp_path):
+    # no engine declares this file for internal flow: every internal engine stays a candidate
+    # (admission then refuses with the honest account), picked in a stable order
+    monkeypatch.setattr(rtcfg, "CORPUS_DIR", str(tmp_path))
+    import meshpipeline.engines.capability as cap
+    import meshpipeline.pipeline.engine_select as es
+    monkeypatch.setattr(cap, "engines_for", lambda *_a, **_k: [])
     monkeypatch.setattr(es, "engines_producing_topology", lambda *_: ["zeta", "alpha"])
     monkeypatch.setattr(es, "default_engine", lambda: "not_a_candidate")
     out = asyncio.run(node_engine_select({"job_id": "t", "purpose": "internal_cfd"}))

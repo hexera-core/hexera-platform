@@ -44,6 +44,9 @@ class MessageStatus(str, enum.Enum):
     unit_question = "unit_question"
     #: the user named a unit; it is durably bound - then run the turn
     unit_recorded = "unit_recorded"
+    #: the user said the file is in another unit than the one settled: it is recorded, every size
+    #: derived under the old one is re-read, and the reply says so - no model turn
+    unit_changed = "unit_changed"
     #: the geometry check is drawing the part: the turn is answered with a holding line
     geometry_hold = "geometry_hold"
     #: the session does not exist for this owner
@@ -57,6 +60,7 @@ class GateChange(str, enum.Enum):
     approval_invalidated = "approval_invalidated"
     unit_asked = "unit_asked"
     unit_answered = "unit_answered"
+    unit_changed = "unit_changed"
 
 
 @dataclass(frozen=True)
@@ -109,7 +113,8 @@ class MessageOutcome:
     @property
     def answered(self) -> bool:
         return self.status in (MessageStatus.approval_deferred, MessageStatus.unit_question,
-                               MessageStatus.already_dispatched, MessageStatus.geometry_hold)
+                               MessageStatus.already_dispatched, MessageStatus.geometry_hold,
+                               MessageStatus.unit_changed)
 
     @property
     def continues_to_intake(self) -> bool:
@@ -267,9 +272,16 @@ async def accept(inbound: InboundMessage, *, session_repo, db_factory, logger,
 
 async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: list,
                   revision: str, session_repo, logger) -> MessageOutcome:
+    changed = await _settle_unit_change(inbound, db, locked=locked, messages=messages,
+                                        revision=revision, session_repo=session_repo, logger=logger,
+                                        gate=gate)
+    if changed is not None:
+        return changed
     approval = gate.get("approval")
     if ap.is_live(approval):
-        intent = ap.classify(inbound.content)
+        # the summary's own engine, named in the answer, is part of the yes, not a change
+        intent = ap.classify(inbound.content,
+                             engine=str(((approval or {}).get("payload") or {}).get("mesh_engine") or ""))
         if uc.needs_confirmation(locked):
             # THE UNIT BEFORE THE RUN. A run cannot start on a file whose scale nobody has named
             # (application/dispatch_contract refuses the pair), so an approval given while the
@@ -299,6 +311,18 @@ async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: 
             return MessageOutcome(status=MessageStatus.approve,
                                   transition=GateTransition(revision=revision,
                                                             approval_status=ap.AWAITING))
+        if intent == ap.QUESTION_INTENT:
+            # A question about the summary changes nothing: the summary stands, one turn further
+            # on, and the intake answers. The user's next clear yes lands on it; a change after
+            # the answer goes through the intake as always and replaces it.
+            gate["approval"] = ap.defer(approval)
+            await session_repo.set_intake_gate(db, inbound.session_id, gate)
+            logger.info("intake message: a question about the summary - it stands - session=%s",
+                        inbound.session_id)
+            return MessageOutcome(
+                status=MessageStatus.proceed,
+                transition=GateTransition(change=GateChange.approval_deferred, revision=revision,
+                                          approval_status=ap.AWAITING))
         if intent == ap.HEDGE_INTENT:
             # Ambiguous: never dispatch, never silently invalidate - ask once, deterministically,
             # and move the snapshot's expected confirmation turn along with the question so the
@@ -366,10 +390,19 @@ async def _settle_geometry_hold(inbound: InboundMessage, db, *, locked, messages
     decision = gh.hold_applies(session_id)
     if not decision:
         return None
+    # A WHOLE THERMAL MODEL (ECXML) is held in its own words: no openings to check, and its own
+    # headline once the check has read the file. Known from the stored check, or - while the
+    # check is still reading - from the upload's format.
+    thermal, headline = gh.stored_thermal(session_id)
+    if not thermal:
+        from meshpipeline.contracts.intake_formats import THERMAL_CHECK
+
+        thermal = await gh.upload_check_mode(db, locked, inbound.owner_id,
+                                             inbound.organization_id) == THERMAL_CHECK
     if decision == "wait":
         # THE NAMING IS ALREADY RUNNING: a message sent meanwhile is answered with the wait line
         # and nothing else, so the intake cannot ask past the stage. Bounded by WAIT_GRACE_S.
-        reply = gh.WAIT_REPLY
+        reply = gh.wait_reply(thermal)
         await session_repo.append_message(db, inbound.session_id, "assistant", reply)
         logger.info("intake message: still held for the geometry check - session=%s", inbound.session_id)
         return MessageOutcome(status=MessageStatus.geometry_hold, reply=reply,
@@ -378,15 +411,118 @@ async def _settle_geometry_hold(inbound: InboundMessage, db, *, locked, messages
                                                      inbound.organization_id)
     if not gh.queue_naming(session_id, inbound.owner_id, gh.purpose_from(messages), interpretation):
         return None
+    reply = gh.hold_reply(thermal, headline)
     try:
-        await session_repo.append_message(db, inbound.session_id, "assistant", gh.HOLD_REPLY)
+        await session_repo.append_message(db, inbound.session_id, "assistant", reply)
     except Exception:
         # the turn will not be stored: withdraw the marker so the next turn can hold again
         gh.withdraw_naming(session_id)
         raise
     logger.info("intake message: held for the geometry check - session=%s", inbound.session_id)
-    return MessageOutcome(status=MessageStatus.geometry_hold, reply=gh.HOLD_REPLY, queued_naming=True,
+    return MessageOutcome(status=MessageStatus.geometry_hold, reply=reply, queued_naming=True,
                           transition=GateTransition(revision=revision))
+
+
+async def withdraw_proposal_for_unit_change(db, session, *, session_repo=None) -> bool:
+    """A run proposed with sizes read in another unit can never dispatch. Called in the caller's
+    transaction when the unit changes somewhere other than the chat (the geometry stage), so the
+    withdrawal lands with the change or not at all - never left to a later turn that may fail.
+    The gate is this authority's to write. True when a live proposal was withdrawn."""
+    from meshpipeline.application.unit_change import withdraw_live_approval
+
+    gate, withdrawn = withdraw_live_approval(getattr(session, "intake_gate", None))
+    if not withdrawn:
+        return False
+    if session_repo is None:
+        from meshpipeline.persistence.repositories.session_repository import SessionRepository
+        session_repo = SessionRepository()
+    await session_repo.set_intake_gate(db, session.id, gate)
+    return True
+
+
+#: What the chat says when a unit change could not be made safely: nothing was changed.
+UNIT_CHANGE_FAILED = ("I couldn't switch the file to {unit} just now: the sizes you confirmed on the picture "
+                      "could not be read, so I changed nothing. Please say it again in a moment.")
+
+
+async def _settle_unit_change(inbound: InboundMessage, db, *, locked, messages: list, revision: str,
+                              session_repo, logger, gate: dict | None = None) -> MessageOutcome | None:
+    """A UNIT CHANGED AFTER IT WAS SETTLED. "The file is in metres", said once the sizes were
+    confirmed as millimetres, is recorded as the user's unit and every length derived under the
+    old one is re-read by the application - the declaration the intake reads, the declared
+    patches - and a run proposed with the old sizes is withdrawn. Nothing is left to the model
+    to convert, which is where a unit named in the chat used to spiral: the model relabelled
+    the numbers itself while the geometry kept the old scale. None when the message states no
+    unit, or the one already held."""
+    if uc.needs_confirmation(locked) or not getattr(locked, "geometry_source_id", None):
+        return None
+    unit = uc.stated_unit(inbound.content)
+    if unit is None:
+        return None
+    from meshpipeline.application.unit_change import UnitChangeError, UnitFixed, change_unit
+
+    try:
+        change = await change_unit(db, locked, owner_id=inbound.owner_id,
+                                   organization_id=inbound.organization_id, unit=unit,
+                                   session_repo=session_repo, where="chat")
+    except UnitFixed as fixed:
+        # THE CONVERTER FIXED THE UNIT: "metres" is true of an ECXML model's source, never of the
+        # millimetre geometry it was converted into. Nothing changes, and the user is told why.
+        logger.info("intake message: %s named, but the unit is fixed at %s - session=%s",
+                    unit.value, fixed.unit.value, inbound.session_id)
+        if not uc.only_states_unit(inbound.content):
+            # THE MESSAGE ASKS FOR MORE ("... and make the mesh finer"): nothing changed about the
+            # unit, and the rest goes on through the turn as any other request does - a proposed
+            # run included, which the request then corrects
+            return None
+        reply = fixed.reply()
+        # A RUN ALREADY PROPOSED STANDS - nothing it was set up with changed - so it waits one
+        # turn: the "go on" the reply invites is the yes it is still waiting for.
+        current = dict(gate if gate is not None else (getattr(locked, "intake_gate", None) or {}))
+        deferred = ap.is_live(current.get("approval"))
+        if deferred:
+            current["approval"] = ap.defer(current.get("approval"))
+            await session_repo.set_intake_gate(db, inbound.session_id, current)
+        await session_repo.append_message(db, inbound.session_id, "assistant", reply)
+        if deferred:
+            return MessageOutcome(
+                status=MessageStatus.unit_changed, reply=reply, awaiting_confirmation=True,
+                transition=GateTransition(change=GateChange.approval_deferred, revision=revision,
+                                          approval_status=ap.AWAITING))
+        return MessageOutcome(status=MessageStatus.unit_changed, reply=reply,
+                              transition=GateTransition(revision=revision))
+    except UnitChangeError as exc:
+        # NOTHING WAS CHANGED: the confirmed sizes could not be re-read, and a unit bound over
+        # them would be the very mismatch this turn exists to prevent. Said, not guessed.
+        logger.warning("intake message: the unit change to %s was not made (%s) - session=%s",
+                       unit.value, exc, inbound.session_id)
+        reply = UNIT_CHANGE_FAILED.format(unit=uc.UNIT_WORDS[unit])
+        await session_repo.append_message(db, inbound.session_id, "assistant", reply)
+        return MessageOutcome(status=MessageStatus.unit_changed, reply=reply,
+                              transition=GateTransition(revision=revision))
+    if change is None:
+        return None
+    if change.gate is not None:
+        # the proposal made with the old sizes can never dispatch; the gate is this authority's
+        await session_repo.set_intake_gate(db, inbound.session_id, change.gate)
+    logger.info("intake message: the file's unit changed %s -> %s - session=%s",
+                change.old_unit, change.new_unit, inbound.session_id)
+    if not change.reread:
+        # nothing was confirmed on the picture yet: the geometry check may be waiting for this
+        # very answer, and the naming now reads the part in the unit just named
+        hold = await _settle_geometry_hold(inbound, db, locked=locked, messages=messages,
+                                           revision=revision, session_repo=session_repo, logger=logger)
+        if hold is not None:
+            return hold
+    reply = change.reply()
+    await session_repo.append_message(db, inbound.session_id, "assistant", reply)
+    return MessageOutcome(
+        status=MessageStatus.unit_changed, reply=reply,
+        transition=GateTransition(
+            change=GateChange.approval_invalidated if change.approval_withdrawn else GateChange.unit_changed,
+            revision=revision,
+            approval_status=ap.INVALIDATED if change.approval_withdrawn else "",
+            reason="the file's unit changed" if change.approval_withdrawn else ""))
 
 
 async def _settle_unit(inbound: InboundMessage, db, *, gate: dict, locked, revision: str,
@@ -396,9 +532,55 @@ async def _settle_unit(inbound: InboundMessage, db, *, gate: dict, locked, revis
     if not uc.needs_confirmation(locked):
         return None
 
+    # A UNIT THE CONVERTER FIXED IS NEVER ASKED: an ECXML model's geometry is millimetres by
+    # construction. Asked, the truthful "metres" (the source's SI) was taken for the converted
+    # geometry and the part became a thousand times too long. Recorded as the file's, silently.
+    from meshpipeline.application import geometry_hold as _gh
+
+    if await _gh.ensure_fixed_unit(db, locked, inbound.owner_id, inbound.organization_id) is not None:
+        await session_repo.set_intake_gate(db, inbound.session_id, uc.answered(gate))
+        logger.info("intake message: the converted geometry's unit is fixed - recorded, not asked - "
+                    "session=%s", inbound.session_id)
+        return MessageOutcome(
+            status=MessageStatus.unit_recorded,
+            transition=GateTransition(change=GateChange.unit_answered, revision=revision))
+
     asked_already = uc.already_asked(gate)
     proposal = uc.proposed(gate) if asked_already else None
     unit = uc.classify(inbound.content, proposal) if asked_already else None
+    if unit is None and not asked_already:
+        # THE UNIT SAID BEFORE IT WAS ASKED. "Air over the Ahmed body, the file is in metres" names
+        # the scale in the very message that would otherwise be answered with the unit question -
+        # asking it then is a question the user has just answered. Taken when the part is
+        # believable in it at its measured size; a unit that would make it absurd (a 1 mm car) is
+        # still asked, with the sizes beside every candidate, so the user sees the doubt.
+        from meshpipeline.application import geometry_hold as gh
+
+        unit = uc.stated_unit(inbound.content)
+        if unit is not None and not uc.believable(
+                gh.measured_size_mm(str(inbound.session_id)), unit,
+                f"{gh.purpose_from(getattr(locked, 'messages', None))} {inbound.content}"):
+            logger.info("intake message: %s said unasked but the part is not believable in it - "
+                        "asking - session=%s", unit.value, inbound.session_id)
+            unit = None
+    if unit is None and asked_already and not insist:
+        # THE USER LEAVES IT TO US. "No idea, whatever the file uses" to the unit question is an
+        # answer once the part is measured: the unit the question proposes (millimetres unless the
+        # size makes that absurd), which the stage then shows beside the part's length for the user
+        # to change. Asked again instead, it was the same question every turn and the geometry
+        # check waited on it for good.
+        from meshpipeline.agents.intake import turn as _turn
+        from meshpipeline.application import geometry_hold as gh
+
+        # only a PURE deferral: "you pick, but not metres" rules a unit out, and is asked again
+        pure = _turn.defers_to_default(inbound.content) and not uc.mentions_unit(inbound.content)
+        size = gh.measured_size_mm(str(inbound.session_id)) if pure else None
+        if size:
+            _words = gh.purpose_from(getattr(locked, "messages", None))
+            unit = proposal or uc.proposal_for(
+                size, _words, gh.measured_unit_inference(str(inbound.session_id), _words))
+            logger.info("intake message: the user left the unit to us - taking the proposed %s - "
+                        "session=%s", unit.value, inbound.session_id)
     if unit is not None:
         # STAMPED WITH BOTH, exactly as api/v1/upload.py stamps the interpretation it writes for a
         # file-declared unit. The two paths write the same table for the same reason; an
@@ -424,16 +606,24 @@ async def _settle_unit(inbound: InboundMessage, db, *, gate: dict, locked, revis
         # because the run cannot start without it.
         return None
 
-    # THE QUESTION PROPOSES when the part has been measured: millimetres, with the part's size
-    # in every candidate unit beside it, so the user can see which one is theirs and "ok" is an
-    # answer. Without a measurement it is the plain question, and nothing is proposed that the
-    # user could not check.
+    # THE QUESTION PROPOSES when the part has been measured: the unit the check reads it in
+    # from what the part is - its shape and flow, its name, the user's words ("This reads as a
+    # car-like body on the ground, 4.7 m long - metres?") - with the part's size in every
+    # candidate unit beside it, so the user can see which one is theirs and "ok" is an answer.
+    # Without a measurement it is the plain question, and nothing is proposed that the user
+    # could not check.
     from meshpipeline.application import geometry_hold as gh
 
     size = gh.measured_size_mm(str(inbound.session_id))
+    inference = None
     if size:
-        proposal = uc.PROPOSED
-    reply = uc.before_run(size, proposal) if insist else uc.question_for(size)
+        # the check's reading, else millimetres unless the part would then be implausible - by
+        # its size, or by what the user has said it is (a 1.04-unit car, a 229-unit city block)
+        _words = gh.purpose_from(getattr(locked, "messages", None))
+        inference = gh.measured_unit_inference(str(inbound.session_id), _words)
+        proposal = uc.proposal_for(size, _words, inference)
+    reply = (uc.before_run(size, proposal, inference) if insist
+             else uc.question_for(size, proposal, inference))
     if insist and ap.is_live(gate.get("approval")):
         # the approval waits one turn on the question: the next clear yes still lands on it
         gate = dict(gate, approval=ap.defer(gate.get("approval")))

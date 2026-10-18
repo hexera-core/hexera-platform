@@ -50,6 +50,19 @@ class InMemoryObjectStore:
         # it fails loudly instead of reaching something real.
         return f"memory://object-store/{key}?expires_in={int(expires_in.total_seconds())}"
 
+    def create_upload_url(self, *, object_key: str, expires_in: timedelta) -> str:
+        # The same unroutable shape. A test plays the client by calling put_bytes with the key -
+        # which is exactly what a client holding the real URL can do: write any bytes it likes.
+        key = normalize_key(object_key)
+        return f"memory://object-store/{key}?put&expires_in={int(expires_in.total_seconds())}"
+
+    def stat_object(self, *, object_key: str) -> StoredObject:
+        key = normalize_key(object_key)
+        if key not in self._objects:
+            raise ObjectNotFound(f"no such object: {key}")
+        return StoredObject(object_key=key, size_bytes=len(self._objects[key]),
+                            content_type=self._content_types.get(key))
+
     def delete_object(self, *, object_key: str) -> None:
         key = normalize_key(object_key)
         self._objects.pop(key, None)

@@ -178,15 +178,56 @@ def _render(tmp_path, **kw):
         domain_max=[1.26, 0.2, 0.2], strategy={}, cell_budget=8_000_000, **kw)
 
 
+def test_a_band_a_hair_under_the_background_costs_no_octree_level(tmp_path):
+    # annular_006 asked its wall for 1.55269 mm under a 1.55492 mm background: cfMesh halved the
+    # whole band (26 across where 13 were planned) and made 6.3 M cells in 1,237 s (verify-5fix)
+    out = _render(tmp_path, passage_radius={"p05": 0.0499, "median": 0.0501, "band": 0.0499})
+    assert out["wall_cell_size"] == out["max_cell_size"]
+    dic = (tmp_path / "system" / "meshDict").read_text()
+    mx = dic.split("maxCellSize ")[1].split(";")[0]
+    assert f"wall {{ cellSize {mx};" in dic, "the band asks for exactly the background cell"
+
+
+def test_the_band_costs_the_fewest_cells_that_hold_its_cells_across():
+    B = R.internal_band_cells
+    need = 2 * 0.08 / R.CFMESH_MIN_CELLS_ACROSS                  # 11.03 mm holds 14.5 across
+    # the background already holds it: no refinement, the wall asks for maxCellSize exactly
+    assert B(0.010, 0.0099, 0.08) == (0.010, 0.010)
+    # a background a little too coarse is made just fine enough (s_duct_003 was 4% short)
+    mx, wall = B(0.012, 0.0107, 0.08)
+    assert np.isclose(mx, need) and wall == mx
+    # far too coarse: the coarsest octree level that holds it, nudged so cfMesh stops there
+    mx, wall = B(0.03, 0.0005, 0.08)
+    assert mx == 0.03 and np.isclose(wall, 0.0075 * 1.001)
+    # asked between two levels: the size stands (cfMesh's halving lands on the finer level)
+    assert B(0.03, 0.0102, 0.08) == (0.03, 0.0102)
+
+
+def test_a_band_put_on_an_octree_level_does_not_box_its_own_walls(tmp_path):
+    # a 31.5 mm background (1.26 m / 40) and a band whose 14.5 across is exactly the 15.75 mm
+    # level: the band takes that level, nudged 0.1% up - 14.49 across its own walls, which must
+    # not then read as narrow and be refined one level finer again
+    b = 0.0315 / 2 * R.CFMESH_MIN_CELLS_ACROSS / 2
+    pts = np.stack([np.linspace(0, 1, 200), np.zeros(200), np.zeros(200)], axis=1)
+    out = _render(tmp_path, passage_radius={"p05": b, "median": 0.3, "band": b},
+                  passage_field=(pts, np.full(200, b), np.full(200, 1e-3)))
+    assert np.isclose(out["wall_cell_size"], 0.01575 * 1.001, rtol=1e-3)
+    assert not out["narrow_regions"], out["narrow_regions"]
+
+
 def test_the_passage_radius_caps_the_wall_band_and_the_background(tmp_path):
     base = _render(tmp_path)
     assert base["passage_caps"] is None
     capped = _render(tmp_path, passage_radius={"p05": 0.05, "median": 0.087})
     assert capped["wall_cell_size"] < base["wall_cell_size"]
-    assert np.isclose(capped["wall_cell_size"], round(2 * 0.05 / 13, 6))
+    # cfMesh is sized for CFMESH_CELLS_ACROSS (15), over the shared 13: its cut-cell wall edges run
+    # longer than the cell asked for, and the floor (12) counts those edges
+    from meshpipeline.engines.cfmesh.cfmesh_runner import CFMESH_CELLS_ACROSS as N
+    assert N == 15
+    assert np.isclose(capped["wall_cell_size"], round(2 * 0.05 / N, 6))
     assert capped["max_cell_size"] <= base["max_cell_size"]
     dic = (tmp_path / "system" / "meshDict").read_text()
-    assert "refinementThickness 0.055" in dic and f"cellSize {2 * 0.05 / 13:.6g}" in dic
+    assert "refinementThickness 0.055" in dic and f"cellSize {2 * 0.05 / N:.6g}" in dic
 
 
 def _ctx(quality):
@@ -219,7 +260,9 @@ def test_the_polymesh_boundary_is_read_from_its_files_alone(tmp_path):
     assert faces.min() == 0 and faces.max() == 15
     out = P.passage_of_polymesh(tmp_path)
     assert out["passage_cells_across_local"]["points"] == 16
-    assert 0.3 < out["passage_radius"]["median"] < 0.7, "half of a unit cross-section"
+    # every wall point of a one-cell duct is a corner, whose chord runs the diagonal: half of
+    # a unit cross-section, up to sqrt(2)/2
+    assert 0.3 < out["passage_radius"]["median"] <= 0.7072, "half of a unit cross-section"
     wpts, wfaces = P.boundary_triangles_of_polymesh(pm, wall_only=True)
     assert len(wfaces) == 2 * 12 and len(wpts) == 16, "the twelve side quads are the wall"
 

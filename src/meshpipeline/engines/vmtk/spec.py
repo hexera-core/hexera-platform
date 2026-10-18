@@ -9,12 +9,15 @@ from meshpipeline.contracts.review_evidence import (
 )
 from meshpipeline.engines.base import (
     Deliverable,
+    DeliveredMesh,
     DownstreamTarget,
     EngineSpec,
+    FlowSupport,
     InputContract,
     MeshCapability,
     ParamSpec,
     RunPolicy,
+    TurfRow,
 )
 from meshpipeline.engines.base import (
     DeliverableMember as M,
@@ -131,6 +134,47 @@ def _viewer_surface():
     return _hook
 
 
+# WHERE VMTK IS AT HOME (engines/home_turf.py reads these). VMTK fills the inside of a PASSAGE: any
+# internal flow whose openings it can cap (each a disk, or each a ring round a centre body) and
+# whose wall it sizes from the local radius - so every tubular structure: vessels, pipes, bends,
+# tees, manifolds, reducers, transitions, S-ducts, coils, venturis, tube-like nozzles, annuli and
+# non-circular ducts. Its cells are tetrahedra sized at 12 or more across the LOCAL gap, so its
+# cost follows the passage's length over its gap: the VMTK-TUBULAR sweep (2026-10-05/06) measured
+# the default fill at about 64-87 thousand cells per unit of slenderness (a bend 754k at 8.6, a
+# tee 954k at 14.9, a thin annulus 113M at 1333); at the 12-across floor with the interior
+# coarsened that is about 0.42 of it with five layers and 0.11 with none - so past ~100 the cell
+# budget reshapes the fill, and past ~800 no tetrahedral fill fits the 8M compute limit.
+HOME_TURF = (
+    TurfRow("flow", "!=", "internal", "outside",
+            "VMTK fills the inside of a passage; it builds no far field around a body and no "
+            "solid regions."),
+    TurfRow("ports", "<", 2, "outside",
+            "VMTK needs an inlet and an outlet opening to cap: a passage with fewer is not one it "
+            "can fill."),
+    TurfRow("slenderness", ">=", 3.0, "home",
+            "A long passage a centerline describes: VMTK sizes every stretch of it from its own "
+            "radius, with boundary layers on the whole wall.", flow="internal"),
+    TurfRow("neck", "<", 0.35, "home",
+            "Branches of very different sizes: VMTK gives each its own cell size from its own "
+            "radius, where a uniform mesher starves the small ones or floods the big one.",
+            flow="internal"),
+    TurfRow("gap_vs_port", ">", 1.4, "weak",
+            "A chamber much wider than its pipes (a plenum, a housing, a volute): VMTK meshes it, "
+            "but its tube sizing buys nothing there.", flow="internal"),
+    TurfRow("slenderness", "<", 1.5, "weak",
+            "Short and stubby, barely a passage: a centerline hardly describes it, so VMTK's "
+            "sizing gains little over a general mesher.", flow="internal"),
+    TurfRow("slenderness", ">", 100.0, "weak",
+            "Long and thin for its gap (a narrow annulus, a flat slot): VMTK's cells are as long "
+            "as they are wide, so to stay in the cell budget it coarsens the core and may drop "
+            "the boundary layers.", flow="internal"),
+    TurfRow("slenderness", ">", 800.0, "outside",
+            "Too thin for its length and width: 12 tetrahedra across the gap would need more than "
+            "the 8 million-cell limit. snappyHexMesh or cfMesh stretch their cells along the "
+            "passage and fit it.", flow="internal"),
+)
+
+
 SPEC = EngineSpec(
 
         name="vmtk",
@@ -194,7 +238,20 @@ SPEC = EngineSpec(
                       # that backs it is in engines/validation_evidence.json.
                       MeshCapability("fluid-domain", "fluid-volume",
                                      topologies=("internal",))),
+        # WHAT FILE IT TAKES - the true path on main. The lumen is staged from a CAD solid
+        # (lumen_staging.stage_lumen opens the declared ports and writes lumen.vtp). An STL upload
+        # is copied as input.stl and nothing writes lumen.vtp from it, so the builder found no
+        # lumen and ran out of ways on (job a76e3ca1, 2026-10-03). Built for tubular passages; when
+        # surface internal flow lands, widen the forms here.
+        accepts=(FlowSupport("internal", ("cad",),
+                             designed_for="tubular passages: vessels, pipes, ducts"),),
+        # a tetrahedral lumen filler: after the hex meshers on the internal ladder
+        ladder_rank=30,
+        home_turf=HOME_TURF,
         input_contract=InputContract(
+            # internal flow from an STL/OBJ/PLY upload: cad/internal_surface closes it at the
+            # confirmed openings (snappy/cfMesh/gmsh/vmtk internal paths read that record)
+            internal_from_surface=True,
             dimensionalities=("3D",),
             input_kind="surface",
             min_thickness_ratio=0.0,
@@ -211,6 +268,12 @@ SPEC = EngineSpec(
         # (ids 1 and 90, alongside the cap ids), so several named wall regions survive - the caps
         # are additional patches, not a limit of one wall.
         supports_multiple_wall_patches=True,
+        # ...but THIS bundle's path marks one: the staged lumen is the whole wall with the
+        # declared ports cut out (lumen_staging.stage_lumen), the delivered mesh.vtu names the
+        # wall by entity id 1 alone, and a second id would be counted as a cap by the patch gate.
+        # Two declared walls would come back as one while the manifest echoed both - so it is one
+        # wall and the declared openings, and nothing else, until a path splits the wall.
+        boundary_limits=(("internal", (("wall", 1), ("symmetry", 0), ("empty", 0))),),
         validation_coverage=(
             _VC(_VA.INTEGRITY, "tetrahedral element validity - no inverted / zero-volume cells in mesh.vtu",
                 "an inverted or degenerate tet is universally invalid for any FE/FV assembly; blocked by "
@@ -272,6 +335,8 @@ SPEC = EngineSpec(
             # FACTUAL consumers of a VTK-native tet volume mesh - not a domain claim
             solvers=("OpenFOAM", "SimVascular/svSolver", "FEniCS/dolfinx", "SU2", "Elmer"),
         ),
+        # a tetrahedral lumen fill with optional near-wall layers (the wall_layers param)
+        delivered_mesh=DeliveredMesh(cells="tetrahedral", walls="body-fitted", prism_layers=True),
         run_policy=RunPolicy(
             required_files=("vmtk_spec.json",),
             # 50 MINUTES: at industry density (13 cells across, 5 layers) the sweep's largest case

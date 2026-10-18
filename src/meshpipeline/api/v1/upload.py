@@ -12,8 +12,10 @@ from pydantic import BaseModel
 import meshpipeline.agents.intake.settings as icfg
 import meshpipeline.settings.runtime as rtcfg
 from meshpipeline.api.security import org_dep, owner_dep, plan_dep
+from meshpipeline.cad.ingest.upload_check import STEP_HEADER_REFUSAL as _STEP_HEADER_REFUSAL
 from meshpipeline.contracts.intake_formats import (
     ACCEPTED_SUFFIXES,
+    refusal_suffix,
     staged_name_for,
     unsupported_message,
 )
@@ -33,9 +35,60 @@ UPLOAD_ACKNOWLEDGEMENT = (
 _JOBS_DIR = Path(rtcfg.JOBS_DIR)
 _JOBS_DIR.mkdir(parents=True, exist_ok=True)
 
-# .vtp is a VTK PolyData surface - vmtk's native lumen input (a segmented vessel/duct
-# surface). The engine's staging seam converts between the surface formats it needs.
+# Every accepted format (contracts/intake_formats) is stored as uploaded; cad/ingest turns it into
+# a canonical CAD solid or STL surface where it is read (the job materialiser, the geometry check).
 _MAX_FILE_BYTES   = 500 * 1024 * 1024
+
+# The IGES unit is read by OpenCASCADE, which loads the whole model to answer - several times the
+# file's size in memory. Above this the upload does not ask it: the unit is left unresolved and is
+# confirmed in conversation, which is the ordinary outcome for any file that states no unit. STEP
+# is read from its text and has no such cost.
+_IGES_UNIT_READ_MAX_BYTES = 64 * 1024 * 1024
+
+
+def sanitised_upload_name(filename: str) -> tuple[str, str]:
+    """The name an upload is recorded under, and its lowercase suffix.
+
+    The client's name is never trusted as a path: the stem keeps only safe characters and is
+    capped, and only the suffix carries forward, because format dispatch keys off it. Shared by the
+    multipart and the direct upload, so both record a file under the same name.
+    """
+    import re as _re
+    raw = filename or ""
+    safe_stem = _re.sub(r"[^A-Za-z0-9_\-.]", "_", Path(raw).stem)[:64]
+    cleaned = safe_stem + Path(raw).suffix.lower()
+    return cleaned, Path(cleaned).suffix.lower()
+
+
+def checked_upload(dest: Path, suffix: str) -> tuple[Path, str]:
+    """THE content check every upload makes, shared by the multipart and the direct route.
+
+    The bytes decide, not the name (cad/ingest/upload_check): a STEP without its ISO-10303-21
+    header, a renamed SolidWorks part, a zip bomb posing as 3MF or a glTF that points at files the
+    upload does not carry are refused here with a sentence that says what to do instead. A file
+    that is plainly ANOTHER accepted format than its name says (an STL named .obj) is kept, and
+    recorded as what it is. Returns the staged file and the suffix its bytes really are."""
+    from meshpipeline.cad.ingest import check_upload
+
+    try:
+        verdict = check_upload(dest, suffix)
+    except Exception as exc:  # noqa: BLE001 - a check that cannot run must not cost the upload
+        logger.warning("upload: the content check could not run (%s); the file is kept and read "
+                       "on the worker", exc)
+        return dest, suffix
+    if not verdict.ok:
+        dest.unlink(missing_ok=True)
+        raise HTTPException(status_code=verdict.status, detail=verdict.refusal)
+    if verdict.suffix != suffix:
+        moved = dest.with_name(staged_name_for(verdict.suffix))
+        dest.replace(moved)
+        logger.info("upload: a %s-named file is a %s file by its content; recorded as such",
+                    suffix, verdict.suffix)
+        return moved, verdict.suffix
+    return dest, suffix
+
+
+STEP_HEADER_REFUSAL = _STEP_HEADER_REFUSAL
 
 
 
@@ -49,20 +102,23 @@ class StepFileOut(BaseModel):
 
 
 
-@router.post("/step-file", response_model=StepFileOut)
+@router.post(
+    "/step-file", response_model=StepFileOut,
+    description=(
+        "Upload a geometry file in the request body (multipart form field `file`). Suited to "
+        "files up to about 30 MB: a hosted deployment's front end refuses a larger request body "
+        "before it reaches the API (HTTP 413). For a larger file use the direct upload - "
+        "POST /api/v1/upload/direct, PUT the bytes to the `upload_url` it returns, then POST its "
+        "`finalize_url` - which answers exactly what this route answers."))
 async def upload_step_file(
-    file:     UploadFile = File(..., description="Geometry file - a surface (.stl, .vtp) or CAD (.step/.stp, .iges/.igs). The selected engine's staging seam converts it to what that engine meshes."),
+    file:     UploadFile = File(..., description="Geometry file. CAD: .step/.stp, .iges/.igs, .brep. Electronics thermal models: .ecxml (JEDEC JEP181 ECXML; also an Icepak _ec.xml), read as one named solid per part plus the air around them, its materials, powers, fans and vents kept beside the geometry. Surface or volume meshes: .stl, .obj, .ply, .off, .3mf, .glb, .gltf (single file), .vtk, .vtp, .vtu, .msh (Gmsh or Fluent), .bdf/.nas, .inp, .mesh, .su2, .3dm (Rhino meshes), .dae (COLLADA). The contents decide the format, not the name. A volume mesh is read as its boundary surface; named groups become named regions. Every file becomes a canonical CAD solid or STL surface before an engine sees it. GET /api/v1/client-config lists the formats."),
     owner_id: str        = Depends(owner_dep),
     plan:     str        = Depends(plan_dep),
     organization_id: str = Depends(org_dep),
 ):
-    filename = file.filename or ""
-    import re as _re
-    _safe_stem = _re.sub(r"[^A-Za-z0-9_\-.]", "_", Path(filename).stem)[:64]
-    filename   = _safe_stem + Path(filename).suffix.lower()
-    suffix = Path(filename).suffix.lower()
+    filename, suffix = sanitised_upload_name(file.filename or "")
     if suffix not in ACCEPTED_SUFFIXES:
-        raise HTTPException(status_code=422, detail=unsupported_message(suffix))
+        raise HTTPException(status_code=422, detail=unsupported_message(refusal_suffix(filename)))
 
     try:
         from meshpipeline.application.job_service import JobService
@@ -111,20 +167,9 @@ async def upload_step_file(
         dest.unlink(missing_ok=True)
         raise HTTPException(status_code=422, detail="Uploaded file is empty")
 
-    if suffix in (".step", ".stp"):
-        try:
-            with open(dest, "rb") as _fh:
-                _header = _fh.read(64)
-            if not _header.lstrip(b"\xef\xbb\xbf \t\r\n").startswith(b"ISO-10303-21"):
-                dest.unlink(missing_ok=True)
-                raise HTTPException(
-                    status_code=400,
-                    detail="File does not appear to be a valid STEP file (missing ISO-10303-21 header).",
-                )
-        except HTTPException:
-            raise
-        except Exception as exc:
-            logger.warning("upload_step_file: could not validate STEP header: %s", exc)
+    # off the event loop: the check reads the file, and a large one must not stall other requests
+    import asyncio as _asyncio
+    dest, suffix = await _asyncio.to_thread(checked_upload, dest, suffix)
 
     step_filename = filename
 
@@ -211,9 +256,11 @@ async def upload_step_file(
             # same transaction as the source, because a source with a verified declaration and no
             # interpretation would send the user a question the file already answered.
             # Unresolved is a legitimate, common outcome - STL and VTP carry no unit at all, and a
-            # STEP declaration that collides with the parser's own failure default is not evidence.
-            # Those leave the session without an interpretation so intake asks; nothing is guessed
-            # here, and no default is written.
+            # STEP unit entity that does not parse is not evidence (a well-formed metre is: the
+            # entity is read from the file's text, not from the parser's fallback). Those leave
+            # the session without an interpretation so the unit is proposed and confirmed; nothing
+            # is guessed here, and no default is written. A declaration the part's size makes
+            # implausible is doubted on the stage, beside the size, before anything is confirmed.
             interpretation_id = None
             evidence = _declared_unit_evidence(dest)
             if evidence is not None and evidence.resolved and evidence.unit is not None:
@@ -314,7 +361,11 @@ def _enqueue_geometry_check(session_id: str, owner_id: str, *, source_payload: d
 
 def _declared_unit_evidence(staged: Path):
     try:
-        from meshpipeline.cad.unit_evidence import read_declared_unit
+        from meshpipeline.cad.unit_evidence import UnitEvidence, read_declared_unit
+        if (staged.suffix.lower() in (".iges", ".igs")
+                and staged.stat().st_size > _IGES_UNIT_READ_MAX_BYTES):
+            return UnitEvidence.unresolved(
+                "the IGES file is too large to read its unit at upload")
         return read_declared_unit(staged)
     except Exception as exc:  # noqa: BLE001 - unreadable evidence is "ask the user", not a 500
         logger.warning("upload_step_file: could not read the declared unit (%s); "

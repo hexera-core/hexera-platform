@@ -28,7 +28,7 @@ Browser ──HTTP──> Console (Next.js) ──signed proxy──> API (state
                               Celery worker ──runs──> LangGraph state machine
 
   intake → engine_select → geometry_admission → builder → executor
-         → {classifier → builder}* → reviewer → END
+         → {classifier → engine_fallback → builder}* → reviewer → END
     (any node may set api_failure → node_failure_handler sink; a geometry-admission
      rejection short-circuits builder entirely: the executor reports it)
 
@@ -216,7 +216,7 @@ Product code above the contracts never imports an adapter and never selects a pr
 |---|---|
 | `agents/` | multi-turn LLM agents, one package each: `intake/`, `builder/`, `reviewer/` (each owns its `settings.py`) |
 | `engines/` | one bundle per engine (`cfmesh`, `snappy`, `snappy_multiregion`, `gmsh`, `vmtk`: all implemented; the two-state contract forbids planned/experimental rows), each owning its `spec`, `authoring`, `criteria`, gates, runner, `pack`, `viewer` and `solvability`; the shared framework (`base`, `registry`, `purposes`, `admission`, `quality_criteria`, `dispatch`, `manifest`, `mesh_history`) sits beside them |
-| `pipeline/` | single-pass orchestration stages: `graph` (the composition root for nodes), `engine_select`, `geometry_admission`, `executor`, `classifier`, `outcome`, `state_factory`, `data_contract`, `enums` |
+| `pipeline/` | single-pass orchestration stages: `graph` (the composition root for nodes), `engine_select`, `engine_fallback`, `geometry_admission`, `executor`, `classifier`, `outcome`, `state_factory`, `data_contract`, `enums` |
 | `application/` | neutral use cases: `pipeline_run` (dispatch + the run body), `job_service`, `artifact_uploader`, `maintenance/{cleanup,export}` |
 | `api/` | HTTP only, adapter-neutral: `app` (assembly), `security`, `v1/{chat,simulation,upload,ws,client_config,router}`, `middleware/hardening`, `schemas/` |
 | `cad/` · `render/` · `sandbox/` | geometry (tessellation, analysis, stl_io, staging, surface checks) · viewer/review artifacts + `review_palette.py` (renderer-owned review presentation) · the LLM code jail (`safe_exec`, `sandbox`, `sandbox_exec`) |
@@ -363,6 +363,39 @@ Uploaded geometry is stored by content: the object key is derived from the file'
 same bytes uploaded twice resolve to one object. Delivered bundles are stored per job.
 
 This is MinIO, with the credentials in `.env`, reached over plain HTTP on the local stack.
+
+#### Large uploads go straight to storage
+
+A hosted deployment cannot take a large file in a request body: Cloud Run refuses an HTTP/1
+request over 32 MiB (`413 Request Entity Too Large`) before the API sees it, and the console
+relays uploads through a service with the same cap. Real CAD is often 40-500 MB, so a large file
+is sent **directly to the object store**:
+
+1. `POST /api/v1/upload/direct` with `{"filename": ..., "size_bytes": ...}` - the API checks the
+   format, the 500 MB cap and the quota, records the cleanup intent, and answers a signed
+   `upload_url` for one object plus a `finalize_url`.
+2. `PUT` the whole file to `upload_url`, with the `headers` it gave (no other credential; the URL
+   is the permission, and the PUT must start within 30 minutes).
+3. `POST` the `finalize_url` with `{"filename": ...}` - the API reads the object back and makes
+   every check the multipart upload makes (format, size, the ISO-10303-21 header, the declared
+   unit), then answers exactly what `POST /api/v1/upload/step-file` answers.
+
+The console sends every file over 20 MB this way and shows its progress; smaller files keep the
+multipart upload. A script uploading large files follows the same three steps, e.g. in Python:
+
+```python
+begun = s.post(f"{base}/api/v1/upload/direct",
+               json={"filename": path.name, "size_bytes": path.stat().st_size}).json()
+with path.open("rb") as fh:
+    requests.put(begun["upload_url"], data=fh, headers=begun["headers"]).raise_for_status()
+session = s.post(f"{base}{begun['finalize_url']}", json={"filename": path.name}).json()
+```
+
+The upload's cleanup intent is held for six hours while its bytes may still be arriving; an upload
+nobody finishes is then reclaimed by the maintenance sweep like any other orphan. Finishing twice
+answers with the same session. On Google Cloud Storage the browser's PUT needs the bucket's CORS
+rule, which the deploy applies (`deploy/gcp/scripts/apply-upload-cors.sh`); local MinIO allows
+every origin already.
 
 ### Redis
 

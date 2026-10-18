@@ -23,6 +23,7 @@ from meshpipeline.api.schemas.job import (
 from meshpipeline.api.security import org_dep, owner_dep, plan_dep
 from meshpipeline.application import spend_gate
 from meshpipeline.application.job_service import JobService
+from meshpipeline.contracts import engineering_text
 from meshpipeline.persistence.models import ArtifactType
 from meshpipeline.persistence.session import get_db
 
@@ -146,6 +147,8 @@ def _artifact_label(artifact_type, engine: str) -> str:
     _t = getattr(artifact_type, "value", str(artifact_type))
     if _t == "mesh":
         return "Surface preview (.msh)"
+    if _t == "repair_report":
+        return "CAD inspection report (.json)"
     if _t == "mesh_bundle":
         try:
             from meshpipeline.engines.registry import get_spec
@@ -153,6 +156,33 @@ def _artifact_label(artifact_type, engine: str) -> str:
         except Exception:  # noqa: BLE001 - an unknown engine still gets a true name
             return "Mesh case (.tar.gz)"
     return _t.replace("_", " ").capitalize()
+
+
+#: The durable record's verdict, in the words the job status has always served.
+_SERVED_VERDICT = {"passed": "PASS", "failed": "FAIL"}
+
+
+def served_review(final_result: dict | None, review: dict) -> dict:
+    """The review the job status serves - its verdict, and the reviewer's words that go with it.
+
+    Once a job is finalized, its durable record (final_result) is the one authority on whether a
+    review concluded and what it concluded. The viewer payload's `review` block is only a copy of
+    the last review's verdict.json, and a review that ended WITHOUT a verdict used to write "FAIL"
+    there: job 4f18812f was delivered with its review unfinished (final_result.reviewer_verdict
+    null) and its status read "FAIL". So a finalized job serves a verdict, reasoning and findings
+    only when its record says the review COMPLETED, and the verdict is the record's own. Before a
+    record exists the payload is all there is, and only a real PASS or FAIL in it is served."""
+    review = review if isinstance(review, dict) else {}
+    if not isinstance(final_result, dict) or not final_result:
+        if review.get("verdict") in ("PASS", "FAIL"):
+            return review
+        return {**review, "verdict": None}
+    verdict = _SERVED_VERDICT.get(str(final_result.get("reviewer_verdict") or ""))
+    if final_result.get("review_execution") != "completed" or verdict is None:
+        # no concluded review on this run: nothing to judge by, so no verdict and no findings -
+        # a retained earlier review's words must not read as this run's judgement either
+        return {}
+    return {**review, "verdict": verdict}
 
 
 def _failed_concerns(review: dict, engine: str) -> list[str]:
@@ -206,8 +236,26 @@ async def list_jobs(limit: int = pagination.DEFAULT_LIMIT, cursor: str | None = 
             "ended_at": row[0].ended_at.isoformat() if row[0].ended_at else None,
             "attempts": row[0].current_attempt,
             "failed_reason": getattr(row[0].failed_reason, "value", row[0].failed_reason),
+            # "delivered_with_concerns" beside `succeeded` - a run list must not read as a pass
+            "review_outcome": _review_outcome(getattr(row[0], "final_result", None)),
         },
         key=lambda row: (row[0].created_at, row[0].id))
+
+
+def _review_outcome(final_result) -> str | None:
+    from meshpipeline.application.final_result import review_outcome_of
+    try:
+        return review_outcome_of(final_result if isinstance(final_result, dict) else None)
+    except Exception:  # noqa: BLE001 - an old or malformed record never breaks a read
+        return None
+
+
+def _review_concerns(final_result) -> list[str]:
+    from meshpipeline.application.final_result import review_concerns_of
+    try:
+        return review_concerns_of(final_result if isinstance(final_result, dict) else None)
+    except Exception:  # noqa: BLE001 - an old or malformed record never breaks a read
+        return []
 
 
 @router.get("/{job_id}", response_model=JobStatus_)
@@ -243,12 +291,13 @@ async def get_job(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
                 )
             )
 
-        _review = _vdata.get("review") or {}
         # The DURABLE application-rendered terminal verdict (never model prose), reproduced from the
         # persisted final_result so a restarted API returns the same result.
         _fr_dict = getattr(job, "final_result", None)
         if not isinstance(_fr_dict, dict):
             _fr_dict = None
+        # the verdict, reasoning and findings served beside it must agree with that record
+        _review = served_review(_fr_dict, _vdata.get("review") or {})
         _final_message = None
         if _fr_dict:
             try:
@@ -256,6 +305,22 @@ async def get_job(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
                 _final_message = render_message(FinalResult.from_dict(_fr_dict))
             except Exception:  # noqa: BLE001 - a malformed/old-version record never breaks the read
                 _final_message = None
+
+        # The parcel's contents, from the same rows the downloads above came from. Guarded like
+        # the rendered message beside it: a malformed or older record must never break a read of
+        # what a customer was given.
+        _manifest = None
+        try:
+            # ONLY ONCE THERE IS A TERMINAL RECORD. A pending job has no parcel, and an empty
+            # account of one reads as "nothing was delivered" rather than "nothing has finished" -
+            # so clients can rely on the manifest's presence to mean a final parcel exists.
+            from meshpipeline.application.delivery_manifest import build as _build_manifest
+            _manifest = None if not _fr_dict else _build_manifest(
+                job_id=str(job.id),
+                artifacts=([] if _is_cancelled(job) else (job.artifacts or [])),
+                final_result=_fr_dict)
+        except Exception:  # noqa: BLE001
+            _manifest = None
 
         return JobStatus_(
             id=job.id,
@@ -268,16 +333,30 @@ async def get_job(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
             artifacts=artifacts_out,
             mesh_available=bool(_vdata.get("mesh_available")),
             reviewer_verdict=_review.get("verdict"),
-            reviewer_reasoning=_review.get("reasoning", ""),
+            # the reviewer model's own words, shown on the result card: its math markup made plain
+            reviewer_reasoning=engineering_text.plain(_review.get("reasoning", "")),
             reviewer_findings=_failed_concerns(_review, _engine),
             final_message=_final_message,
             final_result=_fr_dict,
+            delivery_manifest=_manifest,
+            review_outcome=_review_outcome(_fr_dict),
+            review_concerns=_review_concerns(_fr_dict),
             # a string or nothing: a row from before the column carries none, and a test double must
             # not be able to smuggle an object into the wire contract
             cancel_reason=(job.cancel_reason if isinstance(getattr(job, "cancel_reason", None), str)
                            else None),
             worker_wake_minutes=worker_wake_estimate(job),
+            geometry_filename=geometry_filename_of(job),
         )
+
+
+def geometry_filename_of(job) -> str | None:
+    """What the user called the file this run meshes, or None when the run has no recorded source.
+
+    Display only - the name the upload arrived with, never used to open anything. A string or
+    nothing: a row from before sources were recorded has none."""
+    name = getattr(getattr(job, "geometry_source", None), "original_filename", None)
+    return name if isinstance(name, str) and name else None
 
 
 def worker_wake_estimate(job) -> int | None:
@@ -300,7 +379,29 @@ async def get_surface(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     surface = data.get("surface")
     if not surface:
         raise HTTPException(404, "No renderable surface was delivered for this job")
-    return {"job_id": str(job_id), **surface}
+    out = {"job_id": str(job_id), **surface}
+    up = await _up_axis_of(job_id, owner_id, organization_id)
+    if up:
+        out["up_axis"] = up
+    return out
+
+
+async def _up_axis_of(job_id: uuid.UUID, owner_id: str, organization_id: str) -> str | None:
+    """Which way is up for the part a job meshed - what the user confirmed on its geometry check,
+    else what the check proposed - for the viewer to open with. None when the job had no check or
+    it cannot be read: the viewer then opens z-up, as it always has. Display only."""
+    try:
+        async with get_db() as db:
+            job = await svc.get_job(db, job_id, owner_id, organization_id=organization_id)
+        payload = (getattr(job, "dispatch_payload", None) or {}) if job is not None else {}
+        session_id = str(payload.get("session_id") or "") if isinstance(payload, dict) else ""
+        if not session_id:
+            return None
+        from meshpipeline.application.geometry_check import stored_up_axis
+        return await asyncio.to_thread(stored_up_axis, session_id)
+    except Exception as exc:  # noqa: BLE001 - a view preference never costs the user their mesh
+        logger.info("surface: which way is up unavailable (%s)", type(exc).__name__)
+        return None
 
 
 @router.get("/{job_id}/surface.vtk")

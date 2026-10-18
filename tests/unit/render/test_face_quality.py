@@ -230,3 +230,30 @@ def test_labels_and_faces_are_read_as_32_bit(tmp_path):
     assert mesh.owner.dtype == np.int32 and mesh.neighbour.dtype == np.int32
     assert mesh.face_flat.dtype == np.int32
     assert mesh.n_cells == 3 and mesh.n_faces == 16
+
+
+# ------------------------------------------------------- a region drawn from its own side ----
+def test_a_patch_that_names_its_cells_reads_those_cells_not_the_owners(tmp_path):
+    # a multi-region mesh draws each region whole: on an interface the region is as often the
+    # neighbour as the owner, and its surface must carry the cell on ITS side
+    write_row_of_hexes(tmp_path / "polyMesh", shear_last_y=SHEAR)
+    mesh = FQ.read_polymesh(tmp_path / "polyMesh")
+    both = np.arange(len(mesh.neighbour))
+    mesh.patches = [FQ._Patch("owner_side", -1, len(both), face_ids=both),
+                    FQ._Patch("neighbour_side", -1, len(both), face_ids=both,
+                              cells=mesh.neighbour[both])]
+    q = FQ.quality_fields_of(mesh, non_ortho_limit=65.0)
+    own = _f32(q["patches"]["owner_side"]["non_ortho_b64"])
+    nbr = _f32(q["patches"]["neighbour_side"]["non_ortho_b64"])
+    # the sheared face is the second internal one: cells 1 and 2 touch it, cell 0 does not
+    assert own[0] == pytest.approx(0.0, abs=1e-6)
+    assert nbr[0] == pytest.approx(EXPECTED_DEG, abs=0.05)
+    assert own[1] == pytest.approx(EXPECTED_DEG, abs=0.05) == nbr[1]
+
+
+def test_a_patch_naming_the_wrong_number_of_cells_is_refused(tmp_path):
+    write_row_of_hexes(tmp_path / "polyMesh")
+    mesh = FQ.read_polymesh(tmp_path / "polyMesh")
+    mesh.patches = [FQ._Patch("bad", -1, 2, face_ids=np.array([0, 1]), cells=np.array([1]))]
+    with pytest.raises(FQ.UnreadableMesh):
+        FQ.quality_fields_of(mesh, non_ortho_limit=65.0)

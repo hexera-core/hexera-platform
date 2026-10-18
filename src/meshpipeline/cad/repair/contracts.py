@@ -48,6 +48,12 @@ class DefectCode(str, Enum):
     curve_inconsistency = "curve_inconsistency"
     self_intersection = "self_intersection"
     non_manifold_surface = "non_manifold_surface"
+    # A face or shell whose normal points the wrong way. ShapeFix repairs it, so it is repairable -
+    # but it is NOT the same defect as a non-manifold surface and must not be reported as one.
+    bad_orientation = "bad_orientation"
+    # A sub-shape carrying a tolerance far above the rest of the part. Often the written trace of
+    # a gap somebody already "fixed" by widening the tolerance until the kernel stopped objecting.
+    tolerance_outlier = "tolerance_outlier"
     duplicate_surface_data = "duplicate_surface_data"
     engine_staging_failure = "engine_staging_failure"
 
@@ -128,6 +134,16 @@ class RepairReport:
     operations: tuple[dict, ...]
     summary: str
     diagnostics: dict = field(default_factory=dict)
+    #: THE LOCATED FAILURE POINTS: one entry per defective entity, with which entity it is, where
+    #: it sits, how big it is, and whether it is on the part's outside or inside a cavity
+    #: (cad/repair/localize.py). `defects` above is the SUMMARY - one entry per defect kind, with a
+    #: count - and this is the detail a repair aims at and a reviewer reads.
+    #:
+    #: Empty is not "no defects": the surface path and older reports carry none, and a shape that
+    #: OpenCASCADE calls invalid without attributing it to any entity legitimately has none
+    #: either. That distinction is load-bearing for triage, which may only recommend an automatic
+    #: repair for a defect it can point at.
+    entities: tuple[dict, ...] = ()
 
     def to_dict(self) -> dict:
         return {
@@ -136,6 +152,7 @@ class RepairReport:
             "measurements": [m.to_dict() for m in self.measurements],
             "operations": [dict(op) for op in self.operations],
             "diagnostics": dict(self.diagnostics),
+            "entities": [dict(e) for e in self.entities],
         }
 
 

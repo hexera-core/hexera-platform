@@ -62,11 +62,22 @@ def test_a_structured_geometry_is_measured_against_what_it_carries():
     # Three declared, two carried: the refusal names the shortfall and the regions that do exist,
     # rather than implying the engine is incapable.
     message = _refusal({"region_names": ["fluid", "wall"], "region_count": 2,
-                        "region_source": "roots"})
+                        "region_source": "stl-solids"})
     # The facts, not the phrasing: how many the file carries, how many were asked for, and the
     # names it does offer - so the reader can see the shortfall rather than be told there is one.
     assert "2 regions" in message and "3 wall patches" in message, message
     assert "fluid, wall" in message, "the regions the file does carry are not named back"
+
+
+def test_parts_a_cad_file_names_are_not_promised_by_an_engine_that_flattens_them():
+    # snappyHexMesh and cfMesh tessellate a CAD file as ONE surface, so the parts a STEP assembly
+    # names never reach them apart. Admitting three walls on that promise built one and failed the
+    # other two on "zero faces" after the whole run; the refusal says why and what would work.
+    message = _refusal({"region_names": ["fuselage", "wing", "horizontal_tail"],
+                        "region_count": 3, "region_source": "assembly"})
+    assert "meshes a CAD file as one surface" in message, message
+    assert "fuselage, wing, horizontal_tail" in message
+    assert "STL export" in message
 
 
 def test_unknown_geometry_is_admitted_rather_than_refused_on_silence():

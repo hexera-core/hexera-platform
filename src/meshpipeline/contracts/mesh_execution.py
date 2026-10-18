@@ -3,6 +3,7 @@
 # Boundaries: a Protocol and its binding; the local and Cloud Run implementations live in adapters/mesh_execution/.
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any, Protocol, runtime_checkable
 
 #: The infrastructure failure the product already speaks. A run whose submission cannot be
@@ -14,6 +15,30 @@ from typing import Any, Protocol, runtime_checkable
 #: avoid describing an infrastructure fault as a geometry one. engines/ may not import
 #: application/, so a constant only application/ owned forced that edge.
 RC_INFRASTRUCTURE = -3
+
+#: A run that WAS dispatched and did not come back within its time limit. Not an outage and not
+#: a crash: the mesh was too big or too slow for the budget, and the one repair is a SMALLER mesh.
+#: It always travels with timed_out=True, which every judge reads before the exit code, and it is
+#: the code a local stage timeout already reports (engines/snappy/parallel_stages). It lives here
+#: beside RC_INFRASTRUCTURE because the two used to be one: a remote run that outlived the
+#: worker's deadline was reported as -3, "the mesh run never started", and the planner was told
+#: to resubmit the same plan - which ran out of time again (job 470c3eb9, 2 x 50 minutes).
+RC_TIMED_OUT = -1
+
+#: A run REFUSED before launch because the written case does not build the patches the user
+#: approved (engines/case_contract.py). Not a mesh verdict and not an outage: nothing ran.
+RC_CASE_CONTRACT = -5
+
+#: The tag an RC_INFRASTRUCTURE result's log opens with when the run NEVER STARTED (the remote
+#: runner could not be dispatched or polled). RC_INFRASTRUCTURE alone does not say that: a run
+#: whose output could not be collected ran, and snappyHexMesh's own stage verdict reports -3 for a
+#: run that ran and left no valid mesh. Only this tag, or a run that raised, is the outage; it
+#: lives here because the adapter writes it and the executor's account reads it.
+RUN_NOT_STARTED_TAG = "[CLOUD_RUN_FAILED]"
+
+#: The tag an RC_INFRASTRUCTURE result's log opens with when the run FINISHED but its result could
+#: not be brought back. The mesher ran; what failed is the return trip - ours, not the case's.
+RUN_UNCOLLECTED_TAG = "[CLOUD_RUN_RESULT_UNCOLLECTED]"
 
 
 #: The workspace fact naming WHICH planned meshing pass of the current attempt the next native
@@ -150,10 +175,21 @@ class MeshExecutor(Protocol):
 
 _executor: MeshExecutor | None = None
 
+#: THE LAST CHECK BEFORE A MESHER STARTS: (workspace, engine) -> None to launch, or a refusal
+#: result shaped like a native one (rc RC_CASE_CONTRACT). Every engine's native run reaches the
+#: executor through run_mesh below, so a check here cannot be skipped by one engine forgetting
+#: it. Installed by the composition root beside the executor (engines/ may not be imported here).
+_launch_check: Callable[[Any, str], dict | None] | None = None
+
 
 def set_mesh_executor(executor: MeshExecutor | None) -> None:
     global _executor
     _executor = executor
+
+
+def set_launch_check(check: Callable[[Any, str], dict | None] | None) -> None:
+    global _launch_check
+    _launch_check = check
 
 
 def run_mesh(workspace: Any, *, engine: str, timeout: int) -> dict:
@@ -161,4 +197,84 @@ def run_mesh(workspace: Any, *, engine: str, timeout: int) -> dict:
         raise MeshExecutionError(
             "no MeshExecutor configured - the runtime composition root must call "
             "set_mesh_executor() before meshing")
-    return _executor.run(workspace, engine=engine, timeout=timeout)
+    if _launch_check is not None:
+        refusal = _launch_check(workspace, engine)
+        if refusal is not None:
+            _note_native_run(workspace, refusal, refused=True)
+            return refusal
+    try:
+        result = _executor.run(workspace, engine=engine, timeout=timeout)
+    except BaseException:
+        # the run did not come back with a verdict: told as the infrastructure it is, never a
+        # mesher that crashed
+        _note_native_run(workspace, {"rc": RC_INFRASTRUCTURE, "timed_out": False}, raised=True)
+        raise
+    _note_native_run(workspace, result)
+    return result
+
+
+# #
+# WHAT HAPPENED NATIVELY IN AN ATTEMPT - the record a failure is classified from
+# #
+# An attempt that ends with no mesh used to be told, whatever happened, as "the mesher stopped
+# before it finished writing the mesh... usually on our side" (job d20ad762: a mesher that never
+# started, refused by design). WHY there is no mesh is decided here, where every native run of
+# every engine passes: no run at all, a run that ran out of time, a run whose infrastructure
+# failed, or a mesher that really crashed. The builder opens the record when its attempt starts
+# (open_native_record), so an empty record is POSITIVE evidence that no mesher was started in
+# that attempt; a workspace this process never opened answers None - unknown - and nothing is
+# claimed from it. In-process by design: the record must never enter the workspace, whose bytes
+# are the submission's identity (submission_payload_files), and the builder and the executor
+# that reads it run in the same process one after the other.
+
+_NATIVE_RUNS: dict[str, list[dict]] = {}
+#: how many attempt records a long-lived worker keeps (oldest dropped first)
+_NATIVE_RUNS_KEPT = 512
+
+
+def _key(workspace: Any) -> str:
+    from pathlib import Path
+    try:
+        return str(Path(workspace).resolve())
+    except (OSError, RuntimeError, TypeError):
+        return str(workspace)
+
+
+def open_native_record(workspace: Any) -> None:
+    """The attempt in `workspace` starts: from now on, every native run in it is recorded."""
+    key = _key(workspace)
+    _NATIVE_RUNS.pop(key, None)
+    _NATIVE_RUNS[key] = []
+    while len(_NATIVE_RUNS) > _NATIVE_RUNS_KEPT:
+        _NATIVE_RUNS.pop(next(iter(_NATIVE_RUNS)))
+
+
+def _note_native_run(workspace: Any, result: Any, *, refused: bool = False,
+                     raised: bool = False) -> None:
+    runs = _NATIVE_RUNS.get(_key(workspace))
+    if runs is None:
+        return
+    r = result if isinstance(result, dict) else {}
+    tail = str(r.get("log_tail") or "").lstrip()
+    infra = r.get("rc") == RC_INFRASTRUCTURE
+    runs.append({"rc": r.get("rc"), "timed_out": bool(r.get("timed_out")),
+                 "refused_before_launch": refused, "raised": raised,
+                 # the outage, positively: never inferred from the exit code alone
+                 "never_started": raised or (infra and tail.startswith(RUN_NOT_STARTED_TAG)),
+                 # ran, but the result never came back
+                 "uncollected": infra and tail.startswith(RUN_UNCOLLECTED_TAG)})
+
+
+def native_runs(workspace: Any) -> list[dict] | None:
+    """Every native run of the attempt in `workspace`, in order - [] when none was started -
+    or None when this process never opened that attempt's record (then nothing is known)."""
+    runs = _NATIVE_RUNS.get(_key(workspace))
+    return None if runs is None else [dict(r) for r in runs]
+
+
+def meshers_started(runs: list[dict] | None) -> int | None:
+    """How many of those runs actually launched a mesher (a launch the last check refused did
+    not), or None when unknown."""
+    if runs is None:
+        return None
+    return sum(1 for r in runs if not r.get("refused_before_launch"))

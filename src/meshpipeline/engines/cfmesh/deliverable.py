@@ -80,6 +80,7 @@ def reconcile_boundary_types(workspace, intake_patches: list) -> str:
     if not actual:
         return ""
     bad: list[str] = []
+    mistyped: list[dict] = []
     for p in intake_patches or []:
         role = str(p.get("type", "")).strip()
         name = str(p.get("name", "")).strip()
@@ -87,10 +88,14 @@ def reconcile_boundary_types(workspace, intake_patches: list) -> str:
         if want and name in actual and actual[name] != want:
             bad.append(f"{name}: declared role {role!r} requires OpenFOAM type {want!r}, "
                        f"actual boundary has {actual[name]!r}")
+            mistyped.append({"name": name, "declared": role, "want": want, "got": actual[name]})
     if bad:
-        return ("[BOUNDARY_TYPE_MISMATCH] the generated polyMesh boundary contradicts the "
-                "declared contract - " + "; ".join(bad) + ". The mesh would solve wrong; "
-                "re-run the mesh (the type retype/emission step failed).")
+        from meshpipeline.contracts.failure_cause import FailureCause
+        from meshpipeline.engines.gates import refuse
+        return refuse("[BOUNDARY_TYPE_MISMATCH] the generated polyMesh boundary contradicts the "
+                      "declared contract - " + "; ".join(bad) + ". The mesh would solve wrong; "
+                      "re-run the mesh (the type retype/emission step failed).",
+                      FailureCause.BOUNDARY_TYPE, mistyped=mistyped)
     return ""
 
 

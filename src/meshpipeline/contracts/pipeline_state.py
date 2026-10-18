@@ -16,7 +16,27 @@ from meshpipeline.contracts.geometry_source import GeometryState
 # (thread_id = "<job_id>:s<version>"), so a redelivery after a deploy that changed the
 # schema starts FRESH instead of resuming an incompatible checkpoint - the single biggest
 # production-incident source for agent systems (state management).
-STATE_SCHEMA_VERSION = 9   # v9: `dispute_flag_findings` + `builder_flag_responses` - the
+STATE_SCHEMA_VERSION = 15  # v15: `repair_attempt` - whether the run repaired its own geometry,
+                           # what it aimed at and what it did, or why it did not
+                           # (pipeline/repair_attempt.py). Carries every v14 field.
+                           # v14: `repair_lineage` - when repaired geometry REPLACED the approved
+                           # upload as the geometry this run meshes, which bytes it replaced
+                           # (pipeline/repair_promote.py). `geometry` always names what is being
+                           # meshed; this says what it used to be. Carries every v13 field.
+                           # v13: `repair_status` + `repair_report` - what CAD repair inspection
+                           # said about the verified input on the way into the mesh run
+                           # (node_repair_inspect). Diagnostics: neither field moves geometry.
+                           # Carries every v12 field.
+                           # v12: `review_rerun_count` - reviews of the same validated mesh started
+                           # again after one ended without a verdict (node_review_retry).
+                           # Carries every v11 field.
+                           # v11: `engine_source` + `engine_ladder` - who chose the engine, and
+                           # the fallback ladder's record (every attempt's engine, each switch,
+                           # the offer a run ends with). Carries every v10 field.
+                           # v10: `executor_failure_cause` + `executor_failure_facts` - WHAT the
+                           # failed gate says failed, typed, so the user is told the cause and the
+                           # retry policy skips what a retry cannot change.
+                           # v9: `dispute_flag_findings` + `builder_flag_responses` - the
                            # typed per-flag round trip for a human dispute.
                            # v7: reviewer emits `reviewer_axis_findings` (canonical typed LIST,
                            # + `reviewer_rebuild_required`; executor records
@@ -29,7 +49,14 @@ STATE_SCHEMA_VERSION = 9   # v9: `dispute_flag_findings` + `builder_flag_respons
 
 class PipelineState(TypedDict):
     schema_version: int   # stamped by the worker; see STATE_SCHEMA_VERSION
-    engine:   str         # mesh engine chosen pre-job by node_engine_select
+    engine:   str         # mesh engine chosen pre-job by node_engine_select; moved only by
+                          # node_engine_fallback, to an engine delivering the same approved mesh
+    # WHO CHOSE THE ENGINE: user_direct | suggested_confirmed | dispute | system. Seeded by the
+    # application; decides whether the fallback ladder may move the run on its own.
+    engine_source: str
+    # THE FALLBACK LADDER'S RECORD (pipeline/engine_fallback.py): the approved engine, every
+    # attempt's engine and failure class, each switch and why, and the run's closing offer.
+    engine_ladder: dict
     messages: Annotated[list, add_messages]
     job_id:   str
     user_id:  str
@@ -42,6 +69,23 @@ class PipelineState(TypedDict):
     # trusting a path serialised by whichever container ran the previous node.
     geometry: GeometryState
 
+    # WHAT CAD REPAIR INSPECTION SAW on the way in (pipeline/repair_inspect.py), before the
+    # admission gate judged anything: a RepairStatus value and the typed RepairResult payload.
+    # Diagnostics only - no reader may treat either as a decision, and neither moves `geometry`.
+    repair_status: str
+    repair_report: dict
+    # WHETHER THE RUN FIXED ITS OWN GEOMETRY (pipeline/repair_attempt.py), and either what it did -
+    # the route, the targets, the operations - or why it declined. `attempted: False` is the
+    # ordinary case and is never an error: every refusal on that path leaves the run on the file
+    # the customer sent, which is the same outcome as not having tried.
+    repair_attempt: dict
+    # SET ONLY WHEN A REPAIR WAS PROMOTED (pipeline/repair_promote.py): the identity of the
+    # original upload this run stopped meshing, the repaired bytes that replaced it, and the
+    # engine the replacement was proved to stage for. Empty on every run that meshed what the
+    # customer sent, which is most of them. `geometry` is always what IS being meshed - no reader
+    # has to choose between two candidates - and this is the record of what it was before.
+    repair_lineage: dict
+
     domain:     str
     engine_params: dict   # engine-NATIVE declared params (ParamSpec answers; see data_contract)
 
@@ -50,6 +94,8 @@ class PipelineState(TypedDict):
     executor_output:    str
     executor_success:   bool
     executor_failed_gate: str          # the DECLARED gate key that rejected (classifier routes on it)
+    executor_failure_cause: str        # contracts.failure_cause value: what that gate says failed
+    executor_failure_facts: dict       # the plain facts the user's sentence is built from
     geometry_unsuitable_reason: str    # node_geometry_admission's reject reason (unmeshable input)
     flow_topology:      str            # "internal"/"external"/"" - DERIVED from purpose (neutral fact, NOT an engine_param)
     mesh_manifest:      dict
@@ -83,6 +129,10 @@ class PipelineState(TypedDict):
     # re-runs the SAME mesh attempt number - it is not a new mesh attempt.
     infra_retry_count: int
 
+    # Reviews started again on the SAME validated mesh after one ended without a verdict
+    # (node_review_retry). Not a mesh attempt: retry_count is untouched and nothing is rebuilt.
+    review_rerun_count: int
+
     request_txt:      str
     review_brief_txt: str
 
@@ -112,6 +162,16 @@ class PipelineState(TypedDict):
     requirement_caveats: list
 
     builder_noop_count:     int
+    # The Builder's declared STOP (agents/builder/driver_run.STOP_*), "" otherwise: it built
+    # nothing on purpose because another attempt provably cannot change the outcome - a review's
+    # retry that wrote exactly the case the review rejected. The graph ends the run on the verdict
+    # already reached instead of validating and reviewing the same mesh again.
+    builder_stop:           str
+    # This run's CONCLUDED reviews, one per reviewed mesh (reviewer-owned, append-only): the
+    # attempt, its workspace, the identity of the evidence it was shown, the verdict and the judged
+    # findings. An identical mesh keeps its review instead of being judged twice, and the run
+    # delivers its best gate-passing mesh when a later attempt did worse (application/review_delivery).
+    review_history:         list
     # Aggregate Builder budget: epoch deadline covering ALL attempts of one run. Set once on the
     # first attempt, carried across retries, never reset - so the sum of attempts cannot exceed it.
     builder_deadline_epoch: float

@@ -73,7 +73,8 @@ def test_every_native_stage_reports_its_wall_time(tmp_path, spawns, monkeypatch)
                         lambda ws, **kw: {"passage_cells_across_local": {"p05": 14.0}})
     out = N._run_cartesian_mesh_local(tmp_path)
     t = out["timing"]
-    assert set(t) == {"cartesianMesh_s", "checkMesh_s", "passage_measure_s", "foamToVTK_s", "total_s"}
+    assert set(t) == {"cartesianMesh_s", "checkMesh_s", "passage_measure_s", "layer_census_s",
+                      "foamToVTK_s", "total_s"}
     assert all(v >= 0 for v in t.values()) and t["total_s"] >= t["cartesianMesh_s"]
     assert json.loads((tmp_path / N.TIMING_FILE).read_text()) == t
     assert out["quality"]["passage_cells_across_local"]["p05"] == 14.0

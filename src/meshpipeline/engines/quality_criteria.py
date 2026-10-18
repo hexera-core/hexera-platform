@@ -60,22 +60,35 @@ def measurements_from_manifest(manifest: dict) -> dict:
 
 
 def gate_declared_criteria(engine: str, manifest: dict) -> tuple[bool, str]:
+    from meshpipeline.contracts.failure_cause import FailureCause
+    from meshpipeline.engines.gates import refuse
     if not manifest:
-        return False, ("[QUALITY] no mesh manifest to judge quality from - the mesh was not "
-                       "quality-checked; run_mesh again")
+        return False, refuse("[QUALITY] no mesh manifest to judge quality from - the mesh was not "
+                             "quality-checked; run_mesh again", FailureCause.ENGINE_CRASHED)
     measurements = measurements_from_manifest(manifest)
+    bars = {c.key: c for c in criteria_for(engine)}
     for row in evaluate(engine, measurements):
         if not row["gating"] or row["key"] in BUILD_TIME_KEYS:
             continue
         if row["passed"] is None:
-            return False, (
+            return False, refuse(
                 f"[QUALITY] {row['label']}: `{row['key']}` is missing from the quality report "
                 f"(measured={row['measured']!r}) - the mesh was not quality-checked against a bar "
-                f"it must clear. Re-run run_mesh so the engine reports it.")
+                f"it must clear. Re-run run_mesh so the engine reports it.",
+                FailureCause.MESH_QUALITY, unmeasured=[row["label"]])
         if row["passed"] is False:
-            return False, (
+            # THE NUMBERS AND THE LIMIT travel as facts, so the user reads "the worst
+            # non-orthogonality is 78 degrees, and the limit is 70" - not "quality checks".
+            bar = bars.get(row["key"])
+            facts: dict = {"checks": [{
+                "key": row["key"], "label": row["label"], "measured": row["measured"],
+                "op": getattr(bar, "op", ""), "threshold": getattr(bar, "threshold", None)}]}
+            if row["key"] == "fatal":
+                facts = {"fatal": list(row["measured"] or [])}
+            return False, refuse(
                 f"[QUALITY] {row['label']}: measured {row['measured']!r}, required "
-                f"{row['ok_when']} - {row['rationale']} (source: {row['evidence_url']})")
+                f"{row['ok_when']} - {row['rationale']} (source: {row['evidence_url']})",
+                FailureCause.MESH_QUALITY, **facts)
     return True, ""
 
 

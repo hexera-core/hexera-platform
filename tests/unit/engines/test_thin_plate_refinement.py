@@ -137,8 +137,10 @@ def test_the_cell_budget_bounds_the_extra_refinement():
     free = thin_refinement_boxes(plate, cell_m=0.0044)
     assert free and all(b["level_bump"] == free[0]["level_bump"] for b in free)
     assert free[0]["level_bump"] >= 1 and all("est_cells" in b for b in free)
-    tight = thin_refinement_boxes(plate, cell_m=0.0044, budget_cells=1_000)
-    assert tight and tight[0]["level_bump"] == 1, "a tiny budget must clamp the bump to +1"
+    tight = thin_refinement_boxes(plate, cell_m=0.0044, budget_cells=20_000)
+    assert tight and tight[0]["level_bump"] == 1, "a tight budget must clamp the bump to +1"
+    # and a budget even +1 cannot fit is never passed through (test_thin_feature_zero.py)
+    assert thin_refinement_boxes(plate, cell_m=0.0044, budget_cells=1_000) == []
     roomy = thin_refinement_boxes(plate, cell_m=0.0044, budget_cells=10 ** 9)
     assert roomy[0]["level_bump"] == free[0]["level_bump"], "a roomy budget clamps nothing"
 

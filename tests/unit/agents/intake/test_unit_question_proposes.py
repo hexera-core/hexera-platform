@@ -72,8 +72,9 @@ def _locked(**over):
     return SimpleNamespace(**base)
 
 
-async def _settle(content, *, gate, monkeypatch, size=SIZE, recorded=None, held=None):
+async def _settle(content, *, gate, monkeypatch, size=SIZE, recorded=None, held=None, inference=None):
     monkeypatch.setattr(gh, "measured_size_mm", lambda sid: size)
+    monkeypatch.setattr(gh, "measured_unit_inference", lambda sid, words="": inference)
     monkeypatch.setattr(gh, "hold_applies", lambda sid: (held.append(sid) if held is not None else None))
 
     async def _record(db, *, owner_id, geometry_source_id, unit, organization_id=""):
@@ -100,6 +101,49 @@ async def test_the_first_message_is_asked_the_question_with_the_proposal_and_ok_
     recorded: list = []
     outcome, _ = await _settle("ok", gate=gate, monkeypatch=monkeypatch, recorded=recorded)
     assert outcome.status is msg.MessageStatus.unit_recorded and recorded == [LengthUnit.millimetre]
+
+
+@pytest.mark.asyncio
+async def test_a_part_that_would_be_implausible_in_millimetres_is_proposed_the_believable_unit(monkeypatch):
+    """The Ahmed body STL is 1.044 units long: proposed as millimetres it is a 1 mm car. The
+    question proposes metres - the size in every unit still beside it - and "ok" takes metres."""
+    outcome, repo = await _settle("flow around this body", gate={}, size=[1.044, 0.389, 0.338],
+                                  monkeypatch=monkeypatch)
+    assert "I'll take metres - say ok" in outcome.reply and "1.04 m if metres" in outcome.reply
+    gate = repo.set_intake_gate.await_args.args[2]
+    assert gate["unit_question"] == {"asked": True, "proposed": "m"}
+    recorded: list = []
+    outcome, _ = await _settle("ok", gate=gate, monkeypatch=monkeypatch, recorded=recorded)
+    assert recorded == [LengthUnit.metre]
+    # what the user said the part is can settle what the size alone cannot: a 229-unit block
+    assert uc.proposal_for([229.1, 140.1, 76.0], "wind around a city block of buildings") is LengthUnit.metre
+    assert uc.proposal_for([229.1, 140.1, 76.0], "") is LengthUnit.millimetre
+
+
+@pytest.mark.asyncio
+async def test_the_question_proposes_what_the_check_reads_the_part_as(monkeypatch):
+    """The DrivAer car is 4.7 units long in a file that states no unit. The check reads its shape
+    (a closed body on the ground, 2.3 times as long as wide): "a car-like body on the ground,
+    4.7 m long - metres?" - the reading, how sure it is and the other reading, never a silent
+    millimetre. "ok" takes metres."""
+    from meshpipeline.contracts.unit_plausibility import GROUND_VEHICLE, infer_unit
+
+    inference = infer_unit(4.7, shape=GROUND_VEHICLE).as_dict()
+    outcome, repo = await _settle("air over this car", gate={}, size=[4.7, 2.05, 1.4],
+                                  monkeypatch=monkeypatch, inference=inference)
+    assert "This reads as a car-like body on the ground, 4.7 m long - metres?" in outcome.reply
+    assert "(In millimetres it would be 4.7 mm long.)" in outcome.reply
+    assert "I'll take metres - say ok" in outcome.reply
+    gate = repo.set_intake_gate.await_args.args[2]
+    assert gate["unit_question"] == {"asked": True, "proposed": "m"}
+    recorded: list = []
+    outcome, _ = await _settle("ok", gate=gate, monkeypatch=monkeypatch, recorded=recorded,
+                               inference=inference)
+    assert recorded == [LengthUnit.metre]
+    # an unsure reading says so, and still only proposes
+    low = infer_unit(400.0).as_dict()
+    q = uc.question_for([400.0, 120.0, 120.0], uc.proposal_for([400.0, 120.0, 120.0], "", low), low)
+    assert "The shape alone does not settle it, so please check." in q and "I'll take millimetres" in q
 
 
 @pytest.mark.asyncio

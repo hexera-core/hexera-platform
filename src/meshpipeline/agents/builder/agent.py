@@ -35,7 +35,11 @@ from meshpipeline.agents.builder.context import (  # noqa: F401
     _count_tokens,
     _get_tokenizer,
 )
-from meshpipeline.agents.builder.driver_run import BuilderDriverRun  # noqa: F401
+from meshpipeline.agents.builder.driver_run import (
+    STOP_REVIEWED_CASE_REPEATS,
+    BuilderDriverRun,  # noqa: F401
+    review_caused_retry,
+)
 from meshpipeline.agents.builder.loop import _run_tool_loop  # noqa: F401
 from meshpipeline.agents.builder.messages import _build_initial_messages  # noqa: F401
 from meshpipeline.agents.builder.tools import (  # noqa: F401
@@ -86,12 +90,13 @@ async def node_builder(state: PipelineState) -> dict:
     budget = budget_mod.settle(carried_epoch=state.get("builder_deadline_epoch", 0.0),
                                pipeline_deadline_epoch=state.get("pipeline_deadline_epoch"))
 
-    def _patch(*, retry_count: int, noop_count: int = 0, api_failure: str = "") -> dict:
+    def _patch(*, retry_count: int, noop_count: int = 0, api_failure: str = "",
+               stop: str = "", workspace: str = "") -> dict:
         return turn_patch.TurnPatch(
-            workspace=str(attempt.workspace), request_txt=attempt.request_txt,
+            workspace=workspace or str(attempt.workspace), request_txt=attempt.request_txt,
             review_brief_txt=attempt.review_brief_txt, deadline_epoch=budget.deadline_epoch,
             retry_count=retry_count, noop_count=noop_count, api_failure=api_failure,
-            flag_responses=attempt_mod.flag_responses(attempt.workspace)).state()
+            flag_responses=attempt_mod.flag_responses(attempt.workspace), stop=stop).state()
 
     if budget.exhausted:
         # Aggregate budget exhausted: fail TRUTHFULLY without another expensive attempt. Nothing
@@ -121,6 +126,20 @@ async def node_builder(state: PipelineState) -> dict:
             return _patch(retry_count=bcfg.MAX_BUILDER_RETRIES + 1,      # → failure sink
                           noop_count=state.get("builder_noop_count", 0))
 
+    # THE ENGINE COULD NOT PREPARE ITS INPUT (attempt._record_staging_failure): nothing is run, and
+    # the attempt's closing note says why. Running the builder on without the staged input only
+    # spends model time looking for a file that was never written (job a76e3ca1: 15 minutes), and
+    # the recorded reason - not "the mesher stopped" - is what the executor reports.
+    _staging = attempt_mod.staging_failure(attempt.workspace)
+    if _staging is not None and (_staging.facts or {}).get("ours"):
+        # ...unless the failure was OURS (a disk write, memory, a time limit): nothing about the
+        # file, and possibly gone next time. It goes to the infrastructure replay, which prepares
+        # this same attempt again - never to the executor as the file's refusal.
+        logger.error("Builder: engine staging failed on our side - handing the attempt to the "
+                     "infrastructure replay - job_id=%s: %s", job_id, _staging.builder_text)
+        return _patch(retry_count=attempt.retry_count,
+                      api_failure=attempt_mod.STAGING_SYSTEM_FAILURE)
+
     authored_before = (noop_mod.authored_digest(attempt.workspace, attempt.engine)
                        if attempt.is_retry else "")
 
@@ -130,33 +149,112 @@ async def node_builder(state: PipelineState) -> dict:
     await _publish.aattempt(attempt.retry_count, bcfg.BUILDER_MAX_TOTAL_ATTEMPTS)
     await _publish.anote("Designing the mesh", op_id=f"designing:{attempt.retry_count}")
 
+    # THE ATTEMPT'S RECORD OF NATIVE RUNS opens here: every mesher this attempt starts is recorded
+    # (contracts/mesh_execution.run_mesh), so the executor can tell "no mesher was started" from "a
+    # mesher crashed", and the closing note below says which.
+    from meshpipeline.contracts.mesh_execution import meshers_started, native_runs, open_native_record
+    open_native_record(attempt.workspace)
+
     # Supersession and cancellation propagate out of here untouched: a stale generation writes
     # nothing, and a cancelled attempt is not a failed one.
-    outcome = await invoke.run_attempt(attempt, state, job_id=job_id, publish=_publish,
-                                       timeout_s=budget.attempt_timeout_s)
+    if _staging is None:
+        outcome = await invoke.run_attempt(attempt, state, job_id=job_id, publish=_publish,
+                                           timeout_s=budget.attempt_timeout_s)
+    else:
+        logger.error("Builder: engine staging failed - the attempt ends on it, nothing runs - "
+                     "job_id=%s: %s", job_id, _staging.builder_text)
+        outcome = invoke.TurnOutcome()
 
     if outcome.provider_failed:
         attempt_capture.record_attempt(job_id, attempt=attempt, outcome=outcome)
         # An API failure routes to the failure sink; execution truth is the executor's to write.
         return _patch(retry_count=attempt.retry_count, api_failure=outcome.api_failure)
 
-    verdict = noop_mod.assess(
-        before=authored_before,
-        after=noop_mod.authored_digest(attempt.workspace, attempt.engine) if authored_before else "",
-        carried_count=state.get("builder_noop_count", 0),
-        retry_count=attempt.retry_count)
-    if verdict.repeated:
-        logger.warning("Builder retry no-op: authored mesh spec unchanged - hash=%s "
-                       "consecutive_noops=%d - job_id=%s",
-                       authored_before, verdict.consecutive, job_id)
-    if verdict.budget_exhausted:
-        logger.error("Builder: %d consecutive no-ops - exhausting retry budget - job_id=%s",
-                     verdict.consecutive, job_id)
+    # A STOP: the retry a review rejection caused wrote exactly the case that review rejected, so
+    # the driver built nothing. No attempt is spent - the attempt counter and the workspace stay on
+    # the reviewed mesh, so the run ends on the verdict, findings and mesh that review actually
+    # judged, not on an empty workspace the executor would report as a mesher crash.
+    stopped = outcome.repeats_reviewed_case
+    verdict: noop_mod.NoopVerdict | None = None
+    if stopped:
+        logger.warning("Builder stop: retry %d would rebuild the mesh the review rejected - "
+                       "ending on that review - job_id=%s", attempt.retry_count, job_id)
+    elif _staging is not None:
+        # an ordinary turn that authored nothing - never a no-op of the builder's making
+        verdict = noop_mod.NoopVerdict(
+            repeated=False, consecutive=int(state.get("builder_noop_count", 0) or 0),
+            retry_count=attempt.retry_count)
+    else:
+        verdict = noop_mod.assess(
+            before=authored_before,
+            after=(noop_mod.authored_digest(attempt.workspace, attempt.engine)
+                   if authored_before else ""),
+            carried_count=state.get("builder_noop_count", 0),
+            retry_count=attempt.retry_count)
+        if verdict.repeated:
+            logger.warning("Builder retry no-op: authored mesh spec unchanged - hash=%s "
+                           "consecutive_noops=%d - job_id=%s",
+                           authored_before, verdict.consecutive, job_id)
+            if review_caused_retry(state):
+                # THE SAME STOP, for any engine: the retry a review asked for authored exactly the
+                # case that review saw. An engine without a pre-mesh check (the tool loop) has
+                # already re-run its mesher by now, but its mesh is the one already reviewed - the
+                # run ends on that review instead of validating and judging it again.
+                stopped, verdict = True, None
+                logger.warning("Builder stop: review retry %d authored the reviewed case again - "
+                               "ending on that review - job_id=%s", attempt.retry_count, job_id)
+        if verdict is not None and verdict.budget_exhausted:
+            logger.error("Builder: %d consecutive no-ops - exhausting retry budget - job_id=%s",
+                         verdict.consecutive, job_id)
+        logger.info("Builder finished - job_id=%s mode=%s attempt=%d workspace=%s",
+                    job_id, mode, attempt.retry_count, attempt.workspace)
 
-    logger.info("Builder finished - job_id=%s mode=%s attempt=%d workspace=%s",
-                job_id, mode, attempt.retry_count, attempt.workspace)
-    await _publish.anote(f"Mesh built - {len(attempt.tool_calls)} steps",
-                         op_id=f"built:{attempt.retry_count}")
+    # THE ATTEMPT'S ONE CLOSING NOTE, whichever way it ended. An engine's deterministic driver
+    # takes no tool steps, so "0 steps" read as "did nothing" on every snappy attempt - count
+    # steps only where there are steps to count. And only a mesh is "built": an attempt that
+    # stopped before its mesher said "Mesh built" too (jobs d20ad762, 26f5429a).
+    _steps = len(attempt.tool_calls)
+    await _publish.anote(
+        _REVIEWED_CASE_REPEATS_NOTE if stopped
+        else _staging_note(attempt, _staging) if _staging is not None
+        else _closing_note(attempt, _steps,
+                           meshers_started(native_runs(attempt.workspace))),
+        op_id=f"{'review-repeat-stop' if stopped else 'built'}:{attempt.retry_count}")
 
     attempt_capture.record_attempt(job_id, attempt=attempt, outcome=outcome, noop=verdict)
+    if verdict is None:
+        return _patch(retry_count=int(state.get("retry_count", 0) or 0),
+                      noop_count=state.get("builder_noop_count", 0),
+                      workspace=str(state.get("openfoam_workspace") or ""),
+                      stop=STOP_REVIEWED_CASE_REPEATS)
     return _patch(retry_count=verdict.retry_count, noop_count=verdict.consecutive)
+
+
+def _staging_note(attempt, refusal) -> str:
+    facts = refusal.facts or {}
+    return (f"{facts.get('engine') or attempt.engine} could not prepare its input from your file: "
+            f"{facts.get('reason') or 'staging failed'}. No mesher was started.")
+
+
+def _closing_note(attempt, steps: int, started: int | None) -> str:
+    """What the attempt produced, said as what it was: a mesh on disk (the engine's declared
+    deliverable marker), no mesher started at all, or no mesh on disk otherwise. A record this
+    process does not have (None) claims nothing beyond whether the mesh is on disk."""
+    from meshpipeline.engines.registry import get_spec
+    try:
+        d = get_spec(attempt.engine).deliverable
+        built = d is not None and (attempt.workspace / d.marker).exists()
+    except Exception:  # noqa: BLE001 - a note never decides anything
+        built = True
+    if built:
+        return f"Mesh built - {steps} steps" if steps else "Mesh built"
+    if started == 0:
+        return "No mesh was built: the mesher was not started in this attempt"
+    return "No mesh came out of this attempt"
+
+
+#: What the user reads when a review's retry would have rebuilt the mesh that review rejected.
+_REVIEWED_CASE_REPEATS_NOTE = (
+    "Stopping: the review asked for changes this rebuild cannot make - the revised plan writes "
+    "exactly the mesh the review just rejected. Building it again would only repeat that mesh, "
+    "so this run ends on that review.")

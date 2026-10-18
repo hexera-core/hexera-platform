@@ -1,8 +1,8 @@
 # The interior-point finder assumed the input solid IS the fluid (a duct modeled as a solid
 # rod). A real machined part is METAL with a channel through it - the channel is not inside
 # the solid, every rod-semantics candidate was rejected, and the rocket nozzle died in prep.
-# The hollow-wall fallback nudges each port centroid toward the other port (down the channel
-# by construction) and accepts not-in-metal points. These tests pin both semantics.
+# For a hollow wall the seed is now searched at the port mouths and proven in the capped
+# cavity (tests/unit/cad/test_seed_capped_cavity.py). These tests pin both semantics.
 import math
 
 import pytest

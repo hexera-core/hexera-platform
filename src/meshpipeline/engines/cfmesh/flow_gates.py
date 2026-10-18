@@ -7,8 +7,10 @@ import logging
 from pathlib import Path
 
 import meshpipeline.settings.policy as polcfg
-from meshpipeline.engines.gates import GateCtx, GateSpec
+from meshpipeline.contracts.failure_cause import FailureCause
+from meshpipeline.engines.gates import GateCtx, GateFeedback, GateSpec, refuse
 from meshpipeline.engines.passage import PASSAGE_FLOOR_CELLS
+from meshpipeline.engines.region_check import gate_port_areas
 
 logger = logging.getLogger(__name__)
 
@@ -66,16 +68,19 @@ def _validate_manifest(workspace: Path, domain: str = "") -> tuple[bool, str]:
     v = manifest.get("validation", {})
 
     if not v.get("has_wall", False):
-        return False, "mesh_manifest.json: no patch of TYPE wall - surface classification failed"
+        return False, refuse("mesh_manifest.json: no patch of TYPE wall - surface classification "
+                             "failed", FailureCause.CONTRACT_MISMATCH, missing_roles=["wall"])
     if not (v.get("has_inflow", False) and v.get("has_outflow", False)):
-        return False, (
+        return False, refuse(
             "mesh_manifest.json: missing inflow/outflow boundary "
-            "(need a patch of TYPE inlet + TYPE outlet, or a single TYPE farfield)"
-        )
+            "(need a patch of TYPE inlet + TYPE outlet, or a single TYPE farfield)",
+            FailureCause.CONTRACT_MISMATCH, missing_roles=["inflow or outflow"])
     _patch_val = v.get("patch_validation", {})
     _empty = [name for name, has_faces in _patch_val.items() if not has_faces]
     if _empty:
-        return False, f"mesh_manifest.json: these patches have zero faces: {_empty}"
+        from meshpipeline.engines.preflight import zero_face_feedback
+        return False, zero_face_feedback(
+            f"mesh_manifest.json: these patches have zero faces: {_empty}", _empty, workspace)
 
     # Compute-feasibility gate: the executor is the SOLE limiter of mesh size (the
     # reviewer no longer judges cell count). Over the cap → reject with ACTIONABLE
@@ -85,11 +90,13 @@ def _validate_manifest(workspace: Path, domain: str = "") -> tuple[bool, str]:
     if _cell_count and _cell_count > _CELL_HARD_LIMIT:
         return (
             False,
-            f"mesh_manifest.json: cell_count={_cell_count:,} exceeds the compute budget "
-            f"({_CELL_HARD_LIMIT:,} cells) - the mesh is TOO FINE. COARSEN it: increase "
-            "maxCellSize, raise the wall localRefinement cellSize, and drop or widen any "
-            "objectRefinement, then run_mesh again. Do NOT shrink the domain box to cut "
-            "cells - keep the far-field extents and reduce REFINEMENT instead."
+            refuse(
+                f"mesh_manifest.json: cell_count={_cell_count:,} exceeds the compute budget "
+                f"({_CELL_HARD_LIMIT:,} cells) - the mesh is TOO FINE. COARSEN it: increase "
+                "maxCellSize, raise the wall localRefinement cellSize, and drop or widen any "
+                "objectRefinement, then run_mesh again. Do NOT shrink the domain box to cut "
+                "cells - keep the far-field extents and reduce REFINEMENT instead.",
+                FailureCause.CELL_BUDGET, cells=int(_cell_count), limit=int(_CELL_HARD_LIMIT)),
         )
 
     # cfMesh writes a native OpenFOAM polyMesh.
@@ -103,27 +110,26 @@ def _validate_manifest(workspace: Path, domain: str = "") -> tuple[bool, str]:
 
 def _gate_manifest_valid(ctx: GateCtx) -> tuple[bool, str]:
     ok, err = _validate_manifest(Path(ctx.workspace), domain=ctx.domain)
-    return ok, ("" if ok else f"[MANIFEST_VALIDATION_FAILED] {err}")
+    if ok:
+        return True, ""
+    if isinstance(err, GateFeedback):
+        return False, err.prefixed("[MANIFEST_VALIDATION_FAILED] ")
+    return False, f"[MANIFEST_VALIDATION_FAILED] {err}"
 
 
 def _gate_resolution_floor(ctx: GateCtx) -> tuple[bool, str]:
     """The fill must span the passage where it matters: cells across the local passage at the
     narrowest wall (5th percentile of the boundary points, measured beside the mesh). A mesh
-    without the measure (an older image) is not judged here."""
-    q = (ctx.manifest_or_load().get("quality") or {})
-    local = q.get("passage_cells_across_local") or {}
-    p05 = local.get("p05")
-    if p05 is None:
+    without the measure (an older image) is not judged here. Side passages the flow can go round
+    are set aside (engines/passage_flow.judge_resolution)."""
+    from meshpipeline.engines.passage_flow import judge_resolution, refuse_under_resolved
+    verdict = judge_resolution(ctx.manifest_or_load().get("quality") or {}, PASSAGE_FLOOR_CELLS)
+    if verdict.ok:
         return True, ""
-    if float(p05) < PASSAGE_FLOOR_CELLS:
-        return False, (
-            f"[RESOLUTION] undermeshed: {float(p05):g} cells across the passage at the narrowest "
-            f"wall (5th percentile; median {local.get('median')}) - a CFD mesh needs at least "
-            f"{PASSAGE_FLOOR_CELLS} everywhere (industry practice is 20-40). Fix in meshDict: "
-            "lower the wall localRefinement cellSize to about 2 x (narrowest radius) / 13 with "
-            "refinementThickness about one radius, lower maxCellSize, and run_mesh again."
-        )
-    return True, ""
+    return False, refuse_under_resolved(
+        verdict,
+        "Fix in meshDict: lower the wall localRefinement cellSize to about 2 x (narrowest radius) "
+        "/ 13 with refinementThickness about one radius, lower maxCellSize, and run_mesh again.")
 
 
 def _gate_patch_contract(ctx: GateCtx) -> tuple[bool, str]:
@@ -156,18 +162,29 @@ def _gate_quality_floor(ctx: GateCtx) -> tuple[bool, str]:
 
 FLOW_GATES: tuple[GateSpec, ...] = (
     GateSpec(key="manifest_valid", check=_gate_manifest_valid, section="MANIFEST",
-             proves="The mesh is structurally sound - no negative-volume, open or mis-oriented cells"),
+             proves="The mesh is structurally sound - no negative-volume, open or mis-oriented cells",
+             cause=FailureCause.ENGINE_CRASHED),
     # Soundness BEFORE naming: run_gates stops at the first blocking failure, so with the
     # floor last a patch-name mismatch refused the run while leaving its quality unmeasured.
     # Deliverability, then is-it-sound, then is-it-what-was-asked-for.
     GateSpec(key="quality_floor",  check=_gate_quality_floor,       section="MESH",
-             proves="The mesh clears every quality bar cfMesh requires - no fatal topology defects"),
+             proves="The mesh clears every quality bar cfMesh requires - no fatal topology defects",
+             cause=FailureCause.MESH_QUALITY),
     # Well-shaped is not adequately resolved: after the quality floor (a broken mesh is the
     # worse news), before naming (an under-resolved mesh is not worth patch-checking).
     GateSpec(key="resolution_floor", check=_gate_resolution_floor, section="MESH",
-             proves="Every passage is spanned by enough cells to carry the flow (12 at the narrowest wall)"),
+             proves="Every passage the flow must go through is spanned by enough cells to carry it (12 at the narrowest wall)",
+             cause=FailureCause.UNDER_RESOLVED),
     GateSpec(key="patch_contract", check=_gate_patch_contract, section="GROUPS",
-             proves="Every boundary you named exists in the mesh, and carries real faces"),
+             proves="Every boundary you named exists in the mesh, and carries real faces",
+             cause=FailureCause.CONTRACT_MISMATCH),
+    # SHARED with every engine (engines/region_check.py): each declared inlet/outlet delivered at
+    # about the size declared - a port that swept in the wall round it, or a mesh of another
+    # region, is refused here though every other gate passes
+    GateSpec(key="port_areas", check=gate_port_areas, section="GROUPS",
+             proves="Every inlet and outlet is the opening you declared, at its size",
+             cause=FailureCause.PATCH_NOT_CAPTURED),
     GateSpec(key="boundary_types", check=_gate_boundary_types, section="GROUPS",
-             proves="Each boundary is typed as the solver needs it (wall / symmetry / empty)"),
+             proves="Each boundary is typed as the solver needs it (wall / symmetry / empty)",
+             cause=FailureCause.BOUNDARY_TYPE),
 )

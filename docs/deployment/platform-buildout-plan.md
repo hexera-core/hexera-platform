@@ -312,6 +312,19 @@ reproducible from nothing in `deploy/`, and currently the largest steady cost in
   drain-before-delete, worker-side graceful shutdown on the GCE preemption/shutdown hook,
   lease-aware deletion, and `autoscalingPolicy.scaleInControl` to bound how fast the fleet can
   shrink.
+  *Status 2026-09-29:* the fleet scales on `worker_demand` (queued + running, running counted by
+  each job's execution fence); every worker VM carries a shutdown script whose job hands itself
+  back to the queue (`application/worker_handoff.py`); the deploy fills in a scale-in control of
+  one instance per 30 minutes where none is set; and the reaper re-runs a job whose worker was
+  lost anyway, once. Still open: a handed-back job restarts from the beginning, because the
+  attempt workspace lives on the VM's own disk - resuming from the checkpoint needs it in durable
+  storage first; and the group, not us, picks which VM a scale-in removes.
+  *Status 2026-09-30:* the group no longer picks. On 2026-09-30 its scale-in took the busy VM twice
+  in half an hour, so the autoscaler now only scales out and an idle worker removes its own VM
+  (`runtime/idle_retire.py`: stop taking work, confirm empty, re-read the group under a fleet-wide
+  lock, then `deleteInstances` on itself, never below the floor). A fleet roll is opportunistic once
+  the workers can move themselves: an outdated worker recreates its own VM when idle. Needs one
+  owner-applied grant (`hexeraWorkerSelfRetire`) for the worker identity.
 - **Stated, documented thresholds** rather than a bare `utilizationTarget: 1.0` — target depth
   per worker, cooldown, max scale-in per window, and the max replica count each environment is
   allowed to reach. The max is also the cost ceiling; it should be a deliberate number.

@@ -78,9 +78,16 @@ def build_checks(brief: dict[str, Any]) -> list[dict[str, Any]]:
             from meshpipeline.agents.intake.validation import check_engine_compatibility
             r = check_engine_compatibility(str(engine), str(purpose), str(input_kind))
             ok = r.get("result") == "supported"
-            add("engine_compatible",
-                f"Engine {engine} supports {purpose} from {input_kind}",
-                PASS if ok else FAIL, str(r.get("explanation") or ""))
+            if brief.get("check_mode") == "thermal":
+                # a thermal model's sheet speaks in words, not in the registry's keys
+                from meshpipeline.engines.registry import engine_label
+                add("engine_compatible",
+                    f"{engine_label(str(engine))} meshes this thermal model for a conjugate "
+                    "heat-transfer solve", PASS if ok else FAIL, "" if ok else str(r.get("explanation") or ""))
+            else:
+                add("engine_compatible",
+                    f"Engine {engine} supports {purpose} from {input_kind}",
+                    PASS if ok else FAIL, str(r.get("explanation") or ""))
         except Exception:
             # A gate that cannot run is not a gate that passed.
             add("engine_compatible", "Engine, purpose and input are compatible",
@@ -106,6 +113,10 @@ def build_checks(brief: dict[str, Any]) -> list[dict[str, Any]]:
         except Exception:
             add("boundary_roles_valid", "Boundary roles are valid for the purpose",
                 UNKNOWN, "the boundary vocabulary could not be resolved")
+    elif purpose and brief.get("check_mode") == "thermal":
+        # A WHOLE THERMAL MODEL declares no boundaries on purpose: the air box's sides are the
+        # file's, open to the room unless the file puts a fan, a vent or a wall there
+        add("boundary_roles_valid", "The air box's sides are kept as the file has them", PASS)
     elif purpose:
         # A purpose that needs no patches is not a failure; say so rather than pass.
         add("boundary_roles_valid", "Boundary roles are valid for the purpose",
@@ -156,12 +167,60 @@ def build_brief(session: Any) -> dict[str, Any] | None:
         "review_brief_text":    _clean(getattr(session, "review_brief_txt", None)),
         "submitted":            bool(getattr(session, "intake_submitted", False)),
     }
+    # WHY THE BOUNDARIES ARE WHAT THEY ARE, when the uploaded file declares them and the brief
+    # still gives them the file's roles (the geometry declaration's reason, read back here)
+    from meshpipeline.application.geometry_confirmation import roles_reason_of
+    brief["boundaries_reason"] = _clean(roles_reason_of(getattr(session, "messages", None) or [],
+                                                        brief.get("boundary_assignments") or []))
+    # A WHOLE THERMAL MODEL'S JOB SHEET: the job in an electronics-cooling engineer's words, from
+    # the file's own numbers and the detail level - what the user approves
+    view = _thermal_view(session)
+    if view is not None:
+        from meshpipeline.application.thermal_wording import job_sheet
+        brief["check_mode"] = "thermal"
+        brief["job_sheet"] = _clean(job_sheet(
+            view, level=brief.get("mesh_fidelity") or _declared_detail(session),
+            engine=brief.get("engine") or "snapgrid"))
     # absent stays absent: a field Intake never settled is not a blank row
     brief = {k: v for k, v in brief.items() if v is not None}
     brief["submitted"] = bool(getattr(session, "intake_submitted", False))
     brief["checks"] = build_checks(brief)
     _add_display_labels(brief)
     return brief
+
+
+def _thermal_view(session: Any) -> dict | None:
+    """The thermal view the geometry check read from the file (application/thermal_view), when
+    the conversation's declaration is a whole thermal model's; None otherwise, or when the check
+    cannot be read - the brief is then the generic one."""
+    from meshpipeline.application.geometry_confirmation import thermal_declared
+
+    if not thermal_declared(getattr(session, "messages", None) or []):
+        return None
+    try:
+        from meshpipeline.application.geometry_check import read_check
+
+        view = (read_check(str(getattr(session, "id", ""))) or {}).get("thermal")
+    except Exception:  # noqa: BLE001 - a brief without its job sheet is still the brief
+        return None
+    return view if isinstance(view, dict) and view else None
+
+
+def _declared_detail(session: Any) -> str:
+    """The detail level the user picked on the thermal model's panel, as the declaration says it
+    ("mesh_fidelity standard"); "" when it says none."""
+    import re
+
+    from meshpipeline.application.geometry_confirmation import CONFIRMED_MARK
+
+    for m in reversed(list(getattr(session, "messages", None) or [])):
+        if not isinstance(m, dict):
+            continue
+        text = str(m.get("content") or "")
+        if m.get("role") == "assistant" and text.startswith(CONFIRMED_MARK):
+            found = re.search(r"\(mesh_fidelity (draft|standard|max)\)", text)
+            return found.group(1) if found else ""
+    return ""
 
 
 def _add_display_labels(brief: dict[str, Any]) -> None:

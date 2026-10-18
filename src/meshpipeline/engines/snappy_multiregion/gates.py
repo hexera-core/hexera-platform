@@ -8,7 +8,8 @@ import re
 from pathlib import Path
 
 import meshpipeline.settings.policy as polcfg
-from meshpipeline.engines.gates import GateCtx, GateSpec
+from meshpipeline.contracts.failure_cause import FailureCause
+from meshpipeline.engines.gates import GateCtx, GateSpec, refuse
 
 logger = logging.getLogger(__name__)
 
@@ -71,16 +72,20 @@ def _gate_cht_manifest_valid(ctx: GateCtx) -> tuple[bool, str]:
             return False, f"[MANIFEST_VALIDATION_FAILED] mesh_manifest.json missing required key: {key}"
     ok, why = _region_properties_declares_regions(ws)
     if not ok:
-        return False, why
+        return False, refuse(why, FailureCause.REGION_SPLIT)
     q = manifest.get("quality", {}) or {}
     if q.get("fatal"):
-        return False, (f"[MANIFEST_VALIDATION_FAILED] fatal mesh defects across regions: {q['fatal']} - "
-                       "set quality='strict' (or coarsen the offending region) and run_mesh again")
+        return False, refuse(
+            f"[MANIFEST_VALIDATION_FAILED] fatal mesh defects across regions: {q['fatal']} - "
+            "set quality='strict' (or coarsen the offending region) and run_mesh again",
+            FailureCause.MESH_QUALITY, fatal=list(q["fatal"]))
     n = manifest.get("cell_count", 0) or 0
     if n and n > polcfg.CELL_HARD_LIMIT:
-        return False, (f"mesh_manifest.json: total cell_count={n:,} exceeds the compute budget "
-                       f"({polcfg.CELL_HARD_LIMIT:,}) - the multi-region mesh is TOO FINE. Lower "
-                       "max_cells / surface_level and run_mesh again.")
+        return False, refuse(
+            f"mesh_manifest.json: total cell_count={n:,} exceeds the compute budget "
+            f"({polcfg.CELL_HARD_LIMIT:,}) - the multi-region mesh is TOO FINE. Lower "
+            "max_cells / surface_level and run_mesh again.",
+            FailureCause.CELL_BUDGET, cells=int(n), limit=int(polcfg.CELL_HARD_LIMIT))
     return True, ""
 
 
@@ -158,7 +163,13 @@ def _gate_multiregion_patch_contract(ctx: GateCtx) -> tuple[bool, str]:
         manifest_patches=list(delivered.keys()),   # the user-boundary names finalize delivered
         manifest_patch_types=delivered,
     )
-    return ok, ("" if ok else diag)
+    if ok:
+        return True, ""
+    # the delivered names come from the regions the builder configured - a new attempt may
+    # configure them differently, so the retries stay
+    from meshpipeline.engines.gates import facts_of
+    return False, refuse(str(diag), FailureCause.CONTRACT_MISMATCH,
+                         **{**facts_of(diag), "retry_may_fix": True})
 
 
 def _gate_cht_region_contract(ctx: GateCtx) -> tuple[bool, str]:
@@ -172,11 +183,16 @@ def _gate_cht_region_contract(ctx: GateCtx) -> tuple[bool, str]:
     missing = sorted(set(want) - set(got))
     mistyped = sorted(n for n in set(want) & set(got) if want[n] != got[n])
     if missing:
-        return False, (f"[REGION_CONTRACT_MISMATCH] declared region(s) {missing} are absent from the "
-                       "delivered case - every region the user declared must be meshed.")
+        return False, refuse(
+            f"[REGION_CONTRACT_MISMATCH] declared region(s) {missing} are absent from the "
+            "delivered case - every region the user declared must be meshed.",
+            FailureCause.CONTRACT_MISMATCH, missing=missing, noun="region", retry_may_fix=True)
     if mistyped:
         detail = "; ".join(f"{n}: declared {want[n]!r}, delivered {got[n]!r}" for n in mistyped)
-        return False, f"[REGION_CONTRACT_MISMATCH] region role mismatch - {detail}."
+        return False, refuse(
+            f"[REGION_CONTRACT_MISMATCH] region role mismatch - {detail}.",
+            FailureCause.CONTRACT_MISMATCH, retry_may_fix=True, noun="region",
+            mistyped=[{"name": n, "declared": want[n], "got": got[n]} for n in mistyped])
     return True, ""
 
 
@@ -191,19 +207,25 @@ def _gate_quality_floor(ctx: GateCtx) -> tuple[bool, str]:
 
 MULTIREGION_GATES: tuple[GateSpec, ...] = (
     GateSpec(key="manifest_valid",   check=_gate_cht_manifest_valid,     section="MANIFEST",
-             proves="The multi-region case is sound - no fatal defects in any region"),
+             proves="The multi-region case is sound - no fatal defects in any region",
+             cause=FailureCause.ENGINE_CRASHED),
     # Soundness BEFORE naming: run_gates stops at the first blocking failure, so with the
     # floor last a patch-name mismatch refused the run while leaving its quality unmeasured.
     # Deliverability, then is-it-sound, then is-it-what-was-asked-for.
     GateSpec(key="quality_floor",  check=_gate_quality_floor,       section="MESH",
-             proves="Every region clears the quality bars this engine requires - skewness is localized across all regions"),
+             proves="Every region clears the quality bars this engine requires - skewness is localized across all regions",
+             cause=FailureCause.MESH_QUALITY),
     GateSpec(key="patch_contract",   check=_gate_multiregion_patch_contract, section="GROUPS",
              proves="The delivered mesh carries exactly the boundaries you approved at intake - "
-                    "none merged, renamed, dropped, or re-roled"),
+                    "none merged, renamed, dropped, or re-roled",
+             cause=FailureCause.CONTRACT_MISMATCH),
     GateSpec(key="regions_split",    check=_gate_regions_split,          section="MESH",
-             proves="Every region you declared was meshed - and no undeclared region was invented"),
+             proves="Every region you declared was meshed - and no undeclared region was invented",
+             cause=FailureCause.REGION_SPLIT),
     GateSpec(key="interfaces",       check=_gate_interfaces_conformal,   section="GEOMETRY",
-             proves="The fluid-solid interfaces are conformal - faces match one-to-one across them"),
+             proves="The fluid-solid interfaces are conformal - faces match one-to-one across them",
+             cause=FailureCause.REGION_SPLIT),
     GateSpec(key="region_contract",  check=_gate_cht_region_contract,    section="GROUPS",
-             proves="Each region carries the boundaries you named for it"),
+             proves="Each region carries the boundaries you named for it",
+             cause=FailureCause.CONTRACT_MISMATCH),
 )

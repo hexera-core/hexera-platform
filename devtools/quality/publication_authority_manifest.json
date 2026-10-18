@@ -381,6 +381,32 @@
   "roots": []
  },
  {
+  "context": "agents/builder/agent.py::node_builder::error#4|NotAPublisher|not-a-publisher|",
+  "path": "agents/builder/agent.py",
+  "qualname": "node_builder",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 4,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "agents/builder/agent.py::node_builder::error#5|NotAPublisher|not-a-publisher|",
+  "path": "agents/builder/agent.py",
+  "qualname": "node_builder",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 5,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "agents/builder/agent.py::node_builder::note#1|ExecutionEventPublisher|execution-owned|agents/builder/agent.py::execution_publisher",
   "path": "agents/builder/agent.py",
   "qualname": "node_builder",
@@ -701,6 +727,45 @@
   ]
  },
  {
+  "context": "agents/intake/garbled.py::flaw::search#1|NotAPublisher|not-a-publisher|",
+  "path": "agents/intake/garbled.py",
+  "qualname": "flaw",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "pattern",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "agents/intake/garbled.py::flaw::search#2|NotAPublisher|not-a-publisher|",
+  "path": "agents/intake/garbled.py",
+  "qualname": "flaw",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "pattern",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "agents/intake/loop_policy.py::user_raised_the_engine::search#1|NotAPublisher|not-a-publisher|",
+  "path": "agents/intake/loop_policy.py",
+  "qualname": "user_raised_the_engine",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_ENGINE_TALK",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "agents/intake/unit_clarification.py::classify::search#1|NotAPublisher|not-a-publisher|",
   "path": "agents/intake/unit_clarification.py",
   "qualname": "classify",
@@ -721,6 +786,58 @@
   "method": "search",
   "ordinal": 2,
   "receiver": "_NEGATED_BEFORE",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "agents/intake/unit_clarification.py::mentions_unit::search#1|NotAPublisher|not-a-publisher|",
+  "path": "agents/intake/unit_clarification.py",
+  "qualname": "mentions_unit",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_UNIT_ANYWHERE",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "agents/intake/unit_clarification.py::only_states_unit::search#1|NotAPublisher|not-a-publisher|",
+  "path": "agents/intake/unit_clarification.py",
+  "qualname": "only_states_unit",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_UNIT_ANYWHERE",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "agents/intake/unit_clarification.py::stated_unit::search#1|NotAPublisher|not-a-publisher|",
+  "path": "agents/intake/unit_clarification.py",
+  "qualname": "stated_unit",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_UNSURE",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "agents/intake/unit_clarification.py::stated_unit::search#2|NotAPublisher|not-a-publisher|",
+  "path": "agents/intake/unit_clarification.py",
+  "qualname": "stated_unit",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "re",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,
@@ -1220,6 +1337,97 @@
   "semantic": "error",
   "method": "error",
   "ordinal": 5,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "api/v1/upload_direct.py::begin_direct_upload::error#1|NotAPublisher|not-a-publisher|",
+  "path": "api/v1/upload_direct.py",
+  "qualname": "begin_direct_upload",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "api/v1/upload_direct.py::begin_direct_upload::error#2|NotAPublisher|not-a-publisher|",
+  "path": "api/v1/upload_direct.py",
+  "qualname": "begin_direct_upload",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 2,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "api/v1/upload_direct.py::begin_direct_upload::error#3|NotAPublisher|not-a-publisher|",
+  "path": "api/v1/upload_direct.py",
+  "qualname": "begin_direct_upload",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 3,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "api/v1/upload_direct.py::finalize_direct_upload::error#1|NotAPublisher|not-a-publisher|",
+  "path": "api/v1/upload_direct.py",
+  "qualname": "finalize_direct_upload",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "api/v1/upload_direct.py::finalize_direct_upload::error#2|NotAPublisher|not-a-publisher|",
+  "path": "api/v1/upload_direct.py",
+  "qualname": "finalize_direct_upload",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 2,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "api/v1/upload_direct.py::finalize_direct_upload::error#3|NotAPublisher|not-a-publisher|",
+  "path": "api/v1/upload_direct.py",
+  "qualname": "finalize_direct_upload",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 3,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "api/v1/upload_direct.py::finalize_direct_upload::error#4|NotAPublisher|not-a-publisher|",
+  "path": "api/v1/upload_direct.py",
+  "qualname": "finalize_direct_upload",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 4,
   "receiver": "logger",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
@@ -1732,6 +1940,71 @@
   ]
  },
  {
+  "context": "application/geometry_confirmation.py::declared_case::search#1|NotAPublisher|not-a-publisher|",
+  "path": "application/geometry_confirmation.py",
+  "qualname": "declared_case",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_DECLARED",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "application/geometry_confirmation.py::declared_case::search#2|NotAPublisher|not-a-publisher|",
+  "path": "application/geometry_confirmation.py",
+  "qualname": "declared_case",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "_THERMAL_DECLARED",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "application/geometry_confirmation.py::declared_case::search#3|NotAPublisher|not-a-publisher|",
+  "path": "application/geometry_confirmation.py",
+  "qualname": "declared_case",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 3,
+  "receiver": "_RESTATES",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "application/geometry_confirmation.py::roles_reason_of::search#1|NotAPublisher|not-a-publisher|",
+  "path": "application/geometry_confirmation.py",
+  "qualname": "roles_reason_of",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_ROLES_RE",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "application/geometry_confirmation.py::roles_reason_of::search#2|NotAPublisher|not-a-publisher|",
+  "path": "application/geometry_confirmation.py",
+  "qualname": "roles_reason_of",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "_OPENINGS_RE",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "application/geometry_materializer.py::materialize::error#1|NotAPublisher|not-a-publisher|",
   "path": "application/geometry_materializer.py",
   "qualname": "materialize",
@@ -1760,11 +2033,52 @@
   ]
  },
  {
+  "context": "application/intake_brief.py::_declared_detail::search#1|NotAPublisher|not-a-publisher|",
+  "path": "application/intake_brief.py",
+  "qualname": "_declared_detail",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "application/maintenance/cleanup.py::_publish_terminal_log::closing#1|EventPublisher|maintenance|application/maintenance/cleanup.py::publisher",
   "path": "application/maintenance/cleanup.py",
   "qualname": "_publish_terminal_log",
   "semantic": "closing",
   "method": "closing",
+  "ordinal": 1,
+  "receiver": "publisher(job_id)",
+  "authority": "EventPublisher",
+  "lifecycle": "maintenance",
+  "gated_required": false,
+  "roots": [
+   "application/maintenance/cleanup.py::publisher"
+  ]
+ },
+ {
+  "context": "application/maintenance/cleanup.py::_reap_stalled_async::error#1|NotAPublisher|not-a-publisher|",
+  "path": "application/maintenance/cleanup.py",
+  "qualname": "_reap_stalled_async",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "application/maintenance/cleanup.py::publish_job_note::note#1|EventPublisher|maintenance|application/maintenance/cleanup.py::publisher",
+  "path": "application/maintenance/cleanup.py",
+  "qualname": "publish_job_note",
+  "semantic": "note",
+  "method": "note",
   "ordinal": 1,
   "receiver": "publisher(job_id)",
   "authority": "EventPublisher",
@@ -2102,6 +2416,81 @@
   ]
  },
  {
+  "context": "application/thermal_wording.py::forbidden_words::search#1|NotAPublisher|not-a-publisher|",
+  "path": "application/thermal_wording.py",
+  "qualname": "forbidden_words",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "application/worker_handoff.py::hand_back::error#1|NotAPublisher|not-a-publisher|application/pipeline_run.py::meshpipeline.application.pipeline_run._JobAdapter",
+  "path": "application/worker_handoff.py",
+  "qualname": "hand_back",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "jlog",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "application/pipeline_run.py::meshpipeline.application.pipeline_run._JobAdapter"
+  ]
+ },
+ {
+  "context": "application/worker_handoff.py::hand_back::error#2|NotAPublisher|not-a-publisher|application/pipeline_run.py::meshpipeline.application.pipeline_run._JobAdapter",
+  "path": "application/worker_handoff.py",
+  "qualname": "hand_back",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 2,
+  "receiver": "jlog",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "application/pipeline_run.py::meshpipeline.application.pipeline_run._JobAdapter"
+  ]
+ },
+ {
+  "context": "application/worker_handoff.py::relaunch::error#1|NotAPublisher|not-a-publisher|application/maintenance/cleanup.py::logging.Logger,application/pipeline_run.py::meshpipeline.application.pipeline_run._JobAdapter",
+  "path": "application/worker_handoff.py",
+  "qualname": "relaunch",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "log",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "application/maintenance/cleanup.py::logging.Logger",
+   "application/pipeline_run.py::meshpipeline.application.pipeline_run._JobAdapter"
+  ]
+ },
+ {
+  "context": "application/worker_handoff.py::relaunch::error#2|NotAPublisher|not-a-publisher|application/maintenance/cleanup.py::logging.Logger,application/pipeline_run.py::meshpipeline.application.pipeline_run._JobAdapter",
+  "path": "application/worker_handoff.py",
+  "qualname": "relaunch",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 2,
+  "receiver": "log",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "application/maintenance/cleanup.py::logging.Logger",
+   "application/pipeline_run.py::meshpipeline.application.pipeline_run._JobAdapter"
+  ]
+ },
+ {
   "context": "cad/cad_tessellate.py::tessellate_internal::error#1|NotAPublisher|not-a-publisher|",
   "path": "cad/cad_tessellate.py",
   "qualname": "tessellate_internal",
@@ -2141,6 +2530,19 @@
   "roots": []
  },
  {
+  "context": "cad/cad_tessellate.py::tessellate_internal._less_other_solids::error#1|NotAPublisher|not-a-publisher|",
+  "path": "cad/cad_tessellate.py",
+  "qualname": "tessellate_internal._less_other_solids",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "cad/cad_tessellate.py::tessellate_internal._mouth_caps::error#1|NotAPublisher|not-a-publisher|",
   "path": "cad/cad_tessellate.py",
   "qualname": "tessellate_internal._mouth_caps",
@@ -2148,6 +2550,188 @@
   "method": "error",
   "ordinal": 1,
   "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "cad/ingest/sniff.py::sniff_bytes::search#1|NotAPublisher|not-a-publisher|",
+  "path": "cad/ingest/sniff.py",
+  "qualname": "sniff_bytes",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_STL_FACET",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "cad/ingest/sniff.py::sniff_bytes::search#2|NotAPublisher|not-a-publisher|",
+  "path": "cad/ingest/sniff.py",
+  "qualname": "sniff_bytes",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "_ABAQUS",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "cad/ingest/sniff.py::sniff_bytes::search#3|NotAPublisher|not-a-publisher|",
+  "path": "cad/ingest/sniff.py",
+  "qualname": "sniff_bytes",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 3,
+  "receiver": "_NASTRAN",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "cad/ingest/sniff.py::sniff_bytes::search#4|NotAPublisher|not-a-publisher|",
+  "path": "cad/ingest/sniff.py",
+  "qualname": "sniff_bytes",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 4,
+  "receiver": "_OBJ_VERTEX",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "cad/ingest/sniff.py::sniff_bytes::search#5|NotAPublisher|not-a-publisher|",
+  "path": "cad/ingest/sniff.py",
+  "qualname": "sniff_bytes",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 5,
+  "receiver": "_OBJ_FACE",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "cad/ingest/step_facets.py::census::search#1|NotAPublisher|not-a-publisher|",
+  "path": "cad/ingest/step_facets.py",
+  "qualname": "census",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_FACETED_BREP",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "cad/ingest/step_facets.py::census::search#2|NotAPublisher|not-a-publisher|",
+  "path": "cad/ingest/step_facets.py",
+  "qualname": "census",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "_ASSEMBLY",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "cad/ingest/step_facets.py::read_faceted::search#1|NotAPublisher|not-a-publisher|",
+  "path": "cad/ingest/step_facets.py",
+  "qualname": "read_faceted",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_ASSEMBLY",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "cad/ingest/surface.py::_looks_ascii::search#1|NotAPublisher|not-a-publisher|",
+  "path": "cad/ingest/surface.py",
+  "qualname": "_looks_ascii",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "cad/ingest/units.py::_3mf_unit::search#1|NotAPublisher|not-a-publisher|",
+  "path": "cad/ingest/units.py",
+  "qualname": "_3mf_unit",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_3MF_MODEL_TAG",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "cad/ingest/units.py::_3mf_unit::search#2|NotAPublisher|not-a-publisher|",
+  "path": "cad/ingest/units.py",
+  "qualname": "_3mf_unit",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "_3MF_UNIT_ATTR",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "cad/step_units.py::_unit_metres::search#1|NotAPublisher|not-a-publisher|",
+  "path": "cad/step_units.py",
+  "qualname": "_unit_metres",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_CONVERSION",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "cad/step_units.py::_unit_metres::search#2|NotAPublisher|not-a-publisher|",
+  "path": "cad/step_units.py",
+  "qualname": "_unit_metres",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "_MEASURE",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "cad/step_units.py::_unit_metres::search#3|NotAPublisher|not-a-publisher|",
+  "path": "cad/step_units.py",
+  "qualname": "_unit_metres",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 3,
+  "receiver": "_SI",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,
@@ -2206,6 +2790,58 @@
   "roots": []
  },
  {
+  "context": "contracts/engineering_text.py::_free::search#1|NotAPublisher|not-a-publisher|",
+  "path": "contracts/engineering_text.py",
+  "qualname": "_free",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_DOLLAR_IS_MATH",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "contracts/engineering_text.py::_script::search#1|NotAPublisher|not-a-publisher|",
+  "path": "contracts/engineering_text.py",
+  "qualname": "_script",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_LOWER_AFTER",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "contracts/engineering_text.py::plain::search#1|NotAPublisher|not-a-publisher|",
+  "path": "contracts/engineering_text.py",
+  "qualname": "plain",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_TRIGGER",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "contracts/intake_formats.py::refusal_suffix::search#1|NotAPublisher|not-a-publisher|",
+  "path": "contracts/intake_formats.py",
+  "qualname": "refusal_suffix",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_CREO_SAVE_NUMBER",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "contracts/rationale.py::_asay::rationale#1|ExecutionEventPublisher|execution-owned|contracts/rationale.py::parameter",
   "path": "contracts/rationale.py",
   "qualname": "_asay",
@@ -2249,6 +2885,84 @@
   "roots": [
    "agents/intake/agent.py::IntakeRequestPath"
   ]
+ },
+ {
+  "context": "contracts/unit_plausibility.py::expected_from_words::search#1|NotAPublisher|not-a-publisher|",
+  "path": "contracts/unit_plausibility.py",
+  "qualname": "expected_from_words",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/case_contract.py::_apply_create_patch::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/case_contract.py",
+  "qualname": "_apply_create_patch",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/case_contract.py::_block::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/case_contract.py",
+  "qualname": "_block",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/case_contract.py::_block_mesh_patches::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/case_contract.py",
+  "qualname": "_block_mesh_patches",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/case_contract.py::_word::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/case_contract.py",
+  "qualname": "_word",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/case_contract.py::launch_check::error#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/case_contract.py",
+  "qualname": "launch_check",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
  },
  {
   "context": "engines/cfmesh/deliverable.py::boundary_foam_types::search#1|NotAPublisher|not-a-publisher|",
@@ -2355,6 +3069,45 @@
   "roots": []
  },
  {
+  "context": "engines/cfmesh/rescue.py::protective_meshdict::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/cfmesh/rescue.py",
+  "qualname": "protective_meshdict",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/cfmesh/rescue.py::protective_meshdict::search#2|NotAPublisher|not-a-publisher|",
+  "path": "engines/cfmesh/rescue.py",
+  "qualname": "protective_meshdict",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/cfmesh/rescue.py::protective_meshdict::search#3|NotAPublisher|not-a-publisher|",
+  "path": "engines/cfmesh/rescue.py",
+  "qualname": "protective_meshdict",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 3,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "engines/cfmesh/solvability.py::_read_foam_labels::search#1|NotAPublisher|not-a-publisher|",
   "path": "engines/cfmesh/solvability.py",
   "qualname": "_read_foam_labels",
@@ -2407,6 +3160,136 @@
   "roots": []
  },
  {
+  "context": "engines/layer_census.py::_body::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/layer_census.py",
+  "qualname": "_body",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_ASCII",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/layer_census.py::_boundary::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/layer_census.py",
+  "qualname": "_boundary",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/layer_census.py::_boundary::search#2|NotAPublisher|not-a-publisher|",
+  "path": "engines/layer_census.py",
+  "qualname": "_boundary",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/layer_census.py::stated_layers::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/layer_census.py",
+  "qualname": "stated_layers",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_LAYER_CONTEXT",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/snapgrid/cli.py::main::check#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/snapgrid/cli.py",
+  "qualname": "main",
+  "semantic": "check",
+  "method": "check",
+  "ordinal": 1,
+  "receiver": "N",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/snapgrid/gates.py::region_properties_names::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/snapgrid/gates.py",
+  "qualname": "region_properties_names",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_REGIONS_BLOCK",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/snapgrid/native.py::_boundary_counts::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/snapgrid/native.py",
+  "qualname": "_boundary_counts",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/snapgrid/native.py::_boundary_counts::search#2|NotAPublisher|not-a-publisher|",
+  "path": "engines/snapgrid/native.py",
+  "qualname": "_boundary_counts",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/snapgrid/native.py::dialect_of::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/snapgrid/native.py",
+  "qualname": "dialect_of",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/snapgrid/native.py::parse_check_mesh::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/snapgrid/native.py",
+  "qualname": "parse_check_mesh",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "pat",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "engines/snappy/drivers.py::_build_internal_deterministic::error#1|NotAPublisher|not-a-publisher|",
   "path": "engines/snappy/drivers.py",
   "qualname": "_build_internal_deterministic",
@@ -2433,17 +3316,19 @@
   "roots": []
  },
  {
-  "context": "engines/snappy/drivers.py::_build_internal_deterministic::error#3|NotAPublisher|not-a-publisher|",
+  "context": "engines/snappy/drivers.py::_build_internal_deterministic::error#3|ExecutionEventPublisher|execution-owned|engines/snappy/drivers.py::parameter",
   "path": "engines/snappy/drivers.py",
   "qualname": "_build_internal_deterministic",
   "semantic": "error",
-  "method": "error",
+  "method": "aerror",
   "ordinal": 3,
-  "receiver": "logger",
-  "authority": "NotAPublisher",
-  "lifecycle": "not-a-publisher",
-  "gated_required": false,
-  "roots": []
+  "receiver": "publish",
+  "authority": "ExecutionEventPublisher",
+  "lifecycle": "execution-owned",
+  "gated_required": true,
+  "roots": [
+   "engines/snappy/drivers.py::parameter"
+  ]
  },
  {
   "context": "engines/snappy/drivers.py::_build_internal_deterministic::error#4|ExecutionEventPublisher|execution-owned|engines/snappy/drivers.py::parameter",
@@ -2461,19 +3346,17 @@
   ]
  },
  {
-  "context": "engines/snappy/drivers.py::_build_internal_deterministic::error#5|ExecutionEventPublisher|execution-owned|engines/snappy/drivers.py::parameter",
+  "context": "engines/snappy/drivers.py::_build_internal_deterministic::error#5|NotAPublisher|not-a-publisher|",
   "path": "engines/snappy/drivers.py",
   "qualname": "_build_internal_deterministic",
   "semantic": "error",
-  "method": "aerror",
+  "method": "error",
   "ordinal": 5,
-  "receiver": "publish",
-  "authority": "ExecutionEventPublisher",
-  "lifecycle": "execution-owned",
-  "gated_required": true,
-  "roots": [
-   "engines/snappy/drivers.py::parameter"
-  ]
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
  },
  {
   "context": "engines/snappy/drivers.py::_build_internal_deterministic::meshed#1|ExecutionEventPublisher|execution-owned|engines/snappy/drivers.py::parameter",
@@ -2596,6 +3479,21 @@
   ]
  },
  {
+  "context": "engines/snappy/drivers.py::_build_internal_deterministic::note#8|ExecutionEventPublisher|execution-owned|engines/snappy/drivers.py::parameter",
+  "path": "engines/snappy/drivers.py",
+  "qualname": "_build_internal_deterministic",
+  "semantic": "note",
+  "method": "anote",
+  "ordinal": 8,
+  "receiver": "publish",
+  "authority": "ExecutionEventPublisher",
+  "lifecycle": "execution-owned",
+  "gated_required": true,
+  "roots": [
+   "engines/snappy/drivers.py::parameter"
+  ]
+ },
+ {
   "context": "engines/snappy/drivers.py::_build_snappy_deterministic::error#1|ExecutionEventPublisher|execution-owned|engines/snappy/drivers.py::parameter",
   "path": "engines/snappy/drivers.py",
   "qualname": "_build_snappy_deterministic",
@@ -2609,6 +3507,19 @@
   "roots": [
    "engines/snappy/drivers.py::parameter"
   ]
+ },
+ {
+  "context": "engines/snappy/drivers.py::_build_snappy_deterministic::error#2|NotAPublisher|not-a-publisher|",
+  "path": "engines/snappy/drivers.py",
+  "qualname": "_build_snappy_deterministic",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 2,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
  },
  {
   "context": "engines/snappy/drivers.py::_build_snappy_deterministic::meshed#1|ExecutionEventPublisher|execution-owned|engines/snappy/drivers.py::parameter",
@@ -2716,6 +3627,21 @@
   ]
  },
  {
+  "context": "engines/snappy/drivers.py::_build_snappy_deterministic::note#7|ExecutionEventPublisher|execution-owned|engines/snappy/drivers.py::parameter",
+  "path": "engines/snappy/drivers.py",
+  "qualname": "_build_snappy_deterministic",
+  "semantic": "note",
+  "method": "anote",
+  "ordinal": 7,
+  "receiver": "publish",
+  "authority": "ExecutionEventPublisher",
+  "lifecycle": "execution-owned",
+  "gated_required": true,
+  "roots": [
+   "engines/snappy/drivers.py::parameter"
+  ]
+ },
+ {
   "context": "engines/snappy/drivers.py::_op_begin::tool_call#1|ExecutionEventPublisher|execution-owned|engines/snappy/drivers.py::parameter",
   "path": "engines/snappy/drivers.py",
   "qualname": "_op_begin",
@@ -2736,6 +3662,21 @@
   "qualname": "_op_end",
   "semantic": "tool_result",
   "method": "atool_result",
+  "ordinal": 1,
+  "receiver": "publish",
+  "authority": "ExecutionEventPublisher",
+  "lifecycle": "execution-owned",
+  "gated_required": true,
+  "roots": [
+   "engines/snappy/drivers.py::parameter"
+  ]
+ },
+ {
+  "context": "engines/snappy/drivers.py::_preflight_stopped::error#1|ExecutionEventPublisher|execution-owned|engines/snappy/drivers.py::parameter",
+  "path": "engines/snappy/drivers.py",
+  "qualname": "_preflight_stopped",
+  "semantic": "error",
+  "method": "aerror",
   "ordinal": 1,
   "receiver": "publish",
   "authority": "ExecutionEventPublisher",
@@ -3077,6 +4018,45 @@
   "roots": []
  },
  {
+  "context": "engines/snappy_multiregion/region_select.py::_matches::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/snappy_multiregion/region_select.py",
+  "qualname": "_matches",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_GLOB",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/snappy_multiregion/region_select.py::expand_refinement::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/snappy_multiregion/region_select.py",
+  "qualname": "expand_refinement",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_GLOB",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/snappy_multiregion/region_select.py::resolve_regions::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/snappy_multiregion/region_select.py",
+  "qualname": "resolve_regions",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_GLOB",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "engines/snappy_multiregion/regions.py::parse_region_properties::search#1|NotAPublisher|not-a-publisher|",
   "path": "engines/snappy_multiregion/regions.py",
   "qualname": "parse_region_properties",
@@ -3084,6 +4064,19 @@
   "method": "search",
   "ordinal": 1,
   "receiver": "_REGIONS_BLOCK",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/snappy_multiregion/thermal_fidelity.py::_touching::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/snappy_multiregion/thermal_fidelity.py",
+  "qualname": "_touching",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,
@@ -3144,6 +4137,19 @@
   "roots": [
    "pipeline/engine_select.py::execution_publisher"
   ]
+ },
+ {
+  "context": "pipeline/executor.py::_case_contract_refusal::error#1|NotAPublisher|not-a-publisher|",
+  "path": "pipeline/executor.py",
+  "qualname": "_case_contract_refusal",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
  },
  {
   "context": "pipeline/executor.py::node_executor::check#1|ExecutionEventPublisher|execution-owned|pipeline/executor.py::execution_publisher",
@@ -3227,6 +4233,21 @@
   "semantic": "check",
   "method": "acheck",
   "ordinal": 6,
+  "receiver": "_pub",
+  "authority": "ExecutionEventPublisher",
+  "lifecycle": "execution-owned",
+  "gated_required": true,
+  "roots": [
+   "pipeline/executor.py::execution_publisher"
+  ]
+ },
+ {
+  "context": "pipeline/executor.py::node_executor::check#7|ExecutionEventPublisher|execution-owned|pipeline/executor.py::execution_publisher",
+  "path": "pipeline/executor.py",
+  "qualname": "node_executor",
+  "semantic": "check",
+  "method": "acheck",
+  "ordinal": 7,
   "receiver": "_pub",
   "authority": "ExecutionEventPublisher",
   "lifecycle": "execution-owned",
@@ -3354,9 +4375,9 @@
   ]
  },
  {
-  "context": "pipeline/geometry_admission.py::node_geometry_admission::error#1|NotAPublisher|not-a-publisher|",
+  "context": "pipeline/geometry_admission.py::_refuse::error#1|NotAPublisher|not-a-publisher|",
   "path": "pipeline/geometry_admission.py",
-  "qualname": "node_geometry_admission",
+  "qualname": "_refuse",
   "semantic": "error",
   "method": "error",
   "ordinal": 1,
@@ -3447,6 +4468,47 @@
   "roots": [
    "render/scout_snapshots.py::result of pv.Plotter(off_screen=True, window_size=list(WINDOW))"
   ]
+ },
+ {
+  "context": "render/scout_snapshots.py::render_upright_sheet::screenshot#1|NotAPublisher|not-a-publisher|render/scout_snapshots.py::result of pv.Plotter(off_screen=True, window_size=[1200, 800], shape=(2, 3), border=True)",
+  "path": "render/scout_snapshots.py",
+  "qualname": "render_upright_sheet",
+  "semantic": "screenshot",
+  "method": "screenshot",
+  "ordinal": 1,
+  "receiver": "pl",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "render/scout_snapshots.py::result of pv.Plotter(off_screen=True, window_size=[1200, 800], shape=(2, 3), border=True)"
+  ]
+ },
+ {
+  "context": "runtime/idle_retire.py::IdleRetirer._refused::error#1|NotAPublisher|not-a-publisher|",
+  "path": "runtime/idle_retire.py",
+  "qualname": "IdleRetirer._refused",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "runtime/idle_retire.py::IdleRetirer.run::error#1|NotAPublisher|not-a-publisher|",
+  "path": "runtime/idle_retire.py",
+  "qualname": "IdleRetirer.run",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
  },
  {
   "context": "runtime/observability/sentry.py::setup_sentry::error#1|NotAPublisher|not-a-publisher|",
@@ -3547,6 +4609,19 @@
   "method": "warn",
   "ordinal": 7,
   "receiver": "_w",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "runtime/worker_drain.py::request_drain::error#1|NotAPublisher|not-a-publisher|",
+  "path": "runtime/worker_drain.py",
+  "qualname": "request_drain",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,

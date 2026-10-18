@@ -11,9 +11,11 @@ AUTHORING_TOOL: dict = {
         "description": (
             "Render a VALID, budget-clamped MULTI-REGION snappyHexMesh multi-region case FOR you from a "
             "high-level STRATEGY - you never hand-write the dicts. You MUST supply `regions`: map "
-            "each solid from geometry_report (by its integer index) onto a named region tagged "
-            "'fluid' or 'solid' (a coupled case needs >=1 fluid and >=1 solid). The fluid-solid "
-            "interfaces are created automatically by the region split. Call this, then run_mesh; to "
+            "each solid from geometry_report onto a named region tagged 'fluid' or 'solid' (a "
+            "coupled case needs >=1 fluid and >=1 solid) - by index, by the solid's name, or by a "
+            "glob pattern over the names; a large assembly needs no per-solid list (use "
+            "geometry_report's suggested_regions when it gives one). The fluid-solid interfaces "
+            "are created automatically by the region split. Call this, then run_mesh; to "
             "iterate, change a strategy field and call again. All lengths in METRES."
         ),
         "parameters": {
@@ -21,18 +23,23 @@ AUTHORING_TOOL: dict = {
             "properties": {
                 "regions": {
                     "type": "array",
-                    "description": ("REQUIRED. One entry per region: "
-                                    "{name, type:'fluid'|'solid', solids:[<geometry_report indices>]}. "
+                    "description": ("REQUIRED. One entry per region: {name, type:'fluid'|'solid', "
+                                    "solids:[index | name | 'pattern*']}; or ONE entry "
+                                    "{per_solid: true, type, solids: ['*']} that makes each solid "
+                                    "no other entry claims its own region, named after the solid. "
                                     "Every assembly solid must be assigned to exactly one region."),
                     "items": {
                         "type": "object",
                         "properties": {
-                            "name": {"type": "string", "description": "region name (OpenFOAM-safe, e.g. 'fluid','plate')"},
+                            "name": {"type": "string", "description": "region name (OpenFOAM-safe, e.g. 'fluid','plate'); not with per_solid"},
                             "type": {"type": "string", "description": "'fluid' or 'solid'"},
-                            "solids": {"type": "array", "items": {"type": "integer"},
-                                       "description": "geometry_report solid indices in this region"},
+                            "solids": {"type": "array",
+                                       "items": {"type": ["integer", "string"]},
+                                       "description": "geometry_report solid indices, solid names, or glob patterns over the names"},
+                            "per_solid": {"type": "boolean",
+                                          "description": "one region per matched solid, named after it"},
                         },
-                        "required": ["name", "type", "solids"],
+                        "required": ["type", "solids"],
                     },
                 },
                 "surface_level": {"type": "array", "items": {"type": "integer"}, "description": "[min,max] surface refinement (clamped to budget)"},
@@ -41,7 +48,7 @@ AUTHORING_TOOL: dict = {
                 "first_layer_rel": {"type": "number", "description": "outer layer thickness vs local cell (default 0.35)"},
                 "quality": {"type": "string", "description": "'balanced' (default) or 'strict' (checkMesh skew<4)"},
                 "max_cells": {"type": "integer", "description": "cell budget for the background mesh (default 6e6)"},
-                "region_refinement": {"type": "object", "description": "per-region [min,max] surface-level OVERRIDE, e.g. {\"fasteners\": [5, 6]} - the scale-aware handle for multi-scale assemblies: refine the region holding tiny solids locally (see geometry_report per_solid_scale.needed_level) instead of raising the global surface_level"},
+                "region_refinement": {"type": "object", "description": "per-region [min,max] surface-level OVERRIDE, keyed by region name or a glob pattern over region names, e.g. {\"fasteners\": [5, 6], \"Cap_*\": [4, 4]} - the scale-aware handle for multi-scale assemblies: refine the region holding tiny solids locally (see geometry_report per_solid_scale.needed_level) instead of raising the global surface_level"},
             },
             "required": ["regions"],
         },
@@ -66,11 +73,16 @@ def _int(v) -> bool:
     return isinstance(v, int) and not isinstance(v, bool)
 
 
+def _solid_ref(s) -> bool:
+    """An index, or a solid's name or a glob pattern over the names (resolved by the engine)."""
+    return _int(s) or (isinstance(s, str) and bool(s.strip()))
+
+
 def _validate_regions(regions) -> list[Diagnostic]:
     d: list[Diagnostic] = []
     if not isinstance(regions, list) or not regions:
         return [Diagnostic("error", "regions", "regions must be a non-empty array of "
-                                               "{name, type:'fluid'|'solid', solids:[int]}")]
+                                               "{name, type:'fluid'|'solid', solids:[...]}")]
     names: list[str] = []
     solids_seen: dict[int, str] = {}
     n_fluid = n_solid = 0
@@ -78,10 +90,13 @@ def _validate_regions(regions) -> list[Diagnostic]:
         if not isinstance(r, dict):
             d.append(Diagnostic("error", f"regions[{i}]", "each region must be an object"))
             continue
+        per_solid = r.get("per_solid") is True
         name = str(r.get("name", "")).strip()
         rtype = str(r.get("type", "")).strip().lower()
         solids = r.get("solids")
-        if not name:
+        if per_solid:
+            pass                              # each region is named after its solid
+        elif not name:
             d.append(Diagnostic("error", f"regions[{i}].name", "region name is required"))
         elif name in names:
             d.append(Diagnostic("error", f"regions[{i}].name", f"duplicate region name {name!r}"))
@@ -92,11 +107,14 @@ def _validate_regions(regions) -> list[Diagnostic]:
         else:
             n_fluid += rtype == "fluid"
             n_solid += rtype == "solid"
-        if not (isinstance(solids, list) and solids and all(_int(s) for s in solids)):
-            d.append(Diagnostic("error", f"regions[{i}].solids", "solids must be a non-empty array of integer "
-                                                                 "solid indices (from geometry_report)"))
+        if not (isinstance(solids, list) and solids and all(_solid_ref(s) for s in solids)):
+            d.append(Diagnostic("error", f"regions[{i}].solids",
+                                "solids must be a non-empty array of solid indices, solid names "
+                                "or glob patterns over the names (from geometry_report)"))
         else:
             for s in solids:
+                if not _int(s):
+                    continue                  # names and patterns are resolved by the engine
                 if s in solids_seen:
                     d.append(Diagnostic("error", f"regions[{i}].solids",
                                         f"solid {s} already assigned to region {solids_seen[s]!r} - "
@@ -140,14 +158,18 @@ def validate(strategy: dict) -> list[Diagnostic]:
         d.append(Diagnostic("error", "quality", f"quality must be one of {sorted(_QUALITY)}"))
     if "region_refinement" in strategy:
         rr = strategy["region_refinement"]
-        _declared = {str(r.get("name", "")).strip() for r in strategy.get("regions") or []
-                     if isinstance(r, dict)}
+        _entries = [r for r in strategy.get("regions") or [] if isinstance(r, dict)]
+        _declared = {str(r.get("name", "")).strip() for r in _entries}
+        # per-solid regions are named after their solids, known only once the engine resolves
+        # them; a pattern key is matched there too
+        _open = any(r.get("per_solid") is True for r in _entries)
         if not isinstance(rr, dict):
             d.append(Diagnostic("error", "region_refinement",
                                 "region_refinement must be an object {region_name: [min,max]}"))
         else:
             for rn, lv in rr.items():
-                if _declared and rn not in _declared:
+                if _declared and rn not in _declared and not _open and not any(
+                        c in str(rn) for c in "*?["):
                     d.append(Diagnostic("error", f"region_refinement.{rn}",
                                         f"unknown region {rn!r} - keys must be declared region names"))
                 if not (isinstance(lv, list) and len(lv) == 2

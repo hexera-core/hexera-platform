@@ -26,3 +26,18 @@ class RedisDeliveryGuard:
         if n == 1:
             r.expire(key, _TTL_SECONDS)
         return n
+
+    def forgive_attempt(self, job_id: str) -> None:
+        # Never below zero, and never creating a key that is not there: a count that already
+        # expired has nothing to take back. One atomic script, so a delivery counted by another
+        # worker at the same moment is not lost between a read and a write.
+        self._client().eval(_FORGIVE_LUA, 1, k(f"job:{job_id}:deliveries"))
+
+
+_FORGIVE_LUA = """
+local n = tonumber(redis.call('GET', KEYS[1]) or '0')
+if n > 0 then
+  return redis.call('DECR', KEYS[1])
+end
+return 0
+"""

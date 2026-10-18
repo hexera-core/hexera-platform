@@ -363,6 +363,28 @@ INVENTORY: list[Group] = [
         EnvVar("GEOMETRY_CHECK_VISION_TIMEOUT_S", "60", kind="int", exposure="internal",
                help="seconds the vision naming step may take before the check ships with the code's own names"),
     ]),
+    Group("CAD repair", note="Whether a customer's geometry may be MUTATED, and the caps a conservative repair must stay inside. Inspection runs regardless and only ever reads; CAD_REPAIR_ENABLED is the switch that separates looking from changing, and with it off a repair is refused before any kernel call.", vars=[
+        EnvVar("CAD_REPAIR_ENABLED", "false", kind="bool",
+               help="allow repair attempts to write new geometry; inspection is unaffected"),
+        EnvVar("CAD_REPAIR_AUTONOMOUS", "true", kind="bool", exposure="internal",
+               help="repair a file in the run when triage can point at the defect, instead of only reporting it"),
+        EnvVar("CAD_REPAIR_TIMEOUT_S", "120", kind="float", exposure="internal",
+               help="seconds the run waits for a repair before going on without it; the kernel itself cannot be interrupted"),
+        EnvVar("CAD_INSPECT_TIMEOUT_S", "25", kind="float", exposure="internal",
+               help="seconds inspection may spend on one file before the run goes on without it"),
+        EnvVar("CAD_INSPECT_MAX_BYTES", str(80 * 1024 * 1024), kind="int", exposure="internal",
+               help="files larger than this are not inspected; an operator looks at them instead"),
+        EnvVar("CAD_REPAIR_MAX_DEVIATION_RATIO", "0.001", kind="float", exposure="internal",
+               help="largest surface movement a repair may leave, as a fraction of the part diagonal"),
+        EnvVar("CAD_REPAIR_MAX_TOLERANCE_MM", "0.1", kind="float", exposure="internal",
+               help="largest tolerance in mm a repair may leave on any sub-shape"),
+        EnvVar("CAD_REPAIR_ALLOW_FACE_REMOVAL", "false", kind="bool", exposure="internal",
+               help="allow a repair to delete faces; defeaturing is an operator judgement, not a conservative pass"),
+        EnvVar("CAD_REPAIR_FILL_PLANAR_HOLES", "false", kind="bool", exposure="internal",
+               help="close a hole with a flat patch; adds geometry, and can seal a drilled through-hole - operator decision until that case is detected"),
+        EnvVar("CAD_REPAIR_MAX_HOLE_SPAN_RATIO", "0.75", kind="float", exposure="internal",
+               help="largest patchable hole, as a fraction of the part diagonal; past this it is a missing wall"),
+    ]),
     Group("Quotas", vars=[
         EnvVar("MAX_JOBS_PER_OWNER", "5"),
         EnvVar("MAX_CONCURRENT_JOBS", "20"),
@@ -457,11 +479,16 @@ INVENTORY: list[Group] = [
         EnvVar("REQUIRE_DURABLE_CHECKPOINTER", "", kind="bool", help="forced on outside development; leave blank"),
         EnvVar("PIPELINE_BACKEND", "celery", help="which execution backend the run is attributed to"),
         EnvVar("WORKER_WAKE_MINUTES", "8", kind="int", help="how long a worker takes to pick a job up when the fleet is scaled to zero (autoscaler reaction + VM boot + image pull); the console shows 'waiting for a worker to start (about N minutes)' while a job is pending. 0 hides the estimate"),
+        EnvVar("WORKER_IDLE_RETIRE_MINUTES", "10", kind="int", help="a fleet worker that has held no job this long removes its own VM from the managed instance group, when the group is larger than the autoscaler recommends and above its floor; the autoscaler only scales out, so a VM running a job is never the one removed. 0 turns it off (then nothing shrinks the group)"),
     ]),
 
     Group("Safety switches", note="On by default. Each one is a gate that refuses bad geometry or unsafe generated work; turn one off only with a measured reason.", vars=[
         EnvVar("SOLVABILITY_GATE_ENABLED", "true", kind="bool"),
         EnvVar("DOMAIN_EXTENT_GATE_ENABLED", "true", kind="bool"),
+        EnvVar("ENGINE_FALLBACK_ENABLED", "true", kind="bool",
+               help="when an engine cannot mesh a shape, move the run to the next engine that "
+                    "delivers the same approved mesh (never a user-named engine); off = every "
+                    "run stays on its first engine and a failure only offers the next one"),
         EnvVar("MESH_SCRIPT_SCAN_ENABLED", "true", kind="bool"),
         EnvVar("RUN_PYTHON_REQUIRE_SANDBOX", "true", kind="bool", help="refuse to run generated Python outside the seccomp/Landlock jail"),
         EnvVar("CELL_HARD_LIMIT", "8000000", kind="int", help="compute-feasibility cap on mesh size: the only cell-count gate"),
@@ -503,6 +530,10 @@ INVENTORY: list[Group] = [
                help="replays of a builder attempt killed by a TRANSIENT system failure; 0 disables"),
         EnvVar("BUILDER_INFRA_RETRY_BACKOFF_S", "90", kind="int",
                help="wait before an infra replay - long enough to outlive a provider brownout"),
+        EnvVar("REVIEWER_RERUN_MAX", "2", kind="int",
+               help="reviews of an already-validated mesh started again after one ended without a verdict (stalled, out of rounds, renderer or provider down); nothing is rebuilt; per job; 0 disables"),
+        EnvVar("REVIEWER_RERUN_BACKOFF_S", "90", kind="int",
+               help="wait before a review rerun after a TRANSIENT provider or dependency failure; a stalled review starts again at once"),
     ]),
 
     Group("Web search sizing", vars=[
@@ -553,6 +584,7 @@ INVENTORY: list[Group] = [
         EnvVar("SNAPPY_THIN_AREA_FLOOR", "0.002", kind="float", exposure="internal", help="act only when thin+razor classes cover at least this wetted-area fraction"),
         EnvVar("SNAPPY_RAZOR_CELL_FACTOR", "1.0", kind="float", exposure="internal", help="razor threshold: locally thinner than this many wall cells"),
         EnvVar("SNAPPY_THIN_STACK_FACTOR", "2.0", kind="float", exposure="internal", help="thin threshold: locally thinner than this many two-sided prism stacks"),
+        EnvVar("SNAPPY_SEAL_CAVITIES", "true", kind="bool", exposure="internal", help="external flow: keep out of the mesh any space inside the body that the far field reaches only through gaps narrower than two wall cells (snappy closes the gap on the leak path)"),
     ]),
 
     # EXTERNAL: nobody edits these in .env; a platform or a library supplies them.

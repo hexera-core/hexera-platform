@@ -21,6 +21,8 @@ _FOAM_TOOLS = {
     "snappy": ["blockMesh", "snappyHexMesh", "decomposePar", "reconstructParMesh",
                "surfaceFeatureExtract", "checkMesh"],
     "snappy_multiregion": ["blockMesh", "snappyHexMesh", "splitMeshRegions", "checkMesh"],
+    # the snap-grid mesher writes its polyMesh itself; OpenFOAM only splits and checks it
+    "snapgrid": ["splitMeshRegions", "checkMesh"],
 }
 _ALL_FOAM_TOOLS = sorted({t for tools in _FOAM_TOOLS.values() for t in tools})
 
@@ -31,7 +33,7 @@ def _foam(cmd: str, timeout: int = 60) -> subprocess.CompletedProcess:
 
 
 def test_dispatch_registry_resolves_every_supported_engine(canonical_provenance):
-    expected = {"cfmesh", "snappy", "snappy_multiregion", "gmsh", "vmtk"}
+    expected = {"cfmesh", "snappy", "snappy_multiregion", "gmsh", "vmtk", "snapgrid"}
     assert set(engine_names()) == expected
     runners = engine_runners()
     assert set(runners) == expected

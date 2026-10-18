@@ -43,7 +43,12 @@ ADMIT_MALFORMED = "malformed"
 _HARD_IMPOSSIBLE_CODES = frozenset({
     "purpose_incompatible", "input_kind_incompatible", "dimensionality_unsupported",
     "symmetry_unsupported", "multiple_wall_patches_unsupported", "geometry_unsuitable",
-    "ground_plane_unsupported",
+    "ground_plane_unsupported", "boundary_count_unsupported",
+    # the engine cannot take the uploaded file's FORM (CAD solid / surface) for this flow
+    "geometry_form_unsupported",
+    "source_format_unsupported",
+    # a rename or merge of the patches the file names, on an engine that writes them as named
+    "patch_names_fixed_by_source",
 })
 
 # The two lines closing every impossible message: they preserve user intent, name NO alternative
@@ -64,24 +69,28 @@ def _normalise_patches(patches) -> list[dict]:
     return out
 
 
-def _impossible_message(hard: list) -> str:
+def _impossible_message(hard: list, closing: str = "") -> str:
     # One finding per line, and the assurance and the question each on their own. Joining every
     # rejection with a space produced one run-on block in which two independent constraints - a
     # geometry mismatch and a patch-structure limit, say - were indistinguishable, so a reader
     # could not tell how many decisions they were being asked to make. The chat renderer turns
-    # "- " into a list, so N findings arrive as N things.
+    # "- " into a list, so N findings arrive as N things. `closing` replaces the revise question
+    # when the only way on is a different FILE - asking which value to revise, or offering to list
+    # compatible engines, would send the user looking for an engine that does not exist.
     findings = [r.message.strip() for r in hard if (r.message or "").strip()]
     body = findings[0] if len(findings) == 1 else "\n".join(f"- {f}" for f in findings)
-    return f"{body}\n\n{_PRESERVED_LINE}\n\n{_REVISE_QUESTION}"
+    return f"{body}\n\n{_PRESERVED_LINE}\n\n{closing or _REVISE_QUESTION}"
 
 
 def preview_admission(engine: str, purpose: str, input_kind: str, dimensionality: str | None = None,
-                      patches=None, engine_params=None, geometry_facts=None) -> dict:
+                      patches=None, engine_params=None, geometry_facts=None,
+                      geometry_form: str | None = None, source_patches=None) -> dict:
     # ONE boundary between the keys the system routes on and the words a person reads. Every
     # message below is written with keys, so translating here means no verdict can reach a user in
     # the system's own vocabulary. The declared values keep their keys - callers route on them.
+    # `geometry_form` is the uploaded file's canonical form (engines/capability.py), when known.
     result = _admission(engine, purpose, input_kind, dimensionality, patches, engine_params,
-                        geometry_facts)
+                        geometry_facts, geometry_form, source_patches)
     for field in ("safe_user_message", "capability_reason"):
         if result.get(field):
             result[field] = _vocab.humanize(result[field])
@@ -91,7 +100,8 @@ def preview_admission(engine: str, purpose: str, input_kind: str, dimensionality
 
 
 def _admission(engine: str, purpose: str, input_kind: str, dimensionality: str | None = None,
-               patches=None, engine_params=None, geometry_facts=None) -> dict:
+               patches=None, engine_params=None, geometry_facts=None,
+               geometry_form: str | None = None, source_patches=None) -> dict:
     from meshpipeline.engines.admission import AdmissionEvidence, PatchSummary
     from meshpipeline.engines.registry import engine_names, get_spec
 
@@ -128,7 +138,9 @@ def _admission(engine: str, purpose: str, input_kind: str, dimensionality: str |
     ev = AdmissionEvidence(
         engine=_eng, purpose=_pur, input_kind=_ik, dimensionality=_dim,
         patches=tuple(PatchSummary(name=p["name"], type=p["role"]) for p in _patches),
-        engine_params=_eparams, surface_analysis=geometry_facts)
+        engine_params=_eparams, surface_analysis=geometry_facts,
+        geometry_form=(geometry_form or None),
+        source_patches=tuple(str(n) for n in (source_patches or ()) if str(n).strip()))
     rejections = get_spec(_eng).admit(ev)
     hard = [r for r in rejections if r.code in _HARD_IMPOSSIBLE_CODES]
     if hard:
@@ -139,7 +151,22 @@ def _admission(engine: str, purpose: str, input_kind: str, dimensionality: str |
                     "symmetry_unsupported": ["patches", "engine"],
                     "multiple_wall_patches_unsupported": ["patches", "engine"],
                     "ground_plane_unsupported": ["patches", "engine"],
-                    "geometry_unsuitable": ["geometry", "engine"]}
+                    "boundary_count_unsupported": ["patches", "engine"],
+                    "geometry_unsuitable": ["geometry", "engine"],
+                    "geometry_form_unsupported": ["geometry", "engine"],
+                    "source_format_unsupported": ["geometry", "engine"],
+                    "patch_names_fixed_by_source": ["patches", "engine"]}
+        what_would_pass = [str(r.fix_hint) for r in hard if r.fix_hint]
+        closing = ""
+        if any(r.code == "geometry_form_unsupported" for r in hard):
+            # NO ENGINE AT ALL takes this file for this flow: the out is the FILE, not an engine
+            # (no replacement is named - the rule above - because none exists). Said up front, so
+            # a user is never sent to try every engine in turn.
+            from meshpipeline.engines.capability import engines_for, flow_of, way_on, who_can
+            _flow, _form = flow_of(_pur), str(geometry_form or "")
+            if not engines_for(_flow, _form):
+                closing = f"{who_can(_flow, _form, named=False)} {way_on(_flow, _form)}"
+                what_would_pass = [closing]
         return {"verdict": ADMIT_IMPOSSIBLE, "blocking_rule_code": r0.code,
                 "blocking_rule_codes": sorted({r.code for r in hard}),
                 "selected_engine": _eng, "conflicting_field_names": field_of.get(r0.code, ["engine"]),
@@ -150,8 +177,8 @@ def _admission(engine: str, purpose: str, input_kind: str, dimensionality: str |
                 # The engine's own statement of what WOULD pass, one per finding. Handed to the
                 # model with the refusal, so it can repair a value of its own or propose the one
                 # revision to the user instead of ending the turn on what cannot be done.
-                "what_would_pass": [str(r.fix_hint) for r in hard if r.fix_hint],
-                "safe_user_message": _impossible_message(hard)}
+                "what_would_pass": what_would_pass,
+                "safe_user_message": _impossible_message(hard, closing)}
     # capability + structure OK; anything left (params / missing patches) is still-to-gather.
     gather = [r for r in rejections if r.code in ("engine_param_invalid",) or r.field == "patches"]
     if gather:
@@ -230,7 +257,6 @@ def _admission_message(rejection, engine: str, purpose: str, dim: str) -> str:
 # where a refusal costs one question in chat instead of a meshing run. The 5/3 separation is
 # the binder's tolerance band (a +/-25%% area test cannot tell closer sizes apart under
 # normal manufacturing drift - a counterbored 40 measures like a reduced-bore 50).
-_RESERVED_PATCH_NAMES = frozenset({"outer", "FoamFile", "farfield"})
 _MIN_DECLARED_AREA_SEPARATION = 5.0 / 3.0
 
 
@@ -264,12 +290,20 @@ def _declared_area_mm2(p: dict) -> float | None:
 
 
 def _validate_patch_names(patches: list) -> list[str]:
-    # Every flow, every engine: a name must be one a mesher can write. The executor makes every
-    # name mesh-safe before this runs, so in the conversation this never fires; it is the backstop
-    # for a caller that reached the validator some other way, and it names the safe spelling.
-    from meshpipeline.contracts.patch_names import is_mesh_safe, mesh_safe
+    # Every flow, every engine: a name must be one a mesher can write, must not be a name a mesher
+    # keeps for its own boundaries, and must not be another patch's name in other capitals (gmsh's
+    # deck ignores case, and so does the file system a user unpacks a case onto). The executor
+    # settles all three before this runs, so in the conversation this never fires; it is the
+    # backstop for a caller that reached the validator some other way, and it names the fix.
+    from meshpipeline.contracts.patch_names import (
+        is_mesh_safe,
+        is_reserved,
+        mesh_safe,
+        unreserved,
+    )
 
     errors: list[str] = []
+    seen: dict[str, str] = {}
     for i, p in enumerate(patches):          # i is the position the caller sent
         if not isinstance(p, dict):
             continue
@@ -279,6 +313,24 @@ def _validate_patch_names(patches: list) -> list[str]:
                 f"patches[{i}].name {nm!r} cannot be built verbatim into a mesh - names must "
                 "start with a letter and contain only letters, digits and underscores; use "
                 f"{mesh_safe(nm)!r} and tell the user the new spelling")
+        elif nm and is_reserved(nm):
+            errors.append(
+                f"patches[{i}].name {nm!r} is reserved by the meshing engines - they write a "
+                f"boundary of their own under it; use {unreserved(nm)!r} and tell the user the "
+                "new spelling")
+        if nm:
+            folded = nm.casefold()
+            if folded in seen and seen[folded] != nm:
+                errors.append(
+                    f"patches[{i}].name {nm!r} differs from {seen[folded]!r} only in capitals - "
+                    "a mesher reads them as one boundary; give one of them another name")
+            seen.setdefault(folded, nm)
+        role, typ = p.get("role"), p.get("type")
+        if (isinstance(role, str) and role.strip() and isinstance(typ, str) and typ.strip()
+                and role.strip() != typ.strip()):
+            errors.append(
+                f"patches[{i}] {nm!r} states type {typ.strip()!r} and role {role.strip()!r} - "
+                "a boundary has one kind; send only `type`, with the one the user meant")
     return errors
 
 
@@ -288,13 +340,6 @@ def _validate_internal_ports(patches: list) -> list[str]:
     errors: list[str] = []
     entries = [p for p in patches if isinstance(p, dict)]
     all_names = {(p.get("name") or "").strip() for p in entries}
-
-    for i, p in enumerate(entries):
-        nm = (p.get("name") or "").strip()
-        if nm in _RESERVED_PATCH_NAMES:
-            errors.append(
-                f"patches[{i}].name {nm!r} is reserved by the meshing engines - ask the user "
-                "for a different name")
 
     ports = [(i, p) for i, p in enumerate(entries)
              if (p.get("type") or "").strip() in ("inlet", "outlet")]
@@ -422,7 +467,7 @@ def _validate_ground_plane(patches: list, flow_axis) -> list[str]:
     build are refused here, where fixing them costs one question: a ground that is not a wall, and
     a ground under a part whose flow runs along z. The geometry check measures 'stands on the
     ground' at the part's lowest z, so the floor and the flow would share one axis."""
-    from meshpipeline.engines.ground_plane import GROUND_PATCH, ground_patch_name
+    from meshpipeline.engines.ground_plane import GROUND_PATCH, ground_patch_name, is_ground_word
 
     errors: list[str] = []
     entries = [p for p in patches if isinstance(p, dict)]
@@ -432,6 +477,23 @@ def _validate_ground_plane(patches: list, flow_axis) -> list[str]:
         errors.append(
             f"patches declare the ground {len(grounds)} times ({', '.join(map(repr, grounds))}) - "
             "the box has one floor, so declare it once, as 'ground' with type 'wall'")
+    # A wall CALLED like the ground ("floor", "ground_plane", "road") beside the ground itself is a
+    # second floor: the intake names the first one ground and cannot name two, and left alone the
+    # other would be counted as a body wall the geometry has to supply - and come back empty.
+    aliases = [(p.get("name") or "").strip() for p in entries
+               if (p.get("type") or "").strip() == "wall"
+               and (p.get("name") or "").strip().casefold() != GROUND_PATCH
+               and is_ground_word(p.get("name"))]
+    if aliases and (grounds or len(aliases) > 1):
+        named = ", ".join(map(repr, (grounds[:1] + aliases)))
+        errors.append(
+            f"patches {named} all describe the ground under the part - the box has one floor, so "
+            "declare it once, as 'ground' with type 'wall'")
+    elif aliases:
+        errors.append(
+            f"patch {aliases[0]!r} reads as the ground under the part, which the domain builds "
+            "as the box's floor - name it 'ground' (type 'wall') and tell the user, or give it "
+            "another name if it really is a surface of the part")
     for i, p in enumerate(entries):
         nm = (p.get("name") or "").strip()
         if nm.casefold() == GROUND_PATCH and (p.get("type") or "").strip() != "wall":
@@ -508,9 +570,13 @@ def validate_submission(args: dict) -> list[str]:
             else:
                 _patch_names_seen.add(_pn)
             if _pt not in _valid_types:
+                # a word with two meanings here ("opening" inside a duct) is a question for the
+                # user, not a list of words - say which question
+                from meshpipeline.contracts.patch_names import role_hint
+                _hint = role_hint(_pt, _valid_types)
                 _val_errors.append(
                     f"patches[{_i}].type {_pt!r} is invalid - must be one of "
-                    f"{sorted(_valid_types)}"
+                    f"{sorted(_valid_types)}" + (f"; {_hint}" if _hint else "")
                 )
             else:
                 _types_seen.add(_pt)

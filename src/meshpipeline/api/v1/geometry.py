@@ -25,8 +25,15 @@ router = APIRouter()
 
 STATUS_OFF, STATUS_NONE = "off", "none"
 _PICTURE_URL_TTL = timedelta(hours=1)
-#: How the confirmation announces itself in the conversation; the intake prompt block names it.
-CONFIRMED_MARK = "GEOMETRY CHECK (confirmed by the user):"
+
+# The declaration's words and the patch shape live with the application, where a unit changed in
+# the chat re-reads them too; the route re-exports them for its callers.
+from meshpipeline.application.geometry_confirmation import (  # noqa: E402
+    CONFIRMED_MARK,
+    confirmation_message,
+    patches_from,
+    with_declaration,
+)
 
 
 class ConfirmedOpening(BaseModel):
@@ -37,11 +44,40 @@ class ConfirmedOpening(BaseModel):
     diameter_mm: float | None = None
     width_mm: float | None = None
     height_mm: float | None = None
+    #: AN ANNULUS, as the check measured it (cad/scout): the diameter of the centre rod or hub
+    #: standing in the bore, and the area the flow crosses between them. Sent back as the
+    #: proposal carried them; anything that is no positive length or area is dropped.
+    inner_diameter_mm: float | None = None
+    flow_area_mm2: float | None = None
+    #: Which way the mouth faces, out of the part: the check's own measurement, for an opening it
+    #: proposed and for one the user added on an open end alike. Unit-free, so a change of unit
+    #: leaves it as it is. Stored as a unit vector; three numbers that are no direction are dropped.
+    normal: list[float] | None = None
+
+    @field_validator("normal")
+    @classmethod
+    def _normal_is_a_direction(cls, v):
+        import math
+        if v is None or len(v) != 3 or not all(math.isfinite(x) for x in v):
+            return None
+        length = math.sqrt(sum(x * x for x in v))
+        return [x / length for x in v] if length > 0 else None
+
+    @field_validator("inner_diameter_mm", "flow_area_mm2")
+    @classmethod
+    def _a_positive_size(cls, v):
+        import math
+        return v if v is not None and math.isfinite(v) and v > 0 else None
 
 
 class ConfirmIn(BaseModel):
-    input_kind: Literal["body-surface", "fluid-domain", "solid-body"]
-    flow: Literal["internal", "external"]
+    #: the registry's kinds (contracts/geometry_fields INPUT_KIND_OPTIONS); a test holds them equal.
+    #: Required, except for a whole thermal model, whose kind and flow the server sets.
+    input_kind: Literal["body-surface", "fluid-domain", "solid-body", "solid-assembly"] | None = None
+    flow: Literal["internal", "external"] | None = None
+    #: THE DETAIL LEVEL the user picked on a thermal model's panel (Quick look, Standard, Fine), in
+    #: the mesher's fidelity words: said in the declaration as the user's own choice.
+    detail: Literal["draft", "standard", "max"] | None = None
     openings: list[ConfirmedOpening] = []
     seed_point_mm: list[float] | None = None
     size_mm: list[float] | None = None
@@ -50,8 +86,16 @@ class ConfirmIn(BaseModel):
     # far field reaches in those lengths, and whether the part stands on the ground
     flow_axis: Literal["+x", "-x", "+y", "-y", "+z", "-z", "unknown"] | None = None
     reference_length_mm: float | None = Field(default=None, gt=0)
+    #: Whether the user typed the reference length themselves. Left false, a length that is the
+    #: part's extent along another axis than the flow's - the check's guess, left behind when the
+    #: axis was turned - is corrected to the length along the flow when the form is confirmed.
+    reference_length_typed: bool = False
     extents: dict[str, float] | None = None
     grounded: bool = False
+    #: WHICH WAY IS UP: the axis of the part that points to the sky, as the stage proposed it or
+    #: the user turned it. It turns the views of the part and of its mesh, never the file; left
+    #: out, the part is shown as drawn (+z).
+    up_axis: Literal["+z", "-z", "+y", "-y", "+x", "-x"] | None = None
     #: THE SCALE THE NUMBERS WERE READ UNDER: metres per unit of the file, as the scout assumed
     #: it when the form was drawn (served on the proposal, sent back with it). A triangle file's
     #: numbers are read as millimetres until the unit is confirmed; when the confirmed unit
@@ -61,6 +105,25 @@ class ConfirmIn(BaseModel):
     #: that differs from what the session holds (the file's own declaration, or an earlier
     #: answer) is recorded as the user's, exactly as a chat answer is.
     unit: Literal["mm", "cm", "m", "in"] | None = None
+    #: SET BY THE SERVER, never taken from the form: the upload's converter fixed the unit (an
+    #: ECXML model's geometry is millimetres), so the declaration tells the intake never to ask it.
+    unit_fixed: bool = False
+    #: SET BY THE SERVER with `unit_fixed`: why the converter's unit is the one (an ECXML model
+    #: states its lengths in metres and was converted exactly into millimetres), said in the chat so
+    #: a user who knows the source's unit reads that both are true instead of correcting it.
+    unit_fixed_reason: str = ""
+    #: AN ASSEMBLY'S REGIONS, as the check read them from the file (one per solid, and the fluid):
+    #: filled by the server from the check when the form does not send them, and named in the
+    #: declaration so the intake knows each part is its own region.
+    regions: list[str] | None = None
+    #: SET BY THE SERVER, never taken from the form: why the openings have the roles they have,
+    #: when the uploaded file declares them (geometry_check.declared_openings_reason) and the user
+    #: kept those roles - said in the declaration and carried into the brief.
+    openings_reason: str = ""
+    #: SET BY THE SERVER from the stored check, never taken from the form: "thermal" when the upload
+    #: is a whole thermal model (contracts/intake_formats check_mode), whose air box's sides are the
+    #: file's - so a confirmation with no openings declares none and asks nothing about them.
+    check_mode: str = ""
 
     @field_validator("extents")
     @classmethod
@@ -87,7 +150,8 @@ from meshpipeline.application.geometry_hold import (  # noqa: E402
     should_hold,
 )
 
-REEXPORTED = (CONTINUE_TEXT, DRAWING_MARK, HOLD_REPLY, purpose_from, should_hold)
+REEXPORTED = (CONTINUE_TEXT, DRAWING_MARK, HOLD_REPLY, purpose_from, should_hold,
+              CONFIRMED_MARK, confirmation_message, patches_from, with_declaration)
 
 
 async def _owned_session(session_id: uuid.UUID, owner_id: str, organization_id: str):
@@ -175,6 +239,7 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
         return {"status": STATUS_NONE}
     async with get_db() as db:
         interpretation = await gh.interpretation_payload(db, session, owner_id, organization_id)
+        fixing = await gh.unit_fixing_format(db, session, owner_id, organization_id)
     # the naming starts with the user's first answer: until then the stage must say it is
     # waiting for the chat, not that the model is working
     try:
@@ -188,7 +253,10 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     # a worker that was merely slow still lands its result.
     payload = time_boxed(stored, requested) or stored
     from meshpipeline.contracts.geometry_fields import form_spec
-    payload["fields"] = form_spec()
+    from meshpipeline.contracts.intake_formats import THERMAL_CHECK
+    if payload.get("check_mode") != THERMAL_CHECK:
+        # the generic form's fields; a thermal model is served as its `thermal` view instead
+        payload["fields"] = form_spec()
     payload.setdefault("named", payload.get("status") == "ready")
     payload["naming_requested"] = naming_pending(requested)
     # a triangle file carries no unit: until the chat has settled it, the sizes on the stage are
@@ -206,6 +274,21 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
             if (payload.get("facts") or {}).get("scale_to_m"):
                 payload["proposal"]["scale_to_m"] = float(payload["facts"]["scale_to_m"])
             payload["proposal"]["unit"], payload["proposal"]["unit_basis"] = unit_in_effect(interpretation)
+            if fixing is not None:
+                # THE CONVERTER FIXED IT (an ECXML model's millimetre geometry): the box shows the
+                # unit and offers no other, and no other reading is suggested
+                payload["proposal"]["unit"] = fixing.fixed_unit
+                payload["proposal"]["unit_fixed"] = True
+                payload["proposal"]["unit_fixed_reason"] = fixing.fixed_unit_reason
+            # THE OTHER READING, when the part is implausible in the unit in effect - a "117 mm"
+            # wind turbine blade, a 1 mm car from a triangle file: both lengths in plain words,
+            # for the user to pick one before Proceed. Never once the user has named the unit,
+            # and never for a unit the converter fixed.
+            from meshpipeline.application.geometry_check import unit_suggestion
+            suggestion = None if fixing is not None else unit_suggestion(
+                payload["proposal"], interpretation, purpose_from(getattr(session, "messages", None)))
+            if suggestion is not None:
+                payload["proposal"]["unit_suggestion"] = suggestion
         if payload.get("status") == "ready":
             store = get_object_store()
             payload["pictures"] = [
@@ -213,6 +296,7 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
                  "url": store.create_download_url(object_key=s["object_key"], expires_in=_PICTURE_URL_TTL)}
                 for s in payload.get("snapshots", [])]
         payload.pop("snapshots", None)
+        payload.pop("upright_sheet", None)  # the six-way picture is the model's question, not the card's
         payload.pop("facts", None)         # the proposal is what the user acts on; facts are its source
         payload["skin"] = bool(payload.pop("skin_key", None))   # whether the 3D stage can open
     confirmed = _read_json(check_object_key(str(session_id), "confirmed.json"))
@@ -261,6 +345,10 @@ def in_confirmed_unit(body: ConfirmIn, scale_to_metres: float | None) -> Confirm
 UNIT_FIRST = ("Say what unit the file is in first - in the box beside the sizes, or in the chat: "
               "millimetres, centimetres, metres or inches. The sizes cannot be confirmed in a unit "
               "nobody has named.")
+
+
+UNIT_FIXED = ("This file's unit is fixed at {unit}: {reason}. Leave the unit box as it is - the sizes "
+              "are already right.")
 
 
 STILL_RUNNING = ("This geometry check is still running. It can be run again once it reports failed - "
@@ -361,81 +449,6 @@ async def get_check_skin(session_id: uuid.UUID, owner_id: str = Depends(owner_de
     return Response(content=raw, media_type="application/json")
 
 
-def confirmation_message(body: ConfirmIn) -> str:
-    """The sentence the intake reads: everything the user confirmed, in plain words, with the
-    numbers the builder needs. Its opening phrase is the one the intake prompt block names."""
-    kind = {"body-surface": "the part's wall, hollow inside for the fluid",
-            "fluid-domain": "the fluid volume itself",
-            "solid-body": "a solid body"}[body.input_kind]
-    through = "through it" if body.flow == "internal" else "around it"
-    # The kind is stated verbatim, in the intake's own enum, and it is the same word the session
-    # stores. A solid body the fluid flows around stays "solid-body": the engine gate reads that as
-    # a body surface for any fluid purpose (engines/purposes.kinds_admitted_as), and a later
-    # structural request on the same solid still finds the kind gmsh needs.
-    parts = [f"{CONFIRMED_MARK} the file is {kind}"
-             + (f" ({body.part})" if body.part else "")
-             + f", input_kind {body.input_kind}; the fluid flows {through}."]
-    ports = [o for o in body.openings if o.role != "not_an_opening"]
-    if body.flow == "external":
-        from meshpipeline.contracts.geometry_fields import external_declaration
-        parts.append("No openings: the fluid flows around the whole body.")
-        parts.extend(external_declaration(body))
-    elif ports:
-        rows = []
-        for o in ports:
-            size = (f"{o.diameter_mm:.0f} mm across" if o.diameter_mm
-                    else f"{o.width_mm:.0f} x {o.height_mm:.0f} mm" if o.width_mm and o.height_mm else "")
-            at = (f" at ({o.centroid_mm[0]:.0f}, {o.centroid_mm[1]:.0f}, {o.centroid_mm[2]:.0f}) mm"
-                  if o.centroid_mm and len(o.centroid_mm) == 3 else "")
-            rows.append(f"{o.name} ({o.role}){', ' + size if size else ''}{at}")
-        parts.append("Openings: " + "; ".join(rows) + ".")
-        skipped = [str(o.id) for o in body.openings if o.role == "not_an_opening"]
-        if skipped:
-            parts.append(f"Sticker{'s' if len(skipped) > 1 else ''} {', '.join(skipped)}: not an opening (a hole or a face the fluid does not pass).")
-    else:
-        # the fluid flows through the part but no port was confirmed: the intake must ask
-        parts.append("No openings were confirmed on the picture"
-                     + (" (every sticker was marked not an opening)" if body.openings else "")
-                     + "; ask the user where the fluid enters and leaves.")
-    if body.seed_point_mm and len(body.seed_point_mm) == 3:
-        p = body.seed_point_mm
-        parts.append(f"A point inside the flow: ({p[0]:.0f}, {p[1]:.0f}, {p[2]:.0f}) mm.")
-    if body.size_mm and len(body.size_mm) == 3:
-        s = body.size_mm
-        parts.append(f"Part size: {s[0]:.0f} x {s[1]:.0f} x {s[2]:.0f} mm.")
-    return " ".join(parts)
-
-
-def with_declaration(messages: list[dict] | None, message: str) -> list[dict]:
-    """The conversation with this confirmation as its only one: an earlier confirmation is
-    replaced, not joined, so a retry or a change of mind leaves one declaration for the intake."""
-    kept = [m for m in (messages or [])
-            if not (m.get("role") == "assistant" and str(m.get("content", "")).startswith(CONFIRMED_MARK))]
-    return [*kept, {"role": "assistant", "content": message}]
-
-
-def patches_from(body: ConfirmIn) -> list[dict]:
-    """The session's declared patches, in the shape the intake's submit tool already takes:
-    name and role, plus the size and location fields the port binding reads."""
-    patches: list[dict] = []
-    if body.flow == "external":
-        return patches
-    for o in body.openings:
-        if o.role == "not_an_opening":
-            continue
-        entry: dict = {"name": o.name, "type": o.role}
-        if o.diameter_mm:
-            entry["diameter_mm"] = float(o.diameter_mm)
-        elif o.width_mm and o.height_mm:
-            entry["width_mm"], entry["height_mm"] = float(o.width_mm), float(o.height_mm)
-        if o.centroid_mm and len(o.centroid_mm) == 3:
-            entry["near_mm"] = [float(v) for v in o.centroid_mm]
-        patches.append(entry)
-    if body.flow == "internal" and patches:
-        patches.append({"name": "wall", "type": "wall"})
-    return patches
-
-
 @router.post("/{session_id}/check/confirm")
 async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = Depends(owner_dep),
                         organization_id: str = Depends(org_dep)) -> dict:
@@ -446,9 +459,20 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
     session = await _owned_session(session_id, owner_id, organization_id)
     if session.job_id is not None:
         raise HTTPException(409, "This session has already been dispatched")
-    names = [o.name for o in body.openings]
-    if len(set(names)) != len(names):
-        raise HTTPException(422, "Every opening needs its own name")
+    # TWO OPENINGS WITH ONE NAME ARE NAMED APART, not refused: the check itself named five discarded
+    # stickers "not_an_opening" and the stage then refused Proceed until the user renamed stickers
+    # they were throwing away. Stickers marked not an opening never become patches, so their names
+    # are not compared at all.
+    from meshpipeline.application.geometry_confirmation import distinct_opening_names, renamed_openings_sentence
+
+    # A BODY IN A FLOW HAS NO OPENINGS, whatever rows came with it: the check keeps the openings a part
+    # read as a body would have if the fluid flowed through it (so a flip to "through" has some), and
+    # a client that confirms "around" with them still in hand must not store them as the body's ports
+    if body.flow == "external" and body.openings:
+        body = body.model_copy(update={"openings": []})
+    named_apart = distinct_opening_names(body.openings)
+    renamed = renamed_openings_sentence(body.openings, named_apart)
+    body = body.model_copy(update={"openings": named_apart})
     from meshpipeline.application import geometry_hold as gh
     from meshpipeline.application.geometry_check import check_object_key
 
@@ -465,7 +489,50 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
     from meshpipeline.persistence.session import get_db
 
     async with get_db() as db:
-        interpretation = await gh.interpretation_payload(db, session, owner_id, organization_id)
+        # A UNIT THE CONVERTER FIXED (an ECXML model's millimetre geometry) is in force whatever
+        # the box says, and recorded as the file's when the upload could not record it
+        fixing = await gh.unit_fixing_format(db, session, owner_id, organization_id)
+        interpretation = None
+        if fixing is not None:
+            interpretation = await gh.ensure_fixed_unit(db, session, owner_id, organization_id)
+            await db.commit()
+        if interpretation is None:
+            interpretation = await gh.interpretation_payload(db, session, owner_id, organization_id)
+    if fixing is not None and body.unit and body.unit != fixing.fixed_unit:
+        raise HTTPException(409, UNIT_FIXED.format(unit=fixing.fixed_unit, reason=fixing.fixed_unit_reason))
+    body = body.model_copy(update={"unit_fixed": fixing is not None,
+                                   "unit_fixed_reason": fixing.fixed_unit_reason if fixing else ""})
+    # A WHOLE THERMAL MODEL is the stored check's to say, never the form's
+    from meshpipeline.contracts.intake_formats import THERMAL_CHECK
+    _stored_check = _read_json(check_object_key(str(session_id), "scout.json")) or {}
+    body = body.model_copy(update={
+        "check_mode": THERMAL_CHECK if _stored_check.get("check_mode") == THERMAL_CHECK else ""})
+    if body.check_mode == THERMAL_CHECK:
+        # the panel sends only the detail level: a thermal model is always an assembly of solid
+        # parts with the air among them, so its kind and flow are the server's to fill - and its
+        # name and size are the file's, as the check read them
+        proposed = _stored_check.get("proposal") or {}
+        body = body.model_copy(update={
+            "input_kind": "solid-assembly", "flow": "internal",
+            "part": body.part or str(proposed.get("part") or "")[:80],
+            "size_mm": body.size_mm or proposed.get("size_mm"),
+            "scale_to_m": body.scale_to_m or proposed.get("scale_to_m")})
+    elif body.input_kind is None or body.flow is None:
+        raise HTTPException(422, "Say what the file is (input_kind) and whether the fluid flows "
+                                 "through it or around it (flow).")
+    if body.input_kind == "solid-assembly" and not body.regions:
+        # an assembly's regions are the file's, as the check read them: named in the declaration
+        facts = (_read_json(check_object_key(str(session_id), "scout.json")) or {}).get("facts") or {}
+        names = [str(n) for n in facts.get("source_regions") or [] if str(n).strip()]
+        if names:
+            body = body.model_copy(update={"regions": names})
+    # WHY THE OPENINGS ARE WHAT THEY ARE, when the file declares them - said only while the user
+    # kept the file's roles, so the declaration never claims the file said what the user changed
+    from meshpipeline.application.geometry_confirmation import declared_reason_kept
+    _scout = (_read_json(check_object_key(str(session_id), "scout.json")) or {}).get("facts") or {}
+    _why = declared_reason_kept(_scout, body.openings)
+    if _why:
+        body = body.model_copy(update={"openings_reason": _why})
     current = str(interpretation.get("unit")) if interpretation else None
     corrected = body.unit if body.unit and body.unit != current else None
     if corrected is None and interpretation is None:
@@ -474,7 +541,30 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
         raise HTTPException(409, UNIT_FIRST)
     scale = scale_to_metres(LengthUnit(corrected)) if corrected else float(interpretation["scale_to_metres"])  # type: ignore[index]
     body = in_confirmed_unit(body, scale)
+    # the declaration says which unit the file is in, so the intake is told the scale in words
+    in_force = corrected or (str(interpretation["unit"]) if interpretation else None)
+    if in_force and body.unit != in_force:
+        body = body.model_copy(update={"unit": in_force})
+    if body.up_axis is None:
+        # a form that did not say which way is up (a console from before the Up control) confirms
+        # what the check proposed, so the declaration and the views go by the same axis
+        from meshpipeline.application.geometry_check import stored_up_axis
+        body = body.model_copy(update={"up_axis": stored_up_axis(str(session_id), confirmed=False)})
+    # THE REFERENCE LENGTH FOLLOWS THE CONFIRMED AXIS. A form that turned the flow axis but kept
+    # the length the check measured along its guessed axis (a console from before the box
+    # followed the axis, or an API caller) would size the far field on the wrong length.
+    # Only the check's own guess is changed: the stored check says what it proposed.
+    from meshpipeline.application.geometry_confirmation import reference_length_along_the_flow, stored_lengths
+
+    reference_note = ""
+    if body.flow == "external" and not body.reference_length_typed:
+        stored_size, proposed = stored_lengths(_read_json(check_object_key(str(session_id), "scout.json")), scale)
+        body, reference_note = reference_length_along_the_flow(body, stored_size, proposed)
     message = confirmation_message(body)
+    if renamed:
+        message = f"{message} {renamed}"             # never silent: the chat shows it
+    if reference_note:
+        message = f"{message} {reference_note}"      # said in the declaration, never silent
     patches = patches_from(body)
 
     # The stored copy goes first. If the store is down the user sees an error and nothing has
@@ -483,8 +573,10 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
     store = get_object_store()
     key = check_object_key(str(session_id), "confirmed.json")
     earlier = _stored_bytes(store, key)
+    # the copy says the scale its sizes are in - the unit in force, which every length above was
+    # re-read into - so a later change of unit re-reads it from that, never from a guess
     record = {"confirmed_at": time.time(), "owner_id": owner_id, "message": message,
-              "patches": patches, **body.model_dump()}
+              "patches": patches, **body.model_dump(), "scale_to_m": float(scale)}
     ours = json.dumps(record).encode()
     _put_bytes(store, key, ours)
 
@@ -499,6 +591,8 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
                 await gh.record_unit(db, session, owner_id, organization_id, corrected)
                 logger.info("geometry check: the file's unit set to %s on the stage - session_id=%s",
                             corrected, session_id)
+                # A run proposed under the old unit carried the old sizes: record_unit has the
+                # intake authority withdraw it in this same transaction.
             session.input_kind = body.input_kind
             session.intake_patches = patches
             session.messages = with_declaration(session.messages, message)

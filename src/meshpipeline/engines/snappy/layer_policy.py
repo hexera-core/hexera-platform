@@ -12,6 +12,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -37,21 +38,29 @@ LAYER_POLICY_FACT = "layer_policy.json"
 #: negative-volume failure the earlier attempt already measured).
 ESCALATION_FACT = ".thin_escalation.json"
 
-#: Terminal ladder stage. Stage 0 is the initial classification-derived policy; stages 1..MAX
-#: are deterministic escalations. escalate() beyond MAX returns None and the driver falls back
-#: to the planner's freeform re-plan, exactly as before this module existed.
-MAX_ESCALATION_STAGE = 2
+#: Terminal ladder stage. Stage 0 is the initial classification-derived policy - the FULL request
+#: everywhere, measured and recorded but not reduced; stages 1..MAX are deterministic escalations
+#: after a pass whose layers inverted cells. escalate() beyond MAX returns None and the driver
+#: falls back to the planner's freeform re-plan, exactly as before this module existed.
+#:
+#: Stage 0 used to cut the counts up front (razor 1, thin half). That cut was compensating for
+#: a collapse whose real cause was snappyHexMesh's absolute minVol bar (snappy_runner
+#: .layer_min_vol): with the bar scaled to the mesh, snappy keeps layers on thin and sharp
+#: regions wherever its own quality checks allow, and the up-front cut only threw them away -
+#: ONERA M6 3.6 -> 4.6 mean layers, CRM and C608 likewise (overnight lab, 2026-10-04). A cut is
+#: now made only once a pass has MEASURED inverted layer cells.
+MAX_ESCALATION_STAGE = 3
 
 #: min layer-thickness (relative, matches addLayersControls relativeSizes true) per stage.
-#: Stage 0 keeps snappy's historical 0.05 unless razor area exists - a razor region's single
-#: layer must be allowed to thin locally rather than abort the whole patch's inflation.
-_MIN_THICKNESS_BY_STAGE = {0: 0.05, 1: 0.01, 2: 0.005}
+#: Stages 0-1 keep snappy's historical 0.05 unless razor area exists - a razor region's layers
+#: must be allowed to thin locally rather than abort the whole patch's inflation.
+_MIN_THICKNESS_BY_STAGE = {0: 0.05, 1: 0.05, 2: 0.01, 3: 0.005}
 _MIN_THICKNESS_RAZOR_STAGE0 = 0.02
 
 #: maxThicknessToMedialRatio override per stage (None = renderer's own quality-derived value).
-#: From stage 1 the strict-profile 0.3 makes layers auto-thin approaching the medial axis - the
+#: From stage 2 the strict-profile 0.3 makes layers auto-thin approaching the medial axis - the
 #: mechanism that lets opposing stacks in a thin core shrink instead of colliding.
-_MEDIAL_BY_STAGE = {0: None, 1: 0.3, 2: 0.3}
+_MEDIAL_BY_STAGE = {0: None, 1: None, 2: 0.3, 3: 0.3}
 
 
 def intended_surface_cell(rec: dict, strategy: dict | None) -> float:
@@ -88,8 +97,10 @@ def class_layer_counts(n_requested: int, stage: int) -> dict[str, int]:
     n = max(0, int(n_requested))
     thin0 = max(1, (n + 1) // 2) if n else 0
     if stage <= 0:
-        return {"normal": n, "thin": thin0, "razor": min(1, n)}
+        return {"normal": n, "thin": n, "razor": n}
     if stage == 1:
+        return {"normal": n, "thin": thin0, "razor": min(1, n)}
+    if stage == 2:
         return {"normal": n, "thin": max(1, thin0 - 1) if n else 0, "razor": min(1, n)}
     return {"normal": n, "thin": min(1, n), "razor": 0}
 
@@ -116,6 +127,10 @@ class LayerPolicy:
 
     policy: dict
     labels: np.ndarray | None = field(default=None, compare=False)
+    #: a local repair (plan_repair_policy): triangles within repair_radius_m of these points
+    #: form the <wall>_repair region; labels are then computed on the staged triangles themselves
+    repair_points: tuple = field(default=(), compare=False)
+    repair_radius_m: float = 0.0
 
     @property
     def mode(self) -> str:
@@ -124,7 +139,145 @@ class LayerPolicy:
 
 def _region_names(wall_name: str) -> dict[str, str]:
     safe = re.sub(r"[^A-Za-z0-9_]", "_", wall_name) or "body"
-    return {"normal": safe, "thin": f"{safe}_thin", "razor": f"{safe}_razor"}
+    return {"normal": safe, "thin": f"{safe}_thin", "razor": f"{safe}_razor",
+            "repair": f"{safe}_repair"}
+
+
+# -- LOCAL REPAIR: layers left out only where they actually folded -----------------------------
+#
+# The class ladder above answers a layer-fatal pass by cutting layers on every face the thin-feature
+# classifier called thin or razor. On a clean car that was most of the wall: the Camaro (job
+# 406c002b) read 37 % razor - its whole underbody among it - while a replay at the full request
+# covered that underbody with all three layers. One wrongly oriented face out of ~12 M (checkMesh)
+# started the ladder; three passes later the razor class carried no layers at all, and the delivered
+# mesh had 1.9 of 3 layers over the faces that kept any. checkMesh says WHERE the invalid cells are
+# (foam_exec.fatal_points), so the repair leaves layers out there - a few wall cells round each
+# spot - and every other face keeps the full request.
+
+#: Repair radius, in intended wall cells, per repair stage (the spots of every earlier stage stay).
+REPAIR_RADIUS_CELLS = {1: 2.0, 2: 4.0, 3: 8.0}
+#: Repair stages before the driver falls back to the class ladder / the planner.
+MAX_REPAIR_STAGE = 3
+#: A spot further than this many repair radii from every wall triangle is not a prism-layer fold:
+#: leaving layers out cannot fix it, so it does not count towards a repair.
+_REPAIR_REACH = 1.0
+
+
+def repair_radius_m(surf_cell: float, stage: int) -> float:
+    s = max(1, min(int(stage), MAX_REPAIR_STAGE))
+    return float(REPAIR_RADIUS_CELLS[s]) * float(surf_cell)
+
+
+def repair_mask(tris, points, radius_m: float) -> np.ndarray:
+    """True for every triangle that reaches within radius_m of a repair point.
+
+    Measured to the TRIANGLE, not its centroid: a CAD tessellation lays long slivers over flat
+    panels (a Camaro door triangle runs to half a metre), and a spot on one sat 100 mm from every
+    centroid round it - a centroid test left the folded face's own triangle untouched and the
+    repaired pass folded at exactly the same spot."""
+    return _near(tris, points, radius_m)[0]
+
+
+def _near(tris, points, radius_m: float) -> tuple[np.ndarray, np.ndarray]:
+    """(triangles within radius_m of any point, points within radius_m of any triangle)."""
+    T = np.asarray(tris, dtype=float).reshape(-1, 3, 3)
+    pts = np.asarray(points, dtype=float).reshape(-1, 3)
+    tri_hit = np.zeros(len(T), dtype=bool)
+    pt_hit = np.zeros(len(pts), dtype=bool)
+    if len(T) == 0 or len(pts) == 0 or not (radius_m > 0):
+        return tri_hit, pt_hit
+    from scipy.spatial import cKDTree
+    c = T.mean(axis=1)
+    reach = np.linalg.norm(T - c[:, None, :], axis=2).max(axis=1)   # bounding-sphere radius
+    tree = cKDTree(c)
+    for k, p in enumerate(pts):
+        cand = np.asarray(tree.query_ball_point(p, float(radius_m) + float(reach.max())),
+                          dtype=int)
+        if len(cand) == 0:
+            continue
+        hit = cand[_point_triangle_distance(p, T[cand]) <= float(radius_m)]
+        tri_hit[hit] = True
+        pt_hit[k] = len(hit) > 0
+    return tri_hit, pt_hit
+
+
+def _point_triangle_distance(p: np.ndarray, T: np.ndarray) -> np.ndarray:
+    """Exact distance from point p to each triangle of T (n,3,3) - Ericson's closest-point test."""
+    a, b, c = T[:, 0], T[:, 1], T[:, 2]
+    ab, ac, ap = b - a, c - a, p - a
+    d1, d2 = (ab * ap).sum(1), (ac * ap).sum(1)
+    bp = p - b
+    d3, d4 = (ab * bp).sum(1), (ac * bp).sum(1)
+    cp = p - c
+    d5, d6 = (ab * cp).sum(1), (ac * cp).sum(1)
+    va = d3 * d6 - d5 * d4
+    vb = d5 * d2 - d1 * d6
+    vc = d1 * d4 - d3 * d2
+    denom = va + vb + vc
+    with np.errstate(divide="ignore", invalid="ignore"):
+        v = np.where(denom != 0, vb / denom, 0.0)
+        w = np.where(denom != 0, vc / denom, 0.0)
+        q = a + ab * v[:, None] + ac * w[:, None]                     # interior
+        t_ab = np.clip(np.where(d1 - d3 != 0, d1 / (d1 - d3), 0.0), 0, 1)
+        t_ac = np.clip(np.where(d2 - d6 != 0, d2 / (d2 - d6), 0.0), 0, 1)
+        t_bc = np.clip(np.where((d4 - d3) + (d5 - d6) != 0,
+                                (d4 - d3) / ((d4 - d3) + (d5 - d6)), 0.0), 0, 1)
+    q = np.where(((vc <= 0) & (d1 >= 0) & (d3 <= 0))[:, None], a + ab * t_ab[:, None], q)
+    q = np.where(((vb <= 0) & (d2 >= 0) & (d6 <= 0))[:, None], a + ac * t_ac[:, None], q)
+    q = np.where(((va <= 0) & ((d4 - d3) >= 0) & ((d5 - d6) >= 0))[:, None],
+                 b + (c - b) * t_bc[:, None], q)
+    q = np.where(((d1 <= 0) & (d2 <= 0))[:, None], a, q)
+    q = np.where(((d3 >= 0) & (d4 <= d3))[:, None], b, q)
+    q = np.where(((d6 >= 0) & (d5 <= d6))[:, None], c, q)
+    return np.asarray(np.linalg.norm(p - q, axis=1))
+
+
+def points_on_wall(points, tris, radius_m: float) -> list[list[float]]:
+    """The repair points that lie within reach of the wall - the only ones a layer cut can fix."""
+    pts = np.asarray(points or [], dtype=float).reshape(-1, 3)
+    if len(pts) == 0:
+        return []
+    _, hit = _near(tris, pts, _REPAIR_REACH * float(radius_m))
+    return [[float(v) for v in p] for p in pts[hit]]
+
+
+def plan_repair_policy(base: LayerPolicy | None, *, rec: dict, strategy: dict, wall_name: str,
+                       repair: dict | None) -> LayerPolicy | None:
+    """The pass's policy once a repair is recorded: the full request everywhere except within the
+    stage's radius of the recorded spots, which carry no layers. None without a repair - the
+    caller keeps `base` (the classifier's policy, or none) exactly as before."""
+    if not repair or not repair.get("points"):
+        return None
+    n_layers = max(0, int((strategy or {}).get("n_layers", 3)))
+    if n_layers <= 0:
+        return None
+    stage = max(1, min(int(repair.get("stage", 1)), MAX_REPAIR_STAGE))
+    surf_cell = intended_surface_cell(rec, strategy)
+    radius = repair_radius_m(surf_cell, stage)
+    names = _region_names(wall_name)
+    p: dict[str, Any] = dict(base.policy) if base is not None else {
+        "version": 1, "requested_layers": n_layers, "surface_cell_m": surf_cell,
+        "min_thickness_rel": 0.05, "max_thickness_to_medial": None}
+    classes: dict[str, dict[str, Any]] = {
+        c: {"n_layers": n_layers, "area_frac": v.get("area_frac", 0.0)}
+        for c, v in (p.get("classes") or {}).items() if c != "repair" and isinstance(v, dict)}
+    if not classes:
+        classes = {"normal": {"n_layers": n_layers, "area_frac": 1.0}}
+    classes["repair"] = {"n_layers": 0, "area_frac": None, "points": len(repair["points"]),
+                         "radius_m": radius}
+    p.update({
+        "source": "measured_layer_folds",
+        "mode": "split",
+        "requested_layers": n_layers,
+        "escalation_stage": 0,
+        "repair_stage": stage,
+        "classes": classes,
+        "region_patches": {names["normal"]: "normal", names["repair"]: "repair"},
+    })
+    p.pop("uniform_n_layers", None)
+    return LayerPolicy(policy=p, labels=None,
+                       repair_points=tuple(tuple(float(v) for v in q) for q in repair["points"]),
+                       repair_radius_m=radius)
 
 
 def plan_layer_policy(field_: ThinFeatureField | None, *, rec: dict, strategy: dict,
@@ -168,17 +321,25 @@ def _plan_layer_policy(field_: ThinFeatureField | None, *, rec: dict, strategy: 
     stage = max(0, int(stage))
     counts = class_layer_counts(n_layers, stage)
     razor_present = fracs["razor"] > 0.0
-    if stage <= 0:
-        min_thickness = _MIN_THICKNESS_RAZOR_STAGE0 if razor_present else _MIN_THICKNESS_BY_STAGE[0]
+    if stage <= 1:
+        min_thickness = (_MIN_THICKNESS_RAZOR_STAGE0 if razor_present
+                         else _MIN_THICKNESS_BY_STAGE[stage])
     else:
         min_thickness = _MIN_THICKNESS_BY_STAGE.get(stage, _MIN_THICKNESS_BY_STAGE[MAX_ESCALATION_STAGE])
     medial = _MEDIAL_BY_STAGE.get(stage, _MEDIAL_BY_STAGE[MAX_ESCALATION_STAGE])
 
     # SPLIT only when a meaningful normal remainder exists to carry the declared wall patch and
     # the full layer request; an (almost) wholly thin body is a GLOBAL reduction, not a split.
+    # With every class at the same count (stage 0) there is nothing to split: one UNIFORM wall,
+    # the classes kept only as the honest record of what was measured.
     split = fracs["normal"] >= float(split_min_normal_frac)
     names = _region_names(wall_name)
-    if split:
+    uniform = len(set(counts.values())) == 1
+    if uniform:
+        mode = "uniform"
+        region_patches = {names["normal"]: "uniform"}
+        split = False
+    elif split:
         mode = "split"
         region_patches = {names[c]: c for c in ("normal", "thin", "razor") if fracs[c] > 0.0}
     else:
@@ -202,6 +363,8 @@ def _plan_layer_policy(field_: ThinFeatureField | None, *, rec: dict, strategy: 
                                        / max(field_.area_m2.sum(), 1e-30)), 6),
         "region_patches": region_patches,
     }
+    if uniform:
+        policy["uniform_n_layers"] = n_layers
     return LayerPolicy(policy=policy, labels=labels if split else None)
 
 
@@ -209,6 +372,8 @@ def make_region_labeler(policy: LayerPolicy, wall_name: str) -> Callable[[list],
     """The per-triangle labeller prepare_surface applies when splitting a monolithic wall into
     class regions. Returns None outside split mode. Tolerates the mirrored (doubled) triangle
     list by tiling; any other length mismatch degrades to all-normal rather than mislabel."""
+    if policy is not None and policy.mode == "split" and policy.repair_points:
+        return _repair_labeler(policy, wall_name)
     if policy is None or policy.mode != "split" or policy.labels is None:
         return None
     names = _region_names(wall_name)
@@ -231,6 +396,31 @@ def make_region_labeler(policy: LayerPolicy, wall_name: str) -> Callable[[list],
     return _label
 
 
+def can_split(surface_regions: list, wall_name: str) -> bool:
+    """May a policy split this staged wall into synthetic regions? Only a monolithic wall: the
+    staged surface carries no regions, or only the policy's own synthetic ones. The user's own
+    named parts are their patches and are never split (prepare_surface keeps them as they are)."""
+    own = set(_region_names(wall_name).values())
+    return all(str(r) in own for r in (surface_regions or []))
+
+
+def _repair_labeler(policy: LayerPolicy, wall_name: str) -> Callable[[list], list[str]]:
+    names = _region_names(wall_name)
+
+    def _label(tris: list) -> list[str]:
+        mask = repair_mask(tris, policy.repair_points, policy.repair_radius_m)
+        # the honest record: how much of the wall the repair takes its layers from
+        T = np.asarray(tris, dtype=float).reshape(-1, 3, 3)
+        area = 0.5 * np.linalg.norm(np.cross(T[:, 1] - T[:, 0], T[:, 2] - T[:, 0]), axis=1)
+        total = float(area.sum())
+        rep = policy.policy.get("classes", {}).get("repair")
+        if isinstance(rep, dict):
+            rep["area_frac"] = round(float(area[mask].sum()) / total, 6) if total > 0 else 0.0
+        return [names["repair"] if m else names["normal"] for m in mask]
+
+    return _label
+
+
 def reconcile_policy(policy: LayerPolicy | None, surface_regions: list,
                      wall_name: str) -> LayerPolicy | None:
     """Fit the intended policy to the surface prepare_surface ACTUALLY staged.
@@ -246,9 +436,15 @@ def reconcile_policy(policy: LayerPolicy | None, surface_regions: list,
         return None
     regions = [str(r) for r in (surface_regions or [])]
     names = _region_names(wall_name)
+    synthetic = {names["thin"], names["razor"], names["repair"]}
+    # the patches a uniform count lands on: the user's own named regions when the surface carries
+    # them (keyed by the wall name alone, the renderer gave each region the FULL request whatever
+    # the ladder said, and the record named a patch that was never staged), else the one wall
+    real = [r for r in regions if r not in synthetic]
+    uniform_patches = (dict.fromkeys(real, "uniform") if real and real != [names["normal"]]
+                       else {names["normal"]: "uniform"})
     p = dict(policy.policy)
     if policy.mode == "split":
-        synthetic = {names["thin"], names["razor"]}
         if regions and (synthetic & set(regions)):
             # keep only the class regions that actually exist on the staged surface
             p["region_patches"] = {r: c for r, c in p["region_patches"].items() if r in regions}
@@ -258,11 +454,14 @@ def reconcile_policy(policy: LayerPolicy | None, surface_regions: list,
         n_req = int(p.get("requested_layers", 0))
         uniform = n_req if stage <= 0 else class_layer_counts(n_req, stage)["thin"]
         p["mode"] = "uniform"
-        p["region_patches"] = {names["normal"]: "uniform"}
+        p["region_patches"] = uniform_patches
         p["classes"] = {c: {"n_layers": uniform, "area_frac": p["classes"][c]["area_frac"]}
-                        for c in p["classes"]}
+                        for c in p["classes"] if c != "repair"}
+        p.pop("repair_stage", None)
         p["uniform_n_layers"] = uniform
         return LayerPolicy(policy=p, labels=None)
+    if policy.mode == "uniform":
+        p["region_patches"] = uniform_patches
     return LayerPolicy(policy=p, labels=policy.labels)
 
 
@@ -325,14 +524,69 @@ def read_escalation(workspace) -> int:
     return 0
 
 
-def write_escalation(workspace, stage: int) -> None:
+def _read_fact(workspace) -> dict:
+    ws = Path(workspace)
+    for cand in (ws, *_siblings(ws)):
+        try:
+            raw = json.loads((cand / ESCALATION_FACT).read_text())
+            return raw if isinstance(raw, dict) else {}
+        except FileNotFoundError:
+            continue
+        except Exception:  # noqa: BLE001 - a corrupt fact is no fact
+            logger.warning("unreadable %s in %s - ignoring", ESCALATION_FACT, cand)
+            continue
+    return {}
+
+
+def _write_fact(workspace, fact: dict) -> None:
     ws = Path(workspace)
     try:
         tmp = ws / (ESCALATION_FACT + ".tmp")
-        tmp.write_text(json.dumps({"stage": int(stage)}))
+        tmp.write_text(json.dumps(fact))
         tmp.replace(ws / ESCALATION_FACT)
     except Exception:  # noqa: BLE001
         logger.warning("escalation stage could not be persisted", exc_info=True)
+
+
+def write_escalation(workspace, stage: int) -> None:
+    fact = _read_fact(workspace)
+    fact["stage"] = int(stage)
+    _write_fact(workspace, fact)
+
+
+def read_repair(workspace) -> dict | None:
+    """The local repair this workspace (or its newest sibling attempt) has reached: {"stage",
+    "points"}, or None before any pass folded its layers."""
+    rep = _read_fact(workspace).get("repair")
+    if not isinstance(rep, dict) or not rep.get("points"):
+        return None
+    try:
+        return {"stage": max(1, int(rep.get("stage", 1))),
+                "points": [[float(v) for v in p] for p in rep["points"] if len(p) == 3]}
+    except (TypeError, ValueError):
+        return None
+
+
+def escalate_repair(workspace, new_points) -> dict | None:
+    """Record a layer-fatal pass's spots: the next repair stage over the union of every spot seen.
+    None once MAX_REPAIR_STAGE is spent (the caller falls back to the class ladder)."""
+    prev = read_repair(workspace)
+    stage = (prev["stage"] + 1) if prev else 1
+    if stage > MAX_REPAIR_STAGE:
+        return None
+    pts = list(prev["points"]) if prev else []
+    seen = {tuple(round(v, 6) for v in p) for p in pts}
+    for p in new_points or []:
+        key = tuple(round(float(v), 6) for v in p)
+        if key not in seen:
+            seen.add(key)
+            pts.append([float(v) for v in p])
+    rep = {"stage": stage, "points": pts}
+    fact = _read_fact(workspace)
+    fact["repair"] = rep
+    fact.setdefault("stage", read_escalation(workspace))
+    _write_fact(workspace, fact)
+    return rep
 
 
 def _siblings(ws: Path) -> list[Path]:
@@ -342,13 +596,15 @@ def _siblings(ws: Path) -> list[Path]:
     return [ws.parent / f"attempt_{n}" for n in range(int(m.group(1)) - 1, 0, -1)]
 
 
-def measure_field(surface) -> ThinFeatureField | None:
-    """The driver's one-per-build measurement, degrading to None on any failure."""
+def measure_field(surface, wet_sides=None) -> ThinFeatureField | None:
+    """The driver's measurement, degrading to None on any failure. With `wet_sides` (an external
+    body's sealed-space reading, engines/sealed_cavities) the faces the fluid never touches drop
+    out and the thin class is read across the fluid only."""
     if not scfg.SNAPPY_THIN_LAYER_POLICY:
         return None
     try:
         from meshpipeline.cad.thin_features import measure_thin_features
-        return measure_thin_features(surface)
+        return measure_thin_features(surface, wet_sides=wet_sides)
     except Exception:  # noqa: BLE001 - perception must never cost a build
         logger.warning("thin-feature measurement failed; local layer policy disabled",
                        exc_info=True)
@@ -356,9 +612,10 @@ def measure_field(surface) -> ThinFeatureField | None:
 
 
 __all__ = [
-    "ESCALATION_FACT", "LAYER_POLICY_FACT", "MAX_ESCALATION_STAGE", "LayerPolicy",
-    "class_layer_counts", "escalate", "intended_surface_cell", "is_layer_fatal",
-    "layer_counts_for", "make_region_labeler", "measure_field", "overrides_for",
-    "plan_layer_policy", "read_escalation", "reconcile_policy", "stack_thickness_m",
-    "write_escalation", "write_layer_policy",
+    "ESCALATION_FACT", "LAYER_POLICY_FACT", "MAX_ESCALATION_STAGE", "MAX_REPAIR_STAGE",
+    "REPAIR_RADIUS_CELLS", "LayerPolicy", "can_split", "class_layer_counts", "escalate", "escalate_repair",
+    "intended_surface_cell", "is_layer_fatal", "layer_counts_for", "make_region_labeler",
+    "measure_field", "overrides_for", "plan_layer_policy", "plan_repair_policy",
+    "points_on_wall", "read_escalation", "read_repair", "reconcile_policy", "repair_mask",
+    "repair_radius_m", "stack_thickness_m", "write_escalation", "write_layer_policy",
 ]

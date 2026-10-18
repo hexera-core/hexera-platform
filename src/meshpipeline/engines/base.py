@@ -78,6 +78,11 @@ class InputContract:
     # closed surface (TetGen-backed, e.g. vmtk) requires this; a wrap-then-fill engine that
     # tolerates a dirty surface (snappy/cfMesh) does not - so it is opt-in per engine.
     require_no_self_intersection: bool = False
+    # INTERNAL FLOW FROM A TRIANGLE SURFACE (STL, OBJ, PLY, ...): the engine's internal path takes
+    # the staged surface and the openings the user confirmed on it (cad/internal_surface: lids on
+    # open ends, capped faces kept, the fluid's side of a thick wall) instead of needing a CAD
+    # solid. An engine without it meshes internal flow from a CAD solid only.
+    internal_from_surface: bool = False
 
 
 @dataclass(frozen=True)
@@ -131,6 +136,25 @@ class DownstreamTarget:
     solvers: tuple    # solvers/consumers that can read this mesh's delivered format(s)
 
 
+#: How closely a mesh's wall follows the body, weakest first. A body-fitted wall delivers
+#: everything a staircased one does and more, never the other way round.
+WALL_FITS: tuple[str, ...] = ("staircased", "body-fitted")
+CELL_KINDS: tuple[str, ...] = ("hex-dominant", "tetrahedral")
+
+
+@dataclass(frozen=True)
+class DeliveredMesh:
+    """WHAT THE USER RECEIVES from this engine, in the terms an approval can promise.
+
+    The fallback ladder (pipeline/engine_fallback.py) moves a run to another engine on its own
+    only when that engine delivers what the approved one would have: the same file, the same
+    kind of cells, a wall at least as true to the body, and prism layers where the brief asked
+    for them. Anything less is offered to the user, never delivered silently. Declared here
+    with the rest of the engine's capability, never inferred from its name."""
+
+    cells: str            # one of CELL_KINDS - what fills the volume
+    walls: str            # one of WALL_FITS - how the cells meet the body
+    prism_layers: bool    # can deliver the near-wall prism layers a brief asks for, reliably
 
 
 @dataclass(frozen=True)
@@ -145,6 +169,85 @@ class MeshCapability:
     # () = the distinction does not apply: a solid-volume mesh, or a multi-region case
     # whose fluid topology is its own declared param.
     topologies: tuple[str, ...] = ()
+    # the dimensionalities THIS capability serves; () = whatever the engine's InputContract takes.
+    # gmsh builds the fluid around a 3D body, but its 2D path is a planar FE mesh, not a far field.
+    dimensionalities: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class FlowSupport:
+    """ONE FLOW this bundle is designed for, and the canonical geometry forms its staging can
+    consume for it (engines/capability.py: GEOMETRY_FORMS, FLOW_KINDS).
+
+    Declared, never inferred: the proposal, the fallback ladder and the offers all read it, so an
+    engine is offered only for a file and flow it can actually take, and a new engine is offered
+    exactly where its own spec says it fits. Claim the TRUE path on main - the forms the staging
+    reaches the mesher with today - and widen it when that path is proven, never before."""
+
+    flow: str                     # one of capability.FLOW_KINDS
+    forms: tuple[str, ...]        # the subset of capability.GEOMETRY_FORMS it consumes for `flow`
+    #: The shapes this flow's method is BUILT for, in plain words ("tubular passages: vessels,
+    #: pipes, ducts"). A heads-up the proposal and the offers say out loud; never a gate.
+    designed_for: str = ""
+
+
+#: HOME TURF verdicts, best first. A row's severity says what its condition, when it HOLDS,
+#: means for this engine on this case:
+#:   home    - a strength: the engine is a first choice where this holds (ranks it up);
+#:   weak    - a known weak spot: still offered, with the row's words as the heads-up;
+#:   outside - not what the engine is for: not proposed (a user who names it is told why).
+TURF_HOME = "home"
+TURF_WEAK = "weak"
+TURF_OUTSIDE = "outside"
+TURF_SEVERITIES: tuple[str, ...] = (TURF_HOME, TURF_WEAK, TURF_OUTSIDE)
+#: The comparison a row applies, fact on the left, the row's value on the right.
+TURF_OPS: tuple[str, ...] = ("<", "<=", ">", ">=", "==", "!=", "in", "not in", "is")
+
+
+@dataclass(frozen=True)
+class TurfRow:
+    """ONE MEASURABLE CONDITION on an engine's home turf: WHEN `fact op value` holds (for `flow`,
+    or any flow when it is ''), the engine is `severity` there, for the reason `words` says.
+
+    Declared, never inferred from the engine's name: the recommender, the proposal and the offers
+    read these rows, so a new engine says where it is strong and where it is not in its own spec.
+    `fact` names one measured or carried fact (engines/home_turf.TURF_FACTS lists every one and
+    where it comes from); a case that does not carry the fact makes the row say nothing.
+    Thresholds come from lab evidence - the words cite it where they can."""
+
+    fact: str
+    op: str                       # one of TURF_OPS
+    value: object                 # float/int (ordered ops), bool (is), str (==, !=), tuple (in)
+    severity: str                 # one of TURF_SEVERITIES
+    words: str                    # plain words a user reads: what holds, and what it means
+    flow: str = ""                # capability.FLOW_KINDS member this row is about; '' = every flow
+
+    def applies_to(self, flow: str) -> bool:
+        return not self.flow or not flow or self.flow == flow
+
+    def holds(self, facts) -> bool | None:
+        """Whether the condition holds on these facts; None when the fact is absent (or of a type
+        the comparison cannot take) - an unmeasured fact claims nothing."""
+        if not hasattr(facts, "get") or self.fact not in facts:
+            return None
+        got = facts.get(self.fact)
+        if got is None:
+            return None
+        try:
+            if self.op == "is":
+                return bool(got) is bool(self.value)
+            if self.op == "==":
+                return bool(got == self.value)
+            if self.op == "!=":
+                return bool(got != self.value)
+            if self.op in ("in", "not in"):
+                pool = self.value if isinstance(self.value, (tuple, list, frozenset, set)) else ()
+                inside = got in pool
+                return inside if self.op == "in" else not inside
+            a, b = float(got), float(self.value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return None
+        return {"<": a < b, "<=": a <= b, ">": a > b, ">=": a >= b}.get(self.op)
 
 
 @dataclass(frozen=True)
@@ -168,11 +271,68 @@ class RunPolicy:
     submit_marker: str                # physical deliverable gating submit_mesh
     submit_ok_key: str                # key set true in the submit payload
     submit_hint: str                  # coaching when submit is premature
+    #: THE CAP FOR THE CASE WRITTEN IN A WORKSPACE, when the engine planned the run (timed it from
+    #: the cells it will make): seconds, or None to keep run_timeout. run_mesh still fits it into
+    #: the builder loop's remaining budget.
+    planned_timeout: Callable[[Path], int | None] | None = None
+    #: THE BROKEN CELLS A TIMED-OUT RUN WAS STILL FAILING TO REPAIR, read from its log tail ([]
+    #: when the run was merely slow): such a run is a broken mesh, not one that needed more time.
+    timed_out_defects: Callable[[str], list[str]] | None = None
 
 
-def _region_count(evidence) -> int | None:
+def _label(name: str) -> str:
+    from meshpipeline.contracts.display_names import display_name
+    return display_name("mesh_engine", name)
+
+
+def _mm(v: object) -> str:
+    try:
+        x = float(v) * 1000.0      # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return "?"
+    return f"{x:.3g}" if abs(x) < 100 else f"{x:.0f}"
+
+
+def _crossing_words(report: object) -> str:
+    """Where a self-intersection is and how big, in millimetres, from the measured report
+    (cad/surface_checks.self_intersection_report) - '' when there is none."""
+    if not isinstance(report, dict):
+        return ""
+    try:
+        n = int(report.get("pairs") or 0)
+        at = [_mm(v) for v in (report.get("first_at_m") or [])][:3]
+        region = [_mm(v) for v in (report.get("region_m") or [])][:3]
+    except (TypeError, ValueError):
+        return ""
+    if n <= 0 or len(at) != 3:
+        return ""
+    places = f"{n}{' or more' if report.get('more') else ''} place{'s' if n != 1 else ''}"
+    where = f" in {places} - first near x={at[0]}, y={at[1]}, z={at[2]} mm"
+    if len(region) == 3:
+        where += f", within about {region[0]} x {region[1]} x {region[2]} mm"
+    return where
+
+
+def _region_source(evidence) -> str:
+    return str((evidence.surface_analysis or {}).get("region_source") or "")
+
+
+def _region_staged(spec, evidence) -> bool:
+    # Whether this engine's staging KEEPS the regions the file distinguishes. A region the staged
+    # surface no longer carries is a region the mesher never sees: snappyHexMesh and cfMesh mesh a
+    # CAD file as one flattened surface, so the parts a STEP assembly names reach them as one body.
+    # An unstated source (a caller that supplied a bare count) is taken as kept, as before.
+    source = _region_source(evidence)
+    return not source or source in spec.keeps_regions_from
+
+
+def _region_count(evidence, spec=None) -> int | None:
     facts = evidence.surface_analysis or {}
-    return int(facts["region_count"]) if "region_count" in facts else None
+    if "region_count" not in facts:
+        return None
+    if spec is not None and not _region_staged(spec, evidence):
+        return min(1, int(facts["region_count"]))
+    return int(facts["region_count"])
 
 
 def _region_names(evidence) -> list[str]:
@@ -182,25 +342,51 @@ def _region_names(evidence) -> list[str]:
 def _unmatched_walls(evidence, walls: list[str]) -> list[str]:
     # Declared wall patches with no region of that name in the geometry. Names are what the mesher
     # writes the patches as, so a count alone proves nothing: six regions called a..f cannot become
-    # "fuselage" and "wing" however many of them there are. Compared case-blind because a CAD
-    # exporter's capitalisation is not a difference the user meant.
-    available = {n.casefold() for n in _region_names(evidence)}
-    return [w for w in walls if w.casefold() not in available] if available else []
+    # "fuselage" and "wing" however many of them there are. Compared as the mesher will write them -
+    # mesh-safe and case-blind - because a declared name is made mesh-safe where it enters ("Wing
+    # Left" is declared as Wing_Left) and a CAD exporter's capitalisation is not a difference the
+    # user meant; the engines stage each region under the declared spelling it matched.
+    from meshpipeline.contracts.patch_names import same_patch_name
+    available = _region_names(evidence)
+    if not available:
+        return []
+    return [w for w in walls if not any(same_patch_name(w, n) for n in available)]
+
+
+def _unassigned_regions(evidence, walls: list[str]) -> list[str]:
+    # The file's named parts that no declared wall matches. On an engine whose staging writes every
+    # part as a wall patch, such a part becomes a patch nobody approved - and nothing but the user
+    # can say which wall it belongs to.
+    from meshpipeline.contracts.patch_names import same_patch_name
+    return [n for n in _region_names(evidence)
+            if not any(same_patch_name(w, n) for w in walls)]
+
+
+def _wall_limit(spec, evidence) -> int | None:
+    return spec.boundary_limits_for(topology_of(evidence.purpose or "")).get("wall")
 
 
 def _supplies_fewer_regions(spec, evidence, walls: list[str]) -> bool:
     # THREE questions, and a refusal needs only one answered no: can this engine deliver several
-    # named wall patches at all, does THIS geometry distinguish enough parts, and are the parts it
-    # distinguishes the ones the user asked for? An engine that can do it is never blocked on a
-    # file that carries the regions - and no engine can name a part the file does not contain.
+    # named wall patches at all (for this flow topology), does THIS geometry distinguish enough
+    # parts in a form the engine's staging keeps, and are the parts it distinguishes the ones the
+    # user asked for? An engine that can do it is never blocked on a file that carries the regions -
+    # and no engine can name a part the file does not contain.
     if not spec.supports_multiple_wall_patches:
         return True
-    count = _region_count(evidence)
+    limit = _wall_limit(spec, evidence)
+    if limit is not None and len(walls) > limit:
+        return True
+    count = _region_count(evidence, spec)
     # Unknown says nothing: a caller that supplied no geometry facts is not asserting there are
     # none, and refusing on silence would block a request that may be perfectly deliverable.
     if count is None:
         return False
-    return count < len(walls) or bool(_unmatched_walls(evidence, walls))
+    if count < len(walls) or _unmatched_walls(evidence, walls):
+        return True
+    # ...and, where every staged part becomes a wall, is every part one of the declared walls?
+    return bool(spec.parts_become_walls and _region_staged(spec, evidence)
+                and _unassigned_regions(evidence, walls))
 
 
 def _wall_patch_cause(spec, evidence, walls: list[str]) -> str:
@@ -211,6 +397,15 @@ def _wall_patch_cause(spec, evidence, walls: list[str]) -> str:
     if not spec.supports_multiple_wall_patches:
         return (f"{spec.name} delivers one wall patch for the body. "
                 + (spec.single_wall_patch_reason + " " if spec.single_wall_patch_reason else ""))
+    limit = _wall_limit(spec, evidence)
+    if limit is not None and len(walls) > limit:
+        return (f"{spec.name} delivers {limit} wall patch{'es' if limit != 1 else ''} in "
+                f"{topology_of(evidence.purpose or '')} flow - everything that is not an opening "
+                "is one wall. ")
+    if not _region_staged(spec, evidence) and (_region_count(evidence) or 0) > 1:
+        return (f"Your CAD file names its parts ({', '.join(_region_names(evidence)[:8])}), but "
+                f"{spec.name} meshes a CAD file as one surface, so the parts reach it as one "
+                "body. An STL export whose parts are separate named solids keeps them apart. ")
     count = _region_count(evidence)
     if count is not None and count <= 1:
         return ("Your geometry is one region with no component names, so nothing downstream can "
@@ -221,6 +416,12 @@ def _wall_patch_cause(spec, evidence, walls: list[str]) -> str:
         return (f"Your geometry distinguishes {count} regions ({offered}), fewer than the "
                 f"{len(walls)} wall patches you declared. ")
     missing = _unmatched_walls(evidence, walls)
+    unassigned = _unassigned_regions(evidence, walls) if spec.parts_become_walls else []
+    if not missing and unassigned:
+        return (f"Your geometry names its parts {offered}; the walls you declared cover "
+                f"{len(_region_names(evidence)) - len(unassigned)} of them, so "
+                f"{', '.join(unassigned)} would become a patch nobody approved. Add a wall patch "
+                "for each of those parts too, if they are meant to be kept apart. ")
     # A count that fits but names that do not: the mesher writes each patch under its REGION's
     # name, so a part the file never names cannot come back under a name the user chose. Saying
     # which names the file does offer is the actionable half - they rename their declaration to
@@ -282,6 +483,40 @@ class EngineSpec:
     # requires_mesh_kind is matched against these outputs for the compatibility gate
     # (engines.purposes.is_compatible) - declared capability, NOT a domain claim.
     capabilities: tuple = ()
+    #: WHAT FILE THIS BUNDLE CAN TAKE, PER FLOW (FlowSupport tuple): the flows it is designed for
+    #: and, for each, the canonical geometry forms ("cad", "surface") its staging consumes. The
+    #: one declaration every offer of an engine is derived from (engines/capability.py). Every
+    #: implemented engine declares it, and its flows agree with `capabilities` (test-enforced).
+    accepts: tuple[FlowSupport, ...] = ()
+    #: WHERE THIS ENGINE STANDS ON THE FALLBACK LADDER, lowest first: the most robust input
+    #: handling first, then the body-fitted hex meshers, then the tetrahedral engines. A new
+    #: engine that declares nothing goes last. The ladder and the start-of-run choice read it
+    #: (capability.ladder_order); nothing lists engines by hand.
+    ladder_rank: int = 100
+    #: WHERE THIS ENGINE IS AT HOME, as measurable conditions (TurfRow tuple): its strengths, its
+    #: weak spots and what it is not for, per flow - what the recommender ranks engines by and the
+    #: proposal says out loud (engines/home_turf.py reads them). `accepts` says what file it CAN
+    #: take; these say how well it does there. Empty = nothing declared: every case it accepts is
+    #: treated alike.
+    home_turf: tuple[TurfRow, ...] = ()
+
+    def forms_for(self, flow: str) -> tuple[str, ...] | None:
+        """The geometry forms this bundle consumes for `flow`, or None when it is not designed
+        for that flow at all.
+
+        INTERNAL FLOW FROM A SURFACE is declared in ONE place, the input contract's
+        `InputContract.internal_from_surface` (the shared internal-surface staging,
+        cad/internal_surface): an engine that declares it takes a surface for internal flow. Its
+        `accepts` internal row names the CAD form only, so the fact is never stated twice."""
+        for fs in self.accepts:
+            if fs.flow == flow:
+                forms = tuple(fs.forms)
+                if (flow == "internal" and "surface" not in forms
+                        and self.input_contract is not None
+                        and self.input_contract.internal_from_surface):
+                    forms = (*forms, "surface")
+                return forms
+        return None
     # THE THREE AUDIT SEAMS (stage C): builder briefing fragments, the user
     # deliverable recipe, and the run/submit tool policy. Implemented rows
     # must declare all three (enforced); planned rows leave them None.
@@ -292,6 +527,10 @@ class EngineSpec:
     # Structures descriptor prose so intake names the user's next step from a
     # declaration, not hardcoded OpenFOAM strings (consumer: agents.intake.outcome).
     downstream: DownstreamTarget | None = None
+    # WHAT THE DELIVERED MESH IS (cells, wall fit, prism layers) - the terms the fallback ladder
+    # compares two engines in before it lets one stand in for the other. Implemented rows declare
+    # it (test-enforced); an engine without it is never switched to without asking.
+    delivered_mesh: DeliveredMesh | None = None
     # Optional engine-owned hooks (consumers: builder_tools run_mesh
     # enrichment; agents.builder.agent build dispatch; the viewer surface endpoint).
     # None → generic behavior.
@@ -381,11 +620,12 @@ class EngineSpec:
 
     # PRODUCIBLE PATCH TYPES - a `symmetry` role is a valid EXTERNAL/INTERNAL CFD boundary
     # (it lives in the purpose vocabulary), but producing one requires the engine to mesh
-    # only half the domain with a symmetryPlane on the cut. No engine does that yet - snappy
-    # builds an all-farfield box - so a declared symmetry patch would mesh, fail the patch
+    # only half the domain with a symmetryPlane on the cut. Only snappy does (a half model's cut,
+    # a slab's two ends); an engine whose box is all far field would mesh, fail the patch
     # contract with "zero faces: [symmetry]", and burn every retry. Declared here (default
-    # False) so intake rejects it BEFORE any compute; flip True on the engine that implements
-    # half-domain symmetry meshing (which then also needs a half-model geometry check).
+    # False) so intake rejects it BEFORE any compute. An engine that flips it True must also
+    # record the planes it places in the manifest (geometry.symmetry_faces), or the extent gate
+    # will judge the cut as far field touching the body.
     supports_symmetry_plane: bool = False
     # GROUND PLANE - a body standing on the ground (a car on a road) needs the far-field box's
     # floor laid at the body's lowest point and written as a wall patch named ground
@@ -410,6 +650,40 @@ class EngineSpec:
     #: path to it cannot supply named regions, and naming the wrong one sends a user to revise a
     #: requirement that was fine.
     single_wall_patch_reason: str = ""
+    #: Whether this bundle's staging writes EVERY named part of the input surface as a wall patch
+    #: (declared_boundary.stage_regions: snappy, cfMesh). With several walls declared, a part none
+    #: of them matches would become a patch nobody approved, so admission asks about it. An engine
+    #: that assigns surfaces to groups itself (gmsh) leaves such parts to its default group.
+    parts_become_walls: bool = False
+    #: Whether this engine writes the input file's OWN boundary patches, under the names the file
+    #: gives them (snapgrid: an ECXML model's domain sides). Each one's ROLE may be set; renaming
+    #: one, merging several or dropping one cannot be delivered, so admission refuses it before
+    #: anything is built (dev-areen set_top_box job 4b173bf0 merged four sides into
+    #: "closed_walls", was approved, and failed the patch contract after meshing).
+    patch_names_from_source: bool = False
+    #: Which kinds of region structure this bundle's STAGING keeps apart (cad/regions.py's
+    #: region_source: "assembly" and "roots" for a CAD file's named parts, "stl-solids" for an STL's
+    #: named solids). A region the staged surface no longer carries is one the mesher never sees, so
+    #: the wall-arity rule counts it as merged. Every source by default.
+    keeps_regions_from: tuple[str, ...] = ("assembly", "roots", "stl-solids")
+    #: The UPLOADED FORMATS this engine reads itself (contracts/intake_formats keys), not through
+    #: the canonical STEP/STL every other engine reads. Empty = any accepted format (the canonical
+    #: form is what it meshes). Non-empty = only these: the snap-grid mesher reads the ECXML
+    #: thermal model's own boxes and cylinders, so a STEP or an STL gives it nothing to place.
+    #: Admission refuses another format from the upload's facts (cad/regions.py source_format).
+    reads_source_formats: tuple[str, ...] = ()
+    #: THE BOUNDARIES THIS BUNDLE'S CASE WRITER CAN BUILD, per flow topology: role -> the most
+    #: patches of that role it delivers (0 = none). A role the purpose allows but this engine's path
+    #: for that topology cannot build - a second far-field patch on a box that is one surface, a
+    #: symmetry plane inside a carved duct - comes back with zero faces after a full run, so
+    #: admission refuses it up front with the way on stated. A role not listed is not limited here.
+    boundary_limits: tuple[tuple[str, tuple[tuple[str, int], ...]], ...] = ()
+
+    def boundary_limits_for(self, topology: str) -> dict[str, int]:
+        for topo, limits in self.boundary_limits:
+            if topo == topology:
+                return dict(limits)
+        return {}
 
     # USER-BOUNDARY CONTRACT PARITY (application-owned invariant): an engine that consumes the
     # user's approved intake_patches MUST prove the delivered mesh preserves them (no merge, rename,
@@ -447,9 +721,11 @@ class EngineSpec:
         purpose = evidence.purpose or ""
         ik = evidence.input_kind
 
-        # (engine × purpose × input) CAPABILITY - the core "can it produce this at all".
+        # (engine × purpose × input) CAPABILITY - the core "can it produce this at all". The file's
+        # form is passed so a surface for internal flow is read as the one input it is, whichever
+        # kind the user confirmed (purposes.kinds_admitted_as).
         if purpose in PURPOSES:
-            if not is_compatible(self, purpose, ik):
+            if not is_compatible(self, purpose, ik, form=str(evidence.geometry_form or "")):
                 if not is_compatible(self, purpose):
                     out.append(Rejection(
                         code="purpose_incompatible", phase="declared", field="purpose",
@@ -460,7 +736,11 @@ class EngineSpec:
                 elif ik:
                     req = PURPOSES[purpose].requires_mesh_kind
                     req = (req,) if isinstance(req, str) else tuple(req)
-                    ok = sorted({c.input_kind for c in self.capabilities if c.output_kind in req})
+                    topo = PURPOSES[purpose].flow_topology
+                    # only what this engine takes for THIS flow: gmsh takes a body for external
+                    # flow, and "submit a body-surface" to a body-surface internal case was a lie
+                    ok = sorted({c.input_kind for c in self.capabilities if c.output_kind in req
+                                 and (not topo or topo in c.topologies)})
                     out.append(Rejection(
                         code="input_kind_incompatible", phase="declared", field="input_kind",
                         actual=ik, expected=ok,
@@ -470,11 +750,31 @@ class EngineSpec:
                                 "step exists to derive it here).",
                         fix_hint=f"submit a {' or '.join(ok)} geometry"))
 
+        # THE FILE'S FORM this bundle can take for this flow (declared in `accepts`). A surface
+        # for internal flow on an engine whose internal carve needs a CAD solid is refused HERE,
+        # before anything is built - not by the driver minutes in, where it read as a crash and
+        # was retried unchanged (aorta STL, 2026-10-03). Unknown form or flow: nothing is claimed.
+        from meshpipeline.engines.capability import flow_of, form_words, refusal
+        _flow, _form = flow_of(purpose), str(evidence.geometry_form or "")
+        _forms = self.forms_for(_flow) if _flow else None
+        if _form and _forms is not None and _form not in _forms:
+            out.append(Rejection(
+                code="geometry_form_unsupported", phase="declared", field="geometry",
+                actual=_form, expected=list(_forms),
+                message=refusal(self, _flow, _form),
+                fix_hint=(f"supply {' or '.join(form_words(f) for f in _forms)}, or use an "
+                          f"engine that takes {form_words(_form, short=True)} for this flow")))
+
         # PATCH NAMES the mesher can write. The intake makes every name mesh-safe where it enters;
         # this is the same rule at the last gate before a mesh runs, so a name that slipped past
         # (an old snapshot, a direct API caller) costs one refusal instead of a whole run that
         # ends with "patch has zero faces".
-        from meshpipeline.contracts.patch_names import is_mesh_safe, mesh_safe
+        from meshpipeline.contracts.patch_names import (
+            is_mesh_safe,
+            is_reserved,
+            mesh_safe,
+            unreserved,
+        )
         for p in evidence.patches:
             if p.name and not is_mesh_safe(p.name):
                 out.append(Rejection(
@@ -484,6 +784,43 @@ class EngineSpec:
                             "name must start with a letter and hold only letters, digits and "
                             f"underscores. Use {mesh_safe(p.name)!r} instead.",
                     fix_hint=f"rename the patch to {mesh_safe(p.name)!r}"))
+            elif p.name and is_reserved(p.name):
+                # the mesher writes a boundary of its own under this name, and one of the two
+                # would come back empty or merged
+                out.append(Rejection(
+                    code="patch_name_reserved", phase="declared", field="patches",
+                    actual=p.name, expected=unreserved(p.name),
+                    message=f"the patch name {p.name!r} is one the meshers use for a boundary of "
+                            f"their own. Use {unreserved(p.name)!r} instead.",
+                    fix_hint=f"rename the patch to {unreserved(p.name)!r}"))
+
+        # BOUNDARIES THIS ENGINE'S CASE WRITER CAN BUILD for this flow topology (declared on the
+        # spec). Walls are counted by the wall-arity rule below, which also knows the geometry.
+        _topology = topology_of(purpose)
+        _limits = self.boundary_limits_for(_topology)
+        _counts: dict[str, list[str]] = {}
+        for p in evidence.patches:
+            _counts.setdefault(p.type, []).append(p.name)
+        for role, most in sorted(_limits.items()):
+            names = _counts.get(role, [])
+            if role == "wall" or len(names) <= most:
+                continue
+            if most == 0:
+                msg = (f"a '{role}' patch was declared ({', '.join(names)}), but {self.name} "
+                       f"cannot build a {role} boundary in {_topology} flow. Drop it, or use an "
+                       f"engine that builds one.")
+                hint = f"drop the '{role}' patch"
+            else:
+                msg = (f"{len(names)} '{role}' patches were declared ({', '.join(names)}), but "
+                       f"{self.name} builds at most {most} in {_topology} flow - "
+                       + ("its far field is one box around the body, so it is one patch. "
+                          if role == "farfield" else "")
+                       + f"Declare {'ONE' if most == 1 else most} '{role}' patch"
+                       + ("" if most == 1 else "es") + ".")
+                hint = f"declare at most {most} '{role}' patch" + ("" if most == 1 else "es")
+            out.append(Rejection(
+                code="boundary_count_unsupported", phase="declared", field="patches",
+                actual=names, expected=most, message=msg, fix_hint=hint))
 
         # DIMENSIONALITY the engine can consume (declared InputContract axis).
         ic = self.input_contract
@@ -495,6 +832,21 @@ class EngineSpec:
                 message=f"{self.name} cannot mesh {evidence.dimensionality} geometry - it "
                         f"supports {', '.join(ic.dimensionalities)}.",
                 fix_hint="use an engine that supports this dimensionality"))
+
+        # ...and the capability that serves THIS purpose from THIS geometry must serve it too
+        if (evidence.dimensionality and purpose in PURPOSES and ik
+                and not any(r.code == "dimensionality_unsupported" for r in out)):
+            from meshpipeline.engines.purposes import serving_capabilities
+            caps = serving_capabilities(self, purpose, ik)
+            if caps and all(c.dimensionalities and evidence.dimensionality not in c.dimensionalities
+                            for c in caps):
+                dims = sorted({d for c in caps for d in c.dimensionalities})
+                out.append(Rejection(
+                    code="dimensionality_unsupported", phase="declared", field="dimensionality",
+                    actual=evidence.dimensionality, expected=dims,
+                    message=f"{self.name} cannot produce a {purpose} mesh from {evidence.dimensionality} "
+                            f"'{ik}' geometry - it does that in {', '.join(dims)} only.",
+                    fix_hint="use an engine that supports this dimensionality"))
 
         # SYMMETRY-plane production - a declared symmetry patch needs half-domain meshing.
         if any(p.type == "symmetry" for p in evidence.patches) and not self.supports_symmetry_plane:
@@ -538,6 +890,29 @@ class EngineSpec:
                         f"cannot be delivered here. " + _wall_patch_cause(self, evidence, _walls)
                         + "Declare ONE wall patch for the whole body to proceed.",
                 fix_hint="declare a single wall patch for the body"))
+
+        # THE FILE'S OWN PATCHES, on an engine that writes them as the file names them. Roles are
+        # free; every patch the file declares keeps its own name, none is merged away, and no
+        # other name appears (a remainder "wall" for the solid parts aside). Judged from the
+        # confirmed geometry - unknown when the caller passed none, and then nothing is refused.
+        if self.patch_names_from_source and evidence.source_patches and evidence.patches:
+            from meshpipeline.contracts.patch_names import same_patch_name
+            own = list(evidence.source_patches)
+            declared = [p.name for p in evidence.patches]
+            unknown = [d for d in declared
+                       if not any(same_patch_name(d, n) for n in own)
+                       and not same_patch_name(d, "wall")]
+            dropped = [n for n in own if not any(same_patch_name(n, d) for d in declared)]
+            if unknown or dropped:
+                word = "domain sides" if all(n.startswith("domain_") for n in own) else "patches"
+                out.append(Rejection(
+                    code="patch_names_fixed_by_source", phase="declared", field="patches",
+                    actual=declared, expected=own,
+                    message=(f"This mesher keeps the file's {len(own)} {word} as separate patches "
+                             f"({', '.join(own)}). I can set each one's role (inlet, outlet or "
+                             "wall); merging or renaming them isn't possible with it."),
+                    fix_hint=(f"keep the file's {word} ({', '.join(own)}) under their own names "
+                              "and set each one's role")))
 
         # STRUCTURAL patch requirements of a FLOW mesh (purpose-driven, knowable from declared
         # patches) - skipped when no patches are declared yet (intake flags the shape first).
@@ -590,7 +965,21 @@ class EngineSpec:
 
     def _admit_measured(self, evidence) -> list:
         from meshpipeline.engines.admission import Rejection
-        reason = self.geometry_unsuitable(evidence.surface_analysis or {})
+        facts = evidence.surface_analysis or {}
+        # A format this engine does not read is a physical impossibility, not a quality call. Only
+        # judged when the facts NAME the upload's format: an older caller that never measured it
+        # says nothing, and the build driver refuses a missing source on its own.
+        fmt = str(facts.get("source_format") or "")
+        if self.reads_source_formats and fmt and fmt not in self.reads_source_formats:
+            wants = " or ".join(self.reads_source_formats).upper()
+            return [Rejection(
+                code="source_format_unsupported", phase="measured", field="geometry",
+                actual=fmt, expected=list(self.reads_source_formats),
+                message=f"{self.name} reads only {wants} files - it meshes the model the file "
+                        f"describes (its parts, their materials and positions), and a "
+                        f"{fmt.upper()} file carries no such model.",
+                fix_hint=f"upload the {wants} export of this model")]
+        reason = self.geometry_unsuitable(facts)
         if reason:
             return [Rejection(code="geometry_unsuitable", phase="measured", field="surface_analysis",
                               message=reason,
@@ -605,11 +994,13 @@ class EngineSpec:
         # cannot mesh it, so it is rejected here rather than after wasted build attempts.
         # The flag is set upstream (builder geometry_report) only for engines that require it.
         if ic.require_no_self_intersection and analysis.get("self_intersecting"):
-            return ("[GEOMETRY_UNSUITABLE] the input surface self-intersects - its triangles "
-                    "pass through each other, so it does not bound a solid volume and no "
-                    f"tetrahedral fill is possible. This is a defect in the GEOMETRY, not the "
-                    f"mesh strategy: no {self.name} parameter (edge length, layers, capping) "
-                    "can fix it. The surface must be repaired or replaced upstream.")
+            return ("[GEOMETRY_UNSUITABLE] the input surface self-intersects"
+                    + _crossing_words(analysis.get("self_intersection"))
+                    + f": there its triangles pass through each other, so it encloses no single "
+                    f"volume and {_label(self.name)} cannot fill it. No mesh parameter changes "
+                    "that. Fix the surface where it crosses - in a mesh tool, delete the crossing "
+                    "triangles and close the gap (MeshLab's self-intersecting-face selection, "
+                    "then Close Holes) - or export it again from the source model.")
         if ic.min_thickness_ratio <= 0:
             return ""
         diag = float(analysis.get("diag") or 0.0)

@@ -18,13 +18,68 @@ async function readError(r) {
   return new Error(body.detail || r.statusText);
 }
 
-export async function uploadGeometry(file) {
+/* THE DIRECT UPLOAD. A hosted deployment's front end refuses a request body over 32 MiB before the
+   API sees it ("413 Request Entity Too Large"), and real CAD is often 40-500 MB. So a large file
+   does not travel in a request body: the API hands out a signed PUT URL for one object, the
+   browser sends the bytes straight to storage (with progress), and the API then checks what
+   arrived and answers exactly what the multipart upload answers. Smaller files keep the one-request
+   multipart upload they have always used. */
+export const DIRECT_UPLOAD_FROM_BYTES = 20 * 1024 * 1024;
+
+/** Upload a geometry file; resolves to {session_id, step_filename, intake_greeting}. `onProgress`
+ *  hears {phase: "sending", sent, total} while a large file travels, then {phase: "checking"}. */
+export async function uploadGeometry(file, { onProgress } = {}) {
+  if (file.size > DIRECT_UPLOAD_FROM_BYTES) return uploadGeometryDirect(file, { onProgress });
   const fd = new FormData();
   fd.append("file", file);
   const r = await apiFetch("/api/v1/upload/step-file",
     { method: "POST", headers: formHeaders(), body: fd });
   if (!r.ok) throw await readError(r);
   return r.json();
+}
+
+export async function uploadGeometryDirect(file, { onProgress, makeRequest } = {}) {
+  const r = await apiFetch("/api/v1/upload/direct", {
+    method: "POST", headers: headers(),
+    body: JSON.stringify({ filename: file.name, size_bytes: file.size }) });
+  if (!r.ok) throw await readError(r);
+  const begun = await r.json();
+  await putToStorage(begun, file, onProgress, { makeRequest });
+  if (onProgress) onProgress({ phase: "checking" });
+  const f = await apiFetch(begun.finalize_url, {
+    method: "POST", headers: headers(), body: JSON.stringify({ filename: file.name }) });
+  if (!f.ok) throw await readError(f);
+  return f.json();
+}
+
+/** Send the file to the signed URL, reporting the browser's own upload progress. NOT apiFetch:
+ *  this goes to the object store, not the API, and carries no identity header - the URL is the
+ *  permission. So a 403 here is an expired or refused link, never a signed-out session. */
+export function putToStorage(begun, file, onProgress, { makeRequest } = {}) {
+  return new Promise((resolve, reject) => {
+    const xhr = makeRequest ? makeRequest() : new XMLHttpRequest();
+    xhr.open(begun.method || "PUT", begun.upload_url);
+    for (const [k, v] of Object.entries(begun.headers || {})) xhr.setRequestHeader(k, v);
+    xhr.upload.onprogress = (e) => {
+      if (onProgress && e.lengthComputable) {
+        onProgress({ phase: "sending", sent: e.loaded, total: e.total });
+      }
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) resolve();
+      else reject(new Error(storageRefusal(xhr.status)));
+    };
+    xhr.onerror = () => reject(new Error("the file could not be sent to storage. Check your "
+      + "connection and try again"));
+    xhr.onabort = () => reject(new Error("the upload was stopped before it finished"));
+    xhr.send(file);
+  });
+}
+
+function storageRefusal(status) {
+  if (status === 403) return "the upload link expired or was refused. Try again";
+  if (status === 413) return "storage refused a file this large";
+  return "storage did not accept the file (" + status + "). Try again";
 }
 
 export async function sendMessage(sessionId, content) {

@@ -8,6 +8,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 AXES = ("+x", "-x", "+y", "-y", "+z", "-z")
+#: WHICH WAY IS UP: the axis of the part that points to the sky in the real world, in the order
+#: the console lists them. +z is what CAD means by up and what a part is shown with when nothing
+#: says otherwise; a car drawn upside down is "-z". It turns the views, never the file.
+UP_AXES = ("+z", "-z", "+y", "-y", "+x", "-x")
+DEFAULT_UP = "+z"
 #: Far-field margins in body lengths when nobody has said otherwise: a bluff body's wake needs
 #: room behind it, the rest a little less.
 DEFAULT_EXTENTS = {"upstream": 5.0, "downstream": 10.0, "lateral": 5.0, "vertical": 5.0}
@@ -24,16 +29,27 @@ class GeometryField:
     help: str = ""
 
 
+#: WHAT THE FILE CAN BE CONFIRMED AS, in the words the form shows. An assembly of solid parts is
+#: one closed solid per region - each part, and the fluid around them - as a thermal model (ECXML)
+#: arrives: the input a multi-region (conjugate heat transfer) mesh is built from.
+INPUT_KIND_OPTIONS: tuple[tuple[str, str], ...] = (
+    ("body-surface", "the part's wall, hollow inside for the fluid"),
+    ("fluid-domain", "the fluid volume itself"),
+    ("solid-body", "a solid body the fluid flows around"),
+    ("solid-assembly", "an assembly of solid parts, each its own region"),
+)
+
+
 #: THE REGISTRY. Order is display order. Adding a fact the check can fill in starts here; the
 #: tests hold the confirm model and the console form to this list.
 FIELDS: tuple[GeometryField, ...] = (
     GeometryField("part", "The part", "text", help="what the part is, in a few words"),
-    GeometryField("input_kind", "The file is", "select", options=(
-        ("body-surface", "the part's wall, hollow inside for the fluid"),
-        ("fluid-domain", "the fluid volume itself"),
-        ("solid-body", "a solid body the fluid flows around"))),
+    GeometryField("input_kind", "The file is", "select", options=INPUT_KIND_OPTIONS),
     GeometryField("flow", "The fluid flows", "select", options=(
         ("internal", "through the part"), ("external", "around the part"))),
+    GeometryField("up_axis", "Up", "select", options=tuple((a, a.upper()) for a in UP_AXES),
+                  help="the axis of the part that points up in the real world; the 3D views "
+                       "open with it"),
     GeometryField("openings", "Openings", "openings", applies="internal",
                   help="one row per sticker: name and role; size and position are measured"),
     GeometryField("seed_point_mm", "A point inside the flow", "point", applies="internal", editable=False),
@@ -41,7 +57,8 @@ FIELDS: tuple[GeometryField, ...] = (
                   options=tuple((a, a) for a in AXES) + (("unknown", "not sure"),),
                   help="the direction the flow moves past the part"),
     GeometryField("reference_length_mm", "Reference length (mm)", "number", applies="external",
-                  help="the part's length along the flow; the margins below are multiples of it"),
+                  help="the part's length along the flow, following the flow axis until the user "
+                       "types their own; the margins below are multiples of it"),
     GeometryField("extents", "Far-field margins (body lengths)", "extents", applies="external",
                   help="upstream, downstream, to each side, above"),
     GeometryField("grounded", "The part stands on the ground", "bool", applies="external"),
@@ -59,11 +76,18 @@ def form_spec() -> list[dict]:
             for f in FIELDS]
 
 
-def axis_of_longest_side(size_mm) -> str:
+def up_or_default(up_axis) -> str:
+    """The up axis when it is one of the six, else +z."""
+    return up_axis if up_axis in UP_AXES else DEFAULT_UP
+
+
+def axis_of_longest_side(size_mm, up_axis: str = DEFAULT_UP) -> str:
     """The code's guess at where the flow goes for a body in a flow: along its longest horizontal
-    side, positive sign - the sign is for the pictures and the user to settle."""
-    sx, sy = float(size_mm[0]), float(size_mm[1])
-    return "+x" if sx >= sy else "+y"
+    side - the longer of the two axes across the one that points up - positive sign; the sign is
+    for the pictures and the user to settle."""
+    up = "xyz".index(up_or_default(up_axis)[1])
+    k = max((i for i in range(3) if i != up), key=lambda i: float(size_mm[i]))   # ties: the first
+    return "+" + "xyz"[k]
 
 
 def length_along(size_mm, axis: str) -> float:
@@ -71,21 +95,106 @@ def length_along(size_mm, axis: str) -> float:
     return float(size_mm[idx])
 
 
-def external_defaults(facts: dict, flow_axis: str | None) -> dict:
+#: How close a length must be to the part's extent along an axis to BE that extent: the proposal
+#: rounds it to 0.01 mm and a re-read in another unit to six decimals, so a thousandth of it is
+#: the same number, and a length the user chose is never that close by accident.
+_SAME_LENGTH = 1e-3
+
+
+def same_length(a: float, b: float) -> bool:
+    """Whether two lengths are the same number, to the rounding a length goes through."""
+    return abs(a - b) <= _SAME_LENGTH * max(abs(a), abs(b))
+
+
+def length_of_another_axis(reference_length_mm, flow_axis, size_mm) -> tuple[float, str] | None:
+    """THE REFERENCE LENGTH LEFT BEHIND BY A WRONG AXIS. The check fills the reference length with
+    the part's extent along the axis it guessed; a user who turns the axis keeps that number unless
+    something changes it, and the far field - sized in reference lengths - silently shrinks or
+    grows with it (the NASA CRM read along +y: its 30.4 m span instead of its 64.6 m length).
+
+    When `reference_length_mm` is the part's extent along an axis the flow does NOT travel along,
+    and not its extent along the flow, returns (the extent along the flow, the axis letter the
+    length belongs to). None when the length is the one along the flow, belongs to no axis (a
+    length the user chose, a chord), or cannot be compared: no length, an unsettled axis, no size."""
+    try:
+        ref = float(reference_length_mm)
+        sizes = [float(v) for v in size_mm]
+    except (TypeError, ValueError):
+        return None
+    k = {"x": 0, "y": 1, "z": 2}.get(str(flow_axis or "")[-1:]) if flow_axis in AXES else None
+    if k is None or len(sizes) != 3 or not ref > 0 or not sizes[k] > 0:
+        return None
+    if same_length(ref, sizes[k]):
+        return None
+    other = next((i for i in range(3) if i != k and same_length(ref, sizes[i])), None)
+    return None if other is None else (sizes[k], "xyz"[other])
+
+
+def external_defaults(facts: dict, flow_axis: str | None, up_axis: str = DEFAULT_UP) -> dict:
     """The external-flow facts a proposal carries, whatever the flow turns out to be: the axis the
-    model chose when it is one of the six, else the code's guess; the reference length along it;
-    the default margins; whether the part stands on the ground when the measuring step could
-    tell. Internal cases carry them too, unused, so the form never meets a missing key."""
+    model chose when it is one of the six, else the code's guess across the up axis; the reference
+    length along it; the default margins; whether the part stands on the ground when the
+    measuring step could tell. The measuring step looks for the ground under the file's lowest z,
+    so on a part drawn another way up it has nothing to say. Internal cases carry them too,
+    unused, so the form never meets a missing key."""
     size = facts.get("size_mm") or [0.0, 0.0, 0.0]
-    guess = facts.get("flow_axis_guess") or axis_of_longest_side(size)
+    upright = up_or_default(up_axis) == DEFAULT_UP
+    shaped, reading = axis_from_reading(facts.get("flow_axis_reading"), up_axis)
+    guess = shaped or (facts.get("flow_axis_guess") if upright else None) or axis_of_longest_side(size, up_axis)
     axis = flow_axis if flow_axis in AXES else guess
+    if flow_axis in AXES:
+        sure, why = 1.0, "chosen"
+    elif shaped:
+        sure, why = float(reading.get("confidence") or 0.0), str(reading.get("reason") or "")
+    else:
+        sure, why = LONGEST_SIDE_CONFIDENCE, "the longest side across the up axis; nothing in the shape says more"
     return {
         "flow_axis": axis,
         "flow_axis_guessed": flow_axis not in AXES,
+        "flow_axis_confidence": round(sure, 2),
+        "flow_axis_from": why,
         "reference_length_mm": round(length_along(size, axis), 2),
         "extents": dict(DEFAULT_EXTENTS),
-        "grounded": bool(facts.get("grounded", False)),
+        "grounded": bool(facts.get("grounded", False)) and upright,
     }
+
+
+#: How sure the longest side is as the flow direction when the shape says nothing else.
+LONGEST_SIDE_CONFIDENCE = 0.3
+
+
+def axis_from_reading(readings, up_axis: str = DEFAULT_UP) -> tuple[str | None, dict]:
+    """The flow axis the shape's own reading gives (cad/flow_reading.direction: its readings,
+    surest first), across the up axis, and the reading that gave it: ALONG an axis is that axis;
+    ACROSS one or more is the one horizontal axis square to them all. A reading that leaves a
+    choice (across the up axis alone, a body symmetric both ways) gives way to the next; none
+    left: (None, {}) - the longest side and the user settle it then. The sign is +: which end the
+    flow meets first is for the pictures and the user."""
+    if isinstance(readings, dict):
+        readings = [readings]
+    up = up_or_default(up_axis)[1]
+    for reading in readings or []:
+        if not isinstance(reading, dict):
+            continue
+        axes = [a for a in (reading.get("axes") or []) if a in ("x", "y", "z")]
+        if reading.get("rule") == "along" and len(axes) == 1:
+            return "+" + axes[0], reading
+        if reading.get("rule") == "across" and axes:
+            left = [a for a in "xyz" if a != up and a not in axes]
+            if len(left) == 1:
+                return "+" + left[0], reading
+    return None, {}
+
+
+#: WHY A GROUNDED PART DRAWN ANOTHER WAY UP IS MESHED FREE IN THE FLOW. The mesher lays the ground
+#: under the file's lowest z (engines/ground_plane.VERTICAL_AXIS); on a car drawn upside down that
+#: is its roof. Until the ground follows the up axis, the part is meshed without one - never with
+#: the ground on its roof - and the user is told how to get it.
+GROUND_NEEDS_Z_UP = (
+    "The part stands on the ground, but this file is drawn with {up} up, and the ground plane can "
+    "only be laid under the file's lowest z, which on this file is not under the part. So it is "
+    "meshed free in the flow: every far-field face is open, and no ground patch is declared. Tell "
+    "the user this, and that re-exporting the file with +z up lets it stand on the ground.")
 
 
 def external_declaration(body) -> list[str]:
@@ -102,14 +211,20 @@ def external_declaration(body) -> list[str]:
         lines.append("Far-field margins in reference lengths: "
                      f"{float(ext.get('upstream', 0)):g} upstream, {float(ext.get('downstream', 0)):g} downstream, "
                      f"{float(ext.get('lateral', 0)):g} to each side, {float(ext.get('vertical', 0)):g} above.")
-    lines.append("The part stands on the ground: the floor of the far-field box, at the part's "
-                 "lowest z, is a wall patch named ground, which the domain builds - it is not a "
-                 "region of the geometry."
-                 if getattr(body, "grounded", False) else "The part is free in the flow; every far-field face is open.")
+    up = up_or_default(getattr(body, "up_axis", None))
+    if not getattr(body, "grounded", False):
+        lines.append("The part is free in the flow; every far-field face is open.")
+    elif up != DEFAULT_UP:
+        lines.append(GROUND_NEEDS_Z_UP.format(up=up))
+    else:
+        lines.append("The part stands on the ground: the floor of the far-field box, at the part's "
+                     "lowest z, is a wall patch named ground, which the domain builds - it is not a "
+                     "region of the geometry.")
     return lines
 
 
-__all__ = ["AXES", "DEFAULT_EXTENTS", "EXTERNAL_KEYS", "FIELD_KEYS", "FIELDS", "GeometryField",
-           "axis_of_longest_side", "external_declaration", "external_defaults", "form_spec",
-           "length_along"]
+__all__ = ["AXES", "DEFAULT_EXTENTS", "LONGEST_SIDE_CONFIDENCE", "axis_from_reading", "DEFAULT_UP", "EXTERNAL_KEYS", "FIELD_KEYS", "FIELDS",
+           "GROUND_NEEDS_Z_UP", "INPUT_KIND_OPTIONS", "GeometryField", "UP_AXES", "axis_of_longest_side",
+           "external_declaration", "external_defaults", "form_spec", "length_along",
+           "length_of_another_axis", "same_length", "up_or_default"]
 _ = field  # dataclasses.field is imported for future registry entries with defaults

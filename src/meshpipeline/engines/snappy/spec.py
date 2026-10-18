@@ -8,11 +8,14 @@ from meshpipeline.contracts.review_evidence import (
 )
 from meshpipeline.engines.base import (
     Deliverable,
+    DeliveredMesh,
     DownstreamTarget,
     EngineSpec,
+    FlowSupport,
     InputContract,
     MeshCapability,
     RunPolicy,
+    TurfRow,
 )
 from meshpipeline.engines.base import (
     DeliverableMember as M,
@@ -116,6 +119,34 @@ def _build_driver():
     return drive
 
 
+
+# WHERE snappyHexMesh IS AT HOME (engines/home_turf.py reads these; thresholds from the HOME-TURF lab
+# sweep, 2026-10-05). Castellate, snap, then add layers: it wraps any closed or nearly closed
+# surface, however detailed, from a CAD solid or a triangle file - its turf is external AND internal
+# CFD on complex geometry. Its weak spots are where the method pulls layers back or must spend
+# cells: knife edges, hollow thin shells, long thin gaps.
+HOME_TURF = (
+    TurfRow("n_solids", ">", 1, "home",
+            "Overlapping or touching solids are wrapped as one surface, so an assembly of parts "
+            "meshes as one body.", flow="external"),
+    TurfRow("sharp_edges", ">=", 4.0, "home",
+            "It snaps the mesh to the feature edges, so sharp, detailed geometry keeps its shape."),
+    TurfRow("closed", "is", False, "home",
+            "It tolerates a surface that is not perfectly watertight: the castellated mesh is cut "
+            "by the surface, not filled from it."),
+    TurfRow("ground", "is", True, "home",
+            "It lays the ground plane as a wall under the body (a car on a road).", flow="external"),
+    TurfRow("thin_wall_fraction", ">", 0.3, "weak",
+            "Much of this body is a thin hollow shell: walls thinner than a cell are smoothed over and "
+            "near-wall layers cover only about half of the wall (a hollow car shell measured 53%).",
+            flow="external"),
+    TurfRow("cells_across_at_budget", "<", 8.0, "weak",
+            "The narrowest passage gets fewer than 8 cells across within the cell budget: snappy "
+            "refines it locally and resolves it, but the mesh runs over the budget (a 19-tube heat "
+            "exchanger: 6.4M cells for a 2M budget).", flow="internal"),
+)
+
+
 SPEC = EngineSpec(
 
         name="snappy",
@@ -180,7 +211,20 @@ SPEC = EngineSpec(
                       # inlet/outlet mouths, not a far-field box.
                       MeshCapability("fluid-domain", "fluid-volume",
                                      topologies=("internal",))),
+        # WHAT FILE IT TAKES, per flow - the true path on main. EXTERNAL wraps a surface, so a CAD
+        # solid (tessellated first) and a surface mesh both reach it. INTERNAL carves the fluid out
+        # of a CAD solid (cad_tessellate.tessellate_internal): the openings and the interior point
+        # are read off the solid's faces, and the driver refuses a surface (drivers.py,
+        # _build_internal_deterministic). When surface internal flow lands, widen it here.
+        accepts=(FlowSupport("external", ("cad", "surface")),
+                 FlowSupport("internal", ("cad",))),
+        # the body-fitted hex mesher: after cfMesh on the ladder, before the tet engines
+        ladder_rank=20,
+        home_turf=HOME_TURF,
         input_contract=InputContract(
+            # internal flow from an STL/OBJ/PLY upload: cad/internal_surface closes it at the
+            # confirmed openings (snappy/cfMesh/gmsh/vmtk internal paths read that record)
+            internal_from_surface=True,
             # UPSTREAM TRUTH: snappyHexMesh is a 3D hex/split-hex mesher. The former
             # pseudo-2D workflow (thin slab + extrudeMesh collapse + empty retype) was a
             # wrapper invention and is REMOVED from supported capabilities - real 2D
@@ -201,10 +245,23 @@ SPEC = EngineSpec(
         # as the wall patch the user declared as ground (snappy_runner.domain_from_strategy and
         # render_snappy_case); the other five faces stay far field.
         supports_ground_plane=True,
-        # PROVEN end to end: a STEP whose parts are named tessellates to named STL solids, the
-        # dict declares them under regions{} with per-region patchInfo and layer entries, and
-        # snappyHexMesh returns them as separate wall patches carrying their prism layers.
+        # An input whose parts are separate named STL solids keeps them: prepare_surface stages
+        # each part under the declared wall it matches, the dict declares them under regions{}
+        # with per-region patchInfo and layer entries, and snappyHexMesh returns them as separate
+        # wall patches carrying their prism layers.
         supports_multiple_wall_patches=True,
+        # ...but a CAD file is tessellated as ONE surface (cad_tessellate.tessellate_to_stl), so
+        # the parts a STEP assembly names never reach the mesher apart. Only STL solids are kept.
+        keeps_regions_from=("stl-solids",),
+        # every staged part is a wall patch, so with several walls each part must be one of them
+        parts_become_walls=True,
+        # What this case writer builds. EXTERNAL: blockMesh's far field is one box, written as ONE
+        # patch under the declared far-field name; a symmetry plane is a half-model's cut (one) or
+        # a slab's two ends (two). INTERNAL: the carve delivers one wall and the declared ports -
+        # the port binder refuses any other role, so a symmetry or empty patch would stop the
+        # build after the job started.
+        boundary_limits=(("external", (("farfield", 1), ("symmetry", 2))),
+                         ("internal", (("wall", 1), ("symmetry", 0), ("empty", 0)))),
         validation_coverage=(
             _VC(_VA.INTEGRITY, "checkMesh fatal-topology (negative-volume / open / mis-oriented cells)",
                 "a fatal topological defect is universally invalid - blocked by the manifest_valid gate"),
@@ -256,6 +313,8 @@ SPEC = EngineSpec(
         downstream=DownstreamTarget(
             solvers=("OpenFOAM",),   # the polyMesh feeds OpenFOAM's FV solvers
         ),
+        # an OpenFOAM hex-dominant mesh snapped ONTO the surface, with inflated prism layers
+        delivered_mesh=DeliveredMesh(cells="hex-dominant", walls="body-fitted", prism_layers=True),
         run_policy=RunPolicy(
             required_files=("system/blockMeshDict", "system/snappyHexMeshDict"),
             # a production snappy mesh legitimately takes 20-35 min off-box

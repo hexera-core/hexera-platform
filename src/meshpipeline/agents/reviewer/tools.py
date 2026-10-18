@@ -37,7 +37,10 @@ REVIEWER_TOOLS = [
                     },
                     "distance_mm": {
                         "type": "number",
-                        "description": "Distance in mm. Omit to use the current default pan step.",
+                        # the parameter keeps its old name; the mesh is in metres, and so is this
+                        "description": "Distance in the mesh's unit (metres - the delivered mesh is always "
+                                       "in metres, whatever the key's name says). Omit to use the current "
+                                       "default pan step.",
                     },
                 },
                 "required": ["direction"],
@@ -95,7 +98,8 @@ REVIEWER_TOOLS = [
                 "properties": {
                     "pan_step_mm": {
                         "type": "number",
-                        "description": "New default pan distance in mm. Must be > 0.",
+                        "description": "New default pan distance in the mesh's unit (metres, whatever the "
+                                       "key's name says). Must be > 0.",
                     },
                     "zoom_step": {
                         "type": "number",
@@ -122,10 +126,10 @@ REVIEWER_TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "x": {"type": "number", "description": "World X coordinate (mm)"},
-                    "y": {"type": "number", "description": "World Y coordinate (mm)"},
-                    "z": {"type": "number", "description": "World Z coordinate (mm)"},
-                    "span": {"type": "number", "description": "Approximate size (mm) of the region to show - use the patch span from your first message"},
+                    "x": {"type": "number", "description": "World X coordinate, in metres (the mesh's unit)"},
+                    "y": {"type": "number", "description": "World Y coordinate, in metres (the mesh's unit)"},
+                    "z": {"type": "number", "description": "World Z coordinate, in metres (the mesh's unit)"},
+                    "span": {"type": "number", "description": "Approximate size of the region to show, in metres (the mesh's unit) - use the patch span from your first message"},
                     "preset": {
                         "type": "string",
                         "enum": ["front", "rear", "top", "bottom", "left", "right", "iso"],

@@ -38,3 +38,13 @@ def get_pipeline_launcher() -> PipelineLauncher:
             "no pipeline launcher configured - runtime composition must call "
             "set_pipeline_launcher() at process startup before a run is dispatched")
     return _launcher
+
+
+def launcher_runs_work() -> bool:
+    """Whether a `launch` here puts the run where a worker WILL take it, with no person involved.
+
+    A launcher says so with a module-level `RUNS_WORK = True` (the Celery queue does). The deferred
+    launcher only records a command for an operator to run, so a job re-launched through it would
+    sit pending until somebody did - an automatic re-run there would be a promise nothing keeps.
+    Unconfigured reads as False for the same reason."""
+    return bool(getattr(_launcher, "RUNS_WORK", False))

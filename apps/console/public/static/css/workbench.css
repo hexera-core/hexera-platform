@@ -38,7 +38,6 @@
 #app.wb #input-inner{max-width:none;padding:0}
 #app.wb .rerun{max-width:none}
 #app.wb .im.user .bub{max-width:88%}
-#app.wb .e-shot img{width:96px;height:72px}
 
 #workbench{display:none}
 #app.wb>#workbench{display:flex}
@@ -53,9 +52,7 @@
 #workbench .viewer .v-flags{grid-column:2;grid-row:2;max-height:38vh;overflow-y:auto;
   border-left:1px solid var(--border)}
 #workbench .viewer .v-bnd-cols{grid-template-columns:1fr}
-#workbench .viewer .v-bnd-list{border-right:0;border-bottom:1px solid var(--border);max-height:220px}
-#workbench .viewer .mx-grid{grid-template-columns:repeat(2,1fr)}
-#workbench .viewer .v-dl{flex-wrap:wrap}
+#workbench .viewer .v-bnd-list{border-right:0;max-height:220px}
 
 /* the header control that folds the drawer - only shown once there is a workbench */
 #wb-toggle{cursor:pointer}
@@ -75,6 +72,13 @@
 /* the geometry stage's panel holds a form, so it gets a little more room than a parts list -
    on a wide window only; below 900px the stage stacks like every other viewer */
 #workbench .viewer.gc-stage{grid-template-columns:minmax(0,1fr) clamp(340px,30vw,460px)}
+/* a thermal model's panel is a parts table: wider again, and its foot sits on the panel's edge */
+#workbench .viewer.tm-stage{grid-template-columns:minmax(0,1fr) clamp(400px,36vw,560px)}
+#workbench .viewer.tm-stage .v-bar{padding-bottom:0}
 @media(max-width:900px){
   #workbench .viewer.gc-stage{grid-template-columns:minmax(0,1fr)}
+  /* stacked, the model and its panel share the height, so the list and its button stay reachable */
+  #workbench .viewer.tm-stage{grid-template-rows:minmax(150px,1fr) minmax(0,1.3fr)}
+  #workbench .viewer.tm-stage .v-canvas{min-height:0}
+  #workbench .viewer.tm-stage .v-bar{max-height:none}
 }

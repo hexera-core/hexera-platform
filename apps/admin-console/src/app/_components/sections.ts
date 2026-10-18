@@ -40,6 +40,11 @@ export function buildAdminSections(
       { href: "/customers", label: "Customers", available: true },
     );
   }
+  // THE REPAIR QUEUE is shown wherever the API can be read, dev included - unlike Activity and
+  // Customers, which are launch-operator surfaces that only prod populates. A personal
+  // environment is exactly where the repair loop is exercised, so hiding the queue there would
+  // mean the one place it is being built is the one place it cannot be opened.
+  base.push({ href: "/repair", label: "Repair", available: true });
   if ((env.OUTREACH_ENABLED ?? "").trim() === "1") {
     // Outreach is PROD-ONLY: one partner list, one mailbox. A dev copy would either duplicate the
     // real contacts or sit empty, and neither is worth a second Gmail connection. The deployment

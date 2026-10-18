@@ -3,12 +3,13 @@
 # Collaborates with: agents/reviewer/unified.py, render_runtime.py and sandbox/.
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import meshpipeline.agents.reviewer.settings as rcfg
 from meshpipeline.agents.reviewer.context import build_review_prompt
@@ -19,6 +20,7 @@ from meshpipeline.agents.reviewer.eligibility import (
     validate_plan,
 )
 from meshpipeline.agents.reviewer.interaction_inputs import VisualReviewInteractionInputs
+from meshpipeline.agents.reviewer.loop_policy import MARKER_STALLED
 from meshpipeline.agents.reviewer.persist import save_review_artifacts
 from meshpipeline.agents.reviewer.render_runtime import open_runtime
 from meshpipeline.agents.reviewer.unified import UnifiedReviewOutcome, run_unified_review
@@ -96,14 +98,14 @@ async def node_reviewer(state: PipelineState) -> dict:
     purpose       = state.get("purpose", "")
     engine_params = state.get("engine_params", {}) or {}
     retry_count   = state.get("retry_count", 0)
-    review_save_dir = workspace / f"review_{retry_count + 1}"
-    logger.info("Reviewer: starting - job_id=%s engine=%s attempt=%d", job_id, engine, retry_count)
-
-    # THE reviewer's execution publisher. The review runs inside the graph, under the
-    # claim taken before it started, so every event it publishes is ownership-checked.
-    _publish = execution_publisher(job_id, agent="reviewer")
-    await _publish.astage(op_id=f"inspect:{retry_count}")
-    await _publish.anote("Inspecting the mesh against your brief", op_id=f"inspect:{retry_count}")
+    # A RERUN reviews the same mesh again after a review that ended without a verdict
+    # (pipeline/graph.node_review_retry). Its trail, its event ids and its words are its own.
+    rerun = int(state.get("review_rerun_count", 0) or 0)
+    _scope = f"{retry_count}" + (f":rerun{rerun}" if rerun else "")
+    review_save_dir = workspace / (f"review_{retry_count + 1}"
+                                   + (f"_rerun{rerun}" if rerun else ""))
+    logger.info("Reviewer: starting - job_id=%s engine=%s attempt=%d rerun=%d",
+                job_id, engine, retry_count, rerun)
 
     def _read_txt(filename: str) -> str:
         p = workspace / filename
@@ -112,6 +114,41 @@ async def node_reviewer(state: PipelineState) -> dict:
         except Exception as exc:  # noqa: BLE001
             logger.warning("Reviewer: could not read %s - job_id=%s: %s", filename, job_id, exc)
             return ""
+
+    # WHAT THE FINDINGS ARE JUDGED AGAINST (agents/reviewer/review_policy): the user's request, the
+    # acceptance criteria and the setup they confirmed - the only text a finding may quote to ask
+    # for a rebuild or to call the mesh the wrong problem.
+    from meshpipeline.agents.reviewer.review_policy import builder_levers, measurements_from
+    _request_txt = _read_txt("request.txt") or state.get("request_txt", "")
+    _brief_txt = _read_txt("review_brief.txt") or state.get("review_brief_txt", "")
+    _confirmed = confirmed_setup(state)
+    _history = tuple(h for h in (state.get("review_history") or []) if isinstance(h, dict))
+    _evidence = (_evidence_key(engine=engine, purpose=purpose, request=_request_txt,
+                               brief=_brief_txt, confirmed=_confirmed, manifest=manifest,
+                               workspace=workspace, spec=spec)
+                 if state.get("executor_success") is True else "")
+    # THE SAME MESH, SHOWN THE SAME EVIDENCE, IS NEVER JUDGED TWICE. A second look could only re-roll
+    # the verdict (job 4d8b318d failed 59.6% layer coverage on attempt 1 and passed the same 59.6% on
+    # attempt 3). A rerun after a review that reached no verdict, and a dispute, are judged afresh.
+    _reused = (None if rerun or state.get("user_dispute") or not _evidence else
+               next((h for h in reversed(_history) if h.get("evidence_key") == _evidence
+                     and h.get("verdict") in ("PASS", "FAIL")), None))
+
+    # THE reviewer's execution publisher. The review runs inside the graph, under the
+    # claim taken before it started, so every event it publishes is ownership-checked.
+    _publish = execution_publisher(job_id, agent="reviewer")
+    await _publish.astage(op_id=f"inspect:{_scope}")
+    await _publish.anote("This mesh, and everything a review would be shown, is identical to one "
+                         "already reviewed in this run - that review stands (nothing is judged "
+                         "twice)" if _reused is not None else
+                         "Inspecting the mesh against your brief" if not rerun else
+                         "The last review stopped before it reached a verdict - reviewing the "
+                         "same mesh again (nothing is rebuilt)",
+                         op_id=f"inspect:{_scope}")
+    if _reused is not None:
+        return _reuse_review(_reused, retry_count=retry_count, workspace=workspace,
+                             history=_history, evidence_key=_evidence,
+                             requirement_caveats=state.get("requirement_caveats") or [])
 
  # one plan, one obligation set
     # THE PHASE IS THE RETRY COUNTER'S MEANING, not a new flag: a dispute's first review runs
@@ -130,7 +167,7 @@ async def node_reviewer(state: PipelineState) -> dict:
     if state.get("executor_success") is not True:
         return await _early_nonverdict(
             job_id=job_id, publish=_publish, review_save_dir=review_save_dir,
-            manifest=manifest, retry_count=retry_count,
+            manifest=manifest, retry_count=retry_count, rerun=rerun,
             marker="reviewer_evidence_missing",
             note="The mesh could not be verified because its execution was not validated. "
                  "This is a problem on our side - please try again.",
@@ -145,9 +182,9 @@ async def node_reviewer(state: PipelineState) -> dict:
         review_save_dir=review_save_dir,
         mesh_units=completed_mesh_unit(manifest).value,
         review_brief=_with_adjudicated_deviations(
-            _read_txt("review_brief.txt") or state.get("review_brief_txt", ""),
+            _brief_txt + (f"\n\n{_confirmed}" if _confirmed else ""),
             state.get("requirement_caveats") or []),
-        request=_read_txt("request.txt") or state.get("request_txt", ""),
+        request=_request_txt,
         axis_names=list(plan.axis_names),
         publish=_publish,
         engine=engine,
@@ -158,6 +195,13 @@ async def node_reviewer(state: PipelineState) -> dict:
         prior_flag_findings=HF.findings_from_state(state.get("dispute_flag_findings")),
         builder_flag_responses=HF.responses_from_state(state.get("builder_flag_responses")),
         prior_reviewer_feedback=str(state.get("reviewer_feedback") or ""),
+        rerun=rerun,
+        brief_text="\n".join(t for t in (_request_txt, _brief_txt, _confirmed) if t),
+        levers=builder_levers(spec, purpose),
+        measured=tuple(measurements_from(manifest, state).items()),
+        evidence_key=_evidence,
+        review_history=_history,
+        requirement_caveats=tuple(state.get("requirement_caveats") or ()),
     )
 
     ok, problems = validate_plan(spec, plan)
@@ -197,12 +241,13 @@ async def node_reviewer(state: PipelineState) -> dict:
             if not opening.has_geometry:
                 raise ReviewRenderError(ReviewEvidenceFailure.EVIDENCE_MISSING,
                                         "mesh loaded no renderable geometry (0 surface points)")
-            # The reviewer's own inspection render. Safe mode publishes NOTHING for
-            # these - the reader is told an image was produced (as tool activity), not
-            # handed the image - so the bytes never enter the public backlog at all.
-            # Raw mode publishes it, sanitized, through the same event.
-            await _publish_inspection_image(_publish, opening.initial_screenshot_b64,
-                                      op_id=f"opening-render:{retry_count}")
+            # The reviewer's own inspection renders - this opening one, then every view it takes
+            # in the loop below. Safe mode publishes NOTHING for these - the reader is told an
+            # image was produced (as tool activity), not handed the image - so the bytes never
+            # enter the public backlog at all. Raw mode publishes them, sanitized, through the
+            # same event.
+            pictures = _LivePictures(_publish, _scope)
+            await pictures.opening(opening.initial_screenshot_b64)
 
             # EXPECTED-TARGET-MISSING pre-check: an engine-RESOLVED obligation that discovery cannot
             # satisfy - whole-kind absence OR partial loss (3 groups expected, 1 discovered) - is
@@ -226,6 +271,12 @@ async def node_reviewer(state: PipelineState) -> dict:
                 workspace=workspace,
                 step_basename=inputs.step_basename,
                 patch_names=list((manifest.get("patches") or {}).keys()),
+                # what the viewer can actually draw - the manifest also names boundaries (the far
+                # field, a ground plane) that no review geometry reaches. The session's ENTITIES,
+                # the same set toggle_patch and go_to_coordinates screen against: an engine whose
+                # targets are groups or openings (gmsh, vmtk) has no PATCH targets at all, and an
+                # empty set would read as "nothing here can be shown". None when unknown.
+                renderable_patches=await _viewer_entities(runtime),
                 patch_colour_legend=opening.patch_colour_legend,
                 patch_views=opening.patch_views,
                 mesh_units=inputs.mesh_units,
@@ -248,8 +299,10 @@ async def node_reviewer(state: PipelineState) -> dict:
                 total_timeout_s=rcfg.REVIEWER_TOTAL_TIMEOUT_SECONDS,
                 pipeline_deadline_epoch=state.get("pipeline_deadline_epoch"),
                 job_id=job_id, user_id=inputs.user_id, publish=_publish, obligations=obligations,
-                attempt=inputs.retry_count,
-                user_dispute=inputs.user_dispute, dispute_phase=inputs.dispute_phase)
+                attempt=inputs.retry_count, rerun=inputs.rerun,
+                user_dispute=inputs.user_dispute, dispute_phase=inputs.dispute_phase,
+                on_picture=pictures, brief_text=inputs.brief_text, levers=inputs.levers,
+                measured=dict(inputs.measured))
     except ReviewRenderError as exc:
         return await _render_failure_result(inputs, exc)
 
@@ -276,6 +329,10 @@ _REVIEWER_RETURN_KEYS = frozenset({
     # v8: the canonical accountability record for THIS invocation. Append-only history - the
     # Reviewer writes its own and never reads a previous attempt's.
     "agent_run_records",
+    # This run's concluded reviews, one per reviewed mesh: what the review saw (its evidence key),
+    # where the mesh is, and what it found. Append-only. It lets an identical mesh keep its review
+    # instead of being judged twice, and lets the run deliver its best gate-passing mesh.
+    "review_history",
 })
 
 
@@ -290,16 +347,147 @@ def _reviewer_return(**fields) -> dict:
     return dict(fields)
 
 
+async def _viewer_entities(runtime) -> list[str] | None:
+    """The names the viewer can toggle and frame, or None when the runtime does not say."""
+    caps = getattr(runtime, "capabilities", None)
+    if caps is None:
+        return None
+    try:
+        return list((await caps()).entities) or None
+    except Exception:  # noqa: BLE001 - a prompt hint must never cost the review
+        logger.warning("Reviewer: viewer entities unavailable for the prompt", exc_info=True)
+        return None
+
+
 def _findings_dump(plan, ledger, outcome: UnifiedReviewOutcome, attempt: int) -> list[dict]:
     _owner = {ax.name: getattr(ax, "owner", "") for ax in plan.axes}
-    return [{
-        "axis_key":     f.axis_key,
-        "owner":        _owner.get(f.axis_key, ""),
-        "passed":       f.passed,
-        "finding":      f.finding,
-        "evidence_ids": list(f.evidence_ids),
-        "attempt":      attempt,
-    } for f in outcome.findings]
+    rows = []
+    for f in outcome.findings:
+        row = {
+            "axis_key":     f.axis_key,
+            "owner":        _owner.get(f.axis_key, ""),
+            "passed":       f.passed,
+            "finding":      f.finding,
+            "evidence_ids": list(f.evidence_ids),
+            "attempt":      attempt,
+        }
+        # WHAT THE APPLICATION DECIDED this finding may do (review_policy) - on every finding that
+        # did not pass, so routing, delivery and the console read one judgement, never the model's.
+        j = (outcome.judgements or {}).get(f.axis_key)
+        if not f.passed and j is not None:
+            row.update({
+                "blocking": j.blocking,          # a WRONG_PROBLEM class, or "" - only these fail a job
+                "improve": j.improve,            # may ask the builder for a rebuild
+                "concern_reason": j.reason,      # why it is only a concern
+                "severity": j.severity,          # how prominently a concern is shown
+                "brief_requirement": f.brief_requirement,
+                "builder_change": f.builder_change,
+                "change_request": f.change_request,
+            })
+        rows.append(row)
+    return rows
+
+
+def confirmed_setup(state) -> str:
+    """The setup the user CONFIRMED before meshing, in words a finding can quote: the boundaries
+    and their roles, the flow direction, the reference length and the outer-domain margins. Read
+    from the approved state, never from the builder's configuration."""
+    lines: list[str] = []
+    patches = [p for p in (state.get("intake_patches") or []) if isinstance(p, dict)]
+    if patches:
+        lines.append("Boundaries: " + "; ".join(
+            f"{p.get('name')} as {p.get('type')}" for p in patches if p.get("name")) + ".")
+    if state.get("flow_axis"):
+        lines.append(f"Flow direction: {state.get('flow_axis')}.")
+    ruler = state.get("reference_length_m")
+    if isinstance(ruler, (int, float)) and not isinstance(ruler, bool) and ruler > 0:
+        lines.append(f"Reference length: {float(ruler):.6g} m.")
+    ext = state.get("requested_extents")
+    if isinstance(ext, dict):
+        parts = [f"{k} {float(v):g}" for k, v in ext.items()
+                 if isinstance(v, (int, float)) and not isinstance(v, bool)]
+        if parts:
+            lines.append("Outer-domain margins in reference lengths: " + ", ".join(parts) + ".")
+    if state.get("dimensionality"):
+        lines.append(f"Dimensionality: {state.get('dimensionality')}.")
+    if not lines:
+        return ""
+    return ("CONFIRMED SETUP (approved by the user before meshing; quote it word for word when a "
+            "finding contradicts it):\n  " + "\n  ".join(lines))
+
+
+def _evidence_key(*, engine: str, purpose: str, request: str, brief: str, confirmed: str,
+                  manifest: dict, workspace: Path, spec) -> str:
+    """The identity of everything a review of this mesh is shown: the brief, the confirmed setup,
+    the measurements the gates took and the configuration that built it. Equal keys mean an
+    identical mesh with identical evidence."""
+    authored: dict = {}
+    pol = getattr(spec, "run_policy", None)
+    for rel in (pol.required_files if pol else ()):
+        p = Path(workspace) / rel
+        try:
+            if p.is_file():
+                authored[rel] = hashlib.sha256(p.read_bytes()).hexdigest()
+        except OSError:
+            authored[rel] = "unreadable"
+    body = json.dumps({
+        "engine": engine, "purpose": purpose, "request": request, "brief": brief,
+        "confirmed": confirmed, "quality": (manifest or {}).get("quality"),
+        "cells": (manifest or {}).get("cell_count"),
+        "patches": sorted(((manifest or {}).get("patches") or {}).keys()),
+        "authored": authored,
+    }, sort_keys=True, default=str)
+    return hashlib.sha256(body.encode()).hexdigest()[:32]
+
+
+def _history_entry(*, attempt: int, workspace: Path, evidence_key: str, verdict: str,
+                   findings: list[dict], feedback: str, requirement_caveats) -> dict:
+    return {"attempt": int(attempt), "workspace": str(workspace), "evidence_key": evidence_key,
+            "verdict": verdict, "findings": findings, "feedback": feedback[:4000],
+            "requirement_caveats": list(requirement_caveats or [])}
+
+
+def _reuse_review(entry: dict, *, retry_count: int, workspace: Path, history: tuple,
+                  evidence_key: str, requirement_caveats) -> dict:
+    """The earlier review of this identical mesh, as THIS attempt's verdict. Its requests for a
+    rebuild are spent - the rebuild produced this same mesh - so none of them asks again; a finding
+    that made the mesh the wrong problem still does."""
+    findings = []
+    for f in entry.get("findings") or []:
+        row = dict(f, attempt=retry_count)
+        if row.get("passed") is False:
+            row["improve"] = False
+            row.setdefault("concern_reason", "")
+            if not row.get("blocking"):
+                row["concern_reason"] = "a rebuild produced this same mesh again"
+        findings.append(row)
+    verdict = str(entry.get("verdict") or "")
+    feedback = str(entry.get("feedback") or "")
+    return _reviewer_return(
+        reviewer_result=f"{verdict}\n(identical to the review of attempt {entry.get('attempt')})",
+        reviewer_verdict=verdict,
+        reviewer_feedback=feedback if verdict == "FAIL" else "",
+        reviewer_axis_findings=findings,
+        reviewer_rebuild_required=False,
+        reviewer_tool_calls=[0],
+        review_history=[*history, _history_entry(
+            attempt=retry_count, workspace=workspace, evidence_key=evidence_key,
+            verdict=verdict, findings=findings, feedback=feedback,
+            requirement_caveats=requirement_caveats)],
+    )
+
+
+def _builder_feedback(reasoning: str, findings: list[dict]) -> str:
+    """What the builder is handed after a review that did not pass: the changes the review may ask
+    for, each with the requirement it serves, then the reviewer's report. Concerns are not asks."""
+    asks = [f for f in findings if f.get("improve") is True]
+    if not asks:
+        return reasoning
+    lines = ["The review asks for these changes:"]
+    for f in asks:
+        lines.append(f"- [{f.get('builder_change')}] {f.get('change_request')} "
+                     f"(requirement: \"{f.get('brief_requirement')}\")")
+    return "\n".join(lines) + ("\n\n" + reasoning if reasoning else "")
 
 
 async def _translate_outcome(inputs: VisualReviewInteractionInputs,
@@ -320,6 +508,7 @@ async def _translate_outcome(inputs: VisualReviewInteractionInputs,
     verdict   = outcome.verdict
     reasoning = outcome.reasoning
     findings  = _findings_dump(plan, ledger, outcome, inputs.retry_count)
+    feedback  = _builder_feedback(reasoning, findings) if verdict == "FAIL" else ""
 
     save_review_artifacts(
         inputs.review_save_dir, list(outcome.messages),
@@ -335,10 +524,14 @@ async def _translate_outcome(inputs: VisualReviewInteractionInputs,
         agent_run_records=[outcome.run_record] if outcome.run_record else [],
         reviewer_result=f"{verdict}\n{reasoning}",
         reviewer_verdict=verdict,
-        reviewer_feedback=reasoning if verdict == "FAIL" else "",
+        reviewer_feedback=feedback,
         reviewer_axis_findings=findings,
         reviewer_rebuild_required=outcome.rebuild_required,
         reviewer_tool_calls=[outcome.tool_calls],
+        review_history=[*inputs.review_history, _history_entry(
+            attempt=inputs.retry_count, workspace=inputs.workspace,
+            evidence_key=inputs.evidence_key, verdict=verdict, findings=findings,
+            feedback=feedback, requirement_caveats=inputs.requirement_caveats)],
         # The baseline is written by the phase that establishes it and never overwritten by the
         # phase that is judged against it - otherwise the comparison would be with itself.
         **({"dispute_flag_findings": HF.as_dicts(outcome.flag_findings)}
@@ -347,19 +540,28 @@ async def _translate_outcome(inputs: VisualReviewInteractionInputs,
 
 
 def _nonverdict_note(marker: str) -> str:
+    # What happened, and nothing about what to do next: a review that stopped this way may be
+    # started again on the same mesh (pipeline/graph.node_review_retry), and the terminal message
+    # owns the next step if it is not.
     if marker in ("reviewer_render_unavailable",):
         return ("Visual verification could not be completed because the mesh rendering step was "
-                "unavailable. This is a problem on our side - please try again.")
+                "unavailable. This is a problem on our side.")
+    if marker == MARKER_STALLED:
+        return ("The review stopped making progress before it reached a verdict. This is a "
+                "problem on our side, not your mesh's.")
+    if marker == "reviewer_exhausted":
+        return ("The review ran out of time before it reached a verdict. This is a problem on "
+                "our side, not your mesh's.")
     if _is_provider_failure(marker):
-        return ("The review service is temporarily unavailable. This is a problem on our side - "
-                "please try again.")
-    return ("The mesh could not be fully verified from the available evidence, so it was not "
-            "accepted. This is a problem on our side - please try again.")
+        return ("The review service is temporarily unavailable. This is a problem on our side.")
+    return ("The review could not judge the mesh from the evidence it had, so it reached no "
+            "verdict. This is a problem on our side.")
 
 
 def _is_provider_failure(marker: str) -> bool:
     return marker not in {
         "reviewer_render_unavailable", "reviewer_evidence_missing", "reviewer_exhausted",
+        MARKER_STALLED,
     }
 
 
@@ -371,14 +573,16 @@ class _EarlyRefusalInputs:
     review_save_dir: Path
     manifest: dict
     retry_count: int
+    rerun: int = 0
 
 
 async def _early_nonverdict(*, job_id: str, publish: ExecutionEventPublisher,
                             review_save_dir: Path, manifest: dict,
-                      retry_count: int, marker: str, note: str, chain: str) -> dict:
+                      retry_count: int, marker: str, note: str, chain: str,
+                      rerun: int = 0) -> dict:
     return await _nonverdict(
         _EarlyRefusalInputs(job_id=job_id, publish=publish, review_save_dir=review_save_dir,
-                            manifest=manifest, retry_count=retry_count),
+                            manifest=manifest, retry_count=retry_count, rerun=rerun),
         marker, note, chain)
 
 
@@ -386,7 +590,9 @@ async def _nonverdict(inputs: VisualReviewInteractionInputs | _EarlyRefusalInput
                       note: str, chain: str,
                 *, tool_calls: int = 0, messages: list | None = None) -> dict:
     # the marker names WHICH non-verdict this is; the attempt separates genuine retries
-    await inputs.publish.awarn(note, op_id=f"nonverdict:{marker}:{inputs.retry_count}")
+    _rerun = int(getattr(inputs, "rerun", 0) or 0)
+    await inputs.publish.awarn(note, op_id=f"nonverdict:{marker}:{inputs.retry_count}"
+                                           + (f":rerun{_rerun}" if _rerun else ""))
     try:
         if messages:
             save_review_artifacts(inputs.review_save_dir, messages, None, inputs.manifest,
@@ -446,3 +652,68 @@ async def _publish_inspection_image(publish: ExecutionEventPublisher | None,
         raise
     except Exception:      # observability never fails a review
         pass
+
+
+# The most pictures one review puts on the live page AFTER its opening one. Each is 100-350 KB of
+# base64 on the live stream, so the cap keeps a runaway review from pushing hundreds of them; a
+# typical review takes about twenty views and repeats several. The model still sees every view.
+LIVE_PICTURES_MAX = 24
+
+
+class _LivePictures:
+    """Puts the opening render, then each view the reviewer takes in its loop, on the live page.
+
+    Every picture goes through `_publish_inspection_image` under its own id, so the same rules
+    hold for all of them: only raw trace mode publishes, a failed publish costs the review nothing,
+    and only a lost claim propagates - as it does for every other event this reviewer publishes.
+    A view identical to one already sent (the reviewer often returns to the same camera) is not
+    sent again and does not count toward the cap: the page would show the same picture twice."""
+
+    def __init__(self, publish: ExecutionEventPublisher | None, scope: str,
+                 limit: int = LIVE_PICTURES_MAX) -> None:
+        self._publish = publish
+        self._scope = scope
+        self._limit = limit
+        self._seen: set[bytes] = set()
+        self.sent = 0
+
+    async def opening(self, image_b64: str | None) -> None:
+        await self._send(image_b64 or "", f"opening-render:{self._scope}")
+
+    async def __call__(self, content: Any) -> None:
+        await self._send(_image_b64(content), "")
+
+    async def _send(self, image_b64: str, op_id: str) -> None:
+        try:
+            if not image_b64:
+                return
+            key = hashlib.sha256(image_b64.encode()).digest()
+            if key in self._seen:
+                return
+            if not op_id:
+                if self.sent >= self._limit:
+                    return
+                self.sent += 1
+                op_id = f"review-render:{self._scope}:{self.sent}"
+            self._seen.add(key)
+            await _publish_inspection_image(self._publish, image_b64, op_id=op_id)
+        except StaleExecutionPublish:
+            raise
+        except Exception:  # noqa: BLE001 - a picture for the page never costs the review
+            logger.debug("Reviewer: live picture not published", exc_info=True)
+
+
+def _image_b64(content: Any) -> str:
+    """The base64 body of the image in a viewer tool's result, or '' when it carries none."""
+    if not isinstance(content, list):
+        return ""
+    for part in content:
+        if not (isinstance(part, dict) and part.get("type") == "image_url"):
+            continue
+        ref = part.get("image_url")
+        url = ref.get("url") if isinstance(ref, dict) else None
+        if isinstance(url, str) and url.startswith("data:image/"):
+            _head, sep, body = url.partition(";base64,")
+            if sep and body:
+                return body
+    return ""

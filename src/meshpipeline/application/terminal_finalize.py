@@ -160,11 +160,29 @@ class TerminalAssembly:
     api_failure: str = ""
     attempts: int = 0
     attempts_max: int = 0
+    #: the attempts that started a mesher (pipeline/engine_fallback.attempts_made), when the run
+    #: counted them - what the record says was used; None keeps `attempts`
+    attempts_made: int | None = None
     pipeline_timed_out: bool = False
+    #: the fallback ladder's closing record (pipeline/engine_fallback.final_record) - carried into
+    #: the final result verbatim; {} when the run never classified a failure
+    engine_ladder: dict = field(default_factory=dict)
+    #: which upload a promoted repair replaced (pipeline/repair_promote.py) - carried into the
+    #: final result verbatim; {} on every run that meshed the customer's bytes as they arrived
+    repair_lineage: dict = field(default_factory=dict)
+
     #: node_failure_handler's blameless SYSTEM-failure note, honoured only when api_failure is set
     pre_composed_message: str = ""
     #: machine-measured requirement near-misses for the delivered attempt ([] = fully conforming)
     requirement_caveats: list = field(default_factory=list)
+    #: what the failed gate said failed (contracts.failure_cause) and the facts behind it
+    failure_cause: str = ""
+    failure_facts: dict = field(default_factory=dict)
+    #: reviews started again on the same validated mesh (pipeline/graph.node_review_retry)
+    review_reruns: int = 0
+    #: the concluded review's wrong-problem findings (final_result.review_blocking) - the only
+    #: review findings that fail a run; they name, in the failure, which way the mesh is wrong
+    review_blocking: list = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -198,15 +216,32 @@ def build_terminal_result(assembly: TerminalAssembly, *, delivered_types: list) 
         failed_gate=assembly.failed_gate,
         api_failure=assembly.api_failure,
         attempts=assembly.attempts, attempts_max=assembly.attempts_max,
+        attempts_made=assembly.attempts_made,
         required_ready=ready, delivered_types=delivered_types, optional_warnings=warnings,
         requirement_caveats=list(assembly.requirement_caveats or []),
+        failure_cause=assembly.failure_cause,
+        failure_facts=dict(assembly.failure_facts or {}),
+        review_reruns=assembly.review_reruns,
+        review_blocking=list(assembly.review_blocking or []),
         # a run that exhausted its top-level budget mid-graph is reported truthfully as
         # timed_out rather than as the downstream symptom it produced.
         pipeline_timed_out=assembly.pipeline_timed_out)
+
+    result = _fr.with_engine_ladder(result, assembly.engine_ladder)
+    # "We fixed your file and meshed the fix" is a different claim from "we meshed your file".
+    result = _fr.with_repair_lineage(result, assembly.repair_lineage)
     # The ONLY pre-composed message honoured is the blameless SYSTEM-failure note; any other stale
     # draft (e.g. a pre-delivery outcome_message) is discarded so one renderer owns the closing.
+    # When the result itself names what failed (a review that did not conclude says which way it
+    # stopped), that account is the closing too: the chat and the job page must not tell the same
+    # failure two different ways.
+    # And a failure note never closes a run that DELIVERED: a review that did not finish on a
+    # validated mesh is delivered with its caveat (final_result.review_inconclusive_caveat) while
+    # the failure handler has already drafted "we could not verify your mesh".
     closing = (assembly.pre_composed_message
-               if (assembly.api_failure and assembly.pre_composed_message)
+               if (assembly.api_failure and assembly.pre_composed_message
+                   and not result.failure_detail
+                   and result.status != _fr.TerminalStatus.succeeded)
                else _fr.render_message(result))
     return TerminalResult(result, closing, delivered_types, ready)
 
@@ -405,6 +440,8 @@ async def finalize_crash(session_factory, exc: BaseException, *, job_id: str, ow
             approved_snapshot_id=facts["approved_snapshot_id"],
             executor_success=facts["executor_success"],
             reviewer_verdict=facts["reviewer_verdict"], failed_gate=facts["failed_gate"],
+            failure_cause=facts.get("failure_cause", ""),
+            failure_facts=dict(facts.get("failure_facts") or {}),
             api_failure=f"{cls.dependency}: crash", attempts=facts["attempts"])
         # DELIVERY IS NEVER ASSUMED on a crash: packaging runs only on a succeeded terminal status,
         # so readiness stays false and the deliverable stays missing.

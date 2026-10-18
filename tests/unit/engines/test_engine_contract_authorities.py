@@ -16,7 +16,7 @@ from meshpipeline.engines.registry import (
 )
 
 ENGINES = sorted(engine_names())
-EXPECTED_ENGINES = ["cfmesh", "gmsh", "snappy", "snappy_multiregion", "vmtk"]
+EXPECTED_ENGINES = ["cfmesh", "gmsh", "snapgrid", "snappy", "snappy_multiregion", "vmtk"]
 
 
 def test_the_registry_matches_the_declared_engine_ledger():
@@ -300,7 +300,8 @@ def test_the_moved_contracts_keep_their_field_names():
 
     assert set(Criterion.__dataclass_fields__) == {
         "key", "label", "op", "threshold", "gating", "rationale", "evidence_url"}
-    assert set(GateSpec.__dataclass_fields__) == {"key", "check", "blocking", "section", "proves"}
+    assert set(GateSpec.__dataclass_fields__) == {"key", "check", "blocking", "section", "proves",
+                                                  "cause"}
     assert set(GateCtx.__dataclass_fields__) == {
         "workspace", "engine", "domain", "intake_patches", "engine_params", "manifest"}
     assert {"name", "validation_axis", "guidance", "requires", "visual_only"} <= set(
@@ -324,7 +325,7 @@ def test_every_engine_declares_exactly_its_own_gates_criteria_axes_and_tools():
     from pathlib import Path
 
     frozen = json.loads((Path(__file__).parent / "engine_contract_keys.json").read_text())
-    assert sorted(frozen) == EXPECTED_ENGINES, "the frozen fixture no longer covers five engines"
+    assert sorted(frozen) == EXPECTED_ENGINES, "the frozen fixture no longer covers every engine"
     for engine in EXPECTED_ENGINES:
         spec = get_spec(engine)
         expected = frozen[engine]
@@ -458,14 +459,18 @@ def test_every_snappy_stage_runs_in_the_case_directory(tmp_path, monkeypatch):
     assert _sp is not None
 
 
-def test_the_shared_authority_exposes_exactly_two_names():
+def test_the_shared_authority_exposes_exactly_its_three_mechanics():
     import ast
     import inspect
 
     import meshpipeline.engines.snappy_hexmesh as SH
 
-    assert set(SH.__all__) == {"_write_case_skeleton", "parse_layer_coverage"}
+    # The third is where snappyHexMesh can be told locationInMesh (off_grid_point): both snappy
+    # engines build a background box round the part and seed inside it, and a seed on a cell face
+    # of that box stops the mesher in either - one rule, so they cannot drift apart again.
+    assert set(SH.__all__) == {"SEED_OFF_GRID_LEVEL", "_write_case_skeleton", "off_grid_point",
+                               "parse_layer_coverage"}
     defined = {n.name for n in ast.parse(inspect.getsource(SH)).body
                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
-    assert defined == {"_write_case_skeleton", "parse_layer_coverage"}, (
-        f"the shared authority grew a third definition: {sorted(defined)}")
+    assert defined == {"_write_case_skeleton", "off_grid_point", "parse_layer_coverage"}, (
+        f"the shared authority grew a fourth definition: {sorted(defined)}")

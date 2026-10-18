@@ -16,11 +16,7 @@ from meshpipeline.contracts.coordinate_state import (
     from_occ_transfer,
     from_source_file,
 )
-
-#: Already-triangulated surfaces: raw file coordinates in the source's own unit.
-_SURFACE_SUFFIXES = {".stl"}
-#: B-rep formats: read through OpenCASCADE, which normalises to ITS system unit on transfer.
-_CAD_SUFFIXES = {".step", ".stp", ".iges", ".igs"}
+from meshpipeline.contracts.intake_formats import GeometryKind, geometry_kind
 
 
 class UnsupportedSurfaceSource(RuntimeError):
@@ -37,6 +33,9 @@ def prepare_surface(geometry, destination, *, engine: str = "") -> PreparedSurfa
     dest = Path(destination)
     dest.parent.mkdir(parents=True, exist_ok=True)
     suffix = src.suffix.lower()
+    # The materialiser hands over canonical geometry (cad/ingest): a CAD solid, an STL, or a
+    # surface an engine reads natively (VTP). Which one decides who tessellates.
+    kind = geometry_kind(src)
 
     # A coordinate-state violation is OUR defect, not the user's, and it must leave this boundary
     # classified. An unclassified RuntimeError from here reaches the run entry as an unexplained
@@ -44,15 +43,18 @@ def prepare_surface(geometry, destination, *, engine: str = "") -> PreparedSurfa
     try:
         consumed = _consumed_state(geometry, suffix)
 
-        if suffix in _SURFACE_SUFFIXES:
+        if kind is GeometryKind.surface and suffix == ".stl":
             _prepare_stl(src, dest, consumed)
-        elif suffix in _CAD_SUFFIXES:
+        elif kind is GeometryKind.cad:
             _prepare_cad(src, dest, consumed, engine=engine)
-        else:
-            # vmtk's native .vtp: only its own bundle can read it, and that bundle's tessellator
-            # consumes the interpretation and emits metres - the shared analysis surface and the
-            # native lumen come out of one call, in one unit. Nothing further is applied here.
+        elif suffix in _native_surface_suffixes(engine):
+            # an engine's own surface format (vmtk's .vtp): that bundle's tessellator consumes
+            # the interpretation and emits metres - the shared analysis surface and the native
+            # lumen come out of one call, in one unit. Nothing further is applied here.
             _prepare_via_engine(src, dest, consumed, engine=engine)
+        else:
+            # any other surface is turned into the canonical STL first, then scaled like one
+            _prepare_converted_surface(src, dest, consumed)
     except (CoordinateStateError, AlreadyMetres) as exc:
         from meshpipeline.contracts.geometry_source import GeometrySourceError
         from meshpipeline.errors import FailureClass
@@ -69,9 +71,38 @@ def prepare_surface(geometry, destination, *, engine: str = "") -> PreparedSurfa
     )
 
 
+def _native_surface_suffixes(engine: str) -> tuple[str, ...]:
+    """The surface formats an engine declares it reads itself (`native_surface_suffixes`)."""
+    if not engine:
+        return ()
+    from meshpipeline.engines.runtime import get_engine
+
+    try:
+        return tuple(getattr(get_engine(engine), "native_surface_suffixes", ()) or ())
+    except Exception:  # noqa: BLE001 - an engine that declares nothing reads nothing natively
+        return ()
+
+
+def _prepare_converted_surface(src: Path, dest: Path, consumed: PreparedCoordinates) -> None:
+    from meshpipeline.cad.ingest import IngestError
+    from meshpipeline.cad.ingest.canonical import surface_to_stl
+
+    raw = dest.with_name(dest.stem + ".unscaled.stl")
+    try:
+        surface_to_stl(src, raw)
+    except IngestError as exc:
+        raise UnsupportedSurfaceSource(f"{src.suffix or 'this surface'} could not be read: {exc}") \
+            from exc
+    try:
+        _prepare_stl(raw, dest, consumed)
+    finally:
+        if raw.resolve() != dest.resolve():
+            raw.unlink(missing_ok=True)
+
+
 def _consumed_state(geometry, suffix: str) -> PreparedCoordinates:
     interpretation = _domain_interpretation(geometry)
-    if suffix in _CAD_SUFFIXES:
+    if geometry_kind(suffix) is GeometryKind.cad:
         from meshpipeline.cad.unit_evidence import parser_applied_unit
 
         return from_occ_transfer(interpretation, parser_applied_unit(geometry.path))

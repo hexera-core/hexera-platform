@@ -27,11 +27,13 @@ SCHEMAS: list[dict] = [
                 "Inspect the staged geometry and return the ENGINE's geometry report, in "
                 "METRES (surface meshers: bounding box, extents, thinnest axis, triangle "
                 "count; CAD-solid meshers: solids plus per-surface tags/areas/centroids). "
-                "Call this FIRST, before sizing the mesh."
+                "Call this FIRST, before sizing the mesh. A report too long for one reply "
+                "comes in pages (its '<list>_page' says which); ask for the next with `page`."
             ),
             "parameters": {
                 "type": "object",
-                "properties": {},
+                "properties": {"page": {"type": "integer",
+                                        "description": "page of a long report (default 1)"}},
                 "required": [],
             },
         },
@@ -62,7 +64,7 @@ ACTIONS: dict[str, str] = {
     "measure_scales":  "Measuring the body's length scales",
 }
 
-def geometry_report(ctx: BuilderToolContext) -> dict:
+def geometry_report(ctx: BuilderToolContext, args: dict | None = None) -> dict:
     # Input is an STL surface (CAD is tessellated to input.stl upstream); the ENGINE's own
     # inspect_stl reports it in the engine's vocabulary. The context travels with it so the
     # engine reports PHYSICAL facts rather than whatever the file's numbers happen to be.
@@ -70,7 +72,11 @@ def geometry_report(ctx: BuilderToolContext) -> dict:
     ctx.require_geometry()
     report = get_engine(ctx.engine).inspect_stl(ctx.workspace, context=ctx)
     import meshpipeline.settings.runtime as rtcfg
-    return _bounded_report(report, rtcfg.MAX_TOOL_OUTPUT_CHARS)
+    try:
+        page = int((args or {}).get("page") or 1)
+    except (TypeError, ValueError):
+        page = 1
+    return _bounded_report(report, rtcfg.MAX_TOOL_OUTPUT_CHARS, page=page)
 
 
 def _serialized_len(report: dict) -> int:
@@ -85,7 +91,56 @@ def _serialized_len(report: dict) -> int:
 _CAP_MARGIN = 512
 
 
-def _bounded_report(report: dict, cap: int) -> dict:
+def _bounded_report(report: dict, cap: int, *, page: int = 1) -> dict:
+    """The report within the cap: `_shed` sheds detail in declared steps, and a report still too
+    long - a large assembly's one row per solid - is paged (`_paged`)."""
+    out = _shed(report, cap)
+    if isinstance(out, dict) and _serialized_len(out) > cap - _CAP_MARGIN:
+        out = _paged(out, cap - _CAP_MARGIN, page)
+    return out
+
+
+def _paged(out: dict, budget: int, page: int) -> dict:
+    """The report with its longest list cut to the rows of one page, and a `<key>_page` that
+    says which page, how many there are and how to ask for the next. Every other key - the
+    summary a builder plans from - comes on every page. A 351-part server's report was 87k
+    characters and a 1,000-part board's 241k against the 16k cap (ECXML-TEST, 2026-10-06): the
+    builder got the over-cap notice instead and never saw one solid."""
+    import json
+
+    lists = [k for k, v in out.items() if isinstance(v, list) and v]
+    if not lists:
+        return out
+    key = max(lists, key=lambda k: len(json.dumps(out[k])))
+    rows = out[key]
+    meta_key = f"{key}_page"
+    rest = {**out, key: [], meta_key: {"page": 0, "pages": 0, "rows": [0, 0], "total": len(rows),
+                                       "next": "x" * 64}}
+    room = budget - _serialized_len(rest)
+    if room <= 0:
+        return out                            # the summary alone is too long: nothing to page
+    chunks: list[list] = []
+    cur: list = []
+    size = 0
+    for row in rows:
+        n = len(json.dumps(row)) + 2
+        if cur and size + n > room:
+            chunks.append(cur)
+            cur, size = [], 0
+        cur.append(row)
+        size += n
+    if cur:
+        chunks.append(cur)
+    k = min(max(1, int(page)), len(chunks))
+    start = sum(len(c) for c in chunks[:k - 1])
+    return {**out, key: chunks[k - 1], meta_key: {
+        "page": k, "pages": len(chunks), "rows": [start, start + len(chunks[k - 1])],
+        "total": len(rows),
+        "next": (f"call geometry_report with page={k + 1} for the next rows" if k < len(chunks)
+                 else "this is the last page")}}
+
+
+def _shed(report: dict, cap: int) -> dict:
     """Degrade an oversized geometry report DETERMINISTICALLY instead of losing it whole.
 
     `geometry_report` takes no arguments, so the model cannot make the engine "return a smaller

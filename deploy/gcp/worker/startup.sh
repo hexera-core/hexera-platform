@@ -60,6 +60,25 @@ chmod 600 /etc/hexera/worker.env
   echo "CELERY_RESULT_BACKEND=${REDIS_URL}"
   echo "REDIS_KEY_PREFIX=${REDIS_KEY_PREFIX}"
 } >> /etc/hexera/worker.env
+# ...and so are the object store and the deployment's own names (create-worker-fleet.sh), because
+# the env object is .env.example in a personal environment: published once, never refreshed, and
+# pointing the store at localhost:9000. Each is appended only when the template states it, so an
+# empty value leaves the env object's own line in force. `|| true`: a template made before these
+# keys existed has no such attribute, and the metadata server answers 404.
+for pair in "deployment-id:DEPLOYMENT_ID" \
+            "minio-endpoint:MINIO_ENDPOINT" \
+            "minio-public-endpoint:MINIO_PUBLIC_ENDPOINT" \
+            "minio-access-key:MINIO_ACCESS_KEY" \
+            "minio-bucket:MINIO_BUCKET" \
+            "minio-region:MINIO_REGION" \
+            "minio-secure:MINIO_SECURE" \
+            "gcp-mesh-bucket:GCP_MESH_BUCKET" \
+            "cloudrun-job:CLOUDRUN_JOB"; do
+  value="$(md "${pair%%:*}" || true)"
+  if [ -n "${value}" ]; then
+    echo "${pair##*:}=${value}" >> /etc/hexera/worker.env
+  fi
+done
 
 # CREDENTIALS are fetched by NAME, under this instance's own identity, and only ever exist in a
 # root-owned file on the instance. Metadata carries the secret's name; the value is never in the
@@ -100,8 +119,17 @@ WORKER_UID="$(docker run --rm --entrypoint id "${WORKER_IMAGE}" -u 2>/dev/null |
 mkdir -p /var/lib/hexera/workspaces /var/lib/hexera/data
 chown "${WORKER_UID}:${WORKER_UID}" /var/lib/hexera/workspaces /var/lib/hexera/data
 
+# BOTH CONTAINERS CARRY THE VM'S HOSTNAME, so their celery node names are celery@<vm> and
+# geometry@<vm> rather than two unrelated container ids. An idle simulation worker about to remove
+# its own VM (src/meshpipeline/runtime/idle_retire.py) asks geometry@<its own hostname> whether it
+# is running a check first - which only works if that name is predictable from inside the container.
+WORKER_HOSTNAME="$(hostname)"
+
+# --stop-timeout: when the VM is deleted, docker's own shutdown may stop this container before the
+# shutdown script does (shutdown.sh). Docker's default is 10 seconds and then SIGKILL; this gives
+# the running job the same 75 seconds to hand itself back to the queue whichever stop comes first.
 docker rm -f hexera-worker >/dev/null 2>&1 || true
-docker run -d --name hexera-worker --restart always \
+docker run -d --name hexera-worker --restart always --stop-timeout 75 --hostname "${WORKER_HOSTNAME}" \
   --env-file /etc/hexera/worker.env \
   -v /var/lib/hexera/workspaces:/srv/workspaces \
   -v /var/lib/hexera/data:/srv/data \
@@ -121,7 +149,7 @@ docker run -d --name hexera-worker --restart always \
 # capacity lever, not the fleet's size (create-queue-depth-publisher.sh publishes this queue's
 # depth beside the fleet's, and scales on the fleet's alone).
 docker rm -f hexera-geometry-worker >/dev/null 2>&1 || true
-docker run -d --name hexera-geometry-worker --restart always \
+docker run -d --name hexera-geometry-worker --restart always --stop-timeout 30 --hostname "${WORKER_HOSTNAME}" \
   --env-file /etc/hexera/worker.env \
   -v /var/lib/hexera/workspaces:/srv/workspaces \
   -v /var/lib/hexera/data:/srv/data \

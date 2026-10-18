@@ -20,7 +20,7 @@ _MAX_ITERS = 5000
 def check_solvability(workspace: Path, metrics_out: dict | None = None) -> tuple[bool, str]:
     # When a dict is supplied, residual/iters/n_cells/info are written into
     # it so the executor can persist the solvability curve, not just pass/fail.
-    # cfMesh produces a native OpenFOAM polyMesh (the solver mesh). We verify it
+    # snappyHexMesh produces a native OpenFOAM polyMesh (the solver mesh). We verify it
     # with checkMesh (fatal topology) AND by assembling + solving the discrete
     # pressure-Poisson operator (FV graph Laplacian) with PCG + AMG.
     if metrics_out is None:
@@ -30,7 +30,7 @@ def check_solvability(workspace: Path, metrics_out: dict | None = None) -> tuple
     if (workspace / "constant" / "polyMesh" / "owner").exists():
         return _check_polymesh_solvability(workspace, metrics_out)
     return False, ("[UNSOLVABLE] constant/polyMesh/owner is missing - the builder "
-                   "did not produce a valid cfMesh volume mesh")
+                   "did not produce a valid snappyHexMesh volume mesh")
 
 
 _FOAM_LIST_RE = re.compile(r"(?:^|\n)\s*(\d+)\s*\n\s*\(", re.MULTILINE)
@@ -96,10 +96,22 @@ def _check_polymesh_solvability(workspace: Path, metrics_out: dict) -> tuple[boo
     # internal faces connect owner[f] <-> neighbour[f]
     nf = int(neigh.size)
     oi = owner[:nf]
-    return _solve_fv_laplacian(oi, neigh, n_cells, metrics_out)
+    return _solve_fv_laplacian(oi, neigh, n_cells, metrics_out, passages=_passages_meshed(workspace))
 
 
-def _assemble_pinned_laplacian(owner, neigh, n_cells: int):
+def _passages_meshed(workspace: Path) -> int:
+    """How many separate passages the case was meshed as: 1, or 1 + the further passages its
+    PASSAGES_FILE lists."""
+    import json
+
+    from meshpipeline.cad.fluid_passages import PASSAGES_FILE
+    try:
+        return 1 + len(json.loads((Path(workspace) / PASSAGES_FILE).read_text()).get("runs") or [])
+    except (OSError, ValueError, AttributeError):
+        return 1
+
+
+def _assemble_pinned_laplacian(owner, neigh, n_cells: int, pins=(0,)):
     """The FV graph Laplacian L = D - A (A[i,j] = A[j,i] = 1 per internal face, duplicates
     summed) with cell 0 pinned as the reference pressure: row 0 and column 0 cleared, L[0,0] = 1,
     so the pure-Neumann operator is SPD. Every other diagonal keeps its full degree.
@@ -117,8 +129,12 @@ def _assemble_pinned_laplacian(owner, neigh, n_cells: int):
     # Degree counts every internal face, including those on cell 0's row/column: pinning clears
     # cell 0's couplings, not its neighbours' diagonals.
     deg = (np.bincount(owner, minlength=n_cells) + np.bincount(neigh, minlength=n_cells)).astype(np.float64)
-    deg[0] = 1.0
-    keep = (owner != 0) & (neigh != 0)
+    # one reference pressure per passage: a mesh of several separate passages (each with its own
+    # openings) is solvable when every passage is, and each one's pressure is fixed on its own
+    pinned = np.zeros(n_cells, dtype=bool)
+    pinned[np.asarray(list(pins), dtype=np.int64)] = True
+    deg[pinned] = 1.0
+    keep = ~pinned[owner] & ~pinned[neigh]
     o = owner[keep].astype(idx, copy=False)
     n = neigh[keep].astype(idx, copy=False)
     diag = np.arange(n_cells, dtype=idx)
@@ -133,7 +149,27 @@ def _assemble_pinned_laplacian(owner, neigh, n_cells: int):
     return L
 
 
-def _solve_fv_laplacian(owner, neigh, n_cells: int, metrics_out: dict) -> tuple[bool, str]:
+def _passage_pins(owner, neigh, n_cells: int, passages: int) -> tuple[int, ...]:
+    """The cells whose pressure is pinned: cell 0, or - for a mesh of `passages` separate passages
+    (engines/cfmesh/native.PASSAGES_FILE) whose cells fall into exactly that many connected groups -
+    the first cell of each group. Any other split stays pinned at cell 0 alone, so an orphan region
+    in a one-passage mesh is still found unsolvable."""
+    if passages <= 1:
+        return (0,)
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    g = coo_matrix((np.ones(len(owner)), (owner, neigh)), shape=(n_cells, n_cells))
+    n, lab = connected_components(g, directed=False)
+    if n != passages:
+        return (0,)
+    first = np.full(n, -1, dtype=np.int64)
+    order = np.arange(n_cells)[::-1]
+    first[lab[order]] = order            # the smallest cell index of each group wins
+    return tuple(int(c) for c in first)
+
+
+def _solve_fv_laplacian(owner, neigh, n_cells: int, metrics_out: dict, passages: int = 1) -> tuple[bool, str]:
 
     if n_cells < 2:
         return True, ""  # trivial mesh; nothing to solve
@@ -149,7 +185,7 @@ def _solve_fv_laplacian(owner, neigh, n_cells: int, metrics_out: dict) -> tuple[
         neigh = neigh[valid]
     if owner.size == 0:
         return True, ""  # no internal connectivity to test (degenerate)
-    L = _assemble_pinned_laplacian(owner, neigh, n_cells)
+    L = _assemble_pinned_laplacian(owner, neigh, n_cells, pins=_passage_pins(owner, neigh, n_cells, passages))
     del owner, neigh
 
     rng = np.random.default_rng(0)
