@@ -1505,6 +1505,13 @@ def _upright(proposal: dict, facts: dict, vision: dict | None, flow_axis) -> dic
         proposal["notes"].append(f"Up is {up['up_axis'].upper()}: {up['up_axis_from']}.")
     if proposal["flow"] == "external" and (proposal.get("flow_axis_guessed") or from_nose):
         proposal["notes"].append(direction_note(proposal, overruled))
+    if facts.get("unit_assumed"):
+        # A FILE THAT STATES NO UNIT gets a proposed one, read from what the part is (its shape
+        # and flow, and the naming's estimate once there is one) - shown with how sure it is and
+        # the other reading, for the user to confirm. Never applied: the sizes stay as measured.
+        inferred = unit_inference(proposal, facts)
+        if inferred is not None:
+            proposal["unit_inference"] = inferred
     return proposal
 
 
@@ -1558,6 +1565,38 @@ def direction_note(proposal: dict, overruled: str = "") -> str:
     if overruled:
         words += f" ({overruled}; the shape's axis is surer)"
     return words + (". Please confirm it on the picture." if sure < DIRECTION_SURE else ".")
+
+
+
+def unit_inference(proposal: dict, facts: dict | None = None, words: str = "") -> dict | None:
+    """The unit a file that states none most likely is in (contracts/unit_plausibility.infer_unit),
+    as a dict, or None when the part has no measured size. What the part is comes, best first,
+    from the naming model's estimate of a real one's length, then the words for it (its name, the
+    user's own words), then the measured shape and the flow. The file's numbers are read back
+    through the scale the proposal was measured under."""
+    from meshpipeline.contracts.unit_plausibility import (
+        FORMAT_UNIT,
+        expected_from_estimate,
+        expected_from_words,
+        infer_unit,
+        shape_kind,
+    )
+
+    size, scale = proposal.get("size_mm"), proposal.get("scale_to_m") or (facts or {}).get("scale_to_m")
+    try:
+        if not size or len(size) != 3:
+            return None
+        longest_file = max(float(v) for v in size) * 0.001 / float(scale or 0.001)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+    part = str(proposal.get("part") or "")
+    expected = (expected_from_estimate(part, proposal.get("real_length_m"))
+                or expected_from_words(f"{part}\n{words or ''}"))
+    shape = shape_kind(str(proposal.get("flow") or ""), size, grounded=bool(proposal.get("grounded")),
+                       up_axis=proposal.get("up_axis"))
+    fmt = str((facts or {}).get("source_format") or "").lower().lstrip(".")
+    inferred = infer_unit(longest_file, expected=expected, shape=shape, format_unit=FORMAT_UNIT.get(fmt))
+    return inferred.as_dict() if inferred is not None else None
 
 
 def _is_thermal(facts: dict | None) -> bool:
@@ -1620,7 +1659,13 @@ def unit_suggestion(proposal: dict, interpretation: dict | None, words: str = ""
     the part, the user's own words). A declared unit is only doubted on those words or on a wild
     size; a unit nothing declared (a triangle file) is only a reading, and yields to either."""
     from meshpipeline.contracts.geometry_units import LengthUnit
-    from meshpipeline.contracts.unit_plausibility import expected_from_estimate, expected_from_words, suggest
+    from meshpipeline.contracts.unit_plausibility import (
+        EXTERNAL_BODY,
+        expected_from_estimate,
+        expected_from_words,
+        shape_kind,
+        suggest,
+    )
 
     if interpretation and str(interpretation.get("basis")) == "user_confirmed":
         return None
@@ -1635,5 +1680,12 @@ def unit_suggestion(proposal: dict, interpretation: dict | None, words: str = ""
     part = str(proposal.get("part") or "")
     expected = (expected_from_estimate(part, proposal.get("real_length_m"))
                 or expected_from_words(f"{part}\n{words or ''}"))
+    if expected is None and interpretation is None:
+        # nothing names the part and the file states no unit: what its SHAPE and FLOW say it is
+        # (a car-like body on the ground, a flat wing-like body, a passage) - a 4.7-unit car is
+        # 4.7 m, not 4.7 mm. A declared unit is not doubted on the shape alone.
+        shape = shape_kind(str(proposal.get("flow") or ""), size,
+                           grounded=bool(proposal.get("grounded")), up_axis=proposal.get("up_axis"))
+        expected = shape if shape is not EXTERNAL_BODY else None
     s = suggest(longest_file, in_effect, declared=interpretation is not None, expected=expected)
     return s.as_dict() if s is not None else None
