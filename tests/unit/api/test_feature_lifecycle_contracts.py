@@ -172,6 +172,9 @@ def test_the_served_routes_are_exactly_the_supported_set():
         ("GET", "/api/v1/simulation/{job_id}"),
         ("POST", "/api/v1/simulation/{job_id}/dispute"),
         ("POST", "/api/v1/simulation/{job_id}/cancel"),  # the owner stops a run; 409 once finished
+        ("GET", "/api/v1/simulation/{job_id}/review"),               # a parked run's unsure defects, grouped
+        ("POST", "/api/v1/simulation/{job_id}/review/decision"),     # accept, leave, redirect or apply to a group
+        ("POST", "/api/v1/simulation/{job_id}/review/run"),          # close the park and re-run with the decisions
         ("GET", "/api/v1/simulation/{job_id}/surface"),
         ("GET", "/api/v1/simulation/{job_id}/surface.vtk"),     # the viewer's ParaView export
         ("POST", "/api/v1/upload/step-file"),

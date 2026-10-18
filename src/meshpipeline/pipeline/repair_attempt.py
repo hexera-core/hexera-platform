@@ -184,7 +184,8 @@ async def node_repair_attempt(state: PipelineState) -> dict:
         # delaying a mesh that was viable all along. The thread is abandoned on expiry (the kernel
         # offers no interruption point) and the run proceeds on the original.
         repair_report = await asyncio.wait_for(
-            asyncio.to_thread(repair_step_file, source, destination),
+            asyncio.to_thread(repair_step_file, source, destination,
+                              directives=tuple(state.get("repair_directives") or ())),
             timeout=rcfg.CAD_REPAIR_TIMEOUT_S)
     except TimeoutError:
         logger.warning("node_repair_attempt: the repair exceeded %.1fs - continuing on the "

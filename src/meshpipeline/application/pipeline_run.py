@@ -208,7 +208,7 @@ class JobRequest:
                  "approved_snapshot_id", "approved_patch_contract",
                  "approved_intent_fingerprint", "intake_events",
                  "requested_extents", "reference_length_m", "requirements_strict",
-                 "flow_axis")
+                 "flow_axis", "repair_directives", "review_continuation")
 
     def __init__(self, job_id, owner_id="dev-user", geometry_source=None,
                  geometry_interpretation=None, session_id="",
@@ -220,7 +220,8 @@ class JobRequest:
                  approved_snapshot_id="", approved_patch_contract=None,
                  approved_intent_fingerprint="", intake_events=None,
                  requested_extents=None, reference_length_m=None,
-                 requirements_strict=True, flow_axis=None):
+                 requirements_strict=True, flow_axis=None,
+                 repair_directives=None, review_continuation=False):
         self.job_id           = job_id
         self.owner_id         = owner_id
         # Replayed only once the claim has bound the tenant these records file under. They are
@@ -285,6 +286,11 @@ class JobRequest:
         # {"flags": [...], "comment": str, "of_job_id": str} - a user dispute of a
         # delivered mesh; empty/None = normal run. See graph.PipelineState.user_dispute.
         self.user_dispute     = user_dispute or {}
+        # A PARKED REPAIR RUN'S RE-RUN: the replayed and engineer-decided repair directives the
+        # repair node plays before its rules planner. review_continuation marks it as the same
+        # purchase as the parked run (it was not admitted again and is charged once, at its end).
+        self.repair_directives = [dict(d) for d in (repair_directives or [])]
+        self.review_continuation = bool(review_continuation)
         # user's explicit engine choice from intake ('cfmesh'/'snappy'; '' = auto).
         # Pins state['engine'] so resolution keeps it - the user has the final word.
         self.mesh_engine      = (mesh_engine or "").strip().lower()
@@ -413,6 +419,8 @@ def run_pipeline(
     reference_length_m:      float | None = None,
     requirements_strict:     bool       = True,
     flow_axis:               str | None = None,
+    repair_directives:       list | None = None,
+    review_continuation:     bool       = False,
 ) -> dict:
 
 
@@ -450,6 +458,8 @@ def run_pipeline(
         domain=domain or "",
         engine_params=engine_params or {},
         user_dispute=user_dispute or {},
+        repair_directives=repair_directives or [],
+        review_continuation=review_continuation,
         approved_snapshot_id=approved_snapshot_id or "",
         approved_patch_contract=approved_patch_contract,
         approved_intent_fingerprint=approved_intent_fingerprint or "",
@@ -672,6 +682,8 @@ async def _run_async(req: JobRequest) -> dict:
         from meshpipeline.engines.registry import resolve_engine_params
         initial_state["engine_params"] = resolve_engine_params(_pinned_engine, req.engine_params)
         initial_state["flow_topology"] = topology_of(getattr(req, "purpose", "") or "")
+
+        initial_state["repair_directives"] = list(req.repair_directives)
 
         if req.user_dispute:
             # DISPUTE RUN - the user flagged issues on a delivered mesh. The parent resolution, the

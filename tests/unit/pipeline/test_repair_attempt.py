@@ -7,6 +7,7 @@ import pytest
 from tests._geometry_support import geometry_state
 
 import meshpipeline.settings.cad_repair as rcfg
+from meshpipeline.cad.repair.conservative import RepairRefused
 from meshpipeline.cad.repair.contracts import (
     RepairMeasurement,
     RepairReport,
@@ -491,3 +492,20 @@ def test_a_training_logger_that_breaks_cannot_break_a_refused_run(monkeypatch, t
 
     assert out["repair_attempt"]["attempted"] is False
     assert "geometry" not in out
+
+
+def test_the_runs_repair_directives_reach_the_repair_step(monkeypatch, tmp_path, repairs):
+    seen = {}
+
+    def _repair(source, destination, **kw):
+        seen.update(kw)
+        raise RepairRefused("nothing kept", measurements={"operations": []})
+
+    monkeypatch.setattr("meshpipeline.cad.repair.conservative.repair_step_file", _repair)
+    directive = {"op": "sew_faces", "targets": ["edge:aaaa"], "defect_code": "open_shell",
+                 "defect_fingerprint": "edge:aaaa", "source": "replay", "item_id": ""}
+    _run(_state(tmp_path, repair_directives=[directive]))
+    assert seen["directives"] == (directive,)
+    seen.clear()
+    _run(_state(tmp_path))
+    assert seen["directives"] == ()

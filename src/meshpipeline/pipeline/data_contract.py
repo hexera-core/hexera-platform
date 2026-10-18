@@ -239,6 +239,21 @@ CONTRACT: tuple[ContractVar, ...] = (
         corpus="training+qa: dispute_context event + reviewer's targeted brief",
     ),
     ContractVar(
+        concept="repair directives (review re-run)",
+        purpose="the directives a parked repair run's re-run plays before its rules planner - "
+                "kept operations replayed, then the engineer's decisions. Empty on every run "
+                "that did not resume from a repair review",
+        dispatch_kwarg="repair_directives", state_field="repair_directives",
+        corpus="training: the engineer's decisions are the labels the proposer learns from",
+    ),
+    ContractVar(
+        concept="review continuation",
+        purpose="true when this dispatch is a parked run's own re-run: it was not admitted "
+                "again and its ending is the one charge. Transport only; nothing routes on it",
+        dispatch_kwarg="review_continuation",
+        corpus="",
+    ),
+    ContractVar(
         concept="human flag baseline findings",
         purpose="the FIRST review's per-flag determination on the parent mesh - one typed "
                 "{ordinal, status, observation, explanation, measurements} per flag the user "
@@ -410,6 +425,9 @@ STATE_FIELDS: dict[str, str] = {
     "repair_review_candidates": "review items the repair node minted for defects it left to a "
                              "person; empty unless per-defect review is enabled - the terminal "
                              "path persists them, the node writes nothing",
+    "repair_directives":     "the repair directives a parked run's re-run plays before its rules "
+                             "planner: kept operations replayed, then the engineer's decisions; "
+                             "empty unless the run resumed from a repair review",
     "repair_lineage":        "which upload a promoted repair replaced, and the engine the "
                              "replacement was proved to stage for; empty unless repaired "
                              "geometry became the geometry this run meshes",

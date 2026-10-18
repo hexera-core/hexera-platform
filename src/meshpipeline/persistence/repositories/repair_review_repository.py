@@ -55,6 +55,12 @@ class RepairReviewRepository:
             .order_by(RepairReviewPark.created_at.desc()).limit(1))
         return res.scalars().first()
 
+    async def latest_park(self, db: AsyncSession, job_id: uuid.UUID) -> RepairReviewPark | None:
+        res = await db.execute(
+            select(RepairReviewPark).where(RepairReviewPark.job_id == job_id)
+            .order_by(RepairReviewPark.created_at.desc()).limit(1))
+        return res.scalars().first()
+
     async def items_for(self, db: AsyncSession, job_id: uuid.UUID,
                         park_id: uuid.UUID | None) -> list[RepairReviewItem]:
         stmt = select(RepairReviewItem).where(RepairReviewItem.job_id == job_id)

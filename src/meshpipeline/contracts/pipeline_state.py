@@ -103,6 +103,9 @@ class PipelineState(TypedDict):
     # repair_review_minting.py): plain dicts, empty unless CAD_REPAIR_REVIEW_ENABLED. The node mints;
     # the terminal path persists them.
     repair_review_candidates: list[dict]
+    # DIRECTIVES A PARKED RUN'S RE-RUN PLAYS FIRST (cad/repair/directives.py): the kept operations
+    # replayed, then the engineer's decisions. Empty on every run that did not resume from a park.
+    repair_directives: list[dict]
     # SET ONLY WHEN A REPAIR WAS PROMOTED (pipeline/repair_promote.py): the identity of the
     # original upload this run stopped meshing, the repaired bytes that replaced it, and the
     # engine the replacement was proved to stage for. Empty on every run that meshed what the
