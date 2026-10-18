@@ -2738,6 +2738,19 @@
   "roots": []
  },
  {
+  "context": "cad/stl_io.py::_reads_as_text::search#1|NotAPublisher|not-a-publisher|",
+  "path": "cad/stl_io.py",
+  "qualname": "_reads_as_text",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_TEXT_WORDS",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "capture/source.py::select_export_source::error#1|NotAPublisher|not-a-publisher|",
   "path": "capture/source.py",
   "qualname": "select_export_source",
