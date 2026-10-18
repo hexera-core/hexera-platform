@@ -114,3 +114,26 @@ def test_minting_is_capped_and_reports_what_it_dropped(cameras):
 def test_defect_from_entity_round_trips_the_fields_used_here():
     assert defect_from_entity(_entity("wire_gap", "edge", 4, "w")).entity_index == 4
     assert isinstance(DefectSplit().repairable, tuple)
+
+
+def test_rims_a_kept_operation_renamed_are_still_paired_at_mint(cameras, monkeypatch):
+    # the refusal was recorded mid-run under a fingerprint the survivors no longer carry; the two
+    # rims of the bore survive under new names and must still be minted as a pairing
+    import meshpipeline.cad.repair.plan as plan
+    asked = []
+
+    def _rims(shape, defects):
+        asked.append(sorted(d.fingerprint for d in defects))
+        return frozenset({"rim:a", "rim:b"})
+    monkeypatch.setattr(plan, "paired_rim_fingerprints", _rims)
+    monkeypatch.setattr(minting, "_pairing_keys",
+                        lambda shape, rims: {r.fingerprint: "pair:ab" for r in rims})
+    survivors = [_entity("open_shell", "edge", 3, "rim:a", boundary_edges=4),
+                 _entity("open_shell", "edge", 4, "rim:b", boundary_edges=4),
+                 _entity("open_shell", "edge", 9, "gap:c", boundary_edges=6)]
+    measured = {"survivors": survivors, "operations_kept": 1,
+                "refusals": [{"defect": "rim:before-rename", "reason": "paired_rim"}]}
+    items, _ = _mint(survivors, measured, shape=object(), original_shape=object())
+    keys = {i["fingerprint"]: i["pairing_key"] for i in items}
+    assert keys == {"rim:a": "pair:ab", "rim:b": "pair:ab", "gap:c": ""}, keys
+    assert asked and "gap:c" in asked[0]             # computed over the whole minted pool

@@ -219,8 +219,14 @@ def mint_with_overflow(*, shape, report, repair_run_measured: dict, split: Defec
             items.append(_item(shape, defect, origin=ORIGIN_TRIAGE, message=reason))
 
     by_fingerprint = {d.fingerprint: d for d in pool if d.fingerprint}
-    paired = [by_fingerprint[str(r["defect"])] for r in refusals
-              if r.get("reason") == "paired_rim" and str(r.get("defect", "")) in by_fingerprint]
+    # EVERY RIM IN THE POOL IS PAIRED, not only those a refusal still names. A kept operation
+    # renumbers entities, so a refusal recorded mid-run can name a fingerprint the survivors no
+    # longer carry - and the rim it meant would then be minted as an ordinary survivor, open to
+    # apply-all, with its partner beside it. The pairing is recomputed on the minted shape.
+    rim_fingerprints = _paired_rims_of(shape, pool)
+    paired_fps = {str(r["defect"]) for r in refusals if r.get("reason") == "paired_rim"}
+    paired = [d for d in pool if d.fingerprint
+              and (d.fingerprint in paired_fps or d.fingerprint in rim_fingerprints)]
     pairing = _pairing_keys(shape, paired) if paired else {}
     for refusal in refusals:
         refused = by_fingerprint.get(str(refusal.get("defect", "")))
@@ -233,8 +239,7 @@ def mint_with_overflow(*, shape, report, repair_run_measured: dict, split: Defec
             extra["refusal_detail"] = refusal["detail"]
         items.append(_item(shape, refused, origin=ORIGIN_REFUSAL, extra=extra,
                            tried=_tried(refused, operations),
-                           pairing_key=pairing.get(refused.fingerprint, "")
-                           if reason == "paired_rim" else ""))
+                           pairing_key=pairing.get(refused.fingerprint, "")))
 
     stalled = stopped == _STALLED or (kept == 0 and bool(operations))
     for defect in pool:
@@ -243,8 +248,17 @@ def mint_with_overflow(*, shape, report, repair_run_measured: dict, split: Defec
         seen.add(_key(defect))
         items.append(_item(shape, defect, origin=ORIGIN_STALL if stalled else ORIGIN_SURVIVOR,
                            extra={"stopped_because": stopped} if stopped else None,
-                           tried=_tried(defect, operations)))
+                           tried=_tried(defect, operations),
+                           pairing_key=pairing.get(defect.fingerprint, "")))
     return _cap(items)
+
+
+def _paired_rims_of(shape, pool) -> frozenset[str]:
+    """The planner's own rim discriminator over the minted pool; empty without a shape."""
+    if shape is None:
+        return frozenset()
+    from meshpipeline.cad.repair.plan import paired_rim_fingerprints
+    return paired_rim_fingerprints(shape, pool)
 
 
 # ---------------------------------------------------------------------------------------------
