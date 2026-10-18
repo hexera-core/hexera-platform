@@ -162,8 +162,10 @@ def test_with_the_nonplanar_flag_off_the_run_is_todays_run(tmp_path, monkeypatch
 
     monkeypatch.setattr(rcfg, "CAD_REPAIR_FILL_PLANAR_HOLES", True)
     monkeypatch.setattr(rcfg, "CAD_REPAIR_FILL_NONPLANAR_HOLES", False)
+    assert any(o.name == "fill_nonplanar_hole" for o in OPERATIONS)
     shape = _read(writer(tmp_path / "part.step"))
     with_op = loop.run(shape, tolerance_mm=0.01)
+    assert with_op.verdicts
     without = loop.run(shape, planner=RulesPlanner(ops=tuple(
         o for o in OPERATIONS if o.name != "fill_nonplanar_hole")), tolerance_mm=0.01)
     assert [v.to_dict() for v in with_op.verdicts] == [v.to_dict() for v in without.verdicts]
