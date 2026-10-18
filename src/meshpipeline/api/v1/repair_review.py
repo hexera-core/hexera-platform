@@ -16,11 +16,6 @@ from pydantic import BaseModel
 from meshpipeline.api.security import org_dep, owner_dep
 from meshpipeline.application.job_service import JobService
 from meshpipeline.persistence.models import JobStatus
-from meshpipeline.persistence.repositories.job_repository import JobRepository
-from meshpipeline.persistence.repositories.repair_review_repository import (
-    ParkClosedError,
-    RepairReviewRepository,
-)
 from meshpipeline.persistence.session import get_db
 from meshpipeline.settings import cad_repair as rcfg
 
@@ -28,8 +23,34 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 svc = JobService()
-repo = RepairReviewRepository()
-job_repo = JobRepository()
+
+
+class _Lazy:
+    """A repository built on first use: routes import no persistence repository at module scope."""
+
+    def __init__(self, loader):
+        self._loader, self._obj = loader, None
+
+    def __getattr__(self, name):
+        if self._obj is None:
+            self._obj = self._loader()
+        return getattr(self._obj, name)
+
+
+def _review_repo():
+    from meshpipeline.persistence.repositories.repair_review_repository import (
+        RepairReviewRepository,
+    )
+    return RepairReviewRepository()
+
+
+def _job_repo():
+    from meshpipeline.persistence.repositories.job_repository import JobRepository
+    return JobRepository()
+
+
+repo = _Lazy(_review_repo)
+job_repo = _Lazy(_job_repo)
 
 _BLOCKING = frozenset({"error", "fatal"})
 
@@ -39,6 +60,11 @@ class DecisionIn(BaseModel):
     group_key: str | None = None
     action: Literal["accept", "leave", "redirect", "apply_all"]
     text: str | None = None
+
+
+def _park_closed() -> type[Exception]:
+    from meshpipeline.persistence.repositories.repair_review_repository import ParkClosedError
+    return ParkClosedError
 
 
 def _status_of(job) -> str:
@@ -99,12 +125,19 @@ async def get_review(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
                      organization_id: str = Depends(org_dep)):
     _require_enabled()
     async with get_db() as db:
-        await _owned_job(db, job_id, owner_id, organization_id)
+        job = await _owned_job(db, job_id, owner_id, organization_id)
         park = await repo.latest_park(db, job_id)
         items = await repo.items_for(db, job_id, park.id if park is not None else None)
     if not items:
         raise HTTPException(409, "This run has nothing to review")
-    status = park.status if park is not None else "offered"
+    # The served status is the job's AND the park's together: an open park under a job that has
+    # moved on (resumed, cancelled) is no longer something a person can act on.
+    if park is None:
+        status = "offered"
+    elif park.status == "open" and _status_of(job) == JobStatus.pending_review.value:
+        status = "open"
+    else:
+        status = "closed"
     decided = sum(1 for i in items if i.state != "open")
     return {"job_id": str(job_id), "status": status,
             "geometry_session_id": park.geometry_session_id if park is not None else "",
@@ -193,7 +226,7 @@ async def decide(job_id: uuid.UUID, body: DecisionIn, owner_id: str = Depends(ow
 
         try:
             await repo.record_decision(db, item.id, state, decision)
-        except ParkClosedError as exc:
+        except _park_closed() as exc:
             raise HTTPException(409, "This review is already closed") from exc
         await db.commit()
     directive_out = decision.get("directive")
@@ -252,9 +285,12 @@ async def run_review(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
         # The status CAS first: of two racing runs only one wins, and only it closes the park.
         if await job_repo.transition(db, job_id, JobStatus.pending) != TransitionResult.applied:
             raise HTTPException(409, "This run is no longer waiting for a review")
-        for item in items:
-            if item.state == "open":
-                await repo.record_decision(db, item.id, "unreviewed", {"action": "unreviewed"})
+        unanswered = [i.id for i in items if i.state == "open"]
+        try:
+            for item_id in unanswered:
+                await repo.record_decision(db, item_id, "unreviewed", {"action": "unreviewed"})
+        except _park_closed() as exc:
+            raise HTTPException(409, "This run is no longer waiting for a review") from exc
         await repo.close_park(db, park.id, "run")
         payload = {**dict(job.dispatch_payload or {}), "repair_directives": directives,
                    "review_continuation": True}
@@ -262,14 +298,32 @@ async def run_review(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
 
     # NOT admitted again: this is the parked run's own purchase, and the park deliberately did
     # not charge it - the re-run's ending does, once.
+    #
+    # THE STATUS FLIP COMMITS BEFORE THE DISPATCH, on purpose: dispatching first would let the
+    # worker race a still-pending_review row into an illegal pending_review -> running. So a failed
+    # dispatch is COMPENSATED below instead. KNOWN WINDOW (ledgered): a crash between the commit
+    # above and the dispatch leaves the job pending with a closed park and nothing launched.
     from meshpipeline.application import pipeline_run
     try:
         async with get_db() as db:
             await pipeline_run.dispatch(db, str(job_id), payload)
     except Exception as exc:
         logger.error("review re-run of job %s could not be dispatched", job_id, exc_info=True)
-        async with get_db() as db:
-            await job_repo.mark_launch_failed(db, job_id, type(exc).__name__)
-            await db.commit()
-        raise HTTPException(500, "Failed to resume the repair run") from exc
+        await _compensate(job_id, park.id, unanswered)
+        raise HTTPException(503, "The repair run could not be resumed just now. Your decisions "
+                                 "are kept; try again in a moment.") from exc
     return {"job_id": str(job_id), "status": "pending", "directives": len(directives)}
+
+
+async def _compensate(job_id: uuid.UUID, park_id: uuid.UUID, unanswered: list) -> None:
+    """Put a job whose dispatch failed back where the engineer left it: parked and decidable."""
+    from meshpipeline.persistence.job_state import TransitionResult
+    try:
+        async with get_db() as db:
+            back = await job_repo.transition(db, job_id, JobStatus.pending_review)
+            if back == TransitionResult.applied:
+                await repo.reopen_park(db, park_id)
+                await repo.restore_open(db, unanswered)
+            await db.commit()
+    except Exception:  # noqa: BLE001 - the 503 below is still the honest answer
+        logger.error("review compensation for job %s failed", job_id, exc_info=True)

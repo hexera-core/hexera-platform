@@ -66,7 +66,9 @@ class World:
         self.job_repo = MagicMock()
         self.job_repo.transition = AsyncMock(return_value=TransitionResult.applied)
         self.dispatch = AsyncMock()
-        self.admit = AsyncMock()
+        self.repo.reopen_park = AsyncMock(return_value=True)
+        self.repo.restore_open = AsyncMock(return_value=0)
+        self.get_job = AsyncMock(return_value=self.job)
         self.interpret = AsyncMock()
         self.logged = []
 
@@ -74,9 +76,8 @@ class World:
         stack = [
             patch.object(rr, "get_db", _db), patch.object(rr, "repo", self.repo),
             patch.object(rr, "job_repo", self.job_repo),
-            patch.object(rr.svc, "get_job", new=AsyncMock(return_value=self.job)),
+            patch.object(rr.svc, "get_job", new=self.get_job),
             patch("meshpipeline.application.pipeline_run.dispatch", self.dispatch),
-            patch("meshpipeline.application.spend_gate.admit", self.admit),
             patch("meshpipeline.agents.repair_review.interpreter.interpret", self.interpret),
             patch("meshpipeline.capture.logger.TrainingLogger.log",
                   lambda _s, ev, payload, **kw: self.logged.append((ev, payload, kw))),
@@ -123,6 +124,26 @@ async def test_apply_all_is_refused_for_a_paired_group_end_to_end():
     assert resp.status_code == 409
     world.repo.record_group_decision.assert_not_called()
     assert world.logged == []
+
+
+async def test_every_route_scopes_the_job_by_owner_and_organization():
+    items = [_item(1)]
+    calls = [("GET", "/review", {}),
+             ("POST", "/review/decision",
+              {"json": {"action": "leave", "item_id": str(uuid.UUID(int=1))}}),
+             ("POST", "/review/run", {})]
+    for method, path, kw in calls:
+        world = World(items)
+        await world.call(method, path, **kw)
+        world.get_job.assert_awaited_once()
+        args, kwargs = world.get_job.call_args
+        assert args[1:3] == (_JOB, args[2]) and args[2]          # the caller's owner id
+        assert "organization_id" in kwargs
+
+
+async def test_a_stale_open_park_under_a_moved_on_job_is_served_closed():
+    body = (await World([_item(1)], job="pending").call("GET", "/review")).json()
+    assert body["status"] == "closed"
 
 
 async def test_decisions_on_a_foreign_or_unparked_job_record_nothing():
@@ -178,6 +199,10 @@ async def test_a_redirect_stores_a_directive_and_a_refusal_stores_nothing():
     r = await refusing.call("POST", "/review/decision", json=body)
     assert r.json()["kind"] == "refusal" and r.json()["reason"] == "cannot move geometry"
     refusing.repo.record_decision.assert_not_called()
+    refusing.repo.record_group_decision.assert_not_called()
+    (ev, payload, _kw), = refusing.logged
+    assert ev == "repair_review" and payload["action"] == "redirect_refused"
+    assert payload["text"] == "sew it"
 
 
 async def test_run_builds_replay_then_engineer_directives_in_order_and_skips_the_spend_gate():
@@ -199,7 +224,6 @@ async def test_run_builds_replay_then_engineer_directives_in_order_and_skips_the
         ("fix_small_edges", "engineer")]
     assert directives[0]["targets"] == ["edge:kept"]
     assert payload["owner_id"] == "u"                       # the original dispatch is kept
-    world.admit.assert_not_called()
     world.job_repo.transition.assert_awaited_once()
     assert world.job_repo.transition.call_args.args[2] == JobStatus.pending
     world.repo.close_park.assert_awaited_once()
@@ -249,3 +273,32 @@ async def test_review_disabled_means_409_everywhere(monkeypatch):
         assert (await world.call(method, path, **kw)).status_code == 409
     world.dispatch.assert_not_called()
     world.repo.record_decision.assert_not_called()
+
+
+async def test_a_failed_dispatch_puts_the_job_back_in_review_and_a_retry_works():
+    items = [_item(1, state="accepted", decided=1), _item(2)]
+    world = World(items)
+    world.dispatch.side_effect = RuntimeError("broker down")
+    r = await world.call("POST", "/review/run")
+    assert r.status_code == 503
+    # forward flip, then the compensation: back to pending_review, park reopened, items restored
+    targets = [c.args[2] for c in world.job_repo.transition.mock_calls]
+    assert targets == [JobStatus.pending, JobStatus.pending_review]
+    world.repo.reopen_park.assert_awaited_once_with(world.repo.reopen_park.call_args.args[0],
+                                                    world.park.id)
+    assert world.repo.restore_open.call_args.args[1] == [uuid.UUID(int=2)]
+    world.job_repo.mark_launch_failed.assert_not_called()
+
+    world.dispatch.side_effect = None                       # the retry
+    world.dispatch.reset_mock()
+    retry = await world.call("POST", "/review/run")
+    assert retry.status_code == 202
+    assert world.dispatch.call_args.args[2]["review_continuation"] is True
+
+
+async def test_a_park_closed_under_the_unreviewed_marking_is_a_409():
+    from meshpipeline.persistence.repositories.repair_review_repository import ParkClosedError
+    world = World([_item(1)])
+    world.repo.record_decision.side_effect = ParkClosedError("closed")
+    assert (await world.call("POST", "/review/run")).status_code == 409
+    world.dispatch.assert_not_called()

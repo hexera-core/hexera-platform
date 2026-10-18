@@ -273,3 +273,21 @@ def test_the_parked_outcome_message_names_the_count_and_promises_nothing_was_cha
     assert "waiting" in out.closing_message
     assert "nothing was changed without you" in out.closing_message
     assert out.result.to_dict()["review_parked"] == 3
+
+
+async def test_a_parked_ending_charges_nothing_and_the_reruns_real_ending_charges_once(monkeypatch):
+    # THE CHARGE-ONCE PIN. The re-run is the SAME job, re-dispatched without admission, so the
+    # only thing that keeps the purchase single is that the park does not charge.
+    from meshpipeline.application import terminal_finalize as tf
+    charges = []
+
+    async def _charge(db, row):
+        charges.append(row)
+    monkeypatch.setattr(tf, "_charge_fail_open", _charge)
+
+    plan = rrp.plan_review(STATE, status=JobStatus.failed)
+    await _finalize(JobStatus.pending_review, plan, _Repo())
+    assert charges == [], "a parked run was charged before its re-run finished it"
+
+    await _finalize(JobStatus.succeeded, None, _Repo())      # the re-run's real ending
+    assert len(charges) == 1

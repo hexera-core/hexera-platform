@@ -120,6 +120,26 @@ class RepairReviewRepository:
             .where(RepairReviewPark.id == park_id, RepairReviewPark.status.in_(("open",)))   # CAS shape the architecture fitness test requires
             .values(status="closed", closed_by=closed_by, closed_at=datetime.now(UTC)))
 
+    async def reopen_park(self, db: AsyncSession, park_id: uuid.UUID) -> bool:
+        """Undo a close: the compensation for a review run whose dispatch failed."""
+        res = await db.execute(
+            update(RepairReviewPark)
+            .where(RepairReviewPark.id == park_id, RepairReviewPark.status.in_(("closed",)))   # CAS shape the architecture fitness test requires
+            .values(status="open", closed_by=None, closed_at=None))
+        return bool(res.rowcount)
+
+    async def restore_open(self, db: AsyncSession, item_ids: list[uuid.UUID]) -> int:
+        """Return `unreviewed` items to `open` (only those, only under an open park)."""
+        if not item_ids:
+            return 0
+        open_parks = select(RepairReviewPark.id).where(RepairReviewPark.status == "open")
+        res = await db.execute(
+            update(RepairReviewItem)
+            .where(RepairReviewItem.id.in_(item_ids), RepairReviewItem.state == "unreviewed",
+                   RepairReviewItem.park_id.in_(open_parks))
+            .values(state="open", decision=None, decided_at=None))
+        return int(res.rowcount or 0)
+
 
 def _check_state(state: str) -> None:
     if state not in _DECIDED:
