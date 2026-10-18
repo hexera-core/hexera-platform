@@ -1,5 +1,6 @@
 # Responsibility: Prove, on the real kernel, that the repair node's live LLM posture plays the model's directive first and the caps judge it.
 # Boundaries: the model is a scripted router at the seam; the inspection, the repair and the caps verdicts are real OpenCASCADE.
+# Staging: the real `stages_for` proof runs (not patched).
 # Honest scope: no fixture both stalls the rules planner and is repaired by a model's single-operation
 #               choice (every catalogue operation on every stalling fixture is rolled back), so this
 #               does not claim the model rescues a stalled part. It pins the node-level contract.
@@ -10,14 +11,14 @@ import json
 from types import SimpleNamespace
 
 import pytest
+
+pytest.importorskip("OCP.ShapeFix", reason="the CAD kernel is a native-tier dependency")  # noqa: E402
 from tests._geometry_support import interpretation_ref, source_ref
 from tests.cad_fixtures import write_loose_faces_step, write_open_shell_step
 
 import meshpipeline.settings.cad_repair as rcfg
 from meshpipeline.contracts import model_inference
 from meshpipeline.contracts.geometry_source import MaterializedGeometry
-
-pytest.importorskip("OCP.ShapeFix", reason="the CAD kernel is a native-tier dependency")
 
 
 @pytest.fixture(autouse=True)
@@ -30,8 +31,6 @@ def _opted_in(monkeypatch):
         "CAD_REPAIR_MAX_OPS": 6, "CAD_REPAIR_STALL_LIMIT": 2, "CAD_REPAIR_TIMEOUT_S": 120.0}
     for name, value in settings.items():
         monkeypatch.setattr(rcfg, name, value)
-    monkeypatch.setattr("meshpipeline.pipeline.repair_promote.stages_for",
-                        lambda geometry, engine="": (True, ""))
     yield
     model_inference.set_model_router(None)
 
@@ -81,7 +80,9 @@ def _proposal(op, fingerprint):
 
 
 def _ops_of(rows_):
-    return [r[2] for r in rows_ if r[0] == "repair_attempt"][-1]
+    attempts = [r[2] for r in rows_ if r[0] == "repair_attempt"]
+    assert len(attempts) == 1, attempts
+    return attempts[0]
 
 
 def test_rules_only_stalls_on_the_open_shell_and_live_plays_the_models_directive_first(
@@ -116,6 +117,7 @@ def test_rules_only_stalls_on_the_open_shell_and_live_plays_the_models_directive
     assert directive_rows == [{"item_id": "", "source": "llm-planner", "directive_id": "llm:0",
                                "planner_confidence": 0.8, "outcome": "rolled_back",
                                "reason": directive_rows[0]["reason"]}]
+    assert isinstance(directive_rows[0]["reason"], str) and directive_rows[0]["reason"]
 
 
 def test_live_model_directive_that_the_caps_accept_is_kept_with_its_provenance(
@@ -134,3 +136,13 @@ def test_live_model_directive_that_the_caps_accept_is_kept_with_its_provenance(
     assert ops[0]["planner_confidence"] == 0.8
     assert out["repair_attempt"]["attempted"] is True
     assert _ops_of(rows)["directives"][0]["outcome"] == "kept"
+
+    # THE GEOMETRY, NOT THE FLAG: re-scan the file the node promoted
+    from pathlib import Path
+
+    from meshpipeline.cad.repair.brep import inspect_brep_file
+    promoted = Path(out["geometry"]["local_path"])
+    assert promoted.name == "part-repaired.step" and promoted.exists()
+    assert [e for e in inspect_brep_file(write_loose_faces_step(tmp_path / "orig.step")).entities
+            if e["code"] == "open_shell"], "the original must have been broken"
+    assert inspect_brep_file(promoted).entities == ()
