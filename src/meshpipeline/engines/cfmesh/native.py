@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -41,6 +42,27 @@ QUALITY_FILE = "mesh_quality.json"
 #: Wall seconds per native stage (mesher, checkMesh, passage measure, foamToVTK, total),
 #: written beside the mesh and carried in the result as `timing`.
 TIMING_FILE = "mesh_timing.json"
+
+_BAD_FACES = re.compile(r"Number of bad faces is\s+(\d+)")
+_WRONG_WAY = re.compile(r"(\d+)\s+faces pointing the wrong way")
+_UNTANGLED = ("Finished untangling the mesh", "Finished renaming boundary patches")
+
+
+def untangle_stall(log_tail: str) -> list[str]:
+    """The broken cells a cartesianMesh run that ran out of time was still repairing, read from its
+    log tail: its last untangling pass still counted bad faces, and it never reported the
+    untangling finished. [] for a run that was merely slow (the soccer ball had finished untangling
+    and was renaming its patches when its time ran out)."""
+    text = str(log_tail or "")
+    counts = list(_BAD_FACES.finditer(text))
+    if not counts or int(counts[-1].group(1)) <= 0:
+        return []
+    if any(text.rfind(done) > counts[-1].start() for done in _UNTANGLED):
+        return []
+    wrong = [int(m.group(1)) for m in _WRONG_WAY.finditer(text)]
+    bad = int(counts[-1].group(1))
+    return [f"{bad:,} bad faces cfMesh could not untangle"
+            + (f", {wrong[-1]:,} of them pointing the wrong way" if wrong else "")]
 
 
 def run_cartesian_mesh(workspace, *, context=None, bashrc: str = _DEFAULT_BASHRC,
@@ -138,4 +160,5 @@ def _run_cartesian_mesh_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
 
 
 __all__ = ["CARTESIAN_2D_MESH", "CARTESIAN_MESH", "CREATE_PATCH_TIMEOUT_S", "LOG_TAIL_LINES",
-           "QUALITY_FILE", "RC_DICTS_REJECTED", "TWO_D_MARKER", "run_cartesian_mesh"]
+           "QUALITY_FILE", "RC_DICTS_REJECTED", "TWO_D_MARKER", "run_cartesian_mesh",
+           "untangle_stall"]

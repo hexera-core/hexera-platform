@@ -47,6 +47,7 @@ async def _run_tool_loop(
     execution_id: str = "",
     execution_generation: int = 0,
     user_dispute: dict | None = None,   # the engineer's flags, when answering a dispute
+    broken_mesh_moves_to: str = "",     # the engine a broken mesh moves this run to ('' = stays)
 ) -> tuple[str, list]:
     import time as _time
 
@@ -62,7 +63,7 @@ async def _run_tool_loop(
         workspace=workspace, geometry=geometry, job_id=job_id,
         execution_id=execution_id, execution_generation=execution_generation,
         engine=engine, mesh_fidelity=mesh_fidelity, loop_deadline=loop_deadline,
-        user_dispute=user_dispute)
+        user_dispute=user_dispute, broken_mesh_moves_to=broken_mesh_moves_to)
     executor = BuilderToolExecutor(
         context=tool_context, publish=publish, tool_calls_out=tool_calls_out)
     context = BuilderContextPreparer(workspace=workspace, job_id=job_id, engine=engine)

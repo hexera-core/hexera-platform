@@ -81,6 +81,19 @@ async def _run_engine_driver(driver, attempt: BuilderAttempt, state, *, job_id: 
     return spec_authored, final_text, (marker if marker in _DRIVER_STOPS else "")
 
 
+def _broken_mesh_moves_to(state) -> str:
+    """The fallback ladder's answer, asked before the attempt: the engine a broken mesh would move
+    this run to ('' when it would stay, or when it cannot be said - the attempt then runs as it
+    always did)."""
+    try:
+        from meshpipeline.pipeline.engine_fallback import moves_on_from_broken_mesh
+        return moves_on_from_broken_mesh(state)
+    except Exception:  # noqa: BLE001 - advice to the builder never stops an attempt
+        logger.warning("builder: could not tell where a broken mesh would move this run",
+                       exc_info=True)
+        return ""
+
+
 async def _run_shared_loop(attempt: BuilderAttempt, state, *, job_id: str,
                            publish: ExecutionEventPublisher,
                            timeout_s: int) -> tuple[str, list]:
@@ -109,6 +122,8 @@ async def _run_shared_loop(attempt: BuilderAttempt, state, *, job_id: str,
             execution_generation=attempt.generation,
             # The engineer's flags, so submit_mesh can require a declaration per flag.
             user_dispute=state.get("user_dispute") or None,
+            # Where a BROKEN mesh moves this run, so run_mesh does not re-run this engine on it
+            broken_mesh_moves_to=_broken_mesh_moves_to(state),
         ),
         timeout=timeout_s,
     )
