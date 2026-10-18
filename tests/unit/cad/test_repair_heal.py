@@ -379,3 +379,26 @@ def test_it_sits_after_the_nonplanar_fill_and_before_the_whole_shape_fix():
 
 def test_the_heal_is_not_a_fill():
     assert HealSelfIntersections.name not in FILL_OPS
+
+
+# A DECLINE DECLARES NOTHING
+
+
+@pytest.mark.parametrize("setup", [setup for _, setup in _ORDER], ids=[r for r, _ in _ORDER])
+def test_no_decline_carries_an_area_declaration(setup, heal_doubles):
+    # The session adds AREA_DELTA to the run's accounting and runs the cumulative cap BEFORE it
+    # reads `declined`, so a declaration on a decline turned too_much_surface (and, after earlier
+    # kept ops, crossing_remains or grew_beyond_targets) into a false "cap:" verdict.
+    out = heal_doubles(**setup).apply(SHAPE, TARGETS, tolerance_mm=0.01)
+    assert "declined" in out.evidence and AREA_DELTA not in out.evidence
+
+
+def test_a_decline_after_the_rebuild_still_reports_the_area_it_measured(heal_doubles):
+    out = heal_doubles(area_delta_ratio=0.03).apply(SHAPE, TARGETS, tolerance_mm=0.01)
+    assert out.evidence["area_delta_measured_mm2"] == pytest.approx(30.0)
+
+
+def test_faces_targeted_counts_distinct_faces(heal_doubles):
+    doubled = (*TARGETS, _face_ref(3), _face_ref(7))
+    out = heal_doubles().op.apply(SHAPE, doubled, tolerance_mm=0.01)
+    assert out.evidence["faces_targeted"] == 3

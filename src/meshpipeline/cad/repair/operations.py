@@ -1144,6 +1144,10 @@ def _rebuild_face(face, *, tolerance_mm: float) -> object:
     fixer.RemoveSmallAreaFaceMode = 0
     fixer.FixSplitFaceMode = 0
     fixer.FixLoopWiresMode = 0
+    # NOR REORIENTED OR GIVEN NATURAL BOUNDS: re-trimming has no reason to flip a wire or bound a
+    # face by its surface's own limits, and both are on "auto" by default.
+    fixer.FixOrientationMode = 0
+    fixer.FixAddNaturalBoundMode = 0
     fixer.FixIntersectingWiresMode = 1
     fixer.FixWireMode = 1
     wire = fixer.FixWireTool()
@@ -1218,15 +1222,18 @@ class HealSelfIntersections:
     """Re-trim ONLY the faces the kernel's analysis says cross each other, and nothing else.
 
     WHAT IT MAY TOUCH: the target faces - a face-level `self_intersection` finding's face and the
-    partners the analyzer named in `crossing_faces` - and the edges they own. Every other face,
+    rest of its crossing COMPONENT (`crossing_faces`: every face of the tangle it sits in, not only
+    the faces it crosses itself) - and the edges they own. Every other face,
     and every edge no target owns, must come out the same TShape it went in, and every edge a
     target shared with an outside face must still be shared. Anything else is a decline. It is
     never a whole-shape pass: that is `fix_shape_global`, and a heal that quietly became one would
     be a second global fixer nobody chose.
 
     WHAT IT DECLARES: the summed area of the rebuilt faces minus that of the originals, measured
-    BEFORE the splice, as AREA_DELTA. Volume is not declared; the cumulative cap's residual judges
-    it.
+    BEFORE the splice, as AREA_DELTA - on a kept heal only. A decline reports the same measurement
+    as `area_delta_measured_mm2`, which the run's accounting does not read: a declaration on a
+    shape handed back unchanged would make the cumulative cap report a decline as a violation.
+    Volume is not declared; the cumulative cap's residual judges it.
 
     IT NEVER MUTATES THE INPUT, even on a decline. ShapeFix writes into the edges of the face it
     fixes, and those edges are shared with the rest of the caller's shape (and the session's
@@ -1296,18 +1303,23 @@ class HealSelfIntersections:
         import meshpipeline.cad.repair.localize as localize
         import meshpipeline.settings.cad_repair as rcfg
 
-        def declined(reason: str, **measured) -> OpOutcome:
-            return OpOutcome(shape=shape, evidence={"declined": reason,
-                                                    "faces_targeted": len(targets), **measured})
-
-        if not rcfg.CAD_REPAIR_HEAL_SELF_INTERSECTIONS:
-            return declined("healing_disabled (CAD_REPAIR_HEAL_SELF_INTERSECTIONS)")
-
-        # ONE FACE PER INDEX: a face named twice is healed once.
+        # ONE FACE PER INDEX: a face named twice is healed once, and counted once.
         indices: list[int] = []
         for ref in targets:
             if ref.entity_type == "face" and ref.entity_index not in indices:
                 indices.append(int(ref.entity_index))
+
+        def declined(reason: str, **measured) -> OpOutcome:
+            # NEVER AN AREA_DELTA ON A DECLINE. The session adds a declaration to the run's
+            # accounting and runs the cumulative cap BEFORE it reads `declined`, so a declined
+            # heal that declared its measured change was recorded as a cap violation ("something
+            # moved that no operation claimed") instead of its own reason. The measurement is
+            # still reported, under a key the accounting does not read.
+            return OpOutcome(shape=shape, evidence={"declined": reason,
+                                                    "faces_targeted": len(indices), **measured})
+
+        if not rcfg.CAD_REPAIR_HEAL_SELF_INTERSECTIONS:
+            return declined("healing_disabled (CAD_REPAIR_HEAL_SELF_INTERSECTIONS)")
         resolved = [(i, face) for i in indices
                     if (face := sub_shape(shape, "face", i)) is not None]
         if not resolved:
@@ -1334,7 +1346,8 @@ class HealSelfIntersections:
         rebuilt = [_rebuild_face(face, tolerance_mm=tolerance_mm) for face in originals]
         # MEASURED BEFORE THE SPLICE: the declaration is the rebuilt faces' own area.
         delta = sum(localize._face_area(face) for face in rebuilt) - original_area
-        measured = {AREA_DELTA: round(float(delta), 6), "crossings_before": len(before_pairs)}
+        measured = {"area_delta_measured_mm2": round(float(delta), 6),
+                    "crossings_before": len(before_pairs)}
         limit = rcfg.CAD_REPAIR_MAX_AREA_CHANGE_RATIO * total_area
         if abs(delta) > limit:
             return declined(f"too_much_surface (declared {delta:.6g} mm2 against a "
@@ -1364,7 +1377,8 @@ class HealSelfIntersections:
                 added.append(fingerprint)
         mapping = mapping_from_context(context, targets, shape_before=work, diagonal_mm=diagonal)
         return OpOutcome(shape=spliced, mapping=mapping, added=tuple(added),
-                         evidence={**measured, "faces_targeted": len(targets),
+                         evidence={**measured, AREA_DELTA: round(float(delta), 6),
+                                   "faces_targeted": len(indices),
                                    "faces_rebuilt": len(rebuilt),
                                    "precision_mm": float(tolerance_mm)})
 

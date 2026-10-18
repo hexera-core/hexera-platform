@@ -238,3 +238,54 @@ def test_a_run_over_the_forged_tangle_declines_honestly_and_hands_back_the_part(
     assert heals and all(v.reason.startswith("declined:not_isolated") for v in heals)
     assert not any(v.kept for v in run.verdicts)
     assert any(d.code is DefectCode.self_intersection for d in run.defects)
+
+
+def _session_heal(monkeypatch, *, rebuilt_area_gain, after_pairs):
+    """A real box in a real session, the heal driven to a chosen decline after its rebuild: the
+    BEFORE analysis says faces 1 and 3 cross, each rebuilt face measures `rebuilt_area_gain`
+    more than its original, and the AFTER analysis answers `after_pairs`."""
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+
+    import meshpipeline.cad.repair.localize as localize
+    from meshpipeline.cad.repair.session import RepairSession
+
+    shape = BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape()
+    answers = [[(1, 3)], after_pairs]
+    monkeypatch.setattr(operations, "_analyze_faces", lambda on, faces: answers.pop(0))
+    rebuilt: list = []
+    real_rebuild, real_area = operations._rebuild_face, localize._face_area
+
+    def rebuild(face, *, tolerance_mm):
+        rebuilt.append(real_rebuild(face, tolerance_mm=tolerance_mm))
+        return rebuilt[-1]
+
+    def area(face):
+        gain = rebuilt_area_gain if any(face.IsSame(r) for r in rebuilt) else 0.0
+        return real_area(face) + gain
+
+    monkeypatch.setattr(operations, "_rebuild_face", rebuild)
+    monkeypatch.setattr(localize, "_face_area", area)
+    session = RepairSession(shape)
+    monkeypatch.setattr(session, "_carries", lambda targets, code: True)
+    return session, _refs(shape, (1, 3))
+
+
+def test_a_too_much_surface_decline_is_recorded_as_declined_not_as_a_cap(monkeypatch):
+    # 2 x 30 mm2 on a 600 mm2 box is 10%: the heal's own bound declines it. Before the fix the
+    # declaration rode on the decline and the session's cumulative cap reported it first.
+    session, targets = _session_heal(monkeypatch, rebuilt_area_gain=30.0, after_pairs=[])
+    verdict = session.try_op(HealSelfIntersections(), targets, DefectCode.self_intersection,
+                             tolerance_mm=0.01)
+    assert verdict.reason.startswith("declined:too_much_surface"), verdict.reason
+
+
+def test_a_crossing_remains_decline_after_a_kept_declaration_is_recorded_as_declined(monkeypatch):
+    # Earlier kept ops declared 10 mm2 the shape does not show (inside the 12 mm2 residual); the
+    # heal measured another 10 mm2 and then declined. Counted, the 20 mm2 broke the cap.
+    from meshpipeline.cad.repair.caps import Accounting
+
+    session, targets = _session_heal(monkeypatch, rebuilt_area_gain=5.0, after_pairs=[(1, 3)])
+    session.accounting = Accounting(declared_area_mm2=10.0)
+    verdict = session.try_op(HealSelfIntersections(), targets, DefectCode.self_intersection,
+                             tolerance_mm=0.01)
+    assert verdict.reason.startswith("declined:crossing_remains"), verdict.reason
