@@ -747,30 +747,60 @@ def _filling(edges, supports):
     return face, float(filling.G0Error()), g1
 
 
-def _plate(wire, edges):
-    """The GeomPlate fallback: a plate through the edges, approximated, trimmed to the wire."""
+def _plate(wire):
+    """The GeomPlate fallback: a plate through the edges, approximated, trimmed to the wire.
+
+    ON A COPY OF THE WIRE. `MakeFace(surface, wire)` and `ShapeFix_Face` reuse the edges they are
+    given, writing new pcurves and raised tolerances into them - and the free-loop edges ARE the
+    caller's shape (and the session's rollback snapshot). Built on the originals, a declined or
+    rolled-back plate left tolerance damage nobody declared (1e-7 -> 7.8e-4 mm on the fixture).
+
+    THE REPORTED GAP IS THE WORST OF THREE: the plate's own G0 error, the approximation's error,
+    and the largest edge tolerance ShapeFix needed to bound the face - any one of them alone
+    understates how far the patch's boundary can sit from the loop.
+    """
+    from OCP.BRep import BRep_Tool
     from OCP.BRepAdaptor import BRepAdaptor_Curve
-    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Copy, BRepBuilderAPI_MakeFace
     from OCP.GeomPlate import (
         GeomPlate_BuildPlateSurface,
         GeomPlate_CurveConstraint,
         GeomPlate_MakeApprox,
     )
     from OCP.ShapeFix import ShapeFix_Face
+    from OCP.TopoDS import TopoDS
 
+    copied = TopoDS.Wire_s(BRepBuilderAPI_Copy(wire).Shape())
+    own_edges = _wire_edges(copied)
     plate = GeomPlate_BuildPlateSurface(3, 15, 2)
-    for edge in edges:
+    for edge in own_edges:
         plate.Add(GeomPlate_CurveConstraint(BRepAdaptor_Curve(edge), 0))
     plate.Perform()
     if not plate.IsDone():
         return None
-    surface = GeomPlate_MakeApprox(plate.Surface(), 1e-4, 8, 8, 1e-3, 0).Surface()
-    maker = BRepBuilderAPI_MakeFace(surface, wire, True)
+    approx = GeomPlate_MakeApprox(plate.Surface(), 1e-4, 8, 8, 1e-3, 0)
+    maker = BRepBuilderAPI_MakeFace(approx.Surface(), copied, True)
     if not maker.IsDone():
         return None
     fixer = ShapeFix_Face(maker.Face())    # the wire's edges carry no pcurve on the new surface
     fixer.Perform()
-    return fixer.Face(), float(plate.G0Error()), False
+    face = fixer.Face()
+    edge_tolerance = max((BRep_Tool.Tolerance_s(e) for e in _face_edges(face)), default=0.0)
+    gap = max(float(plate.G0Error()), float(approx.ApproxError()), float(edge_tolerance))
+    return face, gap, False
+
+
+def _face_edges(face) -> list:
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    edges = []
+    explorer = TopExp_Explorer(face, TopAbs_EDGE)
+    while explorer.More():
+        edges.append(TopoDS.Edge_s(explorer.Current()))
+        explorer.Next()
+    return edges
 
 
 def _build_patch(wire, *, tolerance_mm: float, shape=None) -> tuple[object, float, bool, str]:
@@ -780,21 +810,26 @@ def _build_patch(wire, *, tolerance_mm: float, shape=None) -> tuple[object, floa
     error is within `tolerance_mm`: BRepFill_Filling with G1 against the face beside each edge
     (needs `shape`, and exactly one such face per edge), BRepFill_Filling with G0 only, GeomPlate.
     Past tolerance on every builder, the closest attempt is returned for the caller to decline.
+
+    A G1 ATTEMPT THAT MISSED TANGENCY IS NEVER KEPT. BRepFill_Filling may return a face forced
+    toward the neighbour's tangent plane and still close the gap; kept, it would be a patch bent
+    to the wrong face and reported as "G1 not achieved". It falls through to the G0-only build,
+    so `g1_achieved` is True exactly when the kept patch is the tangent one.
     """
     from OCP.Standard import Standard_Failure
 
     edges = _wire_edges(wire)
     if not edges:
         return None, float("inf"), False, ""
-    attempts = []
+    attempts: list = []
     supports = _support_faces(shape, edges) if shape is not None else None
     if supports is not None:
-        attempts.append(("BRepFill_Filling", lambda: _filling(edges, supports)))
-    attempts.append(("BRepFill_Filling", lambda: _filling(edges, None)))
-    attempts.append(("GeomPlate", lambda: _plate(wire, edges)))
+        attempts.append(("BRepFill_Filling", supports, lambda: _filling(edges, supports)))
+    attempts.append(("BRepFill_Filling", None, lambda: _filling(edges, None)))
+    attempts.append(("GeomPlate", None, lambda: _plate(wire)))
 
     best: tuple[object, float, bool, str] = (None, float("inf"), False, "")
-    for builder, attempt in attempts:
+    for builder, constrained, attempt in attempts:
         try:
             built = attempt()
         except (RuntimeError, Standard_Failure) as exc:   # the kernel declining; our bugs surface
@@ -803,6 +838,8 @@ def _build_patch(wire, *, tolerance_mm: float, shape=None) -> tuple[object, floa
         if built is None:
             continue
         face, g0, g1 = built
+        if constrained is not None and not g1:
+            continue                     # forced toward a tangent it did not meet: never kept
         if g0 <= tolerance_mm:
             return face, g0, g1, builder
         if g0 < best[1]:
@@ -889,8 +926,10 @@ class FillNonplanarHole:
     the G0/G1 errors it achieved. Raw GeomPlate yields an untrimmed surface that then has to be cut
     by the wire and given pcurves by ShapeFix, two more steps that can each drift the boundary.
     G1 is attempted first, against the one face beside each free edge, because a tangent patch is
-    the least invented; where G1 cannot be met (no unique neighbour, or the build fails or misses
-    tolerance) a G0-only filling is tried, and GeomPlate is the last resort.
+    the least invented; where G1 cannot be met (no unique neighbour, the build fails, misses
+    tolerance, or misses TANGENCY - a patch forced toward a tangent it did not reach is never
+    kept) a G0-only filling is tried, and GeomPlate is the last resort, built on a copy of the
+    wire so the caller's edges are never rewritten.
 
     THE PAIRED-RIM GUARD STILL STANDS IN FRONT OF IT. This operation is in FILL_OPS, so the
     planner's through-hole guard (which fails closed, run-wide, whenever any candidate rim is

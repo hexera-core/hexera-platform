@@ -13,7 +13,23 @@ from meshpipeline.cad.repair.identity import EntityMapping, EntityRef
 from meshpipeline.cad.repair.localize import EntityDefect
 from meshpipeline.cad.repair.operations import AREA_DELTA, FILL_OPS, FillNonplanarHole
 
-SHAPE = object()
+
+class _Untouchable:
+    """The input shape. Any attribute read on it - the first step of any in-place mutation - is
+    recorded and fails, so the operation itself can only pass it on to a seam."""
+
+    touched: list[str] = []
+
+    def __getattr__(self, name):
+        _Untouchable.touched.append(name)
+        raise AssertionError(f"the operation touched the input shape: .{name}")
+
+
+SHAPE = _Untouchable()
+#: The seams that may be handed the input shape: each only reads it. The kernel builders that
+#: write (`_build_patch` on its own wire copy, `_sew_patch` into a NEW shape) are pinned natively.
+_READ_ONLY = {"free_wire_containing", "_diagonal", "_build_patch", "_sew_patch",
+              "mapping_from_sewing"}
 REF = EntityRef(entity_type="edge", fingerprint="edge:rim", entity_index=3)
 REF2 = EntityRef(entity_type="edge", fingerprint="edge:other", entity_index=9)
 OPEN_LOOP_DEFECT = EntityDefect(code=DefectCode.open_shell, severity=DefectSeverity.error,
@@ -26,16 +42,21 @@ _MAPPING = EntityMapping(moved={}, gone=frozenset({"edge:rim"}), basis="kernel")
 def doubles(monkeypatch):
     """A factory: configure every seam, get back an operation whose `.calls` logs seam order."""
     calls: list[str] = []
+    received: list[str] = []
 
     def configure(*, flag=True, targets=None, wire="WIRE", span_ratio=0.25, planar=False,
                   g0=0.001, g1=True, builder="BRepFill_Filling", bulges=False,
                   sew=("SEWN", "SEWING")):
         del targets                       # the caller passes these to apply, not to the doubles
         calls.clear()
+        received.clear()
+        _Untouchable.touched.clear()
 
         def logged(name, value):
             def double(*args, **kwargs):
                 calls.append(name)
+                if any(a is SHAPE for a in (*args, *kwargs.values())):
+                    received.append(name)
                 return value
             return double
 
@@ -56,6 +77,7 @@ def doubles(monkeypatch):
                             logged("mapping_from_sewing", _MAPPING))
         op = FillNonplanarHole()
         op.calls = calls
+        op.received = received
         return op
 
     return configure
@@ -68,8 +90,39 @@ def doubles(monkeypatch):
     ({"g0": 0.02}, "boundary_error"), ({"bulges": True}, "patch_bulges"),
     ({"sew": None}, "sewing_failed")])
 def test_each_decline_returns_the_input_and_names_its_reason(setup, reason, doubles):
-    out = doubles(**setup).apply(SHAPE, setup.get("targets", (REF,)), tolerance_mm=0.01)
+    op = doubles(**setup)
+    out = op.apply(SHAPE, setup.get("targets", (REF,)), tolerance_mm=0.01)
     assert out.shape is SHAPE and reason in out.evidence["declined"]
+    _assert_untouched(op)
+    assert "_sew_patch" not in op.calls or reason == "sewing_failed"
+
+
+def _assert_untouched(op):
+    assert _Untouchable.touched == []
+    assert set(op.received) <= _READ_ONLY, f"handed the input to {set(op.received) - _READ_ONLY}"
+
+
+#: Every decline's failing setup, in the order apply must check them.
+_ORDER = [("filling_disabled", {"flag": False}), ("no loop was named", {"targets": ()}),
+          ("one_loop_only", {"targets": (REF, REF2)}),
+          ("bounds no closed free loop", {"wire": None}), ("too_large", {"span_ratio": 0.8}),
+          ("planar", {"planar": True}), ("boundary_error", {"g0": 0.02}),
+          ("patch_bulges", {"bulges": True}), ("sewing_failed", {"sew": None})]
+
+
+@pytest.mark.parametrize("first", range(len(_ORDER)))
+def test_with_every_later_check_also_failing_the_earliest_reason_wins(first, doubles):
+    # Flipping one seam at a time only proves each decline exists. Failing EVERY check from
+    # `first` onward at once pins the whole order: the reason reported must be the earliest.
+    setup: dict = {}
+    for _, failing in reversed(_ORDER[first:]):
+        setup.update(failing)                 # the earliest "targets" setting wins, as in apply
+    op = doubles(**setup)
+    out = op.apply(SHAPE, setup.get("targets", (REF,)), tolerance_mm=0.01)
+    reason = _ORDER[first][0]
+    assert out.shape is SHAPE and reason in out.evidence["declined"]
+    assert not any(out.evidence["declined"].startswith(later) for later, _ in _ORDER[first + 1:])
+    _assert_untouched(op)
 
 
 def test_no_patch_built_at_all_is_a_boundary_error(doubles, monkeypatch):
@@ -92,7 +145,9 @@ def test_a_too_large_loop_is_declined_even_when_flat(doubles):
 
 
 def test_a_kept_patch_declares_its_area_and_says_how_it_was_built(doubles):
-    out = doubles(g1=False, builder="GeomPlate").apply(SHAPE, (REF,), tolerance_mm=0.01)
+    op = doubles(g1=False, builder="GeomPlate")
+    out = op.apply(SHAPE, (REF,), tolerance_mm=0.01)
+    _assert_untouched(op)
     assert out.shape == "SEWN"
     assert out.mapping is _MAPPING
     assert len(out.added) == 1 and out.added[0]
@@ -127,3 +182,27 @@ def test_it_sits_after_the_planar_fill_and_before_the_whole_shape_fix():
 
 def test_both_fills_are_guarded_by_name():
     assert FILL_OPS == {"fill_planar_hole", "fill_nonplanar_hole"}
+
+
+def test_a_g1_patch_that_missed_tangency_falls_through_to_the_g0_build(monkeypatch):
+    # A G1 build that closes the gap but misses tangency is a patch bent toward the wrong face:
+    # never kept, and the kept patch's g1_achieved says what was actually kept.
+    pytest.importorskip("OCP.Standard", reason="_build_patch names the kernel's failure type")
+    built = []
+
+    def filling(edges, supports):
+        built.append("g1" if supports is not None else "g0")
+        return ("G1-FACE", 0.0001, False) if supports is not None else ("G0-FACE", 0.0002, False)
+
+    monkeypatch.setattr(operations, "_wire_edges", lambda wire: ["e1", "e2"])
+    monkeypatch.setattr(operations, "_support_faces", lambda shape, edges: ["f1", "f2"])
+    monkeypatch.setattr(operations, "_filling", filling)
+    monkeypatch.setattr(operations, "_plate", lambda wire: pytest.fail("plate not needed"))
+    face, g0, g1, builder = operations._build_patch("WIRE", tolerance_mm=0.01, shape="SHAPE")
+    assert built == ["g1", "g0"]
+    assert (face, g1, builder) == ("G0-FACE", False, "BRepFill_Filling")
+
+    monkeypatch.setattr(operations, "_filling", lambda edges, supports: (
+        ("G1-FACE", 0.0001, True) if supports is not None else pytest.fail("G1 held")))
+    face, g0, g1, _ = operations._build_patch("WIRE", tolerance_mm=0.01, shape="SHAPE")
+    assert (face, g1) == ("G1-FACE", True)

@@ -408,9 +408,9 @@ def _engineer_directives(item, items: list) -> list[dict]:
     Every fill (`operations.FILL_OPS`: the planar and the non-planar one) patches exactly one
     hole, while the session's progress rule needs every target's defect gone - so one fill aimed
     at "all these holes" patched the first, left the rest, and rolled back whole (the non-planar
-    fill declines a second loop outright). Each hole gets its own fill, owned by the member it answers (so the
-    outcome writes back onto that member), and marked `group` so it still meets the rim guard: the
-    engineer looked at one defect, not at each of these.
+    fill declines a second loop outright). Each hole gets its own fill, owned by the member it
+    answers (so the outcome writes back onto that member), and marked `group` so it still meets
+    the rim guard: the engineer looked at one defect, not at each of these.
     """
     from meshpipeline.cad.repair.operations import FILL_OPS
 
@@ -418,9 +418,13 @@ def _engineer_directives(item, items: list) -> list[dict]:
     if directive is None:
         return []
     targets = [t for t in directive.get("targets") or () if t]
+    # EVERY DIRECTIVE BORN FROM A GROUP-SCOPE DECISION IS `group`, even one that ended up naming
+    # a single target (a group redirect whose members were all answered or paired): it is still
+    # one decision over many, not a person's look at that hole, so it must meet the rim guard.
+    grouped = item.state == "redirected" and (item.decision or {}).get("scope") == "group"
     if (item.state != "redirected" or directive.get("op") not in FILL_OPS
             or len(targets) < 2):
-        return [directive]
+        return [{**directive, "group": True} if grouped else directive]
     owners = {m.fingerprint: m for m in items
               if m.fingerprint and (m.decision or {}).get("covered_by") == str(item.id)}
     if item.fingerprint:

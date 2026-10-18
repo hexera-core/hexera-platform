@@ -587,6 +587,36 @@ async def test_a_group_fill_runs_as_one_fill_per_hole_each_owned_by_its_member(f
     assert all(d["group"] and d["op"] == fill for d in directives)
 
 
+@pytest.mark.parametrize("fill", ["fill_planar_hole", "fill_nonplanar_hole"])
+async def test_a_single_target_group_redirect_still_meets_the_rim_guard(fill):
+    """A group-scope redirect whose members were all answered or paired names one hole, but it is
+    still one decision over many: returned unsplit WITHOUT `group` it read as an engineer's own
+    look at that rim and dodged the guard."""
+    g = f"open_shell:{fill}"
+    redirect = {"op": fill, "targets": ["edge:0001"], "defect_code": "open_shell",
+                "defect_fingerprint": "edge:0001", "source": "engineer",
+                "item_id": str(uuid.UUID(int=1))}
+    items = [_item(1, group=g, state="redirected", decided=1,
+                   decision={"directive": redirect, "scope": "group"})]
+    world = World(items)
+    assert (await world.call("POST", "/review/run")).status_code == 202
+    directives = world.dispatch.call_args.args[2]["repair_directives"]
+    assert [(d["op"], d["targets"], d.get("group")) for d in directives] == [
+        (fill, ["edge:0001"], True)]
+
+
+async def test_an_individual_single_target_redirect_stays_individual():
+    redirect = {"op": "fill_nonplanar_hole", "targets": ["edge:0001"], "defect_code": "open_shell",
+                "defect_fingerprint": "edge:0001", "source": "engineer",
+                "item_id": str(uuid.UUID(int=1))}
+    items = [_item(1, group="open_shell:fill_nonplanar_hole", state="redirected", decided=1,
+                   decision={"directive": redirect, "scope": "item"})]
+    world = World(items)
+    assert (await world.call("POST", "/review/run")).status_code == 202
+    directives = world.dispatch.call_args.args[2]["repair_directives"]
+    assert [d.get("group") for d in directives] == [None]
+
+
 async def test_replacing_a_group_answer_with_another_keeps_the_members_it_covered():
     g = "open_shell:fill_planar_hole"
     items = [_item(1, group=g, state="redirected", decided=1,
