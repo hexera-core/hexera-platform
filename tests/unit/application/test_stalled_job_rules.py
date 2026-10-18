@@ -72,3 +72,17 @@ def test_a_live_job_is_never_reaped_for_its_age(monkeypatch):
     assert re.search(
         r"(\w+)\.status = :\w+ AND \1\.lease_expires_at IS NULL AND \1\.started_at IS NOT NULL "
         r"AND \1\.started_at <", sql), sql
+
+
+def test_a_requeued_review_rerun_no_worker_ever_took_is_selected_by_the_ceiling(monkeypatch):
+    """A review re-run's row keeps started_at, has its deadline cleared and - once the launcher
+    took the message - its release mark cleared too. If no worker ever claims it, none of the
+    pending rules match (started, no deadline, no mark), and it waited forever behind a closed
+    review. The ceiling now judges such a row against its last change."""
+    sql, params = _compiled(monkeypatch, hours=4)
+    assert re.search(
+        r"(\w+)\.started_at IS NOT NULL AND \1\.active_worker_token IS NULL AND "
+        r"\1\.lease_expires_at IS NULL AND \1\.pipeline_deadline_at IS NULL AND "
+        r"\1\.updated_at < :(\w+)", sql), sql
+    m = re.search(r"\.pipeline_deadline_at IS NULL AND \w+\.updated_at < :(\w+)", sql)
+    assert params[m.group(1)] == NOW - timedelta(hours=4)
