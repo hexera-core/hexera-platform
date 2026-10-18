@@ -348,6 +348,8 @@ def test_the_naming_rescales_the_facts_and_the_skin_to_the_confirmed_unit(monkey
     assert abs(pts[3] - 1.0) < 1e-6 and abs(pts[7] - 1.0) < 1e-6              # the skin moved with the facts
     edge = struct.unpack("<3f", base64.b64decode(new_skin["edges"]["points_b64"]))
     assert abs(edge[0] - 2.0) < 1e-6                                          # and so did its edges
+    # and the skin says by how much, for what is placed on it from the kernel's millimetres
+    assert abs(new_skin["rescaled_by"] - 1000.0) < 1e-9
 
 
 def test_a_naming_that_finds_no_scout_in_time_marks_its_request_withdrawn(monkeypatch):

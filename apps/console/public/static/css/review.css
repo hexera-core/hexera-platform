@@ -24,6 +24,9 @@
 .rv-noview{padding:24px;color:var(--text-muted,#b9b6ae)}
 .rv-pin{position:absolute;width:18px;height:18px;margin:-9px 0 0 -9px;border-radius:50%;background:var(--accent,#ff4f00);
   border:2px solid #fff;pointer-events:none;box-shadow:0 0 0 4px rgba(255,79,0,.3)}
+.rv-pin-partner{background:var(--steel,#6d8baf);box-shadow:0 0 0 4px rgba(109,139,175,.3)}
+.rv-history{color:var(--warn,#f1bd63)}
+.rv-truncated{color:var(--text-faint,#8a8884);font-size:var(--fs-sm,12px)}
 .rv-panel{padding:18px 20px;overflow:auto;border-left:1px solid var(--border,#333)}
 .rv-panel h2{margin:0 0 8px;font-family:var(--display,inherit);font-size:18px}
 .rv-panel h2 small{color:var(--text-faint,#8a8884);font-size:var(--fs-sm,12px)}

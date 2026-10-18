@@ -345,3 +345,78 @@ def test_a_capped_review_says_it_shows_the_largest_of_how_many(live):
     live.evaluate("window.__rv.close()")
     _open(live)
     assert live.evaluate("!document.querySelector('.rv-truncated')")
+
+
+def test_a_defect_tried_before_says_it_could_not_be_done_safely(live):
+    review = _review()
+    first = review["groups"][0]["items"][0]
+    first["decision_history"] = [{"action": "accept", "state": "accepted",
+                                  "outcome": "rolled_back", "outcome_reason": "moved the part"}]
+    _open(live, review=review)
+    line = _text(live, ".rv-history")
+    assert "tried before and could not be done safely" in line and "moved the part" in line, line
+    _click(live, ".rv-leave")
+    assert live.evaluate("!document.querySelector('.rv-history')"), "history shown on a fresh defect"
+
+
+def test_a_paired_defect_pins_and_names_its_partner(live):
+    review = _review()
+    seam = review["groups"][1]
+    seam["items"][1]["camera"] = {"centroid_mm": [900.0, 250.0, 250.0], "normal": [0, 0, 1],
+                                  "extent_mm": 100.0}
+    _open(live, review={**review, "groups": [seam]})
+    assert "SEAM face 6" in _text(live, ".rv-partner"), _text(live, ".rv-partner")
+    live.wait_for("window._vdbg && !!window._vdbg['review:" + JOB + "']", what="the viewport")
+    mate = live.evaluate("window._vdbg['review:" + JOB + "'].partner()")
+    for got, want in zip(mate, [0.9, 0.25, 0.25], strict=True):
+        assert abs(got - want) < 1e-6, mate
+    _click(live, ".rv-leave")                     # item 6, whose partner is item 5
+    assert "SEAM face 5" in _text(live, ".rv-partner"), _text(live, ".rv-partner")
+    _click(live, ".rv-leave")
+    _click(live, ".rv-onebyone")                  # item 7: its partner is not in the review
+    assert "not in this review" in _text(live, ".rv-partner"), _text(live, ".rv-partner")
+    assert live.evaluate("window._vdbg['review:" + JOB + "'].partner()") is None
+
+
+def test_the_pin_follows_a_skin_rescaled_to_the_confirmed_unit(live):
+    # the user confirmed a unit twice the scout's: the stored skin is twice the size, and a camera
+    # minted in the kernel's millimetres must be read through the skin's factor to land on it
+    live.evaluate("(async () => {" + _prelude().replace(
+        "const REVIEW = ", "const SKIN_SCALE = 2; const REVIEW = ").replace(
+        "if (s.includes('/check/skin')) return Promise.resolve(json(SKIN));",
+        "if (s.includes('/check/skin')) return Promise.resolve(json({...SKIN, rescaled_by: SKIN_SCALE}));")
+        + """
+      const { openReview } = await import('/static/js/review/review.js');
+      window.__rv = await openReview('""" + JOB + """', {});
+    })()""")
+    live.wait_for("window._vdbg && !!window._vdbg['review:" + JOB + "']", what="the viewport")
+    live.settle(0.2)
+    focal = live.evaluate("window._vdbg['review:" + JOB + "'].focal()")
+    for got, want in zip(focal, [0.2, 0.5, 1.0], strict=True):
+        assert abs(got - want) < 1e-3, focal
+
+
+def test_the_parked_copy_does_not_claim_nothing_changed_when_repairs_were_kept(live):
+    out = live.evaluate("""(async () => {
+      const { parkedCopy } = await import('/static/js/review/review.js');
+      return parkedCopy({open: 3, decided: 0, groups: [1]});
+    })()""").lower()
+    assert "before changing anything" not in out
+    assert "except for the repairs it was sure of" in out, out
+
+
+def test_offer_review_stops_asking_once_the_server_says_review_is_off(live):
+    out = live.evaluate("""(async () => {
+      let gets = 0;
+      const real = window.fetch.bind(window);
+      window.fetch = (u, o) => {
+        if (String(u).endsWith('/review')) { gets += 1;
+          return Promise.resolve(new Response(JSON.stringify({detail: 'Per-defect repair review is not enabled'}),
+            {status: 409, headers: {'Content-Type': 'application/json'}})); }
+        return real(u, o); };
+      const { offerReview } = await import('/static/js/review/review.js');
+      const a = document.createElement('div'); document.body.appendChild(a);
+      await offerReview('job-a', a); await offerReview('job-b', a); await offerReview('job-c', a);
+      return gets;
+    })()""")
+    assert out == 1, out

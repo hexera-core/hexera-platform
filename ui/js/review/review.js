@@ -34,8 +34,11 @@ const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 export function parkedCopy(review) {
   const open = Number((review || {}).open || 0);
   const groups = ((review || {}).groups || []).length;
-  return `this run stopped for you before changing anything: ${plural(open, "defect is", "defects are")} `
-    + `waiting in ${plural(groups, "group", "groups")}. nothing was changed without you.`;
+  // THE SERVER'S WORDS (final_result._render_parked): the repairs it was sure of were kept, so
+  // "stopped before changing anything" would be false on any run that kept one.
+  return `the repair is waiting on you: ${plural(open, "defect is", "defects are")} `
+    + `waiting in ${plural(groups, "group", "groups")}. nothing was changed without you - your file `
+    + "is as it was except for the repairs it was sure of.";
 }
 
 const OP_WORDS = { sew: "sew the gap shut" };
@@ -43,6 +46,39 @@ function proposalLine(item) {
   const p = item.proposal;
   if (!p || !p.op) return "";
   return `${OP_WORDS[p.op] || p.op.replaceAll("_", " ")}${p.rationale ? " - " + p.rationale : ""}`;
+}
+
+const ANSWER_WORDS = { accepted: "you accepted the fix", redirected: "you asked for something else",
+  left: "you left it", unreviewed: "it went through unanswered" };
+
+/** What became of this defect last time, when it has been put to the engineer before. "" if not. */
+export function historyLine(item) {
+  const h = (item || {}).decision_history || [];
+  if (!h.length) return "";
+  const last = h[h.length - 1] || {};
+  const why = last.outcome_reason && last.outcome_reason !== "not_reached"
+    ? ` (${last.outcome_reason === "discarded_with_result"
+      ? "the final safety check threw the whole result away" : String(last.outcome_reason).replaceAll("_", " ")})` : "";
+  if (last.outcome === "rolled_back" || last.outcome === "unplayable") {
+    return `this was tried before and could not be done safely${why}.`;
+  }
+  if (last.outcome === "not_reached") return `this was answered before, but the run ended before it was tried${why}.`;
+  if (last.outcome === "kept") return "this was fixed before and has come back.";
+  return `this was put to you before: ${ANSWER_WORDS[last.state] || "it was answered"}.`;
+}
+
+/** The other rim(s) of a pairing: an item in this review when there is one, else its fingerprint
+ *  from the pairing key (a short key lists the pair's fingerprints; a long one is a digest). */
+function partnerOf(item, all) {
+  if (!item.pairing_key) return null;
+  const inReview = all.find((i) => i.id !== item.id && i.pairing_key === item.pairing_key);
+  if (inReview) return { item: inReview, line: `paired with ${inReview.defect_code} `
+    + `${inReview.entity_type} ${inReview.entity_index} - it is pinned too, in the other colour.` };
+  const named = item.pairing_key.startsWith("pair:") ? []
+    : item.pairing_key.split(",").filter((f) => f && f !== item.fingerprint);
+  return { item: null, line: named.length
+    ? `paired with ${named.join(", ")}, which is not in this review.`
+    : "paired with another defect that is not in this review." };
 }
 
 /** The size a defect is ordered by: its largest measurement. */
@@ -115,32 +151,45 @@ async function mountView(host, sessionId, jobId) {
   const pin = document.createElement("div");
   pin.className = "rv-pin"; pin.style.display = "none";
   host.appendChild(pin);
+  const mate = document.createElement("div");
+  mate.className = "rv-pin rv-pin-partner"; mate.style.display = "none";
+  host.appendChild(mate);
+  // THE SKIN'S OWN SCALE. Cameras are minted in the kernel's millimetres; the stored skin is in
+  // metres as the check read the file, and is rescaled when the user confirms another unit
+  // (application/geometry_check._rescale_skin records the factor) - the same correction the
+  // geometry stage gets from scale_to_m. Without it a re-unitted part's pin lands off the part.
+  const toSkin = (mm) => (mm / 1000) * (Number(surf.rescaled_by) || 1);
   let at = null;                       // the defect's point, in the skin's units (metres)
+  let mateAt = null;                   // its paired partner's, when it has one on screen
   const fit = () => { ren.resetCamera(bounds); rw.render(); };
   const ro = new ResizeObserver(() => { scale(); if (!at) fit(); else rw.render(); });
   ro.observe(host);
 
-  function place() {
-    if (!at) { pin.style.display = "none"; return false; }
+  function put(el, p) {
+    if (!p) { el.style.display = "none"; return false; }
     const size = apiRW.getSize(), aspect = size[0] / Math.max(size[1], 1), rect = host.getBoundingClientRect();
-    const nd = ren.worldToNormalizedDisplay(at[0], at[1], at[2], aspect);
+    const nd = ren.worldToNormalizedDisplay(p[0], p[1], p[2], aspect);
     const ok = nd[2] > 0 && nd[2] < 1 && nd[0] >= 0 && nd[0] <= 1 && nd[1] >= 0 && nd[1] <= 1;
-    pin.style.display = ok ? "" : "none";
-    if (ok) { pin.style.left = (nd[0] * rect.width) + "px"; pin.style.top = ((1 - nd[1]) * rect.height) + "px"; }
+    el.style.display = ok ? "" : "none";
+    if (ok) { el.style.left = (nd[0] * rect.width) + "px"; el.style.top = ((1 - nd[1]) * rect.height) + "px"; }
     return ok;
   }
+  function place() { put(mate, mateAt); return put(pin, at); }
   let alive = true;
   (function loop() { if (!alive || !document.body.contains(host)) return; place(); requestAnimationFrame(loop); })();
 
-  /** Put the pin on the defect and bring the camera to it, looking down its normal. */
-  function show(camera) {
+  /** Put the pin on the defect and bring the camera to it, looking down its normal; a paired
+   *  partner's camera, when given, gets the second pin. */
+  function show(camera, partner) {
+    const pc = ((partner || {}).centroid_mm || []);
+    mateAt = pc.length === 3 ? pc.map(toSkin) : null;
     const c = ((camera || {}).centroid_mm || []);
     if (c.length !== 3) { at = null; fit(); return; }
-    at = c.map((v) => v / 1000);
+    at = c.map(toSkin);
     let n = (camera.normal || [0, 0, 0]).slice();
     const L = Math.hypot(n[0], n[1], n[2]);
     n = L > 1e-9 ? n.map((v) => v / L) : [-0.5, -0.5, 0.7];
-    const reach = Math.max(((camera.extent_mm || 0) / 1000) * 4, 0.3 * diag);
+    const reach = Math.max(toSkin(camera.extent_mm || 0) * 4, 0.3 * diag);
     cam.setFocalPoint(...at);
     cam.setPosition(at[0] + n[0] * reach, at[1] + n[1] * reach, at[2] + n[2] * reach);
     cam.setViewUp(...(Math.abs(n[2]) < 0.9 ? [0, 0, 1] : [0, 1, 0]));
@@ -149,7 +198,8 @@ async function mountView(host, sessionId, jobId) {
   scale(); fit();
   window._vdbg = window._vdbg || {};
   window._vdbg["review:" + jobId] = {
-    focal: () => cam.getFocalPoint(), pin: () => at, visible: () => (place() ? 1 : 0),
+    focal: () => cam.getFocalPoint(), pin: () => at, partner: () => mateAt,
+    visible: () => (place() ? 1 : 0),
     camera: () => cam.getPosition(),
   };
   return { show, stop() { alive = false; ro.disconnect(); delete window._vdbg["review:" + jobId]; } };
@@ -185,14 +235,14 @@ export async function openReview(jobId, opts = {}) {
   const panel = $(".rv-panel"), note = $(".rv-note");
 
   let gi = -1, phase = "sample", queue = [], shownIdx = 0, shownTotal = 0, view = null, closed = false, busy = false;
-  let pendingCamera = null;
+  let pendingCamera = null, pendingPartner = null;
 
   mountView($(".rv-view"), review.geometry_session_id, jobId).catch(() => null).then((v) => {
     if (closed) { v?.stop(); return; }       // the review was closed while the part loaded
     view = v;
     if (!v) $(".rv-view").innerHTML = '<p class="rv-noview">the part can\'t be shown here - '
       + "you can still decide; the defect is described beside it.</p>";
-    else if (pendingCamera) v.show(pendingCamera);
+    else if (pendingCamera) v.show(pendingCamera, pendingPartner);
   });
 
   /* ONE ANSWER IN FLIGHT. A second click while a POST is out would send a second decision and
@@ -207,7 +257,9 @@ export async function openReview(jobId, opts = {}) {
     catch { say("that didn't reach the server - try again."); }
     finally { busy = false; held.forEach((b) => { b.disabled = false; }); }
   }
-  const frame = (camera) => { pendingCamera = camera; if (view) view.show(camera); };
+  const frame = (camera, partner = null) => {
+    pendingCamera = camera; pendingPartner = partner; if (view) view.show(camera, partner); };
+  const everyItem = [...itemById.values()];
 
   const say = (t) => { note.textContent = t || ""; };
   function paintRail() {
@@ -246,7 +298,8 @@ export async function openReview(jobId, opts = {}) {
   }
 
   function itemScreen(item) {
-    paintRail(); frame(item.camera); say("");
+    const partner = partnerOf(item, everyItem), seen = historyLine(item);
+    paintRail(); frame(item.camera, partner && partner.item ? partner.item.camera : null); say("");
     const meas = Object.entries(item.measurements || {}).map(
       ([k, v]) => `<li>${esc(k.replaceAll("_", " "))}: <b>${esc(v)}</b></li>`).join("");
     const prop = proposalLine(item);
@@ -257,7 +310,8 @@ export async function openReview(jobId, opts = {}) {
         ${meas ? `<ul class="rv-meas">${meas}</ul>` : ""}
         ${prop ? `<p class="rv-prop">the repair would ${esc(prop)}</p>`
           : "<p class=\"rv-prop\">nothing was proposed for this one.</p>"}
-        ${item.pairing_key ? "<p class=\"rv-paired\">this defect is paired with another; its answer changes what the other means.</p>" : ""}
+        ${seen ? `<p class="rv-history">${esc(seen)}</p>` : ""}
+        ${partner ? `<p class="rv-paired">this defect is paired with another; its answer changes what the other means. <span class="rv-partner">${esc(partner.line)}</span></p>` : ""}
       </article>
       ${readonly ? '<div class="rv-controls"><button type="button" class="rv-next">Next</button></div>'
         : `<div class="rv-controls">
@@ -400,10 +454,16 @@ export async function openReview(jobId, opts = {}) {
 
 /** A quiet way into the review beside a finished run's panel: asks whether this run has an
  *  offered review and, if so, draws one line that opens it. Draws nothing otherwise. */
+/* A DEPLOYMENT WITH REVIEW SWITCHED OFF answers every review GET with the same 409; once it has
+   said so, no finished run asks again. */
+let reviewDisabled = false;
 export async function offerReview(jobId, anchorEl, opts = {}) {
-  if (!anchorEl || document.getElementById("rv-offer-" + jobId)) return null;
+  if (!anchorEl || reviewDisabled || document.getElementById("rv-offer-" + jobId)) return null;
   let review;
-  try { review = await getReview(jobId); } catch { return null; }
+  try { review = await getReview(jobId); } catch (e) {
+    if (/not enabled/i.test((e && e.message) || "")) reviewDisabled = true;
+    return null;
+  }
   if (!review || review.status !== "offered" || !review.open) return null;
   const el = document.createElement("div");
   el.className = "rv-offer"; el.id = "rv-offer-" + jobId;
