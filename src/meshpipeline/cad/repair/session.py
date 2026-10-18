@@ -53,6 +53,8 @@ class OpVerdict:
     #: Stamped by the loop when a directive proposed this operation; empty for an autonomous one.
     item_id: str | None = None
     source: str = ""
+    directive_id: str | None = None
+    planner_confidence: float | None = None
 
     @property
     def kept(self) -> bool:
@@ -63,7 +65,10 @@ class OpVerdict:
                 "status": self.status, "reason": self.reason, "basis": self.basis,
                 "evidence": dict(self.evidence), "delta": dict(self.delta),
                 **({"item_id": self.item_id} if self.item_id else {}),
-                **({"source": self.source} if self.source else {})}
+                **({"source": self.source} if self.source else {}),
+                **({"directive_id": self.directive_id} if self.directive_id else {}),
+                **({"planner_confidence": self.planner_confidence}
+                   if self.planner_confidence is not None else {})}
 
 
 class RepairSession:

@@ -283,6 +283,8 @@ def directive_outcomes(directives, operations, refusals, *, discarded: bool = Fa
     THE JOIN IS EXACT WHERE IT CAN BE. The planner stamps a proposed operation with the directive's
     `item_id` (cad/repair/directives.py), so an operation answers the directive carrying the same
     item_id, and a `directive_unplayable` refusal answers it by the item_id on its directive.
+    A directive with a `directive_id` and no item_id (the LLM planner's) joins the same way on
+    that id.
     Only a directive with NO item_id (a replayed one) falls back to matching a directed,
     unclaimed operation by name and a shared target fingerprint - an autonomous operation is never
     claimed. A directive found nowhere was not reached. `discarded` (the after-check refused the
@@ -297,12 +299,23 @@ def directive_outcomes(directives, operations, refusals, *, discarded: bool = Fa
         if not isinstance(directive, dict):
             continue
         item_id = directive.get("item_id")
+        directive_id = directive.get("directive_id")
         row = {"item_id": item_id, "source": directive.get("source", "")}
+        if directive_id and not item_id:
+            # AN LLM-PLANNED DIRECTIVE has no review item; its stamped `directive_id` is the key.
+            row["directive_id"] = directive_id
+            if directive.get("planner_confidence") is not None:
+                row["planner_confidence"] = directive["planner_confidence"]
         if item_id:
             refusal = next((r for r in skipped
                             if (r.get("directive") or {}).get("item_id") == item_id), None)
             match = next((i for i, o in enumerate(ops)
                           if i not in used and o.get("item_id") == item_id), None)
+        elif directive_id:
+            refusal = next((r for r in skipped
+                            if (r.get("directive") or {}).get("directive_id") == directive_id), None)
+            match = next((i for i, o in enumerate(ops)
+                          if i not in used and o.get("directive_id") == directive_id), None)
         else:
             refusal = next((r for r in skipped if r.get("directive") == directive), None)
             wanted = directive.get("targets") or ()

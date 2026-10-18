@@ -178,7 +178,9 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
         if candidate.source and work.log and work.log[-1] is verdict:
             # THE DIRECTIVE THAT PROPOSED IT travels with the verdict, so what became of an
             # engineer's decision is read off the log and never inferred from op names.
-            verdict = replace(verdict, item_id=candidate.item_id, source=candidate.source)
+            verdict = replace(verdict, item_id=candidate.item_id, source=candidate.source,
+                              directive_id=candidate.directive_id,
+                              planner_confidence=candidate.planner_confidence)
             work.log[-1] = verdict
         if verdict.kept:
             consecutive_misses = 0

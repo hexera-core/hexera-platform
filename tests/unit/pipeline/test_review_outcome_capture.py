@@ -292,3 +292,33 @@ def test_a_triage_decline_on_a_directed_rerun_answers_every_directive_not_reache
     assert out["repair_directive_outcomes"] == [
         {"item_id": ITEM, "source": "engineer", "outcome": "not_reached", "reason": "not_reached"}]
     assert logged[-1]["directives"][0]["outcome"] == "not_reached"
+
+
+def test_llm_directives_without_items_join_by_directive_id_not_by_name():
+    from meshpipeline.application.repair_review_minting import directive_outcomes
+    a = {"item_id": "", "source": "llm-planner", "directive_id": "llm:0", "op": "sew_faces",
+         "targets": ["fa"], "planner_confidence": 0.9}
+    b = {**a, "directive_id": "llm:1", "planner_confidence": 0.6}
+    kept = {**_op_base("sew_faces", "kept", "open_shell", "fa"), "source": "llm-planner",
+            "directive_id": "llm:1"}
+    out = directive_outcomes([a, b], [kept], [])
+    assert [(o["directive_id"], o["outcome"]) for o in out] == [
+        ("llm:0", "not_reached"), ("llm:1", "kept")]
+    assert out[1]["planner_confidence"] == 0.6
+
+
+def test_the_planner_stamps_directive_id_and_confidence_onto_the_candidate_and_verdict():
+    from meshpipeline.cad.repair.directives import DirectedPlanner
+    from meshpipeline.cad.repair.operations import OPERATIONS
+    from meshpipeline.cad.repair.plan import RunHistory
+    from meshpipeline.cad.repair.session import OpVerdict
+    d = SimpleNamespace(fingerprint="fa", entity_type="face", entity_index=3)
+    llm = {"item_id": "", "source": "llm-planner", "directive_id": "llm:2",
+           "planner_confidence": 0.7, "op": OPERATIONS[0].name, "defect_code": "small_face",
+           "targets": ["fa"]}
+    cand = DirectedPlanner([llm]).propose([d], RunHistory(), shape=None)
+    assert (cand.item_id, cand.directive_id, cand.planner_confidence) == (None, "llm:2", 0.7)
+    verdict = OpVerdict(op="x", targets=("fa",), defect_code="small_face", status="kept",
+                        directive_id="llm:2", planner_confidence=0.7, source="llm-planner")
+    assert verdict.to_dict()["directive_id"] == "llm:2"
+    assert verdict.to_dict()["planner_confidence"] == 0.7

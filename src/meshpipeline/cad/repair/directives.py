@@ -91,4 +91,9 @@ class DirectedPlanner:
                          defect_fingerprint=str(directive.get("defect_fingerprint")
                                                 or refs[0].fingerprint),
                          item_id=str(directive["item_id"]) if directive.get("item_id") else None,
-                         source=str(directive.get("source") or "directive"))
+                         source=str(directive.get("source") or "directive"),
+                         directive_id=(str(directive["directive_id"])
+                                       if directive.get("directive_id") else None),
+                         planner_confidence=(float(directive["planner_confidence"])
+                                             if isinstance(directive.get("planner_confidence"),
+                                                           (int, float)) else None))

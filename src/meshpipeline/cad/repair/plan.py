@@ -58,6 +58,9 @@ class Candidate:
     #: Set only by DirectedPlanner: the directive this proposal plays. An autonomous proposal has none.
     item_id: str | None = None
     source: str = ""
+    #: The LLM planner's stamp (`llm:<n>`) and its confidence; empty for every other proposal.
+    directive_id: str | None = None
+    planner_confidence: float | None = None
 
     def to_dict(self) -> dict:
         return {"op": self.op.name, "defect": self.defect_fingerprint,
