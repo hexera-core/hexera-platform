@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -620,6 +621,59 @@ def _passage_sizing(t: dict, srcs: dict, wall_key: str, declaration: list):
     return chosen, (field[0], field[2], point_areas(field[0], field[1]))
 
 
+def _stage_passages(ws: Path, srcs: dict, wall_key: str, declaration: list | None, *,
+                    feature_angle: float = 30.0) -> dict:
+    """The staged surface split into the passages the mesh fills (cad/fluid_passages.plan_passages):
+    {"srcs": the first passage's patch surfaces (cartesianMesh meshes it in the case itself),
+    "sizing": every meshed passage's surfaces (what the passage measure sizes the cells from),
+    "bbox": their joint box, or None when nothing changed} - or {"error", "next"}: a declared
+    opening that opens into nothing a mesher can fill, said before any run. Each further passage
+    is its own surface in `_passages/p<k>/geom.stl`, listed in PASSAGES_FILE for the native run
+    (engines/cfmesh/native.mesh_passages) to mesh beside the first and merge. A surface whose
+    passages cannot be read is meshed as it was staged."""
+    from meshpipeline.cad.fluid_passages import PASSAGES_FILE, plan_staged, write_passage
+
+    (ws / PASSAGES_FILE).unlink(missing_ok=True)
+    unchanged = {"srcs": srcs, "sizing": srcs, "bbox": None}
+    plan = plan_staged(ws, srcs, wall_key, declaration)
+    if plan is None or not plan.reading.read or not plan.meshed:
+        return unchanged
+    why = plan.refusal()
+    if why:
+        return {"error": why[0].upper() + why[1:],
+                "next": "Relay this to the user verbatim - only they can say which openings are "
+                        "real. Do NOT retry with a different strategy."}
+    if not plan.left_out and not plan.several:
+        return unchanged
+    from meshpipeline.cad.fluid_passages import passage_surfaces
+    from meshpipeline.cad.stl_io import _write_solid
+    groups = passage_surfaces(plan)
+    root = ws / "_passages"
+    shutil.rmtree(root, ignore_errors=True)
+    first = write_passage(groups[0], root / "p0")
+    sizing: dict = {}
+    for k, g in enumerate(groups):
+        for name, path in write_passage(g, root / "all", prefix=f"p{k}_").items():
+            sizing.setdefault(name, []).append(path)
+    runs = []
+    for k, g in enumerate(groups[1:], start=1):
+        d = root / f"p{k}"
+        d.mkdir(parents=True, exist_ok=True)
+        with (d / "geom.stl").open("w") as fh:
+            for name, tris in g.items():
+                _write_solid(fh, name, tris)
+        runs.append(f"_passages/p{k}")
+    if runs:
+        (ws / PASSAGES_FILE).write_text(json.dumps({
+            "runs": runs, "feature_angle": feature_angle,
+            "ports": [p.ports for p in plan.meshed], "notes": plan.notes()}, indent=1))
+    lo = [min(p.bbox[0][i] for p in plan.meshed) for i in range(3)]
+    hi = [max(p.bbox[1][i] for p in plan.meshed) for i in range(3)]
+    logger.info("cfMesh internal: %d passage(s) meshed, %d piece(s) left out - %s",
+                len(plan.meshed), len(plan.left_out), "; ".join(plan.notes()))
+    return {"srcs": first, "sizing": sizing, "bbox": [lo, hi], "notes": plan.notes()}
+
+
 def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
                         contract_patches: list, args: dict, cell_budget: int,
                         surface=None) -> dict:
@@ -722,16 +776,33 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
         if _bore_surfaces:
             _srcs = {**_srcs, **_bore_surfaces}
             t = {**t, "wall_bounds_fluid": True}
+    # THE PASSAGES THE MESH FILLS, read before it runs (cad/fluid_passages): cartesianMesh has no
+    # seed point and keeps the LARGEST closed region, so a declared port on any other region came
+    # back with no faces at all - one carotid of two, one tube of a sixteen-tube bundle, every port
+    # of a nozzle whose port-less solid was the larger. Every passage that carries a declared
+    # opening is meshed (side by side, one cartesianMesh run each, merged); a closed piece no
+    # opening touches is left out; a declared opening into nothing meshable is said now, not
+    # found as a zero-face patch after the run.
+    _staged = _stage_passages(ws, _srcs, _wall_key, _decl,
+                              feature_angle=float(args.get("feature_angle", 30.0)))
+    if "error" in _staged:
+        return {"success": False, "error": _staged["error"], "next": _staged["next"]}
+    _srcs = _staged["srcs"]
     prep = prepare_surface_internal(
         workspace, surfaces_src=_srcs,
         feature_angle=float(args.get("feature_angle", 30.0)))
+    if _staged.get("bbox"):
+        prep["body_bbox"] = _staged["bbox"]          # the domain is every passage's
     # the local passage radius of the staged boundary (wall + port caps close it) sizes the
     # wall band and the background; {} when the surfaces do not close, and the strategy stands
     # a solid DECLARED the fluid domain is the fluid's own boundary, whatever its ports look like
     # (this path stages a CAD solid without the declaration, so the record cannot know it)
     if _fluid_declared:
         t = {**t, "wall_bounds_fluid": True}
-    passage_radius, _field = _passage_sizing(t, _srcs, _wall_key, _sizing_decl)
+    passage_radius, _field = _passage_sizing(t, _staged["sizing"], _wall_key, _sizing_decl)
+    for _done in ("all", "p0"):
+        # read into geom.stl and the passage field: only the further passages' surfaces travel
+        shutil.rmtree(ws / "_passages" / _done, ignore_errors=True)
 
     _patches = list(contract_patches or [])
     if not _patches:
@@ -748,7 +819,10 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
     return {"success": True, "wrote": ["system/meshDict"], "topology": "internal",
             "openings": t.get("openings"), "passage_radius": passage_radius, **summary,
             **({"port_sizes": _sizes} if _sizes else {}),
+            **({"passages": _staged["notes"]} if _staged.get("notes") else {}),
             "next": ("meshDict written for the enclosed cavity (valid + budget-clamped). "
+                     + ("Tell the user, in these words: " + " ".join(n[0].upper() + n[1:] + "." for n in _staged["notes"]) + " "
+                        if _staged.get("notes") else "")
                      + ("Tell the user, in these words, that a declared port size disagrees with "
                         "the geometry and the measured opening is used: " + " ".join(_sizes) + " "
                         if _sizes else "")
