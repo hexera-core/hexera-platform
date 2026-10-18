@@ -56,10 +56,11 @@ CAD_REPAIR_ALLOW_FACE_REMOVAL: bool = bool_env("CAD_REPAIR_ALLOW_FACE_REMOVAL", 
 #: opening it is. But the two rims of a THROUGH-HOLE whose wall is missing are also flat closed
 #: loops, and patching them seals the hole - a part with a bolt hole handed back without one. The
 #: PAIRED-RIM GUARD (`plan.paired_rim_fingerprints` over `conservative._paired_rims`) is what
-#: tells the two apart: any loop that is not a lone face's whole outer wire, parallel to and
-#: co-axial with another and offset along its normal, is a rim of one passage of ANY cross-section,
-#: and the planner then refuses filling for the whole run and reports the rims for review. A check
-#: that cannot run fails closed. The session caps bound how much area and volume a kept fill may
+#: tells the two apart: any planar loop that is not a lone face's whole outer wire and sits at the
+#: other end of a straight passage from another (no steeper than 70 deg to either rim's normal) is
+#: a rim of one passage - of ANY cross-section, angle or draft - and the planner then refuses
+#: filling for the whole run and reports the rims for review. A check that cannot run, or that
+#: cannot resolve a candidate rim's free wire, fails closed. The session caps bound how much area and volume a kept fill may
 #: add; they do not see a sealed hole, so the guard - not the caps - is what protects one. Off by
 #: default because it adds geometry the customer never drew; the deploy's `cad_repair` tick turns
 #: it on.

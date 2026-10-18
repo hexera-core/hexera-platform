@@ -235,6 +235,36 @@ def test_the_rim_question_never_raises_for_a_shape_it_cannot_read(monkeypatch):
     assert getattr(rims, "unknown", False) is True
 
 
+def test_a_rim_whose_free_wire_cannot_be_resolved_fails_closed(monkeypatch):
+    # FAIL OPEN, AS IT WAS: the unresolved rim was skipped, its partner had nothing to pair with,
+    # and the partner was filled - one end of a through-hole sealed, a blind hole delivered.
+    defects = tuple(_defect(DefectCode.open_shell, fingerprint=f"edge:{i}", index=i,
+                            measurements={"boundary_edges": 4}) for i in (1, 2))
+    monkeypatch.setattr("meshpipeline.cad.repair.operations.free_wire_containing",
+                        lambda shape, index: "wire" if index == 2 else None)
+    monkeypatch.setattr("meshpipeline.cad.repair.conservative._paired_rims",
+                        lambda loops, shape=None: set())
+
+    rims = paired_rim_fingerprints(object(), defects)
+    assert getattr(rims, "unknown", False) is True
+    assert rims == frozenset({"edge:1", "edge:2"})
+
+    planner, history = RulesPlanner(ops=(_FILL,)), RunHistory()
+    monkeypatch.setattr(plan_module, "paired_rim_fingerprints", lambda shape, d: rims)
+    assert planner.propose(defects, history, shape=object()) is None
+    assert history.fill_refused_because
+
+
+def test_a_lone_unresolved_loop_does_not_bar_filling(monkeypatch):
+    # Nothing to pair with: a single opening whose wire is unresolved cannot be one end of a pair.
+    defects = (_defect(DefectCode.open_shell, fingerprint="edge:1", index=1,
+                       measurements={"boundary_edges": 4}),)
+    monkeypatch.setattr("meshpipeline.cad.repair.operations.free_wire_containing",
+                        lambda shape, index: None)
+    rims = paired_rim_fingerprints(object(), defects)
+    assert rims == frozenset() and not getattr(rims, "unknown", False)
+
+
 def test_a_rim_check_that_could_not_run_refuses_every_fill(monkeypatch):
     # The planner must not fill on a guess: the unknown answer bars filling for the run, and each
     # loop is reported as a possible rim rather than as a demonstrated pair.

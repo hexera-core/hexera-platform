@@ -161,3 +161,24 @@ def test_a_relocated_judgement_defect_is_matched_on_its_code_too(cameras):
                       "operations_kept": 1}, shape=repaired)
     assert sorted((i["defect_code"], i["entity_index"]) for i in items) == [
         ("self_intersection", 9), ("small_face", 7)]
+
+
+def test_a_kernel_failure_while_pairing_keeps_every_item_on_one_coarse_key(cameras, monkeypatch):
+    # OCP's Standard_Failure is not a RuntimeError; uncaught, it took down the whole mint and every
+    # review item for the run was lost. It must degrade to the coarse key like any kernel failure.
+    standard = pytest.importorskip("OCP.Standard", reason="Standard_Failure is the kernel's own")
+    rims = [_entity("open_shell", "edge", i, fp, boundary_edges=4)
+            for i, fp in enumerate(("a1", "a2"), start=1)]
+    monkeypatch.setattr("meshpipeline.cad.repair.operations.free_wire_containing",
+                        lambda shape, index: rims[index - 1]["fingerprint"])
+
+    def _kernel_fails(loops, shape=None):
+        raise standard.Standard_Failure("BRepTools::OuterWire on a null face")
+
+    monkeypatch.setattr("meshpipeline.cad.repair.conservative._paired_rims", _kernel_fails)
+    items, _ = _mint(rims, {"survivors": rims, "operations_kept": 1,
+                            "refusals": [_refusal(r["fingerprint"]) for r in rims]},
+                     shape=object())
+    keys = {i["fingerprint"]: i["pairing_key"] for i in items}
+    assert set(keys) == {"a1", "a2"}
+    assert keys["a1"] == keys["a2"] != ""

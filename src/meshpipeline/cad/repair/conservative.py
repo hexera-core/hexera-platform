@@ -230,19 +230,23 @@ def _centre(shape):
     return ((xmin + xmax) / 2, (ymin + ymax) / 2, (zmin + zmax) / 2)
 
 
-#: How parallel their planes must be (|dot| of unit normals).
-_RIM_PARALLEL_TOLERANCE = 0.999
-#: How far off one axis the two centroids may be, as a fraction of the smaller loop's size (its
-#: largest in-plane distance from its own centroid). A cut passage is straight; the slack covers a
-#: draft angle and a slightly wandering exported rim. Centroids rather than a fitted circle's
-#: centre, so a hex, a slot, a square pocket or a faceted bore is measured the same way as a round
-#: one - a through-hole of ANY cross-section seals the same way when both ends are patched.
-_RIM_AXIS_TOLERANCE = 0.25
-#: The axial gap floor, in units of the larger loop's size. Below it the loops are coplanar - two
-#: holes in one face, which must stay fillable. THERE IS NO CEILING AND NO SIZE-RATIO CAP: a 1 mm
-#: hole through a 25 mm plate and a spot-face three times its bore are both genuine through-holes,
-#: and both caps once let exactly those be sealed. What separates a bore from two unrelated
-#: openings is the inner-wire test in `_bore_like`, not how deep or how flared the passage is.
+#: The steepest a passage may run relative to EACH rim's own plane normal, as the cosine of the
+#: angle between the centroid-to-centroid line and that normal (cos 70 deg). This one bound
+#: replaces two that sealed real holes end to end: "planes parallel within ~2.6 deg" (a drafted
+#: plate's tilted top, a hole leaving through a chamfer, a passage exiting an adjacent face) and
+#: "centroids on one normal within a quarter of the hole's size" (an angled hole's exit rim sits
+#: thickness x tan(angle) to the side - 10 mm at 45 deg through a 10 mm plate). It applies only to
+#: loops that are not a lone face's whole outer wire, which is what keeps a loose box's opposite
+#: faces apart, so geometry no longer has to. Coplanar holes run at 90 deg to their normal and
+#: never pair; two unrelated holes in parallel faces pair only when one is near enough to "behind"
+#: the other, and refusing a fill there costs one fill, not a part.
+_RIM_PASSAGE_COSINE = 0.342
+#: The gap floor, in units of the larger loop's size (its largest in-plane distance from its own
+#: centroid). Below it the loops are one opening seen twice. THERE IS NO CEILING AND NO SIZE-RATIO
+#: CAP: a 1 mm hole through a 25 mm plate and a spot-face three times its bore are both genuine
+#: through-holes, and both caps once let exactly those be sealed. What separates a bore from two
+#: unrelated openings is the topology test in `_lone_face_boundaries`, not how deep, how flared or
+#: how steep the passage is.
 _RIM_MIN_GAP = 1e-3
 
 
@@ -351,8 +355,8 @@ def _lone_face_boundaries(shape, loops: list) -> set[int]:
 def _paired_rims(loops: list, shape=None) -> set[int]:
     """Indices of loops that are the two ENDS OF A MISSING TUBE, not two separate holes.
 
-    THE PART-RUINING CASE. A through-hole whose wall is missing leaves two rims: planar, parallel,
-    on one axis, offset along their own normal. Each one looks exactly like a small fillable hole,
+    THE PART-RUINING CASE. A through-hole whose wall is missing leaves two rims: two planar loops
+    at either end of one straight passage. Each one looks exactly like a small fillable hole,
     and patching both SEALS the hole - handing back a part with no bolt hole where the customer had
     one. Demonstrated on a 100x100x10 plate with an 8 mm bore AND with an 8 mm hex: the hex was
     sealed end to end while the check demanded round rims. The cross-section does not matter.
@@ -362,9 +366,11 @@ def _paired_rims(loops: list, shape=None) -> set[int]:
     an unsewn box's faces are each their own free outer wire. Without `shape` (bare wires, nothing
     to ask the topology) every loop is a candidate - the guard fails toward refusing a fill.
 
-    WHICH CANDIDATES PAIR. Planes parallel, centroids on one axis, a non-zero gap along it. No
-    roundness, no size ratio, no depth ceiling - each of those once let a genuine through-hole be
-    sealed (the constants above say which).
+    WHICH CANDIDATES PAIR. Two planar candidate loops apart, whose centroid-to-centroid line - the
+    passage - leaves through each rim no steeper than 70 deg from that rim's normal. No
+    parallel-planes test, no on-one-normal test, no roundness, no size ratio, no depth ceiling -
+    each of those once let a genuine through-hole be sealed (the constants above say which):
+    angled holes, a drafted plate's tilted top, hex and slot passages, deep holes, spot-faces.
 
     What the right repair is for them - rebuild the wall, or ask - is a judgement, so they are
     reported and left rather than guessed at. Both the planner and the review minting call THIS
@@ -388,17 +394,16 @@ def _paired_rims(loops: list, shape=None) -> set[int]:
         for right in indices[i + 1:]:
             n1, (c1, s1) = rims[left]
             n2, (c2, s2) = rims[right]
-            dot = abs(n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2])
-            if dot < _RIM_PARALLEL_TOLERANCE:
-                continue
             delta = [c2[k] - c1[k] for k in range(3)]
-            # Offset along the shared normal rather than merely apart: two coplanar holes of the
-            # same size in one face are two holes, and must stay fillable.
-            offset = abs(sum(delta[k] * n1[k] for k in range(3)))
-            lateral = max(sum(d * d for d in delta) - offset * offset, 0.0) ** 0.5
-            if lateral > _RIM_AXIS_TOLERANCE * min(s1, s2):
+            gap = sum(d * d for d in delta) ** 0.5
+            if gap <= _RIM_MIN_GAP * max(s1, s2):
                 continue
-            if offset > _RIM_MIN_GAP * max(s1, s2):
+            axis = [d / gap for d in delta]
+            # The passage must leave through BOTH rims, not run along either face: coplanar holes
+            # (axis in the plane) are two holes and must stay fillable.
+            steep_1 = abs(sum(axis[k] * n1[k] for k in range(3)))
+            steep_2 = abs(sum(axis[k] * n2[k] for k in range(3)))
+            if steep_1 >= _RIM_PASSAGE_COSINE and steep_2 >= _RIM_PASSAGE_COSINE:
                 paired.add(left)
                 paired.add(right)
     return paired

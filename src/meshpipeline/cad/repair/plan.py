@@ -34,8 +34,8 @@ logger = logging.getLogger(__name__)
 # gone. Every check agrees the part was repaired, and the customer has a plate with no bolt hole.
 # So the decision is carried by the PAIRED-RIM GUARD (`paired_rim_fingerprints`): RulesPlanner
 # refuses filling for the run once any pair is seen, DirectedPlanner applies the same guard to
-# every directive fill except one engineer's single-rim approval, and a check that cannot run
-# fails closed. The fill operation itself still has no rim check, so a NEW planner must call this
+# every directive fill except one engineer's single-rim approval, and a check that cannot run or
+# cannot resolve a candidate rim fails closed. The fill operation itself still has no rim check, so a NEW planner must call this
 # guard too - a planner that can be replaced is only as safe as the guard it consults. Do not read
 # the paragraph above as "the session makes a planner harmless"; for this one behaviour it does not.
 #
@@ -141,7 +141,8 @@ def paired_rim_fingerprints(shape, defects) -> frozenset[str]:
 
     An empty set is the common and correct answer: an ordinary single opening has nothing to pair
     with, and the guard must not cost the case filling exists for. It never raises. When the
-    question cannot be answered - the kernel or the discriminator fails - it FAILS CLOSED: a
+    question cannot be answered - the kernel or the discriminator fails, or any candidate rim's
+    free wire cannot be resolved while another candidate exists - it FAILS CLOSED: a
     `RimsUnknown` holding every candidate rim, so no fill is proposed on a guess.
 
     THIS IS LOAD-BEARING. The targeted fill operation has no rim check of its own, so the planner's
@@ -156,6 +157,7 @@ def paired_rim_fingerprints(shape, defects) -> frozenset[str]:
 
         loops: list = []
         owners: list[str] = []
+        unresolved: list[str] = []
         for defect in defects:
             if defect.code is not DefectCode.open_shell or not defect.fingerprint:
                 continue
@@ -163,10 +165,19 @@ def paired_rim_fingerprints(shape, defects) -> frozenset[str]:
                 continue
             wire = free_wire_containing(shape, int(defect.entity_index))
             if wire is None:
+                unresolved.append(defect.fingerprint)
                 continue
             loops.append(wire)
             owners.append(defect.fingerprint)
 
+        if unresolved and len(loops) + len(unresolved) >= 2:
+            # AN UNRESOLVED RIM FAILS CLOSED, LIKE AN EXCEPTION. Skipping it left its partner with
+            # nothing to pair with, and the partner was filled - one end of a through-hole sealed,
+            # a blind hole handed back. A loop the check cannot see is not a loop known to be alone.
+            logger.warning("plan: %d candidate rim(s) have no resolvable free wire (%s); refusing "
+                           "every fill this pass rather than pairing the rest without them",
+                           len(unresolved), ", ".join(sorted(unresolved)[:5]))
+            return RimsUnknown(candidates)
         if len(loops) < 2:
             return frozenset()
         paired = _paired_rims(loops, shape=shape)

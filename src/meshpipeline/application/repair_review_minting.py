@@ -119,6 +119,22 @@ def _cap(items: list[dict]) -> tuple[list[dict], int]:
     return kept, len(items) - len(kept)
 
 
+def _pairing_failures() -> tuple[type[Exception], ...]:
+    """What `_pairing_keys` degrades on: a signature mismatch, or the kernel failing.
+
+    OCP's own exception root, `Standard_Failure`, is included when the kernel is installed."""
+    failures: tuple[type[Exception], ...] = (
+        ImportError, AttributeError, TypeError, ValueError, RuntimeError)
+    try:
+        from OCP.Standard import Standard_Failure
+    except ImportError:
+        return failures
+    return (*failures, Standard_Failure)
+
+
+_PAIRING_FAILURES = _pairing_failures()
+
+
 def _pairing_keys(shape, rims: list[EntityDefect]) -> dict[str, str]:
     """`{rim fingerprint: key}`, one key per PAIR of rims (the two ends of one missing tube).
 
@@ -153,9 +169,11 @@ def _pairing_keys(shape, rims: list[EntityDefect]) -> dict[str, str]:
         for f, _ in wires:
             members.setdefault(find(f), []).append(f)
         return {f: _digest(sorted(group)) for group in members.values() for f in group}
-    except (ImportError, AttributeError, TypeError, ValueError, RuntimeError) as exc:
+    except _PAIRING_FAILURES as exc:
         # ImportError/AttributeError/TypeError are a SIGNATURE MISMATCH with plan/conservative/
-        # operations; ValueError/RuntimeError are the kernel failing on a wire. Both degrade to the
+        # operations; ValueError/RuntimeError and OCP's Standard_Failure are the kernel failing on
+        # a wire or a face (`_lone_face_boundaries` walks every face). Uncaught, Standard_Failure
+        # took down the whole mint and every review item for the run was lost. Both degrade to the
         # coarse key, but loudly: tests/native/test_native_repair_minting.py pins the real signatures.
         logger.warning("repair review: rim pairing fell back to one key (%s: %s)",
                        type(exc).__name__, exc)

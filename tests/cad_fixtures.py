@@ -255,6 +255,121 @@ def write_missing_bore_wall_step(path: Path, unit: str = "MM", profile: str = "r
     return path
 
 
+def write_missing_passage_wall_step(path: Path, kind: str, unit: str = "MM") -> Path:
+    """A plate with ONE THROUGH-PASSAGE whose walls are missing, in any of the shapes that sealed.
+
+    The adversarial re-review's builder, as a fixture: cut the passage with a tool, then drop
+    EVERY face the tool contributed (read from the boolean's own history, not guessed from
+    geometry), sew the rest. What is left is two rims and nothing joining them.
+
+    `kind`: `round`, `hex`, `slot`, `square`, `pent`, `tri` (an 8 mm-class passage straight through
+    a 100x100x10 plate); `angled<deg>` (a 4 mm-radius round hole tilted that many degrees from the
+    plate normal - its exit rim sits thickness x tan(deg) to the side); `wedge<deg>` (a straight
+    hole through a plate whose top face is tilted that many degrees - the two rims not parallel).
+    Every one of the angled and wedge cases was delivered "Repaired within the conservative caps"
+    with the hole sealed while the guard demanded parallel rims on one normal.
+    """
+    import math
+
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepBuilderAPI import (
+        BRepBuilderAPI_MakeEdge,
+        BRepBuilderAPI_MakeFace,
+        BRepBuilderAPI_MakePolygon,
+        BRepBuilderAPI_MakeWire,
+        BRepBuilderAPI_Sewing,
+        BRepBuilderAPI_Transform,
+    )
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakePrism
+    from OCP.GC import GC_MakeArcOfCircle
+    from OCP.gp import gp_Ax1, gp_Ax2, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
+    from OCP.Interface import Interface_Static
+    from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp, TopExp_Explorer
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    def prism(wire, height=40.0):
+        return BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(wire).Face(),
+                                     gp_Vec(0, 0, height)).Shape()
+
+    def polygon(sides, radius, z=-15.0):
+        made = BRepBuilderAPI_MakePolygon()
+        for k in range(sides):
+            a = 2 * math.pi * k / sides + 0.3
+            made.Add(gp_Pnt(50 + radius * math.cos(a), 50 + radius * math.sin(a), z))
+        made.Close()
+        return made.Wire()
+
+    def slot(z=-15.0, length=14.0, radius=3.0):
+        h = length / 2
+        def at(x, y):
+            return gp_Pnt(50 + x, 50 + y, z)
+        wire = BRepBuilderAPI_MakeWire()
+        wire.Add(BRepBuilderAPI_MakeEdge(at(-h, -radius), at(h, -radius)).Edge())
+        wire.Add(BRepBuilderAPI_MakeEdge(GC_MakeArcOfCircle(
+            at(h, -radius), at(h + radius, 0), at(h, radius)).Value()).Edge())
+        wire.Add(BRepBuilderAPI_MakeEdge(at(h, radius), at(-h, radius)).Edge())
+        wire.Add(BRepBuilderAPI_MakeEdge(GC_MakeArcOfCircle(
+            at(-h, radius), at(-h - radius, 0), at(-h, -radius)).Value()).Edge())
+        return wire.Wire()
+
+    def cylinder(radius, height=40.0, at=(50, 50, -15)):
+        return BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(*at), gp_Dir(0, 0, 1)), radius,
+                                        height).Shape()
+
+    def rotated(shape, degrees, about=(50, 50, 5)):
+        turn = gp_Trsf()
+        turn.SetRotation(gp_Ax1(gp_Pnt(*about), gp_Dir(1, 0, 0)), math.radians(degrees))
+        return BRepBuilderAPI_Transform(shape, turn, True).Shape()
+
+    plate = BRepPrimAPI_MakeBox(100.0, 100.0, 10.0).Shape()
+    if kind == "round":
+        tool = cylinder(8.0)
+    elif kind in ("hex", "square", "pent", "tri"):
+        sides, radius = {"hex": (6, 8.0), "square": (4, 8.0), "pent": (5, 7.0), "tri": (3, 9.0)}[kind]
+        tool = prism(polygon(sides, radius))
+    elif kind == "slot":
+        tool = prism(slot())
+    elif kind.startswith("angled"):
+        tool = rotated(cylinder(4.0, 80.0, at=(50, 50, -35)), float(kind[len("angled"):]))
+    elif kind.startswith("wedge"):
+        slab = BRepPrimAPI_MakeBox(gp_Pnt(-50, -50, 10.0), 200, 200, 60).Shape()
+        cutter = rotated(slab, float(kind[len("wedge"):]), about=(50, 50, 10.0))
+        plate = BRepAlgoAPI_Cut(BRepPrimAPI_MakeBox(100.0, 100.0, 30.0).Shape(), cutter).Shape()
+        tool = cylinder(4.0)
+    else:
+        raise ValueError(f"unknown passage kind {kind!r}")
+
+    cut = BRepAlgoAPI_Cut(plate, tool)
+    walls = TopTools_IndexedMapOfShape()
+    tool_faces = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(tool, TopAbs_FACE, tool_faces)
+    for i in range(1, tool_faces.Extent() + 1):
+        face = tool_faces.FindKey(i)
+        modified = cut.Modified(face)
+        for piece in modified:
+            walls.Add(piece)
+        if not cut.IsDeleted(face) and modified.Size() == 0:
+            walls.Add(face)
+
+    sewing = BRepBuilderAPI_Sewing(1e-6)
+    explorer = TopExp_Explorer(cut.Shape(), TopAbs_FACE)
+    while explorer.More():
+        if not walls.Contains(explorer.Current()):
+            sewing.Add(explorer.Current())   # every face except the passage's walls
+        explorer.Next()
+    sewing.Perform()
+
+    writer = STEPControl_Writer()
+    if not Interface_Static.SetCVal_s("write.step.unit", unit):
+        raise RuntimeError(f"OCC refused write.step.unit={unit!r}")
+    writer.Transfer(sewing.SewedShape(), STEPControl_AsIs)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    writer.Write(str(path))
+    return path
+
+
 def write_mixed_assembly_step(path: Path, unit: str = "MM", side: float = SIDE) -> Path:
     """One sound SOLID body beside a body that is only loose faces, in one STEP assembly.
 

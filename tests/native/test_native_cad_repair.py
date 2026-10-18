@@ -330,6 +330,29 @@ def test_a_missing_bore_wall_is_never_sealed_shut(tmp_path, monkeypatch, profile
     assert not out.exists()
 
 
+@pytest.mark.parametrize("kind", [
+    "angled10", "angled30", "angled45", "wedge3", "wedge10",
+    "round", "hex", "slot", "square", "pent", "tri"])
+def test_a_through_passage_of_any_shape_angle_or_draft_is_never_sealed(tmp_path, monkeypatch,
+                                                                       kind):
+    """END TO END, AT THE DEFAULT CAPS. Every angled and wedge case here was delivered "Repaired
+    within the conservative caps" - faces 6 -> 8, volume back to the full plate - while the guard
+    demanded parallel rims on one normal. Both rims must be refused as a pair and nothing kept."""
+    from tests.cad_fixtures import write_missing_passage_wall_step
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_FILL_PLANAR_HOLES", True)
+
+    source = write_missing_passage_wall_step(tmp_path / f"{kind}.step", kind)
+    out = tmp_path / f"{kind}-repaired.step"
+    with pytest.raises(RepairRefused) as refused:
+        repair_step_file(source, out)
+
+    measured = refused.value.measurements
+    assert measured["operations_kept"] == 0, f"the {kind} through-hole was sealed"
+    assert [r["reason"] for r in measured["refusals"]].count("paired_rim") == 2, measured["refusals"]
+    assert not out.exists()
+
+
 def test_the_bore_rims_are_located_as_two_separate_openings(tmp_path):
     from tests.cad_fixtures import write_missing_bore_wall_step
 
