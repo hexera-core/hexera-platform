@@ -298,3 +298,16 @@ def test_a_group_with_nothing_proposed_says_why_there_is_no_fix_all(live):
     _click(live, ".rv-leave")
     assert live.evaluate("!document.querySelector('.rv-fixall')")
     assert "nothing was proposed" in _text(live, ".rv-why").lower()
+
+
+def test_a_group_redirect_marks_what_it_covered_answered_and_does_not_ask_it_again(live):
+    _open(live, extra="window.__script.redirect = {kind: 'directive', covered: ['item-2'], "
+                      "playback: 'i will sew every one - 2 paired defects are left out: each one "
+                      "needs its own review'};")
+    live.evaluate("document.querySelector('.rv-redirect-text').value = 'sew all of them'")
+    _click(live, ".rv-redirect-go")
+    assert "left out" in _text(live, ".rv-playback")
+    _click(live, ".rv-confirm")
+    # item 2 was covered: the sample is over, and the rest are the two still open
+    assert "defect 2 message" not in _text(live, ".rv-panel")
+    assert "6 defects still unanswered" in _text(live, ".rv-unanswered"), _text(live, ".rv-unanswered")

@@ -72,10 +72,14 @@ class DirectedPlanner:
             self._skip(directive, TARGET_ABSENT)
             return None
 
-        if op.name == FillPlanarHole.name and directive.get("source") != "engineer":
+        individual = directive.get("source") == "engineer" and len(refs) == 1
+        if op.name == FillPlanarHole.name and not individual:
             # A REPLAYED FILL ON A PAIRED RIM IS CORRUPT STATE: the autonomous pass could never
             # have kept one. An ENGINEER's approval may override the planner's refusal - a human
             # looking at the hole is the authority the guard lacks - and the caps still judge it.
+            # BUT ONLY FOR ONE RIM: the override is a person's look at THAT hole. A multi-target
+            # engineer fill comes from one decision over many (a group redirect) and could name
+            # both rims of a missing bore, sealing it - so it is judged by the guard like any other.
             # Read-only: a skipped directive must not touch the sticky history (refuse_filling,
             # paired_rim entries), or it would block the rules planner's later fills.
             rims = paired_rim_fingerprints(shape, defects) if shape is not None else frozenset()

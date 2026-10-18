@@ -194,3 +194,33 @@ def test_a_bare_string_target_is_one_fingerprint_not_its_characters():
         (_defect(),), __import__("meshpipeline").cad.repair.plan.RunHistory(), shape=None)
 
     assert [t.fingerprint for t in candidate.targets] == ["edge:a"]
+
+
+def _rim(fingerprint, index):
+    return EntityDefect(code=DefectCode.open_shell, severity=DefectSeverity.error,
+                        entity_type="edge", entity_index=index, message="rim",
+                        fingerprint=fingerprint, measurements={"boundary_edges": 4})
+
+
+def _fill_on(targets, source="engineer"):
+    return {"op": "fill_planar_hole", "targets": list(targets), "defect_code": "open_shell",
+            "defect_fingerprint": targets[0], "source": source, "item_id": "i-fill"}
+
+
+def test_an_engineer_fill_on_both_rims_of_a_pair_is_refused_by_the_rim_guard(monkeypatch):
+    # ONE decision naming both ends of a missing bore would seal it: the override is for one rim.
+    import meshpipeline.cad.repair.directives as directives
+    from meshpipeline.cad.repair.plan import RunHistory
+    monkeypatch.setattr(directives, "paired_rim_fingerprints",
+                        lambda shape, defects: frozenset({"rim:a", "rim:b"}))
+    rims = (_rim("rim:a", 1), _rim("rim:b", 2))
+
+    class _Nothing:
+        def propose(self, *a, **k): return None
+    planner = DirectedPlanner([_fill_on(["rim:a", "rim:b"])], _Nothing())
+    assert planner.propose(rims, RunHistory(), shape="shape") is None
+    assert [u["reason"] for u in planner.unplayable] == ["fill_refused"]
+
+    single = DirectedPlanner([_fill_on(["rim:a"])], _Nothing())
+    candidate = single.propose(rims, RunHistory(), shape="shape")
+    assert candidate is not None and [t.fingerprint for t in candidate.targets] == ["rim:a"]

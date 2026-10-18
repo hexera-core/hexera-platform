@@ -168,6 +168,21 @@ class RepairReviewRepository:
         return int(res.rowcount or 0)
 
 
+    async def reopen_covered(self, db: AsyncSession, item_ids: list[uuid.UUID]) -> int:
+        """Return items a group redirect covered to `open` (only those, only under an open park):
+        the redirect that answered them was replaced."""
+        if not item_ids:
+            return 0
+        open_parks = select(RepairReviewPark.id).where(RepairReviewPark.status == "open")
+        res = await db.execute(
+            update(RepairReviewItem)
+            .where(RepairReviewItem.id.in_(item_ids), RepairReviewItem.state == "redirected",
+                   RepairReviewItem.decision["covered_by"].is_not(None),
+                   RepairReviewItem.park_id.in_(open_parks))
+            .values(state="open", decision=None, decided_at=None))
+        return int(res.rowcount or 0)
+
+
 def _check_state(state: str) -> None:
     if state not in _DECIDED:
         raise ValueError(f"a decision state must be one of {sorted(_DECIDED)}, got {state!r}")

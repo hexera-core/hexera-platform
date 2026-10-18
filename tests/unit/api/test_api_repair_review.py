@@ -70,6 +70,7 @@ class World:
         self.dispatch = AsyncMock()
         self.repo.reopen_park = AsyncMock(return_value=True)
         self.repo.restore_open = AsyncMock(return_value=0)
+        self.repo.reopen_covered = AsyncMock(return_value=0)
         self.get_job = AsyncMock(return_value=self.job)
         self.interpret = AsyncMock()
         self.logged = []
@@ -190,7 +191,7 @@ async def test_a_redirect_stores_a_directive_and_a_refusal_stores_nothing():
         directive=directive)
     body = {"action": "redirect", "text": "sew it", "item_id": str(uuid.UUID(int=1))}
     r = await world.call("POST", "/review/decision", json=body)
-    assert r.json() == {"kind": "directive", "playback": "i will sew the faces"}
+    assert r.json() == {"kind": "directive", "playback": "i will sew the faces", "covered": []}
     _a, args, _k = world.repo.record_decision.mock_calls[0]
     assert args[2] == "redirected" and args[3]["directive"]["op"] == "sew_faces"
 
@@ -325,3 +326,79 @@ async def test_the_compensation_can_only_pull_back_a_job_nobody_claimed():
     back = world.job_repo.transition.mock_calls[-1]
     assert back.args[2] == JobStatus.pending_review
     assert set(back.kwargs["allow"]) == {JobStatus.pending}, "a running job could be pulled back"
+
+
+def _fill_interpretation(world, targets):
+    world.interpret.return_value = SimpleNamespace(
+        kind="directive", playback="i will fill every one of these holes", reason="",
+        scope="group", directive={"op": "fill_planar_hole", "targets": list(targets),
+                                  "defect_code": "open_shell", "defect_fingerprint": targets[0],
+                                  "source": "engineer", "item_id": ""})
+
+
+async def test_a_group_redirect_never_targets_a_paired_member_and_says_so():
+    g = "open_shell:fill_planar_hole"
+    items = [_item(1, group=g), _item(2, group=g), _item(3, group=g, pairing="p"),
+             _item(4, group=g, pairing="p")]
+    world = World(items)
+    _fill_interpretation(world, [i.fingerprint for i in items])
+    r = await world.call("POST", "/review/decision",
+                         json={"action": "redirect", "text": "fill all of them",
+                               "item_id": str(uuid.UUID(int=1))})
+    body = r.json()
+    assert body["kind"] == "directive"
+    assert "2 paired defects" in body["playback"] and "own review" in body["playback"]
+    recorded = {c.args[1]: (c.args[2], c.args[3]) for c in world.repo.record_decision.mock_calls}
+    state, decision = recorded[uuid.UUID(int=1)]
+    assert state == "redirected"
+    assert decision["directive"]["targets"] == ["edge:0001", "edge:0002"]
+    # no fill directive anywhere names a paired member
+    paired = {"edge:0003", "edge:0004"}
+    for _state, d in recorded.values():
+        assert not paired & set((d.get("directive") or {}).get("targets") or ())
+    assert uuid.UUID(int=3) not in recorded and uuid.UUID(int=4) not in recorded
+    # the covered member is recorded as answered by the group redirect, with no directive of its own
+    member_state, member = recorded[uuid.UUID(int=2)]
+    assert member_state == "redirected" and member["covered_by"] == str(uuid.UUID(int=1))
+    assert "directive" not in member
+    assert body["covered"] == [str(uuid.UUID(int=2))]
+
+
+async def test_a_group_redirect_given_on_a_paired_defect_is_refused_and_records_nothing():
+    g = "open_shell:fill_planar_hole"
+    items = [_item(3, group=g, pairing="p"), _item(4, group=g, pairing="p")]
+    world = World(items)
+    _fill_interpretation(world, [i.fingerprint for i in items])
+    r = await world.call("POST", "/review/decision",
+                         json={"action": "redirect", "text": "fill both",
+                               "item_id": str(uuid.UUID(int=3))})
+    assert r.json()["kind"] == "refusal" and "pair" in r.json()["playback"]
+    world.repo.record_decision.assert_not_called()
+
+
+async def test_the_covered_members_go_through_as_answered_not_unreviewed_and_add_no_directive():
+    g = "small_edge:fix_small_edges"
+    redirect = {"op": "sew_faces", "targets": ["edge:0001", "edge:0002"],
+                "defect_code": "small_edge", "defect_fingerprint": "edge:0001",
+                "source": "engineer", "item_id": str(uuid.UUID(int=1))}
+    items = [_item(1, group=g, state="redirected", decided=1, decision={"directive": redirect}),
+             _item(2, group=g, state="redirected", decided=1,
+                   decision={"covered_by": str(uuid.UUID(int=1))})]
+    world = World(items)
+    assert (await world.call("POST", "/review/run")).status_code == 202
+    directives = world.dispatch.call_args.args[2]["repair_directives"]
+    assert [d["targets"] for d in directives] == [["edge:0001", "edge:0002"]]
+    assert not [c for c in world.repo.record_decision.mock_calls if c.args[2] == "unreviewed"]
+
+
+async def test_a_new_answer_on_the_redirected_item_reopens_the_members_it_covered():
+    g = "small_edge:fix_small_edges"
+    items = [_item(1, group=g, state="redirected", decided=1, decision={"directive": {}}),
+             _item(2, group=g, state="redirected", decided=1,
+                   decision={"covered_by": str(uuid.UUID(int=1))})]
+    world = World(items)
+    world.repo.reopen_covered = AsyncMock(return_value=1)
+    await world.call("POST", "/review/decision",
+                     json={"action": "leave", "item_id": str(uuid.UUID(int=1))})
+    world.repo.reopen_covered.assert_awaited_once()
+    assert world.repo.reopen_covered.call_args.args[1] == [uuid.UUID(int=2)]

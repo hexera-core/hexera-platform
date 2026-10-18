@@ -198,8 +198,9 @@ async def decide(job_id: uuid.UUID, body: DecisionIn, owner_id: str = Depends(ow
         if item is None:
             raise HTTPException(404, "Review item not found")
 
+        covered: list = []
+        text, playback = (body.text or "").strip(), ""
         if body.action == "redirect":
-            text = (body.text or "").strip()
             if not text:
                 raise HTTPException(422, "Say what you want tried instead")
             from meshpipeline.agents.repair_review.interpreter import interpret
@@ -211,11 +212,26 @@ async def decide(job_id: uuid.UUID, body: DecisionIn, owner_id: str = Depends(ow
                               started=started)
                 return {"kind": "refusal", "playback": interp.playback,
                         "reason": interp.reason or interp.playback}
+            playback = interp.playback
             directive = {**interp.directive, "item_id": str(item.id)}
+            if interp.scope == "group":
+                scoped = _group_scope(item, items, playback)
+                if scoped is None:
+                    reason = ("this defect is one of a pair, and the answer for one changes what "
+                              "its partner means, so it can't cover the group - say what to do "
+                              "with this one alone")
+                    _log_decision(job_id, item_id=item.id, group_key=item.group_key,
+                                  action="redirect_refused", proposal=item.proposal, text=text,
+                                  started=started)
+                    return {"kind": "refusal", "playback": reason, "reason": reason}
+                covered, playback = scoped
+                directive["targets"] = [fp for fp in [item.fingerprint, *(m.fingerprint
+                                                                         for m in covered)] if fp]
             decision = {"action": "redirect", "text": text, "directive": directive,
-                        "playback": interp.playback, "scope": interp.scope}
+                        "playback": playback, "scope": interp.scope}
             state = "redirected"
-            reply = {"kind": "directive", "playback": interp.playback}
+            reply = {"kind": "directive", "playback": playback,
+                     "covered": [str(m.id) for m in covered]}
         elif body.action == "accept":
             if not isinstance(item.proposal, dict) or not item.proposal.get("op"):
                 raise HTTPException(409, "Nothing was proposed for this defect; leave it or "
@@ -227,6 +243,20 @@ async def decide(job_id: uuid.UUID, body: DecisionIn, owner_id: str = Depends(ow
 
         try:
             await repo.record_decision(db, item.id, state, decision)
+            # THE MEMBERS A GROUP REDIRECT COVERED are answered by it: recorded as such, so they
+            # neither go through as `unreviewed` nor carry a directive of their own (the one
+            # directive, on this item, already targets them).
+            for member in covered:
+                await repo.record_decision(db, member.id, "redirected", {
+                    "action": "redirect", "scope": "group", "covered_by": str(item.id),
+                    "text": text, "playback": playback})
+            # ...and a NEW answer on this item un-covers the members its old group redirect held:
+            # they are open again, never left holding an answer nobody gave them.
+            now_covered = {m.id for m in covered}
+            orphaned = [m.id for m in items if m.id not in now_covered
+                        and (m.decision or {}).get("covered_by") == str(item.id)]
+            if orphaned:
+                await repo.reopen_covered(db, orphaned)
         except _park_closed() as exc:
             raise HTTPException(409, "This review is already closed") from exc
         await db.commit()
@@ -235,6 +265,26 @@ async def decide(job_id: uuid.UUID, body: DecisionIn, owner_id: str = Depends(ow
                   proposal=item.proposal, text=body.text, started=started,
                   directive=directive_out if isinstance(directive_out, dict) else None)
     return reply
+
+
+def _group_scope(item, items: list, playback: str) -> tuple[list, str] | None:
+    """`(covered members, playback)` for a group-scoped redirect, or None when it cannot have one.
+
+    A GROUP REDIRECT NEVER TARGETS A PAIRED DEFECT. The answer for one rim of a pairing changes
+    what its partner means - one decision filling both would seal a bore - so paired members each
+    need their own review, and the playback says they were left out. A redirect given ON a paired
+    defect cannot cover the group at all (None). Members already answered keep their answer.
+    """
+    if item.pairing_key:
+        return None
+    same = [m for m in items if m.group_key == item.group_key and m.id != item.id]
+    covered = [m for m in same if m.state == "open" and m.fingerprint and not m.pairing_key]
+    paired = [m for m in same if m.pairing_key]
+    if paired:
+        n = len(paired)
+        playback = (f"{playback} - {n} paired {'defect' if n == 1 else 'defects'} in this group "
+                    f"{'is' if n == 1 else 'are'} left out: each one needs its own review")
+    return covered, playback
 
 
 def _replay_directives(kept: list) -> list[dict]:

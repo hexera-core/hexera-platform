@@ -229,6 +229,8 @@ export async function openReview(jobId, opts = {}) {
 
   function advance() {
     const g = groups[gi];
+    // a defect answered meanwhile (a group redirect covered it) is not asked again
+    if (!readonly) while (queue.length && queue[0].state !== "open") queue.shift();
     if (queue.length) { shownIdx += 1; return itemScreen(queue[0]); }
     if (phase === "sample" && !readonly && restOf(g).length) return applyAllScreen();
     enterGroup(gi + 1);
@@ -264,10 +266,21 @@ export async function openReview(jobId, opts = {}) {
     if (item.state === "redirected") panel.querySelector(".rv-playback-slot").innerHTML = STANDING;
   }
 
+  /* A GROUP REDIRECT ANSWERS THE MEMBERS IT COVERED (never a paired one - the server leaves those
+     out and says so), and a new answer on the same defect hands them back: the server reopens
+     them, and so does the screen. */
+  function cover(item, ids) {
+    const now = new Set(ids || []);
+    (item.covered || []).filter((id) => !now.has(id)).forEach((id) => {
+      const m = itemById.get(id); if (m && m.state === "redirected") m.state = "open"; });
+    now.forEach((id) => { const m = itemById.get(id); if (m) m.state = "redirected"; });
+    item.covered = [...now];
+  }
+
   async function decide(item, action, state) {
     const r = await postReviewDecision(jobId, { item_id: item.id, action });
     if (!r.ok) return say(failure(r, "that answer was not saved"));
-    item.state = state; queue.shift(); advance();
+    item.state = state; cover(item, []); queue.shift(); advance();
   }
 
   async function redirect(item) {
@@ -278,7 +291,7 @@ export async function openReview(jobId, opts = {}) {
     if (!r.ok) return say(failure(r, "that was not understood by the server"));
     const slot = panel.querySelector(".rv-playback-slot");
     if (r.data.kind === "directive") {
-      item.state = "redirected"; paintRail();
+      item.state = "redirected"; cover(item, r.data.covered); paintRail();
       slot.innerHTML = `<div class="rv-playback"><p>${esc(r.data.playback)}</p>
         <p class="rv-recorded">that is recorded as your answer for this defect.</p>
         <button type="button" class="rv-confirm">That's right</button>

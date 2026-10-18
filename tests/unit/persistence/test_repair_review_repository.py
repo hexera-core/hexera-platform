@@ -140,3 +140,12 @@ async def test_the_decided_items_are_read_fresh():
     db = _Db(rows=[RepairReviewItem(id=uuid.uuid4())])
     await repo.decided_items(db, uuid.uuid4())
     assert db.statements[0].get_execution_options().get("populate_existing") is True
+
+
+async def test_reopening_covered_items_touches_only_group_covered_redirects_under_an_open_park():
+    db = _Db(rowcount=2)
+    assert await repo.reopen_covered(db, [uuid.uuid4(), uuid.uuid4()]) == 2
+    sql = _sql(_updates(db)[0])
+    assert "state = 'redirected'" in sql.replace("repair_review_items.", "")
+    assert "covered_by" in sql and "status = 'open'" in sql.replace("repair_review_parks.", "")
+    assert await repo.reopen_covered(_Db(), []) == 0
