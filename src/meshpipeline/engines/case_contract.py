@@ -269,23 +269,12 @@ def _snappy_boundary(ws: Path) -> CaseBoundary | None:
 
 def _passage_solids(ws: Path) -> list[str]:
     """The solids of every further passage's surface a cfMesh case lists in its passages record."""
-    import json
-
-    from meshpipeline.cad.fluid_passages import PASSAGES_FILE
-    rec = ws / PASSAGES_FILE
-    if not rec.exists():
-        return []
+    from meshpipeline.cad.fluid_passages import passage_surface_files
     try:
-        runs = json.loads(rec.read_text()).get("runs") or []
-    except (OSError, ValueError, AttributeError) as exc:
-        raise CaseUnreadable(f"{PASSAGES_FILE} is unreadable: {exc}") from exc
-    out: list[str] = []
-    for rel in runs:
-        surf = ws / str(rel) / "geom.stl"
-        if not surf.exists():
-            raise CaseUnreadable(f"the surface of passage {rel} is missing")
-        out.extend(stl_solid_names(surf))
-    return out
+        surfaces = passage_surface_files(ws)
+    except ValueError as exc:
+        raise CaseUnreadable(str(exc)) from exc
+    return [name for surf in surfaces for name in stl_solid_names(surf)]
 
 
 def _cfmesh_boundary(ws: Path) -> CaseBoundary | None:

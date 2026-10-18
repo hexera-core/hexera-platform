@@ -136,12 +136,20 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
     # reads them and builds the mesh. No engine-name branches - capability by declaration.
     _stls = (R.review_geometry_stls(ws, internal_flow)
              if hasattr(R, "review_geometry_stls") else [ws / "geom.stl"])
+    try:
+        # a case meshed as several separate passages (cad/fluid_passages): every one is reviewed
+        from meshpipeline.cad.fluid_passages import passage_surface_files
+        _stls = [*_stls, *passage_surface_files(ws)]
+    except ValueError:
+        logger.exception("Executor: the further passages' surfaces could not be read (non-fatal)")
     _solids: dict = {}
     for _stl in _stls:
         if not Path(_stl).exists():
             continue
         try:
-            _solids.update(R.read_stl_solids(_stl))
+            for _name, _tris in R.read_stl_solids(_stl).items():
+                # one patch on two passages (the wall of each) is both pieces, not the last one
+                _solids.setdefault(_name, []).extend(_tris)
         except Exception:
             logger.exception("Executor: reading review geometry %s failed", _stl)
     if _solids:

@@ -246,6 +246,28 @@ def passage_surfaces(plan: PassagePlan) -> list[dict[str, list]]:
     return out
 
 
+def passage_surface_files(ws: Path) -> list[Path]:
+    """The surface of every further passage a case's PASSAGES_FILE lists, in its order ([] for a
+    case of one passage). Raises ValueError for a record that cannot be read or names a surface
+    that is missing: a case that says it has more passages than it carries is not one to trust."""
+    import json
+
+    rec = Path(ws) / PASSAGES_FILE
+    if not rec.exists():
+        return []
+    try:
+        runs = json.loads(rec.read_text()).get("runs") or []
+    except (OSError, ValueError, AttributeError) as exc:
+        raise ValueError(f"{PASSAGES_FILE} is unreadable: {exc}") from exc
+    out = []
+    for rel in runs:
+        surf = Path(ws) / str(rel) / "geom.stl"
+        if not surf.exists():
+            raise ValueError(f"the surface of passage {rel} is missing")
+        out.append(surf)
+    return out
+
+
 def plan_staged(ws: Path, srcs: dict, wall_name: str, declaration: list | None) -> PassagePlan | None:
     """The passage plan of a staged internal surface, recorded beside the case as
     PASSAGES_READ_FILE (what was meshed, left out or refused, and why); None when the surface
@@ -365,5 +387,5 @@ def _winding(T: np.ndarray, p: np.ndarray) -> float:
 
 
 __all__ = ["INSIDE_WINDING", "MAX_PASSAGES", "MAX_PIECES", "PASSAGES_FILE", "PASSAGES_READ_FILE", "POCKET_SHARE", "Passage", "PassagePlan", "PassageReading",
-           "passage_surfaces", "plan_passages", "plan_staged", "read_passages",
+           "passage_surface_files", "passage_surfaces", "plan_passages", "plan_staged", "read_passages",
            "stranded_openings", "write_passage"]
