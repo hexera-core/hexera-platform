@@ -139,10 +139,11 @@ def test_cfmesh_refines_the_narrow_branch_in_a_box_and_sizes_the_band_from_the_t
         passage_radius={"min": 0.005, "p05": 0.005, "median": 0.05, "band": 0.05},
         passage_field=(pts, r, areas))
     text = (tmp_path / "system" / "meshDict").read_text()
-    assert out["wall_cell_size"] == pytest.approx(2 * 0.05 / 13, rel=1e-3), "band from the trunk"
+    assert out["wall_cell_size"] == pytest.approx(2 * 0.05 / R.CFMESH_CELLS_ACROSS, rel=1e-3),         "band from the trunk"
     assert "narrowPassage0" in text and "objectRefinements" in text
     assert out["narrow_regions"] and all(
-        b["cell_size"] == pytest.approx(2 * 0.005 / 13, rel=1e-3) for b in out["narrow_regions"])
+        b["cell_size"] == pytest.approx(2 * 0.005 / R.CFMESH_CELLS_ACROSS, rel=1e-3)
+        for b in out["narrow_regions"])
 
 
 def test_snappy_turns_the_narrow_boxes_into_thin_regions_over_the_wall_level():

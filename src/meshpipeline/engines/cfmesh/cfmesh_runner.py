@@ -416,6 +416,58 @@ def _plan_run(*, volume: float, max_cell: float, wall_cell: float, wall_area: fl
     return plan
 
 
+#: INTERNAL FLOW: the cells cfMesh is asked to put across the passage - the wall band at its
+#: radius, the background at the typical one, each narrow passage at its own. The resolution
+#: floor counts 12 at the narrowest wall, on the delivered mesh's own boundary edges and chords,
+#: and those scatter round the size planned on the staged wall. Sized for 13 - the shared target,
+#: half a cell over the floor - every dev-side cfMesh mesh refused at the floor in the verify-5fix
+#: sweep (bar one that had meshed the wall's metal) read just under it at its 5th percentile:
+#: 11.0, 11.2, 11.6, 11.6, 11.6 (the mitral phantom's atrium cover and four venturi orifice
+#: parts). 15 gives the reading two cells of room (about 1.5x the background cells of 13; the
+#: ceiling of 40 is untouched, and internal_band_cells below takes much of the cost back).
+CFMESH_CELLS_ACROSS = 15.0
+#: ...and the fewest a wall point may get before it is refined: the wall band once it is put on the
+#: octree, and the narrow-passage detection. cfMesh refines a cell by halving while it is larger
+#: than the size asked, so a band asked for 0.1% under the background cell costs a whole level -
+#: twice the cells across, eight times the cells in the band. annular_006 asked 1.55269 mm under a
+#: 1.55492 mm background and came out at 6.3 M cells in 1,237 s of a 1,200 s cap; annular_010 at
+#: 6.0 M in 1,335 s (verify-5fix). So the band is put on the octree by what it must hold
+#: (internal_band_cells), not by a size a hair off. Half a cell under the 15 asked: at 15 itself,
+#: the reading's own scatter along a plain pipe (14.98 here, 15.02 there) boxed whole walls one
+#: level finer - 16 to 31 times the cells on five dev bends, reducers and transitions, offline.
+CFMESH_MIN_CELLS_ACROSS = CFMESH_CELLS_ACROSS - 0.5
+#: When the background cell is at most this much coarser than the band needs, the whole background
+#: is made that little finer (at most twice its cells) rather than the band a whole level finer
+#: (eight times the cells over a band that, in a tube, is most of the fluid).
+BAND_BACKGROUND_SHRINK = 2.0 ** (1.0 / 3.0)
+
+
+def internal_band_cells(max_cell: float, wall_cell: float, band_radius: float, *,
+                        min_across: float = CFMESH_MIN_CELLS_ACROSS,
+                        shrink: float = BAND_BACKGROUND_SHRINK) -> tuple[float, float]:
+    """(background cell, wall band cell) for an internal band of `band_radius`, on the octree:
+      * the background already puts `min_across` across the band - the band IS the background
+        (no refinement at all, the wall asks for exactly maxCellSize);
+      * it is short by no more than `shrink` - the background is made just fine enough instead;
+      * else the coarsest level (max_cell / 2^n) holding `min_across`, nudged 0.1% up so cfMesh
+        stops there - or `wall_cell` when that is coarser than the level (between two levels;
+        cfMesh's halving lands on the finer one either way)."""
+    if not (max_cell > 0.0 and wall_cell > 0.0 and band_radius > 0.0):
+        return max_cell, wall_cell
+    need = 2.0 * band_radius / float(min_across)
+    if max_cell <= need * (1.0 + 1e-9):
+        return max_cell, max_cell
+    if max_cell <= shrink * need:
+        return need, need
+    n = 0
+    while n < 12 and max_cell / 2 ** n > need * (1.0 + 1e-9):
+        n += 1
+    level = max_cell / 2 ** n
+    if level < wall_cell:
+        return max_cell, wall_cell
+    return max_cell, level * 1.001
+
+
 def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
                        patches: list, body_bbox, L: float,
                        domain_min, domain_max, strategy: dict | None = None,
@@ -447,19 +499,30 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
     # max_cell/16 (cfMesh halves - an unreachable size just wastes the run).
     wall_cell = float(strategy.get("wall_cell", L / 20.0))
     # PASSAGE CAPS (internal flow): whatever the strategy asked for, the wall band is no
-    # coarser than 13 cells across the narrowest passage and the background no coarser than
-    # 13 across the typical one, with the band one radius thick so a narrow passage is filled
-    # at the wall size end to end. L/20 put 2.7 cells across a 173 mm bore on a 1.26 m reducer.
+    # coarser than CFMESH_CELLS_ACROSS (15) across its passage and the background no coarser
+    # than 15 across the typical one, with the band one radius thick so a narrow passage is
+    # filled at the wall size end to end - then put on the coarsest octree level that still holds
+    # CFMESH_MIN_CELLS_ACROSS (internal_band_cells). L/20 put 2.7 cells across a 173 mm bore on
+    # a 1.26 m reducer.
     _caps: dict = {}
+    _band_r = 0.0               # the band radius the caps sized the wall for, when they did
     if passage_radius and passage_radius.get("p05") and passage_radius.get("median"):
         from meshpipeline.engines.passage import size_caps
-        _caps = size_caps(passage_radius)
+        _caps = size_caps(passage_radius, target=CFMESH_CELLS_ACROSS)
         max_cell = min(max_cell, _caps["max_cell"])
+        _asked = strategy.get("wall_cell")
+        # the wall size is the caps' own unless the builder asked for a finer one (a retry
+        # answering the resolution floor), which stands as asked
+        if _asked is None or float(_asked) >= _caps["wall_cell"]:
+            _band_r = float(passage_radius.get("band") or passage_radius["p05"])
         wall_cell = min(wall_cell, _caps["wall_cell"])
     wall_cell = max(wall_cell, max_cell / float(2 ** max(1, int(max_halvings))))
     if snap_wall:
         # a wall size the engine chose from the budget: the octree level at or above it
         wall_cell = snap_to_octree(max_cell, wall_cell)
+    elif _band_r > 0.0:
+        # ...and the internal band the same way, by the cells it must put across the band
+        max_cell, wall_cell = internal_band_cells(max_cell, wall_cell, _band_r)
     # PASSAGE CEILING: neither the wall band nor a refinement box may cut finer than 40 cells
     # across the narrowest passage (the top of industry practice). A builder that asked for
     # 79 across turned a tee into 16.4 M hexes, an 886 MB deliverable and a 161-minute run.
@@ -496,6 +559,7 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
         _narrow = narrow_passage_regions(
             passage_field[0], passage_field[1], cell_m=wall_cell,
             areas=(passage_field[2] if len(passage_field) > 2 else None),
+            target=CFMESH_CELLS_ACROSS, detect=CFMESH_MIN_CELLS_ACROSS,
             budget_cells=(0.5 * cell_budget if cell_budget else None))
         _narrow_note = str(getattr(_narrow, "note", "") or "")
     # the builder's own regions stop at the ceiling; a narrow passage's box is sized for it
@@ -601,7 +665,9 @@ def _passage_sizing(t: dict, srcs: dict, wall_key: str, declaration: list):
         port_radius_stats,
         staged_passage_field,
     )
-    raw = staged_passage_field(t, srcs, wall_key, declaration, corrected=False)
+    # read along each side of a sharp edge too: a short orifice or throat has no other points
+    raw = staged_passage_field(t, srcs, wall_key, declaration, corrected=False,
+                               read_sharp_edges=True)
     # the ports vouch for the RAW reading: held to the port widths first, a reading off a hollow
     # part's outer skin (straight_reducer_015: 210-336 mm on an 82-165 mm bore) passed the check
     # at the ports and sized the whole wall from the skin (5.3 cells across, lab 2026-10-04).
@@ -624,7 +690,8 @@ def _passage_sizing(t: dict, srcs: dict, wall_key: str, declaration: list):
     chosen = {**field_radius_stats(*field), "source": chosen["source"]}
     # the band at the NARROWEST passage while that is affordable (a one-width part meshes as it
     # always did); the typical passage, with the narrow ones refined locally, when it is not
-    if band_shell_cells(field[0], field[1], field[2], float(chosen["p05"])) <= GLOBAL_BAND_MAX_CELLS:
+    if band_shell_cells(field[0], field[1], field[2], float(chosen["p05"]),
+                        target=CFMESH_CELLS_ACROSS) <= GLOBAL_BAND_MAX_CELLS:
         chosen = {**chosen, "band": chosen["p05"], "band_from": "narrowest"}
     else:
         chosen = {**chosen, "band_from": "typical"}

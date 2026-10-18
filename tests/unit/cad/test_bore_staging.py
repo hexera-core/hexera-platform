@@ -82,3 +82,29 @@ def test_a_solid_that_is_the_flow_is_not_cut(tmp_path):
     t = tessellate_internal(_step(rod, tmp_path / "r.step"), tmp_path / "stls", prepared=_prepared())
     assert t["wall_bounds_fluid"] is True
     assert bore_only_surfaces(dict(t["stls"]), "wall", tmp_path / "bore") is None
+
+
+def test_a_square_to_round_transition_with_its_inlet_on_a_coordinate_plane_stages_its_bore(
+        tmp_path):
+    # transition_013 (our own generator's square-to-round transition, 27 mm wall): its inlet face
+    # lies on x = 0. A ray from inside the bore met the flat inlet cap a rounding error outside
+    # the cap's zero-thickness bounds (x = -1.7e-18) and the ray caster dropped the hit (tolerance
+    # 0), so no wall piece read as the cavity's, this staging returned None without a word, and
+    # cfMesh meshed the metal as well: 4.9 cells "across the passage" that was the 27 mm wall
+    # (verify-5fix, 2026-10-18).
+    from pathlib import Path
+
+    from meshpipeline.engines.port_binding import declaration_targets
+    src = Path(__file__).parents[2] / "fixtures" / "geometry" / "transition_rect_to_round.step"
+    ports = [{"name": "inlet", "type": "inlet", "near_mm": [0, 0, 0],
+              "width_mm": 88.02, "height_mm": 544.74},
+             {"name": "outlet", "type": "outlet", "near_mm": [1067.14, 0, 0],
+              "diameter_mm": 62.04}]
+    t = tessellate_internal(src, tmp_path / "stls", prepared=_prepared(),
+                            declared_ports=declaration_targets(ports))
+    out = bore_only_surfaces(dict(t["stls"]), "wall", tmp_path / "bore")
+    assert out is not None, "the bore-only staging was skipped: the cavity was never told apart"
+    tris = {k: _read(v) for k, v in out.items()}
+    assert _area(tris["inlet"]) == pytest.approx(0.54474 * 0.08802, rel=0.02)
+    assert _area(tris["outlet"]) == pytest.approx(math.pi * 0.03108 ** 2, rel=0.05)
+    assert open_edges(np.concatenate(list(tris.values())), 1e-9) == 0
