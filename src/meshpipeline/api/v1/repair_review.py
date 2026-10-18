@@ -286,6 +286,12 @@ async def run_review(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
         # The status CAS first: of two racing runs only one wins, and only it closes the park.
         if await job_repo.transition(db, job_id, JobStatus.pending) != TransitionResult.applied:
             raise HTTPException(409, "This run is no longer waiting for a review")
+        # THE RE-RUN REUSES THIS ROW: the parked execution's lease, execution id, deadline and
+        # billed span are reset beside the CAS, so the re-run claims cleanly, gets its own budget
+        # and is charged for execution time only (job_repository.review_rerun_reset).
+        await job_repo.reset_for_review_rerun(db, job_id,
+                                              started_at=getattr(job, "started_at", None),
+                                              ended_at=getattr(job, "ended_at", None))
         unanswered = [i.id for i in items if i.state == "open"]
         try:
             for item_id in unanswered:
@@ -321,7 +327,10 @@ async def _compensate(job_id: uuid.UUID, park_id: uuid.UUID, unanswered: list) -
     from meshpipeline.persistence.job_state import TransitionResult
     try:
         async with get_db() as db:
-            back = await job_repo.transition(db, job_id, JobStatus.pending_review)
+            # PINNED to `pending`: only the job this route itself flipped and nothing claimed. A
+            # job a worker already took (running) is never pulled back into review.
+            back = await job_repo.transition(db, job_id, JobStatus.pending_review,
+                                             allow={JobStatus.pending})
             if back == TransitionResult.applied:
                 await repo.reopen_park(db, park_id)
                 await repo.restore_open(db, unanswered)

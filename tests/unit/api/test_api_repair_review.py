@@ -46,6 +46,7 @@ def _park(kept=()):
 
 def _job(status="pending_review"):
     return SimpleNamespace(id=_JOB, status=JobStatus(status),
+                           started_at=_T0, ended_at=_T0 + timedelta(minutes=20),
                            dispatch_payload={"job_id": str(_JOB), "owner_id": "u"})
 
 
@@ -65,6 +66,7 @@ class World:
         self.repo.close_park = AsyncMock()
         self.job_repo = MagicMock()
         self.job_repo.transition = AsyncMock(return_value=TransitionResult.applied)
+        self.job_repo.reset_for_review_rerun = AsyncMock()
         self.dispatch = AsyncMock()
         self.repo.reopen_park = AsyncMock(return_value=True)
         self.repo.restore_open = AsyncMock(return_value=0)
@@ -302,3 +304,24 @@ async def test_a_park_closed_under_the_unreviewed_marking_is_a_409():
     world.repo.record_decision.side_effect = ParkClosedError("closed")
     assert (await world.call("POST", "/review/run")).status_code == 409
     world.dispatch.assert_not_called()
+
+
+async def test_run_resets_the_reused_row_beside_the_status_cas():
+    world = World([_item(1, state="accepted", decided=1)])
+    order = []
+    world.job_repo.transition.side_effect = lambda *a, **k: order.append("cas") or \
+        TransitionResult.applied
+    world.job_repo.reset_for_review_rerun.side_effect = lambda *a, **k: order.append("reset")
+    assert (await world.call("POST", "/review/run")).status_code == 202
+    assert order == ["cas", "reset"]
+    kw = world.job_repo.reset_for_review_rerun.call_args.kwargs
+    assert kw["started_at"] == _T0 and kw["ended_at"] == _T0 + timedelta(minutes=20)
+
+
+async def test_the_compensation_can_only_pull_back_a_job_nobody_claimed():
+    world = World([_item(1, state="accepted", decided=1)])
+    world.dispatch.side_effect = RuntimeError("broker down")
+    assert (await world.call("POST", "/review/run")).status_code == 503
+    back = world.job_repo.transition.mock_calls[-1]
+    assert back.args[2] == JobStatus.pending_review
+    assert set(back.kwargs["allow"]) == {JobStatus.pending}, "a running job could be pulled back"
