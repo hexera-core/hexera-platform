@@ -1424,6 +1424,33 @@ async def _separate_fluid(R, workspace: Path, state, source_path: str, *, job_id
         return t
 
 
+def _one_passage(workspace: Path, srcs: dict, wall_key: str, declaration: list) -> dict:
+    """THE PASSAGE THE SEED FILLS, read before the run (cad/fluid_passages): snappyHexMesh keeps the
+    one region its seed is in, so a declared opening on any other passage came back with no faces.
+    A declared opening into nothing meshable, or openings on several passages that do not connect,
+    are said now in the user's words (InternalSurfaceError); closed pieces no opening touches are
+    left out of the surface. The staged surfaces, unchanged when there is nothing to change."""
+    from meshpipeline.cad.fluid_passages import passage_surfaces, plan_staged, write_passage
+    from meshpipeline.cad.internal_surface import InternalSurfaceError
+
+    plan = plan_staged(workspace, srcs, wall_key, declaration)
+    if plan is None or not plan.reading.read or not plan.meshed:
+        return srcs
+    why = plan.refusal()
+    if not why and plan.several:
+        why = (f"the confirmed openings lie on {len(plan.meshed)} separate passages that do not connect ("
+               + "; ".join(f"passage {k + 1}: {', '.join(p.ports)}" for k, p in enumerate(plan.meshed))
+               + "), and this mesher fills the one passage its seed point is in - the openings on the others "
+               "would come back empty. Mesh it with cfMesh, which meshes separate passages side by side, "
+               "or mesh each passage as a file of its own.")
+    if why:
+        raise InternalSurfaceError(why)
+    if not plan.left_out:
+        return srcs
+    logger.info("internal build: %s", "; ".join(plan.notes()))
+    return write_passage(passage_surfaces(plan)[0], Path(workspace) / "_passages" / "p0")
+
+
 async def _build_internal_deterministic(workspace: Path, state: PipelineState, *, job_id: str,
                                         publish: ExecutionEventPublisher, source_path: str,
                                         initial_plan: dict | None,
@@ -1461,6 +1488,7 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
         if t.get("folded_stls"):
             # blind plugs are wall, physically: their triangles join the wall surface
             _srcs[_wall_key] = [_srcs[_wall_key], *t["folded_stls"].values()]
+        _srcs = _one_passage(workspace, _srcs, _wall_key, state.get("intake_patches") or [])
         prep = R.prepare_surface_internal(workspace, surfaces_src=_srcs)
     except (_fence.StaleWorkerFenced, StaleExecutionPublish):
         raise
