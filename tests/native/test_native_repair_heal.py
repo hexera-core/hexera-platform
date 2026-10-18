@@ -319,29 +319,18 @@ def _directed_heal(shape, target, item_id):
     return loop.run(shape, planner=planner, tolerance_mm=0.01)
 
 
-def _assert_honest(verdict, run, target):
-    # EITHER kept with the target gone and an honest basis, OR a named decline, OR judged and
-    # rolled back by the caps / progress rule - never a silent no-op.
-    if verdict.kept:
-        assert verdict.basis in ("geometric", "kernel")
-        assert target.fingerprint not in {d.fingerprint for d in run.defects
-                                          if d.code is DefectCode.self_intersection}
-    elif verdict.reason.startswith("declined:"):
-        assert verdict.reason[len("declined:"):].split(" ")[0] in {
-            "not_isolated", "multi_body", "too_much_surface", "grew_beyond_targets",
-            "crossing_remains"}
-    else:
-        assert verdict.reason.startswith(("cap:", "target_remains", "new_defect")), verdict.reason
-
-
 def test_an_engineer_directive_on_the_forged_tangle_ends_honestly(tmp_path, monkeypatch):
     _run_config(monkeypatch)
     shape = _read(write_pierced_floor_step(tmp_path / "pierced.step"))
     target = _crossings(shape)[0]
     run = _directed_heal(shape, target, "pierced-proof")
     verdict = run.verdicts[0]
-    assert verdict.op == "heal_self_intersections"
-    _assert_honest(verdict, run, target)
+    print("PIERCED", verdict.reason, verdict.evidence)
+    # The one outcome this part produces: a five-face tangle, one wider than the heal may re-trim.
+    assert verdict.op == "heal_self_intersections" and not verdict.kept
+    assert verdict.reason.startswith("declined:not_isolated"), verdict.reason
+    assert verdict.evidence["declined"].startswith("not_isolated")
+    assert any(d.fingerprint == target.fingerprint for d in run.defects), "target still reported"
 
 
 CORPUS = Path(os.environ.get("HEXERA_OCCT_CORPUS", DEFAULT_CORPUS))
@@ -350,8 +339,8 @@ CORPUS = Path(os.environ.get("HEXERA_OCCT_CORPUS", DEFAULT_CORPUS))
 @pytest.mark.parametrize("name", ["ec_turbine-A.stp", "bm2_ec_exhaust-A.stp"])
 def test_a_corpus_crossing_is_located_and_healed_by_an_engineer_directive(name, monkeypatch):
     # ec_turbine-A: the analyzer completes and finds no face crossing - its self-intersection is
-    # mesh-level, so that file skips. bm2_ec_exhaust-A is the real-part proof: a located crossing
-    # whose directive reaches the rebuild and is judged by the caps.
+    # mesh-level, so that file skips. bm2_ec_exhaust-A is the real-part pin: a located crossing
+    # whose directive the heal declines and the session's caps then roll back.
     path = CORPUS / name
     if not path.exists():
         pytest.skip("OCCT corpus not on disk (licence: never committed)")
@@ -367,9 +356,16 @@ def test_a_corpus_crossing_is_located_and_healed_by_an_engineer_directive(name, 
     run = _directed_heal(shape, target, "corpus-proof")
     verdict = run.verdicts[0]
     print(f"CORPUS {name} component={1 + len(target.measurements['crossing_faces'])} "
-          f"kept={verdict.kept} basis={verdict.basis!r} reason={verdict.reason!r}")
-    assert verdict.op == "heal_self_intersections"
-    _assert_honest(verdict, run, target)
+          f"kept={verdict.kept} basis={verdict.basis!r} reason={verdict.reason!r} "
+          f"evidence={verdict.evidence}")
+    # The one outcome this part produces. The directive names a five-face component, so the heal
+    # itself declines it (evidence carries that, and that no rebuild ran); the session then
+    # reports the cap the part ALREADY breaks (its own 3.77 mm tolerance) ahead of the decline.
+    # Not a heal and not a do-nothing: both reasons are on the verdict.
+    assert verdict.op == "heal_self_intersections" and not verdict.kept
+    assert verdict.reason.startswith("cap:the run left a tolerance of"), verdict.reason
+    assert verdict.evidence["declined"].startswith("not_isolated")
+    assert verdict.evidence["faces_targeted"] == 5
 
 
 def test_a_heal_on_a_sound_part_is_declined_not_isolated(tmp_path):
