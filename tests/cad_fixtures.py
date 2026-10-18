@@ -487,6 +487,49 @@ def write_small_edge_step(path: Path, unit: str = "MM") -> Path:
     return _write_step(BRepAlgoAPI_Cut(plate, wedge).Shape(), path, unit)
 
 
+def write_cylinder_cap_hole_step(path: Path, unit: str = "MM") -> Path:
+    """A Ø40 x 100 mm cylinder with a CURVED OPENING: one 60° x 20 mm patch of its wall is gone.
+
+    THE HOLE NO FLAT LID FITS. The side wall is written as three cylindrical faces - the 60° strip
+    below z=40, the 60° strip above z=60, and the remaining 300° - so the 60° x 20 mm window
+    between them is simply not there. What is left is ONE closed free loop of four edges (two arcs
+    of r=20 at z=40 and z=60, two axial lines), lying on the cylinder rather than in any plane:
+    `BRepBuilderAPI_MakeFace(wire, OnlyPlane=True)` declines it, which is what routes the opening
+    past `fill_planar_hole` to `fill_nonplanar_hole`.
+
+    SMALL BY CONSTRUCTION: the loop's box diagonal is about 28 mm against the part's ~115 mm, a
+    span ratio near 0.25, well under the 0.75 hole-versus-missing-wall cap. The missing surface
+    is 20 x (60° arc of r=20) = 418.9 mm², which is what a correct patch should declare.
+    """
+    import math
+
+    from OCP.BRepBuilderAPI import (
+        BRepBuilderAPI_MakeEdge,
+        BRepBuilderAPI_MakeFace,
+        BRepBuilderAPI_MakeWire,
+        BRepBuilderAPI_Sewing,
+    )
+    from OCP.Geom import Geom_CylindricalSurface
+    from OCP.gp import gp_Ax2, gp_Ax3, gp_Circ, gp_Dir, gp_Pnt
+
+    radius, height = 20.0, 100.0
+    window = math.radians(60.0)
+    wall = Geom_CylindricalSurface(gp_Ax3(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), radius)
+    faces = [BRepBuilderAPI_MakeFace(wall, u0, u1, v0, v1, 1e-7).Face()
+             for u0, u1, v0, v1 in ((0.0, window, 0.0, 40.0), (0.0, window, 60.0, height),
+                                    (window, 2 * math.pi, 0.0, height))]
+    for z in (0.0, height):
+        rim = BRepBuilderAPI_MakeEdge(gp_Circ(gp_Ax2(gp_Pnt(0, 0, z), gp_Dir(0, 0, 1)),
+                                              radius)).Edge()
+        faces.append(BRepBuilderAPI_MakeFace(BRepBuilderAPI_MakeWire(rim).Wire(), True).Face())
+
+    sewing = BRepBuilderAPI_Sewing(1e-6)
+    for face in faces:
+        sewing.Add(face)
+    sewing.Perform()
+    return _write_step(sewing.SewedShape(), path, unit)
+
+
 def write_loose_faces_step(path: Path, unit: str = "MM") -> Path:
     """SIX BOX FACES AT THE RIGHT PLACES, NEVER JOINED - no solid, no joined shell, nothing sewn.
 
