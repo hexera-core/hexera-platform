@@ -65,6 +65,16 @@ CAD_REPAIR_ALLOW_FACE_REMOVAL: bool = bool_env("CAD_REPAIR_ALLOW_FACE_REMOVAL", 
 #: it on.
 CAD_REPAIR_FILL_PLANAR_HOLES: bool = bool_env("CAD_REPAIR_FILL_PLANAR_HOLES", "false")
 
+#: Close a hole whose rim is not flat with a patch that follows the surrounding surface. Separate
+#: from the planar flag because it invents curvature the customer never drew, so it does not
+#: inherit the planar fill's consent. Off by default; the deploy's `cad_repair` tick turns it on.
+CAD_REPAIR_FILL_NONPLANAR_HOLES: bool = bool_env("CAD_REPAIR_FILL_NONPLANAR_HOLES", "false")
+
+#: Heal self-intersecting geometry, touching only the faces the kernel's analysis names and
+#: leaving the rest of the shape as it was. Off by default; the deploy's `cad_repair` tick turns
+#: it on.
+CAD_REPAIR_HEAL_SELF_INTERSECTIONS: bool = bool_env("CAD_REPAIR_HEAL_SELF_INTERSECTIONS", "false")
+
 #: The largest hole that may be patched, as a fraction of the part's diagonal measured across the
 #: hole's own bounding box. Past this it is not a hole, it is a missing wall - and a flat lid over
 #: a missing wall is a different part, not a repaired one.
