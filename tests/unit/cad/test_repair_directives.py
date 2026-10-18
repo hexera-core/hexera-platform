@@ -243,3 +243,19 @@ def test_only_an_engineers_directive_may_aim_at_a_defect_held_for_review():
     assert candidate is not None and candidate.item_id == "i1"
     assert [(u["directive"]["source"], u["reason"]) for u in planner.unplayable] == [
         ("llm-planner", "reserved_for_review")]
+
+
+def test_one_hole_of_a_group_fill_still_meets_the_rim_guard(monkeypatch):
+    """A group fill is split into one single-target fill per hole, but it is still one decision
+    over many - so the single-rim override never applies to a `group` fill."""
+    import meshpipeline.cad.repair.directives as directives
+    from meshpipeline.cad.repair.plan import RunHistory
+    monkeypatch.setattr(directives, "paired_rim_fingerprints",
+                        lambda shape, defects: frozenset({"rim:a", "rim:b"}))
+    rims = (_rim("rim:a", 1), _rim("rim:b", 2))
+
+    class _Nothing:
+        def propose(self, *a, **k): return None
+    grouped = DirectedPlanner([{**_fill_on(["rim:a"]), "group": True}], _Nothing())
+    assert grouped.propose(rims, RunHistory(), shape="shape") is None
+    assert [u["reason"] for u in grouped.unplayable] == ["fill_refused"]

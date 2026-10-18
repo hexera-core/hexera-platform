@@ -172,12 +172,21 @@ def _log_decision(job_id: uuid.UUID, *, item_id, group_key, action: str, proposa
         "latency_ms": int((time.perf_counter() - started) * 1000)})
 
 
-async def _open_park_or_409(db, job, job_id: uuid.UUID):
-    park = await repo.open_park(db, job_id) if _status_of(job) == JobStatus.pending_review.value \
-        else None
+async def _open_park_or_409(db, job, job_id: uuid.UUID, *, lock: bool = False):
+    park = (await repo.open_park(db, job_id, lock=lock)
+            if _status_of(job) == JobStatus.pending_review.value else None)
     if park is None:
         raise HTTPException(409, "This run is not waiting for a review")
     return park
+
+
+async def _lock_park_or_409(db, job_id: uuid.UUID, park) -> None:
+    """Take the park's row lock before writing an answer - the lock `run_review` holds from reading
+    the answers to closing the park. Without it an answer saved after that read was dispatched
+    without, or overwritten as `unreviewed`. A park the run closed meanwhile is a 409."""
+    locked = await repo.open_park(db, job_id, lock=True)
+    if locked is None or locked.id != park.id:
+        raise HTTPException(409, "This review is already closed")
 
 
 @router.post("/{job_id}/review/decision")
@@ -204,6 +213,7 @@ async def decide(job_id: uuid.UUID, body: DecisionIn, owner_id: str = Depends(ow
                                          "decided there")
             proposal = next((m.proposal for m in members if m.proposal), None)
             logged_directive = None
+            await _lock_park_or_409(db, job_id, park)
             if direction == "leave":
                 changed = await repo.record_group_decision(
                     db, job_id, group_key, "left",
@@ -295,6 +305,7 @@ async def decide(job_id: uuid.UUID, body: DecisionIn, owner_id: str = Depends(ow
         else:
             decision, state, reply = {"action": "leave"}, "left", {"kind": "left"}
 
+        await _lock_park_or_409(db, job_id, park)
         try:
             await repo.record_decision(db, item.id, state, decision)
             # THE MEMBERS A GROUP REDIRECT COVERED are answered by it: recorded as such, so they
@@ -357,7 +368,12 @@ def _group_scope(item, items: list, playback: str) -> tuple[list, str] | None:
     if item.pairing_key:
         return None
     same = [m for m in items if m.group_key == item.group_key and m.id != item.id]
-    covered = [m for m in same if m.state == "open" and m.fingerprint and not m.pairing_key]
+    # OPEN MEMBERS, AND THOSE THIS ITEM'S OWN EARLIER GROUP ANSWER COVERED: replacing that answer
+    # with another group answer keeps them in it rather than reopening them. Members answered on
+    # their own keep their answer.
+    mine = str(item.id)
+    covered = [m for m in same if m.fingerprint and not m.pairing_key
+               and (m.state == "open" or (m.decision or {}).get("covered_by") == mine)]
     paired = [m for m in same if m.pairing_key]
     if paired:
         n = len(paired)
@@ -386,6 +402,37 @@ def _replay_directives(kept: list) -> list[dict]:
     return out
 
 
+def _engineer_directives(item, items: list) -> list[dict]:
+    """The directives an item's answer sends: one, except a GROUP FILL, which is one per hole.
+
+    `fill_planar_hole` patches exactly one hole, while the session's progress rule needs every
+    target's defect gone - so one fill aimed at "all these holes" patched the first, left the rest,
+    and rolled back whole. Each hole gets its own fill, owned by the member it answers (so the
+    outcome writes back onto that member), and marked `group` so it still meets the rim guard: the
+    engineer looked at one defect, not at each of these.
+    """
+    from meshpipeline.cad.repair.operations import FillPlanarHole
+
+    directive = _engineer_directive(item)
+    if directive is None:
+        return []
+    targets = [t for t in directive.get("targets") or () if t]
+    if (item.state != "redirected" or directive.get("op") != FillPlanarHole.name
+            or len(targets) < 2):
+        return [directive]
+    owners = {m.fingerprint: m for m in items
+              if m.fingerprint and (m.decision or {}).get("covered_by") == str(item.id)}
+    if item.fingerprint:
+        owners[item.fingerprint] = item
+    out = []
+    for fp in targets:
+        owner = owners.get(fp, item)
+        out.append({**directive, "targets": [fp], "defect_fingerprint": fp,
+                    "defect_code": owner.defect_code or directive.get("defect_code", ""),
+                    "item_id": str(owner.id), "group": True})
+    return out
+
+
 def _engineer_directive(item) -> dict | None:
     if item.state == "redirected":
         directive = (item.decision or {}).get("directive")
@@ -411,12 +458,15 @@ async def run_review(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
         if _status_of(job) == JobStatus.succeeded.value:
             raise HTTPException(409, "This run was delivered; its review is an offer. To "
                                      "apply it, run it again from the chat.")
-        park = await _open_park_or_409(db, job, job_id)
+        # THE PARK'S ROW LOCK, held to the commit that closes it: a decision route answering
+        # meanwhile waits for it, then finds the park closed (409) - never read stale, never
+        # overwritten as `unreviewed` below.
+        park = await _open_park_or_409(db, job, job_id, lock=True)
         items = await repo.items_for(db, job_id, park.id)
         decided = sorted((i for i in items if i.state in ("accepted", "redirected")),
                          key=lambda i: (i.decided_at is None, i.decided_at))
         directives = _replay_directives(park.kept_operations)
-        directives += [d for d in map(_engineer_directive, decided) if d is not None]
+        directives += [d for item in decided for d in _engineer_directives(item, items)]
 
         # The status CAS first: of two racing runs only one wins, and only it closes the park.
         if await job_repo.transition(db, job_id, JobStatus.pending) != TransitionResult.applied:

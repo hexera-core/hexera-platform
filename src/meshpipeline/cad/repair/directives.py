@@ -81,7 +81,10 @@ class DirectedPlanner:
             self._skip(directive, TARGET_ABSENT)
             return None
 
-        individual = directive.get("source") == "engineer" and len(refs) == 1
+        # `group` marks one hole of a group fill (api/v1/repair_review._engineer_directives): a
+        # single target, but from one decision over many, so it is not a person's look at it.
+        individual = (directive.get("source") == "engineer" and len(refs) == 1
+                      and not directive.get("group"))
         if op.name == FillPlanarHole.name and not individual:
             # A REPLAYED FILL ON A PAIRED RIM IS CORRUPT STATE: the autonomous pass could never
             # have kept one. An ENGINEER's approval may override the planner's refusal - a human

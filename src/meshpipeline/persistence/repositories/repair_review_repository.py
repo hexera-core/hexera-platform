@@ -49,11 +49,17 @@ class RepairReviewRepository:
         await db.flush()
         return rows
 
-    async def open_park(self, db: AsyncSession, job_id: uuid.UUID) -> RepairReviewPark | None:
-        res = await db.execute(
-            select(RepairReviewPark)
-            .where(RepairReviewPark.job_id == job_id, RepairReviewPark.status == "open")
-            .order_by(RepairReviewPark.created_at.desc()).limit(1))
+    async def open_park(self, db: AsyncSession, job_id: uuid.UUID, *,
+                        lock: bool = False) -> RepairReviewPark | None:
+        """The job's open park. `lock` takes its row lock for the caller's transaction: the run
+        route holds it from reading the answers to closing the park, and the decision route takes
+        it before writing one, so an answer saved meanwhile is never read stale or overwritten."""
+        stmt = (select(RepairReviewPark)
+                .where(RepairReviewPark.job_id == job_id, RepairReviewPark.status == "open")
+                .order_by(RepairReviewPark.created_at.desc()).limit(1))
+        if lock:
+            stmt = stmt.with_for_update()
+        res = await db.execute(stmt)
         return res.scalars().first()
 
     async def latest_park(self, db: AsyncSession, job_id: uuid.UUID) -> RepairReviewPark | None:

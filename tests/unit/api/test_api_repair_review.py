@@ -533,3 +533,72 @@ async def test_a_failed_dispatch_confirms_nothing():
     world.dispatch.side_effect = RuntimeError("broker down")
     assert (await world.call("POST", "/review/run")).status_code == 503
     world.lease_repo.confirm_requeued.assert_not_called()
+
+
+async def test_run_it_reads_the_answers_under_the_parks_lock():
+    """The run reads the answers and closes the park in one transaction; without the park's row
+    lock an approval saved in another tab between the two was dispatched without, or overwritten
+    with `unreviewed`. The lock is taken BEFORE the answers are read."""
+    world = World([_item(1, state="accepted", decided=1), _item(2)])
+    order: list[str] = []
+    world.repo.open_park = AsyncMock(side_effect=lambda *_a, **kw: (
+        order.append(f"park lock={kw.get('lock')}"), world.park)[1])
+    world.repo.items_for = AsyncMock(side_effect=lambda *_a: (
+        order.append("items"), list(world.items))[1])
+    assert (await world.call("POST", "/review/run")).status_code == 202
+    assert order[:2] == ["park lock=True", "items"]
+
+
+async def test_a_decision_takes_the_parks_lock_and_a_park_closed_meanwhile_is_a_409():
+    world = World([_item(1)])
+    calls: list = []
+
+    async def _open(*_a, lock=False):
+        calls.append(lock)
+        return world.park if not lock else None   # the run closed it while this one waited
+
+    world.repo.open_park = AsyncMock(side_effect=_open)
+    r = await world.call("POST", "/review/decision",
+                         json={"action": "leave", "item_id": str(uuid.UUID(int=1))})
+    assert r.status_code == 409
+    assert True in calls
+    world.repo.record_decision.assert_not_called()
+
+
+async def test_a_group_fill_runs_as_one_fill_per_hole_each_owned_by_its_member():
+    """fill_planar_hole patches exactly one hole and the progress rule needs every target gone, so
+    one fill aimed at two separate holes left the second open and rolled back whole."""
+    g = "open_shell:fill_planar_hole"
+    redirect = {"op": "fill_planar_hole", "targets": ["edge:0001", "edge:0002"],
+                "defect_code": "open_shell", "defect_fingerprint": "edge:0001",
+                "source": "engineer", "item_id": str(uuid.UUID(int=1))}
+    items = [_item(1, group=g, state="redirected", decided=1,
+                   decision={"directive": redirect, "scope": "group"}),
+             _item(2, group=g, state="redirected", decided=1,
+                   decision={"covered_by": str(uuid.UUID(int=1))})]
+    world = World(items)
+    assert (await world.call("POST", "/review/run")).status_code == 202
+    directives = world.dispatch.call_args.args[2]["repair_directives"]
+    assert [(d["targets"], d["item_id"]) for d in directives] == [
+        (["edge:0001"], str(uuid.UUID(int=1))), (["edge:0002"], str(uuid.UUID(int=2)))]
+    # one decision over many is not a person's look at each hole: the rim guard still applies
+    assert all(d["group"] and d["op"] == "fill_planar_hole" for d in directives)
+
+
+async def test_replacing_a_group_answer_with_another_keeps_the_members_it_covered():
+    g = "open_shell:fill_planar_hole"
+    items = [_item(1, group=g, state="redirected", decided=1,
+                   decision={"directive": {"op": "fill_planar_hole"}, "scope": "group"}),
+             _item(2, group=g, state="redirected", decided=1,
+                   decision={"covered_by": str(uuid.UUID(int=1))}),
+             _item(3, group=g, state="left", decided=2, decision={"action": "leave"})]
+    world = World(items)
+    _fill_interpretation(world, ["edge:0001"])
+    r = await world.call("POST", "/review/decision",
+                         json={"action": "redirect", "text": "fill them all after all",
+                               "item_id": str(uuid.UUID(int=1))})
+    assert r.json()["covered"] == [str(uuid.UUID(int=2))]
+    recorded = {c.args[1]: c.args[3] for c in world.repo.record_decision.mock_calls}
+    assert recorded[uuid.UUID(int=1)]["directive"]["targets"] == ["edge:0001", "edge:0002"]
+    assert uuid.UUID(int=3) not in recorded, "a member answered on its own keeps its answer"
+    world.repo.reopen_covered.assert_not_awaited()
