@@ -118,3 +118,25 @@ async def test_closing_a_park_is_a_compare_and_set_on_open():
 
 def test_the_park_model_names_what_the_repository_filters_on():
     assert {"status", "closed_by", "closed_at"} <= {c.name for c in RepairReviewPark.__table__.columns}
+
+
+async def test_an_outcome_lands_under_a_closed_park_and_touches_only_the_decision():
+    db = _Db(rowcount=1)
+    assert await repo.record_outcome(db, uuid.uuid4(), {"outcome": "kept", "reason": ""}) is True
+    (stmt,) = _updates(db)
+    assert "repair_review_parks" not in _sql(stmt.whereclause)     # no open-park condition
+    assert "decision IS NOT NULL" in _sql(stmt.whereclause)        # an outcome decorates a decision
+    assert [c.key for c in stmt._values] == ["decision"]           # never the state
+
+
+async def test_a_reminted_item_is_open_and_carries_its_history():
+    history = [{"state": "accepted", "outcome": "rolled_back"}]
+    (item,) = await repo.add_items(_Db(), uuid.uuid4(), uuid.uuid4(),
+                                   [_item(decision_history=history)])
+    assert item.state == "open" and item.decision_history == history
+
+
+async def test_the_decided_items_are_read_fresh():
+    db = _Db(rows=[RepairReviewItem(id=uuid.uuid4())])
+    await repo.decided_items(db, uuid.uuid4())
+    assert db.statements[0].get_execution_options().get("populate_existing") is True

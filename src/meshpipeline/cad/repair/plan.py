@@ -55,6 +55,9 @@ class Candidate:
     targets: tuple[EntityRef, ...]
     defect_code: DefectCode
     defect_fingerprint: str
+    #: Set only by DirectedPlanner: the directive this proposal plays. An autonomous proposal has none.
+    item_id: str | None = None
+    source: str = ""
 
     def to_dict(self) -> dict:
         return {"op": self.op.name, "defect": self.defect_fingerprint,

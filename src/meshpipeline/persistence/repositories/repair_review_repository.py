@@ -113,7 +113,9 @@ class RepairReviewRepository:
         res = await db.execute(
             select(RepairReviewItem)
             .where(RepairReviewItem.job_id == job_id, RepairReviewItem.decision.is_not(None))
-            .order_by(RepairReviewItem.decided_at, RepairReviewItem.id))
+            .order_by(RepairReviewItem.decided_at, RepairReviewItem.id)
+            # the bulk `||` UPDATE above bypasses the identity map: re-read, never the stale decision
+            .execution_options(populate_existing=True))
         return list(res.scalars().all())
 
     async def record_group_decision(self, db: AsyncSession, job_id: uuid.UUID, group_key: str,

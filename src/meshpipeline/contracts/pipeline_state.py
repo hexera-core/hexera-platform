@@ -106,6 +106,10 @@ class PipelineState(TypedDict):
     # DIRECTIVES A PARKED RUN'S RE-RUN PLAYS FIRST (cad/repair/directives.py): the kept operations
     # replayed, then the engineer's decisions. Empty on every run that did not resume from a park.
     repair_directives: list[dict]
+    # WHAT BECAME OF EACH ENGINEER DIRECTIVE THIS RUN PLAYED ([{item_id, source, outcome, reason}],
+    # only those with an item): the terminal path writes them back onto their items. Must be
+    # declared, or the graph drops it between the node and the terminal path.
+    repair_directive_outcomes: list[dict]
     # SET ONLY WHEN A REPAIR WAS PROMOTED (pipeline/repair_promote.py): the identity of the
     # original upload this run stopped meshing, the repaired bytes that replaced it, and the
     # engine the replacement was proved to stage for. Empty on every run that meshed what the

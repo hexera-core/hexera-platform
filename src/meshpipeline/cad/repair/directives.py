@@ -85,4 +85,6 @@ class DirectedPlanner:
 
         return Candidate(op=op, targets=tuple(refs), defect_code=code,
                          defect_fingerprint=str(directive.get("defect_fingerprint")
-                                                or refs[0].fingerprint))
+                                                or refs[0].fingerprint),
+                         item_id=str(directive["item_id"]) if directive.get("item_id") else None,
+                         source=str(directive.get("source") or "directive"))

@@ -126,7 +126,7 @@ async def _close_the_loop(db, job_id: uuid.UUID, plan: ReviewPlan, repo) -> list
     FAIL-OPEN, in its own savepoint: the park matters more than its history, and a failed
     statement must not poison the caller's transaction.
     """
-    if not (rcfg.CAD_REPAIR_REVIEW_ENABLED and (plan.outcomes or plan.items)):
+    if not (plan.outcomes or plan.items):
         return plan.items
     from meshpipeline.application.repair_review_minting import attach_history
     sp = None

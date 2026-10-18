@@ -50,6 +50,9 @@ class OpVerdict:
     basis: str = ""
     evidence: dict = field(default_factory=dict)
     delta: dict = field(default_factory=dict)
+    #: Stamped by the loop when a directive proposed this operation; empty for an autonomous one.
+    item_id: str | None = None
+    source: str = ""
 
     @property
     def kept(self) -> bool:
@@ -58,7 +61,9 @@ class OpVerdict:
     def to_dict(self) -> dict:
         return {"op": self.op, "targets": list(self.targets), "defect_code": self.defect_code,
                 "status": self.status, "reason": self.reason, "basis": self.basis,
-                "evidence": dict(self.evidence), "delta": dict(self.delta)}
+                "evidence": dict(self.evidence), "delta": dict(self.delta),
+                **({"item_id": self.item_id} if self.item_id else {}),
+                **({"source": self.source} if self.source else {})}
 
 
 class RepairSession:

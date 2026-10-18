@@ -1,6 +1,7 @@
 # Responsibility: Let a re-minted review item carry the decisions made on the same defect before.
-# Boundaries: one nullable column. Additive and safe in either rollout order - the previous image
-#             neither reads nor writes it.
+# Boundaries: one nullable column. The new image REQUIRES it (the model selects it), so this is NOT
+#             order-safe for the image: deploy runs migrations first, then rolls the image. The
+#             previous image is unaffected by the extra column.
 
 # Revision ID: 0016_repair_review_history
 # Revises: 0015_repair_review

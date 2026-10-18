@@ -428,6 +428,9 @@ STATE_FIELDS: dict[str, str] = {
     "repair_directives":     "the repair directives a parked run's re-run plays before its rules "
                              "planner: kept operations replayed, then the engineer's decisions; "
                              "empty unless the run resumed from a repair review",
+    "repair_directive_outcomes": "what became of each engineer directive a re-run played "
+                             "(kept, rolled_back, unplayable, not_reached) for the terminal "
+                             "path to write back onto the review items; empty otherwise",
     "repair_lineage":        "which upload a promoted repair replaced, and the engine the "
                              "replacement was proved to stage for; empty unless repaired "
                              "geometry became the geometry this run meshes",

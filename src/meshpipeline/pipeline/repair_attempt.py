@@ -143,6 +143,23 @@ def _outcome_state(outcomes: list[dict]) -> dict:
     return {"repair_directive_outcomes": [o for o in outcomes if o.get("item_id")]} if outcomes else {}
 
 
+def _not_reached(state, job_id, route: str) -> dict:
+    """A run that ended before the loop could finish owes its directives an answer too: none was
+    tried to a verdict, so each is `not_reached` - logged and written back, never dropped."""
+    directives = state.get("repair_directives") or ()
+    if not directives or not rcfg.CAD_REPAIR_REVIEW_ENABLED:
+        return {}
+    outcomes = _outcomes(state, [], [])
+    try:
+        from meshpipeline.capture.logger import TrainingLogger
+        TrainingLogger(job_id).log("repair_attempt", op_id="repair:attempt", payload={
+            "route": route, "operations": [], "refusals": [], "directives": outcomes,
+            "refused_because": "the run ended before the directives were tried"})
+    except Exception:  # noqa: BLE001 - the corpus is never load-bearing for a run
+        pass
+    return _outcome_state(outcomes)
+
+
 async def _triage_only(report: dict, source: Path) -> dict:
     """Items for what a person decides, when the run stays on the original and the repair's
     survivors describe a file nobody will mesh (or nothing was repaired at all)."""
@@ -209,11 +226,13 @@ async def node_repair_attempt(state: PipelineState) -> dict:
         logger.warning("node_repair_attempt: the repair exceeded %.1fs - continuing on the "
                        "original - job_id=%s", rcfg.CAD_REPAIR_TIMEOUT_S, job_id)
         return {**_declined(f"the repair exceeded {rcfg.CAD_REPAIR_TIMEOUT_S:.0f}s",
-                            route=advice.route), **await _triage_only(report, source)}
+                            route=advice.route), **await _triage_only(report, source),
+                **_not_reached(state, job_id, advice.route)}
     except RepairUnavailable as exc:
         # OUR limitation, never a verdict on the file.
         return {**_declined(f"the repair could not run here: {exc}", route=advice.route),
-                **await _triage_only(report, source)}
+                **await _triage_only(report, source),
+                **_not_reached(state, job_id, advice.route)}
     except RepairRefused as exc:
         # The kernel produced something and the caps declined it. The customer's file is unharmed
         # and this is the evidence an operator needs to decide what to do instead.
@@ -248,7 +267,8 @@ async def node_repair_attempt(state: PipelineState) -> dict:
         logger.warning("node_repair_attempt: the repair failed (%s) - continuing on the original "
                        "- job_id=%s", type(exc).__name__, job_id)
         return {**_declined(f"the repair failed: {type(exc).__name__}", route=advice.route),
-                **await _triage_only(report, source)}
+                **await _triage_only(report, source),
+                **_not_reached(state, job_id, advice.route)}
 
     from meshpipeline.pipeline.repair_promote import PromotionRefused, promote
     try:
@@ -266,13 +286,15 @@ async def node_repair_attempt(state: PipelineState) -> dict:
         # THE RUN STAYS ON THE ORIGINAL, so only what a person decides is minted: the repair's
         # survivors describe a file nobody will mesh.
         return {**_declined(f"the repaired geometry was not promoted: {exc}", route=advice.route),
-                **await _triage_only(report, source)}
+                **await _triage_only(report, source),
+                **_not_reached(state, job_id, advice.route)}
     except Exception as exc:  # noqa: BLE001
         logger.warning("node_repair_attempt: the repaired file could not be adopted (%s: %s) - "
                        "continuing on the original - job_id=%s", type(exc).__name__, exc, job_id)
         return {**_declined(f"the repaired file could not be adopted: {type(exc).__name__}",
                             route=advice.route),
-                **await _triage_only(report, source)}
+                **await _triage_only(report, source),
+                **_not_reached(state, job_id, advice.route)}
 
     measured = {m.name: m.value for m in repair_report.measurements}
     attempted = [dict(op) for op in repair_report.operations]

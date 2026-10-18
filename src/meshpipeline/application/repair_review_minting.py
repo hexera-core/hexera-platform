@@ -253,17 +253,20 @@ def mint_with_overflow(*, shape, report, repair_run_measured: dict, split: Defec
 OUTCOME_KEPT = "kept"
 OUTCOME_ROLLED_BACK = "rolled_back"
 OUTCOME_UNPLAYABLE = "unplayable"
+#: The run ended (or never started) before the directive was tried. NOT a verdict that it could not
+#: be done safely - nothing was learned about it.
+OUTCOME_NOT_REACHED = "not_reached"
 
 
 def directive_outcomes(directives, operations, refusals) -> list[dict]:
     """`[{item_id, source, outcome, reason}]`, one per directive, in the order they were given.
 
-    THE JOIN. An operation entry does not carry the directive that proposed it, so an entry is
-    matched to a directive by what the directive named: the operation's name AND at least one
-    target fingerprint in common. Each entry answers at most one directive (a repeated directive
-    consumes entries in order), so two directives on the same defect are not both credited with
-    one run. A directive the loop could not play is matched exactly: its refusal carries the
-    directive dict itself. A directive in neither list was never reached.
+    THE JOIN IS EXACT WHERE IT CAN BE. The planner stamps a proposed operation with the directive's
+    `item_id` (cad/repair/directives.py), so an operation answers the directive carrying the same
+    item_id, and a `directive_unplayable` refusal answers it by the item_id on its directive.
+    Only a directive with NO item_id (a replayed one) falls back to matching a directed,
+    unclaimed operation by name and a shared target fingerprint - an autonomous operation is never
+    claimed. A directive found nowhere was not reached.
     """
     ops = [o for o in operations or () if isinstance(o, dict)]
     skipped = [r for r in refusals or ()
@@ -273,28 +276,36 @@ def directive_outcomes(directives, operations, refusals) -> list[dict]:
     for directive in directives or ():
         if not isinstance(directive, dict):
             continue
-        row = {"item_id": directive.get("item_id"), "source": directive.get("source", "")}
-        refusal = next((r for r in skipped if r.get("directive") == directive), None)
+        item_id = directive.get("item_id")
+        row = {"item_id": item_id, "source": directive.get("source", "")}
+        if item_id:
+            refusal = next((r for r in skipped
+                            if (r.get("directive") or {}).get("item_id") == item_id), None)
+            match = next((i for i, o in enumerate(ops)
+                          if i not in used and o.get("item_id") == item_id), None)
+        else:
+            refusal = next((r for r in skipped if r.get("directive") == directive), None)
+            wanted = directive.get("targets") or ()
+            wanted = {wanted} if isinstance(wanted, str) else {str(t) for t in wanted}
+            match = next((i for i, o in enumerate(ops)
+                          if i not in used and o.get("source") and not o.get("item_id")
+                          and o.get("name") == directive.get("op")
+                          and wanted & {str(t) for t in o.get("targets") or ()}), None)
         if refusal is not None:
             skipped.remove(refusal)
-            out.append({**row, "outcome": OUTCOME_UNPLAYABLE,
-                        "reason": str(refusal.get("reason", ""))})
-            continue
-        wanted = directive.get("targets") or ()
-        wanted = {wanted} if isinstance(wanted, str) else {str(t) for t in wanted}
-        match = next((i for i, o in enumerate(ops)
-                      if i not in used and o.get("name") == directive.get("op")
-                      and wanted & {str(t) for t in o.get("targets") or ()}), None)
-        if match is None:
-            out.append({**row, "outcome": OUTCOME_UNPLAYABLE, "reason": "not_reached"})
-            continue
-        used.add(match)
-        op = ops[match]
-        if op.get("status") == "kept":
-            out.append({**row, "outcome": OUTCOME_KEPT, "reason": ""})
+            reason = str(refusal.get("reason", ""))
+            outcome = OUTCOME_NOT_REACHED if reason == "not_reached" else OUTCOME_UNPLAYABLE
+            out.append({**row, "outcome": outcome, "reason": reason})
+        elif match is None:
+            out.append({**row, "outcome": OUTCOME_NOT_REACHED, "reason": "not_reached"})
         else:
-            out.append({**row, "outcome": OUTCOME_ROLLED_BACK,
-                        "reason": str(op.get("reason", "") or op.get("status", ""))})
+            used.add(match)
+            op = ops[match]
+            if op.get("status") == "kept":
+                out.append({**row, "outcome": OUTCOME_KEPT, "reason": ""})
+            else:
+                out.append({**row, "outcome": OUTCOME_ROLLED_BACK,
+                            "reason": str(op.get("reason", "") or op.get("status", ""))})
     return out
 
 
