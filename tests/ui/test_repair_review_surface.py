@@ -420,3 +420,17 @@ def test_offer_review_stops_asking_once_the_server_says_review_is_off(live):
       return gets;
     })()""")
     assert out == 1, out
+
+
+def test_an_offered_review_lets_the_customer_step_through_every_leftover(live):
+    """A read-only (offered or closed) review queued only each group's sample and then said that
+    was every group - so most leftover defects could never be opened. Every member is queued."""
+    _open(live, _review(status="offered"))
+    seen = []
+    for _ in range(12):
+        if not live.evaluate("!!document.querySelector('.rv .rv-item')"):
+            break
+        seen.append(_text(live, ".rv-item .rv-msg"))
+        _click(live, ".rv-next")
+    assert seen == [f"defect {n} message" for n in range(1, 9)], seen
+    assert "every group" in _text(live, ".rv")

@@ -280,7 +280,12 @@ export async function openReview(jobId, opts = {}) {
     gi = i;
     if (gi >= groups.length) return finishedScreen();
     const g = groups[gi];
-    queue = g.sampled_item_ids.map((id) => itemById.get(id))
+    // a read-only review (offered, closed) asks nothing, so it shows EVERY member - the sample
+    // first, then the rest - or most leftovers could never be opened
+    const ids = readonly
+      ? [...g.sampled_item_ids, ...g.items.map((i) => i.id).filter((id) => !sampleIds(g).has(id))]
+      : g.sampled_item_ids;
+    queue = ids.map((id) => itemById.get(id))
       .filter((it) => it && (readonly || it.state === "open"));
     phase = "sample"; shownIdx = 0; shownTotal = queue.length;
     advance();
