@@ -198,9 +198,11 @@ async def node_repair_attempt(state: PipelineState) -> dict:
     if advice.route != ROUTE_CONSERVATIVE_REPAIR:
         # Triage declined to recommend an automatic repair: abstained, or routed this to a person
         # or to the customer. Either way it is not ours to attempt.
-        return _declined(f"triage routed this to {advice.route}", route=advice.route,
-                         detail={"reasons": list(advice.reasons),
-                                 "abstain_reason": advice.abstain_reason})
+        # A DIRECTED RE-RUN STILL ANSWERS EVERY DIRECTIVE: none was tried, so each is not_reached.
+        return {**_declined(f"triage routed this to {advice.route}", route=advice.route,
+                            detail={"reasons": list(advice.reasons),
+                                    "abstain_reason": advice.abstain_reason}),
+                **_not_reached(state, job_id, advice.route)}
 
     # THE REPAIRED FILE LIVES IN THE JOB'S OWN WORKSPACE, beside the materialised original, so it
     # survives for the builder that stages it. A resumed run re-materialises the original into the

@@ -271,3 +271,24 @@ def test_a_directive_kept_inside_a_result_the_after_check_discarded_is_not_reach
     (outcome,) = out["repair_directive_outcomes"]
     assert (outcome["outcome"], outcome["reason"]) == ("not_reached", "discarded_with_result")
     assert logged[-1]["directives"][0]["reason"] == "discarded_with_result"
+
+
+def test_a_triage_decline_on_a_directed_rerun_answers_every_directive_not_reached(
+        tmp_path, monkeypatch, logged):
+    from meshpipeline.cad.repair import triage
+    calls = _scripted(monkeypatch)
+    real = triage.recommend
+
+    def _manual(**kw):
+        advice = real(**kw)
+        return type(advice)(route=triage.ROUTE_MANUAL_CLEANUP, confidence=0.5,
+                            reasons=("nothing to aim at",), evidence=advice.evidence)
+    monkeypatch.setattr(triage, "recommend", _manual)
+    state = _state(tmp_path, _entity("small_face", "warning", "face", 3, "fa"),
+                   _entity("open_shell", "error", "edge", 8, "eb"))
+    state["repair_directives"] = [_directive()]
+    out = asyncio.run(node_repair_attempt(state))
+    assert calls == [] and out["repair_attempt"]["attempted"] is False
+    assert out["repair_directive_outcomes"] == [
+        {"item_id": ITEM, "source": "engineer", "outcome": "not_reached", "reason": "not_reached"}]
+    assert logged[-1]["directives"][0]["outcome"] == "not_reached"
