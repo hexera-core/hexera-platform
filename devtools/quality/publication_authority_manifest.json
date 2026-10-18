@@ -3160,6 +3160,19 @@
   "roots": []
  },
  {
+  "context": "engines/layer_census.py::stated_layers::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/layer_census.py",
+  "qualname": "stated_layers",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_LAYER_CONTEXT",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "engines/snapgrid/cli.py::main::check#1|NotAPublisher|not-a-publisher|",
   "path": "engines/snapgrid/cli.py",
   "qualname": "main",

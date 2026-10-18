@@ -395,11 +395,24 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
         ratio = float(strategy.get("thickness_ratio", 1.2))
         first = strategy.get("first_layer_thickness")
         first_line = (f" maxFirstLayerThickness {float(first):.6g};" if first else "")
+        # cfMesh's keyword is allowedDiscontinuity: the old "allowDiscontinuity" was silently
+        # ignored. 0 keeps the wall's count on the layers it shares with the inlet/outlet caps,
+        # so a stack does not end in a step at a port. untangleLayers lets cfMesh shrink, not
+        # drop, a stack that would fold in a tight bend or a narrow branch.
+        # EVERY declared wall gets the layers, not only the first: a multi-wall body (a car and
+        # its wheels, a wing and its flap) is staged as one surface region per wall, and a region
+        # the dict did not name kept cfMesh's single default boundary cell
+        from meshpipeline.engines.ground_plane import is_ground
+        _walls = [wall_patch] + [str(p.get("name")) for p in (patches or [])
+                                 if str(p.get("type") or "").lower() == "wall" and p.get("name")
+                                 and str(p.get("name")) != wall_patch
+                                 and not is_ground(str(p.get("name")), "wall")]
+        _entries = "".join(
+            f"        {w}\n        {{ nLayers {n_layers}; thicknessRatio {ratio:g};"
+            f"{first_line} allowedDiscontinuity 0; }}\n" for w in dict.fromkeys(_walls))
         dict_parts.append(
-            "boundaryLayers\n{\n    patchBoundaryLayers\n    {\n"
-            f"        {wall_patch}\n        {{ nLayers {n_layers}; thicknessRatio {ratio:g};"
-            f"{first_line} allowDiscontinuity 0; }}\n"
-            "    }\n    optimiseLayer 1;\n}\n")
+            "boundaryLayers\n{\n    patchBoundaryLayers\n    {\n" + _entries
+            + "    }\n    optimiseLayer 1;\n    untangleLayers 1;\n}\n")
 
     # renameBoundary: every contract patch → its OpenFOAM type. The solids in
     # geom.fms are named for the contract (prepare_surface), so the mesh's final
@@ -666,11 +679,46 @@ def configure_mesh(workspace, *, geometry_file: str, strategy: dict, wall_patch:
                                       strategy=strategy, wall_patch=wall_patch,
                                       contract_patches=contract_patches, args=args,
                                       cell_budget=cell_budget, surface=surface)
+    strategy, _layer_note = with_requested_layers(workspace, strategy)
     if topology == "internal":
-        return _configure_internal(workspace, strategy=strategy, wall_patch=wall_patch,
-                                   contract_patches=contract_patches, args=args,
-                                   cell_budget=cell_budget, surface=surface)
+        out = _configure_internal(workspace, strategy=strategy, wall_patch=wall_patch,
+                                  contract_patches=contract_patches, args=args,
+                                  cell_budget=cell_budget, surface=surface)
+        return {**out, **_layer_note} if out.get("success") else out
+    out = _configure_external_3d(workspace, geometry_file=geometry_file, strategy=strategy,
+                                 wall_patch=wall_patch, contract_patches=contract_patches,
+                                 args=args, cell_budget=cell_budget, surface=surface)
+    return {**out, **_layer_note} if out.get("success") else out
 
+
+def with_requested_layers(workspace, strategy: dict | None) -> tuple[dict, dict]:
+    """The strategy with the layer count the REQUEST states ("5 prism layers") when the builder
+    gave none - a strategy without n_layers rendered no boundaryLayers at all - and a note for the
+    builder when it asked for fewer than the request: the delivered mesh is measured against the
+    request's count (engines/layer_census), so 2 where 5 were asked reads as 2 of 5."""
+    from meshpipeline.engines.layer_census import stated_layers
+    from meshpipeline.engines.workspace_facts import read_request_txt
+
+    strategy = dict(strategy or {})
+    stated = stated_layers(read_request_txt(workspace))
+    if not stated:
+        return strategy, {}
+    if "n_layers" not in strategy:
+        strategy["n_layers"] = stated
+        return strategy, {"layers_requested": stated,
+                          "layers_note": f"n_layers {stated}: the count the request states"}
+    asked = int(strategy.get("n_layers") or 0)
+    if asked < stated:
+        return strategy, {"layers_requested": stated, "layers_note": (
+            f"the request asks for {stated} prism layers and this strategy for {asked}: the "
+            f"delivered mesh is measured against {stated}, so it will read short unless a "
+            "concrete run_mesh failure made fewer layers necessary")}
+    return strategy, {"layers_requested": stated}
+
+
+def _configure_external_3d(workspace, *, geometry_file: str, strategy: dict, wall_patch: str,
+                           contract_patches: list, args: dict, cell_budget: int,
+                           surface=None) -> dict:
     from meshpipeline.cad.analysis import analyze_surface
     from meshpipeline.cad.prepared_surface import require_metre_surface
     analysis = analyze_surface(require_metre_surface(surface, workspace, geometry_file))

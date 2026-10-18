@@ -70,7 +70,9 @@ def test_the_eligible_shape_caveats_and_succeeds():
     ({"executor_failed_gate": "patch_contract"}, "a hard gate failed"),
     ({"reviewer_rebuild_required": True}, "rebuild ordered"),
     ({"requirements_strict": True}, "strict request"),
-    ({"engine": "cfmesh"}, "engine not snappy"),
+    # cfMesh declares the row now (its layers are counted on the mesh) but never writes the areal
+    # "overall" provenance this caveat requires; an engine with no layer row refuses outright
+    ({"engine": "gmsh"}, "engine declares no layer row"),
     ({"flow_topology": "internal"}, "internal flow excluded in v1"),
     ({"user_dispute": {"flags": ["x"]}}, "dispute runs never caveat"),
     ({"reviewer_verdict": "PASS"}, "not a FAIL"),
