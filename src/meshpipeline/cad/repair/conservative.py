@@ -230,52 +230,132 @@ def _centre(shape):
     return ((xmin + xmax) / 2, (ymin + ymax) / 2, (zmin + zmax) / 2)
 
 
-#: How close two rims' spans must be to count as the same opening seen twice.
-_RIM_SPAN_TOLERANCE = 0.02
 #: How parallel their planes must be (|dot| of unit normals).
 _RIM_PARALLEL_TOLERANCE = 0.999
+#: How round a loop must be to be a drilled rim: the worst point's distance from the fitted circle,
+#: as a fraction of its radius. An exported circle (a true arc or a B-spline approximation) sits
+#: far inside 1e-3; a rim faceted into 16+ segments deviates about 2%; a square deviates ~17%
+#: and an octagon ~4%, so 3% admits every way a round hole is written and no polygonal opening.
+_RIM_ROUNDNESS_TOLERANCE = 0.03
+#: How different the two rims' radii may be, as larger / smaller. NOT ~1.2: a COUNTERSUNK or
+#: counterbored through-hole whose walls are missing has a top rim up to about twice the bore
+#: (a 90-degree countersink on a typical screw), and sealing that is the same ruined part as
+#: sealing a plain bore. 2.5 admits those and still separates a bore from a large opening that
+#: merely sits above a small one.
+_RIM_RADIUS_RATIO = 2.5
+#: How far off one axis the two centres may be, as a fraction of the smaller radius. A drilled
+#: passage is straight; the slack covers fitting noise and a slightly wandering exported rim.
+_RIM_AXIS_TOLERANCE = 0.25
+#: The axial gap, in units of the larger radius. Below the floor the loops are coplanar - two holes
+#: in one face, which must stay fillable. Above the ceiling (20 diameters) the "passage" is deeper
+#: than ordinary drilling reaches, so two such rims are two separate openings that happen to line up.
+_RIM_MIN_GAP = 1e-3
+_RIM_MAX_GAP = 40.0
+
+
+def _loop_points(wire, per_edge: int = 24):
+    """Points along a loop: each edge sampled evenly in its own parameter."""
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    points = []
+    explorer = TopExp_Explorer(wire, TopAbs_EDGE)
+    while explorer.More():
+        curve = BRepAdaptor_Curve(TopoDS.Edge_s(explorer.Current()))
+        first, last = curve.FirstParameter(), curve.LastParameter()
+        for k in range(per_edge):
+            p = curve.Value(first + (last - first) * k / per_edge)
+            points.append((p.X(), p.Y(), p.Z()))
+        explorer.Next()
+    return points
+
+
+def _rim_circle(wire, normal):
+    """The loop as a circle in its own plane - (centre, radius) - or None when it is not round.
+
+    A least-squares (Kasa) fit in plane coordinates, so it does not care how unevenly the edges
+    were sampled; the roundness bound is then checked against the WORST point, not the average.
+    """
+    import numpy as np
+
+    points = np.asarray(_loop_points(wire), dtype=float)
+    if len(points) < 8:
+        return None
+    n = np.asarray(normal, dtype=float)
+    n /= np.linalg.norm(n)
+    helper = np.array([1.0, 0.0, 0.0]) if abs(n[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+    u = np.cross(n, helper)
+    u /= np.linalg.norm(u)
+    v = np.cross(n, u)
+    origin = points.mean(axis=0)
+    rel = points - origin
+    x, y = rel @ u, rel @ v
+    design = np.column_stack([x, y, np.ones_like(x)])
+    (a, b, c), *_ = np.linalg.lstsq(design, x * x + y * y, rcond=None)
+    cx, cy = a / 2.0, b / 2.0
+    squared = c + cx * cx + cy * cy
+    if squared <= 0:
+        return None
+    radius = float(squared ** 0.5)
+    worst = float(np.max(np.abs(np.hypot(x - cx, y - cy) - radius)))
+    if worst > radius * _RIM_ROUNDNESS_TOLERANCE:
+        return None
+    centre = origin + cx * u + cy * v
+    return (tuple(float(k) for k in centre), radius)
 
 
 def _paired_rims(loops: list) -> set[int]:
     """Indices of loops that are the two ENDS OF A MISSING TUBE, not two separate holes.
 
     THE PART-RUINING CASE, and the reason filling is not autonomous yet. A drilled through-hole
-    whose bore wall is missing leaves two rims: planar, parallel, congruent, offset along their
-    own normal. Each one looks exactly like a small fillable hole, and patching both SEALS the
-    hole - handing back a part with no bolt hole where the customer had one. Demonstrated on a
+    whose bore wall is missing leaves two rims: planar, parallel, round, on one axis, offset along
+    their own normal. Each one looks exactly like a small fillable hole, and patching both SEALS
+    the hole - handing back a part with no bolt hole where the customer had one. Demonstrated on a
     100x100x10 plate with an 8 mm bore: two loops, identical 22.627 spans, both far inside the
     size cap.
 
+    BORE-LIKE EVIDENCE, NOT MERELY PARALLEL. The check used to pair ANY two parallel planar loops
+    offset along their normal, and on the OCCT corpus that refused 202 fills of which 2 were
+    bores: opposite faces of an unsewn box, stacked panels, any parallel openings. A pair now also
+    needs both loops round, radii within a countersink's ratio, centres on one axis, and an axial
+    gap a drill could make (the bounds and their reasons are on the constants above).
+
     What the right repair is for them - rebuild the cylinder, or ask - is a judgement, so they are
-    reported and left rather than guessed at.
+    reported and left rather than guessed at. Both the planner and the review minting call THIS
+    function, so there is one definition of a bore pair.
     """
-    planes = {}
+    rims = {}
     for index, wire in enumerate(loops):
         plane = _loop_plane(wire)
-        if plane is not None:
-            planes[index] = (plane, _span(wire))
+        if plane is None:
+            continue
+        circle = _rim_circle(wire, plane[0])
+        if circle is not None:
+            rims[index] = (plane[0], circle)
 
     paired: set[int] = set()
-    indices = sorted(planes)
+    indices = sorted(rims)
     for i, left in enumerate(indices):
         for right in indices[i + 1:]:
-            (n1, c1), s1 = planes[left]
-            (n2, c2), s2 = planes[right]
-            if s1 <= 0 or s2 <= 0:
+            n1, (c1, r1) = rims[left]
+            n2, (c2, r2) = rims[right]
+            if r1 <= 0 or r2 <= 0:
                 continue
-            # SIZE IS NOT THE TEST. A TAPERED through-hole - a countersink, a draft-angled bore -
-            # has rims of different diameters, so requiring congruence let exactly that case
-            # through and sealed a feature the customer drew. What makes two loops the ends of one
-            # passage is that they are parallel and offset ALONG their shared normal; the sizes
-            # may differ by any amount.
             dot = abs(n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2])
             if dot < _RIM_PARALLEL_TOLERANCE:
                 continue
+            if max(r1, r2) / min(r1, r2) > _RIM_RADIUS_RATIO:
+                continue
+            delta = [c2[k] - c1[k] for k in range(3)]
             # Offset along the shared normal rather than merely apart: two coplanar holes of the
             # same size in one face are two holes, and must stay fillable.
-            offset = abs(sum((c2[k] - c1[k]) * n1[k] for k in range(3)))
-            lateral = sum((c2[k] - c1[k]) ** 2 for k in range(3)) ** 0.5
-            if offset > max(s1, s2) * 0.01 and offset >= lateral * 0.99:
+            offset = abs(sum(delta[k] * n1[k] for k in range(3)))
+            lateral = max(sum(d * d for d in delta) - offset * offset, 0.0) ** 0.5
+            if lateral > _RIM_AXIS_TOLERANCE * min(r1, r2):
+                continue
+            if _RIM_MIN_GAP * max(r1, r2) < offset <= _RIM_MAX_GAP * max(r1, r2):
                 paired.add(left)
                 paired.add(right)
     return paired

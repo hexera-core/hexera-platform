@@ -73,3 +73,59 @@ def test_an_ordinary_hole_is_still_proposed_for_filling(tmp_path):
         history.mark_ineffective(candidate.defect_fingerprint, candidate.op.name)
 
     assert "fill_planar_hole" in proposed or "sew_faces" in proposed
+
+
+def test_loose_box_faces_are_not_a_bore_pair(tmp_path):
+    # THE FALSE POSITIVE THE DISCRIMINATOR USED TO RAISE. Opposite faces of an unsewn box are
+    # parallel loops offset along their normal - which was all the old check asked - yet they are
+    # squares, not the rims of a drilled hole. Refusing them cost the corpus 200 fills.
+    from tests.cad_fixtures import write_loose_faces_step
+
+    from meshpipeline.cad.repair.localize import localize_scan
+    from meshpipeline.cad.repair.plan import paired_rim_fingerprints
+
+    shape = _read(write_loose_faces_step(tmp_path / "loose.step"))
+    defects, _ = localize_scan(shape)
+    assert sum(1 for d in defects if d.code.value == "open_shell") >= 2
+    assert paired_rim_fingerprints(shape, defects) == frozenset()
+
+
+def test_square_loops_stacked_on_one_axis_are_not_a_bore_pair():
+    # Co-axial, parallel, the right gap - and still not a bore, because neither loop is round.
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakePolygon
+    from OCP.gp import gp_Pnt
+
+    from meshpipeline.cad.repair.conservative import _paired_rims
+
+    def square(z):
+        polygon = BRepBuilderAPI_MakePolygon()
+        for x, y in ((0, 0), (8, 0), (8, 8), (0, 8)):
+            polygon.Add(gp_Pnt(x, y, z))
+        polygon.Close()
+        return polygon.Wire()
+
+    assert _paired_rims([square(0.0), square(10.0)]) == set()
+
+
+def _circle(radius, z, x=0.0):
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire
+    from OCP.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Pnt
+
+    circle = gp_Circ(gp_Ax2(gp_Pnt(x, 0.0, z), gp_Dir(0, 0, 1)), radius)
+    return BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(circle).Edge()).Wire()
+
+
+def test_two_round_rims_on_one_axis_pair_and_offset_or_unequal_ones_do_not():
+    from meshpipeline.cad.repair.conservative import _paired_rims
+
+    assert _paired_rims([_circle(8.0, 0.0), _circle(8.0, 10.0)]) == {0, 1}
+    # a draft-angled bore: rims a little different, still one passage
+    assert _paired_rims([_circle(8.0, 0.0), _circle(9.0, 10.0)]) == {0, 1}
+    # a countersunk hole with its walls missing: the top rim twice the bore, still one passage
+    assert _paired_rims([_circle(4.0, 0.0), _circle(8.0, 10.0)]) == {0, 1}
+    # two holes in two parallel faces, not on one axis
+    assert _paired_rims([_circle(8.0, 0.0), _circle(8.0, 10.0, x=40.0)]) == set()
+    # coplanar: two holes in one face
+    assert _paired_rims([_circle(8.0, 0.0), _circle(8.0, 0.0, x=40.0)]) == set()
+    # far apart along the axis relative to their size: not one drilled passage
+    assert _paired_rims([_circle(1.0, 0.0), _circle(1.0, 500.0)]) == set()
