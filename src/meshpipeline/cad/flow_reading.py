@@ -641,7 +641,13 @@ def apply_reading(facts: dict, reading: dict) -> None:
         facts["body_kind"] = kind.get("body_kind") or facts.get("body_kind")
         facts.setdefault("confidence", {})["input_kind"] = kind["confidence"]
         if kind["flow"] == "external":
-            facts["openings"] = []
+            # A BODY IN A FLOW KEEPS ITS LIDS, as both scouts keep them for a body they read
+            # themselves: the openings it has IF the fluid flows through it (a stirred tank's
+            # rotating zone, a shaft: a closed cylinder whose two flat ends are its mouths). They
+            # are not drawn (geometry_check.stickered) and the confirm route stores none for an
+            # external body, so they cost nothing until the user says the fluid flows through it -
+            # and then there is something to confirm instead of nothing. No point inside the flow
+            # is sought for a body.
             facts["seed_point_mm"] = facts["seed_point_m"] = None
         facts.setdefault("notes", []).append(kind["reason"])
     ann = reading.get("annulus")
