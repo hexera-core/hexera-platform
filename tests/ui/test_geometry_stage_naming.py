@@ -119,6 +119,19 @@ def test_the_stage_opens_greyed_out_while_naming_then_takes_the_models_labels_an
     tp = turned["top"]["axes"]
     assert abs(tp["y"][1] - 1) < 0.01 and tp["z"][2] > 0.99 and turned["top"]["dimmed"] == [False, False, False], turned
 
+    # WHICH WAY IS UP: a part drawn upside down is turned the right way from the canvas's "Up"
+    # selector, the choice is remembered for this check, and +Z puts it back
+    flipped = live.evaluate(f"""(() => {{
+      const h = window._vdbg['gstage:{SESSION}'];
+      const sel = document.getElementById('gs-up-{SESSION}');
+      sel.value = '-z'; sel.dispatchEvent(new Event('change'));
+      const r = {{axis: h.upAxis(), z: h.axes().z, kept: localStorage.getItem('hexera.view-up.session.{SESSION}')}};
+      h.setUp('+z'); r.back = h.axes().z;
+      return r;
+    }})()""")
+    assert flipped["axis"] == "-z" and flipped["kept"] == "-z", flipped
+    assert flipped["z"][1] < -0.7 and flipped["back"][1] > 0.7, flipped
+
     # the user answered: the check says the naming was asked for, and the banner says so; the
     # form stays open, so the user can still fix the names and proceed without waiting
     asked = live.evaluate(f"""(() => {{

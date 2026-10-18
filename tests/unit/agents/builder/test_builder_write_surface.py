@@ -20,6 +20,9 @@ EXPECTED_ALLOW_LIST = frozenset({
     "builder_flag_responses",
     "retry_count", "builder_noop_count", "openfoam_workspace",
     "request_txt", "review_brief_txt", "api_failure", "builder_deadline_epoch",
+    # a deliberate stop: the builder built nothing because another attempt cannot change the
+    # outcome - its own bookkeeping, not a verdict (the verdict it stops on is the reviewer's)
+    "builder_stop",
 })
 
 # Truth owned by other pipeline stages - the Builder must never be able to return any of these.

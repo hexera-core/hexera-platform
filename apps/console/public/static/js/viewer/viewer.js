@@ -16,6 +16,9 @@ import { getSurface } from "../api/endpoints.js";
 import { headers } from "../api/client.js";
 import { acceptMesh, flagDispute } from "./dispute.js";
 import { VIEWER_FALLBACK } from "./config.js";
+import { MOUSE_HINT, bindMouse, isUpAxis, orient, saveUp, savedUp, shield, upSelectHtml, upVector } from "./view_controls.js";
+// a delivered thermal model (an ECXML upload) is read part by part, with slices and its own files
+import { bindThermalResults, sliceColour, thermalDownloads, thermalResultsHtml } from "./thermal_results.js";
 
 let _vtkP=null;
 function loadVtk(){if(window.vtk)return Promise.resolve();
@@ -36,8 +39,11 @@ function b64u32(b){return new Uint32Array(b64u8(b).buffer);}
 const _PATCH_COLS=[[0.80,0.78,0.72],[0.64,0.77,0.75],[0.83,0.76,0.60],
                    [0.72,0.72,0.70],[0.66,0.71,0.73],[0.76,0.70,0.66]];
 const _EDGE=[0.27,0.25,0.22];          /* hairline edges at rest */
-const _EDGE_HEAT=[0.17,0.15,0.13];     /* darker while the faces carry colour, so the data reads */
+/* darker while the faces carry colour, so every cell still reads against the data (the original
+   heatmap's edge, lightened with the calm end of its scale so a whole part does not read dark) */
+const _EDGE_HEAT=[0.24,0.23,0.22];
 const _SEL=[1.0,0.31,0.0],_SEL_EDGE=[0.62,0.22,0.02];
+const HEAT_HINT='Click a face to see its numbers · Drag still rotates';
 const _SEL_COLS=['#e8613c','#f2c744','#3fa650','#3f7fd9','#b455c8','#38c2c2'];
 
 export async function openViewer(job,anchorEl,opts){
@@ -46,21 +52,28 @@ export async function openViewer(job,anchorEl,opts){
   const box=document.createElement('div');box.className='viewer';box.id='viewer-'+job;
   const _m=opts.metrics||{};
   const _dl=(opts.files||[]).filter(f=>f.type!=='video');
-  const _dlHtml=_dl.length?_dl.map(f=>{
+  // the case the user asked for leads; the previews follow it
+  const _dlHtml=_dl.slice().sort((a,b)=>(b.type==='mesh_bundle')-(a.type==='mesh_bundle')).map(f=>{
       const primary=f.type==='mesh_bundle'?' primary':'';
       return `<a class="v-dlbtn${primary}" href="${esc(f.url||'#')}" download target="_blank" rel="noopener">
-                <b>${esc(f.label||f.type)}</b><span>${fmtBytes(f.size)}</span></a>`;}).join(''):'';
+                <b>${esc(f.label||f.type)}</b><span>${fmtBytes(f.size)}</span></a>`;}).join('');
+  const upAxis=savedUp('job',job)||'+z';
+  // THE PANEL READS TOP TO BOTTOM the way the result is used: the verdict and the download, the
+  // mesh's own figures, its parts, and last the way to ask for a change - beside the marks it sends.
   box.innerHTML=`<div class="v-bar">
-      <div class="v-row">
-        <b>${opts.unreviewed?'Mesh - not signed off':'Your mesh'}</b>
-        <span class="v-meta">
-          ${opts.unreviewed
-            ? `<span class="v-pill fail">DID NOT PASS REVIEW</span>`
-            : (_m.pass!==undefined?`<span class="v-pill${_m.pass?'':' fail'}">${_m.pass?'PASS':'FAIL'}</span>`:'')}
-          ${_m.attempts?`<span class="sep">·</span><span>${_m.attempts} attempt${_m.attempts!==1?'s':''}</span>`:''}
-        </span>
-        <span style="flex:1"></span>
-        <div class="v-dl">${_dlHtml}</div>
+      <div class="v-sec v-head">
+        <div class="v-row v-titlerow">
+          <b class="v-title">${opts.unreviewed?'Mesh - not signed off':'Your mesh'}</b>
+          <span class="v-meta">
+            ${opts.unreviewed
+              ? `<span class="v-pill fail">DID NOT PASS REVIEW</span>`
+              : opts.concerns
+              ? `<span class="v-pill concerns">DELIVERED WITH CONCERNS</span>`
+              : (_m.pass!==undefined?`<span class="v-pill${_m.pass?'':' fail'}">${_m.pass?'PASS':'FAIL'}</span>`:'')}
+            ${_m.attempts?`<span class="sep">·</span><span>${_m.attempts} attempt${_m.attempts!==1?'s':''}</span>`:''}
+          </span>
+        </div>
+        <div class="v-row"><span class="v-status" id="v-status-${job}">loading…</span></div>
       </div>
       ${opts.unreviewed?`<div class="v-why">
         <b>Every validity gate passed</b> - the mesh is structurally sound and solvable.
@@ -72,39 +85,50 @@ export async function openViewer(job,anchorEl,opts){
           re-reviewed against <i>your</i> bar and delivered.
           <button class="v-btn primary" id="v-accept-${job}">This is acceptable →</button>
         </div></div>`:''}
-      <div class="v-row"><span class="v-status" id="v-status-${job}">loading…</span></div>
-      <div class="v-row">
-        <button class="v-btn" id="v-selbtn-${job}">Mark region</button>
-        <span class="v-brush" title="region size - scales with your zoom">region
-          <input type="range" id="v-brush-${job}" min="2" max="30" value="8">
-          <span id="v-brushlbl-${job}"></span></span>
-        <button class="v-btn" id="v-clearbtn-${job}" disabled>Clear marks</button>
-        <span style="flex:1"></span>
-        <button class="v-btn" id="v-fitbtn-${job}">Fit</button>
-        </div>
-      <div class="v-row v-act">
-        <button class="v-btn primary" id="v-submit-${job}">Request a change…</button>
-        <span class="v-cost">a change request re-runs the pipeline - minutes, not seconds</span>
-      </div>
+      ${opts.concerns?`<div class="v-why v-concerns">
+        <b>Every validity gate passed</b> - the mesh is structurally sound and solvable, so it is
+        delivered. The reviewer left these points open; weigh them before you rely on the results:
+        ${(opts.concerns||[]).length
+          ? '<ul class="v-concern-list">'+(opts.concerns||[]).map(c=>`<li>${esc(c)}</li>`).join('')+'</ul>'
+          : ''}
+        ${opts.reasoning?`<div class="v-reason">${esc(String(opts.reasoning).slice(0,600))}</div>`:''}
+        </div>`:''}
+      <div class="v-sec v-dl">${_dlHtml}</div>
+      <div class="v-thermal" id="v-thermal-${job}"></div>
+      <div class="v-facts" id="v-facts-${job}"></div>
       <!-- MESH PARTS: every selectable entity the loaded case actually declares -
            boundary patches, regions, cell zones, face zones, layer groups. The list
            is read from the mesh payload, so a part appears because the case has it. -->
-      <div class="v-facts" id="v-facts-${job}"></div>
       <div class="v-bnd" id="v-bnd-${job}">
         <div class="v-bnd-head">
           <span class="v-bnd-lbl">Mesh parts</span>
           <span class="v-bnd-count" id="v-bnd-count-${job}"></span>
           <span style="flex:1"></span>
-          <button class="v-bnd-act" id="v-bnd-restore-${job}">Restore full mesh</button>
+          <button class="v-bnd-act v-quiet" id="v-bnd-restore-${job}">Restore full mesh</button>
         </div>
         <div class="v-bnd-cols">
           <div class="v-bnd-list" id="v-bnd-chips-${job}"></div>
           <div class="v-bnd-insp" id="v-bnd-note-${job}"></div>
         </div>
+      </div>
+      <div class="v-sec v-review">
+        <div class="v-sec-h">Changes</div>
+        <div class="v-row">
+          <button class="v-btn" id="v-selbtn-${job}">Mark region</button>
+          <span class="v-brush" title="region size - scales with your zoom">Size
+            <input type="range" id="v-brush-${job}" min="2" max="30" value="8" aria-label="region size">
+            <span id="v-brushlbl-${job}"></span></span>
+        </div>
+        <div class="v-row v-act">
+          <button class="v-btn" id="v-submit-${job}">Request a change…</button>
+          <button class="v-btn v-quiet" id="v-clearbtn-${job}" disabled>Clear marks</button>
+        </div>
+        <p class="v-cost">A change request re-runs the pipeline - minutes, not seconds.</p>
       </div></div>
     <div class="v-canvas" id="v-canvas-${job}">
       <div class="v-loading" id="v-load-${job}"><svg class="v-spin" viewBox="0 0 24 24" aria-hidden="true"><circle class="sp-arm" cx="12" cy="12" r="7.2"/><path class="sp-hd" d="M19.20 8.16L22.40 14.56L16.00 14.56Z"/><path class="sp-hd" d="M4.80 15.84L1.60 9.44L8.00 9.44Z"/></svg><div>Loading mesh…</div></div>
-      <div class="v-hint" id="v-hint-${job}">rotate: drag · zoom: wheel or right-drag · pan: shift+drag</div>
+      <div class="v-tools">${upSelectHtml('v-up-'+job,upAxis)}<button class="v-btn v-tool" id="v-fitbtn-${job}" type="button" title="Frame the whole mesh">Fit</button></div>
+      <div class="v-hint" id="v-hint-${job}">${MOUSE_HINT}</div>
       <div class="v-count" id="v-count-${job}"></div></div>
     <div class="v-flags" id="v-flags-${job}" style="display:none"></div>`;
   // THE MESH TAKES THE STAGE. With a workbench on the page the delivered mesh fills it and the
@@ -167,6 +191,7 @@ function initViewer(job,surf,uiCfg){
   grw.resize();
   const ro=new ResizeObserver(()=>{setRenderScale();rw.render();});ro.observe(host);
   host.addEventListener('contextmenu',e=>e.preventDefault());
+  bindMouse(grw);                     // left-drag turns, right-drag pans, the wheel zooms
 
   /* one IMMUTABLE actor per patch - real polygon cells */
   const entries=[];let totalFaces=0;
@@ -193,6 +218,10 @@ function initViewer(job,surf,uiCfg){
     pr.setEdgeVisibility(true);pr.setEdgeColor(_EDGE[0],_EDGE[1],_EDGE[2]);pr.setLineWidth(1);
     pr.setAmbient(0.30);pr.setDiffuse(0.78);
     pr.setSpecular(0.10);pr.setSpecularPower(18);pr.setSpecularColor(1,1,1);
+    // DOUBLE-SIDED. An OpenFOAM boundary face points out of the FLUID, so a car's wall faces point
+    // into the car; with back faces culled the near side vanished and the viewer drew the inside of
+    // the body (a car read as an open tray). The depth test does the hiding instead.
+    if(pr.setBackfaceCulling)pr.setBackfaceCulling(false);
     ren.addActor(actor);
     const b=pd.getBounds();
     entries.push({actor,pd,patch:p.name,polys,pts,nCells,offsets:null,
@@ -200,8 +229,24 @@ function initViewer(job,surf,uiCfg){
     totalFaces+=nCells;});
 
   let edgeCol=_EDGE;             // what paint() draws edges with; the heatmap darkens it
+  // A DELIVERED THERMAL MODEL: its parts table shows one part alone through the parts panel
+  // (partsApi), and a ready-made slice replaces the surfaces while it is on (sliceOn)
+  const thermal=surf.thermal||null;
+  let partsApi=null,sliceOn=null;
+  // the parts panel's own repaint: the heatmap hands edges back through the panel, so a selected
+  // part keeps its selection edge - and a listener on it, so the problem areas follow what is shown
+  let repaintParts=null,onPartsPainted=null;
   const cam=ren.getActiveCamera();
-  cam.azimuth(45);cam.elevation(25);
+  // CAD is z-up, and the geometry check already draws parts that way: start from a front-quarter
+  // view looking slightly down with +z up. vtk's default camera is +y-up, which laid cars and
+  // aircraft on their side in the mesh viewer. A part modelled another way up opens the way the
+  // user last set it for this job (the "Up" control on the canvas).
+  const VIEW_DIR=[1,-1,0.7];
+  const upSel=document.getElementById('v-up-'+job);
+  cam.setFocalPoint(0,0,0);cam.setPosition(...VIEW_DIR);cam.setViewUp(0,0,1);
+  // with no choice stored for this job, the way up the geometry check proposed (surf.up_axis)
+  if(upSel&&!savedUp('job',job)&&isUpAxis(surf.up_axis))upSel.value=surf.up_axis;
+  orient(cam,(upSel&&upSel.value)||'+z',VIEW_DIR);
   ren.resetCamera();rw.render();
   const _bs=ren.computeVisiblePropBounds();
   const diag=Math.max(Math.hypot(_bs[1]-_bs[0],_bs[3]-_bs[2],_bs[5]-_bs[4]),1e-9);
@@ -213,6 +258,13 @@ function initViewer(job,surf,uiCfg){
                    :totalFaces.toLocaleString()+' boundary faces';
 
   document.getElementById('v-fitbtn-'+job).onclick=()=>{ren.resetCamera();clampCam();rw.render();};
+  // WHICH WAY IS UP: turn the camera to the chosen axis, re-frame, and remember it for this job
+  function setUp(axis){
+    orient(cam,axis,VIEW_DIR);ren.resetCamera();clampCam();rw.render();
+    if(upSel&&upSel.value!==axis)upSel.value=axis;
+    saveUp('job',job,axis);}
+  if(upSel)upSel.onchange=()=>setUp(upSel.value);
+  shield(host.querySelector('.v-tools'));
 
  /* camera envelope: adaptive zoom caps computed from the real cells
      Full fidelity always - edges always on, full resolution. Instead of
@@ -334,8 +386,13 @@ function initViewer(job,surf,uiCfg){
                 renderable:p.renderable!==false&&!!actorOf[entity],
                 hiddenByDefault:p.default_visibility==='hidden'};});
 
-    const KIND={boundary:'Boundary patches',region:'Regions',cellGroup:'Cell types',
-                inspection:'Inspection structures'};
+    const KIND=thermal
+      // a thermal model's regions are the file's parts, its boundary the sides of the air box
+      ?{boundary:'Sides of the air box',region:'Parts',cellGroup:'Cell types',inspection:'Slices'}
+      :{boundary:'Boundary patches',region:'Regions',cellGroup:'Cell types',
+        inspection:'Inspection structures'};
+    // a thermal model's slices are drawn from the thermal panel, so they are not listed twice
+    if(thermal)parts=parts.filter(p=>p.kind!=='inspection');
     const kindLabel=k=>KIND[k]||String(k).replace(/([A-Z])/g,' $1')
                                          .replace(/^./,c=>c.toUpperCase());
 
@@ -374,9 +431,8 @@ function initViewer(job,surf,uiCfg){
         const p=parts.find(x=>x.renderable&&x.entity===en.patch);
         const s=p?st[p.id]:null;if(!s)return;
         const pr=en.actor.getProperty(),isSel=!!(selPart&&selPart.entity===en.patch);
-        en.actor.setVisibility(!s.hidden&&(!isolated||isSel));
+        en.actor.setVisibility(!sliceOn&&!s.hidden&&(!isolated||isSel));
         pr.setOpacity(s.opacity);
-        if(pr.setBackfaceCulling)pr.setBackfaceCulling(s.opacity>=1);
         if(isSel){pr.setColor(_SEL[0],_SEL[1],_SEL[2]);
                   pr.setEdgeColor(_SEL_EDGE[0],_SEL_EDGE[1],_SEL_EDGE[2]);pr.setAmbient(0.40);}
         else{pr.setColor(s.base[0],s.base[1],s.base[2]);
@@ -392,7 +448,9 @@ function initViewer(job,surf,uiCfg){
       });
       note.innerHTML=inspect(selPart);
       wire();
+      if(onPartsPainted)onPartsPainted();
     }
+    repaintParts=paint;
 
     // INSPECT - one part at a time: its OpenFOAM identity, its own statistics,
     // and the controls that apply to IT. Nothing is on screen for a part the
@@ -400,32 +458,31 @@ function initViewer(job,surf,uiCfg){
     function inspect(p){
       if(!p){
         const off=parts.filter(x=>x.renderable&&st[x.id].hidden).map(x=>x.label);
-        return `<div class="ins-empty">Select a part to inspect it.<br>`
+        return `<div class="ins-empty">Select a part to inspect it.`
           +`<span>${parts.length} selectable entities were read from this case.</span>`
-          +(off.length?`<span class="ins-off">hidden · ${off.map(esc).join(' · ')}</span>`:'')
+          +(off.length?`<span class="ins-off">Hidden: ${off.map(esc).join(', ')}</span>`:'')
           +`</div>`;
       }
       const rend=p.renderable,s=st[p.id];
       const rows=Object.entries(p.meta||{}).filter(([k])=>k!=='name'&&k!=='role')
         .filter(([,v])=>v!==null&&v!==undefined)
-        .map(([k,v])=>`<div class="ins-cell"><div class="ins-k">${esc(k.replace(/_/g,' '))}</div>`
-          +`<div class="ins-v">${esc(Array.isArray(v)?v.join(', ')
-             :(typeof v==='number'?v.toLocaleString():String(v)))}</div></div>`).join('');
-      return `<div class="ins-eyebrow">Selected part</div>
-        <div class="ins-top"><span class="ins-nm">${esc(p.label)}</span>
+        .map(([k,v])=>`<div class="ins-cell"><dt class="ins-k">${esc(k.replace(/_/g,' '))}</dt>`
+          +`<dd class="ins-v">${esc(Array.isArray(v)?v.join(', ')
+             :(typeof v==='number'?v.toLocaleString():String(v)))}</dd></div>`).join('');
+      return `<div class="ins-top"><span class="ins-nm">${esc(p.label)}</span>
           <span class="ins-badge">${esc(p.role||p.kind)}</span></div>
-        <div class="ins-grid">
-          <div class="ins-cell"><div class="ins-k">kind</div>
-            <div class="ins-v">${esc(kindLabel(p.kind))}</div></div>
-          <div class="ins-cell"><div class="ins-k">declared type</div>
-            <div class="ins-v">${esc(p.role||'-')}</div></div>
+        <dl class="ins-grid">
+          <div class="ins-cell"><dt class="ins-k">kind</dt>
+            <dd class="ins-v">${esc(kindLabel(p.kind))}</dd></div>
+          <div class="ins-cell"><dt class="ins-k">declared type</dt>
+            <dd class="ins-v">${esc(p.role||'-')}</dd></div>
           ${rows}
-        </div>
+        </dl>
         ${rend?`<div class="ins-acts">
           <button class="v-bnd-act on" data-a="hl">Highlighted</button>
           <button class="v-bnd-act${s.hidden?' on':''}" data-a="hide">${s.hidden?'Show':'Hide'}</button>
           <button class="v-bnd-act${isolated?' on':''}" data-a="iso">Isolate</button>
-          <label class="v-bnd-op">opacity
+          <label class="v-bnd-op">Opacity
             <input type="range" data-a="op" min="10" max="100" value="${Math.round(s.opacity*100)}">
             <span>${Math.round(s.opacity*100)}%</span></label>
         </div>`
@@ -441,8 +498,7 @@ function initViewer(job,surf,uiCfg){
                        el.nextElementSibling.textContent=el.value+'%';
                        entries.forEach(en=>{if(en.patch!==st[sel].entity)return;
                          const pr=en.actor.getProperty();
-                         pr.setOpacity(st[sel].opacity);
-                         if(pr.setBackfaceCulling)pr.setBackfaceCulling(st[sel].opacity>=1);});
+                         pr.setOpacity(st[sel].opacity);});
                        rw.render();};return;}
         el.onclick=()=>{
           if(a==='hide'){const s=st[sel];s.hidden=!s.hidden;
@@ -472,6 +528,12 @@ function initViewer(job,surf,uiCfg){
         g.appendChild(c);});
       chips.appendChild(g);});
 
+    // THE THERMAL TABLE shows a part alone (or the whole model again) through the same state
+    partsApi={isolate:(entity)=>{
+      const p=entity?parts.find(x=>x.renderable&&x.entity===entity):null;
+      if(p){sel=p.id;isolated=true;st[p.id].hidden=false;}else{sel=null;isolated=false;}
+      paint();refit();},
+      repaint:()=>{paint();refit();}};
     bRest.onclick=()=>{sel=null;isolated=false;
                        parts.forEach(p=>{const d=dflt(p);
                          st[p.id].hidden=d.hidden;st[p.id].opacity=d.opacity;});
@@ -520,8 +582,8 @@ function initViewer(job,surf,uiCfg){
   function setMarkMode(on){markMode=on;selBtn.classList.toggle('armed',on);
     selBtn.textContent=on?'Marking… (click the mesh)':'Mark region';
     host.style.cursor=on?'crosshair':'';
-    hintEl.textContent=on?'click a spot on the mesh to mark it · drag still rotates'
-                         :'rotate: drag · zoom: wheel or right-drag · pan: shift+drag';}
+    hintEl.textContent=on?'Click a spot on the mesh to mark it · Drag still rotates'
+                         :(activeMetric?HEAT_HINT:MOUSE_HINT);}
   selBtn.onclick=()=>setMarkMode(!markMode);
 
   function pickCell(e,cb){
@@ -539,14 +601,26 @@ function initViewer(job,surf,uiCfg){
       const cid=Number(ids[0]);
       if(cid>=0&&cid<en.nCells)cb(en,cid);}).catch(()=>{});}
 
-  function cellNormal(en,cid){          // Newell normal of the picked polygon
-    const o=cellOffsets(en)[cid],n=en.polys[o];
-    let nx=0,ny=0,nz=0;
+  function newell(en,cid){              // twice the polygon's area vector, in its own vertex order
+    const o=cellOffsets(en)[cid],n=en.polys[o],P=en.pts;let nx=0,ny=0,nz=0;
     for(let j=1;j<=n;j++){const a=en.polys[o+j]*3,b=en.polys[o+(j%n)+1]*3;
-      const ax=en.pts[a],ay=en.pts[a+1],az=en.pts[a+2];
-      const bx=en.pts[b],by=en.pts[b+1],bz=en.pts[b+2];
-      nx+=(ay-by)*(az+bz);ny+=(az-bz)*(ax+bx);nz+=(ax-bx)*(ay+by);}
-    const L=Math.hypot(nx,ny,nz)||1;return [nx/L,ny/L,nz/L];}
+      nx+=(P[a+1]-P[b+1])*(P[a+2]+P[b+2]);ny+=(P[a+2]-P[b+2])*(P[a]+P[b]);
+      nz+=(P[a]-P[b])*(P[a+1]+P[b+1]);}
+    return [nx,ny,nz];}
+  // WHICH WAY IS OUT of a part. OpenFOAM turns a boundary face out of the fluid - into a car body -
+  // and an STL points wherever it was drawn, so each part's sense is read off the part itself: for a
+  // closed body the faces' reach from its centre is all one sign. A flat or open part (an inlet
+  // disc) reads near zero and keeps its own order.
+  function outSign(en){
+    if(en.outSign===undefined){const b=en.pd.getBounds(),c=[(b[0]+b[1])/2,(b[2]+b[3])/2,(b[4]+b[5])/2];
+      let s=0,a=0;const step=Math.max(1,Math.floor(en.nCells/4000));
+      for(let k=0;k<en.nCells;k+=step){const p=cellCenter(en,k),v=newell(en,k);
+        const d=(p[0]-c[0])*v[0]+(p[1]-c[1])*v[1]+(p[2]-c[2])*v[2];s+=d;a+=Math.abs(d);}
+      en.outSign=a>0&&s/a<-0.3?-1:1;en.outFirm=a>0&&Math.abs(s/a)>=0.3;}
+    return en.outSign;}
+  function cellNormal(en,cid){          // unit normal of the polygon, pointing out of its part
+    const v=newell(en,cid),s=outSign(en)/(Math.hypot(v[0],v[1],v[2])||1);
+    return [v[0]*s,v[1]*s,v[2]*s];}
   function ringPd(c,nrm,r){             // thin circle in the surface tangent plane
     let u=Math.abs(nrm[0])>0.9?[0,1,0]:[1,0,0];
     let ux=u[1]*nrm[2]-u[2]*nrm[1],uy=u[2]*nrm[0]-u[0]*nrm[2],uz=u[0]*nrm[1]-u[1]*nrm[0];
@@ -621,7 +695,7 @@ function initViewer(job,surf,uiCfg){
   host.addEventListener('pointerdown',e=>{downXY=[e.clientX,e.clientY];},true);
   host.addEventListener('pointerup',e=>{
     if(!markMode||!downXY)return;
-    if(e.target&&e.target.classList&&e.target.classList.contains('v-pin'))return;
+    if(e.target&&e.target.closest&&e.target.closest('.v-pin,.v-tools,.v-legend,.v-probe,.v-heatctl'))return;
     if(Math.hypot(e.clientX-downXY[0],e.clientY-downXY[1])>6)return;
     pickCell(e,placeMarker);},true);
 
@@ -633,6 +707,8 @@ function initViewer(job,surf,uiCfg){
     submitBtn.textContent=flags.length
       ?`Send ${flags.length} mark${flags.length>1?'s':''} for re-review`
       :'Request a change…';
+    // with marks placed, sending them is the next step, so it takes the accent
+    submitBtn.classList.toggle('primary',flags.length>0);
     flagsEl.innerHTML=flags.length
       ?'<b>Marked regions</b><div class="v-fhint">The reviewer will inspect each marked spot on the delivered mesh. Add a note to say what looks wrong there.</div>':'';
     flags.forEach((f,i)=>{
@@ -648,8 +724,8 @@ function initViewer(job,surf,uiCfg){
             :(f.note?`<div class="f-note">${esc(f.note)}</div>`
                     :'<div class="f-note empty">Add a note describing the issue…</div>'))
         +'</div>'
-        +'<span class="fx" title="edit note" style="color:#8fa3bd">✎</span>'
-        +'<span class="fx" title="remove">✕</span>';
+        +'<span class="fx fx-edit" title="edit note">✎</span>'
+        +'<span class="fx fx-del" title="remove">✕</span>';
       const emptyNote=d.querySelector('.f-note.empty');
       if(emptyNote)emptyNote.onclick=()=>editNote(f);
       const [editEl,delEl]=d.querySelectorAll('.fx');
@@ -697,39 +773,138 @@ function initViewer(job,surf,uiCfg){
     const _ar=surf.quality_fields&&surf.quality_fields.metrics&&surf.quality_fields.metrics.aspect_ratio;
     if(_ar&&!('max_aspect_ratio' in q)&&typeof _ar.max==='number')q.max_aspect_ratio=Number(_ar.max.toFixed(2));
     if(!host||!Object.keys(q).length)return;
-    const LBL={cells:'cells',faces:'faces',hexahedra:'hexahedra',polyhedra:'polyhedra',
-               prisms:'prisms',pyramids:'pyramids',tetrahedra:'tetrahedra',
-               regions:'mesh regions',max_non_ortho:'max non-orthogonality',
-               max_skewness:'max skewness',max_aspect_ratio:'max aspect ratio',skew_faces:'skewed faces',
-               avg_non_ortho:'mean non-orthogonality'};
-    const ORDER=['cells','faces','hexahedra','polyhedra','prisms','pyramids','tetrahedra',
-                 'regions','max_non_ortho','max_skewness','max_aspect_ratio','skew_faces','avg_non_ortho'];
-    const keys=ORDER.filter(k=>k in q)
-      .concat(Object.keys(q).filter(k=>!ORDER.includes(k)&&k!=='units'&&k!=='engine'));
-    if(!keys.length)return;
-    const cell=k=>{
-      const v=q[k];
-      // integers read as counts; a measured value reads to a few figures, and a
-      // very small one reads in exponent form rather than a run of zeroes
-      const shown=typeof v!=='number' ? String(v)
-        : Number.isInteger(v) ? v.toLocaleString()
-        : (Math.abs(v)>0&&Math.abs(v)<0.001) ? v.toExponential(2)
-        : Number(v.toPrecision(6)).toLocaleString(undefined,{maximumFractionDigits:6});
-      const suffix=k==='max_non_ortho'||k==='avg_non_ortho'?'<small>°</small>':'';
-      const of=k==='skew_faces'&&typeof q.faces==='number'
-        ? `<small> of ${q.faces.toLocaleString()}</small>`:'';
-      return `<div class="mx-c" data-key="${esc(k)}"><div class="mx-k">${esc(LBL[k]||k.replace(/_/g,' '))}</div>`
-            +`<div class="mx-v">${shown}${suffix}${of}</div></div>`;};
+    // GROUPED, the way the figures are read: how big the mesh is, what its cells are, how good
+    // they are. A zero that only says "nothing is wrong" (no skewed faces, a skew fraction of 0)
+    // is folded into the figure it qualifies instead of taking a cell of its own.
+    const SIZE=[['cells','Cells'],['faces','Faces'],['regions','Regions']];
+    const TYPES=[['hexahedra','Hexahedra'],['polyhedra','Polyhedra'],['prisms','Prisms'],
+                 ['pyramids','Pyramids'],['tetrahedra','Tetrahedra']];
+    const QUALITY=[['max_non_ortho','Max non-orthogonality','°'],['max_skewness','Max skewness',''],
+                   ['max_aspect_ratio','Max aspect ratio','']];
+    const FOLDED=['avg_non_ortho','skew_faces','skew_fraction'];
+    const KNOWN=[...SIZE,...TYPES,...QUALITY].map(r=>r[0]).concat(FOLDED,['units','engine']);
+    const isNum=v=>typeof v==='number'&&isFinite(v);
+    // integers read as counts; a measured value to two decimals, and a very small one in
+    // exponent form rather than a run of zeroes
+    const show=v=>!isNum(v) ? esc(String(v))
+      : Number.isInteger(v) ? v.toLocaleString()
+      : (Math.abs(v)>0&&Math.abs(v)<0.001) ? v.toExponential(2)
+      : v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+    const has=k=>k in q&&q[k]!==null&&q[k]!==undefined;
+    const stat=([k,l])=>`<div class="mx-c mx-stat" data-key="${k}"><div class="mx-v">${show(q[k])}</div>`
+      +`<div class="mx-k">${l}</div></div>`;
+    // cell types: each as its share of the cells, so a hex-dominant mesh reads at a glance
+    const total=isNum(q.cells)&&q.cells>0?q.cells:0;
+    const type=([k,l])=>{const v=q[k],pct=total&&isNum(v)?Math.max(0,Math.min(100,100*v/total)):null;
+      return `<div class="mx-c mx-row mx-type" data-key="${k}"><div class="mx-k">${l}</div>`
+        +`<div class="mx-v">${show(v)}</div>`
+        +(pct===null?'':`<div class="mx-pct">${pct>0&&pct<1?'&lt;1':Math.round(pct)}%</div>`
+          +`<div class="mx-bar"><i style="width:${pct.toFixed(1)}%"></i></div>`)+`</div>`;};
+    const row=(k,l,unit,sub)=>`<div class="mx-c mx-row mx-q" data-key="${esc(k)}"><div class="mx-k">${esc(l)}</div>`
+      +`<div class="mx-v">${show(q[k])}${unit?`<small>${unit}</small>`:''}</div>`
+      +(sub?`<div class="mx-sub">${sub}</div>`:'')+`</div>`;
+    // the share of faces that are skewed, when there are any
+    const frac=isNum(q.skew_fraction)&&q.skew_fraction>0?`(${Number((q.skew_fraction*100).toPrecision(2))}%)`:'';
+    const ofFaces=isNum(q.faces)?`of ${q.faces.toLocaleString()}`:'';
+    const skewNote=()=>{
+      if(!isNum(q.skew_faces))return frac?`Skewed: ${frac.slice(1,-1)} of faces`:'';
+      if(q.skew_faces===0)return 'No skewed faces';
+      return [`${q.skew_faces.toLocaleString()} skewed face${q.skew_faces!==1?'s':''}`,ofFaces,frac]
+        .filter(Boolean).join(' ');};
+    const quality=[];
+    if(has('max_non_ortho'))quality.push(row('max_non_ortho','Max non-orthogonality','°',
+      has('avg_non_ortho')?`Mean ${show(q.avg_non_ortho)}°`:''));
+    else if(has('avg_non_ortho'))quality.push(row('avg_non_ortho','Mean non-orthogonality','°'));
+    // skewness: the max with the skewed faces under it; without a max, the count and its share
+    // stand on their own - nothing the engine reported is dropped
+    if(has('max_skewness'))quality.push(row('max_skewness','Max skewness','',skewNote()));
+    else if(has('skew_faces'))quality.push(row('skew_faces','Skewed faces','',[ofFaces,frac].filter(Boolean).join(' ')));
+    else if(has('skew_fraction'))quality.push(row('skew_fraction','Skew fraction',''));
+    if(has('max_aspect_ratio'))quality.push(row('max_aspect_ratio','Max aspect ratio',''));
+    // anything the backend declared that this build has no name for still reaches the user
+    const other=Object.keys(q).filter(k=>!KNOWN.includes(k)).map(k=>row(k,k.replace(/_/g,' '),''));
+    const sizes=SIZE.filter(([k])=>has(k)),types=TYPES.filter(([k])=>has(k));
+    const group=(title,body)=>body?`<div class="mx-group"><div class="mx-gh">${title}</div>${body}</div>`:'';
+    if(!sizes.length&&!types.length&&!quality.length&&!other.length)return;
     host.innerHTML=`<div class="mx"><div class="mx-h"><span>Delivered mesh</span>`
       +(q.engine?`<span class="eng">${esc(q.engine)}</span>`:'')
       +(q.units?`<span class="eng">${esc(q.units)}</span>`:'')
-      +`</div><div class="mx-grid">${keys.map(cell).join('')}</div></div>`;
+      +`</div>`
+      +(sizes.length?`<div class="mx-size">${sizes.map(stat).join('')}</div>`:'')
+      +group('Cell types',types.map(type).join(''))
+      +group('Quality',quality.join(''))
+      +group('Other',other.join(''))
+      +`</div>`;
   })();
 
-  document.getElementById('v-status-'+job).textContent=
-    (surf.is_mesh?'your delivered mesh · '
+  const statusEl=document.getElementById('v-status-'+job);
+  statusEl.textContent=thermal&&surf.is_mesh
+    // a thermal model says what it is in its own words: its parts, its cells, its power
+    ?'your delivered thermal mesh · '+(thermal.summary||'')
+    :(surf.is_mesh?'your delivered mesh · '
                 :'input surface - the mesh itself could not be rendered · ')
     +(surf.patches||[]).map(p=>`${p.name}: ${(p.face_count||p.tri_count||0).toLocaleString()} faces`).join(' · ');
+  statusEl.title=statusEl.textContent;   // one line on screen; the whole of it on hover
+
+  /* A DELIVERED THERMAL MODEL - its parts table, its quality in words, its ready-made slices
+     and its own files (viewer/thermal_results.js). A slice is the delivered mesh cut by a plane,
+     region by region, as the payload ships it: shown, it stands in for the surfaces, each part in
+     its own colour and the air in grey, the camera square to it. */
+  const sliceActors={};
+  (function thermalResults(){
+    const host=document.getElementById('v-thermal-'+job);
+    if(!thermal||!host)return;
+    (thermal.slices||[]).forEach(s=>{
+      sliceActors[s.name]=(s.pieces||[]).map(pc=>{
+        const pd=vtk.Common.DataModel.vtkPolyData.newInstance();
+        pd.getPoints().setData(b64f32(pc.points_b64),3);
+        pd.getPolys().setData(b64u32(pc.polys_b64));
+        const mapper=vtk.Rendering.Core.vtkMapper.newInstance();mapper.setInputData(pd);
+        const actor=vtk.Rendering.Core.vtkActor.newInstance();actor.setMapper(mapper);
+        const c=sliceColour(thermal,pc.region);
+        const pr=actor.getProperty();pr.setColor(c[0],c[1],c[2]);
+        pr.setEdgeVisibility(true);pr.setEdgeColor(0.16,0.16,0.15);pr.setLineWidth(1);
+        pr.setAmbient(0.55);pr.setDiffuse(0.55);
+        if(pr.setBackfaceCulling)pr.setBackfaceCulling(false);
+        actor.setVisibility(false);if(actor.setPickable)actor.setPickable(false);
+        ren.addActor(actor);
+        return {actor,region:pc.region};});});
+    function showSlice(name){
+      sliceOn=name&&sliceActors[name]?name:null;
+      Object.entries(sliceActors).forEach(([n,list])=>list.forEach(a=>a.actor.setVisibility(n===sliceOn)));
+      if(!sliceOn){
+        // back to the model's own view, framed on what the parts panel shows
+        orient(cam,(upSel&&upSel.value)||'+z',VIEW_DIR);
+        if(partsApi)partsApi.repaint();else rw.render();
+        return;}
+      if(partsApi)partsApi.repaint();
+      const s=(thermal.slices||[]).find(x=>x.name===sliceOn);
+      // square to the cut: looking along its normal, up the model's z (or y for a level cut),
+      // framed on the window the slice was made for (around a hot part), else the whole cut
+      const b=[Infinity,-Infinity,Infinity,-Infinity,Infinity,-Infinity];
+      sliceActors[sliceOn].forEach(a=>{const ab=a.actor.getBounds();
+        for(let k=0;k<6;k+=2){b[k]=Math.min(b[k],ab[k]);b[k+1]=Math.max(b[k+1],ab[k+1]);}});
+      const clip=Array.isArray(s.clip_box)&&s.clip_box.length===6?s.clip_box:null;
+      if(clip)for(let k=0;k<6;k+=2){
+        const lo=Math.max(b[k],clip[k]),hi=Math.min(b[k+1],clip[k+1]);
+        if(hi>lo){b[k]=lo;b[k+1]=hi;}}
+      const c=[(b[0]+b[1])/2,(b[2]+b[3])/2,(b[4]+b[5])/2],n=s.normal||[0,0,1];
+      cam.setFocalPoint(c[0],c[1],c[2]);
+      cam.setPosition(c[0]+n[0],c[1]+n[1],c[2]+n[2]);
+      cam.setViewUp(...(Math.abs(n[2])>0.9?[0,1,0]:[0,0,1]));
+      _clamping=true;ren.resetCamera(b);_clamping=false;rw.render();}
+    host.innerHTML=thermalResultsHtml(job,thermal);
+    thermalDownloads(document.querySelector('#viewer-'+job+' .v-dl'),job,thermal);
+    const api=bindThermalResults(host,job,thermal,{
+      isolate:name=>{if(sliceOn)showSlice(null);if(partsApi)partsApi.isolate(name);},
+      slice:name=>showSlice(name)});
+    window._vdbg=window._vdbg||{};
+    window._vdbg[job+':thermal']={slice:name=>{api&&api.slice(name);showSlice(name);},
+      sliceOn:()=>sliceOn,slices:()=>Object.fromEntries(Object.entries(sliceActors).map(([n,l])=>[n,l.length])),
+      isolate:name=>{if(partsApi)partsApi.isolate(name);api&&api.pick(name);},
+      visible:()=>entries.filter(e=>e.actor.getVisibility()).map(e=>e.patch),
+      text:()=>host.innerText};
+  })();
 
   /* support/debug hook (read-only-ish; used by headless verification) */
   window._vdbg=window._vdbg||{};
@@ -741,7 +916,10 @@ function initViewer(job,surf,uiCfg){
       const d=Math.hypot(q[0]-f[0],q[1]-f[1],q[2]-f[2])||1e-12;
       return stats?stats.typ*(apiRW.getSize()[1]/(2*Math.tan(cam.getViewAngle()*Math.PI/360)))/d:null;},
     fitDist:()=>_fitDist,stats:stats,diag:diag,size:()=>apiRW.getSize(),
-    markers:()=>flags.length,
+    markers:()=>flags.length,up:()=>cam.getViewUp().slice(),
+    upAxis:()=>upSel?upSel.value:'+z',setUp:axis=>setUp(axis),
+    view:()=>({focal:cam.getFocalPoint().slice(),position:cam.getPosition().slice(),
+               dir:cam.getDirectionOfProjection().slice()}),
     render:()=>rw.render()};
 
   /* PARAVIEW EXPORT - the same boundary and the same per-face numbers as a legacy VTK file,
@@ -769,8 +947,8 @@ function initViewer(job,surf,uiCfg){
 
   /* QUALITY HEATMAP - the boundary coloured by the quality of the cell behind each face.
      The payload carries one float per drawn polygon (render/face_quality.py, aligned with the
-     surface reader's own filter), the bar the engine's gate judges against, and the worst
-     spots. The delivered-mesh FIGURES are the controls: the non-orthogonality, skewness and
+     surface reader's own filter) and the bar the engine's gate judges against. The
+     delivered-mesh FIGURES are the controls: the non-orthogonality, skewness and
      aspect-ratio numbers become clickable when fields exist for them - clicking a number shows where it
      lives. Nothing here touches the geometry: colouring is cell scalars on the same immutable
      actors, and turning it off restores exactly the property colours the parts panel set. */
@@ -794,10 +972,11 @@ function initViewer(job,surf,uiCfg){
        are computed here and handed to the mapper as direct per-face RGB, and the legend is
        built from the SAME stops - so the bar on screen is the bar in the colours, and nothing
        depends on which lookup-table classes the vendored bundle happens to export. */
-    /* the site's ramp: deep steel below, the wireframe blue through the calm range,
-       warming to international orange at the bar, crimson past it */
-    const STOPS=[[0,[70,91,116]],[0.5,[109,139,175]],[0.8,[255,150,80]],[1.0,[255,79,0]]];
-    const PAST=[150,28,22];
+    /* the console's original ramp, its calm blues about 30% lighter (Areen, 2026-10-01):
+       steel below, the wireframe blue through the calm range, warming to amber and
+       international orange at the bar, crimson past it. The colour is the surface's own - nothing is drawn on top of the mesh. */
+    const STOPS=[[0,[92,120,152]],[0.5,[142,178,218]],[0.8,[255,168,90]],[1.0,[255,88,0]]];
+    const PAST=[168,31,25];
     function ramp(m){const md=qf.metrics[m],lim=md.limit||1,lo=md.floor||0;
       // a metric whose bar sits far above everything the mesh has (aspect ratio: checkMesh's
       // 1000 against layers at 10 to 50) spans its colours over the mesh's own range instead,
@@ -816,43 +995,388 @@ function initViewer(job,surf,uiCfg){
       return {color,hi,lo,open,css,limitPct:pc(lim)};}
     function fmt(m,v){const u=qf.metrics[m].unit||'';return (u==='°'?v.toFixed(1):v.toFixed(2))+u;}
 
-    const hotActors=[];
-    function clearHot(){hotActors.forEach(a=>ren.removeActor(a));hotActors.length=0;}
-    function showHot(m){clearHot();
-      const r=stats&&stats.typ>0?Math.max(stats.typ*1.6,diag*0.0025):diag*0.006;
-      (qf.hotspots||[]).filter(h=>h.metric===m).forEach(h=>{
-        const mp=vtk.Rendering.Core.vtkMapper.newInstance();mp.setInputData(spherePd(h.x,h.y,h.z,r));
-        const ac=vtk.Rendering.Core.vtkActor.newInstance();ac.setMapper(mp);ac.setPickable(false);
-        const pp=ac.getProperty();pp.setColor(1.0,0.22,0.16);pp.setAmbient(1.0);pp.setDiffuse(0.0);pp.setLighting(false);
-        ren.addActor(ac);hotActors.push(ac);});}
+    /* PROBLEM AREAS. The faces over the bar, and those near it (80% of it and up), gathered into
+       places, so a mesh with three bad corners reads as three areas and not as a few hundred faces.
+       The worst face left seeds an area and every bad face within a radius of it joins: ten typical
+       faces of what is on screen, or 2% of its size, whichever is larger - so the same rule groups a
+       nozzle's lip and an airliner's wing root. A grid of that radius keeps it one pass however many
+       faces there are, and seeding worst first puts the list in order as it is built. A payload
+       hotspot (a face over the bar) that no drawn area holds - a bad cell inside the volume - still
+       makes an area of its own. Nothing here is drawn on the mesh: a click glides the camera there
+       and the heatmap's own colour shows the cells. */
+    const NEAR=0.8,SHOW_AREAS=5,MAX_AREAS=200;
+    const NEUTRAL=[84,87,92];        // "only bad cells": the flat grey every face below 80% rests in
+    const shown=()=>entries.filter(en=>en.actor.getVisibility());
+    const shownSig=()=>shown().map(en=>en.patch).join('|')+'#'+(upSel?upSel.value:'');
+    const faceSize=(en,cid)=>{const v=newell(en,cid);return Math.sqrt(0.5*Math.hypot(v[0],v[1],v[2]));};
+    const dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+    const unit=v=>{const l=Math.hypot(v[0],v[1],v[2])||1;return [v[0]/l,v[1]/l,v[2]/l];};
+    const tanHalf=()=>Math.tan(cam.getViewAngle()*Math.PI/360);
+    function camDist(){const f=cam.getFocalPoint(),q=cam.getPosition();
+      return Math.hypot(q[0]-f[0],q[1]-f[1],q[2]-f[2])||1e-12;}
+    function unionBounds(list){if(!list.length)return null;
+      const b=[Infinity,-Infinity,Infinity,-Infinity,Infinity,-Infinity];
+      list.forEach(en=>{const e=en.pd.getBounds();
+        for(let k=0;k<6;k+=2){b[k]=Math.min(b[k],e[k]);b[k+1]=Math.max(b[k+1],e[k+1]);}});
+      return b;}
+    function diagOf(list){const b=unionBounds(list);if(!b)return diag;
+      return Math.max(Math.hypot(b[1]-b[0],b[3]-b[2],b[5]-b[4]),1e-9);}
+    function faceTyp(vis){            // the median drawn face of the parts on screen, sampled
+      const tot=vis.reduce((a,en)=>a+en.nCells,0),step=Math.max(1,Math.floor(tot/3000)),s=[];
+      vis.forEach(en=>{for(let c=0;c<en.nCells;c+=step)s.push(faceSize(en,c));});
+      s.sort((a,b)=>a-b);
+      return (s.length&&s[s.length>>1])||(stats&&stats.typ)||diag*0.005;}
+    const roleOf=en=>(((surf.patches||[]).find(p=>p.name===en.patch)||{}).type||'')+' '+en.patch;
+    const isIn=en=>/inlet|inflow/i.test(roleOf(en)),isOut=en=>/outlet|outflow|exit/i.test(roleOf(en));
 
-    let legend=null,probeEl=null;
+    /* WHERE IT IS, in words a person would use, read from the drawn parts' own box and the up axis
+       the viewer is using - nothing is guessed past what the case says. Ahead and behind are said
+       only when the case names an inlet and an outlet: between them the walls of an internal flow
+       read "inlet end" / "outlet end", and a body standing in the stream reads "front" (toward the
+       inlet) / "rear". "tip" is the far end of something only a small share of the part reaches - a
+       wing tip, a fin top, a probe's point. "upper" / "lower" are thirds along the up axis. */
+    function placeFrame(vis){
+      const box=en=>/farfield|freestream|symmetry/i.test(roleOf(en));
+      let ref=vis.filter(en=>!isIn(en)&&!isOut(en)&&!box(en));if(!ref.length)ref=vis;
+      const tot=ref.reduce((a,en)=>a+en.pts.length/3,0),step=Math.max(1,Math.floor(tot/20000)),P=[];
+      ref.forEach(en=>{const n=en.pts.length/3;for(let i=0;i<n;i+=step)P.push([en.pts[i*3],en.pts[i*3+1],en.pts[i*3+2]]);});
+      const range=ax=>{let lo=Infinity,hi=-Infinity;P.forEach(p=>{const d=dot(p,ax);if(d<lo)lo=d;if(d>hi)hi=d;});
+        return [lo,hi];};
+      const mid=list=>{const b=unionBounds(list);return [(b[0]+b[1])/2,(b[2]+b[3])/2,(b[4]+b[5])/2];};
+      const up=upVector(upSel?upSel.value:'+z');
+      const ins=entries.filter(isIn),outs=entries.filter(isOut);
+      let stream=null,internal=false,stR=null;
+      if(ins.length&&outs.length&&P.length){const a=mid(ins),b=mid(outs),d=[b[0]-a[0],b[1]-a[1],b[2]-a[2]];
+        if(Math.hypot(d[0],d[1],d[2])>0){stream=unit(d);stR=range(stream);const span=(stR[1]-stR[0])||1;
+          // the inlet and the outlet close the walls' own ends: the flow runs inside them
+          internal=dot(a,stream)>=stR[0]-0.15*span&&dot(b,stream)<=stR[1]+0.15*span;}}
+      const axes=[[1,0,0],[0,1,0],[0,0,1]].filter(ax=>!stream||Math.abs(dot(ax,stream))<0.9)
+        .map(ax=>({ax,r:range(ax),isUp:Math.abs(dot(ax,up))>0.9}));
+      const big=Math.max(1e-30,...axes.map(a=>a.r[1]-a.r[0]),stR?stR[1]-stR[0]:0);
+      return {P,up,upR:P.length?range(up):null,stream,stR,internal,axes,big};}
+    function hintOf(c,F,nrm,port){
+      if(!F.P.length)return '';
+      const t=(r,v)=>(v-r[0])/((r[1]-r[0])||1);
+      const words=[];
+      if(F.stream&&!port){const s=t(F.stR,dot(c,F.stream));
+        if(s<0.3)words.push(F.internal?'inlet end':'front');
+        else if(s>0.7)words.push(F.internal?'outlet end':'rear');}
+      let tipUp=false;
+      for(const a of F.axes){const s=t(a.r,dot(c,a.ax));if(s>0.05&&s<0.95)continue;
+        // the bottom of the part along the up axis is where it rests, not a tip
+        if(a.isUp&&(dot(a.ax,F.up)>0?s<=0.08:s>=0.92))continue;
+        const span=(a.r[1]-a.r[0])||1,hi=s>=0.92,cut=hi?a.r[1]-0.08*span:a.r[0]+0.08*span;
+        let n=0;F.P.forEach(p=>{const d=dot(p,a.ax);if(hi?d>=cut:d<=cut)n++;});
+        if(n<0.04*F.P.length){words.push('tip');tipUp=a.isUp;break;}}
+      // a level patch says which way it faces; anything else, which third of the height it is in
+      const fu=nrm?dot(nrm,F.up):0;
+      if(Math.abs(fu)>0.85)words.push(fu>0?'top side':'underside');
+      // (a part with no height to speak of - a flat plate - has no upper or lower)
+      else if(!tipUp&&F.upR&&F.upR[1]-F.upR[0]>0.05*F.big){const s=t(F.upR,dot(c,F.up));
+        if(s>0.67)words.push('upper');else if(s<0.33)words.push('lower');}
+      return words.slice(0,2).join(' · ')||'middle';}
+
+    function buildAreas(m){
+      const md=qf.metrics[m],lim=md.limit,out={list:[],total:0,offScreen:false};
+      if(!(lim>0))return out;
+      const cut=NEAR*lim,vis=shown(),vi=new Set(vis);
+      // a part that is not on screen still decides whether the whole mesh is clear
+      entries.forEach(en=>{if(vi.has(en)||out.offScreen)return;const v=en.q[m];
+        if(v)for(let i=0;i<v.length;i++)if(v[i]>=cut){out.offScreen=true;break;}});
+      const onScreen=h=>!h.patch||vis.some(en=>en.patch===h.patch);
+      const hot=(qf.hotspots||[]).filter(h=>h.metric===m&&h.value>lim);
+      if(hot.some(h=>!onScreen(h)))out.offScreen=true;
+      const hs=hot.filter(onScreen);
+      let n=0;vis.forEach(en=>{const v=en.q[m];if(v)for(let i=0;i<v.length;i++)if(v[i]>=cut)n++;});
+      if(!n&&!hs.length)return out;
+      const typ=faceTyp(vis),R=Math.max(10*typ,0.02*diagOf(vis)),R2=R*R;
+      // the candidates, flat: value, part, face, centre
+      const val=new Float32Array(n),ent=new Uint16Array(n),cid=new Uint32Array(n),pos=new Float64Array(n*3);
+      let k=0;vis.forEach(en=>{const v=en.q[m];if(!v)return;const ei=entries.indexOf(en);
+        for(let i=0;i<v.length;i++)if(v[i]>=cut){const p=cellCenter(en,i);
+          val[k]=v[i];ent[k]=ei;cid[k]=i;pos[k*3]=p[0];pos[k*3+1]=p[1];pos[k*3+2]=p[2];k++;}});
+      // a grid of the radius: an area's members all sit in the 27 grid cells around its seed
+      const b=unionBounds(vis)||[0,0,0,0,0,0];
+      const cellOf=(x,y,z)=>[Math.floor((x-b[0])/R),Math.floor((y-b[2])/R),Math.floor((z-b[4])/R)];
+      const key=(i,j,l)=>((i+2)*4099+(j+2))*4099+(l+2);
+      const grid=new Map();
+      for(let q=0;q<n;q++){const g=cellOf(pos[q*3],pos[q*3+1],pos[q*3+2]),kk=key(g[0],g[1],g[2]);
+        let a=grid.get(kk);if(!a){a=[];grid.set(kk,a);}a.push(q);}
+      const order=Array.from({length:n},(_,q)=>q).sort((a,c)=>val[c]-val[a]);
+      const taken=new Uint8Array(n),areas=[];
+      const fresh=(seed,worst,inside)=>({seed,worst,over:0,near:0,hot:0,sum:[0,0,0],nrm:[0,0,0],nabs:0,
+                                         firm:!inside,sizes:[],by:{},m:[]});
+      for(const s of order){if(taken[s])continue;if(areas.length>=MAX_AREAS)break;
+        const sx=pos[s*3],sy=pos[s*3+1],sz=pos[s*3+2],g=cellOf(sx,sy,sz),a=fresh([sx,sy,sz],val[s],false);
+        for(let i=-1;i<=1;i++)for(let j=-1;j<=1;j++)for(let l=-1;l<=1;l++){
+          const cell=grid.get(key(g[0]+i,g[1]+j,g[2]+l));if(!cell)continue;
+          for(const q of cell){if(taken[q])continue;
+            const dx=pos[q*3]-sx,dy=pos[q*3+1]-sy,dz=pos[q*3+2]-sz;if(dx*dx+dy*dy+dz*dz>R2)continue;
+            taken[q]=1;a.m.push(q);
+            if(val[q]>lim)a.over++;else a.near++;
+            a.sum[0]+=pos[q*3];a.sum[1]+=pos[q*3+1];a.sum[2]+=pos[q*3+2];
+            const en=entries[ent[q]],nv=newell(en,cid[q]),sg=outSign(en),nm=Math.hypot(nv[0],nv[1],nv[2]);
+            a.nrm[0]+=nv[0]*sg;a.nrm[1]+=nv[1]*sg;a.nrm[2]+=nv[2]*sg;a.nabs+=nm;
+            if(!en.outFirm)a.firm=false;
+            if(a.sizes.length<400)a.sizes.push(Math.sqrt(0.5*nm));
+            a.by[en.patch]=(a.by[en.patch]||0)+1;}}
+        areas.push(a);}
+      // the hotspots: one inside a drawn area tells it its worst cell; the rest make their own
+      const loose=[];
+      hs.forEach(h=>{
+        const a=areas.find(a=>(h.x-a.seed[0])**2+(h.y-a.seed[1])**2+(h.z-a.seed[2])**2<=R2*1.44);
+        if(!a){loose.push(h);return;}
+        if(h.value>a.worst)a.worst=h.value;
+        a.hot++;});
+      areas.forEach(a=>{if(a.worst>lim&&!a.over)a.over=a.hot||1;});
+      loose.sort((x,y)=>y.value-x.value);
+      const used=new Uint8Array(loose.length);
+      loose.forEach((h,i)=>{if(used[i]||areas.length>=MAX_AREAS)return;
+        const a=fresh([h.x,h.y,h.z],h.value,true);
+        loose.forEach((g,j)=>{if(used[j])return;
+          if((g.x-h.x)**2+(g.y-h.y)**2+(g.z-h.z)**2>R2)return;used[j]=1;a.over++;
+          a.sum[0]+=g.x;a.sum[1]+=g.y;a.sum[2]+=g.z;const pn=g.patch||'inside the mesh';a.by[pn]=(a.by[pn]||0)+1;});
+        areas.push(a);});
+      // worst first; between equals, the one with more cells over
+      areas.sort((x,y)=>(y.worst-x.worst)||(y.over-x.over)||(y.near-x.near));
+      const F=placeFrame(vis);
+      out.total=areas.length;
+      out.list=areas.slice(0,SHOW_AREAS).map((a,i)=>{
+        const cnt=a.m.length||a.over||1,c=[a.sum[0]/cnt,a.sum[1]/cnt,a.sum[2]/cnt];
+        // the place the camera centres: the area's own face nearest its middle, so the focus sits on
+        // the surface even when the area curves round a corner
+        let r=0,best=-1,bd=Infinity;
+        a.m.forEach(q=>{const dd=Math.hypot(pos[q*3]-c[0],pos[q*3+1]-c[1],pos[q*3+2]-c[2]);
+          if(dd>r)r=dd;if(dd<bd){bd=dd;best=q;}});
+        if(best<0)bd=0;
+        const at=best>=0?[pos[best*3],pos[best*3+1],pos[best*3+2]]:c;
+        a.sizes.sort((x,y)=>x-y);
+        const size=a.sizes.length?a.sizes[a.sizes.length>>1]:typ;
+        // the part it is on: the one holding most of it, and a second one holding a fair share
+        const parts=Object.entries(a.by).sort((x,y)=>y[1]-x[1]);
+        const patch=parts.length>1&&parts[1][1]>=0.25*cnt?`${parts[0][0]}, ${parts[1][0]}`
+                                                           :(parts[0]||['inside the mesh'])[0];
+        const nl=Math.hypot(a.nrm[0],a.nrm[1],a.nrm[2]),flat=a.nabs?nl/a.nabs:0;
+        let normal=flat>0.3?[a.nrm[0]/nl,a.nrm[1]/nl,a.nrm[2]/nl]:null;
+        if(!normal&&best>=0)normal=cellNormal(entries[ent[best]],cid[best]);
+        const port=parts.length&&entries.some(en=>en.patch===parts[0][0]&&(isIn(en)||isOut(en)));
+        return {index:i,patch,hint:hintOf(c,F,a.firm&&flat>0.6?normal:null,port),
+                over:a.over,near:a.near,worst:a.worst,centre:at,radius:Math.max(r+bd,size),size,
+                normal,firm:a.firm};});
+      return out;}
+
+    /* THE GLIDE. The camera glides to an area over FLY_MS - focal point straight, distance
+       geometric so a long zoom feels even, direction turned about one axis - rather than jumping,
+       so the viewer keeps their bearings. Any drag, wheel, Fit or change of the up axis takes the
+       camera back at once. */
+    const FLY_MS=1000;
+    let fly=null;
+    function cancelFly(){if(fly){const f=fly;fly=null;f.resolve(false);}}
+    const ease=t=>t<0.5?4*t*t*t:1-Math.pow(-2*t+2,3)/2;
+    function flyTo(tf,dir,dist){
+      cancelFly();
+      const f0=cam.getFocalPoint().slice(),p0=cam.getPosition().slice();
+      const v0=[p0[0]-f0[0],p0[1]-f0[1],p0[2]-f0[2]],d0=Math.hypot(v0[0],v0[1],v0[2])||1e-9;
+      for(let k=0;k<3;k++)v0[k]/=d0;
+      // the turn: about the axis square to both directions (about the view-up for a half turn)
+      const ang=Math.acos(Math.max(-1,Math.min(1,dot(v0,dir))));
+      let ax=[v0[1]*dir[2]-v0[2]*dir[1],v0[2]*dir[0]-v0[0]*dir[2],v0[0]*dir[1]-v0[1]*dir[0]];
+      if(Math.hypot(ax[0],ax[1],ax[2])<1e-6){const u=cam.getViewUp(),d=dot(u,v0);
+        ax=[u[0]-d*v0[0],u[1]-d*v0[1],u[2]-d*v0[2]];}
+      ax=unit(ax);
+      const kx=[ax[1]*v0[2]-ax[2]*v0[1],ax[2]*v0[0]-ax[0]*v0[2],ax[0]*v0[1]-ax[1]*v0[0]];
+      const calm=window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      const dur=calm?0:FLY_MS,t0=performance.now();
+      const me={};me.done=new Promise(r=>{me.resolve=r;});fly=me;
+      const place=e=>{
+        const co=Math.cos(ang*e),si=Math.sin(ang*e),d=d0*Math.pow(dist/d0,e);
+        const v=[0,1,2].map(k=>v0[k]*co+kx[k]*si),f=[0,1,2].map(k=>f0[k]+(tf[k]-f0[k])*e);
+        _clamping=true;
+        try{cam.setFocalPoint(f[0],f[1],f[2]);cam.setPosition(f[0]+v[0]*d,f[1]+v[1]*d,f[2]+v[2]*d);
+            cam.orthogonalizeViewUp();}
+        finally{_clamping=false;}
+        clampCam();ren.resetCameraClippingRange();rw.render();};
+      const land=()=>{if(fly!==me)return;place(1);fly=null;me.resolve(true);};
+      const step=()=>{if(fly!==me)return;const t=dur?(performance.now()-t0)/dur:1;
+        if(t>=1){land();return;}place(ease(t));requestAnimationFrame(step);};
+      setTimeout(land,dur+300);      // a backgrounded tab gets no animation frames: land anyway
+      step();
+      return me.done;}
+    host.addEventListener('pointerdown',e=>{
+      if(!(e.target&&e.target.closest&&e.target.closest('.v-legend,.v-probe')))cancelFly();},true);
+    host.addEventListener('wheel',()=>cancelFly(),{capture:true,passive:true});
+    document.getElementById('v-fitbtn-'+job).addEventListener('click',()=>cancelFly());
+
+    /* WHERE THE CAMERA STOPS: the area in the middle of the view, close enough that its own faces
+       read as cells - 20 px across when the area is small, never under 12 px when it is wide - and
+       seen from the side it faces, keeping the bearing the viewer already has. */
+    function areaDist(a){
+      const H=host.clientHeight||600,t=tanHalf(),at=px=>a.size*H/(2*t*px);
+      const d=Math.min(at(12),Math.max(at(20),1.3*a.radius/t)),r=capRange();
+      return Math.max(r[0],Math.min(r[1],d));}
+    // never straight down the up axis: the view would lose which way is up
+    function offUp(v){const u=cam.getViewUp(),du=dot(v,u);
+      if(Math.abs(du)<=0.94)return v;
+      let h=[v[0]-du*u[0],v[1]-du*u[1],v[2]-du*u[2]];
+      if(Math.hypot(h[0],h[1],h[2])<1e-3){const fw=cam.getDirectionOfProjection(),df=dot(fw,u);
+        h=[-(fw[0]-df*u[0]),-(fw[1]-df*u[1]),-(fw[2]-df*u[2])];}
+      h=unit(h);return unit(v.map((x,k)=>Math.sign(du)*0.94*u[k]+0.34*h[k]));}
+    // the drawn faces' centres and reach (centre to farthest corner), once per part, for the
+    // line-of-sight test
+    function geom(en){if(!en.geo){const C=new Float32Array(en.nCells*3),Rr=new Float32Array(en.nCells),off=cellOffsets(en);
+        for(let c=0;c<en.nCells;c++){const p=cellCenter(en,c),o=off[c],n=en.polys[o];let r=0;
+          C[c*3]=p[0];C[c*3+1]=p[1];C[c*3+2]=p[2];
+          for(let j=1;j<=n;j++){const q=en.polys[o+j]*3;
+            r=Math.max(r,Math.hypot(en.pts[q]-p[0],en.pts[q+1]-p[1],en.pts[q+2]-p[2]));}
+          Rr[c]=r;}
+        en.geo={C,R:Rr};}
+      return en.geo;}
+    // does the sight line p + t v, t0 < t < t1, pass through drawn face c? (its triangle fan)
+    function hits(en,c,p,v,t0,t1){
+      const o=cellOffsets(en)[c],n=en.polys[o],P=en.pts,a=en.polys[o+1]*3;
+      for(let j=2;j<n;j++){const b=en.polys[o+j]*3,e=en.polys[o+j+1]*3;
+        const e1=[P[b]-P[a],P[b+1]-P[a+1],P[b+2]-P[a+2]],e2=[P[e]-P[a],P[e+1]-P[a+1],P[e+2]-P[a+2]];
+        const h=[v[1]*e2[2]-v[2]*e2[1],v[2]*e2[0]-v[0]*e2[2],v[0]*e2[1]-v[1]*e2[0]],det=dot(e1,h);
+        if(det===0)continue;
+        const w=[p[0]-P[a],p[1]-P[a+1],p[2]-P[a+2]],u=dot(w,h)/det;if(u<0||u>1)continue;
+        const q=[w[1]*e1[2]-w[2]*e1[1],w[2]*e1[0]-w[0]*e1[2],w[0]*e1[1]-w[1]*e1[0]],k=dot(v,q)/det;
+        if(k<0||u+k>1)continue;
+        const t=dot(e2,q)/det;if(t>t0&&t<t1)return true;}
+      return false;}
+    // would a part on screen stand between the area and a camera d along v? The line starts a
+    // hair off the area's own face, so only something in front of it counts
+    function blocked(p,v,d,keep){
+      const q=[p[0]+v[0]*d,p[1]+v[1]*d,p[2]+v[2]*d],pad=0.05*diag;
+      for(const en of shown()){const b=en.pd.getBounds();
+        if(Math.max(p[0],q[0])+pad<b[0]||Math.min(p[0],q[0])-pad>b[1]||Math.max(p[1],q[1])+pad<b[2]
+           ||Math.min(p[1],q[1])-pad>b[3]||Math.max(p[2],q[2])+pad<b[4]||Math.min(p[2],q[2])-pad>b[5])continue;
+        const {C,R}=geom(en);
+        for(let c=0;c<en.nCells;c++){
+          const x=C[c*3]-p[0],y=C[c*3+1]-p[1],z=C[c*3+2]-p[2],t=x*v[0]+y*v[1]+z*v[2],r=R[c];
+          if(t+r<=keep||t-r>=d)continue;
+          const ex=x-t*v[0],ey=y-t*v[1],ez=z-t*v[2];
+          if(ex*ex+ey*ey+ez*ez>r*r)continue;
+          if(hits(en,c,p,v,keep,d))return true;}}
+      return false;}
+    function areaDir(a,d){
+      const f=cam.getFocalPoint(),p=cam.getPosition();
+      let v=unit([p[0]-f[0],p[1]-f[1],p[2]-f[2]]),nrm=a.normal?a.normal.slice():null;
+      if(nrm){let dp=dot(v,nrm);
+        // a part with no firm outside (a flat inlet disc) is seen from whichever side faces us
+        if(dp<0&&!a.firm){nrm=nrm.map(x=>-x);dp=-dp;}
+        if(dp<0){v=v.map((x,k)=>x-2*dp*nrm[k]);dp=-dp;}
+        if(dp<0.7)v=unit(v.map((x,k)=>x+(0.7-dp)*nrm[k]));}
+      // the bearing the viewer has, unless something stands in the way: then the clear view
+      // nearest to it, turning about the area's face - over to its other side too when the part
+      // has no firm outside
+      const ring=n=>{const t1=unit(Math.abs(n[0])<0.9?[0,-n[2],n[1]]:[-n[2],0,n[0]]);
+        const t2=[n[1]*t1[2]-n[2]*t1[1],n[2]*t1[0]-n[0]*t1[2],n[0]*t1[1]-n[1]*t1[0]],out=[n];
+        [30,60].forEach(deg=>{const ca=Math.cos(deg*Math.PI/180),sa=Math.sin(deg*Math.PI/180);
+          for(let k=0;k<8;k++){const ph=k*Math.PI/4;
+            out.push(unit([0,1,2].map(i=>n[i]*ca+(t1[i]*Math.cos(ph)+t2[i]*Math.sin(ph))*sa)));}});
+        return out;};
+      const n=nrm||v,cands=ring(n).concat(nrm&&a.firm?[]:ring(n.map(x=>-x)));
+      cands.sort((x,y)=>dot(y,v)-dot(x,v));
+      const keep=0.05*a.size;
+      for(const c of [v].concat(cands)){const w=offUp(c);if(!blocked(a.centre,w,d,keep))return w;}
+      return offUp(v);}
+
+    let legend=null,probeEl=null,selArea=-1,onlyBad=false,curRp=null;
+    let areaSet={list:[],total:0,offScreen:false},areaSig='';
     function hideProbe(){if(probeEl){probeEl.remove();probeEl=null;}}
-    function setMetric(m){
-      if(m===activeMetric)m=null;
-      activeMetric=m;
-      const rp=m?ramp(m):null;
+    function goArea(i){
+      const a=areaSet.list[i];if(!activeMetric||!a)return Promise.resolve(false);
+      selArea=i;markArea();hideProbe();
+      const d=areaDist(a);
+      return flyTo(a.centre,areaDir(a,d),d);}
+    function markArea(){if(!legend)return;
+      legend.querySelectorAll('.v-area').forEach(b=>{
+        b.setAttribute('aria-pressed',String(Number(b.dataset.index)===selArea));});}
+
+    // the worst value, to the precision that tells it apart from the limit
+    function fmtWorst(m,v){const md=qf.metrics[m],u=md.unit||'';
+      const dv=Math.abs(v-md.limit),dp=u==='°'?(dv<0.01?3:dv<0.1?2:1):(dv<0.001?4:dv<0.01?3:2);
+      return v.toFixed(dp)+u;}
+    function areasHtml(m){
+      const S=areaSet;
+      if(!S.list.length)return `<div class="v-areas"><p class="ar-none">`
+        +(S.offScreen?'No problem areas on the parts shown'
+                     :'No problem areas: every cell is well inside the limit')+`</p></div>`;
+      const count=a=>[a.over?`<span class="ar-over">${a.over.toLocaleString()} over the limit</span>`:'',
+                      a.near?`${a.near.toLocaleString()} near`+(a.over?'':' the limit'):''].filter(Boolean).join(' · ');
+      return `<div class="v-areas" role="group" aria-label="Problem areas">`
+        +`<div class="ar-h"><span class="ar-ht">Problem areas</span>`
+          +`<button class="v-only" type="button" aria-pressed="${onlyBad}" `
+          +`title="Grey out every face below ${esc(fmt(m,NEAR*qf.metrics[m].limit))} (80% of the limit)">Only bad cells</button></div>`
+        +S.list.map(a=>`<button class="v-area" type="button" data-index="${a.index}" aria-pressed="${a.index===selArea}" `
+            +`title="Go to area ${a.index+1}">`
+          +`<span class="ar-i">${a.index+1}</span>`
+          +`<span class="ar-b"><span class="ar-t"><span class="ar-p">${esc(a.patch)}</span>`
+            +(a.hint?`<span class="ar-w"> · ${esc(a.hint)}</span>`:'')+`</span>`
+            +`<span class="ar-c">${count(a)}</span></span>`
+          +`<span class="ar-v">${esc(fmtWorst(m,a.worst))}</span></button>`).join('')
+        +(S.total>S.list.length?`<p class="ar-n">The ${S.list.length} worst of ${S.total.toLocaleString()} areas</p>`:'')
+        +`</div>`;}
+    function wireAreas(){if(!legend)return;
+      legend.querySelectorAll('.v-area').forEach(b=>{b.onclick=()=>goArea(Number(b.dataset.index));});
+      const ob=legend.querySelector('.v-only');if(ob)ob.onclick=()=>setOnlyBad(!onlyBad);}
+    // what is on screen changed (a part hidden, shown or isolated; the up axis): the areas follow
+    function refreshAreas(){const m=activeMetric;if(!m)return;
+      const sig=m+'#'+shownSig();if(sig===areaSig)return;
+      cancelFly();areaSet=buildAreas(m);areaSig=sig;selArea=-1;
+      if(!areaSet.list.length&&onlyBad){onlyBad=false;paintFaces(m,curRp);}
+      const el=legend&&legend.querySelector('.v-areas');
+      if(el){el.outerHTML=areasHtml(m);wireAreas();}
+      rw.render();}
+    onPartsPainted=refreshAreas;
+    if(upSel)upSel.addEventListener('change',()=>{cancelFly();refreshAreas();});
+
+    /* ONLY BAD CELLS: every face below 80% of the bar goes one flat grey, so the clusters stand
+       out at full view; off, the scale's colours come back. A viewer's preference - nothing in
+       the payload changes. */
+    function paintFaces(m,rp){const cut=m?NEAR*qf.metrics[m].limit:0;
       entries.forEach(en=>{const mp=en.actor.getMapper();
         if(rp&&en.q[m]){
           const v=en.q[m],rgb=new Uint8Array(v.length*3);
-          for(let i=0;i<v.length;i++)rp.color(v[i],rgb,i*3);
+          for(let i=0;i<v.length;i++){
+            if(onlyBad&&!(v[i]>=cut)){rgb[i*3]=NEUTRAL[0];rgb[i*3+1]=NEUTRAL[1];rgb[i*3+2]=NEUTRAL[2];}
+            else rp.color(v[i],rgb,i*3);}
           en.pd.getCellData().setScalars(vtk.Common.Core.vtkDataArray.newInstance(
             {name:'quality',values:rgb,numberOfComponents:3}));
           mp.setScalarModeToUseCellData();mp.setColorModeToDirectScalars();
           if(mp.setInterpolateScalarsBeforeMapping)mp.setInterpolateScalarsBeforeMapping(false);
           mp.setScalarVisibility(true);}
-        else mp.setScalarVisibility(false);});
+        else mp.setScalarVisibility(false);});}
+    function setOnlyBad(b){
+      onlyBad=!!b&&!!activeMetric&&areaSet.list.length>0;
+      if(activeMetric&&curRp){paintFaces(activeMetric,curRp);rw.render();}
+      const bt=legend&&legend.querySelector('.v-only');
+      if(bt)bt.setAttribute('aria-pressed',String(onlyBad));
+      return onlyBad;}
+
+    function setMetric(m){
+      if(m===activeMetric)m=null;
+      cancelFly();
+      activeMetric=m;onlyBad=false;selArea=-1;
+      const rp=m?ramp(m):null;curRp=rp;
+      paintFaces(m,rp);
       if(legend){legend.remove();legend=null;}
-      clearHot();hideProbe();
-      // edges step back while the faces carry the data, and return when it is switched off
+      hideProbe();
+      areaSet=m?buildAreas(m):{list:[],total:0,offScreen:false};
+      areaSig=m?m+'#'+shownSig():'';
+      // the edges darken while the faces carry the data, so every cell still reads, and are handed
+      // back through the parts panel when it is switched off, so a selected part keeps its
+      // selection edge
       edgeCol=rp?_EDGE_HEAT:_EDGE;
-      entries.forEach(en=>{const pp=en.actor.getProperty();
-        pp.setEdgeColor(edgeCol[0],edgeCol[1],edgeCol[2]);});
-      if(rp){const md=qf.metrics[m];showHot(m);
+      if(repaintParts)repaintParts();
+      else entries.forEach(en=>{en.actor.getProperty().setEdgeColor(edgeCol[0],edgeCol[1],edgeCol[2]);});
+      if(rp){const md=qf.metrics[m];
         legend=document.createElement('div');legend.className='v-legend';
         // an instrument scale: the bar stands upright beside the viewport, the limit is a
-        // tick with its value, the top of the bar is a third past the limit
-        legend.innerHTML=`<b>${esc(md.label)}</b>`
+        // tick with its value, the top of the bar is a third past the limit; the problem areas
+        // follow under it
+        legend.innerHTML=`<span class="lg-h"><b>${esc(md.label)}</b>`
+            +`<button class="x" type="button" title="turn colouring off" aria-label="Turn colouring off">✕</button></span>`
           +`<span class="scale"><span class="ticks">`
             +`<span style="bottom:100%">${esc(fmt(m,rp.hi))}</span>`
             +(rp.open?'':`<span class="lim" style="bottom:${rp.limitPct}">${esc(fmt(m,md.limit))} limit</span>`)
@@ -863,28 +1387,37 @@ function initViewer(job,surf,uiCfg){
              ?`<span class="over">${md.n_over.toLocaleString()} face${md.n_over!==1?'s':''} over</span>`
              :rp.open?`<span class="ok">none near the ${esc(fmt(m,md.limit))} bar</span>`
                      :`<span class="ok">none over</span>`)
-          +`<span class="x" title="turn colouring off">✕</span>`;
+          +areasHtml(m);
         legend.querySelector('.x').onclick=()=>setMetric(null);
-        host.appendChild(legend);
-        hintEl.textContent='click a face to see its numbers · drag still rotates';}
-      else hintEl.textContent='rotate: drag · zoom: wheel or right-drag · pan: shift+drag';
-      document.querySelectorAll(`#v-facts-${job} .mx-c.live, #v-heatctl-${job} a`)
-        .forEach(c=>c.classList.toggle('on',c.dataset.metric===m));
+        wireAreas();
+        // a press or a scroll on the scale is not the start of an orbit or a zoom
+        shield(legend);
+        host.appendChild(legend);}
+      if(!markMode)hintEl.textContent=rp?HEAT_HINT:MOUSE_HINT;
+      document.querySelectorAll(`#v-facts-${job} .mx-c.live, #v-heatctl-${job} a`).forEach(c=>{
+        const on=c.dataset.metric===m;c.classList.toggle('on',on);
+        if(!c.classList.contains('mx-c'))return;
+        c.setAttribute('aria-pressed',String(on));
+        const t=c.querySelector('.mx-show-t');if(t)t.textContent=on?'Showing':'Show on mesh';});
       rw.render();}
 
-    // the figures are the controls; a payload with no figures block gets a plain text one
+    // the figures are the controls - each one that has a field says so, with a small swatch of the
+    // colour scale; a payload with no figures block gets a plain text one
     const facts=document.getElementById('v-facts-'+job);
     let wired=0;
     if(facts)avail.forEach(m=>{
       const cell=[...facts.querySelectorAll('.mx-c')].find(c=>c.dataset.key===META[m].fact);
       if(!cell)return;
-      cell.classList.add('live');cell.dataset.metric=m;cell.title='colour the mesh by this';
+      cell.classList.add('live');cell.dataset.metric=m;cell.title='Colour the mesh by this';
+      cell.setAttribute('role','button');cell.tabIndex=0;cell.setAttribute('aria-pressed','false');
+      cell.insertAdjacentHTML('beforeend',
+        '<span class="mx-show"><i class="mx-ramp" aria-hidden="true"></i><span class="mx-show-t">Show on mesh</span></span>');
       cell.onclick=()=>setMetric(m);wired++;});
     if(wired<avail.length){
       const ctl=document.createElement('div');ctl.className='v-heatctl';ctl.id='v-heatctl-'+job;
-      ctl.innerHTML='colour by '+avail.map(m=>`<a data-metric="${m}">${esc(qf.metrics[m].label)}</a>`).join(' · ');
+      ctl.innerHTML='Colour by '+avail.map(m=>`<a data-metric="${m}">${esc(qf.metrics[m].label)}</a>`).join(' · ');
       ctl.querySelectorAll('a').forEach(a=>{a.onclick=()=>setMetric(a.dataset.metric);});
-      host.appendChild(ctl);}
+      shield(ctl);host.appendChild(ctl);}
 
     /* CLICK TO EXPLAIN. A click on a coloured face says what its number is, whether it clears
        the gate's bar, what the cell behind it is, and the likely reason - then offers to mark
@@ -896,6 +1429,15 @@ function initViewer(job,surf,uiCfg){
       if(cf===5)return at+'a boundary-layer prism squeezed where the surface curves or folds';
       if(cf===6)return at+'a hex distorted while snapping to the curved surface here';
       return at+'an irregular cell';}
+    const shapeOf=cf=>cf===6?'hex':cf===5?'prism':cf===4?'tet':'polyhedron';
+    function probeActs(onMark){
+      probeEl.innerHTML+=`<div class="acts">`
+        +(onMark?`<button class="v-btn" data-a="mark">Mark this spot</button>`:'')
+        +`<button class="v-btn" data-a="close">Close</button></div>`;
+      if(onMark)probeEl.querySelector('[data-a=mark]').onclick=()=>{onMark();hideProbe();};
+      probeEl.querySelector('[data-a=close]').onclick=hideProbe;
+      shield(probeEl);                 // a press on the card is not the start of an orbit
+      host.appendChild(probeEl);}
     function showProbe(en,cid){
       hideProbe();
       const role=((surf.patches||[]).find(p=>p.name===en.patch)||{}).type||'';
@@ -904,29 +1446,45 @@ function initViewer(job,surf,uiCfg){
       const over=have.filter(m=>en.q[m][cid]>qf.metrics[m].limit);
       lastProbe={patch:en.patch,cell:cid,cellFaces:cf,over,
                  values:Object.fromEntries(have.map(m=>[m,en.q[m][cid]]))};
-      const rows=have.map(m=>{const v=en.q[m][cid],md=qf.metrics[m],bad=v>md.limit;
-        return `<div><b>${esc(md.label)}</b> ${esc(fmt(m,v))} `
-          +`<span class="${bad?'over':'ok'}">${bad?'over':'under'} the ${esc(fmt(m,md.limit))} limit</span></div>`;}).join('');
-      const shape=cf===6?'hex':cf===5?'prism':cf===4?'tet':'polyhedron';
+      const rows=have.map(m=>probeRow(m,en.q[m][cid])).join('');
       probeEl=document.createElement('div');probeEl.className='v-probe';
-      probeEl.innerHTML=`<div class="pk">${esc(en.patch)} · face ${cid.toLocaleString()}</div>${rows}`
-        +(cf!=null?`<div>cell behind it: ${cf}-face ${shape}</div>`:'')
-        +(over.length?`<div class="why">likely: ${esc(why(cf,role))}</div>`:'')
-        +`<div class="acts"><button class="v-btn" data-a="mark">Mark this spot</button>`
-        +`<button class="v-btn" data-a="close">Close</button></div>`;
-      probeEl.querySelector('[data-a=mark]').onclick=()=>{placeMarker(en,cid);hideProbe();};
-      probeEl.querySelector('[data-a=close]').onclick=hideProbe;
-      host.appendChild(probeEl);}
+      probeEl.innerHTML=`<div class="pk">${esc(en.patch)} · face ${cid.toLocaleString()}</div>`
+        +`<div class="pr-rows">${rows}</div>`
+        +(cf!=null?`<div class="pr-cell">cell behind it: ${cf}-face ${shapeOf(cf)}</div>`:'')
+        +(over.length?`<div class="why">likely: ${esc(why(cf,role))}</div>`:'');
+      probeActs(()=>placeMarker(en,cid));}
+    // one reading: what it is, its value, and where it sits against the gate's bar
+    function probeRow(m,v){const md=qf.metrics[m],bad=v>md.limit;
+      return `<div class="pr"><span class="pr-k">${esc(md.label)}</span><span class="pr-v">${esc(fmt(m,v))}</span>`
+        +`<span class="pr-s ${bad?'over':'ok'}">${bad?'over':'under'} the ${esc(fmt(m,md.limit))} limit</span></div>`;}
     host.addEventListener('pointerup',e=>{
       if(markMode||!activeMetric||!downXY)return;
-      if(e.target&&e.target.closest&&e.target.closest('.v-probe,.v-legend,.v-pin,.v-heatctl'))return;
+      if(e.target&&e.target.closest&&e.target.closest('.v-probe,.v-legend,.v-pin,.v-heatctl,.v-tools'))return;
       if(Math.hypot(e.clientX-downXY[0],e.clientY-downXY[1])>6)return;
-      pickCell(e,showProbe);},true);
+      pickCell(e,(en,cid)=>showProbe(en,cid));},true);
 
-    /* support/debug hook - lets the browser tier drive the heatmap without pixel picking */
+    /* support/debug hook - lets the browser tier drive the heatmap without pixel picking; the demo
+       recorder clicks the real buttons. `extras` counts what is drawn besides the mesh's own parts
+       and the user's marks: the heatmap draws nothing on top of the mesh, so it stays 0.
+       areas() is the problem-area list on screen (index i is the button with data-index i, shown
+       as number i+1); goArea(i) glides there and resolves true when the camera lands (false when a
+       drag, wheel, Fit or another area took it first); only(b) sets "Only bad cells". */
+    const areaOut=a=>({index:a.index,patch:a.patch,hint:a.hint,over:a.over,near:a.near,worst:a.worst,
+                       centre:a.centre.slice(),radius:a.radius,cellSize:a.size});
     window._vdbg[job+':heat']={metrics:avail,set:setMetric,active:()=>activeMetric,
+      areas:()=>areaSet.list.map(areaOut),totalAreas:()=>areaSet.total,goArea:i=>goArea(i),
+      selected:()=>selArea,only:b=>setOnlyBad(b===undefined?!onlyBad:b),onlyBad:()=>onlyBad,
+      flying:()=>!!fly,focal:()=>cam.getFocalPoint().slice(),dist:()=>camDist(),
+      // how many CSS pixels area i's typical face spans at the camera's distance now
+      cellPx:i=>{const a=areaSet.list[i];if(!a)return null;
+        return a.size*(host.clientHeight||600)/(2*camDist()*tanHalf());},
       probe:(patch,cid)=>{const en=entries.find(t=>t.patch===patch);if(en)showProbe(en,cid);return lastProbe;},
-      last:()=>lastProbe,legend:()=>!!legend,hotspots:()=>hotActors.length,
-      wired:()=>wired};
+      last:()=>lastProbe,legend:()=>!!legend,wired:()=>wired,
+      extras:()=>ren.getActors().filter(a=>!entries.some(en=>en.actor===a)
+        &&!flags.some(f=>f.actors.includes(a))).length,
+      edges:()=>{const pp=entries[0].actor.getProperty();return {on:!!pp.getEdgeVisibility(),color:pp.getEdgeColor()};},
+      colorOf:(patch,cid)=>{const en=entries.find(t=>t.patch===patch);if(!en)return null;
+        const sc=en.pd.getCellData().getScalars();if(!sc||!en.actor.getMapper().getScalarVisibility())return null;
+        const a=sc.getData();return [a[cid*3],a[cid*3+1],a[cid*3+2]];}};
   })();
 }

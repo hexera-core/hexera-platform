@@ -183,16 +183,61 @@ async def test_the_selection_the_user_pinned_is_never_re_decided(monkeypatch):
 # geometry admission
 
 
+def _vmtk_taking_surfaces(monkeypatch) -> None:
+    # The MEASURED check is under test here, and a self-intersection is a defect of a surface:
+    # VMTK takes a surface for internal flow (input_contract.internal_from_surface), so the STL
+    # passes its form check and the measured rejection is the one exercised.
+    from meshpipeline.engines.registry import ENGINE_CATALOG
+    assert "surface" in (ENGINE_CATALOG["vmtk"].forms_for("internal") or ())
+
+
 @pytest.fixture()
 async def rejected(monkeypatch, tmp_path):
     from meshpipeline.pipeline.geometry_admission import node_geometry_admission
 
+    _vmtk_taking_surfaces(monkeypatch)
     seen: list = []
     geometry = _self_intersecting_geometry(tmp_path)
     res = await _owned(monkeypatch, seen, node_geometry_admission,
                        lambda j: {**_VMTK, "job_id": str(j), "geometry": geometry})
     res["seen"] = seen
     yield res
+
+
+@pytest.fixture()
+async def refused_by_design(monkeypatch, tmp_path):
+    # The same STL, for a structural part: Gmsh (the one structural engine) takes a CAD solid only
+    # for FEA, so the node refuses it by design - before staging or measuring anything. (Internal
+    # flow from a surface is taken now: every internal-flow engine declares it.)
+    from meshpipeline.engines.registry import resolve_engine_params
+    from meshpipeline.pipeline.geometry_admission import node_geometry_admission
+
+    seen: list = []
+    geometry = _self_intersecting_geometry(tmp_path)
+    res = await _owned(monkeypatch, seen, node_geometry_admission,
+                       lambda j: {"job_id": str(j), "engine": "gmsh", "purpose": "structural",
+                                  "input_kind": "solid-body", "dimensionality": "3D",
+                                  "intake_patches": [],
+                                  "engine_params": resolve_engine_params("gmsh", {}),
+                                  "geometry": geometry})
+    res["seen"] = seen
+    yield res
+
+
+async def test_a_refusal_by_design_publishes_under_the_claim_and_says_nothing_was_built(
+        refused_by_design):
+    out = refused_by_design["out"]
+    assert out["executor_failure_facts"]["refused_by_design"] is True, out
+    assert out["geometry_unsuitable_reason"].startswith("Gmsh cannot mesh a structural (FEA) part "
+                                                        "from a surface mesh"), out
+    seen = refused_by_design["seen"]
+    assert [(r["fn"], r["method"]) for r in seen][:2] == [("_publish", "stage"),
+                                                          ("_publish", "note")]
+    note = next(r for r in seen if r["module"] == ADMISSION_MOD and r["method"] == "note")
+    assert note["args"][1] == "error" and "Nothing was built" in note["args"][0]
+    for r in seen:
+        assert r["own"] is not None, f"{r['fn']}.{r['method']} published with NO ownership bound"
+        assert str(r["own"].job_id) == str(refused_by_design["job_id"])
 
 
 async def test_a_measured_rejection_publishes_under_the_claim(rejected):

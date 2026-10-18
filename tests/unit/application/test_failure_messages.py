@@ -104,7 +104,9 @@ def test_a_review_that_did_not_conclude_is_not_blamed_on_a_gate():
     fr = _fail("patch_contract", FailureCause.CONTRACT_MISMATCH, {"missing": ["x"]},
                api_failure="reviewer_evidence_missing")
     assert fr.failure_category == FailureCategory.internal_pipeline_failure.value
-    assert fr.failure_cause == "" and "'x'" not in render_message(fr)
+    # the gate's cause is not told - the review is: it is what did not finish
+    assert fr.failure_cause == "review_incomplete" and "'x'" not in render_message(fr)
+    assert "review" in fr.failure_detail and "on our side" in fr.failure_detail
 
 
 def test_a_crash_keeps_the_cause_the_checkpoint_recorded():
@@ -133,7 +135,7 @@ def test_a_measured_refusal_is_the_cads_and_says_why():
         "phases": ["measured"], "codes": ["geometry_unsuitable"]})
     msg = render_message(fr)
     assert fr.failure_category == FailureCategory.input_rejected.value
-    assert "the problem is in the CAD file" in msg
+    assert "the problem is in the geometry file" in msg
     assert "the input surface self-intersects" in msg and "[" not in msg
 
 
@@ -158,7 +160,7 @@ def test_a_mixed_refusal_names_both_changes():
         "declared_reason": "engine_params: bad layers value"})
     msg = render_message(fr)
     assert fr.failure_category == FailureCategory.input_rejected.value
-    assert "the problem is in the CAD file" in msg and "the input surface self-intersects" in msg
+    assert "the problem is in the geometry file" in msg and "the input surface self-intersects" in msg
     assert "Fix the geometry and upload it again." in msg
     assert "The setup also needs a change before this can run: engine_params: bad layers value"         in msg
 
@@ -166,4 +168,4 @@ def test_a_mixed_refusal_names_both_changes():
 def test_an_older_admission_record_keeps_the_class_sentence():
     fr = _fail("geometry")
     assert fr.failure_category == FailureCategory.input_rejected.value
-    assert "the problem is in the CAD file" in render_message(fr)
+    assert "the problem is in the geometry file" in render_message(fr)

@@ -4,9 +4,10 @@
 from __future__ import annotations
 
 import enum
-import re
 import time
 import uuid
+
+from meshpipeline.agents.intake import consent as _consent
 
 APPROVAL_TTL_S = 1800   # a snapshot the user never answers goes stale
 
@@ -18,83 +19,75 @@ DISPATCHED = "dispatched"
 # Deterministic confirmation grammar. Deliberately WHOLE-MESSAGE: "yes" approves, but
 # "yes, but make the far-field 50 chords" does NOT - it is agreement WITH A CHANGE, and the old
 # keyword consent classifier dispatched exactly that kind of message with the stale requirements.
-# Anything that is not a bare approval or a bare hedge goes back to intake as a correction.
-_FILLER = {"please", "ok", "okay", "thanks", "thank", "you", "alright", "right",
-           "great", "perfect", "then", "now", "just", "lets", "let", "us", "s", "and"}
-
-_APPROVE = {
-    "yes", "y", "yep", "yeah", "sure", "yes sure", "yes proceed", "proceed", "yes proceed with mesh generation",
-    "proceed with mesh generation", "proceed exactly as shown", "yes proceed exactly as shown",
-    "exactly as shown", "approve", "approve this", "approve this configuration", "approved",
-    "i approve", "i approve this", "use these requirements", "use these", "confirm", "confirmed",
-    "i confirm", "go", "go ahead", "yes go ahead", "start", "start the mesh",
-    "start mesh generation", "yes start the mesh", "run it", "yes run it", "do it", "yes do it",
-    "correct proceed", "yes correct", "that is correct proceed", "looks good proceed",
-    "yes looks good", "yes that is right", "that is right proceed", "yes approve",
-    "yes confirmed", "yes confirm", "confirm dispatch", "yes dispatch",
-}
-
-_HEDGE = {
-    "maybe", "perhaps", "probably", "possibly", "i think so", "i think", "not sure",
-    "i am not sure", "im not sure", "unsure", "hmm", "hm", "i guess", "i suppose",
-    "maybe yes", "probably yes", "i dont know", "dont know", "no idea",
-}
-
+# Anything that is not a bare approval or a bare hedge goes back to intake as a correction. The
+# vocabulary is the intake's ONE consent reader (agents/intake/consent.py), shared with the engine
+# question and the unit proposal, so "looks good", "go for it" or "yes go ahaed" is a yes here
+# exactly as it is there - a yes that was read as a change threw the summary away and showed the
+# user another one.
 APPROVE_INTENT = "approve"
 HEDGE_INTENT = "ambiguous"
 CORRECTION_INTENT = "correction"
+#: A QUESTION ABOUT THE SUMMARY ("which mesher will you use?"), which changes nothing. It used to be
+#: read as a correction: the summary was thrown away, the model answered without submitting a new
+#: one, and the user's "Yes, go ahead." that followed had no summary to land on - so it was asked
+#: to confirm the same requirements again, and only a second yes started the run (dev-areen
+#: set_top_box, 2026-10-11). A question keeps the summary standing, one turn further on, while the
+#: intake answers it.
+QUESTION_INTENT = "question"
+
+#: Words that make a question a request for a change ("can you make it finer?", "could we use
+#: cfMesh instead?"): such a message is a correction, as before, and the summary is redone.
+_CHANGE_WORDS = frozenset({
+    "make", "change", "set", "switch", "increase", "decrease", "raise", "lower", "add",
+    "remove", "drop", "refine", "finer", "coarser", "instead", "rather", "replace", "move",
+    "rename", "turn", "enable", "disable", "include", "exclude", "more", "less", "fewer",
+    "bigger", "smaller", "larger", "different", "another", "other", "try", "redo", "edit",
+})
 
 
-def _normalise(text: str) -> str:
-    t = re.sub(r"[^0-9a-z]+", " ", str(text or "").casefold())
-    words = [w for w in t.split() if w not in _FILLER]
-    return " ".join(words)
+def is_question(message: str, engine: str = "") -> bool:
+    """Whether the answer to a summary only ASKS something about it: it has a question mark, no
+    word that asks for something to be different, and names no engine but the summary's own
+    ("which mesher will you use?" asks; "could we use cfMesh?" changes)."""
+    import re
+
+    from meshpipeline.agents.intake import vocabulary as _vocab
+
+    text = str(message or "")
+    if "?" not in text:
+        return False
+    words = re.findall(r"[a-z]+", text.casefold())
+    if not words or any(w in _CHANGE_WORDS for w in words):
+        return False
+    return not _vocab.engines_named_in(text, (engine or "").strip().lower())
 
 
-def _phrase_seqs(vocab: set[str]) -> list[tuple[str, ...]]:
-    """The vocabulary as normalised word sequences (deduplicated, empties dropped)."""
-    out = {tuple(_normalise(p).split()) for p in vocab}
-    return sorted(seq for seq in out if seq)
-
-
-_APPROVE_SEQS = _phrase_seqs(_APPROVE)
-_CONSENT_SEQS = _phrase_seqs(_APPROVE | _HEDGE)
-
-
-def _parses_as(words: tuple[str, ...], phrases: list[tuple[str, ...]]) -> bool:
-    """True when the whole word sequence is a concatenation of vocabulary phrases."""
-    n = len(words)
-    ok = [False] * (n + 1)
-    ok[0] = True
-    for i in range(n):
-        if not ok[i]:
-            continue
-        for ph in phrases:
-            j = i + len(ph)
-            if j <= n and words[i:j] == ph:
-                ok[j] = True
-    return ok[n]
-
-
-def classify(message: str) -> str:
-    n = _normalise(message)
-    if not n:
-        return HEDGE_INTENT
-    if n in _APPROVE:
+def classify(message: str, engine: str = "") -> str:
+    """The user's answer to a summary. `engine` is the summary's own engine: naming it ("yes, go
+    ahead with snappyHexMesh") adds nothing to a yes, while naming another is a change."""
+    named: tuple[str, ...] = ()
+    if engine:
+        from meshpipeline.agents.intake import vocabulary as _vocab
+        named = (engine, _vocab.to_display(_vocab.ENGINE, engine))
+    reading = _consent.reading(message, named=named)
+    if reading == _consent.APPROVE:
         return APPROVE_INTENT
-    if n in _HEDGE:
+    if reading == _consent.HEDGE:
+        # consent diluted by a hedge ("maybe. proceed"), a bare hedge, a yes asked back ("ok?"),
+        # or nothing at all: ask
         return HEDGE_INTENT
-    # Composition over the SAME closed vocabulary: "Confirmed. Proceed with mesh generation."
-    # is consent phrases end to end, while "yes, but make the far-field 50 chords" contains
-    # words no consent phrase covers and stays a correction. Consent diluted by a hedge
-    # ("maybe. proceed") stays ambiguous - ask, never dispatch.
-    words = tuple(n.split())
-    if _parses_as(words, _APPROVE_SEQS):
-        return APPROVE_INTENT
-    if _parses_as(words, _CONSENT_SEQS):
-        return HEDGE_INTENT
+    if is_question(message, engine):
+        return QUESTION_INTENT
     return CORRECTION_INTENT
 
+
+#: The question under every summary, with the one plain answer that starts the run: the user types
+#: the answer (the console has no approve button), so the question names it.
+PROCEED_ASK = "Shall I proceed with mesh generation? Reply yes to start it, or tell me what to change."
+#: Said above the question when the user's last message was read as a change and changed nothing -
+#: a chatty yes ("ha, we're going in circles - yes, go ahead!") is not a bare yes, and without this
+#: the user saw the same summary again with no idea why.
+NOTHING_CHANGED = "Nothing in the setup changed with your last message."
 
 CLARIFICATION = (
     "I need a clear answer before spending anything: reply \"yes, proceed\" to run exactly the "
@@ -355,6 +348,18 @@ async def _open_transaction(db, *, session, session_repo, owner_id: str, session
     return job.id, snapshot, source_ref, interp_ref
 
 
+#: The dispatched record of who chose the approved engine (pipeline/state_factory.engine_provenance
+#: reads it). It rides the intake events because that channel already reaches every run, old or
+#: new worker alike, and it holds no user content: an engine key and one of two provenance words.
+ENGINE_PROVENANCE_EVENT = "engine_provenance"
+
+
+def engine_provenance_event(approved: dict) -> dict:
+    return {"type": ENGINE_PROVENANCE_EVENT,
+            "payload": {"mesh_engine": str(approved.get("mesh_engine") or "").strip().lower(),
+                        "engine_source": str(approved.get("engine_source") or "").strip().lower()}}
+
+
 def _build_dispatch_payload(*, job_id, owner_id: str, session_id, session, snapshot: dict,
                             source_ref, interp_ref) -> dict:
     from meshpipeline.application.approved_patch_contract import ApprovedPatchContract
@@ -383,7 +388,10 @@ def _build_dispatch_payload(*, job_id, owner_id: str, session_id, session, snaps
         "mesh_engine": approved.get("mesh_engine", ""),
         "domain": approved.get("domain", ""),
         "engine_params": dict(approved.get("engine_params") or {}),
-        "intake_events": list(session.llm_metadata or []),
+        # the buffered intake records, then WHO CHOSE THE ENGINE, from the approval itself: the
+        # run's fallback ladder may move only an engine the user did not name, and the training
+        # records above are not buffered at all when data collection is off
+        "intake_events": list(session.llm_metadata or []) + [engine_provenance_event(approved)],
         "approved_snapshot_id": str(snapshot.get("id")),
         # THE typed, fingerprinted approved patch contract - built ONCE from the approved snapshot's
         # own declared patches, so the EXACT boundary set is verifiable at reconstruction and at

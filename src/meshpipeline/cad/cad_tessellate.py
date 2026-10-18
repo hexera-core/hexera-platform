@@ -6,9 +6,33 @@ import logging
 import math
 from pathlib import Path
 
+import numpy as np
+
 from meshpipeline.cad.stl_io import read_stl_triangles
 
 logger = logging.getLogger(__name__)
+
+
+def is_iges(path) -> bool:
+    """Whether a CAD file IS IGES, read from its content, not its name. Staging copies every CAD
+    upload to geometry.step for the engines that read the B-rep, so an IGES upload arrived under a
+    .step name and the STEP reader refused it ("OpenCASCADE could not read CAD file:
+    geometry.step": cfMesh internal on every IGES of the lab test set, 2026-10-04). A STEP file
+    opens with ISO-10303-21; an IGES file is 80-column records whose 73rd column names the
+    section (S, G, D, P, T). The name decides only when the content says neither."""
+    p = Path(path)
+    try:
+        with open(p, "rb") as fh:
+            head = fh.read(4096)
+    except OSError:
+        head = b""
+    text = head.lstrip()
+    if text.startswith(b"ISO-10303-21"):
+        return False
+    first = head.splitlines()[0] if head else b""
+    if len(first) >= 73 and first[72:73] in (b"S", b"G") and b"ISO-10303" not in head:
+        return True
+    return p.suffix.lower() in (".igs", ".iges")
 
 
 def _occ_to_metres(prepared):
@@ -29,13 +53,12 @@ def tessellate_to_stl(geom_path, out_stl, *, prepared=None, angular_deflection: 
         if geom_path.resolve() != out_stl.resolve():
             _sh.copy2(geom_path, out_stl)
         return out_stl
-    from OCP.Bnd import Bnd_Box
-    from OCP.BRepBndLib import BRepBndLib
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
-    from OCP.BRepMesh import BRepMesh_IncrementalMesh
     from OCP.IFSelect import IFSelect_RetDone
     from OCP.StlAPI import StlAPI_Writer
-    if geom_path.suffix.lower() in (".igs", ".iges"):
+
+    from meshpipeline.cad.occ_box import mesh_to_size
+    if is_iges(geom_path):
         from OCP.IGESControl import IGESControl_Reader as _Reader
     else:
         from OCP.STEPControl import STEPControl_Reader as _Reader
@@ -46,11 +69,9 @@ def tessellate_to_stl(geom_path, out_stl, *, prepared=None, angular_deflection: 
     shape = reader.OneShape()
     trsf = _occ_to_metres(prepared)
     shape = BRepBuilderAPI_Transform(shape, trsf, True).Shape()
-    box = Bnd_Box(); BRepBndLib.Add_s(shape, box)
-    x0, y0, z0, x1, y1, z1 = box.Get()
-    diag = ((x1 - x0) ** 2 + (y1 - y0) ** 2 + (z1 - z0) ** 2) ** 0.5
-    lin = linear_deflection if linear_deflection is not None else diag / 2500.0
-    BRepMesh_IncrementalMesh(shape, lin, False, angular_deflection, True)
+    # the deflection follows the part's REAL size (cad/occ_box.mesh_to_size), not OpenCascade's
+    # loose envelope: a Supra whose envelope read 4.3x too big was meshed 4.3x too coarse
+    mesh_to_size(shape, 1.0 / 2500.0, angular_deflection, linear_deflection=linear_deflection)
     StlAPI_Writer().Write(shape, str(out_stl))
     return out_stl
 
@@ -141,17 +162,40 @@ def select_declared_openings(candidates: list, declared: list) -> list:
     def _dist(p, q):
         return sum((p[k] - q[k]) ** 2 for k in range(3)) ** 0.5
 
-    def _size_err(area, opening, port):
+    # WHAT FILLS AN OPENING. A ring face's inner wire encloses the bore; a body standing in the
+    # bore (the centre rod of an annular passage, a second solid of the file) shows its own flat
+    # end face inside that wire, in the same plane. The flow crosses only what is left: the bore
+    # less those faces. annular_001 declares its 151 mm bore around a 125 mm rod, 5730 mm2 of
+    # annulus; the ring's inner wire encloses 17923 mm2 and the rod's end disc 12223 mm2, and with
+    # neither measure inside the band, every engine refused the part before meshing (2026-10-04).
+    def _filled(own_idx, opening) -> float:
+        if opening is None or not opening.get("area_m2"):
+            return 0.0
+        wh = opening.get("wh_m") or ()
+        reach = 0.5 * min(wh) if len(wh) == 2 and min(wh) > 0 else (
+            float(opening["area_m2"]) / math.pi) ** 0.5
+        oc = tuple(opening.get("centroid") or ())
+        if len(oc) != 3:
+            return 0.0
+        return sum(a for i, (a, c, _o) in all_faces.items()
+                   if i != own_idx and a < float(opening["area_m2"]) and _dist(c, oc) < reach)
+
+    all_faces = dict(remaining)
+    filled = {i: _filled(i, o) for i, (_a, _c, o) in remaining.items()}
+
+    def _size_err(idx, area, opening, port):
         # the smallest relative disagreement any admissible measure achieves inside the
-        # band, or None when the declared size fits by neither measure
+        # band, or None when the declared size fits by no measure
         declared_area = float(port["area_m2"])
         errs = []
         if _band_ok(area, declared_area):
             errs.append(abs(area / declared_area - 1.0))
         if (opening is not None and opening.get("area_m2")
-                and _shape_agrees(opening, port)
-                and _band_ok(float(opening["area_m2"]), declared_area)):
-            errs.append(abs(float(opening["area_m2"]) / declared_area - 1.0))
+                and _shape_agrees(opening, port)):
+            for measure in {float(opening["area_m2"]),
+                            float(opening["area_m2"]) - filled.get(idx, 0.0)}:
+                if measure > 0.0 and _band_ok(measure, declared_area):
+                    errs.append(abs(measure / declared_area - 1.0))
         return min(errs) if errs else None
 
     hinted = sorted((p for p in declared if p.get("near_m")), key=lambda p: str(p.get("name")))
@@ -161,7 +205,7 @@ def select_declared_openings(candidates: list, declared: list) -> list:
         best = None
         for idx, (area, cen, opening) in remaining.items():
             if port.get("area_m2"):
-                err = _size_err(area, opening, port)
+                err = _size_err(idx, area, opening, port)
                 if err is None:
                     continue
                 err_bucket = int(err / _SIZE_ERR_QUANTUM)
@@ -296,6 +340,37 @@ def _rim_measure(pts: list) -> dict | None:
     p2 = [((p[0] - c[0]) * ux + (p[1] - c[1]) * uy + (p[2] - c[2]) * uz,
            (p[0] - c[0]) * vx + (p[1] - c[1]) * vy + (p[2] - c[2]) * vz) for p in pts]
     return {"area_m2": 0.5 * norm, "centroid": c, "wh_m": _min_rect_wh(p2)}
+
+
+def stands_in_opening(opening: dict, normal, area: float, centroid, outer_wh=None) -> bool:
+    """WHAT FILLS A RING'S OPENING, the one definition the geometry check's scout and the
+    internal-flow staging both use. A ring face's inner wire (`opening`: {"area_m2",
+    "centroid", "wh_m"}, as _rim_measure gives it) encloses a bore; a body standing in the bore -
+    the centre rod or hub of an annular passage, often a solid of its own - shows a flat end face
+    inside that wire, in the same plane. Such a face is smaller than the opening, lies in its
+    plane, has its centre within the opening and, when the extent of its own outer rim
+    (`outer_wh`) is known, fits inside it - its rim's short and long sides inside the opening's
+    short and long sides (a 380 x 30 mm bar in a 400 x 40 mm duct fits): a flange band round the
+    same hole is centred on it and coplanar too, but wider than the hole. The flow crosses the
+    opening less these faces."""
+    try:
+        o_area = float(opening["area_m2"])
+        oc = tuple(float(v) for v in opening["centroid"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    if len(oc) != 3 or not 0.0 < float(area) < o_area:
+        return False
+    wh = opening.get("wh_m") or ()
+    reach = 0.5 * min(wh) if len(wh) == 2 and min(wh) > 0 else math.sqrt(o_area / math.pi)
+    off = [float(centroid[k]) - oc[k] for k in range(3)]
+    if abs(sum(off[k] * float(normal[k]) for k in range(3))) > 1e-3 * reach:
+        return False
+    if math.sqrt(sum(v * v for v in off)) >= reach:
+        return False
+    if outer_wh is not None and len(wh) == 2 and min(wh) > 0 and max(outer_wh) > 0:
+        (a, b), (p, q) = sorted(float(v) for v in outer_wh), sorted(float(v) for v in wh)
+        return a < p and b < q
+    return True
 
 
 def _ring_membrane(ring: list) -> list:
@@ -447,6 +522,181 @@ def seal_open_rims(tris: list) -> tuple[list, list[dict]]:
     return membranes, report
 
 
+# #
+# THE CARVE SURFACE, ASKED ALONG RAYS. snappyHexMesh keeps the region of space that holds
+# locationInMesh and is bounded by the staged surface - wall, port caps, every seal. For a
+# hollow wall the fluid is a region that surface CLOSES: from inside it every ray stops on the
+# surface, while from the exterior void some ray reaches open space. "Not in the metal" cannot
+# tell the two apart - bend_elbow_021 was seeded 0.5 mm outside its own inlet cap, not in the
+# metal, and the carve kept the whole exterior (8579 faces on the blockMesh 'outer' patch).
+# #
+def _sphere_directions(n: int) -> list:
+    # evenly spread unit vectors (a Fibonacci lattice), turned off the lattice's own zero
+    # angle so no ray runs exactly in an axis plane, along an axis-aligned face
+    golden = math.pi * (3.0 - math.sqrt(5.0))
+    out = []
+    for i in range(n):
+        z = 1.0 - (2.0 * i + 1.0) / n
+        r = math.sqrt(max(0.0, 1.0 - z * z))
+        out.append((r * math.cos(golden * i + 0.5), r * math.sin(golden * i + 0.5), z))
+    return out
+
+
+_ENCLOSURE_RAYS = _sphere_directions(64)
+
+
+class CarveRays:
+    """A triangle soup, vectorised for ray casts (Moller-Trumbore over every triangle)."""
+
+    def __init__(self, tris: list) -> None:
+        t = np.asarray(tris, dtype=float).reshape(-1, 3, 3)
+        self._v0 = t[:, 0]
+        self._e1 = t[:, 1] - t[:, 0]
+        self._e2 = t[:, 2] - t[:, 0]
+        self._scale = np.linalg.norm(np.cross(self._e1, self._e2), axis=1)
+
+    def first_hit(self, origin, direction, t_min: float = 0.0) -> float:
+        """Distance along the unit `direction` to the nearest crossing beyond t_min; inf when
+        the ray crosses nothing."""
+        d = np.asarray(direction, dtype=float)
+        s = np.asarray(origin, dtype=float) - self._v0
+        p = np.cross(d, self._e2)
+        det = np.einsum("ij,ij->i", self._e1, p)
+        live = np.abs(det) > 1e-12 * self._scale        # a ray in a triangle's plane misses it
+        inv = np.divide(1.0, det, out=np.zeros_like(det), where=live)
+        u = np.einsum("ij,ij->i", s, p) * inv
+        q = np.cross(s, self._e1)
+        v = (q @ d) * inv
+        t = np.einsum("ij,ij->i", self._e2, q) * inv
+        eps = 1e-9                                       # an edge hit counts on both triangles
+        hit = live & (u >= -eps) & (v >= -eps) & (u + v <= 1.0 + eps) & (t > t_min)
+        return float(t[hit].min()) if hit.any() else math.inf
+
+    def enclosed_clearance(self, point) -> float | None:
+        """The distance to the nearest stop when EVERY ray from `point` stops on the surface;
+        None as soon as one reaches open space - the point is in the exterior void."""
+        nearest = math.inf
+        for d in _ENCLOSURE_RAYS:
+            t = self.first_hit(point, d)
+            if t == math.inf:
+                return None
+            nearest = min(nearest, t)
+        return nearest
+
+    def clear_between(self, a, b) -> bool:
+        """The straight segment from `a` (on the surface - a port's cap) to `b` crosses
+        nothing: `b` is in the region `a`'s side of the surface opens into."""
+        seg = [b[k] - a[k] for k in range(3)]
+        length = math.sqrt(sum(v * v for v in seg))
+        if length <= 0.0:
+            return False
+        d = [v / length for v in seg]
+        return self.first_hit(a, d, t_min=1e-4 * length) >= length
+
+
+def _fluid_union(shape, solids: list, declared_ports: list):
+    """ONE FLUID FROM SEVERAL SOLIDS. A declared fluid domain modelled as several solids that touch
+    (a pump's impeller region and its volute + suction region) is one fluid, but the faces where
+    they touch were staged as wall: a surface with a wall through the middle closes two regions,
+    a carve's seed or cfMesh's fill took one, and the port on the other came out with no faces
+    (volute_pump_domains, snappy and cfMesh; HOME-TURF lab, 2026-10-06). Every solid that carries
+    a declared port, and every solid touching one of those (transitively), is split against the
+    others - OCC's general fuse makes coincident faces shared, however each side was modelled -
+    and the faces two of them share are returned as the interface, which the caller leaves out
+    of the staged surface. A solid that touches no port-carrying solid stays as it is. Returns
+    (shape, solids, interface faces); the input unchanged and [] when nothing touches or the
+    split fails."""
+    import math as _m
+
+    from OCP.Bnd import Bnd_Box
+    from OCP.BOPAlgo import BOPAlgo_Builder
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.BRepBndLib import BRepBndLib
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GeomAbs import GeomAbs_Plane
+    from OCP.GProp import GProp_GProps
+    from OCP.TopAbs import TopAbs_FACE, TopAbs_SOLID
+    from OCP.TopExp import TopExp, TopExp_Explorer
+    from OCP.TopoDS import TopoDS, TopoDS_Compound
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+
+    def _planar_centres(sol):
+        e = TopExp_Explorer(sol, TopAbs_FACE)
+        while e.More():
+            f = TopoDS.Face_s(e.Current())
+            e.Next()
+            if BRepAdaptor_Surface(f).GetType() == GeomAbs_Plane:
+                g = GProp_GProps()
+                BRepGProp.SurfaceProperties_s(f, g)
+                c = g.CentreOfMass()
+                yield (c.X(), c.Y(), c.Z())
+
+    fluid = set()
+    for port in declared_ports:
+        near = port.get("near_m") if isinstance(port, dict) else None
+        if not near:
+            continue
+        dist = [min((_m.dist(near, c) for c in _planar_centres(sol)), default=_m.inf)
+                for sol in solids]
+        k = min(range(len(solids)), key=lambda i: dist[i])
+        if _m.isfinite(dist[k]):
+            fluid.add(k)
+    if not fluid:
+        return shape, solids, []
+    box = Bnd_Box()
+    BRepBndLib.Add_s(shape, box)
+    touch_tol = 1e-6 * (box.CornerMin().Distance(box.CornerMax()) or 1.0)
+    grown = True
+    while grown:
+        grown = False
+        for k, sol in enumerate(solids):
+            if k in fluid:
+                continue
+            for j in list(fluid):
+                d = BRepExtrema_DistShapeShape(sol, solids[j])
+                if d.IsDone() and d.Value() <= touch_tol:
+                    fluid.add(k)
+                    grown = True
+                    break
+    if len(fluid) < 2:
+        return shape, solids, []
+    try:
+        bop = BOPAlgo_Builder()
+        for k in sorted(fluid):
+            bop.AddArgument(solids[k])
+        bop.SetFuzzyValue(touch_tol)
+        bop.Perform()
+        if bop.HasErrors():
+            return shape, solids, []
+        split = bop.Shape()
+        parts = []
+        e = TopExp_Explorer(split, TopAbs_SOLID)
+        while e.More():
+            parts.append(TopoDS.Solid_s(e.Current()))
+            e.Next()
+        fmap = TopTools_IndexedDataMapOfShapeListOfShape()
+        TopExp.MapShapesAndAncestors_s(split, TopAbs_FACE, TopAbs_SOLID, fmap)
+        interface = [fmap.FindKey(i) for i in range(1, fmap.Extent() + 1)
+                     if fmap.FindFromIndex(i).Extent() > 1]
+        if not interface or len(parts) < 2:
+            return shape, solids, []
+        rest = [sol for k, sol in enumerate(solids) if k not in fluid]
+        comp = TopoDS_Compound()
+        bld = BRep_Builder()
+        bld.MakeCompound(comp)
+        for sol in [*parts, *rest]:
+            bld.Add(comp, sol)
+        logger.info("tessellate_internal: %d touching fluid solids are one fluid - %d face(s) "
+                    "between them left out of the staged surface", len(fluid), len(interface))
+        return comp, [*parts, *rest], interface
+    except Exception:  # noqa: BLE001 - the solids as they came is the fallback
+        logger.warning("tessellate_internal: the fluid solids could not be split against each "
+                       "other - kept apart", exc_info=True)
+        return shape, solids, []
+
+
 def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection: float = 0.2,
                         linear_deflection: float | None = None,
                         opening_faces: list[int] | None = None,
@@ -483,7 +733,7 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
     geom_path = Path(geom_path)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    if geom_path.suffix.lower() in (".igs", ".iges"):
+    if is_iges(geom_path):
         from OCP.IGESControl import IGESControl_Reader as _Reader
     else:
         from OCP.STEPControl import STEPControl_Reader as _Reader
@@ -495,32 +745,48 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
     trsf = _occ_to_metres(prepared)
     shape = BRepBuilderAPI_Transform(shape, trsf, True).Shape()
 
+    # EVERY SOLID OF THE FILE. A file can hold several: an annular passage's pipe and the centre
+    # rod modelled as a body of its own (all ten annular corpus parts), an insert, a baffle, a
+    # tube bundle. The fluid is the space they bound together, so "in the material" means in ANY
+    # of them - the first alone saw the rod and called the pipe's own metal open space.
+    solids: list = []
     solid_exp = TopExp_Explorer(shape, TopAbs_SOLID)
-    if not solid_exp.More():
+    while solid_exp.More():
+        solids.append(TopoDS.Solid_s(solid_exp.Current()))
+        solid_exp.Next()
+    if not solids:
         raise RuntimeError(
             "internal-flow input is not a watertight SOLID - the fluid volume must be a "
             "closed solid (a loose surface/shell is the pipe skin, not the flow passage)")
-    solid = TopoDS.Solid_s(solid_exp.Current())
+    interface: list = []
+    if fluid_solid is True and len(solids) > 1 and declared_ports:
+        shape, solids, interface = _fluid_union(shape, solids, declared_ports)
+    classifiers = [BRepClass3d_SolidClassifier(s) for s in solids]
 
     def _inside(p) -> bool:
-        cls = BRepClass3d_SolidClassifier(solid)
-        cls.Perform(gp_Pnt(*p), 1e-9)
-        return cls.State() == TopAbs_IN
+        for cls in classifiers:
+            cls.Perform(gp_Pnt(*p), 1e-9)
+            if cls.State() == TopAbs_IN:
+                return True
+        return False
 
-    diag = 0.0
-    from OCP.Bnd import Bnd_Box
-    from OCP.BRepBndLib import BRepBndLib
-    box = Bnd_Box(); BRepBndLib.Add_s(shape, box)
-    x0, y0, z0, x1, y1, z1 = box.Get()
-    diag = ((x1 - x0) ** 2 + (y1 - y0) ** 2 + (z1 - z0) ** 2) ** 0.5
-    lin = linear_deflection if linear_deflection is not None else diag / 2500.0
-    BRepMesh_IncrementalMesh(shape, lin, False, angular_deflection, True)
+    # meshed at the part's REAL size (cad/occ_box.mesh_to_size); lin is the deflection it was meshed
+    # at, which the cap faces below reuse. The box is the part's real extent too, and it sizes the
+    # internal background mesh (bbox_min/bbox_max below), which a loose envelope inflated.
+    from meshpipeline.cad.occ_box import mesh_to_size
+    box, lin = mesh_to_size(shape, 1.0 / 2500.0, angular_deflection,
+                            linear_deflection=linear_deflection)
+    x0, y0, z0, x1, y1, z1 = box
 
     # classify faces: planar -> opening candidate, curved -> wall (see docstring)
     faces: list = []
     e = TopExp_Explorer(shape, TopAbs_FACE)
     while e.More():
-        faces.append(TopoDS.Face_s(e.Current())); e.Next()
+        _f = TopoDS.Face_s(e.Current()); e.Next()
+        # a face between two fluid solids bounds neither: the fluid runs through it
+        if interface and any(_f.IsSame(x) for x in interface):
+            continue
+        faces.append(_f)
 
     def _face_props(f):
         g = GProp_GProps(); BRepGProp.SurfaceProperties_s(f, g)
@@ -656,6 +922,84 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
                 return cand
         return None
 
+    def _owner(face):
+        # the solid a face bounds (None for a face of no solid)
+        for s in solids:
+            fe = TopExp_Explorer(s, TopAbs_FACE)
+            while fe.More():
+                if fe.Current().IsSame(face):
+                    return s
+                fe.Next()
+        return None
+
+    def _less_other_solids(cap, host):
+        # THE LID IS WHAT IS OPEN: the bore less every other solid's footprint in its plane - a
+        # centre rod ending there (or running through it) fills the middle, and a lid over the
+        # rod's own end face would lay the port patch on top of the wall. OpenCASCADE takes off
+        # what lies IN or ON each solid; the faces left are the lid. Returns (faces, area taken).
+        if len(solids) < 2:
+            return [cap], 0.0
+        # OpenCASCADE's own (loose) boxes are right here: they only skip solids that cannot touch
+        # the lid, and a loose box is never smaller than the part (cad/occ_box is for sizing)
+        from OCP.Bnd import Bnd_Box
+        from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Cut
+        from OCP.BRepBndLib import BRepBndLib
+
+        g = GProp_GProps(); BRepGProp.SurfaceProperties_s(cap, g)
+        before = g.Mass()
+        cbox = Bnd_Box(); BRepBndLib.Add_s(cap, cbox)
+        result = cap
+        ends: set = set()
+        for s in solids:
+            if host is not None and s.IsSame(host):
+                continue
+            sbox = Bnd_Box(); BRepBndLib.Add_s(s, sbox)
+            if sbox.IsOut(cbox):
+                continue
+            # the solid's own faces lying in the lid, wholly inside the bore: its end faces at
+            # the mouth (they are wall no longer once the lid is cut round them - see below)
+            fe = TopExp_Explorer(s, TopAbs_FACE)
+            while fe.More():
+                sf = TopoDS.Face_s(fe.Current())
+                fe.Next()
+                if BRepAdaptor_Surface(sf).GetType() != GeomAbs_Plane:
+                    continue
+                gs = GProp_GProps(); BRepGProp.SurfaceProperties_s(sf, gs)
+                common = BRepAlgoAPI_Common(sf, cap)
+                if not common.IsDone():
+                    continue
+                gc = GProp_GProps(); BRepGProp.SurfaceProperties_s(common.Shape(), gc)
+                if gs.Mass() > 0 and gc.Mass() >= 0.99 * gs.Mass():
+                    ends.update(i for i, f in enumerate(faces) if f.IsSame(sf))
+            cut = BRepAlgoAPI_Cut(result, s)
+            if not cut.IsDone():
+                # half a cut is worse than none: the whole lid stays as it was, and so does the wall
+                logger.error("tessellate_internal: could not take a solid's footprint off a port "
+                             "lid - the lid spans the whole bore, as for a single solid")
+                return [cap], 0.0
+            result = cut.Shape()
+        g = GProp_GProps(); BRepGProp.SurfaceProperties_s(result, g)
+        taken = max(before - g.Mass(), 0.0)
+        if taken <= 1e-6 * before:
+            return [cap], 0.0
+        left = []
+        fe = TopExp_Explorer(result, TopAbs_FACE)
+        while fe.More():
+            lf = TopoDS.Face_s(fe.Current())
+            gl = GProp_GProps(); BRepGProp.SurfaceProperties_s(lf, gl)
+            if gl.Mass() > 1e-9 * before:
+                BRepMesh_IncrementalMesh(lf, lin, False, angular_deflection, True)
+                if _triangles_of(lf):
+                    left.append(lf)
+            fe.Next()
+        if left:
+            lidded_ends.update(ends)  # a bore filled whole has no lid to meet them: they stay
+        return left, taken
+
+    port_bored: set = set()           # port faces whose bore holes were lidded
+    port_filled: set = set()          # ...of which another solid fills part, room left round it
+    lidded_ends: set = set()          # other solids' faces lying in a lid, inside its bore
+
     def _mouth_caps(port_i):
         """Cap face(s) that SEAL a hollow part's port mouth.
 
@@ -674,8 +1018,16 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
         wires = _wires_of(f)
         if len(wires) < 2:
             return []
+        if fluid_solid is True:
+            # A DECLARED FLUID DOMAIN's ring-shaped port face IS the opening: the flow crosses the
+            # ring, and its inner hole (a hub, a shaft) is outside the fluid. Capping that hole
+            # closed a second pocket - hub surface + disc - beside the fluid (blade-row passages:
+            # staged ports 1.5-1.8x the declared annulus, 140 edges used three times), which only
+            # a lucky seed or fill kept out of the mesh. The ring face is the whole lid.
+            return []
         outer_w = BRepTools.OuterWire_s(f)
         pln = BRepAdaptor_Surface(f).Plane()
+        host = _owner(f)
         caps = []
         for wire in wires:
             if wire.IsSame(outer_w):
@@ -688,10 +1040,20 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
                     "internal carve may keep the exterior void (finalize flags it)",
                     port_i)
                 continue
-            caps.append(cap)
+            port_bored.add(port_i)
+            left, taken = _less_other_solids(cap, host)
+            if taken > 0.0 and left:
+                port_filled.add(port_i)
+                logger.info("tessellate_internal: port face %d - another solid fills %.0f mm^2 of "
+                            "its bore; the lid is the %d face(s) left open", port_i, taken * 1e6,
+                            len(left))
+            elif taken > 0.0:
+                logger.warning("tessellate_internal: port face %d - another solid fills its whole "
+                               "bore; nothing is left open to lid", port_i)
+            caps.extend(left)
         if caps:
             logger.info("tessellate_internal: annular port face %d - sealed %d bore "
-                        "hole(s) so the port STL closes the full mouth", port_i, len(caps))
+                        "hole(s) so the port STL closes the mouth", port_i, len(caps))
         return caps
 
     # #
@@ -899,10 +1261,33 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
     stls = {"wall": out_dir / "wall.stl", "inlet": out_dir / "inlet.stl"}
     for nm in outlet_names:
         stls[nm] = out_dir / f"{nm}.stl"
+    port_caps = {pi: _mouth_caps(pi) for pi in (inlet_i, *outlet_ids)}
+
+    # verified interior point for locationInMesh. WHICH region is the flow comes first:
+    #   * a declared fluid domain, or an undeclared solid: the solid IS the flow (a duct modeled
+    #     as a rod, an annular passage), and a point inside it is in the flow;
+    #   * a solid declared a BODY whose ports are rings with capped bores: the solid is the
+    #     METAL of a hollow wall, and the flow is the cavity the wall closes with its port caps.
+    #     No point inside the solid is ever the seed there - a thick part's volume centroid
+    #     sits in its metal, and a carve seeded there meshes the wall whole, with no stray
+    #     patch to give it away;
+    #   * a body whose ports are plain discs is a rod the user called a body: the solid again;
+    #   * a file that does not say, whose port bores hold ANOTHER solid with room left round it
+    #     (a centre rod, an insert): the flow is that room between the solids, so every solid
+    #     is wall - read as the solids themselves, the seed landed in the pipe's metal.
+    hollow_wall = bool(port_bored) and (
+        fluid_solid is False or (fluid_solid is None and bool(port_filled)))
+    if hollow_wall and lidded_ends:
+        # The other solids' end faces a lid was cut round are no boundary of the flow: the flow
+        # stops at the lid, and those faces only close the solid off from the outside. Kept, they
+        # close it into a region of its own - cfMesh meshed annular_001's rod (the largest
+        # closed region), not the annulus round it. The lid and the solid's side wall meet edge
+        # to edge without them.
+        wall_idx = [i for i in wall_idx if i not in lidded_ends]
     _write_group(wall_idx, stls["wall"], extra_faces=undeclared_caps)
-    _write_group([inlet_i], stls["inlet"], extra_faces=_mouth_caps(inlet_i))
+    _write_group([inlet_i], stls["inlet"], extra_faces=port_caps[inlet_i])
     for nm, oi in zip(outlet_names, outlet_ids):
-        _write_group([oi], stls[nm], extra_faces=_mouth_caps(oi))
+        _write_group([oi], stls[nm], extra_faces=port_caps[oi])
     if undeclared_membranes:
         write_stl_binary(stls["wall"],
                          read_stl_triangles(stls["wall"]) + undeclared_membranes)
@@ -935,98 +1320,176 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
             "internal carve may keep the exterior void (finalize flags it)",
             sum(1 for r in open_rims if not r["sealed"]))
 
-    # verified interior point for locationInMesh. Candidates, cheapest-first:
-    # volume centroid, then each port centroid nudged inward along its (oriented) normal.
-    gv = GProp_GProps(); BRepGProp.VolumeProperties_s(solid, gv)
-    vc = gv.CentreOfMass()
-    candidates = [(vc.X(), vc.Y(), vc.Z())]
-    for pi in (inlet_i, *outlet_ids):
-        f = faces[pi]
-        area, c = _face_props(f)
-        ax = BRepAdaptor_Surface(f).Plane().Axis().Direction()
-        n = [ax.X(), ax.Y(), ax.Z()]
-        if f.Orientation() == TopAbs_REVERSED:
-            n = [-v for v in n]
-        step = 0.5 * _m.sqrt(area / _m.pi)              # ~half the port radius, inward
-        candidates.append(tuple(c[k] - step * n[k] for k in range(3)))
-        candidates.append(tuple(c[k] + step * n[k] for k in range(3)))
-    # RING PORTS. The centroid of an annular port face is the centre of the hole it rims - for a
-    # blade-row passage that is the hub bore, which is not fluid. So every ring port also offers
-    # points ON the ring: mid-radius, four in-plane directions, nudged inward along the port
-    # normal. Blade-row passages 001/003/005 (jobs 9bf37dd8, f69eb843, db9e64e1) were
-    # "delivered" as a mesh of the hub bore - the port caps sealed the bore at both ends, the
-    # seed sat inside it, and snappyHexMesh kept it. NOT for a solid declared a body
-    # (fluid_solid is False, which is what the driver passes for every non-fluid input): a metal
-    # tube's end face is an annulus too, and there the ring IS the wall - a point on it would
-    # seed the metal, not the bore. That case is the hollow-wall fallback's, below. Undeclared
-    # keeps the primary semantics: the solid is the fluid.
-    for pi in ((inlet_i, *outlet_ids) if fluid_solid is not False else ()):
-        f = faces[pi]
-        prof = _inner_opening(f)
-        if prof is None:
-            continue
-        area, c = _face_props(f)
-        inner_area = float(prof["area_m2"])
-        r_out = _m.sqrt(max(area + inner_area, 0.0) / _m.pi)
-        r_in = _m.sqrt(max(inner_area, 0.0) / _m.pi)
-        r_mid = 0.5 * (r_out + r_in)
-        ax = BRepAdaptor_Surface(f).Plane().Axis().Direction()
-        n = [ax.X(), ax.Y(), ax.Z()]
-        # an in-plane basis: any vector not parallel to n, made orthogonal
+    # (which region is the flow - hollow_wall - is read above, before the groups were written)
+
+    def _plane_basis(n):
+        # two in-plane unit vectors: any vector not parallel to n, made orthogonal, and n x it
         seed_u = [1.0, 0.0, 0.0] if abs(n[0]) < 0.9 else [0.0, 1.0, 0.0]
         dot = sum(seed_u[k] * n[k] for k in range(3))
         u = [seed_u[k] - dot * n[k] for k in range(3)]
         ul = _m.sqrt(sum(v * v for v in u)) or 1.0
         u = [v / ul for v in u]
         v = [n[1] * u[2] - n[2] * u[1], n[2] * u[0] - n[0] * u[2], n[0] * u[1] - n[1] * u[0]]
-        step = 0.5 * (r_out - r_in)
-        for d in (u, [-x for x in u], v, [-x for x in v]):
-            on_ring = [c[k] + r_mid * d[k] for k in range(3)]
-            for sign in (-1.0, 1.0):
-                candidates.append(tuple(on_ring[k] + sign * step * n[k] for k in range(3)))
-    interior = next((p for p in candidates if _inside(p)), None)
+        return u, v
+
+    interior: tuple | None = None
+    if not hollow_wall:
+        # Candidates, cheapest-first: each solid's volume centroid, then each port centroid nudged
+        # inward along its (oriented) normal.
+        candidates = []
+        for s in solids:
+            gv = GProp_GProps(); BRepGProp.VolumeProperties_s(s, gv)
+            vc = gv.CentreOfMass()
+            candidates.append((vc.X(), vc.Y(), vc.Z()))
+        for pi in (inlet_i, *outlet_ids):
+            f = faces[pi]
+            area, c = _face_props(f)
+            ax = BRepAdaptor_Surface(f).Plane().Axis().Direction()
+            n = [ax.X(), ax.Y(), ax.Z()]
+            if f.Orientation() == TopAbs_REVERSED:
+                n = [-v for v in n]
+            step = 0.5 * _m.sqrt(area / _m.pi)              # ~half the port radius, inward
+            candidates.append(tuple(c[k] - step * n[k] for k in range(3)))
+            candidates.append(tuple(c[k] + step * n[k] for k in range(3)))
+        # RING PORTS. The centroid of an annular port face is the centre of the hole it rims -
+        # for a blade-row passage that is the hub bore, which is not fluid. So every ring port
+        # also offers points ON the ring: mid-radius, four in-plane directions, nudged inward
+        # along the port normal. Blade-row passages 001/003/005 (jobs 9bf37dd8, f69eb843,
+        # db9e64e1) were "delivered" as a mesh of the hub bore - the port caps sealed the bore
+        # at both ends, the seed sat inside it, and snappyHexMesh kept it. NOT for a solid
+        # declared a body (fluid_solid is False, which is what the driver passes for every
+        # non-fluid input): a metal tube's end face is an annulus too, and there the ring IS
+        # the wall - a point on it would seed the metal, not the bore. Undeclared keeps the
+        # primary semantics: the solid is the fluid.
+        for pi in ((inlet_i, *outlet_ids) if fluid_solid is not False else ()):
+            f = faces[pi]
+            prof = _inner_opening(f)
+            if prof is None:
+                continue
+            area, c = _face_props(f)
+            inner_area = float(prof["area_m2"])
+            r_out = _m.sqrt(max(area + inner_area, 0.0) / _m.pi)
+            r_in = _m.sqrt(max(inner_area, 0.0) / _m.pi)
+            r_mid = 0.5 * (r_out + r_in)
+            ax = BRepAdaptor_Surface(f).Plane().Axis().Direction()
+            n = [ax.X(), ax.Y(), ax.Z()]
+            u, v = _plane_basis(n)
+            step = 0.5 * (r_out - r_in)
+            for d in (u, [-x for x in u], v, [-x for x in v]):
+                on_ring = [c[k] + r_mid * d[k] for k in range(3)]
+                for sign in (-1.0, 1.0):
+                    candidates.append(tuple(on_ring[k] + sign * step * n[k] for k in range(3)))
+        # THE SOLID IS THE FLOW - but which, when there are several? The one the ports belong to:
+        # an annular fluid with a separate insert down its middle is the annulus, and its centroid,
+        # on the axis, lies in the insert. A point in a solid that carries no port is in a body.
+        owners = [o for o in (_owner(faces[pi]) for pi in (inlet_i, *outlet_ids)) if o is not None]
+        flow_cls = [c for s, c in zip(solids, classifiers) if any(s.IsSame(o) for o in owners)] or classifiers
+        body_cls = [c for c in classifiers if all(c is not f for f in flow_cls)]
+
+        def _in_flow(p) -> bool:
+            def _in(cls_list) -> bool:
+                for cls in cls_list:
+                    cls.Perform(gp_Pnt(*p), 1e-9)
+                    if cls.State() == TopAbs_IN:
+                        return True
+                return False
+            return _in(flow_cls) and not _in(body_cls)
+
+        interior = next((p for p in candidates if _in_flow(p)), None)
     if interior is None and fluid_solid:
         # A DECLARED fluid domain is the fluid: a point that is not inside the solid is not in
-        # the flow, whatever the hollow-wall fallback below would make of it. Refuse loudly
+        # the flow, whatever the hollow-wall search below would make of it. Refuse loudly
         # rather than seed a void.
         raise RuntimeError(
             "could not locate a point inside the declared fluid domain for locationInMesh - "
             "the volume centroid, the port centroids and the ring-port candidates all fall "
             "outside the solid (a hole through the part?); the mesh would have been of the "
             "void, not the flow")
+
+    def _mouth_probe_rings():
+        # One ring of (point, the mouth point it is reached from, the mouth's radius) per port
+        # and depth, best first. Each port's mouth - the centre of the opening its ring rims,
+        # or of the disc itself - is stepped along the port axis at decreasing depth, on the
+        # axis and then off it, out to 0.95 of the radius: a centre body can fill the axis and
+        # most of the mouth (the annular corpus family's rods span 0.61-0.90 of the bore).
+        # BOTH ways along the axis: which side is in is for the verification to prove, never
+        # for a normal's sign to assume.
+        offsets = [(0.0, 0.0)] + [(f * a, f * b) for f in (0.5, 0.8, 0.9, 0.95)
+                                  for a, b in ((1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0))]
+        for pi in (inlet_i, *outlet_ids):
+            f = faces[pi]
+            prof = _inner_opening(f)
+            if prof is not None:
+                c, area = tuple(prof["centroid"]), float(prof["area_m2"])
+            else:
+                area, c = _face_props(f)
+            r = _m.sqrt(max(area, 0.0) / _m.pi)
+            ax = BRepAdaptor_Surface(f).Plane().Axis().Direction()
+            n = [ax.X(), ax.Y(), ax.Z()]
+            u, v = _plane_basis(n)
+            for depth in (0.5, 0.3, 0.15):
+                ring = []
+                for a, b in offsets:
+                    mouth = tuple(c[k] + r * (a * u[k] + b * v[k]) for k in range(3))
+                    for sign in (1.0, -1.0):
+                        ring.append((tuple(mouth[k] + sign * depth * r * n[k]
+                                           for k in range(3)), mouth, r))
+                yield ring
+
     if interior is None:
-        # HOLLOW-WALL FALLBACK. Everything above assumes the input solid IS the fluid
-        # volume (a duct modeled as a solid rod), where inside-the-solid means inside the
-        # flow. A real machined part - a rocket nozzle - is METAL with a channel through
-        # it: the channel is NOT inside the solid, so every rod-semantics candidate is
-        # correctly rejected and the old code died here. For a hollow part the right test
-        # inverts: a point IN the channel is NOT in the metal. Direction is what makes it
-        # safe - nudging a port centroid TOWARD THE OTHER PORT walks down the channel by
-        # construction (an annular mouth's centroid sits in the void at the channel mouth),
-        # so a not-in-metal point found this way is in the flow region, never in the
-        # exterior void around the part.
-        pc_in = _face_props(faces[inlet_i])[1]
-        for oi in outlet_ids:
-            pc_out = _face_props(faces[oi])[1]
-            seg = [pc_out[k] - pc_in[k] for k in range(3)]
-            seg_len = _m.sqrt(sum(v * v for v in seg)) or 1.0
-            u = [v / seg_len for v in seg]
-            r_in = _m.sqrt(_face_props(faces[inlet_i])[0] / _m.pi)
-            r_out = _m.sqrt(_face_props(faces[oi])[0] / _m.pi)
-            hollow = []
-            for base, direction, radius in ((pc_in, 1.0, r_in), (pc_out, -1.0, r_out)):
-                step = min(0.5 * radius, 0.1 * seg_len)
-                hollow.append(tuple(base[k] + direction * step * u[k] for k in range(3)))
-            hollow.append(tuple(pc_in[k] + 0.5 * seg_len * u[k] for k in range(3)))
-            interior = next((p for p in hollow if not _inside(p)), None)
-            if interior is not None:
-                logger.info("tessellate_internal: hollow-wall fluid point found on the "
-                            "inlet-outlet segment (rod-semantics candidates were all "
-                            "inside the metal's complement)")
-                break
+        # THE CAPPED CAVITY. A real machined part - a rocket nozzle, a flanged elbow - is METAL
+        # with a channel through it, and the flow is the region its wall closes with the port
+        # caps. The old search stepped from the inlet toward the outlet and took the first
+        # point not in the metal. On a bent duct that line leaves the channel at once:
+        # bend_elbow_021 (a 162.64-degree elbow, the outlet almost beside the inlet) was seeded
+        # 0.5 mm upstream of its own inlet cap - not in the metal, but in the exterior - and
+        # the carve kept the exterior void. A point is taken here only when it is PROVEN in the
+        # cavity, against the surface the mesher reads: not in the metal, reached from a port's
+        # cap in a straight line that crosses nothing, and closed in - every ray from it stops
+        # on the staged surface, where from the exterior some ray reaches open space. The cap
+        # divides exactly those two regions, so a point that passes is in the flow. The metal
+        # is EVERY solid of the file: a centre rod modelled as a solid of its own (annular_004)
+        # is closed in by the staged surface too, and the first solid alone would not see it.
+        metal = []
+        se = TopExp_Explorer(shape, TopAbs_SOLID)
+        while se.More():
+            metal.append(BRepClass3d_SolidClassifier(TopoDS.Solid_s(se.Current())))
+            se.Next()
+
+        def _in_metal(p) -> bool:
+            for cls in metal:
+                cls.Perform(gp_Pnt(*p), 1e-9)
+                if cls.State() == TopAbs_IN:
+                    return True
+            return False
+
+        carve = CarveRays([t for p in stls.values() for t in read_stl_triangles(p)])
+        best: tuple | None = None
+        for ring in _mouth_probe_rings():
+            for cand, mouth, r_mouth in ring:
+                p = tuple(round(x, 6) for x in cand)        # judged as it is written
+                if _in_metal(p) or not carve.clear_between(mouth, p):
+                    continue
+                clearance = carve.enclosed_clearance(p)
+                if clearance is None or clearance < 0.02 * r_mouth:
+                    continue                                 # open space, or on a wall
+                if best is None or clearance > best[1]:
+                    best = (p, clearance)
+                if clearance >= 0.25 * r_mouth:
+                    break                                    # well clear of every wall
+            if best is not None:
+                break          # the clearest proven point of the first ring that holds one
+        if best is not None:
+            interior = best[0]
+            logger.info(
+                "tessellate_internal: seed (%.6f, %.6f, %.6f) m proven in the capped cavity - "
+                "outside the metal, straight in from a port cap, closed in on every ray "
+                "(nearest surface %.1f mm)", *interior, best[1] * 1000.0)
     if interior is None:
-        raise RuntimeError("could not locate a point inside the fluid solid for "
-                           "locationInMesh (geometry may not be a closed volume)")
+        raise RuntimeError(
+            "could not locate a point in the flow for locationInMesh - every point tried is in "
+            "the metal or reaches open space, so the ports do not open into a cavity the wall "
+            "closes (an opening missing from the declaration, or a wall that is not closed?)")
 
     n_wall_faces = sum(len(read_stl_triangles(stls["wall"])) for _ in [0])
 
@@ -1041,7 +1504,30 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
             rec["opening"] = {"area": round(prof["area_m2"], 8),
                               "centroid": [round(v, 6) for v in prof["centroid"]],
                               "wh": [round(v, 6) for v in prof["wh_m"]]}
+            filled = _filled_area(pi, prof)
+            if filled > 0.0:
+                # a body standing in the bore (a centre rod) shows a flat face inside the
+                # inner wire: the flow crosses the opening less that face (port_binding)
+                rec["opening"]["filled"] = round(filled, 8)
         return rec
+
+    def _filled_area(pi, prof) -> float:
+        """Area of the other flat faces standing in a ring face's inner wire, in its plane
+        (stands_in_opening: the geometry check's scout reads an opening the same way)."""
+        ax = BRepAdaptor_Surface(faces[pi]).Plane().Axis().Direction()
+        n = (ax.X(), ax.Y(), ax.Z())
+        total = 0.0
+        for j, fj in enumerate(faces):
+            if j == pi or BRepAdaptor_Surface(fj).GetType() != GeomAbs_Plane:
+                continue
+            a, c = _face_props(fj)
+            if not stands_in_opening(prof, n, a, c):
+                continue
+            # the cheap tests passed: does the face's own outer rim fit inside the opening?
+            rim = _rim_measure(_rim_polyline(fj, BRepTools.OuterWire_s(fj)))
+            if stands_in_opening(prof, n, a, c, rim["wh_m"] if rim else None):
+                total += a
+        return total
 
     return {
         "stls": {k: str(v) for k, v in stls.items()},
@@ -1052,6 +1538,12 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
             "inlet": _opening_record(inlet_i),
             **{nm: _opening_record(oi) for nm, oi in zip(outlet_names, outlet_ids)}},
         "n_wall_faces": n_wall_faces,
+        # WHAT THE WALL IS: the fluid's own boundary - a solid declared the fluid domain, or one
+        # whose ports are plain discs, not rings round a bore - or (False) possibly the metal skin
+        # of a hollow wall (bore, outer skin, flange faces). A reader of the wall's passages reads
+        # the first whole and keeps only the cavity's skin of the second
+        # (engines/passage.passage_field_of_stls).
+        "wall_bounds_fluid": bool(fluid_solid is True or (not hollow_wall and not port_bored)),
         # what was sealed into the wall beyond the declared ports, for manifests and
         # user-facing evidence: undeclared shell openings (B-rep holes nothing fills)
         # and open rim rings (gaps the tessellator itself left in the staged surface)
@@ -1067,11 +1559,9 @@ def tessellate_regions_to_stl(geom_path, out_stl, *, prepared=None, angular_defl
     # That is right for a body meshed as a single wall, and lossy for a surface whose parts are
     # named - and the loss happens here, before any engine could have chosen. A file that
     # distinguishes nothing takes the flat path unchanged and reports no names.
-    from OCP.Bnd import Bnd_Box
-    from OCP.BRepBndLib import BRepBndLib
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
-    from OCP.BRepMesh import BRepMesh_IncrementalMesh
 
+    from meshpipeline.cad.occ_box import mesh_to_size
     from meshpipeline.cad.regions import components_of, regions_of
     from meshpipeline.cad.stl_io import write_stl_solids
 
@@ -1094,12 +1584,8 @@ def tessellate_regions_to_stl(geom_path, out_stl, *, prepared=None, angular_defl
         if shape is None or shape.IsNull():
             continue
         shape = BRepBuilderAPI_Transform(shape, trsf, True).Shape()
-        box = Bnd_Box()
-        BRepBndLib.Add_s(shape, box)
-        x0, y0, z0, x1, y1, z1 = box.Get()
-        diag = ((x1 - x0) ** 2 + (y1 - y0) ** 2 + (z1 - z0) ** 2) ** 0.5
-        lin = linear_deflection if linear_deflection is not None else max(diag / 2500.0, 1e-9)
-        BRepMesh_IncrementalMesh(shape, lin, False, angular_deflection, True)
+        # each component meshed at its own REAL size (cad/occ_box.mesh_to_size)
+        mesh_to_size(shape, 1.0 / 2500.0, angular_deflection, linear_deflection=linear_deflection)
         tris = _triangles_of(shape)
         if tris:
             solids[name or f"region_{index + 1}"] = tris

@@ -49,8 +49,9 @@ def test_a_run_is_interpreted_into_the_cards_and_lanes_a_user_sees(live):
     # A stage becoming active retires the one before it, so no lane is left open behind.
     assert [c[1] for c in calls if c[0] == "done"] == ["builder", "executor"]
 
-    verdict = next(c for c in calls if c[0] == "info" and "Verdict" in str(c[2]))
-    assert "meets your brief" in verdict[2] and verdict[3] is False, \
+    # the verdict reaches its lane as a verdict, so the lane's mark can never contradict it
+    verdict = next(c for c in calls if c[0] == "verdict")
+    assert verdict[1] == "reviewer" and verdict[2] is True and "meets your brief" in verdict[3], \
         "a PASS was worded or toned as a failure"
     assert not any("closing" in str(c) for c in calls), \
         "`closing` drew a card - the result card owns that text"
@@ -129,9 +130,10 @@ def test_the_browser_can_render_everything_the_backend_publishes(live, event_voc
         "a stage the UI has no word for must degrade to English, not require a UI release"
 
 
-def test_a_tool_call_is_labelled_TOOL_CALL_and_reasoning_fills_one_card(live):
-    # What the label SAYS, read off the rendered page rather than the source. The tag is uppercased
-    # by the stylesheet, so the text a user sees is not the text the template holds.
+def test_a_tool_call_is_labelled_tool_call_and_reasoning_fills_one_card(live):
+    # What the label SAYS, read off the rendered page rather than the source. A stylesheet can
+    # uppercase the tag, so the text a user sees is not always the text the template holds; the
+    # console sets its labels in sentence case, so it reads "tool call".
     out = live.evaluate("""(async () => {
       const { Stage } = await import('/static/js/render/stage.js');
       Stage.mount();                       // a clean stage, in the page's own #stage element
@@ -149,7 +151,7 @@ def test_a_tool_call_is_labelled_TOOL_CALL_and_reasoning_fills_one_card(live):
       return {shown, cards: cards.length,
               body: cards.length ? cards[cards.length-1].querySelector('.body').textContent : ''};
     })()""")
-    assert out["shown"] == "TOOL CALL", f"a tool call is labelled {out['shown']!r}"
+    assert out["shown"] == "tool call", f"a tool call is labelled {out['shown']!r}"
     assert out["cards"] == 1, f"streamed reasoning drew {out['cards']} cards instead of filling one"
     assert out["body"] == "Checking the budget."
 

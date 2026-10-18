@@ -146,9 +146,12 @@ def _final_result_episode(payload: dict) -> dict:
 
 
 def _engine_select_episode(payload: dict) -> dict:
-    return {"agent": "engine_select", "kind": "deterministic",
-            "decision": {"chosen": payload.get("chosen", ""),
-                         "source": payload.get("source", "")}}
+    decision = {"chosen": payload.get("chosen", ""), "source": payload.get("source", "")}
+    if payload.get("source") == "fallback":
+        # a ladder switch: which engine it left and the failure that moved it - the pair a
+        # learner needs to tell which shapes need which rung
+        decision.update({"from": payload.get("from", ""), "because": payload.get("because", "")})
+    return {"agent": "engine_select", "kind": "deterministic", "decision": decision}
 
 
 def _executor_episode(payload: dict, attempt: int) -> dict:

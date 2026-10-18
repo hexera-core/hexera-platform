@@ -123,3 +123,154 @@ def write_step_of_units(path: Path, unit: str, units: float = SIDE) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     w.Write(str(path))
     return path
+
+
+def write_open_shell_step(path: Path, unit: str = "MM", side: float = SIDE) -> Path:
+    """A STEP that OpenCASCADE genuinely calls INVALID: a box with one face missing.
+
+    THE BROKEN FIXTURE THIS SUITE SAID COULD NOT BE AUTHORED. The earlier claim - that every shape
+    the kernel's constructors build is sound by construction - is wrong, and this is the
+    counter-example: build a box, sew five of its six faces into a shell, and declare that shell a
+    solid. BRepCheck_Analyzer reports IsValid() == False, and ShapeAnalysis_FreeBounds localises
+    the opening to the four edges that bounded the face that is gone.
+
+    It is a REAL defect class, not a contrivance: a surface model exported without one patch, or a
+    translation that dropped a face, arrives looking exactly like this. What it is not is a
+    substitute for a licensed customer file - it has one clean defect, and real files have many
+    interacting ones.
+    """
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeSolid, BRepBuilderAPI_Sewing
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.Interface import Interface_Static
+    from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    box = BRepPrimAPI_MakeBox(side, side, side).Shape()
+    faces = []
+    explorer = TopExp_Explorer(box, TopAbs_FACE)
+    while explorer.More():
+        faces.append(TopoDS.Face_s(explorer.Current()))
+        explorer.Next()
+
+    sewing = BRepBuilderAPI_Sewing(1e-6)
+    for face in faces[:-1]:          # every face but one
+        sewing.Add(face)
+    sewing.Perform()
+    maker = BRepBuilderAPI_MakeSolid()
+    maker.Add(TopoDS.Shell_s(sewing.SewedShape()))
+    holed = maker.Solid()
+
+    writer = STEPControl_Writer()
+    if not Interface_Static.SetCVal_s("write.step.unit", unit):
+        raise RuntimeError(
+            f"OCC refused write.step.unit={unit!r}; the STEP controller is not initialised, so "
+            "this fixture would silently emit millimetres instead.")
+    writer.Transfer(holed, STEPControl_AsIs)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    writer.Write(str(path))
+    return path
+
+
+def write_missing_bore_wall_step(path: Path, unit: str = "MM") -> Path:
+    """A drilled plate whose BORE WALL is missing: two rims, and a trap for a hole-filler.
+
+    THE PART-RUINING CASE, as a fixture. A 100x100x10 plate with an 8 mm through-hole, exported
+    without the cylindrical face, leaves two planar circular loops of identical span - each one
+    indistinguishable from a small fillable hole. Patching both seals the bore and hands the
+    customer back a plate with no bolt hole, which is a ruined part rather than a repaired one.
+
+    It exists so that the discriminator protecting against exactly that is tested on the real
+    geometry rather than on a description of it.
+    """
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder
+    from OCP.GeomAbs import GeomAbs_Cylinder
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+    from OCP.Interface import Interface_Static
+    from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    plate = BRepPrimAPI_MakeBox(100.0, 100.0, 10.0).Shape()
+    bore = BRepPrimAPI_MakeCylinder(
+        gp_Ax2(gp_Pnt(50, 50, -1), gp_Dir(0, 0, 1)), 8.0, 12.0).Shape()
+    drilled = BRepAlgoAPI_Cut(plate, bore).Shape()
+
+    keep = []
+    explorer = TopExp_Explorer(drilled, TopAbs_FACE)
+    while explorer.More():
+        face = TopoDS.Face_s(explorer.Current())
+        if BRepAdaptor_Surface(face).GetType() != GeomAbs_Cylinder:
+            keep.append(face)          # every face except the bore wall
+        explorer.Next()
+
+    sewing = BRepBuilderAPI_Sewing(1e-6)
+    for face in keep:
+        sewing.Add(face)
+    sewing.Perform()
+
+    writer = STEPControl_Writer()
+    if not Interface_Static.SetCVal_s("write.step.unit", unit):
+        raise RuntimeError(
+            f"OCC refused write.step.unit={unit!r}; the STEP controller is not initialised, so "
+            "this fixture would silently emit millimetres instead.")
+    writer.Transfer(sewing.SewedShape(), STEPControl_AsIs)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    writer.Write(str(path))
+    return path
+
+
+def write_mixed_assembly_step(path: Path, unit: str = "MM", side: float = SIDE) -> Path:
+    """One sound SOLID body beside a body that is only loose faces, in one STEP assembly.
+
+    THE CASE A WHOLE-SHAPE JUDGEMENT GETS WRONG. Sewing an assembly that already contains a solid
+    hands back a shell and the solid is gone, so the repair must not sew the assembly. But the
+    second body here is what sewing exists for: six faces at the same place as a box, never joined
+    into a shell, which is how surface exports and translated assemblies routinely arrive. Judge
+    the assembly as one shape and you must either destroy the solid or leave the loose body loose.
+
+    Real, not contrived: a fabricated part and a bought-in surface model in the same STEP is an
+    ordinary customer upload.
+    """
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.gp import gp_Pnt
+    from OCP.Interface import Interface_Static
+    from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS, TopoDS_Compound
+
+    solid = BRepPrimAPI_MakeBox(side, side, side).Shape()
+    # the second body, offset so the two do not touch: its faces are added INDIVIDUALLY, so the
+    # body has no shell and no solid - exactly what sewing is for
+    loose = BRepPrimAPI_MakeBox(gp_Pnt(side * 2, 0.0, 0.0),
+                                gp_Pnt(side * 3, side, side)).Shape()
+
+    builder = BRep_Builder()
+    compound = TopoDS_Compound()
+    builder.MakeCompound(compound)
+    builder.Add(compound, solid)
+
+    loose_body = TopoDS_Compound()
+    builder.MakeCompound(loose_body)
+    explorer = TopExp_Explorer(loose, TopAbs_FACE)
+    while explorer.More():
+        builder.Add(loose_body, TopoDS.Face_s(explorer.Current()))
+        explorer.Next()
+    builder.Add(compound, loose_body)
+
+    writer = STEPControl_Writer()
+    if not Interface_Static.SetCVal_s("write.step.unit", unit):
+        raise RuntimeError(
+            f"OCC refused write.step.unit={unit!r}; the STEP controller is not initialised, so "
+            "this fixture would silently emit millimetres instead.")
+    writer.Transfer(compound, STEPControl_AsIs)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    writer.Write(str(path))
+    return path

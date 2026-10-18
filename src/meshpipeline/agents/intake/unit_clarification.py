@@ -20,6 +20,7 @@ from meshpipeline.contracts.unit_plausibility import (
     expected_from_words,
     length_words,
     proposed_unit,
+    suggest,
 )
 
 #: Asked once, when a session's geometry has no confirmed scale and the part was not measured.
@@ -52,6 +53,43 @@ _NEGATED_BEFORE = re.compile(r"\b(?:not|no|isn'?t|aren'?t|never|nor|rather than|
 
 #: What confirms a proposed unit: the whole message, nothing else in it. A sentence that merely
 #: contains "yes" is not an answer to a question about scale.
+#: A unit word typed with one slip ("metrees", "metrse", "milimetres", "inchs") is that unit. Only
+#: the long spellings are repaired: "mm", "cm", "m" and "in" are too short to tell a slip from
+#: another word.
+_UNIT_SPELLINGS = ("millimetres", "millimeters", "millimetre", "millimeter", "centimetres", "centimeters",
+                   "centimetre", "centimeter", "metres", "meters", "metre", "meter", "inches", "inch")
+_LONG_WORD = re.compile(r"[a-z]{4,}")
+
+
+#: Real words one slip from a unit spelling, never read as one.
+_NOT_UNITS = frozenset({"inched", "matters", "meteors", "centres", "centred", "metes", "meres", "mites"})
+
+
+def _respelled(low: str) -> str:
+    """The text with each word one slip from a unit spelling written as that spelling."""
+    from meshpipeline.agents.intake.consent import one_slip
+
+    def slip(w: str, u: str) -> bool:
+        # a letter too many only when it doubles one ("metrees"): "meteor" is not "meter"
+        if len(w) == len(u) + 1:
+            return any(w[:i] + w[i + 1:] == u and w[i] == w[i - 1] for i in range(1, len(w)))
+        # two neighbours swapped ("metrse") at any length; a letter dropped or changed only in a
+        # word of six letters or more - "mere", "metro" and "inched" are words, not slips
+        if len(w) == len(u) and sorted(w) == sorted(u):
+            return one_slip(w, u)
+        if len(w) == len(u) - 1:                      # a letter dropped: "inchs", "metrs", not "mere"
+            return len(w) >= 5 and one_slip(w, u) and w not in _NOT_UNITS
+        return len(w) >= 6 and one_slip(w, u) and w not in _NOT_UNITS     # one changed: not "metro"
+
+    def fix(m: re.Match) -> str:
+        w = m.group(0)
+        if w in _UNIT_SPELLINGS:
+            return w
+        hits = [u for u in _UNIT_SPELLINGS if len(u) >= 5 and slip(w, u)]
+        return hits[0] if hits else w
+    return _LONG_WORD.sub(fix, low)
+
+
 _ASSENT = frozenset({"ok", "okay", "yes", "yep", "yeah", "sure", "fine", "correct", "right",
                      "that's right", "thats right", "go on", "go ahead", "confirmed", "confirm",
                      "yes please", "ok go", "sounds right", "looks right", "agreed", "y"})
@@ -68,32 +106,65 @@ def size_hint(size_mm) -> str:
         f"{_length_words(longest * scale_to_metres(u))} if {_UNIT_WORDS[u]}" for u in _CANDIDATES) + "."
 
 
-def proposal_for(size_mm, words: str = "") -> LengthUnit:
-    """The unit the question proposes for a measured part: millimetres, unless that makes it
-    implausible - by size alone (a 1.04-unit car read as 1 mm) or by what the user said it is
-    (a "city block" 229 mm long) - and another unit does not."""
+def mentions_unit(message: str) -> bool:
+    """Whether the message names any unit at all - to take, to reject or to doubt."""
+    low = _respelled(str(message or "").lower())
+    return bool(_UNIT_ANYWHERE.search(low))
+
+
+def believable(size_mm, unit: LengthUnit, words: str = "") -> bool:
+    """Whether the part is believable in `unit`: nothing measured yet (there is nothing to doubt it
+    with), or the size under it raises no other reading - the rule the stage uses for a unit the
+    file declares, with what the user says the part is speaking first."""
+    if not size_mm:
+        return True
+    return suggest(max(float(v) for v in size_mm), unit, declared=True,
+                   expected=expected_from_words(words)) is None
+
+
+def proposal_for(size_mm, words: str = "", inference: dict | None = None) -> LengthUnit:
+    """The unit the question proposes for a measured part: the check's reading of what the part
+    is (`inference`: its shape and flow - a 4.7-unit car-like body on the ground is 4.7 m - and
+    the naming's estimate), when there is one; else millimetres, unless that makes it implausible
+    - by size alone (a 1.04-unit car read as 1 mm) or by what the user said it is (a "city block"
+    229 mm long) - and another unit does not."""
+    if inference:
+        try:
+            return LengthUnit(str(inference.get("unit")))
+        except ValueError:
+            pass
     if not size_mm:
         return PROPOSED
     return proposed_unit(max(float(v) for v in size_mm), expected_from_words(words))
 
 
-def question_for(size_mm, proposal: LengthUnit | None = None) -> str:
-    """The unit question. With the part's measured size in hand it proposes a unit - millimetres
-    unless the size says otherwise - and shows how long the part would be in each unit, so the
-    user can tell at a glance which one their file is in and a plain "ok" confirms the proposal.
-    Without a size it is the plain question: nothing is proposed that the user cannot check."""
+#: What the question adds after the reading, by how sure the reading is.
+_SURE = {"high": "", "medium": " I am fairly, not fully, sure of that.",
+         "low": " The shape alone does not settle it, so please check."}
+
+
+def question_for(size_mm, proposal: LengthUnit | None = None, inference: dict | None = None) -> str:
+    """The unit question. With the part's measured size in hand it proposes a unit - the check's
+    reading of what the part is when it has one ("This reads as a car-like body on the ground,
+    4.7 m long - metres?"), else millimetres unless the size says otherwise - and shows how long
+    the part would be in each unit, so the user can tell at a glance which one their file is in
+    and a plain "ok" confirms the proposal. Never a default taken in silence. Without a size it
+    is the plain question: nothing is proposed that the user cannot check."""
     if not size_mm:
         return QUESTION
     take = proposal or PROPOSED
+    reading = ""
+    if inference and str(inference.get("unit")) == take.value and inference.get("words"):
+        reading = f"{inference['words']}{_SURE.get(str(inference.get('confidence')), '')} "
     return ("This file does not say what one unit of its coordinates means, and I need to know "
-            f"before meshing. {size_hint(size_mm)} I'll take {_UNIT_WORDS[take]} - say ok, or "
+            f"before meshing. {reading}{size_hint(size_mm)} I'll take {_UNIT_WORDS[take]} - say ok, or "
             "name the unit: millimetres, centimetres, metres, or inches.")
 
 
-def before_run(size_mm, proposal: LengthUnit | None) -> str:
+def before_run(size_mm, proposal: LengthUnit | None, inference: dict | None = None) -> str:
     """The question once more, when the user approves a run while it is still open - with the
     proposal when the part was measured, and why it cannot wait."""
-    body = question_for(size_mm, proposal)
+    body = question_for(size_mm, proposal, inference)
     if not size_mm and proposal is not None:
         body += f" Or say ok to take {_UNIT_WORDS[proposal]}."
     return "One thing before I start the run. " + body
@@ -132,7 +203,11 @@ def classify(message: str, proposal: LengthUnit | None = None) -> LengthUnit | N
         return parse_unit(text)
     except UnitResolutionError:
         pass
-    low = text.lower()
+    low = _respelled(text.lower())
+    try:
+        return parse_unit(low)                  # a bare unit word typed with a slip: "metrse"
+    except UnitResolutionError:
+        pass
     named = {parse_unit(word) for word in _UNIT_ANYWHERE.findall(low)}
     if len(named) == 1 and not _SIZE_BEFORE.search(low) and not _NEGATED_BEFORE.search(low):
         return named.pop()
@@ -144,10 +219,11 @@ def classify(message: str, proposal: LengthUnit | None = None) -> LengthUnit | N
 #: A sentence that says what unit the FILE is in, unasked: "the file is in metres", "it's in
 #: inches", "the units are mm", "the model was drawn in cm". The subject has to be the file, its
 #: numbers or "it"; a speed ("metres per second") and a size ("117 metres long") are not a unit.
+#: "The file uses metres" says it as plainly as "the file is in metres".
 _SUBJECT = (r"(?:file|geometry|model|cad|step|stl|obj|vtp|iges|part|drawing|coordinates?|numbers|"
             r"dimensions|sizes|units?|scale|it|everything|this|that|they)")
 _FILLER = r"(?:all|actually|really|definitely|drawn|modell?ed|exported|saved|given|written|made)"
-_STATES = re.compile(r"\b" + _SUBJECT + r"(?:'s|'re|\s+(?:is|are|was|were))?\s+(?:" + _FILLER + r"\s+)*"
+_STATES = re.compile(r"\b" + _SUBJECT + r"(?:'s|'re|\s+(?:is|are|was|were|uses|used))?\s+(?:" + _FILLER + r"\s+)*"
                      r"(?:in\s+)?(?:the\s+)?(" + _UNIT_WORD + r")\b(?!\s*(?:per\b|/))")
 _WORD = re.compile(r"[a-z0-9']+")
 _UNIT_ONLY = re.compile(_UNIT_WORD)
@@ -177,13 +253,13 @@ def stated_unit(message: str) -> LengthUnit | None:
     naming exactly one ("metres, not millimetres") counts too. A question ("is it in metres?"),
     a negation, a speed or a size names nothing."""
     text = str(message or "").strip()
-    low = text.lower()
+    low = _respelled(text.lower())
     # A QUESTION OR A DOUBT CHANGES NOTHING, with or without its question mark: "is the file in
     # metres", "not sure if it's in metres" - this reply records a unit and re-reads every size.
     if not text or "?" in text or _ASKS.match(low) or _UNSURE.search(low):
         return None
     try:
-        return parse_unit(text)
+        return parse_unit(low)
     except UnitResolutionError:
         pass
     rejected = {parse_unit(w) for w in re.findall(r"\b(?:not|no|isn'?t|aren'?t|never|rather than|instead of)\s+"
@@ -200,6 +276,26 @@ def stated_unit(message: str) -> LengthUnit | None:
     if not rest and len(named) == 1 and not re.search(r"\b" + _UNIT_WORD + r"\s*(?:per\b|/)", low):
         return named.pop()
     return None
+
+
+#: The words a sentence that only says what unit the file is in is made of, besides the unit.
+_UNIT_SENTENCE_WORDS = _REPLY_FILLER | frozenset({
+    "file", "geometry", "model", "cad", "step", "part", "drawing", "coordinate", "coordinates",
+    "numbers", "dimensions", "sizes", "unit", "units", "scale", "everything", "this", "that",
+    "they", "was", "were", "uses", "used", "drawn", "modelled", "modeled", "exported", "saved",
+    "given", "written", "made", "ecxml", "a", "an", "please", "just", "think", "says", "say",
+    # courtesy carries no request: "the file is in metres, thanks"
+    "thanks", "thank", "you", "cheers", "fyi", "btw", "hi", "hello"})
+
+
+def only_states_unit(message: str) -> bool:
+    """Whether the message says what unit the file is in and nothing else ("metres", "the file
+    is in metres, not mm"). "The file is in metres, and make the mesh finer" asks for more: a
+    turn that answers only the unit must not swallow the rest."""
+    low = _respelled(str(message or "").lower())
+    rest = [w for w in _WORD.findall(low)
+            if w not in _UNIT_SENTENCE_WORDS and not _UNIT_ONLY.fullmatch(w)]
+    return not rest and bool(_UNIT_ANYWHERE.search(low))
 
 
 def asked(intake_gate, proposal: LengthUnit | None = None) -> dict:

@@ -12,6 +12,9 @@ BUILDER_RETURN_KEYS = frozenset({
     # What the builder DECLARES it changed per engineer-flagged region. A claim the
     # post-rebuild review measures for itself - never a substitute for that review.
     "builder_flag_responses",
+    # A deliberate stop (driver_run.STOP_*): this turn built nothing because another attempt
+    # cannot change the outcome. Written only by the stop path in agent.py.
+    "builder_stop",
 })
 
 
@@ -26,6 +29,7 @@ class TurnPatch:
     noop_count: int = 0
     api_failure: str = ""
     flag_responses: list | None = None
+    stop: str = ""
 
     def state(self) -> dict:
         fields = {
@@ -46,6 +50,9 @@ class TurnPatch:
         # declaration a previous attempt of the same dispute already made.
         if self.flag_responses:
             fields["builder_flag_responses"] = list(self.flag_responses)
+        # Omitted on every ordinary turn: a stop ends the run, so nothing can follow it to clear.
+        if self.stop:
+            fields["builder_stop"] = self.stop
         return builder_state(**fields)
 
 

@@ -115,7 +115,9 @@ def test_every_config_knob_has_a_reader():
 def test_intake_prompt_blocks_are_registered_and_composed():
     import meshpipeline.agents.intake.agent as intake
     names = [b[0] for b in intake.INTAKE_PROMPT_BLOCKS]
-    assert names == ["quality_criteria", "engine_first", "geometry_check", "propose_first"]
+    assert names == ["quality_criteria", "engine_first", "geometry_check", "thermal_model",
+                     "propose_first",
+                     "ask_plainly", "plain_text"]
     for name, purpose, build in intake.INTAKE_PROMPT_BLOCKS:
         assert purpose and callable(build)
     # composition uses exactly the registry (no stray system += in run_intake)
@@ -132,7 +134,7 @@ _MF_DYNAMIC = {"patches", "patch_types", "patch_face_counts",
                "engine_params"}
 # Structures documented wholly in their own registry entry - not walked into.
 _MF_OPAQUE = {"quality_criteria.criteria", "geometry.domain_box",
-              "geometry.body_box", "validation.warnings"}
+              "geometry.body_box", "geometry.symmetry_faces", "validation.warnings"}
 
 
 def _walk_manifest(node, prefix: str, out: set) -> None:

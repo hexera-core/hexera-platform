@@ -260,11 +260,15 @@ GCP_MESH_BUCKET=${MESH_BUCKET}
 # the mesh runtime identity (ID; email derived <id>@<project>.iam.gserviceaccount.com)
 MESH_SERVICE_ACCOUNT=${MESH_SA}
 
-# mesh job sizing. 8 vCPU / 16 GiB is what the engine assessments ran on (a 5 to 7 M-hex cfMesh
-# fill or a 4 M-tet VMTK fill needs more than 8 GiB); a deploy may override any of the three
-# from its environment. generated.prod.env pins prod's own values and is not affected.
+# mesh job sizing. 8 vCPU is what the engine assessments ran on; memory is 32 GiB, the most a
+# Cloud Run job allows at 8 vCPU. 16 GiB OOM-killed snappyHexMesh (exit 137) twice on the
+# shell-and-tube rehearsal of 2026-09-30, at about 30 cells across the bore. snappy runs one rank
+# per 3 GiB up to the vCPU count (engines/snappy/native.py), so 32 GiB runs 8 ranks at 4 GiB each
+# where 16 GiB ran 5 at 3.2 GiB. Billed only while a mesh runs: about 0.12 USD more per mesh-hour.
+# A deploy may override any of the three from its environment. generated.prod.env pins prod's own
+# values and is not affected.
 MESH_CPU=${MESH_CPU:-8}
-MESH_MEMORY=${MESH_MEMORY:-16Gi}
+MESH_MEMORY=${MESH_MEMORY:-32Gi}
 MESH_TIMEOUT_SECONDS=${MESH_TIMEOUT_SECONDS:-14400}
 
 # The APPLICATION image, written by scripts/promote-release.sh as the validated digest. The API

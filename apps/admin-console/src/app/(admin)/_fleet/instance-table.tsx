@@ -8,8 +8,9 @@ import { ActionForm } from "./action-form";
 //
 // THE DELETE CONFIRMATION IS BLIND, AND SAYS SO. This console holds no database connection, so it
 // cannot read job leases and cannot tell an operator that the instance they are about to remove is
-// four hours into a mesh job. There is also no drain contract - the worker is not asked to finish
-// first. Both facts are printed next to the button rather than left to be discovered.
+// four hours into a mesh job. What deleting it does to that job is printed next to the button: the
+// worker hands it back to the queue as it shuts down (deploy/gcp/worker/shutdown.sh), and another
+// worker starts it again from the beginning - hours of work repeated, not lost.
 //
 // CPU and memory come from Monitoring keyed by the numeric instance id, not the name. Memory is
 // published by the Ops Agent; a fleet without it has no series, which renders as an unknown rather
@@ -121,8 +122,8 @@ export function InstanceTable({
                     <ActionForm danger operation="instance.delete" submitLabel="Delete instance">
                       <input name="instance" type="hidden" value={row.name} />
                       <p className="admin-empty">
-                        Not drained. Work in flight is lost — this console cannot see it. Type the
-                        name to confirm.
+                        A job running here goes back to the queue and starts again on another
+                        worker, from the beginning. Type the name to confirm.
                       </p>
                       <label className="admin-field-input">
                         <span>Instance name</span>

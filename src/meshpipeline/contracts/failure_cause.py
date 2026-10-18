@@ -20,7 +20,9 @@ ONE VOCABULARY, THREE LEVELS, each naming a different thing and none restating a
   of the whole run (gate_failed, input_rejected, worker_lost, timed_out, ...);
 * the failure CLASS (errors.FailureClass) - whose problem a failure is, and the one sentence for
   the categories that class owns (a refused input, a lost worker, a provider outage);
-* the failure CAUSE (here) - WHICH gate failure, when the category is gate_failed.
+* the failure CAUSE (here) - WHICH gate failure, when the category is gate_failed; and, when the
+  review of a mesh did not conclude (internal_pipeline_failure), that it did not and why - so our
+  own failure still names what failed instead of "something went wrong on our side".
 Where a cause and a class describe the same thing, the class's sentence is the one said: a refused
 geometry is worded by errors.DOMAIN_REJECTED, never a second time here.
 """
@@ -61,8 +63,25 @@ class FailureCause(StrEnum):
     #: The mesher stopped before it wrote a complete mesh, or the mesh's record was never
     #: written. Facts: engine.
     ENGINE_CRASHED = "engine_crashed"
+    #: NO MESHER WAS STARTED in the attempt: the engine's own preparation stopped before the
+    #: native run (the record of native runs says so - contracts/mesh_execution.native_runs). It
+    #: used to be told as a crash (job d20ad762). Facts: engine, deterministic (the engine's
+    #: build is a deterministic driver, so the same inputs stop the same way again).
+    NOT_BUILT = "not_built"
+    #: The mesher RAN OUT OF TIME: its run did not come back within the run's time limit. Not a
+    #: crash and not an outage - the mesh was too big or too slow. Facts: engine.
+    ENGINE_TIMED_OUT = "engine_timed_out"
+    #: The mesh run did not complete ON OUR SIDE: the service that runs the mesher failed to take
+    #: or return it. Never a statement about the geometry. Facts: engine.
+    RUN_INFRASTRUCTURE = "run_infrastructure"
     #: The input geometry was refused before any mesh was built. Facts: reason.
     GEOMETRY_REJECTED = "geometry_rejected"
+    #: The review of the mesh stopped before it reached a verdict - our failure, never a statement
+    #: about the mesh. Job 53bbce4b built a mesh that passed every gate and a trial solve, the
+    #: review stalled, and the user was told only "something went wrong on our side". Facts:
+    #: marker (which way the review stopped), validated (the executor validated the mesh first),
+    #: reruns (how many times the review was already started again on the same mesh).
+    REVIEW_INCOMPLETE = "review_incomplete"
 
 
 #: The causes another builder attempt cannot change. A contract mismatch is authored from the
@@ -102,14 +121,99 @@ def retry_can_help(cause: object, facts: Mapping | None = None) -> bool:
     and every pre-flight refusal). Where the builder model chooses them (gmsh's physical groups,
     the multi-region case's regions) or the geometry staging binds them (vmtk's openings), the
     next attempt may name them differently, so those gates mark the mismatch `retry_may_fix` and
-    it keeps its retries - when in doubt, the ladder stays as it was."""
+    it keeps its retries - when in doubt, the ladder stays as it was.
+
+    And one the other way: a mesh too coarse across its passage, whose gate worked out that even
+    the cheapest rebuild reaching the floor (`rebuild_cells`, the cell count grown by the square of
+    the refinement) is over the job's `cell_limit`. Another attempt can only come out too big or
+    too coarse again, so it is not started."""
     c = as_cause(cause)
     if c is None:
         return True
     if (c is FailureCause.CONTRACT_MISMATCH and isinstance(facts, Mapping)
             and facts.get("retry_may_fix")):
         return True
+    if c is FailureCause.UNDER_RESOLVED and rebuild_over_limit(facts):
+        return False
+    if c is FailureCause.NOT_BUILT:
+        # a deterministic driver that stopped before its mesher stops the same way on the same
+        # inputs (job d20ad762 ran the identical refusal twice); a model-led build may not
+        return not (isinstance(facts, Mapping) and facts.get("deterministic"))
     return c not in _NOT_RETRYABLE
+
+
+# #
+# WHY AN ENGINE STOPPED - the six classes every cause belongs to
+# #
+
+class StopClass(StrEnum):
+    """Why an engine stopped, in the six classes a user can act on. Each cause above belongs to
+    exactly one (stop_class_of); the review and the infrastructure are named by the run itself."""
+    #: the engine does not take this input or flow, by design - nothing was built
+    REFUSED_BY_DESIGN = "refused_by_design"
+    #: the mesher started and stopped without a complete mesh
+    MESHER_CRASHED = "mesher_crashed"
+    #: the run ran out of time, or the mesh came out over the cell budget
+    OUT_OF_BUDGET = "out_of_budget"
+    #: a mesh came out and failed one of its checks
+    CHECK_FAILED = "check_failed"
+    #: a mesh passed its checks and the review asked for a rebuild
+    REVIEW_REBUILD = "review_rebuild"
+    #: our side failed - the service that runs the mesher, or the review's own service
+    INFRASTRUCTURE = "infrastructure"
+
+
+_STOP_CLASS: dict[FailureCause, StopClass] = {
+    FailureCause.GEOMETRY_REJECTED: StopClass.REFUSED_BY_DESIGN,
+    FailureCause.NOT_BUILT: StopClass.REFUSED_BY_DESIGN,
+    FailureCause.ENGINE_CRASHED: StopClass.MESHER_CRASHED,
+    FailureCause.ENGINE_TIMED_OUT: StopClass.OUT_OF_BUDGET,
+    FailureCause.CELL_BUDGET: StopClass.OUT_OF_BUDGET,
+    FailureCause.CONTRACT_MISMATCH: StopClass.CHECK_FAILED,
+    FailureCause.PATCH_NOT_CAPTURED: StopClass.CHECK_FAILED,
+    FailureCause.BOUNDARY_TYPE: StopClass.CHECK_FAILED,
+    FailureCause.MESH_QUALITY: StopClass.CHECK_FAILED,
+    FailureCause.UNDER_RESOLVED: StopClass.CHECK_FAILED,
+    FailureCause.DOMAIN_EXTENT: StopClass.CHECK_FAILED,
+    FailureCause.NOT_SOLVABLE: StopClass.CHECK_FAILED,
+    FailureCause.REGION_SPLIT: StopClass.CHECK_FAILED,
+    FailureCause.RUN_INFRASTRUCTURE: StopClass.INFRASTRUCTURE,
+    FailureCause.REVIEW_INCOMPLETE: StopClass.INFRASTRUCTURE,
+}
+
+#: The words a user reads for each class - the half-sentence the attempt record carries.
+STOP_CLASS_WORDS: dict[StopClass, str] = {
+    StopClass.REFUSED_BY_DESIGN: "refused before building",
+    StopClass.MESHER_CRASHED: "the mesher stopped without a mesh",
+    StopClass.OUT_OF_BUDGET: "ran out of time or cells",
+    StopClass.CHECK_FAILED: "the mesh failed a check",
+    StopClass.REVIEW_REBUILD: "the review asked for a rebuild",
+    StopClass.INFRASTRUCTURE: "a failure on our side",
+}
+
+
+def stop_class_of(cause: object, *, review: bool = False,
+                  infrastructure: bool = False) -> StopClass | None:
+    """The class of a recorded cause - `review` for a reviewer's rebuild request, and
+    `infrastructure` for a provider or service failure the run recorded instead of a cause -
+    or None when nothing says why."""
+    if infrastructure:
+        return StopClass.INFRASTRUCTURE
+    if review:
+        return StopClass.REVIEW_REBUILD
+    c = as_cause(cause)
+    return _STOP_CLASS.get(c) if c is not None else None
+
+
+def rebuild_over_limit(facts: Mapping | None) -> bool:
+    """Whether an under-resolved mesh's facts say no rebuild within the cell limit reaches the
+    floor. False whenever either figure is missing - when in doubt, the retry stays."""
+    if not isinstance(facts, Mapping):
+        return False
+    need, limit = _as_number(facts.get("rebuild_cells")), _as_number(facts.get("cell_limit"))
+    if need is None or limit is None:
+        return False
+    return limit > 0 and need > limit
 
 
 # #
@@ -170,7 +274,8 @@ def clean_reason(reason: object) -> str:
     text = " ".join(str(reason or "").split())
     while text.startswith("[") and "]" in text:
         text = text.split("]", 1)[1].strip()
-    return text[:400].rstrip(".")
+    # room for a refusal that says where the defect is and what to do about it
+    return text[:600].rstrip(".")
 
 
 def _contract(f: Mapping) -> tuple[str, str]:
@@ -239,14 +344,34 @@ def _quality(f: Mapping) -> tuple[str, str]:
             "example a finer mesh near sharp edges, or fewer boundary layers.")
 
 
+def _touch_phrase(m: Mapping, d: object) -> tuple[str, bool]:
+    """A box that touches the body, said plainly - and, when a symmetry plane is misplaced,
+    where it is and where it has to be. The flag says a symmetry plane is the cause."""
+    sp, sf, face = m.get("symmetry_patch"), m.get("symmetry_face"), m.get("face")
+    if not sp:
+        return f"the box touches the body on the {d} side", False
+    if m.get("crosses"):
+        return (f"the body crosses the symmetry plane '{sp}' on the {d} side, and a half model "
+                "has to lie wholly on one side of its cut"), True
+    if sf and sf == face:
+        return (f"the symmetry plane '{sp}' was put across the flow, on the {d} side, but a "
+                "half model is cut along the flow"), True
+    return (f"the box touches the body on the {d} side ({face}), but the symmetry plane "
+            f"'{sp}' is on the {sf} face - it has to be on the face the model was cut on"), True
+
+
 def _domain(f: Mapping) -> tuple[str, str]:
     bits: list[str] = []
+    misplaced = False
     for m in (f.get("misses") or []):
         if not isinstance(m, Mapping):
             continue
         d, req, meas = m.get("direction"), m.get("requested"), m.get("measured")
-        if isinstance(meas, (int, float)) and not isinstance(meas, bool) and meas <= 0:
-            bits.append(f"the box touches the body on the {d} side")
+        if m.get("symmetry_patch") or (isinstance(meas, (int, float))
+                                       and not isinstance(meas, bool) and meas <= 0):
+            phrase, sym = _touch_phrase(m, d)
+            bits.append(phrase)
+            misplaced = misplaced or sym
         elif isinstance(req, (int, float)) and isinstance(meas, (int, float)):
             bits.append(f"{d} is {float(meas):.3g} reference lengths where you asked for "
                         f"{float(req):g}")
@@ -254,8 +379,46 @@ def _domain(f: Mapping) -> tuple[str, str]:
             + (": " + "; ".join(bits) if bits else "") + ".")
     if f.get("before_meshing"):
         what += " We caught it before meshing, so no time was spent on a mesh."
+    if misplaced:
+        # running it again rebuilds the same box: the out is where the plane goes
+        return what, ("Tell me which face the model was cut on, so the symmetry plane goes "
+                      "there, or mesh the whole model without a symmetry plane.")
     return what, (f"You can run it again ({_RUN_AGAIN}), or change the far-field sizes you "
                   "asked for.")
+
+
+#: Why a review stopped, by the marker it ended with (agents/reviewer/loop_policy), in words.
+_REVIEW_STOPPED = {
+    "reviewer_stalled": "the reviewer stopped making progress before it reached a verdict",
+    "reviewer_exhausted": "the reviewer used up its time before it reached a verdict",
+    "reviewer_render_unavailable": ("the tool that draws the mesh for the reviewer was not "
+                                    "available"),
+    # also every pre-loop refusal: a malformed plan, a missing measurement or view or target
+    "reviewer_evidence_missing": "the review did not have everything it needs to judge the mesh",
+}
+
+
+def review_stopped_reason(marker: object) -> str:
+    """Why a review stopped without a verdict, in plain words, from the marker it ended with."""
+    return _REVIEW_STOPPED.get(str(marker or "").strip(),
+                               "the AI service that reviews the mesh was not available")
+
+
+def _review(f: Mapping) -> tuple[str, str]:
+    why = review_stopped_reason(f.get("marker"))
+    reruns = f.get("reruns")
+    n = int(reruns) if isinstance(reruns, int) and not isinstance(reruns, bool) else 0
+    if f.get("validated"):
+        what = ("Your mesh was built and passed every automatic check, but our final review of "
+                f"it did not finish: {why}.")
+    else:
+        what = f"Our review of the mesh could not run: {why}."
+    if n:
+        times = {1: "once", 2: "twice"}.get(n, f"{n} times")
+        what += f" We started the review again on the same mesh {times}, and it stopped again."
+    what += " That is on our side, not a problem with your geometry or your request."
+    return what, (f"You can run it again ({_RUN_AGAIN}) with the same request - nothing needs to "
+                  "change.")
 
 
 def describe(cause: object, facts: Mapping | None = None, *,
@@ -290,10 +453,24 @@ def describe(cause: object, facts: Mapping | None = None, *,
     if c is FailureCause.MESH_QUALITY:
         return _quality(f)
     if c is FailureCause.UNDER_RESOLVED:
-        x, n = f.get("cells_across"), f.get("needed")
-        what = ("The mesh is too coarse where the passage is narrowest"
-                + (f": about {_num(float(x))} cells across it, and it needs at least {_num(n)}"
-                   if isinstance(x, (int, float)) and n is not None else "") + ".")
+        x, n = _as_number(f.get("cells_across")), f.get("needed")
+        if f.get("scope") == "main":
+            # the side passages the flow can go round were set aside; the main way itself fell short
+            what = ("The mesh is too coarse in the passages the flow must go through"
+                    + (f": about {_num(x)} cells across them at the narrowest, and they "
+                       f"need at least {_num(n)}" if x is not None and n is not None else "")
+                    + ".")
+        else:
+            what = ("The mesh is too coarse where the passage is narrowest"
+                    + (f": about {_num(x)} cells across it, and it needs at least {_num(n)}"
+                       if x is not None and n is not None else "") + ".")
+        if rebuild_over_limit(f):
+            rebuild = _as_number(f.get("rebuild_cells")) or 0.0
+            allowed = _as_number(f.get("cell_limit")) or 0.0
+            what += (f" A mesh fine enough would need at least about {rebuild / 1e6:.2g} million "
+                     f"cells, more than the {allowed / 1e6:.2g} million one job may build.")
+            return what, ("You can try another mesher, or mesh a smaller part of the geometry "
+                          "where the passage is narrowest.")
         return what, f"You can run it again ({_RUN_AGAIN}), or ask for a finer mesh."
     if c is FailureCause.CELL_BUDGET:
         cells, limit = f.get("cells"), f.get("limit")
@@ -318,6 +495,45 @@ def describe(cause: object, facts: Mapping | None = None, *,
         return (f"The mesher{who} stopped before it finished writing the mesh, so there was no "
                 "complete mesh to check. This is usually on our side, not your geometry's.",
                 f"You can run it again: {_RUN_AGAIN}.")
+    if c is FailureCause.NOT_BUILT:
+        who = str(f.get("engine") or engine or "The engine")
+        reason = clean_reason(f.get("reason"))
+        what = (f"No mesh was built: {who} could not prepare its input from your file ({reason}), "
+                "so no mesher was started." if reason else
+                f"No mesh was built: {who} stopped while preparing the mesh, before the mesher "
+                "started, so there was nothing to check. The notes above say what it stopped on.")
+        if f.get("deterministic"):
+            return (what, "Running it again would stop the same way. Tell me what to change in "
+                          "this chat - the file, the boundaries or the engine.")
+        return what, f"You can run it again ({_RUN_AGAIN}), or tell me what to change first."
+    if c is FailureCause.ENGINE_TIMED_OUT:
+        who = f" ({f.get('engine') or engine})" if (f.get("engine") or engine) else ""
+        return (f"The mesher{who} ran out of time: its run did not finish within the time one "
+                "run may take, so no complete mesh came back.",
+                f"Ask for less detail (for example 'standard' instead of 'max') and {_RUN_AGAIN}.")
+    if c is FailureCause.RUN_INFRASTRUCTURE:
+        if f.get("result_uncollected"):
+            # the mesher RAN: the return trip failed. A result too large to bring back fails the
+            # same way, so the second remedy is said too
+            return ("The mesher ran, but its result could not be brought back from the service "
+                    "that runs it, so there was no mesh to check. That is our failure, not your "
+                    "geometry's.",
+                    f"You can run it again ({_RUN_AGAIN}). If it happens again, ask for less "
+                    "detail - a very large mesh can be too big to bring back.")
+        if f.get("stage") == "staging":
+            # agents/builder/attempt._record_staging_failure(ours=True): no mesher was started
+            who = str(f.get("engine") or engine or "The engine")
+            reason = clean_reason(f.get("reason"))
+            return (f"No mesh was built: preparing {who}'s input failed on our side"
+                    f"{f' ({reason})' if reason else ''}, so no mesher was started. That is our "
+                    "failure, not your geometry's.",
+                    f"You can run it again with nothing changed: {_RUN_AGAIN}.")
+        return ("The mesh run did not complete on our side: the service that runs the mesher "
+                "failed to take the job or to return its result. That is our failure, not your "
+                "geometry's or your settings'.",
+                f"You can run it again with nothing changed: {_RUN_AGAIN}.")
+    if c is FailureCause.REVIEW_INCOMPLETE:
+        return _review(f)
     if c is FailureCause.GEOMETRY_REJECTED:
         # ONE sentence for a refused input, and errors.py owns it (FailureClass.DOMAIN_REJECTED,
         # the class the input_rejected category renders): lead, the reason, the next step.
@@ -327,5 +543,6 @@ def describe(cause: object, facts: Mapping | None = None, *,
     return "", ""
 
 
-__all__ = ["RETRY_SKIPPED_NOTE", "SEAM_CAUSES", "FailureCause", "as_cause", "clean_reason",
-           "describe", "retry_can_help"]
+__all__ = ["RETRY_SKIPPED_NOTE", "SEAM_CAUSES", "STOP_CLASS_WORDS", "FailureCause", "StopClass",
+           "as_cause", "clean_reason", "describe", "rebuild_over_limit", "retry_can_help",
+           "review_stopped_reason", "stop_class_of"]

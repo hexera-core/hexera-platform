@@ -2,6 +2,7 @@
 # Boundaries: the reviewer node's five publication sites and their refusal; the verdict logic is a unit contract.
 from __future__ import annotations
 
+import base64
 import contextlib
 import json
 import os
@@ -62,8 +63,10 @@ class _Runtime:
         if fn == "submit_findings":
             return TypedToolResult(NOT_VIEWER_TOOL, None, False)
         tid = args.get("target_id") or args.get("patch_name") or ""
+        # each target looks different, so each view is a picture of its own
+        picture = base64.b64encode(tid.encode()).decode()
         frame = [{"type": "text", "text": "ok"},
-                 {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA"}}]
+                 {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{picture}"}}]
         if tid in self._ids:
             return TypedToolResult(frame, EvidenceItem(
                 evidence_id="s", seq=1, label="l", purpose="p", image_ref="/x.png",
@@ -231,11 +234,14 @@ async def test_the_review_opens_under_the_claim_it_was_given(verdict_run):
 
 
 async def test_the_inspection_image_is_published_from_its_own_site(verdict_run):
+    # The opening render, then one picture per view the reviewer took (it inspects both
+    # targets), every one from the same site and under the claim, each under its own id.
     shots = [r for r in verdict_run["seen"] if r["method"] == "screenshot"]
-    assert len(shots) == 1, f"the opening render published {len(shots)} images, not one"
-    assert shots[0]["fn"] == "_publish_inspection_image", shots[0]["fn"]
-    assert shots[0]["op_id"] == "opening-render:0"
-    assert shots[0]["own"] is not None
+    assert [r["op_id"] for r in shots] == ["opening-render:0", "review-render:0:1",
+                                           "review-render:0:2"], [r["op_id"] for r in shots]
+    for shot in shots:
+        assert shot["fn"] == "_publish_inspection_image", shot["fn"]
+        assert shot["own"] is not None
 
 
 async def test_a_safe_disclosure_deployment_publishes_no_inspection_image(monkeypatch, tmp_path):

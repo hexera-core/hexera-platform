@@ -128,6 +128,7 @@
 .status--ok::before{background:var(--ok)}
 .status--run::before{background:var(--accent)}
 .status--fail::before{background:var(--danger)}
+.status--warn::before{background:var(--warn)}
 
 .empty{padding:2.6rem 0;color:var(--text-faint);font-size:.88rem;line-height:1.75}
 

@@ -36,6 +36,16 @@ if REVIEWER_TOTAL_TIMEOUT_SECONDS <= 0:
         f"REVIEWER_TOTAL_TIMEOUT_SECONDS must be a positive number of seconds, got "
         f"{REVIEWER_TOTAL_TIMEOUT_SECONDS}")
 
+# REVIEW RERUNS (pipeline/graph.node_review_retry). A review that ends WITHOUT a verdict on a mesh
+# the executor already validated - the conversation stalled or ran out of rounds, the renderer fell
+# over, or the provider browned out - is started again on the SAME mesh instead of failing the job.
+# A rerun rebuilds nothing and spends none of the mesh-retry ladder: job 53bbce4b lost a 28-minute
+# mesh that had passed every gate and a trial solve to one review that stalled after seven rounds.
+# Counted per job. Kill switch: REVIEWER_RERUN_MAX=0. The backoff applies only to a transient
+# provider or dependency failure; a stalled review starts again at once.
+REVIEWER_RERUN_MAX: int = int(optional_env("REVIEWER_RERUN_MAX", "2"))
+REVIEWER_RERUN_BACKOFF_S: int = int(optional_env("REVIEWER_RERUN_BACKOFF_S", "90"))
+
 # the two reviewer ROUTES
 # The visual reviewer needs MULTIMODAL: it sends rendered views of the mesh, and its verdict is
 # a quality gate. gpt-5.6-terra's vision was probed live before this role was moved onto it

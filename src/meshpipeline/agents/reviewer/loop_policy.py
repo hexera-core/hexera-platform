@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -50,6 +51,23 @@ REVIEWER_NO_PROGRESS_THRESHOLD = 3
 # errors.py - "we could not judge the mesh", never a statement about the mesh.
 MARKER_EVIDENCE_MISSING = "reviewer_evidence_missing"
 MARKER_EXHAUSTED = "reviewer_exhausted"
+# The review loop RAN and stopped making progress (the no-progress threshold). Its own marker,
+# not reviewer_evidence_missing: that one also names the pre-loop refusals (a malformed plan,
+# missing deterministic evidence, absent targets), which the same inputs repeat every time, while
+# a stalled conversation is exactly what a fresh look at the same mesh can get past (job
+# 53bbce4b stalled after seven rounds on a mesh that had passed every gate). The pipeline reruns
+# the one and not the other, so they must be told apart.
+MARKER_STALLED = "reviewer_stalled"
+MARKER_RENDER_UNAVAILABLE = "reviewer_render_unavailable"
+
+# The non-verdicts a second review of the SAME mesh can change: the conversation stalled or ran
+# out of rounds, or the renderer fell over. A transient provider failure is also rerun, but that
+# is decided by its failure class (errors.FailureClass.is_retryable), not listed here.
+RERUNNABLE_MARKERS = frozenset({MARKER_STALLED, MARKER_EXHAUSTED, MARKER_RENDER_UNAVAILABLE})
+
+# Told about each view the viewer actually drew, with the tool result the model receives. The node
+# owns what that means (visual._LivePictures puts it on the live page); the policy only reports it.
+PictureSink = Callable[[Any], Awaitable[None]]
 
 
 @dataclass(frozen=True)
@@ -161,6 +179,7 @@ class ReviewLoopPolicy:
     # ordinary run, and then nothing below changes behaviour.
     user_dispute: Any = None
     dispute_phase: str = ""
+    on_picture: PictureSink | None = None
 
     # attempt-local accumulators
     submissions: int = 0
@@ -181,6 +200,9 @@ class ReviewLoopPolicy:
     _round_progressed: bool = False
     _progress_signature: str = ""
     _last_malformed_sig: str = ""      # the problems the last malformed payload was corrected for
+    # every viewer refusal already answered with its correction (see _refused_view)
+    _refusals_corrected: set = field(default_factory=set)
+    viewer_refusals: int = 0
 
     def __post_init__(self) -> None:
         self.required_axes = tuple(getattr(ax, "name", "") for ax in getattr(self.plan, "axes", ()))
@@ -219,8 +241,26 @@ class ReviewLoopPolicy:
         if typed.is_viewer_tool:
             eid = record_operation_evidence(self.ledger, typed.evidence, self.inventory,
                                             invocation.tool)
+            if _is_refusal(invocation.tool, typed):
+                self._refused_view(typed.content)
+            elif self.on_picture is not None:
+                await self.on_picture(typed.content)
             return ToolOutcome(content=_append_evidence_id(typed.content, eid))
         return ToolOutcome(content=f"Unknown tool: {invocation.tool}", accepted=False)
+
+    def _refused_view(self, content: Any) -> None:
+        # A VIEW THE VIEWER REFUSED IS CORRECTED, NOT STALLED ON - the rule _malformed_round
+        # applies to a malformed payload, for the same reason. The refusal names what cannot be
+        # shown and what can, so the first time a given refusal is said, saying it IS the round's
+        # progress. Only a refusal the model has already been given, asked for again, counts
+        # toward the stall. Without this, three looks at a boundary the viewer cannot draw ended
+        # a review with its round budget almost untouched (job 53bbce4b: 'farfield' from the
+        # front, the rear and the side, seven rounds of sixty, a mesh that had passed every gate).
+        self.viewer_refusals += 1
+        sig = _signature([_content_text(content)])
+        if sig not in self._refusals_corrected:
+            self._refusals_corrected.add(sig)
+            self._mark_progress(f"refusal-corrected:{sig}")
 
     # the submission path
     def _submit(self, args: dict) -> ToolOutcome:
@@ -395,8 +435,30 @@ class ReviewLoopPolicy:
             return None
         deficits = self.last_deficits
         if deficits is None:
-            return None
+            # Nothing submitted yet, so there are no deficits to name - but the stall counter runs
+            # all the same, and it used to run in silence: the model learned the review was over
+            # only when it was. Say it while there is still a round to act in.
+            return self._presubmission_correction(tally)
         return self._correction_body(deficits, unchanged=True, tally=tally, escalated=True)
+
+    def _presubmission_correction(self, tally: LoopTally) -> str:
+        usable = sorted(EvidenceSnapshot.of(self.ledger).usable)
+        remaining = tally.remaining_rounds(self.limits_)
+        lines = ["That round added no new usable evidence."]
+        if usable:
+            lines.append(f"Evidence you can already cite: {', '.join(usable)}. If it covers every "
+                         f"axis, call {SUBMIT_FINDINGS} now and cite those ids - a boundary the "
+                         "viewer cannot show (the outer domain box, a ground plane) is judged from "
+                         "the measured numbers and the metrics on file, not from a view.")
+        lines.append("Otherwise inspect something the viewer can show: the patches and slices "
+                     "named in the task context.")
+        if remaining is not None:
+            lines.append(f"Rounds remaining: {remaining}.")
+        threshold = self.limits_.no_progress_threshold
+        if threshold:
+            lines.append(f"{threshold} rounds in a row without new evidence end the review with "
+                         "no verdict.")
+        return "\n".join(lines)
 
     def _correction_body(self, deficits: AxisDeficits, *, unchanged: bool,
                          tally: LoopTally | None = None, escalated: bool = False) -> str:
@@ -495,6 +557,25 @@ class ReviewLoopPolicy:
             accepted_verdict=(self.accepted.verdict if self.accepted else None))
 
 
+def _is_refusal(tool: str, typed: Any) -> bool:
+    """Whether a rendering tool call was refused rather than drawn: either the runtime screened it
+    before the renderer (an unknown region, a patch with no review geometry - no evidence item at
+    all) or the renderer returned no image. A configuration call carries no image by design and is
+    never a refusal."""
+    from meshpipeline.agents.reviewer.render_runtime import VIEWER_RENDERING_TOOLS
+    if tool not in VIEWER_RENDERING_TOOLS:
+        return False
+    ev = getattr(typed, "evidence", None)
+    return ev is None or not getattr(ev, "image_ref", "")
+
+
+def _content_text(content: Any) -> str:
+    if isinstance(content, list):
+        return " ".join(str(i.get("text", "")) for i in content
+                        if isinstance(i, dict) and i.get("type") == "text")
+    return str(content or "")
+
+
 def _merge(a: EvidenceDelta, b: EvidenceDelta) -> EvidenceDelta:
     return EvidenceDelta(
         newly_usable=a.newly_usable | b.newly_usable,
@@ -506,10 +587,14 @@ def _merge(a: EvidenceDelta, b: EvidenceDelta) -> EvidenceDelta:
 
 __all__ = [
     "MARKER_EVIDENCE_MISSING",
+    "MARKER_RENDER_UNAVAILABLE",
+    "MARKER_STALLED",
+    "RERUNNABLE_MARKERS",
     "REVIEWER_NO_PROGRESS_THRESHOLD",
     "MARKER_EXHAUSTED",
     "SUBMIT_FINDINGS",
     "AxisDeficits",
+    "PictureSink",
     "ReviewLoopPolicy",
     "compute_deficits",
     "normalize_findings",

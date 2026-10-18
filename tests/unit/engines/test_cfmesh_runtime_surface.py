@@ -44,6 +44,8 @@ MUST_NOT_DECLARE: dict[str, str] = {
     "surface_capture_reference": "cfMesh does not body-fit a snapped wall to a reference CAD",
     "stage_declared":            "cfMesh does not open a CAD body at the declared ports before the "
                                  "builder starts (vmtk does); the builder hook is optional",
+    "native_surface_suffixes":   "cfMesh reads only STL: cad/staging converts every other surface "
+                                 "for it (vmtk declares .vtp, which it reads itself)",
 }
 
 
@@ -185,7 +187,8 @@ def test_dispatch_reaches_the_cfmesh_executor_through_its_owning_module():
     from meshpipeline.engines.dispatch import engine_runners
 
     runners = engine_runners()
-    assert set(runners) == {"cfmesh", "snappy", "snappy_multiregion", "gmsh", "vmtk"}
+    assert set(runners) == {"cfmesh", "snappy", "snappy_multiregion", "gmsh", "vmtk",
+                            "snapgrid"}
     assert runners["cfmesh"] is native._run_cartesian_mesh_local, (
         "dispatch no longer resolves cfMesh's local executor from the module that owns it")
 

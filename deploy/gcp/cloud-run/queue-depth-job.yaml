@@ -64,6 +64,11 @@ spec:
                 # visible on the same metric.
                 - name: QUEUE_NAMES
                   value: "${QUEUE_NAMES}"
+                # The deployment's keyspace, where each RUNNING job's execution fence lives. The
+                # autoscaler sizes the fleet on queued + running (the worker_demand metric), and
+                # the running count is those fences, read under this prefix only.
+                - name: REDIS_KEY_PREFIX
+                  value: "${REDIS_KEY_PREFIX}"
                 # The two labels that make the published series findable by exactly one autoscaler
                 # filter. They are deployment identity, not tuning.
                 - name: METRIC_NAMESPACE

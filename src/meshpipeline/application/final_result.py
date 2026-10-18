@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from meshpipeline.application.artifact_policy import required_output_classes
+from meshpipeline.contracts import engineering_text
 from meshpipeline.contracts.review_outcome import ReviewExecution, ReviewVerdict
 from meshpipeline.errors import FailureClass, user_message_for
 
@@ -142,6 +143,21 @@ class FinalResult:
     # machine-measured requirement near-misses delivered WITH the mesh; authored only by the
     # executor's typed gate, stated verbatim on every surface, waivable by nobody
     requirement_caveats: list = field(default_factory=list)
+    # THE FALLBACK LADDER'S ACCOUNT (pipeline/engine_fallback.final_record): the approved engine,
+    # every attempt's engine, each switch and why, the engine that built the delivered mesh, and
+    # on a mesh failure the one offer. Added without a schema bump: it defaults to {}, a reader of
+    # an older record reads {}, and an older reader ignores a key it does not know.
+    engine_ladder: dict = field(default_factory=dict)
+    # WHICH BYTES THIS RESULT WAS BUILT FROM, when they were not the ones the customer uploaded
+    # (pipeline/repair_promote.py): the original upload's identity, the repaired bytes that
+    # replaced it, and the engine the replacement was proved to stage for. Empty on every run that
+    # meshed the upload as it arrived. A delivered mesh has to be able to say this - "we fixed
+    # your file and meshed the fix" is a different claim from "we meshed your file", and a
+    # customer is entitled to know which one they are holding. Added without a schema bump: it
+    # defaults to {}, a reader of an older record reads {}, and an older reader ignores a key it
+    # does not know.
+    repair_lineage: dict = field(default_factory=dict)
+
     optional_warnings: list[str] = field(default_factory=list)
     missing_outputs: list[str] = field(default_factory=list)
     finalized_at: str = ""
@@ -194,6 +210,8 @@ class FinalResult:
             reviewer_verdict=(None if d.get("reviewer_verdict") is None
                               else ReviewVerdict(d["reviewer_verdict"])),
             requirement_caveats=list(d.get("requirement_caveats") or []),
+            engine_ladder=(dict(d["engine_ladder"])
+                           if isinstance(d.get("engine_ladder"), Mapping) else {}),
             review_execution=ReviewExecution(d.get("review_execution", "not_reached")),
             failed_gate=d.get("failed_gate", ""),
             patch_contract_ok=d.get("patch_contract_ok"), outcome_code=d.get("outcome_code", ""),
@@ -201,6 +219,8 @@ class FinalResult:
             attempts_max=int(d.get("attempts_max", 0)),
             required_ready=bool(d.get("required_ready", False)),
             delivered_types=list(d.get("delivered_types", [])),
+            repair_lineage=(dict(d["repair_lineage"])
+                            if isinstance(d.get("repair_lineage"), Mapping) else {}),
             optional_warnings=list(d.get("optional_warnings", [])),
             missing_outputs=list(d.get("missing_outputs", [])),
             finalized_at=d.get("finalized_at", ""),
@@ -269,7 +289,14 @@ def build_final_result(*, job_id: str, owner_id: str, status: TerminalStatus, en
                        pipeline_timed_out: bool = False,
                        requirement_caveats: list | None = None,
                        failure_cause: str = "",
-                       failure_facts: Mapping | None = None) -> FinalResult:
+                       failure_facts: Mapping | None = None,
+                       review_reruns: int = 0,
+                       review_blocking: list | None = None,
+                       attempts_made: int | None = None) -> FinalResult:
+    # `attempts` is the run's retry counter - the budget the category is judged against.
+    # `attempts_made`, when the run knows it, is what the record SAYS was used: the attempts that
+    # started a mesher (pipeline/engine_fallback.attempts_made), the same number the job row shows.
+    _shown = attempts if attempts_made is None else max(0, int(attempts_made))
     _verdict = (reviewer_verdict or "").strip().upper()
 
     # REVIEW-COMPLETION INVARIANT.
@@ -280,7 +307,8 @@ def build_final_result(*, job_id: str, owner_id: str, status: TerminalStatus, en
     # attempt produced no eligible verdict, and any verdict still in state was RETAINED from an
     # earlier attempt (the graph carries reviewer_verdict forward across retries).
     # A retained verdict must never be reported as this run's judgement of the mesh.
-    _reviewer_marker = (api_failure or "").startswith("reviewer_")
+    # bare or router-wrapped (`<<API_FAILURE:reviewer_timeout>>`), the reviewer's own marker
+    _reviewer_marker = _bare_marker(api_failure).startswith("reviewer_")
     if api_failure and (_reviewer_marker or _verdict in ("PASS", "FAIL")):
         # The review RAN and did not conclude: either a reviewer-owned failure marker, or a
         # verdict retained from an earlier attempt that this one did not reproduce. Either way
@@ -308,16 +336,24 @@ def build_final_result(*, job_id: str, owner_id: str, status: TerminalStatus, en
         patch_ok = True
 
     if status == TerminalStatus.succeeded:
-        # CONSTRUCTION-TIME INVARIANT: succeeded beside a FAIL review verdict is lawful in
-        # exactly one shape - a caveated layer delivery, provable by its typed caveat. Any
-        # other path that derives succeeded with a failed review is a bug, caught here
-        # rather than shipped as a silent contradiction.
+        # CONSTRUCTION-TIME INVARIANT: succeeded beside a FAIL review verdict is lawful only when
+        # the delivery SAYS so - the review's open points listed (review_concerns), or a record
+        # from before that kind existed (layer_coverage). Any other path that derives succeeded
+        # with a failed review would read as a pass, and is caught here instead of shipped.
         if verdict is ReviewVerdict.failed and not any(
-                isinstance(c, dict) and c.get("kind") == "layer_coverage"
+                isinstance(c, dict) and c.get("kind") in ("layer_coverage", REVIEW_CONCERNS)
                 for c in (requirement_caveats or [])):
             raise ValueError(
-                "succeeded with a FAIL review verdict requires a kind='layer_coverage' "
-                "caveat - refusing to build a contradictory FinalResult")
+                "succeeded with a FAIL review verdict requires a kind='review_concerns' (or "
+                "legacy 'layer_coverage') caveat - refusing to build a contradictory FinalResult")
+        # The same for a review that did not finish: a delivery without a verdict is lawful only
+        # when it SAYS so, through its typed caveat (review_inconclusive_caveat).
+        if execution is ReviewExecution.failed_to_complete and not any(
+                isinstance(c, dict) and c.get("kind") == REVIEW_INCONCLUSIVE
+                for c in (requirement_caveats or [])):
+            raise ValueError(
+                "succeeded with a review that did not finish requires a "
+                f"kind='{REVIEW_INCONCLUSIVE}' caveat - refusing to deliver it unstated")
         return FinalResult(
             requirement_caveats=list(requirement_caveats or []),
             schema_version=FINAL_RESULT_SCHEMA_VERSION, job_id=job_id, owner_id=owner_id,
@@ -329,7 +365,7 @@ def build_final_result(*, job_id: str, owner_id: str, status: TerminalStatus, en
             approved_snapshot_id=approved_snapshot_id, executor_success=True,
             reviewer_verdict=verdict, review_execution=execution,
             failed_gate="", patch_contract_ok=True, outcome_code="success", failure_category=None,
-            attempts=attempts, attempts_max=attempts_max, required_ready=required_ready,
+            attempts=_shown, attempts_max=attempts_max, required_ready=required_ready,
             delivered_types=list(delivered_types), optional_warnings=list(optional_warnings),
             missing_outputs=[], finalized_at=datetime.now(UTC).isoformat())
 
@@ -346,12 +382,30 @@ def build_final_result(*, job_id: str, owner_id: str, status: TerminalStatus, en
     if cat is FailureCategory.gate_failed:
         cause, detail, next_step = _cause_account(failed_gate, failure_cause, failure_facts,
                                                   engine)
+    elif cat is FailureCategory.review_rejected and review_blocking:
+        # THE ONLY WAY A REVIEW FAILS A RUN: the mesh is the wrong problem. Say which way, in the
+        # taxonomy's own plain words, beside what the reviewer saw.
+        detail, next_step = _wrong_problem_account(review_blocking)
     elif cat is FailureCategory.input_rejected:
         # The admission refusal, split by WHOSE it is. Only a MEASURED refusal is the CAD's; a
         # refusal of the DECLARED setup alone (a symmetry patch or a parameter this engine cannot
         # build) is the request's, and a valid file must not be sent back for repair over it.
         # Either way the recorded reason is said - it is the one thing the user can act on.
         cat, cause, detail, next_step = _admission_account(failure_facts, engine)
+    elif (cat is FailureCategory.internal_pipeline_failure
+          and execution is ReviewExecution.failed_to_complete
+          and _bare_marker(api_failure).startswith("reviewer_")):
+        # OUR failure still names what failed. The review did not conclude, so nothing may be said
+        # about the mesh - but "something went wrong on our side" says nothing at all, and the
+        # user of job 53bbce4b read it after a mesh had passed every gate. Which way the review
+        # stopped, and whether it was already started again, is known here. Only for the
+        # reviewer's OWN marker: a verdict retained from an earlier attempt beside a builder's
+        # provider failure is failed_to_complete too, and there the review never ran at all.
+        from meshpipeline.contracts.failure_cause import FailureCause, describe
+        _facts = {"marker": _bare_marker(api_failure), "validated": bool(executor_success),
+                  "reruns": max(0, int(review_reruns or 0))}
+        detail, next_step = describe(FailureCause.REVIEW_INCOMPLETE, _facts)
+        cause, failure_facts = FailureCause.REVIEW_INCOMPLETE.value, _facts
     from meshpipeline.contracts.failure_cause import retry_can_help
     return FinalResult(
         failure_cause=cause, failure_detail=detail, failure_next_step=next_step,
@@ -365,12 +419,37 @@ def build_final_result(*, job_id: str, owner_id: str, status: TerminalStatus, en
         approved_snapshot_id=approved_snapshot_id, executor_success=executor_success,
         reviewer_verdict=verdict, review_execution=execution,
         failed_gate=failed_gate, patch_contract_ok=patch_ok, outcome_code=cat.value,
-        failure_category=cat.value, attempts=attempts, attempts_max=attempts_max,
+        failure_category=cat.value, attempts=_shown, attempts_max=attempts_max,
         required_ready=False, delivered_types=[], optional_warnings=list(optional_warnings),
         # Derived from the ONE artifact policy, never named here: a literal list silently
         # disagreed with the policy the moment a second required class was added.
         missing_outputs=list(required_output_classes(engine)),
         finalized_at=datetime.now(UTC).isoformat())
+
+
+def _wrong_problem_account(blocking: list) -> tuple[str, str]:
+    """(what failed, what to do next) for a run the review failed as the wrong problem."""
+    from meshpipeline.agents.reviewer.review_policy import WRONG_PROBLEM
+    rows = [f for f in blocking if isinstance(f, Mapping)]
+    parts = []
+    for f in rows:
+        words = WRONG_PROBLEM.get(str(f.get("blocking") or ""), "the mesh is the wrong problem")
+        seen = engineering_text.plain(str(f.get("finding") or "")).strip().rstrip(" .")
+        parts.append(f"{words[0].upper()}{words[1:]}" + (f" - the reviewer saw: {seen[:600]}"
+                                                         if seen else "") + ".")
+    detail = ("Every automatic check on the mesh passed, but it represents a different problem "
+              "than the one you confirmed: " + " ".join(parts)).strip()
+    next_step = ("Check the geometry and setup you confirmed - the boundaries, the flow "
+                 "direction, the size and units - then say \"run it again\", or tell me what to "
+                 "change first.")
+    return detail, next_step
+
+
+def _bare_marker(api_failure: str) -> str:
+    raw = str(api_failure or "").strip()
+    if raw.startswith("<<API_FAILURE:") and raw.endswith(">>"):
+        raw = raw[len("<<API_FAILURE:"):-2].strip()
+    return raw
 
 
 #: The first line of every cancelled verdict. The owner asked; nothing broke.
@@ -481,6 +560,13 @@ def _admission_account(failure_facts: Mapping | None,
     phases = {str(p) for p in (facts.get("phases") or [])}
     reason = clean_reason(facts.get("reason"))
     declared_reason = clean_reason(facts.get("declared_reason"))
+    if facts.get("refused_by_design") and declared_reason:
+        # REFUSED BY DESIGN: the engine cannot take this FORM of file for this flow - its declared
+        # limit, not a defect in the file and not a crash. Said as exactly that, with the fact that
+        # nothing was built; the run's one offer (engine_fallback.offer) carries the way on - the
+        # engines that can take the file, or the file every engine for this flow takes.
+        return (FailureCategory.incompatible_requirements, FailureCause.GEOMETRY_REJECTED.value,
+                f"{declared_reason}. Nothing was built, and no attempt was used.", "")
     if phases and "measured" not in phases:
         reason = declared_reason or reason
         label = engine
@@ -519,7 +605,43 @@ def _render_fidelity(fr: FinalResult) -> str:
     return ""
 
 
+def with_engine_ladder(fr: FinalResult, record: Mapping | None) -> FinalResult:
+    import dataclasses
+    return dataclasses.replace(fr, engine_ladder=dict(record or {}))
+
+
+def with_repair_lineage(fr: FinalResult, record: Mapping | None) -> FinalResult:
+    """Record that this result was built from repaired bytes rather than the upload.
+
+    Carried onto the result rather than derived from it: by the time a terminal record is built
+    the workspace is gone and the graph state is about to be, so the only place this can come from
+    is the run that promoted the repair.
+    """
+    import dataclasses
+    return dataclasses.replace(fr, repair_lineage=dict(record or {}))
+
+
 def render_message(fr: FinalResult) -> str:
+    """The closing message: the account of the outcome, then the fallback ladder's line - on a
+    success that another engine built, which one and why; on a mesh failure, the one offer."""
+    text = _render_outcome(fr)
+    ladder = fr.engine_ladder if isinstance(fr.engine_ladder, Mapping) else {}
+    if fr.status == TerminalStatus.succeeded:
+        from meshpipeline.pipeline.engine_fallback import delivered_note
+        extra = [delivered_note(ladder)]
+        # a delivered mesh may carry an OPTIONAL improvement (engine_fallback.improvement_offer)
+        offer = ladder.get("offer")
+        if isinstance(offer, Mapping) and offer.get("optional"):
+            extra.append(str(offer.get("text") or "").strip())
+        return "\n".join([text, *(e for e in extra if e)])
+    offer = ladder.get("offer")
+    if (fr.status == TerminalStatus.failed and isinstance(offer, Mapping)
+            and str(offer.get("text") or "").strip()):
+        return "\n".join((text, str(offer["text"]).strip()))
+    return text
+
+
+def _render_outcome(fr: FinalResult) -> str:
     lines: list[str] = []
     if fr.status == TerminalStatus.succeeded:
         if fr.requirement_caveats:
@@ -530,7 +652,13 @@ def render_message(fr: FinalResult) -> str:
                      for c in fr.requirement_caveats}
             lines.append("Delivered with stated deviations from your request:"
                          if kinds == {"domain_extent"} else
-                         "Delivered with stated deviations:")
+                         "Delivered with a stated caveat:" if kinds == {REVIEW_INCONCLUSIVE} else
+                         "Delivered with the reviewer's concerns:" if kinds == {REVIEW_CONCERNS}
+                         else "Delivered with a note on its narrowest gaps:"
+                         if kinds == {NARROW_PASSAGES}
+                         else "Delivered with a concern about its size:"
+                         if kinds == {PHYSICAL_SCALE}
+                         else "Delivered with stated deviations:")
             for c in fr.requirement_caveats:
                 kind = (c or {}).get("kind") or "domain_extent"
                 if kind == "domain_extent":
@@ -562,15 +690,36 @@ def render_message(fr: FinalResult) -> str:
                                 f"{v.get('target')} target layers "
                                 f"({v.get('coverage_pct')}% of target thickness)")
                     if c.get("finding"):
-                        lines.append(f"    Reviewer's finding: {c['finding']}")
+                        # the reviewer model's own words: its math markup made plain
+                        lines.append("    Reviewer's finding: "
+                                     + engineering_text.plain(str(c["finding"])))
+                elif kind == REVIEW_INCONCLUSIVE:
+                    lines.append(_review_caveat_line(c))
+                elif kind == REVIEW_CONCERNS:
+                    lines.extend(_concern_lines(c))
+                elif kind == NARROW_PASSAGES:
+                    lines.extend(_narrow_passage_lines(c))
+                elif kind == PHYSICAL_SCALE:
+                    lines.extend(_physical_scale_lines(c))
                 else:
                     lines.append("  - a stated deviation of an unrecognized kind "
                                  "(see the result record)")
-            if kinds == {"domain_extent"}:
+            # the narrow-gap note says everything it needs in its own lines; the closing speaks
+            # for the rest
+            core = kinds - {NARROW_PASSAGES, PHYSICAL_SCALE}
+            if core == {"domain_extent"}:
                 lines.append("Every mesh-quality check passed; only the margins above fell "
                              "short of the request. Rebuild with relaxed constraints if "
                              "they matter for your analysis.")
-            else:
+            elif core == {REVIEW_INCONCLUSIVE}:
+                # true by construction: the caveat is granted only on a mesh the executor
+                # validated with no gate failed (review_inconclusive_caveat)
+                lines.append(REVIEW_INCONCLUSIVE_CLOSING)
+            elif REVIEW_CONCERNS in core and "layer_coverage" not in core:
+                # true by construction, as above (review_concerns_caveat); the margins, if any,
+                # are listed above it in their own words
+                lines.append(REVIEW_CONCERNS_CLOSING)
+            elif core:
                 # NEVER claim every check passed when a layer caveat exists: the pipeline's
                 # own quality review judged layer coverage short of its bar. 'Solver-ready'
                 # is scoped to what was actually measured.
@@ -589,6 +738,11 @@ def render_message(fr: FinalResult) -> str:
                      "Required deliverable: prepared")
         if fr.reviewer_verdict is ReviewVerdict.passed:
             lines.append("Review: passed")
+        elif fr.review_execution is ReviewExecution.failed_to_complete:
+            lines.append("Review: did not finish (see above)")
+        elif fr.reviewer_verdict is ReviewVerdict.failed:
+            # delivered, never passed: the review's open points are listed above
+            lines.append("Review: delivered with concerns (see above)")
         if fr.optional_warnings:
             lines.append("Note: an optional preview could not be prepared, but your mesh is ready.")
         return "\n".join(lines)
@@ -710,6 +864,18 @@ class RunOutcome:
     is_dispute: bool = False
     axis_findings: tuple = ()
     quality: Any = None
+    #: reviews started again on the same validated mesh (pipeline/graph.node_review_retry)
+    review_reruns: int = 0
+    #: the workflow - it names the review axes the concerns are told in
+    purpose: str = ""
+    #: the delivered body's three sides in metres (the passage's, for an internal flow), read off
+    #: the mesh manifest - what the size note judges (physical_scale_caveat). () when unknown.
+    body_size_m: tuple = ()
+    #: what the request calls the part (the task label and the request text), and the unit the
+    #: file was read in - what the size note judges the size against, and the other reading it names
+    words: str = ""
+    unit: str = ""
+    grounded: bool = False
 
     @classmethod
     def from_graph_state(cls, state: Mapping) -> RunOutcome:
@@ -717,7 +883,13 @@ class RunOutcome:
         if raw.startswith("<<API_FAILURE:") and raw.endswith(">>"):
             raw = raw[len("<<API_FAILURE:"):-2]
         manifest = state.get("mesh_manifest") or {}
-        return cls(api_failure=raw,
+        geometry = state.get("geometry") if isinstance(state.get("geometry"), Mapping) else {}
+        interp = (geometry or {}).get("interpretation") if isinstance(geometry, Mapping) else None
+        return cls(body_size_m=delivered_size_m(manifest, str(state.get("flow_topology", "") or "")),
+                   words=" ".join(str(state.get(k, "") or "") for k in ("domain", "request_txt"))[:4000],
+                   unit=str((interp or {}).get("unit") or "") if isinstance(interp, Mapping) else "",
+                   grounded=_grounded(manifest, state.get("intake_patches")),
+                   api_failure=raw,
                    reviewer_verdict=state.get("reviewer_verdict", "") or "",
                    executor_success=bool(state.get("executor_success", False)),
                    retry_count=int(state.get("retry_count", 0) or 0),
@@ -728,6 +900,8 @@ class RunOutcome:
                    engine=str(state.get("engine", "") or ""),
                    flow_topology=str(state.get("flow_topology", "") or ""),
                    is_dispute=bool(state.get("user_dispute") or {}),
+                   review_reruns=int(state.get("review_rerun_count", 0) or 0),
+                   purpose=str(state.get("purpose", "") or ""),
                    axis_findings=tuple(state.get("reviewer_axis_findings") or ()),
                    quality=dict((manifest.get("quality") or {})
                                 if isinstance(manifest, Mapping) else {}))
@@ -807,6 +981,281 @@ def layer_coverage_caveat(outcome: RunOutcome) -> dict | None:
     }
 
 
+#: The caveat kind a delivery carries when its review did not finish.
+REVIEW_INCONCLUSIVE = "review_inconclusive"
+
+#: What a review-inconclusive delivery closes with - true by construction, because the caveat is
+#: granted only on a mesh the executor validated with no gate failed.
+REVIEW_INCONCLUSIVE_CLOSING = (
+    "Every automatic check on the mesh passed - it is sound, its cells clear this engine's "
+    "quality bars and every boundary you named is there with the right type - so it is "
+    "delivered. Look it over yourself before you rely on it, or say \"run it again\" for a new "
+    "run.")
+
+
+def _review_caveat_line(c: Mapping) -> str:
+    from meshpipeline.contracts.failure_cause import review_stopped_reason
+    n = c.get("reruns")
+    n = n if isinstance(n, int) and not isinstance(n, bool) else 0
+    again = ({1: " (it was started again once)", 2: " (it was started again twice)"}.get(
+        n, f" (it was started again {n} times)") if n > 0 else "")
+    return (f"  - the final visual review did not finish{again}: "
+            f"{review_stopped_reason(c.get('marker'))}. So no review verdict was reached on this "
+            "mesh against your brief. That is on our side, not your geometry's.")
+
+
+def review_inconclusive_caveat(outcome: RunOutcome) -> dict | None:
+    """THE one predicate for delivering a mesh whose REVIEW did not finish - used by
+    derive_terminal_status to grant `succeeded` and by terminal assembly to author the caveat, so
+    the two can never disagree.
+
+    A review is the soft assurance layer over hard checks that already passed. When it stops
+    without a verdict (it stalled, ran out of time, its renderer or model provider dropped out)
+    and the reruns (pipeline/graph.node_review_retry) could not get one either, the mesh is not
+    at fault: job 53bbce4b's 2.49M-cell Windsor mesh passed every gate and a trial solve and was
+    reported "something went wrong on our side". A good mesh is never an internal failure: it is
+    delivered, and the delivery says plainly that no review concluded and why.
+
+    Refused (the run stays a failure, told as review_incomplete) unless every fact holds: the
+    non-verdict is the REVIEWER's own marker; the executor validated THIS mesh; no gate failed;
+    and it is not a dispute - there the engineer's own flags need a judgement nobody made."""
+    raw = str(outcome.api_failure or "").strip()
+    if raw.startswith("<<API_FAILURE:") and raw.endswith(">>"):
+        raw = raw[len("<<API_FAILURE:"):-2].strip()
+    if not raw.startswith("reviewer_"):
+        return None
+    if not outcome.executor_success or outcome.failed_gate or outcome.is_dispute:
+        return None
+    return {"kind": REVIEW_INCONCLUSIVE, "marker": raw,
+            "reruns": max(0, int(outcome.review_reruns or 0))}
+
+
+#: The caveat kind a delivery carries when its review CONCLUDED with points left open - findings
+#: that did not pass but do not make the mesh the wrong problem. The mesh is delivered with them
+#: listed; it is never reported as having passed.
+REVIEW_CONCERNS = "review_concerns"
+
+#: What a delivered-with-concerns message closes with - true by construction: the caveat is granted
+#: only on a mesh the executor validated with no gate failed.
+REVIEW_CONCERNS_CLOSING = (
+    "Every automatic check on the mesh passed - it is sound, its cells clear this engine's "
+    "quality bars and every boundary you named is there with the right type - so it is "
+    "delivered. The reviewer's points above are listed for you to weigh; look at those areas "
+    "before you rely on the results, or tell me what to change for a new run.")
+
+
+def _axis_concerns(engine: str, purpose: str) -> dict:
+    """{axis name: the plain sentence that says what failing it means} for this engine+workflow."""
+    try:
+        from meshpipeline.engines.quality_criteria import compose_review_rubric
+        return {ax.name: ax.concern for ax in compose_review_rubric(engine, purpose)
+                if getattr(ax, "concern", "")}
+    except Exception:  # noqa: BLE001 - a label never decides an outcome
+        return {}
+
+
+def _concluded_on_valid_mesh(outcome: RunOutcome) -> bool:
+    return (not outcome.api_failure and outcome.executor_success and not outcome.failed_gate
+            and outcome.reviewer_verdict in ("PASS", "FAIL"))
+
+
+def review_blocking(outcome: RunOutcome) -> list[dict]:
+    """The concluded review's WRONG-PROBLEM findings (agents/reviewer/review_policy) - the only
+    review findings that fail a run. Empty on anything else."""
+    if not _concluded_on_valid_mesh(outcome) or outcome.reviewer_verdict != "FAIL":
+        return []
+    from meshpipeline.agents.reviewer.review_policy import blocking_findings
+    return blocking_findings(list(outcome.axis_findings))
+
+
+def review_concerns_caveat(outcome: RunOutcome) -> dict | None:
+    """THE one predicate for delivering a mesh whose review concluded with points left open - used
+    by derive_terminal_status to grant `succeeded` and by terminal assembly to author the caveat, so
+    the two can never disagree.
+
+    The review can never turn a valid mesh into a failed job unless the mesh is the wrong problem
+    (review_blocking). Anything else it found - partial layers, coarser than ideal, a requirement
+    it could not tie to the brief - is listed here, plainly, on the delivered mesh. Granted on a
+    validated mesh with no gate failed, a concluded FAIL verdict and no wrong-problem finding."""
+    if not _concluded_on_valid_mesh(outcome) or outcome.reviewer_verdict != "FAIL":
+        return None
+    if review_blocking(outcome):
+        return None
+    labels = _axis_concerns(outcome.engine, outcome.purpose)
+    items = []
+    for f in outcome.axis_findings:
+        if not isinstance(f, Mapping) or f.get("passed") is not False:
+            continue
+        key = str(f.get("axis_key") or "")
+        items.append({
+            "axis_key": key,
+            "label": labels.get(key) or "The reviewer raised a point it could not name here",
+            "finding": engineering_text.plain(str(f.get("finding") or ""))[:900],
+            "severity": "material" if f.get("severity") == "material" else "minor",
+            "requirement": str(f.get("brief_requirement") or "")[:300],
+            # the review asked for a rebuild and the rebuilds could not satisfy it
+            "asked_for_rebuild": f.get("improve") is True,
+        })
+    if not items:
+        return None
+    return {"kind": REVIEW_CONCERNS, "items": items}
+
+
+#: The caveat kind a delivery carries when the resolution floor set narrow SIDE passages aside:
+#: gaps the flow can go round (engines/passage_flow) that have fewer cells across them than the
+#: floor. Job 02ed0d14's tube bank: its 20 mm gaps between tubes held 8 to 10 cells across, and a
+#: sound mesh was refused twice although the flow goes round the bundle (on the same part's other
+#: meshes the rest of the passage held 19 to 25 or more). Now such a mesh is delivered, and the
+#: delivery says which gaps fell short and by how much.
+NARROW_PASSAGES = "narrow_passages"
+
+
+def narrow_passage_caveat(outcome: RunOutcome) -> dict | None:
+    """THE one predicate for the narrow-gap note, read at terminal assembly from the delivered
+    mesh's own quality record through the same verdict the gate gave
+    (passage_flow.judge_resolution), so the note and the gate can never disagree. None unless the
+    executor validated the mesh with no gate failed and the floor passed by setting side passages
+    aside."""
+    if not outcome.executor_success or outcome.failed_gate:
+        return None
+    q = outcome.quality if isinstance(outcome.quality, Mapping) else {}
+    from meshpipeline.engines.passage_flow import judge_resolution
+    v = judge_resolution(dict(q))
+    if not (v.ok and v.scope == "main" and v.side):
+        return None
+    raw = v.side.get("cells_across")
+    cells: Mapping = raw if isinstance(raw, Mapping) else {}
+    return {"kind": NARROW_PASSAGES, "floor": v.floor,
+            "cells_across": cells.get("p05"), "cells_across_min": cells.get("min"),
+            "width_m": v.side.get("width_m"),
+            "narrowest_width_m": v.side.get("narrowest_width_m"),
+            "share": v.side.get("under_floor_share"),
+            "main_cells_across": v.cells_across, "main_way_width_m": v.main_way_width_m}
+
+
+#: The caveat kind a delivery carries when the mesh is not a believable size for what it is: the
+#: DrivAer car meshed 4.7 mm long and the BlendedNet aircraft 1 mm long, both from triangle files
+#: that state no unit, were counted as clean passes. The mesh is sound, so it is delivered - and
+#: the delivery says plainly that its size is wrong for what it is, and that the unit is the
+#: likely cause.
+PHYSICAL_SCALE = "physical_scale"
+
+
+def delivered_size_m(manifest: object, flow_topology: str = "") -> tuple:
+    """The delivered body's three sides in metres, off the mesh manifest: the body's own box (the
+    wall the user named), else - for an internal flow, whose mesh IS the passage - the mesh's
+    bounds. () when the manifest says neither (an external mesh's bounds are its far field)."""
+    if not isinstance(manifest, Mapping):
+        return ()
+    geo = manifest.get("geometry")
+    if not isinstance(geo, Mapping):
+        return ()
+    if str(manifest.get("mesh_units") or "m") != "m":
+        return ()
+    try:
+        box = geo.get("body_box")
+        if isinstance(box, Mapping):
+            return tuple(float(box[f"{a}max"]) - float(box[f"{a}min"]) for a in "xyz")
+        if flow_topology == "internal":
+            return tuple(float(geo[f"box_{a}max"]) - float(geo[f"box_{a}min"]) for a in "xyz")
+    except (KeyError, TypeError, ValueError):
+        return ()
+    return ()
+
+
+def _grounded(manifest: object, intake_patches: object) -> bool:
+    """Whether the body stands on a ground the run modelled: a patch the intake named for it."""
+    rows = intake_patches if isinstance(intake_patches, (list, tuple)) else []
+    names = [str(p.get("name") or "") for p in rows if isinstance(p, Mapping)]
+    if isinstance(manifest, Mapping) and isinstance(manifest.get("patch_types"), Mapping):
+        names += [str(n) for n in manifest["patch_types"]]
+    return any(n.lower() in ("ground", "floor", "road") for n in names)
+
+
+def physical_scale_caveat(outcome: RunOutcome) -> dict | None:
+    """THE one predicate for the size note, read at terminal assembly from the delivered mesh's own
+    box (delivered_size_m): None unless the executor validated the mesh with no gate failed and
+    the mesh is far outside the believable size of what it is - by the request's words for it
+    (a car, an aircraft, an artery), else by its shape and flow (contracts/unit_plausibility).
+    Like the narrow-gap note it never enters the graph state, so it can never start a retry: a
+    rebuild cannot fix a unit."""
+    if not outcome.executor_success or outcome.failed_gate:
+        return None
+    sides = [abs(float(v)) for v in (outcome.body_size_m or ()) if isinstance(v, (int, float))]
+    if len(sides) != 3 or max(sides) <= 0:
+        return None
+    from meshpipeline.contracts.geometry_units import LengthUnit
+    from meshpipeline.contracts.unit_plausibility import expected_from_words, scale_concern, shape_kind
+
+    kind = (expected_from_words(outcome.words)
+            or shape_kind(outcome.flow_topology, sides, grounded=outcome.grounded))
+    try:
+        unit = LengthUnit(outcome.unit) if outcome.unit else None
+    except ValueError:
+        unit = None
+    concern = scale_concern(max(sides), kind=kind, unit_in_effect=unit)
+    if concern is None:
+        return None
+    return {"kind": PHYSICAL_SCALE, **concern.as_dict(), "unit": unit.value if unit else None}
+
+
+def _physical_scale_lines(c: Mapping) -> list[str]:
+    words = str(c.get("words") or "").strip()
+    if not words:
+        return ["  - The mesh is not a believable size for what it is. Check the unit of the file."]
+    return [f"  - {words}",
+            "    Every check on the mesh itself passed, but a mesh at the wrong scale gives wrong "
+            "results. If the unit is wrong, say which one the file is in and run it again."]
+
+
+def _mm_text(metres: object) -> str | None:
+    if not isinstance(metres, (int, float)) or isinstance(metres, bool) or metres <= 0:
+        return None
+    mm = float(metres) * 1000.0
+    return f"{mm:.0f} mm" if mm >= 10 else f"{mm:.2g} mm"
+
+
+def _narrow_passage_lines(c: Mapping) -> list[str]:
+    """The narrow-gap note in plain words: how wide the gaps are, how much of the wall they line,
+    how many cells cross them against the floor, and the way round them that holds it."""
+    def n(v: object) -> float | None:
+        return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+    width, share, x = _mm_text(c.get("width_m")), n(c.get("share")), n(c.get("cells_across"))
+    floor = n(c.get("floor")) or 12.0
+    main_w, main_x = _mm_text(c.get("main_way_width_m")), n(c.get("main_cells_across"))
+    first = "  - The narrowest gaps" + (f" are about {width} across" if width else "")
+    if share is not None:
+        first += (" and" if width else "") + f" cover about {max(share * 100, 0.1):.2g}% of the wall"
+    lines = [first + "."]
+    lines.append("    They have about "
+                 + (f"{x:.1f}" if x is not None else "too few")
+                 + f" cells across them. Our floor is {floor:g}, and 20 to 40 is common practice.")
+    way = "    The flow can go round these gaps"
+    if main_w:
+        way += f": its main way through is at least {main_w} across"
+        if main_x is not None:
+            way += f", with about {main_x:.1f} or more cells across it"
+    lines.append(way + ". So the mesh is delivered.")
+    lines.append("    If the flow in these gaps matters to you, ask for a finer mesh.")
+    return lines
+
+
+def _concern_lines(c: Mapping) -> list[str]:
+    lines: list[str] = []
+    items = [i for i in (c.get("items") or []) if isinstance(i, Mapping)]
+    # the points the user should weigh first come first, and say so
+    for item in sorted(items, key=lambda i: i.get("severity") != "material"):
+        mark = "IMPORTANT - " if item.get("severity") == "material" else ""
+        lines.append(f"  - {mark}{item.get('label')}")
+        if item.get("finding"):
+            lines.append(f"    Reviewer: {item.get('finding')}")
+        if item.get("asked_for_rebuild"):
+            lines.append("    (the review asked for a rebuild for this; the rebuild could not "
+                         "satisfy it)")
+    return lines
+
+
 @dataclass(frozen=True)
 class StatusDecision:
 
@@ -820,6 +1269,18 @@ class StatusDecision:
 
 def derive_terminal_status(outcome: RunOutcome, *, job_id: str, jlog) -> StatusDecision:
     from meshpipeline.persistence.models import FailedReason, JobStatus
+
+    if outcome.api_failure and review_inconclusive_caveat(outcome) is not None:
+        # DELIVERED, REVIEW INCONCLUSIVE: the mesh passed every hard check and only the review
+        # could not conclude (see the predicate). Still counted, so operators see how often.
+        jlog.warning("terminal status: delivered with the review inconclusive (%s) - the mesh "
+                     "passed every gate (job_id=%s)", outcome.api_failure, job_id)
+        try:
+            from meshpipeline.metrics import inc as _minc
+            _minc("review_inconclusive_delivery", "pipeline")
+        except Exception:                      # noqa: BLE001 - metrics never change a verdict
+            pass
+        return StatusDecision(JobStatus.succeeded, None)
 
     if outcome.api_failure:
         # SYSTEM failure (a dependency could not do its job). Classify it for the precise DB reason
@@ -853,24 +1314,65 @@ def derive_terminal_status(outcome: RunOutcome, *, job_id: str, jlog) -> StatusD
         # un-validated mesh.
         return StatusDecision(JobStatus.succeeded, None)
 
-    if layer_coverage_caveat(outcome) is not None:
-        # CAVEATED LAYER DELIVERY: the mesh passed every machine gate and solvability, and its
-        # own concluded review failed ONLY prism-layer coverage, above the policy floor, on a
-        # non-strict external snappy request. The mesh is solver-ready with a known, measured,
-        # stated near-wall weakness - delivering it with the caveat (terminal assembly authors
-        # the dict from this same predicate) serves the user better than a bare refusal.
-        jlog.info("terminal status: caveated layer delivery - review FAIL waived by the "
-                  "layer-coverage eligibility predicate (job_id=%s)", job_id)
+    if review_concerns_caveat(outcome) is not None:
+        # DELIVERED WITH CONCERNS. The gates own validity, and every one of them passed; the review
+        # concluded with points left open, none of which makes the mesh the wrong problem. A review
+        # never turns that into a failed job - the mesh is delivered with the points listed
+        # (terminal assembly authors the caveat from this same predicate), and never reported as
+        # having passed. This replaces the layer-only waiver: no criterion is a special case.
+        jlog.info("terminal status: delivered with the review's concerns listed - every gate "
+                  "passed and no finding makes it the wrong problem (job_id=%s)", job_id)
         try:
             from meshpipeline.metrics import inc as _minc
-            _minc("caveated_layer_delivery", "pipeline")
+            _minc("review_concerns_delivery", "pipeline")
         except Exception:                      # noqa: BLE001 - metrics never change a verdict
             pass
         return StatusDecision(JobStatus.succeeded, None)
 
+    # Left: no validated mesh at all, a failed gate, or a concluded review that found the mesh is
+    # the WRONG PROBLEM (review_blocking) - the only way a review fails a run.
     return StatusDecision(
         JobStatus.failed,
         FailedReason.reviewer_rejected if outcome.executor_success else FailedReason.mesh_generation)
+
+
+#: What the API says about a finished run's review, in one word the console can show. A delivered
+#: mesh whose review left points open is never "passed".
+REVIEW_OUTCOMES = ("passed", "delivered_with_concerns", "review_inconclusive", "wrong_problem")
+
+
+def review_outcome_of(fr: Mapping | None) -> str | None:
+    """The review outcome of a persisted final_result, or None when no review outcome applies."""
+    if not isinstance(fr, Mapping):
+        return None
+    kinds = {(c or {}).get("kind") for c in (fr.get("requirement_caveats") or [])
+             if isinstance(c, Mapping)}
+    status, verdict = fr.get("status"), fr.get("reviewer_verdict")
+    if status == TerminalStatus.succeeded.value:
+        if REVIEW_INCONCLUSIVE in kinds:
+            return "review_inconclusive"
+        if verdict == ReviewVerdict.failed.value or REVIEW_CONCERNS in kinds:
+            return "delivered_with_concerns"
+        if verdict == ReviewVerdict.passed.value:
+            return "passed"
+        return None
+    if fr.get("failure_category") == FailureCategory.review_rejected.value:
+        return "wrong_problem"
+    return None
+
+
+def review_concerns_of(fr: Mapping | None) -> list[str]:
+    """The open points a delivered-with-concerns run lists, as plain sentences for the console."""
+    if not isinstance(fr, Mapping):
+        return []
+    out: list[str] = []
+    for c in fr.get("requirement_caveats") or []:
+        if isinstance(c, Mapping) and c.get("kind") == REVIEW_CONCERNS:
+            for item in c.get("items") or []:
+                if isinstance(item, Mapping) and item.get("label"):
+                    mark = "Important: " if item.get("severity") == "material" else ""
+                    out.append(f"{mark}{item.get('label')}")
+    return out
 
 
 def apply_delivery(decision: StatusDecision, delivery) -> StatusDecision:

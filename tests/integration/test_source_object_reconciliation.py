@@ -553,3 +553,88 @@ async def test_retries_are_bounded_and_the_record_is_finally_abandoned(real_stor
     assert rec["last_error"] and len(rec["last_error"]) <= 512
 
     real_store.delete_object(object_key=key)
+
+
+# 14 - a direct upload: its bytes arrive on their own, so its intent is held
+
+
+async def test_a_held_intent_is_left_alone_until_its_bytes_can_no_longer_arrive(real_store):
+    # The client PUTs straight to the store for as long as the transfer takes. A sweep in that
+    # window must neither close the intent as "absent" nor delete the object before the finish.
+    from datetime import timedelta
+
+    from sqlalchemy import text
+
+    from meshpipeline.application.maintenance.reconcile import reclaim_orphan_source_objects
+    from meshpipeline.contracts.geometry_source import source_object_key
+    from meshpipeline.persistence.repositories.source_cleanup_repository import (
+        SourceCleanupRepository,
+    )
+    from meshpipeline.persistence.session import get_db
+
+    owner = _tenant()
+    sid = uuid.uuid4()
+    key = source_object_key(sid)
+    async with get_db() as db:
+        await SourceCleanupRepository().record_intent(db, owner_id=owner, source_id=sid,
+                                                      object_key=key, hold=timedelta(hours=6))
+        await db.commit()
+
+    # before the bytes land: not "absent"
+    async with get_db() as db:
+        await reclaim_orphan_source_objects(db, real_store)
+        await db.commit()
+    assert [c["state"] for c in await _cleanups(owner)] == ["pending"]
+
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / "part.step"
+        p.write_bytes(_STEP)
+        real_store.upload_file(local_path=p, object_key=key)
+
+    # after they land, before the finish: not deleted
+    async with get_db() as db:
+        await reclaim_orphan_source_objects(db, real_store)
+        await db.commit()
+    assert real_store.exists(object_key=key), "the sweep deleted an upload that was still open"
+    assert [c["state"] for c in await _cleanups(owner)] == ["pending"]
+
+    # once the hold has passed, an upload nobody finished is reclaimed like any other orphan
+    async with get_db() as db:
+        await db.execute(text("update source_object_cleanups set next_attempt_at = now() - "
+                              "interval '1 minute' where object_key = :k"), {"k": key})
+        await db.commit()
+    async with get_db() as db:
+        await reclaim_orphan_source_objects(db, real_store)
+        await db.commit()
+    assert not real_store.exists(object_key=key)
+    assert [c["state"] for c in await _cleanups(owner)] == ["resolved_deleted"]
+
+
+async def test_a_direct_upload_round_trips_through_the_real_store(client, real_store):
+    # Begin, PUT the bytes to the signed URL exactly as a browser or a script would, finish: the
+    # source is recorded, the object kept, and no cleanup is left open.
+    import httpx
+
+    owner = _tenant()
+    begin = await client.post("/api/v1/upload/direct", headers={"X-User-Id": owner},
+                              json={"filename": "part.step", "size_bytes": len(_STEP)})
+    assert begin.status_code == 200, begin.text
+    out = begin.json()
+    async with httpx.AsyncClient(timeout=60) as raw:
+        put = await raw.put(out["upload_url"], content=_STEP, headers=out["headers"])
+    assert put.status_code == 200, put.text
+
+    done = await client.post(out["finalize_url"], headers={"X-User-Id": owner},
+                             json={"filename": "part.step"})
+    assert done.status_code == 200, done.text
+    sources = await _sources(owner)
+    assert [str(s["id"]) for s in sources] == [out["upload_id"]]
+    assert real_store.exists(object_key=sources[0]["object_key"])
+    assert [c["state"] for c in await _cleanups(owner)] == ["resolved_adopted"]
+
+    # another person cannot finish it, or learn that it exists
+    other = await client.post(out["finalize_url"], headers={"X-User-Id": _tenant()},
+                              json={"filename": "part.step"})
+    assert other.status_code == 404

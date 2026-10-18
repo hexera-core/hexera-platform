@@ -364,3 +364,35 @@ class TestNameSafety:
     def test_rectangular_ports_declare_width_and_height(self):
         p = DeclaredPatch("duct_in", "inlet", width_mm=80, height_mm=50)
         assert p.declared_area_m2() == pytest.approx(4000e-6)
+
+
+class TestLocationFirstTheAreaAsACheck:
+    # The aorta (VMR 0074): its root was declared as the box round it, 37.6 x 34.3 mm = 1,290 mm2,
+    # while the same finder measured the polygon at 922 mm2 - one opening, two measurements - and
+    # the binder refused the port its own location picked.
+    def test_a_located_port_binds_when_its_size_is_another_measurement_of_the_same_opening(self):
+        t = make_t({"inlet": (921.8e-6, (0.0, 0.0, 0.0)), "outlet": (circle_area_m2(20), (0.25, 0.0, 0.0))})
+        declared = [WALL, DeclaredPatch("inlet", "inlet", width_mm=37.6, height_mm=34.3, near_mm=(0, 0, 0)),
+                    DeclaredPatch("outlet", "outlet", diameter_mm=20, near_mm=(250, 0, 0))]
+        assert bind_ports(declared, t).port_map == {"inlet": "inlet", "outlet": "outlet"}
+
+    def test_a_located_port_more_than_twice_its_openings_size_is_still_refused(self):
+        t = make_t({"inlet": (circle_area_m2(20), (0.0, 0.0, 0.0)), "outlet": (circle_area_m2(20), (0.25, 0.0, 0.0))})
+        declared = [WALL, DeclaredPatch("inlet", "inlet", diameter_mm=30, near_mm=(0, 0, 0)),
+                    DeclaredPatch("outlet", "outlet", diameter_mm=20, near_mm=(250, 0, 0))]
+        with pytest.raises(BindError, match="the location and the size disagree"):
+            bind_ports(declared, t)
+
+    def test_an_opening_the_staging_matched_to_the_port_is_bound_by_its_name(self):
+        # two mouths on one axis (a coaxial pair): nearest-centroid could not pick decisively, but
+        # the staging already matched each declaration to its own loop and keyed it by name
+        t = make_t({"inlet": (circle_area_m2(40), (0.0, 0.0, 0.0)),
+                    "outlet": (circle_area_m2(40), (0.001, 0.0, 0.0))})
+        for rec in t["openings"].values():
+            rec["declared"] = True
+        declared = [WALL, DeclaredPatch("inlet", "inlet", diameter_mm=40, near_mm=(0.5, 0, 0)),
+                    DeclaredPatch("outlet", "outlet", diameter_mm=40, near_mm=(0.5, 0, 0))]
+        assert bind_ports(declared, t).port_map == {"inlet": "inlet", "outlet": "outlet"}
+        del t["openings"]["inlet"]["declared"], t["openings"]["outlet"]["declared"]
+        with pytest.raises(BindError, match="decisively"):
+            bind_ports(declared, t)

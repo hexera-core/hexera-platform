@@ -121,6 +121,34 @@ async def test_a_triangle_file_that_reads_as_a_1_mm_car_is_served_the_metre_read
     assert s["unit"] == "m" and s["words"] == "1.04 mm long - or 1.04 m if the file is in metres"
 
 
+async def test_a_car_shaped_triangle_file_is_doubted_by_its_shape_where_size_alone_would_not(served):
+    """A 50-unit car-like body on the ground: 50 mm is a believable PART, so size alone said
+    nothing - but nothing car-shaped is 5 cm long. The shape and the flow name the other reading."""
+    check = _scouted([50.0, 20.0, 14.0])
+    check["proposal"].update(flow="external", grounded=True, up_axis="+z")
+    served(check, None, geometry_interpretation_id=None, messages=[{"role": "user", "content": "mesh this"}])
+    s = (await route.get_check(SID, "alice", "org-1"))["proposal"]["unit_suggestion"]
+    assert s["unit"] in ("cm", "in") and s["instead_of"] == "mm"
+    assert "car-like body on the ground" in s["why"]
+    # a declared unit is never doubted on the shape alone
+    assert gc.unit_suggestion({"size_mm": [50.0, 20.0, 14.0], "scale_to_m": 0.001, "flow": "external",
+                               "grounded": True}, DECLARED_MM, "") is None
+
+
+async def test_the_scouts_proposal_carries_the_unit_it_reads_a_unit_less_file_in():
+    """What the stage and the chat propose for a file that states no unit: the DrivAer-sized car
+    (4.7 units, on the ground) reads as 4.7 m, sure, with the millimetre reading beside it."""
+    facts = {"input_kind": "solid-body", "flow": "external", "openings": [], "size_mm": [4.7, 2.05, 1.4],
+             "notes": [], "unit_assumed": True, "scale_to_m": 0.001, "source_format": "stl",
+             "grounded": True, "up_evidence": {"axis": "+z", "confidence": 0.9, "reason": "flat underside"}}
+    p = gc._proposal(facts, None)
+    u = p.get("unit_inference")
+    assert u is not None and u["unit"] == "m" and u["alternative"] == "mm"
+    assert u["words"].startswith("This reads as")
+    # a file that states its unit is read in it, and nothing is inferred
+    assert "unit_inference" not in gc._proposal({**facts, "unit_assumed": False}, None)
+
+
 async def test_the_suggestion_reads_the_file_units_back_through_the_scale_they_were_measured_under():
     # a naming that re-read the facts in metres serves 117000 "mm" under a scale of 1.0: the file's
     # own number is still 117, and in metres (the user's unit) nothing is doubted

@@ -480,7 +480,7 @@ API: it logs that the directory is missing and leaves `/ui` and `/static` unmoun
 
 <!-- Regenerate: python -m meshpipeline.settings.inventory --reference -->
 
-Every supported setting (233 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
+Every supported setting (248 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
 
 | Setting | Exposure | Read by | Secret |
 |---|---|---|---|
@@ -547,6 +547,16 @@ Every supported setting (233 entries). `template` settings are the ones `.env.ex
 | `LANGFUSE_SECRET_KEY` | template | app | yes |
 | `GEOMETRY_CHECK_ENABLED` | template | app |  |
 | `GEOMETRY_CHECK_VISION_TIMEOUT_S` | internal | app |  |
+| `CAD_INSPECT_MAX_BYTES` | internal | app |  |
+| `CAD_INSPECT_TIMEOUT_S` | internal | app |  |
+| `CAD_REPAIR_ALLOW_FACE_REMOVAL` | internal | app |  |
+| `CAD_REPAIR_AUTONOMOUS` | internal | app |  |
+| `CAD_REPAIR_ENABLED` | template | app |  |
+| `CAD_REPAIR_FILL_PLANAR_HOLES` | internal | app |  |
+| `CAD_REPAIR_MAX_DEVIATION_RATIO` | internal | app |  |
+| `CAD_REPAIR_MAX_HOLE_SPAN_RATIO` | internal | app |  |
+| `CAD_REPAIR_MAX_TOLERANCE_MM` | internal | app |  |
+| `CAD_REPAIR_TIMEOUT_S` | internal | app |  |
 | `CELERY_WORKER_CONCURRENCY` | template | compose |  |
 | `CONSOLE_SIGNUP_ENABLED` | template | app |  |
 | `CREDITS_PER_MESH_MINUTE` | template | app |  |
@@ -591,10 +601,12 @@ Every supported setting (233 entries). `template` settings are the ones `.env.ex
 | `PIPELINE_BACKEND` | template | app |  |
 | `REQUIRE_DURABLE_CHECKPOINTER` | template | app |  |
 | `WORKER_HEARTBEAT_SECONDS` | template | app |  |
+| `WORKER_IDLE_RETIRE_MINUTES` | template | app |  |
 | `WORKER_LEASE_SECONDS` | template | app |  |
 | `WORKER_WAKE_MINUTES` | template | app |  |
 | `CELL_HARD_LIMIT` | template | app |  |
 | `DOMAIN_EXTENT_GATE_ENABLED` | template | app |  |
+| `ENGINE_FALLBACK_ENABLED` | template | app |  |
 | `LAYER_CAVEAT_FLOOR_PCT_EXTERNAL` | template | app |  |
 | `LAYER_CAVEAT_PATCH_MIN_THICKNESS_PCT` | template | app |  |
 | `MESH_SCRIPT_SCAN_ENABLED` | template | app |  |
@@ -620,6 +632,8 @@ Every supported setting (233 entries). `template` settings are the ones `.env.ex
 | `DEEPINFRA_WRITE_TIMEOUT` | template | app |  |
 | `MAX_BUILDER_RETRIES` | template | app |  |
 | `MAX_SNAPPY_ATTEMPTS` | template | app |  |
+| `REVIEWER_RERUN_BACKOFF_S` | template | app |  |
+| `REVIEWER_RERUN_MAX` | template | app |  |
 | `TAVILY_API_KEY` | template | app | yes |
 | `WEB_SEARCH_MAX_RESULTS` | template | app |  |
 | `WEB_SEARCH_TIMEOUT` | template | app |  |
@@ -647,6 +661,7 @@ Every supported setting (233 entries). `template` settings are the ones `.env.ex
 | `PLANNER_TOTAL_TIMEOUT_SECONDS` | internal | app |  |
 | `REVIEWER_TOTAL_TIMEOUT_SECONDS` | internal | app |  |
 | `SNAPPY_RAZOR_CELL_FACTOR` | internal | app |  |
+| `SNAPPY_SEAL_CAVITIES` | internal | app |  |
 | `SNAPPY_THIN_AREA_FLOOR` | internal | app |  |
 | `SNAPPY_THIN_LAYER_POLICY` | internal | app |  |
 | `SNAPPY_THIN_STACK_FACTOR` | internal | app |  |

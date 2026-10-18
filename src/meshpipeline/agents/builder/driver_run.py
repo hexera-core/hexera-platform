@@ -138,6 +138,21 @@ class BuilderDriverRun:
 # The Builder's terminal contract, shared with the canonical path (executor.BuilderToolResult).
 TERMINAL_SUCCESS = "submit_mesh:success"
 
+#: A driver's STOP, not a failure: the retry a review rejection caused authored, byte for byte,
+#: the case whose mesh that review just rejected, so it built nothing. Rebuilding it would repeat
+#: the rejected mesh for another full mesher run (job e0fa8ad0 built 1,219,085 cells twice and
+#: was rejected twice). node_builder ends the run on the review already reached and spends no
+#: attempt on it.
+STOP_REVIEWED_CASE_REPEATS = "reviewed_case_repeats"
 
-__all__ = ["STRATEGY_CANONICAL_LOOP", "STRATEGY_ENGINE_DRIVER", "TERMINAL_SUCCESS",
-           "BuildDriverOutcome", "BuilderDriverRun"]
+
+def review_caused_retry(state) -> bool:
+    """This attempt is the retry a concluded review asked for - not a gate failure's, not an
+    engine switch's, and not a dispute rebuild (the engineer asked for a new mesh there)."""
+    st = state or {}
+    return ((st.get("classifier_result") or {}).get("error_source") == "reviewer_fail"
+            and not st.get("user_dispute"))
+
+
+__all__ = ["STOP_REVIEWED_CASE_REPEATS", "STRATEGY_CANONICAL_LOOP", "STRATEGY_ENGINE_DRIVER",
+           "TERMINAL_SUCCESS", "BuildDriverOutcome", "BuilderDriverRun", "review_caused_retry"]

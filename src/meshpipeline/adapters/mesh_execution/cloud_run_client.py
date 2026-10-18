@@ -17,7 +17,12 @@ import meshpipeline.settings.providers as provcfg
 from meshpipeline.adapters.mesh_execution.exchange_coordinates import (
     coordinates_for,
 )
-from meshpipeline.contracts.mesh_execution import SubmissionIndeterminate
+from meshpipeline.contracts.mesh_execution import (
+    RC_TIMED_OUT,
+    RUN_NOT_STARTED_TAG,
+    RUN_UNCOLLECTED_TAG,
+    SubmissionIndeterminate,
+)
 from meshpipeline.settings.env import ConfigurationError
 
 logger = logging.getLogger(__name__)
@@ -193,10 +198,78 @@ def _trigger_job(*, input_uri: str, output_uri: str, engine: str,
 def _fail(engine: str, detail: str) -> dict:
     logger.error("Cloud Run mesh FAILED for %s: %s", engine, detail)
     return {"rc": -3, "timed_out": False,
-            "log_tail": f"[CLOUD_RUN_FAILED] {engine}: {detail}"}
+            "log_tail": f"{RUN_NOT_STARTED_TAG} {engine}: {detail}"}
 
 
-RESULT_UNCOLLECTED_MARKER = "[CLOUD_RUN_RESULT_UNCOLLECTED]"
+RESULT_TIMEOUT_MARKER = "[CLOUD_RUN_TIMEOUT]"
+
+
+def _timed_out(engine: str, deadline_s: float,
+               operation: CloudRunOperationReference | None) -> dict:
+    """The run was DISPATCHED - this worker's submission was accepted, or a previous worker's was
+    and this one is collecting it - and no result came back by the deadline. That is a run that
+    ran out of time, not one that never started: job 470c3eb9's snappyHexMesh ran the full 50
+    minutes twice, each time reported as "INFRASTRUCTURE failure - the mesh run never started",
+    and the planner, told to resubmit the plan unchanged, did exactly that.
+
+    TIMED OUT, so every judge reads it before the exit code and asks for a smaller mesh. The
+    operation reference travels back so the claim records the submission as accepted: a
+    replacement worker then collects this run's late result instead of starting another."""
+    minutes = max(0, int(round(float(deadline_s) / 60.0)))
+    logger.warning("Cloud Run mesh TIMED OUT for %s: no result within %ss", engine, deadline_s)
+    return {"rc": RC_TIMED_OUT, "timed_out": True,
+            "provider_reference": operation.operation_name if operation else "",
+            "log_tail": (f"{RESULT_TIMEOUT_MARKER} {engine}: the mesh run ran out of time - no "
+                         f"result after {minutes} min. It was dispatched and did not finish in "
+                         "time; the mesh is too big or too slow for the budget.")}
+
+
+#: Compressed bytes a returned workspace carries per mesh cell, with margin. Measured: a 7 M-cell
+#: snappy passage came back as 557 MB (80 B a cell, job 3cd77f85), and VMTK's Fluent aorta as
+#: 560 MB (lab, 2026-10-04) - both past the generic 512 MiB extraction ceiling, so meshes the cell
+#: budget allows were built, paid for and lost on the way back.
+RESULT_BYTES_PER_CELL = 100
+#: ...and per cell the RESULT DOCUMENT says the mesh has, measured on what came back: compressed,
+#: the whole workspace; raw, all of it and its largest single file. A 6.7 M-cell cfMesh polyMesh is
+#: 1,236 MB raw (its faces file 699 MB) and 218 MB gzipped (cf_lab tw011_v3); the volume export
+#: beside it is most of the rest - the verify-7fix layered lumens came back at 566-696 MB. Each
+#: with room: these bound a mesh the run has already built and paid for, not a guess.
+RESULT_ARCHIVE_BYTES_PER_MEASURED_CELL = 200
+RESULT_RAW_BYTES_PER_MEASURED_CELL = 800
+RESULT_FILE_BYTES_PER_MEASURED_CELL = 400
+
+
+def result_extraction_limits(result: dict | None = None):
+    """The extraction limits for a RETURNED mesh workspace: the generic limits, with the archive
+    ceiling sized from the cell budget - CELL_HARD_LIMIT cells at RESULT_BYTES_PER_CELL (800 MB
+    at the default 8 M) - and, when the remote's result document says how many cells the mesh
+    has, from that count too (the archive, the expanded total and the largest file each at their
+    RESULT_*_PER_MEASURED_CELL). Never below the generic limits; entries, depth, ratio and member
+    types are unchanged."""
+    from dataclasses import replace
+
+    import meshpipeline.settings.policy as polcfg
+    from meshpipeline.sandbox.safe_extract import default_limits
+    base = default_limits()
+    by_budget = int(polcfg.CELL_HARD_LIMIT) * RESULT_BYTES_PER_CELL
+    q = (result or {}).get("quality") if isinstance(result, dict) else None
+    try:
+        cells = max(0, int((q or {}).get("cells") or 0)) if isinstance(q, dict) else 0
+    except (TypeError, ValueError):
+        cells = 0
+    # the count is the remote's word: bounded, so no document can lift the limits without end
+    cells = min(cells, 2 * int(polcfg.CELL_HARD_LIMIT))
+    return replace(
+        base,
+        max_archive_bytes=max(base.max_archive_bytes, by_budget,
+                              cells * RESULT_ARCHIVE_BYTES_PER_MEASURED_CELL),
+        max_total_uncompressed_bytes=max(base.max_total_uncompressed_bytes,
+                                         cells * RESULT_RAW_BYTES_PER_MEASURED_CELL),
+        max_file_bytes=max(base.max_file_bytes, cells * RESULT_FILE_BYTES_PER_MEASURED_CELL))
+
+
+#: one spelling, owned by the contract the executor's account reads it through
+RESULT_UNCOLLECTED_MARKER = RUN_UNCOLLECTED_TAG
 
 
 def _uncollected(engine: str, result: dict, exc: BaseException) -> dict:
@@ -274,18 +347,26 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
 
         result = _poll_gcs_json(bucket, res_key, deadline_s=timeout + 600)
         if result is None:
-            return _fail(engine, f"no result within {timeout + 600}s deadline")
+            # Reached only once the run is dispatched (a refused or ambiguous submission raised
+            # above), so this is a run out of time, never one that did not start.
+            return _timed_out(engine, timeout + 600, operation)
         # A recognised mesh result, checked rather than assumed. Anything else - a JSON scalar, a
         # list, a document without the verdict - is an exchange we do not understand, and the one
         # safe reading of that is "not collected", so the objects stay for someone who can.
         if not isinstance(result, dict) or "rc" not in result:
             return _fail(engine, "the result document is not a recognised mesh result")
 
-        out_bytes = bucket.blob(out_key).download_as_bytes()
         # bounded, fail-closed extraction of the returned workspace tar (size/entry/ratio/type
-        # limits) - never unbounded extractall, even for our own tar.
+        # limits) - never unbounded extractall, even for our own tar. Streamed to a file beside
+        # the workspace, not held in memory: the archive of a mesh at the cell budget is most of
+        # a gigabyte, and holding it (twice, as bytes and as a buffer) was the worker's peak.
+        import tempfile
+
         from meshpipeline.sandbox.safe_extract import safe_extract_tar
-        safe_extract_tar(fileobj=io.BytesIO(out_bytes), dest=str(ws))
+        with tempfile.TemporaryDirectory(prefix="mesh_result_", dir=str(ws.parent)) as _tmp:
+            _archive = Path(_tmp) / "result.tar.gz"
+            bucket.blob(out_key).download_to_filename(str(_archive))
+            safe_extract_tar(path=_archive, dest=str(ws), limits=result_extraction_limits(result))
         # Built BEFORE the exchange is released: this is the last thing that can raise, so the
         # objects must still exist while it happens.
         # The reference travels back so the submission authority can record what was accepted.

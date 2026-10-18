@@ -23,9 +23,13 @@ def _judge_measurements(result: dict, q: dict, wall_faces: int) -> dict:
 
 def _repair_message(key: str, result: dict, q: dict) -> str:
     if key == "timed_out":
-        return ("TIMEOUT - the mesh is too fine to build in budget. This is the ONE case to "
-                "REDUCE the budget: lower max_cells and/or surface_level; fewer n_layers also "
-                "helps. Do NOT enlarge anything.")
+        # The mesher RAN and ran out of time. Say that plainly, and name the lever that actually
+        # shrinks the mesh: an internal plan's wall cell is bore / cells_across_diameter, so a
+        # lower surface_level alone leaves it exactly as fine as the run that timed out.
+        return ("TIMEOUT - snappyHexMesh ran out of time: the mesh is too fine to build in "
+                "budget. This is the ONE case to REDUCE the mesh: lower cells_across_diameter "
+                "(internal passage) or surface_level (external body), and max_cells; fewer "
+                "n_layers also helps. Do NOT resubmit the same plan and do NOT enlarge anything.")
     if key == "rc":
         # -3 is RC_INFRASTRUCTURE: the run never reached snappyHexMesh at all. Describing that as
         # a geometry problem sent a planner enlarging its domain 20->25->30 and 30->40->50 across
@@ -51,11 +55,22 @@ def _repair_message(key: str, result: dict, q: dict) -> str:
             return ("RESULT NOT COLLECTED - the mesh ran to completion but its output could not "
                     "be brought back from the remote runner. Nothing in this plan caused it; "
                     "resubmit this plan unchanged.")
-        if result.get("rc") == RC_INFRASTRUCTURE:
+        if result.get("rc") == RC_INFRASTRUCTURE and \
+                "[CLOUD_RUN_FAILED]" in str(result.get("log_tail") or ""):
             return ("INFRASTRUCTURE failure - the mesh run never started, so nothing about this "
                     "plan caused it and nothing in it can fix it. Do NOT change the domain, the "
                     "levels, the layers or the budget: a different plan is a different payload, "
                     "and that is what the submission claim rejects. Resubmit this plan unchanged.")
+        if result.get("rc") == RC_INFRASTRUCTURE:
+            # -3 WITHOUT the dispatch marker is the mesher's own stage verdict
+            # (engines/snappy/parallel_stages): every stage ran, but the run left no complete,
+            # valid mesh. It started; calling it "never started" asks for the same run again.
+            _note = str(result.get("stage_note") or "").strip()
+            return ("snappyHexMesh RAN but left no complete, valid mesh"
+                    + (f" ({_note[:160]})" if _note else "")
+                    + ". This is not an infrastructure failure and resubmitting unchanged repeats "
+                      "it: REDUCE max_cells and the resolution (cells_across_diameter or "
+                      "surface_level, and any local refinement) so the run completes.")
         if result.get("rc") in (137, -9):
             # SIGKILL: the container runtime's answer to a process past its memory limit. The
             # 'setup issue' advice below (strict quality, a larger domain) makes the next mesh

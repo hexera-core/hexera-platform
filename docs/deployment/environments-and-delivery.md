@@ -378,7 +378,7 @@ dominant cost and is not addressed here — see §7.
 14. API service *(`images`)*
 15. Meter sweep — the scheduled job that bills overage *(`images`; a stated skip where billing is off)*
 16. Maintenance sweep — the scheduled job that reaps stalled jobs and purges expired uploads *(`images`; a stated skip where there is no hosted database)*
-17. Console service *(`console`)*
+17. Console service *(`console`)*, then the artifacts bucket's browser-upload CORS rule *(`images` or `console`; `apply-upload-cors.sh`)* — lets the deployment's own pages PUT a large file straight into the bucket
 18. Admin console *(`admin`)*
 19. Outreach sender *(`outreach`)*
 20. Worker fleet + rolling update *(`workers`)*

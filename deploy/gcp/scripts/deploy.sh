@@ -287,6 +287,19 @@ if want console; then
 else
   skipped console "the console service keeps serving whichever digest it already has"
 fi
+# THE BROWSER UPLOAD PATH. A file over 20 MB is PUT by the browser straight into the artifacts
+# bucket - Cloud Run refuses a request body over 32 MiB - and that cross-origin PUT needs the bucket
+# to accept it from this deployment's pages. After the console, so its addresses exist to be listed;
+# with either tier, because the API serves the same page and issues the signed URLs. Idempotent: an
+# unchanged rule is left as it is.
+if want images || want console; then
+  # Best effort: a failure here must not stop the rest of the deploy - large console uploads just
+  # wait for the rule, and the script says how to apply it by hand.
+  bash "${S}/apply-upload-cors.sh" || warn "the browser-upload CORS step failed - files over 20 MB
+       cannot be uploaded from the console until it succeeds; rerun: bash deploy/gcp/scripts/apply-upload-cors.sh"
+else
+  skipped console "the artifacts bucket's browser-upload CORS rule is left as it is"
+fi
 
 stage "Admin console (the promoted admin digest, behind IAP)"
 # AFTER the API, like the console: its pages read the API and the database, so an admin console

@@ -1,12 +1,14 @@
 # Responsibility: Propose, confirm and verify which engine the user chose.
 # Boundaries: a user-named engine is honoured only when the user actually named it, and a plain
 # yes binds to the engine the application proposed - never to one the model would rather have.
+# The engine is asked ONCE, as the application's own one-line question with the model's reason.
 from __future__ import annotations
 
 import re
 import time
 import uuid
 
+from meshpipeline.agents.intake import consent as _consent
 from meshpipeline.agents.intake import vocabulary as _vocab
 from meshpipeline.engines.registry import engine_label
 
@@ -22,6 +24,9 @@ CONFIRMED = "confirmed_selection"
 # field that will be dispatched.
 VIA_CONVERSATION = "conversation"
 VIA_STRUCTURED_INPUT = "structured_input"
+# A whole thermal model (an ECXML upload confirmed on its panel) is meshed by the engine that reads
+# its file itself, selected without a question: the job sheet the user approves names it.
+VIA_THE_FILE = "the_file"
 
 # A PLAIN YES to the application's own question. The question names the engine ("Do you want to
 # select snappyHexMesh?"), so "yes", "ok", "sure" or "go with that" is a complete answer that binds
@@ -112,7 +117,12 @@ def _tokens(engine: str, message: str, *, keep_engine: bool,
         text = text.replace("?", f" {_QUESTION_WORD} ")
         text = _CLAUSE_BREAK.sub(f" {_BREAK_WORD} ", text)
     text = re.sub(r"[^0-9a-z]+", " ", text)
-    for spelling in {engine, engine_label(engine)}:
+    # the engine's own names first, then a sibling's name that is the leading part of its own
+    # ("snappyHexMesh" for "snappyHexMesh multi-region") - what a user shortens it to
+    spellings = sorted({engine, engine_label(engine)}, key=len, reverse=True)
+    for sibling in short_siblings(engine):
+        spellings += sorted({sibling, engine_label(sibling)}, key=len, reverse=True)
+    for spelling in spellings:
         bare = re.sub(r"[^0-9a-z]+", " ", str(spelling or "").casefold()).strip()
         if bare:
             text = re.sub(rf"(?<![0-9a-z]){re.escape(bare)}(?![0-9a-z])",
@@ -125,6 +135,11 @@ def _tokens(engine: str, message: str, *, keep_engine: bool,
 
 
 def plain_assent(engine: str, message: str) -> bool:
+    # The intake's one consent reader first ("sounds good", "go for it", "yes go ahaed" are a yes
+    # to this question exactly as they are to the summary), then this question's own words, which
+    # may name the engine it proposed ("yes, snappyHexMesh", "use it").
+    if _consent.is_yes(message):
+        return True
     words = [w for w in _tokens(engine, message, keep_engine=False) if w not in _FILLER]
     return bool(words) and all(w in _ASSENT for w in words)
 
@@ -227,8 +242,88 @@ def declines(engine: str, message: str) -> bool:
     return False
 
 
+def short_siblings(engine: str) -> frozenset[str]:
+    """Engines whose name is the LEADING PART of `engine`'s own: snappyHexMesh for "snappyHexMesh
+    multi-region". A user answering "I'd mesh this with snappyHexMesh multi-region" with
+    "snappyHexMesh is fine" shortens the name of the engine they were asked about."""
+    from meshpipeline.engines.registry import engine_names
+
+    own = (engine or "").strip().lower()
+    label = _norm(engine_label(own))
+    return frozenset(n for n in engine_names()
+                     if n != own and _norm(engine_label(n))
+                     and label.startswith(_norm(engine_label(n)) + " "))
+
+
+def _only_shortens(engine: str, message: str, named) -> bool:
+    # every engine the message names is a shortening of the proposed one, and the message is
+    # otherwise a plain yes to it: "snappyHexMesh is fine", "yes, use snappyHexMesh" - not "use
+    # plain snappyHexMesh" or "the single-region snappyHexMesh", which choose the sibling
+    short = short_siblings(engine)
+    return bool(named) and set(named) <= short and plain_assent(engine, message)
+
+
 def names_another_engine(engine: str, message: str) -> bool:
-    return bool(_vocab.engines_named_in(message, (engine or "").strip().lower()))
+    # An accepted proposal binds to EXACTLY the engine proposed: a shortened name of it is a yes
+    # to it, never a choice of the sibling the short name also spells (dev-areen set_top_box,
+    # 2026-10-11: "snappyHexMesh is fine" to snappyHexMesh multi-region was taken as plain
+    # snappyHexMesh, refused for heat transfer, and asked again three times).
+    named = _vocab.engines_named_in(message, (engine or "").strip().lower())
+    return bool(named) and not _only_shortens(engine, message, named)
+
+
+def user_chose(engine: str, user_texts) -> bool:
+    """Whether the user's own words already chose `engine`. `user_texts` are the user's messages,
+    oldest first. The most recent
+    message that names any engine decides - it must name this one and no other, neither ask about
+    it nor decline it, and CHOOSE it in plain words: the name alone ("snappyHexMesh", the answer
+    to "which toolchain?"), a plain choice ("use snappy", "snappyHexMesh it is") or a choice verb
+    before it ("I'll go with snappyHexMesh for the mesh"). A mention is not a choice: "I used
+    snappyHexMesh last time" names it and chooses nothing. The user who
+    answered "which engine?" with "snappyHexMesh" and was asked a setup question next was then
+    asked "Do you want to select snappyHexMesh?" - the model proposed the engine a turn later and
+    only the latest message was searched for its name."""
+    want = (engine or "").strip().lower()
+    for said in reversed(tuple(user_texts or ())):
+        said = str(said or "")
+        named = _vocab.engines_named_in(said, "")
+        if not named:
+            # a later "forget it", "actually don't use that" takes the choice back although it names
+            # no engine (review on #92): the engine is asked again, never confirmed over it
+            if declines(want, said):
+                return False
+            continue
+        if named != [want] or "?" in said or declines(want, said):
+            return False
+        return _chooses_in(want, said)
+    return False
+
+
+#: What may come before an engine's name to choose it: the choice verbs, and "make it", "switch
+#: to", "change to", "try", "go ahead with".
+_CHOOSING = _CHOICE | frozenset({"make", "switch", "change", "try", "goahead"})
+
+
+def _chooses_in(engine: str, message: str) -> bool:
+    # a clause that is the engine alone, or a plain choice of it ("use it", "go with X", "X it is"),
+    # or a choice verb before the engine within its clause ("I'll go with X for the mesh")
+    words = _tokens(engine, message, keep_engine=True, keep_breaks=True)
+    clauses: list[list[str]] = [[]]
+    for w in words:
+        if w in (_BREAK_WORD, _QUESTION_WORD):
+            clauses.append([])
+        else:
+            clauses[-1].append(w)
+    for clause in clauses:
+        if _ENGINE_WORD not in clause:
+            continue
+        rest = [w for w in clause if w != _ENGINE_WORD and w not in _FILLER]
+        if not rest or _chooses_the_engine(clause):
+            return True
+        before = clause[:clause.index(_ENGINE_WORD)]
+        if any(w in _CHOOSING for w in before) and not any(w in _NEGATION for w in before):
+            return True
+    return False
 
 
 def state_of(sel: dict | None) -> str:
@@ -334,6 +429,30 @@ def confirm(sel: dict | None, *, session_id: str, owner_id: str, revision: str,
     return _confirmed(sel, revision), ""
 
 
+#: "I don't know" in front of a delegation is not a refusal: "I don't know, your call" hands the
+#: choice back. Taken out before the message is read for a real "no" to the engine.
+_NOT_KNOWING = re.compile(
+    r"\b(?:i\s+)?(?:do\s+not|don['’]?t)\s+know\b|\bno\s+(?:idea|clue)\b", re.IGNORECASE)
+
+
+def leaves_it_to_us(engine: str, message: str) -> bool:
+    # "your call", "you decide", "I don't know, whatever you think": the question named one engine
+    # and the user handed the choice back, so the engine it named stands. To the summary a
+    # delegation is no go-ahead to spend anything (consent.HEDGES); to a proposal of one engine it
+    # is the answer. Read by the intake's one deferral reader, never by a word list of this
+    # module's - and never over a "no" aimed at the engine ("your call, but not snappyHexMesh").
+    # A message that names an engine is about the engine ("I don't know what snappyHexMesh is"),
+    # not a hand-back: the plain reading below, or the model, answers it. Nor is uncertainty on
+    # its own (review on #108): "I don't know" or "no idea what a mesher is" says they are
+    # unsure, not that the choice is ours - the hand-back must still be there once the
+    # not-knowing is taken out.
+    from meshpipeline.agents.intake.turn import defers_to_default
+    if _vocab.engines_named_in(str(message or "")):
+        return False
+    rest = _NOT_KNOWING.sub(" ", str(message or ""))
+    return defers_to_default(rest) and not declines(engine, rest)
+
+
 def confirm_by_assent(sel: dict | None, *, session_id: str, owner_id: str, revision: str,
                       latest_user_message: str, user_msg_count: int) -> dict | None:
     # The application reads a plain yes to its own question ITSELF, before the model runs. The
@@ -345,11 +464,40 @@ def confirm_by_assent(sel: dict | None, *, session_id: str, owner_id: str, revis
     if not ok or sel is None:
         return None
     engine = str(sel.get("engine") or "")
-    if names_another_engine(engine, latest_user_message) or declines(engine, latest_user_message):
+    if names_another_engine(engine, latest_user_message):
         return None
-    if not plain_assent(engine, latest_user_message):
+    if leaves_it_to_us(engine, latest_user_message):
+        return _confirmed(sel, revision)
+    if declines(engine, latest_user_message) or not plain_assent(engine, latest_user_message):
         return None
     return _confirmed(sel, revision)
+
+
+def choose_listed(sel: dict | None, *, session_id: str, owner_id: str, revision: str,
+                  latest_user_message: str, user_msg_count: int) -> dict | None:
+    """THE USER PICKS ANOTHER ENGINE FROM THE LIST. The engine question lists every engine that can
+    take the file, with its fit (agents/intake/measured_choice.statement), and the console draws
+    one button per engine. An answer that plainly chooses ONE of the listed engines - "use cfMesh",
+    "cfMesh", "go with Gmsh" - is the user's selection, read here before the model runs, exactly
+    as a plain yes to the proposed one is. Anything else (a question, a hedge, two engines, an
+    engine the list does not hold) is left to the model, as before."""
+    ok, _ = _answerable(sel, session_id=session_id, owner_id=owner_id,
+                        user_msg_count=user_msg_count)
+    if not ok or sel is None:
+        return None
+    listed = [str(f.get("engine") or "") for f in
+              ((sel.get("recommendation") or {}).get("fits") or ()) if isinstance(f, dict)]
+    named = _vocab.engines_named_in(str(latest_user_message or ""), "")
+    if len(named) != 1 or named[0] not in listed or named[0] == sel.get("engine"):
+        return None
+    if _only_shortens(str(sel.get("engine") or ""), str(latest_user_message or ""), named):
+        return None     # a yes to the proposed engine by its short name (confirm_by_assent's)
+    engine = named[0]
+    message = str(latest_user_message or "")
+    if "?" in message or declines(engine, message) or not _chooses_in(engine, message):
+        return None
+    return {**sel, "id": uuid.uuid4().hex, "engine": engine, "state": CONFIRMED,
+            "confirmed_revision": revision, "expires_at": time.time() + CONFIRMED_TTL_S}
 
 
 def verify_confirmed(sel: dict | None, engine: str, *, session_id: str,
@@ -370,8 +518,37 @@ def verify_confirmed(sel: dict | None, engine: str, *, session_id: str,
     return True, ""
 
 
-def render_selection_statement(engine: str) -> str:
+#: Past this a "reason" is no longer one line a person reads in passing.
+REASON_MAX_CHARS = 160
+
+
+def proposal_reason(engine: str, reason) -> str:
+    """The model's one-line reason for proposing `engine`, as the question will print it - or ""
+    when it cannot go in front of the user as written: empty, too long, a question of its own, or
+    naming another engine (the question offers ONE engine; alternatives are for when the user
+    asks)."""
+    from meshpipeline.contracts.engineering_text import plain
+
+    text = re.sub(r"\s+", " ", plain(str(reason or ""))).strip().strip(" .;:,-–—")
+    text = re.sub(r"^(?:because|since|as)\s+", "", text, flags=re.IGNORECASE)
+    if not text or len(text) > REASON_MAX_CHARS or "?" in text:
+        return ""
+    if _vocab.engines_named_in(text, (engine or "").strip().lower()):
+        return ""
+    if len(text) > 1 and text[0].isupper() and text[1].islower():
+        text = text[0].lower() + text[1:]     # "It fits ..." reads on after the colon; "CFD" stays
+    return text
+
+
+def render_selection_statement(engine: str, reason: str = "") -> str:
+    """The ONE engine question: the engine, why it suits this part, and a plain way to say no.
+
+    It used to read "Selected engine: X. This is a proposal, not a selection - nothing has been
+    selected yet and nothing will be meshed. Do you want to select X?" - three sentences of
+    bookkeeping around a yes/no, and no reason at all. A plain yes (or "your call") to it is read
+    by the application before the model runs (`confirm_by_assent`); naming another engine is a
+    new choice."""
     shown = engine_label(engine)
-    return (f"Selected engine: {shown}\n\n"
-            "This is a proposal, not a selection - nothing has been selected yet and nothing will "
-            f"be meshed. Do you want to select {shown}?")
+    why = proposal_reason(engine, reason)
+    opening = f"I'd mesh this with {shown}: {why}." if why else f"I'd mesh this with {shown}."
+    return f"{opening} OK, or do you use a different mesher?"

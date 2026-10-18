@@ -153,6 +153,21 @@ _UNAUTHENTICATED_ROUTE_ALLOWED: dict[str, str] = {
         "anything but bytes, and a deployment with no secret configured refuses the route outright "
         "rather than trusting what it cannot verify. "
         "test_the_billing_webhook_refuses_an_unverified_body keeps that true."),
+    "api/v1/admin_repair.py:assign_job": (
+        "POST /api/v1/admin/repair/jobs/{id}/assign is the OPERATOR's route, not a tenant's: the "
+        "repair queue is one list over EVERY customer's jobs, and `owner_dep` proves which ONE "
+        "tenant a caller is - which is exactly what this surface must not be scoped to. It is "
+        "not ungated: admin_dep compares X-Admin-Key against ADMIN_API_KEY in constant time and "
+        "a deployment with no key configured answers 404 rather than admitting the capability "
+        "exists. test_every_route_is_behind_the_admin_credential in "
+        "tests/unit/api/test_admin_repair_route.py keeps every route on this module gated, so "
+        "this exception cannot spread to a new one unnoticed."),
+    "api/v1/admin_repair.py:decide_job": (
+        "POST /api/v1/admin/repair/jobs/{id}/decide is the same operator surface and the same "
+        "reason: deciding a customer's repair job is staff work across the tenant boundary. The "
+        "actor is not taken on trust either - the admin console sends the IAP-verified identity "
+        "and the decision row records it, so a decision names a person even though the shared "
+        "credential cannot."),
     "api/v1/admin_billing.py:raise_invoice": (
         "POST /api/v1/admin/billing/organizations/{id}/invoices is the OPERATOR's route, not a "
         "tenant's: it raises an invoice ACROSS the tenant boundary for an account that is invoiced "

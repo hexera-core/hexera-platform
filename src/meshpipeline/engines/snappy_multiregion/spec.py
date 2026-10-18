@@ -9,12 +9,15 @@ from meshpipeline.contracts.review_evidence import (
 )
 from meshpipeline.engines.base import (
     Deliverable,
+    DeliveredMesh,
     DownstreamTarget,
     EngineSpec,
+    FlowSupport,
     InputContract,
     MeshCapability,
     ParamSpec,
     RunPolicy,
+    TurfRow,
 )
 from meshpipeline.engines.base import (
     DeliverableMember as M,
@@ -100,6 +103,22 @@ def _viewer_surface():
     return polymesh_viewer
 
 
+
+# WHERE multi-region snappyHexMesh IS AT HOME (engines/home_turf.py reads these; thresholds from
+# the HOME-TURF lab sweep, 2026-10-05). One body-fitted background mesh cut into a polyMesh per
+# solid with conformal interfaces: conjugate heat transfer and other coupled fluid + solid
+# assemblies. A single body is not a multi-region case.
+HOME_TURF = (
+    TurfRow("n_solids", ">=", 2, "home",
+            "Each solid becomes its own region, with matching faces on every shared interface."),
+    TurfRow("n_solids", "<", 2, "outside",
+            "A single solid is a single-region job: mesh it with snappyHexMesh, cfMesh or Gmsh."),
+    TurfRow("closed", "is", False, "weak",
+            "A solid that is not closed cannot become a region of its own; gaps or overlaps between "
+            "solids keep the interfaces from matching."),
+)
+
+
 SPEC = EngineSpec(
 
         name="snappy_multiregion",
@@ -158,6 +177,13 @@ SPEC = EngineSpec(
         # topologies=() - a multi-region case declares its own `fluid_topology` param;
         # the CHT purpose does not fix it.
         capabilities=(MeshCapability("solid-assembly", "multiregion-volume"),),
+        # WHAT FILE IT TAKES: the assembly read solid by solid (multiregion_runner), from a B-rep
+        # (STEP, IGES, BREP, each by its own reader) or from a surface - an STL's named solids, or
+        # an unnamed triangle soup split into the closed bodies it bounds
+        # (snappy_multiregion/surface_solids.py).
+        accepts=(FlowSupport("multi-region", ("cad", "surface")),),
+        ladder_rank=50,
+        home_turf=HOME_TURF,
         input_contract=InputContract(
             dimensionalities=("3D",),
             input_kind="solid",
@@ -232,6 +258,8 @@ SPEC = EngineSpec(
             solvers=("chtMultiRegionFoam (conjugate heat transfer)",
                      "solids4Foam (fluid-structure interaction)"),
         ),
+        # per-region OpenFOAM hex-dominant meshes, snapped onto each region's surface
+        delivered_mesh=DeliveredMesh(cells="hex-dominant", walls="body-fitted", prism_layers=True),
         run_policy=RunPolicy(
             required_files=("system/blockMeshDict", "system/snappyHexMeshDict"),
             # a multi-region build (background snappy + split of several regions)

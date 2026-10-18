@@ -286,18 +286,49 @@ permissions remain a non-goal:
 
 **The delete confirmation is blind, and the page says so.** The console holds no database
 connection, so it cannot read job leases and cannot tell you the worker you are about to remove is
-four hours into a mesh job. There is also no drain contract yet — the worker is not asked to finish
-first. Closing that gap needs either the read-only database connection or the drain work in
-build-out item 6; neither is in place.
+four hours into a mesh job. What it can tell you is what happens to that job: every worker VM runs
+`deploy/gcp/worker/shutdown.sh` as it goes down, which stops the worker container; the job sees the
+shutdown, releases its lease and goes back on the queue, and the next free worker starts it again
+from the beginning (`application/worker_handoff.py`). The work done so far is repeated, not lost,
+and the user is told the job moved. The same happens on autoscaler scale-in and on a fleet roll.
 
 **Who owns the scaling knobs.** The floor, ceiling, cooldown, jobs-per-instance and scale-in
 control belong to **this console**, not to the deploy. `create-worker-fleet.sh` sets them when it
 creates the autoscaler and does not reconcile them afterwards;
 `create-queue-depth-publisher.sh` still repoints the metric filter but reads the live numbers back
-and passes them through unchanged; the three Cloud Run scripts pass `--min-instances` /
-`--max-instances` only when creating a service. The `WORKER_MIG_*` and `*_MIN_INSTANCES` values in
-`generated.<env>.env` are therefore **creation defaults** — they stop describing the running system
-the moment anyone changes it here. The Fleet page is the authority after that.
+- the scale-in control included - and passes them through unchanged; the three Cloud Run scripts
+pass `--min-instances` / `--max-instances` only when creating a service. The `WORKER_MIG_*` and
+`*_MIN_INSTANCES` values in `generated.<env>.env` are therefore **creation defaults** — they stop
+describing the running system the moment anyone changes it here. The Fleet page is the authority
+after that. The one default the deploy fills in on a live group is the scale-in control, and only
+when the group has none: at most one instance removed per 30 minutes
+(`WORKER_SCALE_IN_MAX_REPLICAS`, `WORKER_SCALE_IN_WINDOW_SECONDS`).
+
+**What the fleet scales on.** `custom.googleapis.com/hexera/worker_demand` - jobs queued PLUS jobs
+running - not the queue depth. Sized on depth alone, the group shrank to its floor whenever a burst
+of queued jobs drained, and deleted VMs that were mid-job (shared dev, 2026-09-29: three jobs lost
+at 05:41, 06:39 and 07:32 UTC). The depth series is still published and is what the queue chart on
+this page shows.
+
+**Who removes a worker VM: the idle worker, not the autoscaler.** A Compute Engine group cannot be
+told which of its VMs is idle, and on shared dev (2026-09-30) its scale-in removed the busy VM twice
+in half an hour, with the scale-in control in place. So the autoscaler's mode is `ONLY_SCALE_OUT`:
+it still adds VMs as demand rises and still holds the floor, but never deletes one. A worker that
+has held no job for `WORKER_IDLE_RETIRE_MINUTES` (default 10) removes its own VM when the group is
+above its floor, after it has stopped taking work and checked it is still empty
+(`src/meshpipeline/runtime/idle_retire.py`). The mode is set by `create-worker-fleet.sh`
+(`WORKER_SELF_RETIRE`, default `true`) and carried through every rewrite; a console edit writes the
+policy back whole, mode included. The scale-in control above does nothing in this mode. The workers
+need one grant for this - `projects/<project>/roles/hexeraWorkerSelfRetire` on the worker identity
+(`compute.instanceGroupManagers.get/update`, `compute.autoscalers.get`) - which the fleet deploy
+attempts and, if the deploy identity cannot change IAM, prints for an owner to run once. Without it
+the workers say so in their logs and the group does not shrink.
+
+**A fleet roll no longer replaces a busy worker.** Once the group runs workers that can move
+themselves (their template carries the `self-retire` label), a fleet deploy rolls
+OPPORTUNISTICALLY: new VMs start on the new template, and a worker on the old one recreates its own
+VM as soon as it is idle. The first roll onto such workers is still proactive, because the workers
+it replaces cannot move themselves.
 
 
 ## 11. What the first real dev deploy found

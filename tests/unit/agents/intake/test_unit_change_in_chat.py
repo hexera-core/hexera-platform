@@ -191,8 +191,17 @@ async def test_a_file_with_no_unit_yet_is_the_unit_questions_not_a_change(monkey
     monkeypatch.setattr(uch, "change_unit", _change)
     monkeypatch.setattr(gh, "measured_size_mm", lambda sid: None)
     monkeypatch.setattr(gh, "hold_applies", lambda sid: None)
+    recorded: list = []
+
+    async def _record(db, *, owner_id, geometry_source_id, unit, organization_id=""):
+        recorded.append(unit)
+        return SimpleNamespace(interpretation_id=str(uuid.uuid4()))
+    monkeypatch.setattr(uc, "record", _record)
     repo = MagicMock(); repo.append_message = AsyncMock(); repo.set_intake_gate = AsyncMock()
+    repo.bind_geometry_interpretation = AsyncMock()
     inbound = msg.InboundMessage(session_id=SID, owner_id="alice", content="the file is in metres", organization_id="")
     outcome = await msg._settle(inbound, AsyncMock(), gate={}, locked=_locked(geometry_interpretation_id=None),
                                 messages=[], revision="r1", session_repo=repo, logger=MagicMock())
-    assert seen == [] and outcome.status is msg.MessageStatus.unit_question
+    # the unit question's, not a change: said before it was asked, it IS the answer - recorded as
+    # the file's first unit (nothing measured yet to doubt it with), never re-read as a change
+    assert seen == [] and outcome.status is msg.MessageStatus.unit_recorded and recorded == [LengthUnit.metre]

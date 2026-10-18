@@ -263,6 +263,28 @@ class TestTheDriverStopsBeforeTheMesher:
         ok, _pub = run()
         assert ok is True and seen["native"] == 1
 
+    def test_a_half_model_on_its_symmetry_plane_is_meshed_not_refused(self, driver, monkeypatch):
+        # job 011e1fe0 (the CRM high-lift half model): the box sat on the cut, as it must, and
+        # every pass of both attempts was refused as "the box touches the body on the lateral
+        # side". The plane is now judged as what it is, and recorded for the post-mesh gate.
+        run, seen, _ws = driver
+        cut = {"axis": 1, "pos": -0.2, "side": "min", "name": "symmetry"}   # the body's y-min
+        monkeypatch.setattr(R, "detect_symmetry_plane", lambda *a, **k: cut)
+        recorded: list = []
+        stub_prepare = R.prepare_surface
+
+        def _prepare(ws, **k):
+            recorded.append(k.get("symmetry_faces"))
+            return stub_prepare(ws, **k)
+        monkeypatch.setattr(R, "prepare_surface", _prepare)
+        seen["boxes"] = [([-3.0, -0.2, -5.0], [7.0, 5.2, 5.3])]
+        asked = {"requested_extents": {"upstream": 2.0, "downstream": 5.0, "lateral": 5.0,
+                                       "vertical": 5.0}, "reference_length_m": 1.0}
+        ok, pub = run(passes=1, intake_patches=_patches(CAR + [("symmetry", "symmetry")]),
+                      requirements_strict=True, **asked)
+        assert ok is True and seen["native"] == 1, [c for c in pub.calls if c[0] == "anote"]
+        assert recorded == [[{"patch": "symmetry", "axis": "y", "side": "min"}]]
+
 
 # the executor reports a recorded refusal instead of a mesher that "did not finish"
 

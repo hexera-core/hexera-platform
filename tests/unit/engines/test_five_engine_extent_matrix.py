@@ -234,7 +234,9 @@ def test_emit_the_measured_matrix(tmp_path, monkeypatch, request):
 
 # explained blanks
 
-def test_gmsh_refuses_a_bare_surface_and_says_so(tmp_path):
+def test_gmsh_refuses_an_empty_surface_and_says_so(tmp_path):
+    # a CLOSED surface is meshed now (tests/unit/engines/test_gmsh_surface_and_external.py); one
+    # with nothing in it still cannot bound a volume, and the refusal says what to supply
     from meshpipeline.engines.gmsh import gmsh_runner as R
 
     ws = tmp_path / "ws"
@@ -242,8 +244,8 @@ def test_gmsh_refuses_a_bare_surface_and_says_so(tmp_path):
     (ws / "input.stl").write_text("solid s\nendsolid s\n")
 
     out = R.inspect_stl(ws)
-    assert "geometry.step missing" in out.get("error", "")
-    assert "CAD solid" in out["error"], "the refusal must tell the user what to supply"
+    assert "no faces gmsh can close into a volume" in out.get("error", "")
+    assert "closed surface (or a CAD solid)" in out["error"], "the refusal must say what to supply"
 
 
 def test_multiregion_needs_more_than_one_solid(tmp_path):

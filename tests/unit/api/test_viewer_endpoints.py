@@ -42,7 +42,7 @@ class _Store:
         return self.blobs[key]
 
 
-def _client(monkeypatch, *, row=True, store=None, owner=OWNER, job_owner=OWNER):
+def _client(monkeypatch, *, row=True, store=None, owner=OWNER, job_owner=OWNER, dispatch_payload=None):
     import meshpipeline.contracts.object_storage as osmod
     import meshpipeline.persistence.repositories.artifact_repository as arepo
 
@@ -53,7 +53,8 @@ def _client(monkeypatch, *, row=True, store=None, owner=OWNER, job_owner=OWNER):
 
     async def fake_get_job(db, job_id, owner_id, *, organization_id=""):
         # the real service is tenant-scoped; a foreign owner simply gets nothing
-        return SimpleNamespace(id=job_id) if owner_id == job_owner else None
+        return (SimpleNamespace(id=job_id, dispatch_payload=dispatch_payload)
+                if owner_id == job_owner else None)
     monkeypatch.setattr(sim.svc, "get_job", fake_get_job)
 
     class _Repo:
@@ -151,3 +152,27 @@ def test_no_response_leaks_a_storage_key_or_local_path(monkeypatch):
     body = client.get(f"/api/v1/simulation/{JOB}/surface").text
     for leaked in ("jobs/x/viewer_data.json", "storage_key", "WORKSPACE_BASE", "/attempt_"):
         assert leaked not in body, leaked
+
+
+# which way is up
+
+SESSION = "22222222-2222-4222-8222-222222222222"
+
+
+def test_the_surface_says_which_way_is_up_for_the_part_its_check_confirmed(monkeypatch):
+    """A car drawn upside down: the geometry check's confirmed up axis rides on the surface, so the
+    viewer opens it the right way up. Display only - the delivered bytes are untouched."""
+    store = _Store({"jobs/x/viewer_data.json": json.dumps(_PAYLOAD).encode(),
+                    f"sessions/{SESSION}/geometry_check/confirmed.json": json.dumps({"up_axis": "-z"}).encode()})
+    client, _ = _client(monkeypatch, store=store, dispatch_payload={"session_id": SESSION})
+    r = client.get(f"/api/v1/simulation/{JOB}/surface")
+    assert r.status_code == 200 and r.json()["up_axis"] == "-z"
+    assert r.json()["kind"] == "stl"
+
+
+def test_a_job_with_no_check_or_an_unreadable_one_opens_as_drawn(monkeypatch):
+    client, store = _client(monkeypatch)                                   # no session on the job
+    assert "up_axis" not in client.get(f"/api/v1/simulation/{JOB}/surface").json()
+    client, store = _client(monkeypatch, dispatch_payload={"session_id": SESSION})   # nothing stored
+    r = client.get(f"/api/v1/simulation/{JOB}/surface")
+    assert r.status_code == 200 and "up_axis" not in r.json()

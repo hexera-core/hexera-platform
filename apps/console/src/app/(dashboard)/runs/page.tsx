@@ -2,7 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { auth } from "@/auth";
-import { formatDuration, runTitle, statusClass } from "@/app/_components/run-status";
+import { formatDuration, runTitle, statusClass, statusLabel } from "@/app/_components/run-status";
 import { ownerIdFromSession } from "@/lib/auth/session";
 import { consoleFetch } from "@/lib/hexera-api/console-fetch";
 
@@ -15,6 +15,7 @@ type Run = {
   ended_at: string | null;
   attempts: number;
   failed_reason: string | null;
+  review_outcome?: string | null;
 };
 
 type RunPage = { items: Run[]; next_cursor: string | null };
@@ -80,7 +81,9 @@ export default async function RunsPage({
               {page.items.map((run) => (
                 <tr key={run.id}>
                   <td>
-                    <span className={statusClass(run.status)}>{run.status}</span>
+                    <span className={statusClass(run.status, run.review_outcome)}>
+                      {statusLabel(run.status, run.review_outcome)}
+                    </span>
                   </td>
                   <td>
                     <Link href={`/runs/${run.id}`}>{runTitle(run)}</Link>

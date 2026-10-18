@@ -9,11 +9,14 @@ from meshpipeline.contracts.review_evidence import (
 )
 from meshpipeline.engines.base import (
     Deliverable,
+    DeliveredMesh,
     DownstreamTarget,
     EngineSpec,
+    FlowSupport,
     InputContract,
     MeshCapability,
     RunPolicy,
+    TurfRow,
 )
 from meshpipeline.engines.base import (
     DeliverableMember as M,
@@ -58,6 +61,16 @@ def _recommend():
     return recommend
 
 
+def _planned_timeout(workspace):
+    from meshpipeline.engines.cfmesh.cfmesh_runner import planned_run_cap
+    return planned_run_cap(workspace)
+
+
+def _timed_out_defects(log_tail):
+    from meshpipeline.engines.cfmesh.native import untangle_stall
+    return untangle_stall(log_tail)
+
+
 def _review_rubric():
     from meshpipeline.engines.cfmesh.criteria import REVIEW_AXES
     return REVIEW_AXES
@@ -95,6 +108,37 @@ def _viewer_surface():
     return polymesh_viewer
 
 
+
+# WHERE cfMesh IS AT HOME (engines/home_turf.py reads these; thresholds from the HOME-TURF lab
+# sweep, 2026-10-05). An octree of cartesian cells fitted to a watertight surface, with
+# polyhedral cells at the wall and layers extruded over the whole boundary: fast and robust on
+# clean external bodies and internal passages. It is weaker where a gap holds only a few cells
+# and where the surface is not closed, and it cannot lay a ground plane today.
+HOME_TURF = (
+    TurfRow("layers_requested", "is", True, "home",
+            "Its boundary layers are extruded over the whole wall: measured at 100% of the wall "
+            "area with a layer and 99.95-99.99% with all requested (ONERA M6, Windsor body at "
+            "3.8-4.2M cells)."),
+    TurfRow("knife_edges", ">", 1.0, "weak",
+            "Thin slotted elements (slats and flaps of a high-lift wing) can fold the boundary "
+            "cells: the high-lift airliner came out with incorrectly oriented faces at 1.4M "
+            "cells.", flow="external"),
+    TurfRow("ground", "is", True, "outside",
+            "It cannot lay a ground plane under the body yet: the far-field box is all open air.",
+            flow="external"),
+    TurfRow("closed", "is", False, "weak",
+            "The surface is not watertight; cfMesh fills a closed surface, so holes have to be "
+            "closed first."),
+    TurfRow("cells_across_at_budget", "<", 10.0, "weak",
+            "The narrowest passage gets fewer than 10 cells across within the cell budget; cfMesh "
+            "refines the wall band, not the gap, so tight gaps (a tube bank) can come out under the "
+            "resolution floor.", flow="internal"),
+    TurfRow("thin_wall_fraction", ">", 0.3, "weak",
+            "Much of this body is a thin hollow shell: at the default size it is meshed as a rough "
+            "envelope, and finer sizing breaks the mesh quality.", flow="external"),
+)
+
+
 SPEC = EngineSpec(
 
         name="cfmesh",
@@ -108,16 +152,18 @@ SPEC = EngineSpec(
             "profiles are REJECTED (outside the supported Cartesian envelope)."),
         descriptor=(
         "FLUID / CFD volume meshing. Fills a region with a Cartesian "
-        "octree mesh (cfMesh cartesianMesh); the surface is STAIRCASED (cut-cell), not "
-        "body-fitted. cartesianMesh is inside-out: it meshes the volume ENCLOSED by the "
+        "octree mesh (cfMesh cartesianMesh) whose boundary cells are projected onto the surface "
+        "and its feature edges, so the wall is BODY-FITTED (polyhedral cells at the wall), as "
+        "fine as the wall cell. cartesianMesh is inside-out: it meshes the volume ENCLOSED by the "
         "supplied surface. So the region depends on the topology the user declares - "
         "INTERNAL meshes the cavity inside the geometry (ducts, pipes, manifolds); "
         "EXTERNAL wraps the body in a far-field box and meshes the fluid around it. "
         "Tolerates dirty/non-watertight geometry (gaps, thin trailing edges) and meshes quickly. "
         "Also the system's TRUE-2D engine: native cartesian2DMesh meshes a profile ribbon "
         "one cell thick with empty front/back planes (airfoil sections, 2D studies). "
-        "PRODUCES an OpenFOAM polyMesh of the fluid. The staircased surface does not resolve "
-        "the wall, so it does not support wall-resolved y+ or reliable near-wall boundary layers."
+        "PRODUCES an OpenFOAM polyMesh of the fluid, with boundary layers extruded over the whole "
+        "wall (their coverage is measured on every mesh). Wall-resolved y+ ~1 stacks on sharp "
+        "edges are better served by a body-fitted layer mesher."
     ),
         _load_prompt=_prompt,
         _load_tools=_tools,
@@ -129,9 +175,8 @@ SPEC = EngineSpec(
             "and patch names/types for renameBoundary."
         ),
         intake_advisories=(
-            "The cut-cell surface is STAIRCASED by design (not body-fitted) - fine surface "
-            "features and near-wall gradients may be under-resolved unless refined, and it "
-            "is a poor fit when smooth wall-shear/boundary-layer resolution is the goal.",
+            "The wall follows the surface only as finely as the wall cell - fine surface "
+            "features and near-wall gradients may be under-resolved unless refined locally.",
             "Sharp feature edges have to be captured before meshing or they are rounded off; "
             "very thin regions and tight gaps between surfaces can leave bad cells that need "
             "coarser or more careful local sizing.",
@@ -147,8 +192,30 @@ SPEC = EngineSpec(
         # default mode; EXTERNAL is the one needing a bounding box bolted on (what
         # surfaceGenerateBoundingBox exists to do).
         capabilities=(MeshCapability("body-surface", "fluid-volume",
-                                     topologies=("internal", "external")),),
+                                     topologies=("internal", "external")),
+                      # A PREPARED fluid domain for internal flow: the solid IS the fluid, its
+                      # skin is exactly the closed surface cartesianMesh fills from the inside
+                      # (the same tessellate_internal staging, the fluid read as the solid). The
+                      # catalog alone refused it: on main every fluid-domain internal case was
+                      # turned away before staging ("cfmesh cannot produce a internal_cfd mesh
+                      # from a 'fluid-domain' geometry"), while the same staging meshed the
+                      # corpus's fluid twins when admitted (lab, 2026-10-04). External flow is
+                      # not admitted from a fluid domain: the far field is a box around a body.
+                      MeshCapability("fluid-domain", "fluid-volume",
+                                     topologies=("internal",))),
+        # WHAT FILE IT TAKES, per flow. EXTERNAL wraps a surface, so a CAD solid (tessellated
+        # first) and a surface mesh both reach it. INTERNAL carves the fluid out of the CAD solid
+        # (geometry.step + tessellate_internal); a surface upload is taken for internal flow too,
+        # declared once below as input_contract.internal_from_surface (cad/internal_surface).
+        accepts=(FlowSupport("external", ("cad", "surface")),
+                 FlowSupport("internal", ("cad",))),
+        # the most forgiving input handling (it wraps dirty surfaces): first on the ladder
+        ladder_rank=10,
+        home_turf=HOME_TURF,
         input_contract=InputContract(
+            # internal flow from an STL/OBJ/PLY upload: cad/internal_surface closes it at the
+            # confirmed openings (snappy/cfMesh/gmsh/vmtk internal paths read that record)
+            internal_from_surface=True,
             dimensionalities=("2D", "3D"),
             input_kind="surface",
             min_thickness_ratio=0.0,
@@ -213,11 +280,25 @@ SPEC = EngineSpec(
                 # cfMesh's intermediate feature-edge surface: written only when the
                 # surface-with-features path runs, so its absence is not a broken case.
                 M("geom.fms", required=False),
+                # a case of several separate passages: the record and every further passage's
+                # case (its surface and dicts), which native.mesh_passages meshed and merged in
+                M("passages.json", required=False),
+                M("_passages", kind="dir", required=False),
             ),
         ),
         downstream=DownstreamTarget(
             solvers=("OpenFOAM",),   # the polyMesh feeds OpenFOAM's FV solvers
         ),
+        # an OpenFOAM hex-dominant octree mesh. Its boundaryLayers are extruded over the whole wall,
+        # MEASURED on the mesh (engines/layer_census.py, HOME-TURF lab 2026-10-06): ONERA M6 at
+        # 3.8M cells 100% of the wall area with a layer and 99.95% with all requested; blade-row
+        # passages 99.9% / 99.6%; heat-exchanger shell side 99.6% / 98.2%. The finalize step
+        # reports the coverage of every mesh, so a run that loses layers says so.
+        # BODY-FITTED, measured (HOME-TURF audit, 2026-10-06): on 86 passing cfMesh meshes every
+        # delivered inlet/outlet patch is 0.99-1.01 of the opening declared and every fluid volume
+        # 0.99-1.002 of the CAD's - the boundary cells are projected onto the surface, not left as
+        # a stair-stepped cut-cell skin, which would miss both.
+        delivered_mesh=DeliveredMesh(cells="hex-dominant", walls="body-fitted", prism_layers=True),
         run_policy=RunPolicy(
             required_files=("system/meshDict",),
             # 20 MINUTES: at industry density (the passage caps put ~13 cells across every
@@ -226,10 +307,22 @@ SPEC = EngineSpec(
             # for draft meshes, where a too-fine dict was meant to fail fast so the builder
             # coarsens - coarsening is now bounded by the floor. Snappy's budget is 2400 s.
             run_timeout=lambda: min(1200, rtcfg.OPENFOAM_COMMAND_TIMEOUT),
-            timeout_hint=("The wall band and background are held at ~13 cells across the passage "
-                          "by the passage caps, so a fill that does not finish in 20 min is a domain "
-                          "too large for that density or an objectRefinement that is far too fine: "
-                          "drop or widen the objectRefinements first, then run_mesh again."),
+            # A PLANNED CASE GETS THE TIME ITS PLAN NEEDS: configure_mesh times the external case
+            # from the cells it will make (cfmesh_runner.estimate_cells at a cautious fill rate)
+            # and records the cap - up to 50 minutes - or makes the wall coarser until it fits.
+            # The fixed 20 minutes timed out the soccer ball in its last step, and sized the
+            # DrivAer cars' 4.3M cells to finish with three minutes to spare (e2e, 2026-10-17).
+            planned_timeout=_planned_timeout,
+            # a run that timed out while cartesianMesh was still untangling faces that point the
+            # wrong way is a broken mesh, not a slow one: the BlendedNet wings ran out of time with
+            # 43,771 bad faces left, the SAE notchback with 182 - on plans of 1-3M cells that fit
+            # the cap with room to spare (e2e, 2026-10-17). More time does not mend that.
+            timed_out_defects=_timed_out_defects,
+            timeout_hint=("The run outlasted the time its plan was given: the wall band and the "
+                          "background are sized for this body, so a fill that does not finish is "
+                          "an objectRefinement that is far too fine, or a surface cfMesh cannot "
+                          "untangle - drop or widen the objectRefinements first, then run_mesh "
+                          "again; if it times out again, stop."),
             ok_guidance="Valid mesh (no fatal defects) - call submit_mesh.",
             fail_label="cartesianMesh failed",
             fail_hint=("Adjust the meshDict (fewer/thinner boundaryLayers, or "

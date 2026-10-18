@@ -88,12 +88,14 @@ def clear_refusal(workspace) -> None:
 
 def check_domain(*, requested, reference_length_m, strict: bool, flow_axis,
                  body_min, body_max, domain_min, domain_max,
-                 grounded: bool) -> PreflightRefusal | None:
+                 grounded: bool, symmetry_faces: list | None = None) -> PreflightRefusal | None:
     """The far-field box the driver is about to mesh, judged exactly as the post-mesh domain gate
     will judge it (that gate measures this same prepared box). Refuses what that gate would
     block - a margin under half the request, or a box touching the body - and, when the approval
     is strict, a near miss too. A lenient near miss is not refused: it is delivered with the miss
-    stated, so its mesh is not wasted."""
+    stated, so its mesh is not wasted. The faces that sit on the body by design - the floor under
+    a grounded body, the symmetry planes of a half model or a slab ([{patch, axis, side}], the
+    list the builder records into the manifest) - owe no margin, here as after the mesh."""
     if not isinstance(requested, dict) or not reference_length_m:
         return None
     from meshpipeline.engines.domain_extent_gate import evaluate_domain_extents
@@ -108,7 +110,8 @@ def check_domain(*, requested, reference_length_m, strict: bool, flow_axis,
     try:
         v = evaluate_domain_extents(requested, reference_length_m,
                                     {"geometry": {"domain_box": box, "body_box": body}},
-                                    flow_axis=flow_axis, grounded=grounded)
+                                    flow_axis=flow_axis, grounded=grounded,
+                                    symmetry_faces=list(symmetry_faces or []))
     except Exception:  # noqa: BLE001 - a pre-flight that cannot judge refuses nothing
         logger.exception("pre-flight: domain evaluation failed - leaving it to the post-mesh gate")
         return None

@@ -7,7 +7,7 @@ import logging
 from dataclasses import dataclass, field
 
 from meshpipeline.agents.builder.attempt import BuilderAttempt
-from meshpipeline.agents.builder.driver_run import BuilderDriverRun
+from meshpipeline.agents.builder.driver_run import STOP_REVIEWED_CASE_REPEATS, BuilderDriverRun
 from meshpipeline.application.execution_publisher import StaleExecutionPublish
 from meshpipeline.contracts.agent_loop import LoopExit
 from meshpipeline.contracts.event_stream import ExecutionEventPublisher
@@ -30,15 +30,26 @@ class TurnOutcome:
     messages_out: list = field(default_factory=list)
     api_failure: str = ""
     timed_out: bool = False
+    #: an engine driver's declared STOP (driver_run.STOP_*): it built nothing on purpose, and
+    #: says why. Empty on every ordinary turn.
+    driver_stop: str = ""
 
     @property
     def provider_failed(self) -> bool:
         return bool(self.api_failure)
 
+    @property
+    def repeats_reviewed_case(self) -> bool:
+        return self.driver_stop == STOP_REVIEWED_CASE_REPEATS
+
+
+#: The driver markers that are stops the graph acts on - every other marker stays diagnostics only.
+_DRIVER_STOPS = frozenset({STOP_REVIEWED_CASE_REPEATS})
+
 
 async def _run_engine_driver(driver, attempt: BuilderAttempt, state, *, job_id: str,
                              publish: ExecutionEventPublisher,
-                             timeout_s: int) -> tuple[bool, str]:
+                             timeout_s: int) -> tuple[bool, str, str]:
     from meshpipeline.application import execution_fence as fence
 
     run = BuilderDriverRun(
@@ -67,7 +78,20 @@ async def _run_engine_driver(driver, attempt: BuilderAttempt, state, *, job_id: 
         raise
     else:
         run.finish(exit=exit_reason, failure_marker=marker)
-    return spec_authored, final_text
+    return spec_authored, final_text, (marker if marker in _DRIVER_STOPS else "")
+
+
+def _broken_mesh_moves_to(state) -> str:
+    """The fallback ladder's answer, asked before the attempt: the engine a broken mesh would move
+    this run to ('' when it would stay, or when it cannot be said - the attempt then runs as it
+    always did)."""
+    try:
+        from meshpipeline.pipeline.engine_fallback import moves_on_from_broken_mesh
+        return moves_on_from_broken_mesh(state)
+    except Exception:  # noqa: BLE001 - advice to the builder never stops an attempt
+        logger.warning("builder: could not tell where a broken mesh would move this run",
+                       exc_info=True)
+        return ""
 
 
 async def _run_shared_loop(attempt: BuilderAttempt, state, *, job_id: str,
@@ -98,6 +122,8 @@ async def _run_shared_loop(attempt: BuilderAttempt, state, *, job_id: str,
             execution_generation=attempt.generation,
             # The engineer's flags, so submit_mesh can require a declaration per flag.
             user_dispute=state.get("user_dispute") or None,
+            # Where a BROKEN mesh moves this run, so run_mesh does not re-run this engine on it
+            broken_mesh_moves_to=_broken_mesh_moves_to(state),
         ),
         timeout=timeout_s,
     )
@@ -111,9 +137,10 @@ async def run_attempt(attempt: BuilderAttempt, state, *, job_id: str,
     try:
         driver = get_spec(attempt.engine).build_driver
         if driver is not None:
-            spec_authored, final_text = await _run_engine_driver(
+            spec_authored, final_text, stop = await _run_engine_driver(
                 driver, attempt, state, job_id=job_id, publish=publish, timeout_s=timeout_s)
-            return TurnOutcome(spec_authored=spec_authored, final_text=final_text)
+            return TurnOutcome(spec_authored=spec_authored, final_text=final_text,
+                               driver_stop=stop)
         final_text, messages_out = await _run_shared_loop(
             attempt, state, job_id=job_id, publish=publish, timeout_s=timeout_s)
         return TurnOutcome(spec_authored=True, final_text=final_text, messages_out=messages_out)

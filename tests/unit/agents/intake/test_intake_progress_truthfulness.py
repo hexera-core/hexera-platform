@@ -91,7 +91,7 @@ def test_a_changed_selection_is_progress(rig, monkeypatch):
     assert _preview(p, 0).made_progress is True
     monkeypatch.setattr(ex_mod.es, "propose",
                         lambda e, **k: {"id": "sel2", "engine": e})
-    monkeypatch.setattr(ex_mod.es, "render_selection_statement", lambda e: f"Selected: {e}")
+    monkeypatch.setattr(ex_mod.es, "render_selection_statement", lambda e, reason="": f"Selected: {e}")
     monkeypatch.setattr(ex_mod.ap, "invalidate", lambda a, why: a)
     p.before_round(LoopTally(rounds=1), [])
     asyncio.run(p.execute(type("I", (), {"tool": "propose_engine_selection",

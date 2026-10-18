@@ -1,11 +1,14 @@
 // Responsibility: Show the geometry check as a stage the user can orient in - the part in 3D drawn
 // the way a CAD viewer draws it, a numbered sticker on every opening, and the panel beside it
-// where names and roles are confirmed, stickers added or removed.
+// where names and roles are confirmed, stickers added or removed. A whole thermal model (an ECXML
+// upload) gets its own mode instead: the parts in the colours of the panel's list, picked from
+// either side, the case seen through, the file's air box as faint lines - and no stickers.
 // Owns: its vtk.js scene (the skin, its edges, the lights, the sticker balls and the pins that
-// follow them), the naming state of the panel, and the takeover of the workbench while the
-// check is open.
+// follow them), the naming state of the panel, the measuring ruler, and the takeover of the
+// workbench while the check is open.
 // Boundaries: it decides nothing about the geometry - positions, sizes and proposals arrive from
-// the check - and it starts no run; confirming is the callback it was handed.
+// the check, the holes an added opening snaps to among them - and it starts no run; confirming
+// is the callback it was handed.
 
 /* THE GEOMETRY STAGE.
  *
@@ -17,8 +20,12 @@
  */
 import { getGeometrySkin } from "../api/endpoints.js";
 import { esc } from "../core/format.js";
-import { applyFlow, bindUnit, followSuggestion, followUnit, formHtml, markConfirmed, readExternal, readForm, rowHtml,
-  shown, unitChoiceHint, unitChoiceNeeded, unitOf } from "../render/geometry_form.js";
+import { applyFlow, bindAxis, bindUnit, changedAnswers, editsLine, extentAlong, followSuggestion, followUnit, formHtml,
+  markConfirmed, noteDrawn, readExternal, readForm, rowHtml, servedProposal, shown, tableHead, unitChoiceHint,
+  unitChoiceNeeded, unitOf } from "../render/geometry_form.js";
+import { bindThermalPanel, partDetails, thermalPanelHtml, watts } from "../render/thermal_form.js";
+import { circleThrough, clickIndex, firstHit, snapAt } from "./open_ends.js";
+import { bindMouse, isUpAxis, orient, saveUp, savedUp, shield, upSelectHtml, upVector } from "./view_controls.js";
 
 let _vtkP = null;
 function loadVtk() {
@@ -79,9 +86,9 @@ function takeOver(box, anchorEl) {
 
 function leadHtml(p) {
   const size = (p.size_mm || []).map((v) => shown(v, p)).join(" x ");
-  return `<b>${esc(p.part || "the part")}</b>${size ? ` · ${esc(size)} <span class="gc-u">${unitOf(p)}</span>` : ""}<br>
-    Turn the part and click a sticker to select its row. Fix any name or role, add or remove a
-    sticker, then proceed: the questions that follow skip everything confirmed here.`;
+  return `<div class="gc-part"><b>${esc(p.part || "the part")}</b>${size ? `<span class="gc-size">${esc(size)} <span class="gc-u">${unitOf(p)}</span></span>` : ""}</div>
+    <p>Turn the part and click a sticker to select its row. Fix any name or role, add or remove a
+    sticker, then proceed: the questions that follow skip everything confirmed here.</p>`;
 }
 
 /** Open the check as a stage. `d` is the check the API served (its `proposal` is what is shown;
@@ -92,18 +99,24 @@ function leadHtml(p) {
  *  WebGL - so the user still gets the card. */
 export async function openGeometryStage(sessionId, d, confirm, opts) {
   opts = opts || {};
+  // A WHOLE THERMAL MODEL (an ECXML upload) is shown as the file's own model, not as a part with
+  // openings to name: its own panel and scene, below
+  if (d && d.thermal) return openThermalStage(sessionId, d, confirm, opts);
   const p = d.proposal || {};
+  // what the check proposed, kept apart from the form the user edits: Proceed says back what changed
+  let served = servedProposal(null, p);
   const id = "gstage-" + sessionId;
   document.getElementById(id)?.remove();
   const box = document.createElement("div"); box.className = "viewer gc-stage"; box.id = id;
   box.innerHTML = `<div class="v-bar gc-panel">
-      <div class="v-row"><b>Geometry check</b><span class="v-meta">what Hexera sees</span></div>
+      <div class="v-row v-titlerow"><b class="v-title">Geometry check</b><span class="v-meta">what Hexera sees</span></div>
       <div class="gc-banner" hidden><span class="gc-spin" aria-hidden="true"></span><span class="gc-banner-text"></span><span class="gc-banner-act"></span></div>
       <div class="gc-lead">${leadHtml(p)}</div>
       <div class="gc-form">${formHtml(p)}</div>
     </div>
     <div class="v-canvas gc-canvas" id="gs-canvas-${sessionId}">
       <div class="v-loading" id="gs-load-${sessionId}"><div>Loading the part…</div></div>
+      <div class="v-tools">${upSelectHtml("gs-up-" + sessionId, savedUp("session", sessionId) || (isUpAxis(p.up_axis) ? p.up_axis : "+z"))}<button class="v-btn v-tool" id="gs-fit-${sessionId}" type="button" title="Frame the whole part">Fit</button></div>
       <svg class="gc-axes" viewBox="0 0 84 84" aria-hidden="true">
         ${["x", "y", "z"].map((k) => `<line class="ax ax-${k}" x1="42" y1="42" x2="42" y2="42"/><text class="ax-l ax-${k}" x="42" y="42">${k.toUpperCase()}</text>`).join("")}
       </svg>
@@ -111,7 +124,7 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
   const release = takeOver(box, opts.anchorEl);
   const panel = box.querySelector(".gc-panel");
   const form = panel.querySelector(".gc-form");
-  applyFlow(form); bindUnit(panel, p);
+  applyFlow(form); bindUnit(panel, p); bindAxis(form, p); noteDrawn(form);
   const banner = panel.querySelector(".gc-banner");
   /* THE FORM IS NEVER LOCKED. The user can fix the measuring step's labels and proceed at any
      point; the banner says what is happening around them - whether the file said its unit (a
@@ -198,7 +211,7 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
       const body = readForm(form, p);
       btn.disabled = true; btn.textContent = "Confirming…";
       try {
-        await confirm(body);
+        await confirm(body, editsLine(served, body, p));     // the chat says back what the user changed
         markConfirmed(form);
         scene.stop();
         release();                       // the workbench goes back; the conversation carries on
@@ -218,6 +231,7 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
     if (!d2) return;
     unitNeeded = !!d2.unit_needed;
     const q = d2.proposal || {};
+    if (d2.proposal) served = servedProposal(served, d2.proposal);
     followUnit(panel, p, q.unit, q.unit_basis);      // a unit settled in the chat reaches an untouched box
     followSuggestion(panel, p, q.unit_suggestion);   // the other reading, as the server now sees it
     if (d2.status === "scouted") {
@@ -248,13 +262,24 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
       // re-reads the form from `scale_to_m` when it is confirmed. Only the words move.
       const mine = p.scale_to_m || 0.001, theirs = p2.scale_to_m || mine;    // a missing scale is the display's default
       const rescaled = Math.abs(theirs - mine) > 1e-12;
-      const words = rescaled ? Object.fromEntries(Object.entries(p2).filter(([k]) => !/_mm$|_m$|^faces$/.test(k))) : p2;
+      const words = rescaled ? Object.fromEntries(Object.entries(p2).filter(([k]) => !/_mm$|_m$|^faces$|^holes$/.test(k))) : p2;
       // a unit the user set in the box outlives the re-draw; a served one fills an untouched box
       const chosen = p.unit_touched ? { unit: p.unit, unit_basis: p.unit_basis, unit_touched: true } : {};
-      Object.assign(p, words, { openings: merged }, chosen);
+      // so do the flow axis the user turned and the reference length they typed; an untyped
+      // length is the part's length along the axis that stands
+      const answered = {};
+      if (p.flow_axis_touched) Object.assign(answered, { flow_axis: p.flow_axis, flow_axis_guessed: false });
+      if (p.reference_length_typed) answered.reference_length_mm = p.reference_length_mm;
+      // ...and so does every other answer the user changed on the form - the kind, the flow, the
+      // far-field box, the ground - which the re-draw used to put back to the check's values
+      p.user_set = { ...(p.user_set || {}), ...changedAnswers(form) };
+      Object.assign(p, words, { openings: merged }, chosen, answered, p.user_set);
+      if (p.flow_axis_touched && !p.reference_length_typed) {
+        const along = extentAlong(p, p.flow_axis); if (along !== null) p.reference_length_mm = along;
+      }
       panel.querySelector(".gc-lead").innerHTML = leadHtml(p);
       form.innerHTML = formHtml(p);
-      applyFlow(form); bindUnit(panel, p); bindProceed(); scene.rebind();
+      applyFlow(form); bindUnit(panel, p); bindAxis(form, p); noteDrawn(form); bindProceed(); scene.rebind();
       shown = "ready"; showBanner("");
     } else {
       const key = "failed|" + (d2.reason || "");
@@ -271,6 +296,19 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
   return { release: () => { clearTimeout(stallTimer); scene.stop(); release(); }, update, isNaming: () => naming };
 }
 
+/** The names of a thermal model's placed parts beside their colours, in the stage's corner. */
+function partsLegend(patches) {
+  const el = document.createElement("div"); el.className = "gc-legend";
+  el.style.cssText = "position:absolute;left:8px;bottom:8px;max-height:45%;overflow:auto;padding:6px 8px;"
+    + "border-radius:6px;background:rgba(255,255,255,0.88);color:#2a2f36;font-size:11px;line-height:1.5;z-index:2";
+  const named = patches.filter((pt) => pt.name), rows = named.slice(0, 40);
+  el.innerHTML = rows.map((pt) => {
+    const c = (Array.isArray(pt.color) ? pt.color : BODY).map((v) => Math.round(v * 255)).join(",");
+    return `<div><span style="display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:6px;background:rgb(${c})"></span>${esc(pt.name)}</div>`;
+  }).join("") + (named.length > rows.length ? `<div>and ${named.length - rows.length} more</div>` : "");
+  return el;
+}
+
 function initScene(sessionId, box, surf, p) {
   const host = document.getElementById("gs-canvas-" + sessionId);
   const grw = vtk.Rendering.Misc.vtkGenericRenderWindow.newInstance({ background: BACKGROUND });
@@ -282,6 +320,7 @@ function initScene(sessionId, box, surf, p) {
     apiRW.setSize(Math.max(2, Math.round(r.width * DPR)), Math.max(2, Math.round(r.height * DPR))); }
   grw.resize();
   host.addEventListener("contextmenu", (e) => e.preventDefault());
+  bindMouse(grw);                     // left-drag turns, right-drag pans, the wheel zooms
 
   /* THE LIGHTS: a key from the upper left, a fill from the right and a faint rim from behind,
      all riding with the camera, so a turned part is always lit the way a CAD viewer lights it */
@@ -312,12 +351,16 @@ function initScene(sessionId, box, surf, p) {
     const mapper = vtk.Rendering.Core.vtkMapper.newInstance(); mapper.setInputData(pd);
     const actor = vtk.Rendering.Core.vtkActor.newInstance(); actor.setMapper(mapper); actor.setPickable(true);
     const pr = actor.getProperty();
-    pr.setColor(BODY[0], BODY[1], BODY[2]); pr.setEdgeVisibility(false);
+    // a thermal model's placed parts each carry a colour of their own; any other skin is one body
+    const col = Array.isArray(pt.color) && pt.color.length === 3 ? pt.color : BODY;
+    pr.setColor(col[0], col[1], col[2]); pr.setEdgeVisibility(false);
     pr.setInterpolationToPhong();
     pr.setAmbient(0.32); pr.setDiffuse(0.76); pr.setSpecular(0.12); pr.setSpecularPower(20);
     ren.addActor(actor);
-    skins.push({ actor, pd, pts, polys, offsets: null });
+    skins.push({ actor, pd, pts, polys });
   });
+  /* THE PARTS - a thermal model drawn as its placed parts: the legend names each colour */
+  if (surf.parts) host.appendChild(partsLegend(surf.patches || []));
   /* THE SHARP EDGES - dark hairlines where faces meet at an angle, and along open rims */
   let edgeCount = 0;
   if (surf.edges && surf.edges.lines_b64) {
@@ -350,15 +393,25 @@ function initScene(sessionId, box, surf, p) {
     const [w, h] = apiRW.getSize(), a = w / Math.max(h, 1);
     if (a < 1) { cam.dolly(a); ren.resetCameraClippingRange(); }
     rw.render(); }
-  /* THE OPENING VIEW: the drawing-office three-quarter view, framed on the part */
+  /* THE OPENING VIEW: the drawing-office three-quarter view, framed on the part, with the axis the
+     user says is up pointing up - the one they set for this check, else the one the check
+     proposes (p.up_axis), else +Z */
+  const upSel = box.querySelector("#gs-up-" + sessionId);
+  let upAxis = (upSel && upSel.value) || "+z";
   function iso() {
     cam.setPosition(centre[0] - diag, centre[1] - diag, centre[2] + 0.8 * diag);
     cam.setFocalPoint(...centre); cam.setViewUp(0, 0, 1);
+    orient(cam, upAxis, [-1, -1, 0.8]);
     fit();
   }
   const ro = new ResizeObserver(() => { setRenderScale(); if (!touched) fit(); else rw.render(); });
   ro.observe(host);
-  host.addEventListener("pointerdown", () => { touched = true; }, true);
+  host.addEventListener("pointerdown", (e) => { if (!(e.target.closest && e.target.closest(".v-tools"))) touched = true; }, true);
+  const tools = box.querySelector(".v-tools");
+  shield(tools);
+  if (upSel) upSel.onchange = () => { upAxis = upSel.value; saveUp("session", sessionId, upAxis); iso(); };
+  const fitBtn = box.querySelector("#gs-fit-" + sessionId);
+  if (fitBtn) fitBtn.onclick = () => iso();
 
   /* THE STICKERS - a ball on every opening, at the position the check measured, and an HTML pin
      with its number that follows it every frame. The pin is the thing to click: it is never
@@ -408,88 +461,176 @@ function initScene(sessionId, box, surf, p) {
     const { c, n } = pn.o;
     cam.setFocalPoint(c[0], c[1], c[2]);
     cam.setPosition(c[0] + n[0] * 0.9 * diag, c[1] + n[1] * 0.9 * diag, c[2] + n[2] * 0.9 * diag);
-    cam.setViewUp(...(Math.abs(n[2]) < 0.9 ? [0, 0, 1] : [0, 1, 0]));
+    // the chosen up stays up, unless the mouth faces straight along it
+    const u = upVector(upAxis), along = Math.abs(n[0] * u[0] + n[1] * u[1] + n[2] * u[2]);
+    cam.setViewUp(...(along < 0.9 ? u : (Math.abs(u[2]) > 0.5 ? [0, 1, 0] : [0, 0, 1])));
     ren.resetCameraClippingRange(); cam.zoom(1.6); rw.render();
     touched = true;
     if (sel !== id) select(id);
   }
 
-  /* ADDING A STICKER: click the part where the opening is. The click is snapped to the nearest
-     flat face the measuring step found, so the new opening carries a real size and position;
-     off any measured face it lands on the picked spot with the size left for the user. */
-  const selector = apiRW.getSelector ? apiRW.getSelector() : null;
-  if (selector) { selector.setCaptureZValues(false); selector.setFieldAssociation(1); }
+  /* ADDING A STICKER: click the part where the opening is. The click is a ray through the clicked
+     pixel, read against the check's own holes (cad/open_ends on the server - the same holes the
+     upload's stickers come from), in this order: the hole the ray looks into - through it, where
+     there is no surface to click, or onto the end face around it - else the measured flat face
+     the click lands on, else the hole nearest the spot clicked. Each carries a real centre, size
+     and direction. When none is there the sticker is never dropped on the wall: the stage asks
+     for the hole's edge instead - two more clicks on its rim - and the circle through the three
+     points is the opening. Esc cancels. When the user says the file is the fluid volume itself,
+     its mouths are faces, not holes, and only the measured faces are read. */
   let addMode = false, downXY = null;
-  function setAddMode(on) {
+  let trace = null;                                  // the rim points clicked so far, while tracing
+  const traceDots = [];
+  const ADD_HINT = "then click the part where it is";
+  const TRACE_HINT = "Couldn't find a hole here: click 2 more points around its edge";
+  function hint(text) { const th = form.querySelector(".gc-tools-hint"); if (th) th.textContent = text; }
+  function setAddMode(on, said) {
     addMode = on;
+    endTrace();
+    if (on && measuring) setMeasure(false);
     const b = form.querySelector(".gc-add"); if (b) { b.classList.toggle("armed", on); b.textContent = on ? "Click the part…" : "Add an opening"; }
     host.style.cursor = on ? "crosshair" : "";
-    const th = form.querySelector(".gc-tools-hint");
-    if (th) th.textContent = on ? "click the spot on the part where the opening is (dragging still turns it)" : "then click the part where it is";
+    hint(on ? "click the spot on the part where the opening is (dragging still turns it)" : (said || ADD_HINT));
+    if (on) setTimeout(clicksNow, 30);               // read the skin while the user aims, not on the click
   }
-  function cellOffsets(sk) {
-    if (!sk.offsets) { const n = sk.polys.length; const off = []; let q = 0; while (q < n) { off.push(q); q += sk.polys[q] + 1; } sk.offsets = off; }
-    return sk.offsets;
+  // what a click is read against: the skin's triangles and the check's holes, read once
+  let clicks = null;
+  function clicksNow() {
+    if (!clicks) clicks = clickIndex(skins.map((s) => ({ pts: s.pts, polys: s.polys })), p.holes || []);
+    return clicks;
   }
-  function cellCentreNormal(sk, cid) {
-    const o = cellOffsets(sk)[cid], n = sk.polys[o];
-    let x = 0, y = 0, z = 0;
-    for (let j = 1; j <= n; j++) { const q = sk.polys[o + j] * 3; x += sk.pts[q]; y += sk.pts[q + 1]; z += sk.pts[q + 2]; }
-    let nx = 0, ny = 0, nz = 0;
-    for (let j = 1; j <= n; j++) { const a = sk.polys[o + j] * 3, b = sk.polys[o + (j % n) + 1] * 3;
-      nx += (sk.pts[a + 1] - sk.pts[b + 1]) * (sk.pts[a + 2] + sk.pts[b + 2]);
-      ny += (sk.pts[a + 2] - sk.pts[b + 2]) * (sk.pts[a] + sk.pts[b]);
-      nz += (sk.pts[a] - sk.pts[b]) * (sk.pts[a + 1] + sk.pts[b + 1]); }
-    const L = Math.hypot(nx, ny, nz) || 1;
-    return { c: [x / n, y / n, z / n], n: [nx / L, ny / L, nz / L] };
-  }
-  function pick(e, cb) {
-    if (!selector) return;
+  /** The ray through a point on the canvas, from the camera into the scene, in the skin's units.
+   *  It starts at the camera, not at the near clipping plane, which a camera moved without a
+   *  re-fit can leave beyond the part. */
+  function rayAt(clientX, clientY) {
     const rect = host.getBoundingClientRect(), size = apiRW.getSize();
-    const x = Math.round((e.clientX - rect.left) * (size[0] / rect.width));
-    const y = Math.round((rect.height - (e.clientY - rect.top)) * (size[1] / rect.height));
-    selector.getSourceDataAsync(ren, x, y, x, y).then((src) => {
-      if (!src) return;
-      const sels = src.generateSelection(x, y, x, y);
-      if (!sels || !sels.length) return;
-      const pr = sels[0].getProperties();
-      const sk = skins.find((s) => s.actor === pr.prop); if (!sk) return;
-      const ids = (pr.selectionList && pr.selectionList.length) ? pr.selectionList
-               : (pr.attributeID != null && pr.attributeID >= 0 ? [pr.attributeID] : []);
-      const cid = Number(ids[0]);
-      if (cid >= 0) cb(cellCentreNormal(sk, cid));
-    }).catch(() => {});
+    const x = (clientX - rect.left) / rect.width, y = 1 - (clientY - rect.top) / rect.height;
+    const aspect = size[0] / Math.max(size[1], 1);
+    const a = ren.normalizedDisplayToWorld(x, y, 0, aspect), b = ren.normalizedDisplayToWorld(x, y, 1, aspect);
+    const dir = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], L = Math.hypot(dir[0], dir[1], dir[2]) || 1;
+    const cp = cam.getPosition();
+    const back = ((a[0] - cp[0]) * dir[0] + (a[1] - cp[1]) * dir[1] + (a[2] - cp[2]) * dir[2]) / L;
+    return { origin: [a[0] - dir[0] / L * back, a[1] - dir[1] / L * back, a[2] - dir[2] / L * back], dir };
   }
-  /** A new opening at a point on the part: snapped to the measured flat face the click lands
-   *  on, else the point itself with no size. Of concentric faces - a coaxial fitting's inner
-   *  and outer port share a centre - the smallest one that still reaches the click is the one
-   *  clicked; a face turned away from the clicked surface is never it. Returns the opening. */
-  function add(point, normal) {
-    const faces = p.faces || [];
+  const r6 = (v) => Math.round(v * 1e6) / 1e6, r2 = (v) => Math.round(v * 100) / 100;
+  /** The measured flat face that is this hole, when the measuring step measured it: the same
+   *  direction, centre and size. A STEP file's faces are exact, so theirs are the numbers. */
+  function measuredAs(h) {
+    const n = h.normal, c = h.centroid_m, d = (h.diameter_mm || 0) / 1000;
+    return (p.faces || []).find((f) => {
+      const fn = f.normal || [0, 0, 1], fc = f.centroid_m || (f.centroid_mm || [0, 0, 0]).map((v) => v / 1000);
+      const fd = (f.diameter_mm || 0) / 1000;
+      return Math.abs(fn[0] * n[0] + fn[1] * n[1] + fn[2] * n[2]) >= 0.95 && Math.abs(fd - d) <= 0.1 * d
+        && Math.hypot(fc[0] - c[0], fc[1] - c[1], fc[2] - c[2]) <= 0.1 * d;
+    }) || null;
+  }
+  /** A new opening on a hole, as the check measured it: centre, size, which way it faces. */
+  function addHole(h) {
+    const f = measuredAs(h);
+    if (f) return place(fromFace(f, { open_end: true }));
+    const id = nextId();
+    return place({ id, name: `opening_${id}`, role: "outlet", shape: h.shape, kind: h.kind, confidence: 0.5,
+      centroid_m: h.centroid_m, centroid_mm: h.centroid_mm, normal: h.normal,
+      diameter_mm: h.diameter_mm, width_mm: h.width_mm, height_mm: h.height_mm,
+      // an annular mouth: the centre body standing in it, so the opening confirmed is the ring
+      inner_diameter_mm: h.inner_diameter_mm, flow_area_mm2: h.flow_area_mm2,
+      added: true, snapped: true, open_end: true });
+  }
+  /** What a click does, along the ray through the clicked pixel (see above): the opening it
+   *  added, or null - nothing met, or the stage now asking for the hole's edge. */
+  function addAt(ray) {
+    const idx = clicksNow();
+    if (trace) return traceAt(snapAt({ ...idx, holes: [] }, ray).hit, ray.origin);
+    const fluid = (form.querySelector(".gc-kind") || {}).value === "fluid-domain";
+    const s = snapAt(fluid ? { ...idx, holes: [] } : idx, ray);
+    if (s.through) return done(addHole(s.through), "Snapped to the hole there.");
+    if (!s.hit) return null;
+    const face = faceAt(s.hit.point, s.hit.normal);
+    if (face) return done(place(fromFace(face)), "");
+    if (s.near) return done(addHole(s.near), "Snapped to the hole there.");
+    trace = [];
+    return traceAt(s.hit, ray.origin);
+  }
+  function done(o, said) { setAddMode(false, said); return o; }
+  /** TRACING A HOLE the check did not find: each click is a point on its rim; at the third, the
+   *  circle through them is the opening - its centre, its diameter, and the three points' plane
+   *  turned to face the viewer, who clicked from outside the part. */
+  function traceAt(hit, viewer) {
+    if (!hit) return null;
+    trace.push(hit.point);
+    const dot = vtk.Rendering.Core.vtkActor.newInstance(), mp = vtk.Rendering.Core.vtkMapper.newInstance();
+    mp.setInputData(spherePd(hit.point[0], hit.point[1], hit.point[2], 0.006 * diag));
+    dot.setMapper(mp); dot.setPickable(false); dot.getProperty().setColor(SEL[0], SEL[1], SEL[2]);
+    ren.addActor(dot); traceDots.push(dot); rw.render();
+    if (trace.length < 3) {
+      hint(trace.length === 1 ? TRACE_HINT : "click 1 more point around its edge (Esc cancels)");
+      return null;
+    }
+    const c = circleThrough(trace[0], trace[1], trace[2], viewer);
+    if (!c) {                                        // three points in a line make no circle
+      trace.pop(); ren.removeActor(traceDots.pop()); rw.render();
+      hint("Those points lie in a line: click another point around the edge");
+      return null;
+    }
+    const id = nextId();
+    const o = place({ id, name: `opening_${id}`, role: "outlet", shape: "circle", kind: "traced", confidence: 0.5,
+      centroid_m: c.centre.map(r6), centroid_mm: c.centre.map((v) => r2(v * 1000)), normal: c.normal.map((v) => Math.round(v * 1e5) / 1e5),
+      diameter_mm: r2(c.diameter * 1000), added: true, snapped: true, traced: true });
+    return done(o, "Placed on the circle through your three points.");
+  }
+  function endTrace() {
+    trace = null;
+    if (traceDots.length) { traceDots.splice(0).forEach((a) => ren.removeActor(a)); rw.render(); }
+  }
+  function onKey(e) {
+    if (e.key !== "Escape") return;
+    if (addMode) setAddMode(false);
+    if (measuring) setMeasure(false);
+  }
+  document.addEventListener("keydown", onKey);
+  function nextId() { return Math.max(0, ...(p.openings || []).map((o) => Number(o.id) || 0)) + 1; }
+  function fromFace(f, extra) {
+    const id = nextId();
+    return { id, name: `opening_${id}`, role: "outlet", shape: f.shape, kind: f.kind, confidence: 0.5,
+      centroid_m: f.centroid_m, centroid_mm: f.centroid_mm, normal: f.normal,
+      diameter_mm: f.diameter_mm, width_mm: f.width_mm, height_mm: f.height_mm,
+      inner_diameter_mm: f.inner_diameter_mm, flow_area_mm2: f.flow_area_mm2,
+      added: true, snapped: true, ...extra };
+  }
+  /** The measured flat face a point on the part lies on, or null. Of concentric faces - a coaxial
+   *  fitting's inner and outer port share a centre - the smallest one that still reaches the
+   *  point is the one clicked; a face turned away from the clicked surface is never it. */
+  function faceAt(point, normal) {
     let best = null, bestHalf = Infinity, bestD = Infinity;
-    faces.forEach((f) => {
+    (p.faces || []).forEach((f) => {
       const fn = f.normal || [0, 0, 1];
       if (normal && (fn[0] * normal[0] + fn[1] * normal[1] + fn[2] * normal[2]) < 0.5) return;
       const fc = f.centroid_m || (f.centroid_mm || [0, 0, 0]).map((v) => v / 1000);
       const half = Math.max(f.width_mm || 0, f.height_mm || 0, f.diameter_mm || 0) / 1000 / 2;
       const dd = Math.hypot(point[0] - fc[0], point[1] - fc[1], point[2] - fc[2]);
-      if (dd > 1.1 * half + 0.003) return;                // the click is not on this face (a tenth of slack)
+      if (dd > 1.1 * half + 0.003) return;                // the point is not on this face (a tenth of slack)
       if (half < bestHalf || (half === bestHalf && dd < bestD)) { best = f; bestHalf = half; bestD = dd; }
     });
-    const nextId = Math.max(0, ...(p.openings || []).map((o) => Number(o.id) || 0)) + 1;
-    const o = best
-      ? { id: nextId, name: `opening_${nextId}`, role: "outlet", shape: best.shape, kind: best.kind, confidence: 0.5,
-          centroid_m: best.centroid_m, centroid_mm: best.centroid_mm, normal: best.normal,
-          diameter_mm: best.diameter_mm, width_mm: best.width_mm, height_mm: best.height_mm, added: true, snapped: true }
-      : { id: nextId, name: `opening_${nextId}`, role: "outlet", shape: "unknown", kind: "picked", confidence: 0.3,
-          centroid_m: point.slice(), centroid_mm: point.map((v) => Math.round(v * 1000 * 100) / 100), normal: normal.slice(), added: true };
+    return best;
+  }
+  /** A new opening at a point on the part (the support hook's way in): on the measured flat face
+   *  there, else the point itself, with its size left for the user to type. Returns the opening. */
+  function add(point, normal) {
+    const face = faceAt(point, normal);
+    if (face) return place(fromFace(face));
+    const id = nextId();
+    return place({ id, name: `opening_${id}`, role: "outlet", shape: "unknown", kind: "picked", confidence: 0.3,
+      centroid_m: point.slice(), centroid_mm: point.map((v) => r2(v * 1000)), normal: normal.slice(), added: true });
+  }
+  /** The new opening's row and pin, selected. */
+  function place(o) {
     p.openings = [...(p.openings || []), o];
     const tbody = form.querySelector(".gc-table tbody");
     if (tbody) { tbody.insertAdjacentHTML("beforeend", rowHtml(o, p)); }
     else {
       // the first opening on a part that had none: the table takes the "no openings" note's
       // place, and the Add button beside it stays
-      const table = `<table class="gc-table"><thead><tr><th>#</th><th>name</th><th>role</th><th>size</th><th class="gc-pos">position</th><th>sure</th><th></th></tr></thead><tbody>${rowHtml(o, p)}</tbody></table>`;
+      const table = `<table class="gc-table">${tableHead()}<tbody>${rowHtml(o, p)}</tbody></table>`;
       const note = form.querySelector(".gc-int .gc-note");
       if (note) note.outerHTML = table; else form.querySelector(".gc-int").insertAdjacentHTML("afterbegin", table);
     }
@@ -503,11 +644,111 @@ function initScene(sessionId, box, surf, p) {
   }
   host.addEventListener("pointerdown", (e) => { downXY = [e.clientX, e.clientY]; }, true);
   host.addEventListener("pointerup", (e) => {
-    if (!addMode || !downXY) return;
-    if (e.target && e.target.classList && e.target.classList.contains("gc-pin")) return;
+    if (!(addMode || measuring) || !downXY) return;
+    if (e.target && e.target.closest && e.target.closest(".gc-pin,.v-tools")) return;
     if (Math.hypot(e.clientX - downXY[0], e.clientY - downXY[1]) > 6) return;
-    pick(e, ({ c, n }) => { add(c, n); setAddMode(false); });
+    if (measuring) measureAt(e.clientX, e.clientY);
+    else addAt(rayAt(e.clientX, e.clientY));
   }, true);
+
+  /* MEASURING: two clicks on the part draw a thin line between them, a dot at each end and the
+     distance beside it, in the unit the sizes are shown in. A click within a few pixels of a
+     hole's edge lands on that edge, so a hole's width across is two clicks. A third click starts
+     a new measurement; Esc or the button ends it. It sends nothing and changes nothing the user
+     confirms - a ruler, not an answer. */
+  let measuring = false;
+  const measurePts = [], measureActors = [];
+  let measureLabel = null;
+  const RIM_SNAP_PX = 8;
+  function setMeasure(on) {
+    measuring = on;
+    clearMeasure();
+    if (on && addMode) setAddMode(false);
+    const b = form.querySelector(".gc-measure");
+    if (b) { b.classList.toggle("armed", on); b.textContent = on ? "Measuring…" : "Measure"; }
+    host.style.cursor = on ? "crosshair" : "";
+    hint(on ? "click two points on the part (a hole's edge pulls the click onto it); Esc ends" : ADD_HINT);
+  }
+  function clearMeasure() {
+    measurePts.length = 0;
+    measureActors.splice(0).forEach((a) => ren.removeActor(a));
+    if (measureLabel) { measureLabel.remove(); measureLabel = null; }
+    rw.render();
+  }
+  /** Whether a point is in front of the camera (whatever the clipping planes say). */
+  function inFront(pt) {
+    const cp = cam.getPosition(), dop = cam.getDirectionOfProjection();
+    return (pt[0] - cp[0]) * dop[0] + (pt[1] - cp[1]) * dop[1] + (pt[2] - cp[2]) * dop[2] > 0;
+  }
+  /** Where a point of the part is on the screen, in client pixels; null when it is behind the camera. */
+  function screenOf(pt) {
+    if (!inFront(pt)) return null;
+    const size = apiRW.getSize(), rect = host.getBoundingClientRect();
+    const nd = ren.worldToNormalizedDisplay(pt[0], pt[1], pt[2], size[0] / size[1]);
+    return [rect.left + nd[0] * rect.width, rect.top + (1 - nd[1]) * rect.height];
+  }
+  /** The hole edge point nearest a click on the screen, within RIM_SNAP_PX, that the camera can
+   *  see (nothing of the part stands between them), or null. */
+  function rimPointNear(clientX, clientY) {
+    let best = null, bestD = RIM_SNAP_PX;
+    for (const h of p.holes || []) {
+      for (const pt of [...(h.loop_m || []), ...(h.outer_m || [])]) {
+        const sp = screenOf(pt);
+        if (!sp) continue;
+        const dd = Math.hypot(sp[0] - clientX, sp[1] - clientY);
+        if (dd < bestD) { best = pt; bestD = dd; }
+      }
+    }
+    if (!best) return null;
+    const cp = cam.getPosition(), dir = [best[0] - cp[0], best[1] - cp[1], best[2] - cp[2]];
+    const L = Math.hypot(dir[0], dir[1], dir[2]);
+    const hit = snapAt({ ...clicksNow(), holes: [] }, { origin: cp, dir }).hit;
+    return hit && hit.t < L - 1e-4 * diag ? null : best;      // hidden behind the part: not it
+  }
+  /** One measuring click at a point on the canvas: the point it lands on (a hole's edge when one
+   *  is that close), and - at the second - the line, the dots and the distance. */
+  function measureAt(clientX, clientY) {
+    const pt = rimPointNear(clientX, clientY) || (snapAt({ ...clicksNow(), holes: [] }, rayAt(clientX, clientY)).hit || {}).point;
+    if (!pt) return null;
+    if (measurePts.length >= 2) clearMeasure();               // a third click starts again
+    measurePts.push(pt);
+    const dotPd = spherePd(pt[0], pt[1], pt[2], 0.004 * diag);
+    const mp = vtk.Rendering.Core.vtkMapper.newInstance(); mp.setInputData(dotPd);
+    const ac = vtk.Rendering.Core.vtkActor.newInstance(); ac.setMapper(mp); ac.setPickable(false);
+    ac.getProperty().setColor(SEL[0], SEL[1], SEL[2]); ac.getProperty().setLighting(false);
+    ren.addActor(ac); measureActors.push(ac);
+    if (measurePts.length === 2) {
+      const pd = vtk.Common.DataModel.vtkPolyData.newInstance();
+      pd.getPoints().setData(Float32Array.from([...measurePts[0], ...measurePts[1]]), 3);
+      pd.getLines().setData(Uint32Array.from([2, 0, 1]));
+      const lm = vtk.Rendering.Core.vtkMapper.newInstance(); lm.setInputData(pd);
+      const la = vtk.Rendering.Core.vtkActor.newInstance(); la.setMapper(lm); la.setPickable(false);
+      const lp = la.getProperty(); lp.setColor(SEL[0], SEL[1], SEL[2]); lp.setLineWidth(1.5); lp.setLighting(false);
+      ren.addActor(la); measureActors.push(la);
+      measureLabel = document.createElement("div");
+      measureLabel.className = "gc-mlabel";
+      measureLabel.textContent = measuredNow().label;
+      host.appendChild(measureLabel);
+    }
+    rw.render();
+    return measuredNow();
+  }
+  /** The measurement as it stands: its points, its length in the reading's millimetres, and the
+   *  words beside the line - the number as the sizes on the form show it, in the file's unit. */
+  function measuredNow() {
+    if (measurePts.length < 2) return { points: measurePts.slice(), mm: null, label: null };
+    const [a, b] = measurePts;
+    const mm = Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]) * 1000;
+    return { points: measurePts.slice(), mm, label: `${shown(mm, p)} ${unitOf(p)}` };
+  }
+  function placeMeasureLabel(aspect, rect) {
+    if (!measureLabel || measurePts.length < 2) return;
+    const [a, b] = measurePts, m = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2];
+    const nd = ren.worldToNormalizedDisplay(m[0], m[1], m[2], aspect);
+    const ok = inFront(m);
+    measureLabel.style.display = ok ? "" : "none";
+    if (ok) { measureLabel.style.left = (nd[0] * rect.width) + "px"; measureLabel.style.top = ((1 - nd[1]) * rect.height) + "px"; }
+  }
 
   /* the form is re-drawn when the model's labels arrive, so its controls are re-bound then */
   function rebind() {
@@ -517,6 +758,8 @@ function initScene(sessionId, box, surf, p) {
       if (!tr.dataset.bound) { tr.dataset.bound = "1"; tr.addEventListener("focusin", () => { const id = Number(tr.dataset.id); if (sel !== id) select(id); }); }
     });
     const addBtn = form.querySelector(".gc-add"); if (addBtn) addBtn.onclick = () => setAddMode(!addMode);
+    const mBtn = form.querySelector(".gc-measure");
+    if (mBtn) { mBtn.onclick = () => setMeasure(!measuring); mBtn.classList.toggle("armed", measuring); }
     // pins follow the rows: a row without a pin gets one, a pin without a row goes
     const ids = new Set(rows().map((tr) => Number(tr.dataset.id)));
     pins.slice().forEach((pn) => { if (!ids.has(pn.id)) removePin(pn.id); });
@@ -624,6 +867,7 @@ function initScene(sessionId, box, surf, p) {
       const n = pn.o.n, facing = (n[0] * (x - cp[0]) + n[1] * (y - cp[1]) + n[2] * (z - cp[2])) < 0;
       pn.el.classList.toggle("back", !facing);
     });
+    placeMeasureLabel(aspect, rect);
     requestAnimationFrame(pinLoop);
   })();
 
@@ -632,16 +876,372 @@ function initScene(sessionId, box, surf, p) {
   /* support/debug hook - the browser tier drives the stage through it, without pixel picking */
   window._vdbg = window._vdbg || {};
   window._vdbg["gstage:" + sessionId] = {
-    pins: () => pins.length, selected: () => sel, select, look, diag, add, remove, iso,
+    pins: () => pins.length, selected: () => sel, select, look, diag, add, addAt, rayAt, remove, iso,
+    tracing: () => (trace ? trace.length : null), adding: () => addMode,
+    measuring: () => measuring, measured: () => measuredNow(), measureAt, screenOf,
     openings: () => (p.openings || []).map((o) => Number(o.id)),
     external: () => ({ arrow: decor.length >= 1, box: decor.length >= 2, actors: decor.length }),
     visible: () => pins.filter((pn) => pn.el.style.display !== "none").length,
     camera: () => cam.getPosition(), cam: () => cam, edges: () => edgeCount, axes: () => { drawAxes(); return axesNow; },
     smooth: () => skins.some((s) => !!s.pd.getPointData().getNormals()),
+    upAxis: () => upAxis, setUp: (a) => { if (upSel) { upSel.value = a; upSel.onchange(); } },
     render: () => rw.render(),
   };
   return {
-    stop: () => { alive = false; ro.disconnect(); clearDecor(); delete window._vdbg["gstage:" + sessionId]; },
+    stop: () => { alive = false; ro.disconnect(); clearDecor(); clearMeasure(); document.removeEventListener("keydown", onKey); delete window._vdbg["gstage:" + sessionId]; },
     rebind, refresh: refreshExternal,
+  };
+}
+
+/* ======================================================================================
+ * THE THERMAL MODEL STAGE - an ECXML upload, shown the way a thermal tool opens a model.
+ *
+ * The file already says what every part is, what it is made of, how much heat it gives off and
+ * where the fans and vents sit, so there is nothing here to name, no openings, no flow arrow and
+ * no far-field box. The parts are drawn in the colours the panel's list wears; clicking a row (or
+ * a part) lights that part and fades the rest, hovering says what it is, the case can be seen
+ * through, and the air box the file sets is drawn as faint lines. The one answer is the detail
+ * level, sent with "Mesh this model".
+ * ====================================================================================== */
+const AIRBOX = [0.43, 0.55, 0.69], OUTLINE = [1.0, 0.31, 0.0];
+const FADED = 0.12, XRAY = 0.18;
+
+async function openThermalStage(sessionId, d, confirm, opts) {
+  const t = d.thermal || {};
+  const id = "gstage-" + sessionId;
+  document.getElementById(id)?.remove();
+  const box = document.createElement("div"); box.className = "viewer gc-stage tm-stage"; box.id = id;
+  const hasCase = (t.tree || []).some((r) => r.kind === "enclosure" && r.region);
+  box.innerHTML = `<div class="v-bar gc-panel tm-panel">${thermalPanelHtml(t)}</div>
+    <div class="v-canvas gc-canvas" id="gs-canvas-${sessionId}">
+      <div class="v-loading" id="gs-load-${sessionId}"><div>Loading the model…</div></div>
+      <div class="v-tools">${upSelectHtml("gs-up-" + sessionId, savedUp("session", sessionId) || "+z")}${hasCase ? `<button class="v-btn v-tool on" id="gs-xray-${sessionId}" type="button" aria-pressed="true" title="See through the case to the parts inside">See inside</button>` : ""}<button class="v-btn v-tool" id="gs-all-${sessionId}" type="button" hidden title="Show every part again">Show all</button><button class="v-btn v-tool" id="gs-fit-${sessionId}" type="button" title="Frame the whole model">Fit</button></div>
+      <div class="tm-tip" hidden></div>
+      <svg class="gc-axes" viewBox="0 0 84 84" aria-hidden="true">
+        ${["x", "y", "z"].map((k) => `<line class="ax ax-${k}" x1="42" y1="42" x2="42" y2="42"/><text class="ax-l ax-${k}" x="42" y="42">${k.toUpperCase()}</text>`).join("")}
+      </svg>
+    </div>`;
+  const release = takeOver(box, opts.anchorEl);
+  const panelEl = box.querySelector(".tm-panel");
+  let scene = null, closed = false;
+  const panel = bindThermalPanel(panelEl, t, {
+    select: (region) => scene && scene.select(region),
+    hover: (region) => scene && scene.hover(region),
+    frame: (region) => scene && scene.frame(region),
+    probe: (name) => scene && scene.probe(name),
+    confirm: async (body) => {
+      await confirm(body, "");
+      closed = true;
+      if (scene) scene.stop();
+      release();                         // the workbench goes back; the conversation carries on
+    },
+  });
+  try {
+    await loadVtk();
+    const surf = await getGeometrySkin(sessionId);
+    if (closed) return null;             // confirmed while the model loaded: nothing left to draw
+    scene = initThermalScene(sessionId, box, surf, t, panel);
+    document.getElementById("gs-load-" + sessionId)?.remove();
+  } catch (e) {
+    // the panel works without the picture: the card carries it instead
+    if (closed) return null;             // confirmed already: no card for a model that is done
+    console.warn("thermal stage unavailable, showing the card instead:", e && e.message);
+    release();
+    if (opts.fallback) opts.fallback();
+    return null;
+  }
+  return {
+    release: () => { if (scene) scene.stop(); release(); },
+    // the file's model does not move while the page waits: nothing to follow
+    update: () => {},
+    isNaming: () => false,
+  };
+}
+
+function initThermalScene(sessionId, box, surf, t, panel) {
+  const host = document.getElementById("gs-canvas-" + sessionId);
+  const grw = vtk.Rendering.Misc.vtkGenericRenderWindow.newInstance({ background: BACKGROUND });
+  grw.setContainer(host);
+  const ren = grw.getRenderer(), rw = grw.getRenderWindow();
+  const apiRW = grw.getApiSpecificRenderWindow ? grw.getApiSpecificRenderWindow() : grw.getOpenGLRenderWindow();
+  const DPR = Math.min(window.devicePixelRatio || 1, 2);
+  function setRenderScale() { const r = host.getBoundingClientRect();
+    apiRW.setSize(Math.max(2, Math.round(r.width * DPR)), Math.max(2, Math.round(r.height * DPR))); }
+  grw.resize();
+  host.addEventListener("contextmenu", (e) => e.preventDefault());
+  bindMouse(grw);
+  if (vtk.Rendering.Core.vtkLight) {
+    [[-0.7, 0.9, 1.0, 0.62], [0.9, 0.25, 0.7, 0.28], [0.0, -0.4, -1.0, 0.14]].forEach(([x, y, z, i]) => {
+      const l = vtk.Rendering.Core.vtkLight.newInstance();
+      if (l.setLightTypeToCameraLight) l.setLightTypeToCameraLight();
+      l.setPosition(x, y, z); l.setFocalPoint(0, 0, 0); l.setIntensity(i); l.setColor(1, 1, 1);
+      ren.addLight(l);
+    });
+  }
+  const rows = new Map((t.tree || []).filter((r) => r.region).map((r) => [r.region, r]));
+
+  /* THE PARTS - one actor each, under the region name the list's rows carry */
+  const parts = new Map();
+  (surf.patches || []).forEach((pt) => {
+    let pts, polys, normals = null;
+    if (pt.polys_b64) { pts = b64f32(pt.points_b64); polys = b64u32(pt.polys_b64);
+      if (pt.normals_b64) normals = b64f32(pt.normals_b64); }
+    else { pts = b64f32(pt.positions_b64); const n = pts.length / 9;
+      polys = new Uint32Array(n * 4);
+      for (let q = 0; q < n; q++) { polys[q * 4] = 3; polys[q * 4 + 1] = q * 3; polys[q * 4 + 2] = q * 3 + 1; polys[q * 4 + 3] = q * 3 + 2; } }
+    const pd = vtk.Common.DataModel.vtkPolyData.newInstance();
+    pd.getPoints().setData(pts, 3); pd.getPolys().setData(polys);
+    if (normals && normals.length === pts.length) {
+      pd.getPointData().setNormals(vtk.Common.Core.vtkDataArray.newInstance({ name: "Normals", values: normals, numberOfComponents: 3 }));
+    }
+    const mapper = vtk.Rendering.Core.vtkMapper.newInstance(); mapper.setInputData(pd);
+    const actor = vtk.Rendering.Core.vtkActor.newInstance(); actor.setMapper(mapper);
+    const row = rows.get(pt.name) || {};
+    // the list's colour is the part's colour: the same table on both sides (ecxml_place.PART_COLOURS)
+    const col = Array.isArray(row.color) ? row.color : Array.isArray(pt.color) ? pt.color : BODY;
+    const pr = actor.getProperty();
+    pr.setColor(col[0], col[1], col[2]); pr.setInterpolationToPhong();
+    pr.setAmbient(0.32); pr.setDiffuse(0.76); pr.setSpecular(0.12); pr.setSpecularPower(20);
+    ren.addActor(actor);
+    parts.set(pt.name, { actor, pd, pts, polys, index: null, isCase: (row.kind || "") === "enclosure" || pt.kind === "enclosure", row });
+  });
+  let edges = null;
+  if (surf.edges && surf.edges.lines_b64) {
+    const pd = vtk.Common.DataModel.vtkPolyData.newInstance();
+    pd.getPoints().setData(b64f32(surf.edges.points_b64), 3); pd.getLines().setData(b64u32(surf.edges.lines_b64));
+    const mp = vtk.Rendering.Core.vtkMapper.newInstance(); mp.setInputData(pd);
+    edges = vtk.Rendering.Core.vtkActor.newInstance(); edges.setMapper(mp); edges.setPickable(false);
+    const pp = edges.getProperty(); pp.setColor(...EDGE); pp.setLineWidth(1); pp.setLighting(false); pp.setOpacity(0.9);
+    ren.addActor(edges);
+  }
+  const cam = ren.getActiveCamera();
+  ren.resetCamera(); rw.render();
+  const bs = ren.computeVisiblePropBounds();
+  const partBounds = bs.slice();
+  const diag = Math.max(Math.hypot(bs[1] - bs[0], bs[3] - bs[2], bs[5] - bs[4]), 1e-9);
+  const centre = [(bs[0] + bs[1]) / 2, (bs[2] + bs[3]) / 2, (bs[4] + bs[5]) / 2];
+
+  function lines(P, E, color, width, opacity) {
+    const pd = vtk.Common.DataModel.vtkPolyData.newInstance();
+    pd.getPoints().setData(Float32Array.from(P.flat()), 3);
+    pd.getLines().setData(Uint32Array.from(E.flatMap(([a, b]) => [2, a, b])));
+    const mp = vtk.Rendering.Core.vtkMapper.newInstance(); mp.setInputData(pd);
+    const ac = vtk.Rendering.Core.vtkActor.newInstance(); ac.setMapper(mp); ac.setPickable(false);
+    const pp = ac.getProperty(); pp.setColor(...color); pp.setLineWidth(width); pp.setLighting(false); pp.setOpacity(opacity);
+    ren.addActor(ac); return ac;
+  }
+  const BOX_E = [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6], [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7]];
+  function boxPts(b) {
+    return [[b[0], b[2], b[4]], [b[1], b[2], b[4]], [b[1], b[3], b[4]], [b[0], b[3], b[4]],
+            [b[0], b[2], b[5]], [b[1], b[2], b[5]], [b[1], b[3], b[5]], [b[0], b[3], b[5]]];
+  }
+  /* THE AIR BOX the file sets: faint lines only, so it frames the model without hiding it. A box
+     the file does not set (Hexera's box around the parts) is not drawn: there is no room air. */
+  const dom = t.domain || {};
+  let airbox = null;
+  if (dom.source === "solutionDomain" && dom.box_mm && dom.box_mm.min && dom.box_mm.max) {
+    const lo = dom.box_mm.min.map((v) => v / 1000), hi = dom.box_mm.max.map((v) => v / 1000);
+    airbox = lines(boxPts([lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]]), BOX_E, AIRBOX, 1, 0.55);
+  }
+
+  /* SEE INSIDE: a case is drawn see-through, so the board and the chips in it show, and a click
+     goes through it to them. Its own row still lights it fully. */
+  let xray = [...parts.values()].some((p) => p.isCase);
+  // `selected`: the one part picked; `lit`: every part shown (that part, or a whole group)
+  let selected = null, lit = null, hovered = null, outline = null, touched = false;
+  function paint() {
+    parts.forEach((p, region) => {
+      const pr = p.actor.getProperty();
+      let op = 1;
+      // a faded case is fainter still: its walls are many layers deep between the eye and the part
+      if (lit) op = lit.has(region) ? 1 : (p.isCase ? FADED / 2.5 : FADED);
+      else if (xray && p.isCase) op = XRAY;
+      pr.setOpacity(op);
+      pr.setAmbient(region === hovered || region === selected ? 0.55 : 0.32);
+      p.actor.setPickable(op >= 0.5);
+    });
+    if (edges) edges.getProperty().setOpacity(lit ? 0.12 : (xray ? 0.55 : 0.9));
+    if (outline) { ren.removeActor(outline); outline = null; }
+    if (lit) {
+      // one box around what is shown: the part, or the whole group
+      const b = [Infinity, -Infinity, Infinity, -Infinity, Infinity, -Infinity];
+      lit.forEach((r) => { const q = parts.get(r).pd.getBounds();
+        for (let i = 0; i < 6; i += 2) { b[i] = Math.min(b[i], q[i]); b[i + 1] = Math.max(b[i + 1], q[i + 1]); } });
+      const pad = 0.004 * diag;
+      outline = lines(boxPts([b[0] - pad, b[1] + pad, b[2] - pad, b[3] + pad, b[4] - pad, b[5] + pad]), BOX_E, OUTLINE, 1.5, 1);
+    }
+    const all = box.querySelector("#gs-all-" + sessionId); if (all) all.hidden = !lit;
+    rw.render();
+  }
+  /** Light one part (a region name), a group of them (a list), or none (null). */
+  function select(what) {
+    const list = (Array.isArray(what) ? what : what ? [what] : []).filter((r) => parts.has(r));
+    selected = !Array.isArray(what) && list.length ? list[0] : null;
+    lit = list.length ? new Set(list) : null;
+    paint();
+  }
+  function hover(region) { hovered = region && parts.has(region) ? region : null; paint(); }
+  function frame(region) {
+    const p = parts.get(region); if (!p) return;
+    select(region); panel.select(region);
+    ren.resetCamera(p.pd.getBounds()); cam.zoom(0.7); ren.resetCameraClippingRange(); rw.render();
+    touched = true;
+  }
+
+  /* PICKING: the ray through the pixel, against each part the user can see (a faded or
+     see-through part lets the click through). Parts are boxes and cylinders: a plain ray cast. */
+  function rayAt(clientX, clientY) {
+    const rect = host.getBoundingClientRect(), size = apiRW.getSize();
+    const x = (clientX - rect.left) / rect.width, y = 1 - (clientY - rect.top) / rect.height;
+    const aspect = size[0] / Math.max(size[1], 1);
+    const a = ren.normalizedDisplayToWorld(x, y, 0, aspect), b = ren.normalizedDisplayToWorld(x, y, 1, aspect);
+    const dir = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], L = Math.hypot(dir[0], dir[1], dir[2]) || 1;
+    const cp = cam.getPosition();
+    const back = ((a[0] - cp[0]) * dir[0] + (a[1] - cp[1]) * dir[1] + (a[2] - cp[2]) * dir[2]) / L;
+    return { origin: [a[0] - dir[0] / L * back, a[1] - dir[1] / L * back, a[2] - dir[2] / L * back],
+             dir: [dir[0] / L, dir[1] / L, dir[2] / L] };
+  }
+  function pickAt(clientX, clientY) {
+    const ray = rayAt(clientX, clientY);
+    let best = null, bestT = Infinity;
+    parts.forEach((p, region) => {
+      if (!p.actor.getPickable()) return;
+      if (!p.index) p.index = clickIndex([{ pts: p.pts, polys: p.polys }], []);
+      const hit = firstHit(p.index, ray.origin, ray.dir);
+      if (hit && hit.t < bestT) { bestT = hit.t; best = region; }
+    });
+    return best;
+  }
+  const tip = host.querySelector(".tm-tip");
+  function showTip(region, clientX, clientY) {
+    const r = region && rows.get(region);
+    if (!r) { tip.hidden = true; return; }
+    const rect = host.getBoundingClientRect();
+    tip.innerHTML = `<b>${esc(r.name)}</b><span>${esc([r.kind, r.material || "no material", watts(r.power_W)].filter(Boolean).join(" · "))}</span>`;
+    tip.title = partDetails(r);
+    tip.hidden = false;
+    tip.style.left = Math.max(8, Math.min(clientX - rect.left + 14, rect.width - 240)) + "px";
+    tip.style.top = Math.min(clientY - rect.top + 14, rect.height - 60) + "px";
+  }
+  let downXY = null, moveAt = null;
+  host.addEventListener("pointerdown", (e) => {
+    downXY = [e.clientX, e.clientY];
+    if (!(e.target.closest && e.target.closest(".v-tools"))) touched = true;
+  }, true);
+  host.addEventListener("pointerup", (e) => {
+    if (!downXY || (e.target.closest && e.target.closest(".v-tools,.tm-probe"))) return;
+    if (Math.hypot(e.clientX - downXY[0], e.clientY - downXY[1]) > 6) return;
+    const region = pickAt(e.clientX, e.clientY);
+    const next = region && region === selected ? null : region;
+    select(next); panel.select(next);
+  }, true);
+  host.addEventListener("pointermove", (e) => {
+    if (e.buttons) { tip.hidden = true; return; }      // turning the model: no hover reading
+    const queued = moveAt !== null;
+    moveAt = [e.clientX, e.clientY];
+    if (queued) return;
+    requestAnimationFrame(() => {
+      if (!moveAt) return;
+      const [x, y] = moveAt; moveAt = null;
+      const region = pickAt(x, y);
+      if (region !== hovered) { hovered = region; panel.hover(region); paint(); }
+      showTip(region, x, y);
+    });
+  });
+  host.addEventListener("pointerleave", () => {
+    moveAt = null; tip.hidden = true;
+    if (hovered) { hovered = null; panel.hover(null); paint(); }
+  });
+
+  /* THE PROBES the engineer will read temperatures at: small pins, named on hover */
+  const probes = (t.probes || []).filter((p) => (p.at_mm || []).length === 3).map((p) => {
+    const el = document.createElement("div"); el.className = "tm-probe"; el.title = p.name;
+    el.setAttribute("aria-label", "probe " + p.name);
+    host.appendChild(el);
+    return { name: p.name, c: p.at_mm.map((v) => v / 1000), el };
+  });
+  function probe(name) {
+    probes.forEach((p) => p.el.classList.toggle("sel", p.name === name && !p.el.classList.contains("sel")));
+  }
+
+  /* THE CAMERA - the three-quarter view framed on the parts, re-fitted as the canvas settles */
+  function fit() {
+    ren.resetCamera(partBounds);
+    const [w, h] = apiRW.getSize(), a = w / Math.max(h, 1);
+    if (a < 1) { cam.dolly(a); ren.resetCameraClippingRange(); }
+    rw.render(); }
+  const upSel = box.querySelector("#gs-up-" + sessionId);
+  let upAxis = (upSel && upSel.value) || "+z";
+  function iso() {
+    cam.setPosition(centre[0] - diag, centre[1] - diag, centre[2] + 0.8 * diag);
+    cam.setFocalPoint(...centre); cam.setViewUp(0, 0, 1);
+    orient(cam, upAxis, [-1, -1, 0.8]);
+    fit();
+  }
+  const ro = new ResizeObserver(() => { setRenderScale(); if (!touched) fit(); else rw.render(); });
+  ro.observe(host);
+  const tools = box.querySelector(".v-tools"); shield(tools);
+  if (upSel) upSel.onchange = () => { upAxis = upSel.value; saveUp("session", sessionId, upAxis); iso(); };
+  const fitBtn = box.querySelector("#gs-fit-" + sessionId); if (fitBtn) fitBtn.onclick = () => { touched = false; iso(); };
+  const allBtn = box.querySelector("#gs-all-" + sessionId); if (allBtn) allBtn.onclick = () => { select(null); panel.select(null); };
+  const xrayBtn = box.querySelector("#gs-xray-" + sessionId);
+  if (xrayBtn) xrayBtn.onclick = () => {
+    xray = !xray; xrayBtn.classList.toggle("on", xray); xrayBtn.setAttribute("aria-pressed", xray ? "true" : "false"); paint();
+  };
+
+  const axesEl = box.querySelector(".gc-axes");
+  const axesLines = ["x", "y", "z"].map((k) => [axesEl.querySelector("line.ax-" + k), axesEl.querySelector("text.ax-" + k)]);
+  function drawAxes() {
+    const dir = cam.getDirectionOfProjection(), up = cam.getViewUp();
+    const right = [dir[1] * up[2] - dir[2] * up[1], dir[2] * up[0] - dir[0] * up[2], dir[0] * up[1] - dir[1] * up[0]];
+    const rl = Math.hypot(right[0], right[1], right[2]) || 1;
+    right[0] /= rl; right[1] /= rl; right[2] /= rl;
+    const upp = [right[1] * dir[2] - right[2] * dir[1], right[2] * dir[0] - right[0] * dir[2], right[0] * dir[1] - right[1] * dir[0]];
+    const C = 42, L = 28;
+    ["x", "y", "z"].forEach((k, i) => {
+      const sx = right[i], sy = upp[i], sz = -dir[i];
+      const [line, label] = axesLines[i];
+      line.setAttribute("x2", (C + L * sx).toFixed(1)); line.setAttribute("y2", (C - L * sy).toFixed(1));
+      label.setAttribute("x", (C + (L + 9) * sx).toFixed(1)); label.setAttribute("y", (C - (L + 9) * sy).toFixed(1));
+      line.classList.toggle("back", sz < 0); label.classList.toggle("back", sz < 0);
+    });
+  }
+  let alive = true;
+  (function loop() {
+    if (!alive || !document.body.contains(host)) return;
+    drawAxes();
+    const size = apiRW.getSize(), aspect = size[0] / size[1], rect = host.getBoundingClientRect();
+    probes.forEach((p) => {
+      const nd = ren.worldToNormalizedDisplay(p.c[0], p.c[1], p.c[2], aspect);
+      const ok = nd[2] > 0 && nd[2] < 1 && nd[0] >= 0 && nd[0] <= 1 && nd[1] >= 0 && nd[1] <= 1;
+      p.el.style.display = ok ? "" : "none";
+      if (ok) { p.el.style.left = (nd[0] * rect.width) + "px"; p.el.style.top = ((1 - nd[1]) * rect.height) + "px"; }
+    });
+    requestAnimationFrame(loop);
+  })();
+
+  setRenderScale(); iso(); paint();
+
+  /* support/debug hook - the browser tier drives the stage through it, without pixel picking */
+  window._vdbg = window._vdbg || {};
+  window._vdbg["gstage:" + sessionId] = {
+    thermal: true, parts: () => [...parts.keys()], selected: () => selected, lit: () => (lit ? [...lit] : []),
+    select: (r) => { select(r); panel.select(r); },
+    opacity: (r) => (parts.get(r) ? parts.get(r).actor.getProperty().getOpacity() : null),
+    color: (r) => (parts.get(r) ? parts.get(r).actor.getProperty().getColor() : null),
+    pickAt,
+    screenOf: (pt) => {
+      const size = apiRW.getSize(), rect = host.getBoundingClientRect();
+      const nd = ren.worldToNormalizedDisplay(pt[0], pt[1], pt[2], size[0] / size[1]);
+      return [rect.left + nd[0] * rect.width, rect.top + (1 - nd[1]) * rect.height];
+    },
+    centreOf: (r) => { const b = parts.get(r).pd.getBounds(); return [(b[0] + b[1]) / 2, (b[2] + b[3]) / 2, b[5]]; },
+    airbox: () => !!airbox, xray: () => xray, setXray: (on) => { xray = !!on; paint(); },
+    probes: () => probes.length, pins: () => 0, outline: () => !!outline,
+    iso, frame, cam: () => cam, render: () => rw.render(),
+  };
+  return {
+    select, hover, frame, probe,
+    stop: () => { alive = false; ro.disconnect(); delete window._vdbg["gstage:" + sessionId]; },
   };
 }

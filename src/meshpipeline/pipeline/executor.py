@@ -79,7 +79,9 @@ def _gate_statement(engine: str, gate_key: str) -> str:
                 return g.proves or g.key
     except Exception:  # noqa: BLE001
         pass
-    return {"domain_extent": "The far-field domain is the size you asked for"}.get(
+    return {"domain_extent": "The far-field domain is the size you asked for",
+            # agents/builder/attempt.STAGING_GATE: the engine's own preparation of the file
+            "staging": "The engine prepared its input from your file"}.get(
         gate_key, "The mesh setup matches what you approved")
 
 
@@ -99,6 +101,78 @@ def _gate_cause(engine: str, gate_key: str, feedback: object) -> str:
         pass
     seam = SEAM_CAUSES.get(gate_key)
     return seam.value if seam is not None else ""
+
+
+def _meshers_started(workspace) -> int | None:
+    from meshpipeline.contracts.mesh_execution import meshers_started, native_runs
+    return meshers_started(native_runs(workspace))
+
+
+def _manifest_stamp(workspace) -> tuple[int, int] | None:
+    """(mtime_ns, size) of the workspace's mesh manifest, or None when there is none - so the
+    executor can tell a manifest THIS finalize wrote from one left by an earlier pass."""
+    try:
+        st = (Path(workspace) / "mesh_manifest.json").stat()
+    except (OSError, TypeError, ValueError):
+        return None
+    return st.st_mtime_ns, st.st_size
+
+
+def _broken_mesh(workspace, before: tuple[int, int] | None) -> list[str]:
+    """The fatal checkMesh defects of the mesh this finalize just judged - read from the manifest
+    it wrote, and only when it wrote one (a manifest left from before says nothing about this
+    mesh). [] when there is no such manifest or the mesh had no fatal defect."""
+    now = _manifest_stamp(workspace)
+    if now is None or now == before:
+        return []
+    try:
+        quality = (json.loads((Path(workspace) / "mesh_manifest.json").read_text()) or {}).get(
+            "quality") or {}
+    except (OSError, ValueError, AttributeError):
+        return []
+    fatal = quality.get("fatal") if isinstance(quality, dict) else None
+    return [str(x) for x in fatal if str(x).strip()] if isinstance(fatal, list) else []
+
+
+def _no_mesh_cause(state, workspace, cause: str, facts: dict) -> tuple[str, dict]:
+    """(cause, facts) for an attempt that ended with no mesh and no refusal on record, read from
+    the attempt's record of native runs (contracts/mesh_execution.native_runs):
+
+    * no mesher started at all          -> NOT_BUILT (the engine stopped while preparing);
+    * the last run ran out of time      -> ENGINE_TIMED_OUT;
+    * the last run never started        -> RUN_INFRASTRUCTURE (never a statement about the input)
+      - positively: it raised, or its log carries the never-started tag;
+    * the last run ran, and its result could not be brought back (the uncollected tag)
+                                        -> RUN_INFRASTRUCTURE, said as a run that RAN;
+    * a mesher ran and left no mesh     -> the finalize seam's cause (the mesher crashed). An
+      RC_INFRASTRUCTURE result with neither tag is snappy's own stage verdict: it ran, and left
+      no valid mesh.
+
+    A workspace whose record this process never opened says nothing, and the seam's cause stands
+    exactly as before."""
+    from meshpipeline.contracts.failure_cause import FailureCause
+    from meshpipeline.contracts.mesh_execution import meshers_started, native_runs
+    runs = native_runs(workspace)
+    if runs is None:
+        return cause, facts
+    started = meshers_started(runs) or 0
+    facts = {**facts, "meshers_started": started}
+    launched = [r for r in runs if not r.get("refused_before_launch")]
+    if started == 0:
+        try:
+            from meshpipeline.engines.registry import get_spec
+            deterministic = get_spec(state.get("engine", "")).build_driver is not None
+        except Exception:  # noqa: BLE001 - an unknown engine claims nothing
+            deterministic = False
+        return FailureCause.NOT_BUILT.value, {**facts, "deterministic": deterministic}
+    last = launched[-1]
+    if last.get("timed_out"):
+        return FailureCause.ENGINE_TIMED_OUT.value, facts
+    if last.get("never_started"):
+        return FailureCause.RUN_INFRASTRUCTURE.value, facts
+    if last.get("uncollected"):
+        return FailureCause.RUN_INFRASTRUCTURE.value, {**facts, "result_uncollected": True}
+    return cause, facts
 
 
 async def node_executor(state: PipelineState) -> dict:
@@ -175,6 +249,7 @@ async def node_executor(state: PipelineState) -> dict:
     # internal jobs bypassing intake (programmatic submits) can arrive with no domain label;
     # give the reviewer a non-empty flow context rather than an empty field.
     _mfst_domain = _domain or ("internal flow" if _internal else "")
+    _manifest_before = _manifest_stamp(workspace)
     # ENGINE-ADAPTER seam: each engine declares its own finalize (flow engines →
     # each flow bundle's finalize clone; gmsh → its own finalize).
     result: dict = ({"success": False, "output": _refusal.builder_text, "stdout": "", "stderr": ""}
@@ -201,7 +276,30 @@ async def node_executor(state: PipelineState) -> dict:
         # the refused gate speaks for itself, and the user sees which check it was
         failed_gate, failure_cause = _refusal.gate, _refusal.cause
         failure_facts = dict(_refusal.facts)
+        _started = _meshers_started(workspace)
+        if _started is not None:
+            # whether an earlier pass of this attempt did start a mesher: what the attempt is
+            # counted by (engine_fallback.mesher_started)
+            failure_facts["meshers_started"] = _started
         await _pub.acheck(_gate_statement(state.get("engine", ""), _refusal.gate), ok=False)
+    elif not executor_success and (_broken := _broken_mesh(workspace, _manifest_before)):
+        # A MESH CAME OUT, AND IT IS BROKEN: finalize wrote its manifest and checkMesh's fatal
+        # defects are in it. That is a mesh that failed its quality check, not a mesher that
+        # "stopped before it finished writing the mesh" (every cfMesh DrivAer car was told that,
+        # e2e sweep 2026-10-17). The fatal list travels as a fact: the user's sentence names the
+        # defects, and the fallback ladder moves a broken mesh to the next engine at once.
+        from meshpipeline.contracts.failure_cause import FailureCause
+        failure_cause = FailureCause.MESH_QUALITY.value
+        failure_facts = {**failure_facts, "fatal": _broken}
+        _started = _meshers_started(workspace)
+        if _started is not None:
+            failure_facts["meshers_started"] = _started
+    elif not executor_success:
+        # NO MESH, AND NOTHING REFUSED IT: say which of the four it was, from the attempt's record
+        # of native runs - not "the mesher stopped" for every one of them (job d20ad762 was told
+        # its mesher crashed when no mesher had started)
+        failure_cause, failure_facts = _no_mesh_cause(state, workspace, failure_cause,
+                                                      failure_facts)
     executor_output  = result.get("output", "")
     mesh_manifest: dict = {}
     solvability_metrics: dict = {}  # residual/iters/n_cells/info
@@ -270,7 +368,13 @@ async def node_executor(state: PipelineState) -> dict:
 
         if executor_success:
             _domain_check_failed = False
-            if executor_success and not contract_failed and mesh_manifest and polcfg.DOMAIN_EXTENT_GATE_ENABLED:
+            from meshpipeline.engines.domain_extent_gate import far_field_exists
+            # the far-field extent is judged only where a far field exists: never on an internal
+            # flow, whose box is the mesher's background around the passage, not room the user
+            # asked for (the gate itself says the same from the manifest)
+            if (executor_success and not contract_failed and mesh_manifest
+                    and polcfg.DOMAIN_EXTENT_GATE_ENABLED
+                    and far_field_exists(state.get("flow_topology"), mesh_manifest)):
                 _typed_req = state.get("requested_extents")
                 _typed_ruler = state.get("reference_length_m")
                 if _typed_req and _typed_ruler:

@@ -51,7 +51,7 @@ def folded_class_regions(ws: Path, layer_policy: dict | None) -> dict:
     out: dict = {}
     for r in regions:
         base, _, cls = str(r).rpartition("_")
-        if cls in ("thin", "razor") and base and r not in present:
+        if cls in ("thin", "razor", "repair") and base and r not in present:
             out[str(r)] = base
     return out
 
@@ -127,6 +127,13 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
                              "timed-out or cancelled run leaves a partial polyMesh); "
                              "re-run the mesh.")}
     q = R.check_mesh(ws)
+    if internal_flow:
+        # WHICH under-resolved passages the flow can go round (engines/passage_flow.py): read here,
+        # on the mesh that came home, only when the measure beside it put the narrowest wall under
+        # the floor - so the resolution floor judges the passages the flow must go through, and a
+        # tube bank's gaps are told on the delivered mesh instead of refusing it (job 02ed0d14).
+        from meshpipeline.engines.passage_flow import passage_flow_of_polymesh
+        q.update(passage_flow_of_polymesh(ws, q))
     # NEAR-WALL PRISM LAYER COVERAGE - a MEASURED number, not a visual: a ~1e-4 m layer band
     # on a metre-scale body is invisible in any whole-body render, so the reviewer must judge
     # the layer axis from this figure (it otherwise mistook an unresolvable near-wall region
@@ -184,6 +191,18 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
                 q["layer_policy"] = _pol
         except Exception:
             logger.exception("finalize: layer-policy record unreadable (non-fatal)")
+    # THE WAKE REFINEMENT the case authored (engines/wake_region.py): the boxes behind the body
+    # and their cells, and what the cell budget cut - so the reviewer judging the wake reads
+    # what was asked of the mesher, not a guess from the render.
+    _wk = ws / "wake_refinement.json"
+    if _wk.exists():
+        try:
+            import json as _json
+            _w = _json.loads(_wk.read_text())
+            if isinstance(_w, dict):
+                q["wake_refinement"] = _w
+        except Exception:
+            logger.exception("finalize: wake-refinement record unreadable (non-fatal)")
     patch_entities, bbox = {}, (0.0,) * 6
     _review_tris: dict = {}   # per-patch triangles → precomputed reviewer camera views
     # The review surface the vision reviewer renders is built from the geometry THIS ENGINE
@@ -219,7 +238,9 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
     # background-box skin ('outer') surviving the carve: the channel leaked to the
     # exterior void - a hollow part whose annular port mouths were not sealed - and the
     # delivered mesh contains a spurious outside region (jobs 95bd0197 and 0de57541
-    # shipped 'outer' patches of 58,348 and 5,827 faces beside inlet/outlet/wall).
+    # shipped 'outer' patches of 58,348 and 5,827 faces beside inlet/outlet/wall). The
+    # same patch appears when the surface is closed but the seed sits OUTSIDE it
+    # (bend_elbow_021: 0.5 mm upstream of its sealed inlet), so the message names both.
     # Recorded as a QUALITY KEY (not a criteria row: gate_declared_criteria fails closed
     # on any gating key absent from the quality report, so a new row would demand this
     # measurement of every snappy job, external aero included) and shouted in the builder
@@ -236,10 +257,11 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
             internal_leak_msg = (
                 f" [INTERNAL_CARVE_LEAK] boundary patch(es) beyond the staged "
                 f"inlet/outlet/wall set carry faces: {_detail} - the carve kept the "
-                f"exterior void (a hollow part's port mouths were not sealed), so the "
-                f"mesh includes a spurious outside region and is physically wrong for "
-                f"internal flow. This is a geometry-prep defect, not a plan problem - "
-                f"do not re-plan; the port STLs must seal the mouths.")
+                f"exterior void (a port mouth left open, or the seed point outside the "
+                f"cavity), so the mesh includes a spurious outside region and is "
+                f"physically wrong for internal flow. This is a geometry-prep defect, not "
+                f"a plan problem - do not re-plan; the staged surface must close the flow "
+                f"and the seed must sit inside it.")
             logger.error("finalize: internal-flow mesh delivered unexpected boundary "
                          "patch(es) with faces (%s) - carve leaked to the exterior void",
                          _detail)
@@ -266,6 +288,20 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
         build_surface_msh(ws)
     except Exception:
         logger.exception("Executor: surface deliverable export failed (non-fatal)")
+    # each boundary's AREA, off the same VTK boundary: the shared port-area gate holds every
+    # inlet/outlet to the opening the user declared (engines/region_check.py)
+    try:
+        from meshpipeline.engines.region_check import patch_areas_from_vtk, recorded_port_openings
+        _areas = patch_areas_from_vtk(ws)
+        if _areas:
+            q["patch_areas_m2"] = {k: round(v, 10) for k, v in _areas.items()}
+        # ...and the openings the staging measured on the geometry: the sizes the gate holds
+        # them to (a typed size only where nothing was measured)
+        _openings = recorded_port_openings(ws)
+        if _openings:
+            q["port_openings_m2"] = _openings
+    except Exception:
+        logger.exception("Executor: patch areas not measured (non-fatal)")
     body_bbox = None
     try:
         _bi = R.inspect_stl(ws)
@@ -306,7 +342,9 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
     # metric just measures the deviation. Engines that do not body-fit a reference simply
     # don't define the hook, so there is NO engine-name list here (capability by declaration).
     _ref_fn = getattr(R, "surface_capture_reference", None)
-    if callable(_ref_fn) and volume_path:
+    # the boundary .vtp is what is measured, not the volume: a volume export left behind for size
+    # (engines/return_scope.py) must not cost the wall its capture figure
+    if callable(_ref_fn):
         try:
             from meshpipeline.cad.surface_checks import surface_deviation
             _pair = _ref_fn(ws, patch_types)
@@ -320,6 +358,7 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
     # the A1 domain-extent gate measures this, not the octree-padded mesh bounds.
     requested_box = None
     reference_length = None
+    symmetry_faces: list = []
     _gb = ws / "geom_box.json"
     if _gb.exists():
         try:
@@ -327,6 +366,9 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
             _d = _json.loads(_gb.read_text())
             requested_box = [_d["domain_min"], _d["domain_max"]]
             reference_length = _d.get("reference_length_m")
+            # the box's symmetry planes lie on the body by design: the extent gate owes them
+            # no margin, and reads which faces they are from the manifest
+            symmetry_faces = list(_d.get("symmetry_faces") or [])
         except Exception:
             logger.warning("Executor: could not read geom_box.json (non-fatal)")
     # mesh_mode must record the engine that ACTUALLY built this mesh: the dispute
@@ -337,7 +379,7 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
                      bbox=bbox, quality=q, domain=domain or "",
                      body_bbox=body_bbox, mesh_bounds=q.get("bounds"),
                      requested_box=requested_box, volume_path=volume_path,
-                     reference_length=reference_length,
+                     reference_length=reference_length, symmetry_faces=symmetry_faces,
                      # STATED explicitly. Every engine receives prepared metre geometry and
                      # writes metres; the constant says so rather than a default assuming it.
                      mesh_units=COMPLETED_MESH_UNIT.value,

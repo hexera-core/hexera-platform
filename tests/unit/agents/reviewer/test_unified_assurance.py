@@ -569,8 +569,10 @@ def test_unified_blocks_pass_on_a_failed_gate_then_exhausts_to_non_verdict():
         provider_call=_scripted_provider(script), max_rounds=12, job_id="j"))
     # PASS never becomes eligible (gate failed) -> truthful non-verdict, NOT a fabricated verdict.
     # The identical resubmission now ends the review through no-progress rather than burning the
-    # whole round budget; the outcome is the same truthful non-verdict either way.
-    assert out.verdict == "" and out.api_failure == "reviewer_evidence_missing"
+    # whole round budget; the outcome is the same truthful non-verdict either way. The loop RAN
+    # and stalled, so it carries the stall's own marker (reviewer_stalled), which the pipeline can
+    # rerun - not the pre-loop reviewer_evidence_missing, which it cannot.
+    assert out.verdict == "" and out.api_failure == "reviewer_stalled"
     assert out.failure_class == "eligibility_non_convergence"
     assert out.llm_rounds < 12, "an unchanged resubmission must not consume the whole budget"
 
@@ -722,8 +724,10 @@ def test_the_unified_tool_set_uses_evidence_linked_findings():
     assert "submit_findings" in names
     sf = next(t for t in UNIFIED_TOOLS if t["function"]["name"] == "submit_findings")
     item = sf["function"]["parameters"]["properties"]["axis_findings"]["items"]["properties"]
-    # `satisfied` is the per-axis judgement the application derives the verdict from
-    assert set(item) == {"axis_key", "finding", "evidence_ids", "passed"}
+    # `satisfied` is the per-axis judgement the application derives the verdict from; the judgement
+    # fields say what a finding that did not pass claims and asks for (agents/reviewer/review_policy)
+    assert set(item) == {"axis_key", "finding", "evidence_ids", "passed", "brief_requirement",
+                         "wrong_problem", "severity", "builder_change", "change_request"}
     assert set(sf["function"]["parameters"]["properties"]["axis_findings"]["items"]
                ["required"]) == {"axis_key", "finding", "evidence_ids", "passed"}
 

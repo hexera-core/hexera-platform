@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 import meshpipeline.settings.policy as polcfg
 from meshpipeline.agents.intake import engine_selection as es
-from meshpipeline.agents.intake import refusal, turn
+from meshpipeline.agents.intake import measured_choice, refusal, turn
 from meshpipeline.agents.intake import settings as icfg
 from meshpipeline.agents.intake import vocabulary as _vocab
 from meshpipeline.agents.intake.executor import (
@@ -142,19 +142,31 @@ INTAKE_TOOLS: list[dict] = [
         "function": {
             "name": "propose_engine_selection",
             "description": (
-                "Record that the user NAMED or CHANGED the engine they want, in their own latest "
-                "message (e.g. 'use Gmsh', 'switch to cfMesh'). This is a PROPOSAL, not a selection: "
-                "the application then shows its own deterministic 'Selected engine: X' statement and "
-                "asks the user to confirm, and the turn ENDS there - you will not be asked to compose "
-                "that reply, so do not try to. NEVER call this because an engine was recommended, "
-                "because it is the only compatible one, because it looks best to you, or because you "
-                "think the user meant it. Only their explicit naming counts."
+                "Settle the engine - the ONE way it is ever asked. Two uses: (1) the user NAMED or "
+                "CHANGED the engine in their own words (e.g. 'use Gmsh', 'switch to cfMesh'): pass "
+                "their words in user_named_verbatim and it is selected at once, with no question. "
+                "(2) The user has named NO engine: propose the one you would use for THIS case, "
+                "with a one-line `reason`. The application then asks them its own one-line "
+                "question ('I'd mesh this with X: <reason>. OK, or do you use a different "
+                "mesher?') and the turn ENDS there - you do not compose that reply, and you never "
+                "ask the engine in your own words. An engine the user already confirmed is never "
+                "proposed again. NEVER call this in a turn where you compared engines, to replace "
+                "an engine the user chose, or to route around a refusal."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "engine": {"type": "string", "enum": _ENGINE_CHOICES,
-                               "description": "The engine the user named in their own words."},
+                               "description": ("The engine the user named, or - when they named "
+                                               "none - the one you would use for this case.")},
+                    "reason": {
+                        "type": "string",
+                        "description": (
+                            "Only when the user named no engine: ONE short line, in plain words, "
+                            "on why this engine suits THIS part - e.g. 'it fits the mesh to the "
+                            "nozzle's curved walls and grows thin layers along them'. No other "
+                            "engine's name, no question, no jargon the user did not use."),
+                    },
                     "user_named_verbatim": {
                         "type": "string",
                         "description": (
@@ -175,9 +187,10 @@ INTAKE_TOOLS: list[dict] = [
             "name": "confirm_engine_selection",
             "description": (
                 "Record the user's confirmation of the proposed engine, given after they saw the "
-                "application's 'Selected engine: X' question. A plain 'yes', 'ok', 'sure' or 'go "
-                "with that' answers that question and confirms X - the application reads it "
-                "itself, so this call is then simply accepted. Otherwise quote their words "
+                "application's engine question ('I'd mesh this with X ... OK?'). A plain 'yes', "
+                "'ok', 'sure', 'go with that' or 'your call' answers that question and confirms X "
+                "- the application reads it itself, so this call is then simply accepted. "
+                "Otherwise quote their words "
                 "exactly: the application checks the quote against their actual message and "
                 "refuses words they did not write. If they answered with a different engine, call "
                 "propose_engine_selection for that engine instead."
@@ -413,9 +426,9 @@ INTAKE_TOOLS: list[dict] = [
                         "description": (
                             "The engine that builds the mesh - a DIRECT USER INPUT, never "
                             "an inferred output. Either the user named their toolchain "
-                            "when you asked (authoritative - do not second-guess it from "
-                            "the geometry), or they were unsure and you proposed one from "
-                            "the objective questions and THEY CONFIRMED it. There is no "
+                            "(authoritative - do not second-guess it from the geometry), or "
+                            "they named none and you proposed one through "
+                            "propose_engine_selection and THEY CONFIRMED it. There is no "
                             "'auto': every submission carries a user-confirmed engine."
                         ),
                     },
@@ -425,8 +438,8 @@ INTAKE_TOOLS: list[dict] = [
                         "description": (
                             "Provenance of mesh_engine: 'user_direct' = the user named "
                             "their engine/toolchain themselves; 'suggested_confirmed' = "
-                            "you inferred a fit from the objective questions, proposed it "
-                            "openly, and the user explicitly agreed."
+                            "you proposed it through the application's one engine question "
+                            "and the user agreed."
                         ),
                     },
                     "dimensionality": {
@@ -650,6 +663,10 @@ def _previous_run_block(state: Mapping[str, Any]) -> str:
         "  review_brief_txt must both state the change, worded identically), re-run\n"
         "  preview_selected_admission on the FULL updated payload, and call submit_requirements.\n"
         "- A different ENGINE → that is a new selection: call propose_engine_selection.\n"
+        "- The verdict above ends with an OFFER ('Reply \"use ...\"') and the user takes it → the\n"
+        "  offer IS the change and nothing else moves: an offered engine is a new selection of\n"
+        "  that engine (propose_engine_selection, quoting their words); an offered setting\n"
+        "  (fewer layers) is a change like any other. Never re-ask what the offer settled.\n"
         "- The verdict above blames the request itself → say in one line what it needs, propose\n"
         "  the specific change that addresses it, and ask whether to go with that.\n"
         "- You cannot tell what they want → ask ONE question whose proposal is the same settings\n"
@@ -708,32 +725,55 @@ def _block_engine_first() -> str:
         "     that answer is AUTHORITATIVE: ACCEPT it (engine_source=user_direct) and do NOT ask "
         "     them to choose or confirm it again - never re-derive or second-guess it from the "
         "     geometry, and never silently change it.\n"
-        "  3. If the engine is still MISSING, your FIRST substantive question is which engine/"
-        "     toolchain the user already works in - asked BEFORE any engine-specific parameters. "
-        "     Offer the implemented options with a one-line gist of each, plus 'not sure':\n"
+        "  3. If the user has NOT named an engine, it is settled by ONE question, asked ONCE, and "
+        "     that question carries your proposal. It is your FIRST substantive question as soon as "
+        "     you know what the mesh is for (the purpose) - BEFORE any engine-specific parameter. "
+        "     You do not write it: call propose_engine_selection with the engine you would use for "
+        "     THIS case and a `reason` - one short plain line on why it suits this part (e.g. 'it "
+        "     fits the mesh to the nozzle's curved walls and grows thin layers along them'). The "
+        "     application asks the user 'I'd mesh this with X: <reason>. OK, or do you use a "
+        "     different mesher?' and the turn ends there. Their 'ok' (or 'your call') confirms it "
+        "     (engine_source=suggested_confirmed); naming another engine replaces it. When a "
+        "     MEASURED ENGINE RECOMMENDATION block follows, the application measured the upload "
+        "     and ranked the engines on lab evidence: propose ITS recommended engine - the question "
+        "     then carries that evidence and lists the alternatives with their fit, and the user "
+        "     picks. Without one, pick from "
+        "     this catalog, judged against the purpose, the geometry check and what the user said. "
+        "     Each engine's 'Takes' line is a hard limit: propose only one that takes the uploaded "
+        "     file (a CAD solid, or a surface mesh such as an STL) for this flow - the application "
+        "     refuses any other. Its 'Delivers' line is what the user gets: when the case needs the "
+        "     wall resolved (forces, wall shear, heat transfer, a y+ target), prefer an engine that "
+        "     delivers a body-fitted wall with near-wall prism layers:\n"
         + catalog_menu() + "\n"
         "  4. Ask only ONE substantive question per turn; if a prerequisite (e.g. the purpose) is "
         "     needed to explain a compatibility conflict, ask the minimum necessary question.\n"
-        "  5. Do NOT recommend a specific engine unless the user explicitly asks for a "
-        "     recommendation.\n"
-        "  6. WHAT 'REQUIRED' MEANS: only the fields submit_requirements marks required. A question "
+        "  5. Proposing ONE engine to a user who named none (rule 3) is the only time you name an "
+        "     engine unprompted. Do NOT list, compare or rank engines unless the user explicitly "
+        "     asks for a recommendation.\n"
+        "  6. THE ENGINE IS NEVER AN ASSUMPTION. Never go on with an engine the user has not "
+        "     confirmed, and never write one into your reply as 'assumed', 'unconfirmed', 'not "
+        "     stated' or 'carried forward' - if it is not settled, settle it (rule 3).\n"
+        "  7. ONCE SETTLED, LEAVE IT ALONE. After the user named or confirmed the engine, do not "
+        "     mention it again - no 'for the X setup', no 'using X', no recap - unless the user "
+        "     asks about it, a check refuses it, or a soft limitation needs its one 'Heads-up:' "
+        "     line. The summary the user approves shows it. The application sends back a reply "
+        "     that breaks this or rule 6.\n"
+        "  8. WHAT 'REQUIRED' MEANS: only the fields submit_requirements marks required. A question "
         "     about anything else (what else might be inside the geometry, how a target will be met, "
         "     a preference) is a courtesy, never a reason to withhold a submission. When the user "
         "     tells you to proceed with standard defaults, or that everything needed is already "
         "     stated, every such courtesy question is ANSWERED: note the assumption in request_txt "
-        "     and move on. And never ask again for a value the user has already given - exact port "
-        "     coordinates ARE their locations.\n"
+        "     (not in your reply) and move on. And never ask again for a value the user has already "
+        "     given - exact port coordinates ARE their locations.\n"
         "Once the engine is settled, ask your follow-up questions in THAT ENGINE'S native concepts "
-        "- the way its users think - not through a generic abstraction:\n" + native_qs + "\n"
-        "FALLBACK - only when the user is unsure or ambiguous: ask objective-"
-        "level questions (external body in a far-field vs coupled multi-region "
-        "vs image-derived internal passage), infer the best fit, and PROPOSE it "
-        "openly (e.g. 'this sounds like external aero - I would suggest "
-        "snappyHexMesh; proceed with that, or pick another?'). The inferred "
-        "choice is ALWAYS shown and overridable, never silently applied: submit "
-        "only after the user explicitly agrees (engine_source="
-        "suggested_confirmed). If their choice looks ill-suited (judge against "
-        "the catalog gists), say so ONCE with your reasoning and ask them to "
+        "- the way its users think - not through a generic abstraction, and without naming the "
+        "engine:\n" + native_qs + "\n"
+        "FALLBACK - only when you cannot yet tell what kind of case it is: ask the objective-"
+        "level question first (a body in a far-field vs a coupled multi-region assembly vs an "
+        "internal passage), then propose as in rule 3. The proposed engine is ALWAYS shown and "
+        "overridable, never silently applied: submit only after the user explicitly agrees "
+        "(engine_source=suggested_confirmed). If the engine the user chose looks ill-suited (judge "
+        "against the catalog gists), say so ONCE with your reasoning and ask them to "
         "confirm (do NOT name a replacement engine unless they ask); if they confirm, their word "
         "is final - the pipeline honors it.\n"
         "Each engine DECLARES the parameters you must settle with the user "
@@ -746,7 +786,8 @@ def _block_engine_first() -> str:
         "not always hit; whether they bite depends on the specific geometry. When the "
         "user's engine + purpose + the geometry they describe fall into one of these - "
         "judge it yourself, using these declared tendencies AND your own meshing "
-        "knowledge (web_search if unsure) - raise it ONCE, briefly, BEFORE submitting: "
+        "knowledge (web_search if unsure) - raise it ONCE, in one line that starts 'Heads-up:', "
+        "BEFORE submitting: "
         "say what may fall short and why, note it MIGHT be fine for their case, and that they can "
         "switch engines if they prefer - but recommend a SPECIFIC alternative engine only if they "
         "ask. Then let them decide - "
@@ -785,7 +826,19 @@ def _block_geometry_check() -> str:
         "convert a number the user quoted from the old reading. The picture's openings, axes and "
         "flow direction stand - they do not depend on the unit. That is not a conflict, and never "
         "a reason to ask the flow axis, the unit, or anything else the check settled, again; "
-        "re-propose with the new sizes when a run was withdrawn.\n"
+        "re-propose with the new sizes when a run was withdrawn. When the message says the unit "
+        "is fixed by the conversion of the uploaded file (an ECXML thermal model), it never "
+        "changes: never ask what unit the file or the model is in. Where your requirements name "
+        "the unit, say both facts as the message does: the model's own lengths (metres, for "
+        "ECXML) were converted exactly into the geometry's unit.\n"
+        "When the message says the file is an assembly of solid parts, each its own region, the "
+        "fluid is one more region: it is the multi-region input for conjugate heat transfer, "
+        "already confirmed - never ask the user to supply or verify it again. When it also says "
+        "the sides of the air box are the file's own, the thermal model sets them itself: send no "
+        "patches for them, and never ask about openings, inlets, outlets or which way the air "
+        "flows. When it names a detail level the user chose on the panel, that is the user's own "
+        "mesh_fidelity (Quick look = draft, Standard = standard, Fine = max): record it as stated "
+        "and never ask about detail.\n"
         "An assistant message beginning 'GEOMETRY CHECK (drawing your part):' is a holding line "
         "while the picture is made: nothing in it is declared, and you never repeat it. A user "
         "message saying they confirmed the geometry check is your cue to continue with the next "
@@ -801,6 +854,45 @@ def _block_geometry_check() -> str:
     )
 
 
+def _block_thermal_model() -> str:
+    # An ECXML upload names every part, material, power, fan, vent and the room air, and the user
+    # confirmed it on the thermal model panel. The generic flow's questions (openings, which way
+    # the fluid goes, the unit, the engine) are answered by the file; an electronics-cooling
+    # engineer asked them reads a tool that did not understand the model (2026-10-12).
+    return (
+        "\n\nA THERMAL MODEL - EVERYTHING IS SETTLED, ASK NOTHING:\n"
+        "When the 'GEOMETRY CHECK (confirmed by the user):' message continues 'the thermal "
+        "model', the user uploaded an electronics thermal model (ECXML) and confirmed it on the "
+        "thermal model panel. The file states every part, material, power, fan, vent and the "
+        "room air, and the panel settled the detail level. So:\n"
+        "- The case is settled: the purpose and the input kind are the ones the message states "
+        "(conjugate heat transfer of an assembly of solid parts), dimensionality 3D, patches [] "
+        "(an empty list: the air box's sides are the file's own), "
+        "mesh_fidelity as the message states it (standard when it names none).\n"
+        "- The engine is the one that reads the file itself (snapgrid): call "
+        "propose_engine_selection with it and the application selects it without a question. "
+        "Never ask about, offer or compare engines unless the user brings it up.\n"
+        "- In this same turn, call preview_selected_admission and then submit_requirements "
+        "(engine_source suggested_confirmed). The application then shows the user the job sheet "
+        "and asks for approval: that is the only question.\n"
+        "- Never ask about the unit, which way the air flows, openings, vents or fans, the fluid "
+        "(it is air, from the file), the purpose, the up direction, a reference length or the "
+        "size of the air box, or the engine.\n"
+        "- Speak as an electronics-cooling engineer: parts, layers, power, room air, the air box, "
+        "the detail level. Never write inlet, outlet, sticker, sure, triangle, far field or "
+        "'flows through' - except inside a name the file itself gives - in a reply, request_txt "
+        "or review_brief_txt.\n"
+        "- request_txt says: the model by its name, its parts and total power, a conjugate "
+        "heat-transfer solve, a snap-grid hex mesh at the detail level with at least the level's "
+        "cells through every layer, delivered as an OpenFOAM multi-region case plus the thermal "
+        "model. review_brief_txt says: every part present as its own region beside the air, the "
+        "power kept where the file puts it, the thinnest layers meshed with at least the level's "
+        "cells through them, and every region checked clean.\n"
+        "- A user who asks for another solver's format is told plainly that today the delivery "
+        "is an OpenFOAM multi-region case, and that naming their solver helps us add it."
+    )
+
+
 def _block_propose_first() -> str:
     return (
         "\n\nPROPOSE, THEN ASK - every question carries your best proposal:\n"
@@ -808,22 +900,24 @@ def _block_propose_first() -> str:
         "correct one value, not write everything out. So every question you ask comes with the "
         "answer you would give yourself, read from what is already known - the file, the geometry "
         "check, the stated purpose, earlier answers, the engine's own defaults - and ends by asking "
-        "whether it is right. For example: 'Fluid and conditions? I would go with air at 15 C and "
-        "sea-level pressure, 10 m/s, k-omega SST with wall functions at y+ 30 to 300 - ok, or tell "
+        "whether it is right. For example: 'Fluid and conditions? I would go with air at 15 °C and "
+        "sea-level pressure, 10 m/s, k-ω SST with wall functions at y⁺ 30–300 - ok, or tell "
         "me what differs.' A proposal is NOT a recorded value: record only what the user states or "
         "confirms; an 'ok' confirms the proposal exactly as you stated it, and you then carry those "
         "values as user-given. The courtesy follow-ups that usually share one answer - prism layers, "
         "patch names, refinement zones - go into ONE question with ONE proposal, not four turns. "
-        "Two things are never proposed: the ENGINE (rule 5 above stands - offer the menu, do not "
-        "recommend unless asked) and the file's UNIT (units are asked, never guessed).\n"
+        "Two things are handled apart: the ENGINE is proposed ONCE, through "
+        "propose_engine_selection - the application asks it (ENGINE FIRST rule 3), you never ask "
+        "or assume it in your own words - and the file's UNIT is asked, never guessed.\n"
         "HOW A REPLY IS READ: 'ok', 'yes', 'fine', 'sure', 'sensible default', 'you decide', "
         "'whatever is standard' and 'I do not know' all ACCEPT the proposal exactly as you stated "
         "it - take those values and move on. Any other reply is still the user's ONE answer to "
         "that question: if it changes a value, take the change; if it is unclear or answers "
         "something else, take your own proposal, note it in request_txt as an assumption the user "
-        "did not state, and move on. Never ask the same question twice, in any wording, and never "
+        "did not state (in request_txt only - your reply simply uses the value and never calls it "
+        "an assumption), and move on. Never ask the same question twice, in any wording, and never "
         "re-ask what the user has already answered - the application watches for a repeated "
-        "question and sends it back to you to move on. Near-wall treatment (the y+ band, the "
+        "question and sends it back to you to move on. Near-wall treatment (the y⁺ band, the "
         "first-layer thickness, the layer count), patch names and refinement zones are courtesy "
         "questions: one question, one proposal, and never a reason to hold a submission. The same "
         "holds after an admission refusal: whatever you must ask the user carries your proposed "
@@ -831,23 +925,76 @@ def _block_propose_first() -> str:
         "A VALUE THE USER LEAVES TO YOU is yours to choose. 'I do not know', 'use a sensible "
         "default' or 'you decide' answers even a question you had no proposal for - which of two "
         "openings is the second inlet, say: pick the sensible default (the first candidate you "
-        "listed, unless the geometry says otherwise), say which in one line, record it as an "
-        "assumption, and continue. Never reply that a value is required and cannot be defaulted: "
+        "listed, unless the geometry says otherwise), say which in one plain line, record it in "
+        "request_txt as assumed, and continue. Never reply that a value is required and cannot be defaulted: "
         "required means it must be in the submission, not that the user must type it. The two "
         "exceptions stand - the ENGINE is proposed and confirmed, never defaulted, and the UNIT is "
         "asked, never guessed."
     )
 
 
+def _block_ask_plainly() -> str:
+    # A real session (a rocket nozzle, shared dev) opened three replies in a row with the engine
+    # "as an unstated assumption", then asked two or three things in one long sentence. An
+    # engineer answering wants one clear question, in their own words, and nothing restated.
+    return (
+        "\n\nHOW TO ASK - ONE CLEAR THING, IN PLAIN WORDS:\n"
+        "Write the way an engineer talks to a colleague: short sentences, everyday words, the "
+        "user's own terms. Each reply asks ONE clear thing. When several values belong together "
+        "and are confirmed together (the flow conditions, say), put them in a short numbered list "
+        "- at most five lines, each with the value you propose - and ask once: 'OK, or tell me "
+        "what to change.' Never two separate questions in one reply, and never one long sentence "
+        "carrying several.\n"
+        "Say only what moves the setup forward. Do not recap what is settled - the engine, the "
+        "geometry check, earlier answers; the summary before the run shows all of it. Never "
+        "narrate your bookkeeping to the user: no 'I'll record', 'I'll carry forward', 'as an "
+        "assumption', 'unconfirmed', 'unstated', 'not stated by you'. A value you take from your "
+        "own proposal is simply used; request_txt notes it as assumed, your reply does not.\n"
+        "Not: \"I'll carry forward snappyHexMesh as the unconfirmed engine assumption, with a full "
+        "3D internal fluid mesh. For the CFD case, should I use a steady, single-phase, "
+        "incompressible air-flow setup with ...?\"\n"
+        "But:\n"
+        "\"Flow conditions - I'd go with:\n"
+        "1. Air at 15 °C and sea-level pressure\n"
+        "2. 10 m/s at the inlet\n"
+        "3. k-ω SST with wall functions, y⁺ 30–300\n"
+        "OK, or tell me what to change.\""
+    )
+
+
+def _block_plain_text() -> str:
+    # The chat has no math renderer, and must not pull one in. A reply the model wrote in LaTeX
+    # reached a demo as \(y^+=30\text{-}300\). The application also makes any markup that still
+    # slips through plain (contracts/engineering_text.py), but that is the safety net, not the rule.
+    return (
+        "\n\nHOW YOUR WORDS ARE SHOWN - PLAIN TEXT, NEVER MATH MARKUP:\n"
+        "Your reply is shown as plain text with light markdown (**bold**, lists, `code`). The chat "
+        "has no math renderer, so LaTeX reaches the user as raw symbols: never write it. No "
+        "\\( \\) or \\[ \\] or $ $ delimiters, no ^{...} or _{...}, no \\text{...}, \\approx, "
+        "\\times, \\omega or any other backslash command. Write numbers, units and symbols the way "
+        "they are printed, in Unicode: 10⁵ and 2.5 × 10⁶, m², s⁻¹, 15 °C, 210 GPa, Δp, μm, ≈, ≤, "
+        "≥, ±; for a flow case y⁺ = 30–300 or y⁺ ≈ 1, and k-ω SST or k-ε. Put a space between a "
+        "number and its unit (40 m/s, 32 mm) and an en dash in a range (30–300). Backticks are "
+        "ONLY for patch names and file names (`inlet_1`, `wing.step`) - never around numbers, "
+        "units or symbols."
+    )
+
+
 INTAKE_PROMPT_BLOCKS: tuple = (
     ("quality_criteria", "evidence-backed production-grade bars the intake can cite",
      _block_quality_criteria),
-    ("engine_first", "engine as direct user input; native follow-ups; propose+confirm fallback",
+    ("engine_first", "engine as direct user input; an unnamed engine is asked once, as a proposal with a reason, never assumed; once settled never restated; native follow-ups",
      _block_engine_first),
     ("geometry_check", "facts the user confirmed on the geometry-check picture are declared; never re-asked",
      _block_geometry_check),
-    ("propose_first", "every question carries a proposed answer read from what is known; 'ok' or 'I do not know' accepts it; one unclear reply and the model moves on; no question twice; engine and unit never proposed",
+    ("thermal_model", "a whole thermal model confirmed on its panel: the case, engine and level are settled; nothing is asked; no generic-CFD words",
+     _block_thermal_model),
+    ("propose_first", "every question carries a proposed answer read from what is known; 'ok' or 'I do not know' accepts it; one unclear reply and the model moves on; no question twice; the engine goes through its one question, the unit is asked",
      _block_propose_first),
+    ("ask_plainly", "one clear thing per reply in plain words, a short numbered list when values are confirmed together; nothing settled is restated; no 'assumption' bookkeeping in chat",
+     _block_ask_plainly),
+    ("plain_text", "replies are plain text: no LaTeX or math markup; Unicode for superscripts, symbols and units; backticks only for patch and file names",
+     _block_plain_text),
 )
 
 
@@ -891,6 +1038,57 @@ def _extract_reply(result: dict) -> str:
 
 
 
+async def _measured_recommendation(state, state_messages):
+    """The measured engine recommendation for this conversation's upload, or None: when the engine
+    is already settled (pinned on the session, or confirmed), when no flow is known yet, or when no
+    uploaded file is staged to measure (nothing to compare with the lab's shapes)."""
+    if state.get("engine"):
+        return None
+    gate = state.get("intake_gate") if isinstance(state.get("intake_gate"), Mapping) else {}
+    if es.state_of((gate or {}).get("selection")) == es.CONFIRMED:
+        return None
+    declared = _declared_case(state_messages)
+    purpose = declared[0] if declared else str(state.get("purpose") or "")
+    kind = declared[1] if declared else str(state.get("input_kind") or "")
+    if not purpose:
+        return None
+    staged = measured_choice.staged_upload(str(state.get("session_id") or ""))
+    if not staged:
+        return None
+    from meshpipeline.pipeline.geometry_state import geometry_ref
+    form = measured_choice.upload_form(staged, geometry_ref(state))
+    return await measured_choice.rank_in_time(
+        path=staged, purpose=purpose, input_kind=kind, form=form, engines=_IMPLEMENTED_ENGINES,
+        patches=list(state.get("intake_patches") or []),
+        said="\n".join(turn.user_texts(state_messages)))
+
+
+def _declared_case(state_messages) -> tuple | None:
+    from meshpipeline.application.geometry_confirmation import declared_case
+    return declared_case(state_messages)
+
+
+def _thermal_declared(state_messages) -> bool:
+    """Whether the user confirmed a whole thermal model on its panel - and the chat has not since
+    restated what the file is (then the declared case no longer stands, and neither does this)."""
+    from meshpipeline.application.geometry_confirmation import thermal_declared
+    return thermal_declared(state_messages) and _declared_case(state_messages) is not None
+
+
+def _thermal_names(session_id: str) -> tuple[str, ...]:
+    """Every name the thermal model's file gives, as the geometry check read it; () when the
+    check cannot be read (the vocabulary check then reads the reply whole)."""
+    from meshpipeline.application.thermal_wording import file_names
+
+    try:
+        from meshpipeline.application.geometry_check import read_check
+
+        view = (read_check(session_id) or {}).get("thermal") if session_id else None
+    except Exception:  # noqa: BLE001 - the check without names is stricter, never looser
+        return ()
+    return tuple(file_names(view)) if isinstance(view, dict) else ()
+
+
 async def node_intake(state: PipelineState) -> dict:
     job_id = state.get("job_id", "unknown")
 
@@ -914,6 +1112,11 @@ async def node_intake(state: PipelineState) -> dict:
         # the conversation's run has ended and this turn starts another; once the new
         # requirements are submitted the confirmation block above takes over
         system += _previous_run_block(state)
+    # THE MEASURED RECOMMENDATION. While the engine is unsettled, the uploaded geometry is measured
+    # and every engine that can take it is ranked by its lab record on shapes like it; the model
+    # reads the ranking, and the one engine question proposes its best engine with the evidence.
+    _recommendation = await _measured_recommendation(state, state.get("messages", []))
+    system += measured_choice.prompt_block(_recommendation, settled=False)
     state_messages = state.get("messages", [])
     llm_messages = _build_llm_messages(system=system, state_messages=state_messages)
 
@@ -931,10 +1134,11 @@ async def node_intake(state: PipelineState) -> dict:
         llm_messages, state_messages = turn.apply_default_nudge(llm_messages, state_messages)
 
     _ctx = turn.hydrate(state, state_messages)
-    # A plain yes to the application's own engine question ("Do you want to select X?") is read
-    # HERE, before the model runs. The question named the engine, so "yes", "ok" or "go with
-    # that" binds to it and needs no quote; the model used to have to quote the user to confirm,
-    # and a "yes" it paraphrased was refused as words they never wrote - then asked again.
+    # A plain yes to the application's own engine question ("I'd mesh this with X ... OK?") is
+    # read HERE, before the model runs. The question named the engine, so "yes", "ok", "go with
+    # that" or "your call" binds to it and needs no quote; the model used to have to quote the
+    # user to confirm, and a "yes" it paraphrased was refused as words they never wrote - then
+    # asked again.
     _assented = es.confirm_by_assent(
         _ctx.selection, session_id=_ctx.session_id, owner_id=_ctx.owner_id,
         revision=_ctx.revision, latest_user_message=_ctx.latest_user_msg,
@@ -943,6 +1147,18 @@ async def node_intake(state: PipelineState) -> dict:
         logger.info("Intake: engine selection CONFIRMED by the user's plain yes engine=%s - "
                     "job_id=%s", _assented["engine"], job_id)
         _ctx = dataclasses.replace(_ctx, selection=_assented)
+    else:
+        # THE USER PICKS. The question listed every engine that can take the file; naming one of
+        # them plainly ("use cfMesh" - what the console's engine buttons send) selects it here,
+        # before the model runs, the way a plain yes selects the proposed one.
+        _picked = es.choose_listed(
+            _ctx.selection, session_id=_ctx.session_id, owner_id=_ctx.owner_id,
+            revision=_ctx.revision, latest_user_message=_ctx.latest_user_msg,
+            user_msg_count=_ctx.user_msg_count)
+        if _picked is not None:
+            logger.info("Intake: engine selection CONFIRMED - the user picked %s from the list "
+                        "- job_id=%s", _picked["engine"], job_id)
+            _ctx = dataclasses.replace(_ctx, selection=_picked)
     # A JobPublisher only exists once a job does - and Intake runs BEFORE one. Rather than mint a
     # fake job id or instantiate a worker-owned publisher in the request path, the turn collects
     # the same typed events through a sink and returns them with the response.
@@ -951,8 +1167,12 @@ async def node_intake(state: PipelineState) -> dict:
     _exec_state = IntakeExecutionState(
         session_id=_ctx.session_id, owner_id=_ctx.owner_id, revision=_ctx.revision,
         user_msg_count=_ctx.user_msg_count, latest_user_msg=_ctx.latest_user_msg,
+        user_texts=turn.user_texts(state_messages),
+        declared_case=_declared_case(state_messages),
+        thermal=_thermal_declared(state_messages),
         source_ref=_ctx.source_ref, rec_authorized=_ctx.rec_authorized,
-        pending=_ctx.pending, selection=_ctx.selection, approval=_ctx.approval)
+        pending=_ctx.pending, selection=_ctx.selection, approval=_ctx.approval,
+        recommendation=_recommendation)
     _executor = IntakeToolExecutor(
         state=_exec_state, job_id=str(job_id), implemented_engines=_IMPLEMENTED_ENGINES,
         search_tool=_execute_intake_tool, trace=_trace_publisher)
@@ -963,7 +1183,12 @@ async def node_intake(state: PipelineState) -> dict:
         # enforced, because no measured Intake distribution justifies a value.
         limits_=_LoopLimits(max_rounds=icfg.INTAKE_MAX_ROUNDS),
         # What has already been asked, so a reply that asks it again is caught inside the loop.
-        prior_questions=turn.prior_assistant_texts(state_messages))
+        prior_questions=turn.prior_assistant_texts(state_messages),
+        # A whole thermal model's own names, which its vocabulary check leaves alone.
+        thermal_names=_thermal_names(str(state.get("session_id") or "")) if _exec_state.thermal else (),
+        # The engine is asked once and then left alone - except in the turn after a run has
+        # ended, where what the last run's engine did is the subject.
+        engine_guard=not (state.get("previous_run") and not _awaiting_confirmation))
 
     async def _intake_provider(*, messages, tools, job_id, user_id, tool_choice="auto"):
         # No on_reasoning here on purpose: intake's route is not streamed, so it has no reasoning
