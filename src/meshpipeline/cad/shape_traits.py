@@ -463,14 +463,14 @@ def _cad_triangles(path: Path, tmp: Path) -> np.ndarray:
 
 
 def _read_binary_stl(path: Path) -> np.ndarray:
-    data = Path(path).read_bytes()
-    n = int(np.frombuffer(data[80:84], dtype="<u4")[0]) if len(data) >= 84 else 0
-    if n <= 0 or len(data) < 84 + 50 * n:
-        from meshpipeline.cad.stl_io import read_stl_triangles
-        return np.asarray(read_stl_triangles(path), dtype=float).reshape(-1, 3, 3)
-    rec = np.frombuffer(data[84:84 + 50 * n], dtype=np.dtype([("n", "<f4", 3), ("v", "<f4", (3, 3)),
-                                                               ("a", "<u2")]))
-    return rec["v"].astype(float)
+    from meshpipeline.cad.stl_io import read_binary_corners, read_stl_triangles, stl_layout
+
+    path = Path(path)
+    with path.open("rb") as fh:
+        layout = stl_layout(fh.read(4096), path.stat().st_size)
+    if layout.binary:
+        return read_binary_corners(path, layout)
+    return np.asarray(read_stl_triangles(path), dtype=float).reshape(-1, 3, 3)
 
 
 def measure_file(path, *, flow: str = "", input_kind: str = "", patches: Sequence[Mapping] = (),
