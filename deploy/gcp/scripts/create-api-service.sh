@@ -237,6 +237,9 @@ fi
 [ -z "${CAD_REPAIR_ENABLED:-}" ] || API_ENV_PAIRS+=("CAD_REPAIR_ENABLED=${CAD_REPAIR_ENABLED}")
 [ -z "${CAD_REPAIR_REVIEW_ENABLED:-}" ] \
   || API_ENV_PAIRS+=("CAD_REPAIR_REVIEW_ENABLED=${CAD_REPAIR_REVIEW_ENABLED}")
+# The LLM planner posture, only when the workflow's llm_planner input chose shadow or live.
+[ -z "${CAD_REPAIR_LLM_PLANNER:-}" ] \
+  || API_ENV_PAIRS+=("CAD_REPAIR_LLM_PLANNER=${CAD_REPAIR_LLM_PLANNER}")
 # The database this deployment migrated. POSTGRES_* and not DATABASE_URL: a DSN carries the
 # password, and DATABASE_URL is declared secret precisely because it does.
 if [ -n "${MIGRATE_DB_HOST:-}" ]; then

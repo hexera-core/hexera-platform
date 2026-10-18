@@ -126,6 +126,19 @@ on:
         required: false
         default: false
         type: boolean
+      # THE LLM PLANNER'S POSTURE, chosen here like cad_repair. "off" exports nothing, so the API and
+      # fleet keep the shipped default (rules only). "shadow" asks the model and records beside the
+      # rules without acting; "live" lets its plan act inside the repair caps. Declarative: a redeploy
+      # left at "off" drops the flag from an environment that had it. Only meaningful with cad_repair.
+      llm_planner:
+        description: "llm_planner - the model's posture in the CAD repair planner on the targeted environment: off (rules only), shadow (recorded, never acted on) or live"
+        required: false
+        default: "off"
+        type: choice
+        options:
+          - "off"
+          - shadow
+          - live
 
 # A deploy MUTATES a cloud project through an 18-stage provisioner. Cancelling one mid-flight
 # leaves the project half-reconciled - the stages are individually idempotent, the sequence is
@@ -1388,6 +1401,8 @@ jobs:
       # shipped defaults stay in force.
       CAD_REPAIR_ENABLED: ${{ inputs.cad_repair && 'true' || '' }}
       CAD_REPAIR_REVIEW_ENABLED: ${{ inputs.cad_repair && 'true' || '' }}
+      # The planner posture, stated only when it is not "off"; empty means "not stated".
+      CAD_REPAIR_LLM_PLANNER: ${{ inputs.llm_planner != 'off' && inputs.llm_planner || '' }}
     steps:
       # A SHALLOW CHECKOUT IS ENOUGH HERE, unlike release's. Nothing in this job reads history:
       # lib.sh derives the image tag from `rev-parse --short=12 HEAD` plus a `diff --quiet HEAD`

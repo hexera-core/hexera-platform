@@ -143,3 +143,28 @@ CAD_REPAIR_REVIEW_LLM_CALLS_MAX: int = int(optional_env("CAD_REPAIR_REVIEW_LLM_C
 #: engineer as unexamined. A model that has not answered in this long is not going to answer in
 #: time for a job's deadline.
 CAD_REPAIR_REVIEW_LLM_TIMEOUT_S: float = float(optional_env("CAD_REPAIR_REVIEW_LLM_TIMEOUT_S", "20.0"))
+
+
+def _planner_posture() -> str:
+    """The planner posture, FAILING CLOSED: anything but exactly shadow or live reads as off."""
+    raw = optional_env("CAD_REPAIR_LLM_PLANNER", "off").strip().lower()
+    return raw if raw in ("shadow", "live") else "off"
+
+
+#: Where the model sits in the repair loop's planner seat. "off" is byte-for-byte the prior
+#: behaviour: the rule planner alone, no model call, no shadow row. "shadow" asks the model and
+#: records what it would have done beside what the rules did, without acting on it. "live" lets its
+#: plan act, inside the same caps and measurements every operation already answers to. An unknown
+#: value reads as "off": a typo in a deployment must not put a model in charge of geometry.
+CAD_REPAIR_LLM_PLANNER: str = _planner_posture()
+
+#: The most planner model calls one repair run may make. A hard ceiling on spend per run.
+CAD_REPAIR_LLM_PLANNER_CALLS_MAX: int = int(optional_env("CAD_REPAIR_LLM_PLANNER_CALLS_MAX", "2"))
+
+#: Seconds one planner model call may take before the rule planner's choice stands.
+CAD_REPAIR_LLM_PLANNER_TIMEOUT_S: float = float(
+    optional_env("CAD_REPAIR_LLM_PLANNER_TIMEOUT_S", "20.0"))
+
+#: The confidence below which the model's plan is not acted on and the rule planner's choice stands.
+CAD_REPAIR_LLM_PLANNER_MIN_CONFIDENCE: float = float(
+    optional_env("CAD_REPAIR_LLM_PLANNER_MIN_CONFIDENCE", "0.5"))

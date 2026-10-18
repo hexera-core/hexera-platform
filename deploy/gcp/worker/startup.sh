@@ -75,7 +75,8 @@ for pair in "deployment-id:DEPLOYMENT_ID" \
             "gcp-mesh-bucket:GCP_MESH_BUCKET" \
             "cloudrun-job:CLOUDRUN_JOB" \
             "cad-repair-enabled:CAD_REPAIR_ENABLED" \
-            "cad-repair-review-enabled:CAD_REPAIR_REVIEW_ENABLED"; do
+            "cad-repair-review-enabled:CAD_REPAIR_REVIEW_ENABLED" \
+            "cad-repair-llm-planner:CAD_REPAIR_LLM_PLANNER"; do
   value="$(md "${pair%%:*}" || true)"
   if [ -n "${value}" ]; then
     echo "${pair##*:}=${value}" >> /etc/hexera/worker.env
