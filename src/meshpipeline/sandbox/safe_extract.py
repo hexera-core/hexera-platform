@@ -111,6 +111,58 @@ def _validate_members(members: list[tarfile.TarInfo], dest: Path, limits: Extrac
                 f"{limits.max_ratio}x cap (possible decompression bomb)")
 
 
+#: Naming what made an archive too big reads its headers, which means inflating it: no longer
+#: than this, and only on the way to refusing it.
+NAME_MEMBERS_BUDGET_S = 60.0
+
+
+def largest_members(*, path: str | Path | None = None, fileobj: BinaryIO | None = None,
+                    n: int = 5, budget_s: float = NAME_MEMBERS_BUDGET_S) -> str:
+    """'; largest files ...: a 410 MB, b 120 MB, ...' for an archive refused for its size - the
+    files that made it too big, so the refusal says what to leave out ('' when the headers cannot
+    be read). Streams the headers; nothing is written. Names are shown, never trusted."""
+    import time
+    sizes: list[tuple[int, str]] = []
+    partial = False
+    src: BinaryIO | None = None
+    pos = None
+    try:
+        if path is not None:
+            src = open(path, "rb")  # noqa: SIM115 - closed in finally
+        elif fileobj is not None:
+            src = fileobj
+            pos = fileobj.tell()
+            fileobj.seek(0)
+        else:
+            return ""
+        t0 = time.monotonic()
+        with tarfile.open(fileobj=src, mode="r|gz") as tf:
+            for m in tf:
+                if m.isreg():
+                    sizes.append((int(m.size), m.name[:80]))
+                if time.monotonic() - t0 > budget_s:
+                    partial = True
+                    break
+    except Exception:  # noqa: BLE001 - a better message, never a different failure
+        if not sizes:
+            return ""
+        partial = True
+    finally:
+        if path is not None and src is not None:
+            src.close()
+        elif fileobj is not None and pos is not None:
+            try:
+                fileobj.seek(pos)
+            except (OSError, ValueError):
+                pass
+    if not sizes:
+        return ""
+    sizes.sort(reverse=True)
+    names = ", ".join(f"{name} {size / 1e6:.0f} MB" for size, name in sizes[:n])
+    return (f"; largest files (uncompressed{', first part read' if partial else ''}): {names}"
+            f"; {len(sizes)} files, {sum(s for s, _ in sizes) / 1e6:.0f} MB in all")
+
+
 def safe_extract_tar(*, fileobj: BinaryIO | None = None, path: str | Path | None = None,
                      dest: str | Path, limits: ExtractionLimits | None = None) -> int:
     lim = limits or default_limits()
@@ -131,7 +183,8 @@ def safe_extract_tar(*, fileobj: BinaryIO | None = None, path: str | Path | None
         except (OSError, ValueError):
             archive_bytes = 0
     if archive_bytes > lim.max_archive_bytes:
-        _reject(f"archive is {archive_bytes} bytes, over the {lim.max_archive_bytes} cap")
+        _reject(f"archive is {archive_bytes} bytes, over the {lim.max_archive_bytes} cap"
+                + largest_members(path=path, fileobj=fileobj))
 
     written = 0
     try:
@@ -179,4 +232,4 @@ def safe_extract_tar(*, fileobj: BinaryIO | None = None, path: str | Path | None
 
 
 __all__ = ["WorkspaceExtractionError", "ExtractionLimits", "default_limits", "validate_limits",
-           "safe_extract_tar"]
+           "safe_extract_tar", "largest_members", "NAME_MEMBERS_BUDGET_S"]
