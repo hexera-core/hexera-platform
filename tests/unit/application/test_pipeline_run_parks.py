@@ -46,23 +46,44 @@ def no_real_model_call():
     model_inference.set_model_router(None)
 
 
-class _Savepoint:
-    def __init__(self, db): self.db = db
-    async def commit(self): self.db.log.append("sp_commit")
-    async def rollback(self): self.db.log.append("sp_rollback")
+class _Nested:
+    """SQLAlchemy's AsyncSessionTransaction in miniature: `begin_nested()` is a PLAIN call whose
+    result is both awaited (`sp = await db.begin_nested()`) and entered (`async with
+    db.begin_nested():`, the charge's savepoint). An `async def begin_nested` would hand the charge
+    a coroutine, `async with` would raise TypeError, and the fail-open would swallow it - every
+    charge assertion through it vacuous."""
+    def __init__(self, db, logged):
+        self.db, self.logged = db, logged
 
+    def __await__(self):
+        async def _self():
+            return self
+        return _self().__await__()
 
-class _Quiet:
-    async def commit(self): ...
-    async def rollback(self): ...
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, *a):
+        await (self.rollback() if exc_type else self.commit())
+        return False
+
+    async def commit(self):
+        if self.logged:
+            self.db.log.append("sp_commit")
+
+    async def rollback(self):
+        if self.logged:
+            self.db.log.append("sp_rollback")
 
 
 class _Db:
-    """The FIRST savepoint is the review write's (logged); later ones are the history lookup's own."""
+    """The FIRST savepoint is the review write's (logged); later ones are the history lookup's own
+    and the charge's."""
     def __init__(self): self.log, self.opened = [], 0
-    async def begin_nested(self):
+
+    def begin_nested(self):
         self.opened += 1
-        return _Savepoint(self) if self.opened == 1 else _Quiet()
+        return _Nested(self, logged=self.opened == 1)
 
 
 class _Repo:
@@ -291,13 +312,15 @@ def test_the_parked_outcome_message_names_the_count_and_promises_nothing_was_cha
 
 async def test_a_parked_ending_charges_nothing_and_the_reruns_real_ending_charges_once(monkeypatch):
     # THE CHARGE-ONCE PIN. The re-run is the SAME job, re-dispatched without admission, so the
-    # only thing that keeps the purchase single is that the park does not charge.
-    from meshpipeline.application import terminal_finalize as tf
+    # only thing that keeps the purchase single is that the park does not charge. The charge is
+    # observed BELOW the fail-open and its savepoint, so a charge that never ran cannot pass.
+    from meshpipeline.application import metering_service
     charges = []
 
-    async def _charge(db, row):
-        charges.append(row)
-    monkeypatch.setattr(tf, "_charge_fail_open", _charge)
+    async def _charge(db, *, job):
+        charges.append(job)
+        return 1
+    monkeypatch.setattr(metering_service, "charge_for_job", _charge)
 
     plan = rrp.plan_review(STATE, status=JobStatus.failed)
     await _finalize(JobStatus.pending_review, plan, _Repo())
