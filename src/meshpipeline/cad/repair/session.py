@@ -9,9 +9,11 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import meshpipeline.settings.cad_repair as rcfg
 from meshpipeline.cad.repair.caps import (
     Accounting,
     cumulative_refusal,
@@ -22,6 +24,7 @@ from meshpipeline.cad.repair.caps import (
 )
 from meshpipeline.cad.repair.contracts import DefectSeverity
 from meshpipeline.cad.repair.identity import GONE, EntityRef
+from meshpipeline.cad.repair.localize import face_scan_budget_s
 from meshpipeline.cad.repair.localize import localize_scan as _localize_scan
 
 logger = logging.getLogger(__name__)
@@ -92,9 +95,15 @@ class RepairSession:
     pure logic.
     """
 
-    def __init__(self, shape, *, measurer=_measure, scanner=_localize_scan) -> None:
+    def __init__(self, shape, *, measurer=_measure, scanner=None,
+                 remaining_s: Callable[[], float] | None = None) -> None:
         self._measure = measurer
-        self._scan = scanner
+        # AN INJECTED SCANNER IS CALLED AS IT ALWAYS WAS, `scanner(shape)`, and is never told
+        # about the face scan: that budget is the default scanner's business.
+        self._scan = scanner if scanner is not None else self._default_scan
+        #: What is left of the run's time, asked at each scan. None until somebody knows - the
+        #: loop assigns one - and then the whole repair allowance is assumed.
+        self.remaining_s = remaining_s
         self.shape = shape
         #: THE UPLOAD'S OWN MEASUREMENT, taken once and never replaced. Every cumulative check is
         #: against this, which is what stops six small operations drifting past a cap together.
@@ -103,6 +112,19 @@ class RepairSession:
         self._defects: tuple | None = None
         self.complete_scan: bool = True
         self.log: list[OpVerdict] = []
+
+    def _default_scan(self, shape):
+        """`localize_scan`, with a face-level scan only when the self-intersection heal is on.
+
+        `_localize_scan` is looked up AT CALL TIME, so a test patching the module attribute is
+        obeyed. With the flag off the budget is 0.0 and `remaining_s` is never even asked, which
+        is what keeps a flag-off run's scans byte-for-byte what they were.
+        """
+        budget = 0.0
+        if rcfg.CAD_REPAIR_HEAL_SELF_INTERSECTIONS:
+            remaining = self.remaining_s or (lambda: float(rcfg.CAD_REPAIR_TIMEOUT_S))
+            budget = face_scan_budget_s(remaining())
+        return _localize_scan(shape, face_scan_s=budget)
 
     def defects(self) -> tuple:
         """The current shape's located defects. Scanned once per shape and cached."""

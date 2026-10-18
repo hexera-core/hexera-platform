@@ -544,7 +544,256 @@ def _stamped(found: tuple[EntityDefect, ...], *,
                  for defect, ref in zip(found, refs, strict=True))
 
 
-def localize_scan(shape, *, valid: bool | None = None) -> tuple[tuple[EntityDefect, ...], bool]:
+#: The share of a run's REMAINING time the face-level self-intersection scan may spend, and its
+#: ceiling. A quarter, because the scan is evidence for one heal among several and the loop still
+#: needs time to try operations and re-inspect; capped, because a two-minute repair budget must
+#: not hand half a minute to one analysis on every re-scan.
+FACE_SCAN_FRACTION = 0.25
+FACE_SCAN_CAP_S = 30.0
+
+#: The kernel status a face-level finding carries. Not a BRepCheck status - BRepCheck never tests
+#: whether two faces cross - so it is named for what the analyzer found.
+_SELF_INTERFERENCE = "SelfInterference"
+
+
+def face_scan_budget_s(remaining_s: float) -> float:
+    """How long the face-level scan may run, given what is left of the caller's budget."""
+    return max(0.0, min(FACE_SCAN_FRACTION * remaining_s, FACE_SCAN_CAP_S))
+
+
+def _bounded(fn, *args, budget_s: float):
+    """`fn(*args)`'s result, or None when it ran past `budget_s` or failed in any way.
+
+    IN A FORKED CHILD, NOT A DAEMON THREAD, and that is a measured decision. OCP's bindings HOLD
+    THE GIL through a kernel call: with `BOPAlgo_ArgumentAnalyzer.Perform` running in a daemon
+    thread, the caller's `join(0.2)` returned only when the 3-second analysis finished, and a
+    second Python thread ticked twice in that time. An abandoned thread would therefore be waited
+    for anyway - exactly what a budget exists to prevent. Nor can the kernel be asked to stop:
+    OCP exposes `Message_ProgressIndicator` without a constructor, so no Python user-break
+    indicator can be handed to `Perform`.
+    A child process is stopped for real: on expiry it is SIGKILLed and reaped, so the analysis
+    ends rather than being ignored while it burns a core. It also means a kernel crash on a
+    pathological part kills the child, not the worker - the pipe closes empty and the answer is
+    the same silence as a timeout.
+
+    NEVER RAISES, NEVER BLOCKS PAST BUDGET. Every failure - expiry, an exception in `fn`, a child
+    that died, a platform without `fork` - is logged at info and returned as None, because the
+    caller treats this as optional evidence (see `face_self_intersections`).
+    The result crosses the pipe pickled, so `fn` must return something picklable.
+    """
+    if not budget_s or budget_s <= 0:
+        return None
+    try:
+        return _in_child(fn, args, float(budget_s))
+    except Exception as exc:  # noqa: BLE001 - optional evidence; a failure here is silence
+        logger.info("localize: bounded analysis gave no answer (%s: %s)", type(exc).__name__, exc)
+        return None
+
+
+def _in_child(fn, args, budget_s: float):
+    import os
+    import pickle  # noqa: S403 - the only producer is our own forked child
+    import select
+    import signal
+    import time
+
+    if not hasattr(os, "fork"):
+        logger.info("localize: no fork on this platform - the bounded analysis is skipped")
+        return None
+
+    read_end, write_end = os.pipe()
+    pid = os.fork()
+    if pid == 0:  # pragma: no cover - runs in the child, whose coverage nobody collects
+        # THE CHILD TOUCHES NOTHING BUT `fn` AND THE PIPE, and always leaves through `_exit`: it
+        # holds a copy of the parent's every lock and handler (pytest's, Celery's, logging's), and
+        # running any of them here is how a forked child deadlocks or double-flushes.
+        try:
+            os.close(read_end)
+            try:
+                payload = pickle.dumps((True, fn(*args)))
+            except BaseException as exc:  # noqa: BLE001 - reported to the parent, never raised
+                payload = pickle.dumps((False, f"{type(exc).__name__}: {exc}"))
+            view = memoryview(payload)
+            while view:
+                view = view[os.write(write_end, view):]
+        finally:
+            os._exit(0)
+
+    os.close(write_end)
+    deadline = time.monotonic() + budget_s
+    chunks: list[bytes] = []
+    expired = False
+    try:
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0 or not select.select([read_end], [], [], left)[0]:
+                expired = True
+                break
+            chunk = os.read(read_end, 1 << 16)
+            if not chunk:
+                break
+            chunks.append(chunk)
+    finally:
+        os.close(read_end)
+        if expired:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        os.waitpid(pid, 0)
+
+    if expired:
+        logger.info("localize: bounded analysis passed its %.2fs budget and was stopped",
+                    budget_s)
+        return None
+    if not chunks:
+        logger.info("localize: bounded analysis ended without an answer (the child died)")
+        return None
+    ok, value = pickle.loads(b"".join(chunks))  # noqa: S301 - our own child's bytes
+    if not ok:
+        logger.info("localize: bounded analysis raised (%s)", value)
+        return None
+    return value
+
+
+def _kernel_face_pairs(shape) -> list[tuple[int, int]]:
+    """Pairs of faces that cross each other, as 1-based indices into the shape's face map.
+
+    `BOPAlgo_ArgumentAnalyzer` WITH ONLY ITS SELF-INTERFERENCE MODE ON, chosen over
+    `BRepAlgoAPI_Check`. The latter wraps the same analyzer but first runs a full
+    `BRepCheck_Analyzer` validity pass and the small-edge and rebuild-face checks - the validity
+    answer `localize_scan` already has, and defects `_status_defects` and `_size_defects` already
+    report - so it would pay twice for what is known to learn the one thing that is not. The
+    analyzer runs `BOPAlgo_CheckerSI`, which intersects every pair of sub-shapes that do not
+    legitimately share topology; that is the only kernel test of whether two faces cross, and
+    BRepCheck has no equivalent.
+
+    FACE-TYPED PAIRS ONLY. The checker also reports vertex, edge and solid participants (on two
+    overlapping boxes, roughly half its records name a solid or an edge); a heal aims at faces,
+    and an edge or solid record carries no face index to aim with.
+    Serial, never `RunParallel`: this runs in a forked child, where a thread pool is a liability.
+    """
+    from OCP.BOPAlgo import BOPAlgo_ArgumentAnalyzer, BOPAlgo_CheckStatus
+    from OCP.TopAbs import TopAbs_FACE
+
+    analyzer = BOPAlgo_ArgumentAnalyzer()
+    analyzer.SetShape1(shape)
+    analyzer.ArgumentTypeMode = False
+    analyzer.SelfInterMode = True
+    analyzer.SmallEdgeMode = False
+    analyzer.RebuildFaceMode = False
+    analyzer.TangentMode = False
+    analyzer.MergeVertexMode = False
+    analyzer.MergeEdgeMode = False
+    analyzer.ContinuityMode = False
+    analyzer.CurveOnSurfaceMode = False
+    analyzer.StopOnFirstFaulty = False
+    analyzer.SetRunParallel(False)
+    analyzer.Perform()
+
+    faces = _indexed(shape, TopAbs_FACE)
+    pairs: set[tuple[int, int]] = set()
+    for result in analyzer.GetCheckResult():
+        if result.GetCheckStatus() != BOPAlgo_CheckStatus.BOPAlgo_SelfIntersect:
+            continue
+        faulty = [*result.GetFaultyShapes1(), *result.GetFaultyShapes2()]
+        if len(faulty) != 2 or any(s.ShapeType() != TopAbs_FACE for s in faulty):
+            continue
+        a, b = (int(faces.FindIndex(s)) for s in faulty)
+        if a > 0 and b > 0 and a != b:
+            pairs.add((min(a, b), max(a, b)))
+    return sorted(pairs)
+
+
+def _components(pairs: list[tuple[int, int]]) -> dict[int, list[int]]:
+    """Each face mapped to the sorted rest of its connected component in the crossing graph.
+
+    A COMPONENT, NOT JUST THE DIRECT PARTNERS: three faces that cross pairwise in a chain are one
+    tangle, and a heal that resolves one crossing changes the others, so every face is told about
+    the whole knot it sits in.
+    """
+    parent: dict[int, int] = {}
+
+    def root(x: int) -> int:
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for a, b in pairs:
+        ra, rb = root(a), root(b)
+        if ra != rb:
+            parent[max(ra, rb)] = min(ra, rb)
+    groups: dict[int, list[int]] = {}
+    for face in parent:
+        groups.setdefault(root(face), []).append(face)
+    return {face: sorted(set(groups[root(face)]) - {face}) for face in sorted(parent)}
+
+
+def face_self_intersections(shape, *, budget_s: float,
+                            interior: set[int] | None = None) -> list[EntityDefect]:
+    """Faces that cross other faces of the same part, one error per face, within `budget_s`.
+
+    RUN ONLY WHEN THE SELF-INTERSECTION HEAL IS ENABLED (`CAD_REPAIR_HEAL_SELF_INTERSECTIONS`):
+    the analysis is the costliest thing a scan can do, and a finding nothing can act on is not
+    worth seconds of every inspection. Callers express that by passing a zero budget.
+
+    A TIMEOUT IS SILENCE, NOT INCOMPLETENESS. `localize_scan`'s completeness flag means "the status
+    walk saw every sub-shape", and a loop reads False as "no absence may be claimed" - a stop
+    reason that would end every run on a large part whose crossing analysis is merely slow. What
+    this finds is extra evidence for one heal; without it the scan is exactly as complete as it
+    was before the heal existed.
+    """
+    pairs = _bounded(_kernel_face_pairs, shape, budget_s=budget_s)
+    if not pairs:
+        return []
+    from OCP.TopAbs import TopAbs_FACE
+
+    inside = interior or set()
+    faces = _indexed(shape, TopAbs_FACE)
+    out: list[EntityDefect] = []
+    for index, partners in _components([(int(a), int(b)) for a, b in pairs]).items():
+        if index < 1 or index > faces.Extent():
+            continue
+        out.append(EntityDefect(
+            code=DefectCode.self_intersection, severity=DefectSeverity.error,
+            entity_type="face", entity_index=index,
+            message=f"This face crosses {len(partners)} other face(s) of the part.",
+            region=(REGION_INTERIOR if index in inside
+                    else REGION_EXTERIOR if inside else REGION_UNKNOWN),
+            measurements={"crossing_face_indices": list(partners)},
+            location=_centroid_and_box(faces.FindKey(index)),
+            kernel_status=_SELF_INTERFERENCE))
+    return out
+
+
+def _linked(found: tuple[EntityDefect, ...]) -> tuple[EntityDefect, ...]:
+    """Name each crossing face's partners by fingerprint, once every fingerprint exists.
+
+    AFTER THE STAMP, because a partner's fingerprint does not exist before it: an index is only
+    good for this shape, and a heal that renumbers faces must still be able to say which crossing
+    it aimed at. A partner with no surviving face record is left out rather than guessed.
+    """
+    from dataclasses import replace
+
+    names = {d.entity_index: d.fingerprint for d in found
+             if d.entity_type == "face" and d.code is DefectCode.self_intersection
+             and d.fingerprint}
+    out = []
+    for defect in found:
+        partners = defect.measurements.get("crossing_face_indices")
+        if defect.entity_type != "face" or partners is None:
+            out.append(defect)
+            continue
+        out.append(replace(defect, measurements={
+            **defect.measurements,
+            "crossing_faces": [names[i] for i in partners if i in names]}))
+    return tuple(out)
+
+
+def localize_scan(shape, *, valid: bool | None = None,
+                  face_scan_s: float = 0.0) -> tuple[tuple[EntityDefect, ...], bool]:
     """Every located failure point this module can find, and whether the scan was exhaustive.
 
     Order is by entity type then index, NOT by severity: a caller that wants the worst first can
@@ -555,6 +804,11 @@ def localize_scan(shape, *, valid: bool | None = None) -> tuple[tuple[EntityDefe
     `LOCALIZE_STATUS_BUDGET`), so on a very large invalid part the list can be short because the
     walk stopped, not because the part is nearly sound. Reporting that as a complete diagnosis is
     how a repairable defect gets missed, so completeness travels with the findings.
+
+    `face_scan_s` IS THE FACE-LEVEL SELF-INTERSECTION BUDGET, and zero - the default - means the
+    analyzer is never called, so a caller without the heal enabled gets byte-for-byte the scan it
+    always got. A face scan that times out adds nothing and leaves completeness the status walk's
+    alone (see `face_self_intersections`).
     """
     from OCP.TopAbs import TopAbs_FACE
 
@@ -573,6 +827,11 @@ def localize_scan(shape, *, valid: bool | None = None) -> tuple[tuple[EntityDefe
     # `FillPlanarHole.targets_for` will aim at. At equal severity the earlier record survives
     # deduplication, so putting the status walk first would silently disable planar filling.
     found.extend(_open_boundary_defects(shape, diagonal=diagonal, interior=interior))
+    # FACE CROSSINGS BEFORE THE STATUS WALK, for the same reason: the analyzer's record of a face
+    # is the one carrying `crossing_face_indices`, so at equal severity it must be the survivor
+    # over a walk's `SelfIntersectingWire` on the same face.
+    if face_scan_s > 0:
+        found.extend(face_self_intersections(shape, budget_s=face_scan_s, interior=interior))
     attributed, complete = _status_defects(shape, interior=interior, valid=valid)
     found.extend(attributed)
     found.extend(_size_defects(shape, diagonal=diagonal, total_area=total_area,
@@ -586,7 +845,8 @@ def localize_scan(shape, *, valid: bool | None = None) -> tuple[tuple[EntityDefe
     # STAMPED AFTER THE SORT, so the collision suffix a shared box gets is assigned in the same
     # stable order the report is read in - two scans of identical bytes must produce identical
     # names, or nothing can be compared across a repair.
-    return _stamped(tuple(found), diagonal_mm=diagonal), complete
+    stamped = _stamped(tuple(found), diagonal_mm=diagonal)
+    return (_linked(stamped) if face_scan_s > 0 else stamped), complete
 
 
 def _diagonal(shape) -> float:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+import meshpipeline.settings.cad_repair as rcfg
 from meshpipeline.cad.repair.contracts import (
     DefectCode,
     DefectSeverity,
@@ -137,12 +138,16 @@ def inspect_brep_file(path: Path) -> RepairReport:
         # WHERE IT IS BROKEN, not just whether. `IsValid()` is one bit about the whole part and
         # cannot be acted on by an operator or aimed at by a repair; this attributes the damage to
         # entities, with their size and position (cad/repair/localize.py).
-        from meshpipeline.cad.repair.localize import localize_scan, summarise
+        from meshpipeline.cad.repair.localize import face_scan_budget_s, localize_scan, summarise
         scan_complete = True
+        # THE FACE SCAN ONLY WITH THE HEAL ON, and sliced from the inspection's own allowance:
+        # with the flag off this is 0.0 and the analyzer is never called.
+        face_scan_s = (face_scan_budget_s(rcfg.CAD_INSPECT_TIMEOUT_S)
+                       if rcfg.CAD_REPAIR_HEAL_SELF_INTERSECTIONS else 0.0)
         try:
             # the validity answer is already in hand; computing it twice doubles the
             # analyser's cost on every inspection
-            found, scan_complete = localize_scan(shape, valid=is_valid)
+            found, scan_complete = localize_scan(shape, valid=is_valid, face_scan_s=face_scan_s)
         except Exception as exc:  # noqa: BLE001
             # EVIDENCE, NEVER LOAD-BEARING. Localisation reaches deep into the kernel and a shape
             # it cannot walk must still get an inspection: the report then carries no entities,

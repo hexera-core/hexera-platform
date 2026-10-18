@@ -139,9 +139,18 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
     """
     chosen = planner if planner is not None else RulesPlanner()
     limits = budget if budget is not None else LoopBudget.from_settings()
-    work = session if session is not None else RepairSession(shape)
-    history = RunHistory()
+    # THE CLOCK STARTS BEFORE THE SESSION EXISTS, so the face scan's slice of the budget is a
+    # slice of what this run actually has left - including the first scan - and not of a fresh
+    # allowance every time the session re-inspects.
     started = clock()
+
+    def remaining() -> float:
+        return limits.timeout_s - (clock() - started)
+
+    work = session if session is not None else RepairSession(shape, remaining_s=remaining)
+    if work.remaining_s is None:
+        work.remaining_s = remaining
+    history = RunHistory()
 
     original = work.original.to_dict()
 
