@@ -241,6 +241,49 @@ def _operation_rows(operations) -> list[dict]:
             for op in operations if isinstance(op, dict)]
 
 
+def _tessellate_to_stl(shape, path: Path) -> Path:
+    """Mesh a B-rep shape to a binary STL at `path` (the mesh-level checker reads triangles)."""
+    from OCP.StlAPI import StlAPI_Writer
+
+    from meshpipeline.cad.occ_box import mesh_to_size
+    mesh_to_size(shape, 1.0 / 2500.0, 0.2)
+    if not StlAPI_Writer().Write(shape, str(path)):
+        raise RuntimeError("the shape could not be written to STL")
+    return path
+
+
+def heal_corroborated(shape) -> bool | None:
+    """True when the repaired shape's triangles do not pass through each other, False when they do,
+    None when the check cannot run. The B-rep analyzer cannot see a mesh-level self-intersection
+    (ec_turbine-A's), so a kept heal is only believed once this agrees; a heal counts toward the
+    turbine class only when this is True."""
+    from meshpipeline.cad import surface_checks
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            stl = _tessellate_to_stl(shape, Path(tmp) / "healed.stl")
+            return surface_checks.self_intersection_report(stl) is None
+    except Exception:  # noqa: BLE001 - an unrunnable check is "unknown", not "failed"
+        return None
+
+
+def summarise_catalogue(rows: list[dict]) -> dict:
+    """Kept / rolled back / declined / failed per operation, the catalogue operations no row
+    reached, and those only ever declined (proposed, never ran)."""
+    tally: dict[str, dict[str, int]] = {}
+    for row in rows:
+        for op in row.get("operations", []) or []:
+            entry = tally.setdefault(op.get("op", "?"),
+                                     {"kept": 0, "rolled_back": 0, "declined": 0, "failed": 0})
+            key = op.get("status", "failed")
+            if key == "rolled_back" and str(op.get("reason", "")).startswith("declined:"):
+                key = "declined"
+            entry[key] = entry.get(key, 0) + 1
+    never = [op.name for op in OPERATIONS if op.name not in tally]
+    only_declined = [name for name, c in tally.items()
+                     if c["declined"] and not (c["kept"] or c["rolled_back"] or c["failed"])]
+    return {"tally": tally, "never_exercised": never, "only_declined": only_declined}
+
+
 def _one(path: Path, scratch: Path, *, mode: str = "off") -> dict:
     from meshpipeline.cad.repair.conservative import (
         RepairRefused,
@@ -339,6 +382,14 @@ def _one(path: Path, scratch: Path, *, mode: str = "off") -> dict:
     fixed = {code: count for code, count in row["located_before"].items()
              if count > row["located_after"].get(code, 0)}
     row["repaired_defects"] = fixed
+    # A KEPT HEAL IS CORROBORATED AT THE TRIANGLE LEVEL, where the turbine's crossing actually is.
+    if any(op.get("op") == "heal_self_intersections" and op.get("status") == "kept"
+           for op in row["operations"]):
+        try:
+            from meshpipeline.cad.ingest.cad import read_step
+            row["heal_corroborated"] = heal_corroborated(read_step(destination))
+        except Exception:  # noqa: BLE001
+            row["heal_corroborated"] = None
     row["outcome"] = ("repaired" if fixed else
                       "no_change" if row["located_after"] == row["located_before"] else
                       "changed_without_fixing")
@@ -399,6 +450,8 @@ def main() -> int:
     print(f"CAD_REPAIR_ENABLED={rcfg.CAD_REPAIR_ENABLED}  "
           f"AUTONOMOUS={rcfg.CAD_REPAIR_AUTONOMOUS}  "
           f"FILL_PLANAR_HOLES={rcfg.CAD_REPAIR_FILL_PLANAR_HOLES}  "
+          f"FILL_NONPLANAR_HOLES={rcfg.CAD_REPAIR_FILL_NONPLANAR_HOLES}  "
+          f"HEAL_SELF_INTERSECTIONS={rcfg.CAD_REPAIR_HEAL_SELF_INTERSECTIONS}  "
           f"max_deviation={rcfg.CAD_REPAIR_MAX_DEVIATION_RATIO}  "
           f"max_tolerance_mm={rcfg.CAD_REPAIR_MAX_TOLERANCE_MM}")
     print(f"{len(files)} file(s)\n")
@@ -493,15 +546,8 @@ def main() -> int:
     # A DECLINE IS NOT A FAILURE. An operation that said no, with a reason, is recorded as
     # rolled_back by the session; the `declined:` prefix is what tells the two apart here, so
     # `rolled_back` below counts only operations that ran and did not repair their target.
-    tally: dict[str, dict[str, int]] = {}
-    for row in rows:
-        for op in row.get("operations", []) or []:
-            entry = tally.setdefault(op.get("op", "?"),
-                                     {"kept": 0, "rolled_back": 0, "declined": 0, "failed": 0})
-            key = op.get("status", "failed")
-            if key == "rolled_back" and str(op.get("reason", "")).startswith("declined:"):
-                key = "declined"
-            entry[key] = entry.get(key, 0) + 1
+    catalogue = summarise_catalogue(rows)
+    tally = catalogue["tally"]
     for name, counts in sorted(tally.items(), key=lambda kv: -sum(kv[1].values())):
         print(f"  {name:<22} kept={counts['kept']:<4} rolled_back={counts['rolled_back']:<4} "
               f"declined={counts['declined']:<4} failed={counts['failed']}")
@@ -523,17 +569,24 @@ def main() -> int:
     # Names the catalogue holds that no file gave the loop a reason to try. "Exercised" means the
     # operation actually ran: one that was proposed but only ever declined never touched a shape,
     # so it is listed separately below rather than counted as exercised.
-    never = [op.name for op in OPERATIONS if op.name not in tally]
+    never = catalogue["never_exercised"]
     for name in never:
         print(f"        {name}")
     if not never:
         print("  every operation was attempted at least once")
-    only_declined = [name for name, c in tally.items()
-                     if c["declined"] and not (c["kept"] or c["rolled_back"] or c["failed"])]
+    only_declined = catalogue["only_declined"]
     if only_declined:
         print("  proposed but only ever declined (never ran):")
         for name in only_declined:
             print(f"        {name}")
+
+    print("\n== heals corroborated by the triangle check ==")
+    kept_heals = [r for r in rows if "heal_corroborated" in r]
+    corroborated = [r for r in kept_heals if r["heal_corroborated"] is True]
+    print(f"  {len(corroborated)} / {len(kept_heals)}")
+    for r in kept_heals:
+        if r["heal_corroborated"] is not True:
+            print(f"        uncorroborated: {r['file']} ({r['heal_corroborated']})")
 
     if args.planner != "off":
         _print_planner(planner_summary(rows, args.planner), cache)
