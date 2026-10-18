@@ -60,8 +60,14 @@ def _inspect(path: Path) -> dict:
 # THE LLM PLANNER INSTRUMENT. Everything from here to `_one` is the planner side of this tool:
 # a reply cache wrapped AROUND the model seam (llm_plan is untouched), and the per-file pre-pass.
 # This tool owns the async edge, so `asyncio.run` is called here, once per file.
-_PROVIDER_KEYS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
-                  "OPENROUTER_API_KEY")
+def _supported_keys() -> tuple[str, ...]:
+    """The credential names the routing layer actually reads - one table, so this tool cannot
+    disagree with the router about which providers exist."""
+    from meshpipeline.settings.providers import LLM_PROVIDER_KEY_ENV
+    return tuple(LLM_PROVIDER_KEY_ENV.values())
+
+
+_PROVIDER_KEYS = _supported_keys()
 PLANNER_SOURCE = "llm-planner"
 
 
@@ -74,6 +80,12 @@ def prompt_key(messages) -> str:
     canon = json.dumps([[str(m.get("role", "")), str(m.get("content", ""))] for m in messages],
                        ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(canon.encode("utf-8")).hexdigest()
+
+
+def _usable(text: str) -> bool:
+    from meshpipeline.agents.repair_review._wire import parse_object
+    reply = parse_object(text or "")
+    return reply is not None and isinstance(reply.get("proposals"), list)
 
 
 class CacheError(Exception):
@@ -110,7 +122,11 @@ class CachingRouter:
             return SimpleNamespace(ok=False, assistant_text="")
         result = await self.inner.call_repair_review_model(messages, job_id=job_id, name=name)
         text = getattr(result, "assistant_text", "") or ""
-        if getattr(result, "ok", True) and text:
+        # ONLY A USABLE REPLY IS RECORDED. The planner retries an unusable one with the identical
+        # prompt, so caching it would answer the retry with the same bad reply - in memory even
+        # without --reply-cache. Usable is what the planner itself reads: a JSON object carrying
+        # a `proposals` list.
+        if getattr(result, "ok", True) and _usable(text):
             self.table[key] = text
             if self.path is not None:
                 # Not atomic on purpose: this is a scratch cache; a torn write is reported by
@@ -207,11 +223,22 @@ def planner_summary(rows: list[dict], mode: str) -> dict:
                 key = op.get("status", "failed")
                 if key == "rolled_back" and str(op.get("reason", "")).startswith("declined:"):
                     key = "declined"
+                if key == "kept" and r.get("result_discarded"):
+                    key = "rolled_back"   # the after-check threw the whole result away
                 if key not in e:
                     key = "failed"
                 e[key] += 1
         out["llm_ops"] = per_op
     return out
+
+
+def _operation_rows(operations) -> list[dict]:
+    return [{"op": op.get("name", ""), "status": op.get("status", ""),
+             "reason": op.get("reason", ""), "basis": op.get("basis", ""),
+             "defect_code": op.get("defect_code", ""),
+             "targets": op.get("targets", []),
+             **({"source": op["source"]} if op.get("source") else {})}
+            for op in operations if isinstance(op, dict)]
 
 
 def _one(path: Path, scratch: Path, *, mode: str = "off") -> dict:
@@ -269,7 +296,13 @@ def _one(path: Path, scratch: Path, *, mode: str = "off") -> dict:
         row.update(outcome="unavailable", error=str(exc))
         return row
     except RepairRefused as exc:
+        # THE ATTEMPTS GO WITH THE REFUSAL (conservative.py puts them in its measurements), so a
+        # model operation that rolled back and left nothing kept is still counted. A result the
+        # after-check discarded kept nothing either: its `kept` operations count as rolled back.
+        measured = dict(getattr(exc, "measurements", None) or {})
         row.update(outcome="refused", error=str(exc),
+                   operations=_operation_rows(measured.get("operations") or ()),
+                   result_discarded=bool(measured.get("result_discarded")),
                    seconds=round(time.monotonic() - started, 2))
         return row
     except Exception as exc:  # noqa: BLE001
@@ -281,12 +314,7 @@ def _one(path: Path, scratch: Path, *, mode: str = "off") -> dict:
         # EVERY ATTEMPT, KEPT OR NOT. The rolled-back ones are the interesting half: they are
         # where the rules planner ran out of ideas, which is exactly what a model later has to
         # beat, and a corpus run that only listed successes could not show it.
-        operations=[{"op": op.get("name", ""), "status": op.get("status", ""),
-                     "reason": op.get("reason", ""), "basis": op.get("basis", ""),
-                     "defect_code": op.get("defect_code", ""),
-                     "targets": op.get("targets", []),
-                     **({"source": op["source"]} if op.get("source") else {})}
-                    for op in repaired.operations],
+        operations=_operation_rows(repaired.operations),
         operations_attempted=int(measured.get("operations_attempted", 0) or 0),
         operations_kept=int(measured.get("operations_kept", 0) or 0),
         # FINISHED OR OUT OF ROOM. The single most useful number from a corpus run: a corpus full

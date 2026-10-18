@@ -177,3 +177,68 @@ def test_corrupt_cache_is_a_one_line_error_naming_the_path(tmp_path):
     bad.write_text("{not json")
     with pytest.raises(rc.CacheError, match=str(bad)):
         rc.CachingRouter(bad)
+
+
+def test_the_supported_provider_keys_are_the_ones_the_routing_layer_reads(monkeypatch):
+    """With only DEEPINFRA_API_KEY or DEEPSEEK_API_KEY set, the tool said no model was available:
+    its key list named providers the router does not support and missed two it does."""
+    from meshpipeline.settings.providers import LLM_PROVIDER_KEY_ENV
+
+    assert set(rc._PROVIDER_KEYS) == set(LLM_PROVIDER_KEY_ENV.values())
+    for name in rc._PROVIDER_KEYS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("DEEPINFRA_API_KEY", "set-for-the-test")
+    cache, note = rc.install_planner_router("")
+    assert cache is not None and note == "model: real router"
+
+
+def test_an_unusable_reply_is_not_cached_so_the_planners_retry_asks_again(tmp_path):
+    """The planner retries an unusable reply with the identical prompt. Cached anyway, the retry
+    got the same bad reply from the table - with or without --reply-cache."""
+    class _BadThenGood(_Inner):
+        async def call_repair_review_model(self, messages, job_id="", name="RepairReview"):
+            self.calls += 1
+            text = "sorry, I cannot help" if self.calls == 1 else REPLY
+            return SimpleNamespace(ok=True, assistant_text=text)
+
+    inner = _BadThenGood()
+    cache = rc.CachingRouter(tmp_path / "c.json", inner)
+    model_inference.set_model_router(cache)
+    plan = rc.plan_for(_entities())
+    assert inner.calls == 2 and [d["op"] for d in plan.directives] == ["fix_small_edges"]
+    assert list(json.loads((tmp_path / "c.json").read_text()).values()) == [REPLY]
+
+
+def test_a_refused_repair_keeps_its_model_attempts_in_the_counts(kernel, monkeypatch):
+    """A repair the caps refuse raises RepairRefused carrying its attempts. The row dropped them,
+    so a model operation that rolled back and left nothing kept vanished from llm_ops."""
+    import meshpipeline.cad.repair.conservative as cons
+
+    def refused(source, destination, *, profile=None, directives=()):
+        raise cons.RepairRefused("nothing was kept", measurements={"operations": [
+            {"name": d["op"], "status": "rolled_back", "reason": "target_remains",
+             "targets": d["targets"], "source": d["source"]} for d in directives]})
+
+    monkeypatch.setattr(cons, "repair_step_file", refused)
+    model_inference.set_model_router(rc.CachingRouter(None, _Inner()))
+    row = rc._one(kernel.part, kernel.part.parent, mode="live")
+    assert row["outcome"] == "refused"
+    assert rc.planner_summary([row], "live")["llm_ops"] == {
+        "fix_small_edges": {"kept": 0, "rolled_back": 1, "declined": 0, "failed": 0}}
+
+
+def test_a_kept_model_operation_inside_a_discarded_result_counts_as_rolled_back(kernel,
+                                                                                monkeypatch):
+    import meshpipeline.cad.repair.conservative as cons
+
+    def discarded(source, destination, *, profile=None, directives=()):
+        raise cons.RepairRefused("the result moved the part", measurements={
+            "result_discarded": True, "operations": [
+                {"name": d["op"], "status": "kept", "targets": d["targets"],
+                 "source": d["source"]} for d in directives]})
+
+    monkeypatch.setattr(cons, "repair_step_file", discarded)
+    model_inference.set_model_router(rc.CachingRouter(None, _Inner()))
+    row = rc._one(kernel.part, kernel.part.parent, mode="live")
+    assert rc.planner_summary([row], "live")["llm_ops"]["fix_small_edges"]["kept"] == 0
+    assert rc.planner_summary([row], "live")["llm_ops"]["fix_small_edges"]["rolled_back"] == 1
