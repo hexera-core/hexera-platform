@@ -292,8 +292,9 @@ def _shortfall(shape: str, reason: str, *, timed_out: bool, minutes: float,
     """The rest of "Pass N ..." for a pass that did not produce a production-grade mesh, in
     plain words. A run that ran out of time says so - it is not "no cells, 0 faces"."""
     if repeat:
-        return ("not run - it would rebuild, unchanged, the mesh that just ran out of time, and "
-                "nothing is left to make coarser; stopping the meshing passes here")
+        return ("not run - it would rebuild, unchanged, a mesh that just ran out of time or came "
+                "out broken, and nothing is left to make coarser; stopping the meshing passes "
+                "here")
     if timed_out:
         return (f"ran out of time - snappyHexMesh did not finish within {minutes:.0f} min; "
                 + ("no meshing passes left" if last else "re-planning a coarser mesh"))
@@ -553,12 +554,14 @@ def _pass_shape(q: dict, wall_faces: int) -> str:
 
 
 def _repair_after_fold(workspace: Path, q: dict, *, production: bool, repairable: bool,
-                       surface, rec: dict | None, strategy: dict, job_id: str) -> str | None:
+                       surface, rec: dict | None, strategy: dict, job_id: str,
+                       not_layers: list | None = None) -> str | None:
     """After a pass whose prism layers folded into invalid cells, record a LOCAL repair for the
     next pass and say so in the engineer's words; None when there is nothing to repair here - a
     clean pass, a wall the repair may not split, no located spot on the wall, or every repair
     stage spent. The spots come from checkMesh (foam_exec.fatal_points); a spot off the wall is
-    no prism fold and is left to the planner."""
+    no prism fold and is left to the planner. When every spot lies where the layers were already
+    taken out, `not_layers` (if given) gets True: the layers did not cause this fold."""
     from meshpipeline.cad.thin_features import staged_triangles
     from meshpipeline.engines.snappy import layer_policy as LP
     if production or not repairable or rec is None or not LP.is_layer_fatal(q):
@@ -588,6 +591,8 @@ def _repair_after_fold(workspace: Path, q: dict, *, production: bool, repairable
             logger.info("layer-fatal pass: every folded spot lies inside the area already "
                         "repaired - not a prism-layer fold; no further layer repair - job_id=%s",
                         job_id)
+            if not_layers is not None:
+                not_layers.append(True)
             return None
     rep = LP.escalate_repair(workspace, on_wall)
     if rep is None:
@@ -779,9 +784,11 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
         await run.fence("write plan memory")
         _mem = await _op_begin(publish, "author_configuration", run, attempt)
         _write_plan_memory(workspace, strategy)
+        _why_coarser = ("came out broken where its layers were not the cause"
+                        if (_timeout_ref or {}).get("_why") == "broken" else "ran out of time")
         await publish.anote(f"Meshing pass {attempt} of {max_attempts} - "
                         f"{str(strategy.get('approach', 'default strategy'))[:80]}"
-                        + (f" - made coarser because the last pass ran out of time: "
+                        + (f" - made coarser because the last pass {_why_coarser}: "
                            f"{_coarsened}" if _coarsened else ""),
                 op_id=f"snappy:pass-open:{attempt}")
         try:
@@ -967,9 +974,26 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
         # The planner's freeform re-plan stays the answer for every other failure, and for this
         # one once the repair or the ladder is spent.
         _esc_note = ""
+        _not_layers: list = []
         _repair_note = _repair_after_fold(workspace, q, production=production,
                                           repairable=_repairable, surface=_surface,
-                                          rec=rec, strategy=strategy, job_id=job_id)
+                                          rec=rec, strategy=strategy, job_id=job_id,
+                                          not_layers=_not_layers)
+        if _not_layers and not production and not _timed_out_now:
+            # A FOLD THE LAYERS DID NOT CAUSE IS THIS PLAN'S, NOT THE LAYERS'. The same plan builds
+            # the same broken mesh: the enodise splitter plate (an open, non-manifold plate) came
+            # back at 2,741,541 cells with the same 705 skewed faces and a face pointing the wrong
+            # way on four identical passes, 25-40 minutes each, and the run failed; on the sweep
+            # before, the pass that followed a time-out was cut to half the budget and came out
+            # production-grade at 1.13 M cells (baseline-main / verify-5fix, 2026-10-17/18). So the
+            # plan is recorded as one this shape cannot take, like a plan that ran out of time:
+            # the next pass - in this attempt or the next - is made coarser by the same arithmetic,
+            # and an identical case is never meshed again.
+            _timeout_ref = {**strategy, "_why": "broken"}
+            _timeout_case = _case_snapshot(workspace)
+            _write_timed_out_plan(workspace, _timeout_ref)
+            logger.info("layer-fatal pass not caused by the layers - the next pass is made "
+                        "coarser, and this case is not meshed again - job_id=%s", job_id)
         if _repair_note is not None:
             # a repair is in play: the class ladder below never cuts the classifier's classes
             # on top of it (the spots are KNOWN; whole classes are a guess)
