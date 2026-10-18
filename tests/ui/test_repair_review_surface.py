@@ -65,6 +65,7 @@ window.fetch = (u, o) => {
   const s = String(u), m = (o && o.method) || 'GET';
   if (s.includes('/check/skin')) return Promise.resolve(json(SKIN));
   if (s.endsWith('/review/decision')) {
+    if (window.__script.reject) return Promise.reject(new TypeError('network down'));
     const body = JSON.parse(o.body);
     window.__calls.push({url: s, method: m, body});
     if (body.action === 'redirect') return Promise.resolve(json(window.__script.redirect));
@@ -239,3 +240,61 @@ def test_the_parked_run_page_states_the_count_and_the_promise(live):
       return parkedCopy({open: 8, decided: 0, groups: [1, 2, 3]});
     })()""")
     assert "8" in out and "nothing was changed without you" in out.lower(), out
+
+
+def test_change_it_keeps_a_line_saying_the_earlier_answer_stands(live):
+    _open(live)
+    live.evaluate("document.querySelector('.rv-redirect-text').value = 'leave the fillet alone'")
+    _click(live, ".rv-redirect-go")
+    assert live.evaluate("document.activeElement.className") == "rv-confirm"
+    _click(live, ".rv-change")
+    assert "stays recorded until you replace it" in _text(live, ".rv-standing")
+
+
+def test_a_refused_second_redirect_says_the_earlier_answer_still_stands(live):
+    _open(live)
+    live.evaluate("document.querySelector('.rv-redirect-text').value = 'leave the fillet alone'")
+    _click(live, ".rv-redirect-go")
+    _click(live, ".rv-change")
+    live.evaluate("""window.__script.redirect = {kind: 'refusal', playback: 'i cannot do that'};
+      document.querySelector('.rv-redirect-text').value = 'delete the part'""")
+    _click(live, ".rv-redirect-go")
+    text = _text(live, ".rv-playback").lower()
+    assert "earlier answer still stands" in text and "nothing was recorded" not in text, text
+
+
+def test_two_rapid_clicks_send_one_decision_and_skip_nothing(live):
+    _open(live)
+    live.evaluate("const b = document.querySelector('.rv-leave'); b.click(); b.click();")
+    live.settle(0.3)
+    assert len(live.evaluate("window.__calls")) == 1
+    assert "defect 2 message" in _text(live, ".rv-item")
+
+
+def test_a_decision_that_never_reaches_the_server_keeps_the_item_and_says_so(live):
+    _open(live, extra="window.__script.reject = true;")
+    _click(live, ".rv-leave")
+    assert "didn't reach the server" in _text(live, ".rv-note")
+    assert "defect 1 message" in _text(live, ".rv-item")
+    assert live.evaluate("!document.querySelector('.rv-leave').disabled"), "controls stayed held"
+
+
+def test_escape_in_the_redirect_box_does_not_close_the_review(live):
+    _open(live)
+    live.evaluate("""const t = document.querySelector('.rv-redirect-text'); t.focus();
+      t.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}));""")
+    assert live.evaluate("!!document.querySelector('.rv')")
+    live.evaluate("document.body.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}))")
+    assert live.evaluate("!document.querySelector('.rv')")
+
+
+def test_a_group_with_nothing_proposed_says_why_there_is_no_fix_all(live):
+    base = _review()
+    odd = base["groups"][2]
+    extra = [_item(n, "odd", "ODD", proposal=False) for n in (9, 10)]
+    odd["items"] += extra
+    odd["count"] = 3
+    _open(live, review={**base, "groups": [odd]})
+    _click(live, ".rv-leave")
+    assert live.evaluate("!document.querySelector('.rv-fixall')")
+    assert "nothing was proposed" in _text(live, ".rv-why").lower()

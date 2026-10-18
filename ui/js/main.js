@@ -87,8 +87,9 @@ configureStream({
    review's "Run it" resumes the SAME job, so the stream carries on from here. */
 const _parkedShown = new Set();
 function parkedRun(job) {
-  if (!job || job.status !== "pending_review" || _parkedShown.has(job.job_id || job.id || getState.jobId())) return;
+  if (!job || job.status !== "pending_review") return;
   const id = job.job_id || job.id || getState.jobId();
+  if (_parkedShown.has(id)) return;
   _parkedShown.add(id);
   const opts = { onRun: (r) => { _parkedShown.delete(id); Stage.chat("assistant", r.said); } };
   openParked(id, Stage.col(), opts).then((el) => { el?.querySelector("button")?.click(); });

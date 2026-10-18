@@ -54,6 +54,8 @@ export function sizeOf(item) {
 const unanswered = (groups) => groups.reduce(
   (n, g) => n + g.items.filter((i) => i.state === "open").length, 0);
 
+const STANDING = '<p class="rv-standing">your earlier answer stays recorded until you replace it.</p>';
+
 function unansweredLine(n) {
   return n ? `${plural(n, "defect", "defects")} still unanswered - they go through unreviewed.`
     : "every defect is answered.";
@@ -173,15 +175,29 @@ export async function openReview(jobId, opts = {}) {
   const $ = (s) => root.querySelector(s);
   const panel = $(".rv-panel"), note = $(".rv-note");
 
-  let gi = -1, phase = "sample", queue = [], shownIdx = 0, shownTotal = 0, view = null, viewReady = false;
+  let gi = -1, phase = "sample", queue = [], shownIdx = 0, shownTotal = 0, view = null, closed = false, busy = false;
   let pendingCamera = null;
 
-  mountView($(".rv-view"), review.geometry_session_id, jobId).then((v) => {
-    view = v; viewReady = true;
-    if (!v) $(".rv-view").innerHTML = '<p class="rv-noview">the part cannot be shown here; '
-      + "the defect is described beside it.</p>";
+  mountView($(".rv-view"), review.geometry_session_id, jobId).catch(() => null).then((v) => {
+    if (closed) { v?.stop(); return; }       // the review was closed while the part loaded
+    view = v;
+    if (!v) $(".rv-view").innerHTML = '<p class="rv-noview">the part can\'t be shown here - '
+      + "you can still decide; the defect is described beside it.</p>";
     else if (pendingCamera) v.show(pendingCamera);
   });
+
+  /* ONE ANSWER IN FLIGHT. A second click while a POST is out would send a second decision and
+     skip a defect; the controls are held until the server has answered, and a request that never
+     arrives leaves the defect on screen with a note. */
+  async function guarded(fn) {
+    if (busy) return;
+    busy = true;
+    const held = [...root.querySelectorAll(".rv-panel button, .rv-panel textarea, .rv-run")];
+    held.forEach((b) => { b.disabled = true; });
+    try { await fn(); }
+    catch { say("that didn't reach the server - try again."); }
+    finally { busy = false; held.forEach((b) => { b.disabled = false; }); }
+  }
   const frame = (camera) => { pendingCamera = camera; if (view) view.show(camera); };
 
   const say = (t) => { note.textContent = t || ""; };
@@ -220,7 +236,6 @@ export async function openReview(jobId, opts = {}) {
 
   function itemScreen(item) {
     paintRail(); frame(item.camera); say("");
-    const g = groups[gi];
     const meas = Object.entries(item.measurements || {}).map(
       ([k, v]) => `<li>${esc(k.replaceAll("_", " "))}: <b>${esc(v)}</b></li>`).join("");
     const prop = proposalLine(item);
@@ -243,9 +258,10 @@ export async function openReview(jobId, opts = {}) {
           <button type="button" class="rv-redirect-go">Try this instead</button>
           <div class="rv-playback-slot"></div></div>`}`;
     if (readonly) { panel.querySelector(".rv-next").onclick = () => { queue.shift(); advance(); }; return; }
-    panel.querySelector(".rv-do")?.addEventListener("click", () => decide(item, "accept", "accepted"));
-    panel.querySelector(".rv-leave").onclick = () => decide(item, "leave", "left");
-    panel.querySelector(".rv-redirect-go").onclick = () => redirect(item);
+    panel.querySelector(".rv-do")?.addEventListener("click", () => guarded(() => decide(item, "accept", "accepted")));
+    panel.querySelector(".rv-leave").onclick = () => guarded(() => decide(item, "leave", "left"));
+    panel.querySelector(".rv-redirect-go").onclick = () => guarded(() => redirect(item));
+    if (item.state === "redirected") panel.querySelector(".rv-playback-slot").innerHTML = STANDING;
   }
 
   async function decide(item, action, state) {
@@ -268,10 +284,12 @@ export async function openReview(jobId, opts = {}) {
         <button type="button" class="rv-confirm">That's right</button>
         <button type="button" class="rv-change">Change it</button></div>`;
       slot.querySelector(".rv-confirm").onclick = () => { queue.shift(); advance(); };
-      slot.querySelector(".rv-change").onclick = () => { slot.innerHTML = ""; box.value = ""; box.focus(); };
+      slot.querySelector(".rv-change").onclick = () => { slot.innerHTML = STANDING; box.value = ""; box.focus(); };
+      slot.querySelector(".rv-confirm").focus();
     } else {
       slot.innerHTML = `<div class="rv-playback rv-refused"><p>${esc(r.data.playback || r.data.reason || "that cannot be done")}</p>
-        <p>nothing was recorded; leave it, or say it another way.</p></div>`;
+        <p>${item.state === "redirected" ? "your earlier answer still stands."
+          : "nothing was recorded; leave it, or say it another way."}</p></div>`;
     }
   }
 
@@ -292,12 +310,12 @@ export async function openReview(jobId, opts = {}) {
     const go = (items) => { queue = items; phase = "rest"; shownIdx = 0; shownTotal = items.length; advance(); };
     panel.querySelector(".rv-onebyone").onclick = () => go(rest);
     panel.querySelector(".rv-largest").onclick = () => go(rest.slice().sort((a, b) => sizeOf(b) - sizeOf(a)));
-    panel.querySelector(".rv-fixall")?.addEventListener("click", async () => {
+    panel.querySelector(".rv-fixall")?.addEventListener("click", () => guarded(async () => {
       const r = await postReviewDecision(jobId, { group_key: g.group_key, action: "apply_all" });
       if (!r.ok) return say(failure(r, "that was not applied"));
       rest.forEach((i) => { i.state = "accepted"; });
       queue = []; phase = "rest"; advance();
-    });
+    }));
   }
 
   function failure(r, lead) {
@@ -306,17 +324,17 @@ export async function openReview(jobId, opts = {}) {
   }
 
   /* ---------- the way out ---------- */
-  function close() { view?.stop(); root.remove(); document.removeEventListener("keydown", onKey); }
-  const onKey = (e) => { if (e.key === "Escape") { close(); opts.onClose?.(); } };
+  function close() { closed = true; view?.stop(); root.remove(); document.removeEventListener("keydown", onKey); }
+  const onKey = (e) => {
+    const t = e.target, typing = t && /^(TEXTAREA|INPUT)$/.test(t.tagName || "");
+    if (e.key === "Escape" && !typing && !busy) { close(); opts.onClose?.(); } };
   document.addEventListener("keydown", onKey);
   $(".rv-back").onclick = () => { close(); opts.onClose?.(); };
 
   const runBtn = $(".rv-run");
-  if (runBtn) runBtn.onclick = async () => {
+  if (runBtn) runBtn.onclick = () => guarded(async () => {
     const left = unanswered(groups);
-    runBtn.disabled = true;
     const r = await postReviewRun(jobId).catch(() => ({ ok: false, status: 0, data: {} }));
-    runBtn.disabled = false;
     if (r.ok) {
       const said = `running it. ${left ? plural(left, "defect", "defects") + " unanswered went through unreviewed."
         : "every defect was answered."} nothing was changed without you.`;
@@ -327,7 +345,7 @@ export async function openReview(jobId, opts = {}) {
     if (r.status === 409) return say(((r.data || {}).detail || "this run is not waiting for a review")
       + " - if it was delivered, run it again from the chat.");
     say("the run could not be started. try again.");
-  };
+  });
 
   paintRail();
   if (!groups.length) finishedScreen(); else enterGroup(0);
