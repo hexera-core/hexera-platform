@@ -1036,6 +1036,8 @@ async def _run_async(req: JobRequest) -> dict:
         _timed_out = _pb.is_exhausted(_pipeline_deadline)
         _review_plan = _rrp.plan_review(final_state, status=final_status,
                                         system_failure=bool(api_failure) or _timed_out)
+        # items the rules had no direction for get the model's proposal BEFORE they are written
+        _review_plan = await _rrp.with_proposals(_review_plan, job_id)
         if _review_plan is not None and _review_plan.park:
             # `failed_reason` stays the decision's: terminal_finalize falls back to a plain failure
             # (with it) if the park cannot be written, and never stamps it on a parked row.

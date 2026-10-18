@@ -72,6 +72,24 @@ def plan_review(state: dict, *, status: JobStatus,
                       geometry_session_id=str(state.get("session_id") or ""))
 
 
+async def with_proposals(plan: ReviewPlan | None, job_id: str) -> ReviewPlan | None:
+    """The plan with the LLM's proposals filled in for items the rules had nothing for.
+
+    Runs BEFORE persistence, so the items are written once, already proposed. Bounded by the
+    proposer's call and timeout caps; fail-open: any failure returns the plan unchanged.
+    """
+    if plan is None or not plan.items:
+        return plan
+    try:
+        from dataclasses import replace
+
+        from meshpipeline.agents.repair_review.proposer import propose_for_groups
+        return replace(plan, items=await propose_for_groups(list(plan.items), job_id=job_id))
+    except Exception as exc:  # noqa: BLE001 - proposals are a convenience, never a reason to lose a park
+        logger.warning("repair review proposals skipped for job %s: %s", job_id, type(exc).__name__)
+        return plan
+
+
 async def open_park_exists(db, job_id: uuid.UUID, repo=None) -> bool:
     from meshpipeline.persistence.repositories.repair_review_repository import (
         RepairReviewRepository,
