@@ -11,16 +11,25 @@ from __future__ import annotations
 from meshpipeline.cad.repair.contracts import DefectCode
 from meshpipeline.cad.repair.identity import EntityRef
 from meshpipeline.cad.repair.operations import OPERATIONS, FillPlanarHole
-from meshpipeline.cad.repair.plan import Candidate, RulesPlanner, RunHistory, paired_rim_fingerprints
+from meshpipeline.cad.repair.plan import (
+    Candidate,
+    RulesPlanner,
+    RunHistory,
+    held_fingerprints,
+    paired_rim_fingerprints,
+)
 
 TARGET_ABSENT = "target_absent"
 UNKNOWN_OP = "unknown_op"
 MALFORMED = "malformed"
 FILL_REFUSED = "fill_refused"
-#: An automatic (LLM or replayed) directive aimed at a defect held for the engineer's review.
+#: A model's directive aimed at a defect held for the engineer's review (a replay is exempt).
 RESERVED_FOR_REVIEW = "reserved_for_review"
 #: An operation at or beyond this scope runs over the whole shape (operations.FixShapeGlobal).
 WHOLE_SHAPE_SCOPE = 99
+#: The sources whose directive may aim at a defect held for review: the engineer who is being
+#: asked, and a replay of an operation this upload already kept.
+HELD_ANSWERING_SOURCES = frozenset({"engineer", "replay"})
 
 
 class DirectedPlanner:
@@ -64,16 +73,19 @@ class DirectedPlanner:
         except ValueError:
             self._skip(directive, MALFORMED)
             return None
-        # HOLDS AIM AT RESERVED ENTITIES; A WHOLE-SHAPE HEAL IS NOT AIM. A whole-shape operation
-        # (fix_shape_global) runs over every entity whatever it names - the targets it carries
-        # are bookkeeping for the progress rule, not a choice of what to change - so it is not
-        # aimed at a held defect and is not refused merely because its code is a judgement code.
-        # Refusing it removed the last resort the rules planner used to have. A SCOPED operation
-        # does aim, and a non-engineer one is refused when its code is held or when any target
-        # carries a held defect. Semantics changed from "refuse by code" (the earlier wave).
+        # A HELD DEFECT IS THE ENGINEER'S QUESTION, AND ONLY THE ENGINEER OR A REPLAY ANSWERS IT.
+        # A directive from anyone else (a model) is refused when its code is held, or when any of
+        # its targets carries a held defect - WHOLE-SHAPE INCLUDED. The earlier wave let a model's
+        # fix_shape_global on a held code play as "not aim"; the session kept it exactly when it
+        # removed the held defect, so the engineer was then asked about a defect already healed,
+        # and a re-run re-appended the model's heal after the engineer had chosen "leave".
+        # A whole-shape directive whose code is NOT held, at targets carrying no held defect, plays.
+        # REPLAY IS EXEMPT: it is an autonomous operation this upload already KEPT, replayed so the
+        # re-run reproduces the same file (api/v1/repair_review._replay_directives), not a new
+        # decision about a held defect.
         whole_shape = op.scope >= WHOLE_SHAPE_SCOPE
-        engineer = directive.get("source") == "engineer"
-        if code in self._reserved and not engineer and not whole_shape:
+        may_answer_held = directive.get("source") in HELD_ANSWERING_SOURCES
+        if code in self._reserved and not may_answer_held:
             # A person has not answered this one yet; a model's guess is not that answer.
             self._skip(directive, RESERVED_FOR_REVIEW)
             return None
@@ -97,8 +109,8 @@ class DirectedPlanner:
         if not refs:
             self._skip(directive, TARGET_ABSENT)
             return None
-        if self._reserved and not engineer and not whole_shape:
-            held = {d.fingerprint for d in defects if d.fingerprint and d.code in self._reserved}
+        if self._reserved and not may_answer_held:
+            held = held_fingerprints(defects, self._reserved)
             if any(r.fingerprint in held for r in refs):
                 self._skip(directive, RESERVED_FOR_REVIEW)
                 return None

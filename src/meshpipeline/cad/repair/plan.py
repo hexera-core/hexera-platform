@@ -177,6 +177,18 @@ def paired_rim_fingerprints(shape, defects) -> frozenset[str]:
         return RimsUnknown(candidates)
 
 
+def held_fingerprints(defects, reserved) -> frozenset[str]:
+    """Fingerprints of the entities carrying a defect held for review (a code in `reserved`).
+
+    THE ONE DEFINITION OF "AIMED AT A HELD ENTITY", shared by the rules planner and the directed
+    planner so the two cannot disagree about what a hold covers: an entity is held when ANY defect
+    on it is held, whatever code the operation aimed at it claims.
+    """
+    if not reserved:
+        return frozenset()
+    return frozenset(d.fingerprint for d in defects if d.fingerprint and d.code in reserved)
+
+
 class RulesPlanner:
     """Fixed rules: worst defect first, narrowest operation first, whole-shape last.
 
@@ -228,10 +240,10 @@ class RulesPlanner:
             key=lambda d: (_SEVERITY_RANK.get(d.severity, 9), d.entity_type, d.entity_index,
                            d.code.value))
 
+        held = held_fingerprints(defects, self._reserved)
         for defect in ordered:
             if defect.code in self._reserved:
-                # HELD FOR THE ENGINEER. The whole-shape fixer claims invalid_brep, so proposing
-                # it would change what the review is asking a person about before they answered.
+                # HELD FOR THE ENGINEER: never the subject of a proposal here, whatever claims it.
                 continue
             if not defect.fingerprint:
                 # FOUND AND NOT AIMABLE. The case a model most needs to see: an unlocated defect
@@ -256,6 +268,13 @@ class RulesPlanner:
                     continue
                 targets = op.targets_for(defect)
                 if not targets:
+                    continue
+                if any(t.fingerprint in held for t in targets):
+                    # AIMED AT A HELD ENTITY, by an operation answering some OTHER code on it: the
+                    # same refusal DirectedPlanner gives a model's directive. Filtering by code
+                    # alone let a small_edge fix change the very face the engineer is being asked
+                    # about. The defect is not refused outright - a later operation whose targets
+                    # avoid the held entity may still claim it.
                     continue
                 return Candidate(op=op, targets=targets, defect_code=defect.code,
                                  defect_fingerprint=defect.fingerprint)

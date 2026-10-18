@@ -349,32 +349,80 @@ def _model_whole_shape(targets):
             "item_id": ""}
 
 
+class _Nothing:
+    label = "nothing"
+
+    def propose(self, *a, **k):
+        return None
+
+
 @pytest.mark.parametrize("targets", [(), ("face:b",)])
-def test_a_model_whole_shape_heal_on_a_held_code_plays_because_it_aims_at_nothing(targets):
-    """Holds aim at reserved entities; a whole-shape heal is not aim. With no targets, or with the
-    bookkeeping target a model names for it, the whole-shape fixer is not refused for its code."""
+def test_a_model_whole_shape_heal_on_a_held_code_is_refused(targets):
+    """A whole-shape heal on a held code would answer the engineer's question before they did:
+    the session keeps it exactly when it removes the held defect. Refused, named or target-less."""
     from meshpipeline.cad.repair.plan import RunHistory
 
     whole = _WholeShapeOp("whole_op")
-    planner = DirectedPlanner([_model_whole_shape(targets)], None, ops=(whole,),
+    planner = DirectedPlanner([_model_whole_shape(targets)], _Nothing(), ops=(whole,),
                               reserved=frozenset({DefectCode.invalid_brep}))
-    candidate = planner.propose((_brep_defect(),), RunHistory(), shape=None)
+    assert planner.propose((_brep_defect(),), RunHistory(), shape=None) is None
+    assert [u["reason"] for u in planner.unplayable] == ["reserved_for_review"]
 
+
+def test_a_model_whole_shape_heal_on_a_code_nobody_holds_plays():
+    from meshpipeline.cad.repair.plan import RunHistory
+
+    whole = _WholeShapeOp("whole_op")
+    directive = {**_model_whole_shape(()), "defect_code": "small_edge"}
+    planner = DirectedPlanner([directive], _Nothing(), ops=(whole,),
+                              reserved=frozenset({DefectCode.invalid_brep}))
+    candidate = planner.propose((_defect("edge:a"), _brep_defect("face:b")), RunHistory(),
+                                shape=None)
     assert candidate is not None and candidate.op is whole and candidate.source == "llm-planner"
-    # the session's progress rule still needs a defect-carrying name to judge against
-    assert [t.fingerprint for t in candidate.targets] == ["face:b"]
-    assert candidate.defect_code is DefectCode.invalid_brep
+    # target-less: named by the defects carrying its own code, for the progress rule
+    assert [t.fingerprint for t in candidate.targets] == ["edge:a"]
+    assert planner.unplayable == []
+
+
+def test_a_model_whole_shape_heal_whose_target_carries_a_held_defect_is_refused():
+    from meshpipeline.cad.repair.plan import RunHistory
+
+    whole = _WholeShapeOp("whole_op")
+    directive = {**_model_whole_shape(("face:b",)), "defect_code": "small_edge"}
+    shared = (_defect("face:b"), _brep_defect("face:b"))
+    planner = DirectedPlanner([directive], _Nothing(), ops=(whole,),
+                              reserved=frozenset({DefectCode.invalid_brep}))
+    assert planner.propose(shared, RunHistory(), shape=None) is None
+    assert [u["reason"] for u in planner.unplayable] == ["reserved_for_review"]
+
+
+@pytest.mark.parametrize("source", ["engineer", "replay"])
+@pytest.mark.parametrize("whole_shape", [False, True])
+def test_an_engineer_or_replay_directive_at_a_held_entity_plays(source, whole_shape):
+    """The engineer is the person being asked; a replay is an operation this upload already kept,
+    replayed so the re-run reproduces the same file. Neither is refused reserved_for_review."""
+    from meshpipeline.cad.repair.plan import RunHistory
+
+    op = _WholeShapeOp("whole_op") if whole_shape else _Op("directed_op")
+    held_code = {**_directive(op=op.name, targets=("face:b",), source=source,
+                              item_id="i1" if source == "engineer" else ""),
+                 "defect_code": "invalid_brep" if whole_shape else "small_edge"}
+    planner = DirectedPlanner([held_code], _Nothing(), ops=(op,),
+                              reserved=frozenset({DefectCode.invalid_brep}))
+    candidate = planner.propose((_defect("face:b"), _brep_defect("face:b")), RunHistory(),
+                                shape=None)
+    assert candidate is not None and candidate.source == source
     assert planner.unplayable == []
 
 
 def test_a_target_less_whole_shape_heal_with_nothing_carrying_its_code_is_target_absent():
     from meshpipeline.cad.repair.plan import RunHistory
 
-    class _Nothing:
-        def propose(self, *a, **k): return None
-    planner = DirectedPlanner([_model_whole_shape(())], _Nothing(), ops=(_WholeShapeOp("whole_op"),),
+    # a code nobody holds (a held code is refused before its targets are looked at)
+    directive = {**_model_whole_shape(()), "defect_code": "small_edge"}
+    planner = DirectedPlanner([directive], _Nothing(), ops=(_WholeShapeOp("whole_op"),),
                               reserved=frozenset({DefectCode.invalid_brep}))
-    assert planner.propose((_defect(),), RunHistory(), shape=None) is None
+    assert planner.propose((_brep_defect(),), RunHistory(), shape=None) is None
     assert [u["reason"] for u in planner.unplayable] == ["target_absent"]
 
 

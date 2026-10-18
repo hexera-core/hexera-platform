@@ -375,3 +375,20 @@ def test_with_nothing_reserved_the_planner_still_claims_every_code():
     planner = RulesPlanner(ops=(_GLOBAL,))
     defects = (_defect(DefectCode.invalid_brep, fingerprint="face:j", kind="face"),)
     assert planner.propose(defects, RunHistory(), shape=None).op.name == "fix_shape_global"
+
+
+def test_the_rules_planner_does_not_aim_another_codes_fix_at_an_entity_held_for_review():
+    # The DirectedPlanner refuses a model's scoped op aimed at an entity carrying a held defect;
+    # the rules planner must agree, not merely skip the held CODE. Here the face carries both a
+    # held invalid_brep and a repairable small_face: the small_face fix would change the face the
+    # engineer is being asked about.
+    narrow = _Op("narrow", {DefectCode.small_face}, 1)
+    planner = RulesPlanner(ops=(narrow,), reserved=frozenset({DefectCode.invalid_brep}))
+    shared = (_defect(DefectCode.small_face, fingerprint="face:b", kind="face", index=2),
+              _defect(DefectCode.invalid_brep, fingerprint="face:b", kind="face", index=2))
+    assert planner.propose(shared, RunHistory(), shape=None) is None
+
+    elsewhere = (_defect(DefectCode.small_face, fingerprint="face:c", kind="face", index=3),
+                 _defect(DefectCode.invalid_brep, fingerprint="face:b", kind="face", index=2))
+    candidate = planner.propose(elsewhere, RunHistory(), shape=None)
+    assert candidate is not None and candidate.defect_fingerprint == "face:c"
