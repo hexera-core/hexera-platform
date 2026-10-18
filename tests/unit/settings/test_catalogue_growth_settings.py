@@ -1,6 +1,7 @@
 import meshpipeline.settings.cad_repair as rcfg
 from meshpipeline.settings import inventory
 
+
 def test_the_new_geometry_flags_exist_and_default_off():
     assert rcfg.CAD_REPAIR_FILL_NONPLANAR_HOLES is False
     assert rcfg.CAD_REPAIR_HEAL_SELF_INTERSECTIONS is False
