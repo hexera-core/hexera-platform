@@ -73,7 +73,9 @@ for pair in "deployment-id:DEPLOYMENT_ID" \
             "minio-region:MINIO_REGION" \
             "minio-secure:MINIO_SECURE" \
             "gcp-mesh-bucket:GCP_MESH_BUCKET" \
-            "cloudrun-job:CLOUDRUN_JOB"; do
+            "cloudrun-job:CLOUDRUN_JOB" \
+            "cad-repair-enabled:CAD_REPAIR_ENABLED" \
+            "cad-repair-review-enabled:CAD_REPAIR_REVIEW_ENABLED"; do
   value="$(md "${pair%%:*}" || true)"
   if [ -n "${value}" ]; then
     echo "${pair##*:}=${value}" >> /etc/hexera/worker.env

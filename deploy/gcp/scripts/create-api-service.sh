@@ -232,6 +232,11 @@ fi
 if [ -n "${GCP_MESH_BUCKET:-}" ]; then
   API_ENV_PAIRS+=("GCP_MESH_BUCKET=${GCP_MESH_BUCKET}")
 fi
+# The CAD repair loop and its review, only when the workflow's cad_repair input stated them. --set-env-vars
+# is declarative, so an unticked deploy drops these from an API that had them: intended, the workflow decides.
+[ -z "${CAD_REPAIR_ENABLED:-}" ] || API_ENV_PAIRS+=("CAD_REPAIR_ENABLED=${CAD_REPAIR_ENABLED}")
+[ -z "${CAD_REPAIR_REVIEW_ENABLED:-}" ] \
+  || API_ENV_PAIRS+=("CAD_REPAIR_REVIEW_ENABLED=${CAD_REPAIR_REVIEW_ENABLED}")
 # The database this deployment migrated. POSTGRES_* and not DATABASE_URL: a DSN carries the
 # password, and DATABASE_URL is declared secret precisely because it does.
 if [ -n "${MIGRATE_DB_HOST:-}" ]; then

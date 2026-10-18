@@ -443,6 +443,11 @@ WORKER_METADATA=(
   "gcp-mesh-bucket=${GCP_MESH_BUCKET:-}"
   "cloudrun-job=${CLOUDRUN_MESH_JOB:-}"
 )
+# The CAD repair switches, only when the deploy stated them (the workflow's cad_repair input); absent
+# attributes leave the env object's shipped values in force.
+[ -z "${CAD_REPAIR_ENABLED:-}" ] || WORKER_METADATA+=("cad-repair-enabled=${CAD_REPAIR_ENABLED}")
+[ -z "${CAD_REPAIR_REVIEW_ENABLED:-}" ] \
+  || WORKER_METADATA+=("cad-repair-review-enabled=${CAD_REPAIR_REVIEW_ENABLED}")
 WORKER_METADATA+=(${WORKER_SECRET_METADATA[@]+"${WORKER_SECRET_METADATA[@]}"})
 
 # The metadata list is handed to gcloud with '|' as its delimiter. Neither of the obvious
