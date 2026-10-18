@@ -779,6 +779,38 @@ def read_whole_shape(facts: dict, skin: Path) -> None:
         facts["reading"] = {"read": False, "reason": f"the shape could not be read ({type(exc).__name__})"}
 
 
+def vet_openings(facts: dict, skin: Path) -> None:
+    """THE PROPOSAL HELD TO THE STAGING THE MESHER WILL USE (cad/fluid_passages.stranded_openings):
+    an opening the scout found that opens into no passage - a bolt hole through a flange, a slot
+    through a plate, a dimple closed into a pocket - would come back from the mesher as a patch
+    with no faces. It is proposed as not an opening, with the reason in the notes; the user can
+    still make it one. A proposal left without an inlet takes its largest remaining opening. Run
+    for every reading: a body in a flow keeps its openings for a flip to internal flow too. A CAD
+    file is staged on its B-rep, not on this skin, so only a triangle file is vetted this way."""
+    from meshpipeline.application.geometry_confirmation import body_of, patches_from
+    from meshpipeline.cad.fluid_passages import stranded_openings
+
+    ops = [o for o in facts.get("openings") or [] if o.get("role") in ("inlet", "outlet")]
+    if len(ops) < 2:
+        return
+    try:
+        patches = patches_from(body_of({"flow": "internal", "input_kind": facts.get("input_kind") or "",
+                                        "openings": [dict(o) for o in ops]}))
+    except Exception:  # noqa: BLE001 - openings the declaration cannot be made from are not vetted
+        return
+    stranded = stranded_openings(skin, patches)
+    if not stranded or len(stranded) >= len(ops) - 1:
+        return                   # at least two openings must stay: a vetting cannot empty a part
+    for o in ops:
+        if o.get("name") in stranded:
+            o["role"] = "not_an_opening"
+            facts.setdefault("notes", []).append(
+                f"opening {o.get('id')} ({o.get('name')}) is proposed as not an opening: {stranded[o['name']]}")
+    kept = [o for o in ops if o.get("role") != "not_an_opening"]
+    if kept and not any(o.get("role") == "inlet" for o in kept):
+        max(kept, key=lambda o: float(o.get("area_mm2") or 0.0))["role"] = "inlet"
+
+
 def skin_holes(skin: Path) -> list[dict]:
     """The holes of the skin the stage draws, by the one definition the triangle scout uses
     (cad/open_ends) - what "Add an opening" snaps to. A STEP file's openings are measured exactly
@@ -824,6 +856,7 @@ def _scout_triangles(local_path: Path, work: Path, interp_ref, ref,
     if not file_scale:
         # a thermal model's placed parts (file_scale) state their regions and openings themselves
         read_whole_shape(facts, skin)
+        vet_openings(facts, skin)
     return facts, skin
 
 

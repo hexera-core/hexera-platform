@@ -253,6 +253,11 @@ def scout_mesh(path: Path, *, scale_to_m: float) -> ScoutResult:
     # a tube network has as many openings as it has ends (a pulmonary tree has 30): every one is
     # proposed, up to MAX_LUMEN_ENDS; anything else past MAX_OPENINGS is a perforated face
     most = MAX_LUMEN_ENDS if lumen is not None and lumen[0] and flow == "internal" else MAX_OPENINGS
+    # ...and so is a set of open ends: every rim is a hole in the skin the fluid would leave by, and
+    # one left off the proposal is sealed shut without a word - a sixteen-tube bundle's 32 ends were
+    # cut to 16, and half its tubes were meshed with one end and no way through
+    if len(pool) > most and all(o.kind in ("ring", "rim") for o in pool[most:]):
+        most = max(most, min(len(pool), MAX_LUMEN_ENDS))
     if len(pool) > most:
         notes.append(f"{len(pool)} candidate openings found; only the {most} largest are proposed")
         pool = pool[:most]
