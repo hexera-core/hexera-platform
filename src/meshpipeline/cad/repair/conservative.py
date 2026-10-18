@@ -140,7 +140,11 @@ def _is_valid(shape) -> bool:
     return _valid(shape)
 
 
-def _write_step(shape, destination: Path) -> None:
+#: OpenCASCADE's `write.step.unit` name for each unit the pipeline resolves.
+_STEP_UNIT_NAMES = {"mm": "MM", "cm": "CM", "m": "M", "in": "INCH"}
+
+
+def _write_step(shape, destination: Path, *, unit=None) -> None:
     """Write the repaired shape, DECLARING the unit its coordinates are actually in.
 
     `write.step.unit` is a PROCESS-GLOBAL OpenCASCADE static. Left unset, the writer uses whatever
@@ -155,16 +159,28 @@ def _write_step(shape, destination: Path) -> None:
     original's interpretation across. The writer is constructed BEFORE the unit is set, because
     `write.step.unit` is registered by the STEP controller's initialisation and setting it first
     silently does nothing.
+
+    IN THE UPLOAD'S OWN UNIT (`unit`, the unit the parser applied to the upload), not always
+    millimetres. Staging reads a file's coordinates RELATIVE TO THE UNIT IT DECLARES
+    (contracts/coordinate_state.to_metres), and promotion carries the upload's interpretation onto
+    these bytes. A millimetre file under an inch upload's interpretation was staged 25.4 times too
+    large. The writer converts from the session's millimetres into the declared unit, so the
+    repaired file reads back exactly as the upload does - including under an approved override.
     """
     from OCP.IFSelect import IFSelect_RetDone
     from OCP.Interface import Interface_Static
     from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
 
-    writer = STEPControl_Writer()
-    if not Interface_Static.SetCVal_s("write.step.unit", "MM"):
+    name = _STEP_UNIT_NAMES.get(str(getattr(unit, "value", unit) or "mm"))
+    if name is None:
         raise RepairRefused(
-            "OpenCASCADE refused write.step.unit=MM, so the repaired file's declared unit cannot "
-            "be guaranteed - refusing rather than writing a file that may be mis-scaled")
+            f"the upload's unit {unit!r} has no STEP name here, so the repaired file could not "
+            "declare it - refusing rather than writing a file that may be mis-scaled")
+    writer = STEPControl_Writer()
+    if not Interface_Static.SetCVal_s("write.step.unit", name):
+        raise RepairRefused(
+            f"OpenCASCADE refused write.step.unit={name}, so the repaired file's declared unit "
+            "cannot be guaranteed - refusing rather than writing a file that may be mis-scaled")
     writer.Transfer(shape, STEPControl_AsIs)
     if writer.Write(str(destination)) != IFSelect_RetDone:
         raise RepairRefused(f"the repaired shape could not be written to {destination.name}")
@@ -501,7 +517,9 @@ def repair_step_file(source: Path, destination: Path, *,
             "re-exporting the upload would change its topology without repairing it",
             measurements=measurements)
 
-    _write_step(result.shape, dest)
+    from meshpipeline.cad.unit_evidence import parser_applied_unit
+
+    _write_step(result.shape, dest, unit=parser_applied_unit(src))
 
     defects: tuple[RepairDefect, ...] = ()
     if not final.valid:

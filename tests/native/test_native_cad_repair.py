@@ -627,3 +627,27 @@ def test_a_run_that_kept_nothing_is_refused_rather_than_delivered(tmp_path):
     # REFUSED MEANS NOTHING WAS DELIVERED. The node leaves the run on the original upload, which
     # is the same outcome as not having tried.
     assert not out.exists()
+
+
+@pytest.mark.parametrize("unit, expected", [("INCH", "in"), ("M", "m"), ("MM", "mm")])
+def test_a_repaired_file_declares_the_uploads_unit_so_the_carried_interpretation_still_holds(
+        tmp_path, unit, expected):
+    """Promotion carries the upload's interpretation onto the repaired bytes, and staging reads it
+    RELATIVE TO THE UNIT THE FILE DECLARES (coordinate_state.to_metres). A repaired file declaring
+    millimetres under an inch upload's interpretation was staged 25.4 times too large; a metre one,
+    1000 times. So the repaired file declares the unit the upload declared, and the part reads back
+    the same physical size."""
+    from tests.cad_fixtures import write_loose_faces_step
+
+    from meshpipeline.cad.repair.brep import _read_shape
+    from meshpipeline.cad.repair.localize import _diagonal
+    from meshpipeline.cad.unit_evidence import parser_applied_unit
+
+    source = write_loose_faces_step(tmp_path / "part.step", unit)
+    repaired = tmp_path / "part-repaired.step"
+    repair_step_file(source, repaired)
+
+    assert parser_applied_unit(source).value == expected
+    assert parser_applied_unit(repaired) == parser_applied_unit(source)
+    before, after = _diagonal(_read_shape(source)), _diagonal(_read_shape(repaired))
+    assert abs(after - before) / before < 1e-6, (before, after)
