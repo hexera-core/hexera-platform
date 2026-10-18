@@ -980,6 +980,7 @@ async def _run_async(req: JobRequest) -> dict:
         # Artifacts are delivered ONLY on a genuine success (verdict PASS with a real
         # visual review). DELIVER FIRST - a delivery failure downgrades the job to a
         # system failure, recorded by the single status commit below.
+        _delivery = None   # the artifact delivery's outcome, when there was one to make
         if final_status == JobStatus.succeeded:
             # Deliver FIRST, commit status ONCE afterwards: a client must never see `succeeded`
             # before the mesh is fetchable. A run whose mesh cannot reach the user did not succeed,
@@ -1048,8 +1049,10 @@ async def _run_async(req: JobRequest) -> dict:
         # asked ONCE, here: the plan's system-failure exclusion and the status's timeout account
         # must read the same answer
         _timed_out = _pb.is_exhausted(_pipeline_deadline)
-        _review_plan = _rrp.plan_review(final_state, status=final_status,
-                                        system_failure=bool(api_failure) or _timed_out)
+        _review_plan = _rrp.plan_review(
+            final_state, status=final_status,
+            system_failure=_rrp.is_system_failure(api_failure=bool(api_failure),
+                                                  timed_out=_timed_out, delivery=_delivery))
         # a park never re-asks what the engineer already answered "leave it": with nothing new
         # to ask, the re-run ends as an ordinary failure that says what was left
         _review_plan, _review_left = await _rrp.settle_left(_review_plan, AsyncSessionLocal,

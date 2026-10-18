@@ -48,6 +48,17 @@ def source_sha256(state: dict) -> str:
     return str(((state.get("geometry") or {}).get("ref") or {}).get("sha256") or "")
 
 
+def is_system_failure(*, api_failure: bool, timed_out: bool, delivery=None) -> bool:
+    """Whether a run's ending is OUR failure, which never parks for a person's geometry review.
+
+    A model API outage, the pipeline deadline, and an artifact delivery that did not succeed: the
+    last turns a built mesh into a failed run (final_result.apply_delivery), and parking that would
+    ask a customer to change geometry when storage was the problem.
+    """
+    delivered_badly = delivery is not None and not bool(getattr(delivery, "succeeded", True))
+    return bool(api_failure) or bool(timed_out) or delivered_badly
+
+
 def plan_review(state: dict, *, status: JobStatus,
                 system_failure: bool = False) -> ReviewPlan | None:
     """None when review is off or the run left nothing for a person.

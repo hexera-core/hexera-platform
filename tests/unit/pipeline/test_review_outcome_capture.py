@@ -322,3 +322,23 @@ def test_the_planner_stamps_directive_id_and_confidence_onto_the_candidate_and_v
                         directive_id="llm:2", planner_confidence=0.7, source="llm-planner")
     assert verdict.to_dict()["directive_id"] == "llm:2"
     assert verdict.to_dict()["planner_confidence"] == 0.7
+
+
+def test_a_run_whose_artifacts_could_not_be_delivered_never_parks_for_geometry_review():
+    """apply_delivery turns a built mesh into a failed run when storage refuses it. That is our
+    failure: parking it would ask the customer to change geometry when storage was the problem."""
+    from types import SimpleNamespace
+
+    from meshpipeline.application.repair_review_park import is_system_failure, plan_review
+    from meshpipeline.persistence.models import JobStatus
+
+    failed_delivery = SimpleNamespace(succeeded=False)
+    assert is_system_failure(api_failure=False, timed_out=False, delivery=failed_delivery)
+    assert not is_system_failure(api_failure=False, timed_out=False,
+                                 delivery=SimpleNamespace(succeeded=True))
+    assert not is_system_failure(api_failure=False, timed_out=False, delivery=None)
+    assert is_system_failure(api_failure=True, timed_out=False)
+    assert is_system_failure(api_failure=False, timed_out=True)
+    state = {"repair_review_candidates": [{"fingerprint": "f", "defect_code": "small_face"}]}
+    assert plan_review(state, status=JobStatus.failed, system_failure=is_system_failure(
+        api_failure=False, timed_out=False, delivery=failed_delivery)) is None
