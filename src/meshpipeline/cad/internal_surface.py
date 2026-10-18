@@ -332,7 +332,10 @@ def write_staged(staged: StagedInternal, out_dir: Path) -> dict:
                # the staged lid is what the flow crosses (a ring's lid is the gap round the
                # centre body): the port-area gate holds the delivered patch to it
                # (engines/region_check.flow_area_m2)
-               "flow_area": round(float(o.area), 10)}
+               "flow_area": round(float(o.area), 10),
+               # matched to THIS declared port, by its location and size, here: the binder binds
+               # the port to it by name instead of re-picking the nearest (port_binding rule 2)
+               "declared": True}
         if o.inner is not None:
             # a ring: what its inner edge encloses, in the shape the CAD path reports a ring port
             # face's inner wire - so the binder holds a declaration against the ring, the centre

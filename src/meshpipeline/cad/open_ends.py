@@ -137,7 +137,7 @@ class Hole:
             out["outer_m"] = [r6(p) for p in _thin(self.outer)]
         if self.annular:
             out["inner_diameter_mm"] = round(2.0 * math.sqrt(self.filled / math.pi) * mm_per_unit, 2)
-            out["flow_area_mm2"] = round((self.area - self.filled) * mm_per_unit * mm_per_unit, 2)
+        out.update(measured_flow_area(self.area, self.filled, self.shape, mm_per_unit))
         return out
 
 
@@ -852,6 +852,23 @@ def _solidity(P: np.ndarray, c: np.ndarray, n: np.ndarray, area: float) -> float
     except (QhullError, ValueError):
         return 1.0
     return min(area / hull, 1.0) if hull > 0 else 1.0
+
+
+def measured_flow_area(area: float, filled: float, shape: str, mm_per_unit: float = 1000.0) -> dict:
+    """THE AREA THE FLOW CROSSES, as this finder measured it, for every opening whose shape and
+    sides do not state it: a ring round a centre body (`area - filled`) and any mouth that is no
+    circle. A circle's equal-area diameter states its area exactly; a rectangle's sides nearly; an
+    oblique pipe cut, an ellipse or a slot has width x height of its BOX, which is not the opening
+    (an aorta's root measured 922 mm2 and was declared as its 1,290 mm2 box). The declaration then
+    carries this one measurement (geometry_confirmation.patches_from -> area_mm2), so the scout,
+    the staging and the port binding all judge the opening by the same number. Rounded to six
+    significant figures: a 0.2 mm vessel's 0.03 mm2 survives where two decimals would not."""
+    out: dict = {}
+    if 0.0 < filled < area:
+        out["flow_area_mm2"] = float(f"{(area - filled) * mm_per_unit * mm_per_unit:.6g}")
+    elif shape != "circle" and area > 0.0:
+        out["flow_area_mm2"] = float(f"{area * mm_per_unit * mm_per_unit:.6g}")
+    return out
 
 
 def _shape(wh: tuple[float, float], area: float) -> str:
