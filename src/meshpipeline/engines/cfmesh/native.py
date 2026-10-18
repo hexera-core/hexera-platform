@@ -65,6 +65,33 @@ def untangle_stall(log_tail: str) -> list[str]:
             + (f", {wrong[-1]:,} of them pointing the wrong way" if wrong else "")]
 
 
+#: What the run keeps back from its cap for the steps after the mesher (passage measure, layer
+#: census, foamToVTK), beyond twice the first checkMesh's time: a rescue never eats into them.
+POST_MESH_RESERVE_S = 120.0
+
+
+def _rescued(ws: Path, q: dict, *, bashrc: str, timing: dict, t0: float, timeout: int,
+             is_2d: bool) -> dict:
+    """The quality record after a near-edge rescue (engines/cfmesh/rescue.py) - `q` unchanged
+    when the mesh is not near its validity edge. The rescue runs inside the run's own cap, less
+    what the steps after it need, so the run still returns inside the time it was given."""
+    from meshpipeline.engines.cfmesh.rescue import near_edge, rescue
+    if not near_edge(q):
+        return q
+    t = time.monotonic()
+    deadline = t0 + float(timeout) - (2.0 * float(timing.get("checkMesh_s") or 0.0)
+                                      + POST_MESH_RESERVE_S)
+    mesher_s = float(timing.get(f"{CARTESIAN_2D_MESH if is_2d else CARTESIAN_MESH}_s") or 0.0)
+    try:
+        out = rescue(ws, q, bashrc=bashrc, deadline=deadline, mesher_seconds=mesher_s,
+                     is_2d=is_2d)
+    except Exception:  # noqa: BLE001 - a second chance must never lose the first mesh
+        logger.warning("cfMesh rescue errored; the mesh as built stands", exc_info=True)
+        return q
+    timing["rescue_s"] = round(time.monotonic() - t, 1)
+    return out
+
+
 def run_cartesian_mesh(workspace, *, context=None, bashrc: str = _DEFAULT_BASHRC,
                        timeout: int = 1800) -> dict:
     reason = scan_case_dicts(workspace)
@@ -125,6 +152,8 @@ def _run_cartesian_mesh_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
             q = check_mesh(ws, bashrc=bashrc)
             timing["checkMesh_s"] = round(time.monotonic() - t1, 1)
             if q:
+                q = _rescued(ws, q, bashrc=bashrc, timing=timing, t0=t0, timeout=timeout,
+                             is_2d=is_2d)
                 # the passage measure beside the mesh too: cells across the local passage at
                 # every boundary point (flow_gates.resolution_floor holds 12 at the narrowest).
                 # It reads the boundary files only and gives up past its own budget.

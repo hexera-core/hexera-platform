@@ -538,6 +538,14 @@ def _run_and_judge(ctx: BuilderToolContext, prepared: PreparedMeshRun) -> dict:
     else:
         out["guidance"] = (_policy.ok_guidance if ok else
                            f"Not valid ({fatal or _policy.fail_label}). {_policy.fail_hint}")
+    _rescue = q.get("rescue") if isinstance(q.get("rescue"), dict) else None
+    if _rescue and _rescue.get("note"):
+        # the mesh came out at its validity edge and the engine's own levers were tried beside it
+        # (engines/cfmesh/rescue.py): the user hears what was done, in its words
+        out["rescue_note"] = str(_rescue["note"])
+        if ok:
+            out["guidance"] = (f"{out.get('guidance') or ''} Tell the user, in these words: "
+                               f"{_rescue['note']}").strip()
     if not ok and fatal and ctx.broken_mesh_moves_to:
         # A BROKEN MESH MOVES THE RUN ON (pipeline/engine_fallback.py): this engine's mesh of this
         # shape has fatal defects, and the run will move to the next engine, which delivers the

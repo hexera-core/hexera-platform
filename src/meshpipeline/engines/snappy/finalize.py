@@ -342,7 +342,9 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
     # metric just measures the deviation. Engines that do not body-fit a reference simply
     # don't define the hook, so there is NO engine-name list here (capability by declaration).
     _ref_fn = getattr(R, "surface_capture_reference", None)
-    if callable(_ref_fn) and volume_path:
+    # the boundary .vtp is what is measured, not the volume: a volume export left behind for size
+    # (engines/return_scope.py) must not cost the wall its capture figure
+    if callable(_ref_fn):
         try:
             from meshpipeline.cad.surface_checks import surface_deviation
             _pair = _ref_fn(ws, patch_types)

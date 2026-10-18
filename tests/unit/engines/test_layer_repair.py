@@ -319,6 +319,31 @@ def test_a_spot_inside_the_repaired_area_is_no_layer_fold(tmp_path):
     assert LP.read_repair(ws)["stage"] == 2
 
 
+def test_a_fold_the_layers_did_not_cause_is_said_so_and_makes_the_next_plan_coarser(tmp_path):
+    # the enodise splitter plate: after its one local repair the same plan came back with the same
+    # face pointing the wrong way, four passes running, 25-40 minutes each (verify-5fix). The fold
+    # is reported as not the layers', the plan is recorded as one this shape cannot take, and the
+    # pass after it - this attempt's or the next attempt's - gets half the budget
+    ws = tmp_path / "attempt_1"
+    ws.mkdir()
+    surface = _staged(tmp_path)
+    flag: list = []
+    assert D._repair_after_fold(ws, FATAL, production=False, repairable=True, surface=surface,
+                                rec=REC, strategy=STRATEGY, job_id="j", not_layers=flag)
+    assert flag == [], "a first fold is the layers' to repair"
+    again = {"fatal": ["incorrectly oriented faces"], "fatal_points": [[0.505, 0.5, 0.002]]}
+    assert D._repair_after_fold(ws, again, production=False, repairable=True, surface=surface,
+                                rec=REC, strategy=STRATEGY, job_id="j", not_layers=flag) is None
+    assert flag == [True]
+    D._write_timed_out_plan(ws, {**STRATEGY, "_why": "broken"})
+    nxt = tmp_path / "attempt_2"
+    nxt.mkdir()
+    recorded = D._sibling_timed_out_plan(nxt)
+    assert recorded and recorded["max_cells"] == 2_000_000
+    plan, cuts = D._coarsen_after_timeout(recorded, dict(STRATEGY), internal=False)
+    assert plan["max_cells"] == 1_000_000 and cuts
+
+
 @pytest.mark.parametrize("q, production, repairable", [
     (FATAL, True, True),                                           # a production-grade pass
     (FATAL, False, False),                                         # the user's own parts
