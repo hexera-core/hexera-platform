@@ -450,6 +450,10 @@ WORKER_METADATA=(
   || WORKER_METADATA+=("cad-repair-review-enabled=${CAD_REPAIR_REVIEW_ENABLED}")
 [ -z "${CAD_REPAIR_FILL_PLANAR_HOLES:-}" ] \
   || WORKER_METADATA+=("cad-repair-fill-planar-holes=${CAD_REPAIR_FILL_PLANAR_HOLES}")
+[ -z "${CAD_REPAIR_FILL_NONPLANAR_HOLES:-}" ] \
+  || WORKER_METADATA+=("cad-repair-fill-nonplanar-holes=${CAD_REPAIR_FILL_NONPLANAR_HOLES}")
+[ -z "${CAD_REPAIR_HEAL_SELF_INTERSECTIONS:-}" ] \
+  || WORKER_METADATA+=("cad-repair-heal-self-intersections=${CAD_REPAIR_HEAL_SELF_INTERSECTIONS}")
 [ -z "${CAD_REPAIR_LLM_PLANNER:-}" ] \
   || WORKER_METADATA+=("cad-repair-llm-planner=${CAD_REPAIR_LLM_PLANNER}")
 WORKER_METADATA+=(${WORKER_SECRET_METADATA[@]+"${WORKER_SECRET_METADATA[@]}"})

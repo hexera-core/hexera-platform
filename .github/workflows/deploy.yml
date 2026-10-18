@@ -114,15 +114,16 @@ on:
         default: false
         type: boolean
       # THE REPAIR LOOP IS A SETTING, AND THIS IS WHERE IT IS CHOSEN. Ticking it exports
-      # CAD_REPAIR_ENABLED, CAD_REPAIR_REVIEW_ENABLED and CAD_REPAIR_FILL_PLANAR_HOLES for the run:
+      # CAD_REPAIR_ENABLED, CAD_REPAIR_REVIEW_ENABLED, CAD_REPAIR_FILL_PLANAR_HOLES,
+      # CAD_REPAIR_FILL_NONPLANAR_HOLES and CAD_REPAIR_HEAL_SELF_INTERSECTIONS for the run:
       # the API service gets them as environment, and the worker fleet gets them as template
       # metadata that its startup script appends to the worker env. Unticked exports NOTHING, so the
-      # scripts leave all three settings at their shipped defaults. It is declarative, like every other API setting: redeploying the app
+      # scripts leave all five settings at their shipped defaults. It is declarative, like every other API setting: redeploying the app
       # unticked drops the flags from an environment that had them, which is the point - the
       # workflow, not a hand-edit in the cloud, decides. The fleet only picks the change up when
       # `fleet` is ticked too, because an instance template is immutable.
       cad_repair:
-        description: "cad_repair - enable the conservative CAD repair loop, its planar hole filling AND the repair review on the targeted environment (unticked leaves all three at their shipped defaults)"
+        description: "cad_repair - enable the conservative CAD repair loop, its planar and non-planar hole filling, the self-intersection heal AND the repair review on the targeted environment (unticked leaves all five at their shipped defaults)"
         required: false
         default: false
         type: boolean
@@ -1405,6 +1406,9 @@ jobs:
       # guard (both ends of a missing passage, any cross-section, refuse filling for the run); the
       # session caps only bound the size and volume drift of a fill that is kept.
       CAD_REPAIR_FILL_PLANAR_HOLES: ${{ inputs.cad_repair && 'true' || '' }}
+      # The other two geometry-adding flags ride the same tick: the non-planar fill and the heal.
+      CAD_REPAIR_FILL_NONPLANAR_HOLES: ${{ inputs.cad_repair && 'true' || '' }}
+      CAD_REPAIR_HEAL_SELF_INTERSECTIONS: ${{ inputs.cad_repair && 'true' || '' }}
       # The planner posture, stated only when it is not "off"; empty means "not stated".
       CAD_REPAIR_LLM_PLANNER: ${{ inputs.llm_planner != 'off' && inputs.llm_planner || '' }}
     steps:

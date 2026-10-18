@@ -77,6 +77,8 @@ for pair in "deployment-id:DEPLOYMENT_ID" \
             "cad-repair-enabled:CAD_REPAIR_ENABLED" \
             "cad-repair-review-enabled:CAD_REPAIR_REVIEW_ENABLED" \
             "cad-repair-fill-planar-holes:CAD_REPAIR_FILL_PLANAR_HOLES" \
+            "cad-repair-fill-nonplanar-holes:CAD_REPAIR_FILL_NONPLANAR_HOLES" \
+            "cad-repair-heal-self-intersections:CAD_REPAIR_HEAL_SELF_INTERSECTIONS" \
             "cad-repair-llm-planner:CAD_REPAIR_LLM_PLANNER"; do
   value="$(md "${pair%%:*}" || true)"
   if [ -n "${value}" ]; then

@@ -8,6 +8,7 @@ from pathlib import Path
 
 API = Path(__file__).parents[3] / "deploy" / "gcp" / "scripts" / "create-api-service.sh"
 FLAGS = ("CAD_REPAIR_ENABLED", "CAD_REPAIR_REVIEW_ENABLED", "CAD_REPAIR_FILL_PLANAR_HOLES",
+         "CAD_REPAIR_FILL_NONPLANAR_HOLES", "CAD_REPAIR_HEAL_SELF_INTERSECTIONS",
          "CAD_REPAIR_LLM_PLANNER")
 
 
@@ -36,6 +37,8 @@ def test_an_unticked_redeploy_may_drop_the_repair_flags_a_ticked_one_left():
 def test_a_ticked_deploy_still_declares_them_and_unrelated_drift_is_still_refused():
     ticked = {"CAD_REPAIR_ENABLED": "true", "CAD_REPAIR_REVIEW_ENABLED": "true",
               "CAD_REPAIR_FILL_PLANAR_HOLES": "true",
+              "CAD_REPAIR_FILL_NONPLANAR_HOLES": "true",
+              "CAD_REPAIR_HEAL_SELF_INTERSECTIONS": "true",
               "CAD_REPAIR_LLM_PLANNER": "shadow"}
     # declared by API_ENV_PAIRS in the real script; here nothing declares them, so they show up
     assert _undeclared(ticked, list(FLAGS)) == list(FLAGS)
