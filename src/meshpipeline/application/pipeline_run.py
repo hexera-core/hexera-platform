@@ -945,6 +945,7 @@ async def _run_async(req: JobRequest) -> dict:
                         AsyncSessionLocal, job_id=job_id,
                         report=dict(final_state.get("repair_report") or {}),
                         repair_status=str(final_state.get("repair_status", "") or ""),
+                        repair_attempt=dict(final_state.get("repair_attempt") or {}),
                         owner_id=owner_id,
                         delivery_attempt=int(final_state.get("retry_count", 0) or 0),
                         execution_generation=_generation,

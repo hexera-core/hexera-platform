@@ -315,3 +315,19 @@ def test_a_repaired_file_that_cannot_be_hashed_does_not_end_the_run(store, deliv
     assert asyncio.run(deliver_repaired_cad(
         _session_factory({}), job_id=str(uuid.uuid4()), local_path=repaired)) == ""
     assert not delivered
+
+
+def test_the_delivered_report_carries_what_the_repair_did_beside_the_inspection(store, delivered):
+    """The downloadable report held only the upload's inspection: the operations, refusals, stop
+    reason and remaining defects lived in `repair_attempt` and never reached the customer, who got
+    repaired CAD with nothing durable explaining it. The inspection itself is unchanged."""
+    attempt = {"attempted": True, "stopped_because": "resolved", "resolved": True,
+               "operations": [{"name": "sew_faces", "status": "kept"}],
+               "refusals": [{"defect": "edge:r", "reason": "paired_rim"}],
+               "defects_remaining": [{"code": "small_face"}]}
+    asyncio.run(deliver_repair_report(_session_factory({}), job_id=str(uuid.uuid4()),
+                                      report=_REPORT, repair_status="repairable",
+                                      repair_attempt=attempt))
+    stored = json.loads(store.get_bytes(object_key=delivered["storage_key"]))
+    assert stored["report"] == _REPORT
+    assert stored["repair_attempt"] == attempt

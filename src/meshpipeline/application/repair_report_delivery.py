@@ -25,6 +25,7 @@ REPAIR_REPORT_LOGICAL_KEY = "repair_report"
 
 async def deliver_repair_report(session_factory, *, job_id: str, report: dict,
                                 repair_status: str = "",
+                                repair_attempt: dict | None = None,
                                 owner_id: str = "",
                                 delivery_attempt: int = 0,
                                 execution_generation: int = 0,
@@ -53,7 +54,12 @@ async def deliver_repair_report(session_factory, *, job_id: str, report: dict,
     from meshpipeline.persistence.models import ArtifactType
     from meshpipeline.persistence.repositories.artifact_repository import ArtifactRepository
 
-    payload = {"repair_status": str(repair_status or ""), "report": report}
+    payload: dict = {"repair_status": str(repair_status or ""), "report": report}
+    # WHAT THE REPAIR DID, beside the inspection of what arrived: its operations, refusals, why it
+    # stopped and what it left. A customer handed repaired CAD gets the explanation with it, and
+    # the inspection above stays the upload's own, unchanged.
+    if repair_attempt:
+        payload["repair_attempt"] = dict(repair_attempt)
     body = json.dumps(payload, sort_keys=True, default=str)
     # CONTENT-ADDRESSED. Two writers can race for one job - a retry, or a worker whose lease was
     # taken over - and a shared key let the loser overwrite bytes a COMMITTED row already pointed
