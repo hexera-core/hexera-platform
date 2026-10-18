@@ -52,8 +52,12 @@ NEAR_EDGE_NON_ORTHO = 75.0
 #: figure moves by a few hundredths between two reads of the same mesh).
 MIN_GAIN_DEG = 0.5
 #: The biggest mesh a rescue is tried on: each candidate is a whole extra polyMesh on the run's
-#: disk (in memory on Cloud Run) beside the one kept.
-RESCUE_MAX_CELLS = 4_000_000
+#: disk - in memory on Cloud Run (16-32 GiB jobs), about 1.2 GB raw for 6.7 M cells - beside the
+#: one kept. The mitral ventricle base came out invalid at 5.2 M cells once 5 layers were asked.
+RESCUE_MAX_CELLS = 6_000_000
+#: ...and the biggest one re-meshed: a second cartesianMesh holds its own working set on top.
+#: Between the two, only the optimiser is tried.
+REMESH_MAX_CELLS = 4_000_000
 #: A re-mesh is started only when the time left holds this many times the first run's mesher time.
 REMESH_HEADROOM = 1.3
 #: improveMeshQuality's passes: cfMesh's defaults are 50 loops of 50 iterations and 2 surface
@@ -247,7 +251,11 @@ def rescue(workspace, q: dict, *, bashrc: str, deadline: float, mesher_seconds: 
         # 2. a protective re-mesh, when the best is still near the edge and the time holds a run
         protective = protective_meshdict(asked_dict) if asked_dict else None
         if near_edge(best_q) and protective is not None:
-            if _left() < REMESH_HEADROOM * max(mesher_seconds, 30.0):
+            if cells > REMESH_MAX_CELLS:
+                record["tried"].append({"step": REMESHED, "skipped": (
+                    f"{int(cells):,} cells is over the {REMESH_MAX_CELLS:,} a second run may "
+                    "hold beside the first")})
+            elif _left() < REMESH_HEADROOM * max(mesher_seconds, 30.0):
                 record["tried"].append({"step": "re-meshed protecting the layers",
                                         "skipped": "no time left in the run cap for another run"})
             else:
@@ -358,5 +366,5 @@ def _num(v) -> float | None:
 
 
 __all__ = ["MIN_GAIN_DEG", "NEAR_EDGE_NON_ORTHO", "PROTECTIVE_LAYER_OPTIMISATION",
-           "RESCUE_FILE", "RESCUE_MAX_CELLS", "better", "near_edge", "note",
+           "REMESH_MAX_CELLS", "RESCUE_FILE", "RESCUE_MAX_CELLS", "better", "near_edge", "note",
            "protective_meshdict", "rank", "rescue"]

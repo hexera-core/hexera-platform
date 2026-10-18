@@ -196,6 +196,18 @@ def test_a_case_that_cannot_be_read_back_is_not_touched(tmp_path):
     assert not (ws / RS.SCRATCH).exists()
 
 
+def test_a_mesh_too_big_for_a_second_run_gets_the_optimiser_only(tmp_path):
+    # the mitral ventricle base: 5.2 M cells, invalid at 5 layers
+    ws = _ws(tmp_path)
+    calls: list = []
+    big = {**_BROKEN, "cells": 5_200_000}
+    table = {"optimised(as built)": {"cells": 5_200_000, "max_non_ortho": 80.0, "fatal": []}}
+    out = _rescue(ws, big, table, calls)
+    assert [c["cmd"].split("&& ")[-1].split()[0] for c in calls] == ["improveMeshQuality"]
+    assert out["rescue"]["kept"] == "optimised" and out["fatal"] == []
+    assert any("second run" in str(s.get("skipped")) for s in out["rescue"]["tried"])
+
+
 def test_a_mesh_too_big_to_copy_is_not_rescued(tmp_path):
     ws = _ws(tmp_path)
     calls: list = []
