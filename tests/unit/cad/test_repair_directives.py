@@ -224,3 +224,22 @@ def test_an_engineer_fill_on_both_rims_of_a_pair_is_refused_by_the_rim_guard(mon
     single = DirectedPlanner([_fill_on(["rim:a"])], _Nothing())
     candidate = single.propose(rims, RunHistory(), shape="shape")
     assert candidate is not None and [t.fingerprint for t in candidate.targets] == ["rim:a"]
+
+
+def test_only_an_engineers_directive_may_aim_at_a_defect_held_for_review():
+    """A reserved code is the engineer's question: a model's (or a replay's) directive aimed at it
+    is recorded as unplayable, while the engineer's own answer on it is played."""
+    from meshpipeline.cad.repair.plan import RunHistory
+
+    directed = _Op("directed_op")
+    reserved = frozenset({DefectCode.small_edge})
+    model = _directive(source="llm-planner", item_id="")
+    engineer = _directive(source="engineer", item_id="i1")
+    planner = DirectedPlanner([model, engineer], _Fallback(directed), ops=(directed,),
+                              reserved=reserved)
+
+    candidate = planner.propose((_defect(),), RunHistory(), shape=None)
+
+    assert candidate is not None and candidate.item_id == "i1"
+    assert [(u["directive"]["source"], u["reason"]) for u in planner.unplayable] == [
+        ("llm-planner", "reserved_for_review")]

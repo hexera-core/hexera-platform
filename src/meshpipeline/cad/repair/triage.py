@@ -72,6 +72,12 @@ _CUSTOMER_MUST_ACT: frozenset[str] = frozenset({
 })
 
 
+#: With per-defect review on, the codes `split` hands a PERSON: no automatic proposal - the rules
+#: planner's or a model's - may aim at one before the engineer answers (cad/repair/plan.py).
+REVIEW_RESERVED_CODES: frozenset[DefectCode] = frozenset(
+    DefectCode(c) for c in _NEEDS_JUDGEMENT | _CUSTOMER_MUST_ACT)
+
+
 #: Why a defect is a person's call, in the voice the review screen speaks. Keyed by defect code.
 _JUDGEMENT_REASONS: dict[str, str] = {
     DefectCode.small_face.value: ("a very small face is usually intentional - a chamfer, a logo - "

@@ -437,12 +437,17 @@ def repair_step_file(source: Path, destination: Path, *,
     tolerance = min(rcfg.CAD_REPAIR_MAX_TOLERANCE_MM,
                     max(original.diagonal_mm, 1.0) * rcfg.CAD_REPAIR_MAX_DEVIATION_RATIO)
 
-    planner = None
+    from meshpipeline.cad.repair.plan import RulesPlanner
+    from meshpipeline.cad.repair.triage import REVIEW_RESERVED_CODES
+
+    # PER-DEFECT REVIEW HOLDS THE JUDGEMENT DEFECTS for a person: nothing automatic aims at them
+    # until an engineer's directive does.
+    reserved = REVIEW_RESERVED_CODES if rcfg.CAD_REPAIR_REVIEW_ENABLED else frozenset()
+    planner: object = RulesPlanner(reserved=reserved)
     if directives:
         from meshpipeline.cad.repair.directives import DirectedPlanner
-        from meshpipeline.cad.repair.plan import RulesPlanner
 
-        planner = DirectedPlanner(directives, RulesPlanner())
+        planner = DirectedPlanner(directives, RulesPlanner(reserved=reserved), reserved=reserved)
     result = run_loop(before_shape, planner=planner, tolerance_mm=tolerance)
     final = measure(result.shape)
 

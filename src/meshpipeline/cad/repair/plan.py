@@ -170,8 +170,12 @@ class RulesPlanner:
 
     label = "rules-v1"
 
-    def __init__(self, ops: tuple[RepairOp, ...] = OPERATIONS) -> None:
+    def __init__(self, ops: tuple[RepairOp, ...] = OPERATIONS, *,
+                 reserved: frozenset[DefectCode] = frozenset()) -> None:
         self._ops = tuple(sorted(ops, key=lambda op: op.scope))
+        #: Codes a PERSON decides (per-defect review: cad/repair/triage.REVIEW_RESERVED_CODES).
+        #: Never proposed here, whatever claims them - only an engineer's directive aims at one.
+        self._reserved = frozenset(reserved)
 
     def propose(self, defects, history: RunHistory, *, shape) -> Candidate | None:
         rims = paired_rim_fingerprints(shape, defects) if shape is not None else frozenset()
@@ -200,6 +204,10 @@ class RulesPlanner:
                            d.code.value))
 
         for defect in ordered:
+            if defect.code in self._reserved:
+                # HELD FOR THE ENGINEER. The whole-shape fixer claims invalid_brep, so proposing
+                # it would change what the review is asking a person about before they answered.
+                continue
             if not defect.fingerprint:
                 # FOUND AND NOT AIMABLE. The case a model most needs to see: an unlocated defect
                 # cannot be verified against, so nothing may be tried on it.

@@ -17,6 +17,8 @@ TARGET_ABSENT = "target_absent"
 UNKNOWN_OP = "unknown_op"
 MALFORMED = "malformed"
 FILL_REFUSED = "fill_refused"
+#: An automatic (LLM or replayed) directive aimed at a defect held for the engineer's review.
+RESERVED_FOR_REVIEW = "reserved_for_review"
 
 
 class DirectedPlanner:
@@ -24,9 +26,12 @@ class DirectedPlanner:
 
     label = "directed-v1"
 
-    def __init__(self, directives, fallback=None, ops=OPERATIONS) -> None:
+    def __init__(self, directives, fallback=None, ops=OPERATIONS, *,
+                 reserved: frozenset[DefectCode] = frozenset()) -> None:
         self._pending = [dict(d) for d in directives]
-        self._fallback = fallback if fallback is not None else RulesPlanner()
+        self._fallback = fallback if fallback is not None else RulesPlanner(reserved=reserved)
+        #: Codes only an ENGINEER's directive may aim at (see RulesPlanner).
+        self._reserved = frozenset(reserved)
         self._ops = {op.name: op for op in ops}
         #: Directive + reason for every directive that was skipped. Nothing is dropped silently.
         self.unplayable: list[dict] = []
@@ -56,6 +61,10 @@ class DirectedPlanner:
             code = DefectCode(directive.get("defect_code"))
         except ValueError:
             self._skip(directive, MALFORMED)
+            return None
+        if code in self._reserved and directive.get("source") != "engineer":
+            # A person has not answered this one yet; a model's guess is not that answer.
+            self._skip(directive, RESERVED_FOR_REVIEW)
             return None
 
         by_fingerprint = {d.fingerprint: d for d in defects if d.fingerprint}

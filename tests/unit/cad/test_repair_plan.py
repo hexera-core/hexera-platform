@@ -333,3 +333,28 @@ def test_exactly_one_catalogued_operation_carries_the_fill_name():
     from meshpipeline.cad.repair.operations import OPERATIONS, FillPlanarHole
 
     assert [op.name for op in OPERATIONS].count(FillPlanarHole.name) == 1
+
+
+# A DEFECT RESERVED FOR A PERSON
+
+
+def test_a_reserved_code_is_never_proposed_even_when_an_operation_claims_it():
+    """With per-defect review on, an invalid_brep defect is the engineer's question. The whole-shape
+    fixer claims invalid_brep, so without the reservation the loop changed exactly the geometry the
+    review was holding back - before anyone answered."""
+    planner = RulesPlanner(ops=(_NARROW, _GLOBAL), reserved=frozenset({DefectCode.invalid_brep}))
+    defects = (_defect(DefectCode.invalid_brep, fingerprint="face:j", kind="face"),
+               _defect(DefectCode.small_edge, fingerprint="edge:r",
+                       severity=DefectSeverity.warning, index=2))
+
+    candidate = planner.propose(defects, RunHistory(), shape=None)
+
+    assert candidate is not None and candidate.defect_fingerprint == "edge:r"
+    only_reserved = planner.propose(defects[:1], RunHistory(), shape=None)
+    assert only_reserved is None
+
+
+def test_with_nothing_reserved_the_planner_still_claims_every_code():
+    planner = RulesPlanner(ops=(_GLOBAL,))
+    defects = (_defect(DefectCode.invalid_brep, fingerprint="face:j", kind="face"),)
+    assert planner.propose(defects, RunHistory(), shape=None).op.name == "fix_shape_global"
