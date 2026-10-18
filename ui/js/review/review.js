@@ -272,15 +272,16 @@ export async function openReview(jobId, opts = {}) {
   function cover(item, ids) {
     const now = new Set(ids || []);
     (item.covered || []).filter((id) => !now.has(id)).forEach((id) => {
-      const m = itemById.get(id); if (m && m.state === "redirected") m.state = "open"; });
-    now.forEach((id) => { const m = itemById.get(id); if (m) m.state = "redirected"; });
+      const m = itemById.get(id); if (m && m.state === "redirected") { m.state = "open"; m.coveredBy = null; } });
+    now.forEach((id) => { const m = itemById.get(id); if (m) { m.state = "redirected"; m.coveredBy = item.id; } });
     item.covered = [...now];
   }
 
   async function decide(item, action, state) {
     const r = await postReviewDecision(jobId, { item_id: item.id, action });
     if (!r.ok) return say(failure(r, "that answer was not saved"));
-    item.state = state; cover(item, []); queue.shift(); advance();
+    item.state = state; item.decided_at = new Date().toISOString(); cover(item, []);
+    queue.shift(); advance();
   }
 
   async function redirect(item) {
@@ -291,7 +292,8 @@ export async function openReview(jobId, opts = {}) {
     if (!r.ok) return say(failure(r, "that was not understood by the server"));
     const slot = panel.querySelector(".rv-playback-slot");
     if (r.data.kind === "directive") {
-      item.state = "redirected"; cover(item, r.data.covered); paintRail();
+      item.state = "redirected"; item.decided_at = new Date().toISOString();
+      cover(item, r.data.covered); paintRail();
       slot.innerHTML = `<div class="rv-playback"><p>${esc(r.data.playback)}</p>
         <p class="rv-recorded">that is recorded as your answer for this defect.</p>
         <button type="button" class="rv-confirm">That's right</button>
@@ -306,29 +308,51 @@ export async function openReview(jobId, opts = {}) {
     }
   }
 
+  /* THE SAMPLE'S SETTLED DIRECTION, as the server reads it: every sampled answer "leave it" means
+     leave the rest; otherwise the latest answer that was not a leave (an accept, or a redirect
+     whose operation the rest receive). A defect a group redirect covered is not a sample answer. */
+  const STATE_DIRECTION = { accepted: "accept", redirected: "redirect", left: "leave" };
+  function sampleDirection(g) {
+    const answered = g.sampled_item_ids.map((id) => itemById.get(id))
+      .filter((i) => i && STATE_DIRECTION[i.state] && !i.coveredBy && !(i.decision || {}).covered_by)
+      .sort((a, b) => (Date.parse(a.decided_at) || 0) - (Date.parse(b.decided_at) || 0));
+    if (!answered.length) return null;
+    const acted = answered.filter((i) => i.state !== "left");
+    return acted.length ? STATE_DIRECTION[acted[acted.length - 1].state] : "leave";
+  }
+
   function applyAllScreen() {
     const g = groups[gi], rest = restOf(g);
     paintRail(); frame(null); say("");
-    const fixable = g.apply_all_allowed && g.proposed_op;
+    const direction = g.apply_all_allowed ? sampleDirection(g) : null;
+    const fixable = direction === "redirect" || (direction === "accept" && !!g.proposed_op);
+    const leaveable = direction === "leave";
     const why = !g.apply_all_allowed
       ? "<p class=\"rv-why\">these defects come in pairs, and the answer for one changes what its partner means, so each one needs its own answer - there is no fix-all for this group.</p>"
+      : leaveable ? "<p class=\"rv-why\">you left every one in the sample as it is, so the one answer on offer for the rest is the same: leave them.</p>"
+      : direction === "redirect" ? "<p class=\"rv-why\">the rest get what you asked for in the sample, each one tried on its own.</p>"
       : !g.proposed_op ? "<p class=\"rv-why\">nothing was proposed for this group, so there is nothing to apply to all of it.</p>" : "";
     panel.innerHTML = `<h2>${plural(rest.length, "more", "more")} like these</h2>
-      <p>that was the sample. ${fixable ? "if the rest are the same, one answer covers them." : ""}</p>${why}
+      <p>that was the sample. ${fixable || leaveable ? "if the rest are the same, one answer covers them." : ""}</p>${why}
       <div class="rv-controls">
         ${fixable ? `<button type="button" class="rv-fixall">Fix all ${rest.length} the same way</button>` : ""}
+        ${leaveable ? `<button type="button" class="rv-leaverest">Leave the rest</button>` : ""}
         <button type="button" class="rv-onebyone">Keep reviewing one by one</button>
         <button type="button" class="rv-largest">Show me the largest first</button>
       </div>`;
     const go = (items) => { queue = items; phase = "rest"; shownIdx = 0; shownTotal = items.length; advance(); };
     panel.querySelector(".rv-onebyone").onclick = () => go(rest);
     panel.querySelector(".rv-largest").onclick = () => go(rest.slice().sort((a, b) => sizeOf(b) - sizeOf(a)));
-    panel.querySelector(".rv-fixall")?.addEventListener("click", () => guarded(async () => {
+    const applyAll = () => guarded(async () => {
       const r = await postReviewDecision(jobId, { group_key: g.group_key, action: "apply_all" });
       if (!r.ok) return say(failure(r, "that was not applied"));
-      rest.forEach((i) => { i.state = "accepted"; });
+      const state = { leave: "left", redirect: "redirected", accept: "accepted" }[(r.data || {}).direction || direction];
+      const at = new Date().toISOString();
+      rest.forEach((i) => { i.state = state; i.decided_at = at; });
       queue = []; phase = "rest"; advance();
-    }));
+    });
+    panel.querySelector(".rv-fixall")?.addEventListener("click", applyAll);
+    panel.querySelector(".rv-leaverest")?.addEventListener("click", applyAll);
   }
 
   function failure(r, lead) {

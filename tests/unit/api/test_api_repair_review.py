@@ -402,3 +402,48 @@ async def test_a_new_answer_on_the_redirected_item_reopens_the_members_it_covere
                      json={"action": "leave", "item_id": str(uuid.UUID(int=1))})
     world.repo.reopen_covered.assert_awaited_once()
     assert world.repo.reopen_covered.call_args.args[1] == [uuid.UUID(int=2)]
+
+
+async def test_apply_all_after_a_sample_redirect_repeats_that_redirect_on_each_remaining_member():
+    sew = {"op": "sew_faces", "targets": ["edge:0002"], "defect_code": "small_edge",
+           "defect_fingerprint": "edge:0002", "source": "engineer", "item_id": "x"}
+    items = [_item(1, state="accepted", decided=1),
+             _item(2, state="redirected", decided=5, decision={"directive": sew}),
+             _item(3), _item(4)]
+    world = World(items)
+    r = await world.call("POST", "/review/decision",
+                         json={"action": "apply_all", "group_key": items[0].group_key})
+    assert r.json() == {"kind": "applied", "changed": 2, "direction": "redirect"}
+    world.repo.record_group_decision.assert_not_called()      # never the proposal
+    recorded = {c.args[1]: (c.args[2], c.args[3]) for c in world.repo.record_decision.mock_calls}
+    assert set(recorded) == {uuid.UUID(int=3), uuid.UUID(int=4)}
+    for n in (3, 4):
+        state, decision = recorded[uuid.UUID(int=n)]
+        assert state == "redirected" and decision["directive"]["op"] == "sew_faces"
+        assert decision["directive"]["targets"] == [f"edge:{n:04d}"]
+        assert decision["directive"]["item_id"] == str(uuid.UUID(int=n))
+
+
+async def test_apply_all_after_an_all_leave_sample_leaves_the_rest():
+    items = [_item(1, state="left", decided=1), _item(2, state="left", decided=2),
+             _item(3), _item(4)]
+    world = World(items)
+    r = await world.call("POST", "/review/decision",
+                         json={"action": "apply_all", "group_key": items[0].group_key})
+    assert r.json()["direction"] == "leave"
+    _db, _job, _group, state, decision = world.repo.record_group_decision.call_args.args
+    assert state == "left" and decision["direction"] == "leave"
+
+
+async def test_apply_all_after_an_accepted_sample_accepts_the_proposal_and_needs_a_sample():
+    items = [_item(1, state="left", decided=1), _item(2, state="accepted", decided=2), _item(3)]
+    world = World(items)
+    r = await world.call("POST", "/review/decision",
+                         json={"action": "apply_all", "group_key": items[0].group_key})
+    assert r.json()["direction"] == "accept"
+    assert world.repo.record_group_decision.call_args.args[3] == "accepted"
+    unanswered = World([_item(1), _item(2), _item(3)])
+    r = await unanswered.call("POST", "/review/decision",
+                              json={"action": "apply_all", "group_key": items[0].group_key})
+    assert r.status_code == 409
+    unanswered.repo.record_group_decision.assert_not_called()

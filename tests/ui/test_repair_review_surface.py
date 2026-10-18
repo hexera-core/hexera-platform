@@ -296,8 +296,34 @@ def test_a_group_with_nothing_proposed_says_why_there_is_no_fix_all(live):
     odd["count"] = 3
     _open(live, review={**base, "groups": [odd]})
     _click(live, ".rv-leave")
+    # nothing to fix all with - and the sample was left, so leaving the rest is the one offer
     assert live.evaluate("!document.querySelector('.rv-fixall')")
-    assert "nothing was proposed" in _text(live, ".rv-why").lower()
+    assert "Leave the rest" in _text(live, ".rv-leaverest")
+
+
+def test_an_all_leave_sample_offers_leave_the_rest_never_fix_all(live):
+    _open(live)
+    _click(live, ".rv-leave")
+    _click(live, ".rv-leave")
+    assert live.evaluate("!document.querySelector('.rv-fixall')"), "fix-all offered after leaving the sample"
+    assert "leave them" in _text(live, ".rv-why").lower()
+    _click(live, ".rv-leaverest")
+    calls = live.evaluate("window.__calls")
+    assert calls[-1]["body"] == {"group_key": "gap", "action": "apply_all"}
+    # the two in the sample and the two after it are answered: four of eight remain
+    assert "4 defects still unanswered" in _text(live, ".rv-unanswered"), _text(live, ".rv-unanswered")
+
+
+def test_a_redirect_in_the_sample_is_what_fix_all_repeats(live):
+    _open(live)
+    _click(live, ".rv-do")
+    live.evaluate("document.querySelector('.rv-redirect-text').value = 'sew it from the other side'")
+    _click(live, ".rv-redirect-go")
+    _click(live, ".rv-confirm")
+    assert "what you asked for in the sample" in _text(live, ".rv-why").lower()
+    _click(live, ".rv-fixall")
+    states = live.evaluate("window.__rv.groups[0].items.map(i => i.state)")
+    assert states == ["accepted", "redirected", "redirected", "redirected"], states
 
 
 def test_a_group_redirect_marks_what_it_covered_answered_and_does_not_ask_it_again(live):

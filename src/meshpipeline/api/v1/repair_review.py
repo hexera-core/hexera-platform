@@ -180,19 +180,55 @@ async def decide(job_id: uuid.UUID, body: DecisionIn, owner_id: str = Depends(ow
             if any(m.pairing_key for m in members):
                 raise HTTPException(409, "This group holds paired defects; decide each one "
                                          "on its own")
+            direction, settled_on = _settled_direction(members)
+            if direction is None:
+                raise HTTPException(409, "Answer the sample first; apply-all repeats what you "
+                                         "decided there")
             proposal = next((m.proposal for m in members if m.proposal), None)
-            if proposal is None:
-                raise HTTPException(409, "Nothing was proposed for this group, so there is "
-                                         "nothing to apply")
-            changed = await repo.record_group_decision(
-                db, job_id, group_key, "accepted",
-                {"action": "apply_all", "proposal": proposal})
+            logged_directive = None
+            if direction == "leave":
+                changed = await repo.record_group_decision(
+                    db, job_id, group_key, "left",
+                    {"action": "apply_all", "direction": "leave",
+                     "from_item": str(settled_on.id)})
+            elif direction == "redirect":
+                # THE SAMPLE'S REDIRECT, applied to each remaining member on its own: the same
+                # operation, aimed at that member alone, so each still runs individually through
+                # the session (and a member it cannot be played on says so).
+                shape = dict((settled_on.decision or {}).get("directive") or {})
+                if not shape.get("op"):
+                    raise HTTPException(409, "The sample's redirect carries no operation to "
+                                             "repeat; answer the rest one by one")
+                changed = 0
+                for member in members:
+                    if member.state != "open" or not member.fingerprint:
+                        continue
+                    directive = {"op": shape.get("op"), "targets": [member.fingerprint],
+                                 "defect_code": member.defect_code,
+                                 "defect_fingerprint": member.fingerprint,
+                                 "source": "engineer", "item_id": str(member.id)}
+                    try:
+                        await repo.record_decision(db, member.id, "redirected", {
+                            "action": "apply_all", "direction": "redirect",
+                            "from_item": str(settled_on.id), "directive": directive})
+                    except _park_closed() as exc:
+                        raise HTTPException(409, "This review is already closed") from exc
+                    changed += 1
+                logged_directive = {"op": shape.get("op"), "from_item": str(settled_on.id)}
+            else:
+                if proposal is None:
+                    raise HTTPException(409, "Nothing was proposed for this group, so there is "
+                                             "nothing to apply")
+                changed = await repo.record_group_decision(
+                    db, job_id, group_key, "accepted",
+                    {"action": "apply_all", "direction": "accept", "proposal": proposal})
             if not changed:
                 raise HTTPException(409, "Every item in this group is already decided")
             await db.commit()
-            _log_decision(job_id, item_id=None, group_key=body.group_key, action="apply_all",
-                          proposal=proposal, text=body.text, started=started)
-            return {"kind": "applied", "changed": changed}
+            _log_decision(job_id, item_id=None, group_key=body.group_key,
+                          action=f"apply_all:{direction}", proposal=proposal, text=body.text,
+                          started=started, directive=logged_directive)
+            return {"kind": "applied", "changed": changed, "direction": direction}
 
         item = next((i for i in items if body.item_id is not None and i.id == body.item_id), None)
         if item is None:
@@ -265,6 +301,31 @@ async def decide(job_id: uuid.UUID, body: DecisionIn, owner_id: str = Depends(ow
                   proposal=item.proposal, text=body.text, started=started,
                   directive=directive_out if isinstance(directive_out, dict) else None)
     return reply
+
+
+_DIRECTIONS = {"accepted": "accept", "redirected": "redirect", "left": "leave"}
+
+
+def _settled_direction(members: list) -> tuple[str | None, object]:
+    """`(direction, the item it was read from)`: what the engineer settled on in the sample.
+
+    The sample is the group's first SAMPLE_SIZE members (what _groups serves as sampled). Only
+    the engineer's own answers there count - an `unreviewed` or a group-covered member is not an
+    answer about the group. All of them "leave it" means leave the rest; otherwise the LATEST
+    answer that was not a leave is the direction (an accept, or a redirect whose operation the
+    rest receive). Nothing answered yet: (None, None).
+    """
+    size = max(int(rcfg.CAD_REPAIR_REVIEW_SAMPLE_SIZE), 0)
+    answered = sorted(
+        (m for m in members[:size] if m.state in _DIRECTIONS and m.decided_at is not None
+         and not (m.decision or {}).get("covered_by")),
+        key=lambda m: m.decided_at)
+    if not answered:
+        return None, None
+    acted = [m for m in answered if m.state != "left"]
+    if not acted:
+        return "leave", answered[-1]
+    return _DIRECTIONS[acted[-1].state], acted[-1]
 
 
 def _group_scope(item, items: list, playback: str) -> tuple[list, str] | None:
