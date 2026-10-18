@@ -483,3 +483,19 @@ def test_an_approved_fill_survives_the_next_cycles_replay(monkeypatch):
             "item_id": approved, "source": "engineer"}]
     (outcome,) = directive_outcomes(replayed[:1], ops, [])
     assert outcome["item_id"] == approved and outcome["outcome"] == "kept"
+
+
+async def test_a_run_delivered_after_a_park_serves_its_offered_items_not_the_closed_park():
+    closed = SimpleNamespace(**{**vars(_park()), "status": "closed"})
+    world = World([], park=closed, job="succeeded")
+    offered = [_item(9, state="open")]
+    asked = []
+
+    async def _items(db, job_id, park_id):
+        asked.append(park_id)
+        return offered if park_id is None else [_item(1, state="left")]
+    world.repo.items_for = AsyncMock(side_effect=_items)
+    body = (await world.call("GET", "/review")).json()
+    assert asked == [None]
+    assert body["status"] == "offered" and body["open"] == 1
+    assert body["groups"][0]["items"][0]["id"] == str(uuid.UUID(int=9))

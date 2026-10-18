@@ -128,12 +128,18 @@ async def get_review(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     async with get_db() as db:
         job = await _owned_job(db, job_id, owner_id, organization_id)
         park = await repo.latest_park(db, job_id)
-        items = await repo.items_for(db, job_id, park.id if park is not None else None)
+        # A DELIVERED RUN SERVES ITS OFFERED ITEMS (minted without a park), even when an earlier
+        # cycle of it parked: park -> re-run -> delivered must not keep showing the closed park.
+        delivered = _status_of(job) == JobStatus.succeeded.value
+        offered = park is None or delivered
+        items = await repo.items_for(db, job_id, None if offered else park.id)
     if not items:
         raise HTTPException(409, "This run has nothing to review")
     # The served status is the job's AND the park's together: an open park under a job that has
     # moved on (resumed, cancelled) is no longer something a person can act on.
-    if park is None:
+    session_id = (park.geometry_session_id if park is not None
+                  else str((getattr(job, "dispatch_payload", None) or {}).get("session_id") or ""))
+    if offered:
         status = "offered"
     elif park.status == "open" and _status_of(job) == JobStatus.pending_review.value:
         status = "open"
@@ -141,7 +147,7 @@ async def get_review(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
         status = "closed"
     decided = sum(1 for i in items if i.state != "open")
     return {"job_id": str(job_id), "status": status,
-            "geometry_session_id": park.geometry_session_id if park is not None else "",
+            "geometry_session_id": session_id,
             "groups": _groups(items), "decided": decided, "open": len(items) - decided}
 
 
