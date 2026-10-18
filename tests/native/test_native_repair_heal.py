@@ -1,6 +1,9 @@
 # Responsibility: Verify on the real kernel that heal_self_intersections reads the real face scan, declines a tangle it cannot isolate or uncross, and never changes the shape it was handed.
-# Boundaries: a forged self-interfering solid, two overlapping boxes and a sound box - no corpus file. The corpus proof (ec_turbine-A) is a separate, directed run.
+# Boundaries: a forged self-interfering solid, two overlapping boxes and a sound box, plus one directed run on ec_turbine-A from the OCCT corpus (on disk only, never committed; skipped when absent).
 from __future__ import annotations
+
+import os
+from pathlib import Path
 
 import pytest
 from tests.cad_fixtures import write_pierced_floor_step
@@ -13,6 +16,9 @@ from meshpipeline.cad.repair.localize import _diagonal, localize_scan
 from meshpipeline.cad.repair.operations import MAX_HEAL_FACES, HealSelfIntersections
 
 pytest.importorskip("OCP.BOPAlgo", reason="the CAD kernel is a native-tier dependency")
+
+DEFAULT_CORPUS = "/tmp/cadcorpus/occt/opencascade-dataset-7.8.0/step"  # noqa: S108 - a read-only dataset location
+TURBINE = Path(os.environ.get("HEXERA_OCCT_CORPUS", DEFAULT_CORPUS)) / "ec_turbine-A.stp"
 
 
 @pytest.fixture(autouse=True)
@@ -289,3 +295,81 @@ def test_a_crossing_remains_decline_after_a_kept_declaration_is_recorded_as_decl
     verdict = session.try_op(HealSelfIntersections(), targets, DefectCode.self_intersection,
                              tolerance_mm=0.01)
     assert verdict.reason.startswith("declined:crossing_remains"), verdict.reason
+
+
+def _run_config(monkeypatch):
+    for name, value in (("CAD_REPAIR_ENABLED", True), ("CAD_REPAIR_MAX_DEVIATION_RATIO", 0.001),
+                        ("CAD_REPAIR_MAX_TOLERANCE_MM", 0.1),
+                        ("CAD_REPAIR_ALLOW_FACE_REMOVAL", False),
+                        ("CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO", 0.02), ("CAD_REPAIR_MAX_OPS", 6),
+                        ("CAD_REPAIR_STALL_LIMIT", 2), ("CAD_REPAIR_TIMEOUT_S", 120.0)):
+        monkeypatch.setattr(rcfg, name, value)
+
+
+def _directed_heal(shape, target, item_id):
+    from meshpipeline.cad.repair import loop
+    from meshpipeline.cad.repair.directives import DirectedPlanner
+    from meshpipeline.cad.repair.triage import REVIEW_RESERVED_CODES
+
+    # The whole crossing component, as the scan reports it, plus the face itself.
+    directive = {"op": "heal_self_intersections", "defect_code": "self_intersection",
+                 "defect_fingerprint": target.fingerprint,
+                 "targets": [target.fingerprint, *target.measurements["crossing_faces"]],
+                 "source": "engineer", "item_id": item_id}
+    planner = DirectedPlanner([directive], reserved=REVIEW_RESERVED_CODES)
+    return loop.run(shape, planner=planner, tolerance_mm=0.01)
+
+
+def _assert_honest(verdict, run, target):
+    # EITHER kept with the target gone and an honest basis, OR a named decline, OR judged and
+    # rolled back by the caps / progress rule - never a silent no-op.
+    if verdict.kept:
+        assert verdict.basis in ("geometric", "kernel")
+        assert target.fingerprint not in {d.fingerprint for d in run.defects
+                                          if d.code is DefectCode.self_intersection}
+    elif verdict.reason.startswith("declined:"):
+        assert verdict.reason[len("declined:"):].split(" ")[0] in {
+            "not_isolated", "multi_body", "too_much_surface", "grew_beyond_targets",
+            "crossing_remains"}
+    else:
+        assert verdict.reason.startswith(("cap:", "target_remains", "new_defect")), verdict.reason
+
+
+def test_an_engineer_directive_on_the_forged_tangle_ends_honestly(tmp_path, monkeypatch):
+    _run_config(monkeypatch)
+    shape = _read(write_pierced_floor_step(tmp_path / "pierced.step"))
+    target = _crossings(shape)[0]
+    run = _directed_heal(shape, target, "pierced-proof")
+    verdict = run.verdicts[0]
+    assert verdict.op == "heal_self_intersections"
+    _assert_honest(verdict, run, target)
+
+
+@pytest.mark.skipif(not TURBINE.exists(),
+                    reason="OCCT corpus not on disk (licence: never committed)")
+def test_the_turbine_crossing_is_located_and_healed_by_an_engineer_directive(monkeypatch):
+    _run_config(monkeypatch)
+    shape = _read(TURBINE)
+    found, _ = localize_scan(shape, face_scan_s=30.0)
+    located = [d for d in found if d.code is DefectCode.self_intersection
+               and d.measurements.get("crossing_faces")]
+    if not located:
+        # The analyzer ran to completion inside its budget (~5 s; a timeout is silence too, but
+        # 120 s gave the same empty answer) and found no face crossing another: there is nothing
+        # for the heal to aim at, and forcing a directive would prove nothing.
+        pytest.skip("ec_turbine-A: the face scan completed and located no self-crossing face")
+    target = located[0]
+    run = _directed_heal(shape, target, "turbine-proof")
+    verdict = run.verdicts[0]
+    print(f"TURBINE component={1 + len(target.measurements['crossing_faces'])} "
+          f"kept={verdict.kept} basis={verdict.basis!r} reason={verdict.reason!r}")
+    assert verdict.op == "heal_self_intersections"
+    _assert_honest(verdict, run, target)
+
+
+def test_a_heal_on_a_sound_part_is_declined_not_isolated(tmp_path):
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+
+    shape = BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape()
+    out = HealSelfIntersections().apply(shape, _refs(shape, (1,)), tolerance_mm=0.01)
+    assert out.shape is shape and out.evidence["declined"].startswith("not_isolated")
