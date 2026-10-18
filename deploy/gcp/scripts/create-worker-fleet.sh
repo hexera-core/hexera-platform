@@ -448,6 +448,8 @@ WORKER_METADATA=(
 [ -z "${CAD_REPAIR_ENABLED:-}" ] || WORKER_METADATA+=("cad-repair-enabled=${CAD_REPAIR_ENABLED}")
 [ -z "${CAD_REPAIR_REVIEW_ENABLED:-}" ] \
   || WORKER_METADATA+=("cad-repair-review-enabled=${CAD_REPAIR_REVIEW_ENABLED}")
+[ -z "${CAD_REPAIR_FILL_PLANAR_HOLES:-}" ] \
+  || WORKER_METADATA+=("cad-repair-fill-planar-holes=${CAD_REPAIR_FILL_PLANAR_HOLES}")
 [ -z "${CAD_REPAIR_LLM_PLANNER:-}" ] \
   || WORKER_METADATA+=("cad-repair-llm-planner=${CAD_REPAIR_LLM_PLANNER}")
 WORKER_METADATA+=(${WORKER_SECRET_METADATA[@]+"${WORKER_SECRET_METADATA[@]}"})

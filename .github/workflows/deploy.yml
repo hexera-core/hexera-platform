@@ -114,15 +114,15 @@ on:
         default: false
         type: boolean
       # THE REPAIR LOOP IS A SETTING, AND THIS IS WHERE IT IS CHOSEN. Ticking it exports
-      # CAD_REPAIR_ENABLED and CAD_REPAIR_REVIEW_ENABLED for the run: the API service gets both as
-      # environment, and the worker fleet gets them as template metadata that its startup script
-      # appends to the worker env. Unticked exports NOTHING, so the scripts leave both settings at
-      # their shipped defaults. It is declarative, like every other API setting: redeploying the app
+      # CAD_REPAIR_ENABLED, CAD_REPAIR_REVIEW_ENABLED and CAD_REPAIR_FILL_PLANAR_HOLES for the run:
+      # the API service gets them as environment, and the worker fleet gets them as template
+      # metadata that its startup script appends to the worker env. Unticked exports NOTHING, so the
+      # scripts leave all three settings at their shipped defaults. It is declarative, like every other API setting: redeploying the app
       # unticked drops the flags from an environment that had them, which is the point - the
       # workflow, not a hand-edit in the cloud, decides. The fleet only picks the change up when
       # `fleet` is ticked too, because an instance template is immutable.
       cad_repair:
-        description: "cad_repair - enable the conservative CAD repair loop AND the repair review on the targeted environment (unticked leaves both at their shipped defaults)"
+        description: "cad_repair - enable the conservative CAD repair loop, its planar hole filling AND the repair review on the targeted environment (unticked leaves all three at their shipped defaults)"
         required: false
         default: false
         type: boolean
@@ -1401,6 +1401,9 @@ jobs:
       # shipped defaults stay in force.
       CAD_REPAIR_ENABLED: ${{ inputs.cad_repair && 'true' || '' }}
       CAD_REPAIR_REVIEW_ENABLED: ${{ inputs.cad_repair && 'true' || '' }}
+      # Planar hole filling rides the same tick: the paired-rim discriminator now asks for bore-like
+      # evidence, and every fill is still judged by the session caps and rolled back past them.
+      CAD_REPAIR_FILL_PLANAR_HOLES: ${{ inputs.cad_repair && 'true' || '' }}
       # The planner posture, stated only when it is not "off"; empty means "not stated".
       CAD_REPAIR_LLM_PLANNER: ${{ inputs.llm_planner != 'off' && inputs.llm_planner || '' }}
     steps:
