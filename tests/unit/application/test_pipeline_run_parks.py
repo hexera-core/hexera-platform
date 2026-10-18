@@ -33,11 +33,24 @@ def review_on(monkeypatch):
     monkeypatch.setattr(rcfg, "CAD_REPAIR_REVIEW_ENABLED", True)
 
 
+class _Savepoint:
+    def __init__(self, db): self.db = db
+    async def commit(self): self.db.log.append("sp_commit")
+    async def rollback(self): self.db.log.append("sp_rollback")
+
+
+class _Db:
+    def __init__(self): self.log = []
+    async def begin_nested(self): return _Savepoint(self)
+
+
 class _Repo:
-    def __init__(self):
-        self.parks, self.items = [], []
+    def __init__(self, fail_create=False):
+        self.parks, self.items, self.fail_create = [], [], fail_create
 
     async def create_park(self, db, job_id, kept, sha, session):
+        if self.fail_create:
+            raise RuntimeError("insert failed")
         park = SimpleNamespace(id=uuid.uuid4(), job_id=job_id, kept_operations=kept,
                                source_sha256=sha, geometry_session_id=session, status="open")
         self.parks.append(park)
@@ -78,10 +91,13 @@ class _Outbox:
         return True
 
 
-async def _finalize(status, plan, repo, jobs=None, outbox=None):
+PLAIN = ({"job_id": str(JOB), "review_parked": 0, "schema_version": 5}, "plain failure")
+
+
+async def _finalize(status, plan, repo, jobs=None, outbox=None, db=None):
     jobs, outbox = jobs or _Jobs(), outbox or _Outbox()
     out = await finalize_terminal_atomic(
-        None, ownership=None, intended_status=status, failed_reason=None,
+        db or _Db(), ownership=None, plain_failure=PLAIN, intended_status=status, failed_reason=None,
         final_result_dict={"job_id": str(JOB), "review_parked": 3, "schema_version": 5},
         closing_message="m", job_repo=jobs, outbox_repo=outbox, review_plan=plan,
         review_repo=repo)
@@ -109,7 +125,7 @@ async def test_a_failed_run_with_no_candidates_fails_exactly_as_today():
     repo = _Repo()
     _, _, outbox = await _finalize(JobStatus.failed, None, repo)
     assert repo.parks == [] and repo.items == []
-    assert "dedup_key" not in outbox.rows[0]
+    assert outbox.rows[0]["dedup_key"] is None
 
 
 async def test_review_off_never_parks(monkeypatch):
@@ -126,20 +142,16 @@ async def test_a_succeeded_run_with_candidates_stays_succeeded_and_items_have_no
     assert jobs.log[0] == ("transition", JobStatus.succeeded)
 
 
-async def test_a_lost_status_cas_writes_no_park():
+async def test_a_lost_status_cas_rolls_the_park_back():
     plan = rrp.plan_review(STATE, status=JobStatus.failed)
-    repo = _Repo()
-    await _finalize(JobStatus.pending_review, plan, repo,
+    db = _Db()
+    await _finalize(JobStatus.pending_review, plan, _Repo(), db=db,
                     jobs=_Jobs(TransitionResult.rejected_current_state))
-    assert repo.parks == [] and repo.items == []
+    assert db.log == ["sp_rollback"], "a park outlived the status CAS it belongs to"
 
 
 async def test_cancel_closes_the_open_park(monkeypatch):
-    from tests.unit.application.test_job_cancel import (
-        _cancel,
-        _row,
-        wired,  # noqa: F401
-    )
+    from tests.unit.application.test_job_cancel import _cancel, _row
 
     import meshpipeline.persistence.repositories.repair_review_repository as rr
     from meshpipeline.application import job_cancel
@@ -166,16 +178,6 @@ def _wired(monkeypatch):
     return {"log": [], "revoked": [], "delivered": []}
 
 
-class _Log:
-    def __init__(self): self.errors = []
-    def error(self, *a, **k): self.errors.append(a)
-
-
-class _Session:
-    async def __aenter__(self): return self
-    async def __aexit__(self, *a): return False
-
-
 async def test_a_rerun_that_parks_again_opens_a_second_park_and_the_first_stays_closed():
     repo = _Repo()
     plan = rrp.plan_review(STATE, status=JobStatus.failed)
@@ -183,14 +185,68 @@ async def test_a_rerun_that_parks_again_opens_a_second_park_and_the_first_stays_
     first = repo.parks[0]
     # the run route closes the first park before the re-run
     await repo.close_park(None, first.id, "run")
-    assert await rrp.refuse_second_open_park(_Session, plan, JOB, _Log(), repo) is plan
     await _finalize(JobStatus.pending_review, plan, repo)
     assert [p.status for p in repo.parks] == ["closed", "open"]
     assert repo.parks[0].closed_by == "run" and repo.parks[0].id != repo.parks[1].id
-    # but an open park at park time is a defect: no second one, a plain failure
-    log = _Log()
-    assert await rrp.refuse_second_open_park(_Session, plan, JOB, log, repo) is None
-    assert log.errors and len(repo.parks) == 2
+
+
+async def test_an_open_park_at_park_time_fails_plainly_through_the_whole_terminal_path(monkeypatch):
+    # the guard lives INSIDE the finalize transaction; assert what pipeline_run reads back
+    import meshpipeline.application.outbox_publisher as obp
+    import meshpipeline.application.terminal_finalize as tf
+    import meshpipeline.persistence.repositories.repair_review_repository as rr
+    repo, jobs, outbox = _Repo(), _Jobs(), _Outbox()
+    await repo.create_park(None, JOB, [], "a" * 64, "s")      # still open: a defect
+    monkeypatch.setattr(rr, "RepairReviewRepository", lambda: repo)
+    monkeypatch.setattr(tf, "TerminalOutboxRepository", lambda: outbox)
+
+    async def _noop(sf, job_id): return None
+    monkeypatch.setattr(obp, "deliver_own_terminal_event", _noop)
+
+    class _S(_Db):
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def commit(self): self.log.append("commit")
+
+    class _J(_Jobs):
+        async def get_internal(self, db, job_id):
+            return SimpleNamespace(status=JobStatus.failed, failed_reason=None,
+                                   created_at=None, ended_at=None)
+    jobs = _J()
+    asm = TerminalAssembly(job_id=str(JOB), owner_id="o", status=JobStatus.pending_review,
+                           failed_reason=FailedReason.unhandled, engine="cfmesh",
+                           review_plan=rrp.plan_review(STATE, status=JobStatus.failed))
+
+    class _Lg:
+        def warning(self, *a, **k): pass
+    pub = await tf.assemble_and_finalize(_S, asm, ownership=None, lease_repo=None,
+                                         job_repo=jobs, jlog=_Lg())
+    assert pub.status == JobStatus.failed and len(repo.parks) == 1
+    assert jobs.log[0] == ("transition", JobStatus.failed)
+    assert pub.result.review_parked == 0 and "waiting" not in pub.closing_message
+
+
+async def test_a_park_write_that_raises_still_lands_a_plain_failed_status():
+    plan = rrp.plan_review(STATE, status=JobStatus.failed)
+    repo = _Repo(fail_create=True)
+    out, jobs, outbox = await _finalize(JobStatus.pending_review, plan, repo)
+    assert out.fell_back_to_failed
+    assert jobs.log[0] == ("transition", JobStatus.failed)
+    assert repo.parks == [] and repo.items == []
+    assert outbox.rows[0]["event_payload"]["closing_message"] == "plain failure"
+    assert outbox.rows[0]["dedup_key"] is None
+
+
+@pytest.mark.parametrize("flags", [{"system_failure": True}])
+def test_a_system_failure_or_timeout_never_parks_and_keeps_the_blameless_note(flags):
+    assert rrp.plan_review(STATE, status=JobStatus.failed, **flags) is None
+    note = "We hit a problem on our side; this is not your file."
+    asm = TerminalAssembly(job_id=str(JOB), owner_id="o", status=JobStatus.failed,
+                           failed_reason=FailedReason.unhandled, engine="cfmesh",
+                           api_failure="llm_down", pre_composed_message=note,
+                           review_plan=rrp.plan_review(STATE, status=JobStatus.failed, **flags))
+    out = build_terminal_result(asm, delivered_types=[])
+    assert out.result.review_parked == 0 and out.closing_message == note
 
 
 def test_the_parked_outcome_message_names_the_count_and_promises_nothing_was_changed():

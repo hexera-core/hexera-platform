@@ -1031,11 +1031,15 @@ async def _run_async(req: JobRequest) -> dict:
         # rides into the ONE status commit below (terminal_finalize writes the park beside the
         # transition), never after it. A cancelled job cannot park: the transition CAS refuses.
         from meshpipeline.application import repair_review_park as _rrp
-        _review_plan = _rrp.plan_review(final_state, status=final_status)
-        _review_plan = await _rrp.refuse_second_open_park(
-            AsyncSessionLocal, _review_plan, uuid.UUID(job_id), jlog)
+        # asked ONCE, here: the plan's system-failure exclusion and the status's timeout account
+        # must read the same answer
+        _timed_out = _pb.is_exhausted(_pipeline_deadline)
+        _review_plan = _rrp.plan_review(final_state, status=final_status,
+                                        system_failure=bool(api_failure) or _timed_out)
         if _review_plan is not None and _review_plan.park:
-            final_status, _failed_reason = JobStatus.pending_review, None
+            # `failed_reason` stays the decision's: terminal_finalize falls back to a plain failure
+            # (with it) if the park cannot be written, and never stamps it on a parked row.
+            final_status = JobStatus.pending_review
 
         # THE TERMINAL OUTCOME. Assembly (read the durable artifact rows, apply the readiness
         # policy, render the application-owned verdict) and the ONE atomic fenced commit that
@@ -1045,9 +1049,6 @@ async def _run_async(req: JobRequest) -> dict:
             TerminalAssembly,
             assemble_and_finalize,
         )
-        # asked ONCE: the status's timeout account and the ladder's "no offer on a timeout" must
-        # read the same answer
-        _timed_out = _pb.is_exhausted(_pipeline_deadline)
         _publication = await assemble_and_finalize(
             AsyncSessionLocal,
             TerminalAssembly(
@@ -1094,6 +1095,9 @@ async def _run_async(req: JobRequest) -> dict:
         assert _publication.result is not None
         _result = _publication.result
         _final_closing = _publication.closing_message
+        # a park that could not be written was recorded as a plain failure: report that
+        if _publication.status is not None:
+            final_status = _publication.status
         _job_created_at, _job_ended_at = _publication.created_at, _publication.ended_at
 
         # POST-TERMINAL RECORDING. The verdict is already durable and published; these three

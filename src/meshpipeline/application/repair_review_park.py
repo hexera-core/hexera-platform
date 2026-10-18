@@ -14,6 +14,10 @@ from meshpipeline.settings import cad_repair as rcfg
 logger = logging.getLogger(__name__)
 
 
+class OpenParkExists(Exception):
+    """The job already has an open park - a defect: the run route closes it before a re-run."""
+
+
 @dataclass(frozen=True)
 class ReviewPlan:
     """What a finished run owes the review: its items, and a park when the run is waiting on them."""
@@ -40,8 +44,12 @@ def source_sha256(state: dict) -> str:
     return str(((state.get("geometry") or {}).get("ref") or {}).get("sha256") or "")
 
 
-def plan_review(state: dict, *, status: JobStatus) -> ReviewPlan | None:
+def plan_review(state: dict, *, status: JobStatus,
+                system_failure: bool = False) -> ReviewPlan | None:
     """None when review is off or the run left nothing for a person.
+
+    A SYSTEM failure or a timeout never parks (and persists no items): it is not about the file, a
+    person's decisions cannot cure it, and its blameless note must be the message.
 
     A failed run with candidates parks; a succeeded one keeps its status and only records the
     items. Any other status (a crash, a cancel) is not this module's to decide.
@@ -49,12 +57,18 @@ def plan_review(state: dict, *, status: JobStatus) -> ReviewPlan | None:
     if not rcfg.CAD_REPAIR_REVIEW_ENABLED:
         return None
     items = list(state.get("repair_review_candidates") or [])
+    if status == JobStatus.failed and system_failure:
+        return None
     if not items or status not in (JobStatus.failed, JobStatus.succeeded):
         return None
     if status == JobStatus.succeeded:
         return ReviewPlan(items=items)
     return ReviewPlan(items=items, park=True, kept_operations=kept_operations(state),
                       source_sha256=source_sha256(state),
+                      # THE CHAT SESSION id: the same id the console's
+                      # GET /geometry/{session_id}/check/skin route (api/v1/geometry.py) serves
+                      # the part's skin under, because the job's `session_id` is the session the
+                      # upload created (api/v1/upload.py create_session).
                       geometry_session_id=str(state.get("session_id") or ""))
 
 
@@ -73,23 +87,10 @@ async def write_review(db, job_id: uuid.UUID, plan: ReviewPlan, repo=None) -> uu
     repo = repo or RepairReviewRepository()
     park_id = None
     if plan.park:
+        if await open_park_exists(db, job_id, repo):
+            raise OpenParkExists(str(job_id))
         park = await repo.create_park(db, job_id, plan.kept_operations, plan.source_sha256,
                                       plan.geometry_session_id)
         park_id = park.id
     await repo.add_items(db, job_id, park_id, plan.items)
     return park_id
-
-
-async def refuse_second_open_park(session_factory, plan: ReviewPlan | None, job_id: uuid.UUID,
-                                  jlog, repo=None) -> ReviewPlan | None:
-    """ONE OPEN PARK PER JOB. The run route closes the old park before it dispatches a re-run, so
-    an open one at park time is a defect: say so and return None (fail plainly) rather than open
-    a second. A plan that does not park passes through untouched."""
-    if plan is None or not plan.park:
-        return plan
-    async with session_factory() as db:
-        if not await open_park_exists(db, job_id, repo):
-            return plan
-    jlog.error("repair review: job %s already has an open park at park time - this is a defect "
-               "(the run route closes it first); failing plainly without a second park", job_id)
-    return None
