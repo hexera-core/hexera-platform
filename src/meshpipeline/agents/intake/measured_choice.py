@@ -125,6 +125,9 @@ async def rank_in_time(*, timeout_s: float = MEASURE_WAIT_S, **kw):
     except TimeoutError:
         logger.info("Intake: the geometry is still being measured - no engine recommendation "
                     "this turn")
+        from meshpipeline.engines.determinism import note_time_limit
+        note_time_limit("intake.recommendation", "no measured engine recommendation this turn: "
+                        "the measurement was not ready", budget_s=float(timeout_s))
     except Exception as exc:  # noqa: BLE001 - advice never breaks a turn
         logger.warning("Intake: engine recommendation unavailable (%s: %s)",
                        type(exc).__name__, str(exc)[:200])

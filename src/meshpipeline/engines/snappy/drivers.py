@@ -193,6 +193,10 @@ class TimedOutCaseRepeats(Exception):
 
 def _write_timed_out_plan(workspace: Path, strategy: dict) -> None:
     import json as _json
+
+    from meshpipeline.engines.determinism import note_time_limit
+    note_time_limit("snappy.plan", "a pass ran out of time: every later pass of this run is "
+                    "planned no finer than it")
     try:
         (Path(workspace) / _TIMED_OUT_PLAN).write_text(_json.dumps(strategy, default=str))
     except Exception:  # noqa: BLE001 - durable memory is best-effort; the in-run one still holds

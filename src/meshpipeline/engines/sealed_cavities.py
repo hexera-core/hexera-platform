@@ -61,6 +61,12 @@ class CavityReading:
     seal_gap_m: float
 
 
+def _note_overdue(budget_s: float | None) -> None:
+    from meshpipeline.engines.determinism import note_time_limit
+    note_time_limit("sealed_cavities", "the sealed-space reading ran past its budget: the body "
+                    "is meshed without sealing its spaces", budget_s=float(budget_s or 0.0))
+
+
 def read_cavities(tris, *, cell_m: float, gap_cells: float = SEAL_GAP_CELLS,
                   min_cells: float = MIN_CAVITY_CELLS, max_voxels: int = MAX_VOXELS,
                   budget_s: float | None = 120.0) -> CavityReading | None:
@@ -85,9 +91,14 @@ def read_cavities(tris, *, cell_m: float, gap_cells: float = SEAL_GAP_CELLS,
 
     None when the reading cannot be made (no triangles, a degenerate cell, no scipy, over
     budget): the caller then meshes exactly as before."""
+    from meshpipeline.engines.passage_flow import EvidenceOverdue
     try:
         return _read_cavities(tris, cell_m=cell_m, gap_cells=gap_cells, min_cells=min_cells,
                               max_voxels=max_voxels, budget_s=budget_s)
+    except EvidenceOverdue:
+        # a clock decided the plan: the spaces stay unsealed this run (engines/determinism.py)
+        _note_overdue(budget_s)
+        return None
     except Exception:  # noqa: BLE001 - a reading is an improvement, never a prerequisite
         logger.warning("sealed-cavity reading failed; meshing without it", exc_info=True)
         return None
@@ -144,6 +155,7 @@ def _read_cavities(tris, *, cell_m: float, gap_cells: float, min_cells: float, m
     if far == 0 or far_raw == 0:
         return None
     if deadline is not None and time.monotonic() > deadline:
+        _note_overdue(budget_s)
         return None
 
     cavities: list[SealedCavity] = []
@@ -302,7 +314,7 @@ def outward_signs(tris) -> np.ndarray:
     fn = np.cross(T[:, 1] - T[:, 0], T[:, 2] - T[:, 0])
     area2 = np.linalg.norm(fn, axis=1)
     area_per = np.bincount(comp, weights=area2, minlength=n_comp)
-    shells = [int(k) for k in np.argsort(-area_per) if closed[k]][:PARITY_SHELLS]
+    shells = [int(k) for k in np.argsort(-area_per, kind="stable") if closed[k]][:PARITY_SHELLS]
     if shells:
         good = area2 > 0
         diag = float(np.linalg.norm(V.max(axis=0) - V.min(axis=0))) or 1.0
@@ -311,7 +323,7 @@ def outward_signs(tris) -> np.ndarray:
             faces = np.flatnonzero((comp == k) & good)
             if len(faces) == 0:
                 continue
-            pick = faces[np.argsort(-area2[faces])[:PARITY_FACES]]
+            pick = faces[np.argsort(-area2[faces], kind="stable")[:PARITY_FACES]]
             for f in pick:
                 u = fn[f] / area2[f]
                 # a hair off the face: far below any wall thickness, far above round-off
