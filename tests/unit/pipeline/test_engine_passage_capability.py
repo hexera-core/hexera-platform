@@ -306,7 +306,11 @@ def test_the_round3_cases_never_move_to_an_engine_that_refuses_them(case, kind, 
         # one passage (snappy did run on these): the ladder is as it was
         assert d.switch_to == "snappy"
         return
-    assert not d.switch and "separate passages" in d.why
+    # a broken or absent mesh is stopped by the passages; a measured check missed once is stopped
+    # sooner, by cfMesh's own levers being tried first (engine_fallback rule 2)
+    first_measured_miss = lad.classify(st).kind == lad.FIXABLE
+    assert not d.switch and ("own levers" in d.why if first_measured_miss
+                             else "separate passages" in d.why), d.why
     o = lad.final_record({**st, "retry_count": 9}, succeeded=False, system_failure=False)["offer"]
     assert o["kind"] in ("passages", "fewer_layers") and "separate passages" in o["text"]
     assert o.get("engine") in ("cfmesh", "") and "use snappyHexMesh" not in o["text"]

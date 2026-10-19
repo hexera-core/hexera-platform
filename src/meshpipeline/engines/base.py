@@ -148,13 +148,20 @@ class DeliveredMesh:
 
     The fallback ladder (pipeline/engine_fallback.py) moves a run to another engine on its own
     only when that engine delivers what the approved one would have: the same file, the same
-    kind of cells, a wall at least as true to the body, and prism layers where the brief asked
-    for them. Anything less is offered to the user, never delivered silently. Declared here
-    with the rest of the engine's capability, never inferred from its name."""
+    kind of cells, a wall at least as true to the body, and every requirement of the approved
+    plan (prism layers, the wake refinement of an external flow - engine_fallback
+    .plan_requirements). Anything less is offered to the user, never delivered silently. Declared
+    here with the rest of the engine's capability, never inferred from its name."""
 
     cells: str            # one of CELL_KINDS - what fills the volume
     walls: str            # one of WALL_FITS - how the cells meet the body
     prism_layers: bool    # can deliver the near-wall prism layers a brief asks for, reliably
+    #: builds the refined wake behind an external body ON ITS OWN, from the plan (graded boxes
+    #: along the declared flow - engines/wake_region.py), not only when a planner happens to
+    #: author one. An engine without it does not deliver what an external-flow plan on an engine
+    #: with it would: job 0d0fc370 moved an external body from snappyHexMesh to cfMesh "for the same
+    #: mesh", and cfMesh's mesh came back with no wake refinement at all.
+    wake_refinement: bool = False
 
 
 @dataclass(frozen=True)
