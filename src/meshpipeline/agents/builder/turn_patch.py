@@ -15,6 +15,10 @@ BUILDER_RETURN_KEYS = frozenset({
     # A deliberate stop (driver_run.STOP_*): this turn built nothing because another attempt
     # cannot change the outcome. Written only by the stop path in agent.py.
     "builder_stop",
+    # A NEW ATTEMPT IS A NEW MESH: its review starts with no reruns behind it. The count belongs
+    # to the mesh being reviewed (pipeline/graph.node_review_retry), never to the job - otherwise a
+    # rebuilt mesh is reviewed as "the same mesh again" and its never-judged-twice reuse is off.
+    "review_rerun_count",
 })
 
 
@@ -46,6 +50,10 @@ class TurnPatch:
             fields["api_failure"] = self.api_failure
         if not self.api_failure:
             fields["builder_noop_count"] = self.noop_count
+        # A turn that authored an attempt resets the review reruns: they counted reviews of the
+        # PREVIOUS mesh. A provider failure or a stop built nothing, so the count stands.
+        if not self.api_failure and not self.stop:
+            fields["review_rerun_count"] = 0
         # Omitted when empty: an ordinary build must not write an empty list over a
         # declaration a previous attempt of the same dispute already made.
         if self.flag_responses:

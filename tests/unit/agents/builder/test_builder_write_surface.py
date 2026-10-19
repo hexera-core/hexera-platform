@@ -23,6 +23,8 @@ EXPECTED_ALLOW_LIST = frozenset({
     # a deliberate stop: the builder built nothing because another attempt cannot change the
     # outcome - its own bookkeeping, not a verdict (the verdict it stops on is the reviewer's)
     "builder_stop",
+    # a new attempt is a new mesh: the reviews-of-the-same-mesh rerun count goes back to 0
+    "review_rerun_count",
 })
 
 # Truth owned by other pipeline stages - the Builder must never be able to return any of these.

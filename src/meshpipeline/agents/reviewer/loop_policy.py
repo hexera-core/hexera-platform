@@ -275,6 +275,13 @@ class ReviewLoopPolicy:
                 args.get("flag_findings"), user_dispute=self.user_dispute,
                 phase=self.dispute_phase or HF.PHASE_PARENT)
             problems = (*problems, *flag_problems)
+        # `rebuild_required` is held to a LITERAL JSON boolean, the way `passed` is: bool("false")
+        # is True, and a string read that way turned a targeted retry into a from-scratch TOPOLOGY
+        # rebuild (pipeline/classifier). Left out it is false, as before.
+        _rebuild = args.get("rebuild_required", False)
+        if _rebuild is not None and type(_rebuild) is not bool:
+            problems = (*problems, "rebuild_required must be the JSON boolean true or false, "
+                                   f"got {_rebuild!r}")
         if problems:
             # MALFORMED. Nothing was constructed with an inferred judgement, eligibility is not
             # consulted, and no verdict can exist. It is not counted as a submission because
@@ -332,7 +339,7 @@ class ReviewLoopPolicy:
             # Reviewer-authored fields that survive: the report handed to the builder, and its
             # rebuild intent. Neither is a verdict.
             self.accepted_reasoning = str(args.get("reasoning", ""))
-            self.accepted_rebuild_required = bool(args.get("rebuild_required", False))
+            self.accepted_rebuild_required = args.get("rebuild_required") is True
             self.accepted_flag_findings = flag_findings
             self._mark_progress(f"accepted:{sig}")
             return ToolOutcome(content="Findings accepted. Review complete.",
