@@ -620,7 +620,8 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
                        farfield: str = "farfield",
                        class_regions: bool = True,
                        outside_points: list | None = None,
-                       wake: WakeRequest | None = None) -> dict:
+                       wake: WakeRequest | None = None,
+                       gap_field: tuple | None = None) -> dict:
     ws = Path(workspace)
     strategy = strategy or {}
     rec = recommendation
@@ -811,15 +812,33 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
         for k, t in enumerate(_wake_tiers))
     _wake_refine = "".join(f" {_WAKE_BOX}{k} {{ mode inside; levels ((1e15 {t.level})); }}"
                            for k, t in enumerate(_wake_tiers))
+    # THE GAPS BETWEEN THE BODY'S PARTS (engines/gap_sizing; cad/shape_traits.body_gap_field):
+    # a wheel and its arch, a flap and its slot get the rule's 13 cells across, boxed there only,
+    # with snappy's cell ceiling raised to what they cost - within the compute limit. External
+    # flow has no floor gate to refuse a mesh, so over the limit the gaps get as many as it holds,
+    # and the run says so. No field (one body, or none read) authors the historical dict.
+    _gap = None
+    _gap_geom = _gap_refine = ""
+    if gap_field is not None:
+        _gap, max_cells = _plan_body_gaps(
+            gap_field, wall_cell=base_actual / (2 ** smax), budget=max_cells,
+            base_cells=castellated_estimate(
+                area=analysis.get("surface_area"), divisions=div, base_cell=base_actual,
+                surface_level=smax, near=(b0d, near_band_level), far=(b1d, max(1, smin - 1))))
+        for k, b in enumerate(_gap.regions if _gap is not None else []):
+            _lvl = min(_HARD_MAX_LEVEL, smax + int(b.get("level_bump", 1)))
+            _gap_geom += (f" {_GAP_BOX}{k} {{ type searchableBox; min {vf(b['min'])}; "
+                          f"max {vf(b['max'])}; }}")
+            _gap_refine += f" {_GAP_BOX}{k} {{ mode inside; levels ((1e15 {_lvl})); }}"
 
     (ws / "system" / "snappyHexMeshDict").write_text(
         _HDR.format(cls="dictionary", obj="snappyHexMeshDict") + f"""
 castellatedMesh true; snap true; addLayers {'true' if _any_layers else 'false'};
-geometry {{ {surface_name}.stl {{ type triSurfaceMesh; name {surface_name};{_geo_regions} }}{_wake_geom} }}
+geometry {{ {surface_name}.stl {{ type triSurfaceMesh; name {surface_name};{_geo_regions} }}{_wake_geom}{_gap_geom} }}
 castellatedMeshControls {{ maxLocalCells {max_cells}; maxGlobalCells {max_cells}; minRefinementCells 10;
   maxLoadUnbalance 0.10; nCellsBetweenLevels 3; features ( {{ file "{feature_file}"; level {flevel}; }} );
   refinementSurfaces {{ {surface_name} {{ level ({smin} {smax});{_ref_regions} }} }} resolveFeatureAngle {ang:.0f};
-  refinementRegions {{ {surface_name} {{ mode distance; levels (({b0d:.6g} {near_band_level}) ({b1d:.6g} {max(1, smin - 1)})); }}{_wake_refine} }}
+  refinementRegions {{ {surface_name} {{ mode distance; levels (({b0d:.6g} {near_band_level}) ({b1d:.6g} {max(1, smin - 1)})); }}{_wake_refine}{_gap_refine} }}
   locationInMesh {vf(loc)}; allowFreeStandingZoneFaces true;{_outside} }}
 snapControls {{ nSmoothPatch 3; tolerance 2.0; nSolveIter 50; nRelaxIter 8; nFeatureSnapIter 15;
   implicitFeatureSnap false; explicitFeatureSnap true; multiRegionFeatureSnap false; }}
@@ -879,7 +898,40 @@ mergeTolerance 1e-6; debug 0;
         _wr.write_text(json.dumps(out["wake"]))
     elif _wr.exists():
         _wr.unlink()
+    if _gap is not None and _gap.spots:
+        out["gap_plan"] = _gap.record()
+        out["gap_note"] = _gap.words(base_actual / (2 ** smax), auto=True)
+        _gap.write(ws)
     return out
+
+
+#: The searchable boxes round the gaps between a body's parts (render_snappy_case).
+_GAP_BOX = "gapZone"
+
+
+def _plan_body_gaps(field, *, wall_cell: float, budget: int, base_cells: float | None):
+    """(gap plan, the cell ceiling to mesh with) for the gaps between an external body's parts
+    (engines/gap_sizing.plan_gaps on the body gap field): the boxes put 13 across every gap the
+    wall cell leaves short, the ceiling rises to what they cost within the compute limit, and over
+    it the gaps get as many as the limit holds. (None, budget) when the plan cannot be made."""
+    import meshpipeline.settings.policy as polcfg
+    from meshpipeline.engines import gap_sizing as GS
+    from meshpipeline.engines.passage import narrow_passage_regions
+    try:
+        pts, half, areas = field
+
+        def at(t: float) -> list:
+            return list(narrow_passage_regions(pts, half, cell_m=wall_cell, areas=areas,
+                                               target=t, detect=GS.GAP_CELLS_ACROSS,
+                                               budget_cells=None) or [])
+        plan = GS.plan_gaps(at, cell_m=wall_cell, budget=int(budget),
+                            limit=int(polcfg.CELL_HARD_LIMIT), base_cells=base_cells,
+                            accept_fewer=True)
+    except Exception:  # noqa: BLE001 - a plan we cannot make leaves the case as planned
+        logger.warning("render_snappy_case: the body-gap plan failed - meshing as planned",
+                       exc_info=True)
+        return None, int(budget)
+    return plan, max(int(budget), int(plan.budget) if plan.regions else int(budget))
 
 
 def configure_mesh(workspace, *, geometry_file: str, strategy: dict, wall_patch: str,

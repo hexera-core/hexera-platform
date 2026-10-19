@@ -1185,7 +1185,12 @@ def narrow_passage_regions(points, radius, *, cell_m: float, areas=None,
         fluid = (min(box_volume, float((A[idx] * rg).sum())) if A is not None else box_volume)
         boxes.append({"min": lo.tolist(), "max": hi.tolist(), "radius_m": rmin,
                       "cell_needed_m": 2.0 * rmin / float(target), "level_bump": int(b),
-                      "n_points": int(len(idx)), "volume_m3": fluid})
+                      "n_points": int(len(idx)), "volume_m3": fluid,
+                      # the passage the points bound, as a tube holds it (area x r / 2): what
+                      # engines/gap_sizing costs a box at, where the budget held here keeps the
+                      # cautious twice-over figure above
+                      "fluid_m3": (min(box_volume, 0.5 * float((A[idx] * rg).sum()))
+                                   if A is not None else box_volume)})
 
     def _cost(bs) -> float:
         return sum(b["volume_m3"] / (float(cell_m) / (2 ** b["level_bump"])) ** 3 for b in bs)
