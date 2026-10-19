@@ -45,14 +45,15 @@ from meshpipeline.cad.ingest.ecxml_build import (
     _face_object,
     _heatsink,
     _material,
-    _noise,
     _pair_scan,
     _Part,
     _plate,
+    _precision,
     _records_in_domain,
     _Tol,
     _um,
     _unique_namer,
+    length_words,
 )
 
 #: More parts than a one-region-per-part conjugate case can carry: the solver reads one mesh and
@@ -89,18 +90,42 @@ def _records() -> dict[str, list]:
     return {k: [] for k in (
         "patches", "fans", "grilles", "flow_resistances", "volume_heat_sources",
         "surface_heat_sources", "baffles", "monitor_points", "compact_models", "not_built",
-        "inactive")}
+        "inactive", "thin_layers", "thin_layers_meshed")}
 
 
-def place(model: EcxmlModel) -> Placement:
+def place(model: EcxmlModel, layers=None) -> Placement:
     """Every active object of the model at its place: solid parts with their material boxes, the
     physics the mesh does not carry in records, and the order overlapping parts are painted in.
-    Raises EcxmlError when there is nothing to place."""
+
+    THIN LAYERS (cad/ingest/ecxml_films): a layer too thin to mesh with sound cells and thermally
+    thin is carried as a thin-layer thermal resistance - placed once, the rule decides, and the
+    model is placed again with that layer's place closed by its better-conducting neighbour; the
+    layer is a record (records["thin_layers"]) the mesher puts on the interface. `layers`: the
+    ecxml_films.LayerRule (the grid it would be meshed in); None: the default rule; False: every
+    layer meshed. Raises EcxmlError when there is nothing to place."""
+    from meshpipeline.cad.ingest import ecxml_films
+
+    first = _place(model, None)
+    if layers is False:
+        return first
+    plan = ecxml_films.decide(first, layers or ecxml_films.LayerRule())
+    if not plan:
+        first.records["thin_layers_meshed"] = plan.kept
+        return first
+    second = _place(model, plan)
+    second.records["thin_layers_meshed"] = plan.kept
+    return second
+
+
+def _place(model: EcxmlModel, collapse) -> Placement:
     objs = model.active_objects
     notes: list[str] = list(model.notes)
     report: list[str] = []
-    noise = _noise(model, objs)
-    snapped, moved, roundoff = _snap_roundoff(model, objs, noise)
+    precision = _precision(model, objs)
+    noise = precision.noise
+    snapped, moved, roundoff = _snap_roundoff(model, objs, precision)
+    if collapse:
+        snapped = _closing(snapped, collapse.moves, noise)
     domain, domain_source = _domain(model.domain, objs, snapped, noise)
     if domain is None:
         raise EcxmlError("the ECXML model holds no object with a size and no solution domain, so "
@@ -121,6 +146,17 @@ def place(model: EcxmlModel) -> Placement:
             continue
         if o.props.get("heatsink"):
             heatsink_parts.setdefault((o.path, o.material), []).append(o)
+            continue
+        if collapse and o.order in collapse.skip:
+            row = collapse.skip[o.order]
+            records["thin_layers"].append(row)
+            fate[o.order] = "thin-layer thermal resistance (in the sidecar)"
+            # its outline stays on the grid, so the faces that carry it are exactly its footprint
+            a = "xyz".index(row["axis"])
+            box = snapped(o)
+            lo, hi = list(box.lo), list(box.hi)
+            lo[a] = hi[a] = row["plane_m"]
+            extra.append(_Box(lo, hi))
             continue
         if k == "monitorPoint":
             assert o.location is not None
@@ -237,12 +273,53 @@ def place(model: EcxmlModel) -> Placement:
     if cycles:
         report.append(f"Overlap: the file's precedence rule went round in a circle for {cycles} "
                       "part(s); those are painted in file order (the later object wins).")
-    report += roundoff_lines(roundoff)
+    report += roundoff_lines(roundoff, precision)
     names = _names(parts)
+    if collapse:
+        report += thin_layer_lines(records["thin_layers"])
     return Placement(model=model, domain=domain, domain_source=domain_source, parts=parts,
                      paint=paint, records=records, fate=fate, notes=notes, report=report,
                      tol=tol, planes=planes, names=names, order_cycles=cycles,
                      snapped=snapped, roundoff=roundoff)
+
+
+def _closing(snapped, moves: list[dict[float, float]], noise: float):
+    """The snapped boxes with the planes a collapsed thin layer leaves moved onto the plane it
+    collapses to (cad/ingest/ecxml_films.decide): its neighbour grows into its place."""
+    cache: dict[int, _Box] = {}
+
+    def to(axis: int, v: float) -> float:
+        for frm, dest in moves[axis].items():
+            if abs(v - frm) <= noise:
+                return dest
+        return v
+
+    def closed(o: Obj) -> _Box:
+        if o.order not in cache:
+            b = snapped(o)
+            cache[o.order] = _Box([to(i, b.lo[i]) for i in range(3)],
+                                  [to(i, b.hi[i]) for i in range(3)])
+        return cache[o.order]
+
+    return closed
+
+
+def thin_layer_lines(rows: list[dict]) -> list[str]:
+    """The report's words for the thin layers carried as resistances."""
+    if not rows:
+        return []
+    rows = sorted(rows, key=lambda r: r["thickness_m"])
+    shown = "; ".join(
+        f"{r['label']} ({length_words(r['thickness_m'])} of {r.get('material') or '?'}, "
+        f"k {r['k_through_W_mK']:.3g} W/mK: R = {r['R_m2K_W']:.3g} m2K/W)" for r in rows[:8])
+    more = f", and {len(rows) - 8} more" if len(rows) > 8 else ""
+    return [f"Thin layers: {len(rows)} layer(s) too thin to mesh with sound cells (they would be "
+            "over 1000 times wider than thick) and thermally thin (they carry under 1% of the "
+            "sideways conduction beside them) are each a thin-layer thermal resistance R = t / k on "
+            f"the interface between their neighbours, as Flotherm's collapsed cuboids and Icepak's "
+            f"contact resistances are: {shown}{more}. The neighbour that conducts better fills "
+            "the layer's place, and what it adds is taken off the layer's own resistance, so the "
+            "resistance through the stack is the file's."]
 
 
 def _no_solid(_tol):
@@ -357,22 +434,52 @@ def thinner_why(noise: float) -> str:
 
 
 #: Exporters round a plane they compute (a location plus a size, a unit conversion) differently
-#: from the same plane written as a number: Analog Devices' public models carry 10-50 nm steps
-#: between faces that are meant to meet. No electronics layer is this thin, so two planes of
-#: DIFFERENT objects closer than this are one plane. (One object's own two faces never merge.)
-ROUNDOFF_M = 1e-7
+#: from the same plane written as a number. Analog Devices' public models, written to 8 places
+#: (10 nm), carry steps of 1 to 6 units of that last place between faces that are meant to meet;
+#: float32 exports carry steps of about their own noise (30 nm at 0.12 m). So two planes of
+#: DIFFERENT objects are one plane when they are closer than ROUNDOFF_UNITS units of the file's
+#: print limit, or ROUNDOFF_NOISE times its binary-float noise - a reach that comes from the file's
+#: own digits, never a fixed length: a file written to 12 places reads a 10 nm step as 10 nm.
+#: (Never when it would change an object's extent by more than ROUNDOFF_THICKNESS_SHARE.)
+ROUNDOFF_UNITS = 10.0
+ROUNDOFF_NOISE = 2.0
+#: ... and never when it would change the extent of an object a plane bounds by more than this
+#: share of it: that is the object's own size, not round-off (a 50 nm film beside a 30 nm one keeps
+#: its 50 nm, and a 10 nm film its own two faces, whatever the reach).
+ROUNDOFF_THICKNESS_SHARE = 0.01
 
 
-def _snap_roundoff(model: EcxmlModel, objs: list[Obj], noise: float):
+def roundoff_reach(precision) -> float:
+    """How close two planes of different objects may be and still be read as one, metres."""
+    return max(precision.noise, ROUNDOFF_UNITS * precision.printed,
+               ROUNDOFF_NOISE * precision.float32)
+
+
+def reach_words(precision) -> str:
+    """Where the round-off reach comes from, in words."""
+    if ROUNDOFF_UNITS * precision.printed >= max(precision.noise,
+                                                ROUNDOFF_NOISE * precision.float32):
+        return (f"{ROUNDOFF_UNITS:g} units of the last digit the file writes, "
+                f"{length_words(precision.printed)}")
+    if ROUNDOFF_NOISE * precision.float32 >= precision.noise:
+        return (f"{ROUNDOFF_NOISE:g} times the float32 noise of its numbers, "
+                f"{length_words(precision.float32)}")
+    return "the file's own precision"
+
+
+def _snap_roundoff(model: EcxmlModel, objs: list[Obj], precision):
     """The fused build's snapping (every bound onto the plane it is meant to share, planes within
-    the file's precision one plane), widened to exporter round-off: planes of different objects
-    closer than max(precision, ROUNDOFF_M) are one plane - the one most objects state (the
-    domain's own sides first) - unless that would put one object's two faces on one plane while
-    the file keeps them further apart than its precision. Returns snapped(o) -> _Box, the moved
+    the file's precision one plane), widened to exporter round-off: planes closer than
+    roundoff_reach(precision) are one plane - the one most objects state (the domain's own sides
+    first) - as long as reading them as one changes no object's extent by more than
+    ROUNDOFF_THICKNESS_SHARE of it. So a part's own two faces never become one plane, and a 50 nm
+    film keeps its 50 nm beside a 30 nm one however far the reach is; a 60 nm step between the
+    faces of two 90 um solder bumps is still one plane. Returns snapped(o) -> _Box, the moved
     counts, and the merges beyond the file's precision (what the report says)."""
-    merge = max(noise, ROUNDOFF_M)
+    noise = precision.noise
+    merge = roundoff_reach(precision)
     by_axis: list[list[tuple[float, int, int]]] = [[], [], []]   # (value, owner, 0 lo / 1 hi)
-    own_extent: dict[tuple[int, int], tuple[float, float]] = {}
+    extent: dict[tuple[int, int], float] = {}
     names: dict[int, str] = {-1: "the solution domain"}
     for o in objs:
         if o.location is not None and o.size is not None:
@@ -380,28 +487,35 @@ def _snap_roundoff(model: EcxmlModel, objs: list[Obj], noise: float):
             names[o.order] = o.label
             for i in range(3):
                 by_axis[i] += [(lo[i], o.order, 0), (hi[i], o.order, 1)]
-                own_extent[(o.order, i)] = (lo[i], hi[i])
+                extent[(o.order, i)] = abs(hi[i] - lo[i])
     if model.domain is not None:
         d = model.domain
         for i in range(3):
             by_axis[i] += [(d.location[i], -1, 0), (d.location[i] + d.size[i], -1, 1)]
+            extent[(-1, i)] = abs(d.size[i])
+
+    def room(w: tuple[float, int, int], i: int) -> float:
+        """How far a plane of this object may move: a share of its extent (a flat object - a
+        vent, a fan face - moves whole)."""
+        e = extent.get((w[1], i), math.inf)
+        return math.inf if e <= noise else ROUNDOFF_THICKNESS_SHARE * e
+
     rep_of: dict[tuple[int, int, int], float] = {}         # (owner, axis, lo/hi) -> plane
     merges: list[dict] = []
     for i, vals in enumerate(by_axis):
         vals.sort()
         clusters: list[list[tuple[float, int, int]]] = []
+        reach_left: list[float] = []          # the least room of any member, per cluster
         for v in vals:
-            cur = clusters[-1] if clusters else None
-            if cur is not None and v[0] - cur[0][0] <= merge:
-                # one object's own two faces stay apart when the file keeps them apart
-                clash = v[0] - cur[0][0] > noise and any(
-                    w[1] == v[1] and w[1] >= 0 and w[2] != v[2]
-                    and abs(own_extent[(v[1], i)][1] - own_extent[(v[1], i)][0]) > noise
-                    for w in cur)
-                if not clash:
-                    cur.append(v)
+            if clusters:
+                span = v[0] - clusters[-1][0][0]
+                if span <= noise or (span <= merge
+                                     and span <= min(reach_left[-1], room(v, i))):
+                    clusters[-1].append(v)
+                    reach_left[-1] = min(reach_left[-1], room(v, i))
                     continue
             clusters.append([v])
+            reach_left.append(room(v, i))
         for cl in clusters:
             values = sorted({w[0] for w in cl})
             if any(w[1] == -1 for w in cl):
@@ -446,21 +560,26 @@ def _snap_roundoff(model: EcxmlModel, objs: list[Obj], noise: float):
     return snapped, moved, merges
 
 
-def roundoff_lines(merges: list[dict]) -> list[str]:
+def roundoff_lines(merges: list[dict], precision=None) -> list[str]:
     """The report's words for the planes read as one beyond the file's precision."""
     if not merges:
         return []
+    reach = (roundoff_reach(precision) if precision is not None
+             else max(m["step_m"] for m in merges))
+    why = reach_words(precision) if precision is not None else "the file's own precision"
     worst = max(merges, key=lambda m: m["step_m"])
     line = (f"Exporter round-off: {len(merges)} group(s) of planes of different objects closer "
-            f"than {ROUNDOFF_M * 1e6:g} um were read as one plane each (largest step "
-            f"{worst['step_m'] * 1e9:.3g} nm, on {worst['axis']} at {worst['at_m']:.9g} m: "
-            + ", ".join(worst["objects"][:4]) + ").")
+            f"than {length_words(reach)} ({why}) were read as one plane each (largest step "
+            f"{length_words(worst['step_m'])}, on {worst['axis']} at {worst['at_m']:.9g} m: "
+            + ", ".join(worst["objects"][:4]) + "). Planes that close which bound a part are "
+            f"kept where the file puts them when reading them as one would change the part's "
+            f"thickness by more than {ROUNDOFF_THICKNESS_SHARE:.0%}.")
     gaps = [g for m in merges for g in m["gaps_closed"]]
     if gaps:
         gaps.sort(key=lambda g: -g["gap_m"])
         line += (f" {len(gaps)} gap(s) that thin are closed, so those parts touch: "
                  + "; ".join(f"{g['between'][0]} and {g['between'][1]} "
-                             f"({g['gap_m'] * 1e9:.3g} nm)" for g in gaps[:6])
+                             f"({length_words(g['gap_m'])})" for g in gaps[:6])
                  + ("..." if len(gaps) > 6 else "") + ".")
     return [line]
 
@@ -732,6 +851,8 @@ def placement_sidecar(placement: Placement, *, regions: list[dict] | None = None
         "volume_heat_sources": records["volume_heat_sources"],
         "surface_heat_sources": records["surface_heat_sources"],
         "baffles": records["baffles"], "compact_models": records["compact_models"],
+        "thin_layers": records["thin_layers"],
+        "thin_layers_meshed": records["thin_layers_meshed"],
         "monitor_points": records["monitor_points"],
         "inactive_objects": records["inactive"], "not_built": records["not_built"],
         "ignored_elements": model.ignored_elements,

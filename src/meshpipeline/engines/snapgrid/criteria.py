@@ -21,6 +21,9 @@ from meshpipeline.engines.review_types import Criterion, ReviewAxis
 
 #: The ECXML standard the mesher reads (JEDEC JEP181A); the file's numbers are the model.
 _JEP181 = "https://www.jedec.org/standards-documents/docs/jep181a"
+#: Published heat-sink gridding practice (cells across a fin gap and a fin) behind the thermal rules.
+_FLOTHERM_FINS = ("https://www.electronics-cooling.com/1996/01/applying-computational-fluid-"
+                  "dynamics-to-heat-sink-design-and-selection/")
 
 CRITERIA_ROWS: tuple[Criterion, ...] = (
     Criterion(
@@ -66,10 +69,25 @@ CRITERIA_ROWS: tuple[Criterion, ...] = (
         key="thin_layers_short", label="Every thin layer has the cells across it that were asked",
         op="empty", threshold=None, gating=False,
         rationale=("Every layer always has at least one cell through it (a layer is never merged "
-                   "away). A layer listed here has fewer cells across it than the plan asked for, "
+                   "away; one too thin to mesh with sound cells is carried as a thin-layer thermal "
+                   "resistance on its interface instead, and listed as such). A layer listed here has fewer cells across it than the plan asked for, "
                    "usually because the cell budget ran out; the temperature drop across it is "
                    "resolved more coarsely. Advisory - the mesh is still the file's model."),
         evidence_url=_JEP181,
+    ),
+    Criterion(
+        key="resolution_short",
+        label="Every air gap, heated surface, heat source and fan or vent has the cells its level asks",
+        op="empty", threshold=None, gating=False,
+        rationale=("Measured off the grid lines, never estimated: the cells across every air gap "
+                   "between solids (Flotherm: at least 3 across a fin gap, 5 for pressure drop; "
+                   "Icepak: 2-3 in every gap), inside the warm-air layer on every heated surface, "
+                   "across every heat source, and across every fan, vent and grille (Icepak: 4-5). "
+                   "A listed item is resolved more coarsely than its detail level asks - usually the "
+                   "cell budget ran out - and the temperatures there carry more grid error. Advisory: "
+                   "a concern for the reviewer, not a refusal. Absent when the mesher did not "
+                   "measure it, which never reads as a pass."),
+        evidence_url=_FLOTHERM_FINS,
     ),
 )
 
@@ -104,5 +122,23 @@ REVIEW_AXES: tuple[ReviewAxis, ...] = (
                   MetricRequirement("max_non_ortho"),
                   RenderTargetRequirement(TargetKind.REGION, "region:*")),
         evidence_url=_OF_MESH_VALIDITY,
+    ),
+    ReviewAxis(
+        name="thermal_resolution", validation_axis="quality",
+        guidance=("Judge whether the grid resolves what sets the temperatures, from the MEASURED "
+                  "counts (resolution_short, the build report's 'Resolution:' lines) and the slices: "
+                  "cells across each fin channel and every air gap between solids, a fine warm-air "
+                  "layer on each heated surface (heat sources, heat sinks, the board under them), "
+                  "cells across each heat source and each fan or vent, and cells through the fins "
+                  "and heat-sink base. Raise a concern for every item listed short - name it and the "
+                  "count - and never call a region resolved that the counts say is not."),
+        concern="A gap, heated surface, heat source or opening has fewer cells than its level asks",
+        failure_signals=("a fin channel with fewer cells across than asked",
+                         "coarse air cells against a heated surface",
+                         "a heat source or fan crossed by only a few cells"),
+        evidence=("quality_metrics", "render", "region_summary"),
+        requires=(MetricRequirement("resolution_short"),
+                  RenderTargetRequirement(TargetKind.REGION, "region:*")),
+        evidence_url=_FLOTHERM_FINS,
     ),
 )

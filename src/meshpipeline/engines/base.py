@@ -148,13 +148,20 @@ class DeliveredMesh:
 
     The fallback ladder (pipeline/engine_fallback.py) moves a run to another engine on its own
     only when that engine delivers what the approved one would have: the same file, the same
-    kind of cells, a wall at least as true to the body, and prism layers where the brief asked
-    for them. Anything less is offered to the user, never delivered silently. Declared here
-    with the rest of the engine's capability, never inferred from its name."""
+    kind of cells, a wall at least as true to the body, and every requirement of the approved
+    plan (prism layers, the wake refinement of an external flow - engine_fallback
+    .plan_requirements). Anything less is offered to the user, never delivered silently. Declared
+    here with the rest of the engine's capability, never inferred from its name."""
 
     cells: str            # one of CELL_KINDS - what fills the volume
     walls: str            # one of WALL_FITS - how the cells meet the body
     prism_layers: bool    # can deliver the near-wall prism layers a brief asks for, reliably
+    #: builds the refined wake behind an external body ON ITS OWN, from the plan (graded boxes
+    #: along the declared flow - engines/wake_region.py), not only when a planner happens to
+    #: author one. An engine without it does not deliver what an external-flow plan on an engine
+    #: with it would: job 0d0fc370 moved an external body from snappyHexMesh to cfMesh "for the same
+    #: mesh", and cfMesh's mesh came back with no wake refinement at all.
+    wake_refinement: bool = False
 
 
 @dataclass(frozen=True)
@@ -189,6 +196,13 @@ class FlowSupport:
     #: The shapes this flow's method is BUILT for, in plain words ("tubular passages: vessels,
     #: pipes, ducts"). A heads-up the proposal and the offers say out loud; never a gate.
     designed_for: str = ""
+    #: HOW MANY SEPARATE FLUID PASSAGES one job of this engine meshes for this flow - passages that
+    #: do not connect, each with its own confirmed openings (cad/fluid_passages reads them off the
+    #: staged surface). A hard limit of the engine's DRIVER, not a weak spot: snappyHexMesh fills
+    #: the one region its seed point is in and refuses the rest before it runs. 1 unless the driver
+    #: is proven to mesh several; the recommender, the fallback ladder and its offers read it
+    #: (engines/capability.covers_passages). Only internal flow is ever counted.
+    max_passages: int = 1
 
 
 #: HOME TURF verdicts, best first. A row's severity says what its condition, when it HOLDS,
@@ -271,6 +285,13 @@ class RunPolicy:
     submit_marker: str                # physical deliverable gating submit_mesh
     submit_ok_key: str                # key set true in the submit payload
     submit_hint: str                  # coaching when submit is premature
+    #: THE CAP FOR THE CASE WRITTEN IN A WORKSPACE, when the engine planned the run (timed it from
+    #: the cells it will make): seconds, or None to keep run_timeout. run_mesh still fits it into
+    #: the builder loop's remaining budget.
+    planned_timeout: Callable[[Path], int | None] | None = None
+    #: THE BROKEN CELLS A TIMED-OUT RUN WAS STILL FAILING TO REPAIR, read from its log tail ([]
+    #: when the run was merely slow): such a run is a broken mesh, not one that needed more time.
+    timed_out_defects: Callable[[str], list[str]] | None = None
 
 
 def _label(name: str) -> str:
@@ -510,6 +531,11 @@ class EngineSpec:
                     forms = (*forms, "surface")
                 return forms
         return None
+
+    def max_passages_for(self, flow: str) -> int | None:
+        """How many separate fluid passages one job of this engine meshes for `flow`
+        (FlowSupport.max_passages), or None when it is not designed for that flow at all."""
+        return next((int(fs.max_passages) for fs in self.accepts if fs.flow == flow), None)
     # THE THREE AUDIT SEAMS (stage C): builder briefing fragments, the user
     # deliverable recipe, and the run/submit tool policy. Implemented rows
     # must declare all three (enforced); planned rows leave them None.

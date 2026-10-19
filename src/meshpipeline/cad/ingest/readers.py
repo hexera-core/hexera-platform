@@ -1,7 +1,7 @@
 # Responsibility: Read every accepted mesh format into one SurfaceMesh, keeping the named groups and bodies the file carries.
 # Owns: one reader per format, the volume-mesh boundary extraction, and the group names each format stores in its own way.
 # Boundaries: in-memory and bounded; it writes nothing (canonical.py does) and resolves no reference outside the file.
-# Collaborates with: cad/ingest/surface.py (the value), cad/ingest/limits.py (the bounds), meshio, pyvista/VTK, trimesh, rhino3dm.
+# Collaborates with: cad/ingest/surface.py (the value), cad/ingest/limits.py (the bounds), meshio, pyvista/VTK, trimesh, rhino3dm, cad/ingest/collada.py (COLLADA).
 from __future__ import annotations
 
 import re
@@ -726,6 +726,10 @@ def read_surface(path: Path, key: str) -> SurfaceMesh:
         return read_gltf(p)
     if key == "3dm":
         return read_3dm(p)
+    if key == "dae":
+        from meshpipeline.cad.ingest.collada import read_collada
+
+        return read_collada(p)
     if key in ("vtk", "vtu", "vtp", "ply"):
         return read_vtk_family(p)
     if key == "msh":

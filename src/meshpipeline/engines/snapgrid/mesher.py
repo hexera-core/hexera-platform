@@ -18,6 +18,10 @@ What the file says and the mesh holds, checked before anything is written:
 * the regions fill the domain;
 * every active object is accounted for, once; region names are unique;
 * two solid parts share faces exactly where the file makes them touch, and nowhere else;
+* a layer too thin to mesh with sound cells (over 1000 times wider than thick) that carries little
+  sideways heat is a thin-layer thermal resistance on the interface between its neighbours - its
+  own mappedWall pair with OpenFOAM's thicknessLayers / kappaLayers written beside it
+  (engines/snapgrid/thin_layers.py, cad/ingest/ecxml_films.py);
 * every part has at least one cell through its thickness on every axis - a layer is never merged
   away - and the parts with fewer cells across than asked are listed.
 """
@@ -61,6 +65,7 @@ from meshpipeline.engines.snapgrid import blocks as B
 from meshpipeline.engines.snapgrid import boxmesh
 from meshpipeline.engines.snapgrid import curved as C
 from meshpipeline.engines.snapgrid import grid as G
+from meshpipeline.engines.snapgrid import thin_layers as TL
 from meshpipeline.engines.snapgrid.polymesh import SIDES, Patch
 
 REPORT_NAME = "snapgrid_report.json"
@@ -69,6 +74,8 @@ MESHER = "snapgrid"
 REPORT_VERSION = 2
 #: Thin-layer rows the report keeps (thinnest first); the counts cover every part.
 _THIN_ROWS = 200
+#: Resolution shortfalls the report lists by name (worst first); the count covers all.
+_SHORT_ROWS = 2000
 
 
 @dataclass
@@ -91,14 +98,16 @@ def _foam_dict(cls: str, obj: str, body: str, location: str = "system") -> str:
 
 
 def write_case_skeleton(case: Path) -> None:
-    """The three system dicts every OpenFOAM utility reads before it opens a mesh."""
+    """The three system dicts every OpenFOAM utility reads before it opens a mesh. A tool that
+    writes the mesh again in ASCII writes writePrecision digits: 17, a double's full precision -
+    12 would move a point 5 m from the origin by up to 10 pm, 1% of a 1 nm film."""
     system = case / "system"
     system.mkdir(parents=True, exist_ok=True)
     (system / "controlDict").write_text(_foam_dict("dictionary", "controlDict", (
         "application     chtMultiRegionFoam;\nstartFrom       startTime;\nstartTime       0;\n"
         "stopAt          endTime;\nendTime         1;\ndeltaT          1;\n"
         "writeControl    timeStep;\nwriteInterval   1;\nwriteFormat     binary;\n"
-        "writePrecision  12;\nwriteCompression off;\ntimeFormat      general;\n"
+        "writePrecision  17;\nwriteCompression off;\ntimeFormat      general;\n"
         "timePrecision   6;\nrunTimeModifiable false;\n")))
     (system / "fvSchemes").write_text(_foam_dict("dictionary", "fvSchemes", (
         "ddtSchemes { default steadyState; }\ngradSchemes { default Gauss linear; }\n"
@@ -127,7 +136,7 @@ def render_region_properties(fluids: list[str], solids: list[str]) -> str:
 # ------------------------------------------------------------------------------ the mesh ------
 def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None = None,
                dry_run: bool = False, local: bool = True, dialect: str = "esi",
-               memory_bytes: float | None = None) -> SnapgridMesh:
+               memory_bytes: float | None = None, thin_layers: bool = True) -> SnapgridMesh:
     """Read `src` (ECXML), mesh it on a snap grid refined locally (blocks) and write the
     single-region polyMesh with a cellZone per region, constant/regionProperties, the report and
     the physics sidecar into the OpenFOAM case `case`. `dry_run` stops after the grid is sized
@@ -136,12 +145,18 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
     more cells than the budget to keep its layers) or FidelityError (a mesh that would not be the
     file's model - a bug, never a model fault). `memory_bytes`: the memory the job may use (None:
     read from the machine and its container); a budget that would not fit in it is lowered before
-    anything is built, and a model that cannot keep its layers in it raises grid.OutOfMemory."""
+    anything is built, and a model that cannot keep its layers in it raises grid.OutOfMemory.
+    `thin_layers`: carry the layers too thin to mesh soundly as thin-layer resistances (the
+    default); False meshes every layer."""
     plan = plan or G.GridPlan()
     case = Path(case)
     t = {"start": time.perf_counter()}
     model = read_ecxml(src)
-    placement = place(model)
+    from meshpipeline.cad.ingest.ecxml_films import LayerRule
+
+    # thin layers too flat to mesh soundly become resistances (cad/ingest/ecxml_films); False
+    # meshes every layer, however flat its cells
+    placement = place(model, layers=LayerRule.from_plan(plan) if thin_layers else False)
     t["placed"] = time.perf_counter()
     asked = plan
     plan, memory = _plan_for_memory(plan, memory_bytes)
@@ -163,7 +178,11 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
                     "relaxed": layout.relaxed, "grid": layout_stats(layout),
                     "memory": {**memory, "estimate_bytes": G.memory_needed(layout.n_cells)}}
     if dry_run:
+        from meshpipeline.engines.snapgrid import thermal_rules as TR
         report["dry_run"] = True
+        report["resolution"] = _resolution_record(TR.audit(placement, layout, layout.plan, asked),
+                                                  asked)
+        report["rules_budget"] = layout.rules_budget
         report["timings_s"] = _timings(t)
         return SnapgridMesh(case=case, report=report, sidecar={})
 
@@ -283,9 +302,24 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
     checks, contacts, staircase = _fidelity(placement, topo, zone, part_vol, live, part_region,
                                             regions, vols)
     staircase = _curved_rows(staircase, curved_rows, snapped)
-    thin = _thin_layers(placement, layout, live, part_region, plan.min_cells_across)
+    from meshpipeline.engines.snapgrid import thermal_rules as TR
+    thin = _thin_layers(placement, layout, live, part_region,
+                        {k: TR.part_cells(placement, asked, k) for k in live})
+    # what the grid gives every thermal rule, measured off its lines against what was asked
+    try:
+        resolution = TR.audit(placement, layout, layout.plan, asked)
+    except Exception as exc:  # noqa: BLE001 - never a fake pass: the report says it was not measured
+        resolution = {"measured": False, "error": f"{type(exc).__name__}: {exc}"[:300],
+                      "rows": {}, "short": []}
     interfaces = _interfaces(topo, cell_zone, zone_names, n_air)
     patches, chunk_ids, patch_rows = _boundary(placement, layout, topo, zone_names)
+    # thin layers carried as resistances: the faces over each one's footprint get their own pair
+    tl_tol = G.plane_tolerance(placement)
+    tl_tags, tl_combos = TL.tag_faces(placement, topo, points, keys, cell_zone, tl_tol)
+    tl_names = TL.tag_names(placement, tl_combos)
+    tl_rows = TL.interfaces(placement, topo, points, keys, cell_zone, zone_names,
+                            {n_air + z: k for z, k in enumerate(live)}, tl_tags, tl_combos,
+                            tl_names, tl_tol)
     t["checked"] = time.perf_counter()
 
     case.mkdir(parents=True, exist_ok=True)
@@ -298,7 +332,9 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
     region_meshes = boxmesh.write_regions(case, topo, points, cell_zone=cell_zone,
                                           zone_names=zone_names, chunk_patches=chunk_ids,
                                           patches=patches, binary=as_binary,
-                                          dialect=dialect)
+                                          dialect=dialect, face_tags=tl_tags,
+                                          tag_names=tl_names)
+    tl_files = TL.write_includes(case, tl_rows, dialect, set(air_names))
     for rname in zone_names:
         _write_region_system(case, rname)
     # what the viewer draws: every part's meshed surface under its name, and the domain's sides
@@ -338,12 +374,20 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
     stats["interface_skew"] = report.get("interface_skew") or {}
     report["grid"] = stats
     build_report += _report_lines(placement, layout, stats, thin, staircase, records)
+    build_report += _resolution_lines(resolution, layout)
     build_report += _flattened_warning(placement, flattened, contacts)
     report["thin_air"] = _thin_air(placement, live)
     build_report += _physics_warnings(placement, live, part_vol)
     build_report += _thin_air_lines(report["thin_air"])
+    build_report += TL.report_lines(tl_rows, placement)
     build_report += checks
-    sidecar = _sidecar(placement, regions, patch_rows, build_report, contacts, stats)
+    report["thin_layer_resistances"] = list(records.get("thin_layers") or [])
+    report["thin_layers_meshed_flat"] = list(records.get("thin_layers_meshed") or [])
+    report["thin_layer_interfaces"] = tl_rows
+    report["thin_layer_files"] = tl_files
+    sidecar = _sidecar(placement, regions, patch_rows, build_report, contacts, stats,
+                       {"thin_layer_interfaces": tl_rows, "thin_layer_files": tl_files,
+                        "thin_layer_dialect": dialect})
     (case / SIDECAR_NAME).write_text(json.dumps(sidecar, indent=1, default=float))
     report.update({
         "regions": [{k: r.get(k) for k in ("name", "type", "kind", "material", "power_W",
@@ -352,6 +396,7 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
                     for r in regions],
         "fluid_regions": fluids, "solid_regions": solids,
         "thin_layers": thin[:_THIN_ROWS], "thin_layers_short": [r for r in thin if not r["ok"]],
+        "resolution": _resolution_record(resolution, asked), "rules_budget": layout.rules_budget,
         "staircased": staircase,
         "interfaces": interfaces, "patches": written["patches"],
         "solid_contacts": sorted(sorted(c) for c in contacts),
@@ -381,7 +426,7 @@ def _plan_for_memory(plan: G.GridPlan, memory_bytes: float | None) -> tuple[G.Gr
     lowered = max(1000, fit)
     out["lowered_from"] = plan.max_cells
     out["note"] = (f"the memory this job has ({have / 1e9:.3g} GB) holds about {fit:,} cells at "
-                   f"{G.BYTES_PER_CELL * 1e3:.3g} GB per million, so the cell budget was lowered "
+                   f"{G.BYTES_PER_CELL * 1e-3:.3g} GB per million, so the cell budget was lowered "
                    f"from {plan.max_cells:,} to {lowered:,} before anything was built")
     return G._replace(plan, max_cells=lowered), out
 
@@ -1168,7 +1213,7 @@ def _interfaces(topo: boxmesh.BoxTopology, cell_zone: np.ndarray, names: list[st
 
 
 def _thin_layers(placement: Placement, layout: B.Layout, live: list[int], names: dict,
-                 want: int) -> list[dict]:
+                 want: int | dict[int, int]) -> list[dict]:
     """Each part's thinnest extent and the cells through it (thinnest first): how every thin layer
     - a thermal interface, a die attach, a board - is resolved. A part always has at least one
     cell through each of its boxes on each axis: the blocks it reaches into hold both of its faces.
@@ -1204,8 +1249,9 @@ def _thin_layers(placement: Placement, layout: B.Layout, live: list[int], names:
         if best is None:
             continue
         t, n, i = best
+        w = want.get(k, 1) if isinstance(want, dict) else want
         rows.append({"part": names[k], "axis": _AXES[i], "thickness_m": t, "cells_across": int(n),
-                     "wanted": want, "ok": n >= want})
+                     "wanted": w, "ok": n >= w})
     rows.sort(key=lambda r: (r["thickness_m"], r["cells_across"]))
     return rows
 
@@ -1364,13 +1410,55 @@ def _report_lines(placement: Placement, layout: B.Layout, st: dict, thin: list[d
     return lines
 
 
+def _resolution_record(res: dict, asked: G.GridPlan) -> dict:
+    """The resolution audit as the report keeps it: the rules asked, each rule's measured rows
+    (capped), the counts and every shortfall."""
+    from meshpipeline.engines.snapgrid import thermal_rules as TR
+
+    def plain(v):
+        if isinstance(v, np.generic):
+            return v.item()
+        if isinstance(v, np.ndarray):
+            return v.tolist()
+        return v
+
+    rows = {k: [{kk: plain(v) for kk, v in r.items()} for r in rs[:_THIN_ROWS]]
+            for k, rs in (res.get("rows") or {}).items()}
+    return {"measured": bool(res.get("measured")), "error": res.get("error"),
+            "rules": TR.describe_plan(asked), "rows": rows, "counts": res.get("counts") or {},
+            "short": [{k: plain(r[k]) for k in ("what", "want", "got", "first_m", "first_want_m")
+                       if k in r} for r in (res.get("short") or [])[:_SHORT_ROWS]],
+            "short_count": len(res.get("short") or []),
+            "short_lines": TR.short_lines(res), "summary": TR.summary_lines(res),
+            "velocity_m_s": res.get("velocity_m_s"), "velocity_from": res.get("velocity_from"),
+            "heated_parts": res.get("heated_parts") or []}
+
+
+def _resolution_lines(res: dict, layout: B.Layout) -> list[str]:
+    """The build report's lines on the thermal rules: what each got, and any shortfall."""
+    from meshpipeline.engines.snapgrid import thermal_rules as TR
+
+    if not res.get("measured"):
+        return ["WARNING: the cells across gaps, heated surfaces, heat sources and openings were "
+                f"not measured ({res.get('error') or 'unknown error'})."]
+    out = [f"Resolution: {line}" for line in TR.summary_lines(res)]
+    short = TR.short_lines(res)
+    if short:
+        out += [f"WARNING: {line}." for line in short]
+        if layout.rules_budget:
+            out.append(f"A cell budget of at least {layout.rules_budget:,} keeps every rule as "
+                       "asked.")
+    return out
+
+
 def _sidecar(placement: Placement, regions: list[dict], patches: list[dict],
-             build_report: list[str], contacts: set, stats: dict) -> dict:
+             build_report: list[str], contacts: set, stats: dict,
+             extra: dict | None = None) -> dict:
     """The fused build's sidecar shape, with the mesh's regions, patches and grid."""
     return placement_sidecar(placement, regions=regions, patches=patches,
                              build_report=build_report, solid_contacts=contacts, mesher=MESHER,
                              geometry_unit="m (the mesh is in the file's metres)",
-                             extra={"grid": stats})
+                             extra={"grid": stats, **(extra or {})})
 
 
 def write_sidecar_beside(path: Path, sidecar: dict) -> None:

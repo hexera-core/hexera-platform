@@ -14,8 +14,11 @@ class Ecxml:
     """An ECXML document under construction. Every element is written in the order the schema's
     xs:sequence requires; lengths are metres, temperatures kelvin, powers watts."""
 
-    def __init__(self, name: str, producer: str = "FloTHERM") -> None:
+    def __init__(self, name: str, producer: str = "FloTHERM", *, places: int | None = 8) -> None:
+        """`places`: the decimal places every location and size is written with (JEP181A's
+        examples: 8), or None for the shortest exact form (Python's repr: "1e-08", "0.0016")."""
         self.name, self.producer = name, producer
+        self.places = places
         self._domain: str = ""
         self._materials: list[str] = []
         self._stack: list[list[str]] = [[]]
@@ -59,9 +62,10 @@ class Ecxml:
         return self
 
     # -- helpers ----------------------------------------------------------------------------
-    @staticmethod
-    def _xyz(tag: str, v) -> str:
-        return f"<{tag}>{''.join(f'<{a}>{_num(x)}</{a}>' for a, x in zip('xyz', v))}</{tag}>"
+    def _xyz(self, tag: str, v) -> str:
+        def fmt(x) -> str:
+            return repr(float(x)) if self.places is None else f"{float(x):.{self.places}f}"
+        return f"<{tag}>{''.join(f'<{a}>{fmt(x)}</{a}>' for a, x in zip('xyz', v))}</{tag}>"
 
     @staticmethod
     def _head(name: str, active: bool) -> str:

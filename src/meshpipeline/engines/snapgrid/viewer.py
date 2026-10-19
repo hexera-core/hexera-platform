@@ -62,9 +62,17 @@ def write_viewer(case: Path, *, points: np.ndarray, keys: np.ndarray, topo, cell
 
     Beside the geometry: the per-face quality heatmap (non-orthogonality, skewness, aspect ratio
     of the cell behind each drawn face, on that face's own side), measured here because this is
-    the only place the whole mesh is in memory. Returns {name: faces} written."""
+    the only place the whole mesh is in memory. Returns {name: faces} written.
+
+    The surfaces are drawn in float32 RELATIVE TO THE MODEL'S OWN CENTRE (`origin`, stored beside
+    them in float64): float32 holds 7 digits, so a 10 nm film 5 cm from the file's origin - or a
+    1 um one 5 m away - would fold onto its neighbour if drawn where the file puts it."""
     from meshpipeline.engines.snapgrid.boxmesh import _boundary_patch_ids
     from meshpipeline.engines.snapgrid.curved import face_geometry
+
+    points = np.asarray(points, dtype=np.float64)
+    origin = draw_origin(points)
+    points = points - origin
 
     n_int = len(topo.owner)
     ids_i = np.searchsorted(keys, topo.face_pts)
@@ -119,8 +127,28 @@ def write_viewer(case: Path, *, points: np.ndarray, keys: np.ndarray, topo, cell
                         types=np.array([s[1] for s in surfaces]),
                         encloses=np.array([s[2] for s in surfaces], dtype=bool),
                         counts=np.array([len(s[3]) for s in surfaces], dtype=np.int64),
-                        cell_size=sizes_all.astype(np.float32), **data)
+                        cell_size=sizes_all.astype(np.float32), origin=origin, **data)
     return {s[0]: len(s[3]) for s in surfaces}
+
+
+def draw_origin(points: np.ndarray) -> np.ndarray:
+    """The point the viewer draws relative to: the centre of the points' box (float64)."""
+    if not len(points):
+        return np.zeros(3)
+    return (np.min(points, axis=0) + np.max(points, axis=0)) / 2.0
+
+
+def stored_origin(workspace) -> np.ndarray:
+    """The origin the viewer file was drawn relative to (zeros for a file written before it
+    was)."""
+    path = Path(workspace) / VIEWER_NAME
+    try:
+        with np.load(path, allow_pickle=False) as z:
+            if "origin" in z.files:
+                return np.asarray(z["origin"], dtype=np.float64).reshape(3)
+    except (OSError, ValueError):
+        pass
+    return np.zeros(3)
 
 
 def _quality_json(points, off, flat, owner, neighbour, surfaces) -> str:
@@ -171,6 +199,8 @@ def snapgrid_viewer(workspace, *, roles: dict, units: str,
         stats = ({"p10": float(np.percentile(cs, 10)), "typ": float(np.median(cs))}
                  if len(cs) else None)
         quality = str(z["quality"]) if "quality" in files else ""
+        origin = (np.asarray(z["origin"], dtype=np.float64).reshape(3) if "origin" in files
+                  else np.zeros(3))
     resp = polymesh_response(raw, stats, roles, units)
     if resp and quality:
         try:
@@ -184,12 +214,16 @@ def snapgrid_viewer(workspace, *, roles: dict, units: str,
             logger.warning("snapgrid viewer: the stored quality fields are unreadable - "
                            "drawn without a heatmap")
     if resp:
+        # where the drawing's (0, 0, 0) is in the file's metres: everything drawn - the surfaces,
+        # the heatmap's hotspots, the slices - is relative to it
+        resp["origin_m"] = [float(v) for v in origin]
+    if resp:
         # A THERMAL MODEL'S RESULTS: every part with its cells and layers, the quality in plain
         # words, ready-made slices and the files to download (engines/snapgrid/results)
         try:
             from meshpipeline.engines.snapgrid.results import thermal_results
 
-            thermal = thermal_results(Path(workspace))
+            thermal = thermal_results(Path(workspace), origin=origin)
             if thermal:
                 resp["thermal"] = thermal
         except Exception:  # noqa: BLE001 - the results block is an addition, never worth the mesh

@@ -15,8 +15,8 @@ logger = logging.getLogger(__name__)
 #: prompt names it so nothing in it is ever read as declared.
 DRAWING_MARK = "GEOMETRY CHECK (drawing your part):"
 HOLD_REPLY = (
-    f"{DRAWING_MARK} thanks - I'm drawing your part now. It will appear beside this chat in a few "
-    "seconds with a numbered sticker on every opening I found. Check the names, fix anything "
+    f"{DRAWING_MARK} thanks - I'm drawing your part now. It will appear beside this chat "
+    "with a numbered sticker on every opening I found. Check the names, fix anything "
     "wrong, and press Proceed. Then I'll ask only what is still missing."
 )
 #: What the conversation says to a message sent while the part is still being drawn.
@@ -31,8 +31,8 @@ WAIT_REPLY = (
 THERMAL_HOLD_REPLY = f"{DRAWING_MARK} {{headline}} Check the parts beside this chat and press Mesh this model."
 #: ...before the check has read the file: there is no headline yet to give.
 THERMAL_OPENING_REPLY = (
-    f"{DRAWING_MARK} opening your thermal model now. It will appear beside this chat in a few "
-    "seconds: check the parts there and press Mesh this model."
+    f"{DRAWING_MARK} opening your thermal model now. It will appear beside this chat: "
+    "check the parts there and press Mesh this model."
 )
 THERMAL_WAIT_REPLY = (
     f"{DRAWING_MARK} still opening your thermal model - it will appear beside this chat in a "
@@ -162,6 +162,44 @@ def measured_size_mm(session_id: str) -> list[float] | None:
         return [float(v) for v in size]
     except Exception as exc:  # noqa: BLE001 - a hint we cannot read is a question without one
         logger.info("geometry check: measured size unavailable for the unit question (%s)", exc)
+        return None
+
+
+def measured_unit_inference(session_id: str, words: str = "") -> dict | None:
+    """The unit the check reads a unit-less file as - from what the part is (its shape and flow,
+    the naming's name and estimate, the user's words) - with how sure that is and the other
+    reading (application/geometry_check.unit_inference). The confirmed form wins over the scout's
+    guess for the flow, the ground and the part's name. None when there is nothing measured to
+    read, or the file stated its unit."""
+    import meshpipeline.settings.geometry_check as gcfg
+
+    if not gcfg.GEOMETRY_CHECK_ENABLED:
+        return None
+    import json
+
+    from meshpipeline.application.geometry_check import check_object_key, read_check, unit_inference
+    from meshpipeline.contracts.object_storage import ObjectNotFound, get_object_store
+
+    try:
+        stored = read_check(session_id) or {}
+        facts = stored.get("facts") or {}
+        if not facts.get("unit_assumed", True):
+            return None
+        proposal = dict(stored.get("proposal") or {})
+        if not proposal.get("size_mm"):
+            proposal["size_mm"] = facts.get("size_mm")
+        try:
+            confirmed = json.loads(get_object_store().get_bytes(
+                object_key=check_object_key(session_id, "confirmed.json")))
+        except ObjectNotFound:
+            confirmed = None
+        if isinstance(confirmed, dict):
+            for key in ("flow", "grounded", "up_axis", "part"):
+                if confirmed.get(key) not in (None, ""):
+                    proposal[key] = confirmed[key]
+        return unit_inference(proposal, facts, words)
+    except Exception as exc:  # noqa: BLE001 - a reading we cannot make is a question without one
+        logger.info("geometry check: unit reading unavailable for the unit question (%s)", exc)
         return None
 
 

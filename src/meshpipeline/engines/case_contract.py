@@ -267,6 +267,16 @@ def _snappy_boundary(ws: Path) -> CaseBoundary | None:
                         engine_owned=frozenset(box) if internal else frozenset())
 
 
+def _passage_solids(ws: Path) -> list[str]:
+    """The solids of every further passage's surface a cfMesh case lists in its passages record."""
+    from meshpipeline.cad.fluid_passages import passage_surface_files
+    try:
+        surfaces = passage_surface_files(ws)
+    except ValueError as exc:
+        raise CaseUnreadable(str(exc)) from exc
+    return [name for surf in surfaces for name in stl_solid_names(surf)]
+
+
 def _cfmesh_boundary(ws: Path) -> CaseBoundary | None:
     """Every solid of the assembled surface (geom.stl) renamed and retyped by the meshDict's
     renameBoundary - a solid it does not list lands in its defaultName - plus, in 2D, the front and
@@ -283,6 +293,9 @@ def _cfmesh_boundary(ws: Path) -> CaseBoundary | None:
     solids = stl_solid_names(surf)
     if not solids:
         raise CaseUnreadable("geom.stl names no solids (empty, or not ASCII)")
+    # a case of several separate passages meshes each further one from its own surface and merges
+    # it in (engines/cfmesh/native.mesh_passages): their solids are the case's boundary too
+    solids = [*solids, *_passage_solids(ws)]
     patches: dict[str, str] = {}
     for s in solids:
         if s in renames:

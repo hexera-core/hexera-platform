@@ -76,6 +76,13 @@ MAX_LIDS_PROBED = 256
 #: A flat patch this many times the size of the patches round it is a face the part was drawn
 #: with even where it runs smoothly into a fillet; a facet of a curved wall is their size.
 FACE_OVER_FACETS = 4.0
+#: THE TUBE BEHIND A LID: rays fanned square to the lid from its axis, half a radius and a radius
+#: in, meet the wall at BEHIND_LO..BEHIND_HI of the lid's own radius, varying by at most
+#: BEHIND_SPREAD of their mean - the cross-section a lid closes is the lid's own (a branch's end).
+BEHIND_DEPTHS = (0.5, 1.0)
+BEHIND_RAYS = 8
+BEHIND_LO, BEHIND_HI = 0.6, 1.6
+BEHIND_SPREAD = 0.35
 
 
 @dataclass
@@ -96,6 +103,10 @@ class Hole:
     #: how sure the reading is, 0..1: an open edge or a bore wall all round, and how much of the
     #: air outside is clear
     confidence: float = 0.0
+    #: AN ANNULUS: the area of what stands in the hole - the flat end of a centre rod or hub,
+    #: lying in the mouth's plane inside its loop (see WHAT STANDS IN A HOLE) - so the flow
+    #: crosses `area - filled`. 0.0 for a plain bore.
+    filled: float = 0.0
 
     @property
     def equivalent_diameter(self) -> float:
@@ -104,6 +115,10 @@ class Hole:
     @property
     def shape(self) -> str:
         return _shape(self.wh, self.area)
+
+    @property
+    def annular(self) -> bool:
+        return 0.0 < self.filled < self.area
 
     def as_dict(self, mm_per_unit: float = 1000.0) -> dict:
         """The hole as the stage reads it: metres and the reading's millimetres side by side, the
@@ -120,6 +135,9 @@ class Hole:
             out["width_mm"], out["height_mm"] = round(self.wh[0] * mm_per_unit, 2), round(self.wh[1] * mm_per_unit, 2)
         if self.outer is not None:
             out["outer_m"] = [r6(p) for p in _thin(self.outer)]
+        if self.annular:
+            out["inner_diameter_mm"] = round(2.0 * math.sqrt(self.filled / math.pi) * mm_per_unit, 2)
+        out.update(measured_flow_area(self.area, self.filled, self.shape, mm_per_unit))
         return out
 
 
@@ -146,6 +164,17 @@ class Cap:
     solidity: float                 # how much of its outline's convex hull it fills
     clear: int
     confidence: float
+    #: THE TUBE BEHIND IT (lids only): the passage's width just behind the lid over the lid's own
+    #: width (1 for the end of a tube of its size), and how much that width varies round it; 0 / inf
+    #: when not looked at or a ray found no wall
+    behind: float = 0.0
+    behind_spread: float = math.inf
+
+    @property
+    def tube_end(self) -> bool:
+        """The lid closes a tube of its own size: just behind it the walls stand about its own width
+        apart all the way round - the end of a branch, not a flat on a body."""
+        return (BEHIND_LO <= self.behind <= BEHIND_HI) and self.behind_spread <= BEHIND_SPREAD
 
     @property
     def face_of_part(self) -> bool:
@@ -464,7 +493,8 @@ class _Mesh:
         # air outside is
         conf = (0.6 if kind == "rim" else 0.5) + 0.35 * clear / (CONE_RAYS + 1)
         hole = Hole(kind=kind, centroid=c, normal=out, area=area, wh=wh, loop=P, outer=outer,
-                    planarity=dev / d, clear=clear, confidence=round(conf, 2))
+                    planarity=dev / d, clear=clear, confidence=round(conf, 2),
+                    filled=self._standing_in(P, c, out, d, dev, area))
         return hole, band
 
     # ---------------------------------------------------------------------------- the caps ----
@@ -596,6 +626,8 @@ class _Mesh:
         lids = sorted((cap for cap in out if cap._rim_ok), key=lambda cap: (round(cap.sharp, 2), cap.area), reverse=True)
         for cap in lids[:MAX_LIDS_PROBED]:
             cap.clear = self._clear(cap.centroid + cap.normal * 0.02 * cap.equivalent_diameter, cap.normal)
+            if cap.clear >= MIN_CLEAR:
+                cap.behind, cap.behind_spread = self._behind(cap)
         # HOW SURE: a rim sharp all the way round, under open air - the share of the rim beyond
         # half that is sharp, times the share of the outside rays that met nothing
         for cap in out:
@@ -654,6 +686,28 @@ class _Mesh:
         hits = self._hits(np.repeat(origin[None, :], len(dirs), axis=0), dirs, self._in_cone(origin, axis, CONE_DEG))
         return int(np.sum(~np.isfinite(hits)))
 
+    def _behind(self, cap: Cap) -> tuple[float, float]:
+        """The cross-section a lid closes (see BEHIND_DEPTHS): the walls' mean distance from the
+        lid's axis just behind it, over the lid's radius, and how much it varies round the axis
+        (0.0, inf when a ray meets no wall - the lid closes no tube)."""
+        r = 0.5 * cap.equivalent_diameter
+        n = cap.normal
+        u = np.cross(n, [0.0, 0.0, 1.0] if abs(n[2]) < 0.9 else [0.0, 1.0, 0.0])
+        u /= np.linalg.norm(u)
+        w = np.cross(n, u)
+        angles = np.linspace(0.0, 2.0 * math.pi, BEHIND_RAYS, endpoint=False)
+        dirs = np.asarray([math.cos(a) * u + math.sin(a) * w for a in angles])
+        near = self._near(cap.centroid, (max(BEHIND_DEPTHS) + 3.0) * r)
+        ratios, spreads = [], []
+        for k in BEHIND_DEPTHS:
+            o = cap.centroid - n * (k * r)
+            hits = self._hits(np.repeat(o[None, :], len(dirs), axis=0), dirs, near)
+            if not np.all(np.isfinite(hits)):
+                return 0.0, math.inf
+            ratios.append(float(np.mean(hits)) / r)
+            spreads.append(float(np.std(hits) / max(float(np.mean(hits)), 1e-300)))
+        return float(np.median(ratios)), float(max(spreads))
+
     def _spanned(self, P, c, out, d, dev) -> bool:
         """Whether a surface lies across the loop - its own face, or another set just behind it.
         Points spread evenly over the loop's area look for one; a rod standing in a bore (an
@@ -665,6 +719,30 @@ class _Mesh:
         near = self._near(c, float(np.max(np.linalg.norm(P - c, axis=1))) + 3.0 * reach)
         hits = self._hits(origins, np.repeat(-out[None, :], len(origins), axis=0), near)
         return bool(np.sum(hits < 2.0 * reach) >= 0.9 * len(origins))
+
+    def _standing_in(self, P, c, out, d, dev, area) -> float:
+        """WHAT STANDS IN A HOLE: the area of the faces lying in the mouth's plane, inside its
+        loop, facing its way - the flat end of a centre rod or hub (an annular mouth), the faces
+        cad_tessellate.stands_in_opening finds on a CAD part. The bore's wall runs back from the
+        loop and the cut wall's end face lies outside it, so neither counts."""
+        R = float(np.max(np.linalg.norm(P - c, axis=1)))
+        near = self._near(c, R)
+        if len(near) == 0:
+            return 0.0
+        tol = dev + 2e-3 * d
+        corners = self.verts[self.faces[near]]                       # (k, 3, 3)
+        flat = np.all(np.abs((corners - c) @ out) <= tol, axis=1)
+        facing = np.abs(self.normal[near] @ out) >= math.cos(math.radians(10.0))
+        cand = near[flat & facing]
+        if len(cand) == 0:
+            return 0.0
+        u = np.cross(out, [0.0, 0.0, 1.0] if abs(out[2]) < 0.9 else [0.0, 1.0, 0.0])
+        u /= np.linalg.norm(u)
+        w = np.cross(out, u)
+        q = self.centre[cand] - c
+        inside = _in_polygon(np.c_[q @ u, q @ w], np.c_[(P - c) @ u, (P - c) @ w])
+        filled = float(self.area[cand[inside]].sum())
+        return filled if filled < area else 0.0
 
     def _end_face(self, c, out, d, dev, seeds) -> tuple[np.ndarray | None, set]:
         """The face around a bore's mouth - the cut wall's end - grown from the faces on the loop
@@ -776,6 +854,23 @@ def _solidity(P: np.ndarray, c: np.ndarray, n: np.ndarray, area: float) -> float
     return min(area / hull, 1.0) if hull > 0 else 1.0
 
 
+def measured_flow_area(area: float, filled: float, shape: str, mm_per_unit: float = 1000.0) -> dict:
+    """THE AREA THE FLOW CROSSES, as this finder measured it, for every opening whose shape and
+    sides do not state it: a ring round a centre body (`area - filled`) and any mouth that is no
+    circle. A circle's equal-area diameter states its area exactly; a rectangle's sides nearly; an
+    oblique pipe cut, an ellipse or a slot has width x height of its BOX, which is not the opening
+    (an aorta's root measured 922 mm2 and was declared as its 1,290 mm2 box). The declaration then
+    carries this one measurement (geometry_confirmation.patches_from -> area_mm2), so the scout,
+    the staging and the port binding all judge the opening by the same number. Rounded to six
+    significant figures: a 0.2 mm vessel's 0.03 mm2 survives where two decimals would not."""
+    out: dict = {}
+    if 0.0 < filled < area:
+        out["flow_area_mm2"] = float(f"{(area - filled) * mm_per_unit * mm_per_unit:.6g}")
+    elif shape != "circle" and area > 0.0:
+        out["flow_area_mm2"] = float(f"{area * mm_per_unit * mm_per_unit:.6g}")
+    return out
+
+
 def _shape(wh: tuple[float, float], area: float) -> str:
     w, h = wh
     if w <= 0 or h <= 0:
@@ -825,6 +920,27 @@ def _chain(ids, ea, eb, at, V):
             yield np.asarray(path_v), ids[np.asarray(path_e)]
         else:
             used[np.asarray(path_e[1:], dtype=np.int64)] = False
+
+
+#: Points x polygon edges tested at once by _in_polygon: its memory stays a few tens of MB
+#: however detailed the mouth and however many faces lie near it.
+IN_POLYGON_BATCH = 2_000_000
+
+
+def _in_polygon(pts: np.ndarray, poly: np.ndarray) -> np.ndarray:
+    """Which of the 2D points lie inside the closed 2D polygon (even-odd rule), the points taken
+    in batches of IN_POLYGON_BATCH point-edge pairs."""
+    x0, y0 = poly[:, 0][None, :], poly[:, 1][None, :]
+    x1, y1 = np.roll(poly[:, 0], -1)[None, :], np.roll(poly[:, 1], -1)[None, :]
+    out = np.zeros(len(pts), dtype=bool)
+    step = max(1, IN_POLYGON_BATCH // max(len(poly), 1))
+    for k in range(0, len(pts), step):
+        x, y = pts[k:k + step, 0][:, None], pts[k:k + step, 1][:, None]
+        crosses = (y0 > y) != (y1 > y)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            at = x0 + (y - y0) * (x1 - x0) / (y1 - y0)
+        out[k:k + step] = np.count_nonzero(crosses & (x < at), axis=1) % 2 == 1
+    return out
 
 
 def _measure(P: np.ndarray):

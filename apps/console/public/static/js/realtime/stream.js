@@ -19,6 +19,10 @@ import { get as getState, isTerminal, set as setState } from "../core/state.js";
 const BACKOFF_MIN = 1000, BACKOFF_MAX = 30000;
 const POLL_FAST_MS = 5000, POLL_SLOW_MS = 15000, POLL_SLOW_AFTER = 120;
 const REPLAY_TIMEOUT_MS = 25000;
+/* WHEN THE LIVE STREAM IS CALLED DOWN: this many attempts in a row that never opened. Two is
+   about three seconds of backoff - long enough that one blip says nothing, short enough that a
+   page whose socket cannot open at all says so before the user wonders why nothing moves. */
+const STREAM_TROUBLE_AFTER = 2;
 
 let socket = null;
 let reconnectTimer = null;
@@ -27,9 +31,34 @@ let backoff = BACKOFF_MIN;
 let cursor = 0;             // last seq RENDERED - handed back on reconnect
 let pollCount = 0;
 let pollFails = 0;
-let sinks = { onEvent() {}, onTerminal() {}, onStatus() {}, onPollTrouble() {}, onPollRecovered() {} };
+let failedConnects = 0;     // attempts in a row that never opened
+let streamDown = false;     // announced to the page through onStreamTrouble
+let sinks = { onEvent() {}, onTerminal() {}, onStatus() {}, onPollTrouble() {}, onPollRecovered() {},
+  onStreamTrouble() {}, onStreamRecovered() {} };
 
 export function configure(s) { sinks = { ...sinks, ...s }; }
+
+/** The last event seq this page rendered - where a catch-up replay starts from. */
+export function lastSeq() { return cursor; }
+
+/* THE STREAM'S OWN HEALTH, said to the page. The poller keeps the run's status honest on its own,
+   so a socket that cannot open is not a stuck run - but without a word the page showed "Generating
+   mesh" with no steps under it for the whole run, which reads exactly like one. */
+function noteFailedConnect() {
+  failedConnects++;
+  if (!streamDown && failedConnects >= STREAM_TROUBLE_AFTER && !isTerminal()) {
+    streamDown = true;
+    sinks.onStreamTrouble();
+  }
+}
+
+function noteOpened() {
+  failedConnects = 0;
+  if (streamDown) {
+    streamDown = false;
+    sinks.onStreamRecovered();
+  }
+}
 
 /** Everything this module owns, released. Safe to call when nothing is running. */
 function stop() {
@@ -44,6 +73,7 @@ export function start(since) {
   stop();
   setState.jobStatus("");
   pollCount = 0; pollFails = 0;
+  failedConnects = 0; streamDown = false;
   backoff = BACKOFF_MIN;
   cursor = since || 0;
   connect();
@@ -57,15 +87,17 @@ async function connect() {
   const jobId = getState.jobId();
   if (!jobId) return;
   const ticket = await wsTicket(jobId);
-  if (!ticket) { scheduleReconnect(); return; }
+  if (!ticket) { noteFailedConnect(); scheduleReconnect(); return; }
+  let opened = false;
   try {
     socket = new WebSocket(streamUrl(jobId, ticket, cursor));
   } catch (e) {
     console.error("WS failed:", e);
+    noteFailedConnect();
     scheduleReconnect();
     return;
   }
-  socket.onopen = () => { backoff = BACKOFF_MIN; };
+  socket.onopen = () => { opened = true; backoff = BACKOFF_MIN; noteOpened(); };
   socket.onmessage = (e) => {
     let ev;
     try { ev = JSON.parse(e.data); } catch (err) { console.error("bad event", err); return; }
@@ -78,7 +110,10 @@ async function connect() {
     if (ev.type === "closing") setState.outcomeMessage(ev.text || "");
     sinks.onEvent(ev);
   };
-  socket.onclose = scheduleReconnect;
+  socket.onclose = () => {
+    if (!opened) noteFailedConnect();
+    scheduleReconnect();
+  };
 }
 
 /* A mesh job runs for HOURS. This used to give up after five tries in fifteen seconds - and
@@ -96,27 +131,33 @@ function scheduleReconnect() {
 
 /** Replay a finished run's event log, then resolve. `since=0` makes the server send the whole
  *  history and close; it renders exactly as if it had been watched live, because it is the
- *  same events through the same dispatch. */
-export function replay(jobId) {
+ *  same events through the same dispatch. `since` replays only what came after that seq - the
+ *  catch-up for a live page whose stream dropped out. Resolves true when the log was read (its
+ *  closing event arrived), false when the socket could not deliver it. */
+export function replay(jobId, since = 0) {
   return new Promise(async (resolve) => {
     const ticket = await wsTicket(jobId);
-    if (!ticket) return resolve();
+    if (!ticket) return resolve(false);
     let w;
-    try { w = new WebSocket(streamUrl(jobId, ticket, 0)); } catch { return resolve(); }
+    try { w = new WebSocket(streamUrl(jobId, ticket, since)); } catch { return resolve(false); }
     let settled = false;
+    let complete = false;
     const finish = () => {
       if (settled) return;
       settled = true;
       clearTimeout(t);
       try { w.close(); } catch { /* already closed */ }
-      resolve();
+      resolve(complete);
     };
     const t = setTimeout(finish, REPLAY_TIMEOUT_MS);   // never wait on a dead socket
     w.onmessage = (e) => {
+      // the page has moved on to another run: this one's log must not land on that run's stage
+      if (getState.jobId() !== jobId) { finish(); return; }
       let ev;
       try { ev = JSON.parse(e.data); } catch (err) { console.error("bad event", err); return; }
       if (ev.type === "closing") {
         setState.outcomeMessage(ev.text || getState.outcomeMessage());
+        complete = true;
         finish();
         return;
       }
@@ -165,7 +206,9 @@ async function poll() {
     clearInterval(pollTimer); pollTimer = null;
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
     setTimeout(() => socket && socket.close(), 1500);
-    sinks.onTerminal(job);
+    // `streamDown`: the live steps never reached this page (or stopped reaching it), so the page
+    // still owes the user the run's log before its result.
+    sinks.onTerminal(job, { streamDown });
   }
 }
 

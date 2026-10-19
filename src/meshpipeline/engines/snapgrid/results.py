@@ -16,9 +16,12 @@ import csv
 import io
 import json
 import logging
+import math
 from pathlib import Path
 
 import numpy as np
+
+from meshpipeline.cad.ingest.ecxml_build import length_words
 
 logger = logging.getLogger(__name__)
 
@@ -175,11 +178,13 @@ def _pack(points: np.ndarray, polys: np.ndarray) -> dict:
             "polys_b64": base64.b64encode(polys.astype(np.uint32).tobytes()).decode("ascii")}
 
 
-def slice_pieces(ws: Path, planes: list[dict]) -> dict[str, list[dict]]:
+def slice_pieces(ws: Path, planes: list[dict], origin=None) -> dict[str, list[dict]]:
     """The delivered mesh cut by each plane, region by region: {plane name: [{region, cells,
     points_b64, polys_b64}]}, the cut cells as polygons in the mesh's own unit. Read from the case
     itself (every region's polyMesh), so what the user sees is the mesh they download. {} when
-    the case cannot be read - the slices are then simply not offered."""
+    the case cannot be read - the slices are then simply not offered. `origin`: the point the
+    viewer draws relative to (engines/snapgrid/viewer.draw_origin), taken off in float64 before
+    the float32 packing, so a nanometre layer far from the file's origin stays apart."""
     if not planes:
         return {}
     try:
@@ -236,8 +241,10 @@ def slice_pieces(ws: Path, planes: list[dict]) -> dict[str, list[dict]]:
             if not len(faces) or cut.n_cells > budget:
                 continue
             budget -= cut.n_cells
-            pieces.append({"region": region, "cells": int(cut.n_cells),
-                           **_pack(np.asarray(cut.points), faces)})
+            pts = np.asarray(cut.points, dtype=np.float64)
+            if origin is not None:
+                pts = pts - np.asarray(origin, dtype=np.float64)
+            pieces.append({"region": region, "cells": int(cut.n_cells), **_pack(pts, faces)})
         if pieces:
             out[plane["name"]] = pieces
     return out
@@ -289,7 +296,8 @@ def part_rows(report: dict, sidecar: dict) -> list[dict]:
             "material": r.get("material") or (side.get(name) or {}).get("material") or "",
             "power_W": round(heat.get(name, float(r.get("power_W") or 0.0)), 6),
             "cells": int(r.get("cells") or 0),
-            "thinnest_mm": round(float(thick) * 1000.0, 4) if thick is not None else None,
+            "thinnest_mm": _sig(float(thick) * 1000.0) if thick is not None else None,
+            "thinnest_text": length_words(float(thick)) if thick is not None else "",
             "thinnest_axis": t.get("axis") or "",
             "cells_through": t.get("cells_across"), "cells_asked": t.get("wanted"),
             "layer_ok": t.get("ok") if t else None,
@@ -312,6 +320,39 @@ def per_part_csv(rows: list[dict]) -> str:
                     "" if r["volume_vs_file_pct"] is None else f"{r['volume_vs_file_pct']:g}",
                     r["touches"]])
     return buf.getvalue()
+
+
+def _sig(v: float, sig: int = 4) -> float:
+    """A number to `sig` significant digits (a 10 nm layer is 1e-05 mm, never 0.0)."""
+    if v == 0 or not math.isfinite(v):
+        return v
+    return round(v, max(0, sig - 1 - int(math.floor(math.log10(abs(v))))))
+
+
+def thin_layer_rows(report: dict) -> list[dict]:
+    """The layers carried as thin-layer resistances, one row each: the layer, its thickness in
+    words, its own resistance and the interface patches that carry it."""
+    by_layer: dict[str, list[dict]] = {}
+    for r in report.get("thin_layer_interfaces") or []:
+        if isinstance(r, dict):
+            for name in r.get("layers") or []:
+                by_layer.setdefault(str(name), []).append(r)
+    out = []
+    for f in report.get("thin_layer_resistances") or []:
+        if not isinstance(f, dict):
+            continue
+        label = str(f.get("label") or f.get("name"))
+        on = by_layer.get(label, [])
+        out.append({"label": label, "material": f.get("material") or "",
+                    "thickness_m": float(f.get("thickness_m") or 0.0),
+                    "thickness_text": length_words(float(f.get("thickness_m") or 0.0)),
+                    "R_m2K_W": float(f.get("R_m2K_W") or 0.0),
+                    "between": [", ".join(f.get("below") or []) or "air",
+                                ", ".join(f.get("above") or []) or "air"],
+                    "patches": [r.get("patch_a") for r in on],
+                    "R_applied_m2K_W": [float(r.get("R_applied_m2K_W") or 0.0) for r in on],
+                    "area_mm2": sum(float(r.get("area_m2") or 0.0) for r in on) * 1e6})
+    return sorted(out, key=lambda r: r["thickness_m"])
 
 
 def quality_lines(report: dict, rows: list[dict]) -> list[str]:
@@ -355,7 +396,7 @@ def quality_lines(report: dict, rows: list[dict]) -> list[str]:
     if layered:
         thin = min(layered, key=lambda r: r["thinnest_mm"])
         asked = f" (asked for {thin['cells_asked']})" if thin["cells_asked"] else ""
-        lines.append(f"Thinnest layer: {thin['label']}, {thin['thinnest_mm']:g} mm with "
+        lines.append(f"Thinnest layer: {thin['label']}, {thin['thinnest_text']} with "
                      f"{thin['cells_through']} cell{'s' if thin['cells_through'] != 1 else ''} "
                      f"through it{asked}.")
         short = [r for r in layered if r["layer_ok"] is False]
@@ -364,16 +405,44 @@ def quality_lines(report: dict, rows: list[dict]) -> list[str]:
                          "a layer than asked: " + ", ".join(
                              f"{r['label']} ({r['cells_through']} of {r['cells_asked']})" for r in short[:6])
                          + (f", and {len(short) - 6} more" if len(short) > 6 else "") + ".")
+    # the thermal rules, as the mesher measured them off the grid lines
+    res = report.get("resolution") or {}
+    if res.get("measured"):
+        lines += [str(x) for x in res.get("summary") or []]
+        lines += [f"Coarser than asked: {x}." for x in res.get("short_lines") or []]
     rounds = [s for s in report.get("staircased") or [] if isinstance(s, dict) and s.get("part")]
     if rounds:
         worst_pct = max(abs(float(s.get("error_pct") or 0.0)) for s in rounds)
         names = sorted({_label(str(s["part"])) for s in rounds})
         lines.append(f"Round parts follow the file within {worst_pct:.1f}% of their volume "
                      f"({', '.join(names[:6])}{', …' if len(names) > 6 else ''}); box parts are exact.")
+    films = thin_layer_rows(report)
+    if films:
+        lines.append(f"{len(films)} layer{'s' if len(films) != 1 else ''} too thin to mesh with sound "
+                     "cells " + ("are" if len(films) != 1 else "is") + " carried as a thin-layer "
+                     "thermal resistance on the interface between the parts either side, as "
+                     "Flotherm and Icepak model them: " + "; ".join(
+                         f"{f['label']} ({f['thickness_text']}, R = {f['R_m2K_W']:.3g} m²K/W)"
+                         for f in films[:6]) + (f", and {len(films) - 6} more" if len(films) > 6 else "")
+                     + ". The solver entries are in constant/<region>/thinLayerResistances.")
     return lines
 
 
-def thermal_results(ws: Path) -> dict | None:
+def _shifted(plane: dict, origin) -> dict:
+    """A slice plane's own coordinates (its origin, its clip box) in the drawing's frame."""
+    if origin is None:
+        return plane
+    o = [float(v) for v in origin]
+    out = dict(plane)
+    if plane.get("origin") is not None:
+        out["origin"] = [float(v) - o[i] for i, v in enumerate(plane["origin"])]
+    box = plane.get("clip_box")
+    if isinstance(box, list | tuple) and len(box) == 6:
+        out["clip_box"] = [float(v) - o[k // 2] for k, v in enumerate(box)]
+    return out
+
+
+def thermal_results(ws: Path, origin=None) -> dict | None:
     """The results block a thermal model's viewer payload carries, or None when the case has no
     snap-grid report beside it."""
     ws = Path(ws)
@@ -394,11 +463,11 @@ def thermal_results(ws: Path) -> dict | None:
     manifest = _read(ws, "mesh_manifest.json")
     planes = [p for p in manifest.get("inspection_regions") or []
               if isinstance(p, dict) and p.get("label")] or slice_planes(sidecar, report)
-    pieces = slice_pieces(ws, planes)
-    slices = [{"name": p["name"], "label": p["label"], "why": p.get("why", ""),
-               "normal": p["normal"], "origin": p["origin"], "clip_box": p.get("clip_box"),
+    pieces = slice_pieces(ws, planes, origin)
+    slices = [{"name": q["name"], "label": q["label"], "why": q.get("why", ""),
+               "normal": q["normal"], "origin": q["origin"], "clip_box": q.get("clip_box"),
                "pieces": pieces[p["name"]]}
-              for p in planes if p["name"] in pieces]
+              for p in planes if p["name"] in pieces for q in [_shifted(p, origin)]]
     sidecar_text = json.dumps(sidecar, indent=1, default=str) if sidecar else ""
     # the file's total, heat sources outside the parts included - as the thermal model panel said it
     total = sidecar.get("total_power_W")
@@ -414,6 +483,7 @@ def thermal_results(ws: Path) -> dict | None:
         "cells": cells,
         "quality": quality_lines(report, rows),
         "parts": rows,
+        "thin_layers": thin_layer_rows(report),
         "air": air,
         "slices": slices,
         "files": {

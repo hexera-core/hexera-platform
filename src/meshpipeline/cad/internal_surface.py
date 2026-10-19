@@ -38,6 +38,15 @@ CAP_CREASE_DEG = 30.0
 FLAT_COS = math.cos(math.radians(3.0))
 #: The seed must stand at least this share of its opening's radius clear of every face.
 SEED_CLEARANCE = 0.02
+#: A blunt closed tube end (cad/lumen) is cut at most TIP_DEPTH of the opening's radius deep, and
+#: holds the faces within TIP_REACH of that radius of its axis.
+TIP_DEPTH = 2.0
+TIP_REACH = 1.3
+#: A rounded end read by its normals is kept when its area is this close to the declared opening's
+#: (the port binder's own band, engines/port_binding); otherwise the tip is cut to that area.
+TIP_FIT = (0.75, 1.25)
+#: A cut tip faces its way less surely than a lid (a blunt end is half its flat top, half its sides).
+TIP_COHERENT = 0.4
 #: A loop along which the wall runs OUTWARD from it (away from its axis) on at least this share of
 #: its edges is a STEP in the passage - where it widens: a counterbore's floor, the lip of an exit
 #: cone. A centre body's own surface lies wholly within its edge, so such a loop is never one, and
@@ -334,7 +343,10 @@ def write_staged(staged: StagedInternal, out_dir: Path) -> dict:
                # the staged lid is what the flow crosses (a ring's lid is the gap round the
                # centre body): the port-area gate holds the delivered patch to it
                # (engines/region_check.flow_area_m2)
-               "flow_area": round(float(o.area), 10)}
+               "flow_area": round(float(o.area), 10),
+               # matched to THIS declared port, by its location and size, here: the binder binds
+               # the port to it by name instead of re-picking the nearest (port_binding rule 2)
+               "declared": True}
         if o.inner is not None:
             # a ring: what its inner edge encloses, in the shape the CAD path reports a ring port
             # face's inner wire - so the binder holds a declaration against the ring, the centre
@@ -754,9 +766,50 @@ def _cap_at(mesh, p: _Port, used) -> _Opening | None:
             return lateral <= r and float(mesh.normal[g] @ n0) >= cosmax
         region = _grow(mesh, f0, inside)
         ok = _cap_ok(mesh, region, p, total, taken)
+        dome_fits = ok and p.area and TIP_FIT[0] <= float(mesh.area[region].sum()) / p.area <= TIP_FIT[1]
+        if not dome_fits and d_decl:
+            # A BLUNT, UNEVEN CLOSURE (a segmented vessel's end, cad/lumen): no clean dome to read by
+            # its normals, so the tube's tip is cut square to its axis just deep enough that the cut
+            # piece has the opening's own area - the opening is the end of the tube, at its size
+            sliced = _tip_slice(mesh, f0, p, n0, 0.5 * d_decl)
+            if sliced is not None and _cap_ok(mesh, sliced, p, total, taken, coherent_at=TIP_COHERENT):
+                region, ok = sliced, True
     if not ok:
         return None
     return _cap_record(mesh, region)
+
+
+def _tip_slice(mesh, f0: int, p: _Port, axis: np.ndarray, radius: float) -> np.ndarray | None:
+    """The faces of a tube's closed tip from the declared point (on the tip) back along `axis` (out
+    of the part) to the depth at which their area reaches the declared opening's, within TIP_REACH of
+    the tube's radius of the axis - the depth found by halving. None when no depth reaches it."""
+    if p.near is None or not p.area:
+        return None
+    near, target, reach = p.near, float(p.area), TIP_REACH * radius
+
+    def upto(depth: float) -> np.ndarray:
+        def inside(e, g) -> bool:
+            if mesh.count[e] != 2:
+                return False
+            rel = mesh.centre[g] - near
+            along = float(rel @ axis)
+            return along >= -depth and float(np.linalg.norm(rel - along * axis)) <= reach
+        return _grow(mesh, f0, inside)
+
+    lo, hi = 0.0, TIP_DEPTH * radius
+    region = upto(hi)
+    if float(mesh.area[region].sum()) < target:
+        return None
+    for _ in range(24):
+        if hi - lo <= 1e-3 * radius:
+            break
+        mid = 0.5 * (lo + hi)
+        here = upto(mid)
+        if float(mesh.area[here].sum()) >= target:
+            hi, region = mid, here
+        else:
+            lo = mid
+    return region
 
 
 def _cap_record(mesh, region) -> _Opening:
@@ -791,7 +844,7 @@ def _flat_labels(mesh) -> np.ndarray:
     return lab
 
 
-def _cap_ok(mesh, region, p: _Port, total: float, taken) -> bool:
+def _cap_ok(mesh, region, p: _Port, total: float, taken, coherent_at: float = 0.6) -> bool:
     if len(region) == 0 or np.isin(region, taken).any():
         return False
     area = float(mesh.area[region].sum())
@@ -802,7 +855,7 @@ def _cap_ok(mesh, region, p: _Port, total: float, taken) -> bool:
         return False
     a = mesh.area[region]
     coherent = float(np.linalg.norm((mesh.normal[region] * a[:, None]).sum(axis=0))) / max(float(a.sum()), 1e-300)
-    return coherent >= 0.6                       # a mouth faces one way, more or less
+    return coherent >= coherent_at               # a mouth faces one way, more or less
 
 
 def _holes_area(mesh, region) -> float:

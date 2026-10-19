@@ -94,7 +94,10 @@ SPEC = EngineSpec(
         validation_notes=(
             "ecxml solid-assembly->multiregion-volume: the ECXML test set (Flotherm, Icepak, "
             "6SigmaET exports and generated boards of 10-2,000 parts, a 1U server) meshes with "
-            "every box volume exact to round-off, every layer kept (25 um die attach: 2 cells), "
+            "every box volume exact to round-off, every layer kept (25 um die attach: 2 cells; "
+            "films of 1 nm to 1 um kept at 0, 5 cm and 5 m from the origin - meshed, or a "
+            "thin-layer resistance R = t/k on their interface whose temperature drop an OpenFOAM "
+            "11 conduction solve matches to 1e-6), "
             "contacts as the file makes them, and checkMesh clean on every region (OpenFOAM 11 "
             "locally, v2412 on the lab VMs; 3.3M cells for 2,000 parts). Full pipeline: "
             "set_top_box.ecxml on dev-areen, job f8542f71 (2026-10-11) - 357,973 cells in 9 "
@@ -105,8 +108,12 @@ SPEC = EngineSpec(
             "glued or joined - each stays where the file puts it, a hexahedral grid is laid with "
             "every part plane on a grid plane (refined only near the parts), and every cell "
             "belongs to one part or air space, so the interfaces are conformal by construction. "
-            "Thin layers (die attach, pads, copper) always keep cells through them; round parts "
-            "are snapped onto their circles. PRODUCES a coupled multi-region OpenFOAM case (one "
+            "The grid follows the published electronics-cooling practice at each detail level: "
+            "cells through every part (more through heat sources and heat sinks), across every "
+            "air gap and fin channel, inside the warm-air layer on heated surfaces, and across "
+            "heat sources, fans and vents - measured and reported per item. Thin layers (die "
+            "attach, pads, copper) always keep cells through them; round parts are snapped onto "
+            "their circles. PRODUCES a coupled multi-region OpenFOAM case (one "
             "region per part and per air space, mappedWall interfaces, regionProperties) plus "
             "the file's physics. Reads ECXML only - it meshes the file's own model."
         ),
@@ -126,6 +133,9 @@ SPEC = EngineSpec(
             "Every thin layer keeps at least one cell through it. When the cell budget cannot "
             "give a layer the cells asked for, the layer is listed in the build report, never "
             "merged away.",
+            "Each detail level sets cells across air gaps and fin channels, in the warm-air layer "
+            "on heated surfaces and across heat sources, fans and vents. What a tight budget "
+            "relaxes is said in plain words, and every shortfall is measured and listed.",
             "It reads ECXML only: a STEP or STL export of the same board carries no parts, "
             "materials or power for it to place.",
         ),

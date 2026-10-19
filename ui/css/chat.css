@@ -9,3 +9,52 @@
 .im.user .bub{background:#16171b;color:#fafafa;border-radius:16px 16px 4px 16px;padding:10px 15px;font-size:13.5px;line-height:1.6;max-width:78%}
 @keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 
+
+/* THE GEOMETRY CHECK'S LIVE LINE (js/render/check_progress.js): a small working mark, the step
+   running now, its time, and the steps done folded under it. The mark moves only while the check
+   works; waiting on the user, done or failed, it is still. */
+.gp-row{animation:none}
+.gp{display:flex;flex-direction:column;gap:5px;max-width:76ch;font-size:var(--fs-md);line-height:1.5;color:var(--text-muted)}
+.gp-head{display:flex;align-items:center;gap:10px;min-height:22px;flex-wrap:wrap}
+.gp-mark{flex:none;width:14px;height:14px;display:inline-flex;align-items:center;justify-content:center;
+  font-size:11px;font-weight:700;line-height:1}
+.gp-mark:empty::before{content:'';width:8px;height:8px;border-radius:50%;border:1.5px solid var(--steel);box-sizing:border-box}
+.gp[data-live] .gp-mark:empty::before{border:0;background:var(--accent);animation:gp-pulse 1.4s ease-in-out infinite}
+.gp[data-state="done"] .gp-mark{color:var(--ok)}
+.gp[data-state="failed"] .gp-mark,.gp[data-state="unsupported"] .gp-mark{color:var(--danger)}
+.gp-now{color:var(--text);font-weight:500}
+.gp[data-live] .gp-now{background:linear-gradient(90deg,var(--text-muted) 20%,var(--text-bright) 50%,var(--text-muted) 80%);
+  background-size:220% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;
+  animation:gp-shimmer 2.4s linear infinite}
+.gp[data-state="done"] .gp-now{color:var(--text-muted);font-weight:400}
+.gp[data-state="failed"] .gp-now,.gp[data-state="unsupported"] .gp-now{color:var(--text-bright)}
+.gp-time{font-size:var(--fs-sm);color:var(--text-faint);font-variant-numeric:tabular-nums}
+.gp-time:empty{display:none}
+.gp-toggle{display:inline-flex;align-items:center;gap:6px;padding:2px 6px;border:0;border-radius:var(--radius-tight);
+  background:none;color:var(--text-faint);font:inherit;font-size:var(--fs-xs);cursor:pointer}
+.gp-toggle:hover{color:var(--text);background:var(--hover)}
+.gp-chev{width:5px;height:5px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;
+  transform:translateY(-2px) rotate(45deg);transition:transform .15s}
+.gp-toggle[aria-expanded="true"] .gp-chev{transform:translateY(1px) rotate(-135deg)}
+.gp-note,.gp-reason,.gp-advice,.gp-acts{padding-left:24px;font-size:var(--fs-sm)}
+.gp-note{color:var(--text-faint)}
+.gp[data-slow="very"] .gp-note{color:var(--warn)}
+.gp-reason{color:var(--text-faint)}
+.gp-advice{color:var(--text)}
+.gp-acts{margin-top:3px}
+.gp-retry{height:28px;padding:0 12px;border:1px solid var(--border);border-radius:var(--r-md);background:var(--surface-2);
+  color:var(--text);font:500 var(--fs-sm)/1 var(--sans);cursor:pointer;transition:background .12s,border-color .12s}
+.gp-retry:hover:not(:disabled){border-color:var(--border-strong);background:var(--surface-raised)}
+.gp-retry:disabled{opacity:.6;cursor:default}
+.gp-steps{list-style:none;margin:2px 0 0 6px;padding:2px 0 2px 17px;border-left:1px solid var(--divider);
+  display:flex;flex-direction:column;gap:3px}
+.gp-steps[hidden]{display:none}
+.gp-step{display:flex;align-items:baseline;gap:8px;font-size:var(--fs-sm);color:var(--text-muted)}
+.gp-tick{flex:none;width:12px;text-align:center;font-size:10px;color:var(--text-faint)}
+.gp-step.done .gp-tick{color:var(--ok)}
+.gp-step.active .gp-tick{color:var(--accent)}
+.gp-step.failed .gp-tick{color:var(--danger)}
+.gp-step.failed .gp-label,.gp-step.active .gp-label{color:var(--text)}
+.gp-t{font-size:var(--fs-xs);color:var(--text-faint);font-variant-numeric:tabular-nums}
+@keyframes gp-pulse{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(.55);opacity:.45}}
+@keyframes gp-shimmer{from{background-position:100% 0}to{background-position:-120% 0}}

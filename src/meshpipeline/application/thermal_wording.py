@@ -122,6 +122,10 @@ def job_sheet(view: dict | None, *, level: str = "", engine: str = "") -> str:
         k = plan.get("min_cells_across")
         if k:
             limits.append(f"at least {int(k)} cell{'s' if int(k) != 1 else ''} through every layer")
+        g = plan.get("gap_cells")
+        if g:
+            limits.append(f"{int(g)} across every air gap and a fine warm-air layer on every "
+                          "heated surface")
         said.append(f"Snap-grid hex mesh, {words}" + (f": {', '.join(limits)}." if limits else "."))
         said.append(_DELIVERED)
     else:

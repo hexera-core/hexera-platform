@@ -148,15 +148,30 @@ def test_a_record_without_a_cause_reads_the_cause_the_executor_would_have_record
 
 # the switch happens on the right failures
 
+#: A measured check that failed on cfMesh once already, with its levers tried on the retry.
+def _levers_tried(cause: str) -> dict:
+    return {"approved": "cfmesh", "source": lad.SOURCE_SUGGESTED,
+            "attempts": [{"attempt": 1, "engine": "cfmesh", "kind": lad.FIXABLE, "cause": cause}],
+            "switches": []}
+
+
 @pytest.mark.parametrize("gate,cause", [
     ("finalize", "engine_crashed"), ("manifest_valid", "engine_crashed"),
     ("quality_floor", "mesh_quality"), ("resolution_floor", "under_resolved"),
     ("solvability", "not_solvable"), ("manifest_valid", "cell_budget"),
     ("manifest_valid", "patch_not_captured")])
 def test_an_engine_that_cannot_mesh_the_shape_moves_to_the_same_contract_engine(quiet, gate,
-                                                                              cause):
+                                                                              cause, monkeypatch):
+    # no mesh at all moves at once; a measured check moves only once this engine's own levers
+    # were tried on a retry and it still failed (attempt 2 of the same failure here)
     said, events = quiet
-    out = _node(_external(executor_failed_gate=gate, executor_failure_cause=cause))
+    monkeypatch.setattr(bcfg, "MAX_BUILDER_RETRIES", 2)
+    no_mesh = lad.classify(_external(executor_failed_gate=gate,
+                                     executor_failure_cause=cause)).kind == lad.ENGINE
+    st = (_external(executor_failed_gate=gate, executor_failure_cause=cause) if no_mesh else
+          _external(retry_count=2, executor_failed_gate=gate, executor_failure_cause=cause,
+                    engine_ladder=_levers_tried(cause)))
+    out = _node(st)
     assert out["engine"] == "snappy", f"{gate} on cfMesh did not move the run to snappyHexMesh"
     assert out["builder_mode"] == "initial", "the new engine did not get a fresh build"
     assert out["builder_noop_count"] == 0
@@ -164,14 +179,53 @@ def test_an_engine_that_cannot_mesh_the_shape_moves_to_the_same_contract_engine(
     assert sw == [sw[0]] and sw[0]["from"] == "cfmesh" and sw[0]["to"] == "snappy"
     assert said and "snappyHexMesh" in said[0] and "same boundaries" in said[0]
     assert events[0]["source"] == "fallback" and events[0]["chosen"] == "snappy"
-    assert events[0]["from"] == "cfmesh" and events[0]["op_id"] == "engine-select:fallback:2"
+    attempt = int(st["retry_count"]) + 1
+    assert events[0]["from"] == "cfmesh"
+    assert events[0]["op_id"] == f"engine-select:fallback:{attempt}"
 
 
-def test_a_review_failure_is_a_retryable_failure_too(quiet):
-    out = _node(_external(executor_success=True, executor_failed_gate="",
-                          reviewer_verdict="FAIL"))
-    assert out["engine"] == "snappy"
-    assert out["engine_ladder"]["switches"][0]["because"] == "review"
+@pytest.mark.parametrize("gate,cause", [
+    ("quality_floor", "mesh_quality"), ("resolution_floor", "under_resolved"),
+    ("solvability", "not_solvable"), ("manifest_valid", "cell_budget"),
+    ("manifest_valid", "patch_not_captured"), ("", "")])
+def test_a_small_failure_never_switches(quiet, monkeypatch, gate, cause):
+    # A SMALL FAILURE - one measured check missed on the first try, or nothing the gates measured
+    # at all (a review) - is answered by this engine's own levers, never by another engine: not
+    # with attempts to spare, not with the other engine untried, not on any engine source
+    monkeypatch.setattr(bcfg, "MAX_BUILDER_RETRIES", 3)
+    for source in (lad.SOURCE_SUGGESTED, lad.SOURCE_SYSTEM):
+        st = (_external(engine_source=source, executor_failed_gate=gate,
+                        executor_failure_cause=cause) if gate else
+              _external(engine_source=source, executor_success=True, executor_failed_gate="",
+                        reviewer_verdict="FAIL"))
+        out = _node(st)
+        assert "engine" not in out, f"{gate or 'a review'} moved the run on the first failure"
+        assert not out["engine_ladder"]["switches"]
+
+
+@pytest.mark.parametrize("findings", [
+    [],                                                       # the review gave no reason at all
+    [{"axis_key": "prism_layer_coverage", "passed": False, "blocking": "", "improve": True}],
+    [{"axis_key": "wake_resolution", "passed": False, "blocking": "requirement_absent",
+      "improve": True}]])
+def test_a_review_never_moves_the_run_to_another_engine(quiet, monkeypatch, findings):
+    # THE AI REVIEW IS NO MEASUREMENT: whatever it found, on any attempt, the run stays on the
+    # engine that built the mesh (a same-engine improvement retry, or delivery with concerns)
+    monkeypatch.setattr(bcfg, "MAX_BUILDER_RETRIES", 3)
+    for retry in (1, 2, 3):
+        record = {"approved": "cfmesh", "source": lad.SOURCE_SUGGESTED, "switches": [],
+                  "attempts": [{"attempt": n, "engine": "cfmesh", "kind": lad.REVIEW,
+                                "cause": "review"} for n in range(1, retry)]}
+        out = _node(_external(retry_count=retry, executor_success=True, executor_failed_gate="",
+                              reviewer_verdict="FAIL", reviewer_axis_findings=findings,
+                              engine_ladder=record))
+        assert "engine" not in out, f"a review moved the run on attempt {retry}"
+        assert out["engine_ladder"]["attempts"][-1]["kind"] == lad.REVIEW
+    # and a review with nothing that makes the mesh the wrong problem is not called a failure
+    said = lad.classify(_external(executor_success=True, executor_failed_gate="",
+                                  reviewer_verdict="FAIL", reviewer_axis_findings=findings))
+    if not any(f.get("blocking") for f in findings):
+        assert "passed every check" in said.reason
 
 
 def test_the_recorded_failure_cause_decides_when_it_is_present(quiet):
@@ -228,14 +282,28 @@ def test_an_engine_that_cannot_build_the_declared_boundaries_is_not_a_rung():
     assert [r.engine for r in lad.ladder(grounded)] == ["snappy"]
 
 
-def test_cfmesh_and_snappy_are_the_same_contract_both_ways():
+def test_cfmesh_and_snappy_are_the_same_contract_both_ways_inside_a_passage():
     # both deliver hex-dominant cells on a body-fitted wall with prism layers (measured: cfMesh's
     # delivered ports and volumes match the CAD within 1%, its layers cover the wall)
     up = {r.engine: r for r in lad.ladder(_external())}
     assert up["snappy"].same_contract and not up["snappy"].changes
-    down = {r.engine: r for r in lad.ladder(_external(engine="snappy"))}
+    down = {r.engine: r for r in lad.ladder(_external(
+        engine="snappy", purpose="internal_cfd", intake_patches=[dict(p) for p in INTERNAL]))}
     assert down["cfmesh"].same_contract and not down["cfmesh"].changes
+
+
+def test_an_engine_that_does_not_refine_the_wake_is_not_the_same_external_mesh():
+    # the approved snappyHexMesh plan of an external flow builds graded wake boxes on its own
+    # (DeliveredMesh.wake_refinement); cfMesh declares none, so moving there is an offer that says
+    # so - never a silent switch to a mesh with no wake
+    down = {r.engine: r for r in lad.ladder(_external(engine="snappy"))}
+    assert not down["cfmesh"].same_contract
+    assert any("wake" in c for c in down["cfmesh"].changes)
     assert not down["gmsh"].same_contract
+    assert lad.REQ_WAKE in lad.plan_requirements(_external(engine="snappy"))
+    # a brief that wants no wake refinement holds no engine to it
+    assert lad.REQ_WAKE not in lad.plan_requirements(_external(
+        engine="snappy", request_txt="External flow, no wake refinement please."))
 
 
 def test_asked_for_layers_make_an_engine_without_reliable_layers_a_change():
@@ -430,10 +498,12 @@ def test_the_closing_message_carries_the_offer_and_the_switch():
 
 # budgets are respected
 
-def test_with_only_one_retry_the_first_failure_goes_to_the_untried_engine(quiet):
-    # MAX_BUILDER_RETRIES=1: a retry on cfMesh would leave snappy no attempt at all
+def test_with_only_one_retry_a_measured_failure_is_retried_on_its_own_engine(quiet):
+    # MAX_BUILDER_RETRIES=1: the one retry goes to this engine's own levers - a measured check
+    # missed once is not an engine that cannot mesh the shape - and no mesh at all still moves on
     out = _node(_external(executor_failed_gate="quality_floor"))
-    assert out["engine"] == "snappy"
+    assert "engine" not in out
+    assert _node(_external(executor_failed_gate="finalize"))["engine"] == "snappy"
 
 
 def test_with_attempts_to_spare_a_fixable_failure_is_retried_here_first(quiet, monkeypatch):
@@ -655,11 +725,63 @@ def test_a_switch_reaches_the_training_trajectory_with_its_reason():
         "chosen": "cfmesh", "source": "user"}
 
 
-def test_a_layer_failure_on_one_hex_engine_offers_the_other_first():
+def test_a_layer_failure_on_one_hex_engine_offers_the_other_first_inside_a_passage():
     # cfMesh extrudes its layers over the whole wall: when snappy's layers fail the review and
     # cfMesh was not tried, the same mesh from cfMesh is the first offer, before fewer layers
     st = _external(engine="snappy", retry_count=2, executor_success=True, executor_failed_gate="",
-                   reviewer_verdict="FAIL", request_txt="External aero, 8 prism layers.",
+                   purpose="internal_cfd", intake_patches=[dict(p) for p in INTERNAL],
+                   reviewer_verdict="FAIL", request_txt="Duct flow, 8 prism layers.",
                    reviewer_axis_findings=[{"axis_key": "prism_layer_coverage", "passed": False}])
     offer = lad.final_record(st, succeeded=False, system_failure=False)["offer"]
     assert offer["kind"] == "engine" and offer["engine"] == "cfmesh" and offer["same_contract"]
+    # outside a body the approved snappyHexMesh plan refines the wake, which cfMesh does not:
+    # cfMesh is no longer "the same mesh", so fewer layers on snappy comes first
+    ext = lad.final_record(_external(engine="snappy", retry_count=2, executor_success=True,
+                                     executor_failed_gate="", reviewer_verdict="FAIL",
+                                     request_txt="External aero, 8 prism layers.",
+                                     reviewer_axis_findings=[{"axis_key": "prism_layer_coverage",
+                                                              "passed": False}]),
+                           succeeded=False, system_failure=False)["offer"]
+    assert ext["kind"] == "fewer_layers"
+
+
+# a broken mesh moves on (e2e sweep 2026-10-17: cfMesh broke 7 of 8 DrivAer cars)
+
+_BROKEN = {"executor_failure_cause": "mesh_quality",
+           "executor_failure_facts": {"fatal": ["negative-volume cells"], "meshers_started": 1}}
+
+
+def test_a_broken_mesh_is_the_engines_own_failing_and_says_what_broke():
+    f = lad.classify(_external(**_BROKEN))
+    assert f.kind == lad.ENGINE
+    assert "broken" in f.reason and "negative-volume cells" in f.reason
+    # the same cause without broken cells is still a bar a retry might clear
+    assert lad.classify(_external(executor_failure_cause="mesh_quality",
+                                  executor_failure_facts={})).kind == lad.FIXABLE
+
+
+def test_a_broken_mesh_moves_to_the_next_engine_even_with_attempts_to_spare(quiet, monkeypatch):
+    monkeypatch.setattr(bcfg, "MAX_BUILDER_RETRIES", 3)
+    out = _node(_external(**_BROKEN))
+    assert out["engine"] == "snappy", "a broken mesh was given to the same engine again"
+    switch = out["engine_ladder"]["switches"][0]
+    assert switch["why"] == "this engine's mesh of this shape came out broken"
+    said, _ = quiet
+    assert any("negative-volume cells" in s and "snappyHexMesh" in s for s in said), said
+
+
+def test_a_broken_mesh_on_a_user_named_engine_stays_and_is_offered_the_other(quiet):
+    st = _external(engine_source=lad.SOURCE_USER, **_BROKEN)
+    assert "engine" not in _node(st)
+    offer = lad.final_record({**st, "retry_count": 2}, succeeded=False,
+                             system_failure=False)["offer"]
+    assert offer["engine"] == "snappy" and "broken" in offer["text"]
+
+
+def test_the_builder_is_told_before_the_attempt_where_a_broken_mesh_moves_the_run(quiet):
+    fresh = _external(retry_count=0, executor_failed_gate="", executor_success=False)
+    assert lad.moves_on_from_broken_mesh(fresh) == "snappy"
+    assert lad.moves_on_from_broken_mesh({**fresh, "engine_source": lad.SOURCE_USER}) == ""
+    # the last regular attempt has nowhere to move to inside this run
+    last = _external(retry_count=bcfg.MAX_BUILDER_RETRIES + 1)
+    assert lad.moves_on_from_broken_mesh(last) == ""

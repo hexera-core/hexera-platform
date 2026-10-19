@@ -690,6 +690,10 @@ def render_message(fr: FinalResult) -> str:
         return "\n".join([text, *(e for e in extra if e)])
     if fr.status == TerminalStatus.failed and fr.review_left:
         text = "\n".join((text, _render_left(fr.review_left)))
+    if fr.status == TerminalStatus.failed:
+        # NO VALID MESH AT ALL: what each attempt did, in plain words, before the one offer
+        from meshpipeline.pipeline.engine_fallback import attempts_account
+        text = "\n".join([text, *attempts_account(ladder)])
     offer = ladder.get("offer")
     if (fr.status == TerminalStatus.failed and isinstance(offer, Mapping)
             and str(offer.get("text") or "").strip()):
@@ -712,6 +716,8 @@ def _render_outcome(fr: FinalResult) -> str:
                          "Delivered with the reviewer's concerns:" if kinds == {REVIEW_CONCERNS}
                          else "Delivered with a note on its narrowest gaps:"
                          if kinds == {NARROW_PASSAGES}
+                         else "Delivered with a concern about its size:"
+                         if kinds == {PHYSICAL_SCALE}
                          else "Delivered with stated deviations:")
             for c in fr.requirement_caveats:
                 kind = (c or {}).get("kind") or "domain_extent"
@@ -753,12 +759,14 @@ def _render_outcome(fr: FinalResult) -> str:
                     lines.extend(_concern_lines(c))
                 elif kind == NARROW_PASSAGES:
                     lines.extend(_narrow_passage_lines(c))
+                elif kind == PHYSICAL_SCALE:
+                    lines.extend(_physical_scale_lines(c))
                 else:
                     lines.append("  - a stated deviation of an unrecognized kind "
                                  "(see the result record)")
             # the narrow-gap note says everything it needs in its own lines; the closing speaks
             # for the rest
-            core = kinds - {NARROW_PASSAGES}
+            core = kinds - {NARROW_PASSAGES, PHYSICAL_SCALE}
             if core == {"domain_extent"}:
                 lines.append("Every mesh-quality check passed; only the margins above fell "
                              "short of the request. Rebuild with relaxed constraints if "
@@ -920,6 +928,14 @@ class RunOutcome:
     review_reruns: int = 0
     #: the workflow - it names the review axes the concerns are told in
     purpose: str = ""
+    #: the delivered body's three sides in metres (the passage's, for an internal flow), read off
+    #: the mesh manifest - what the size note judges (physical_scale_caveat). () when unknown.
+    body_size_m: tuple = ()
+    #: what the request calls the part (the task label and the request text), and the unit the
+    #: file was read in - what the size note judges the size against, and the other reading it names
+    words: str = ""
+    unit: str = ""
+    grounded: bool = False
 
     @classmethod
     def from_graph_state(cls, state: Mapping) -> RunOutcome:
@@ -927,7 +943,13 @@ class RunOutcome:
         if raw.startswith("<<API_FAILURE:") and raw.endswith(">>"):
             raw = raw[len("<<API_FAILURE:"):-2]
         manifest = state.get("mesh_manifest") or {}
-        return cls(api_failure=raw,
+        geometry = state.get("geometry") if isinstance(state.get("geometry"), Mapping) else {}
+        interp = (geometry or {}).get("interpretation") if isinstance(geometry, Mapping) else None
+        return cls(body_size_m=delivered_size_m(manifest, str(state.get("flow_topology", "") or "")),
+                   words=" ".join(str(state.get(k, "") or "") for k in ("domain", "request_txt"))[:4000],
+                   unit=str((interp or {}).get("unit") or "") if isinstance(interp, Mapping) else "",
+                   grounded=_grounded(manifest, state.get("intake_patches")),
+                   api_failure=raw,
                    reviewer_verdict=state.get("reviewer_verdict", "") or "",
                    executor_success=bool(state.get("executor_success", False)),
                    retry_count=int(state.get("retry_count", 0) or 0),
@@ -1169,6 +1191,81 @@ def narrow_passage_caveat(outcome: RunOutcome) -> dict | None:
             "narrowest_width_m": v.side.get("narrowest_width_m"),
             "share": v.side.get("under_floor_share"),
             "main_cells_across": v.cells_across, "main_way_width_m": v.main_way_width_m}
+
+
+#: The caveat kind a delivery carries when the mesh is not a believable size for what it is: the
+#: DrivAer car meshed 4.7 mm long and the BlendedNet aircraft 1 mm long, both from triangle files
+#: that state no unit, were counted as clean passes. The mesh is sound, so it is delivered - and
+#: the delivery says plainly that its size is wrong for what it is, and that the unit is the
+#: likely cause.
+PHYSICAL_SCALE = "physical_scale"
+
+
+def delivered_size_m(manifest: object, flow_topology: str = "") -> tuple:
+    """The delivered body's three sides in metres, off the mesh manifest: the body's own box (the
+    wall the user named), else - for an internal flow, whose mesh IS the passage - the mesh's
+    bounds. () when the manifest says neither (an external mesh's bounds are its far field)."""
+    if not isinstance(manifest, Mapping):
+        return ()
+    geo = manifest.get("geometry")
+    if not isinstance(geo, Mapping):
+        return ()
+    if str(manifest.get("mesh_units") or "m") != "m":
+        return ()
+    try:
+        box = geo.get("body_box")
+        if isinstance(box, Mapping):
+            return tuple(float(box[f"{a}max"]) - float(box[f"{a}min"]) for a in "xyz")
+        if flow_topology == "internal":
+            return tuple(float(geo[f"box_{a}max"]) - float(geo[f"box_{a}min"]) for a in "xyz")
+    except (KeyError, TypeError, ValueError):
+        return ()
+    return ()
+
+
+def _grounded(manifest: object, intake_patches: object) -> bool:
+    """Whether the body stands on a ground the run modelled: a patch the intake named for it."""
+    rows = intake_patches if isinstance(intake_patches, (list, tuple)) else []
+    names = [str(p.get("name") or "") for p in rows if isinstance(p, Mapping)]
+    if isinstance(manifest, Mapping) and isinstance(manifest.get("patch_types"), Mapping):
+        names += [str(n) for n in manifest["patch_types"]]
+    return any(n.lower() in ("ground", "floor", "road") for n in names)
+
+
+def physical_scale_caveat(outcome: RunOutcome) -> dict | None:
+    """THE one predicate for the size note, read at terminal assembly from the delivered mesh's own
+    box (delivered_size_m): None unless the executor validated the mesh with no gate failed and
+    the mesh is far outside the believable size of what it is - by the request's words for it
+    (a car, an aircraft, an artery), else by its shape and flow (contracts/unit_plausibility).
+    Like the narrow-gap note it never enters the graph state, so it can never start a retry: a
+    rebuild cannot fix a unit."""
+    if not outcome.executor_success or outcome.failed_gate:
+        return None
+    sides = [abs(float(v)) for v in (outcome.body_size_m or ()) if isinstance(v, (int, float))]
+    if len(sides) != 3 or max(sides) <= 0:
+        return None
+    from meshpipeline.contracts.geometry_units import LengthUnit
+    from meshpipeline.contracts.unit_plausibility import expected_from_words, scale_concern, shape_kind
+
+    kind = (expected_from_words(outcome.words)
+            or shape_kind(outcome.flow_topology, sides, grounded=outcome.grounded))
+    try:
+        unit = LengthUnit(outcome.unit) if outcome.unit else None
+    except ValueError:
+        unit = None
+    concern = scale_concern(max(sides), kind=kind, unit_in_effect=unit)
+    if concern is None:
+        return None
+    return {"kind": PHYSICAL_SCALE, **concern.as_dict(), "unit": unit.value if unit else None}
+
+
+def _physical_scale_lines(c: Mapping) -> list[str]:
+    words = str(c.get("words") or "").strip()
+    if not words:
+        return ["  - The mesh is not a believable size for what it is. Check the unit of the file."]
+    return [f"  - {words}",
+            "    Every check on the mesh itself passed, but a mesh at the wrong scale gives wrong "
+            "results. If the unit is wrong, say which one the file is in and run it again."]
 
 
 def _mm_text(metres: object) -> str | None:

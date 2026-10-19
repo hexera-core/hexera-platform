@@ -81,7 +81,13 @@ def _far_sandwich(offset: float = 5.0) -> Ecxml:
 
 
 def test_micron_layers_far_from_the_origin_written_as_decimals_are_kept(tmp_path):
-    result = _mesh(tmp_path, _far_sandwich(), max_cells=100_000)
+    # every layer meshed: this is about the precision (a 1 um layer 5 m out is otherwise thin
+    # enough to be a thin-layer resistance - tests/unit/cad/test_ecxml_nanometre.py)
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    src = tmp_path / "model.ecxml"
+    src.write_bytes(_far_sandwich().xml())
+    result = mesh_ecxml(src, tmp_path / "case", G.GridPlan(max_cells=100_000), binary=False,
+                        thin_layers=False)
     rep = result.report
     assert {"Layer_0", "Layer_1"} <= set(rep["solid_regions"])
     assert not rep["flattened"] and rep["file_precision_m"] < 1e-7
@@ -156,7 +162,9 @@ def test_the_budget_takes_cells_out_of_the_layers_one_at_a_time():
     from meshpipeline.engines.snapgrid import blocks as B
 
     steps = G.relaxations(G.GridPlan(min_cells_across=4, cylinder_cells=12, growth=1.3))
-    assert [p.min_cells_across for p in steps] == [4, 4, 3, 2, 1, 1, 1, 1]
+    # the growth limit relaxes in two steps (1.5, then 2) before a cell comes out of a layer
+    assert [p.growth for p in steps][:3] == [1.3, 1.5, 2.0]
+    assert [p.min_cells_across for p in steps] == [4, 4, 4, 3, 2, 1, 1, 1, 1]
     assert [p.cylinder_cells for p in steps][-3:] == [10, 8, 6]
     pl = place(read_ecxml(_stack(Ecxml("Stack")).xml()))
     two = G.GridPlan(min_cells_across=2, growth=2.0)

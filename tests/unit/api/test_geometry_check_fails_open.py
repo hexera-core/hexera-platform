@@ -108,6 +108,25 @@ async def test_a_fresh_pending_check_is_still_pending(served):
     assert d["status"] == "pending" and "retry" not in d
 
 
+async def test_the_check_is_served_with_the_live_line_the_chat_shows(served):
+    now = time.time()
+    served({"scout.json": {"status": "pending", "session_id": str(SID), "written_at": now - 8},
+            "progress.json": {"scout": {"marker": now - 8, "picked_at": now - 6, "mode": "generic",
+                                        "current": "measuring", "work": {"size_bytes": 2_000_000, "suffix": ".stl"},
+                                        "steps": {"reading": {"at": now - 6, "end": now - 3},
+                                                  "measuring": {"at": now - 3}}}}})
+    d = await route.get_check(SID, "alice", "org-1")
+    line = d["progress"]
+    assert line["state"] == "running" and line["live"] is True and line["current"] == "Measuring the shape…"
+    assert [s["state"] for s in line["steps"]][:3] == ["done", "done", "active"]
+
+
+async def test_a_check_with_no_record_of_its_steps_is_still_served_a_line(served):
+    served({"scout.json": _scouted()})
+    d = await route.get_check(SID, "alice", "org-1")
+    assert d["progress"]["state"] == "waiting" and d["progress"]["live"] is False
+
+
 async def test_a_scouted_check_with_no_naming_asked_is_served_for_the_stage_to_open(served):
     served({"scout.json": _scouted()}, geometry_interpretation_id=uuid.uuid4())
     d = await route.get_check(SID, "alice", "org-1")

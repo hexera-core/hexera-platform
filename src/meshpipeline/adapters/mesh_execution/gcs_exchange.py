@@ -37,18 +37,30 @@ def download_workspace(input_uri: str) -> str:
     return ws
 
 
+#: The returned archive goes up in chunks, each with its own deadline - the input side's rule
+#: (cloud_run_client._UPLOAD_CHUNK_BYTES): sent as one request, the storage SDK's 60-second
+#: default is a deadline on the WHOLE archive, and a result of several hundred MB (the layered
+#: lumens of verify-7fix came back at 566-696 MB) must not race it. The archive is written to a
+#: file beside the workspace, not held in memory twice.
+RESULT_UPLOAD_CHUNK_BYTES = 16 * 1024 * 1024
+RESULT_UPLOAD_TIMEOUT_S = 300
+
+
 def upload_result(output_uri: str, workspace: str, result: dict) -> None:
     gcs = storage_client()
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-        # Same rule as the input side: children only, so no "." member is written. The local
-        # worker extracts this through the identical safe_extract, so a "." root here fails the
-        # run just as surely - one step later, after the mesh has already been paid for.
-        for child in sorted(pathlib.Path(workspace).iterdir()):
-            tf.add(str(child), arcname=child.name)
     out_bucket, out_key = split_gs(output_uri)
-    gcs.bucket(out_bucket).blob(out_key).upload_from_string(
-        buf.getvalue(), content_type="application/gzip")
+    ws = pathlib.Path(workspace)
+    with tempfile.TemporaryDirectory(prefix="mesh_out_", dir=str(ws.parent)) as tmp:
+        archive = pathlib.Path(tmp) / "output.tar.gz"
+        with tarfile.open(name=str(archive), mode="w:gz") as tf:
+            # Same rule as the input side: children only, so no "." member is written. The local
+            # worker extracts this through the identical safe_extract, so a "." root here fails
+            # the run just as surely - one step later, after the mesh has already been paid for.
+            for child in sorted(ws.iterdir()):
+                tf.add(str(child), arcname=child.name)
+        gcs.bucket(out_bucket).blob(out_key, chunk_size=RESULT_UPLOAD_CHUNK_BYTES) \
+            .upload_from_filename(str(archive), content_type="application/gzip",
+                                  timeout=RESULT_UPLOAD_TIMEOUT_S)
     from meshpipeline.artifact_keys import result_key_beside
     res_key = result_key_beside(out_key)
     gcs.bucket(out_bucket).blob(res_key).upload_from_string(

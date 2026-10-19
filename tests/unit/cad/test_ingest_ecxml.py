@@ -677,7 +677,7 @@ def test_a_gap_the_files_precision_cannot_tell_from_contact_is_refused_with_the_
     with pytest.raises(FidelityError) as err:
         build(read_ecxml(_as_float32_export(_die_on_substrate(3e-7, scale=100.0))))
     said = str(err.value)
-    assert "cannot be told apart from contact" in said and "0.3 um (Substrate and Die)" in said
+    assert "cannot be told apart from contact" in said and "300 nm (Substrate and Die)" in said
     assert "sub-assembly" in said
 
 

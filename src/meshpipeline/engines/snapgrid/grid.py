@@ -41,12 +41,20 @@ MAX_LINES_PER_AXIS = 20_000
 
 @dataclass(frozen=True)
 class GridPlan:
-    """What the grid is asked for. Every field has a default a thermal engineer would accept."""
+    """What the grid is asked for. Every field has a default a thermal engineer would accept; the
+    thermal rules (engines/snapgrid/thermal_rules.py) are off at 0, so a bare plan is the plain
+    snap grid and each detail level (runner.FIDELITY_PLANS) switches them on."""
     max_cells: int = 2_000_000          # the cell budget
     background_cells: int = 50          # cells along the domain's longest side, where nothing is
     min_cells_across: int = 2           # cells through each part, on each axis
     cylinder_cells: int = 12            # cells across a cylinder's or a round vent's diameter
     growth: float = 1.3                 # largest size ratio between neighbouring cells
+    hot_cells_across: int = 0           # cells through each heated part (0: min_cells_across)
+    gap_cells: int = 0                  # cells across each air gap between two solids
+    band_cells: int = 0                 # cells inside the thermal boundary layer of a heated face
+    spread_cells: int = 0               # cells across each heat-producing part's width
+    opening_cells: int = 0              # cells across each fan, vent and grille
+    air_aspect: float = 0.0             # longest/shortest side of a cell in gaps and heated bands
 
     def problems(self) -> list[str]:
         out = []
@@ -60,6 +68,12 @@ class GridPlan:
             out.append("cylinder_cells must be at least 2")
         if not 1.05 <= self.growth <= 4.0:
             out.append("growth must be between 1.05 and 4")
+        for name in ("hot_cells_across", "gap_cells", "band_cells", "spread_cells",
+                     "opening_cells"):
+            if getattr(self, name) < 0:
+                out.append(f"{name} must not be negative")
+        if self.air_aspect and self.air_aspect < 1.0:
+            out.append("air_aspect must be at least 1 (or 0: no limit)")
         return out
 
 
@@ -136,7 +150,11 @@ def _place_axis(ax: _Axis, H: float, m: float) -> np.ndarray:
         end_size[i + 1] = min(end_size[i + 1], S[i])
         start_size[i] = min(start_size[i], S[i])
     for a, b, s in ax.covers:
-        if b <= a:
+        if b == a:                           # a source on one plane (a face): sized there only
+            end_size[a] = min(end_size[a], s)
+            start_size[a] = min(start_size[a], s)
+            continue
+        if b < a:
             continue
         cover[a:b] = np.minimum(cover[a:b], s)
         end_size[b] = min(end_size[b], s)
@@ -390,18 +408,62 @@ class OutOfMemory(OverBudget):
 
 def relaxations(plan: GridPlan) -> list[GridPlan]:
     """The plans tried, in order, when a model does not fit the cell budget - each one only after
-    the one before it could not fit even with the coarsest background: the plan; the growth limit
-    relaxed to 2; then one cell fewer through each part at a time (N-1, N-2, ... 1 - never straight
-    from N to 1); then two cells fewer across each cylinder at a time, down to 6."""
+    the one before it could not fit even with the coarsest background. What matters least for the
+    temperatures goes first, one step at a time:
+
+    1. cells in the heated bands may be longer along the surface (aspect x2, x4);
+    2. one cell fewer inside each heated surface's boundary layer, down to 2;
+    3. fewer cells across fans and vents (down to 4) and across heat sources (down to 3);
+    4. the growth limit relaxed to 1.5, then 2;
+    5. one cell fewer through heated parts, down to the cells through every part;
+    6. one cell fewer across each air gap, down to 2;
+    7. the thermal rules left to the rest of the grid (the plain snap grid);
+    8. one cell fewer through every part (N-1, ... 1 - never straight from N to 1);
+    9. two cells fewer across each cylinder at a time, down to 6.
+
+    Cells through every part go only once every thermal rule is gone - the plain snap grid's
+    promise is kept first - and never below one: a layer is never merged away."""
     out = [plan]
-    if plan.growth < 2.0:
-        out.append(_replace(plan, growth=2.0))
+
+    def step(**kw) -> None:
+        nxt = _replace(out[-1], **kw)
+        if nxt != out[-1]:
+            out.append(nxt)
+
+    if plan.air_aspect and plan.band_cells:
+        for k in (2, 4):
+            step(air_aspect=plan.air_aspect * k)
+    for n in range(plan.band_cells - 1, 1, -1):
+        step(band_cells=n)
+    for n in _down(plan.opening_cells, 4):
+        step(opening_cells=n)
+    for n in _down(plan.spread_cells, 3):
+        step(spread_cells=n)
+    for g in (1.5, 2.0):
+        if out[-1].growth < g:
+            step(growth=g)
+    for n in range(plan.hot_cells_across - 1, plan.min_cells_across - 1, -1):
+        if n >= 1:
+            step(hot_cells_across=n)
+    for n in range(plan.gap_cells - 1, 1, -1):
+        step(gap_cells=n)
+    step(band_cells=0, spread_cells=0, opening_cells=0, gap_cells=0, air_aspect=0.0,
+         hot_cells_across=0)
     for n in range(plan.min_cells_across - 1, 0, -1):
-        out.append(_replace(out[-1], min_cells_across=n))
+        step(min_cells_across=n)
     c = plan.cylinder_cells
     while c > 6:
         c = max(6, c - 2)
-        out.append(_replace(out[-1], cylinder_cells=c))
+        step(cylinder_cells=c)
+    return out
+
+
+def _down(n: int, floor: int) -> list[int]:
+    """Steps from n down to `floor`, a quarter at a time (at least one cell a step)."""
+    out = []
+    while n > floor:
+        n = max(floor, min(n - 1, int(n * 0.75)))
+        out.append(n)
     return out
 
 
@@ -410,7 +472,26 @@ def _replace(plan: GridPlan, **kw) -> GridPlan:
     return replace(plan, **kw)
 
 
-def _relaxed_words(want: GridPlan, got: GridPlan) -> list[str]:
+#: How a rule the budget switched off is said.
+_OFF_WORDS = {
+    "band_cells": "the air next to heated surfaces is left to the rest of the grid (asked {want} "
+                  "cells inside its warm-air layer)",
+    "spread_cells": "heat-producing parts get no cells beyond the rest of the grid across their "
+                    "width (asked {want})",
+    "opening_cells": "fans, vents and grilles get no cells beyond the rest of the grid across "
+                     "them (asked {want})",
+    "gap_cells": "air gaps between solids keep only the cells the rest of the grid gives them, at "
+                 "least one (asked {want} across)",
+    "air_aspect": "cells next to heated surfaces are no longer kept short along the surface "
+                  "(asked at most {want:g}x their size across it)",
+}
+
+
+def _relaxed_words(want: GridPlan, got: GridPlan, applies: set[str] | None = None) -> list[str]:
+    """What the budget changed from `want` to `got`, in words; `applies`: the thermal rules the
+    model has anything for (None: all) - a rule with nothing to act on is never said relaxed."""
+    from meshpipeline.engines.snapgrid.thermal_rules import RULE_WORDS
+
     out = []
     if got.growth != want.growth:
         out.append(f"neighbouring cells may differ by up to {got.growth:g}x (asked "
@@ -421,6 +502,19 @@ def _relaxed_words(want: GridPlan, got: GridPlan) -> list[str]:
     if got.cylinder_cells != want.cylinder_cells:
         out.append(f"cylinders get {got.cylinder_cells} cells across (asked "
                    f"{want.cylinder_cells}), to fit the cell budget")
+    for key, words in RULE_WORDS.items():
+        if applies is not None and key not in applies:
+            continue
+        w, g = getattr(want, key), getattr(got, key)
+        if key == "hot_cells_across":
+            w, g = w or want.min_cells_across, g or got.min_cells_across
+            if w <= want.min_cells_across:
+                continue
+        if not w or g == w:
+            continue
+        text = _OFF_WORDS[key].format(want=w) if (not g and key in _OFF_WORDS) else \
+            words.format(got=g, want=w)
+        out.append(text + ", to fit the cell budget")
     return out
 
 

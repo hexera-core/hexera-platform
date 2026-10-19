@@ -60,7 +60,7 @@ _CAD_SUFFIXES = frozenset({".step", ".stp", ".iges", ".igs", ".brep", ".brp"})
 #: Triangle and mesh formats: whatever the reader makes of them, what reaches an engine is a
 #: triangulated surface (a volume mesh contributes its skin).
 _SURFACE_SUFFIXES = frozenset({".stl", ".obj", ".ply", ".off", ".3mf", ".gltf", ".glb", ".vtk",
-                               ".vtp", ".vtu", ".msh", ".bdf", ".nas", ".inp"})
+                               ".vtp", ".vtu", ".msh", ".bdf", ".nas", ".inp", ".dae"})
 
 
 def _suffix_of(source: object) -> str:
@@ -239,6 +239,26 @@ def engines_for(flow: str, form: str = "", specs: Mapping | None = None) -> list
             if not form or accepts(cat[n], flow, form) is not False]
 
 
+def covers_passages(spec, flow: str, passages: int | None) -> bool:
+    """Whether one job of this engine meshes a case of `passages` separate fluid passages for
+    `flow`, by its declaration (FlowSupport.max_passages). An unknown count, a single passage and
+    any flow but internal narrow nothing: only a measured count of several can rule an engine out,
+    and only for internal flow, where passages are counted."""
+    if flow != FLOW_INTERNAL or not isinstance(passages, int) or isinstance(passages, bool) \
+            or passages <= 1:
+        return True
+    limit = spec.max_passages_for(flow)
+    return limit is None or passages <= limit
+
+
+def engines_covering(engines: Iterable[str], flow: str, passages: int | None,
+                     specs: Mapping | None = None) -> list[str]:
+    """Of `engines`, in the order given, those whose declaration covers `passages` (covers_passages).
+    A name the catalogue does not hold is kept: this answers the passage question only."""
+    cat = _catalog(specs)
+    return [n for n in engines if n not in cat or covers_passages(cat[n], flow, passages)]
+
+
 def capability_table(specs: Mapping | None = None) -> dict[tuple[str, str, str], bool]:
     """(engine, flow, form) -> can it - the whole declared matrix, for tests and reports."""
     cat = _catalog(specs)
@@ -358,6 +378,7 @@ def delivers_line(spec) -> str:
 
 __all__ = ["FLOW_EXTERNAL", "FLOW_INTERNAL", "FLOW_KINDS", "FLOW_MULTI_REGION",
            "FLOW_STRUCTURAL", "FORM_CAD", "FORM_SURFACE", "GEOMETRY_FORMS", "accepts",
-           "capability_table", "delivers_line", "designed_for", "engine_words", "engines_for",
-           "flow_of", "flow_words", "form_words", "geometry_form", "geometry_form_of_state",
-           "ladder_order", "refusal", "takes_line", "way_on", "who_can"]
+           "capability_table", "covers_passages", "delivers_line", "designed_for", "engine_words",
+           "engines_covering", "engines_for", "flow_of", "flow_words", "form_words",
+           "geometry_form", "geometry_form_of_state", "ladder_order", "refusal",
+           "takes_line", "way_on", "who_can"]

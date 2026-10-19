@@ -175,6 +175,9 @@ class _FakeCelery:
         # queues from another's.
         self.conf = types.SimpleNamespace()
         self.conf.update = lambda **kw: self.conf.__dict__.update(kw)
+        # Bootsteps added to the worker or consumer blueprint, kept so a test can ask what is
+        # wired in (runtime/celery_worker.py ConsumerHeartbeat).
+        self.steps = {"worker": set(), "consumer": set()}
     def task(self, *a, **k):
         # the options too, for the same reason: a task's time limits are a contract the
         # application reads a check through, and a test must be able to hold them to it
@@ -211,10 +214,18 @@ class _FakeSoftTimeLimit(Exception): pass
 class _FakeTimeLimit(Exception): pass
 _celery_exc.SoftTimeLimitExceeded = _FakeSoftTimeLimit
 _celery_exc.TimeLimitExceeded     = _FakeTimeLimit
+_celery_bootsteps = types.ModuleType("celery.bootsteps")
+class _FakeStartStopStep:
+    requires: tuple = ()
+    def __init__(self, parent, **kwargs):
+        pass
+_celery_bootsteps.StartStopStep = _FakeStartStopStep
+_celery_mod.bootsteps = _celery_bootsteps
 for _n, _m in [
     ("celery",            _celery_mod),
     ("celery.signals",    _celery_signals),
     ("celery.exceptions", _celery_exc),
+    ("celery.bootsteps",  _celery_bootsteps),
 ]:
     sys.modules.setdefault(_n, _m)
 

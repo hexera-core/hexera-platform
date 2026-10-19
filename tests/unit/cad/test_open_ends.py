@@ -300,3 +300,13 @@ def test_the_inside_of_a_tees_junction_is_not_a_hole():
     assert all(h.kind == "bore" for h in holes)
     branch = next(h for h in holes if h.centroid[2] > 0.1)
     assert branch.centroid[2] == pytest.approx(0.2, abs=1e-3) and branch.normal[2] > 0.99
+
+
+
+def test_the_area_the_flow_crosses_is_carried_for_every_mouth_its_shape_does_not_state():
+    from meshpipeline.cad.open_ends import measured_flow_area
+    assert measured_flow_area(0.0005, 0.0, "circle") == {}              # its diameter states it
+    assert measured_flow_area(921.8e-6, 0.0, "other") == {"flow_area_mm2": 921.8}
+    assert measured_flow_area(0.0012, 0.0002, "circle") == {"flow_area_mm2": 1000.0}   # a ring
+    # six significant figures: a 0.2 mm vessel's mouth is not rounded away
+    assert measured_flow_area(3.14159e-8, 0.0, "other") == {"flow_area_mm2": 0.0314159}

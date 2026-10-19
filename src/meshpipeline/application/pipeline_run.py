@@ -883,6 +883,11 @@ async def _run_async(req: JobRequest) -> dict:
         # review caveats it never enters the graph state, so it can never start a retry.
         from meshpipeline.application.final_result import narrow_passage_caveat
         _narrow_caveat = narrow_passage_caveat(_run_outcome)
+        # and the size note: a sound mesh that is not a believable size for what it is (a car
+        # 4.7 mm long) is delivered with the concern said, never as a clean pass - the unit of a
+        # file that states none is the likely cause, and only the user can say which it is
+        from meshpipeline.application.final_result import physical_scale_caveat
+        _scale_caveat = physical_scale_caveat(_run_outcome)
         verdict, api_failure = _run_outcome.reviewer_verdict, _run_outcome.api_failure
 
         retry_count = _run_outcome.retry_count
@@ -1109,7 +1114,8 @@ async def _run_async(req: JobRequest) -> dict:
                 requirement_caveats=(list(final_state.get("requirement_caveats") or [])
                                      + ([_concerns_caveat] if _concerns_caveat else [])
                                      + ([_review_caveat] if _review_caveat else [])
-                                     + ([_narrow_caveat] if _narrow_caveat else [])),
+                                     + ([_narrow_caveat] if _narrow_caveat else [])
+                                     + ([_scale_caveat] if _scale_caveat else [])),
                 review_blocking=list(_review_blocking),
                 review_plan=_review_plan,
                 review_left=_review_left,

@@ -19,12 +19,33 @@ Which runs count (recorded in the table's provenance):
   facts into failures, for a defect found AFTER the runs that every gate missed (a mesh of the
   wrong region). Facts: input_kind, form, annulus (a declared opening with an inner diameter).
   Every recount is written into the table's provenance with its reason and count.
+* a run whose mesh came out INVALID (checkMesh's fatal defects: negative-volume cells, faces
+  pointing the wrong way) is marked `invalid` - engines/fitness.py reads it before speed.
+
+THE END-TO-END SWEEPS (--e2e, repeatable: a sweep's results/ directory) add the runs the corpus
+loop made through the whole product path - the check, the intake's defaults, the engine the
+recommendation picked, the mesh and the reviewer's deterministic evidence - on public CFD CAD the
+lab never held (detailed cars, high-lift aircraft, turbines). Each e2e result carries its own
+measured traits (the recommendation's measurement of that upload), so nothing is measured again.
+They count when their commit is an ancestor of --e2e-base (default HEAD - the lab's --base can be
+a lineage commit that main's squash merges never descend from); a delivered mesh (pass, or delivered with concerns) is a pass, a
+mesh that failed or ran out of time in the mesh stage is a failure, and everything that stopped
+before an engine ran (refused, the check, the intake) or on our side (a harness error, a workspace
+that could not be extracted) is left out. A lab run of the same shape, engine and format is
+superseded by the e2e run: it is the newer, and the product's own path.
 
 Usage (from the repository root, in the venv that has OCP and pyvista):
     PYTHONPATH=src python devtools/fitness/build_engine_fitness.py \\
         --out /home/areen/overnight/lab/out --since a4595577 \\
         --cases /home/areen/overnight/lab/testset/cases --cases /home/areen/overnight/recommend/cases \\
-        --cases /home/areen/overnight/vmtk-tubular/cases --root /home/areen/overnight/lab/testset
+        --cases /home/areen/overnight/vmtk-tubular/cases --root /home/areen/overnight/lab/testset \\
+        --e2e /home/areen/overnight/e2e/sweeps/baseline-main/results
+
+To add e2e sweeps to the lab record a table already ships with (the lab's out/ has moved on, and
+re-reading it would change rows the build is not about):
+    PYTHONPATH=src python devtools/fitness/build_engine_fitness.py \\
+        --lab-rows-from src/meshpipeline/engines/fitness_table.json \\
+        --e2e /home/areen/overnight/e2e/sweeps/baseline-main/results
 """
 from __future__ import annotations
 
@@ -53,6 +74,8 @@ def shape_id(case_id: str) -> str:
     out: the workstreams' prefixes, the file format and the fluid/wall/assembly twin suffixes
     removed. Bookkeeping only - the ranking never reads a name."""
     s = case_id.lower()
+    # an e2e case keeps its file's name ("drivaer_1.stl.stl", "...config.stp")
+    s = re.sub(rf"(\.{_FORMAT_SUFFIX})+$", "", s)
     s = re.sub(r"^(rc|vt|mx|stl|ht\d*|smoke|turf)_", "", s)
     for _ in range(3):
         s = re.sub(rf"_{_FORMAT_SUFFIX}$", "", s)
@@ -100,6 +123,20 @@ def _layers_pct(result: dict) -> float | None:
     return None
 
 
+_FATAL_IN_REASON = re.compile(r"fatal=\[([^\]]*)\]")
+
+
+def _fatal(result: dict, reason: str = "") -> list[str]:
+    """The fatal checkMesh defects of a run's mesh: the quality report's own list, else the ones
+    the engine's verdict names ("[CFMESH] polyMesh cells=... fatal=['negative-volume cells']")."""
+    q = result.get("quality")
+    listed = q.get("fatal") if isinstance(q, dict) else None
+    if isinstance(listed, list) and listed:
+        return [str(x) for x in listed]
+    m = _FATAL_IN_REASON.search(reason or str(result.get("reason") or ""))
+    return re.findall(r"'([^']+)'", m.group(1)) if m else []
+
+
 def _status(result: dict) -> str | None:
     s = str(result.get("status") or "")
     if s == "pass":
@@ -109,6 +146,70 @@ def _status(result: dict) -> str | None:
     if s == "error":
         return None if str(result.get("failure_class") or "").startswith(_RUNNER_CRASHES) else "fail"
     return None          # refused: the capability filter's business, not fitness
+
+
+#: e2e failures that are our side, not the engine's: never evidence about an engine
+_E2E_INFRASTRUCTURE = ("workspaceextractionerror", "harness:", "timeout:wallclock", "crash:")
+
+
+def e2e_status(result: dict) -> tuple[str | None, str]:
+    """(pass | fail | None, why) for one e2e result: a delivered mesh passes, a mesh-stage failure
+    or time-out fails, anything that stopped before an engine ran or on our side does not count."""
+    outcome = str(result.get("outcome") or "")
+    stage = str(result.get("stage") or "")
+    failure = str(result.get("failure_class") or "")
+    if outcome in ("pass", "concerns"):
+        return "pass", ""
+    if outcome not in ("failed", "timeout"):
+        return None, f"e2e {outcome or 'no outcome'}"
+    if not stage.startswith("mesh"):
+        return None, f"e2e stopped at {stage.split(':', 1)[0] or 'an unknown stage'}"
+    if any(m in failure for m in _E2E_INFRASTRUCTURE):
+        return None, "e2e failure on our side"
+    return "fail", ""
+
+
+def e2e_row(result: dict) -> tuple[dict | None, str]:
+    """One table row from one e2e result (see the module doc), or (None, why it does not count).
+    The commit rule is the caller's."""
+    from meshpipeline.cad.shape_traits import TRAITS_VERSION
+    from meshpipeline.engines.fitness import brief_facts
+    status, why = e2e_status(result)
+    if status is None:
+        return None, why
+    rec = result.get("recommend") if isinstance(result.get("recommend"), dict) else {}
+    traits = rec.get("traits") if isinstance(rec.get("traits"), dict) else None
+    if not traits or not traits.get("n_triangles"):
+        return None, "e2e geometry not measured"
+    if int(traits.get("version") or 0) != TRAITS_VERSION:
+        return None, "e2e traits measured by another traits version"
+    engine = str(result.get("engine") or "")
+    if not engine:
+        return None, "e2e run names no engine"
+    mesh = result.get("mesh") if isinstance(result.get("mesh"), dict) else {}
+    reason = str(mesh.get("reason") or result.get("reason") or "")
+    fatal = _fatal(mesh, reason)
+    quality = dict(mesh.get("quality") or {}) if isinstance(mesh.get("quality"), dict) else {}
+    if fatal:
+        quality["fatal"] = fatal
+    intake = result.get("intake") if isinstance(result.get("intake"), dict) else {}
+    patches = [p for p in (intake.get("patches") or []) if isinstance(p, dict)]
+    case_id = str(result.get("case_id") or "")
+    row = {
+        "shape": shape_id(case_id), "case": case_id, "family": str(result.get("category") or ""),
+        "engine": engine, "format": str(result.get("format") or ""),
+        "form": str(traits.get("form") or ""), "status": status,
+        "failure_class": "" if status == "pass" else str(result.get("failure_class") or ""),
+        "cells": result.get("cells"),
+        "seconds": _num((mesh.get("timings") or {}).get("total")),
+        "layers_pct": _layers_pct(mesh), "cells_across_p05": None, "quality": quality,
+        "tag": str(result.get("tag") or ""),
+        "commit": str((result.get("git") or {}).get("commit") or "")[:8],
+        "brief": brief_facts(request_txt=str(intake.get("request_txt") or ""), patches=patches),
+        "source": "e2e", "traits": traits}
+    if status == "fail" and fatal:
+        row["invalid"] = True
+    return row, ""
 
 
 def _render(table: dict) -> str:
@@ -175,27 +276,12 @@ def _measure(job: dict) -> tuple[str, dict]:
     return job["key"], t.as_dict()
 
 
-def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--out", required=True, help="the lab's out/ directory")
-    ap.add_argument("--cases", action="append", default=[], help="a directory of case JSONs (repeatable)")
-    ap.add_argument("--root", action="append", default=[], help="a root relative input files resolve against")
-    ap.add_argument("--since", required=True, help="oldest commit whose runs count")
-    ap.add_argument("--base", default="HEAD", help="the code the table ships with (default HEAD)")
-    ap.add_argument("--prefix", action="append", default=[], help="only result tags matching this glob")
-    ap.add_argument("--cache", default="", help="traits cache file (JSON) to reuse measurements")
-    ap.add_argument("--table", default=str(TABLE))
-    ap.add_argument("--jobs", type=int, default=4)
-    ap.add_argument("--recount", action="append", default=[],
-                    help="ENGINE:FACT=VALUE[,FACT=VALUE]:REASON - passes that delivered the wrong mesh")
-    args = ap.parse_args(argv)
-
+def _lab_rows(args, base: str, since: str) -> tuple[list, Counter, Counter, Counter, Counter]:
+    """(rows, excluded, recounted, commits, prefixes) from the lab's out/ directory."""
     from meshpipeline.cad.shape_traits import TRAITS_VERSION
     from meshpipeline.engines.capability import flow_of
     from meshpipeline.engines.fitness import brief_facts
 
-    base = _git("rev-parse", args.base)
-    since = _git("rev-parse", args.since)
     case_dirs = [Path(d) for d in args.cases]
     roots = [Path(r) for r in args.root] + case_dirs
     excluded: Counter = Counter()
@@ -282,27 +368,138 @@ def main(argv=None) -> int:
             if status == "pass" and engine == eng and all(facts.get(k) == v for k, v in want.items()):
                 status, failure = "fail", f"recounted:{reason}"
                 recounted[f"{eng}: {reason}"] += 1
-        rows.append({
+        fatal = _fatal(r) if status == "fail" else []
+        quality = dict(r.get("quality") or {}) if isinstance(r.get("quality"), dict) else {}
+        if fatal:
+            quality["fatal"] = fatal
+        row = {
             "shape": shape_id(case_id), "case": case_id, "family": case.get("family") or "",
             "engine": engine, "format": fmt, "form": traits.get("form") or "",
             "status": status, "failure_class": failure,
             "cells": r.get("cells"), "seconds": _num((r.get("timings") or {}).get("total")),
             "layers_pct": _layers_pct(r), "cells_across_p05": _cells_across(r),
-            "quality": r.get("quality") or {}, "tag": tag, "commit": commit[:8],
+            "quality": quality, "tag": tag, "commit": commit[:8],
             # what the case's own brief says (layers asked for, ground, budget): the held-out check
             # recommends with it, as the product does with the user's brief
             "brief": brief_facts(request_txt=str(case.get("request_txt") or ""),
                                  patches=[p for p in (case.get("patches") or []) if isinstance(p, dict)],
                                  cell_budget=case.get("max_cells")),
-            "traits": traits})
+            "traits": traits}
+        if fatal:
+            row["invalid"] = True
+        rows.append(row)
+
+    return rows, excluded, recounted, commits, prefixes
+
+
+def _prior_lab_rows(path: str) -> tuple[list, Counter, Counter, Counter, Counter, dict]:
+    """The lab rows of an earlier table, as they are - for a build that adds the e2e sweeps to
+    the lab record the table shipped with, without re-reading an out/ directory that has moved
+    on since (newer re-runs there would change rows this build is not about)."""
+    prior = json.loads(Path(path).read_text())
+    prov = prior.get("provenance") or {}
+    rows = [dict(r) for r in prior.get("rows") or () if isinstance(r, dict) and r.get("source") != "e2e"]
+    # the lab side's own exclusions only: an earlier build's e2e counts are counted again here
+    excluded = Counter({k: v for k, v in (prov.get("excluded") or {}).items()
+                        if not k.startswith(("e2e", "lab run superseded"))})
+    # a table that was itself built this way passes on where ITS lab rows came from
+    origin = dict(prov.get("lab_rows_from") or {}) or {
+        "version": prior.get("version"), "command": prior.get("command"),
+        "base_commit": prov.get("base_commit"), "since_commit": prov.get("since_commit")}
+    return (rows, excluded, Counter(prov.get("recounted") or {}),
+            Counter(prov.get("commits") or {}), Counter(prov.get("tag_prefixes") or {}),
+            {**origin, "table": path, "runs": len(rows)})
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--out", default="", help="the lab's out/ directory")
+    ap.add_argument("--lab-rows-from", default="",
+                    help="instead of --out: keep the lab rows of this earlier table as they are "
+                         "(its code rule and provenance come with them) and add the --e2e runs")
+    ap.add_argument("--cases", action="append", default=[], help="a directory of case JSONs (repeatable)")
+    ap.add_argument("--root", action="append", default=[], help="a root relative input files resolve against")
+    ap.add_argument("--since", default="", help="oldest commit whose runs count (with --out)")
+    ap.add_argument("--base", default="HEAD", help="the code the table ships with (default HEAD)")
+    ap.add_argument("--prefix", action="append", default=[], help="only result tags matching this glob")
+    ap.add_argument("--cache", default="", help="traits cache file (JSON) to reuse measurements")
+    ap.add_argument("--table", default=str(TABLE))
+    ap.add_argument("--jobs", type=int, default=4)
+    ap.add_argument("--recount", action="append", default=[],
+                    help="ENGINE:FACT=VALUE[,FACT=VALUE]:REASON - passes that delivered the wrong mesh")
+    ap.add_argument("--e2e", action="append", default=[],
+                    help="an e2e sweep's results/ directory (repeatable)")
+    ap.add_argument("--e2e-base", default="HEAD",
+                    help="e2e runs count when their commit is an ancestor of this (default HEAD: the "
+                         "code the table ships with; the lab's --base may be a lineage commit)")
+    ap.add_argument("--e2e-since", default="", help="...and, when given, descends from this")
+    args = ap.parse_args(argv)
+    if bool(args.out) == bool(args.lab_rows_from):
+        ap.error("give exactly one of --out (with --since) or --lab-rows-from")
+    if args.out and not args.since:
+        ap.error("--out needs --since")
+
+    from meshpipeline.cad.shape_traits import TRAITS_VERSION
+
+    base = _git("rev-parse", args.base)
+    since = _git("rev-parse", args.since) if args.since else ""
+    lab_from: dict = {}
+    if args.lab_rows_from:
+        rows, excluded, recounted, commits, prefixes, lab_from = _prior_lab_rows(args.lab_rows_from)
+        base = str(lab_from.get("base_commit") or base)
+        since = str(lab_from.get("since_commit") or since)
+    else:
+        rows, excluded, recounted, commits, prefixes = _lab_rows(args, base, since)
+
+    # THE END-TO-END SWEEPS: newest result per (case, engine, format), by the same code rule
+    e2e_latest: dict[tuple, tuple[float, dict]] = {}
+    e2e_sweeps: Counter = Counter()
+    e2e_base = _git("rev-parse", args.e2e_base) if args.e2e else ""
+    e2e_since = _git("rev-parse", args.e2e_since) if args.e2e and args.e2e_since else ""
+    for d in args.e2e:
+        for f in sorted(Path(d).glob("*.json")):
+            try:
+                res = json.loads(f.read_text())
+            except (OSError, ValueError):
+                continue
+            if not isinstance(res, dict) or "case_id" not in res:
+                continue
+            commit = str((res.get("git") or {}).get("commit") or "")
+            if not commit or not is_ancestor(commit, e2e_base) or (
+                    e2e_since and not is_ancestor(e2e_since, commit)):
+                excluded["e2e code not in since..base"] += 1
+                continue
+            row, why = e2e_row(res)
+            if row is None:
+                excluded[why] += 1
+                continue
+            key = (row["case"], row["engine"], row["format"])
+            mtime = f.stat().st_mtime
+            if key in e2e_latest:
+                excluded["e2e older duplicate"] += 1
+                if mtime <= e2e_latest[key][0]:
+                    continue
+            e2e_latest[key] = (mtime, row)
+            e2e_sweeps[str(res.get("sweep") or Path(d).parent.name)] += 1
+    e2e_rows = [row for _, row in e2e_latest.values()]
+    if e2e_rows:
+        newer = {(r["shape"], r["engine"], r["format"]) for r in e2e_rows}
+        kept = [r for r in rows if (r["shape"], r["engine"], r["format"]) not in newer]
+        excluded["lab run superseded by an e2e run"] += len(rows) - len(kept)
+        rows = kept + sorted(e2e_rows, key=lambda r: (r["case"], r["engine"], r["format"]))
+        # counted from the rows the table keeps: a superseded lab run no longer counts
+        commits = Counter(str(r.get("commit") or "") for r in rows)
+        prefixes = Counter(str(r.get("tag") or "").split("-", 1)[0] for r in rows)
 
     from meshpipeline.cad.shape_traits import ShapeTraits
-    from meshpipeline.engines.fitness import shape_class, table_from
+    from meshpipeline.engines.fitness import detail_of, shape_class, table_from
     summary: dict = defaultdict(lambda: defaultdict(lambda: [0, 0]))
     for row in rows:
-        cls = shape_class(ShapeTraits.from_dict(row["traits"])) or "(unplaced)"
+        t = ShapeTraits.from_dict(row["traits"])
+        cls = shape_class(t) or "(unplaced)"
+        detail = detail_of(t)
         flow = row["traits"].get("flow") or ""
-        cell = summary[f"{flow} / {cls} / {row['form']}"][row["engine"]]
+        cell = summary[f"{flow} / {cls}{f' ({detail})' if detail else ''} / {row['form']}"][row["engine"]]
         cell[0] += row["status"] == "pass"
         cell[1] += 1
     table = {
@@ -313,7 +510,14 @@ def main(argv=None) -> int:
         "provenance": {
             "base_commit": base, "since_commit": since,
             "rule": "runs whose commit descends from since_commit and is an ancestor of base_commit; "
-                    "newest result per (case, engine, format); refusals and lab-runner crashes left out",
+                    "newest result per (case, engine, format); refusals and lab-runner crashes left out; "
+                    "e2e sweep runs whose commit is an ancestor of e2e.base_commit count when an "
+                    "engine ran (delivered = pass, a mesh-stage failure or time-out = fail) and "
+                    "supersede a lab run of the same shape, engine and format",
+            "e2e": {"dirs": list(args.e2e), "runs": len(e2e_rows), "base_commit": e2e_base,
+                    "since_commit": e2e_since, "sweeps": dict(sorted(e2e_sweeps.items()))},
+            "invalid": sum(1 for r in rows if r.get("invalid")),
+            **({"lab_rows_from": lab_from} if lab_from else {}),
             "runs": len(rows), "shapes": len({r["shape"] for r in rows}),
             "cases": len({r["case"] for r in rows}),
             "commits": dict(sorted(commits.items())), "tag_prefixes": dict(sorted(prefixes.items())),

@@ -80,6 +80,43 @@ def test_the_model_is_told_the_sizes_the_guesses_and_which_stickers_face_each_pi
     assert "opening-1 (stickers facing the camera: 1)" in text
 
 
+def _read_as_a_body():
+    """The scout's facts for a closed lumen it read as a body in a flow: the openings it would have
+    if the fluid flowed through it are kept beside the reading."""
+    facts = _facts()
+    facts.update(body_kind="single_solid", input_kind="solid-body", flow="external",
+                 confidence={"input_kind": 0.6, "openings": 0.6}, seed_point_mm=None)
+    return facts
+
+
+def test_a_body_read_as_external_keeps_its_openings_for_a_flip_but_draws_no_stickers():
+    """The e2e sweep's capped lumens (a tank, a blade passage, a hot-end) were read as bodies and their
+    lids dropped, so the user who said "the fluid flows through it" had nothing to confirm and the
+    intake refused. The openings stay on the proposal - the stage shows them once the flow is
+    "through" - while the pictures and the model still see a body, unstickered, as before."""
+    facts = _read_as_a_body()
+    assert gc.stickered(facts) == []
+    proposal = gc._proposal(facts, None)
+    assert proposal["flow"] == "external"
+    assert [o["role"] for o in proposal["openings"]] == ["inlet", "outlet"]
+    text = gc._facts_text(facts, [_Shot("overview", [])], "")
+    assert "Stickers:" not in text and "no stickers are drawn" in text
+    # the internal reading draws them, as it always did
+    assert [o["id"] for o in gc.stickered(_facts())] == [1, 2]
+
+
+def test_a_model_that_says_the_fluid_flows_through_finds_the_kept_openings_waiting():
+    vision = {"part": "coronary artery tree", "flow": "internal", "input_kind": "fluid-domain",
+              "confidence": 0.9, "openings": []}
+    proposal = gc._proposal(_read_as_a_body(), vision)
+    assert (proposal["flow"], proposal["input_kind"]) == ("internal", "fluid-domain")
+    assert [o["name"] for o in proposal["openings"]] == ["inlet", "outlet"]
+    confirmed = ConfirmIn(input_kind="fluid-domain", flow="internal",
+                          openings=[ConfirmedOpening(**{k: o[k] for k in ("id", "name", "role", "diameter_mm", "centroid_mm")})
+                                    for o in proposal["openings"]])
+    assert [p["type"] for p in patches_from(confirmed)] == ["inlet", "outlet", "wall"]
+
+
 # ----------------------------------------------------------------------- confirmation ----
 def _confirm():
     return ConfirmIn(input_kind="body-surface", flow="internal", part="pipe elbow",

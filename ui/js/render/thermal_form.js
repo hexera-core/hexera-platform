@@ -46,13 +46,30 @@ export function duration(s) {
   if (f < 90) return `about ${Math.max(10, Math.round(f / 10) * 10)} s`;
   return `about ${Math.round(f / 60)} min`;
 }
-function dims(size) {
-  return (size || []).filter((v) => v !== null && v !== undefined).map(num).join(" × ");
+/** A length given in mm, in the unit that reads it: "10 nm", "25 µm", "1.6 mm" - never "0 mm". */
+export function length(mm) {
+  const f = Number(mm);
+  if (mm === null || mm === undefined || mm === "" || !isFinite(f)) return "";
+  const a = Math.abs(f);
+  if (a === 0) return "0 mm";
+  if (a < 0.0009995) return `${num(Number((f * 1e6).toPrecision(3)))} nm`;
+  if (a < 0.9995) return `${num(Number((f * 1e3).toPrecision(3)))} µm`;
+  return `${num(f)} mm`;
 }
-/** A size as the narrow column shows it: three significant digits, no spaces round the "×". */
+/** Sizes in mm as a person reads them: "10 × 10 × 0.3 mm", or each in its own unit when one is
+ * under a micrometre's worth of millimetres ("10 mm × 10 mm × 10 nm"). */
+function dimsText(size) {
+  const v = (size || []).filter((x) => x !== null && x !== undefined);
+  if (!v.length) return "";
+  if (v.every((x) => Math.abs(Number(x)) >= 0.01 || Number(x) === 0)) return `${v.map(num).join(" × ")} mm`;
+  return v.map(length).join(" × ");
+}
+/** A size as the narrow column shows it (mm): three significant digits, no spaces round the "×";
+ * a size under 10 µm carries its own unit. */
 function dimsShort(size) {
   return (size || []).filter((v) => v !== null && v !== undefined)
-    .map((v) => num(Number(Number(v).toPrecision(3)))).join("×");
+    .map((v) => (Math.abs(Number(v)) >= 0.01 || Number(v) === 0
+      ? num(Number(Number(v).toPrecision(3))) : length(v).replace(" ", ""))).join("×");
 }
 function k(v) {
   if (Array.isArray(v)) return `${v.map(num).join(" / ")} W/m·K`;
@@ -88,8 +105,9 @@ export function partDetails(r) {
   if (partSub(r)) lines.push(partSub(r));
   lines.push(`Material: ${r.material || "none given"}`);
   lines.push(`Power: ${watts(r.power_W)}`);
-  if (r.size_mm) lines.push(`Size: ${dims(r.size_mm)} mm`);
-  if (r.thinnest_mm) lines.push(`Thinnest layer: ${num(r.thinnest_mm)} mm`);
+  if (r.size_mm) lines.push(`Size: ${dimsText(r.size_mm)}`);
+  if (r.thinnest_mm) lines.push(`Thinnest layer: ${length(r.thinnest_mm)}`);
+  if (r.thin_layer) lines.push(`Carried as a thin-layer resistance, not as cells: ${r.thin_layer}`);
   if (r.left_out) lines.push(`Left out of the mesh: ${r.left_out}`);
   else if (r.clipped) lines.push("Partly outside the air box: only the part inside is meshed");
   return lines.join("\n");
@@ -101,11 +119,11 @@ function rowHtml(r, maxW) {
   const reg = r.region ? ` data-region="${attr(r.region)}" role="button" tabindex="0"` : "";
   return `<div class="tm-row${out ? " out" : ""}"${reg} title="${attr(partDetails(r))}">
       <span class="tm-sw" style="background:${out ? "transparent" : rgb(r.color)}"></span>
-      <span class="tm-nm"><b>${esc(r.name)}</b><small>${esc(out ? "left out" : partSub(r))}</small></span>
+      <span class="tm-nm"><b>${esc(r.name)}</b><small>${esc(out ? "left out" : r.thin_layer ? "thin layer, a resistance" : partSub(r))}</small></span>
       <span class="tm-mat">${esc(r.material || "—")}</span>
       <span class="tm-w num">${r.power_W ? esc(watts(r.power_W)) : '<span class="tm-zero">—</span>'}${share ? `<i class="tm-heat" title="share of the hottest part"><i style="width:${share}%"></i></i>` : ""}</span>
       <span class="tm-sz num">${esc(dimsShort(r.size_mm))}</span>
-      <span class="tm-th num">${r.thinnest_mm ? esc(num(r.thinnest_mm)) : ""}</span>
+      <span class="tm-th num">${r.thinnest_mm ? esc(length(r.thinnest_mm)) : ""}</span>
     </div>`;
 }
 
@@ -161,7 +179,7 @@ function sourceWords(s) {
 
 function resistanceWords(r) {
   const bits = [];
-  if (r.size_mm) bits.push(`${dims(r.size_mm)} mm`);
+  if (r.size_mm) bits.push(dimsText(r.size_mm));
   if ((r.loss_coefficient_xyz || []).length) bits.push(`loss coefficients ${r.loss_coefficient_xyz.map(num).join(" / ")} (x / y / z)`);
   if ((r.open_pct_xyz || []).length) bits.push(`${r.open_pct_xyz.map(num).join(" / ")}% open`);
   return bits.join(", ");
@@ -184,6 +202,8 @@ export function levelWords(row) {
     let s = `${cells(row.est_cells)} cells · ${duration(row.est_seconds)}`;
     const short = Number(row.thin_layers_short_count || (row.thin_layers_short || []).length || 0);
     if (short) s += ` · ${plural(short, "layer")} short`;
+    const rules = Number(row.rules_short_count || 0);
+    if (rules) s += ` · ${plural(rules, "spot")} coarser than asked`;
     return s;
   }
   return `up to ${cells(row.max_cells)} cells · ${row.estimate || "sized when the mesh runs"}`;
@@ -193,12 +213,17 @@ export function levelWords(row) {
 export function levelPromise(row, label) {
   if (!row) return "";
   const across = Number(row.min_cells_across || 1);
-  const aim = `${label}: up to ${cells(row.max_cells)} cells, aiming for ${plural(across, "cell")} through every layer`;
+  const gap = Number(row.gap_cells || 0);
+  const gaps = gap ? ` and ${gap} across every air gap` : "";
+  const aim = `${label}: up to ${cells(row.max_cells)} cells, aiming for ${plural(across, "cell")} through every layer${gaps}`;
   if (row.fits === false) return `${aim}. ${sentenceOf(row.estimate || "This model needs more cells than that")}`;
   const short = Number(row.thin_layers_short_count || (row.thin_layers_short || []).length || 0);
   if (short) return `${aim}; ${plural(short, "thin layer")} ${short === 1 ? "gets" : "get"} fewer.`;
   // the check sized it and every layer gets its cells: the promise is the check's own result
-  if (row.est_cells) return `${label}: up to ${cells(row.max_cells)} cells, at least ${plural(across, "cell")} through every layer.`;
+  const rules = Number(row.rules_short_count || 0);
+  if (row.est_cells && rules) return `${aim}; ${plural(rules, "spot")} ${rules === 1 ? "gets" : "get"} fewer.`;
+  // the counts were measured off the laid-out grid: the promise is the check's own result
+  if (row.est_cells && row.rules_measured !== false) return `${label}: up to ${cells(row.max_cells)} cells, at least ${plural(across, "cell")} through every layer${gaps}.`;
   return `${aim}.`;
 }
 function sentenceOf(text) {

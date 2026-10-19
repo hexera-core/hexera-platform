@@ -289,10 +289,37 @@ def test_a_case_identical_to_the_one_that_timed_out_is_never_run_again(external)
     ws, (ok, _value, _outcome), pub = external.go()
     assert ok is False
     assert external.runs == [1], "the identical case was meshed again"
-    assert any(n.startswith("Pass 2 not run - it would rebuild, unchanged, the mesh that just "
+    assert any(n.startswith("Pass 2 not run - it would rebuild, unchanged, a mesh that just "
                             "ran out of time") for n in pub.notes), pub.notes
     assert not any(n.startswith("Meshing pass 3") for n in pub.notes), \
         "the passes stop instead of burning another"
+
+
+def test_a_pass_broken_where_its_layers_were_not_the_cause_is_followed_by_a_coarser_one(
+        external, monkeypatch):
+    # the enodise splitter plate: the same plan rebuilt the same broken mesh on four passes
+    # (verify-5fix). Once the fold is known not to be the layers', the next pass is coarser.
+    import meshpipeline.engines.snappy.drivers as drv
+    import meshpipeline.engines.snappy.snappy_runner as R
+    meshes = iter([{"cells": 2_741_541, "fatal": ["incorrectly oriented faces"],
+                    "skew_faces": 705, "skew_fraction": 1e-4}, dict(_CLEAN)])
+    monkeypatch.setattr(R, "check_mesh", lambda *_a, **_k: next(meshes))
+    monkeypatch.setattr(R, "run_snappy", lambda *_a, **_k: (external.runs.append(1),
+                                                            {"rc": 0, "timed_out": False})[1])
+
+    def _not_the_layers(*_a, not_layers=None, **_k):
+        if not_layers is not None:
+            not_layers.append(True)
+        return None
+    monkeypatch.setattr(drv, "_repair_after_fold", _not_the_layers)
+    ws, (ok, _value, _outcome), pub = external.go()
+    assert ok is True and len(external.runs) == 2
+    opened = [n for n in pub.notes if n.startswith("Meshing pass 2 of")]
+    assert opened and ("made coarser because the last pass came out broken where its layers "
+                       "were not the cause") in opened[0], opened
+    assert "cell budget cut from 6 M to 3 M" in opened[0]
+    rec = json.loads((ws / ".timed_out_plan.json").read_text())
+    assert rec["max_cells"] == 6_000_000 and rec["_why"] == "broken"
 
 
 @pytest.fixture

@@ -122,32 +122,49 @@ def believable(size_mm, unit: LengthUnit, words: str = "") -> bool:
                    expected=expected_from_words(words)) is None
 
 
-def proposal_for(size_mm, words: str = "") -> LengthUnit:
-    """The unit the question proposes for a measured part: millimetres, unless that makes it
-    implausible - by size alone (a 1.04-unit car read as 1 mm) or by what the user said it is
-    (a "city block" 229 mm long) - and another unit does not."""
+def proposal_for(size_mm, words: str = "", inference: dict | None = None) -> LengthUnit:
+    """The unit the question proposes for a measured part: the check's reading of what the part
+    is (`inference`: its shape and flow - a 4.7-unit car-like body on the ground is 4.7 m - and
+    the naming's estimate), when there is one; else millimetres, unless that makes it implausible
+    - by size alone (a 1.04-unit car read as 1 mm) or by what the user said it is (a "city block"
+    229 mm long) - and another unit does not."""
+    if inference:
+        try:
+            return LengthUnit(str(inference.get("unit")))
+        except ValueError:
+            pass
     if not size_mm:
         return PROPOSED
     return proposed_unit(max(float(v) for v in size_mm), expected_from_words(words))
 
 
-def question_for(size_mm, proposal: LengthUnit | None = None) -> str:
-    """The unit question. With the part's measured size in hand it proposes a unit - millimetres
-    unless the size says otherwise - and shows how long the part would be in each unit, so the
-    user can tell at a glance which one their file is in and a plain "ok" confirms the proposal.
-    Without a size it is the plain question: nothing is proposed that the user cannot check."""
+#: What the question adds after the reading, by how sure the reading is.
+_SURE = {"high": "", "medium": " I am fairly, not fully, sure of that.",
+         "low": " The shape alone does not settle it, so please check."}
+
+
+def question_for(size_mm, proposal: LengthUnit | None = None, inference: dict | None = None) -> str:
+    """The unit question. With the part's measured size in hand it proposes a unit - the check's
+    reading of what the part is when it has one ("This reads as a car-like body on the ground,
+    4.7 m long - metres?"), else millimetres unless the size says otherwise - and shows how long
+    the part would be in each unit, so the user can tell at a glance which one their file is in
+    and a plain "ok" confirms the proposal. Never a default taken in silence. Without a size it
+    is the plain question: nothing is proposed that the user cannot check."""
     if not size_mm:
         return QUESTION
     take = proposal or PROPOSED
+    reading = ""
+    if inference and str(inference.get("unit")) == take.value and inference.get("words"):
+        reading = f"{inference['words']}{_SURE.get(str(inference.get('confidence')), '')} "
     return ("This file does not say what one unit of its coordinates means, and I need to know "
-            f"before meshing. {size_hint(size_mm)} I'll take {_UNIT_WORDS[take]} - say ok, or "
+            f"before meshing. {reading}{size_hint(size_mm)} I'll take {_UNIT_WORDS[take]} - say ok, or "
             "name the unit: millimetres, centimetres, metres, or inches.")
 
 
-def before_run(size_mm, proposal: LengthUnit | None) -> str:
+def before_run(size_mm, proposal: LengthUnit | None, inference: dict | None = None) -> str:
     """The question once more, when the user approves a run while it is still open - with the
     proposal when the part was measured, and why it cannot wait."""
-    body = question_for(size_mm, proposal)
+    body = question_for(size_mm, proposal, inference)
     if not size_mm and proposal is not None:
         body += f" Or say ok to take {_UNIT_WORDS[proposal]}."
     return "One thing before I start the run. " + body

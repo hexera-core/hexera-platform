@@ -9,7 +9,7 @@
 import { esc, fmtBytes } from "../core/format.js";
 
 /* the table's columns: [key, heading, numeric] */
-const COLS = [["label", "Part", false], ["cells", "Cells", true], ["thinnest_mm", "Thinnest, mm", true],
+const COLS = [["label", "Part", false], ["cells", "Cells", true], ["thinnest_mm", "Thinnest", true],
               ["cells_through", "Cells through", true], ["volume_vs_file_pct", "Volume vs file", true]];
 /* above this many parts the table gets a search box (a package has hundreds of solder balls) */
 const SEARCH_FROM = 30;
@@ -47,9 +47,22 @@ function rowHtml(r) {
     + `<small>${esc([r.kind, r.material, r.power_W ? `${Number(r.power_W).toLocaleString(undefined, { maximumFractionDigits: 3 })} W` : ""]
         .filter(Boolean).join(" · "))}</small></td>`
     + `<td class="n">${fmtNum(r.cells)}</td>`
-    + `<td class="n">${fmtNum(r.thinnest_mm)}</td>`
+    + `<td class="n">${r.thinnest_text ? esc(r.thinnest_text) : fmtNum(r.thinnest_mm)}</td>`
     + throughCell(r)
     + `<td class="n${vol === "exact" ? " ok" : ""}">${esc(vol)}</td></tr>`;
+}
+
+/** The layers carried as thin-layer resistances (no cells of their own), one line each. */
+function thinLayersHtml(rows) {
+  if (!rows.length) return "";
+  const r3 = (v) => Number(Number(v).toPrecision(3)).toExponential().replace(/\.?0+e/, "e");
+  return `<div class="v-sec tr-thin">
+      <div class="v-sec-h">Thin layers carried as resistances <span class="tr-n">${rows.length.toLocaleString()}</span></div>
+      <ul class="tr-q">${rows.map((f) => `<li><b>${esc(f.label)}</b>, ${esc(f.thickness_text)}`
+        + `${f.material ? ` of ${esc(f.material)}` : ""}: R = ${esc(r3(f.R_m2K_W))} m²K/W between `
+        + `${esc((f.between || []).join(" and "))}`
+        + `${(f.patches || []).length ? ` <small>(${esc(f.patches.slice(0, 3).join(", "))}${f.patches.length > 3 ? ", …" : ""})</small>` : ""}</li>`).join("")}</ul>
+    </div>`;
 }
 
 /** The panel section for one delivered thermal model (`t` = the payload's `thermal` block). */
@@ -71,6 +84,7 @@ export function thermalResultsHtml(job, t) {
       </div>
       <div class="tr-sl-why" id="v-thermal-why-${esc(job)}"></div>
     </div>` : ""}
+    ${thinLayersHtml(t.thin_layers || [])}
     <div class="v-sec tr-parts">
       <div class="v-sec-h">Parts <span class="tr-n">${parts.length.toLocaleString()}</span></div>
       ${parts.length > SEARCH_FROM ? `<input class="tr-find" type="search" placeholder="Find a part or material" aria-label="Find a part">` : ""}

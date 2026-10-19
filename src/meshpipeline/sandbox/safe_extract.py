@@ -5,9 +5,10 @@ from __future__ import annotations
 import shutil
 import stat
 import tarfile
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO, NoReturn
+from typing import BinaryIO, NoReturn, cast
 
 from meshpipeline.settings.env import optional_env
 
@@ -111,11 +112,136 @@ def _validate_members(members: list[tarfile.TarInfo], dest: Path, limits: Extrac
                 f"{limits.max_ratio}x cap (possible decompression bomb)")
 
 
+#: Naming what made an archive too big reads its headers, which means inflating it: no longer
+#: than this, and only on the way to refusing it.
+NAME_MEMBERS_BUDGET_S = 60.0
+
+
+class _Deadlined:
+    """A read-only stream that stops (raises TimeoutError) once `deadline` (monotonic) passes."""
+
+    def __init__(self, src: BinaryIO, deadline: float):
+        self._src, self._deadline = src, deadline
+
+    def read(self, n: int = -1) -> bytes:
+        import time
+        if time.monotonic() > self._deadline:
+            raise TimeoutError("archive header scan past its budget")
+        return self._src.read(n)
+
+
+def largest_members(*, path: str | Path | None = None, fileobj: BinaryIO | None = None,
+                    n: int = 5, budget_s: float = NAME_MEMBERS_BUDGET_S) -> str:
+    """'; largest files ...: a 410 MB, b 120 MB, ...' for an archive refused for its size - the
+    files that made it too big, so the refusal says what to leave out ('' when the headers cannot
+    be read). Streams the headers; nothing is written. Names are shown, never trusted."""
+    import time
+    sizes: list[tuple[int, str]] = []
+    partial = False
+    src: BinaryIO | None = None
+    pos = None
+    try:
+        if path is not None:
+            src = open(path, "rb")  # noqa: SIM115 - closed in finally
+        elif fileobj is not None:
+            src = fileobj
+            pos = fileobj.tell()
+            fileobj.seek(0)
+        else:
+            return ""
+        # the deadline is held on every READ of the compressed stream, not between members: one
+        # huge, highly compressed member is skipped by inflating it, and that must stop on time too
+        deadline = time.monotonic() + budget_s
+        with tarfile.open(fileobj=cast(BinaryIO, _Deadlined(src, deadline)), mode="r|gz") as tf:
+            for m in tf:
+                if m.isreg():
+                    sizes.append((int(m.size), m.name[:80]))
+    except Exception:  # noqa: BLE001 - a better message, never a different failure
+        if not sizes:
+            return ""
+        partial = True
+    finally:
+        if path is not None and src is not None:
+            src.close()
+        elif fileobj is not None and pos is not None:
+            try:
+                fileobj.seek(pos)
+            except (OSError, ValueError):
+                pass
+    if not sizes:
+        return ""
+    sizes.sort(reverse=True)
+    names = ", ".join(f"{name} {size / 1e6:.0f} MB" for size, name in sizes[:n])
+    return (f"; largest files (uncompressed{', first part read' if partial else ''}): {names}"
+            f"; {len(sizes)} files, {sum(s for s, _ in sizes) / 1e6:.0f} MB in all")
+
+
 def safe_extract_tar(*, fileobj: BinaryIO | None = None, path: str | Path | None = None,
                      dest: str | Path, limits: ExtractionLimits | None = None) -> int:
+    # A destination that already HOLDS files belongs to the caller, and a refusal must never take
+    # it: extracting straight into it meant the fail-closed cleanup below removed the caller's own
+    # files with the partial tree. A returned mesh workspace is extracted over the attempt's
+    # workspace - the staged inputs, the plan, the builder's records - and one archive that tripped
+    # a limit wiped all of it, leaving the builder looping with nothing to work on. So that case
+    # extracts into a fresh directory beside the destination and moves the members over only once
+    # the whole archive has extracted. An absent or empty destination is extracted into directly
+    # and removed on refusal, exactly as before.
+    dest_p = Path(dest)
+    if dest_p.is_dir() and any(dest_p.iterdir()):
+        return _extract_over(fileobj=fileobj, path=path, dest=dest_p, limits=limits)
+    return _extract_fresh(fileobj=fileobj, path=path, dest_p=dest_p, limits=limits)
+
+
+def _extract_over(*, fileobj: BinaryIO | None, path: str | Path | None, dest: Path,
+                  limits: ExtractionLimits | None) -> int:
+    try:
+        staging = Path(tempfile.mkdtemp(prefix=f".{dest.name}.extract_", dir=str(dest.parent)))
+    except OSError as exc:
+        raise WorkspaceExtractionError(
+            f"archive extraction could not be staged: {type(exc).__name__}") from exc
+    try:
+        written = _extract_fresh(fileobj=fileobj, path=path, dest_p=staging, limits=limits)
+        _check_merge(staging, dest, staging)        # every conflict refused before anything moves
+        try:
+            _move_over(staging, dest)
+        except OSError as exc:
+            raise WorkspaceExtractionError(
+                f"archive extraction failed moving members into place: {type(exc).__name__}"
+            ) from exc
+        return written
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+def _check_merge(staged: Path, dest: Path, root: Path) -> None:
+    for child in staged.iterdir():
+        target = dest / child.name
+        rel = child.relative_to(root).as_posix()
+        if target.is_symlink():                     # never written through, wherever it points
+            _reject(f"archive entry {rel!r} would land on a symlink in the destination")
+        if child.is_dir():
+            if target.is_dir():
+                _check_merge(child, target, root)
+            elif target.exists():
+                _reject(f"archive directory {rel!r} would replace a file in the destination")
+        elif target.is_dir():
+            _reject(f"archive file {rel!r} would replace a directory in the destination")
+
+
+def _move_over(staged: Path, dest: Path) -> None:
+    # Same-named files are replaced and new ones added; files the archive does not carry stay.
+    for child in sorted(staged.iterdir()):
+        target = dest / child.name
+        if child.is_dir() and target.is_dir():
+            _move_over(child, target)
+        else:
+            shutil.move(str(child), str(target))
+
+
+def _extract_fresh(*, fileobj: BinaryIO | None, path: str | Path | None, dest_p: Path,
+                   limits: ExtractionLimits | None) -> int:
     lim = limits or default_limits()
     validate_limits(lim)
-    dest_p = Path(dest)
     dest_p.mkdir(parents=True, exist_ok=True)
 
     # compressed archive size (for the ratio/decompression-bomb guard)
@@ -131,7 +257,8 @@ def safe_extract_tar(*, fileobj: BinaryIO | None = None, path: str | Path | None
         except (OSError, ValueError):
             archive_bytes = 0
     if archive_bytes > lim.max_archive_bytes:
-        _reject(f"archive is {archive_bytes} bytes, over the {lim.max_archive_bytes} cap")
+        _reject(f"archive is {archive_bytes} bytes, over the {lim.max_archive_bytes} cap"
+                + largest_members(path=path, fileobj=fileobj))
 
     written = 0
     try:
@@ -179,4 +306,4 @@ def safe_extract_tar(*, fileobj: BinaryIO | None = None, path: str | Path | None
 
 
 __all__ = ["WorkspaceExtractionError", "ExtractionLimits", "default_limits", "validate_limits",
-           "safe_extract_tar"]
+           "safe_extract_tar", "largest_members", "NAME_MEMBERS_BUDGET_S"]

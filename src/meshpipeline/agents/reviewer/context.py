@@ -338,6 +338,24 @@ def build_review_prompt(
             f"conclude 'no layers' from a slice where the near-wall looks like a dense/black region "
             f"- judge coverage from THIS number. (Rough guide: >=70% is good, 40-70% partial, <40% "
             f"poor; weigh it against the workflow's y+ target.)")
+        if _q.get("layer_coverage_source") == "census" and _q.get("layers_requested"):
+            # a mesher with no layer report of its own (cfMesh): counted on the mesh, and the
+            # target is what the REQUEST asked for, not only what the mesher was told
+            _told = _q.get("layers_in_meshdict")
+            _meta.append(
+                f"These layers were COUNTED on the mesh itself (wall-adjacent cell stacks), against "
+                f"the {_q['layers_requested']} layers requested"
+                + (f" (the mesher was told {_told})" if _told and _told != _q["layers_requested"] else "")
+                + f": mean {_q.get('layers_mean')} layers per wall face, all {_q['layers_requested']} "
+                f"on {_q.get('layer_area_full_pct')}% of the wall area, at least one on "
+                f"{_q.get('layer_area_any_pct')}%. Fewer layers than requested is a shortfall on the "
+                f"layer axis, however clean the stack that exists.")
+    elif _q.get("layer_coverage_source") == "unmeasured" and _q.get("layers_requested"):
+        _meta.append(
+            f"Near-wall prism layers: {_q['layers_requested']} were requested, but the delivered "
+            f"layers could NOT be measured ({_q.get('layer_census_note') or 'no reason recorded'}). "
+            f"No figure exists for the prism-layer axis: judge it only from a near-wall inspection, "
+            f"and say that the count is unmeasured.")
     _lpol = _q.get("layer_policy")
     if isinstance(_lpol, dict) and _lpol.get("classes"):
         _meta.append(layer_policy_line(_lpol))

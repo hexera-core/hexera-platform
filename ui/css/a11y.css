@@ -24,6 +24,9 @@ select:focus-visible, [role="button"]:focus-visible, [tabindex]:focus-visible, .
     transition-duration:.001ms !important;
     scroll-behavior:auto !important;
   }
+  /* the geometry check's live line: a still mark and plain text; the words still change */
+  .gp[data-live] .gp-mark:empty::before{animation:none}
+  .gp[data-live] .gp-now{animation:none;background:none;color:var(--text)}
 }
 
 /* NARROW SCREENS. The console is desktop-first, but it must not break on a phone:

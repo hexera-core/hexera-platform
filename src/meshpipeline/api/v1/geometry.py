@@ -44,6 +44,11 @@ class ConfirmedOpening(BaseModel):
     diameter_mm: float | None = None
     width_mm: float | None = None
     height_mm: float | None = None
+    #: AN ANNULUS, as the check measured it (cad/scout): the diameter of the centre rod or hub
+    #: standing in the bore, and the area the flow crosses between them. Sent back as the
+    #: proposal carried them; anything that is no positive length or area is dropped.
+    inner_diameter_mm: float | None = None
+    flow_area_mm2: float | None = None
     #: Which way the mouth faces, out of the part: the check's own measurement, for an opening it
     #: proposed and for one the user added on an open end alike. Unit-free, so a change of unit
     #: leaves it as it is. Stored as a unit vector; three numbers that are no direction are dropped.
@@ -57,6 +62,12 @@ class ConfirmedOpening(BaseModel):
             return None
         length = math.sqrt(sum(x * x for x in v))
         return [x / length for x in v] if length > 0 else None
+
+    @field_validator("inner_diameter_mm", "flow_area_mm2")
+    @classmethod
+    def _a_positive_size(cls, v):
+        import math
+        return v if v is not None and math.isfinite(v) and v > 0 else None
 
 
 class ConfirmIn(BaseModel):
@@ -214,12 +225,15 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     session = await _owned_session(session_id, owner_id, organization_id)
     from meshpipeline.application import geometry_hold as gh
     from meshpipeline.application.geometry_check import (
+        NAMING_SOFT_LIMIT_S,
+        SCOUT_SOFT_LIMIT_S,
         check_object_key,
         naming_pending,
         naming_requested,
         retry_step,
         time_boxed,
     )
+    from meshpipeline.application.geometry_progress import progress_view, read_progress
     from meshpipeline.contracts.object_storage import get_object_store
     from meshpipeline.persistence.session import get_db
 
@@ -253,6 +267,9 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     payload["unit_needed"] = unit_needed(session)
     if payload.get("status") == "failed":
         payload.setdefault("retry", retry_step(payload))
+    # the check as reported, for the live line, before the stage's fields are added to it
+    reported = {k: payload.get(k) for k in ("status", "written_at", "seconds", "naming_seconds", "check_mode",
+                                            "source", "step", "retry", "reason", "timed_out")}
     if payload.get("status") in ("ready", "scouted") or payload.get("facts"):
         # the stage opens on a scouted check too, with the code's labels, and keeps them on a
         # naming that failed; the pictures are for the card, which only shows once the check
@@ -291,6 +308,11 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     confirmed = _read_json(check_object_key(str(session_id), "confirmed.json"))
     if confirmed is not None:
         payload["confirmed"] = confirmed
+    # THE LIVE LINE the chat shows while the part is checked: the step running now, the steps
+    # done with their times, a note when one runs long, and the way on when one fails
+    payload["progress"] = progress_view(reported, requested, read_progress(str(session_id)),
+                                        scout_limit_s=SCOUT_SOFT_LIMIT_S, naming_limit_s=NAMING_SOFT_LIMIT_S,
+                                        confirmed=confirmed is not None)
     return payload
 
 
@@ -454,6 +476,11 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
     # are not compared at all.
     from meshpipeline.application.geometry_confirmation import distinct_opening_names, renamed_openings_sentence
 
+    # A BODY IN A FLOW HAS NO OPENINGS, whatever rows came with it: the check keeps the openings a part
+    # read as a body would have if the fluid flowed through it (so a flip to "through" has some), and
+    # a client that confirms "around" with them still in hand must not store them as the body's ports
+    if body.flow == "external" and body.openings:
+        body = body.model_copy(update={"openings": []})
     named_apart = distinct_opening_names(body.openings)
     renamed = renamed_openings_sentence(body.openings, named_apart)
     body = body.model_copy(update={"openings": named_apart})

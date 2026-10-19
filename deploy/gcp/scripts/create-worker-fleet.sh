@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Responsibility: Provision the worker fleet - one instance template per digest, the managed group, and the policy that FIRST sizes it.
-# Owns: template naming, the rolling update that moves an existing group onto a new digest, the fleet's SHAPE, and
-#       whether the autoscaler removes VMs or the idle workers remove themselves (its MODE, and the grant that needs).
+# Owns: template naming, the rolling update that moves an existing group onto a new digest, the proof that every running
+#       VM reached it (or a loud failure), the fleet's SHAPE, and whether the autoscaler removes VMs or the idle workers
+#       remove themselves (its MODE, and the grant that needs).
 # Boundaries: instance metadata carries secret NAMES only; the group is rolled, never recreated, and never deleted;
 #             an existing autoscaler's SIZING belongs to the admin console and is not reconciled here.
 
@@ -122,6 +123,16 @@ WORKER_ROLLING_TYPE="${WORKER_ROLLING_TYPE:-}"
 WORKER_ROLLING_MAX_SURGE="${WORKER_ROLLING_MAX_SURGE:-1}"
 WORKER_ROLLING_MAX_UNAVAILABLE="${WORKER_ROLLING_MAX_UNAVAILABLE:-0}"
 WORKER_ROLLING_MIN_READY_SECONDS="${WORKER_ROLLING_MIN_READY_SECONDS:-180}"
+
+# verification - see step 7. How long the running VMs get to move onto the new template by
+# themselves before the rest are replaced (surge first, so a worker is always serving), how long the
+# whole roll may take before this stage fails, and how often it looks.
+WORKER_ROLL_FORCE_AFTER_SECONDS="${WORKER_ROLL_FORCE_AFTER_SECONDS:-900}"
+WORKER_ROLL_TIMEOUT_SECONDS="${WORKER_ROLL_TIMEOUT_SECONDS:-2400}"
+WORKER_ROLL_POLL_SECONDS="${WORKER_ROLL_POLL_SECONDS:-20}"
+#: A guest-attribute heartbeat older than this is a watchdog that stopped (watchdog.sh writes one
+#: every 30 s), so the health it last reported is not evidence of anything.
+WORKER_ROLL_HEARTBEAT_MAX_AGE_SECONDS="${WORKER_ROLL_HEARTBEAT_MAX_AGE_SECONDS:-180}"
 
 # Set updatePolicy.minReadySec on a managed instance group. gcloud exposes no flag for it on any
 # track (see the roll below), so this goes through the Compute API.
@@ -244,6 +255,15 @@ if [ "${WORKER_ROLLING_MAX_SURGE}" -eq 0 ] && [ "${WORKER_ROLLING_MAX_UNAVAILABL
   die "maxSurge and maxUnavailable are both 0 - a rolling update with neither can never replace an
    instance. Compute Engine rejects it, and so does this."
 fi
+for knob in WORKER_ROLL_FORCE_AFTER_SECONDS WORKER_ROLL_TIMEOUT_SECONDS WORKER_ROLL_POLL_SECONDS \
+            WORKER_ROLL_HEARTBEAT_MAX_AGE_SECONDS; do
+  [[ "${!knob}" =~ ^[0-9]+$ ]] || die "${knob} must be a whole number of seconds, got '${!knob}'"
+done
+if [ "${WORKER_ROLL_FORCE_AFTER_SECONDS}" -ge "${WORKER_ROLL_TIMEOUT_SECONDS}" ]; then
+  die "WORKER_ROLL_FORCE_AFTER_SECONDS=${WORKER_ROLL_FORCE_AFTER_SECONDS} is not before
+   WORKER_ROLL_TIMEOUT_SECONDS=${WORKER_ROLL_TIMEOUT_SECONDS}: the roll would fail before the VMs
+   that did not move themselves were ever replaced."
+fi
 # substitute needs somewhere to put the replacement, which is the surge; a group configured with no
 # surge can only replace an instance in place.
 if [ "${WORKER_ROLLING_MAX_SURGE}" -ge 1 ]; then
@@ -259,6 +279,11 @@ STARTUP="${DEPLOY_DIR}/worker/startup.sh"
 # operator): it stops the worker container, whose job then hands itself back to the queue.
 SHUTDOWN="${DEPLOY_DIR}/worker/shutdown.sh"
 [ -f "${SHUTDOWN}" ] || die "worker shutdown script not found: ${SHUTDOWN}"
+# THE WATCHDOG - what restarts a container whose consumer stopped working (docker's restart policy
+# only acts on a process that exits), and what publishes the guest attributes step 7 verifies.
+# startup.sh installs it from the `watchdog-script` metadata key.
+WATCHDOG="${DEPLOY_DIR}/worker/watchdog.sh"
+[ -f "${WATCHDOG}" ] || die "worker watchdog script not found: ${WATCHDOG}"
 
 # Compute Engine is enabled HERE rather than in enable-apis.sh: that list is what EVERY deployment
 # needs, and a mesh-only deployment has no fleet at all.
@@ -442,6 +467,9 @@ WORKER_METADATA=(
   "minio-secure=${MINIO_SECURE:-${MINIO_ENDPOINT:+true}}"
   "gcp-mesh-bucket=${GCP_MESH_BUCKET:-}"
   "cloudrun-job=${CLOUDRUN_MESH_JOB:-}"
+  # Lets the VM's watchdog publish `hexera/*` guest attributes - the image each container runs and
+  # its health - which is how step 7 knows a rolled VM really runs the new digest.
+  "enable-guest-attributes=TRUE"
 )
 # The CAD repair switches, only when the deploy stated them (the workflow's cad_repair input); absent
 # attributes leave the env object's shipped values in force.
@@ -494,7 +522,7 @@ SPEC_HASH="$(printf '%s\n' "${APP_IMAGE}" "${WORKER_MACHINE_TYPE}" "${WORKER_BOO
   "${WORKER_BOOT_DISK_TYPE}" "${WORKER_IMAGE_FAMILY}" "${WORKER_IMAGE_PROJECT}" "${VPC_NETWORK}" \
   "${VPC_SUBNET}" "${WORKER_SA_EMAIL}" "${WORKER_SCOPES}" "${WORKER_METADATA[@]}" \
   "${SELF_RETIRE_LABEL}" \
-  | cat - "${STARTUP}" "${SHUTDOWN}" \
+  | cat - "${STARTUP}" "${SHUTDOWN}" "${WATCHDOG}" \
   | python3 -c 'import hashlib,sys;print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest()[:6])')"
 TEMPLATE="${WORKER_TEMPLATE_PREFIX:-${WORKER_MIG}-tpl}-${DIGEST:0:12}-${SPEC_HASH}"
 [ ${#TEMPLATE} -le 63 ] \
@@ -528,7 +556,7 @@ info "Creating instance template ${TEMPLATE}"
     --service-account "${WORKER_SA_EMAIL}" \
     --scopes "${WORKER_SCOPES}" \
     --labels "app=hexera,component=worker,version=0-0-1,deployment-id=${DEPLOYMENT_ID},managed-by=deploy${SELF_RETIRE_LABEL}" \
-    --metadata-from-file "startup-script=${STARTUP},shutdown-script=${SHUTDOWN}" \
+    --metadata-from-file "startup-script=${STARTUP},shutdown-script=${SHUTDOWN},watchdog-script=${WATCHDOG}" \
     --metadata "^|^$(IFS='|'; printf '%s' "${WORKER_METADATA[*]}")"
   log "template        ${TEMPLATE}  (created - ${#WORKER_SECRET_METADATA[@]} secret NAME(s) in metadata, no value)"
 fi
@@ -563,6 +591,15 @@ fi
 #    group runs NOW: its `self-retire` label (step 4) says its VMs move themselves. A group still on a
 #    template without it - the first deploy after this change, or WORKER_SELF_RETIRE=false - is
 #    rolled proactively, one last time. WORKER_ROLLING_TYPE forces either.
+#
+#    AN OPPORTUNISTIC ROLL IS A REQUEST, NOT A RESULT. It moves a VM only if that VM's worker moves
+#    itself, and nothing here used to check that one did. Shared dev, 2026-10-17 to 10-19: four fleet
+#    deploys went green while dev-workers-tjj1 kept running image 09518cf25b23 from 10-12. Its workers'
+#    broker connections had hung on 10-16, so the idle worker could not stop its own consumer ("did
+#    not stop taking work within 10s - staying", every two minutes) and never recycled itself; the
+#    VM was only replaced when it was recreated by hand. Step 7 therefore waits for every running VM
+#    to reach the new template, replaces the ones that have not after WORKER_ROLL_FORCE_AFTER_SECONDS,
+#    and fails the stage if they are still not on the new digest and healthy by the deadline.
 if gc compute instance-groups managed describe "${WORKER_MIG}" --zone "${WORKER_MIG_ZONE}" >/dev/null 2>&1; then
   CURRENT_TEMPLATE_URL="$(gc compute instance-groups managed describe "${WORKER_MIG}" \
     --zone "${WORKER_MIG_ZONE}" --format='value(versions[0].instanceTemplate)' 2>/dev/null || true)"
@@ -723,6 +760,154 @@ else
     --scale-in-control "max-scaled-in-replicas=${WORKER_SCALE_IN_MAX_REPLICAS},time-window=${WORKER_SCALE_IN_WINDOW_SECONDS}" \
     --mode "${AS_MODE}"
 fi
+
+# 7) THE ROLL IS VERIFIED, NOT ASSUMED - on every run, not only the run that made a new template: a
+#    group already pointed at the right template can still be running VMs from an older one (the
+#    re-run of a deploy whose roll never finished reads "reused" in step 5 and is exactly that case).
+#
+#    DONE means every VM in the group is on ${TEMPLATE}, RUNNING with nothing pending, and its watchdog
+#    (deploy/gcp/worker/watchdog.sh) reports - in guest attributes it refreshed within the last
+#    WORKER_ROLL_HEARTBEAT_MAX_AGE_SECONDS - that BOTH containers were started from exactly
+#    ${APP_IMAGE} and docker's healthcheck calls both healthy. Being made from the new template is
+#    not proof of the new code: a VM whose startup failed is on the new template too.
+#
+#    THE ESCALATION. Idle workers move themselves within minutes (runtime/idle_retire.py). A VM still
+#    on an older template after WORKER_ROLL_FORCE_AFTER_SECONDS is either running a long job or not
+#    working at all, and from here the two look the same - so the group is switched to a PROACTIVE
+#    roll with the same surge and unavailability as step 5: the replacement is created and must be
+#    ready before the old VM goes, so a worker keeps serving the queue throughout. A job on a replaced
+#    VM is handed back by shutdown.sh and starts again on another worker, which is the price of a
+#    deploy that is guaranteed to land rather than one that may never.
+#
+#    A GROUP AT ZERO is done at once: the next VM the autoscaler starts boots from ${TEMPLATE}.
+_roll_verdict_py='
+import json, sys, time
+instances_file, attrs_dir, template, image, max_age = sys.argv[1:6]
+with open(instances_file) as fh:
+    text = fh.read().strip()
+instances = json.loads(text) if text else []
+now = time.time()
+rows, outdated, pending = [], 0, 0
+for inst in instances:
+    name = inst.get("name") or str(inst.get("instance", "")).rsplit("/", 1)[-1]
+    tpl = str((inst.get("version") or {}).get("instanceTemplate") or inst.get("instanceTemplate") or "").rsplit("/", 1)[-1]
+    status, action = inst.get("instanceStatus", "?"), inst.get("currentAction", "?")
+    if tpl != template:
+        outdated += 1
+        rows.append((name, "on %s, not %s (%s, %s)" % (tpl or "<unknown>", template, status, action)))
+        continue
+    if status != "RUNNING" or action != "NONE":
+        pending += 1
+        rows.append((name, f"on the new template, still {status}/{action}"))
+        continue
+    try:
+        attrs = {a.get("key"): a.get("value", "") for a in json.load(open(f"{attrs_dir}/{name}.json")) or []}
+    except Exception:
+        attrs = {}
+    problems = []
+    beat = attrs.get("heartbeat", "")
+    if not beat.isdigit():
+        problems.append("its watchdog has published nothing yet (or its guest attributes cannot be read)")
+    elif now - int(beat) > float(max_age):
+        problems.append(f"its watchdog last reported {now - int(beat):.0f}s ago")
+    for label in ("worker", "geometry"):
+        got = attrs.get(label + "-image", "")
+        if got != image:
+            problems.append("%s container runs %s" % (label, got or "<nothing>"))
+        health = attrs.get(label + "-health", "")
+        if health != "healthy":
+            problems.append("%s container is %s" % (label, health or "<unreported>"))
+    if problems:
+        pending += 1
+        rows.append((name, "; ".join(problems)))
+    else:
+        rows.append((name, "on the new digest, both containers healthy"))
+for name, what in rows:
+    print(f"    {name}: {what}")
+sys.exit(0 if not outdated and not pending else (10 if outdated else 11))
+'
+_roll_dir="$(mktemp -d)"
+trap 'rm -rf "${_roll_dir}"' EXIT
+_roll_started="$(date +%s)"
+_roll_forced=false
+info "Waiting for every ${WORKER_MIG} VM to run ${APP_IMAGE##*@} and report healthy"
+log "replace what has not moved after ${WORKER_ROLL_FORCE_AFTER_SECONDS}s; fail after ${WORKER_ROLL_TIMEOUT_SECONDS}s"
+while :; do
+  _elapsed=$(( $(date +%s) - _roll_started ))
+  if ! gc compute instance-groups managed list-instances "${WORKER_MIG}" --zone "${WORKER_MIG_ZONE}" \
+       --format=json > "${_roll_dir}/instances.json" 2>"${_roll_dir}/list.err"; then
+    warn "could not list the instances of ${WORKER_MIG}: $(tail -c 300 "${_roll_dir}/list.err")"
+    : > "${_roll_dir}/unlisted"
+  else
+    rm -f "${_roll_dir}/unlisted"
+    for _vm in $(python3 -c '
+import json, sys
+text = open(sys.argv[1]).read().strip()
+for i in (json.loads(text) if text else []):
+    print(i.get("name") or str(i.get("instance", "")).rsplit("/", 1)[-1])
+' "${_roll_dir}/instances.json"); do
+      gc compute instances get-guest-attributes "${_vm}" --zone "${WORKER_MIG_ZONE}" \
+        --query-path "hexera/" --format=json > "${_roll_dir}/${_vm}.json" 2>/dev/null \
+        || echo '[]' > "${_roll_dir}/${_vm}.json"
+    done
+  fi
+  _verdict_rc=0
+  if [ -e "${_roll_dir}/unlisted" ]; then
+    _verdict_rc=12
+    _verdict_text="    (the group's instances could not be listed)"
+  else
+    _verdict_text="$(python3 -c "${_roll_verdict_py}" "${_roll_dir}/instances.json" "${_roll_dir}" \
+      "${TEMPLATE}" "${APP_IMAGE}" "${WORKER_ROLL_HEARTBEAT_MAX_AGE_SECONDS}")" || _verdict_rc=$?
+  fi
+  if [ "${_verdict_rc}" -eq 0 ]; then
+    if [ -z "${_verdict_text}" ]; then
+      log "fleet roll      no VM is running - the next one boots from ${TEMPLATE}"
+    else
+      log "fleet roll      every VM is on ${TEMPLATE} and verified after ${_elapsed}s:"
+      printf '%s\n' "${_verdict_text}"
+    fi
+    break
+  fi
+  if [ "${_elapsed}" -ge "${WORKER_ROLL_TIMEOUT_SECONDS}" ]; then
+    _even=""
+    [ "${_roll_forced}" = true ] && _even=", even after a proactive replacement"
+    die "the fleet ${WORKER_MIG} did not reach ${TEMPLATE} (image ${APP_IMAGE}) within
+   ${WORKER_ROLL_TIMEOUT_SECONDS}s${_even}. The deploy is NOT done - workers may still run the old
+   code. Where each VM stands:
+${_verdict_text}
+   Look closer with:
+     gcloud compute instance-groups managed list-instances ${WORKER_MIG} --zone ${WORKER_MIG_ZONE} --project ${GCP_PROJECT_ID}
+     gcloud compute instances get-guest-attributes <vm> --zone ${WORKER_MIG_ZONE} --project ${GCP_PROJECT_ID} --query-path hexera/
+     gcloud compute instances get-serial-port-output <vm> --zone ${WORKER_MIG_ZONE} --project ${GCP_PROJECT_ID}"
+  fi
+  if [ "${_verdict_rc}" -eq 10 ] && [ "${_roll_forced}" = false ] \
+     && [ "${_elapsed}" -ge "${WORKER_ROLL_FORCE_AFTER_SECONDS}" ]; then
+    warn "after ${_elapsed}s some ${WORKER_MIG} VMs have not moved onto ${TEMPLATE} by themselves -
+       they are busy with a long job or not working at all. Replacing them now (proactive,
+       surge ${WORKER_ROLLING_MAX_SURGE}, unavailable ${WORKER_ROLLING_MAX_UNAVAILABLE}: each
+       replacement is ready before the VM it replaces goes; a job on a replaced VM is handed back
+       and starts again on another worker):
+${_verdict_text}"
+    gc compute instance-groups managed update "${WORKER_MIG}" \
+      --zone "${WORKER_MIG_ZONE}" \
+      --update-policy-type proactive >/dev/null \
+      || die "could not switch ${WORKER_MIG} to a proactive update policy, so the VMs above stay on
+   their old template"
+    gc compute instance-groups managed rolling-action start-update "${WORKER_MIG}" \
+      --zone "${WORKER_MIG_ZONE}" \
+      --version "template=${TEMPLATE}" \
+      --type proactive \
+      --replacement-method "${REPLACEMENT_METHOD}" \
+      --max-surge "${WORKER_ROLLING_MAX_SURGE}" \
+      --max-unavailable "${WORKER_ROLLING_MAX_UNAVAILABLE}" >/dev/null \
+      || die "could not start the proactive replacement of ${WORKER_MIG}'s outdated VMs"
+    _roll_forced=true
+    MIG_DISPOSITION="${MIG_DISPOSITION}, then replaced proactively"
+  fi
+  log "fleet roll      waiting (${_elapsed}s):"
+  printf '%s\n' "${_verdict_text}"
+  sleep "${WORKER_ROLL_POLL_SECONDS}"
+done
 
 if [ "${WORKER_MIG_MIN_REPLICAS}" -eq 0 ]; then
   FLOOR_STATE="0 - scales to zero (Decision 4: dev pays for nothing while idle)"
