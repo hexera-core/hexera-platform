@@ -62,7 +62,8 @@ def test_the_adapter_and_the_report_name_the_same_volume(tmp_path):
 def test_with_a_volume_the_promised_slices_are_reviewable():
     # the manifest's promise (write_manifest publishes slices for an engine declaring REGION)
     regions = _inspection_regions(((0.0, 0.0, 0.0), (0.18, 0.15, 0.08)))
-    manifest = {"inspection_regions": regions}
+    manifest = {"inspection_regions": regions,
+                "mesh_paths": {"volume": "VTK/case_0/internal.vtu"}}
     obligations = get_spec("snapgrid").expected_target_obligations(manifest, {}, "conjugate_heat_transfer")
     region_rule = next(o for o in obligations if o.kind is TargetKind.REGION)
     found = {t.target_id for t in expand_region_targets(resolve_regions(manifest), required=True,
