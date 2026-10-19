@@ -7,7 +7,9 @@
 # Boundaries: numpy and scipy over triangles, in metres. No OpenCASCADE, no engine, no storage, no
 # model, and nothing about what the part is: every rule here is measured on the triangles. The
 # B-rep path for a CAD solid stays in cad/cad_tessellate.tessellate_internal; stage_internal()
-# below picks one of the two for a source file.
+# below picks one of the two for a source file. A surface holding several closed parts that touch
+# (an assembly in one triangle file) is handed to cad/fluid_volume first: its fluid is the space
+# inside the parts, not any one skin.
 from __future__ import annotations
 
 import json
@@ -203,6 +205,16 @@ def stage_internal_surface(surface_path, out_dir, *, intake_patches: list | None
     are taken, the largest called inlet and the rest outlet (outlet_1, outlet_2, ...)."""
     from meshpipeline.cad.scout_mesh import read_triangles
     tris = read_triangles(Path(surface_path))
+    if str(input_kind or "").strip() != "fluid-domain":
+        # AN ASSEMBLY IN ONE TRIANGLE FILE (several closed parts): the fluid is the space inside
+        # them, closed off at the declared openings (cad/fluid_volume) - as for a CAD assembly
+        from meshpipeline.cad.fluid_volume import closed_pieces, stage_bounded
+        from meshpipeline.engines.port_binding import declaration_targets
+        if closed_pieces(tris) >= 2:
+            staged_fv = stage_bounded(surface_path, out_dir, kind="triangles",
+                                      declared=declaration_targets(intake_patches or []))
+            if staged_fv is not None:
+                return staged_fv
     staged = stage_triangles(tris, intake_patches=intake_patches, input_kind=input_kind,
                              surface_path=Path(surface_path))
     return write_staged(staged, Path(out_dir))

@@ -754,6 +754,16 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
     while solid_exp.More():
         solids.append(TopoDS.Solid_s(solid_exp.Current()))
         solid_exp.Next()
+    if fluid_solid is not True and opening_faces is None and declared_ports and len(solids) != 1:
+        # AN ASSEMBLY, OR A FILE OF SURFACES: the fluid is the space inside the parts, closed off at
+        # the declared openings (cad/fluid_volume) - their skins together bound nothing by
+        # themselves. Staged that way when the declared openings are that fluid's; else as before.
+        from meshpipeline.cad.fluid_volume import stage_bounded
+        staged = stage_bounded(geom_path, out_dir, declared=declared_ports, kind="cad",
+                               scale=trsf.ScaleFactor(), angular_deflection=angular_deflection,
+                               linear_deflection=linear_deflection)
+        if staged is not None:
+            return staged
     if not solids:
         raise RuntimeError(
             "internal-flow input is not a watertight SOLID - the fluid volume must be a "
