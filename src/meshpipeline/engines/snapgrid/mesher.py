@@ -1312,12 +1312,12 @@ def _fidelity(placement: Placement, topo: boxmesh.BoxTopology, zone: np.ndarray,
     allowed, required = _file_contacts(live_parts, domain, placement.tol)
     invented = contacts - allowed
     if invented:
-        pair = sorted(next(iter(invented)))
+        pair = min(sorted(x) for x in invented)
         raise FidelityError(f"the mesh makes {pair[0]} and {pair[1]} touch, but the file keeps "
                             "them apart")
     lost = required - contacts
     if lost:
-        pair = sorted(next(iter(lost)))
+        pair = min(sorted(x) for x in lost)
         raise FidelityError(f"{pair[0]} and {pair[1]} touch in the file, but the mesh does not "
                             "share the faces between them")
     # what the check above cannot see: a part that is not meshed takes its contacts with it, so

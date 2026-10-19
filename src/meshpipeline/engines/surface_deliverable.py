@@ -57,6 +57,8 @@ def build_surface_msh(workspace) -> str | None:
     import pyvista as pv
 
     gmsh.initialize(interruptible=False)          # worker-thread safe
+
+    _pin_gmsh(gmsh)
     try:
         gmsh.option.setNumber("General.Terminal", 0)
         gmsh.model.add("surface")
@@ -114,6 +116,15 @@ def build_surface_msh(workspace) -> str | None:
         return None
     finally:
         gmsh.finalize()
+
+
+
+def _pin_gmsh(gmsh) -> None:
+    """One thread and a fixed seed (engines/determinism.py): threaded gmsh inserts points in the
+    order threads finish, so the same surface could come out as a different staging."""
+    from meshpipeline.engines.determinism import GMSH_RANDOM_SEED, GMSH_THREADS
+    gmsh.option.setNumber("General.NumThreads", GMSH_THREADS)
+    gmsh.option.setNumber("Mesh.RandomSeed", GMSH_RANDOM_SEED)
 
 
 __all__ = ["SURFACE_MSH", "build_surface_msh"]

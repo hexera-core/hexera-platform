@@ -108,7 +108,7 @@ def check_contract(
     extra   = actual_names - declared_names
     mistyped = {
         n: (declared_cmp[n], actual_cmp[n])
-        for n in declared_names & actual_names
+        for n in sorted(declared_names & actual_names)
         if declared_cmp[n] != actual_cmp[n]
     }
 

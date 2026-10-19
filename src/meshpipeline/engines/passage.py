@@ -804,6 +804,9 @@ def passage_of_polymesh(workspace, *, budget_s: float = PASSAGE_MEASURE_BUDGET_S
     except MeasureOverdue:
         logger.warning("passage measure abandoned after %.0f s; the mesh ships without it",
                        budget_s)
+        from meshpipeline.engines.determinism import note_time_limit
+        note_time_limit("passage.measure", "the passage measure was abandoned: the mesh ships "
+                        "without it", budget_s=float(budget_s))
         return {}
     except Exception:  # noqa: BLE001 - evidence, not a verdict
         logger.warning("passage measure of the polyMesh failed", exc_info=True)
