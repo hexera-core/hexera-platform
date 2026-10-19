@@ -41,7 +41,19 @@ def test_console_honours_the_cloud_run_port():
     assert "HOSTNAME=0.0.0.0" in block, (
         "Next's standalone server binds localhost unless HOSTNAME is set, which on Cloud Run "
         "means the container answers nothing and the revision never becomes ready")
-    assert 'CMD ["node", "apps/console/server.js"]' in block
+    assert '"apps/console/server.js"]' in block
+
+
+def test_console_starts_with_the_live_stream_relay():
+    # Next answers HTTP only: without the relay preload every job-stream upgrade the run page
+    # makes to this origin is dropped, and the browser sees a 503 for the whole run.
+    block = _stage("console")
+    assert ('CMD ["node", "--import", "./apps/console/src/server/preload.ts", '
+            '"apps/console/server.js"]') in block, "the console CMD does not load the stream relay"
+    copied = [line for line in block.splitlines() if line.startswith("COPY") and "src/server/" in line]
+    assert copied, "the console image does not carry the relay files the CMD imports"
+    for name in ("preload.ts", "stream-relay.ts"):
+        assert any(name in line for line in copied), f"the console image does not carry {name}"
 
 
 def test_next_emits_standalone_output_rooted_at_the_workspace():

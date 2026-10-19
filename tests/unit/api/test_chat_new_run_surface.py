@@ -29,7 +29,7 @@ def test_the_composer_offers_to_run_again_or_change_something():
 
 def test_the_offer_is_made_when_the_run_ends_and_withdrawn_when_one_starts():
     main = (UI / "js" / "main.js").read_text()
-    on_terminal = main.split("onTerminal(job) {", 1)[1].split("},", 1)[0]
+    on_terminal = main.split("onTerminal(job, how) {", 1)[1].split("},", 1)[0]
     assert "offerNewRun()" in on_terminal and "enableInput()" in on_terminal
     assert "Start a new simulation" not in main, (
         "the composer still tells the user to start over instead of continuing")
@@ -49,7 +49,7 @@ def test_only_the_conversation_a_run_came_from_is_offered_to_run_it_again():
     # the page holds no session (a composer opened then would swallow whatever is typed), or a
     # later upload opened a session for OTHER geometry (a "run again" would go to that part).
     main = (UI / "js" / "main.js").read_text()
-    on_terminal = main.split("onTerminal(job) {", 1)[1].split("\n  },", 1)[0]
+    on_terminal = main.split("onTerminal(job, how) {", 1)[1].split("\n  },", 1)[0]
     guard, _, rest = on_terminal.partition(
         "if (!session || session !== getState.runSessionId()) {")
     assert rest, "the end of a run offers another run without asking whose run it was"
@@ -99,7 +99,7 @@ def test_an_answer_about_a_run_the_page_has_left_is_dropped():
     guard = "if (getState.jobId() !== jobId) return;"
     assert guard in answered, "a stale poll answer is applied to the current run"
     assert answered.index(guard) < answered.index("setState.jobStatus(job.status)")
-    assert answered.index(guard) < answered.index("sinks.onTerminal(job)")
+    assert answered.index(guard) < answered.index("sinks.onTerminal(job, ")
 
 
 def test_the_offer_is_styled_in_both_shipped_copies():
