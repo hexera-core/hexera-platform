@@ -445,7 +445,11 @@ CONSOLE_MEMORY=${CONSOLE_MEMORY:-512Mi}
 CONSOLE_CONCURRENCY=${CONSOLE_CONCURRENCY:-80}
 CONSOLE_MIN_INSTANCES=${CONSOLE_MIN_INSTANCES:-0}
 CONSOLE_MAX_INSTANCES=${CONSOLE_MAX_INSTANCES:-3}
-CONSOLE_TIMEOUT_SECONDS=${CONSOLE_TIMEOUT_SECONDS:-300}
+# The request cap is also how long one live job-stream socket may last: the console relays the run
+# page's WebSocket to the API (apps/console/src/server/stream-relay.ts), and Cloud Run ends a socket
+# at its service's timeout. 900 matches the API's own cap, so the relay never cuts a socket sooner
+# than the API would; the page reconnects with its cursor either way and loses no event.
+CONSOLE_TIMEOUT_SECONDS=${CONSOLE_TIMEOUT_SECONDS:-900}
 # THE CONSOLE IS THE PUBLIC FRONT DOOR and is invokable by anyone by design: its own Auth.js
 # session is the gate, not Cloud Run's IAM. This is a stated choice, not an inherited default.
 CONSOLE_INGRESS=${CONSOLE_INGRESS:-all}

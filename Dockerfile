@@ -594,13 +594,20 @@ ENV NODE_ENV=production \
 COPY --from=console-build /build/apps/console/.next/standalone/ ./
 COPY --from=console-build /build/apps/console/.next/static/ ./apps/console/.next/static/
 COPY --from=console-build /build/apps/console/public/ ./apps/console/public/
+# THE LIVE-STREAM RELAY (src/server/stream-relay.ts). Next answers HTTP only, and the run page's
+# WebSocket dials this origin, so without it every stream upgrade was dropped and reached the
+# browser as a 503. It needs nothing but Node's own modules, so the two files are copied as they
+# are and Node 24 runs them by erasing their types; nothing is traced or bundled for them.
+COPY --from=console-build /build/apps/console/src/server/preload.ts /build/apps/console/src/server/stream-relay.ts ./apps/console/src/server/
 # node:24-slim already ships a "node" user at uid 1000 (see /etc/passwd in the base image);
 # creating a new "console" user at the same uid fails with "UID 1000 is not unique", so the
 # existing account is reused here rather than invented.
 RUN chown -R node:node /srv
 USER node
 EXPOSE 8080
-CMD ["node", "apps/console/server.js"]
+# The preload wraps the one HTTP server Next's standalone server.js creates; everything else about
+# how Next starts, listens and shuts down is exactly as Next ships it.
+CMD ["node", "--import", "./apps/console/src/server/preload.ts", "apps/console/server.js"]
 
 
 # ---------------------------------------------------------------------------
