@@ -29,6 +29,11 @@
 # gets its SIGTERM and its time.
 set -uo pipefail
 
+# THE WATCHDOG FIRST (watchdog.sh): it restarts a container docker calls unhealthy, and a container
+# being stopped on purpose must not be started again behind this script's back.
+touch /run/hexera-shutting-down
+systemctl stop hexera-worker-watchdog >/dev/null 2>&1 || true
+
 docker stop --time 75 hexera-worker &
 docker stop --time 30 hexera-geometry-worker &
 wait

@@ -1,5 +1,6 @@
 # Responsibility: Start the pipeline worker: bind adapters per fork, and own the worker's logging, metrics and shutdown lifecycle.
 # Boundaries: a process entry point.
+from celery import bootsteps
 from celery.signals import (
     setup_logging,
     worker_init,
@@ -11,6 +12,47 @@ from celery.signals import (
 
 from meshpipeline.adapters.pipeline_execution.celery_app import celery_app  # noqa: F401  (celery -A target)
 from meshpipeline.runtime.observability.sentry import setup_sentry
+
+
+class ConsumerHeartbeat(bootsteps.StartStopStep):
+    """The consumer's liveness beat (runtime/worker_liveness.py), driven by the consumer's OWN timer.
+
+    `c.timer` is the event loop's timer, so the beat fires only while that loop turns - which it
+    does only while the consumer is connected and reading the broker. A reconnect that never
+    returns, a socket read that blocks forever, a wedged loop: each stops the beat, and the
+    container's healthcheck sees it go stale. A consumer step, so a reconnect stops and restarts it
+    with the rest of the consumer and the timer is never registered twice."""
+
+    requires = ("celery.worker.consumer.tasks:Tasks",)
+
+    def __init__(self, parent, **kwargs):
+        super().__init__(parent, **kwargs)
+        self._tref = None
+
+    def start(self, c):
+        from meshpipeline.runtime.worker_liveness import BEAT_SECONDS
+        self._beat(c)
+        self._tref = c.timer.call_repeatedly(BEAT_SECONDS, self._beat, (c,))
+
+    def stop(self, c):
+        if self._tref is not None:
+            self._tref.cancel()
+            self._tref = None
+
+    shutdown = stop
+
+    @staticmethod
+    def _beat(c):
+        from meshpipeline.runtime.worker_liveness import beat
+        task_consumer = getattr(c, "task_consumer", None)
+        queues = []
+        if task_consumer is not None:
+            queues = [q.name for q in getattr(task_consumer, "queues", ())
+                      if task_consumer.consuming_from(q)]
+        beat(node=str(getattr(c, "hostname", "") or ""), queues=queues)
+
+
+celery_app.steps["consumer"].add(ConsumerHeartbeat)
 
 
 @setup_logging.connect
@@ -30,6 +72,10 @@ def _on_worker_init(**kwargs):
     # otherwise make every job this worker takes hand itself straight back (runtime/worker_drain).
     from meshpipeline.runtime.worker_drain import clear_drain
     clear_drain()
+    # ...and a liveness heartbeat from the previous run, which would vouch for a consumer that has
+    # not connected yet (runtime/worker_liveness).
+    from meshpipeline.runtime.worker_liveness import clear_heartbeat
+    clear_heartbeat()
     # Distributed tracing (no-op unless OTEL_TRACES_ENABLED=true): instruments Celery
     # (broker context propagation) + httpx, so a worker job continues the API's trace.
     from meshpipeline.runtime.observability.otel import setup_tracing
@@ -126,6 +172,10 @@ def _on_worker_ready(sender=None, **kwargs):
     # (runtime/idle_retire.py). `sender` is the consumer; a no-op everywhere but a fleet VM.
     from meshpipeline.runtime.idle_retire import SIZING_QUEUE, start_idle_retire
     start_idle_retire(CeleryTap(sender, SIZING_QUEUE))
+    # ...and tell Redis which queues this consumer is working, for as long as its beat is fresh, so
+    # a queue with work waiting and nobody on it is noticed (deploy/gcp/worker/queue_depth_publisher).
+    from meshpipeline.runtime.worker_liveness import start_presence
+    start_presence()
 
 
 @worker_process_shutdown.connect

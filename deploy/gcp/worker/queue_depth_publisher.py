@@ -214,13 +214,10 @@ def running_jobs(client, prefix: str = "") -> int:
     return len(set(client.scan_iter(match=fence_pattern(prefix), count=500)))
 
 
-def measure(redis_url: str, queues: list[str] | None = None,
-            prefix: str | None = None) -> tuple[dict[str, int], int]:
-    """(depth per queue, running jobs) on ONE connection - the cold attach is paid once."""
+def _on_one_connection(redis_url: str, work):
+    """Run `work(client)` on ONE connection, retried like queue_depths - the cold attach is paid once."""
     import redis
 
-    queues = list(queues if queues is not None else QUEUE_NAMES)
-    prefix = REDIS_KEY_PREFIX if prefix is None else prefix
     last: Exception | None = None
     for attempt in range(1, REDIS_CONNECT_ATTEMPTS + 1):
         client = redis.from_url(
@@ -229,8 +226,7 @@ def measure(redis_url: str, queues: list[str] | None = None,
             socket_timeout=REDIS_READ_TIMEOUT_SECONDS,
         )
         try:
-            depths = {queue: int(client.llen(queue)) for queue in queues}
-            return depths, running_jobs(client, prefix)
+            return work(client)
         except (redis.exceptions.TimeoutError, redis.exceptions.ConnectionError) as exc:
             last = exc
             logger.warning(
@@ -241,6 +237,129 @@ def measure(redis_url: str, queues: list[str] | None = None,
             client.close()
     assert last is not None
     raise last
+
+
+def measure(redis_url: str, queues: list[str] | None = None,
+            prefix: str | None = None) -> tuple[dict[str, int], int]:
+    """(depth per queue, running jobs) on ONE connection - the cold attach is paid once."""
+    queues = list(queues if queues is not None else QUEUE_NAMES)
+    prefix = REDIS_KEY_PREFIX if prefix is None else prefix
+
+    def _work(client) -> tuple[dict[str, int], int]:
+        depths = {queue: int(client.llen(queue)) for queue in queues}
+        return depths, running_jobs(client, prefix)
+    return _on_one_connection(redis_url, _work)
+
+
+# ---------------------------------------------------------------------------------------------
+# WORK WAITING AND NOBODY CONSUMING IT
+#
+# Shared dev, 2026-10-16 06:58 to 10-19: the geometry worker's broker connection hung, the queue
+# filled, and nothing said so for three days - this publisher measured the backlog every two
+# minutes and reported it as an ordinary number. A depth alone cannot tell "busy" from "nobody is
+# there". So every live consumer keeps a key per queue it is actually consuming, refreshed only while
+# its event loop is turning (src/meshpipeline/runtime/worker_liveness.py), and this counts them.
+#
+# GRACE BEFORE THE ALERT. A fleet scaled to zero has no consumer by design until the autoscaler
+# brings a VM up - minutes of boot, docker install and image pull - so work waiting with nobody on
+# it is normal for a while. The first run that sees it records the moment in Redis; the alert fires
+# once it has lasted NO_CONSUMER_GRACE_SECONDS, and the mark is cleared as soon as a consumer is
+# back or the queue is empty.
+#
+# IT NEVER FAILS THE RUN. This job is also what a deploy runs to prove the fleet's signal works, and
+# a stranded queue is exactly when a deploy must not be blocked. The alert is an ERROR log line
+# (structured, so Cloud Logging carries its severity) and a `queue_consumers` series per queue.
+# ---------------------------------------------------------------------------------------------
+
+#: Restated from src/meshpipeline/runtime/worker_liveness.py (this program may not import the
+#: application); tests/unit/runtime/test_worker_liveness.py holds the two together.
+PRESENCE_KEY_TEMPLATE = "fleet:consumers:{queue}:{node}"
+UNCONSUMED_SINCE_TEMPLATE = "fleet:unconsumed-since:{queue}"
+NO_CONSUMER_GRACE_SECONDS = 600
+CONSUMERS_METRIC_TYPE = "custom.googleapis.com/hexera/queue_consumers"
+
+
+def presence_pattern(prefix: str, queue: str) -> str:
+    return _glob_escape(prefix + PRESENCE_KEY_TEMPLATE.format(queue=queue, node="")) + "*"
+
+
+def consumer_counts(client, queues: list[str], prefix: str = "") -> dict[str, int]:
+    """How many live consumers each queue has: one presence key per consumer, expiring by itself."""
+    return {queue: len(set(client.scan_iter(match=presence_pattern(prefix, queue), count=500)))
+            for queue in queues}
+
+
+def stranded_queues(client, depths: dict[str, int], consumers: dict[str, int], *, prefix: str = "",
+                    now: float, grace: float = NO_CONSUMER_GRACE_SECONDS) -> list[dict]:
+    """The queues that have held waiting work with no consumer for longer than `grace` - and, for
+    every queue, keep or clear the mark of when that started."""
+    stranded = []
+    for queue, depth in depths.items():
+        key = prefix + UNCONSUMED_SINCE_TEMPLATE.format(queue=queue)
+        if depth <= 0 or consumers.get(queue, 0) > 0:
+            client.delete(key)
+            continue
+        # NX: the FIRST run to see it owns the moment; a day's expiry so a mark can never outlive
+        # the deployment it was about.
+        client.set(key, str(int(now)), nx=True, ex=86400)
+        raw = client.get(key)
+        since = float(raw) if raw not in (None, b"", "") else now
+        waited = max(0.0, now - since)
+        if waited >= grace:
+            stranded.append({"queue": queue, "waiting": int(depth), "seconds": int(waited)})
+        else:
+            logger.warning("queue %s has %d task(s) waiting and no live consumer yet (%ds; this is an "
+                           "alert after %ds - a fleet waking from zero takes minutes)",
+                           queue, depth, int(waited), int(grace))
+    return stranded
+
+
+def observe(redis_url: str, queues: list[str] | None = None, prefix: str | None = None, *,
+            now: float | None = None) -> dict:
+    """Everything one run reports, on ONE connection. The consumer check is advisory: a failure in
+    it is logged and the depths and demand are still returned, because those are what scale the
+    fleet."""
+    queues = list(queues if queues is not None else QUEUE_NAMES)
+    prefix = REDIS_KEY_PREFIX if prefix is None else prefix
+    moment = datetime.datetime.now(datetime.UTC).timestamp() if now is None else now
+
+    def _work(client) -> dict:
+        depths = {queue: int(client.llen(queue)) for queue in queues}
+        running = running_jobs(client, prefix)
+        consumers: dict[str, int] | None = None
+        stranded: list[dict] = []
+        try:
+            consumers = consumer_counts(client, queues, prefix)
+            stranded = stranded_queues(client, depths, consumers, prefix=prefix, now=moment)
+        except Exception as exc:  # noqa: BLE001 - see the docstring
+            logger.warning("could not check the queues' consumers (%s: %s) - depths still published",
+                           type(exc).__name__, exc)
+        return {"depths": depths, "running": running, "consumers": consumers, "stranded": stranded}
+    return _on_one_connection(redis_url, _work)
+
+
+def report_stranded(stranded: list[dict], *, namespace: str) -> None:
+    for item in stranded:
+        message = (f"NO CONSUMER: queue {item['queue']} in {namespace} has {item['waiting']} task(s) "
+                   f"waiting and no live worker has consumed it for {item['seconds'] // 60} min. "
+                   f"Its workers are gone or stuck (a hung broker connection looks like this): check "
+                   f"the fleet's VMs and their containers' health.")
+        logger.error(message)
+        # One structured line on stdout, so Cloud Logging records it at ERROR severity and an alert
+        # can match on `jsonPayload.alert="queue_without_consumer"`.
+        print(json.dumps({"severity": "ERROR", "alert": "queue_without_consumer",
+                          "namespace": namespace, "message": message, **item}), flush=True)
+
+
+def build_consumer_series(consumers: dict[str, int], *, project_id: str, namespace: str,
+                          location: str, end_time: str) -> list[dict]:
+    # The same resource labels as each queue's depth series, so "depth > 0 and consumers == 0" is one
+    # alert condition across two metrics of one resource.
+    series = build_time_series(consumers, project_id=project_id, namespace=namespace,
+                               location=location, end_time=end_time)
+    for item in series:
+        item["metric"] = {"type": CONSUMERS_METRIC_TYPE}
+    return series
 
 
 def build_time_series(depths: dict[str, int], *, project_id: str, namespace: str, location: str,
@@ -294,7 +413,7 @@ def build_demand_series(queued: int, running: int, *, queue: str, project_id: st
 
 
 def publish(depths: dict[str, int], *, project_id: str, namespace: str, location: str,
-            running: int | None = None) -> None:
+            running: int | None = None, consumers: dict[str, int] | None = None) -> None:
     # ONE write for every series: the same timestamp on each, and one request where a request per
     # series would multiply the chance of two writes to one series arriving out of order.
     now = datetime.datetime.now(datetime.UTC).replace(microsecond=0)
@@ -305,6 +424,9 @@ def publish(depths: dict[str, int], *, project_id: str, namespace: str, location
         series.append(build_demand_series(
             depths.get(QUEUE_NAME, 0), running, queue=QUEUE_NAME, project_id=project_id,
             namespace=namespace, location=location, end_time=end_time))
+    if consumers is not None:
+        series.extend(build_consumer_series(consumers, project_id=project_id, namespace=namespace,
+                                            location=location, end_time=end_time))
     body = {"timeSeries": series}
     req = urllib.request.Request(
         f"https://monitoring.googleapis.com/v3/projects/{project_id}/timeSeries",
@@ -343,11 +465,15 @@ def main() -> None:
     location = METRIC_LOCATION or os.environ["METRIC_LOCATION"]
     project_id = _metadata("project/project-id")
 
-    depths, running = measure(redis_url)
+    seen = observe(redis_url)
+    depths, running, consumers = seen["depths"], seen["running"], seen["consumers"]
     publish(depths, project_id=project_id, namespace=namespace, location=location,
-            running=running)
+            running=running, consumers=consumers)
+    report_stranded(seen["stranded"], namespace=namespace)
     for queue, depth in depths.items():
-        logger.info("queue_depth=%d published for %s/%s (queue %s)", depth, namespace, location, queue)
+        logger.info("queue_depth=%d published for %s/%s (queue %s, %s live consumer(s))", depth,
+                    namespace, location, queue,
+                    "?" if consumers is None else consumers.get(queue, 0))
     logger.info("worker_demand=%d published for %s/%s (queue %s: %d queued + %d running)",
                 depths.get(QUEUE_NAME, 0) + running, namespace, location, QUEUE_NAME,
                 depths.get(QUEUE_NAME, 0), running)

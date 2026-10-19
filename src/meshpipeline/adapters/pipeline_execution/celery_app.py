@@ -14,6 +14,44 @@ import meshpipeline.settings.runtime as rtcfg
 #: A message that DOES come back after this finds its job terminal and is skipped at the claim.
 BROKER_VISIBILITY_TIMEOUT_SECONDS = int(rtcfg.PIPELINE_TOTAL_TIMEOUT_SECONDS) + 2 * 3600
 
+# A BROKER CONNECTION THAT CAN NEVER HANG. Shared dev, 2026-10-16 06:58 UTC: Redis reset the
+# geometry worker's connection (ConnectionError 104), the consumer logged "Trying to re-establish
+# the connection..." and then waited on a socket that never answered - with no timeout, for three
+# days, and no geometry check ran. Reproduced off-cloud by resetting a worker's connection and leaving
+# the reconnect unanswered: celery's defaults reconnect into it and block forever, silently.
+#
+# So every socket the broker and the result backend open has a bound: a connect that does not
+# complete fails, a read that gets no reply fails, TCP keepalive notices a peer that vanished
+# without a reset, and redis-py pings an idle connection before trusting it. A failure is then an
+# ordinary connection error, which celery retries and logs. BRPOP waits 1 s and the event loop only
+# reads a readable socket, so 30 s is far past any healthy wait.
+BROKER_SOCKET_TIMEOUT_SECONDS = 30
+BROKER_CONNECT_TIMEOUT_SECONDS = 10
+BROKER_HEALTH_CHECK_SECONDS = 25
+#: After this many failed reconnects in a row (about six minutes of celery's 2 s -> 30 s backoff)
+#: the worker gives up and EXITS, and its restart policy starts a fresh process - rather than
+#: retrying for ever inside one that may be in a bad state. Celery's default is 100.
+BROKER_CONNECTION_MAX_RETRIES = 20
+
+
+def _keepalive_options() -> dict[int, int]:
+    """Probe an idle connection after 60 s, every 15 s, and give up after 4 missed probes - so a
+    peer that disappeared without a reset is found in about two minutes, not the kernel's two
+    hours. Linux names these; elsewhere (a developer's Mac) the kernel defaults stand."""
+    import socket
+    wanted = {"TCP_KEEPIDLE": 60, "TCP_KEEPINTVL": 15, "TCP_KEEPCNT": 4}
+    return {getattr(socket, name): value for name, value in wanted.items() if hasattr(socket, name)}
+
+
+_SOCKET_OPTIONS = {
+    "socket_timeout": BROKER_SOCKET_TIMEOUT_SECONDS,
+    "socket_connect_timeout": BROKER_CONNECT_TIMEOUT_SECONDS,
+    "socket_keepalive": True,
+    "socket_keepalive_options": _keepalive_options(),
+    "health_check_interval": BROKER_HEALTH_CHECK_SECONDS,
+    "retry_on_timeout": True,
+}
+
 celery_app = Celery(
     "meshpipeline",
     broker=provcfg.REDIS_URL,
@@ -38,8 +76,22 @@ celery_app.conf.update(
     # BOTH options, not one. The broker carries the queues; the result backend carries the task
     # results. Prefixing only the broker isolates the work and leaves the answers colliding.
     broker_transport_options={"global_keyprefix": provcfg.REDIS_KEY_PREFIX,
-                              "visibility_timeout": BROKER_VISIBILITY_TIMEOUT_SECONDS},
+                              "visibility_timeout": BROKER_VISIBILITY_TIMEOUT_SECONDS,
+                              **_SOCKET_OPTIONS},
     result_backend_transport_options={"global_keyprefix": provcfg.REDIS_KEY_PREFIX},
+    # The broker connection's lifecycle (see _SOCKET_OPTIONS above): retry at startup as well as
+    # after a loss - the Celery 6 default flips, and a worker that boots before Redis answers must
+    # wait for it, not exit - and stop retrying after a bounded run so the process is replaced.
+    broker_connection_retry=True,
+    broker_connection_retry_on_startup=True,
+    broker_connection_max_retries=BROKER_CONNECTION_MAX_RETRIES,
+    broker_connection_timeout=BROKER_CONNECT_TIMEOUT_SECONDS,
+    # The result backend is the same Redis, so it gets the same bounds on connect, keepalive and
+    # idle health. Its read timeout keeps celery's 120 s: a caller may legitimately wait on a result.
+    redis_socket_connect_timeout=BROKER_CONNECT_TIMEOUT_SECONDS,
+    redis_socket_keepalive=True,
+    redis_retry_on_timeout=True,
+    redis_backend_health_check_interval=BROKER_HEALTH_CHECK_SECONDS,
     task_serializer="json",
     result_serializer="json",
     accept_content=["json"],
