@@ -148,7 +148,7 @@ def _record_emissions(monkeypatch, seen: list) -> None:
 
         monkeypatch.setattr(JobPublisher, method, w)
 
-    for method in ("note", "error", "attempt", "meshed", "meshing",
+    for method in ("note", "error", "attempt", "meshed", "meshing", "plan", "mesh_stage",
                    "tool_call", "tool_result"):
         wrap(method)
 

@@ -76,7 +76,8 @@ SEMANTIC = {"note": "note", "warn": "warn", "error": "error", "stage": "stage",
             "attempt": "attempt", "check": "check", "action": "action", "search": "search",
             "screenshot": "screenshot", "file": "file", "reasoning": "reasoning",
             "rationale": "rationale", "tool_call": "tool_call", "tool_result": "tool_result",
-            "meshing": "meshing", "meshed": "meshed", "verdict": "verdict", "closing": "closing"}
+            "meshing": "meshing", "meshed": "meshed", "plan": "plan", "mesh_stage": "mesh_stage",
+            "verdict": "verdict", "closing": "closing"}
 
 
 def _production_frame(naive: bool = False):
