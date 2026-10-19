@@ -303,6 +303,13 @@ class CachingModelRouter:
             parallel_tool_calls=parallel_tool_calls, on_reasoning=on_reasoning),
             messages=messages, tools=tools, tool_choice="auto", job_id=job_id, user_id=user_id)
 
+    async def call_repair_review_model(self, messages, job_id="", name="RepairReview"):
+        # the CAD-repair review names no owner, so - like every ownerless round - it is asked of
+        # the model and logged, never kept or replayed
+        return await self._round("repair_review", lambda: self._inner.call_repair_review_model(
+            messages=messages, job_id=job_id, name=name),
+            messages=messages, tools=None, tool_choice=name, job_id=job_id, user_id="")
+
     async def call_summarizer_model(self, messages, job_id=""):
         # web search results are the world's, not ours: a summary of them is never replayed
         return await self._inner.call_summarizer_model(messages=messages, job_id=job_id)
