@@ -191,6 +191,13 @@ _UNAUTHENTICATED_ROUTE_ALLOWED: dict[str, str] = {
         "customer account. It is not ungated: the route carries Depends(admin_dep), reusing the "
         "ADMIN_API_KEY guard from admin_billing, and test_every_route_carries_the_guard in "
         "test_admin_ops_route.py pins that every admin_ops route keeps that guard."),
+    "api/v1/admin_ops.py:set_manual_plan": (
+        "POST /api/v1/admin/ops/organizations/{id}/manual-plan is an OPERATOR control that changes "
+        "a customer's billing tier across the tenant boundary. `owner_dep` would scope the caller "
+        "to one tenant, which is the opposite of this support action. It is not ungated: the route "
+        "carries Depends(admin_dep), reusing the ADMIN_API_KEY guard from admin_billing, and "
+        "test_every_route_carries_the_guard in test_admin_ops_route.py pins that every admin_ops "
+        "route keeps that guard."),
 }
 
 

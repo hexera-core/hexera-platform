@@ -24,6 +24,8 @@ export const hexeraApiRoutes = {
     `${HEXERA_API_PREFIX}/admin/ops/organizations/${segment(organizationId)}`,
   adminOpsOrganizationCreditGrants: (organizationId: PathSegment): ApiPath =>
     `${HEXERA_API_PREFIX}/admin/ops/organizations/${segment(organizationId)}/credit-grants`,
+  adminOpsOrganizationManualPlan: (organizationId: PathSegment): ApiPath =>
+    `${HEXERA_API_PREFIX}/admin/ops/organizations/${segment(organizationId)}/manual-plan`,
   adminOpsOrganizations: (limit?: number): ApiPath =>
     limit === undefined
       ? `${HEXERA_API_PREFIX}/admin/ops/organizations`
@@ -84,6 +86,7 @@ export type HexeraApiRoute =
   | ReturnType<(typeof hexeraApiRoutes)["adminOpsOrganizations"]>
   | ReturnType<(typeof hexeraApiRoutes)["adminOpsOrganization"]>
   | ReturnType<(typeof hexeraApiRoutes)["adminOpsOrganizationCreditGrants"]>
+  | ReturnType<(typeof hexeraApiRoutes)["adminOpsOrganizationManualPlan"]>
   | ReturnType<(typeof hexeraApiRoutes)["chatHistory"]>
   | ReturnType<(typeof hexeraApiRoutes)["simulation"]>
   | ReturnType<(typeof hexeraApiRoutes)["simulationDispute"]>

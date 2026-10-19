@@ -8,7 +8,9 @@ export type Read<T> = { data: T; error: null } | { data: null; error: string };
 
 export type AdminRun = {
   attempts: number;
+  charged_credits: number;
   created_at: string | null;
+  duration_seconds: number | null;
   ended_at: string | null;
   failed_reason: string | null;
   id: string;
@@ -25,6 +27,25 @@ export type AdminRun = {
   status: string;
   task_label: string;
   updated_at: string | null;
+};
+
+export type AdminUsagePeriod = {
+  entries: number;
+  granted: number;
+  period: string | null;
+  spent: number;
+};
+
+export type AdminTrace = {
+  attempt: number | null;
+  created_at: string | null;
+  execution_generation: number;
+  job_id: string;
+  kind: string;
+  name: string;
+  payload: unknown;
+  record_type: string;
+  seq: number;
 };
 
 export type AdminOrganization = {
@@ -130,6 +151,8 @@ export async function readCustomer(
     members: AdminMember[];
     organization: AdminOrganization;
     recent_runs: AdminRun[];
+    traces: AdminTrace[];
+    usage_periods: AdminUsagePeriod[];
   }>
 > {
   return request(hexeraApiRoutes.adminOpsOrganization(organizationId));
@@ -149,6 +172,36 @@ export async function grantCredits(input: {
     }),
     headers: { "Content-Type": "application/json" },
     method: "POST",
+  });
+}
+
+export async function setManualPlan(input: {
+  organizationId: string;
+  plan: string;
+}): Promise<Read<{ organization: AdminOrganization }>> {
+  return request(hexeraApiRoutes.adminOpsOrganizationManualPlan(input.organizationId), {
+    body: JSON.stringify({ plan: input.plan }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+}
+
+export function filterCustomers(
+  rows: readonly AdminOrganization[],
+  query: string,
+): AdminOrganization[] {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return [...rows];
+  return rows.filter((row) => {
+    const haystack = [
+      row.id,
+      row.name,
+      row.plan || "free",
+      row.slug,
+      row.status,
+      row.stripe_customer_id,
+    ].join(" ").toLowerCase();
+    return haystack.includes(needle);
   });
 }
 

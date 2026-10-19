@@ -65,6 +65,14 @@ export type InvoiceRow = {
   status: string;
 };
 
+export type BillingAttention = {
+  detail: string;
+  kind: "manual_without_customer" | "meter_backlog" | "negative_balance" | "past_due";
+  organizationId?: string;
+  organizationName?: string;
+  severity: "info" | "warn";
+};
+
 export type Read<T> = { data: T; error: null } | { data: null; error: string };
 
 function ok<T>(data: T): Read<T> {
@@ -209,4 +217,60 @@ export function planLabel(plan: string): string {
   // in fact the most common and entirely correct state: settings/plans.py resolves an empty plan to
   // the deployment's own limits.
   return plan.trim() === "" ? "free" : plan;
+}
+
+export function manualPlanChoices(
+  plans: Read<{ billing_enabled: boolean; plans: BillingPlan[] }>,
+): BillingPlan[] | null {
+  if (plans.error || !plans.data) return null;
+  return plans.data.plans;
+}
+
+export function billingAttention(
+  organizations: readonly BillingOrganization[],
+  pendingMeter: { credits: number; entries: number },
+): BillingAttention[] {
+  const items: BillingAttention[] = [];
+
+  if (pendingMeter.entries > 0) {
+    items.push({
+      detail: `${pendingMeter.entries.toLocaleString("en-US")} debit(s), ${pendingMeter.credits.toLocaleString("en-US")} credits, have not reached the provider meter yet.`,
+      kind: "meter_backlog",
+      severity: "warn",
+    });
+  }
+
+  for (const org of organizations) {
+    const plan = org.plan.trim();
+    const status = org.status.trim();
+    if (org.balance < 0 && plan === "") {
+      items.push({
+        detail: `${credits(org.balance)} balance on a free organization; grant credits or move it to a paid/manual plan.`,
+        kind: "negative_balance",
+        organizationId: org.id,
+        organizationName: org.name,
+        severity: "warn",
+      });
+    }
+    if (plan !== "" && status === "" && !org.stripe_customer_id) {
+      items.push({
+        detail: `${planLabel(plan)} is set manually, but there is no provider customer id to invoice against.`,
+        kind: "manual_without_customer",
+        organizationId: org.id,
+        organizationName: org.name,
+        severity: "info",
+      });
+    }
+    if (["past_due", "unpaid"].includes(status)) {
+      items.push({
+        detail: `Subscription is ${status}; usage may continue while payment needs operator follow-up.`,
+        kind: "past_due",
+        organizationId: org.id,
+        organizationName: org.name,
+        severity: "warn",
+      });
+    }
+  }
+
+  return items;
 }

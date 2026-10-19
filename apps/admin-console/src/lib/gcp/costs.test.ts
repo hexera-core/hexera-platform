@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  budgetPosture,
   isExportNotYetWritten,
   resolveExportTable,
   readBillingAccount,
@@ -51,9 +52,89 @@ test("reads budgets, their amounts and their alert thresholds", async () => {
   assert.equal(budgets.length, 1);
   assert.equal(budgets[0].displayName, "hexera-dev monthly");
   assert.equal(budgets[0].currency, "USD");
+  assert.equal(budgets[0].projectCount, 1);
   // units and nanos together are the amount: 400 + 0.5
   assert.equal(budgets[0].amount, 400.5);
   assert.deepEqual(budgets[0].thresholdPercents, [50, 90]);
+});
+
+test("summarises spend against the project-scoped budget an operator owns", () => {
+  const posture = budgetPosture(
+    [
+      {
+        amount: 1000,
+        basis: "specified",
+        currency: "USD",
+        displayName: "account-wide",
+        projectCount: null,
+        scopedToProject: false,
+        thresholdPercents: [80],
+      },
+      {
+        amount: 250,
+        basis: "specified",
+        currency: "USD",
+        displayName: "hexera-dev",
+        projectCount: 1,
+        scopedToProject: true,
+        thresholdPercents: [50, 90],
+      },
+    ],
+    [
+      { amount: 60, currency: "USD", service: "Cloud Run" },
+      { amount: 40, currency: "USD", service: "Cloud SQL" },
+    ],
+  );
+
+  assert.deepEqual(posture, {
+    budgetAmount: 250,
+    budgetName: "hexera-dev",
+    currency: "USD",
+    largestService: { amount: 60, currency: "USD", service: "Cloud Run" },
+    percentUsed: 40,
+    remaining: 150,
+    spent: 100,
+  });
+});
+
+test("does not compare account-wide budgets with project-only spend", () => {
+  assert.equal(
+    budgetPosture(
+      [
+        {
+          amount: 1000,
+          basis: "specified",
+          currency: "USD",
+          displayName: "shared account",
+          projectCount: null,
+          scopedToProject: false,
+          thresholdPercents: [80],
+        },
+      ],
+      [{ amount: 100, currency: "USD", service: "Cloud Run" }],
+    ),
+    null,
+  );
+});
+
+test("does not invent posture from a rolling budget with no explicit amount", () => {
+  assert.equal(
+    budgetPosture(
+      [
+        {
+          amount: null,
+          basis: "last period",
+          currency: null,
+          displayName: "rolling",
+          projectCount: 1,
+          scopedToProject: true,
+          thresholdPercents: [100],
+        },
+      ],
+      [{ amount: 50, currency: "USD", service: "Cloud Run" }],
+    ),
+    null,
+  );
 });
 
 test("a budget with no explicit amount reports none rather than zero", async () => {
@@ -137,8 +218,9 @@ test("shows only budgets that apply to this project", () => {
       [
         [
           { budgetFilter: { projects: ["projects/224734058693"] }, displayName: "dev", name: "b1" },
-          { budgetFilter: { projects: ["projects/688073002171"] }, displayName: "prod", name: "b2" },
-          { displayName: "whole account", name: "b3" },
+          { budgetFilter: { projects: ["projects/224734058693", "projects/688073002171"] }, displayName: "shared", name: "b2" },
+          { budgetFilter: { projects: ["projects/688073002171"] }, displayName: "prod", name: "b3" },
+          { displayName: "whole account", name: "b4" },
         ],
         null,
         {},
@@ -148,11 +230,14 @@ test("shows only budgets that apply to this project", () => {
   return readBudgets(client, "billingAccounts/x", "224734058693").then((budgets) => {
     assert.deepEqual(
       budgets.map((b) => b.displayName),
-      ["dev", "whole account"],
+      ["dev", "shared", "whole account"],
       "an account-wide budget applies here too; another project's does not",
     );
     assert.equal(budgets[0].scopedToProject, true);
-    assert.equal(budgets[1].scopedToProject, false);
+    assert.equal(budgets[0].projectCount, 1);
+    assert.equal(budgets[1].projectCount, 2);
+    assert.equal(budgets[2].scopedToProject, false);
+    assert.equal(budgets[2].projectCount, null);
   });
 });
 

@@ -2,6 +2,7 @@ import { Alert, EmptyState, FieldList, Panel, StatRow } from "@/app/_components/
 import { getBillingReader, getBudgetReader, getSpendReader } from "@/lib/gcp/clients";
 import { readAdminTargets } from "@/lib/gcp/config";
 import {
+  budgetPosture,
   isExportNotYetWritten,
   readBillingAccount,
   readBudgets,
@@ -77,6 +78,7 @@ export default async function CostsPage() {
 
   const total = spend.reduce((sum, row) => sum + row.amount, 0);
   const currency = spend[0]?.currency ?? "USD";
+  const posture = budgetPosture(budgets, spend);
 
   return (
     <>
@@ -202,6 +204,37 @@ export default async function CostsPage() {
             </table>
           </>
         ) : null}
+      </Panel>
+
+      <Panel title="Cost posture" heading={`last ${WINDOW_DAYS} days vs configured budget`}>
+        {budgetError || spendError || accountError || !targets.billingExportTable || exportPending ? (
+          <EmptyState note="Posture is withheld until the budget and billing export reads both succeed." />
+        ) : !posture ? (
+          <EmptyState note="No explicit budget and billing-export spend overlap yet, so there is no honest budget posture to report." />
+        ) : (
+          <>
+            <StatRow
+              stats={[
+                { label: "Spend", value: money(posture.spent, posture.currency) },
+                { label: "Budget", value: money(posture.budgetAmount, posture.currency) },
+                { label: "Used", value: `${posture.percentUsed}%` },
+                { label: "Remaining", value: money(posture.remaining, posture.currency) },
+              ]}
+            />
+            {posture.percentUsed >= 80 ? (
+              <Alert tone="info">
+                {posture.budgetName} is already {posture.percentUsed}% used in the current{" "}
+                {WINDOW_DAYS}-day view.
+              </Alert>
+            ) : null}
+            {posture.largestService ? (
+              <p className="admin-note">
+                Largest service: {posture.largestService.service} at{" "}
+                {money(posture.largestService.amount, posture.largestService.currency)}.
+              </p>
+            ) : null}
+          </>
+        )}
       </Panel>
 
       <Panel title="What this page does not answer">

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { applyCreditGrant, applyInvoiceRaise } from "./operations";
+import { applyCreditGrant, applyInvoiceRaise, applyManualPlan } from "./operations";
 
 const ACTOR = { email: "operator@hexera.ai", subject: "accounts.google.com:1234" };
 
@@ -107,6 +107,55 @@ test("manual invoices write one audit line naming the verified actor", async () 
       description: "Enterprise launch invoice",
       invoiceId: "inv_1",
     },
+    resource: "org-1",
+  });
+});
+
+test("manual plan changes write one audit line naming the verified actor", async () => {
+  const form = new FormData();
+  form.set("organization_id", "org-1");
+  form.set("plan", "enterprise");
+  form.set("reason", "signed MSA");
+  const audited: unknown[] = [];
+
+  const result = await applyManualPlan(form, {
+    actor: ACTOR,
+    audit: (entry) => audited.push(entry),
+    plan: async (input) => {
+      assert.deepEqual(input, {
+        organizationId: "org-1",
+        plan: "enterprise",
+      });
+      return {
+        data: {
+          organization: {
+            active_runs: 0,
+            balance: 0,
+            created_at: null,
+            current_period_end: null,
+            has_billing_account: false,
+            id: "org-1",
+            included_credits: 100000,
+            last_run_at: null,
+            name: "Acme",
+            plan: "enterprise",
+            run_count: 0,
+            slug: "acme",
+            status: "",
+            stripe_customer_id: "",
+          },
+        },
+        error: null,
+      };
+    },
+  });
+
+  assert.deepEqual(result, { ok: true });
+  assert.equal(audited.length, 1);
+  assert.deepEqual(audited[0], {
+    action: "customer.manual_plan.set",
+    actor: ACTOR.email,
+    after: { plan: "enterprise", reason: "signed MSA" },
     resource: "org-1",
   });
 });
