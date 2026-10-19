@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 import meshpipeline.engines.snappy.settings as scfg
 import meshpipeline.settings.policy as polcfg
+from meshpipeline.engines.gap_sizing import accepted_fewer
 from meshpipeline.engines.ground_plane import VERTICAL_AXIS, ground_patch_name
 from meshpipeline.engines.port_binding import BindError as _PortBindError
 from meshpipeline.engines.preflight import PreflightRefusal, PreflightStop, check_domain
@@ -333,6 +334,9 @@ def _native_payload_members(workspace) -> list[str]:
     members = ["system"]
     members += sorted(p.relative_to(ws).as_posix()
                       for p in (ws / "constant" / "triSurface").glob("*.stl"))
+    # the narrow spots' refinement surfaces (_narrow_surfaces) - read by the mesher, never patches
+    members += sorted(p.relative_to(ws).as_posix()
+                      for p in (ws / "constant" / "triSurface" / "refine").glob("*.stl"))
     # THE FACTS THE REMOTE READS. native.py measures the passage beside the mesh when the
     # workspace says the flow is internal - and it reads that from the `flow_topology` file.
     # Left out of this list, the file never reached the mesher: every Cloud Run execution logged
@@ -480,6 +484,20 @@ def _box_patch_names(patches: list) -> frozenset[str]:
     if ground:
         names.add(ground)
     return frozenset(names)
+
+
+def _body_gap_field(surface):
+    """(points, half-gap, area per point) of the gaps between the staged body's separate parts
+    (cad/shape_traits.body_gap_field), or None - one body, or a reading that failed. A
+    measurement is an optimisation, never fatal."""
+    try:
+        from meshpipeline.cad.shape_traits import body_gap_field
+        from meshpipeline.cad.thin_features import staged_triangles
+        return body_gap_field(staged_triangles(surface.path))
+    except Exception:  # noqa: BLE001
+        logger.warning("external build: the body-gap field could not be read - no gap "
+                       "refinement", exc_info=True)
+        return None
 
 
 def _plan_surface(state, workspace):
@@ -630,6 +648,9 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
     # THIN-FEATURE FIELD - measured once per build (the geometry is fixed across passes; only
     # the strategy changes). None disables the local layer policy for this whole build.
     _thin_field = LP.measure_field(_surface)
+    # THE GAPS BETWEEN THE BODY'S PARTS - measured once per build too: each pass boxes the ones
+    # its wall cell leaves under 13 across (snappy_runner.render_snappy_case, engines/gap_sizing)
+    _gap_field = _body_gap_field(_surface)
     # the escalation ladder's durable stage: 0 on a fresh geometry, advanced by layer-fatal
     # passes below, carried across pipeline retries via the sibling attempt's fact
     _esc_stage = LP.read_escalation(workspace)
@@ -884,7 +905,14 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                 # the wake behind the body, along the declared flow, in the approved ruler
                 wake=WakeRequest(knobs=strategy.get("wake"), flow_axis=state.get("flow_axis"),
                                  ruler_m=state.get("reference_length_m")
-                                 or strategy.get("reference_length_m")))
+                                 or strategy.get("reference_length_m")),
+                # the gaps between the body's parts, 13 cells across (engines/gap_sizing)
+                gap_field=_gap_field)
+            if int(summary.get("max_cells") or 0) > int(strategy.get("max_cells") or 0):
+                # the gap boxes raised snappy's cell ceiling: the plan memory carries the budget
+                # the pass really used, so an overshoot correction reads it right
+                strategy = {**strategy, "max_cells": int(summary["max_cells"])}
+                _write_plan_memory(workspace, strategy)
             # the honest record travels with the case: the manifest reports the per-region
             # layer decisions this pass actually authored (stale records are removed)
             LP.write_layer_policy(workspace, _policy)
@@ -903,7 +931,8 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             await publish.anote("Carving the body out of the background mesh - refinement level "
                             f"{summary['surface_level']}, {summary['n_layers']} boundary layers"
                             + _sealed_note(_cavities)
-                            + (f"; {summary['wake_note']}" if summary.get("wake_note") else ""),
+                            + (f"; {summary['wake_note']}" if summary.get("wake_note") else "")
+                            + (f"; {summary['gap_note']}" if summary.get("gap_note") else ""),
                     op_id=f"snappy:carving:{attempt}")
             # RUN (deterministic; Cloud Run Job / local) + user-facing instrumentation
             _t_mesh = _time.monotonic()
@@ -1112,30 +1141,134 @@ def _staged_passage_field(t: dict, srcs: dict, wall_key: str, intake_patches: li
                     "describe - no local refinement")
         return None
     pts, faces, r = staged_passage_field(t, srcs, wall_key, intake_patches, field=raw)
-    return pts, r, point_areas(pts, faces)
+    # the faces travel too: a narrow spot's own wall is what its refinement is measured from
+    # (_narrow_surfaces), so the cells refined are the passage's, not a box round it
+    return pts, r, point_areas(pts, faces), faces
 
 
 #: The cells across a narrow passage its local refinement aims at (engines/passage).
 _PASSAGE_TARGET = 13.0
 
 
-def _narrow_passage_boxes(field, *, wall_cell: float, budget_cells: float,
-                          target: float = _PASSAGE_TARGET) -> list:
+def _narrow_passage_boxes(field, *, wall_cell: float, budget_cells: float | None,
+                          target: float = _PASSAGE_TARGET, detect: float | None = None) -> list:
     """Refinement boxes, in render_internal_case's thin-region form ({min, max, level_bump} over
-    the level whose cell is `wall_cell`), for every passage that cell puts under `target` cells
-    across (engines/passage.narrow_passage_regions); [] without a field. Detected AT the target,
-    not half a cell under it: a snapped wall reads ~15% under its nominal cells across at the
-    gate's 5th percentile, so a passage a hair under 13 nominal is one the floor refuses."""
+    the level whose cell is `wall_cell`), for every passage that cell puts under `detect` cells
+    across (default `target`), each refined to `target` across (engines/passage.
+    narrow_passage_regions); [] without a field. Detected AT the target, not half a cell under
+    it: a snapped wall reads ~15% under its nominal cells across at the gate's 5th percentile, so
+    a passage a hair under 13 nominal is one the floor refuses."""
     if field is None:
         return []
     from meshpipeline.engines.passage import narrow_passage_regions
     try:
         return narrow_passage_regions(field[0], field[1], cell_m=wall_cell, areas=field[2],
-                                      target=float(target), detect=float(target),
+                                      target=float(target),
+                                      detect=float(target if detect is None else detect),
                                       budget_cells=budget_cells)
     except Exception:  # noqa: BLE001 - a measurement is an optimisation, never fatal
         logger.exception("narrow-passage regions failed - continuing without them")
         return []
+
+
+#: How far past the middle of a narrow passage its distance refinement reaches (a share of the
+#: widest radius read there): the cells AT the middle must be inside it too.
+_REACH_MARGIN = 1.25
+
+
+def _reach(box: dict) -> float:
+    """How far from a narrow spot's wall its refinement reaches: to the middle of the passage
+    (its widest reading) and a little past it, so walls on both sides fill the whole width."""
+    return _REACH_MARGIN * float(box.get("radius_max_m") or box.get("radius_m") or 0.0)
+
+
+def _narrow_surfaces(workspace: Path, regions: list, field) -> tuple[list, list]:
+    """(distance regions, boxes left) for the narrow spots of a pass. Each octree level's spots
+    become ONE refinement surface - the staged wall's own triangles there, written under
+    constant/triSurface/refine (never a patch: it is referenced only as a refinement region,
+    and the review reads only the top-level surfaces) - refined to that level within a passage
+    width of it. A spot with no triangles of its own keeps its box."""
+    import numpy as np
+
+    from meshpipeline.cad.stl_io import write_stl_binary
+    if field is None or len(field) < 4 or field[3] is None or not regions:
+        return [], list(regions)
+    pts = np.asarray(field[0], dtype=float)
+    faces = np.asarray(field[3], dtype=np.int64)
+    by_level: dict[int, list] = {}
+    for b in regions:
+        by_level.setdefault(int(b.get("level_bump", 1)), []).append(b)
+    out_dir = Path(workspace) / "constant" / "triSurface" / "refine"
+    if out_dir.exists():
+        for old in out_dir.glob("*.stl"):
+            old.unlink()
+    surfaces, boxes = [], []
+    for level, group in sorted(by_level.items()):
+        ids = [np.asarray(b.get("point_ids"), dtype=np.int64) for b in group
+               if b.get("point_ids") is not None and len(b.get("point_ids"))]
+        if not ids:
+            boxes += group
+            continue
+        mark = np.zeros(len(pts), dtype=bool)
+        mark[np.concatenate(ids)] = True
+        tris = faces[mark[faces].any(axis=1)]
+        if not len(tris):
+            boxes += group
+            continue
+        out_dir.mkdir(parents=True, exist_ok=True)
+        name = f"narrowGap{level}"
+        write_stl_binary(out_dir / f"{name}.stl", pts[tris])
+        surfaces.append({"name": name, "file": f"refine/{name}.stl", "level_bump": level,
+                         "distance_m": max(_reach(b) for b in group)})
+    return surfaces, boxes
+
+
+#: Cells of each octree level snappy keeps before grading to the next (nCellsBetweenLevels 3,
+#: render_internal_case), plus one: the wall's own cell fills about this many cells deep.
+_WALL_SHELL_CELLS = 4.0
+
+
+def _gap_plan(field, *, wall_cell: float, target: float, budget: int, band_m: float,
+              near_cell: float, surface_cell: float, base_cell: float, accept_fewer: bool):
+    """The pass's gap plan (engines/gap_sizing.plan_gaps): the narrow spots of the staged wall
+    (`field`), boxed at `target` cells across from `wall_cell` (the cell at the wall), costed and
+    checked against the pass's `budget` and the compute limit BEFORE meshing. The mesh without
+    the boxes is costed on the same field - the fluid at the background cell (`base_cell`), the
+    wall's own cell (`surface_cell`) a few cells deep, the near-wall band (`band_m` deep, at
+    `near_cell`) - and never under the plan's own share (gap_sizing.PLAN_BOX_SHARE): the budget is
+    snappy's maxGlobalCells, a ceiling it stops refining at, so it errs high. A failed reading
+    plans nothing."""
+    from meshpipeline.engines import gap_sizing as GS
+    limit = int(polcfg.CELL_HARD_LIMIT)
+    empty = GS.GapPlan(GS.NO_NARROW, budget_in=int(budget), budget=int(budget), limit=limit)
+    if field is None:
+        return empty
+    try:
+        import numpy as np
+        base = (1.0 - GS.PLAN_BOX_SHARE) * float(budget)
+        a, r = field[2], field[1]
+        if a is not None:
+            base = max(base, GS.fill_cells(a, r, base_cell)
+                       + GS.fill_cells(a, r, surface_cell, depth=_WALL_SHELL_CELLS * surface_cell)
+                       + (GS.fill_cells(a, r, near_cell, depth=band_m) if band_m > 0.0 else 0.0))
+
+        def at(t: float) -> list:
+            boxes = list(_narrow_passage_boxes(field, wall_cell=wall_cell, budget_cells=None,
+                                               target=t, detect=float(target)) or [])
+            if len(field) > 3 and field[3] is not None:
+                # refined BY DISTANCE from the spot's own wall (_narrow_surfaces): the cells
+                # within a passage width of it, on both sides - not the whole box round it
+                for b in boxes:
+                    ids = b.get("point_ids")
+                    if ids is not None and len(ids):
+                        b["refine_m3"] = 2.0 * float(np.asarray(a)[ids].sum()) * _reach(b)
+            return boxes
+        return GS.plan_gaps(at, cell_m=wall_cell, budget=int(budget), limit=limit,
+                            base_cells=base, target=float(target), accept_fewer=accept_fewer,
+                            whole_box=True)
+    except Exception:  # noqa: BLE001 - a plan we cannot make leaves the pass as planned
+        logger.exception("gap plan failed - meshing the pass as planned")
+        return empty
 
 
 def _over_band(boxes: list, offset: int) -> list:
@@ -1725,7 +1858,27 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
             logger.info("internal pass %d: %s - job_id=%s", attempt, _band_note, job_id)
         _near_cell = _wall_cell / 2.0 if _band_m > 0.0 else _wall_cell
         _near_offset = 1 if _band_m > 0.0 else 0
-        strategy = {**strategy, "near_band_m": round(_band_m, 6)}
+        # SIZED FROM THE MEASURED NARROWEST GAP (engines/gap_sizing): every narrow spot of the
+        # staged wall gets its box at the rule's count (13 across, more after a local retry), and
+        # the cell budget is checked against what that costs BEFORE meshing - raised to it within
+        # the compute limit, never met by dropping spots (the boxes used to be held to half the
+        # plan's budget and the rest dropped: 15 of the 17 round-4 dev meshes refused for too few
+        # cells across their narrowest passage had been planned that way). Over the limit the
+        # pass is not meshed (below).
+        _planned_budget = _budget
+        _narrow_target = float(strategy.get("narrow_target") or _PASSAGE_TARGET)
+        _gap = _gap_plan(_passage_field, wall_cell=_near_cell, target=_narrow_target,
+                         budget=_budget, band_m=_band_m, near_cell=_near_cell,
+                         surface_cell=_wall_cell, base_cell=base_cell,
+                         accept_fewer=accepted_fewer(state.get("engine_params")))
+        _gap.write(workspace)
+        _narrow_regions = _over_band(list(_gap.regions), _near_offset)
+        _narrow_surfaces_, _narrow_regions = _narrow_surfaces(workspace, _narrow_regions,
+                                                              _passage_field)
+        if not _gap.stops and _gap.budget > _budget:
+            _budget = int(_gap.budget)
+        strategy = {**strategy, "near_band_m": round(_band_m, 6),
+                    **({"max_cells": _budget} if _budget != _planned_budget else {})}
         previous_plan = strategy
         await run.fence("write plan memory")
         _mem = await _op_begin(publish, "author_configuration", run, attempt)
@@ -1741,7 +1894,8 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                 # is captured locally, never by re-meshing the whole part at the finest level
                 _thin_regions = _thin_boxes(
                     _read_tris(_wall_stl), cell_m=_wall_cell,
-                    budget_cells=max(50_000, int(strategy.get("thin_budget") or 0.5 * _budget)))
+                    budget_cells=max(50_000, int(strategy.get("thin_budget")
+                                                 or 0.5 * _planned_budget)))
         except Exception:  # noqa: BLE001 - a measurement is an optimisation, never fatal
             logger.exception("internal build: thin-feature probe failed - continuing without "
                              "local thin refinement - job_id=%s", job_id)
@@ -1762,22 +1916,25 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                    else "refining locally as far as the cell budget allows")
                 + (f" ({_thin_note})" if _thin_note else ""),
                 op_id=f"internal:thin-feature:{attempt}")
-        # NARROW PASSAGES, against the cell at the wall too, to the target this pass carries (13
-        # across, more after a local retry), within the budget the pass gives them
-        _narrow_target = float(strategy.get("narrow_target") or _PASSAGE_TARGET)
-        _narrow_regions = _narrow_passage_boxes(
-            _passage_field, wall_cell=_near_cell, target=_narrow_target,
-            budget_cells=max(50_000, int(strategy.get("narrow_budget") or 0.5 * _budget)))
-        _over_band(_narrow_regions, _near_offset)
-        if _narrow_regions:
-            _narrow_note = str(getattr(_narrow_regions, "note", "") or "")
+        # NARROW PASSAGES, against the cell at the wall too (the gap plan above): what is refined
+        # where, and what the budget became - or, over the limit, why the pass is not meshed and
+        # what the user can choose instead
+        if _gap.regions or _gap.stops:
             await publish.anote(
-                f"Narrow passages - {len(_narrow_regions)} region(s) down to "
-                f"{_mm(2.0 * min(float(b['radius_m']) for b in _narrow_regions))} across, "
-                f"under {_narrow_target:.3g} cells at the {_near_cell * 1000:.2g} mm cell "
-                f"at the wall; refining them locally to {_narrow_target:.3g} across"
-                + (f" ({_narrow_note})" if _narrow_note else ""),
+                _gap.words(_near_cell)
+                + ("" if not _gap.stops else
+                   ". Options: " + " ".join(f"({i}) {o}" for i, o in
+                                            enumerate(_gap.options(), 1))),
                 op_id=f"internal:narrow-passage:{attempt}")
+        if _gap.stops:
+            # KNOWN BEFORE MESHING: the limit cannot hold the rule, so no pass would clear the
+            # resolution floor. Reported as that gate (engines/preflight), with the facts that
+            # stop a retry and the user's options - never an hour of meshing first.
+            _gap.refusal().write(workspace)
+            await _op_end(publish, _mem, "author_configuration", {"stage": "gap-limit"}, False)
+            logger.warning("internal pass %d not meshed - %s - job_id=%s", attempt, _gap.words(),
+                           job_id)
+            return False
 
         await publish.anote(f"Meshing pass {attempt} of {max_attempts} - "
                      f"{str(strategy.get('approach', 'default strategy'))[:80]}"
@@ -1805,7 +1962,8 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                 port_sizes=_port_sizes, sealed_before=_sealed_before,
                 thin_regions=[*_thin_regions, *_narrow_regions,
                               *(strategy.get("local_boxes") or [])],
-                near_band_depth=_band_m if _band_set else None)
+                near_band_depth=_band_m if _band_set else None,
+                distance_regions=_narrow_surfaces_)
             _stop_on_repeated_case(workspace, _reviewed_ws, job_id=job_id,
                                    where=f"internal pass {attempt}")
             if _repeats_timed_out_case(workspace, _timeout_case):

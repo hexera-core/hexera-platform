@@ -159,8 +159,25 @@ def statement(rec, engine: str) -> str:
     if others:
         listed = "; ".join(f"{_display(f.engine)} ({_fit(f)})" for f in others)
         lines.append(f"Also able to mesh it: {listed}.")
+    gaps = gap_estimate(rec)
+    if gaps is not None and gaps.over_limit:
+        # THE CELL BUDGET, UP FRONT: the gap rule does not fit one job, so the user chooses now,
+        # not after an hour of meshing (engines/gap_sizing)
+        lines.append(gaps.sentence())
     lines.append("OK, or pick another engine?")
     return " ".join(lines)
+
+
+def gap_estimate(rec):
+    """What the gap rule (13 cells across every gap) costs on this upload, from the measurement the
+    recommendation was ranked on (engines/gap_sizing.estimate_from_traits); None unmeasured."""
+    from meshpipeline.engines.gap_sizing import estimate_from_traits
+    traits = getattr(rec, "traits", None) if rec is not None else None
+    try:
+        return estimate_from_traits(traits) if traits else None
+    except Exception:  # noqa: BLE001 - advice never breaks a turn
+        logger.warning("Intake: the gap estimate could not be read", exc_info=True)
+        return None
 
 
 def _fit(fit) -> str:
@@ -208,9 +225,18 @@ def prompt_block(rec, *, settled: bool) -> str:
                "engine, answer from these lines in plain words. The user picks: any engine "
                "listed here that they name is theirs, without argument.") if rec.engine else (
                "No engine here is suited by its own declaration; if the user names one, take it.")
+    gaps = gap_estimate(rec)
+    sizing = ""
+    if gaps is not None:
+        # the gap rule's cost, measured: said to the user only when it is over the limit (the
+        # engine question carries it); background for questions otherwise
+        sizing = (f"  {gaps.sentence()}"
+                  + (f" {gaps.guidance()}" if gaps.over_limit else
+                     " (Background only - the run sizes the narrow spots itself; do not raise "
+                     "it unasked.)") + "\n")
     return ("\n\nMEASURED ENGINE RECOMMENDATION (the application measured the uploaded geometry "
             "and compared it with lab runs of every engine on shapes measured to be like it - "
-            "evidence, not opinion):\n" + shape + rows + "\n" + use)
+            "evidence, not opinion):\n" + shape + sizing + rows + "\n" + use)
 
 
 def choice_payload(gate) -> dict | None:

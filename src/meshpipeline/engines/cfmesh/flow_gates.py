@@ -121,9 +121,13 @@ def _gate_resolution_floor(ctx: GateCtx) -> tuple[bool, str]:
     """The fill must span the passage where it matters: cells across the local passage at the
     narrowest wall (5th percentile of the boundary points, measured beside the mesh). A mesh
     without the measure (an older image) is not judged here. Side passages the flow can go round
-    are set aside (engines/passage_flow.judge_resolution)."""
+    are set aside (engines/passage_flow.judge_resolution). A run whose approval accepted fewer
+    cells across its narrowest spots (engines/gap_sizing: the cell limit could not hold the rule)
+    is judged against what was accepted."""
+    from meshpipeline.engines.gap_sizing import accepted_floor
     from meshpipeline.engines.passage_flow import judge_resolution, refuse_under_resolved
-    verdict = judge_resolution(ctx.manifest_or_load().get("quality") or {}, PASSAGE_FLOOR_CELLS)
+    floor = accepted_floor(ctx.workspace, ctx.engine_params) or PASSAGE_FLOOR_CELLS
+    verdict = judge_resolution(ctx.manifest_or_load().get("quality") or {}, floor)
     if verdict.ok:
         return True, ""
     return False, refuse_under_resolved(
