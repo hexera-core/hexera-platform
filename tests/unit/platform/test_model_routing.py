@@ -379,3 +379,70 @@ async def test_telemetry_carries_no_content_fields(_fresh):
     forbidden = {"prompt", "messages", "content", "completion", "text", "api_key",
                  "authorization", "headers", "tool_arguments", "output"}
     assert fields & forbidden == set(), f"telemetry record exposes content fields: {fields & forbidden}"
+
+
+# a half-open probe always hands its slot back, however it ends
+def _half_open_breaker():
+    from meshpipeline.adapters._shared.resilience import CircuitState, get_breaker
+    b = get_breaker(PRIMARY.circuit_group)
+    for _ in range(b.failure_threshold):
+        b.record_failure()
+    b._opened_at -= b.recovery_timeout + 1      # the recovery window has passed
+    assert b.state is CircuitState.HALF_OPEN
+    return b
+
+
+async def _healthy_call_is_served():
+    result, target, _ = await execute(_route(), _ok(PRIMARY),
+                                      _classify_fixed(FailureCategory.CONNECTION), job_id="next")
+    assert result == "result" and target is PRIMARY
+
+
+@pytest.mark.parametrize("category", [FailureCategory.INVALID_REQUEST, FailureCategory.AUTH,
+                                      FailureCategory.TOOL_SCHEMA])
+async def test_a_probe_ending_in_our_own_defect_does_not_wedge_the_circuit(category):
+    from meshpipeline.adapters._shared.resilience import CircuitState
+    b = _half_open_breaker()
+    with pytest.raises(RouteExhausted) as ei:
+        await execute(_route(), _raises(ValueError("bad request")), _classify_fixed(category),
+                      job_id="probe")
+    assert ei.value.category is category
+    # says nothing about provider health: neither trips nor closes the breaker
+    assert b.state is CircuitState.HALF_OPEN
+    await _healthy_call_is_served()
+    assert b.state is CircuitState.CLOSED
+
+
+async def test_a_probe_refused_at_admission_does_not_wedge_the_circuit():
+    from meshpipeline.adapters._shared.resilience import CircuitState
+    b = _half_open_breaker()
+    route = _route(concurrency_budget=1, queue_deadline_s=0.05)
+    held = await model_capacity.acquire(PRIMARY.domain.key, 1, 1.0)
+    assert held is not None
+    try:
+        with pytest.raises(RouteExhausted) as ei:
+            await execute(route, _ok(PRIMARY), _classify_fixed(FailureCategory.CONNECTION),
+                          job_id="probe")
+        assert ei.value.category is FailureCategory.OVERLOAD
+    finally:
+        await model_capacity.release(held)
+    assert b.state is CircuitState.HALF_OPEN
+    await _healthy_call_is_served()
+    assert b.state is CircuitState.CLOSED
+
+
+async def test_a_cancelled_probe_does_not_wedge_the_circuit():
+    from meshpipeline.adapters._shared.resilience import CircuitState
+    b = _half_open_breaker()
+
+    async def _stall(_t):
+        await asyncio.sleep(10)
+        return ("never", Usage())
+
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(
+            execute(_route(timeout_s=30), _stall, _classify_fixed(FailureCategory.CONNECTION),
+                    job_id="probe"), 0.05)
+    assert b.state is CircuitState.HALF_OPEN
+    await _healthy_call_is_served()
+    assert b.state is CircuitState.CLOSED

@@ -150,57 +150,68 @@ async def execute(
             failover_occurred = True
             continue
 
-        # The ceiling belongs to the QUOTA DOMAIN, not to this role: two roles on the same
-        # provider+model share one pool, so they must contend against one number.
-        budget = _domain_budget(target.domain.key, route)
-        # Queueing spends the SAME total budget as the attempts do.
-        queue_wait = budget_clock.cap(route.queue_deadline_s)
-        lease = await capacity.acquire(target.domain.key, budget, queue_wait)
-        if lease is None:
-            expired = budget_clock.expired()
-            last_category = FailureCategory.TIMEOUT if expired else FailureCategory.OVERLOAD
-            last_phase = Phase.TIMEOUT if expired else Phase.ADMISSION
-            _why = ("route deadline exhausted while queued" if expired
-                    else f"queue deadline {queue_wait:.1f}s exceeded")
-            last_detail = f"{target.label}: {_why} at budget {budget}"
-            logger.warning("route %s: %s", route.role, last_detail)
-            _emit(route, target, reason, job_id, attempts=0, category=last_category,
-                  circuit_state=_state(breaker), failover=is_standby, cost_of=cost_of,
-                  timed_out=expired)
-            if not route.may_fail_over(last_category):
-                break
-            failover_occurred = True
-            continue
-
+        # From here on this call may hold a half-open probe slot that allow() took. Release
+        # it however the call ends: success and transient failure record first (and reset the
+        # count); admission timeout/overload, a non-transient error (INVALID_REQUEST, AUTH,
+        # TOOL_SCHEMA...) and cancellation record nothing, and without this the slot would be
+        # held forever and every later call in this process refused with CIRCUIT_OPEN.
+        # A non-transient error counts as NEITHER success nor failure: it is about our request,
+        # not the provider, so it must not trip the breaker - nor close it on a provider whose
+        # health it never showed. The next call simply probes again.
         try:
-            (result, category, detail, attempts, usage, latency, started,
-             cause) = await _attempt_target(route, target, invoke, classify, budget_clock)
-        finally:
-            # ALWAYS returns the slot: success, failure, timeout, and cancellation alike.
-            await capacity.release(lease)
-        last_attempts = attempts
+            # The ceiling belongs to the QUOTA DOMAIN, not to this role: two roles on the same
+            # provider+model share one pool, so they must contend against one number.
+            budget = _domain_budget(target.domain.key, route)
+            # Queueing spends the SAME total budget as the attempts do.
+            queue_wait = budget_clock.cap(route.queue_deadline_s)
+            lease = await capacity.acquire(target.domain.key, budget, queue_wait)
+            if lease is None:
+                expired = budget_clock.expired()
+                last_category = FailureCategory.TIMEOUT if expired else FailureCategory.OVERLOAD
+                last_phase = Phase.TIMEOUT if expired else Phase.ADMISSION
+                _why = ("route deadline exhausted while queued" if expired
+                        else f"queue deadline {queue_wait:.1f}s exceeded")
+                last_detail = f"{target.label}: {_why} at budget {budget}"
+                logger.warning("route %s: %s", route.role, last_detail)
+                _emit(route, target, reason, job_id, attempts=0, category=last_category,
+                      circuit_state=_state(breaker), failover=is_standby, cost_of=cost_of,
+                      timed_out=expired)
+                if not route.may_fail_over(last_category):
+                    break
+                failover_occurred = True
+                continue
 
-        if category is None:
-            breaker.record_success()
-            _emit(route, target, reason, job_id, attempts=attempts, category=None,
+            try:
+                (result, category, detail, attempts, usage, latency, started,
+                 cause) = await _attempt_target(route, target, invoke, classify, budget_clock)
+            finally:
+                # ALWAYS returns the slot: success, failure, timeout, and cancellation alike.
+                await capacity.release(lease)
+            last_attempts = attempts
+
+            if category is None:
+                breaker.record_success()
+                _emit(route, target, reason, job_id, attempts=attempts, category=None,
+                      circuit_state=_state(breaker), failover=failover_occurred or is_standby,
+                      lease=lease, usage=usage, latency=latency, started=started,
+                      status="ok", cost_of=cost_of)
+                return result, target, attempts
+
+            last_category, last_detail, last_cause = category, detail, cause
+            last_phase = Phase.TIMEOUT if category is FailureCategory.TIMEOUT else Phase.PROVIDER
+            if category in (FailureCategory.RATE_LIMIT, FailureCategory.OVERLOAD,
+                            FailureCategory.TIMEOUT, FailureCategory.CONNECTION,
+                            FailureCategory.SERVICE_UNAVAILABLE,
+                            FailureCategory.MODEL_UNAVAILABLE):
+                breaker.record_failure()
+
+            _emit(route, target, reason, job_id, attempts=attempts, category=category,
                   circuit_state=_state(breaker), failover=failover_occurred or is_standby,
                   lease=lease, usage=usage, latency=latency, started=started,
-                  status="ok", cost_of=cost_of)
-            return result, target, attempts
-
-        last_category, last_detail, last_cause = category, detail, cause
-        last_phase = Phase.TIMEOUT if category is FailureCategory.TIMEOUT else Phase.PROVIDER
-        if category in (FailureCategory.RATE_LIMIT, FailureCategory.OVERLOAD,
-                        FailureCategory.TIMEOUT, FailureCategory.CONNECTION,
-                        FailureCategory.SERVICE_UNAVAILABLE,
-                        FailureCategory.MODEL_UNAVAILABLE):
-            breaker.record_failure()
-
-        _emit(route, target, reason, job_id, attempts=attempts, category=category,
-              circuit_state=_state(breaker), failover=failover_occurred or is_standby,
-              lease=lease, usage=usage, latency=latency, started=started,
-              status=_status_for(category),
-              timed_out=category is FailureCategory.TIMEOUT, cost_of=cost_of)
+                  status=_status_for(category),
+                  timed_out=category is FailureCategory.TIMEOUT, cost_of=cost_of)
+        finally:
+            breaker.release_probe()
 
         if not route.may_fail_over(category):
             # Our defect, or no standby: stop. Routing around it would buy the same failure.
