@@ -226,6 +226,13 @@ class JobPublisher:
     def meshed(self, cells: int | None = None, op_id: str = "") -> None:
         self._emit_keyed(E.meshed(self.agent, cells), op_id)
 
+    def plan(self, cells: int | None = None, layers: int | None = None,
+             refinements: list[str] | None = None, op_id: str = "") -> None:
+        self._emit_keyed(E.plan(self.agent, cells, layers, refinements), op_id)
+
+    def mesh_stage(self, key: str, label: str, op_id: str = "") -> None:
+        self._emit_keyed(E.mesh_stage(self.agent, key, label), op_id)
+
     def verdict(self, verdict: str, summary: str = "") -> None:
         self.emit(E.verdict(self.agent, verdict, summary))
 

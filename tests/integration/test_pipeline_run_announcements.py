@@ -174,7 +174,7 @@ async def test_the_pinned_engine_is_announced_under_the_run_claim(run):
         assert str(r["own"].job_id) == str(run["job_id"])
         assert r["op_id"] == "pinned"
         assert r["fence_expected"], "an execution-owned announcement carried no fence expectation"
-    assert PINNED in engine[1]["args"][0], engine[1]["args"][0]
+    assert PINNED in engine[1]["args"][0].lower(), engine[1]["args"][0]   # by its label, "Gmsh"
 
 
 async def test_the_dispute_is_announced_under_the_same_claim(run):
