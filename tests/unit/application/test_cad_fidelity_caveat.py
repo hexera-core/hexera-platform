@@ -56,3 +56,10 @@ def test_every_number_and_the_size_reading_land_in_the_result_record():
     fr = FinalResult(schema_version=5, job_id="j", owner_id="o", status=TerminalStatus.succeeded,
                      executor_success=True, cad_fidelity=rec)
     assert FinalResult.from_dict(fr.to_dict()).cad_fidelity == rec
+
+
+def test_a_size_no_rule_could_judge_is_unmeasured_not_passed():
+    # a structural part the request names nothing for: no flow, no word - nothing to judge it by
+    oc = RunOutcome(executor_success=True, flow_topology="", quality={"cad_fidelity": _CLEAN},
+                    body_size_m=(0.4, 0.1, 0.1), words="")
+    assert cad_fidelity_record(oc)["size"]["verdict"] == "unmeasured"

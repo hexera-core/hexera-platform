@@ -278,15 +278,20 @@ def cad_reference(workspace, flow: str, intake_patches=None) -> tuple[Surface, s
     (empty, "", False) when none is on disk."""
     ws = Path(workspace)
     if flow == "internal":
+        further = _passages(ws)
+        if further and (ws / "geom.stl").exists():
+            # a case meshed as several passages (cad/fluid_passages): the first passage's own
+            # surface and each further one's, once each - the whole staged boundary already holds
+            # every passage, so it is never added to them
+            return (join([read_stl(q) for q in [ws / "geom.stl", *further]]),
+                    "staged fluid boundary, every passage", True)
         whole = [q for q in (ws / "_internal_stls" / "fluid_boundary.stl",
                              ws / "fluid_boundary.stl", ws / "geom.stl") if q.exists()]
         if whole:
-            return (join([read_stl(q) for q in [whole[0], *_passages(ws)]]),
-                    "staged fluid boundary", True)
+            return read_stl(whole[0]), "staged fluid boundary", True
         fb = _restaged(ws, intake_patches)
         if fb is not None:
-            return (join([fb, *[read_stl(q) for q in _passages(ws)]]),
-                    "fluid boundary staged from your file", True)
+            return fb, "fluid boundary staged from your file", True
         parts = sorted((ws / "_internal_stls").glob("*.stl"))
         if parts:
             return join([read_stl(q) for q in parts]), "staged part surface and lids", False
@@ -389,11 +394,26 @@ def _signed_volume(s: Surface, origin) -> float:
     return float(np.einsum("ij,ij->i", c[:, 0], np.cross(c[:, 1], c[:, 2])).sum() / 6.0)
 
 
+def is_closed(s: Surface) -> bool:
+    """Every edge shared by exactly two triangles once coincident points are merged. The only
+    proof of closure a volume is read on: two openings of equal area facing opposite ways (a slab
+    between two symmetry planes, with no end caps) cancel in any sum over the faces."""
+    if not s.n:
+        return False
+    try:
+        surf = _polydata(s).clean(tolerance=1e-9, absolute=False)
+        edges = surf.extract_feature_edges(boundary_edges=True, non_manifold_edges=True,
+                                           feature_edges=False, manifold_edges=False)
+        return edges.n_cells == 0
+    except Exception:  # noqa: BLE001 - what cannot be read is not proven closed
+        return False
+
+
 def outward_volume(s: Surface) -> float | None:
     """The volume a surface whose faces already point OUT of the region encloses (an OpenFOAM
-    boundary points out of the fluid), or None when it is not closed (the sum moves with the
-    origin)."""
-    if not s.n:
+    boundary points out of the fluid), or None when it is not closed (an open edge, or a sum that
+    moves with the origin - faces wound both ways)."""
+    if not s.n or not is_closed(s):
         return None
     lo, hi = s.points.min(axis=0), s.points.max(axis=0)
     span = float(np.linalg.norm(hi - lo)) or 1.0

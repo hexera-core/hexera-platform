@@ -1153,6 +1153,17 @@ def _cad_fidelity_lines(c: Mapping) -> list[str]:
     return lines
 
 
+def _size_was_judged(outcome: RunOutcome) -> bool:
+    """Whether the size note had a rule to judge this mesh by - the same reading
+    physical_scale_caveat makes: the request's word for the part, else its shape and flow."""
+    from meshpipeline.contracts.unit_plausibility import expected_from_words, shape_kind
+    sides = [abs(float(v)) for v in (outcome.body_size_m or ()) if isinstance(v, (int, float))]
+    if len(sides) != 3:
+        return False
+    return bool(expected_from_words(outcome.words)
+                or shape_kind(outcome.flow_topology, sides, grounded=outcome.grounded))
+
+
 def cad_fidelity_record(outcome: RunOutcome, *, size_caveat: Mapping | None = None) -> dict:
     """The numbers the result record carries (FinalResult.cad_fidelity): the fidelity measures of the
     mesh the run ends with, and the size note's reading of its physical size."""
@@ -1167,9 +1178,12 @@ def cad_fidelity_record(outcome: RunOutcome, *, size_caveat: Mapping | None = No
         size.update(verdict="concern", what=size_caveat.get("what"), too=size_caveat.get("too"),
                     other_unit=size_caveat.get("other_unit"),
                     other_longest_m=size_caveat.get("other_longest_m"))
-    elif size["longest_m"] is not None and outcome.executor_success and not outcome.failed_gate:
+    elif (size["longest_m"] is not None and outcome.executor_success and not outcome.failed_gate
+          and _size_was_judged(outcome)):
         size["verdict"] = "pass"
     else:
+        # no rule knows what this part should measure (a structural part the request names
+        # nothing for): its size was not checked, so it is not reported as passing
         size["verdict"] = "unmeasured"
     out["size"] = size
     return out

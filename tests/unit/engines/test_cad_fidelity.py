@@ -167,3 +167,32 @@ def test_staged_parts_that_also_bound_the_metal_hold_only_the_wall_to_the_cad(tm
     assert rec["verdicts"] == {"mesh_to_cad": F.PASS}
     assert "not the fluid" in rec["surface"]["cad_to_mesh_why"]
     assert "not the fluid" in rec["volume"]["why"]
+
+
+def test_a_slab_open_at_two_opposite_symmetry_planes_has_no_volume_to_read():
+    # no end caps: the two missing faces cancel in any sum over the faces, so only the open edges
+    # tell that this surface encloses nothing
+    box = pv.Box(bounds=(0, 1, 0, 0.4, 0, 0.4), level=4, quads=True).compute_normals(
+        cell_normals=True, point_normals=False, auto_orient_normals=True)
+    n = np.asarray(box.cell_data["Normals"])
+    sides = box.extract_cells(np.flatnonzero(np.abs(n[:, 0]) <= 0.9)).extract_surface(
+        algorithm="dataset_surface")
+    s = F._from_pyvista(sides)
+    assert F.outward_volume(s) is None and F.enclosed_volume(s) is None
+    assert F.is_closed(F._from_pyvista(box))
+
+
+def test_a_case_of_several_passages_counts_each_passage_once(tmp_path):
+    ws = tmp_path / "ws"
+    _write_cad(ws / "geom.stl", bounds=(0, 1, 0, 0.4, 0, 0.4))
+    _write_cad(ws / "_passages" / "p1" / "geom.stl", bounds=(0, 1, 1, 1.4, 0, 0.4))
+    # the whole staged boundary holds both passages: it must not be added on top of them
+    _write_cad(ws / "_internal_stls" / "fluid_boundary.stl", bounds=(0, 1, 0, 1.4, 0, 0.4))
+    (ws / "passages.json").write_text(json.dumps({"runs": ["_passages/p1"]}))
+    from meshpipeline.cad.fluid_passages import PASSAGES_FILE
+    if PASSAGES_FILE != "passages.json":
+        (ws / PASSAGES_FILE).parent.mkdir(parents=True, exist_ok=True)
+        (ws / PASSAGES_FILE).write_text(json.dumps({"runs": ["_passages/p1"]}))
+    cad, source, fluid_side = F.cad_reference(ws, "internal")
+    assert fluid_side and source.endswith("every passage")
+    assert F.enclosed_volume(cad) == pytest.approx(2 * 0.4 * 0.4, rel=1e-6)
