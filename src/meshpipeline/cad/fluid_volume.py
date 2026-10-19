@@ -1109,18 +1109,15 @@ def stage(x: Extraction, declared: list, out_dir, *, angular_deflection: float =
             t = _face_triangles(f)
             tris.extend(t)
             names.extend([name] * len(t))
+    # the coordinates as the mesher reads them (binary STL is float32), points a hair apart joined
+    T = np.asarray(tris, dtype=np.float64).reshape(-1, 3, 3).astype(np.float32).astype(np.float64)
+    V, F, L = _weld_labelled(T, names)
     # THE RIM AUDIT every internal staging makes: a face the tessellator left without triangles
     # leaves a gap, sealed into the wall
-    membranes, open_rims = seal_open_rims(tris)
-    tris.extend(membranes)
-    names.extend(["wall"] * len(membranes))
-    T = np.asarray(tris, dtype=np.float64).reshape(-1, 3, 3)
-    # the coordinates as the mesher reads them (binary STL is float32), welded exactly
-    pts = T.reshape(-1, 3).astype(np.float32).astype(np.float64)
-    V, inv = np.unique(pts, axis=0, return_inverse=True)
-    F = np.asarray(inv).reshape(-1, 3)
-    ok = (F[:, 0] != F[:, 1]) & (F[:, 1] != F[:, 2]) & (F[:, 0] != F[:, 2])
-    F, L = F[ok], np.asarray(names, dtype=object)[ok]
+    membranes, open_rims = seal_open_rims([tuple(map(tuple, t)) for t in V[F]])
+    if membranes:
+        T = np.concatenate([V[F], np.asarray(membranes, dtype=np.float64).reshape(-1, 3, 3)])
+        V, F, L = _weld_labelled(T, [*L.tolist(), *(["wall"] * len(membranes))])
     if any(not np.any(L == n) for n in matched):
         return None                     # a declared opening with no triangles: not this fluid
     ports = {}
@@ -1156,7 +1153,7 @@ def _file_safe(name: str) -> str:
 #: How long the geometry check waits for the split before it keeps its face-by-face reading, and
 #: how long the staging waits before it stages the parts' skins as before (seconds).
 CHECK_BUDGET_S = 120.0
-STAGE_BUDGET_S = 900.0
+STAGE_BUDGET_S = 600.0
 
 
 def run_bounded(task: dict, work, timeout_s: float) -> dict:
@@ -1260,16 +1257,23 @@ def closed_pieces(tris) -> int:
     return int(closed.sum())
 
 
-def _weld(T):
-    """(points, faces) of a triangle soup: points closer than a billionth of the part's size are one
-    point (a file writes 2e-18 where it means 0), and nothing else is joined - two parts pressed face
-    to face keep both their faces (open_ends.skin_faces drops them)."""
+def _weld_labelled(T, names: list):
+    """(points, faces, patch per face) of labelled triangles, welded as _weld does."""
+    import numpy as np
+    P = np.asarray(T, dtype=np.float64).reshape(-1, 3)
+    V, F_all = _weld_keep(P)
+    lab = np.asarray(names, dtype=object)
+    ok = (F_all[:, 0] != F_all[:, 1]) & (F_all[:, 1] != F_all[:, 2]) & (F_all[:, 0] != F_all[:, 2])
+    return V, F_all[ok], lab[ok]
+
+
+def _weld_keep(P):
+    """_weld, but every triangle kept (degenerate ones too), in order: the caller filters."""
     import numpy as np
     from scipy.sparse import coo_matrix
     from scipy.sparse.csgraph import connected_components
     from scipy.spatial import cKDTree
 
-    P = np.asarray(T, dtype=np.float64).reshape(-1, 3)
     U, inv = np.unique(P, axis=0, return_inverse=True)
     inv = np.asarray(inv).reshape(-1)
     diag = float(np.linalg.norm(U.max(axis=0) - U.min(axis=0))) if len(U) else 0.0
@@ -1283,7 +1287,15 @@ def _weld(T):
         keep = np.unique(first)
         remap = np.searchsorted(keep, first[lab])
         U, inv = U[keep], remap[inv]
-    F = inv.reshape(-1, 3)
+    return U, inv.reshape(-1, 3)
+
+
+def _weld(T):
+    """(points, faces) of a triangle soup: points closer than a billionth of the part's size are one
+    point (a file writes 2e-18 where it means 0), and nothing else is joined - two parts pressed face
+    to face keep both their faces (open_ends.skin_faces drops them)."""
+    import numpy as np
+    U, F = _weld_keep(np.asarray(T, dtype=np.float64).reshape(-1, 3))
     ok = (F[:, 0] != F[:, 1]) & (F[:, 1] != F[:, 2]) & (F[:, 0] != F[:, 2])
     return U, F[ok]
 
