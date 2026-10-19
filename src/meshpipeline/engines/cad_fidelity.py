@@ -15,10 +15,20 @@ opening - so one rule holds for a 2 mm channel and a 40 m hull:
      = the share of the CAD AREA farther than MISS_CELLS local cells from the mesh boundary (the
      local cell = the nearest boundary face's size). For an external body it is counted only
      inside the meshed domain's box (a half model or a body cut by the ground is not "missing" the
-     half it was cut from); an internal mesh is held to its whole fluid boundary.
+     half it was cut from), and only on its WETTED OUTER SKIN: a body made of several solids
+     (two halves joined on a plane, a wing pushed into a fuselage, a part pressed against
+     another) carries faces inside the body - where the solids touch or overlap - that the air
+     never reaches and no external mesh can follow. The skin is what the outside air touches,
+     found by flooding the space round the body from outside on a voxel grid finer than the
+     mesh's cells (`outer_skin`), the way the mesher keeps the region it reaches from its
+     outside point; `cad_hidden_share` says how much of the CAD was set aside. A missing fin or a
+     lost part is outside air's surface, so it is still counted. An internal mesh is held to its
+     whole fluid boundary.
 2. FLUID VOLUME: the mesh's fluid volume (divergence theorem over its boundary) against the volume
    the staged CAD encloses - for an internal flow the fluid itself, for an external body the body
-   it displaces. Only where both sides are closed; otherwise "not computable", never a guess.
+   it displaces. Only where both sides are closed, and for an external body only when its solids
+   do not touch or overlap (summed solids count an overlap twice); otherwise "not computable",
+   never a guess.
 3. OPENINGS: each inlet/outlet patch's area against the opening confirmed for it (measured on the
    geometry by the staging, else declared) - a tighter band than the port-area gate's.
 4. SIZE (the plausible physical size for the purpose) is read at terminal assembly by the size
@@ -326,6 +336,78 @@ def _sample(n: int, rng) -> np.ndarray:
 MIN_CAD_SAMPLES = 20_000
 
 
+#: the outer skin is found on a voxel grid whose cell is this share of the mesh wall's median
+#: face size (so the band it keeps round the skin is narrower than the miss distance)...
+SKIN_VOXEL_OF_CELL = 0.5
+#: ...coarsened until the grid has at most this many voxels and the surface is drawn into it
+#: with at most this many points
+SKIN_MAX_VOXELS = 16_000_000
+SKIN_MAX_RASTER_POINTS = 12_000_000
+#: a CAD point within this many voxels of the outside air is on the skin
+SKIN_BAND_VOXELS = 2
+#: past this share of the CAD hidden inside the body, its solids touch or overlap and their
+#: summed volume is not the volume the body displaces
+HIDDEN_VOLUME_LIMIT = 0.01
+
+
+def _raster_count(c: np.ndarray, h: float) -> tuple[np.ndarray, int]:
+    """Per triangle the subdivisions that put its points at most h/2 apart, and the point total."""
+    edge = np.max(np.linalg.norm(c - np.roll(c, 1, axis=1), axis=2), axis=1)
+    k = np.maximum(1, np.ceil(edge / (0.5 * h))).astype(np.int64)
+    return k, int(((k + 1) * (k + 2) // 2).sum())
+
+
+def outer_skin(cad: Surface, cell: float):
+    """Which points of the CAD the OUTSIDE AIR touches: a function points (n,3) -> bool (n,), or
+    None when it cannot be told. The CAD is drawn into a voxel grid (cell <= SKIN_VOXEL_OF_CELL of
+    `cell`, coarsened to fit the budget), the empty voxels connected to the grid's border are the
+    outside air, and a point within SKIN_BAND_VOXELS voxels of that air is on the skin. Faces
+    where solids touch or overlap, faces inside another solid and a sealed cavity's walls are
+    not; a surface with a hole lets the air in, so everything stays counted (the old reading).
+    Orientation-free: it needs no solid to be closed or wound one way."""
+    if not cad.n or not cell > 0:
+        return None
+    from scipy import ndimage
+    c = cad.corners()
+    lo, hi = cad.points.min(axis=0), cad.points.max(axis=0)
+    span = np.maximum(hi - lo, 1e-12)
+    h = SKIN_VOXEL_OF_CELL * float(cell)
+    pad = SKIN_BAND_VOXELS + 2
+    for _ in range(12):
+        dims = np.ceil(span / h).astype(np.int64) + 2 * pad + 1
+        k, total = _raster_count(c, h)
+        if float(np.prod(dims.astype(float))) <= SKIN_MAX_VOXELS and total <= SKIN_MAX_RASTER_POINTS:
+            break
+        h *= 1.5
+    else:
+        return None
+    origin = lo - pad * h
+    solid = np.zeros(tuple(int(d) for d in dims), dtype=bool)
+    for kk in np.unique(k):
+        i, j = np.meshgrid(np.arange(kk + 1), np.arange(kk + 1), indexing="ij")
+        keep = (i + j) <= kk
+        u, v = (i[keep] / kk)[None, :, None], (j[keep] / kk)[None, :, None]
+        tris = np.flatnonzero(k == kk)
+        step = max(1, 2_000_000 // int(keep.sum()))
+        for s in range(0, len(tris), step):
+            t = c[tris[s:s + step]]
+            p = (t[:, 0, None, :] + u * (t[:, 1] - t[:, 0])[:, None, :]
+                 + v * (t[:, 2] - t[:, 0])[:, None, :]).reshape(-1, 3)
+            idx = np.clip(np.floor((p - origin) / h).astype(np.int64), 0, dims - 1)
+            solid[idx[:, 0], idx[:, 1], idx[:, 2]] = True
+    labels, _ = ndimage.label(~solid)          # faces-only (6-) connectivity: air never leaks
+    air = labels == labels[0, 0, 0]            # through an edge or corner the surface was drawn on
+    del labels
+    near = ndimage.binary_dilation(air, structure=np.ones((3, 3, 3), dtype=bool),
+                                   iterations=SKIN_BAND_VOXELS)
+
+    def touched(points: np.ndarray) -> np.ndarray:
+        idx = np.clip(np.floor((np.asarray(points, dtype=float) - origin) / h).astype(np.int64),
+                      0, dims - 1)
+        return near[idx[:, 0], idx[:, 1], idx[:, 2]]
+    return touched
+
+
 def _area_samples(s: Surface, rng) -> tuple[np.ndarray, np.ndarray]:
     """Points spread over the surface in proportion to area, each standing for an equal share of
     it: (points (n,3), area each point stands for (n,))."""
@@ -347,8 +429,10 @@ def _q(v: float, nd: int = 4) -> float:
     return round(float(v), nd)
 
 
-def surface_distance(mesh_wall: Surface, mesh_all: Surface, cad: Surface, *, box=None) -> dict:
-    """Both one-sided distances, sampled and area-weighted (see the module notes)."""
+def surface_distance(mesh_wall: Surface, mesh_all: Surface, cad: Surface, *, box=None,
+                     skin=None) -> dict:
+    """Both one-sided distances, sampled and area-weighted (see the module notes). `skin`, when
+    given, keeps only the CAD points the outside air touches (see outer_skin)."""
     rng = np.random.default_rng(SEED)
     out: dict = {}
     diag = float(np.linalg.norm(cad.points.max(axis=0) - cad.points.min(axis=0))) if cad.n else 0.0
@@ -372,6 +456,11 @@ def surface_distance(mesh_wall: Surface, mesh_all: Surface, cad: Surface, *, box
             pad = 0.01 * float(np.linalg.norm(hi - lo))
             inside = np.all((c >= lo - pad) & (c <= hi + pad), axis=1)
             c, a = c[inside], a[inside]
+        hidden = None
+        if skin is not None and len(c):
+            wet = np.asarray(skin(c), dtype=bool)
+            hidden = float(a[~wet].sum() / max(a.sum(), 1e-300))
+            c, a = c[wet], a[wet]
         if len(c):
             i = _sample(len(c), rng)
             d = _distance(c[i], mesh_all)
@@ -386,6 +475,8 @@ def surface_distance(mesh_wall: Surface, mesh_all: Surface, cad: Surface, *, box
                 "max_m": float(f"{d.max():.4g}"),
                 "max_of_diag": _q(d.max() / diag, 6) if diag else None,
                 "cad_missed_share": _q(float(w[missed].sum() / max(w.sum(), 1e-300)), 5)}
+        if hidden is not None:
+            out.setdefault("cad_to_mesh", {})["cad_hidden_share"] = _q(hidden, 5)
     return out
 
 
@@ -534,8 +625,12 @@ def measure(workspace, *, intake_patches, manifest: Mapping | None = None,
         # an external domain is cut from the space round the body: a half model or a body on
         # the ground is meshed only on its side of the cut, so the CAD is counted inside the box;
         # an internal mesh must reach the whole fluid boundary, so all of it is counted
+        skin = None
+        if flow == "external" and fluid_side and wall.n:
+            # the outside air's skin, on a grid finer than the mesh's own wall faces
+            skin = outer_skin(cad, float(np.median(wall.cell_size)))
         dist = surface_distance(wall, allb, cad if fluid_side else _empty(),
-                                box=(lo, hi) if flow == "external" else None)
+                                box=(lo, hi) if flow == "external" else None, skin=skin)
         if not fluid_side:
             # the staged surface bounds the metal too: the mesh's wall is held to it, but the
             # mesh is not expected to reach all of it
@@ -551,7 +646,7 @@ def measure(workspace, *, intake_patches, manifest: Mapping | None = None,
         verdicts["mesh_to_cad"] = (REBUILD if off > WALL_OFF_REBUILD
                                    and float(m2c["p95_cells"]) > REBUILD_P95_CELLS else
                                    CONCERN if off > WALL_OFF_CONCERN else PASS)
-    if c2m:
+    if "cad_missed_share" in c2m:
         miss = float(c2m["cad_missed_share"])
         verdicts["cad_to_mesh"] = (REBUILD if miss > CAD_MISSED_REBUILD else
                                    CONCERN if miss > CAD_MISSED_CONCERN else PASS)
@@ -559,7 +654,9 @@ def measure(workspace, *, intake_patches, manifest: Mapping | None = None,
     # 2. volume
     vol: dict = {}
     try:
-        cad_v = enclosed_volume(cad) if fluid_side else None
+        # solids that touch or overlap: their summed volume counts the overlap twice
+        joined = float(c2m.get("cad_hidden_share") or 0.0) > HIDDEN_VOLUME_LIMIT
+        cad_v = enclosed_volume(cad) if fluid_side and not joined else None
         if flow == "external":
             mesh_v = outward_volume(wall)
             mesh_v = -mesh_v if mesh_v is not None else None   # wall faces point into the body
@@ -582,6 +679,8 @@ def measure(workspace, *, intake_patches, manifest: Mapping | None = None,
         else:
             vol["why"] = ("the staged CAD surface is not the fluid's own boundary"
                           if not fluid_side else
+                          "the CAD's solids touch or overlap inside the body, so their summed "
+                          "volume is not the volume the body displaces" if joined else
                           "the CAD surface is not closed" if not cad_v else
                           f"the mesh's {what} boundary is not closed (it meets the ground, a "
                           "symmetry plane or the box)")
@@ -696,5 +795,6 @@ __all__ = ["CAD_MISSED_CONCERN", "CAD_MISSED_REBUILD", "CONCERN", "OPENING_BAND"
            "REBUILD", "RECORD_KEY", "UNMEASURED", "VOLUME_CONCERN_EXTERNAL",
            "VOLUME_CONCERN_INTERNAL", "VOLUME_REBUILD", "WALL_OFF_CONCERN", "WALL_OFF_REBUILD",
            "Surface", "cad_reference", "concerns", "enclosed_volume", "gate_cad_fidelity", "join",
+           "outer_skin",
            "measure", "mesh_patches", "outward_volume", "read_stl", "record_into_manifest",
            "surface_distance"]
