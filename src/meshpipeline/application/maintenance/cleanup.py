@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import shutil
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import meshpipeline.settings.policy as polcfg
@@ -75,18 +74,8 @@ async def _purge_async() -> dict:
             )
             jobs = result.scalars().all()
 
-            training_dir = Path(rtcfg.CORPUS_DIR)
-            _pending_job_ids: set[str] = set()
-            if training_dir.exists():
-                for _sample_dir in training_dir.iterdir():
-                    if not _sample_dir.is_dir():
-                        continue
-                    _jid_file = _sample_dir / ".job_id"
-                    if _jid_file.exists() and not (_sample_dir / ".export_complete").exists():
-                        try:
-                            _pending_job_ids.add(_jid_file.read_text().strip())
-                        except OSError:
-                            pass
+            from meshpipeline.application.maintenance.worker_disk import pending_export_job_ids
+            _pending_job_ids = pending_export_job_ids()
 
             for job in jobs:
                 workspace = rtcfg.WORKSPACE_BASE / str(job.id)

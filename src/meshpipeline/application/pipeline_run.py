@@ -572,6 +572,14 @@ async def _run_async(req: JobRequest) -> dict:
 
         jlog.info("STEP mode: owner=%s", owner_id)
 
+        # FREE THIS MACHINE'S DISK before the run writes to it. Finished jobs' workspaces and
+        # previews are on the worker's own disk, and nothing else can see it to delete them
+        # (application/maintenance/worker_disk.py). Kept: this job, and the parent of the dispute
+        # it may be about to re-review. Never raises.
+        from meshpipeline.application.maintenance import worker_disk as _wd
+        _dispute_parent = str((req.user_dispute or {}).get("of_job_id", "") or "")
+        await _wd.reclaim_quietly(AsyncSessionLocal, keep={job_id, _dispute_parent}, jlog=jlog)
+
         # THE execution entry. Whatever local path a previous process wrote into a checkpoint is
         # irrelevant here - this process resolves the tenant's row, reconciles it against the
         # approved snapshot, downloads into its OWN workspace and verifies the bytes before the
