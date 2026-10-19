@@ -365,3 +365,13 @@ def test_layers_on_under_half_the_wall_are_a_quality_fault():
     rec = F.recommend(_t(TUBE), ["cfmesh", "snappy"], table=_table(rows))
     assert rec.engine == "snappy"
     assert "near-wall layers on only 20% of the wall" in rec.reason
+
+
+def test_a_layer_fault_needs_as_many_measured_layers_as_shapes():
+    # one measured coverage among many passes is not a record of thin layers
+    rows = [_row(f"t{i}", "cfmesh", TUBE, seconds=30.0, layers_pct=20.0 if i == 0 else None)
+            for i in range(30)]
+    rows += [_row(f"t{i}", "snappy", TUBE, seconds=300.0, layers_pct=95.0) for i in range(8)]
+    rec = F.recommend(_t(TUBE), ["cfmesh", "snappy"], table=_table(rows))
+    assert not F.quality_fault(rec.fit_of("cfmesh").evidence)
+    assert rec.engine == "cfmesh"
