@@ -178,6 +178,18 @@ class FinalResult:
     # this cause (pipeline/graph.route_after_executor) - said in the message, so a stop after one
     # attempt reads as a decision, not as a budget that ran out.
     retry_skipped: bool = False
+    # HOW MANY THINGS A PARKED RUN IS WAITING ON A PERSON FOR (repair review). Non-zero only on the
+    # record of a run that parked in `pending_review`; the message then says it is waiting rather
+    # than that it failed. Added without a schema bump: it defaults to 0 and an older reader
+    # ignores the key.
+    review_parked: int = 0
+    # WHAT THE ENGINEER ALREADY SAID TO LEAVE, on a re-run that failed with nothing new to ask
+    # (repair review): {"count": n, "codes": {defect_code: n}}. The run then ends as an ordinary
+    # failure - never another park on the same questions - and the message says what was left.
+    review_left: dict = field(default_factory=dict)
+    # HOW MANY UNSURE DEFECTS THE MINT CAP DROPPED (repair_review_minting.MINT_CAP), so the review
+    # can say "showing the largest N of M" instead of presenting a capped queue as the whole part.
+    review_truncated: int = 0
 
     def __post_init__(self) -> None:
         # THE invariant, enforced at construction so no path can violate it.
@@ -234,7 +246,11 @@ class FinalResult:
             failure_cause=str(d.get("failure_cause") or ""),
             failure_detail=str(d.get("failure_detail") or ""),
             failure_next_step=str(d.get("failure_next_step") or ""),
-            retry_skipped=bool(d.get("retry_skipped", False)))
+            retry_skipped=bool(d.get("retry_skipped", False)),
+            review_parked=int(d.get("review_parked", 0) or 0),
+            review_left=(dict(d["review_left"])
+                         if isinstance(d.get("review_left"), Mapping) else {}),
+            review_truncated=int(d.get("review_truncated", 0) or 0))
 
 
 # WHAT A CRASH STILL KNOWS.
@@ -633,9 +649,47 @@ def with_repair_lineage(fr: FinalResult, record: Mapping | None) -> FinalResult:
     return dataclasses.replace(fr, repair_lineage=dict(record or {}))
 
 
+def with_review_parked(fr: FinalResult, count: int) -> FinalResult:
+    """Mark this result as the record of a run parked for review on `count` things."""
+    import dataclasses
+    return dataclasses.replace(fr, review_parked=int(count))
+
+
+def with_review_left(fr: FinalResult, left: Mapping | None) -> FinalResult:
+    """Mark this failure as one whose only questions the engineer already answered "leave it"."""
+    import dataclasses
+    return dataclasses.replace(fr, review_left=dict(left or {}))
+
+
+def with_review_truncated(fr: FinalResult, dropped: int) -> FinalResult:
+    import dataclasses
+    return dataclasses.replace(fr, review_truncated=max(int(dropped or 0), 0))
+
+
+def _render_left(left: Mapping) -> str:
+    count = int(left.get("count", 0) or 0)
+    raw = left.get("codes")
+    codes: Mapping = raw if isinstance(raw, Mapping) else {}
+    what = ", ".join(f"{n} {str(code).replace('_', ' ')}" for code, n in sorted(codes.items()))
+    things = "1 thing" if count == 1 else f"{count} things"
+    return (f"You chose to leave {things} as {'it was' if count == 1 else 'they were'}"
+            f"{f' ({what})' if what else ''}, so the run went on with the part as it stands. It "
+            "still failed, and there is nothing new to ask you about, so the run ends here rather "
+            "than asking you the same questions again.")
+
+
+def _render_parked(count: int) -> str:
+    things = "1 thing" if count == 1 else f"{count} things"
+    return (f"The repair is waiting on you. It left {things} for you to decide, and nothing was "
+            "changed without you: your file is as it was except for the repairs it was sure of. "
+            "Review them and the run will pick up from there.")
+
+
 def render_message(fr: FinalResult) -> str:
     """The closing message: the account of the outcome, then the fallback ladder's line - on a
     success that another engine built, which one and why; on a mesh failure, the one offer."""
+    if fr.review_parked > 0 and fr.status == TerminalStatus.failed:
+        return _render_parked(fr.review_parked)
     text = _render_outcome(fr)
     ladder = fr.engine_ladder if isinstance(fr.engine_ladder, Mapping) else {}
     if fr.status == TerminalStatus.succeeded:
@@ -646,6 +700,8 @@ def render_message(fr: FinalResult) -> str:
         if isinstance(offer, Mapping) and offer.get("optional"):
             extra.append(str(offer.get("text") or "").strip())
         return "\n".join([text, *(e for e in extra if e)])
+    if fr.status == TerminalStatus.failed and fr.review_left:
+        text = "\n".join((text, _render_left(fr.review_left)))
     if fr.status == TerminalStatus.failed:
         # NO VALID MESH AT ALL: what each attempt did, in plain words, before the one offer
         from meshpipeline.pipeline.engine_fallback import attempts_account

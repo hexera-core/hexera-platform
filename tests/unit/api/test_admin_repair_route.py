@@ -73,10 +73,13 @@ class _Repo:
     async def decisions_for_job(self, db, job_id):
         return [_Decision(**d) for d in self.decisions if d["repair_job_id"] == job_id]
 
-    async def assign(self, db, job_id, *, operator, claim_only_if_unassigned=False):
+    async def assign(self, db, job_id, *, operator, claim_only_if_unassigned=False,
+                     release_only_if_held_by=""):
         job = self.jobs[job_id]
         self.assigned.append((job_id, operator, claim_only_if_unassigned))
         if claim_only_if_unassigned and job.assigned_operator is not None:
+            return False
+        if release_only_if_held_by and job.assigned_operator != release_only_if_held_by:
             return False
         job.assigned_operator = operator or None
         job.assigned_at = datetime(2026, 10, 1, 10, 0, tzinfo=UTC) if operator else None
@@ -298,6 +301,27 @@ def test_releasing_a_job_returns_it_to_the_unassigned_queue(monkeypatch):
 
     assert body["job"]["assigned_operator"] is None
     assert body["job"]["assigned_at"] is None
+
+
+def test_a_release_from_a_stale_page_cannot_clear_a_claim_made_since(monkeypatch):
+    """Ana's page still shows her claim; a lead has since reassigned the job to Ben. Her release
+    names her as the holder, so the conditional release refuses it rather than clearing Ben's."""
+    job = _Job(assigned_operator="ben")
+    client = _client(monkeypatch, _Repo([job]))
+
+    res = client.post(f"/api/v1/admin/repair/jobs/{job.id}/assign",
+                      json={"operator": "", "claim": False, "holder": "ana"}, headers=HEADERS)
+
+    assert res.status_code == 409 and "ben" in res.json()["detail"]
+    assert job.assigned_operator == "ben"
+
+
+def test_the_holder_may_release_their_own_claim(monkeypatch):
+    job = _Job(assigned_operator="ana")
+    client = _client(monkeypatch, _Repo([job]))
+    res = client.post(f"/api/v1/admin/repair/jobs/{job.id}/assign",
+                      json={"operator": "", "claim": False, "holder": "ana"}, headers=HEADERS)
+    assert res.status_code == 200 and job.assigned_operator is None
 
 
 # DECISIONS

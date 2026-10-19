@@ -1,0 +1,1219 @@
+plan: the rim discriminator failed (RimsUndecidable: 1 candidate rim(s) are not planar loops and have no best-fit normal, beside 2 other candidate(s)); refusing every fill this pass rather than guessing there is no through-hole
+plan: the rim discriminator failed (RimsUndecidable: 1 candidate rim(s) are not planar loops and have no best-fit normal, beside 2 other candidate(s)); refusing every fill this pass rather than guessing there is no through-hole
+plan: the rim discriminator failed (RimsUndecidable: 2 candidate rim(s) are not planar loops and have no best-fit normal, beside 4 other candidate(s)); refusing every fill this pass rather than guessing there is no through-hole
+plan: the rim discriminator failed (RimsUndecidable: 2 candidate rim(s) are not planar loops and have no best-fit normal, beside 4 other candidate(s)); refusing every fill this pass rather than guessing there is no through-hole
+[32;1m*** ERR StepReaderData : Unresolved Reference : Fails Count : 2 ***[0m
+[32;1m*** ERR StepReaderData : Unresolved Reference : Fails Count : 2 ***[0m
+CAD_REPAIR_ENABLED=True  AUTONOMOUS=True  FILL_PLANAR_HOLES=True  FILL_NONPLANAR_HOLES=False  HEAL_SELF_INTERSECTIONS=False  max_deviation=0.001  max_tolerance_mm=0.1
+331 file(s)
+
+repaired files are written to /var/folders/g6/mq56z4xj1h950wltbq5bscjc0000gn/T/repair_corpus_out
+refused                      OCC22459-TEST2.stp                                     before=['open_shell', 'small_edge'] located={'small_edge': 47, 'open_shell': 3} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (new_defect)
+      - sew_faces            open_shell            rolled_back (new_defect)
+nothing_to_repair            OCC23123-test.step                                     before=[] located={} -> fixed={}
+nothing_to_repair            OCC2368.stp                                            before=[] located={} -> fixed={}
+refused                      OCC26308-Face.stp                                      before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (declined:too_large (span ratio 1.0000))
+refused                      PRO10363.stp                                           before=['small_edge'] located={'small_edge': 6} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+refused                      PRO7071.stp                                            before=['small_edge'] located={'small_edge': 6} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+nothing_to_repair            as1-oc-214-mat.stp                                     before=[] located={} -> fixed={}
+not_attempted:manual_cleanup as1_motor.step                                         before=['small_edge', 'small_face'] located={'small_edge': 308, 'small_face': 168} -> fixed={}
+nothing_to_repair            bm2_ec_exhaust-A.stp                                   before=[] located={} -> fixed={}
+nothing_to_repair            bm2_ec_lever-A.stp                                     before=[] located={} -> fixed={}
+nothing_to_repair            bm2_ec_leverrod-A.stp                                  before=[] located={} -> fixed={}
+refused                      bm2_ec_t4-A.stp                                        before=['open_shell', 'small_edge'] located={'open_shell': 6, 'small_edge': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - sew_faces            open_shell            rolled_back (target_remains)
+refused                      bm2_pe_t4-A.stp                                        before=['open_shell', 'small_edge'] located={'open_shell': 10, 'small_edge': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (new_defect)
+      - sew_faces            open_shell            rolled_back (new_defect)
+refused                      bm2_pe_t4-B.stp                                        before=['open_shell', 'small_edge'] located={'open_shell': 12, 'small_edge': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (new_defect)
+      - fill_planar_hole     open_shell            rolled_back (new_defect)
+nothing_to_repair            brep_wv1.stp                                           before=[] located={} -> fixed={}
+nothing_to_repair            brep_wv2.stp                                           before=[] located={} -> fixed={}
+nothing_to_repair            bug21802_as1-oc-214.stp                                before=[] located={} -> fixed={}
+nothing_to_repair            bug22821_test.step                                     before=[] located={} -> fixed={}
+refused                      bug24283_spheres.stp                                   before=['small_edge'] located={'small_edge': 4} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+nothing_to_repair            bug24595_281390.stp                                    before=[] located={} -> fixed={}
+refused                      bug24746_ENI.stp                                       before=['open_shell'] located={'open_shell': 3} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (declined:too_large (span ratio 0.9904))
+refused                      bug24983_111FACE.stp                                   before=['open_shell'] located={'open_shell': 2} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (declined:too_large (span ratio 0.9943))
+refused                      bug25013_25013face.stp                                 before=['open_shell', 'small_edge'] located={'open_shell': 1, 'small_edge': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (declined:too_large (span ratio 0.9223))
+refused                      bug25013_25013faces.stp                                before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (declined:too_large (span ratio 0.8571))
+refused                      bug25045_ick_0433.stp                                  before=['small_edge'] located={'small_edge': 2} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+nothing_to_repair            bug25167.stp                                           before=[] located={} -> fixed={}
+nothing_to_repair            bug25169_box-openshell.stp                             before=[] located={} -> fixed={}
+nothing_to_repair            bug25176_occ25176.stp                                  before=[] located={} -> fixed={}
+refused                      bug25381_test_assembly_invisible.step                  before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (cap:the operation lost 7 solid(s) - a closed body became loose surfaces, which is damage rather than repair)
+nothing_to_repair            bug25415_part_of_hdrv8w64p254_4x2_1016x502h838p.stp    before=[] located={} -> fixed={}
+not_attempted:ask_customer   bug27333_simple.stp                                    before=['invalid_brep'] located={} -> fixed={}[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 2                      ******[0m
+[32;1m** WorkSession : Sending all data[0m
+[32;1m Step File Name : /var/folders/g6/mq56z4xj1h950wltbq5bscjc0000gn/T/repair_corpus_out/bug28366_fuselage-repaired.step(758 ents)  Write  Done[0m
+[32;1m*** ERR StepReaderData : Unresolved Reference : Fails Count : 1 ***[0m
+[32;1m**** ERR StepFile : Incorrect Syntax : Fails Count : 5 ****[0m
+[32;1m*** ERR StepReaderData : Unresolved Reference : Fails Count : 65 ***[0m
+
+not_attempted:manual_cleanup bug27453_165-174_piattello.stp                         before=['small_edge', 'small_face'] located={'small_edge': 81, 'small_face': 50} -> fixed={}
+refused                      bug27693_cornetta-step.stp                             before=['small_edge'] located={'small_edge': 4} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+refused                      bug28345_30338.stp                                     before=['small_edge'] located={'small_edge': 2} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+repaired                     bug28366_fuselage.stp                                  before=['open_shell', 'small_edge'] located={'small_edge': 4, 'open_shell': 8} -> fixed={'open_shell': 8}
+      + sew_faces            open_shell            kept
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+      ! refused paired_rim: this loop pairs with another as the two ends of one passage (the line between them leaves each no steeper than 70 degrees from its wall's normal, or a curved rim lies on the other's axis) - a missing tube wall, and patching both would seal a through-hole
+      ! refused paired_rim: this loop pairs with another as the two ends of one passage (the line between them leaves each no steeper than 70 degrees from its wall's normal, or a curved rim lies on the other's axis) - a missing tube wall, and patching both would seal a through-hole
+      ! refused paired_rim: this loop pairs with another as the two ends of one passage (the line between them leaves each no steeper than 70 degrees from its wall's normal, or a curved rim lies on the other's axis) - a missing tube wall, and patching both would seal a through-hole
+      ! refused paired_rim: this loop pairs with another as the two ends of one passage (the line between them leaves each no steeper than 70 degrees from its wall's normal, or a curved rim lies on the other's axis) - a missing tube wall, and patching both would seal a through-hole
+      = stopped: stalled (resolved=False)
+refused                      bug28414_bug_toroidal_surface.stp                      before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (declined:not_planar)
+nothing_to_repair            bug28454_directives.stp                                before=[] located={} -> fixed={}
+refused                      bug29478.stp                                           before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (declined:too_large (span ratio 0.9990))
+refused                      bug29715_slow.stp                                      before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (declined:too_large (span ratio 0.9994))
+nothing_to_repair            bug30053.stp                                           before=[] located={} -> fixed={}
+nothing_to_repair            bug30149_comb_bug.step                                 before=[] located={} -> fixed={}
+not_attempted:manual_cleanup bug30790.step                                          before=['bad_orientation', 'invalid_brep', 'open_shell', 'small_face'] located={'open_shell': 251, 'small_face': 634, 'bad_orientation': 50, 'invalid_brep': 8} -> fixed={}
+nothing_to_repair            bug31000_InSensitive.stp                               before=[] located={} -> fixed={}
+nothing_to_repair            bug31292.stp                                           before=[] located={} -> fixed={}
+not_attempted:manual_cleanup bug31670_russian.stp                                   before=['small_edge', 'small_face'] located={'small_edge': 301, 'small_face': 1172} -> fixed={}
+not_attempted:manual_cleanup bug32239.STEP                                          before=['small_edge', 'small_face'] located={'small_edge': 28, 'small_face': 853} -> fixed={}
+not_attempted:manual_cleanup bug32314_corrupted.stp                                 before=['invalid_brep', 'open_shell', 'small_face'] located={'open_shell': 3, 'invalid_brep': 1, 'small_face': 1} -> fixed={}
+refused                      bug32596_abc_0_13.step                                 before=['small_edge'] located={'small_edge': 2} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+nothing_to_repair            bug32745_pmi1.stp                                      before=[] located={} -> fixed={}
+not_attempted:manual_cleanup bug33100_window.step                                   before=['invalid_brep'] located={'invalid_brep': 4} -> fixed={}
+not_attempted:manual_cleanup bug33261.stp                                           before=['open_shell', 'small_edge', 'small_face'] located={'small_edge': 16, 'open_shell': 1, 'small_face': 1127} -> fixed={}
+not_attempted:manual_cleanup bug33398.step                                          before=['small_edge', 'small_face'] located={'small_edge': 34, 'small_face': 20} -> fixed={}
+nothing_to_repair            bug33569.stp                                           before=[] located={} -> fixed={}
+nothing_to_repair            bug3883_xr2-ct-214_bolt.stp                            before=[] located={} -> fixed={}
+nothing_to_repair            bug3883_xr2-ct-214_l-bracket.stp                       before=[] located={} -> fixed={}
+nothing_to_repair            bug3883_xr2-ct-214_nut.stp                             before=[] located={} -> fixed={}
+nothing_to_repair            bug3883_xr2-ct-214_plate.stp                           before=[] located={} -> fixed={}
+nothing_to_repair            bug3883_xr2-ct-214_rod.stp                             before=[] located={} -> fixed={}
+refused                      ec_exhaust-A.stp                                       before=['small_edge'] located={'small_edge': 8} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+nothing_to_repair            ec_soapbox-A.stp                                       before=[] located={} -> fixed={}
+not_attempted:manual_cleanup ec_turbine-A.stp                                       before=['open_shell', 'small_edge', 'small_face'] located={'open_shell': 2, 'small_edge': 1, 'small_face': 1} -> fixed={}
+not_attempted:manual_cleanup nist_ftc_08_asme1_ap242-2.stp                          before=['invalid_brep'] located={'invalid_brep': 274} -> fixed={}
+nothing_to_repair            occ23010.step                                          before=[] located={} -> fixed={}
+refused                      pr1ct.stp                                              before=['small_edge'] located={'small_edge': 6} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+refused                      pr1db.stp                                              before=['small_edge'] located={'small_edge': 6} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+not_attempted:manual_cleanup pr1sy.stp                                              before=['small_edge', 'small_face'] located={'small_edge': 3, 'small_face': 1} -> fixed={}
+nothing_to_repair            pr2ct.stp                                              before=[] located={} -> fixed={}
+nothing_to_repair            pr2db.stp                                              before=[] located={} -> fixed={}
+not_attempted:manual_cleanup pr_3-sy.stp                                            before=['small_edge', 'small_face'] located={'small_edge': 2, 'small_face': 1} -> fixed={}
+not_attempted:manual_cleanup r0901_ec.stp                                           before=['small_edge', 'small_face'] located={'small_edge': 8, 'small_face': 3} -> fixed={}
+nothing_to_repair            r103ec.stp                                             before=[] located={} -> fixed={}
+nothing_to_repair            screw.step                                             before=[] located={} -> fixed={}
+refused                      t4mec.stp                                              before=['open_shell', 'small_edge'] located={'open_shell': 15, 'small_edge': 3} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (cap:the run left a tolerance of 0.3412 mm, over the 0.1 mm cap - the kernel agreed to stop complaining rather than fixing the geometry)
+      - sew_faces            open_shell            rolled_back (cap:the run left a tolerance of 0.3412 mm, over the 0.1 mm cap - the kernel agreed to stop complaining rather than fixing the geometry)
+nothing_to_repair            tr10_r0901_ec.stp                                      before=[] located={} -> fixed={}
+nothing_to_repair            tr8_bv1_ct.stp                                         before=[] located={} -> fixed={}
+nothing_to_repair            tr8_bv1_db.stp                                         before=[] located={} -> fixed={}
+nothing_to_repair            tr8_bv1_ec.stp                                         before=[] located={} -> fixed={}
+nothing_to_repair            tr8_bv1_sy.stp                                         before=[] located={} -> fixed={}
+nothing_to_repair            tr8_bv1_tc.stp                                         before=[] located={} -> fixed={}
+nothing_to_repair            tr8_bv1_ug.stp                                         before=[] located={} -> fixed={}
+nothing_to_repair            tr8_bv1a_ec.stp                                        before=[] located={} -> fixed={}
+refused                      tr8_ha1_ct.stp                                         before=['open_shell'] located={'open_shell': 2} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (declined:the targeted body already has a solid to lose)
+      - fill_planar_hole     open_shell            rolled_back (cap:the operation lost 2 solid(s) - a closed body became loose surfaces, which is damage rather than repair)
+nothing_to_repair            tr8_ha1_db.stp                                         before=[] located={} -> fixed={}
+refused                      tr8_ha1_tc.stp                                         before=['open_shell'] located={'open_shell': 2} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (declined:the targeted body already has a solid to lose)
+      - fill_planar_hole     open_shell            rolled_back (cap:the operation lost 2 solid(s) - a closed body became loose surfaces, which is damage rather than repair)
+refused                      tr8_ha1_ug.stp                                         before=['open_shell'] located={'open_shell': 2} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (declined:the targeted body already has a solid to lose)
+      - fill_planar_hole     open_shell            rolled_back (cap:the operation lost 2 solid(s) - a closed body became loose surfaces, which is damage rather than repair)
+nothing_to_repair            tr9_3dt-ct.stp                                         before=[] located={} -> fixed={}
+nothing_to_repair            tr9_3dt-tc.stp                                         before=[] located={} -> fixed={}
+nothing_to_repair            tr9_3dt-td.stp                                         before=[] located={} -> fixed={}
+not_attempted:ask_customer   tr9_asd-db.stp                                         before=['invalid_brep'] located={} -> fixed={}
+nothing_to_repair            tr9_bv1-ct.stp                                         before=[] located={} -> fixed={}
+nothing_to_repair            tr9_bv1-db.stp                                         before=[] located={} -> fixed={}
+nothing_to_repair            tr9_bv1-ec.stp                                         before=[] located={} -> fixed={}
+nothing_to_repair            tr9_bv1-tc.stp                                         before=[] located={} -> fixed={}
+nothing_to_repair            tr9_bv1-td.stp                                         before=[] located={} -> fixed={}
+nothing_to_repair            tr9_bv1-ug.stp                                         before=[] located={} -> fixed={}
+not_attempted:ask_customer   tr9_exd-db.stp                                         before=['invalid_brep'] located={} -> fixed={}
+not_attempted:manual_cleanup tr9_r1001-ec.stp                                       before=['small_face'] located={'small_face': 49} -> fixed={}
+nothing_to_repair            trj10_ap209-eb.stp                                     before=[] located={} -> fixed={}
+refused                      trj10_ap209-td.stp                                     before=['small_edge'] located={'small_edge': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+not_attempted:manual_cleanup trj10_b2-oc-214.stp                                    before=['small_edge', 'small_face'] located={'small_edge': 16, 'small_face': 13} -> fixed={}
+refused                      trj10_ch1-id-chs.stp                                   before=['small_edge'] located={'small_edge': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+not_attempted:ask_customer   trj10_ch1-tu-203.stp                                   before=['invalid_brep'] located={} -> fixed={}
+nothing_to_repair            trj12_gd1-id-214.stp                                   before=[] located={} -> fixed={}
+nothing_to_repair            trj12_is1-oc-214.stp                                   before=[] located={} -> fixed={}
+nothing_to_repair            trj1_d1-db.stp                                         before=[] located={} -> fixed={}
+nothing_to_repair            trj1_d1-tc.stp                                         before=[] located={} -> fixed={}
+nothing_to_repair            trj1_io1-ac.stp                                        before=[] located={} -> fixed={}
+nothing_to_repair            trj1_io1-ms.stp                                        before=[] located={} -> fixed={}
+nothing_to_repair            trj1_io1-tc.stp                                        before=[] located={} -> fixed={}plan: the rim discriminator failed (RimsUndecidable: 1 candidate rim(s) are not planar loops and have no best-fit normal, beside 4 other candidate(s)); refusing every fill this pass rather than guessing there is no through-hole
+plan: the rim discriminator failed (RimsUndecidable: 1 candidate rim(s) are not planar loops and have no best-fit normal, beside 4 other candidate(s)); refusing every fill this pass rather than guessing there is no through-hole
+plan: the rim discriminator failed (RimsUndecidable: 1 candidate rim(s) are not planar loops and have no best-fit normal, beside 3 other candidate(s)); refusing every fill this pass rather than guessing there is no through-hole
+plan: the rim discriminator failed (RimsUndecidable: 1 candidate rim(s) are not planar loops and have no best-fit normal, beside 3 other candidate(s)); refusing every fill this pass rather than guessing there is no through-hole
+
+nothing_to_repair            trj1_io1-ug.stp                                        before=[] located={} -> fixed={}
+refused                      trj1_t4m-ac.stp                                        before=['open_shell', 'small_edge'] located={'open_shell': 15, 'small_edge': 2} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (new_defect)
+      - sew_faces            open_shell            rolled_back (new_defect)
+refused                      trj1_t4m-pe.stp                                        before=['open_shell', 'small_edge'] located={'open_shell': 6, 'small_edge': 2} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - sew_faces            open_shell            rolled_back (new_defect)
+nothing_to_repair            trj2_as1-ac-214.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj2_as1-ec-214.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj2_as1-id-203.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj2_as1-in-203.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj2_as1-md-214.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj2_as1-pe-203.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj2_as1-tc-214.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj2_as1-ug-203.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj2_as1-ug-214.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj2_d2-db-214.stp                                     before=[] located={} -> fixed={}
+refused                      trj2_f1-db-214.stp                                     before=['small_edge'] located={'small_edge': 2} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+nothing_to_repair            trj2_io1-ac-214.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj2_io1-ca-214.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj2_io1-ct-203.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj2_io1-ec-214.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj2_io1-id-203.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj2_io1-in-203.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj2_io1-md-214.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj2_io1-pe-203.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj2_io1-tc-214.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj2_io1-ug-203.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj2_io1-ug-214.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj2_io1-ug-test.stp                                   before=[] located={} -> fixed={}
+nothing_to_repair            trj3_as1-ac-214.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj3_as1-ec-203.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj3_as1-ec-214.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj3_as1-id-203.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj3_as1-md-214.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj3_as1-pe-203.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj3_as1-tc-203.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj3_as1-tc-214.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj3_as1-ug-214.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj3_d1-db-214.stp                                     before=[] located={} -> fixed={}
+nothing_to_repair            trj3_d1-pe-214.stp                                     before=[] located={} -> fixed={}
+nothing_to_repair            trj3_d1-tc-214.stp                                     before=[] located={} -> fixed={}
+not_attempted:manual_cleanup trj3_s1-ac-214.stp                                     before=['small_edge', 'small_face'] located={'small_edge': 24, 'small_face': 4} -> fixed={}
+not_attempted:manual_cleanup trj3_s1-al-214.stp                                     before=['invalid_brep', 'open_shell', 'small_edge', 'small_face'] located={'open_shell': 15, 'small_edge': 16, 'invalid_brep': 16, 'small_face': 9} -> fixed={}
+not_attempted:manual_cleanup trj3_s1-ct-203.stp                                     before=['small_edge', 'small_face'] located={'small_edge': 48, 'small_face': 4} -> fixed={}
+not_attempted:manual_cleanup trj3_s1-ct-214.stp                                     before=['small_edge', 'small_face'] located={'small_edge': 48, 'small_face': 4} -> fixed={}
+not_attempted:manual_cleanup trj3_s1-db-214.stp                                     before=['small_edge', 'small_face'] located={'small_edge': 48, 'small_face': 8} -> fixed={}
+not_attempted:manual_cleanup trj3_s1-ec-203.stp                                     before=['small_edge', 'small_face'] located={'small_edge': 12, 'small_face': 2} -> fixed={}
+not_attempted:manual_cleanup trj3_s1-ec-214.stp                                     before=['small_edge', 'small_face'] located={'small_edge': 12, 'small_face': 2} -> fixed={}
+not_attempted:manual_cleanup trj3_s1-id-203.stp                                     before=['small_edge', 'small_face'] located={'small_edge': 14, 'small_face': 4} -> fixed={}
+not_attempted:manual_cleanup trj3_s1-md-214.stp                                     before=['small_edge', 'small_face'] located={'small_edge': 24, 'small_face': 2} -> fixed={}
+not_attempted:manual_cleanup trj3_s1-pe-203.stp                                     before=['small_edge', 'small_face'] located={'small_edge': 24, 'small_face': 2} -> fixed={}
+not_attempted:manual_cleanup trj3_s1-tc-214.stp                                     before=['small_edge', 'small_face'] located={'small_edge': 28, 'small_face': 2} -> fixed={}
+not_attempted:manual_cleanup trj3_s1-ug-214.stp                                     before=['small_edge', 'small_face'] located={'small_edge': 18, 'small_face': 2} -> fixed={}
+refused                      trj3_t2-db-214.stp                                     before=['small_edge'] located={'small_edge': 2} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+nothing_to_repair            trj4_d2-db-214.stp                                     before=[] located={} -> fixed={}
+nothing_to_repair            trj4_d2-pe-214.stp                                     before=[] located={} -> fixed={}
+nothing_to_repair            trj4_d2-tc-214.stp                                     before=[] located={} -> fixed={}plan: the rim discriminator failed (RimsUndecidable: 2 candidate rim(s) are not planar loops and have no best-fit normal, beside 7 other candidate(s)); refusing every fill this pass rather than guessing there is no through-hole
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 2                      ******[0m
+[32;1m** WorkSession : Sending all data[0m
+[32;1m Step File Name : /var/folders/g6/mq56z4xj1h950wltbq5bscjc0000gn/T/repair_corpus_out/trj4_k1_geo-ac-214-repaired.step(5646 ents)  Write  Done[0m
+
+nothing_to_repair            trj4_d2-tu-214.stp                                     before=[] located={} -> fixed={}
+repaired                     trj4_k1_geo-ac-214.stp                                 before=['open_shell', 'small_edge'] located={'open_shell': 67, 'small_edge': 2} -> fixed={'open_shell': 67}
+      + sew_faces            open_shell            kept
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 2                      ******[0m
+[32;1m** WorkSession : Sending all data[0m
+[32;1m Step File Name : /var/folders/g6/mq56z4xj1h950wltbq5bscjc0000gn/T/repair_corpus_out/trj4_k1_geo-md-203-repaired.step(5278 ents)  Write  Done[0m
+plan: the rim discriminator failed (RimsUndecidable: 4 candidate rim(s) are not planar loops and have no best-fit normal, beside 7 other candidate(s)); refusing every fill this pass rather than guessing there is no through-hole
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 2                      ******[0m
+[32;1m** WorkSession : Sending all data[0m
+[32;1m Step File Name : /var/folders/g6/mq56z4xj1h950wltbq5bscjc0000gn/T/repair_corpus_out/trj4_k1_geo-pe-203-repaired.step(6188 ents)  Write  Done[0m
+
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      = stopped: stalled (resolved=False)
+repaired                     trj4_k1_geo-md-203.stp                                 before=['open_shell', 'small_edge'] located={'open_shell': 45, 'small_edge': 1} -> fixed={'open_shell': 45}
+      + sew_faces            open_shell            kept
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+      ! refused paired_rim: this loop pairs with another as the two ends of one passage (the line between them leaves each no steeper than 70 degrees from its wall's normal, or a curved rim lies on the other's axis) - a missing tube wall, and patching both would seal a through-hole
+      ! refused paired_rim: this loop pairs with another as the two ends of one passage (the line between them leaves each no steeper than 70 degrees from its wall's normal, or a curved rim lies on the other's axis) - a missing tube wall, and patching both would seal a through-hole
+      ! refused paired_rim: this loop pairs with another as the two ends of one passage (the line between them leaves each no steeper than 70 degrees from its wall's normal, or a curved rim lies on the other's axis) - a missing tube wall, and patching both would seal a through-hole
+      ! refused paired_rim: this loop pairs with another as the two ends of one passage (the line between them leaves each no steeper than 70 degrees from its wall's normal, or a curved rim lies on the other's axis) - a missing tube wall, and patching both would seal a through-hole
+      ! refused paired_rim: this loop pairs with another as the two ends of one passage (the line between them leaves each no steeper than 70 degrees from its wall's normal, or a curved rim lies on the other's axis) - a missing tube wall, and patching both would seal a through-hole
+      ! refused paired_rim: this loop pairs with another as the two ends of one passage (the line between them leaves each no steeper than 70 degrees from its wall's normal, or a curved rim lies on the other's axis) - a missing tube wall, and patching both would seal a through-hole
+      ! refused paired_rim: this loop pairs with another as the two ends of one passage (the line between them leaves each no steeper than 70 degrees from its wall's normal, or a curved rim lies on the other's axis) - a missing tube wall, and patching both would seal a through-hole
+      ! refused paired_rim: this loop pairs with another as the two ends of one passage (the line between them leaves each no steeper than 70 degrees from its wall's normal, or a curved rim lies on the other's axis) - a missing tube wall, and patching both would seal a through-hole
+      ! refused paired_rim: this loop pairs with another as the two ends of one passage (the line between them leaves each no steeper than 70 degrees from its wall's normal, or a curved rim lies on the other's axis) - a missing tube wall, and patching both would seal a through-hole
+      ! refused paired_rim: this loop pairs with another as the two ends of one passage (the line between them leaves each no steeper than 70 degrees from its wall's normal, or a curved rim lies on the other's axis) - a missing tube wall, and patching both would seal a through-hole
+      ! refused paired_rim: this loop pairs with another as the two ends of one passage (the line between them leaves each no steeper than 70 degrees from its wall's normal, or a curved rim lies on the other's axis) - a missing tube wall, and patching both would seal a through-hole
+      ! refused paired_rim: this loop pairs with another as the two ends of one passage (the line between them leaves each no steeper than 70 degrees from its wall's normal, or a curved rim lies on the other's axis) - a missing tube wall, and patching both would seal a through-hole
+      = stopped: stalled (resolved=False)
+repaired                     trj4_k1_geo-pe-203.stp                                 before=['open_shell', 'small_edge'] located={'open_shell': 56, 'small_edge': 6} -> fixed={'open_shell': 56}
+      + sew_faces            open_shell            kept
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filledplan: the rim discriminator failed (RimsUndecidable: 4 candidate rim(s) are not planar loops and have no best-fit normal, beside 7 other candidate(s)); refusing every fill this pass rather than guessing there is no through-hole
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 2                      ******[0m
+[32;1m** WorkSession : Sending all data[0m
+[32;1m Step File Name : /var/folders/g6/mq56z4xj1h950wltbq5bscjc0000gn/T/repair_corpus_out/trj4_k1_geo-pe-214-repaired.step(6188 ents)  Write  Done[0m
+
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      = stopped: stalled (resolved=False)
+repaired                     trj4_k1_geo-pe-214.stp                                 before=['open_shell', 'small_edge'] located={'open_shell': 56, 'small_edge': 6} -> fixed={'open_shell': 56}
+      + sew_faces            open_shell            kept
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filledplan: the rim discriminator failed (RimsUndecidable: 2 candidate rim(s) are not planar loops and have no best-fit normal, beside 5 other candidate(s)); refusing every fill this pass rather than guessing there is no through-hole
+plan: the rim discriminator failed (RimsUndecidable: 2 candidate rim(s) are not planar loops and have no best-fit normal, beside 5 other candidate(s)); refusing every fill this pass rather than guessing there is no through-hole
+plan: the rim discriminator failed (RimsUndecidable: 1 candidate rim(s) are not planar loops and have no best-fit normal, beside 26 other candidate(s)); refusing every fill this pass rather than guessing there is no through-hole
+plan: the rim discriminator failed (RimsUndecidable: 1 candidate rim(s) are not planar loops and have no best-fit normal, beside 26 other candidate(s)); refusing every fill this pass rather than guessing there is no through-hole
+
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      = stopped: stalled (resolved=False)
+refused                      trj4_k1_geo-tc-214.stp                                 before=['open_shell', 'small_edge'] located={'open_shell': 64, 'small_edge': 4} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (new_defect)
+      - sew_faces            open_shell            rolled_back (new_defect)
+refused                      trj4_k1_geo-tu-214.stp                                 before=['open_shell', 'small_edge'] located={'open_shell': 58, 'small_edge': 4} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (new_defect)
+      - sew_faces            open_shell            rolled_back (new_defect)
+refused                      trj4_k1_top-ct-203.stp                                 before=['small_edge'] located={'small_edge': 2} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]plan: the rim discriminator failed (RimsUndecidable: 1 candidate rim(s) are not planar loops and have no best-fit normal, beside 28 other candidate(s)); refusing every fill this pass rather than guessing there is no through-hole
+plan: the rim discriminator failed (RimsUndecidable: 1 candidate rim(s) are not planar loops and have no best-fit normal, beside 28 other candidate(s)); refusing every fill this pass rather than guessing there is no through-hole
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 2                      ******[0m
+[32;1m** WorkSession : Sending all data[0m
+[32;1m Step File Name : /var/folders/g6/mq56z4xj1h950wltbq5bscjc0000gn/T/repair_corpus_out/trj4_k1_top-id-214-repaired.step(4539 ents)  Write  Done[0m
+plan: the rim discriminator failed (RimsUndecidable: 2 candidate rim(s) are not planar loops and have no best-fit normal, beside 5 other candidate(s)); refusing every fill this pass rather than guessing there is no through-hole
+plan: the rim discriminator failed (RimsUndecidable: 2 candidate rim(s) are not planar loops and have no best-fit normal, beside 5 other candidate(s)); refusing every fill this pass rather than guessing there is no through-hole
+plan: the rim discriminator failed (RimsUndecidable: 1 candidate rim(s) are not planar loops and have no best-fit normal, beside 24 other candidate(s)); refusing every fill this pass rather than guessing there is no through-hole
+plan: the rim discriminator failed (RimsUndecidable: 1 candidate rim(s) are not planar loops and have no best-fit normal, beside 24 other candidate(s)); refusing every fill this pass rather than guessing there is no through-hole
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 2                      ******[0m
+[32;1m** WorkSession : Sending all data[0m
+[32;1m Step File Name : /var/folders/g6/mq56z4xj1h950wltbq5bscjc0000gn/T/repair_corpus_out/trj5_k1-al-214-repaired.step(10207 ents)  Write  Done[0m
+plan: the rim discriminator failed (RimsUndecidable: 1 candidate rim(s) are not planar loops and have no best-fit normal, beside 28 other candidate(s)); refusing every fill this pass rather than guessing there is no through-hole
+plan: the rim discriminator failed (RimsUndecidable: 1 candidate rim(s) are not planar loops and have no best-fit normal, beside 28 other candidate(s)); refusing every fill this pass rather than guessing there is no through-hole
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 2                      ******[0m
+[32;1m** WorkSession : Sending all data[0m
+[32;1m Step File Name : /var/folders/g6/mq56z4xj1h950wltbq5bscjc0000gn/T/repair_corpus_out/trj5_k1-id-214-repaired.step(4539 ents)  Write  Done[0m
+
+      - fix_small_edges      small_edge            rolled_back (cap:the operation turned a valid shape into an invalid one)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+refused                      trj4_k1_top-ec-214.stp                                 before=['open_shell', 'small_edge'] located={'open_shell': 63, 'small_edge': 4} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (new_defect)
+      - sew_faces            open_shell            rolled_back (new_defect)
+repaired                     trj4_k1_top-id-214.stp                                 before=['open_shell', 'small_edge'] located={'open_shell': 1, 'small_edge': 4} -> fixed={'open_shell': 1}
+      + sew_faces            open_shell            kept
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+      = stopped: stalled (resolved=False)
+refused                      trj4_k1_top-md-203.stp                                 before=['small_edge'] located={'small_edge': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+refused                      trj4_k1_top-pe-203.stp                                 before=['small_edge'] located={'small_edge': 2} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+refused                      trj4_k1_top-pe-214.stp                                 before=['small_edge'] located={'small_edge': 2} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+refused                      trj4_k1_top-tc-214.stp                                 before=['open_shell', 'small_edge'] located={'open_shell': 64, 'small_edge': 4} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (new_defect)
+      - sew_faces            open_shell            rolled_back (new_defect)
+refused                      trj4_k1_top-tu-214.stp                                 before=['open_shell', 'small_edge'] located={'open_shell': 58, 'small_edge': 4} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (new_defect)
+      - sew_faces            open_shell            rolled_back (new_defect)
+refused                      trj4_k1_top-ug-214.stp                                 before=['small_edge'] located={'small_edge': 4} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+not_attempted:manual_cleanup trj4_pm2-ec-214.stp                                    before=['small_edge', 'small_face'] located={'small_edge': 89, 'small_face': 141} -> fixed={}
+not_attempted:manual_cleanup trj4_s1-ac-214.stp                                     before=['small_edge', 'small_face'] located={'small_edge': 24, 'small_face': 4} -> fixed={}
+not_attempted:manual_cleanup trj4_s1-ai-214.stp                                     before=['small_edge', 'small_face'] located={'small_edge': 10, 'small_face': 4} -> fixed={}
+not_attempted:manual_cleanup trj4_s1-ec-214.stp                                     before=['small_edge', 'small_face'] located={'small_edge': 12, 'small_face': 2} -> fixed={}
+not_attempted:manual_cleanup trj4_s1-pe-203.stp                                     before=['small_edge', 'small_face'] located={'small_edge': 24, 'small_face': 2} -> fixed={}
+not_attempted:manual_cleanup trj4_s1-pe-214.stp                                     before=['small_edge', 'small_face'] located={'small_edge': 24, 'small_face': 2} -> fixed={}
+not_attempted:manual_cleanup trj4_s1-tu-214.stp                                     before=['small_edge', 'small_face'] located={'small_edge': 24, 'small_face': 2} -> fixed={}
+not_attempted:manual_cleanup trj4_s1-ug-214.stp                                     before=['small_edge', 'small_face'] located={'small_edge': 18, 'small_face': 2} -> fixed={}
+not_attempted:ask_customer   trj4_xr1-db-214.stp                                    before=['invalid_brep'] located={} -> fixed={}
+not_attempted:ask_customer   trj4_xr1-ec-214.stp                                    before=['invalid_brep'] located={} -> fixed={}
+not_attempted:ask_customer   trj4_xr1-id-214.stp                                    before=['invalid_brep'] located={} -> fixed={}
+not_attempted:ask_customer   trj4_xr1-pe-214.stp                                    before=['invalid_brep'] located={} -> fixed={}
+not_attempted:ask_customer   trj4_xr1-tc-214.stp                                    before=['invalid_brep'] located={} -> fixed={}
+not_attempted:ask_customer   trj4_xr1-tu-214.stp                                    before=['invalid_brep'] located={} -> fixed={}
+nothing_to_repair            trj5_d3-db-214.stp                                     before=[] located={} -> fixed={}
+nothing_to_repair            trj5_d3-pe-214.stp                                     before=[] located={} -> fixed={}
+nothing_to_repair            trj5_d3-tc-214.stp                                     before=[] located={} -> fixed={}
+nothing_to_repair            trj5_d3-tu-214.stp                                     before=[] located={} -> fixed={}
+repaired                     trj5_k1-al-214.stp                                     before=['small_edge'] located={'small_edge': 8} -> fixed={'small_edge': 8}
+      + fix_small_edges      small_edge            kept
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+      = stopped: stalled (resolved=False)
+refused                      trj5_k1-ct-203.stp                                     before=['small_edge'] located={'small_edge': 149} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (cap:the operation turned a valid shape into an invalid one)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+refused                      trj5_k1-ct-214.stp                                     before=['small_edge'] located={'small_edge': 149} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (cap:the operation turned a valid shape into an invalid one)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+refused                      trj5_k1-ec-214.stp                                     before=['open_shell', 'small_edge'] located={'open_shell': 63, 'small_edge': 4} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (new_defect)
+      - sew_faces            open_shell            rolled_back (new_defect)
+repaired                     trj5_k1-id-214.stp                                     before=['open_shell', 'small_edge'] located={'open_shell': 1, 'small_edge': 4} -> fixed={'open_shell': 1}
+      + sew_faces            open_shell            kept
+      - fix_small_edges      small_edge            rolled_back (target_remains)plan: the rim discriminator failed (RimsUndecidable: 2 candidate rim(s) are not planar loops and have no best-fit normal, beside 5 other candidate(s)); refusing every fill this pass rather than guessing there is no through-hole
+plan: the rim discriminator failed (RimsUndecidable: 2 candidate rim(s) are not planar loops and have no best-fit normal, beside 5 other candidate(s)); refusing every fill this pass rather than guessing there is no through-hole
+
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+      = stopped: stalled (resolved=False)
+refused                      trj5_k1-md-203.stp                                     before=['small_edge'] located={'small_edge': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+refused                      trj5_k1-pe-203.stp                                     before=['small_edge'] located={'small_edge': 2} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+refused                      trj5_k1-pe-214.stp                                     before=['small_edge'] located={'small_edge': 2} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+refused                      trj5_k1-sh-203.stp                                     before=['small_edge'] located={'small_edge': 4} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+refused                      trj5_k1-tc-203.stp                                     before=['open_shell', 'small_edge'] located={'open_shell': 64, 'small_edge': 4} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (new_defect)
+      - sew_faces            open_shell            rolled_back (new_defect)
+refused                      trj5_k1-ug-214.stp                                     before=['small_edge'] located={'small_edge': 4} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+not_attempted:manual_cleanup trj5_s1-ac-214.stp                                     before=['small_edge', 'small_face'] located={'small_edge': 24, 'small_face': 4} -> fixed={}
+not_attempted:manual_cleanup trj5_s1-in-214.stp                                     before=['small_edge', 'small_face'] located={'small_edge': 28, 'small_face': 2} -> fixed={}
+not_attempted:manual_cleanup trj5_s1-ug-214.stp                                     before=['small_edge', 'small_face'] located={'small_edge': 18, 'small_face': 2} -> fixed={}
+nothing_to_repair            trj6_as1-ec-214.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj6_as1-hc-214.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj6_as1-id-214.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj6_as1-pe-203.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj6_as1-pe-214.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj6_as1-tc-214.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj6_as1-td-214.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj6_as1-tu-214.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj6_as1-ug-214.stp                                    before=[] located={} -> fixed={}
+not_attempted:manual_cleanup trj6_b1-ec-214.stp                                     before=['invalid_brep', 'self_intersection', 'small_edge', 'small_face'] located={'small_edge': 316, 'small_face': 13, 'invalid_brep': 4, 'self_intersection': 4} -> fixed={}
+refused                      trj6_c1-ct-203.stp                                     before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (cap:the operation lost 1 solid(s) - a closed body became loose surfaces, which is damage rather than repair)
+refused                      trj6_c1-ct-214.stp                                     before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (cap:the operation lost 1 solid(s) - a closed body became loose surfaces, which is damage rather than repair)
+refused                      trj6_c1-ec-214.stp                                     before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (cap:the operation lost 1 solid(s) - a closed body became loose surfaces, which is damage rather than repair)
+nothing_to_repair            trj6_c1-hc-214.stp                                     before=[] located={} -> fixed={}
+refused                      trj6_c1-id-214.stp                                     before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (cap:the operation lost 1 solid(s) - a closed body became loose surfaces, which is damage rather than repair)
+refused                      trj6_c1-pe-214.stp                                     before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (declined:the targeted body already has a solid to lose)
+      - fill_planar_hole     open_shell            rolled_back (cap:the operation lost 3 solid(s) - a closed body became loose surfaces, which is damage rather than repair)
+refused                      trj6_c1-sd-214.stp                                     before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (cap:the operation lost 1 solid(s) - a closed body became loose surfaces, which is damage rather than repair)
+refused                      trj6_c1-tc-214.stp                                     before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (cap:the operation lost 1 solid(s) - a closed body became loose surfaces, which is damage rather than repair)
+refused                      trj6_c1-tu-214.stp                                     before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 2                      ******[0m
+[32;1m** WorkSession : Sending all data[0m
+[32;1m Step File Name : /var/folders/g6/mq56z4xj1h950wltbq5bscjc0000gn/T/repair_corpus_out/trj6_k1-al-214-repaired.step(10648 ents)  Write  Done[0m
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 2                      ******[0m
+[32;1m** WorkSession : Sending all data[0m
+[32;1m Step File Name : /var/folders/g6/mq56z4xj1h950wltbq5bscjc0000gn/T/repair_corpus_out/trj6_k1-id-203-repaired.step(4539 ents)  Write  Done[0m
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 2                      ******[0m
+[32;1m** WorkSession : Sending all data[0m
+[32;1m Step File Name : /var/folders/g6/mq56z4xj1h950wltbq5bscjc0000gn/T/repair_corpus_out/trj6_k1-sd-214-repaired.step(9644 ents)  Write  Done[0m
+plan: the rim discriminator failed (RimsUndecidable: 2 candidate rim(s) are not planar loops and have no best-fit normal, beside 5 other candidate(s)); refusing every fill this pass rather than guessing there is no through-hole
+plan: the rim discriminator failed (RimsUndecidable: 2 candidate rim(s) are not planar loops and have no best-fit normal, beside 5 other candidate(s)); refusing every fill this pass rather than guessing there is no through-hole
+plan: the rim discriminator failed (RimsUndecidable: 1 candidate rim(s) are not planar loops and have no best-fit normal, beside 24 other candidate(s)); refusing every fill this pass rather than guessing there is no through-hole
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 2                      ******[0m
+[32;1m** WorkSession : Sending all data[0m
+[32;1m Step File Name : /var/folders/g6/mq56z4xj1h950wltbq5bscjc0000gn/T/repair_corpus_out/trj6_k1-ug-214-repaired.step(3779 ents)  Write  Done[0m
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (cap:the operation lost 1 solid(s) - a closed body became loose surfaces, which is damage rather than repair)
+refused                      trj6_c1-ug-214.stp                                     before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (cap:the operation lost 1 solid(s) - a closed body became loose surfaces, which is damage rather than repair)
+nothing_to_repair            trj6_d3-db-214.stp                                     before=[] located={} -> fixed={}
+nothing_to_repair            trj6_d3-pe-214.stp                                     before=[] located={} -> fixed={}
+repaired                     trj6_k1-al-214.stp                                     before=['small_edge'] located={'small_edge': 8} -> fixed={'small_edge': 8}
+      + fix_small_edges      small_edge            kept
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+      = stopped: stalled (resolved=False)
+refused                      trj6_k1-ct-203.stp                                     before=['small_edge'] located={'small_edge': 2} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+refused                      trj6_k1-ct-214.stp                                     before=['small_edge'] located={'small_edge': 2} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+refused                      trj6_k1-ec-214.stp                                     before=['small_edge'] located={'small_edge': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (new_defect)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+repaired                     trj6_k1-id-203.stp                                     before=['open_shell', 'small_edge'] located={'open_shell': 1, 'small_edge': 4} -> fixed={'open_shell': 1}
+      + sew_faces            open_shell            kept
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+      = stopped: stalled (resolved=False)
+refused                      trj6_k1-md-214.stp                                     before=['small_edge'] located={'small_edge': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+refused                      trj6_k1-pe-203.stp                                     before=['small_edge'] located={'small_edge': 2} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+refused                      trj6_k1-pe-214.stp                                     before=['small_edge'] located={'small_edge': 2} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+repaired                     trj6_k1-sd-214.stp                                     before=['open_shell', 'small_edge'] located={'open_shell': 2, 'small_edge': 2} -> fixed={'open_shell': 2}
+      + sew_faces            open_shell            kept
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+      = stopped: stalled (resolved=False)
+refused                      trj6_k1-td-214.stp                                     before=['open_shell', 'small_edge'] located={'open_shell': 64, 'small_edge': 4} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (cap:the run left a tolerance of 0.1001 mm, over the 0.1 mm cap - the kernel agreed to stop complaining rather than fixing the geometry)
+      - sew_faces            open_shell            rolled_back (cap:the run left a tolerance of 0.1001 mm, over the 0.1 mm cap - the kernel agreed to stop complaining rather than fixing the geometry)
+repaired                     trj6_k1-ug-214.stp                                     before=['open_shell', 'small_edge'] located={'open_shell': 58, 'small_edge': 4} -> fixed={'open_shell': 58}
+      + sew_faces            open_shell            kept
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      = stopped: stalled (resolved=False)
+not_attempted:manual_cleanup trj6_pm4-ec-203.stp                                    before=['small_edge', 'small_face'] located={'small_edge': 89, 'small_face': 141} -> fixed={}
+nothing_to_repair            trj7_as1-hc-214.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj7_as1-id-214.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj7_as1-pe-203.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj7_as1-pe-214.stp                                    before=[] located={} -> fixed={}
+not_attempted:manual_cleanup trj7_b1-ec-214.stp                                     before=['invalid_brep', 'self_intersection', 'small_edge', 'small_face'] located={'small_edge': 31, 'small_face': 31, 'invalid_brep': 2, 'self_intersection': 2} -> fixed={}
+nothing_to_repair            trj7_c1-hc-214.stp                                     before=[] located={} -> fixed={}
+refused                      trj7_c2-ac-214.stp                                     before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (cap:the run moved the part's overall size by 0.37711 of its original diagonal, over the 0.001 cap)
+refused                      trj7_c2-al-214.stp                                     before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (declined:too_large (span ratio 0.7966))
+refused                      trj7_c2-ct-203.stp                                     before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]plan: the rim discriminator failed (RimsUndecidable: 3 candidate rim(s) are not planar loops and have no best-fit normal, beside 1 other candidate(s)); refusing every fill this pass rather than guessing there is no through-hole
+plan: the rim discriminator failed (RimsUndecidable: 3 candidate rim(s) are not planar loops and have no best-fit normal, beside 1 other candidate(s)); refusing every fill this pass rather than guessing there is no through-hole
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 2                      ******[0m
+[32;1m** WorkSession : Sending all data[0m
+[32;1m Step File Name : /var/folders/g6/mq56z4xj1h950wltbq5bscjc0000gn/T/repair_corpus_out/trj7_k1-id-214-repaired.step(4539 ents)  Write  Done[0m
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 2                      ******[0m
+[32;1m** WorkSession : Sending all data[0m
+[32;1m Step File Name : /var/folders/g6/mq56z4xj1h950wltbq5bscjc0000gn/T/repair_corpus_out/trj7_k1-sd-214-repaired.step(9644 ents)  Write  Done[0m
+
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (cap:the run moved the part's overall size by 0.34887 of its original diagonal, over the 0.001 cap)
+refused                      trj7_c2-ct-214.stp                                     before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (cap:the run moved the part's overall size by 0.34887 of its original diagonal, over the 0.001 cap)
+refused                      trj7_c2-db-214.stp                                     before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (declined:not_planar)
+refused                      trj7_c2-ec-214.stp                                     before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (cap:the run moved the part's overall size by 0.41600 of its original diagonal, over the 0.001 cap)
+refused                      trj7_c2-id-214.stp                                     before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (declined:too_large (span ratio 0.7994))
+refused                      trj7_c2-pe-203.stp                                     before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (declined:too_large (span ratio 0.8199))
+nothing_to_repair            trj7_c2-pe-214.stp                                     before=[] located={} -> fixed={}
+refused                      trj7_c2-sd-214.stp                                     before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (declined:too_large (span ratio 0.9465))
+refused                      trj7_c2-tc-203.stp                                     before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (declined:too_large (span ratio 0.7676))
+refused                      trj7_c2-td-203.stp                                     before=['open_shell'] located={'open_shell': 4} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (declined:not_planar)
+refused                      trj7_c2-tu-203.stp                                     before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (declined:not_planar)
+refused                      trj7_c2-ug-214.stp                                     before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (declined:too_large (span ratio 0.8835))
+refused                      trj7_k1-ac-203.stp                                     before=['small_edge'] located={'small_edge': 4} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+refused                      trj7_k1-al-214.stp                                     before=['open_shell', 'small_edge'] located={'open_shell': 4, 'small_edge': 12} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (new_defect)
+      - sew_faces            open_shell            rolled_back (new_defect)
+refused                      trj7_k1-ct-203.stp                                     before=['small_edge'] located={'small_edge': 2} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+refused                      trj7_k1-ct-214.stp                                     before=['small_edge'] located={'small_edge': 2} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+refused                      trj7_k1-ec-214.stp                                     before=['small_edge'] located={'small_edge': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (new_defect)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+repaired                     trj7_k1-id-214.stp                                     before=['open_shell', 'small_edge'] located={'open_shell': 1, 'small_edge': 4} -> fixed={'open_shell': 1}
+      + sew_faces            open_shell            kept
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+      = stopped: stalled (resolved=False)
+refused                      trj7_k1-pe-203.stp                                     before=['small_edge'] located={'small_edge': 2} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+refused                      trj7_k1-pe-214.stp                                     before=['small_edge'] located={'small_edge': 2} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+repaired                     trj7_k1-sd-214.stp                                     before=['open_shell', 'small_edge'] located={'open_shell': 2, 'small_edge': 2} -> fixed={'open_shell': 2}
+      + sew_faces            open_shell            kept
+      - fix_small_edges      small_edge            rolled_back (target_remains)plan: the rim discriminator failed (RimsUndecidable: 1 candidate rim(s) are not planar loops and have no best-fit normal, beside 24 other candidate(s)); refusing every fill this pass rather than guessing there is no through-hole
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 2                      ******[0m
+[32;1m** WorkSession : Sending all data[0m
+[32;1m Step File Name : /var/folders/g6/mq56z4xj1h950wltbq5bscjc0000gn/T/repair_corpus_out/trj7_k1-ug-214-repaired.step(3779 ents)  Write  Done[0m
+
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+      = stopped: stalled (resolved=False)
+repaired                     trj7_k1-ug-214.stp                                     before=['open_shell', 'small_edge'] located={'open_shell': 58, 'small_edge': 4} -> fixed={'open_shell': 58}
+      + sew_faces            open_shell            kept
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filledplan: the rim discriminator failed (RimsUndecidable: 5 candidate rim(s) are not planar loops and have no best-fit normal, beside 9 other candidate(s)); refusing every fill this pass rather than guessing there is no through-hole
+plan: the rim discriminator failed (RimsUndecidable: 5 candidate rim(s) are not planar loops and have no best-fit normal, beside 9 other candidate(s)); refusing every fill this pass rather than guessing there is no through-hole
+
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      = stopped: stalled (resolved=False)
+nothing_to_repair            trj8_as1-ec-214.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj8_as1-tu-214.stp                                    before=[] located={} -> fixed={}
+not_attempted:manual_cleanup trj8_b1-ec-214.stp                                     before=['small_edge', 'small_face'] located={'small_edge': 28, 'small_face': 31} -> fixed={}
+refused                      trj8_c2-ac-214.stp                                     before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (cap:the run moved the part's overall size by 0.37711 of its original diagonal, over the 0.001 cap)
+refused                      trj8_c2-ct-203.stp                                     before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (cap:the run moved the part's overall size by 0.34887 of its original diagonal, over the 0.001 cap)
+refused                      trj8_c2-ct-214.stp                                     before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (cap:the run moved the part's overall size by 0.34887 of its original diagonal, over the 0.001 cap)
+refused                      trj8_c2-db-214.stp                                     before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (declined:not_planar)
+refused                      trj8_c2-ec-214.stp                                     before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (cap:the run moved the part's overall size by 0.41600 of its original diagonal, over the 0.001 cap)
+refused                      trj8_c2-hc-214.stp                                     before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (declined:too_large (span ratio 1.0000))
+refused                      trj8_c2-id-214.stp                                     before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (declined:too_large (span ratio 0.7994))
+refused                      trj8_c2-pe-203.stp                                     before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (declined:too_large (span ratio 1.0000))
+refused                      trj8_c2-pe-214.stp                                     before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (declined:too_large (span ratio 0.8199))
+refused                      trj8_c2-tu-214.stp                                     before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (cap:the run moved the part's overall size by 0.50207 of its original diagonal, over the 0.001 cap)
+refused                      trj8_k1-ac-203.stp                                     before=['small_edge'] located={'small_edge': 4} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+refused                      trj8_k1-ct-203.stp                                     before=['small_edge'] located={'small_edge': 2} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+refused                      trj8_k1-ct-214.stp                                     before=['small_edge'] located={'small_edge': 2} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+refused                      trj8_k1-db-214.stp                                     before=['small_edge'] located={'small_edge': 2} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+refused                      trj8_k1-hc-214.stp                                     before=['open_shell', 'small_edge'] located={'open_shell': 14, 'small_edge': 450} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (new_defect)
+      - sew_faces            open_shell            rolled_back (new_defect)
+refused                      trj8_k1-md-214.stp                                     before=['small_edge'] located={'small_edge': 2} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)plan: the rim discriminator failed (RimsUndecidable: 1 candidate rim(s) are not planar loops and have no best-fit normal, beside 24 other candidate(s)); refusing every fill this pass rather than guessing there is no through-hole
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 2                      ******[0m
+[32;1m** WorkSession : Sending all data[0m
+[32;1m Step File Name : /var/folders/g6/mq56z4xj1h950wltbq5bscjc0000gn/T/repair_corpus_out/trj8_k1-ug-214-repaired.step(3779 ents)  Write  Done[0m
+
+refused                      trj8_k1-pe-203.stp                                     before=['small_edge'] located={'small_edge': 2} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+refused                      trj8_k1-pe-214.stp                                     before=['small_edge'] located={'small_edge': 2} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+repaired                     trj8_k1-ug-214.stp                                     before=['open_shell', 'small_edge'] located={'open_shell': 58, 'small_edge': 4} -> fixed={'open_shell': 58}
+      + sew_faces            open_shell            kept
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      ! refused paired_rim: the through-hole check could not run on this shape, so this loop may be one end of a missing tube wall and is not filled
+      = stopped: stalled (resolved=False)
+nothing_to_repair            trj9_ap209-mp.stp                                      before=[] located={} -> fixed={}
+refused                      trj9_ap209-td.stp                                      before=['small_edge'] located={'small_edge': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - fix_small_edges      small_edge            rolled_back (target_remains)
+      - fix_shape_global     small_edge            rolled_back (target_remains)
+refused                      trj9_c2-ct-214.stp                                     before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (cap:the run moved the part's overall size by 0.34887 of its original diagonal, over the 0.001 cap)
+refused                      trj9_c2-id-214.stp                                     before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (declined:too_large (span ratio 0.7994))
+refused                      trj9_c2-oc-203.stp                                     before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (cap:the run moved the part's overall size by 0.41600 of its original diagonal, over the 0.001 cap)
+refused                      trj9_c2-oc-214.stp                                     before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (cap:the run moved the part's overall size by 0.41600 of its original diagonal, over the 0.001 cap)
+refused                      trj9_c2-pe-203.stp                                     before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (cap:the run moved the part's overall size by 0.38813 of its original diagonal, over the 0.001 cap)
+refused                      trj9_c2-pe-214.stp                                     before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (cap:the run moved the part's overall size by 0.38813 of its original diagonal, over the 0.001 cap)
+refused                      trj9_c2-sy-214.stp                                     before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (cap:the run moved the part's overall size by 0.78151 of its original diagonal, over the 0.001 cap)
+refused                      trj9_c2-tu-214.stp                                     before=['open_shell'] located={'open_shell': 1} -> fixed={} [nothing was kept (2 operation(s) attempted, stopped because stalled), so there is nothing ]
+      - sew_faces            open_shell            rolled_back (target_remains)
+      - fill_planar_hole     open_shell            rolled_back (cap:the run moved the part's overall size by 0.50207 of its original diagonal, over the 0.001 cap)
+nothing_to_repair            trj9_io1-id-214.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj9_io1-oc-214.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj9_io1-sy-214.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj9_io1-tu-214.stp                                    before=[] located={} -> fixed={}
+nothing_to_repair            trj9_io1-ug-214.stp                                    before=[] located={} -> fixed={}
+not_attempted:ask_customer   xr1-db-214_0.stp                                       before=['invalid_brep'] located={} -> fixed={}
+not_attempted:ask_customer   xr1-db-214_1.stp                                       before=['invalid_brep'] located={} -> fixed={}
+not_attempted:ask_customer   xr1-db-214_2.stp                                       before=['invalid_brep'] located={} -> fixed={}
+nothing_to_repair            xr1-db-214_3.stp                                       before=[] located={} -> fixed={}
+nothing_to_repair            xr1-db-214_4.stp                                       before=[] located={} -> fixed={}
+nothing_to_repair            xr1-db-214_5.stp                                       before=[] located={} -> fixed={}
+not_attempted:ask_customer   xr1-db-214_6.stp                                       before=['invalid_brep'] located={} -> fixed={}
+nothing_to_repair            xr1-db-214_7.stp                                       before=[] located={} -> fixed={}
+nothing_to_repair            xr1-db-214_8.stp                                       before=[] located={} -> fixed={}
+nothing_to_repair            xr1-tc-blt.stp                                         before=[] located={} -> fixed={}
+nothing_to_repair            xr1-tc-lbr.stp                                         before=[] located={} -> fixed={}
+nothing_to_repair            xr1-tc-nut.stp                                         before=[] located={} -> fixed={}
+nothing_to_repair            xr1-tc-plt.stp                                         before=[] located={} -> fixed={}
+nothing_to_repair            xr1-tc-rod.stp                                         before=[] located={} -> fixed={}
+nothing_to_repair            xr1-tu-blt.stp                                         before=[] located={} -> fixed={}
+nothing_to_repair            xr1-tu-lbr.stp                                         before=[] located={} -> fixed={}
+nothing_to_repair            xr1-tu-nut.stp                                         before=[] located={} -> fixed={}
+nothing_to_repair            xr1-tu-plt.stp                                         before=[] located={} -> fixed={}
+nothing_to_repair            xr1-tu-rod.stp                                         before=[] located={} -> fixed={}
+
+== summary ==
+   143  nothing_to_repair
+   115  refused
+    57  not_attempted
+    16  repaired
+
+== defects actually repaired, by kind (credited by re-inspection) ==
+   414  open_shell
+    16  small_edge
+
+== what triage advised ==
+   143  mesh_as_is
+   131  conservative_repair
+    43  manual_cleanup
+    14  ask_customer
+
+== why the loop stopped ==
+    16  stalled
+
+== operations, kept vs rolled back ==
+  sew_faces              kept=14   rolled_back=81   declined=4    failed=0
+  fix_small_edges        kept=2    rolled_back=62   declined=0    failed=0
+  fix_shape_global       kept=0    rolled_back=62   declined=0    failed=0
+  fill_planar_hole       kept=0    rolled_back=30   declined=23   failed=0
+
+== what the planner refused to attempt ==
+   369  paired_rim
+
+== operations never exercised on this corpus ==
+        fix_face_boundary
+        fill_nonplanar_hole
+        heal_self_intersections
+
+== heals corroborated by the triangle check ==
+  corroborated 0 / kept 0, unknown 0
+
+rows written to /tmp/planner-evidence/catalogue-baseline.json

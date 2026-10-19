@@ -1,0 +1,10 @@
+aggregate baseline 430 growth 430 kinds {'open_shell': 414, 'small_edge': 16} {'open_shell': 414, 'small_edge': 16}
+GATE aggregate >= 430: PASS (floor held, no strictly-more claim)
+paired_rim baseline 369 growth 369 GATE >=: PASS
+GATE no paired_rim file kept a fill_* op in growth: PASS
+GATE every baseline-kept file kept again: PASS (baseline kept files: 16)
+promoted files in growth: 16 GATE final check (valid_after, >=1 kept): PASS
+cap: max declared_area_mm2 baseline/growth: 0 0
+outcomes baseline {'not_attempted:ask_customer': 14, 'refused': 115, 'repaired': 16, 'nothing_to_repair': 143, 'not_attempted:manual_cleanup': 43}
+outcomes growth   {'not_attempted:ask_customer': 14, 'refused': 115, 'repaired': 16, 'nothing_to_repair': 143, 'not_attempted:manual_cleanup': 43}
+new ops: {'heal_self_intersections': {'rolled_back:declined:multi_body (the crossing faces belong to more than one body)': 4, 'rolled_back:declined:not_isolated (22 faces, more than the 4 one heal may re-trim)': 2, 'rolled_back:declined:not_isolated (6 faces, more than the 4 one heal may re-trim)': 2, 'rolled_back:declined:not_isolated (the analysis shows no crossing among the targets)': 2}}

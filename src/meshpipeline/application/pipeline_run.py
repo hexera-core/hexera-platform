@@ -222,7 +222,7 @@ class JobRequest:
                  "approved_snapshot_id", "approved_patch_contract",
                  "approved_intent_fingerprint", "intake_events",
                  "requested_extents", "reference_length_m", "requirements_strict",
-                 "flow_axis")
+                 "flow_axis", "repair_directives", "review_continuation")
 
     def __init__(self, job_id, owner_id="dev-user", geometry_source=None,
                  geometry_interpretation=None, session_id="",
@@ -234,7 +234,8 @@ class JobRequest:
                  approved_snapshot_id="", approved_patch_contract=None,
                  approved_intent_fingerprint="", intake_events=None,
                  requested_extents=None, reference_length_m=None,
-                 requirements_strict=True, flow_axis=None):
+                 requirements_strict=True, flow_axis=None,
+                 repair_directives=None, review_continuation=False):
         self.job_id           = job_id
         self.owner_id         = owner_id
         # Replayed only once the claim has bound the tenant these records file under. They are
@@ -299,6 +300,11 @@ class JobRequest:
         # {"flags": [...], "comment": str, "of_job_id": str} - a user dispute of a
         # delivered mesh; empty/None = normal run. See graph.PipelineState.user_dispute.
         self.user_dispute     = user_dispute or {}
+        # A PARKED REPAIR RUN'S RE-RUN: the replayed and engineer-decided repair directives the
+        # repair node plays before its rules planner. review_continuation marks it as the same
+        # purchase as the parked run (it was not admitted again and is charged once, at its end).
+        self.repair_directives = [dict(d) for d in (repair_directives or [])]
+        self.review_continuation = bool(review_continuation)
         # user's explicit engine choice from intake ('cfmesh'/'snappy'; '' = auto).
         # Pins state['engine'] so resolution keeps it - the user has the final word.
         self.mesh_engine      = (mesh_engine or "").strip().lower()
@@ -427,6 +433,8 @@ def run_pipeline(
     reference_length_m:      float | None = None,
     requirements_strict:     bool       = True,
     flow_axis:               str | None = None,
+    repair_directives:       list | None = None,
+    review_continuation:     bool       = False,
 ) -> dict:
 
 
@@ -464,6 +472,8 @@ def run_pipeline(
         domain=domain or "",
         engine_params=engine_params or {},
         user_dispute=user_dispute or {},
+        repair_directives=repair_directives or [],
+        review_continuation=review_continuation,
         approved_snapshot_id=approved_snapshot_id or "",
         approved_patch_contract=approved_patch_contract,
         approved_intent_fingerprint=approved_intent_fingerprint or "",
@@ -706,6 +716,8 @@ async def _run_async(req: JobRequest) -> dict:
         from meshpipeline.engines.registry import resolve_engine_params
         initial_state["engine_params"] = resolve_engine_params(_pinned_engine, req.engine_params)
         initial_state["flow_topology"] = topology_of(getattr(req, "purpose", "") or "")
+
+        initial_state["repair_directives"] = list(req.repair_directives)
 
         if req.user_dispute:
             # DISPUTE RUN - the user flagged issues on a delivered mesh. The parent resolution, the
@@ -980,6 +992,8 @@ async def _run_async(req: JobRequest) -> dict:
                         AsyncSessionLocal, job_id=job_id,
                         report=dict(final_state.get("repair_report") or {}),
                         repair_status=str(final_state.get("repair_status", "") or ""),
+                        repair_attempt=dict(final_state.get("repair_attempt") or {}),
+                        owner_id=owner_id,
                         delivery_attempt=int(final_state.get("retry_count", 0) or 0),
                         execution_generation=_generation,
                         fence_commit=_fence_report)
@@ -1000,6 +1014,7 @@ async def _run_async(req: JobRequest) -> dict:
                                 AsyncSessionLocal, job_id=job_id,
                                 local_path=_repaired.path,
                                 suffix=_repaired.ref.suffix_hint or ".step",
+                                owner_id=owner_id,
                                 delivery_attempt=int(final_state.get("retry_count", 0) or 0),
                                 execution_generation=_generation,
                                 fence_commit=_fence_report)
@@ -1013,6 +1028,7 @@ async def _run_async(req: JobRequest) -> dict:
         # Artifacts are delivered ONLY on a genuine success (verdict PASS with a real
         # visual review). DELIVER FIRST - a delivery failure downgrades the job to a
         # system failure, recorded by the single status commit below.
+        _delivery = None   # the artifact delivery's outcome, when there was one to make
         if final_status == JobStatus.succeeded:
             # Deliver FIRST, commit status ONCE afterwards: a client must never see `succeeded`
             # before the mesh is fetchable. A run whose mesh cannot reach the user did not succeed,
@@ -1073,6 +1089,32 @@ async def _run_async(req: JobRequest) -> dict:
             _decision = apply_delivery(_decision, _delivery)
             final_status, _failed_reason = _decision.status, _decision.failed_reason
 
+        # THE REPAIR REVIEW. A failed run whose repair left things for a person PARKS in
+        # pending_review instead of failing; a delivered run only records its items. The decision
+        # rides into the ONE status commit below (terminal_finalize writes the park beside the
+        # transition), never after it. A cancelled job cannot park: the transition CAS refuses.
+        from meshpipeline.application import repair_review_park as _rrp
+        # asked ONCE, here: the plan's system-failure exclusion and the status's timeout account
+        # must read the same answer
+        _timed_out = _pb.is_exhausted(_pipeline_deadline)
+        _review_plan = _rrp.plan_review(
+            final_state, status=final_status,
+            system_failure=_rrp.is_system_failure(api_failure=bool(api_failure),
+                                                  timed_out=_timed_out, delivery=_delivery))
+        # a park never re-asks what the engineer already answered "leave it": with nothing new
+        # to ask, the re-run ends as an ordinary failure that says what was left
+        _review_plan, _review_left = await _rrp.settle_left(_review_plan, AsyncSessionLocal,
+                                                            job_id)
+        # items the rules had no direction for get the model's proposal BEFORE they are written,
+        # but only on a park: a delivered run has nobody waiting on them
+        _review_plan = await _rrp.with_proposals(
+            _review_plan, job_id,
+            str((final_state.get("repair_attempt") or {}).get("stopped_because") or ""))
+        if _review_plan is not None and _review_plan.park:
+            # `failed_reason` stays the decision's: terminal_finalize falls back to a plain failure
+            # (with it) if the park cannot be written, and never stamps it on a parked row.
+            final_status = JobStatus.pending_review
+
         # THE TERMINAL OUTCOME. Assembly (read the durable artifact rows, apply the readiness
         # policy, render the application-owned verdict) and the ONE atomic fenced commit that
         # persists it both belong to terminal_finalize; this call is the lifecycle step, not the
@@ -1081,9 +1123,6 @@ async def _run_async(req: JobRequest) -> dict:
             TerminalAssembly,
             assemble_and_finalize,
         )
-        # asked ONCE: the status's timeout account and the ladder's "no offer on a timeout" must
-        # read the same answer
-        _timed_out = _pb.is_exhausted(_pipeline_deadline)
         _publication = await assemble_and_finalize(
             AsyncSessionLocal,
             TerminalAssembly(
@@ -1122,6 +1161,8 @@ async def _run_async(req: JobRequest) -> dict:
                                      + ([_scale_caveat] if _scale_caveat else [])
                                      + ([_fidelity_caveat] if _fidelity_caveat else [])),
                 review_blocking=list(_review_blocking),
+                review_plan=_review_plan,
+                review_left=_review_left,
                 pre_composed_message=str(final_state.get("outcome_message") or "").strip()),
             ownership=ownership, lease_repo=lease_repo, job_repo=job_repo, jlog=jlog)
         if _publication.fenced:
@@ -1132,6 +1173,9 @@ async def _run_async(req: JobRequest) -> dict:
         assert _publication.result is not None
         _result = _publication.result
         _final_closing = _publication.closing_message
+        # a park that could not be written was recorded as a plain failure: report that
+        if _publication.status is not None:
+            final_status = _publication.status
         _job_created_at, _job_ended_at = _publication.created_at, _publication.ended_at
 
         # POST-TERMINAL RECORDING. The verdict is already durable and published; these three

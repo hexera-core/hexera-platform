@@ -228,6 +228,52 @@ def test_the_staging_reason_reaches_the_closing_message_and_is_not_retried(quiet
     assert "crash" not in text and "stopped before it finished writing" not in text
 
 
+def test_a_part_with_no_wall_left_is_declined_at_the_staging_gate_and_never_retried(tmp_path,
+                                                                                   monkeypatch):
+    """Every face of the upload named an opening leaves the wall with nothing. It used to stage as
+    a success and spend all three mesh attempts in the engine runner on the empty patch; the
+    staging refuses it here, under the gate the retry policy skips, in words the user can act on."""
+    from meshpipeline.cad.internal_surface import EMPTY_WALL
+    from meshpipeline.cad.stl_io import write_stl_binary
+    from meshpipeline.contracts.failure_cause import retry_can_help
+    from meshpipeline.pipeline.graph import route_after_executor
+
+    o, tris = 0.05, []
+    for ax in range(3):
+        for sign in (-1.0, 1.0):
+            corners = []
+            for u, v in ((-1, -1), (1, -1), (1, 1), (-1, 1)):
+                pt = [0.0, 0.0, 0.0]
+                pt[ax] = sign * o
+                pt[(ax + 1) % 3] = u * o
+                pt[(ax + 2) % 3] = v * o
+                corners.append(pt)
+            tris += [(corners[0], corners[1], corners[2]), (corners[0], corners[2], corners[3])]
+    write_stl_binary(tmp_path / "input.stl", tris)
+    patches = [{"name": "p1", "type": "inlet", "near_mm": [50, 0, 0],
+                "width_mm": 100.0, "height_mm": 100.0}]
+    for k, near in enumerate([[-50, 0, 0], [0, 50, 0], [0, -50, 0], [0, 0, 50], [0, 0, -50]]):
+        patches.append({"name": f"p{k + 2}", "type": "outlet", "near_mm": near,
+                        "width_mm": 100.0, "height_mm": 100.0})
+    patches.append({"name": "shell", "type": "wall"})
+    monkeypatch.setattr("meshpipeline.cad.staging.staged_surface",
+                        lambda g, p: types.SimpleNamespace(consumed=None))
+    geometry = types.SimpleNamespace(path=str(tmp_path / "input.stl"))
+    attempt_mod._stage_declared(tmp_path, geometry,
+                                {"intake_patches": patches, "input_kind": "fluid-domain"}, "gmsh")
+
+    refusal = attempt_mod.staging_failure(tmp_path)
+    assert refusal is not None and refusal.gate == attempt_mod.STAGING_GATE
+    assert refusal.facts["reason"] == " ".join(EMPTY_WALL.split())[:300]
+    assert "no wall left" in refusal.facts["reason"]
+    assert refusal.facts["deterministic"] is True and refusal.facts["before_meshing"] is True
+    assert not retry_can_help(refusal.cause, refusal.facts), "one decline, not three attempts"
+    assert route_after_executor({"executor_failed_gate": "staging", "retry_count": 1,
+                                 "executor_failure_cause": refusal.cause, "job_id": "t",
+                                 "engine": "gmsh",
+                                 "executor_failure_facts": refusal.facts}) == "__end__"
+
+
 # self-intersection
 
 

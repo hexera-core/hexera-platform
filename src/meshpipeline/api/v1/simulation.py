@@ -149,6 +149,10 @@ def _artifact_label(artifact_type, engine: str) -> str:
         return "Surface preview (.msh)"
     if _t == "repair_report":
         return "CAD inspection report (.json)"
+    if _t == "repaired_cad":
+        # NAMED, not left to the fallback below, which rendered it "Repaired cad" - a download
+        # button whose own label looked like a bug on the most consequential file we hand back.
+        return "Repaired geometry (.step)"
     if _t == "mesh_bundle":
         try:
             from meshpipeline.engines.registry import get_spec

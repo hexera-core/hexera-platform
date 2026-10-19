@@ -52,15 +52,29 @@ CAD_REPAIR_ALLOW_FACE_REMOVAL: bool = bool_env("CAD_REPAIR_ALLOW_FACE_REMOVAL", 
 #: hole - sewing stitches coincident boundaries, and a face that is simply missing has nothing to
 #: stitch to - so the commonest reason a real part will not mesh survives every other operation.
 #:
-#: WHY IT IS NOT ON BY DEFAULT. A flat patch across a flat loop looks determined, and across an
-#: isolated opening it is. But the two rims of a DRILLED THROUGH-HOLE are also flat closed loops,
-#: and patching them seals the hole - turning a part with a bolt hole into a part without one,
-#: which is a ruined part rather than a repaired one. Telling those two cases apart needs a
-#: discriminator this code does not have yet (paired, parallel, congruent loops offset along their
-#: normal are a missing tube wall, not two holes). Until it does, filling is an operator's
-#: decision on evidence, not an autonomous one, and the unfilled loops are reported with their
-#: reasons so that evidence exists.
+#: WHAT GUARDS IT. A flat patch across a flat loop looks determined, and across an isolated
+#: opening it is. But the two rims of a THROUGH-HOLE whose wall is missing are also flat closed
+#: loops, and patching them seals the hole - a part with a bolt hole handed back without one. The
+#: PAIRED-RIM GUARD (`plan.paired_rim_fingerprints` over `conservative._paired_rims`) is what
+#: tells the two apart: any planar loop that is not a lone face's whole outer wire and sits at the
+#: other end of a straight passage from another (no steeper than 70 deg to either rim's normal) is
+#: a rim of one passage - of ANY cross-section, angle or draft - and the planner then refuses
+#: filling for the whole run and reports the rims for review. A check that cannot run, or that
+#: cannot resolve or judge (a non-planar loop) a candidate rim, fails closed. The session caps bound how much area and volume a kept fill may
+#: add; they do not see a sealed hole, so the guard - not the caps - is what protects one. Off by
+#: default because it adds geometry the customer never drew; the deploy's `cad_repair` tick turns
+#: it on.
 CAD_REPAIR_FILL_PLANAR_HOLES: bool = bool_env("CAD_REPAIR_FILL_PLANAR_HOLES", "false")
+
+#: Close a hole whose rim is not flat with a patch that follows the surrounding surface. Separate
+#: from the planar flag because it invents curvature the customer never drew, so it does not
+#: inherit the planar fill's consent. Off by default; the deploy's `cad_repair` tick turns it on.
+CAD_REPAIR_FILL_NONPLANAR_HOLES: bool = bool_env("CAD_REPAIR_FILL_NONPLANAR_HOLES", "false")
+
+#: Heal self-intersecting geometry, touching only the faces the kernel's analysis names and
+#: leaving the rest of the shape as it was. Off by default; the deploy's `cad_repair` tick turns
+#: it on.
+CAD_REPAIR_HEAL_SELF_INTERSECTIONS: bool = bool_env("CAD_REPAIR_HEAL_SELF_INTERSECTIONS", "false")
 
 #: The largest hole that may be patched, as a fraction of the part's diagonal measured across the
 #: hole's own bounding box. Past this it is not a hole, it is a missing wall - and a flat lid over
@@ -89,3 +103,81 @@ CAD_INSPECT_MAX_BYTES: int = int(optional_env("CAD_INSPECT_MAX_BYTES", str(80 * 
 #: matters - a pathological part must not spend a job's deadline before admission has even judged
 #: the original.
 CAD_REPAIR_TIMEOUT_S: float = float(optional_env("CAD_REPAIR_TIMEOUT_S", "120"))
+
+#: Operations the loop may TRY in one run, kept or rolled back. Not a limit on how many may be
+#: kept: a run that tried six and kept one did six re-inspections, and the re-inspection is what
+#: costs. Six is a budget, not a derived number: it is not tied to how many operations
+#: `operations.OPERATIONS` holds, which grows, and is sized to leave room for retries.
+CAD_REPAIR_MAX_OPS: int = int(optional_env("CAD_REPAIR_MAX_OPS", "6"))
+
+#: Consecutive operations that were not kept before the loop gives up. A planner that has proposed
+#: two things in a row that did not work has run out of ideas the rules can express, and further
+#: attempts spend a job's deadline rediscovering that.
+CAD_REPAIR_STALL_LIMIT: int = int(optional_env("CAD_REPAIR_STALL_LIMIT", "2"))
+
+#: How far the part's surface area may end up from what the operations ACCOUNTED FOR, as a
+#: fraction of the original.
+#:
+#: WHY THIS IS NOT THE OLD ALLOWANCE. The whole-shape repair compared area and volume against the
+#: original with the hole-span cap (0.75) as the allowance, because patching a hole legitimately
+#: moves both and there was no way to say by how much. An operation that patches a hole now
+#: DECLARES the area it added, so the comparison is against `original + declared` and the residual
+#: can be tight. A 75% allowance on a measurement nobody predicted is not a cap; it is a record of
+#: not knowing.
+CAD_REPAIR_MAX_AREA_CHANGE_RATIO: float = float(
+    optional_env("CAD_REPAIR_MAX_AREA_CHANGE_RATIO", "0.02"))
+
+#: The same residual, for volume - applied only when the solid count did not RISE. Volume that
+#: appears because a body closed is ACCEPTED AND RECORDED rather than compared, and `caps` skips
+#: the comparison in three cases: the original had no solid, the result has none, or the result has
+#: MORE than the original. The third is the mixed assembly - one solid body beside one sewn closed
+#: and promoted - where the new body's volume is real, undeclarable (whether a shell closed is the
+#: kernel's answer) and not a fraction of anything. A solid LOST is caught by the per-operation
+#: solid-count check instead.
+CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO: float = float(
+    optional_env("CAD_REPAIR_MAX_VOLUME_CHANGE_RATIO", "0.02"))
+
+#: Whether an UNSURE repair defect is put to an engineer in the console. OFF, and while it is off
+#: the review mints nothing and no run parks: an unsure defect is reported exactly as it was before
+#: this slice existed. Turning it on is what lets a run wait on a person, so it is a deployment's
+#: decision and not a default.
+CAD_REPAIR_REVIEW_ENABLED: bool = bool_env("CAD_REPAIR_REVIEW_ENABLED", "false")
+
+#: How many unsure defects one review may put to a model before the rest go to the engineer
+#: unexamined. A bound on spend per review, not a quality threshold: the sample is what the model
+#: looks at, and it is taken in the order the defects were found.
+CAD_REPAIR_REVIEW_SAMPLE_SIZE: int = int(optional_env("CAD_REPAIR_REVIEW_SAMPLE_SIZE", "3"))
+
+#: The most model calls one review may make, across the sample. A hard ceiling on the review's
+#: cost, independent of how many defects the sample holds.
+CAD_REPAIR_REVIEW_LLM_CALLS_MAX: int = int(optional_env("CAD_REPAIR_REVIEW_LLM_CALLS_MAX", "4"))
+
+#: Seconds one review model call may take before it is abandoned and its defect goes to the
+#: engineer as unexamined. A model that has not answered in this long is not going to answer in
+#: time for a job's deadline.
+CAD_REPAIR_REVIEW_LLM_TIMEOUT_S: float = float(optional_env("CAD_REPAIR_REVIEW_LLM_TIMEOUT_S", "20.0"))
+
+
+def _planner_posture() -> str:
+    """The planner posture, FAILING CLOSED: anything but exactly shadow or live reads as off."""
+    raw = optional_env("CAD_REPAIR_LLM_PLANNER", "off").strip().lower()
+    return raw if raw in ("shadow", "live") else "off"
+
+
+#: Where the model sits in the repair loop's planner seat. "off" is byte-for-byte the prior
+#: behaviour: the rule planner alone, no model call, no shadow row. "shadow" asks the model and
+#: records what it would have done beside what the rules did, without acting on it. "live" lets its
+#: plan act, inside the same caps and measurements every operation already answers to. An unknown
+#: value reads as "off": a typo in a deployment must not put a model in charge of geometry.
+CAD_REPAIR_LLM_PLANNER: str = _planner_posture()
+
+#: The most planner model calls one repair run may make. A hard ceiling on spend per run.
+CAD_REPAIR_LLM_PLANNER_CALLS_MAX: int = int(optional_env("CAD_REPAIR_LLM_PLANNER_CALLS_MAX", "2"))
+
+#: Seconds one planner model call may take before the rule planner's choice stands.
+CAD_REPAIR_LLM_PLANNER_TIMEOUT_S: float = float(
+    optional_env("CAD_REPAIR_LLM_PLANNER_TIMEOUT_S", "20.0"))
+
+#: The confidence below which the model's plan is not acted on and the rule planner's choice stands.
+CAD_REPAIR_LLM_PLANNER_MIN_CONFIDENCE: float = float(
+    optional_env("CAD_REPAIR_LLM_PLANNER_MIN_CONFIDENCE", "0.5"))

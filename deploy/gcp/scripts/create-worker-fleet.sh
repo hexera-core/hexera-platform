@@ -471,6 +471,19 @@ WORKER_METADATA=(
   # its health - which is how step 7 knows a rolled VM really runs the new digest.
   "enable-guest-attributes=TRUE"
 )
+# The CAD repair switches, only when the deploy stated them (the workflow's cad_repair input); absent
+# attributes leave the env object's shipped values in force.
+[ -z "${CAD_REPAIR_ENABLED:-}" ] || WORKER_METADATA+=("cad-repair-enabled=${CAD_REPAIR_ENABLED}")
+[ -z "${CAD_REPAIR_REVIEW_ENABLED:-}" ] \
+  || WORKER_METADATA+=("cad-repair-review-enabled=${CAD_REPAIR_REVIEW_ENABLED}")
+[ -z "${CAD_REPAIR_FILL_PLANAR_HOLES:-}" ] \
+  || WORKER_METADATA+=("cad-repair-fill-planar-holes=${CAD_REPAIR_FILL_PLANAR_HOLES}")
+[ -z "${CAD_REPAIR_FILL_NONPLANAR_HOLES:-}" ] \
+  || WORKER_METADATA+=("cad-repair-fill-nonplanar-holes=${CAD_REPAIR_FILL_NONPLANAR_HOLES}")
+[ -z "${CAD_REPAIR_HEAL_SELF_INTERSECTIONS:-}" ] \
+  || WORKER_METADATA+=("cad-repair-heal-self-intersections=${CAD_REPAIR_HEAL_SELF_INTERSECTIONS}")
+[ -z "${CAD_REPAIR_LLM_PLANNER:-}" ] \
+  || WORKER_METADATA+=("cad-repair-llm-planner=${CAD_REPAIR_LLM_PLANNER}")
 WORKER_METADATA+=(${WORKER_SECRET_METADATA[@]+"${WORKER_SECRET_METADATA[@]}"})
 
 # The metadata list is handed to gcloud with '|' as its delimiter. Neither of the obvious

@@ -147,6 +147,12 @@ def stalled_jobs_clause(now: datetime) -> ColumnElement[bool]:
     a worker that claimed it at the last moment and is refusing it truthfully. The never-started
     ceiling reaches only a job that has truly never started.
 
+    QUEUED WITH NO CLOCK. A review re-run reuses its row with the deadline cleared (its claim
+    anchors a fresh one) and, once the launcher took it, the release mark cleared too - so if no
+    worker ever takes that message, no rule above reads it: not never-started, no deadline, no
+    mark. It is judged by the ceiling against its last change instead, rather than waiting forever
+    behind a closed review.
+
     RELEASED BUT NOT CONFIRMED QUEUED. A release (a hand-back, or this reaper's own re-run) marks
     the unowned pending job with `lease_expires_at` until the launcher has taken its message
     (persistence/lease.py `hand_back`, `confirm_requeued`). A mark older than a lease is a release
@@ -184,6 +190,15 @@ def stalled_jobs_clause(now: datetime) -> ColumnElement[bool]:
         & SimulationJob.active_worker_token.is_(None)
         & SimulationJob.lease_expires_at.isnot(None)
         & (SimulationJob.lease_expires_at < lease_cutoff),
+        # confirmed back on the queue with NO clock left to judge it by - a review re-run
+        # (job_repository.review_rerun_reset clears its deadline so its claim anchors a fresh one,
+        # and confirm_requeued clears the release mark) whose message no worker ever took
+        SimulationJob.status.in_([JobStatus.pending, JobStatus.queued])
+        & SimulationJob.started_at.isnot(None)
+        & SimulationJob.active_worker_token.is_(None)
+        & SimulationJob.lease_expires_at.is_(None)
+        & SimulationJob.pipeline_deadline_at.is_(None)
+        & (SimulationJob.updated_at < started_cutoff),
     )
 
 

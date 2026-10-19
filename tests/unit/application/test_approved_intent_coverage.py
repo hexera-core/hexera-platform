@@ -46,6 +46,15 @@ DECLARED_EXCLUSIONS: dict[str, str] = {
     "user_dispute": (
         "A dispute run is a DIFFERENT logical run against an already-delivered mesh; it carries its "
         "parent's pinned engine and is re-reviewed, not re-approved through the intake gate."),
+    "repair_directives": (
+        "The repair directives a parked run's re-run plays first. They steer only which catalogue "
+        "operation the CAD repair tries next. MITIGATION: a directive is a planner proposal, not a "
+        "cap waiver - the repair session's caps, rollback and progress rule judge it exactly as "
+        "they judge the rules planner's, and it is written only by the owner-scoped review route."),
+    "review_continuation": (
+        "Marks a dispatch as a parked run's own re-run, so the spend gate is not applied twice. "
+        "MITIGATION: it changes no mesh input and nothing routes on it; it is set only by the "
+        "owner-scoped review route, and the job is charged once at its real ending."),
 }
 
 

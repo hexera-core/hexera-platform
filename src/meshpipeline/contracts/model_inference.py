@@ -135,6 +135,10 @@ class ModelRouter(Protocol):
         name: str = "Intake", tools: list[ToolDefinition] | None = None,
     ) -> ModelRoundResult: ...
 
+    async def call_repair_review_model(
+        self, messages: Conversation, job_id: str = "", name: str = "RepairReview",
+    ) -> ModelRoundResult: ...
+
     async def call_reviewer_with_tools(
         self, messages: Conversation, tools: list[ToolDefinition],
         job_id: str = "", user_id: str = "",
@@ -191,6 +195,12 @@ async def call_intake_model(
 ) -> ModelRoundResult:
     return await _r().call_intake_model(
         messages=messages, job_id=job_id, user_id=user_id, name=name, tools=tools)
+
+
+async def call_repair_review_model(
+    messages: Conversation, job_id: str = "", name: str = "RepairReview",
+) -> ModelRoundResult:
+    return await _r().call_repair_review_model(messages=messages, job_id=job_id, name=name)
 
 
 async def call_reviewer_with_tools(

@@ -1279,6 +1279,32 @@
   "roots": []
  },
  {
+  "context": "api/v1/repair_review.py::_compensate::error#1|NotAPublisher|not-a-publisher|",
+  "path": "api/v1/repair_review.py",
+  "qualname": "_compensate",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "api/v1/repair_review.py::run_review::error#1|NotAPublisher|not-a-publisher|",
+  "path": "api/v1/repair_review.py",
+  "qualname": "run_review",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "api/v1/simulation.py::_viewer_data::error#1|NotAPublisher|not-a-publisher|",
   "path": "api/v1/simulation.py",
   "qualname": "_viewer_data",
@@ -2470,6 +2496,32 @@
   "roots": [
    "application/terminal_finalize.py::callers of finalize_crash()"
   ]
+ },
+ {
+  "context": "application/terminal_finalize.py::finalize_terminal_atomic::error#1|NotAPublisher|not-a-publisher|",
+  "path": "application/terminal_finalize.py",
+  "qualname": "finalize_terminal_atomic",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "log",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "application/terminal_finalize.py::finalize_terminal_atomic::error#2|NotAPublisher|not-a-publisher|",
+  "path": "application/terminal_finalize.py",
+  "qualname": "finalize_terminal_atomic",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 2,
+  "receiver": "log",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
  },
  {
   "context": "application/thermal_wording.py::forbidden_words::search#1|NotAPublisher|not-a-publisher|",

@@ -69,6 +69,10 @@ class AssignIn(BaseModel):
     #: Refuse the claim if somebody already holds it, so two operators opening the same row
     #: cannot both believe they took it. A lead REASSIGNING work passes false.
     claim: bool = True
+    #: For a RELEASE (empty operator): clear the claim only while THIS operator holds it. A release
+    #: from a page loaded before a reassignment then fails as a 409 instead of clearing the new
+    #: holder's claim. The admin console sends its verified actor here.
+    holder: str = Field(default="", max_length=256)
 
 
 #: Decisions that claim the customer received something. Each needs evidence that the thing
@@ -264,8 +268,10 @@ async def assign_job(job_id: str, body: AssignIn) -> dict:
         job = await repo().operator_job(db, jid)
         if job is None:
             raise HTTPException(status_code=404, detail="repair job not found")
+        holder = body.holder.strip() if not body.operator else ""
         took = await repo().assign(db, jid, operator=body.operator,
-                                 claim_only_if_unassigned=bool(body.claim and body.operator))
+                                 claim_only_if_unassigned=bool(body.claim and body.operator),
+                                 release_only_if_held_by=holder)
         if not took:
             # 409, not 403: the caller is entitled to this queue, it just lost the race for this
             # item. The distinction is what lets a client refresh rather than give up.

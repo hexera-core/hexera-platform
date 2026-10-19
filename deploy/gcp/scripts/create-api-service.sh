@@ -232,6 +232,31 @@ fi
 if [ -n "${GCP_MESH_BUCKET:-}" ]; then
   API_ENV_PAIRS+=("GCP_MESH_BUCKET=${GCP_MESH_BUCKET}")
 fi
+# The CAD repair loop and its review, only when the workflow's cad_repair input stated them. --set-env-vars
+# is declarative, so an unticked deploy drops these from an API that had them: intended, the workflow decides.
+[ -z "${CAD_REPAIR_ENABLED:-}" ] || API_ENV_PAIRS+=("CAD_REPAIR_ENABLED=${CAD_REPAIR_ENABLED}")
+[ -z "${CAD_REPAIR_REVIEW_ENABLED:-}" ] \
+  || API_ENV_PAIRS+=("CAD_REPAIR_REVIEW_ENABLED=${CAD_REPAIR_REVIEW_ENABLED}")
+[ -z "${CAD_REPAIR_FILL_PLANAR_HOLES:-}" ] \
+  || API_ENV_PAIRS+=("CAD_REPAIR_FILL_PLANAR_HOLES=${CAD_REPAIR_FILL_PLANAR_HOLES}")
+[ -z "${CAD_REPAIR_FILL_NONPLANAR_HOLES:-}" ] \
+  || API_ENV_PAIRS+=("CAD_REPAIR_FILL_NONPLANAR_HOLES=${CAD_REPAIR_FILL_NONPLANAR_HOLES}")
+[ -z "${CAD_REPAIR_HEAL_SELF_INTERSECTIONS:-}" ] \
+  || API_ENV_PAIRS+=("CAD_REPAIR_HEAL_SELF_INTERSECTIONS=${CAD_REPAIR_HEAL_SELF_INTERSECTIONS}")
+# The LLM planner posture, only when the workflow's llm_planner input chose shadow or live.
+[ -z "${CAD_REPAIR_LLM_PLANNER:-}" ] \
+  || API_ENV_PAIRS+=("CAD_REPAIR_LLM_PLANNER=${CAD_REPAIR_LLM_PLANNER}")
+# UNTICKED IS A STATED INTENT TOO. The live-setting check below refuses to drop a name this run
+# does not declare, so a revision that once had repair on could never be deployed with it off: the
+# rollout stopped and the old revision kept serving with repair enabled. An unset opt-in is named
+# droppable here, exactly as billing's are, and nothing else that check guards is loosened.
+OPT_IN_DROPPABLE=()
+[ -n "${CAD_REPAIR_ENABLED:-}" ] || OPT_IN_DROPPABLE+=(CAD_REPAIR_ENABLED)
+[ -n "${CAD_REPAIR_REVIEW_ENABLED:-}" ] || OPT_IN_DROPPABLE+=(CAD_REPAIR_REVIEW_ENABLED)
+[ -n "${CAD_REPAIR_FILL_PLANAR_HOLES:-}" ] || OPT_IN_DROPPABLE+=(CAD_REPAIR_FILL_PLANAR_HOLES)
+[ -n "${CAD_REPAIR_FILL_NONPLANAR_HOLES:-}" ] || OPT_IN_DROPPABLE+=(CAD_REPAIR_FILL_NONPLANAR_HOLES)
+[ -n "${CAD_REPAIR_HEAL_SELF_INTERSECTIONS:-}" ] || OPT_IN_DROPPABLE+=(CAD_REPAIR_HEAL_SELF_INTERSECTIONS)
+[ -n "${CAD_REPAIR_LLM_PLANNER:-}" ] || OPT_IN_DROPPABLE+=(CAD_REPAIR_LLM_PLANNER)
 # The database this deployment migrated. POSTGRES_* and not DATABASE_URL: a DSN carries the
 # password, and DATABASE_URL is declared secret precisely because it does.
 if [ -n "${MIGRATE_DB_HOST:-}" ]; then
@@ -339,7 +364,8 @@ if run_svc_exists "${API_SERVICE}"; then
   while read -r live_name; do
     [ -n "${live_name}" ] || continue
     declared=0
-    for declared_name in "${DECLARED_ENV_NAMES[@]}" ${BILLING_OFF_DROPPABLE[@]+"${BILLING_OFF_DROPPABLE[@]}"}; do
+    for declared_name in "${DECLARED_ENV_NAMES[@]}" ${BILLING_OFF_DROPPABLE[@]+"${BILLING_OFF_DROPPABLE[@]}"} \
+        ${OPT_IN_DROPPABLE[@]+"${OPT_IN_DROPPABLE[@]}"}; do
       [ "${live_name}" != "${declared_name}" ] || { declared=1; break; }
     done
     [ "${declared}" = "1" ] || undeclared+=("${live_name}")

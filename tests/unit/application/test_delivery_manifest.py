@@ -162,3 +162,17 @@ def test_a_repaired_delivery_that_cannot_name_the_original_is_incomplete():
                                 _Row(ArtifactType.repair_report)],
                      final_result=_delivered(repair_lineage={"engine_staged_for": "snappy"}))
     assert any("does not identify the original upload" in g for g in evidence_gaps(manifest))
+
+
+def test_the_served_manifest_states_its_own_gaps():
+    """`evidence_gaps` was never called by production code, so a repaired delivery whose repaired
+    file failed to upload still served `required_ready: True` with no warning at all."""
+    lineage = {"original": {"source_id": "s0", "sha256": "a" * 64}}
+    manifest = build(job_id="j1", artifacts=[_Row(ArtifactType.mesh_bundle),
+                                             _Row(ArtifactType.repair_report)],
+                     final_result=_delivered(repair_lineage=lineage))
+    assert manifest["required_ready"] is True
+    assert any("cannot download" in g for g in manifest["evidence_gaps"])
+    clean = build(job_id="j1", artifacts=[_Row(ArtifactType.mesh_bundle)],
+                  final_result=_delivered())
+    assert clean["evidence_gaps"] == []

@@ -73,12 +73,30 @@ for pair in "deployment-id:DEPLOYMENT_ID" \
             "minio-region:MINIO_REGION" \
             "minio-secure:MINIO_SECURE" \
             "gcp-mesh-bucket:GCP_MESH_BUCKET" \
-            "cloudrun-job:CLOUDRUN_JOB"; do
+            "cloudrun-job:CLOUDRUN_JOB" \
+            "cad-repair-enabled:CAD_REPAIR_ENABLED" \
+            "cad-repair-review-enabled:CAD_REPAIR_REVIEW_ENABLED" \
+            "cad-repair-fill-planar-holes:CAD_REPAIR_FILL_PLANAR_HOLES" \
+            "cad-repair-fill-nonplanar-holes:CAD_REPAIR_FILL_NONPLANAR_HOLES" \
+            "cad-repair-heal-self-intersections:CAD_REPAIR_HEAL_SELF_INTERSECTIONS" \
+            "cad-repair-llm-planner:CAD_REPAIR_LLM_PLANNER"; do
   value="$(md "${pair%%:*}" || true)"
   if [ -n "${value}" ]; then
     echo "${pair##*:}=${value}" >> /etc/hexera/worker.env
   fi
 done
+
+# THE PROJECT, asked of the metadata server for the same reason the secrets block asks it: it is a
+# fact about where this instance runs, so nothing has to state it and nothing can state it wrongly.
+# It has no metadata attribute and the env object is .env.example, where the line is EMPTY - so
+# without this a personal fleet has no project at all, and every mesh dispatch was refused with
+# "Cloud Run compute is required for meshing but is not configured - missing: GCP_PROJECT_ID"
+# while the fleet looked healthy. The job name and the exchange bucket beside it came through the
+# loop above, which is why that one name was the only thing missing.
+project="$(md_project || true)"
+if [ -n "${project}" ]; then
+  echo "GCP_PROJECT_ID=${project}" >> /etc/hexera/worker.env
+fi
 
 # CREDENTIALS are fetched by NAME, under this instance's own identity, and only ever exist in a
 # root-owned file on the instance. Metadata carries the secret's name; the value is never in the

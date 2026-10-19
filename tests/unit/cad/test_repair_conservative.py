@@ -197,3 +197,73 @@ def test_the_source_file_is_only_ever_read(monkeypatch, tmp_path):
     # whatever happened, the customer's bytes are exactly as they arrived
     assert source.read_bytes() == before
     assert not Path(tmp_path / "out.step").exists()
+
+
+# THE REFUSAL IS NOW THE CAPS MODULE'S, AND MUST NOT HAVE DRIFTED
+
+
+def test_the_old_refusal_entry_point_still_refuses_everything_it_used_to():
+    # `_refusal` is kept as a payload-driven shim, exercised here with recorded measurement payloads. If splitting it into sanity and cumulative changed any
+    # verdict, that is a silent behaviour change to a safety check.
+    assert "no faces" in _refusal(_BEFORE, _after(faces=0))
+    assert "solid" in _refusal(_BEFORE, _after(solids=0))
+    assert "face" in _refusal(_BEFORE, _after(faces=19))
+    assert "tolerance" in _refusal(_BEFORE, _after(max_tolerance_mm=0.5))
+    assert "diagonal" in _refusal(_BEFORE, _after(diagonal_mm=201.0))
+    assert "invalid" in _refusal(_BEFORE, _after(valid=False))
+    assert _refusal(_BEFORE, _BEFORE) == ""
+
+
+def test_the_shim_tolerates_the_measurement_keys_the_old_report_carried():
+    # Recorded pipeline payloads outlive a deploy, and `Measure.from_dict` has to read one written
+    # before area and volume were recorded at all.
+    sparse = {"valid": True, "diagonal_mm": 200.0, "max_tolerance_mm": 0.01,
+              "solids": 1, "shells": 1, "faces": 20, "edges": 60, "vertices": 40}
+    assert _refusal(sparse, dict(sparse)) == ""
+
+
+def test_the_shim_now_bounds_area_and_volume_by_the_residual_not_the_old_hole_span_allowance():
+    # A DELIBERATE TIGHTENING, not drift. The old `_refusal` allowed area and volume to move by up
+    # to CAD_REPAIR_MAX_HOLE_SPAN_RATIO (0.75). The shim declares no area or volume, so an
+    # unexplained 10% change is now refused at the 0.02 residual.
+    before = {**_BEFORE, "surface_area_mm2": 1000.0, "volume_mm3": 8000.0}
+    assert _refusal(before, {**before, "surface_area_mm2": 1100.0}) != ""
+    assert _refusal(before, {**before, "volume_mm3": 8800.0}) != ""
+    assert _refusal(before, {**before, "surface_area_mm2": 1010.0}) == ""
+
+
+def test_a_resolved_summary_does_not_hide_a_surviving_warning():
+    from types import SimpleNamespace
+
+    from meshpipeline.cad.repair.conservative import _summary
+
+    result = SimpleNamespace(resolved=True, stopped_because="resolved", verdicts=[],
+                             defects=({"code": "duplicate_surface_data"},))
+    text = _summary(result, SimpleNamespace(valid=True))
+    assert text != "Repaired within the conservative caps."
+    assert "1 advisory defect(s)" in text
+
+    clean = SimpleNamespace(resolved=True, stopped_because="resolved", verdicts=[], defects=())
+    assert _summary(clean, SimpleNamespace(valid=True)) == "Repaired within the conservative caps."
+
+
+def test_a_resolved_summary_names_an_analyzer_crossing_and_never_calls_it_a_warning():
+    # Floor fix: an analyzer-only crossing does not block `resolved`, but it is an ERROR, so the
+    # operator's sentence must count it on its own and must not claim "warnings, not errors".
+    from types import SimpleNamespace
+
+    from meshpipeline.cad.repair.conservative import _summary
+
+    crossing = {"code": "self_intersection", "severity": "error",
+                "kernel_status": "SelfInterference", "measurements": {}}
+    only = SimpleNamespace(resolved=True, stopped_because="resolved", verdicts=[],
+                           defects=(crossing,))
+    text = _summary(only, SimpleNamespace(valid=True))
+    assert "1 crossing(s) the face analyzer found, for review" in text
+    assert "not errors" not in text and "advisory" not in text
+
+    both = SimpleNamespace(resolved=True, stopped_because="resolved", verdicts=[],
+                           defects=(crossing, {"code": "small_edge", "severity": "warning"}))
+    text = _summary(both, SimpleNamespace(valid=True))
+    assert "1 advisory defect(s) remain (warnings, not errors)" in text
+    assert "1 crossing(s) the face analyzer found, for review" in text

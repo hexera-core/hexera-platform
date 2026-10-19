@@ -28,7 +28,7 @@ import { circleThrough, clickIndex, firstHit, snapAt } from "./open_ends.js";
 import { bindMouse, isUpAxis, orient, saveUp, savedUp, shield, upSelectHtml, upVector } from "./view_controls.js";
 
 let _vtkP = null;
-function loadVtk() {
+export function loadVtk() {
   if (window.vtk) return Promise.resolve();
   if (!_vtkP) _vtkP = new Promise((res, rej) => {
     const s = document.createElement("script"); s.src = "/static/vendor/vtk.js";
@@ -36,9 +36,9 @@ function loadVtk() {
     document.head.appendChild(s); });
   return _vtkP;
 }
-function b64f32(b) { const bin = atob(b), n = bin.length, u = new Uint8Array(n);
+export function b64f32(b) { const bin = atob(b), n = bin.length, u = new Uint8Array(n);
   for (let i = 0; i < n; i++) u[i] = bin.charCodeAt(i); return new Float32Array(u.buffer); }
-function b64u32(b) { const bin = atob(b), n = bin.length, u = new Uint8Array(n);
+export function b64u32(b) { const bin = atob(b), n = bin.length, u = new Uint8Array(n);
   for (let i = 0; i < n; i++) u[i] = bin.charCodeAt(i); return new Uint32Array(u.buffer); }
 
 /* the console's own palette: the mesh viewer's dark background, a light grey part with soft

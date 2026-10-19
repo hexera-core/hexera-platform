@@ -8,6 +8,7 @@ import pytest
 pytest.importorskip("OCP.STEPControl")
 
 from meshpipeline.cad.cad_tessellate import tessellate_internal  # noqa: E402
+from meshpipeline.cad.internal_surface import InternalSurfaceError  # noqa: E402
 from meshpipeline.contracts.coordinate_state import from_occ_transfer  # noqa: E402
 from meshpipeline.contracts.geometry_units import (  # noqa: E402
     GeometryInterpretation,
@@ -141,3 +142,27 @@ def test_a_flat_wall_face_is_still_mistaken_for_a_port(tmp_path):
     impostor = areas[2]
     assert not any(impostor == pytest.approx(a, rel=0.02)
                    for a in (math.pi * 20 ** 2, math.pi * 30 ** 2)), impostor
+
+
+def test_a_box_every_face_of_which_reads_as_an_opening_is_refused_with_no_wall_left(tmp_path):
+    """Detection is "the face is planar", so every face of a box is an opening and the wall - what
+    no opening claimed - is left with nothing. The staging used to write a wall of no triangles at
+    all and report success; the mesher met the empty patch three attempts later. The staging
+    refuses it instead, in the words the user can act on."""
+    step = tmp_path / "box.step"
+
+    import gmsh
+    gmsh.initialize(interruptible=False)
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.model.add("box")
+        gmsh.model.occ.addBox(0, 0, 0, 100, 50, 50)
+        gmsh.model.occ.synchronize()
+        gmsh.write(str(step))
+    finally:
+        gmsh.finalize()
+
+    out = tmp_path / "stls"
+    out.mkdir()
+    with pytest.raises(InternalSurfaceError, match="no wall left"):
+        tessellate_internal(str(step), out, prepared=_prepared())

@@ -2,7 +2,11 @@
 
 import { useActionState } from "react";
 
-import { claimRepair, decideRepair, REPAIR_FORM_IDLE } from "./actions";
+import { claimRepair, decideRepair, type RepairFormState } from "./actions";
+
+// HERE, NOT IN actions.ts: a "use server" module may export only async functions, and a constant
+// exported from one fails `next build` (src/app/server-actions.test.ts pins the rule).
+const REPAIR_FORM_IDLE: RepairFormState = {};
 
 // THE REFUSAL IS PART OF THE FORM, NOT A PAGE. Two operators work one queue, so a decision that
 // arrives a moment late is an ordinary 409 rather than a fault - and an operator who has just

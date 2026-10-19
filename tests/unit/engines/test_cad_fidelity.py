@@ -196,3 +196,85 @@ def test_a_case_of_several_passages_counts_each_passage_once(tmp_path):
     cad, source, fluid_side = F.cad_reference(ws, "internal")
     assert fluid_side and source.endswith("every passage")
     assert F.enclosed_volume(cad) == pytest.approx(2 * 0.4 * 0.4, rel=1e-6)
+
+
+# # an external body made of several solids: only the skin the outside air touches is the CAD the
+# # mesh must reach - faces where the solids touch or overlap are inside the body
+
+BODY_ROLES = [{"name": "body", "type": "wall"}, {"name": "farfield", "type": "farfield"}]
+
+
+def _solids(ws: Path, *bounds) -> None:
+    """input.stl = several closed boxes in one file, each its own solid."""
+    ws.mkdir(parents=True, exist_ok=True)
+    pv.merge([pv.Box(bounds=b, level=6).triangulate() for b in bounds]).extract_surface(
+        algorithm="dataset_surface").save(str(ws / "input.stl"))
+
+
+def _external_mesh(ws: Path, body_bounds) -> None:
+    """An external mesh's boundary: the body's skin (faces into the body) and a far-field box."""
+    body = _box_patches(body_bounds, inward=True)
+    far = pv.Box(bounds=(-5, 6, -5, 5.5, -5, 5.5), level=2, quads=True).extract_surface(
+        algorithm="dataset_surface")
+    _write_boundary(ws, {"body": pv.merge(list(body.values())).extract_surface(
+        algorithm="dataset_surface"), "farfield": far})
+    (ws / "mesh_manifest.json").write_text(json.dumps(
+        {"flow_topology": "external", "patch_types": {"body": "wall", "farfield": "patch"},
+         "quality": {}}))
+
+
+@pytest.mark.parametrize("halves", [
+    # two halves joined on a plane: each carries a cut face on it, inside the body
+    ((0, 0.5, 0, 0.5, 0, 0.5), (0.5, 1, 0, 0.5, 0, 0.5)),
+    # two solids pushed into each other: each has faces inside the other
+    ((0, 0.65, 0, 0.5, 0, 0.5), (0.35, 1, 0, 0.5, 0, 0.5)),
+])
+def test_faces_where_solids_touch_or_overlap_are_not_missed_by_an_external_mesh(tmp_path, halves):
+    ws = tmp_path / "ws"
+    _solids(ws, *halves)
+    _external_mesh(ws, (0, 1, 0, 0.5, 0, 0.5))      # the mesh follows the body's outer skin
+    rec = F.measure(ws, intake_patches=BODY_ROLES, flow="external")
+    c2m = rec["surface"]["cad_to_mesh"]
+    assert c2m["cad_missed_share"] < F.CAD_MISSED_CONCERN, rec
+    assert c2m["cad_hidden_share"] > 0.05               # the inside faces were set aside, said so
+    assert rec["verdicts"]["cad_to_mesh"] == F.PASS
+    # summed solids are not the volume the body displaces: not read, and said why
+    assert "volume" not in rec["verdicts"] and "touch or overlap" in rec["volume"]["why"]
+    assert rec["verdict"] == F.PASS
+    assert F.gate_cad_fidelity(GateCtx(workspace=ws, intake_patches=BODY_ROLES))[0]
+
+
+def test_a_fin_the_mesh_dropped_is_still_refused_when_it_is_its_own_solid(tmp_path):
+    # the fin is a second solid whose root is pushed into the body: its root is hidden, but the
+    # fin standing in the air is skin, and a mesh of the body alone does not reach it
+    ws = tmp_path / "ws"
+    _solids(ws, (0, 1, 0, 0.5, 0, 0.5), (0.4, 0.6, 0.2, 0.3, 0.3, 1.5))
+    _external_mesh(ws, (0, 1, 0, 0.5, 0, 0.5))
+    rec = F.measure(ws, intake_patches=BODY_ROLES, flow="external")
+    assert rec["verdicts"]["cad_to_mesh"] == F.REBUILD, rec
+    assert rec["surface"]["cad_to_mesh"]["cad_missed_share"] > F.CAD_MISSED_REBUILD
+    ok, feedback = F.gate_cad_fidelity(GateCtx(workspace=ws, intake_patches=BODY_ROLES))
+    assert not ok and "not reached by the mesh" in feedback
+
+
+def test_a_lost_part_beside_the_body_is_still_refused(tmp_path):
+    # a separate part standing free in the air (a pod beside the body) that the mesh lost
+    ws = tmp_path / "ws"
+    _solids(ws, (0, 1, 0, 0.5, 0, 0.5), (0, 1, 0.8, 1.3, 0, 0.5))
+    _external_mesh(ws, (0, 1, 0, 0.5, 0, 0.5))
+    rec = F.measure(ws, intake_patches=BODY_ROLES, flow="external")
+    assert rec["verdicts"]["cad_to_mesh"] == F.REBUILD, rec
+    assert rec["surface"]["cad_to_mesh"]["cad_hidden_share"] < 0.01   # nothing of it is hidden
+
+
+def test_a_surface_with_a_hole_keeps_every_face_counted():
+    # air gets in through the hole: the skin finder sets nothing aside, the old reading stands
+    box = pv.Box(bounds=(0, 1, 0, 0.5, 0, 0.5), level=6, quads=True).compute_normals(
+        cell_normals=True, point_normals=False, auto_orient_normals=True)
+    n = np.asarray(box.cell_data["Normals"])
+    open_box = F._from_pyvista(box.extract_cells(np.flatnonzero(n[:, 0] < 0.9)).extract_surface(
+        algorithm="dataset_surface"))
+    inner = F._from_pyvista(pv.Box(bounds=(0.3, 0.6, 0.1, 0.4, 0.1, 0.4), level=2))
+    cad = F.join([open_box, inner])
+    skin = F.outer_skin(cad, 0.05)
+    assert skin is not None and skin(cad.centroids()).all()
