@@ -46,6 +46,14 @@ then the share of delivered meshes whose cells went past the 70-degree non-ortho
 out broken or badly shaped never wins a tie on speed. Every number in a reason is a count of
 real runs; thin evidence says so.
 
+A QUALITY FAULT outweighs the pass rate, not only a tie. An engine whose own record on shapes like
+this shows MOST of its delivered meshes past the cell-shape limit, MOST of its tries broken, or
+near-wall layers on under half the wall, is not recommended over an engine with a measured record
+and no such fault: "passed" there means the mesh cleared that engine's bars, not that it is the
+mesh a solver wants. (cfMesh passed 38 of 38 thin bodies from CAD with 24 of the 38 past the
+limit; snappyHexMesh passed 6 of 6 with none - the rate alone recommended cfMesh.) Both stay on
+the list with their reasons, and the user still picks.
+
 Engines may also DECLARE where they are at home (EngineSpec.home_turf, rows of a fact, a test, a
 severity and words). Those rows give the plain "why"; an OUTSIDE row keeps an engine from being
 recommended - it stays on the list, marked, for the user to pick if they want it. The ranking
@@ -58,7 +66,7 @@ import logging
 import math
 import statistics
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -113,6 +121,15 @@ DETAILED_EDGES = 12.0
 #: from CAD, where snappyHexMesh had none) is.
 NON_ORTHO_LIMIT = 70.0
 QUALITY_STEP = 0.2
+#: A QUALITY FAULT (see quality_fault): more than this share of an engine's delivered meshes past
+#: NON_ORTHO_LIMIT, or of its tries broken, on shapes like this - read only once MIN_SHAPES meshes
+#: (or tries) back it, so one bad mesh in two is not a record.
+FAULT_SHARE = 0.5
+#: ...or its delivered meshes carried near-wall layers on under this share of the wall (median).
+FAULT_LAYERS_PCT = 50.0
+#: An engine without a fault is put ahead of one with a fault only when its own cautious score is at
+#: least this: a sound engine that mostly fails is no better a pick than a faulted one that passes.
+SOUND_SCORE = 0.5
 
 # how much fine detail an external body carries (its first evidence level)
 DETAILED = "detailed"
@@ -567,6 +584,8 @@ def fit_words(fit: EngineFit) -> str:
         return "best fit"
     if fit.evidence.level < 0:
         return "untested"
+    if quality_fault(fit.evidence):
+        return "quality concerns"
     return "good fit" if fit.score >= 0.75 else "fair fit" if fit.score >= 0.45 else "poor fit"
 
 
@@ -662,6 +681,21 @@ def quality_step(ev: Evidence) -> int:
     return int(math.floor(ev.over_limit_share / QUALITY_STEP + 1e-9)) if ev.shaped else 0
 
 
+def quality_fault(ev: Evidence) -> str:
+    """What makes an engine's record on shapes like this a QUALITY FAULT, in plain words, or "":
+    most of its tries made a broken mesh, most of its delivered meshes went past the cell-shape
+    limit, or its delivered meshes had near-wall layers on under half the wall. Each is read only
+    when MIN_SHAPES runs back it. A fault outweighs the pass rate in the ranking (recommend)."""
+    if ev.runs >= MIN_SHAPES and ev.invalid_share > FAULT_SHARE:
+        return f"{ev.invalid} of its {ev.runs} tries made a broken mesh"
+    if ev.shaped >= MIN_SHAPES and ev.over_limit_share > FAULT_SHARE:
+        return (f"{ev.over_limit} of its {ev.shaped} meshes had cells more than "
+                f"{NON_ORTHO_LIMIT:.0f} degrees out of square")
+    if ev.passed >= MIN_SHAPES and ev.layers_pct is not None and ev.layers_pct < FAULT_LAYERS_PCT:
+        return f"its meshes had near-wall layers on only {ev.layers_pct:.0f}% of the wall"
+    return ""
+
+
 def reads_own_format(engine: str, source_format: str) -> bool:
     """Whether `engine` reads files of `source_format` ITSELF (EngineSpec.reads_source_formats):
     it meshes the model the file describes, not a conversion of it."""
@@ -710,12 +744,16 @@ def recommend(traits: ShapeTraits, engines: Sequence[str], *, table: Table | Non
         scored.append((name, ev, turf, words, layers, score, ladder))
 
     def key(item):
-        # within a tie on the measured rate, what the meshes were like - how many came out broken,
-        # how many of the delivered ones went past the cell-shape limit - and only then the
-        # declared turf, the layers and the time. Measured before declared: cfMesh declares
-        # thick bodies home and made broken meshes on 7 of 8 DrivAer cars.
+        # an engine with a measured record and no QUALITY FAULT ranks ahead of one with a fault
+        # (or with no record at all), whatever their pass rates: most meshes past the cell-shape
+        # limit is not a pass a solver can use. Then, within a tie on the measured rate, what the
+        # meshes were like - how many came out broken, how many of the delivered ones went past
+        # the cell-shape limit - and only then the declared turf, the layers and the time.
+        # Measured before declared: cfMesh declares thick bodies home and made broken meshes on
+        # 7 of 8 DrivAer cars.
         name, ev, turf, _, _, score, ladder = item
-        return (turf == "outside", not reads_own_format(name, source_format),
+        sound = ev.level >= 0 and score >= SOUND_SCORE and not quality_fault(ev)
+        return (turf == "outside", not reads_own_format(name, source_format), not sound,
                 -math.floor(score / TIE_STEP + 1e-9), validity_step(ev), quality_step(ev),
                 _TURF_ORDER.get(turf, 1),
                 -(ev.layers_pct if ev.layers_pct is not None else -1.0),
@@ -729,6 +767,16 @@ def recommend(traits: ShapeTraits, engines: Sequence[str], *, table: Table | Non
                  for rank, (name, ev, turf, words, layers, score, _) in enumerate(scored, start=1))
     top = next((f for f in fits if f.recommended), None)
     reason = top.reason if top is not None else ""
+    if top is not None:
+        # SAY WHY an engine that passed more tries is not the one recommended: its own fault
+        passed_over = [f for f in fits if f is not top and not f.outside
+                       and f.score > top.score and quality_fault(f.evidence)]
+        if passed_over:
+            reason += "; " + "; ".join(
+                f"recommended over {f.label}, which passes more often, because "
+                f"{quality_fault(f.evidence)}" for f in passed_over)
+            fits = tuple(replace(f, reason=reason) if f is top else f
+                         for f in fits)
     return Recommendation(engine=best, reason=reason, fits=fits, shape=shape_words(traits),
                           traits=traits.as_dict(), table_version=tab.version)
 
@@ -747,5 +795,5 @@ __all__ = ["BLUNT", "BRANCHED", "CAUTION", "CHAMBER", "DEFAULT_CELL_BUDGET", "DE
            "SLENDER", "TABLE_PATH", "THIN_GAP", "TUBE", "EngineFit", "Evidence", "Recommendation", "Run",
            "Table", "brief_facts", "cautious", "committed_table", "detail_of", "evidence_for",
            "evidence_words", "facts_of", "fit_words", "handles_through_fluid", "is_detailed",
-           "quality_step", "ranked_engines", "ranking_of", "recommend", "shape_class", "shape_words",
+           "quality_fault", "quality_step", "ranked_engines", "ranking_of", "recommend", "shape_class", "shape_words",
            "table_from", "validity_step"]
