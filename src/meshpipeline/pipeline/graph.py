@@ -83,8 +83,8 @@ def review_can_rerun(state: PipelineState) -> bool:
     only for a non-verdict another look can change: the conversation stalled or ran out of rounds,
     the renderer fell over, or a provider or dependency browned out. A pre-loop refusal (a malformed
     assurance plan, missing deterministic evidence, absent review targets) and a provider that is
-    down for good repeat identically, so they go to the sink as before. Bounded per job by
-    REVIEWER_RERUN_MAX and by the run's own deadline."""
+    down for good repeat identically, so they go to the sink as before. Bounded per mesh by
+    REVIEWER_RERUN_MAX (every builder attempt resets the count) and by the run's own deadline."""
     import meshpipeline.agents.reviewer.settings as rcfg
     from meshpipeline.agents.reviewer.loop_policy import RERUNNABLE_MARKERS
     from meshpipeline.errors import classify_api_failure
