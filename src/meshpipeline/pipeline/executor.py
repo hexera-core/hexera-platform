@@ -329,8 +329,10 @@ async def node_executor(state: PipelineState) -> dict:
             # below where the refusal can propagate. The order is the gate order either way.
             _gate_results.append((key, ok))
 
-        _gates_ok, _gate_key, _gate_feedback = run_gates(
-            _spec.gates, _ctx, on_result=_report_gate)
+        # off the event loop: a gate may measure the mesh for a minute (engines/cad_fidelity),
+        # and the worker's drain and cancellation checks must keep running meanwhile
+        _gates_ok, _gate_key, _gate_feedback = await asyncio.to_thread(
+            lambda: run_gates(_spec.gates, _ctx, on_result=_report_gate))
         for _key, _ok in _gate_results:
             # Report what the gate PROVES, in the engineer's language - never the internal key.
             # This is a TRUST surface: the user is being shown the checks their mesh survived,

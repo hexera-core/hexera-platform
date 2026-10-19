@@ -173,6 +173,10 @@ DOMAIN_EXTENT_GATE_ENABLED: bool = optional_env("DOMAIN_EXTENT_GATE_ENABLED", "t
 # the engine fallback ladder (pipeline/engine_fallback.py): a run whose engine cannot mesh the
 # shape moves to the next engine that delivers the same approved mesh
 ENGINE_FALLBACK_ENABLED: bool = optional_env("ENGINE_FALLBACK_ENABLED", "true").lower() == "true"
+# the CAD fidelity checks (engines/cad_fidelity.py): a sound mesh that is not the part - its
+# boundary off the CAD, part of the CAD missing, the volume far off - is rebuilt (off = every
+# miss is only said beside the delivered mesh; the numbers are recorded either way)
+CAD_FIDELITY_RETRY_ENABLED: bool = optional_env("CAD_FIDELITY_RETRY_ENABLED", "true").lower() == "true"
 MESH_SCRIPT_SCAN_ENABLED: bool = optional_env("MESH_SCRIPT_SCAN_ENABLED", "true").lower() == "true"
 RUN_PYTHON_REQUIRE_SANDBOX: bool = optional_env("RUN_PYTHON_REQUIRE_SANDBOX", "true").lower() == "true"
 

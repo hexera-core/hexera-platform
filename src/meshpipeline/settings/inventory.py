@@ -489,6 +489,10 @@ INVENTORY: list[Group] = [
                help="when an engine cannot mesh a shape, move the run to the next engine that "
                     "delivers the same approved mesh (never a user-named engine); off = every "
                     "run stays on its first engine and a failure only offers the next one"),
+        EnvVar("CAD_FIDELITY_RETRY_ENABLED", "true", kind="bool",
+               help="rebuild a sound mesh that is not the part (its boundary off the CAD, part of "
+                    "the CAD surface missing, its volume far from the CAD's); off = those misses "
+                    "are only said beside the delivered mesh - the numbers are recorded either way"),
         EnvVar("MESH_SCRIPT_SCAN_ENABLED", "true", kind="bool"),
         EnvVar("RUN_PYTHON_REQUIRE_SANDBOX", "true", kind="bool", help="refuse to run generated Python outside the seccomp/Landlock jail"),
         EnvVar("CELL_HARD_LIMIT", "8000000", kind="int", help="compute-feasibility cap on mesh size: the only cell-count gate"),
