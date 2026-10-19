@@ -14,6 +14,7 @@ import meshpipeline.settings.runtime as rtcfg
 from meshpipeline.contracts.intake_formats import is_cad
 from meshpipeline.contracts.mesh_units import COMPLETED_MESH_UNIT
 from meshpipeline.engines.base import RunPolicy
+from meshpipeline.engines.determinism import note_time_limit
 from meshpipeline.sandbox.safe_exec import (
     NativeOutcome,
     describe_native_result,
@@ -808,6 +809,8 @@ def _remesh_folded_wall(ws: Path, strategy: dict, left, floor: float,
         if left() < floor:
             notes.append(f"[vmtk] the remeshed wall is folded ({_defect_label(defects)}) and "
                          f"under {floor:g} s of the budget is left to remesh it again")
+            note_time_limit("vmtk.surface", "a folded wall was not remeshed again: under the "
+                            "floor of the budget left", left_s=float(left()), floor_s=floor)
             return result
         how = f"with collapses held to {retry['collapse_angle']:g} rad"
         if retry["shuffle"] is not None:
@@ -880,6 +883,8 @@ def _run_vmtk_local(workspace, *, timeout: int, **_ignored) -> dict:
         if i and deadline - _now() < floor:
             notes.append(f"[vmtk] {len(ladder) - i} ladder step(s) not started: under "
                          f"{floor:g} s of the {int(timeout)} s budget left")
+            note_time_limit("vmtk.ladder", f"{len(ladder) - i} ladder step(s) not started",
+                            left_s=deadline - _now(), floor_s=floor, budget_s=float(timeout))
             break
         last = i
         argv = build_staged_stages(strat)[1] if staged else build_pype(strat)
@@ -904,6 +909,8 @@ def _run_vmtk_local(workspace, *, timeout: int, **_ignored) -> dict:
             notes.append(f"[vmtk] attempt {i + 1} ({_step_label(strat)}): the layered fill ran out "
                          f"its {step_budget} s share of the budget - next: "
                          f"{_step_label(ladder[bare_after])}")
+            note_time_limit("vmtk.ladder", "a layered fill ran out its share of the budget; "
+                            "the layer-free fill was run instead", budget_s=float(step_budget))
             i = bare_after
             continue
         if _fill_completed(ws, result):
@@ -913,6 +920,9 @@ def _run_vmtk_local(workspace, *, timeout: int, **_ignored) -> dict:
             if folded is None or folded <= OVERLAP_TOLERANCE:
                 break
             nxt = _thinner(ladder, i)
+            if nxt is not None and deadline - _now() < floor:
+                note_time_limit("vmtk.ladder", "a folded boundary layer was kept: no time for a "
+                                "thinner stack", left_s=deadline - _now(), floor_s=floor)
             if nxt is None or deadline - _now() < floor:
                 break
             notes.append(f"[vmtk] attempt {i + 1} ({_step_label(strat)}): the fill completed but "

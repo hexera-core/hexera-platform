@@ -42,6 +42,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from meshpipeline.engines.determinism import note_time_limit
+
 logger = logging.getLogger(__name__)
 
 #: A valid mesh whose worst face is more than this many degrees out of square is near the edge:
@@ -203,6 +205,8 @@ def rescue(workspace, q: dict, *, bashrc: str, deadline: float, mesher_seconds: 
         (ws / "mesh_quality.json").unlink(missing_ok=True)     # never a cached figure
         if deadline - time.monotonic() < check_s:
             logger.warning("rescue: no time left to measure the %s mesh - not a candidate", name)
+            note_time_limit("cfmesh.rescue", f"the {name} mesh was not measured, so not kept",
+                            left_s=deadline - time.monotonic(), needed_s=check_s)
             return None
         try:
             return check(ws, bashrc=bashrc) or None
@@ -228,12 +232,17 @@ def rescue(workspace, q: dict, *, bashrc: str, deadline: float, mesher_seconds: 
         budget = min(_left(), max(300.0, mesher_seconds))
         if budget < 60.0:
             record["tried"].append({"step": name, "skipped": "no time left in the run cap"})
+            note_time_limit("cfmesh.rescue", f"'{name}' skipped: no time left in the run cap",
+                            left_s=_left())
             return
         shutil.copytree(src_dir, ws / _POLYMESH)
         t = time.monotonic()
         rc = _run(run, ws, bashrc, env, f"improveMeshQuality {OPTIMISE_ARGS}",
                   "improveMeshQuality.log", budget)
         step = {"step": name, "rc": rc, "seconds": round(time.monotonic() - t, 1)}
+        if rc == -1:
+            note_time_limit("cfmesh.rescue", f"'{name}' was stopped at its time budget",
+                            budget_s=budget)
         if rc != 0 or not (ws / _POLYMESH / "owner").exists():
             step["error"] = _tail(ws / "improveMeshQuality.log")
             record["tried"].append(step)
@@ -258,6 +267,9 @@ def rescue(workspace, q: dict, *, bashrc: str, deadline: float, mesher_seconds: 
             elif _left() < REMESH_HEADROOM * max(mesher_seconds, 30.0):
                 record["tried"].append({"step": "re-meshed protecting the layers",
                                         "skipped": "no time left in the run cap for another run"})
+                note_time_limit("cfmesh.rescue", "the protective re-mesh was skipped: no time "
+                                "left in the run cap", left_s=_left(),
+                                needed_s=REMESH_HEADROOM * max(mesher_seconds, 30.0))
             else:
                 meshdict.write_text(protective)
                 t = time.monotonic()

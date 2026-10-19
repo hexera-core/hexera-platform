@@ -106,6 +106,10 @@ def review_can_rerun(state: PipelineState) -> bool:
         from meshpipeline.application.pipeline_budget import remaining_seconds
         wait = rcfg.REVIEWER_RERUN_BACKOFF_S if transient else 0
         if remaining_seconds(float(deadline)) <= wait + REVIEW_RERUN_MIN_WINDOW_S:
+            from meshpipeline.engines.determinism import note_time_limit
+            note_time_limit("review_rerun", "a review without a verdict was not started again: "
+                            "too little time left", left_s=remaining_seconds(float(deadline)),
+                            needed_s=float(wait + REVIEW_RERUN_MIN_WINDOW_S))
             return False
     return True
 

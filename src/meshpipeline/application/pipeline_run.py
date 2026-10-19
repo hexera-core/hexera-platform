@@ -463,6 +463,12 @@ def run_pipeline(
 # contract importing this module) is what keeps dispatch_contract from importing the orchestrator.
 from meshpipeline.application.dispatch_types import register_run_entry  # noqa: E402
 
+
+def _planner_model() -> str:
+    from meshpipeline.engines.snappy.settings import PLANNER_MODEL
+    return PLANNER_MODEL
+
+
 RUN_ENTRY = register_run_entry(run_pipeline)
 
 
@@ -637,7 +643,8 @@ async def _run_async(req: JobRequest) -> dict:
                 # capture provenance for the OTHER LLM surfaces too - the corpus
                 # must record every model that shaped the sample
                 "intake":     {"model": provcfg.DEEPSEEK_MODEL, "temperature": icfg.INTAKE_TEMPERATURE, "max_tokens": icfg.INTAKE_MAX_TOKENS},
-                "planner":           {"model": bcfg.BUILDER_MODEL},
+                # the planner's OWN model (engines/snappy/settings.PLANNER_MODEL), not the builder's
+                "planner":           {"model": _planner_model()},
                 "engine_selector":   {"model": None},
                 "search_summarizer": {"model": provcfg.SEARCH_SUMMARIZER_MODEL,
                                       "temperature": provcfg.SEARCH_SUMMARIZER_TEMPERATURE,
@@ -1094,10 +1101,20 @@ async def _run_async(req: JobRequest) -> dict:
         # records - the training capture, the viewer preview and the conversation export - each
         # have their own policy and none may affect the outcome. post_terminal owns them.
         from meshpipeline.application import post_terminal as _pt
+        # THE RUN'S REPRODUCIBILITY RECORD (application/run_reproducibility.py): input hash, every
+        # AI decision and what it was asked, the mesher's stamp, the time-limited decisions - kept
+        # beside the workspace and in the capture record, so two runs of one file can be compared
+        try:
+            from meshpipeline.application import run_reproducibility as _repro
+            _repro_record = _repro.write(job_id, final_state)
+        except Exception as _exc:  # noqa: BLE001 - a record never touches a verdict
+            jlog.warning("run reproducibility record failed (%s)", _exc)
+            _repro_record = {}
         _pt.capture_terminal_record(
             job_id, generation=_generation, final_result=_result.to_dict(),
             terminal_message=_final_closing, geometry_source=_geometry_provenance(final_state),
-            agent_model_configs=final_state.get("agent_model_configs", {}), jlog=jlog)
+            agent_model_configs={**(final_state.get("agent_model_configs", {}) or {}),
+                                 "reproducibility": _repro_record}, jlog=jlog)
 
         _pt.copy_viewer_preview(job_id, final_state.get("openfoam_workspace", ""), jlog=jlog)
         _pt.enqueue_conversation_export(job_id, final_state, created_at=_job_created_at,

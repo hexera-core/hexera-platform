@@ -1354,7 +1354,7 @@ def _seed(V, F, L, ports: dict[str, _Opening]) -> tuple[np.ndarray, dict]:
         patch = np.flatnonzero(L == name)
         if len(patch):
             a = np.linalg.norm(np.cross(T[patch, 1] - T[patch, 0], T[patch, 2] - T[patch, 0]), axis=1)
-            pick = patch[np.argsort(-a)[:12]]
+            pick = patch[np.argsort(-a, kind="stable")[:12]]
             for f in pick.tolist():
                 c = T[f].mean(axis=0)
                 for depth in (0.1, 0.25, 0.5):

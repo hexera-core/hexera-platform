@@ -128,6 +128,10 @@ async def seed_measured_order(state: Mapping, *, timeout_s: float = ORDER_WAIT_S
         info = await asyncio.wait_for(asyncio.to_thread(measure_order, state), timeout=timeout_s)
     except Exception as exc:  # noqa: BLE001 - a timeout or a failure leaves the declared order
         logger.info("engine ladder: no measured order for this run (%s)", type(exc).__name__)
+        if isinstance(exc, TimeoutError):
+            from meshpipeline.engines.determinism import note_time_limit
+            note_time_limit("engine_ladder", "the measured engine order was not ready in time: "
+                            "the declared order stands", budget_s=float(timeout_s))
         return {}
     return {**record_of(state), **info} if info else {}
 
@@ -688,6 +692,11 @@ def decide(state: Mapping, *, record: Mapping, now: float | None = None) -> Deci
     target = open_rungs[0].engine
     clock = time.time() if now is None else now
     if remaining_seconds(state, now=clock) < rung_seconds(target):
+        # a clock decided this, not the shape: recorded so a run that differs here is explained
+        from meshpipeline.engines.determinism import note_time_limit
+        note_time_limit("engine_fallback", f"no switch to {target}: too little time left",
+                        left_s=remaining_seconds(state, now=clock),
+                        needed_s=rung_seconds(target))
         return Decision(why=f"too little time left for a {engine_label(target)} run",
                         failure=failure)
     broken = broken_cells(state.get("executor_failure_facts")

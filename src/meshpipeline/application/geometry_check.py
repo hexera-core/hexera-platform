@@ -1059,6 +1059,10 @@ def _wait_for_scout(session_id: str) -> dict | None:
         if stored is not None and stored.get("status") != STATUS_PENDING:
             return stored
         if time.time() >= deadline:
+            if stored is None or stored.get("status") == STATUS_PENDING:
+                from meshpipeline.engines.determinism import note_time_limit
+                note_time_limit("geometry_check.naming", "the naming stopped waiting for the scout",
+                                budget_s=float(NAMING_WAIT_S))
             return stored
         time.sleep(2.0)
 
@@ -1366,6 +1370,7 @@ def _up_with_vision(sheet: Path, order, *, part: str, purpose_text: str, session
     except Exception as exc:  # noqa: BLE001 - provider weather; the shape still says what it can
         logger.warning("geometry check: which way is up unavailable from the pictures (%s: %s)",
                        type(exc).__name__, str(exc)[:200])
+        _note_vision_timeout(exc, "the up axis was not read from the pictures")
         return {"error": f"{type(exc).__name__}"}
     return answer if isinstance(answer, dict) else {"error": "malformed answer"}
 
@@ -1451,8 +1456,17 @@ def _name_with_vision(facts: dict, shots, *, purpose_text: str, session_id: str,
         answer = asyncio.run(asyncio.wait_for(_ask(), timeout=GEOMETRY_CHECK_VISION_TIMEOUT_S))
     except Exception as exc:  # noqa: BLE001 - provider weather; the check still ships
         logger.warning("geometry check: vision naming unavailable (%s: %s)", type(exc).__name__, str(exc)[:200])
+        _note_vision_timeout(exc, "the openings were not named from the pictures")
         return {"error": f"{type(exc).__name__}"}
     return answer if isinstance(answer, dict) else {"error": "malformed answer"}
+
+
+def _note_vision_timeout(exc: BaseException, what: str) -> None:
+    if isinstance(exc, TimeoutError):
+        from meshpipeline.engines.determinism import note_time_limit
+        from meshpipeline.settings.geometry_check import GEOMETRY_CHECK_VISION_TIMEOUT_S
+        note_time_limit("geometry_check.vision", f"{what}: the model ran past its time limit",
+                        budget_s=float(GEOMETRY_CHECK_VISION_TIMEOUT_S))
 
 
 def _proposal(facts: dict, vision: dict | None) -> dict:

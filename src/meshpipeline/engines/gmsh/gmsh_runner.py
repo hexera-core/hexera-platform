@@ -55,6 +55,7 @@ def tessellate_to_stl(geom_path, out_stl, *, context=None, prepared=None) -> Pat
     _mine = not gmsh.isInitialized()
     if _mine:
         gmsh.initialize(interruptible=False)
+        _pin_gmsh(gmsh)
     drawn = False
     try:
         gmsh.option.setNumber("General.Terminal", 0)
@@ -168,6 +169,7 @@ def _inspect_fluid_boundary(ws: Path) -> dict:
     _mine = not gmsh.isInitialized()
     if _mine:
         gmsh.initialize(interruptible=False)
+        _pin_gmsh(gmsh)
     try:
         gmsh.option.setNumber("General.Terminal", 0)
         gmsh.model.add("inspect_surface")
@@ -203,6 +205,7 @@ def _inspect_surface(ws: Path, stl: Path) -> dict:
     _mine = not gmsh.isInitialized()
     if _mine:
         gmsh.initialize(interruptible=False)
+        _pin_gmsh(gmsh)
     try:
         gmsh.option.setNumber("General.Terminal", 0)
         gmsh.model.add("inspect_surface")
@@ -264,6 +267,7 @@ def inspect_stl(workspace, geometry_file: str = "input.stl", *, context=None) ->
     _mine = not gmsh.isInitialized()
     if _mine:
         gmsh.initialize(interruptible=False)
+        _pin_gmsh(gmsh)
     try:
         gmsh.option.setNumber("General.Terminal", 0)
         # the size the builder is told is the surface's, not OpenCascade's loose envelope
@@ -419,3 +423,11 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
            f"order={q.get('element_order')} min_sicn={q.get('min_sicn')} "
            f"fatal={q.get('fatal', [])}")
     return {"success": not q.get("fatal"), "stdout": out, "stderr": "", "output": out}
+
+
+def _pin_gmsh(gmsh) -> None:
+    """One thread and a fixed seed (engines/determinism.py): threaded gmsh inserts points in the
+    order threads finish, so the same surface could come out as a different staging."""
+    from meshpipeline.engines.determinism import GMSH_RANDOM_SEED, GMSH_THREADS
+    gmsh.option.setNumber("General.NumThreads", GMSH_THREADS)
+    gmsh.option.setNumber("Mesh.RandomSeed", GMSH_RANDOM_SEED)
