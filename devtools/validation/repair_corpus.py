@@ -330,7 +330,10 @@ def _one(path: Path, scratch: Path, *, mode: str = "off") -> dict:
                         for t in advice.targets],
                abstain_reason=advice.abstain_reason)
 
-    if status is RepairStatus.clean and not before["entities"]:
+    # A crossing only the face analyzer measured does not make a file repair work (floor-fix
+    # ruling 2): with review off it is the flag-off file's outcome, the finding still in the row.
+    if status is RepairStatus.clean and not [e for e in before["entities"]
+                                             if not e.get("analyzer_only")]:
         row.update(outcome="nothing_to_repair", seconds=round(time.monotonic() - started, 2))
         return row
     if advice.route != ROUTE_CONSERVATIVE_REPAIR:

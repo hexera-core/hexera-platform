@@ -12,8 +12,9 @@ from dataclasses import dataclass, field, replace
 
 import meshpipeline.settings.cad_repair as rcfg
 from meshpipeline.cad.repair.contracts import DefectSeverity
+from meshpipeline.cad.repair.localize import analyzer_only
 from meshpipeline.cad.repair.plan import RulesPlanner, RunHistory
-from meshpipeline.cad.repair.session import OpVerdict, RepairSession
+from meshpipeline.cad.repair.session import HEAL_OP, OpVerdict, RepairSession
 
 logger = logging.getLogger(__name__)
 
@@ -82,9 +83,20 @@ class RepairRun:
                 "original": dict(self.original), "final": dict(self.final)}
 
 
+def _judged(session: RepairSession) -> tuple:
+    """The defects the ENDING is decided on: everything but the face analyzer's own findings.
+
+    NON-DEMOTION (floor-fix ruling 2). A crossing only the analyzer measured exists to target the
+    heal and to ask a person; one no operation removed must not turn a run the flag-off world
+    calls `resolved` into `no_candidate` or `stalled`. It stays in `defects_remaining`, marked
+    `analyzer_only`. A face the status walk also reported is not analyzer-only and still counts.
+    """
+    return tuple(d for d in session.defects() if not analyzer_only(d))
+
+
 def _errors_remain(session: RepairSession) -> bool:
     """Is any defect left that the kernel calls an error or worse?"""
-    return any(d.severity in _ERRORS for d in session.defects())
+    return any(d.severity in _ERRORS for d in _judged(session))
 
 
 def _abandoned(session: RepairSession) -> bool:
@@ -96,8 +108,12 @@ def _abandoned(session: RepairSession) -> bool:
     failed on but a wider one later cleared is gone from the final list, so its earlier rollback
     does not count against the run.
     """
-    tried = {fp for v in session.log if not v.kept for fp in v.targets}
-    return any(d.fingerprint in tried for d in session.defects())
+    # A ROLLED-BACK HEAL ABANDONS NOTHING the flag-off run would have tried: it aims at the
+    # analyzer's crossing and its partner faces, and a partner's unrelated warning must not turn
+    # into "abandoned" because the heal could not re-trim the tangle (floor-fix ruling 2). A
+    # crossing the status walk also reported is an error and still blocks `resolved` above.
+    tried = {fp for v in session.log if not v.kept and v.op != HEAL_OP for fp in v.targets}
+    return any(d.fingerprint in tried for d in _judged(session))
 
 
 def _terminal(session: RepairSession, fallback: str) -> str:

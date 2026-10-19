@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from meshpipeline.cad.repair.contracts import DefectCode, DefectSeverity
 
@@ -127,7 +127,32 @@ class EntityDefect:
         }
         if self.ambiguous:
             out["ambiguous"] = True
+        if analyzer_only(self):
+            # ITS OWN MARKER, so a reader of `defects_remaining` can tell a finding only the face
+            # analyzer made - one that targets the heal and asks a person, but decides no ending
+            # and no route - from a status-walk defect. Absent on every other record, which is
+            # what keeps a flag-off report byte-for-byte what it was.
+            out["analyzer_only"] = True
         return out
+
+
+def analyzer_only(defect) -> bool:
+    """Is this a finding ONLY the face-level analyzer made (no status-walk record of it)?
+
+    THE FLOOR-FIX RULING. Such a finding exists to give the heal a target and a person a question.
+    It must not change any other operation's verdict, the run's ending, or the inspection's triage
+    route: those are decided on the status walk, exactly as they were before the analyzer existed.
+    A face the status walk ALSO reported (a `SelfIntersectingWire` the analyzer's record shadowed
+    in `_deduped`) is not analyzer-only - the flag-off world measured it too.
+    Reads an EntityDefect or its stored dict, so triage and the loop share one definition.
+    """
+    if isinstance(defect, dict):
+        status = defect.get("kernel_status", "")
+        measurements = defect.get("measurements") or {}
+    else:
+        status = getattr(defect, "kernel_status", "")
+        measurements = getattr(defect, "measurements", None) or {}
+    return status == _SELF_INTERFERENCE and not measurements.get(_STATUS_WALK_ALSO)
 
 
 def _indexed(shape, kind):
@@ -519,10 +544,18 @@ def _deduped(found: list[EntityDefect]) -> list[EntityDefect]:
             best[key] = len(out)
             out.append(defect)
             continue
+        shadowed = defect
         if _SEVERITY_RANK.get(defect.severity, 0) > _SEVERITY_RANK.get(out[slot].severity, 0):
             # The same defect, reported worse. Replace IN PLACE, so the survivor keeps the
             # position - and the precedence - the first record had.
-            out[slot] = defect
+            shadowed, out[slot] = out[slot], defect
+        survivor = out[slot]
+        if analyzer_only(survivor) and shadowed.kernel_status != _SELF_INTERFERENCE:
+            # THE STATUS WALK SAW THIS FACE TOO. The analyzer's record survives for its partner
+            # evidence, but the finding is one the flag-off world also measured, so it keeps its
+            # weight in the run's ending and the triage route (see `analyzer_only`).
+            out[slot] = replace(survivor, measurements={
+                **survivor.measurements, _STATUS_WALK_ALSO: shadowed.kernel_status or "walk"})
     return out
 
 
@@ -554,6 +587,9 @@ FACE_SCAN_CAP_S = 30.0
 #: The kernel status a face-level finding carries. Not a BRepCheck status - BRepCheck never tests
 #: whether two faces cross - so it is named for what the analyzer found.
 _SELF_INTERFERENCE = "SelfInterference"
+#: Set on an analyzer record that shadowed a status-walk record of the same face in `_deduped`:
+#: the walk's kernel status, kept so the finding is not mistaken for one only the analyzer made.
+_STATUS_WALK_ALSO = "status_walk_status"
 
 
 def face_scan_budget_s(remaining_s: float) -> float:

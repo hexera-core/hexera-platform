@@ -138,7 +138,12 @@ def inspect_brep_file(path: Path) -> RepairReport:
         # WHERE IT IS BROKEN, not just whether. `IsValid()` is one bit about the whole part and
         # cannot be acted on by an operator or aimed at by a repair; this attributes the damage to
         # entities, with their size and position (cad/repair/localize.py).
-        from meshpipeline.cad.repair.localize import face_scan_budget_s, localize_scan, summarise
+        from meshpipeline.cad.repair.localize import (
+            analyzer_only,
+            face_scan_budget_s,
+            localize_scan,
+            summarise,
+        )
         scan_complete = True
         # THE FACE SCAN ONLY WITH THE HEAL ON, and sliced from the inspection's own allowance:
         # with the flag off this is 0.0 and the analyzer is never called.
@@ -160,8 +165,13 @@ def inspect_brep_file(path: Path) -> RepairReport:
             localisation_failed = False
         entities = tuple(d.to_dict() for d in found)
         located = summarise(found)
+        # THE VERDICT IS THE STATUS WALK'S (floor-fix ruling 2). A crossing only the face analyzer
+        # measured is carried in `entities`, marked `analyzer_only`, for the heal to aim at and a
+        # reviewer to answer - but it must not move this file's status or its triage route away
+        # from what the same file gets with the heal off. With the flag off `walked` is `found`.
+        walked = tuple(d for d in found if not analyzer_only(d))
 
-        defects = _summarise_defects(found)
+        defects = _summarise_defects(walked)
         if counts["faces"] == 0:
             defects = (
                 RepairDefect(
@@ -171,7 +181,7 @@ def inspect_brep_file(path: Path) -> RepairReport:
                     details={"reason": "no_faces"},
                 ),
             )
-        elif not is_valid and not found:
+        elif not is_valid and not walked:
             # INVALID, AND WE CANNOT SAY WHY. This is a real and distinct answer: the kernel
             # objects to the part but attributes the objection to no entity, so there is nothing
             # for an automatic repair to aim at and nothing to tell a customer beyond the fact.

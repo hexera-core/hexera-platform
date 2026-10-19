@@ -22,9 +22,9 @@ from meshpipeline.cad.repair.caps import (
 from meshpipeline.cad.repair.caps import (
     measure as _measure,
 )
-from meshpipeline.cad.repair.contracts import DefectSeverity
+from meshpipeline.cad.repair.contracts import DefectCode, DefectSeverity
 from meshpipeline.cad.repair.identity import GONE, EntityRef
-from meshpipeline.cad.repair.localize import face_scan_budget_s
+from meshpipeline.cad.repair.localize import analyzer_only, face_scan_budget_s
 from meshpipeline.cad.repair.localize import localize_scan as _localize_scan
 
 logger = logging.getLogger(__name__)
@@ -32,6 +32,10 @@ logger = logging.getLogger(__name__)
 KEPT = "kept"
 ROLLED_BACK = "rolled_back"
 FAILED = "failed"
+
+#: The one operation whose keep/rollback re-inspection runs the face-level scan (floor-fix
+#: ruling 1b). Every other operation is judged on the status walk alone, as before the analyzer.
+HEAL_OP = "heal_self_intersections"
 
 #: A new defect at this severity or worse means the operation made things worse. An `info`
 #: finding is a remark, not damage.
@@ -99,7 +103,9 @@ class RepairSession:
                  remaining_s: Callable[[], float] | None = None) -> None:
         self._measure = measurer
         # AN INJECTED SCANNER IS CALLED AS IT ALWAYS WAS, `scanner(shape)`, and is never told
-        # about the face scan: that budget is the default scanner's business.
+        # about the face scan: that budget is the default scanner's business. What it returns in
+        # a status-walk re-inspection is filtered of analyzer-only findings instead (`_rescan`).
+        self._injected = scanner is not None
         self._scan = scanner if scanner is not None else self._default_scan
         #: What is left of the run's time, asked at each scan. None until somebody knows - the
         #: loop assigns one - and then the whole repair allowance is assumed.
@@ -113,15 +119,16 @@ class RepairSession:
         self.complete_scan: bool = True
         self.log: list[OpVerdict] = []
 
-    def _default_scan(self, shape):
+    def _default_scan(self, shape, *, face_scan: bool = True):
         """`localize_scan`, with a face-level scan only when the self-intersection heal is on.
 
         `_localize_scan` is looked up AT CALL TIME, so a test patching the module attribute is
         obeyed. With the flag off the budget is 0.0 and `remaining_s` is never even asked, which
-        is what keeps a flag-off run's scans byte-for-byte what they were.
+        is what keeps a flag-off run's scans byte-for-byte what they were. `face_scan=False` is
+        the status-walk re-inspection (`_rescan`): budget 0.0 there too, whatever the flag.
         """
         budget = 0.0
-        if rcfg.CAD_REPAIR_HEAL_SELF_INTERSECTIONS:
+        if face_scan and rcfg.CAD_REPAIR_HEAL_SELF_INTERSECTIONS:
             remaining = self.remaining_s or (lambda: float(rcfg.CAD_REPAIR_TIMEOUT_S))
             budget = face_scan_budget_s(remaining())
         return _localize_scan(shape, face_scan_s=budget)
@@ -132,6 +139,26 @@ class RepairSession:
             found, complete = self._scan(self.shape)
             self._defects = tuple(found)
             self.complete_scan = bool(complete)
+        return self._defects
+
+    def _rescan(self, *, face_scan: bool) -> tuple:
+        """Re-inspect the current shape for a keep/rollback judgement, and cache the result.
+
+        SCAN PLACEMENT (floor-fix ruling 1). The face scan runs for the session's first scan and
+        for the re-inspection that judges a heal; every other operation is judged on the status
+        walk alone, exactly as before the analyzer existed. Without this a kept sew was rolled
+        back `new_defect` for a crossing the flag-off world never measured (trj4_k1_geo-pe-*).
+        An injected scanner is still called as `scanner(shape)`; its analyzer-only findings are
+        dropped here instead, so a double cannot reintroduce the demotion either.
+        """
+        if self._injected:
+            found, complete = self._scan(self.shape)
+        else:
+            found, complete = self._default_scan(self.shape, face_scan=face_scan)
+        if not face_scan:
+            found = [d for d in found if not analyzer_only(d)]
+        self._defects = tuple(found)
+        self.complete_scan = bool(complete)
         return self._defects
 
     def current(self):
@@ -225,8 +252,15 @@ class RepairSession:
                 reason=f"declined:{str(declined)[:200]}", evidence=dict(outcome.evidence), delta=delta))
 
         previous = self.defects()
-        self._defects = None
-        found = self.defects()
+        # THE HEAL IS JUDGED ON THE FACE SCAN, so `crossing_remains`/`new_defect` still police it;
+        # everything else on the status walk alone, against a `previous` without the analyzer's
+        # findings, which is the comparison the flag-off run makes.
+        judged_by_face_scan = (op.name == HEAL_OP
+                               or code == DefectCode.self_intersection.value)
+        found = self._rescan(face_scan=judged_by_face_scan)
+        if not judged_by_face_scan:
+            carried = tuple(d for d in previous if analyzer_only(d))
+            previous = tuple(d for d in previous if not analyzer_only(d))
 
         basis = self._basis(outcome, targets)
         reason = self._progress_refusal(outcome, targets, defect_code, previous, found)
@@ -235,6 +269,18 @@ class RepairSession:
             return self._record(OpVerdict(
                 op=op.name, targets=fingerprints, defect_code=code, status=ROLLED_BACK,
                 reason=reason, basis=basis, evidence=dict(outcome.evidence), delta=delta))
+
+        if not judged_by_face_scan and carried:
+            # THE ANALYZER'S FINDINGS STAY ON THE LIST after a kept operation that did not re-run
+            # the face scan: they still target the heal and still reach `defects_remaining`, and
+            # the heal's own re-inspection re-measures them. Marked as not re-scanned since, so
+            # nobody reads them as a fresh measurement of the changed shape.
+            from dataclasses import replace
+
+            present = {(d.fingerprint, d.code) for d in found}
+            self._defects = (*found, *(
+                replace(d, measurements={**d.measurements, "not_rescanned_after": op.name})
+                for d in carried if (d.fingerprint, d.code) not in present))
 
         self.accounting = self.accounting.plus(outcome.evidence)
         return self._record(OpVerdict(

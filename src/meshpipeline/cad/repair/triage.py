@@ -300,7 +300,15 @@ def recommend(*, repair_status: str = "", report: Mapping | None = None,
                 "target_engine": target_engine,
                 "located_entities": len(entities)}
 
-    if status == RepairStatus.clean.value and not codes:
+    # PER-DEFECT REVIEW: with it on, a defect a person decides no longer takes the repairable ones
+    # down with it. The repairables run, and the judgement defects become review items.
+    parts = split(payload)
+    review = bool(rcfg.CAD_REPAIR_REVIEW_ENABLED and parts.judgement)
+
+    # A FINDING ONLY THE FACE ANALYZER MADE leaves `codes` and the status as the flag-off file's
+    # (cad/repair/brep.py), so with review off it routes nowhere new. With review on it is still a
+    # question for a person, so a file whose only finding it is goes to review, not mesh_as_is.
+    if status == RepairStatus.clean.value and not codes and not review:
         return Recommendation(
             route=ROUTE_MESH_AS_IS, confidence=0.9,
             reasons=("the inspection found no defects",), evidence=evidence)
@@ -322,10 +330,6 @@ def recommend(*, repair_status: str = "", report: Mapping | None = None,
             evidence=evidence)
 
     judgement = [e for e in entities if e.get("code") in _NEEDS_JUDGEMENT]
-    # PER-DEFECT REVIEW: with it on, a defect a person decides no longer takes the repairable ones
-    # down with it. The repairables run, and the judgement defects become review items.
-    parts = split(payload)
-    review = bool(rcfg.CAD_REPAIR_REVIEW_ENABLED and parts.judgement)
     if any(c in _NEEDS_JUDGEMENT for c in codes) and not review:
         return Recommendation(
             route=ROUTE_MANUAL_CLEANUP, confidence=0.6,
