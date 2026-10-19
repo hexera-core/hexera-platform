@@ -56,6 +56,37 @@ RUN_UNCOLLECTED_TAG = "[CLOUD_RUN_RESULT_UNCOLLECTED]"
 #: describing the same pass.
 NATIVE_PASS_FACT = ".native_pass"  # noqa: S105 - a workspace file name, not a credential
 
+#: HOW MANY NATIVE RUNS this process has sent from each workspace (run_mesh, below). Only an
+#: engine DRIVER numbers its passes (NATIVE_PASS_FACT); an engine meshed by the shared builder tool
+#: loop - cfMesh, gmsh, the multi-region engine - records none, yet its builder is told to change
+#: the case and call run_mesh again inside the same attempt. Without a number of its own, that
+#: second run carried the first run's identity with a different payload, and the submission
+#: authority refused it as an identity conflict: every in-attempt retry of those engines died as
+#: "[CLOUD_RUN_FAILED] ... the same identity cannot describe two different runs".
+#:
+#: Counted by the seam every engine passes, so no engine has to remember to keep it, and kept in
+#: the process rather than the workspace: the workspace's bytes are the submission's identity, so
+#: a count written there would change the digest of the very run it numbers. It is never reset by
+#: a new attempt record (open_native_record): an infrastructure replay of the same attempt is a new
+#: run and gets the next number. A new process starts again at 1, and a new process is a new
+#: execution generation, whose identities are its own anyway.
+_NATIVE_RUN_COUNTS: dict[str, int] = {}
+
+
+def note_native_run(workspace: Any) -> int:
+    """Count one more native run sent from this workspace and return its number (1-based)."""
+    key = _key(workspace)
+    n = _NATIVE_RUN_COUNTS.pop(key, 0) + 1
+    _NATIVE_RUN_COUNTS[key] = n
+    while len(_NATIVE_RUN_COUNTS) > _NATIVE_RUNS_KEPT:
+        _NATIVE_RUN_COUNTS.pop(next(iter(_NATIVE_RUN_COUNTS)))
+    return n
+
+
+def read_native_run(workspace: Any) -> int | None:
+    """The number of the native run being sent from `workspace` now; None before the first."""
+    return _NATIVE_RUN_COUNTS.get(_key(workspace))
+
 
 def note_native_pass(workspace: Any, pass_index: int) -> None:
     # Recorded BEFORE dispatch, overwritten per pass. The driver numbers its passes from its own
@@ -246,6 +277,8 @@ def run_mesh(workspace: Any, *, engine: str, timeout: int) -> dict:
         if refusal is not None:
             _note_native_run(workspace, refusal, refused=True)
             return refusal
+    # numbered before the executor composes the run's identity from the workspace
+    note_native_run(workspace)
     try:
         result = _executor.run(workspace, engine=engine, timeout=timeout)
     except BaseException:
