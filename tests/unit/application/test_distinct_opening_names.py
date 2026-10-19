@@ -33,7 +33,7 @@ def test_every_real_opening_ends_with_its_own_name_and_nothing_else_moves(openin
         if before.role == "not_an_opening":
             assert after.name == before.name                 # a discarded sticker is left as it is
     # the first of each name keeps it
-    seen: list[str] = []
+    seen: list[str] = ["wall"]                  # the built-in wall is named first
     for before, after in zip(openings, out):
         if before.role == "not_an_opening":
             continue
