@@ -498,12 +498,48 @@ def test_the_closing_message_carries_the_offer_and_the_switch():
 
 # budgets are respected
 
-def test_with_only_one_retry_a_measured_failure_is_retried_on_its_own_engine(quiet):
-    # MAX_BUILDER_RETRIES=1: the one retry goes to this engine's own levers - a measured check
-    # missed once is not an engine that cannot mesh the shape - and no mesh at all still moves on
+def test_with_only_one_retry_a_measured_failure_goes_to_the_untried_engine(quiet):
+    # MAX_BUILDER_RETRIES=1 (the default): a lever retry on cfMesh would spend the run's last
+    # regular attempt and leave snappy none at all, so the measured failure moves the run now -
+    # levers first only where there is room for them and a switch after them
     out = _node(_external(executor_failed_gate="quality_floor"))
-    assert "engine" not in out
+    assert out["engine"] == "snappy"
+    assert out["engine_ladder"]["switches"][0]["why"] == (
+        "the shared attempts go to the untried engine")
     assert _node(_external(executor_failed_gate="finalize"))["engine"] == "snappy"
+
+
+def test_an_internal_mesh_over_its_cell_budget_reaches_the_other_engine_on_the_default_budget(
+        quiet):
+    # e2e verify-round5 (2026-10-19): four branching vessels came out of cfMesh at 9-15 M cells
+    # on the 8 M budget. Its own passage caps hold the cells where they are, so the lever retry
+    # rendered the same case and the run ended on it; the round before, the same failure moved the
+    # run to snappyHexMesh, which delivered 4.5 M production-grade cells. With one regular retry
+    # the failure must still reach the other engine.
+    st = _external(purpose="internal_cfd", input_kind="fluid-domain",
+                   intake_patches=[dict(p) for p in INTERNAL],
+                   request_txt="Internal flow through a branching vessel, standard mesh.",
+                   executor_failed_gate="manifest_valid", executor_failure_cause="cell_budget")
+    assert lad.classify(st).kind == lad.FIXABLE
+    out = _node(st)
+    assert out["engine"] == "snappy", "a cell-budget failure on the last regular attempt stayed"
+    assert out["builder_mode"] == "initial"
+
+
+def test_levers_come_first_only_where_a_switch_still_fits_after_them(quiet, monkeypatch):
+    # MAX_BUILDER_RETRIES=2: attempt 1's measured failure leaves two regular attempts - one for
+    # cfMesh's own levers, one for snappy - so it stays; attempt 2's leaves one, so it moves
+    monkeypatch.setattr(bcfg, "MAX_BUILDER_RETRIES", 2)
+    first = _node(_external(executor_failed_gate="manifest_valid",
+                            executor_failure_cause="cell_budget"))
+    assert "engine" not in first
+    # the lever retry changed nothing and started no mesher (an identical case is refused before
+    # the run): its levers are not counted as tried, and the switch still comes on the last one
+    second = _node(_external(retry_count=2, executor_failed_gate="manifest_valid",
+                             executor_failure_cause="cell_budget",
+                             executor_failure_facts={"meshers_started": 0},
+                             engine_ladder=first["engine_ladder"]))
+    assert second["engine"] == "snappy"
 
 
 def test_with_attempts_to_spare_a_fixable_failure_is_retried_here_first(quiet, monkeypatch):
