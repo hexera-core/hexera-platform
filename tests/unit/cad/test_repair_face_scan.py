@@ -282,3 +282,18 @@ def test_a_crossing_the_status_walk_also_reported_is_not_analyzer_only():
     assert survivor.measurements["crossing_faces"] == ["face:f7"]
     assert not analyzer_only(survivor) and "analyzer_only" not in survivor.to_dict()
     assert not analyzer_only(walk) and "analyzer_only" not in walk.to_dict()
+
+
+def test_a_crossing_present_before_and_after_a_kept_sew_is_carried_not_rescanned(monkeypatch):
+    # Reviewer probe (finding 2), the symmetric case: the analyzer reports the crossing both
+    # before and after the sew. The sew is judged on the status walk alone and kept; the finding
+    # stays on the list, once, marked as not re-measured since the sew.
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_HEAL_SELF_INTERSECTIONS", True)
+    session = RepairSession("original", measurer=lambda s: MEASURE,
+                            scanner=_scripted((_OPENING, _CROSSING), (_CROSSING,)))
+    defect = session.defects()[0]
+    verdict = session.try_op(_Sew(), _Sew().targets_for(defect), defect.code, tolerance_mm=0.01)
+    assert verdict.kept, verdict.reason
+    (left,) = session.defects()
+    assert left.fingerprint == "face:f3"
+    assert left.measurements["not_rescanned_after"] == "sew_faces"

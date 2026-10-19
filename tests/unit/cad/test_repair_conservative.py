@@ -245,3 +245,25 @@ def test_a_resolved_summary_does_not_hide_a_surviving_warning():
 
     clean = SimpleNamespace(resolved=True, stopped_because="resolved", verdicts=[], defects=())
     assert _summary(clean, SimpleNamespace(valid=True)) == "Repaired within the conservative caps."
+
+
+def test_a_resolved_summary_names_an_analyzer_crossing_and_never_calls_it_a_warning():
+    # Floor fix: an analyzer-only crossing does not block `resolved`, but it is an ERROR, so the
+    # operator's sentence must count it on its own and must not claim "warnings, not errors".
+    from types import SimpleNamespace
+
+    from meshpipeline.cad.repair.conservative import _summary
+
+    crossing = {"code": "self_intersection", "severity": "error",
+                "kernel_status": "SelfInterference", "measurements": {}}
+    only = SimpleNamespace(resolved=True, stopped_because="resolved", verdicts=[],
+                           defects=(crossing,))
+    text = _summary(only, SimpleNamespace(valid=True))
+    assert "1 crossing(s) the face analyzer found, for review" in text
+    assert "not errors" not in text and "advisory" not in text
+
+    both = SimpleNamespace(resolved=True, stopped_because="resolved", verdicts=[],
+                           defects=(crossing, {"code": "small_edge", "severity": "warning"}))
+    text = _summary(both, SimpleNamespace(valid=True))
+    assert "1 advisory defect(s) remain (warnings, not errors)" in text
+    assert "1 crossing(s) the face analyzer found, for review" in text

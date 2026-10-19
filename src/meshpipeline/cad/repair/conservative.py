@@ -947,8 +947,19 @@ def _summary(result, final) -> str:
             # `resolved` only means no ERROR-severity defect is left, so a surviving warning can
             # sit beside a resolved run. An unqualified success sentence over a non-empty defect
             # list is how an operator is told a part is clean when it is not.
-            return (f"{base} {len(result.defects)} advisory defect(s) remain (warnings, not "
-                    "errors) - see the defect list.")
+            # AN ANALYZER-ONLY CROSSING IS THE EXCEPTION: it does not block `resolved` (floor-fix
+            # ruling 2) but it IS an error, so it is counted in its own clause and never folded
+            # into "warnings, not errors".
+            from meshpipeline.cad.repair.localize import analyzer_only
+
+            crossings = sum(1 for d in result.defects if analyzer_only(d))
+            advisory = len(result.defects) - crossings
+            clauses = []
+            if advisory:
+                clauses.append(f"{advisory} advisory defect(s) remain (warnings, not errors)")
+            if crossings:
+                clauses.append(f"{crossings} crossing(s) the face analyzer found, for review")
+            return f"{base} {'; '.join(clauses)} - see the defect list."
         return base
     if result.stopped_because == SCAN_INCOMPLETE:
         return ("Repaired as far as the inspection could see; the defect scan was partial, so "
