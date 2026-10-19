@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import uuid
 from collections.abc import MutableMapping
 from typing import Any
@@ -20,15 +21,28 @@ from meshpipeline.application.worker_handoff import WorkerDraining
 
 logger = logging.getLogger(__name__)
 
-# a stable per-PROCESS id. A redelivery that lands in the SAME process (an in-process
-# restart) shares it; a fresh process is a fresh execution. It is the last-resort backend execution
-# identity when neither a Cloud Run execution nor a Celery task id is available (direct/test runs).
-_PROCESS_RUN_ID = uuid.uuid4().hex
+# The last-resort backend execution identity, used whenever PIPELINE_EXECUTION_ID is empty (direct
+# runs, tests, and every Celery run: the Celery task id is never used here, and it would not help
+# because launch sets task_id=job_id). It is stable per OS PROCESS: a redelivery that lands in the
+# SAME live process shares it; a fresh process is a fresh execution. It is derived lazily and
+# re-derived when the pid changes, because Celery imports this module in the parent BEFORE forking
+# its pool children - an import-time value would be shared by every child and by every replacement
+# child after an OOM kill or hard time limit, and the lease would then treat a takeover by another
+# process as a same-execution resume (no generation bump, outgoing fence left live).
+_PROCESS_RUN_ID: tuple[int, str] | None = None
+
+
+def _process_run_id() -> str:
+    global _PROCESS_RUN_ID
+    pid = os.getpid()
+    if _PROCESS_RUN_ID is None or _PROCESS_RUN_ID[0] != pid:
+        _PROCESS_RUN_ID = (pid, uuid.uuid4().hex)
+    return _PROCESS_RUN_ID[1]
 
 
 def _backend_execution_id(job_id: str) -> tuple[str, str]:
     backend = (provcfg.PIPELINE_BACKEND or "direct").strip()[:32] or "direct"
-    exec_id = (provcfg.PIPELINE_EXECUTION_ID or "").strip() or f"proc-{_PROCESS_RUN_ID}"
+    exec_id = (provcfg.PIPELINE_EXECUTION_ID or "").strip() or f"proc-{_process_run_id()}"
     return backend, exec_id
 
 
