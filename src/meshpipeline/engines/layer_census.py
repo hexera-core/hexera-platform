@@ -288,7 +288,9 @@ _NUM = r"\b(\d{1,2}|" + "|".join(_WORDS) + r")"
 _LAYER_CONTEXT = re.compile(r"prism|boundary|inflation|near[- ]wall|y\+|\bwall", re.I)
 _STATED = (
     # "5 prism layers", "five boundary layers", "10 inflation layers", "5 near-wall layers"
-    re.compile(_NUM + r"\s+(?:prism(?:atic)?|boundary|inflation|near[- ]wall|wall)[\s-]*layers?\b", re.I),
+    # "5 prism boundary layers", "five wall boundary layers": up to three layer words in a row
+    re.compile(_NUM + r"\s+(?:(?:prism(?:atic)?|boundary|inflation|near[- ]wall|wall)[\s-]*){1,3}"
+               r"layers?\b", re.I),
     # "5 layers" - counted only with a layer word around it
     re.compile(_NUM + r"\s+layers\b", re.I),
     # "n_layers = 5", "nLayers 5"
