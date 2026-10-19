@@ -24,7 +24,9 @@ facts only, never from an AI judgement:
      refused the input, or its mesh is broken (checkMesh's fatal defects) - ENGINE;
   2. the measured validity checks (fixed thresholds: cell quality, resolution floor, cell budget,
      boundaries captured, the trial solve) still fail AFTER this engine's own levers were tried
-     on a retry - FIXABLE, on its second failure on this engine (_levers_spent);
+     on a retry - FIXABLE, on its second failure on this engine (_levers_spent) - or on its
+     first, when a retry here would leave an untried engine no attempt of its own (the run's
+     regular attempts cannot hold both, so the levers come first only where there is room);
   3. and in either case only to an engine whose DECLARED capability covers the approved plan's
      requirements (plan_requirements: prism layers, an external flow's wake refinement) and the
      case's separate passages (FlowSupport.max_passages, below).
@@ -858,9 +860,6 @@ def decide(state: Mapping, *, record: Mapping, now: float | None = None) -> Deci
                             "every measured check, so this engine's own levers answer it",
                         failure=failure)
     engine = str(state.get("engine") or "")
-    if failure.kind == FIXABLE and not _levers_spent(record, engine):
-        return Decision(why="a measured check failed - this engine's own levers are tried first",
-                        failure=failure)
     if not may_switch_on_its_own(state):
         return Decision(why=f"the engine is not ours to change (source {engine_source(state) or 'unknown'})",
                         failure=failure)
@@ -879,6 +878,16 @@ def decide(state: Mapping, *, record: Mapping, now: float | None = None) -> Deci
     left = bcfg.MAX_BUILDER_RETRIES + 1 - int(state.get("retry_count", 0) or 0)
     if left < 1:
         return Decision(why="no regular attempt is left", failure=failure)
+    if failure.kind == FIXABLE and not _levers_spent(record, engine) and left > len(open_rungs):
+        # LEVERS FIRST, WHERE THERE IS ROOM FOR THEM: a retry with this engine's own levers must
+        # still leave every untried rung an attempt. When it would not, it spends the run's last
+        # regular attempt here and no other engine can ever be reached - with the default one
+        # regular retry, rule 2 never fired at all. On branching vessels cfMesh came in at 9-15 M
+        # cells on an 8 M budget, its own passage caps rendered the retry's case byte for byte as
+        # before, and the run ended, where snappyHexMesh had delivered 4.5 M production-grade
+        # cells the round before (e2e verify-round5, 2026-10-19).
+        return Decision(why="a measured check failed - this engine's own levers are tried first",
+                        failure=failure)
     if failure.kind == FIXABLE and not _repeats(record, engine, failure) and left > len(open_rungs):
         return Decision(why="a retry here fits and still leaves every untried rung an attempt",
                         failure=failure)
