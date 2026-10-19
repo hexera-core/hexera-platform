@@ -208,9 +208,9 @@ def stage_internal_surface(surface_path, out_dir, *, intake_patches: list | None
     if str(input_kind or "").strip() != "fluid-domain":
         # AN ASSEMBLY IN ONE TRIANGLE FILE (several closed parts): the fluid is the space inside
         # them, closed off at the declared openings (cad/fluid_volume) - as for a CAD assembly
-        from meshpipeline.cad.fluid_volume import closed_pieces, stage_bounded
+        from meshpipeline.cad.fluid_volume import MAX_TRIANGLES, closed_pieces, stage_bounded
         from meshpipeline.engines.port_binding import declaration_targets
-        if closed_pieces(tris) >= 2:
+        if len(tris) <= MAX_TRIANGLES and closed_pieces(tris) >= 2:
             staged_fv = stage_bounded(surface_path, out_dir, kind="triangles",
                                       declared=declaration_targets(intake_patches or []))
             if staged_fv is not None:

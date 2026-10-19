@@ -137,6 +137,18 @@ def test_a_triangle_file_of_two_touching_parts_is_split_the_same_way():
     assert len(x.passages[0].main_ports) == 2
 
 
+def test_the_check_counts_a_triangle_files_parts_on_its_own_triangles(tmp_path):
+    from OCP.BRepMesh import BRepMesh_IncrementalMesh
+
+    from meshpipeline.cad.fluid_volume_check import triangle_parts
+    from meshpipeline.cad.stl_io import write_stl_binary
+    shape = _two_halves()
+    BRepMesh_IncrementalMesh(shape, 0.001, False, 0.2, True)
+    tris = [t for f in fv._faces(shape) for t in fv._face_triangles(f)]
+    write_stl_binary(tmp_path / "halves.stl", tris)
+    assert triangle_parts(tmp_path / "halves.stl") == 2      # pressed face to face, still two parts
+
+
 def test_a_step_assembly_is_staged_as_its_fluid_through_tessellate_internal(tmp_path):
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
     from OCP.gp import gp_Trsf

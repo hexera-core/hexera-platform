@@ -18,9 +18,23 @@ MIN_PARTS = 2
 
 
 def wants_fluid_volume(facts: dict) -> bool:
-    """Whether the check splits the space: several parts, or a file of surfaces."""
+    """Whether the check splits the space of a CAD file: several solids, or a file of surfaces."""
     n = int(facts.get("solids") or 0)
     return n >= MIN_PARTS or (n == 0 and facts.get("body_kind") == "surface")
+
+
+def triangle_parts(source: Path) -> int:
+    """How many closed parts a triangle file holds, counted on its own triangles (the scout's skin
+    joins parts pressed face to face into one); 0 when it is too big to split anyway."""
+    from meshpipeline.cad.fluid_volume import MAX_TRIANGLES, closed_pieces
+    from meshpipeline.cad.stl_io import read_stl_triangles
+    try:
+        if (Path(source).stat().st_size - 84) // 50 > MAX_TRIANGLES:
+            return 0
+        tris = read_stl_triangles(Path(source))
+        return closed_pieces(tris) if len(tris) <= MAX_TRIANGLES else 0
+    except Exception:  # noqa: BLE001 - a skin it cannot read is no assembly to split
+        return 0
 
 
 def read_fluid_volume(facts: dict, source: Path, *, work: Path, scale: float = 1.0,
@@ -30,7 +44,7 @@ def read_fluid_volume(facts: dict, source: Path, *, work: Path, scale: float = 1
     scout's own reading stands."""
     from meshpipeline.cad.fluid_volume import CHECK_BUDGET_S, run_bounded
 
-    if not wants_fluid_volume(facts):
+    if not (triangle_parts(source) >= MIN_PARTS if kind == "triangles" else wants_fluid_volume(facts)):
         return
     try:
         answer = run_bounded({"task": "propose", "source": str(source), "scale": float(scale), "kind": kind},
@@ -142,4 +156,4 @@ def _litres(v: float) -> str:
     return f"{v * 1000.0:.0f} ml"
 
 
-__all__ = ["MIN_PARTS", "fold", "read_fluid_volume", "wants_fluid_volume"]
+__all__ = ["MIN_PARTS", "fold", "read_fluid_volume", "triangle_parts", "wants_fluid_volume"]

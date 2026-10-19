@@ -1136,8 +1136,15 @@ def stage(x: Extraction, declared: list, out_dir, *, angular_deflection: float =
         return None
     facts.update({"sealed": sealed, "open_rims": open_rims,
                   "fluid_volume": {**x.as_dict(), "staged_passages": len(used)}})
+    # THE SEED, PROVEN ON WHAT THE MESHER READS: inside the welded float32 surface by its winding
+    # number. Several passages carry one seed (the largest's): a seeded mesher meets the others in
+    # the passage reading (cad/fluid_passages) and says so; cfMesh meshes each one.
+    seed = np.asarray(main.seed, dtype=float)
+    if float(isf._winding(V[F], seed[None, :])[0]) < 0.5:
+        logger.warning("fluid volume: the seed is not inside the staged surface - not staged")
+        return None
     staged = isf.StagedInternal(verts=V, faces=F, labels=L.tolist(), ports=ports, wall="wall",
-                                seed=np.asarray(main.seed, dtype=float), facts=facts)
+                                seed=seed, facts=facts)
     rec = isf.write_staged(staged, Path(out_dir))
     rec["source"] = "fluid_volume"
     rec["sealed"]["open_rims"] = open_rims
