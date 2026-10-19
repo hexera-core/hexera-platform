@@ -526,3 +526,80 @@ def test_a_model_heal_directive_is_held_only_while_review_is_on(review_on, playe
     else:
         assert candidate is None
         assert [u["reason"] for u in planner.unplayable] == ["reserved_for_review"]
+
+
+# THE ACCEPT PATH NAMES ONE FACE. The review proposer writes one review item per crossing face and
+# its proposal names that face alone; accepting it hands the planner `targets: [that face]`. Every
+# analyzer crossing involves two faces at least, so the raw list made the heal's pre-analysis find
+# "no crossing among the targets" while the scan's own `crossing_faces` listed the partners. The
+# directive is widened to the whole component the scan measured, as the rules planner aims it.
+
+_TRIANGLE = (_crossing_face("face:f3", 3, ((7, "face:f7"), (9, "face:f9"))),
+             _crossing_face("face:f7", 7, ((3, "face:f3"), (9, "face:f9"))))
+
+
+@pytest.fixture
+def _heal_flag(monkeypatch):
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_HEAL_SELF_INTERSECTIONS", True)
+
+
+@pytest.mark.usefixtures("_heal_flag")
+def test_a_one_face_engineer_heal_is_aimed_at_the_whole_crossing_component():
+    from meshpipeline.cad.repair.plan import RunHistory
+    from meshpipeline.cad.repair.triage import REVIEW_RESERVED_CODES
+
+    planner = DirectedPlanner([_heal_on(["face:f3"], "engineer")], _Nothing(),
+                              reserved=REVIEW_RESERVED_CODES)
+    candidate = planner.propose(_TRIANGLE, RunHistory(), shape=None)
+    assert candidate is not None and candidate.op.name == "heal_self_intersections"
+    assert [(t.fingerprint, t.entity_index) for t in candidate.targets] == [
+        ("face:f3", 3), ("face:f7", 7), ("face:f9", 9)]
+    # the item it answers and the defect it is judged on are still the face the engineer accepted
+    assert candidate.defect_fingerprint == "face:f3" and candidate.item_id == "i-heal"
+    assert planner.unplayable == []
+
+
+@pytest.mark.usefixtures("_heal_flag")
+def test_a_heal_already_naming_its_component_is_not_doubled():
+    from meshpipeline.cad.repair.plan import RunHistory
+
+    planner = DirectedPlanner([_heal_on(["face:f3", "face:f7"], "engineer")], _Nothing())
+    candidate = planner.propose(_CROSSING, RunHistory(), shape=None)
+    assert [(t.fingerprint, t.entity_index) for t in candidate.targets] == [
+        ("face:f3", 3), ("face:f7", 7)]
+
+
+@pytest.mark.usefixtures("_heal_flag")
+def test_a_widened_one_face_model_heal_is_still_held_while_review_is_on():
+    from meshpipeline.cad.repair.plan import RunHistory
+    from meshpipeline.cad.repair.triage import REVIEW_RESERVED_CODES
+
+    planner = DirectedPlanner([_heal_on(["face:f3"], "llm-planner")], _Nothing(),
+                              reserved=REVIEW_RESERVED_CODES)
+    assert planner.propose(_TRIANGLE, RunHistory(), shape=None) is None
+    assert [u["reason"] for u in planner.unplayable] == ["reserved_for_review"]
+
+
+@pytest.mark.usefixtures("_heal_flag")
+def test_a_heal_at_a_face_without_crossing_evidence_keeps_the_face_it_named():
+    # No `crossing_faces` (a wire-level finding): nothing to widen to, so the heal meets its own
+    # not_isolated decline rather than a guess at partners.
+    from meshpipeline.cad.repair.plan import RunHistory
+
+    bare = EntityDefect(code=DefectCode.self_intersection, severity=DefectSeverity.error,
+                        entity_type="face", entity_index=4, message="wire crosses",
+                        fingerprint="face:f4")
+    planner = DirectedPlanner([_heal_on(["face:f4"], "engineer")], _Nothing())
+    candidate = planner.propose((bare,), RunHistory(), shape=None)
+    assert [(t.fingerprint, t.entity_index) for t in candidate.targets] == [("face:f4", 4)]
+
+
+@pytest.mark.usefixtures("_heal_flag")
+def test_another_ops_one_target_directive_at_a_crossing_face_is_not_widened():
+    from meshpipeline.cad.repair.plan import RunHistory
+
+    directive = {**_heal_on(["face:f3"], "engineer"), "op": "fix_face_boundary"}
+    planner = DirectedPlanner([directive], _Nothing())
+    candidate = planner.propose(_TRIANGLE, RunHistory(), shape=None)
+    assert candidate is not None and candidate.op.name == "fix_face_boundary"
+    assert [t.fingerprint for t in candidate.targets] == ["face:f3"]

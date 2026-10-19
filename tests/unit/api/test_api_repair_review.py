@@ -634,3 +634,44 @@ async def test_replacing_a_group_answer_with_another_keeps_the_members_it_covere
     assert recorded[uuid.UUID(int=1)]["directive"]["targets"] == ["edge:0001", "edge:0002"]
     assert uuid.UUID(int=3) not in recorded, "a member answered on its own keeps its answer"
     world.repo.reopen_covered.assert_not_awaited()
+
+
+async def test_accepting_a_proposed_heal_reaches_the_heal_aimed_at_the_whole_crossing(monkeypatch):
+    """The proposer names ONE face per review item; accepting it sends that one face. Every
+    crossing the analyzer reports involves two faces at least, so the heal's pre-analysis over the
+    raw list could only decline "no crossing among the targets" while the scan named the partners.
+    Through the real run route and the real planner, the accepted heal reaches the operation aimed
+    at the face and every face it crosses."""
+    from meshpipeline.cad.repair.contracts import DefectCode, DefectSeverity
+    from meshpipeline.cad.repair.directives import DirectedPlanner
+    from meshpipeline.cad.repair.localize import EntityDefect
+    from meshpipeline.cad.repair.plan import RunHistory
+    from meshpipeline.cad.repair.triage import REVIEW_RESERVED_CODES
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_HEAL_SELF_INTERSECTIONS", True)
+    item = _item(1, group="self_intersection:heal_self_intersections", severity="error",
+                 state="accepted", decided=1,
+                 proposal={"op": "heal_self_intersections", "targets": ["face:0003"],
+                           "rationale": "r", "provenance": "rules"})
+    item.entity_type, item.fingerprint = "face", "face:0003"
+    world = World([item])
+    assert (await world.call("POST", "/review/run")).status_code == 202
+    directives = world.dispatch.call_args.args[2]["repair_directives"]
+    assert [(d["op"], d["targets"], d["source"]) for d in directives] == [
+        ("heal_self_intersections", ["face:0003"], "engineer")]
+
+    def crossing(fp, index, partners):
+        return EntityDefect(code=DefectCode.self_intersection, severity=DefectSeverity.error,
+                            entity_type="face", entity_index=index, message="crosses",
+                            fingerprint=fp, kernel_status="SelfInterference",
+                            measurements={"crossing_face_indices": [i for i, _ in partners],
+                                          "crossing_faces": [f for _, f in partners]})
+
+    scan = (crossing("face:0003", 3, ((7, "face:0007"),)),
+            crossing("face:0007", 7, ((3, "face:0003"),)))
+    planner = DirectedPlanner(directives, reserved=REVIEW_RESERVED_CODES)
+    candidate = planner.propose(scan, RunHistory(), shape=None)
+    assert candidate is not None and candidate.op.name == "heal_self_intersections"
+    assert [(t.fingerprint, t.entity_index) for t in candidate.targets] == [
+        ("face:0003", 3), ("face:0007", 7)]
+    assert candidate.item_id == str(uuid.UUID(int=1)) and planner.unplayable == []

@@ -333,6 +333,42 @@ def test_an_engineer_directive_on_the_forged_tangle_ends_honestly(tmp_path, monk
     assert any(d.fingerprint == target.fingerprint for d in run.defects), "target still reported"
 
 
+def test_accepting_the_proposed_heal_on_the_forged_tangle_aims_at_the_whole_component(
+        tmp_path, monkeypatch):
+    # THE REAL ACCEPT PATH: the review proposer names one face per item, and an accepted item's
+    # directive is built by the API from that one face. The heal must still be aimed at every face
+    # of the crossing the scan located - a one-face heal can only find "no crossing among the
+    # targets", which the scan's own `crossing_faces` contradicts.
+    from types import SimpleNamespace
+
+    from meshpipeline.api.v1.repair_review import _engineer_directives
+    from meshpipeline.cad.repair import loop
+    from meshpipeline.cad.repair.directives import DirectedPlanner
+    from meshpipeline.cad.repair.triage import REVIEW_RESERVED_CODES
+
+    _run_config(monkeypatch)
+    shape = _read(write_pierced_floor_step(tmp_path / "pierced.step"))
+    target = _crossings(shape)[0]
+    item = SimpleNamespace(id="pierced-accept", state="accepted", fingerprint=target.fingerprint,
+                           defect_code="self_intersection", decision={},
+                           proposal={"op": "heal_self_intersections",
+                                     "targets": [target.fingerprint], "provenance": "rules"})
+    directives = _engineer_directives(item, [item])
+    assert [d["targets"] for d in directives] == [[target.fingerprint]]
+    run = loop.run(shape, planner=DirectedPlanner(directives, reserved=REVIEW_RESERVED_CODES),
+                   tolerance_mm=0.01)
+    verdict = run.verdicts[0]
+    print("PIERCED-ACCEPT", verdict.reason, verdict.evidence)
+    component = {target.fingerprint, *target.measurements["crossing_faces"]}
+    assert verdict.op == "heal_self_intersections" and verdict.source == "engineer"
+    assert verdict.evidence["faces_targeted"] == len(component)
+    assert "no crossing among the targets" not in verdict.reason
+    # The honest outcome on this part: its five-face tangle is wider than the heal may re-trim.
+    assert verdict.reason.startswith(f"declined:not_isolated ({len(component)} faces, more than")
+    assert not verdict.kept
+    assert any(d.fingerprint == target.fingerprint for d in run.defects), "target still reported"
+
+
 CORPUS = Path(os.environ.get("HEXERA_OCCT_CORPUS", DEFAULT_CORPUS))
 
 

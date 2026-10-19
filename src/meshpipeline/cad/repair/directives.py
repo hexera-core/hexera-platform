@@ -30,6 +30,27 @@ WHOLE_SHAPE_SCOPE = 99
 #: The sources whose directive may aim at a defect held for review: the engineer who is being
 #: asked, and a replay of an operation this upload already kept.
 HELD_ANSWERING_SOURCES = frozenset({"engineer", "replay"})
+#: The one operation whose directive is aimed at the crossing COMPONENT its named face sits in.
+HEAL_OP = "heal_self_intersections"
+
+
+def _crossing_components(op, refs: list[EntityRef], by_fingerprint) -> list[EntityRef]:
+    """Each named face followed by the faces the CURRENT scan says it crosses, once each.
+
+    THE ACCEPT PATH NAMES ONE FACE: the review proposer writes one item per crossing face and its
+    proposal names that face alone (agents/repair_review/proposer.py), so an accepted heal reached
+    the operation as a one-face list. Every crossing the analyzer reports involves two faces at
+    least, so the heal's own pre-analysis could only decline "no crossing among the targets" while
+    the scan's `crossing_faces` named the partners. The heal is aimed here exactly as the rules
+    planner aims it (`op.targets_for`); a face with no analyzer evidence keeps the face it named
+    (and meets the heal's not_isolated decline), and a directive already naming the component -
+    a group redirect, a replay - comes out with the same faces in the same order.
+    """
+    out: list[EntityRef] = []
+    for ref in refs:
+        widened = op.targets_for(by_fingerprint[ref.fingerprint]) or (ref,)
+        out.extend(r for r in widened if all(o.entity_index != r.entity_index for o in out))
+    return out
 
 
 class DirectedPlanner:
@@ -106,6 +127,8 @@ class DirectedPlanner:
                 refs.append(EntityRef(entity_type=defect.entity_type, fingerprint=fingerprint,
                                       entity_index=int(defect.entity_index),
                                       ambiguous=bool(getattr(defect, "ambiguous", False))))
+        if op.name == HEAL_OP:
+            refs = _crossing_components(op, refs, by_fingerprint)
         if not refs:
             self._skip(directive, TARGET_ABSENT)
             return None
