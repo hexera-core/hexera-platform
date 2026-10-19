@@ -17,6 +17,7 @@ import { getJob } from "./api/endpoints.js";
 import { dispatch, resultSurface } from "./core/events.js";
 import { beginRun, get as getState, isTerminalStatus, set as setState, waitingCopy }
   from "./core/state.js";
+import { CheckProgress } from "./render/check_progress.js";
 import { Notice } from "./render/notice.js";
 import { Stage, closeLightbox, openLightbox, setCancelHandler, setResultHandler }
   from "./render/stage.js";
@@ -174,6 +175,8 @@ configureComposer({
     { anchorEl: Stage.col(), retry, fallback: () => { Stage.geometryCheck(d, confirm); } }),
   // the card, when it stands in for the stage, follows the check in place
   geometryCard: (d) => Stage.geometryCheckUpdate(d),
+  // the check's live line, in the conversation while the part is checked
+  checkProgress: (p, opts) => CheckProgress.show(Stage.col(), p, opts),
 });
 
 configureDispute({

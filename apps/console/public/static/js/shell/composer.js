@@ -32,6 +32,8 @@ let deps = {
   geometryCheck() {},
   // the card that stands in when the stage cannot draw, following the check in place
   geometryCard() {},
+  // the check's live line in the conversation (render/check_progress.js), fed by the poll
+  checkProgress() {},
   // the open engine question's choice (every engine that can take the file, with its fit), and
   // the function that sends the user's pick
   engineChoice() {},
@@ -129,6 +131,9 @@ async function upload(file) {
    the way on: try again, or carry on in the chat. The wait is long on purpose: the naming waits
    for the user, and a user may take their time over the first answer. */
 const CHECK_POLL_MS = 3000, CHECK_POLL_MAX = 900;   // forty-five minutes, then stop quietly
+/* polls in a row with no answer before the live line says it cannot reach the server - and stops
+   counting up: a line whose server is quiet must not look as if work were still going on */
+const CHECK_OFFLINE_AFTER = 5;
 
 /* THE CHAT WAITS WITH THE USER. From the moment the reply says the part is being drawn until the
    user has pressed Proceed (or the check gave up), the box is closed: a message typed meanwhile
@@ -173,6 +178,19 @@ async function watchGeometryCheck(sessionId) {
   // THE WAY ON when a step gave up: the scout when the part was never measured, the naming when
   // it was. The watch goes on, so the fresh result lands where the old one would have.
   const retryFn = async (step) => { const d = await retryGeometryCheck(sessionId, step); told = ""; return d; };
+  // THE LIVE LINE'S OWN "Try again": the step the check last reported, run again, and the line
+  // follows the fresh check at once rather than at the next poll
+  let retryAs = null, misses = 0;
+  const rowRetry = async () => {
+    deps.notice.clear?.();
+    let d;
+    try { d = await retryFn(retryAs); } catch (e) {
+      deps.notice.show("Could not run the geometry check again: " + e.message, "error");
+      throw e;
+    }
+    if (d && d.progress) deps.checkProgress(d.progress, { retry: rowRetry });
+    return d;
+  };
   // `edits` is the stage's (or the card's) one line saying what the user changed on the form. It
   // is said once the server holds the answers, before the declaration that carries them all.
   const confirmFn = async (body, edits) => {
@@ -198,6 +216,12 @@ async function watchGeometryCheck(sessionId) {
     try { d = await getGeometryCheck(sessionId); } catch { /* transient; try again */ }
     const status = d && d.status;
     if (d) _checkMode = d.check_mode || "";
+    if (d) {
+      misses = 0; retryAs = d.retry || null;
+      deps.checkProgress(d.progress || null, { retry: rowRetry });
+    } else if (++misses >= CHECK_OFFLINE_AFTER) {
+      deps.checkProgress(null, { offline: true, retry: rowRetry });
+    }
     if (d && d.confirmed) {
       // answered, on the stage or the card, whatever the naming did afterwards
       _checkState = "done"; releaseHold(); if (stage) stage.release(); return;
@@ -250,6 +274,8 @@ async function watchGeometryCheck(sessionId) {
     }
     await new Promise((r) => setTimeout(r, CHECK_POLL_MS));
   }
+  // the watch gave up: the line says so and stops, instead of counting up for good
+  if (getState.sessionId() === sessionId) deps.checkProgress(null, { ended: true });
 }
 
 /* AFTER A RUN ENDS THE CONVERSATION GOES ON. The next message starts another run on the same

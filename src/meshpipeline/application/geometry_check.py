@@ -313,7 +313,12 @@ def run_geometry_check(*, session_id: str, owner_id: str, source: dict,
     stored too, as a status the console can show, because a check that silently never arrives is
     worse than one that says it could not read the part. `purpose_text` is accepted for the
     older single-step callers and ignored: naming has its own step now."""
+    from meshpipeline.application import geometry_progress as gp
+
     started = time.time()
+    # THE LIVE LINE: each step is recorded as it starts, so the chat says what is happening now
+    tracker = _scout_tracker(session_id, source)
+    token = gp.track(tracker)
     try:
         result = _scout(session_id=session_id, owner_id=owner_id, source=source,
                         interpretation=interpretation)
@@ -323,10 +328,16 @@ def run_geometry_check(*, session_id: str, owner_id: str, source: dict,
         logger.exception("geometry scout failed - session=%s", session_id)
         result = {"status": STATUS_FAILED, "reason": f"{type(exc).__name__}: {str(exc)[:200]}",
                   "named": False, "step": RETRY_SCOUT, "retry": RETRY_SCOUT}
+        if _out_of_time(exc):
+            # the worker's soft limit: said as the time box says it, not as the exception's name
+            result.update(reason=SCOUT_TOO_LONG, timed_out=True)
+    finally:
+        gp.untrack(token)
     result["seconds"] = round(time.time() - started, 1)
     # THE WRITE IS PART OF THE TASK: a result that cannot be stored is stored as a failure, so the
     # stage never waits on a `pending` nothing will replace
     stored = store_status(session_id, result.pop("status"), RETRY_SCOUT, **result)
+    tracker.finish(ok=stored.get("status") == STATUS_SCOUTED)
     logger.info("geometry scout %s - session=%s in %.1fs", stored.get("reason") or stored["status"],
                 session_id, result["seconds"])
     return stored
@@ -334,6 +345,33 @@ def run_geometry_check(*, session_id: str, owner_id: str, source: dict,
 
 class _Unsupported(RuntimeError):
     pass
+
+
+def _out_of_time(exc: BaseException) -> bool:
+    """Whether the worker's soft time limit ended the step (Celery's SoftTimeLimitExceeded, known
+    by name: the application does not import the queue)."""
+    return type(exc).__name__ == "SoftTimeLimitExceeded"
+
+
+def _scout_tracker(session_id: str, source: dict):
+    """The scout's progress record, begun: which pending marker it runs for, what kind of check
+    it is, and how big the file is - so the line can say "big file (180 MB)"."""
+    from meshpipeline.application import geometry_progress as gp
+    from meshpipeline.contracts.intake_formats import format_for_suffix
+
+    suffix = str((source or {}).get("suffix_hint") or "").lower()
+    marker = None
+    try:
+        stored = read_check(session_id)
+        if stored is not None and stored.get("status") == STATUS_PENDING:
+            marker = stored.get("written_at")
+    except Exception:  # noqa: BLE001 - without the marker the record is matched by its time
+        marker = None
+    fmt = format_for_suffix(suffix)
+    tracker = gp.Tracker(session_id, "scout")
+    tracker.begin(marker=marker, mode=str(getattr(fmt, "check_mode", "") or "") or "generic",
+                  work={"size_bytes": (source or {}).get("size_bytes"), "suffix": suffix})
+    return tracker
 
 
 def _fetch(ref, work: Path) -> Path:
@@ -352,6 +390,7 @@ def _fetch(ref, work: Path) -> Path:
 
 
 def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict | None) -> dict:
+    from meshpipeline.application import geometry_progress as gp
     from meshpipeline.cad.ingest import IngestError, canonicalise
     from meshpipeline.contracts.geometry_source import GeometryInterpretationRef, GeometrySourceRef
     from meshpipeline.contracts.intake_formats import (
@@ -378,6 +417,7 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
         # thermal model, which the check reads as its PLACED parts: each part where the file puts
         # it, under its own name and colour, in milliseconds and without joining anything (the
         # joined form, when an engine needs it, is built for the run)
+        gp.mark(gp.READING)
         fetched = _fetch(ref, work)
         try:
             canonical = canonicalise(fetched, work, stem="geometry", ecxml_form="placed")
@@ -417,6 +457,7 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
             declared_openings(facts, thermal)
 
         # the same skin, stored for the stage the user turns the part in
+        gp.mark(gp.PICTURES, triangles=gp.skin_triangles(skin))
         skin_key = check_object_key(session_id, "skin.json")
         _store_json(skin_key, _placed_skin_payload(fetched) if placed else skin_payload(skin))
         # which way the part stands up, as far as its shape says: the code's half of the up
@@ -456,6 +497,7 @@ def _scout_thermal(session_id: str, ref, fetched: Path, canonical, sidecar: dict
     levels - built from the file (application/thermal_view). Nothing else is asked of it: no
     pictures, no picture naming, no up question, no triangle measuring, and no openings - the air
     box's sides are the file's, described in the view, never given a role."""
+    from meshpipeline.application import geometry_progress as gp
     from meshpipeline.application.thermal_view import detail_levels_bounded, thermal_view
     from meshpipeline.cad.ingest.ecxml import read_ecxml
     from meshpipeline.cad.ingest.ecxml_place import place, placed_skin
@@ -464,9 +506,11 @@ def _scout_thermal(session_id: str, ref, fetched: Path, canonical, sidecar: dict
     placement = place(read_ecxml(fetched))
     thermal_key = check_object_key(session_id, "thermal_model.json")
     _store_json(thermal_key, sidecar)
+    gp.mark(gp.MEASURING)
     # the grid laid out for each detail level, in a child stopped at its time budget: a level
     # it could not size in time shows its limits, and is sized when the mesh runs
     view = thermal_view(sidecar, placement, detail=detail_levels_bounded(fetched))
+    gp.mark(gp.PICTURES)
     skin_key = check_object_key(session_id, "skin.json")
     _store_json(skin_key, placed_skin(placement))
     facts = thermal_facts(view, canonical)
@@ -736,11 +780,13 @@ def _store_upright_sheet(session_id: str, skin: Path, work: Path, store) -> dict
 
 def _scout_exact(local_path: Path, work: Path, interp_ref, ref) -> tuple[dict, Path]:
     """A STEP or IGES file: OpenCASCADE reads real faces, so the openings come out exact."""
+    from meshpipeline.application import geometry_progress as gp
     from meshpipeline.cad.scout import read_cad, scout_cad, write_view_stl
 
     prepared, unit_note = _prepared_coordinates(local_path, interp_ref, ref)
     # read once: the scout and the view skin each work on their own scaled copy of it
     shape = read_cad(local_path)
+    gp.mark(gp.MEASURING)
     # a thermal model states its openings (declared_openings, below); its many solids are not
     # searched for them
     declared = {"declared_openings": True} if _thermal_sidecar(local_path) is not None else {}
@@ -752,6 +798,7 @@ def _scout_exact(local_path: Path, work: Path, interp_ref, ref) -> tuple[dict, P
     if unit_note:
         facts["notes"].append(unit_note)
     skin = write_view_stl(local_path, work / "skin.stl", prepared=prepared, shape=shape)
+    gp.mark(gp.OPENINGS, triangles=gp.skin_triangles(skin))
     facts["holes"] = skin_holes(skin)
     if not declared:
         read_whole_shape(facts, skin)
@@ -834,6 +881,7 @@ def _scout_triangles(local_path: Path, work: Path, interp_ref, ref,
     """An STL, OBJ or VTP file: triangles only, so the openings are read from loops and flat
     rings in the mesh - close, not exact - and the unit is whatever the user confirms
     (`file_scale`: the scale a converted file was written at, when its source fixes the unit)."""
+    from meshpipeline.application import geometry_progress as gp
     from meshpipeline.cad.scout_mesh import scout_mesh, write_mesh_skin
     from meshpipeline.contracts.geometry_units import LengthUnit, scale_to_metres
 
@@ -844,6 +892,7 @@ def _scout_triangles(local_path: Path, work: Path, interp_ref, ref,
     else:
         scale = scale_to_metres(LengthUnit.millimetre)
         note = "a triangle file carries no unit; sizes assume millimetres until the intake confirms"
+    gp.mark(gp.MEASURING)
     result = scout_mesh(local_path, scale_to_m=scale)
     facts = result.as_dict()
     facts.update(getattr(result, "extra", {}) or {})
@@ -853,6 +902,7 @@ def _scout_triangles(local_path: Path, work: Path, interp_ref, ref,
     if note:
         facts["notes"].append(note)
     skin = write_mesh_skin(local_path, work / "skin.stl", scale_to_m=scale)
+    gp.mark(gp.OPENINGS, triangles=gp.skin_triangles(skin))
     if not file_scale:
         # a thermal model's placed parts (file_scale) state their regions and openings themselves
         read_whole_shape(facts, skin)
@@ -949,12 +999,20 @@ def run_geometry_naming(*, session_id: str, owner_id: str, purpose_text: str,
     and stores the proposal as `ready`. A scout that failed stays failed; the naming never
     invents a check that was not made. A naming that breaks is stored as `failed` where it can
     be, so the conversation stops waiting for a stage that will not come."""
+    from meshpipeline.application import geometry_progress as gp
+
+    tracker = gp.Tracker(session_id, "naming")
+    tracker.begin()
+    token = gp.track(tracker)
     try:
-        return _name(session_id=session_id, owner_id=owner_id, purpose_text=purpose_text,
-                     interpretation=interpretation)
+        landed = _name(session_id=session_id, owner_id=owner_id, purpose_text=purpose_text,
+                       interpretation=interpretation)
+        tracker.finish(ok=landed.get("status") == STATUS_READY)
+        return landed
     except Exception as exc:  # noqa: BLE001 - the user is told, in one sentence, and the intake carries on
         logger.exception("geometry naming failed - session=%s", session_id)
-        reason = f"{type(exc).__name__}: {str(exc)[:200]}"
+        tracker.finish(ok=False)
+        reason = NAMING_TOO_LONG if _out_of_time(exc) else f"{type(exc).__name__}: {str(exc)[:200]}"
         try:
             # a duplicate attempt may already have named the check: a late failure never
             # replaces a result the user can act on
@@ -964,14 +1022,18 @@ def run_geometry_naming(*, session_id: str, owner_id: str, purpose_text: str,
                 return {"status": STATUS_READY, "named": True, "superseded_failure": reason}
             # the scout's facts, proposal and skin stay on the failed record: the stage keeps
             # the part for the user to name by hand, and a retry has something to name
-            write_status(session_id, STATUS_FAILED, **_failed_record(reason, RETRY_NAMING, current))
+            write_status(session_id, STATUS_FAILED, **_failed_record(reason, RETRY_NAMING, current),
+                         **({"timed_out": True} if reason == NAMING_TOO_LONG else {}))
         except Exception:  # noqa: BLE001 - the store itself may be what broke
             logger.warning("geometry naming: could not record the failure for %s", session_id)
         return {"status": STATUS_FAILED, "named": False, "reason": reason, "step": RETRY_NAMING,
                 "retry": RETRY_NAMING}
+    finally:
+        gp.untrack(token)
 
 
 def _name(*, session_id: str, owner_id: str, purpose_text: str, interpretation: dict | None) -> dict:
+    from meshpipeline.application import geometry_progress as gp
     from meshpipeline.contracts.geometry_source import GeometryInterpretationRef
     from meshpipeline.contracts.object_storage import get_object_store
 
@@ -1003,6 +1065,7 @@ def _name(*, session_id: str, owner_id: str, purpose_text: str, interpretation: 
             # only and stay as they are.
             _rescale_skin(session_id, k)
 
+    gp.mark(gp.NAMING)
     if _is_thermal(facts):
         # the file names every part and says which way is up: nothing is asked of a model
         proposal = _proposal(facts, {})
