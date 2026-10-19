@@ -971,7 +971,7 @@ def configure_mesh(workspace, *, geometry_file: str, strategy: dict, wall_patch:
 
 def with_requested_layers(workspace, strategy: dict | None) -> tuple[dict, dict]:
     """The strategy with the layer count the REQUEST states ("5 prism layers") when the builder
-    gave none - a strategy without n_layers rendered no boundaryLayers at all - and a note for the
+    gave none or 0 - a strategy without layers rendered no boundaryLayers at all - and a note for the
     builder when it asked for fewer than the request: the delivered mesh is measured against the
     request's count (engines/layer_census), so 2 where 5 were asked reads as 2 of 5."""
     from meshpipeline.engines.layer_census import stated_layers
@@ -986,6 +986,14 @@ def with_requested_layers(workspace, strategy: dict | None) -> tuple[dict, dict]
         return strategy, {"layers_requested": stated,
                           "layers_note": f"n_layers {stated}: the count the request states"}
     asked = int(strategy.get("n_layers") or 0)
+    if asked <= 0:
+        # NO LAYERS where the request states some is never the mesh asked for: the review
+        # rejects it and the attempt is spent (a valid run is submitted as it stands). Fewer
+        # than stated stays the builder's call - a concrete run_mesh failure can make a
+        # thinner stack necessary.
+        strategy["n_layers"] = stated
+        return strategy, {"layers_requested": stated, "layers_note": (
+            f"n_layers {stated}: the count the request states (the strategy asked for none)")}
     if asked < stated:
         return strategy, {"layers_requested": stated, "layers_note": (
             f"the request asks for {stated} prism layers and this strategy for {asked}: the "

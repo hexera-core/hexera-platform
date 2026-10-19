@@ -103,7 +103,8 @@ def test_the_reviewer_reads_the_counted_layers_against_the_request(tmp_path):
     ctx = _review_context(census_quality(ws, [{"name": "wall", "type": "wall"}]))
     assert "40.0%" in ctx and "wall: 40.0% (2.0/5 layers)" in ctx
     assert "COUNTED on the mesh itself" in ctx and "the mesher was told 2" in ctx
-    assert "Fewer layers than requested is a shortfall" in ctx
+    assert "fewer layers than requested is a shortfall" in ctx
+    assert "The request is MET when all 5 cover at least 95% of the wall area" in ctx
 
 
 def test_the_reviewer_is_told_when_the_layers_could_not_be_counted():
@@ -119,3 +120,19 @@ def test_cfmesh_declares_the_layer_row_snappy_declares():
     snappy = {c.key: c for c in criteria_for("snappy")}
     assert rows["layer_coverage_pct"].op == snappy["layer_coverage_pct"].op == ">"
     assert rows["layer_coverage_pct"].gating is False and rows["layer_coverage_pct"].threshold == 0.0
+
+
+def test_a_strategy_with_no_layers_takes_the_requests_count(tmp_path):
+    # the builder ran a layerless "coarse base first" and submitted it: the attempt was spent
+    (tmp_path / "request.txt").write_text("Inflate 5 prism boundary layers on the body.")
+    s, note = with_requested_layers(tmp_path, {"n_layers": 0, "wall_cell": 0.2})
+    assert s["n_layers"] == 5 and s["wall_cell"] == 0.2
+    assert note["layers_requested"] == 5 and "asked for none" in note["layers_note"]
+    (tmp_path / "request.txt").write_text("mesh it")
+    assert with_requested_layers(tmp_path, {"n_layers": 0}) == ({"n_layers": 0}, {})
+
+
+def test_the_builder_is_told_to_configure_the_layers_from_the_first_run():
+    from meshpipeline.engines.cfmesh.pack import CFMESH_SYSTEM
+    assert "coarse base FIRST" not in CFMESH_SYSTEM
+    assert "first configure_mesh" in CFMESH_SYSTEM

@@ -135,6 +135,8 @@ def test_the_requested_count_is_the_users(tmp_path):
     assert stated_layers("Resolve the near-wall flow with 5 prism layers (expansion ratio 1.2).") == 5
     assert stated_layers("Near-wall: wall functions, five boundary layers, growth 1.2") == 5
     assert stated_layers("n_layers = 8") == 8
+    assert stated_layers("Inflate 5 prism boundary layers on the body.") == 5
+    assert stated_layers("Add five wall boundary layers targeting y+ = 30-300.") == 5
     assert stated_layers("Use 3 layers on the wall for y+.") == 3
     assert stated_layers("a 3 layers deep stack of plates") == 0     # no near-wall layer word
     assert stated_layers("Standard mesh fidelity, 2 inlets.") == 0
