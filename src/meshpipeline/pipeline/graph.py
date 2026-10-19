@@ -292,11 +292,24 @@ def route_after_reviewer(
     # cited, buildable change (agents/reviewer/review_policy) has nothing a rebuild could act on:
     # the run ends here and terminal assembly delivers the mesh with the concerns listed - or,
     # for a confirmed wrong-problem finding, fails it with the class named.
-    from meshpipeline.agents.reviewer.review_policy import asks_for_rebuild
+    from meshpipeline.agents.reviewer.review_policy import asks_for_rebuild, concern_retry_spent
     if not asks_for_rebuild(state.get("reviewer_axis_findings")):
         logger.info("route_after_reviewer: review did not pass but asks for no buildable change "
                     "→ END (attempt=%d/%d) - job_id=%s", retry_count,
                     bcfg.BUILDER_MAX_TOTAL_ATTEMPTS, state.get("job_id"))
+        return _END
+
+    # ONE IMPROVEMENT RETRY FOR CONCERNS. A review whose open points are all concerns (nothing
+    # makes the mesh the wrong problem) buys at most one same-engine improvement retry per run;
+    # after it the run ends and delivers its best valid mesh (application/review_delivery) with
+    # the concerns listed. Job 0d0fc370 spent three attempts - and an engine switch - on one
+    # layer-coverage concern over a production-grade mesh. (The retry stays on this engine: the
+    # ladder never moves a run on a review - pipeline/engine_fallback.)
+    if concern_retry_spent(state):
+        logger.info("route_after_reviewer: only concerns left and the run's improvement retry for "
+                    "concerns is spent → END, delivering the best valid mesh (attempt=%d/%d) "
+                    "- job_id=%s", retry_count, bcfg.BUILDER_MAX_TOTAL_ATTEMPTS,
+                    state.get("job_id"))
         return _END
 
     if retry_count <= bcfg.MAX_BUILDER_RETRIES:

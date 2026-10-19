@@ -634,6 +634,10 @@ def render_message(fr: FinalResult) -> str:
         if isinstance(offer, Mapping) and offer.get("optional"):
             extra.append(str(offer.get("text") or "").strip())
         return "\n".join([text, *(e for e in extra if e)])
+    if fr.status == TerminalStatus.failed:
+        # NO VALID MESH AT ALL: what each attempt did, in plain words, before the one offer
+        from meshpipeline.pipeline.engine_fallback import attempts_account
+        text = "\n".join([text, *attempts_account(ladder)])
     offer = ladder.get("offer")
     if (fr.status == TerminalStatus.failed and isinstance(offer, Mapping)
             and str(offer.get("text") or "").strip()):

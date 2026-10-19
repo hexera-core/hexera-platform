@@ -76,6 +76,9 @@ class VisualReviewInteractionInputs:
     evidence_key: str = ""
     review_history: tuple = ()
     requirement_caveats: tuple = ()
+    #: the engine parameters that built THIS mesh, as (key, value) pairs - recorded with the review
+    #: so a run that delivers this attempt later delivers it under the engine that built it
+    engine_params: tuple = ()
 
     def __post_init__(self) -> None:
         for name in ("job_id", "mesh_units"):
