@@ -117,14 +117,15 @@ export function createCheckProgress() {
       let moved = false;
       if (!el) {
         el = document.createElement("div");
-        el.className = "im assistant gp-row";
-        el.id = "check-progress";
-        col.appendChild(el);
-        moved = true;
+        // a PINNED line (the run card's) sits at the top of its host and never moves
+        el.className = opts.pinned ? "gp-pinned" : "im assistant gp-row";
+        el.id = opts.id || "check-progress";
+        if (opts.pinned) col.prepend(el); else col.appendChild(el);
+        moved = !opts.pinned;
       }
       // a line still working (or waiting on the answer) stays below the newest message, and ends
       // there; once it has ended, the conversation goes on below it
-      if (el.nextSibling && !(wasSettled && SETTLED.includes(last.state))) { col.appendChild(el); moved = true; }
+      if (!opts.pinned && el.nextSibling && !(wasSettled && SETTLED.includes(last.state))) { col.appendChild(el); moved = true; }
       const next = signature(last, flags);
       if (next !== sig) { sig = next; draw(); }
       else tick();

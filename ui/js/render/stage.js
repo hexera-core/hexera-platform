@@ -23,6 +23,9 @@ import { applyFlow, bindAxis, bindUnit, displayText, followAxis, followSuggestio
 import { changedAnswers, editsLine, noteDrawn, servedProposal } from "./geometry_form.js";
 // a thermal model (an ECXML upload) has its own panel, card or stage alike
 import { bindThermalPanel, thermalPanelHtml } from "./thermal_form.js";
+// the run card's live line: the step running now, in plain words
+import { createRunLine } from "./run_progress.js";
+const RunLine = createRunLine();
 
 /* The lightbox is its own DOM region (#lb) but too small to be its own module. */
 export function openLightbox(src) {
@@ -64,7 +67,7 @@ export const Stage = {
     // one still counted as open).
     this._att=null;this._attSep=null;this._built=new Set();this._seq=0;this.meshBar=null;this._ended=false;
     // ...and so did the stopped clock and the last event's time
-    this.finished=false;this._evt=0;},
+    this.finished=false;this._evt=0;RunLine.reset();},
   // Fill the empty state's format line from the SERVER's capability description. Advisory and
   // best-effort: when capabilities are unavailable the line stays empty and the neutral lead
   // sentence still invites an upload, because the server is the authority on what it accepts.
@@ -269,8 +272,10 @@ export const Stage = {
       <span class="proc-sub" id="proc-sub">working…</span>
       <span class="proc-clock" id="proc-clock">0:00</span>
       <button class="proc-cancel" id="proc-cancel" type="button" hidden>Cancel run</button></div>
+      <div class="proc-live" id="proc-live"></div>
       <div class="tl" id="tl"></div>`;
     this.col().appendChild(p);this.proc=p;this.tl=p.querySelector('#tl');
+    RunLine.attach(p.querySelector('#proc-live'));RunLine.draw();
     p.querySelector('#proc-cancel').onclick=()=>onCancel();
     this.t0=Date.now();
     // one ticker drives every live duration - the run's total and the active stage's
@@ -281,6 +286,8 @@ export const Stage = {
       Object.values(this.nodes).forEach(n=>{
         if(n.t0&&!n.tEnd&&n.dur)n.dur.textContent=fmtDur(Date.now()-n.t0);});
       if(this.meshBar)this.tickMesh();
+      // the live line's notes follow the clock ("taking longer than similar runs")
+      if(!this.finished&&(this._lineTick=(this._lineTick||0)+1)%10===0)RunLine.draw();
     },500);},
 
   // WAITING FOR A WORKER. The sub-line under "Generating mesh" said "working…" from the
@@ -290,7 +297,8 @@ export const Stage = {
   // means a worker has it and the line returns to "working…". A finished run is left alone.
   waiting(text){if(!this.proc||this.proc.classList.contains('done'))return;
     const s=this.proc.querySelector('#proc-sub');if(!s)return;
-    s.textContent=text||'working…';},
+    s.textContent=text||'working…';
+    RunLine.model.waiting(text);RunLine.draw();},
   // The Cancel control is shown ONLY for a run this page is attached to live. A replayed run
   // renders the same card, and a control that could stop nothing must not be on it.
   showCancel(){const b=this.proc?.querySelector('#proc-cancel');if(b)b.hidden=false;},
@@ -334,7 +342,15 @@ export const Stage = {
       <div class="mb-track"><div class="mb-fill"></div></div>
       <div class="mb-sub">${esc(sub)}</div>`;
     n.body.appendChild(w);this.scroll(n);
-    this.meshBar={el:w,t0:Date.now(),ref:ref,budget:budget*1000,hasHist:hasHist};},
+    this.meshBar={el:w,t0:Date.now(),ref:ref,budget:budget*1000,hasHist:hasHist};
+    RunLine.model.meshing(engine,budget,history,this.now());RunLine.draw();},
+  // WHAT THE RUNNING MESHER SAYS IT IS DOING ("adding wall layers"), under its bar and on the line
+  meshStage(label){
+    const m=this.meshBar;if(m&&label){const l=m.el.querySelector('.mb-lbl');if(l)l.textContent=`meshing · ${label}`;}
+    RunLine.model.meshStage(label,this.now());RunLine.draw();},
+  // THE PLAN the run will build (cells, wall layers, where it refines), in its lane and on the line
+  plan(agent,summary){if(summary)this.info(agent,'Plan: '+summary);
+    RunLine.model.plan(summary,this.now());RunLine.draw();},
   tickMesh(){const m=this.meshBar;if(!m)return;
     const el=Date.now()-m.t0;
     // Progress is against the reference time, capped at 100%. Past the typical time the
@@ -360,7 +376,8 @@ export const Stage = {
     if(sub)sub.textContent=`finished in ${fmtDur(el)}`;
     const num=m.el.querySelector('.mb-num');
     if(num&&cells)num.textContent=`${fmtDur(el)} · ${cells}`;
-    this.meshBar=null;},
+    this.meshBar=null;
+    RunLine.model.meshed(cells,this.now());RunLine.draw();},
   node(agent){this.ensureProc();
     if(this.nodes[agent])return this.nodes[agent];
     const n=document.createElement('div');n.className='tl-node open';
@@ -375,6 +392,7 @@ export const Stage = {
                        t0:this.now(),tEnd:null,count:0,
                        // what the lane's mark is read from: see markOf
                        agent,seq:++this._seq,worst:0};
+    RunLine.model.lane(agent,this.now());RunLine.draw();
     return this.nodes[agent];},
   done(a){const n=this.nodes[a];if(n&&!n.tEnd){n.dot.classList.remove('active');
     n.el.classList.remove('open');n.tEnd=Math.max(n.t0,this.now());
@@ -431,7 +449,8 @@ export const Stage = {
     // until one arrives, and then both appear together.
     if(n===1)sep.hidden=true;
     else this.tl.querySelectorAll('.tl-att[hidden]').forEach(e=>e.hidden=false);
-    this.tl.appendChild(sep);this._attSep=sep;},
+    this.tl.appendChild(sep);this._attSep=sep;
+    RunLine.model.attempt(n,this.now());RunLine.draw();},
   // AN ATTEMPT THAT BUILT NOTHING SAYS SO on its header: "Attempt 2" alone read as a second mesh
   // on runs where every attempt was refused before a mesher ever started.
   _closeAttempt(){const s=this._attSep;if(!s||s.dataset.closed)return;s.dataset.closed='1';
@@ -439,7 +458,8 @@ export const Stage = {
   // THE REVIEW'S VERDICT, kept on its lane: it decides the lane's mark (a FAIL is never a tick),
   // and a rebuild that follows rewords it as the request it was.
   verdict(agent,ok,text){this.info(agent,text,!ok);const n=this.node(agent);
-    n.verdict=ok?'PASS':'FAIL';n.verdictRow=n.body.lastElementChild;this.paint(n);},
+    n.verdict=ok?'PASS':'FAIL';n.verdictRow=n.body.lastElementChild;this.paint(n);
+    RunLine.model.verdict(ok,this.now());RunLine.draw();},
 
   // a passed/failed CHECK - the evidence the user is owed. The STATEMENT comes from
   // the engine (GateSpec.proves); the UI never translates an internal key.
@@ -452,6 +472,8 @@ export const Stage = {
   // `tone` is the note's own (info | warn | error): an error marks its lane failed, a warning
   // marks it warned. A caller that names no tone is read by `warn` alone, as before.
   info(agent,text,warn,tone){const n=this.node(agent);this.bump(n);const r=document.createElement('div');r.className='row';
+    // the engine lane's own sentence ("Mesh engine: cfMesh - ...") is the line's engine step, as said
+    if(agent==='engine_select'){RunLine.model.engine(text,this.now());RunLine.draw();}
     n.worst=Math.max(n.worst||0,tone==='error'?2:warn?1:0);
     r.innerHTML=`<div class="e-info${warn?' warn':''}">${esc(text)}</div>`;n.body.appendChild(r);this.scroll(n);this.paint(n);},
   // `action` arrives already in plain words - the tool roster is named on the backend,
@@ -609,6 +631,9 @@ export const Stage = {
       if(s)s.textContent='stopped when the run ended';this.meshBar.el.classList.add('stopped');this.meshBar=null;}
     // the open lanes close when the job ended, and the run's clock stops there
     this.at(data.endedAt);
+    {const t0=Date.parse(data.createdAt||''),t1=Date.parse(data.endedAt||'');
+     RunLine.model.final({...data,concerns,totalMs:t0>0&&t1>0?t1-t0:(this.t0?this.now()-this.t0:null)},this.now());
+     RunLine.draw();}
     Object.keys(this.nodes).forEach(k=>this.done(k));
     lanes.forEach(n=>this.paint(n));
     this.clock(data.createdAt,data.endedAt);

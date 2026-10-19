@@ -76,6 +76,8 @@ class _Publish:
     async def atool_result(self, *_a, **_k): self._rec("tool_result")
     async def ameshing(self, *_a, **_k): self._rec("meshing")
     async def ameshed(self, *_a, **_k): self._rec("meshed")
+    async def aplan(self, *_a, **_k): pass
+    async def amesh_stage(self, *_a, **_k): pass
     async def averdict(self, *_a, **_k): self._rec("verdict")
     async def aclosing(self, *_a, **_k): self._rec("closing")
 

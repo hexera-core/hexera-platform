@@ -112,12 +112,29 @@ class _Abandoned(Exception):
     """The run stopped waiting before the remote finished; the message says why."""
 
 
-def _poll_gcs_json(bucket, key: str, deadline_s: float) -> dict | None:
+def _relay_progress(bucket, progress_key: str, seen: dict) -> None:
+    """The stage the remote mesher last said it was at (runtime/mesh_runner's beacon), handed
+    to whoever started this mesh (contracts/mesh_progress) when it has moved on. Never raises."""
+    try:
+        blob = bucket.get_blob(progress_key)
+        if blob is None or blob.generation == seen.get("generation"):
+            return
+        seen["generation"] = blob.generation
+        from meshpipeline.contracts.mesh_progress import report
+        report(json.loads(blob.download_as_bytes()))
+    except Exception as exc:  # noqa: BLE001 - the live line is a courtesy, never the run's
+        logger.debug("mesh progress: unreadable (%s)", type(exc).__name__)
+
+
+def _poll_gcs_json(bucket, key: str, deadline_s: float, progress_key: str | None = None) -> dict | None:
     blob = bucket.blob(key)
     start = time.time()
+    seen: dict = {}
     while time.time() - start < deadline_s:
         if blob.exists():
             return json.loads(blob.download_as_bytes())
+        if progress_key:
+            _relay_progress(bucket, progress_key, seen)
         # Asked between polls, AFTER the result check: a result that has already landed is
         # collected, never thrown away over a cancel that came a moment too late.
         reason = abandonment_reason()
@@ -415,7 +432,9 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
                 output_uri=f"gs://{bucket_name}/{out_key}",
                 engine=engine, timeout=timeout)
 
-        result = _poll_gcs_json(bucket, res_key, deadline_s=timeout + 600)
+        from meshpipeline.artifact_keys import progress_key_beside
+        result = _poll_gcs_json(bucket, res_key, deadline_s=timeout + 600,
+                                progress_key=progress_key_beside(out_key))
         if result is None:
             # Reached only once the run is dispatched (a refused or ambiguous submission raised
             # above), so this is a run out of time, never one that did not start.

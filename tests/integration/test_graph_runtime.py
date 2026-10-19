@@ -84,8 +84,8 @@ def test_engine_resolution_runs_on_real_code_without_crashing(monkeypatch):
     assert out == {"engine": default_engine()}
 
     assert [a["op_id"] for a in announced] == ["forced", "resolved"], announced
-    assert [a["text"] for a in announced] == [f"Mesh engine: {_expected}",
-                                              f"Mesh engine: {default_engine()}"], announced
+    assert [a["text"] for a in announced] == [es.engine_choice_words(_expected, "topology_internal"),
+                                              es.engine_choice_words(default_engine(), "default")], announced
 
 
 def test_gmsh_deterministic_path_on_real_geometry():

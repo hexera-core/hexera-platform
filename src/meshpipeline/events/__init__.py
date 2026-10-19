@@ -28,13 +28,15 @@ TOOL_CALL:  Final = "tool_call"   # a tool was invoked
 TOOL_RESULT: Final = "tool_result"  # …and what came back
 MESHING:    Final = "meshing"     # the mesher started, with the engine's declared budget
 MESHED:     Final = "meshed"      # the mesher finished, with the cell count
+PLAN:       Final = "plan"        # the mesh the run will build: cells, wall layers, refinement
+MESH_STAGE: Final = "mesh_stage"  # what the running mesher is doing now, as it reports it
 VERDICT:    Final = "verdict"     # the reviewer's decision
 CLOSING:    Final = "closing"     # the run's final word to the user
 
 EVENT_TYPES: Final[frozenset[str]] = frozenset({
     STAGE, ATTEMPT, NOTE, CHECK, ACTION, SEARCH, FILE,
     SCREENSHOT, MESHING, MESHED, VERDICT, CLOSING,
-    REASONING, RATIONALE, TOOL_CALL, TOOL_RESULT,
+    REASONING, RATIONALE, TOOL_CALL, TOOL_RESULT, PLAN, MESH_STAGE,
 })
 
 # A reasoning operation's lifecycle. One id, one card, three possible ends.
@@ -200,6 +202,44 @@ def meshing(stage_: str, engine: str, budget_s: int, history: dict | None = None
 
 def meshed(stage_: str, cells: int | None = None) -> UiEvent:
     return UiEvent(MESHED, stage_, {"cells": int(cells) if cells else None})
+
+
+def cells_words(cells: int | float | None) -> str:
+    """A cell count a person reads at a glance: 2.1M, 850k, 4,200."""
+    n = int(cells or 0)
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M".replace(".0M", "M")
+    if n >= 10_000:
+        return f"{round(n / 1000)}k"
+    return f"{n:,}"
+
+
+def plan_words(cells: int | None, layers: int | None, refinements: list[str] | None) -> str:
+    """The plan in one line: "about 2.1M cells, 5 wall layers, finer cells in the wake"."""
+    bits = []
+    if cells:
+        bits.append(f"about {cells_words(cells)} cells")
+    if layers is not None:
+        bits.append("no wall layers" if int(layers) <= 0
+                    else f"{int(layers)} wall layer{'s' if int(layers) != 1 else ''}")
+    bits.extend(str(r).strip() for r in (refinements or []) if str(r).strip())
+    return ", ".join(bits)
+
+
+def plan(stage_: str, cells: int | None = None, layers: int | None = None,
+         refinements: list[str] | None = None) -> UiEvent:
+    from meshpipeline.trace.sanitizer import scrub_text
+    refs = [scrub_text(str(r), limit=120) for r in (refinements or [])][:6]
+    return UiEvent(PLAN, stage_, {
+        "cells": int(cells) if cells else None,
+        "layers": int(layers) if layers is not None else None,
+        "refinements": refs, "summary": plan_words(cells, layers, refs)})
+
+
+def mesh_stage(stage_: str, key: str, label: str) -> UiEvent:
+    from meshpipeline.trace.sanitizer import scrub_text
+    return UiEvent(MESH_STAGE, stage_, {"key": scrub_text(str(key), limit=40),
+                                        "label": scrub_text(str(label), limit=120)})
 
 
 def verdict(stage_: str, verdict_: str, summary: str = "") -> UiEvent:

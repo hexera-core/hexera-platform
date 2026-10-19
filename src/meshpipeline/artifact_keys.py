@@ -42,3 +42,8 @@ def repaired_cad_key(job: str, digest: str, suffix: str = ".step") -> str:
 
 def result_key_beside(output_object_key: str) -> str:
     return output_object_key.rsplit("/", 1)[0] + "/result.json"
+
+
+def progress_key_beside(output_object_key: str) -> str:
+    """Where a running remote mesher says which stage it is at (runtime/mesh_runner's beacon)."""
+    return output_object_key.rsplit("/", 1)[0] + "/progress.json"
