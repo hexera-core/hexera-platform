@@ -56,6 +56,11 @@
     "boundary_types",
     true,
     "GROUPS"
+   ],
+   [
+    "cad_fidelity",
+    true,
+    "GEOMETRY"
    ]
   ],
   "input_contract": {
@@ -136,6 +141,11 @@
     "port_areas",
     true,
     "GROUPS"
+   ],
+   [
+    "cad_fidelity",
+    true,
+    "GEOMETRY"
    ]
   ],
   "input_contract": {
@@ -293,6 +303,11 @@
     "boundary_types",
     true,
     "GROUPS"
+   ],
+   [
+    "cad_fidelity",
+    true,
+    "GEOMETRY"
    ]
   ],
   "input_contract": {

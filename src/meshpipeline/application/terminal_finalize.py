@@ -170,6 +170,9 @@ class TerminalAssembly:
     #: which upload a promoted repair replaced (pipeline/repair_promote.py) - carried into the
     #: final result verbatim; {} on every run that meshed the customer's bytes as they arrived
     repair_lineage: dict = field(default_factory=dict)
+    #: the fidelity numbers of the mesh the run ends with (final_result.cad_fidelity_record) - carried
+    #: into the final result verbatim; {} when no mesh was measured
+    cad_fidelity: dict = field(default_factory=dict)
 
     #: node_failure_handler's blameless SYSTEM-failure note, honoured only when api_failure is set
     pre_composed_message: str = ""
@@ -230,6 +233,7 @@ def build_terminal_result(assembly: TerminalAssembly, *, delivered_types: list) 
     result = _fr.with_engine_ladder(result, assembly.engine_ladder)
     # "We fixed your file and meshed the fix" is a different claim from "we meshed your file".
     result = _fr.with_repair_lineage(result, assembly.repair_lineage)
+    result = _fr.with_cad_fidelity(result, assembly.cad_fidelity)
     # The ONLY pre-composed message honoured is the blameless SYSTEM-failure note; any other stale
     # draft (e.g. a pre-delivery outcome_message) is discarded so one renderer owns the closing.
     # When the result itself names what failed (a review that did not conclude says which way it

@@ -8,6 +8,7 @@ from pathlib import Path
 
 import meshpipeline.settings.policy as polcfg
 from meshpipeline.contracts.failure_cause import FailureCause
+from meshpipeline.engines.cad_fidelity import gate_cad_fidelity
 from meshpipeline.engines.gates import GateCtx, GateFeedback, GateSpec, refuse
 from meshpipeline.engines.passage import PASSAGE_FLOOR_CELLS
 from meshpipeline.engines.region_check import gate_port_areas
@@ -206,4 +207,11 @@ FLOW_GATES: tuple[GateSpec, ...] = (
     GateSpec(key="boundary_types", check=_gate_boundary_types, section="GROUPS",
              proves="Each boundary is typed as the solver needs it (wall / symmetry / empty)",
              cause=FailureCause.BOUNDARY_TYPE),
+    # SHARED with every flow engine (engines/cad_fidelity.py), and LAST: a sound, correctly named mesh
+    # is held to the CAD it was built from - its boundary on the surface, none of the surface
+    # missing, the fluid volume the CAD's. The numbers are recorded either way; only a mesh that is
+    # not the part is refused (a smaller miss is said beside the delivered mesh)
+    GateSpec(key="cad_fidelity", check=gate_cad_fidelity, section="GEOMETRY",
+             proves="The mesh follows your CAD - its boundary lies on the surface, none of the surface is missing, and the volume matches",
+             cause=FailureCause.PATCH_NOT_CAPTURED),
 )
