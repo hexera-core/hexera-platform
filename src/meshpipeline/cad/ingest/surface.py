@@ -245,9 +245,13 @@ def _consistent_flips(t: np.ndarray) -> np.ndarray:
 
 
 def safe_solid_name(name: str) -> str:
-    """A name an STL solid line, and an OpenFOAM patch after it, can carry unchanged."""
-    s = _NAME_UNSAFE.sub("_", str(name or "").strip()).strip("_.")
-    return s[:64]
+    """A name an STL solid line, and an OpenFOAM patch after it, can carry unchanged - and that
+    no mesher keeps for itself: a part called "outer" is written as outer_patch, the spelling the
+    declaration gives a wall typed "outer" (contracts/patch_names.case_name), so the two meet."""
+    from meshpipeline.contracts.patch_names import MAX_NAME_LENGTH, unreserved
+
+    s = _NAME_UNSAFE.sub("_", str(name or "").strip()).strip("_.")[:MAX_NAME_LENGTH]
+    return unreserved(s) if s else s
 
 
 def named_groups(mesh: SurfaceMesh) -> dict[str, np.ndarray]:
