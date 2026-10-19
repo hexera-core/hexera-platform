@@ -222,17 +222,22 @@ class RepairJobRepository:
         return list((await db.execute(stmt)).scalars().all())
 
     async def assign(self, db: AsyncSession, job_id: uuid.UUID, *, operator: str,
-                     claim_only_if_unassigned: bool = False) -> bool:
+                     claim_only_if_unassigned: bool = False,
+                     release_only_if_held_by: str = "") -> bool:
         """Put `operator`'s name on the job, or take it off when `operator` is empty.
 
         `claim_only_if_unassigned` makes it a CLAIM: the update applies only while nobody holds
         the item, so two operators opening the same queue row cannot both believe they took it.
         Reassignment - a lead moving work - is the default and deliberately overwrites.
+        `release_only_if_held_by` makes a release CONDITIONAL on the current holder, compared in
+        the update itself, so a stale page cannot clear a claim made since it loaded.
         """
         who = str(operator or "").strip()[:256]
         stmt = update(CadRepairJob).where(CadRepairJob.id == job_id)
         if claim_only_if_unassigned:
             stmt = stmt.where(CadRepairJob.assigned_operator.is_(None))
+        if release_only_if_held_by:
+            stmt = stmt.where(CadRepairJob.assigned_operator == str(release_only_if_held_by)[:256])
         stmt = stmt.values(assigned_operator=who or None,
                            assigned_at=func.now() if who else None)
         res = await db.execute(stmt.returning(CadRepairJob.id))

@@ -383,11 +383,17 @@ export async function readRepairJob(jobId: string): Promise<Read<RepairJobDetail
 
 export async function assignRepairJob(input: {
   claim?: boolean;
+  /** For a release: clear the claim only while this operator holds it (checked by the API). */
+  holder?: string;
   jobId: string;
   operator: string;
 }): Promise<Read<{ job: RepairJobRow }>> {
   return request(hexeraApiRoutes.adminRepairJobAssign(input.jobId), {
-    body: JSON.stringify({ claim: input.claim ?? true, operator: input.operator }),
+    body: JSON.stringify({
+      claim: input.claim ?? true,
+      holder: input.holder ?? "",
+      operator: input.operator,
+    }),
     headers: { "Content-Type": "application/json" },
     method: "POST",
   });

@@ -170,6 +170,13 @@ async def call_intake_model(messages: Conversation, job_id: str = "", user_id: s
     return await _run_chat(icfg.INTAKE_ROUTE, name, messages, job_id, user_id, tools=tools)
 
 
+# repair review (non-streaming, no tools): the proposer and the redirect interpreter. It rides the
+# intake route - a short interactive JSON reply on the same chat model - under its own trace label.
+async def call_repair_review_model(messages: Conversation, job_id: str = "",
+                                   name: str = "RepairReview") -> ModelRoundResult:
+    return await _run_chat(icfg.INTAKE_ROUTE, name, messages, job_id, "")
+
+
 # search summarizer (non-streaming; respond-or-RAISE)
 async def call_summarizer_model(messages: Conversation, job_id: str = "") -> ModelRoundResult:
     import meshpipeline.agent_tools.shared.settings as scfg

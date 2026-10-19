@@ -23,8 +23,6 @@ export type RepairFormState = {
   strategy?: string;
 };
 
-export const REPAIR_FORM_IDLE: RepairFormState = {};
-
 async function verifiedActor(): Promise<IapActor> {
   const targets = readAdminTargets(process.env);
   const headerList = await headers();

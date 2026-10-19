@@ -190,3 +190,29 @@ export function streamUrl(jobId, ticket, since) {
   qs.set("since", String(since));
   return `${proto}://${urlBase.host}/api/v1/ws/${jobId}/stream?${qs}`;
 }
+
+/** A parked repair run's unsure defects, grouped and sampled: {status: open|offered|closed,
+ *  geometry_session_id, groups, decided, open}. Throws on failure (409: nothing to review). */
+export async function getReview(jobId) {
+  const r = await apiFetch(`/api/v1/simulation/${jobId}/review`, { headers: headers() });
+  if (!r.ok) throw await readError(r);
+  return r.json();
+}
+
+/** Record one decision. `body` is {item_id | group_key, action, text?}. Answers {ok, status, data}
+ *  and does not throw on a refusal: the caller words each one. */
+export async function postReviewDecision(jobId, body) {
+  const r = await apiFetch(`/api/v1/simulation/${jobId}/review/decision`,
+    { method: "POST", headers: headers(), body: JSON.stringify(body) });
+  const data = await r.json().catch(() => ({}));
+  return { ok: r.ok, status: r.status, data };
+}
+
+/** Resume the parked run with the decisions so far. 202 on success; 503 means the dispatch
+ *  failed and the review was put back as it was; 409 means the run is no longer waiting. */
+export async function postReviewRun(jobId) {
+  const r = await apiFetch(`/api/v1/simulation/${jobId}/review/run`,
+    { method: "POST", headers: headers() });
+  const data = await r.json().catch(() => ({}));
+  return { ok: r.ok, status: r.status, data };
+}

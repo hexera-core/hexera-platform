@@ -31,12 +31,12 @@ class OutboxRow:
 class TerminalOutboxRepository:
     async def enqueue(self, db: AsyncSession, *, job_id: uuid.UUID, execution_generation: int,
                       terminal_status: str, final_result_schema_version: int,
-                      event_payload: dict) -> bool:
+                      event_payload: dict, dedup_key: str | None = None) -> bool:
         stmt = (pg_insert(TerminalOutbox)
                 .values(id=uuid.uuid4(), job_id=job_id, execution_generation=execution_generation,
                         terminal_status=terminal_status,
                         final_result_schema_version=final_result_schema_version,
-                        event_payload=event_payload, dedup_key=dedup_key_for(job_id))
+                        event_payload=event_payload, dedup_key=dedup_key or dedup_key_for(job_id))
                 .on_conflict_do_nothing(index_elements=["dedup_key"]))
         res = await db.execute(stmt)
         return bool(res.rowcount)

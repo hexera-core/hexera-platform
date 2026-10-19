@@ -94,10 +94,10 @@ export async function applyRepairAssignment(
     // form: reassigning another person's work is a lead's act and wants its own surface with its
     // own audit, not a text field on the row everybody can see.
     const release = optionalString(form, "release") === "1";
-    // RELEASING IS ONLY EVER YOUR OWN CLAIM. The form offered "Release it" for any held job, and
-    // the API clears an assignment without asking who holds it - so one operator could return
-    // another's work to the queue, and a stale page could undo a reassignment made since it
-    // loaded. The holder travels with the form and has to be the person submitting it.
+    // RELEASING IS ONLY EVER YOUR OWN CLAIM. The holder on the form is what the page showed, so
+    // it gives the better message for another operator's claim - but it is not the check: a page
+    // loaded before a lead reassigned the job still shows YOUR name. The API compares the CURRENT
+    // holder with the verified actor in the update itself, and refuses (409) otherwise.
     const heldBy = optionalString(form, "assigned_operator");
     if (release && heldBy && heldBy !== deps.actor.email) {
       throw new Error(
@@ -106,7 +106,11 @@ export async function applyRepairAssignment(
     }
     const operator = release ? "" : deps.actor.email;
 
-    const result = await assign({ claim: !release, jobId, operator });
+    const result = await assign(
+      release
+        ? { claim: false, holder: deps.actor.email, jobId, operator }
+        : { claim: true, jobId, operator },
+    );
     if (result.error) return { error: result.error, ok: false };
 
     audit({

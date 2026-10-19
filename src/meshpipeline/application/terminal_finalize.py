@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,6 +18,12 @@ from meshpipeline.persistence.models import FailedReason, JobStatus
 from meshpipeline.persistence.repositories.job_repository import JobRepository
 from meshpipeline.persistence.repositories.terminal_outbox_repository import TerminalOutboxRepository
 
+if TYPE_CHECKING:
+    from meshpipeline.application.repair_review_park import ReviewPlan
+    from meshpipeline.persistence.repositories.repair_review_repository import (
+        RepairReviewRepository,
+    )
+
 log = logging.getLogger(__name__)
 
 
@@ -26,6 +33,8 @@ class FinalizeOutcome:
     transition: TransitionResult | None
     durable_status: JobStatus | None
     enqueued: bool                     # True = THIS call inserted the outbox row (else already present)
+    #: True when a park could not be written and the run was recorded as a plain failure instead
+    fell_back_to_failed: bool = False
 
 
 async def finalize_terminal_atomic(
@@ -33,6 +42,8 @@ async def finalize_terminal_atomic(
     failed_reason: FailedReason | None, final_result_dict: dict, closing_message: str,
     lease_repo: LeaseRepository | None = None, job_repo: JobRepository | None = None,
     outbox_repo: TerminalOutboxRepository | None = None,
+    review_plan: ReviewPlan | None = None, review_repo: RepairReviewRepository | None = None,
+    plain_failure: tuple[dict, str] | None = None,
 ) -> FinalizeOutcome:
     lease_repo = lease_repo or LeaseRepository()
     job_repo = job_repo or JobRepository()
@@ -49,11 +60,44 @@ async def finalize_terminal_atomic(
     else:
         job_id = uuid.UUID(str(final_result_dict["job_id"]))
 
+    # 1b. THE REVIEW WRITE, in a SAVEPOINT before the CAS. It can never abort this commit: any
+    #     failure (an open park already there, a constraint, a dropped statement) is logged and the
+    #     run FAILS OPEN to a plain `failed` with the plain failure's own record and message.
+    fell_back = False
+    review_sp = None
+    park_id = None
+    if review_plan is not None:
+        from meshpipeline.application.repair_review_park import write_review
+        try:
+            review_sp = await db.begin_nested()
+            park_id = await write_review(db, job_id, review_plan, review_repo)
+        except Exception:
+            log.error("repair review: the review write for job %s failed - recording the run "
+                      "as a plain failure instead of parking it", job_id, exc_info=True)
+            if review_sp is not None:
+                try:
+                    await review_sp.rollback()
+                except Exception:   # noqa: BLE001 - the terminal commit still has to land
+                    log.error("repair review: savepoint rollback failed for job %s", job_id,
+                              exc_info=True)
+            review_sp, park_id, review_plan = None, None, None
+            if intended_status == JobStatus.pending_review:
+                fell_back = True
+                intended_status = JobStatus.failed
+                if plain_failure is not None:
+                    final_result_dict, closing_message = plain_failure
+
     # 2. terminal status CAS. We hold the row lock, so no concurrent writer can transition it out from
     #    under us while we finalize. The CAS never overwrites an already-terminal result.
     tr = await job_repo.transition(db, job_id, intended_status)
     row = await job_repo.get_internal(db, job_id)
     durable_status = row.status if row is not None else intended_status
+    if review_sp is not None:
+        # the review rows live and die with the status they belong to
+        if tr == TransitionResult.applied:
+            await review_sp.commit()
+        else:
+            await review_sp.rollback()
 
     # 3+4. Persist the final_result and enqueue the terminal-event intent ONLY when WE actually
     # performed the terminal transition. If the job was ALREADY terminal (a prior finalize / a
@@ -61,7 +105,8 @@ async def finalize_terminal_atomic(
     # the outbox dedup key would reject a second row anyway, but we skip cleanly so an idempotent
     # re-finalize leaves the first verdict authoritative.
     if tr == TransitionResult.applied:
-        if failed_reason is not None and row is not None:
+        if (failed_reason is not None and row is not None
+                and intended_status != JobStatus.pending_review):
             row.failed_reason = failed_reason
         await job_repo.set_final_result(db, job_id, final_result_dict)
         # 3a. THE CHARGE, written inside this same fenced transaction. The CAS above has already
@@ -72,18 +117,24 @@ async def finalize_terminal_atomic(
         # It writes a ledger row and makes NO network call: reporting the consumption to the
         # provider's meter happens after the commit, from a sweep that can be retried. See
         # 0007_usage_metering for why that split is not optional.
-        if row is not None:
+        # A PARKED RUN IS NOT FINISHED: it is waiting on a person and its re-run is what finishes
+        # it, so it is not charged here.
+        if row is not None and intended_status != JobStatus.pending_review:
             await _charge_fail_open(db, row)
+        # One terminal event per job - except a park, which announces itself under its own key so
+        # the re-run's real ending is not swallowed by the dedup.
+        dedup_key = f"terminal:{job_id}:park:{park_id}" if park_id is not None else None
         enqueued = await outbox_repo.enqueue(
             db, job_id=job_id, execution_generation=generation,
             terminal_status=durable_status.value,
             final_result_schema_version=int(final_result_dict.get("schema_version", 1)),
-            event_payload={"closing_message": closing_message, "final_result": final_result_dict})
+            event_payload={"closing_message": closing_message, "final_result": final_result_dict},
+            dedup_key=dedup_key)
     else:
         enqueued = False
 
     return FinalizeOutcome(fenced=False, transition=tr, durable_status=durable_status,
-                           enqueued=enqueued)
+                           enqueued=enqueued, fell_back_to_failed=fell_back)
 
 
 async def _charge_fail_open(db: AsyncSession, row) -> None:
@@ -183,6 +234,12 @@ class TerminalAssembly:
     #: the concluded review's wrong-problem findings (final_result.review_blocking) - the only
     #: review findings that fail a run; they name, in the failure, which way the mesh is wrong
     review_blocking: list = field(default_factory=list)
+    #: the repair review's items and park (application/repair_review_park.ReviewPlan); None when
+    #: review is off or the run left nothing for a person. status == pending_review means PARK.
+    review_plan: ReviewPlan | None = None
+    #: what the engineer already answered "leave it" to, on a failed re-run with nothing new to
+    #: ask (application/repair_review_park.settle_left) - said in the failure's message
+    review_left: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -228,6 +285,12 @@ def build_terminal_result(assembly: TerminalAssembly, *, delivered_types: list) 
         pipeline_timed_out=assembly.pipeline_timed_out)
 
     result = _fr.with_engine_ladder(result, assembly.engine_ladder)
+    if assembly.status == JobStatus.pending_review and assembly.review_plan is not None:
+        result = _fr.with_review_parked(result, len(assembly.review_plan.items))
+    if assembly.review_plan is not None and assembly.review_plan.truncated:
+        result = _fr.with_review_truncated(result, assembly.review_plan.truncated)
+    if assembly.status == JobStatus.failed and assembly.review_left:
+        result = _fr.with_review_left(result, assembly.review_left)
     # "We fixed your file and meshed the fix" is a different claim from "we meshed your file".
     result = _fr.with_repair_lineage(result, assembly.repair_lineage)
     # The ONLY pre-composed message honoured is the blameless SYSTEM-failure note; any other stale
@@ -267,12 +330,21 @@ class TerminalPublication:
     closing_message: str
     created_at: str | None
     ended_at: str | None
+    #: the status this call intended, after a failed park fell back to a plain failure
+    status: JobStatus | None = None
 
 
 async def assemble_and_finalize(session_factory, assembly: TerminalAssembly, *,
                                 ownership, lease_repo, job_repo, jlog) -> TerminalPublication:
     delivered_types = await read_delivered_types(session_factory, assembly.job_id, jlog=jlog)
     rendered = build_terminal_result(assembly, delivered_types=delivered_types)
+    # What a park that cannot be written is recorded as instead: the same run, plainly failed.
+    plain = None
+    if assembly.status == JobStatus.pending_review:
+        import dataclasses
+        plain = build_terminal_result(
+            dataclasses.replace(assembly, status=JobStatus.failed, review_plan=None),
+            delivered_types=delivered_types)
 
     async with session_factory() as db:
         outcome = await finalize_terminal_atomic(
@@ -280,7 +352,9 @@ async def assemble_and_finalize(session_factory, assembly: TerminalAssembly, *,
             failed_reason=assembly.failed_reason,
             final_result_dict=rendered.result.to_dict(),
             closing_message=rendered.closing_message,
-            lease_repo=lease_repo, job_repo=job_repo)
+            lease_repo=lease_repo, job_repo=job_repo, review_plan=assembly.review_plan,
+            plain_failure=((plain.result.to_dict(), plain.closing_message)
+                           if plain is not None else None))
         await db.commit()
     if outcome.fenced:
         jlog.warning("Worker FENCED at the atomic terminal transaction (generation/token "
@@ -299,7 +373,11 @@ async def assemble_and_finalize(session_factory, assembly: TerminalAssembly, *,
     # SOLE publisher of the terminal event, so the user's message survives this worker's death.
     from meshpipeline.application import outbox_publisher as _obp
     await _obp.deliver_own_terminal_event(session_factory, assembly.job_id)
-    return TerminalPublication(False, rendered.result, rendered.closing_message, created, ended)
+    if outcome.fell_back_to_failed and plain is not None:
+        rendered = plain
+    return TerminalPublication(False, rendered.result, rendered.closing_message, created, ended,
+                               JobStatus.failed if outcome.fell_back_to_failed
+                               else assembly.status)
 
 
 # #

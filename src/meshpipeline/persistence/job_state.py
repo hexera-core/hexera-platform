@@ -36,8 +36,10 @@ def is_active(status: object) -> bool:
 # appear as a source, so an ordinary transition can never overwrite a succeeded/failed result.
 LEGAL_SOURCES: dict[JobStatus, frozenset[JobStatus]] = {
     JobStatus.running:        frozenset({JobStatus.pending}),                       # worker start
-    JobStatus.pending:        frozenset({JobStatus.running}),                       # redelivery reset of a stale running
-    JobStatus.pending_review: frozenset({JobStatus.running}),                       # reserved (unused by the current pipeline)
+    JobStatus.pending:        frozenset({JobStatus.running,
+                                         JobStatus.pending_review}),                # redelivery reset of a stale running; a parked run's re-run dispatch
+    JobStatus.pending_review: frozenset({JobStatus.running,                         # a failed repair run parked for review
+                                         JobStatus.pending}),                       # COMPENSATION ONLY: the review run's dispatch failed, so the job returns to the review it left (api/v1/repair_review.py)
     JobStatus.queued:         frozenset({JobStatus.pending}),                       # reserved (unused by the current pipeline)
     JobStatus.succeeded:      frozenset({JobStatus.running, JobStatus.pending_review}),
     JobStatus.failed:         frozenset({JobStatus.pending, JobStatus.queued,

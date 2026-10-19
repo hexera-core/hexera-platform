@@ -362,7 +362,7 @@ def install_durable_execution_fakes(monkeypatch, run_module, *, published=None,
 
     class _FakeOutbox:
         async def enqueue(self, db, *, job_id, execution_generation, terminal_status,
-                          final_result_schema_version, event_payload):
+                          final_result_schema_version, event_payload, dedup_key=None):
             if any(r["job_id"] == str(job_id) for r in rows):
                 return False                                   # dedup: one terminal event per job
             rows.append({"job_id": str(job_id), "payload": event_payload, "published": False})

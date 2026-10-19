@@ -29,6 +29,41 @@ def _task_label():
     return func.coalesce(ChatSession.domain, dispatched)
 
 
+def _aware(dt: datetime) -> datetime:
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
+
+
+def review_rerun_reset(*, started_at: datetime | None, ended_at: datetime | None,
+                       now: datetime) -> dict:
+    """The execution columns a parked job's re-run starts from. Pure, so it is asserted on a row.
+
+    THE RE-RUN REUSES THE JOB ROW, so everything the parked execution left on it would otherwise
+    be read as if that execution were still going:
+
+    - its LEASE (`active_worker_token`, `lease_expires_at`): the park releases nothing, so a
+      Run-it inside the lease window made the re-run's claim an `active_lease_conflict` and the job
+      died as "worker lost". The token is cleared and `lease_expires_at` becomes `now` - the
+      existing "released but not confirmed queued" mark (persistence/lease.hand_back). A crash
+      before the dispatch is then relaunched by the stalled-job reaper; the route clears the mark
+      with `confirm_requeued` once the launcher took the run.
+    - its EXECUTION ID: a worker process keeps one for its life, and the claim reads a matching id
+      as the SAME execution resuming - the old generation and its finished checkpoint thread.
+    - its DEADLINE, anchored once at the first claim: a park answered hours later left the re-run
+      no budget ("budget exhausted", classified a system failure, so the decisions died with it).
+      NULL, so the re-run's claim anchors a fresh one.
+    - its BILLED SPAN. A run is charged from `started_at` to `ended_at`, and the park stamped
+      `ended_at`. `started_at` moves forward by exactly the parked wait, so the one charge at the
+      re-run's ending covers the two execution spans and nothing of the time a person took.
+    """
+    values: dict = {"active_worker_token": None, "lease_expires_at": now,
+                    "pipeline_execution_id": None, "pipeline_deadline_at": None, "ended_at": None}
+    if started_at is not None and ended_at is not None:
+        waited = _aware(now) - _aware(ended_at)
+        if waited.total_seconds() > 0:
+            values["started_at"] = _aware(started_at) + waited
+    return values
+
+
 class JobRepository:
     async def create(self, db: AsyncSession, owner_id: str, *,
                      organization_id: str = "") -> SimulationJob:
@@ -202,6 +237,21 @@ class JobRepository:
             .where(SimulationJob.id == job_id, SimulationJob.pipeline_submitted_at.is_(None))
             .values(pipeline_dispatch_state="submitted", pipeline_backend=backend[:32],
                     pipeline_submitted_at=now, updated_at=now))
+
+    async def reset_for_review_rerun(self, db: AsyncSession, job_id: uuid.UUID, *,
+                                     started_at: datetime | None, ended_at: datetime | None,
+                                     now: datetime | None = None) -> None:
+        """Make a parked job's row claimable by its re-run, in the run route's own transaction.
+
+        Only a job the route has just moved to `pending` (the CAS in the WHERE): see
+        `review_rerun_reset` for what each column is reset to and why.
+        """
+        now = now or datetime.now(UTC)
+        await db.execute(
+            update(SimulationJob)
+            .where(SimulationJob.id == job_id, SimulationJob.status.in_([JobStatus.pending]))
+            .values(**review_rerun_reset(started_at=started_at, ended_at=ended_at, now=now),
+                    updated_at=now))
 
     async def mark_launch_failed(self, db: AsyncSession, job_id: uuid.UUID, error: str) -> None:
         now = datetime.now(UTC)

@@ -19,6 +19,7 @@ import { beginRun, get as getState, isTerminalStatus, set as setState, waitingCo
   from "./core/state.js";
 import { CheckProgress } from "./render/check_progress.js";
 import { Notice } from "./render/notice.js";
+import { openRepairPanel } from "./render/repair.js";
 import { Stage, closeLightbox, openLightbox, setCancelHandler, setResultHandler }
   from "./render/stage.js";
 import { configure as configureStream, lastSeq, replay, start as startStream, terminalResult }
@@ -28,6 +29,7 @@ import { clearNewRunOffer, configureComposer, disableInput, enableInput, mountCo
   offerNewRun, setPlaceholder, showRunFile } from "./shell/composer.js";
 import { refreshHealth } from "./shell/settings.js";
 import { configureDispute } from "./viewer/dispute.js";
+import { offerReview, openParked } from "./review/review.js";
 import { openGeometryStage } from "./viewer/geometry_stage.js";
 import { openViewer } from "./viewer/viewer.js";
 
@@ -102,6 +104,7 @@ configureStream({
   onStatus: (job) => {
     Stage.waiting(waitingCopy(job) || (streamDown ? STREAM_DOWN_SUB : ""));
     Stage.clock(job.created_at);
+    parkedRun(job);
   },
   onPollTrouble: () => Notice.hold("poll",
     "Having trouble reaching the server for status updates - still retrying.", "warn"),
@@ -116,6 +119,19 @@ configureStream({
     Notice.release("stream");
   },
 });
+
+/* A RUN PARKED FOR REVIEW. The repair stopped on defects the rules were unsure about: the run
+   page says how many and that nothing was changed without the engineer, and opens the review. The
+   review's "Run it" resumes the SAME job, so the stream carries on from here. */
+const _parkedShown = new Set();
+function parkedRun(job) {
+  if (!job || job.status !== "pending_review") return;
+  const id = job.job_id || job.id || getState.jobId();
+  if (_parkedShown.has(id)) return;
+  _parkedShown.add(id);
+  const opts = { onRun: (r) => { _parkedShown.delete(id); Stage.chat("assistant", r.said); } };
+  openParked(id, Stage.col(), opts).then((el) => { el?.querySelector("button")?.click(); });
+}
 
 /* what "a run finished" means: attach the viewer, or do not */
 setResultHandler((data, anchor) => {
@@ -133,10 +149,19 @@ setResultHandler((data, anchor) => {
     openViewer(job, anchor,
       { metrics: { attempts: data.attempts, pass: false }, files: data.files || [],
         unreviewed: true, findings: data.findings || [], reasoning: data.reasoning || "" });
+  } else {
+    // A TERMINAL failure - no valid mesh was ever produced. Any mesh file left in the workspace
+    // is structurally INVALID; showing it as "your mesh" would be a lie, and the outcome message
+    // has already explained what happened.
+    //
+    // BUT A REPAIR IS NOT THE MESH. If we fixed the customer's geometry on the way, that file is
+    // a deliverable in its own right and it exists whatever the mesher went on to do - so it is
+    // handed over here rather than withheld because a later stage failed.
+    openRepairPanel(job, anchor, data);
   }
-  // else: a TERMINAL failure - no valid mesh was ever produced. Any mesh file left in the
-  // workspace is structurally INVALID; showing it as "your mesh" would be a lie. The outcome
-  // message already explains what happened - that is the whole result.
+  // A QUIET WAY BACK to the defects the repair was unsure about, only when the run was delivered
+  // and the server says it holds an offered review (it answers nothing otherwise).
+  offerReview(job, anchor, { onRun: (r) => Stage.chat("assistant", r.said) });
 });
 
 /* what "start a new run" means: one definition, used by three callers. `origin` is the

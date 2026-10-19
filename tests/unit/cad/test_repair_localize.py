@@ -145,3 +145,161 @@ def test_an_unplaceable_defect_says_unknown_rather_than_guessing_the_outside():
     # claiming a defect is on the outside when it is in a cavity sends an operator to the wrong
     # place; `unknown` is the honest answer when the shape cannot be classified
     assert _defect(DefectCode.open_shell).to_dict()["region"] == REGION_UNKNOWN
+
+
+# THE FINGERPRINT A DEFECT CARRIES
+
+
+def test_a_defect_carries_a_fingerprint_so_a_repair_can_aim_at_it_and_a_scan_can_look_for_it():
+    # `entity_index` is an index into ONE shape's map and ShapeFix renumbers everything it
+    # touches, so after a repair "is edge 12 fixed?" is unanswerable from the index alone. The
+    # fingerprint is the name that survives the renumbering.
+    defect = _defect(DefectCode.small_edge)
+    assert hasattr(defect, "fingerprint")
+    assert defect.fingerprint == "", "a defect built without one must not invent it"
+
+
+def test_a_defects_fingerprint_reaches_its_payload():
+    from meshpipeline.cad.repair.localize import EntityDefect
+
+    defect = EntityDefect(code=DefectCode.small_edge, severity=DefectSeverity.warning,
+                          entity_type="edge", entity_index=4, message="x",
+                          fingerprint="edge:abcd1234")
+    assert defect.to_dict()["fingerprint"] == "edge:abcd1234"
+
+
+def test_stamping_names_every_defect_that_has_a_box_and_leaves_the_rest_empty():
+    from meshpipeline.cad.repair.localize import EntityDefect, _stamped
+
+    located = EntityDefect(code=DefectCode.small_edge, severity=DefectSeverity.warning,
+                           entity_type="edge", entity_index=1, message="x",
+                           location={"unit": "mm", "bbox_min": [0, 0, 0], "bbox_max": [1, 0, 0]})
+    # UNLOCATED IS A REAL CASE: `_centroid_and_box` returns {} for a degenerate entity, and the
+    # status walk attributes some findings to a sub-shape it cannot index. Such a defect is
+    # UNTARGETABLE, and the planner reports skipping it rather than aiming at a guess.
+    unlocated = EntityDefect(code=DefectCode.invalid_brep, severity=DefectSeverity.error,
+                             entity_type="shell", entity_index=0, message="x")
+
+    stamped = _stamped((located, unlocated), diagonal_mm=100.0)
+
+    assert stamped[0].fingerprint.startswith("edge:")
+    assert stamped[1].fingerprint == ""
+    # Nothing else about the defect changed - the stamp is additive, so a report comparison across
+    # this change sees only the new key.
+    assert stamped[0].code is located.code and stamped[0].entity_index == 1
+
+
+def test_two_defects_on_entities_sharing_a_box_are_still_distinguishable():
+    # A duplicated face carries two defects whose boxes are identical. They must not collapse onto
+    # one name, or the session would think fixing one fixed both.
+    from meshpipeline.cad.repair.localize import EntityDefect, _stamped
+
+    box = {"unit": "mm", "bbox_min": [0, 0, 0], "bbox_max": [1, 1, 0]}
+    pair = tuple(EntityDefect(code=DefectCode.curve_inconsistency, severity=DefectSeverity.error,
+                              entity_type="face", entity_index=i, message="x", location=box)
+                 for i in (3, 4))
+
+    stamped = _stamped(pair, diagonal_mm=100.0)
+
+    assert stamped[0].fingerprint != stamped[1].fingerprint
+
+
+# ONE ENTITY, ONE DEFECT PER CODE
+#
+# `_status_defects` emits one defect per kernel status, and `TopExp_Explorer` enumerates a shared
+# sub-shape once per owning parent - so one edge can be visited twice and two kernel statuses can
+# map to one product code. Left in, the duplicate records make `refs_for` believe two entities
+# share a box, which suffixes both names `#0`/`#1`. After a repair clears one of them the survivor
+# is stamped WITHOUT a suffix, so the progress rule looks for a name that no longer exists and
+# keeps an operation whose targeted defect is still there.
+
+
+def test_the_same_code_reported_twice_on_one_entity_is_one_defect():
+    from meshpipeline.cad.repair.localize import EntityDefect, _deduped
+
+    box = {"unit": "mm", "bbox_min": [0, 0, 0], "bbox_max": [1, 0, 0]}
+    # "NotClosed" and "FreeEdge" are different kernel words for one opening, and the explorer can
+    # hand back the same edge twice. Neither duplicate carries information the first does not.
+    twice = [EntityDefect(code=DefectCode.open_shell, severity=DefectSeverity.error,
+                          entity_type="edge", entity_index=4, message="x", location=box,
+                          kernel_status=status)
+             for status in ("NotClosed", "FreeEdge")]
+
+    assert len(_deduped(twice)) == 1
+    assert _deduped(twice)[0].kernel_status == "NotClosed", "the first record must be the kept one"
+
+
+def test_two_different_codes_on_one_entity_are_two_defects():
+    # Deduplication is per CODE: one edge can genuinely be both a sliver and a broken curve, and
+    # collapsing those would hide one of them.
+    from meshpipeline.cad.repair.localize import EntityDefect, _deduped
+
+    box = {"unit": "mm", "bbox_min": [0, 0, 0], "bbox_max": [1, 0, 0]}
+    pair = [EntityDefect(code=code, severity=DefectSeverity.error, entity_type="edge",
+                         entity_index=4, message="x", location=box)
+            for code in (DefectCode.small_edge, DefectCode.curve_inconsistency)]
+
+    assert len(_deduped(pair)) == 2
+
+
+def test_two_codes_on_one_entity_keep_the_unsuffixed_name_so_a_later_scan_can_find_them():
+    # THE BUG THIS PINS: suffixed `edge:abc#0` / `edge:abc#1` here, then `edge:abc` after the
+    # repair that cleared one of them, so `_progress_refusal` found neither and kept an operation
+    # that had fixed nothing.
+    from meshpipeline.cad.repair.localize import EntityDefect, _stamped
+
+    box = {"unit": "mm", "bbox_min": [0, 0, 0], "bbox_max": [1, 0, 0]}
+    pair = tuple(EntityDefect(code=code, severity=DefectSeverity.error, entity_type="edge",
+                              entity_index=4, message="x", location=box)
+                 for code in (DefectCode.curve_inconsistency, DefectCode.small_edge))
+
+    stamped = _stamped(pair, diagonal_mm=100.0)
+
+    assert "#" not in stamped[0].fingerprint
+    assert stamped[0].fingerprint == stamped[1].fingerprint
+
+
+def test_the_most_severe_duplicate_is_the_one_kept():
+    """A WARNING MUST NEVER SHADOW AN ERROR. `non_manifold_surface` is the one code in
+    `_STATUS_TO_CODE` with mixed severities - `EnclosedRegion` is a warning while
+    `InvalidMultiConnexity` and `InvalidImbricationOfShells` are errors - and all three are
+    shell-level statuses, so both can land on one shell. Keeping whichever the kernel listed first
+    would drop the error record, and `status_for` would then call the run `repaired` with an
+    error-severity defect recorded as a warning.
+    """
+    from meshpipeline.cad.repair.localize import EntityDefect, _deduped
+
+    box = {"unit": "mm", "bbox_min": [0, 0, 0], "bbox_max": [1, 1, 1]}
+    pair = [EntityDefect(code=DefectCode.non_manifold_surface, severity=severity,
+                         entity_type="shell", entity_index=1, message="x", location=box,
+                         kernel_status=status)
+            for severity, status in ((DefectSeverity.warning, "EnclosedRegion"),
+                                     (DefectSeverity.error, "InvalidMultiConnexity"))]
+
+    kept = _deduped(pair)
+
+    assert len(kept) == 1
+    assert kept[0].severity is DefectSeverity.error
+    assert kept[0].kernel_status == "InvalidMultiConnexity"
+
+
+def test_the_survivor_lands_where_the_first_record_did():
+    # THE ORDER IS LOAD-BEARING: `FillPlanarHole.targets_for` only accepts an `open_shell` that
+    # carries `boundary_edges`, which is the free-bound record - so it has to win over a
+    # status-walk record of the same opening, and it does by being listed first at equal severity.
+    from meshpipeline.cad.repair.localize import EntityDefect, _deduped
+
+    box = {"unit": "mm", "bbox_min": [0, 0, 0], "bbox_max": [1, 1, 1]}
+    rich = EntityDefect(code=DefectCode.open_shell, severity=DefectSeverity.error,
+                        entity_type="edge", entity_index=3, message="x", location=box,
+                        measurements={"boundary_edges": [3, 4]}, kernel_status="FreeBounds")
+    thin = EntityDefect(code=DefectCode.open_shell, severity=DefectSeverity.error,
+                        entity_type="edge", entity_index=3, message="x", location=box,
+                        kernel_status="FreeEdge")
+    other = EntityDefect(code=DefectCode.small_edge, severity=DefectSeverity.warning,
+                         entity_type="edge", entity_index=1, message="x", location=box)
+
+    kept = _deduped([other, rich, thin])
+
+    assert [d.kernel_status for d in kept] == ["", "FreeBounds"]
+    assert kept[1].measurements["boundary_edges"] == [3, 4]

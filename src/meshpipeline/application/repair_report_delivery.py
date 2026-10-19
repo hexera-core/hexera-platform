@@ -25,6 +25,8 @@ REPAIR_REPORT_LOGICAL_KEY = "repair_report"
 
 async def deliver_repair_report(session_factory, *, job_id: str, report: dict,
                                 repair_status: str = "",
+                                repair_attempt: dict | None = None,
+                                owner_id: str = "",
                                 delivery_attempt: int = 0,
                                 execution_generation: int = 0,
                                 fence_commit=None) -> str:
@@ -52,7 +54,12 @@ async def deliver_repair_report(session_factory, *, job_id: str, report: dict,
     from meshpipeline.persistence.models import ArtifactType
     from meshpipeline.persistence.repositories.artifact_repository import ArtifactRepository
 
-    payload = {"repair_status": str(repair_status or ""), "report": report}
+    payload: dict = {"repair_status": str(repair_status or ""), "report": report}
+    # WHAT THE REPAIR DID, beside the inspection of what arrived: its operations, refusals, why it
+    # stopped and what it left. A customer handed repaired CAD gets the explanation with it, and
+    # the inspection above stays the upload's own, unchanged.
+    if repair_attempt:
+        payload["repair_attempt"] = dict(repair_attempt)
     body = json.dumps(payload, sort_keys=True, default=str)
     # CONTENT-ADDRESSED. Two writers can race for one job - a retry, or a worker whose lease was
     # taken over - and a shared key let the loser overwrite bytes a COMMITTED row already pointed
@@ -60,6 +67,7 @@ async def deliver_repair_report(session_factory, *, job_id: str, report: dict,
     digest = hashlib.sha256(body.encode()).hexdigest()
     object_key = repair_report_key(str(job_id), digest)
     scratch: Path | None = None
+    stored = None
     try:
         from meshpipeline.contracts.object_storage import get_object_store
         _fd, _name = tempfile.mkstemp(prefix="repair_report_", suffix=".json")
@@ -98,7 +106,10 @@ async def deliver_repair_report(session_factory, *, job_id: str, report: dict,
     except Exception as exc:  # noqa: BLE001 - evidence is never load-bearing for a run
         logger.warning("repair_report_delivery: could not deliver the inspection report (%s) - "
                        "the run is unaffected - job_id=%s", exc, job_id)
-        await _discard_orphan(session_factory, object_key, job_id=job_id)
+        await _discard_orphan(session_factory, object_key, job_id=job_id, owner_id=owner_id,
+                              logical_key=REPAIR_REPORT_LOGICAL_KEY,
+                              artifact_type=ArtifactType.repair_report,
+                              delivery_attempt=delivery_attempt, stored=stored)
         return ""
     finally:
         if scratch is not None:
@@ -130,30 +141,55 @@ async def _is_claimed(session_factory, object_key: str, *, job_id: str) -> bool:
         return True
 
 
-async def _discard_orphan(session_factory, object_key: str, *, job_id: str) -> None:
-    """Delete an object whose row never committed, so it does not linger untracked.
+async def _discard_orphan(session_factory, object_key: str, *, job_id: str, owner_id: str,
+                         logical_key: str, artifact_type, delivery_attempt: int,
+                         stored=None) -> None:
+    """Hand an object whose row never committed to the artifact reconciler. NEVER DELETED HERE.
 
-    BEST EFFORT, and said so: if the delete also fails the object stays, and the artifact
-    reconciler - which already adopts an object a ready row owns and deletes one nobody owns -
-    is the backstop. What matters here is not leaving a file nobody will ever look for without
-    having tried.
+    WHY NOT DELETE ON THE SPOT. The keys are content-addressed, so two deliveries of identical
+    bytes for one job - a retry, or a worker whose lease was taken over - share one key. If this
+    one failed while the other was still committing, "no committed row names it" was true at the
+    instant of the check and false a moment later, and the delete took the bytes the other
+    delivery's committed row points at. The reconciler (application/maintenance/reconcile.py)
+    decides later, when an in-flight writer has either committed (its ready row ADOPTS the object)
+    or not, and re-verifies the object's checksum before it deletes anything.
+
+    BEST EFFORT, and said so: a record that cannot be written leaves the object where it is - a
+    leaked file costs storage, a wrongly deleted one costs the customer their deliverable.
     """
     if await _is_claimed(session_factory, object_key, job_id=job_id):
         logger.info("repair_report_delivery: %s is named by a committed artifact row - leaving "
                     "it where the customer can download it - job_id=%s", object_key, job_id)
         return
+    if not owner_id:
+        logger.warning("repair_report_delivery: no owner to record the orphaned object %s "
+                       "against - keeping it - job_id=%s", object_key, job_id)
+        return
     try:
-        from meshpipeline.contracts.object_storage import get_object_store
-        get_object_store().delete_object(object_key=object_key)
-        logger.info("repair_report_delivery: discarded the orphaned object %s - job_id=%s",
-                    object_key, job_id)
+        from meshpipeline.persistence.repositories.reconciliation_repository import (
+            ReconciliationRepository,
+        )
+        async with session_factory() as db:
+            await ReconciliationRepository().record_orphan(
+                db, owner_id=owner_id, job_id=uuid.UUID(str(job_id)),
+                delivery_attempt=int(delivery_attempt or 0), logical_key=logical_key,
+                artifact_type=artifact_type, object_key=object_key,
+                # what THIS delivery stored, so the reconciler refuses to delete bytes a later
+                # write replaced (its generation check)
+                object_checksum=getattr(stored, "checksum", None),
+                object_size=int(getattr(stored, "size_bytes", 0) or 0),
+                detail="repair evidence row never committed")
+            await db.commit()
+        logger.info("repair_report_delivery: handed the orphaned object %s to the reconciler "
+                    "- job_id=%s", object_key, job_id)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("repair_report_delivery: could not discard the orphaned object %s (%s) "
-                       "- the reconciler is the backstop - job_id=%s", object_key, exc, job_id)
+        logger.warning("repair_report_delivery: could not record the orphaned object %s (%s) "
+                       "- keeping it - job_id=%s", object_key, exc, job_id)
 
 
 async def deliver_repaired_cad(session_factory, *, job_id: str, local_path,
                                suffix: str = ".step",
+                               owner_id: str = "",
                                delivery_attempt: int = 0,
                                execution_generation: int = 0,
                                fence_commit=None) -> str:
@@ -182,6 +218,7 @@ async def deliver_repaired_cad(session_factory, *, job_id: str, local_path,
 
     safe = (suffix or src.suffix or ".step").lower()
     object_key = ""
+    stored = None
     try:
         # INSIDE THE GUARD. Hashing reads the file again, and a file that vanished or became
         # unreadable between the check above and here must not raise out of a best-effort
@@ -222,5 +259,8 @@ async def deliver_repaired_cad(session_factory, *, job_id: str, local_path,
                        "mesh is unaffected but the customer cannot download the repair "
                        "- job_id=%s", exc, job_id)
         if object_key:
-            await _discard_orphan(session_factory, object_key, job_id=job_id)
+            await _discard_orphan(session_factory, object_key, job_id=job_id, owner_id=owner_id,
+                                  logical_key=REPAIRED_CAD_LOGICAL_KEY,
+                                  artifact_type=ArtifactType.repaired_cad,
+                                  delivery_attempt=delivery_attempt, stored=stored)
         return ""

@@ -1166,6 +1166,9 @@ def _rescale_skin(session_id: str, k: float) -> None:
             if p.get(name):
                 arr = np.frombuffer(base64.b64decode(p[name]), dtype=np.float32) * float(k)
                 p[name] = base64.b64encode(arr.astype(np.float32).tobytes()).decode("ascii")
+    # THE FACTOR TRAVELS WITH THE SKIN: anything placed on it from the kernel's own millimetres (a
+    # repair review's cameras) reads it, as the stage reads scale_to_m. Cumulative across rescales.
+    skin["rescaled_by"] = float(skin.get("rescaled_by") or 1.0) * float(k)
     _store_json(key, skin)
 
 

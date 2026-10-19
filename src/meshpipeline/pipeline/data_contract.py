@@ -239,6 +239,21 @@ CONTRACT: tuple[ContractVar, ...] = (
         corpus="training+qa: dispute_context event + reviewer's targeted brief",
     ),
     ContractVar(
+        concept="repair directives (review re-run)",
+        purpose="the directives a parked repair run's re-run plays before its rules planner - "
+                "kept operations replayed, then the engineer's decisions. Empty on every run "
+                "that did not resume from a repair review",
+        dispatch_kwarg="repair_directives", state_field="repair_directives",
+        corpus="training: the engineer's decisions are the labels the proposer learns from",
+    ),
+    ContractVar(
+        concept="review continuation",
+        purpose="true when this dispatch is a parked run's own re-run: it was not admitted "
+                "again and its ending is the one charge. Transport only; nothing routes on it",
+        dispatch_kwarg="review_continuation",
+        corpus="",
+    ),
+    ContractVar(
         concept="human flag baseline findings",
         purpose="the FIRST review's per-flag determination on the parent mesh - one typed "
                 "{ordinal, status, observation, explanation, measurements} per flag the user "
@@ -345,6 +360,11 @@ CONTRACT: tuple[ContractVar, ...] = (
 
 # corpus event registry: every event type + which corpus purpose it serves
 EVENT_TYPES: dict[str, str] = {
+    "repair_review":      "training: a review proposal the model declined (op_id review:propose), "
+                          "kept to see which defects the catalogue cannot answer",
+    "planner_shadow":     "training: what the LLM planner proposed beside what the rules planner did "
+                          "on the same part (op_id review:shadow); written once per shadow run, "
+                          "whichever way the repair ended",
     "intake_turn":        "training: one intake conversation turn",
     "engine_provenance":  "qa: who chose the approved engine (user_direct | suggested_confirmed), "
                           "appended to the dispatched intake events by the approval in every "
@@ -405,6 +425,18 @@ STATE_FIELDS: dict[str, str] = {
     "repair_attempt":        "whether the run repaired its own geometry, what it aimed at and "
                              "what it did - or why it declined; a decline leaves the run on the "
                              "customer's own file",
+    "repair_review_candidates": "review items the repair node minted for defects it left to a "
+                             "person; empty unless per-defect review is enabled - the terminal "
+                             "path persists them, the node writes nothing",
+    "repair_review_truncated": "how many review items the mint cap dropped, so the review says "
+                             "it shows the largest of a larger number; 0 unless the part had "
+                             "more unsure defects than the cap",
+    "repair_directives":     "the repair directives a parked run's re-run plays before its rules "
+                             "planner: kept operations replayed, then the engineer's decisions; "
+                             "empty unless the run resumed from a repair review",
+    "repair_directive_outcomes": "what became of each engineer directive a re-run played "
+                             "(kept, rolled_back, unplayable, not_reached) for the terminal "
+                             "path to write back onto the review items; empty otherwise",
     "repair_lineage":        "which upload a promoted repair replaced, and the engine the "
                              "replacement was proved to stage for; empty unless repaired "
                              "geometry became the geometry this run meshes",

@@ -233,7 +233,7 @@ def test_a_status_walk_that_hit_its_budget_is_reported_as_incomplete(monkeypatch
     _stub_shape(monkeypatch, valid=False)
     found = (EntityDefect(code=DefectCode.open_shell, severity=DefectSeverity.error,
                           entity_type="face", entity_index=3, message="an opening"),)
-    monkeypatch.setattr(localize_mod, "localize_scan", lambda _s, valid=None: (found, False))
+    monkeypatch.setattr(localize_mod, "localize_scan", lambda _s, valid=None, **_kw: (found, False))
     path = tmp_path / "huge.step"
     path.write_text("fixture")
 
@@ -248,7 +248,7 @@ def test_a_scan_that_saw_everything_says_so(monkeypatch, tmp_path):
     from meshpipeline.cad.repair import localize as localize_mod
 
     _stub_shape(monkeypatch, valid=True)
-    monkeypatch.setattr(localize_mod, "localize_scan", lambda _s, valid=None: ((), True))
+    monkeypatch.setattr(localize_mod, "localize_scan", lambda _s, valid=None, **_kw: ((), True))
     path = tmp_path / "sound.step"
     path.write_text("fixture")
 

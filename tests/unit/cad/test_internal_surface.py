@@ -281,6 +281,39 @@ def test_openings_that_leave_the_fluid_open_are_refused_in_plain_words():
         stage_triangles(sheet, intake_patches=_ports())
 
 
+def _box(s=0.1):
+    """A closed cube: six flat faces, and no other surface at all."""
+    o, tris = s / 2.0, []
+
+    def at(x, y, z):
+        return (x * o, y * o, z * o)
+
+    def quad(a, b, c, d):
+        tris.extend([(a, b, c), (a, c, d)])
+
+    quad(at(1, -1, -1), at(1, 1, -1), at(1, 1, 1), at(1, -1, 1))
+    quad(at(-1, -1, -1), at(-1, -1, 1), at(-1, 1, 1), at(-1, 1, -1))
+    quad(at(-1, 1, -1), at(-1, 1, 1), at(1, 1, 1), at(1, 1, -1))
+    quad(at(-1, -1, -1), at(1, -1, -1), at(1, -1, 1), at(-1, -1, 1))
+    quad(at(-1, -1, 1), at(1, -1, 1), at(1, 1, 1), at(-1, 1, 1))
+    quad(at(-1, -1, -1), at(-1, 1, -1), at(1, 1, -1), at(1, -1, -1))
+    return np.asarray(tris, dtype=float)
+
+
+def test_a_surface_whose_every_face_is_an_opening_is_refused_with_no_wall_left():
+    """The wall is the REMAINDER: whatever no opening claimed. Declare every face of a cube an
+    opening and it claims nothing, which used to stage as a success with a 0-triangle wall.stl -
+    the engine runner then spent all three mesh attempts on a condition no retry can mend. It is
+    the staging's refusal, said once, in words that say what to change."""
+    faces = [("feed", "inlet", [50, 0, 0]), ("exit", "outlet", [-50, 0, 0]),
+             ("top", "outlet", [0, 50, 0]), ("bottom", "outlet", [0, -50, 0]),
+             ("front", "outlet", [0, 0, 50]), ("back", "outlet", [0, 0, -50])]
+    patches = [{"name": n, "type": r, "near_mm": p, "width_mm": 100.0, "height_mm": 100.0}
+               for n, r, p in faces] + [{"name": "shell", "type": "wall"}]
+    with pytest.raises(InternalSurfaceError, match="no wall left"):
+        stage_triangles(_box(), intake_patches=patches, input_kind="fluid-domain")
+
+
 # ------------------------------------------------------------------------------ the record ----
 def test_the_written_record_is_what_the_engines_bind_under_the_users_names(tmp_path):
     from meshpipeline.cad.stl_io import read_stl_solids, write_stl_binary

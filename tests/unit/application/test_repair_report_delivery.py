@@ -128,7 +128,21 @@ def test_a_differing_report_cannot_reach_the_committed_object(store, delivered):
     assert json.loads(store.get_bytes(object_key=committed_key))["report"] == _REPORT
 
 
-def test_a_report_whose_row_never_commits_does_not_linger(store, monkeypatch):
+@pytest.fixture
+def reconciled(monkeypatch):
+    recorded: list[dict] = []
+
+    async def _record(self, db, **kw):
+        recorded.append(kw)
+
+    monkeypatch.setattr(
+        "meshpipeline.persistence.repositories.reconciliation_repository."
+        "ReconciliationRepository.record_orphan", _record)
+    return recorded
+
+
+def test_a_report_whose_row_never_commits_is_handed_to_the_reconciler(store, monkeypatch,
+                                                                      reconciled):
     async def _boom(self, db, **kw):
         raise RuntimeError("database unreachable")
 
@@ -138,13 +152,53 @@ def test_a_report_whose_row_never_commits_does_not_linger(store, monkeypatch):
     job_id = str(uuid.uuid4())
 
     assert asyncio.run(deliver_repair_report(_session_factory({}), job_id=job_id,
-                                             report=_REPORT)) == ""
+                                             report=_REPORT, owner_id="owner-1",
+                                             delivery_attempt=2)) == ""
 
-    # the uploaded object is discarded rather than left untracked in the store
-    from meshpipeline.contracts.object_storage import ObjectNotFound
-    leaked = [k for k in store._objects if job_id in k]
-    assert leaked == [], f"orphaned objects left behind: {leaked}"
-    assert ObjectNotFound
+    # not left untracked: recorded for the reconciler, with what this delivery stored
+    [record] = reconciled
+    key = [k for k in store._objects if job_id in k]
+    assert record["object_key"] in key
+    assert record["owner_id"] == "owner-1" and record["delivery_attempt"] == 2
+    assert record["logical_key"] == REPAIR_REPORT_LOGICAL_KEY
+    assert record["artifact_type"] == ArtifactType.repair_report
+    # (the double's upload reports no checksum; a real store's is what the generation check reads)
+    assert "object_checksum" in record
+
+
+def test_a_failed_delivery_never_deletes_bytes_a_concurrent_writer_is_committing(
+        store, monkeypatch, reconciled):
+    """The race: identical content shares one key, so a delivery that fails while another one is
+    still committing sees no committed owner - and deleting then removed the bytes the other's
+    committed row was about to name. Cleanup is the reconciler's, which adopts on a ready row."""
+    async def _boom(self, db, **kw):
+        raise RuntimeError("database unreachable")
+
+    monkeypatch.setattr(
+        "meshpipeline.persistence.repositories.artifact_repository."
+        "ArtifactRepository.deliver_artifact", _boom)
+    deleted: list[str] = []
+    monkeypatch.setattr(store, "delete_object", lambda **kw: deleted.append(kw["object_key"]))
+    job_id = str(uuid.uuid4())
+
+    asyncio.run(deliver_repair_report(_session_factory({}), job_id=job_id, report=_REPORT,
+                                      owner_id="owner-1"))
+
+    assert deleted == [], "a delivery deleted a shared content-addressed object on the spot"
+    assert [k for k in store._objects if job_id in k]
+
+
+def test_an_orphan_with_no_owner_to_record_against_is_kept(store, monkeypatch, reconciled):
+    async def _boom(self, db, **kw):
+        raise RuntimeError("database unreachable")
+
+    monkeypatch.setattr(
+        "meshpipeline.persistence.repositories.artifact_repository."
+        "ArtifactRepository.deliver_artifact", _boom)
+    job_id = str(uuid.uuid4())
+    asyncio.run(deliver_repair_report(_session_factory({}), job_id=job_id, report=_REPORT))
+    assert reconciled == []
+    assert [k for k in store._objects if job_id in k], "kept: a leak beats a wrong delete"
 
 
 def test_no_report_means_nothing_is_stored(store, delivered):
@@ -261,3 +315,19 @@ def test_a_repaired_file_that_cannot_be_hashed_does_not_end_the_run(store, deliv
     assert asyncio.run(deliver_repaired_cad(
         _session_factory({}), job_id=str(uuid.uuid4()), local_path=repaired)) == ""
     assert not delivered
+
+
+def test_the_delivered_report_carries_what_the_repair_did_beside_the_inspection(store, delivered):
+    """The downloadable report held only the upload's inspection: the operations, refusals, stop
+    reason and remaining defects lived in `repair_attempt` and never reached the customer, who got
+    repaired CAD with nothing durable explaining it. The inspection itself is unchanged."""
+    attempt = {"attempted": True, "stopped_because": "resolved", "resolved": True,
+               "operations": [{"name": "sew_faces", "status": "kept"}],
+               "refusals": [{"defect": "edge:r", "reason": "paired_rim"}],
+               "defects_remaining": [{"code": "small_face"}]}
+    asyncio.run(deliver_repair_report(_session_factory({}), job_id=str(uuid.uuid4()),
+                                      report=_REPORT, repair_status="repairable",
+                                      repair_attempt=attempt))
+    stored = json.loads(store.get_bytes(object_key=delivered["storage_key"]))
+    assert stored["report"] == _REPORT
+    assert stored["repair_attempt"] == attempt
