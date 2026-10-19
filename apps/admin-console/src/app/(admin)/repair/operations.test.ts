@@ -151,7 +151,8 @@ test("releasing clears the claim and does not re-claim it", async () => {
   });
 
   // claim:false, because a release is not a contended write - there is nothing to lose a race for
-  assert.deepEqual(calls[0], { claim: false, jobId: "job-1", operator: "" });
+  // - but it names the verified actor as the holder, so the API releases only their own claim
+  assert.deepEqual(calls[0], { claim: false, holder: ACTOR.email, jobId: "job-1", operator: "" });
   assert.equal(entries[0].action, "repair.release");
 });
 
@@ -189,5 +190,20 @@ test("releasing your own claim still works", async () => {
   );
 
   assert.equal(result.ok, true);
-  assert.deepEqual(calls[0], { claim: false, jobId: "job-1", operator: "" });
+  assert.deepEqual(calls[0], { claim: false, holder: ACTOR.email, jobId: "job-1", operator: "" });
+});
+
+test("a release from a stale page still names the verified actor, never the form's holder", async () => {
+  // The page loaded while Ana held the job; a lead has since given it to Ben. The form still says
+  // Ana, so the console's own check passes - the API's conditional release is what refuses it.
+  const { assign, calls } = assignSpy({ error: "Product API returned 409." });
+
+  const result = await applyRepairAssignment(
+    form({ assigned_operator: ACTOR.email, job_id: "job-1", release: "1" }),
+    { actor: ACTOR, assign },
+  );
+
+  assert.equal(calls[0].holder, ACTOR.email);
+  assert.equal(result.ok, false);
+  assert.match(result.error ?? "", /409/);
 });

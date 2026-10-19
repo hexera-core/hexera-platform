@@ -138,6 +138,15 @@ def is_cad(path) -> bool:
 #: inspection reads its true reason back here: a staged file missing says nothing about why.
 STAGING_GATE = "staging"
 
+#: The wall is the REMAINDER: whatever face no opening claimed. Name every face an opening and it
+#: claims nothing, and a wall of no triangles is not a fluid boundary - the staging used to report
+#: success and let the mesher spend its whole retry ladder on it. BOTH staging paths (this module
+#: and cad/cad_tessellate) refuse on these words, at the gate above: said once, never retried.
+EMPTY_WALL = (
+    "every face of the file was named an opening, so the fluid has no wall left to flow along: "
+    "with nothing but inlets and outlets there is no passage to mesh. Only the ends the fluid "
+    "enters and leaves by are openings - leave the faces it runs along as wall, then run again.")
+
 
 def staging_failure(workspace) -> str:
     """The recorded staging failure in plain words, or "" when staging did not fail."""
@@ -170,8 +179,8 @@ def stage_internal(source_path, workspace, *, prepared, intake_patches: list | N
                 declared_ports=(declared_ports if declared_ports is not None
                                 else declaration_targets(intake_patches or [])),
                 **(cad_kwargs or {}))
-        except BindError:
-            raise
+        except (BindError, InternalSurfaceError):
+            raise                                 # the user's to settle: not staged a second way
         except Exception as exc:  # noqa: BLE001 - the surface path is the way out, said below
             if not (ws / "input.stl").exists():
                 raise
@@ -284,6 +293,8 @@ def stage_triangles(tris, *, intake_patches: list | None = None, input_kind: str
             V, F, L, is_lid, lid_report, sealed = _assemble(mesh, pieces, chosen, lidded, caps, wall, lids)
             F = _orient(V, F)
     facts = _verify(V, F, L, list(matched), wall, is_lid=is_lid)
+    if facts["patches"][wall]["faces"] == 0:
+        raise InternalSurfaceError(EMPTY_WALL)
     facts.update({"lids": lid_report, "sealed": sealed, "input_kind": str(input_kind or ""),
                   "pieces_kept": int(len(chosen)), "pieces": int(pieces.max() + 1) if len(pieces) else 0,
                   "loose_open_pieces_left_out": [{"faces": int(np.sum(pieces == p))} for p in loose],
@@ -1406,6 +1417,6 @@ def _seed(V, F, L, ports: dict[str, _Opening]) -> tuple[np.ndarray, dict]:
                   "clearance_m": round(float(best[2]), 7), "from": owners[best[0]][0]}
 
 
-__all__ = ["STAGING_GATE", "InternalSurfaceError", "StagedInternal", "is_cad",
+__all__ = ["EMPTY_WALL", "STAGING_GATE", "InternalSurfaceError", "StagedInternal", "is_cad",
            "stage_internal", "stage_internal_surface", "stage_triangles", "staging_failure",
            "write_staged"]

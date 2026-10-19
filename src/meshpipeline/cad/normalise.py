@@ -28,23 +28,35 @@ def scale_stl_file(src: Path, dest: Path, prepared: PreparedCoordinates) -> Path
         shutil.copy2(src, dest)          # already metres: keep the user's exact bytes
         return Path(dest)
 
-    if Path(src).open("rb").read(5) != b"solid":
-        # BINARY: no names to carry, so VTK reads, transforms and writes it end to end.
-        import pyvista as pv
+    from meshpipeline.cad.stl_io import (
+        StlReadError,
+        is_ascii_stl,
+        read_binary_corners,
+        read_stl_solids,
+        write_stl_binary,
+        write_stl_solids,
+    )
 
-        mesh = pv.read(str(src))
-        mesh.points = mesh.points * factor
-        mesh.save(str(dest))
+    # Binary or ASCII is read from the bytes, never from the header's first word: a binary STL
+    # whose header says "solid ..." is common, and so is an ASCII file opening on a bare "solid".
+    if not is_ascii_stl(Path(src)):
+        # BINARY: no names to carry. Every record is scaled and written back as binary.
+        corners = read_binary_corners(Path(src)) * factor
+        if not len(corners):
+            raise StlReadError(f"{Path(src).name} holds no triangles to scale")
+        write_stl_binary(Path(dest), corners)
         return Path(dest)
 
     # ASCII: solid names are PRODUCT policy - they become patch identities downstream - so the
     # named writer keeps them. VTK would round-trip the geometry perfectly and drop the names.
-    from meshpipeline.cad.stl_io import read_stl_solids, write_stl_solids
-
-    write_stl_solids(Path(dest), {
+    solids = {
         name: [tuple(tuple(c * factor for c in v) for v in tri) for tri in tris]
         for name, tris in read_stl_solids(Path(src)).items()
-    })
+    }
+    if not any(solids.values()):
+        # never hand the mesher an empty surface: it would fail later with no word of why
+        raise StlReadError(f"{Path(src).name} holds no triangles to scale")
+    write_stl_solids(Path(dest), solids)
     return Path(dest)
 
 

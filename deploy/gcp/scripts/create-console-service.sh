@@ -54,7 +54,8 @@ require_digest_reference CONSOLE_IMAGE "${CONSOLE_IMAGE:-}"
 CONSOLE_CPU="${CONSOLE_CPU:-1}"
 CONSOLE_MEMORY="${CONSOLE_MEMORY:-512Mi}"
 CONSOLE_CONCURRENCY="${CONSOLE_CONCURRENCY:-80}"
-CONSOLE_TIMEOUT_SECONDS="${CONSOLE_TIMEOUT_SECONDS:-300}"
+# also the life of one relayed live-stream socket - see bootstrap-env.sh for why it matches the API
+CONSOLE_TIMEOUT_SECONDS="${CONSOLE_TIMEOUT_SECONDS:-900}"
 CONSOLE_MIN_INSTANCES="${CONSOLE_MIN_INSTANCES:-0}"
 CONSOLE_MAX_INSTANCES="${CONSOLE_MAX_INSTANCES:-3}"
 CONSOLE_INGRESS="${CONSOLE_INGRESS:-all}"
@@ -152,9 +153,12 @@ done
 #    NEXT_PUBLIC_HEXERA_API_BASE_URL is load-bearing here and DOES take effect: its only consumer
 #    is a server component that injects it into the page as it renders, and the console image
 #    passes no NEXT_PUBLIC_* build argument, so nothing was inlined and the SSR bundle still reads
-#    process.env at request time. The browser's WebSocket dials this origin directly - it does not
-#    pass through this service's proxy - so a wrong value here is a console that renders correctly
-#    and never streams.
+#    process.env at request time. The browser's WebSocket dials this origin directly when the page's
+#    inline session script ran (a full page load). That script does NOT run on a client-side
+#    navigation - "New run" is a <Link> - and the page then dials the console's own origin, which
+#    the console's stream relay (apps/console/src/server/stream-relay.ts) carries to
+#    HEXERA_API_BASE_URL. Both reach the same API socket; deploy.yml's verify-console proves the
+#    relayed one.
 #
 #    DO NOT supply this as a Docker build argument to "fix" it per environment. NEXT_PUBLIC_ is
 #    precisely the prefix Next inlines at build time when a value is present then; supplying one

@@ -678,9 +678,16 @@ def recommend(traits: ShapeTraits, engines: Sequence[str], *, table: Table | Non
     `source_format` is the upload's own format. An engine that reads that format ITSELF ranks
     ahead of engines that would mesh a conversion of it, measured or not: the conversion is what
     loses the model (an ECXML's parts, materials and powers), and lab runs of other engines on
-    the converted geometry say nothing about that. Declared by the engine, not named here."""
+    the converted geometry say nothing about that. Declared by the engine, not named here.
+
+    SEPARATE PASSAGES: when the openings lie on several passages that do not connect
+    (traits.passages), only the engines whose declaration meshes that many in one job are ranked
+    (capability.covers_passages) - an engine that will certainly refuse the case is no choice to
+    offer. When none does, every engine stays, and the run's own refusal says what to do."""
+    from meshpipeline.engines.capability import engines_covering
     from meshpipeline.engines.home_turf import rows_for, verdict
 
+    engines = engines_covering(dict.fromkeys(engines), traits.flow, traits.passages) or list(engines)
     tab = committed_table() if table is None else table
     cls = shape_class(traits)
     detail = detail_of(traits)

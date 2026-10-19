@@ -91,6 +91,178 @@ def _declined(reason: str, *, route: str = "", detail: dict | None = None) -> di
     return {"repair_attempt": record}
 
 
+def _mint(*, report: dict, measured: dict, source: Path,
+          survivors_path: Path | None) -> dict:
+    """Review items for what the run left unsure, as the state keys to merge in. Never raises: a
+    lost item is logged, not fatal.
+
+    THE NODE MINTS, THE TERMINAL PATH PERSISTS - this touches no database. Empty when review is off.
+    """
+    if not rcfg.CAD_REPAIR_REVIEW_ENABLED:
+        return {"repair_review_candidates": []}
+    try:
+        from meshpipeline.application.repair_review_minting import mint_with_overflow
+        from meshpipeline.cad.repair.brep import _read_shape
+        from meshpipeline.cad.repair.triage import split
+
+        def _shape(path: Path):
+            try:
+                return _read_shape(path)
+            except Exception:  # noqa: BLE001 - the camera falls back to a default without a shape
+                return None
+
+        original = _shape(source)
+        shape = _shape(survivors_path) if survivors_path else original
+        items, dropped = mint_with_overflow(
+            shape=shape, report=report, repair_run_measured=measured, split=split(report),
+            original_shape=original)
+    except Exception:  # noqa: BLE001
+        logger.warning("node_repair_attempt: review items could not be minted", exc_info=True)
+        return {"repair_review_candidates": []}
+    out: dict = {"repair_review_candidates": items}
+    if dropped:
+        out["repair_review_truncated"] = dropped
+    return out
+
+
+def _outcomes(state, operations, refusals, *, discarded: bool = False,
+              directives=None, discarded_reason: str = "") -> list[dict]:
+    """What became of each directive this run was given. Never raises; empty when review is off.
+
+    `directives` is what the kernel was handed (the state's, plus the live LLM planner's); it
+    defaults to the state's own.
+    """
+    if directives is None:
+        directives = state.get("repair_directives") or ()
+    if not directives or not rcfg.CAD_REPAIR_REVIEW_ENABLED:
+        return []
+    try:
+        from meshpipeline.application.repair_review_minting import directive_outcomes
+        if discarded_reason:
+            return directive_outcomes(directives, operations, refusals, discarded=discarded,
+                                      discarded_reason=discarded_reason)
+        return directive_outcomes(directives, operations, refusals, discarded=discarded)
+    except Exception:  # noqa: BLE001 - the corpus and the loop-closing are never load-bearing
+        logger.warning("node_repair_attempt: directive outcomes could not be joined", exc_info=True)
+        return []
+
+
+def _outcome_state(outcomes: list[dict]) -> dict:
+    """The outcomes the terminal path writes back onto their items (only those with an item)."""
+    return {"repair_directive_outcomes": [o for o in outcomes if o.get("item_id")]} if outcomes else {}
+
+
+def _not_reached(state, job_id, route: str, directives=None) -> dict:
+    """A run that ended before the loop could finish owes its directives an answer too: none was
+    tried to a verdict, so each is `not_reached` - logged and written back, never dropped."""
+    if directives is None:
+        directives = state.get("repair_directives") or ()
+    if not directives or not rcfg.CAD_REPAIR_REVIEW_ENABLED:
+        return {}
+    outcomes = _outcomes(state, [], [], directives=directives)
+    try:
+        from meshpipeline.capture.logger import TrainingLogger
+        TrainingLogger(job_id).log("repair_attempt", op_id="repair:attempt", payload={
+            "route": route, "operations": [], "refusals": [], "directives": outcomes,
+            "refused_because": "the run ended before the directives were tried"})
+    except Exception:  # noqa: BLE001 - the corpus is never load-bearing for a run
+        pass
+    return _outcome_state(outcomes)
+
+
+def _not_promoted(state, job_id, route: str, directives, repair_report, why: str) -> dict:
+    """A COMPLETED repair whose result was not adopted still answers its directives with what the
+    operations did: a rolled-back one stays rolled back, and one the session kept is `not_reached`
+    with NOT_PROMOTED, because the run meshes the original. The refusal is recorded beside them -
+    never folded into "never tried". Never raises."""
+    try:
+        from meshpipeline.application.repair_review_minting import NOT_PROMOTED
+        measured = {m.name: m.value for m in repair_report.measurements}
+        attempted = [dict(op) for op in repair_report.operations]
+        refusals = measured.get("refusals", []) or []
+        outcomes = _outcomes(state, attempted, refusals, discarded=True, directives=directives,
+                             discarded_reason=NOT_PROMOTED)
+    except Exception:  # noqa: BLE001 - the corpus and the loop-closing are never load-bearing
+        logger.warning("node_repair_attempt: promotion-refusal outcomes failed", exc_info=True)
+        return {}
+    try:
+        from meshpipeline.capture.logger import TrainingLogger
+        TrainingLogger(job_id).log("repair_attempt", op_id="repair:attempt", payload={
+            "route": route, "operations": attempted, "refusals": refusals,
+            "stopped_because": measured.get("stopped_because", ""),
+            "planner": measured.get("planner", ""), "directives": outcomes,
+            "refused_because": f"the repaired geometry was not promoted: {why}"})
+    except Exception:  # noqa: BLE001 - the corpus is never load-bearing for a run
+        pass
+    return _outcome_state(outcomes)
+
+
+async def _triage_only(report: dict, source: Path) -> dict:
+    """Items for what a person decides, when the run stays on the original and the repair's
+    survivors describe a file nobody will mesh (or nothing was repaired at all)."""
+    import asyncio
+    return await asyncio.to_thread(_mint, report=report, measured={"survivors": []},
+                                   source=source, survivors_path=None)
+
+
+class _EmptyPlan:
+    """What a shadow run records when the pre-pass itself failed: nothing proposed."""
+    called = 0
+    directives: tuple = ()
+    declines: tuple = ()
+    call_failures: tuple = ()
+
+
+def _posture() -> str:
+    """The LLM planner posture, read at call time; anything but shadow/live is off."""
+    posture = str(getattr(rcfg, "CAD_REPAIR_LLM_PLANNER", "off") or "off")
+    return posture if posture in ("shadow", "live") else "off"
+
+
+async def _prepass(report: dict, job_id: str):
+    """The LLM planner's plan for this report, or None. Total.
+
+    RUNS ON THE EVENT LOOP, BEFORE the kernel's `wait_for`: the planner's own per-call timeouts
+    bound it, so a slow model never spends the kernel's clock. The planner module is imported only
+    here, so with the posture off nothing of it is touched.
+    """
+    try:
+        from collections.abc import Mapping
+
+        from meshpipeline.agents.repair_review import _wire
+        from meshpipeline.agents.repair_review.planner import llm_plan
+        nested = report.get("report")
+        inner = dict(nested) if isinstance(nested, Mapping) else report
+        entities = [e for e in (inner.get("entities") or ()) if isinstance(e, dict)]
+        story = _wire.story_of([{"defect_code": e.get("code")} for e in entities])
+        return await llm_plan(inner, story=story, job_id=job_id)
+    except Exception:  # noqa: BLE001 - a planner that breaks leaves the run as it would have been
+        logger.warning("node_repair_attempt: the LLM planner pre-pass failed", exc_info=True)
+        return None
+
+
+def _shadow_row(job_id: str, plan, outcome: str, *, operations=(), stopped_because: str = "",
+                resolved=None, refusals=()) -> None:
+    """THE ONE SHADOW WRITER, called from every exit of the node past the pre-pass.
+
+    A shadow run's whole value is the pairing of what the model proposed with what the rules did
+    on the same part, so it is logged once whichever way the loop ended; `not_executed` says the
+    loop never produced a verdict. A no-op when there is no shadow plan. Never raises.
+    """
+    if plan is None:
+        return
+    try:
+        from meshpipeline.capture.logger import TrainingLogger
+        TrainingLogger(job_id).log("planner_shadow", op_id="review:shadow", payload={
+            "outcome": outcome, "called": plan.called,
+            "proposals": [dict(d) for d in plan.directives],
+            "declines": list(plan.declines), "call_failures": list(plan.call_failures),
+            "operations": [dict(o) for o in operations], "refusals": list(refusals),
+            "stopped_because": stopped_because, "resolved": resolved})
+    except Exception:  # noqa: BLE001 - the corpus is never load-bearing for a run
+        pass
+
+
 async def node_repair_attempt(state: PipelineState) -> dict:
     """Repair the geometry if the evidence supports it, and hand on whichever file should be meshed."""
     import asyncio
@@ -121,14 +293,29 @@ async def node_repair_attempt(state: PipelineState) -> dict:
     if advice.route != ROUTE_CONSERVATIVE_REPAIR:
         # Triage declined to recommend an automatic repair: abstained, or routed this to a person
         # or to the customer. Either way it is not ours to attempt.
-        return _declined(f"triage routed this to {advice.route}", route=advice.route,
-                         detail={"reasons": list(advice.reasons),
-                                 "abstain_reason": advice.abstain_reason})
+        # A DIRECTED RE-RUN STILL ANSWERS EVERY DIRECTIVE: none was tried, so each is not_reached.
+        return {**_declined(f"triage routed this to {advice.route}", route=advice.route,
+                            detail={"reasons": list(advice.reasons),
+                                    "abstain_reason": advice.abstain_reason}),
+                **_not_reached(state, job_id, advice.route)}
 
     # THE REPAIRED FILE LIVES IN THE JOB'S OWN WORKSPACE, beside the materialised original, so it
     # survives for the builder that stages it. A resumed run re-materialises the original into the
     # same place and re-derives the repair, which is why the derived identity is deterministic.
     destination = source.with_name(f"{source.stem}-repaired{source.suffix}")
+
+    # THE LLM PLANNER, if the deployment runs one. OFF TOUCHES NOTHING. SHADOW asks and only
+    # records; LIVE hands the proposals to the kernel AFTER the engineer's and the replay's, which
+    # keep their place. The kernel judges an LLM directive exactly like any other.
+    posture = _posture()
+    directives = tuple(state.get("repair_directives") or ())
+    shadow_plan = None
+    if posture != "off":
+        plan = await _prepass(report, job_id)
+        if posture == "shadow":
+            shadow_plan = plan if plan is not None else _EmptyPlan()
+        elif plan is not None:
+            directives = directives + tuple(plan.directives)
 
     from meshpipeline.cad.repair.conservative import (
         RepairRefused,
@@ -142,27 +329,65 @@ async def node_repair_attempt(state: PipelineState) -> dict:
         # delaying a mesh that was viable all along. The thread is abandoned on expiry (the kernel
         # offers no interruption point) and the run proceeds on the original.
         repair_report = await asyncio.wait_for(
-            asyncio.to_thread(repair_step_file, source, destination),
+            asyncio.to_thread(repair_step_file, source, destination,
+                              directives=directives),
             timeout=rcfg.CAD_REPAIR_TIMEOUT_S)
     except TimeoutError:
         logger.warning("node_repair_attempt: the repair exceeded %.1fs - continuing on the "
                        "original - job_id=%s", rcfg.CAD_REPAIR_TIMEOUT_S, job_id)
-        return _declined(f"the repair exceeded {rcfg.CAD_REPAIR_TIMEOUT_S:.0f}s",
-                         route=advice.route)
+        _shadow_row(job_id, shadow_plan, "not_executed")
+        return {**_declined(f"the repair exceeded {rcfg.CAD_REPAIR_TIMEOUT_S:.0f}s",
+                            route=advice.route), **await _triage_only(report, source),
+                **_not_reached(state, job_id, advice.route, directives)}
     except RepairUnavailable as exc:
         # OUR limitation, never a verdict on the file.
-        return _declined(f"the repair could not run here: {exc}", route=advice.route)
+        _shadow_row(job_id, shadow_plan, "not_executed")
+        return {**_declined(f"the repair could not run here: {exc}", route=advice.route),
+                **await _triage_only(report, source),
+                **_not_reached(state, job_id, advice.route, directives)}
     except RepairRefused as exc:
         # The kernel produced something and the caps declined it. The customer's file is unharmed
         # and this is the evidence an operator needs to decide what to do instead.
         logger.info("node_repair_attempt: repair refused (%s) - continuing on the original "
                     "- job_id=%s", exc, job_id)
-        return _declined(f"the repair was refused: {exc}", route=advice.route,
-                         detail={"measurements": exc.measurements})
+        outcomes = _outcomes(state, exc.measurements.get("operations", []),
+                             exc.measurements.get("refusals", []),
+                             discarded=bool(exc.measurements.get("result_discarded")),
+                             directives=directives)
+        _shadow_row(job_id, shadow_plan, "refused",
+                    operations=exc.measurements.get("operations", []),
+                    stopped_because=str(exc.measurements.get("stopped_because", "")),
+                    refusals=exc.measurements.get("refusals", []))
+        try:
+            from meshpipeline.capture.logger import TrainingLogger
+            # A DECLINE IS STILL A TRAINING ROW, and often the most useful one. A run that kept
+            # nothing is refused before anything is written, so the success path below never runs
+            # - and an attempted-and-rolled-back sequence is exactly what slice 8 needs to learn
+            # from. The attempts travel in the refusal's own measurements for this reason.
+            TrainingLogger(job_id).log("repair_attempt", op_id="repair:attempt", payload={
+                "route": advice.route, "targets": [dict(t) for t in advice.targets],
+                "operations": [dict(op) for op in exc.measurements.get("operations", [])],
+                "stopped_because": exc.measurements.get("stopped_because", ""),
+                "refusals": exc.measurements.get("refusals", []),
+                "planner": exc.measurements.get("planner", ""),
+                "refused_because": str(exc),
+                "directives": outcomes,
+                "measurements": dict(exc.measurements)})
+        except Exception:  # noqa: BLE001 - the corpus is never load-bearing for a run
+            pass
+        minted = await asyncio.to_thread(
+            _mint, report=report, measured=dict(exc.measurements), source=source,
+            survivors_path=None)
+        return {**_declined(f"the repair was refused: {exc}", route=advice.route,
+                            detail={"measurements": exc.measurements}),
+                **minted, **_outcome_state(outcomes)}
     except Exception as exc:  # noqa: BLE001 - a repair that breaks is never the file's fault
+        _shadow_row(job_id, shadow_plan, "not_executed")
         logger.warning("node_repair_attempt: the repair failed (%s) - continuing on the original "
                        "- job_id=%s", type(exc).__name__, job_id)
-        return _declined(f"the repair failed: {type(exc).__name__}", route=advice.route)
+        return {**_declined(f"the repair failed: {type(exc).__name__}", route=advice.route),
+                **await _triage_only(report, source),
+                **_not_reached(state, job_id, advice.route, directives)}
 
     from meshpipeline.pipeline.repair_promote import PromotionRefused, promote
     try:
@@ -170,55 +395,107 @@ async def node_repair_attempt(state: PipelineState) -> dict:
         # is our problem, not the customer's, and like every other refusal here it leaves the run
         # on the original rather than failing a mesh that was viable.
         repaired = _derived_source(original, destination)
-        update = promote(state, repaired=repaired, engine=engine,
-                         attempt=int(state.get("retry_count", 0) or 0))
+        # OFF THE EVENT LOOP AND ON A CLOCK, like the repair itself: the staging proof is a
+        # tessellation, and run here synchronously it held the job's heartbeat and cancellation
+        # checks for as long as it took. A proof past the bound is a refusal (the thread is
+        # abandoned, as the repair's is) and the run stays on the original.
+        try:
+            update = await asyncio.wait_for(
+                asyncio.to_thread(promote, state, repaired=repaired, engine=engine,
+                                  attempt=int(state.get("retry_count", 0) or 0)),
+                timeout=rcfg.CAD_REPAIR_TIMEOUT_S)
+        except TimeoutError as exc:
+            raise PromotionRefused(
+                f"the staging proof exceeded {rcfg.CAD_REPAIR_TIMEOUT_S:.0f}s") from exc
     except PromotionRefused as exc:
         # It repaired, but the result is not something the mesher can use - so the run stays on the
         # original and the repair becomes evidence rather than geometry.
         logger.info("node_repair_attempt: promotion refused (%s) - continuing on the original "
                     "- job_id=%s", exc, job_id)
-        return _declined(f"the repaired geometry was not promoted: {exc}", route=advice.route)
+        _shadow_row(job_id, shadow_plan, "not_executed")
+        # THE RUN STAYS ON THE ORIGINAL, so only what a person decides is minted: the repair's
+        # survivors describe a file nobody will mesh.
+        return {**_declined(f"the repaired geometry was not promoted: {exc}", route=advice.route),
+                **await _triage_only(report, source),
+                **_not_promoted(state, job_id, advice.route, directives, repair_report, str(exc))}
     except Exception as exc:  # noqa: BLE001
         logger.warning("node_repair_attempt: the repaired file could not be adopted (%s: %s) - "
                        "continuing on the original - job_id=%s", type(exc).__name__, exc, job_id)
-        return _declined(f"the repaired file could not be adopted: {type(exc).__name__}",
-                         route=advice.route)
+        _shadow_row(job_id, shadow_plan, "not_executed")
+        return {**_declined(f"the repaired file could not be adopted: {type(exc).__name__}",
+                            route=advice.route),
+                **await _triage_only(report, source),
+                **_not_promoted(state, job_id, advice.route, directives, repair_report,
+                                type(exc).__name__)}
 
-    operations = [op["name"] for op in repair_report.operations]
     measured = {m.name: m.value for m in repair_report.measurements}
-    logger.info("node_repair_attempt: repaired and promoted for engine=%s - operations=%s "
-                "- job_id=%s", engine, operations, job_id)
+    attempted = [dict(op) for op in repair_report.operations]
+    outcomes = _outcomes(state, attempted, measured.get("refusals", []), directives=directives)
+    _shadow_row(job_id, shadow_plan, "executed", operations=attempted,
+                stopped_because=str(measured.get("stopped_because", "")),
+                resolved=bool(measured.get("resolved", False)),
+                refusals=measured.get("refusals", []))
+    logger.info("node_repair_attempt: repaired and promoted for engine=%s - stopped=%s "
+                "- kept=%s/%s - job_id=%s", engine, measured.get("stopped_because"),
+                measured.get("operations_kept"), measured.get("operations_attempted"), job_id)
     try:
         from meshpipeline.capture.logger import TrainingLogger
+        # THE SLICE 8 CORPUS. Every attempt, kept or rolled back, with the defect it aimed at and
+        # the basis on which that was judged. A rolled-back operation is as much a training
+        # example as a kept one - more, arguably - which is why the whole sequence is logged
+        # rather than only what worked. This starts filling the day the deterministic loop is
+        # enabled, which is the reason it had to go in first.
         TrainingLogger(job_id).log("repair_attempt", op_id="repair:attempt", payload={
             "route": advice.route, "targets": [dict(t) for t in advice.targets],
-            "operations": operations, "report": repair_report.to_dict(),
+            "operations": attempted,
+            "stopped_because": measured.get("stopped_because", ""),
+            "refusals": measured.get("refusals", []),
+            "planner": measured.get("planner", ""),
+            "directives": outcomes,
+            "report": repair_report.to_dict(),
             "lineage": update.get("repair_lineage", {})})
     except Exception:  # noqa: BLE001 - the corpus is never load-bearing for a run
         pass
 
+    minted = await asyncio.to_thread(
+        _mint, report=report,
+        measured={**measured, "operations": attempted,
+                  "survivors": [dict(e) for e in repair_report.entities]},
+        source=source, survivors_path=destination)
+
     # `repair_status` IS NOT TOUCHED. It is the inspection's verdict on the file the customer
     # SENT, and `repair_report` beside it is that inspection - so overwriting it with the repair's
-    # own verdict produced a pairing that read "repaired" next to the original defect list. What
-    # the repair did belongs in `repair_attempt`, and whether it resolved the defects is stated
-    # there rather than implied by a status.
-    _left = measured.get("holes_left")
-    unresolved = list(_left) if isinstance(_left, list) else []
+    # own verdict produced a pairing that read "repaired" next to the original defect list.
     return {
         **update,
+        **minted,
+        **_outcome_state(outcomes),
         "repair_attempt": {
             "attempted": True,
+            # NOT A STATEMENT THAT THE RUN SUCCEEDED. `status_for` (cad/repair/conservative.py)
+            # returns "repaired" unless the report's DEFECTS include an error or fatal entry - it
+            # looks at no caps and at no warnings, so warnings left behind still read "repaired",
+            # even beside `resolved: False`. Read `resolved` for whether the loop succeeded. Not to
+            # be confused with the top-level `repair_status`, the inspection's verdict on the
+            # customer's file.
             "repair_status": status_for(repair_report).value,
-            # A repair can stay inside every cap and still leave the defect it was run for: an
-            # opening it declined to patch, or a shape it could not make fully valid.
-            "resolved": not unresolved and not repair_report.defects,
+            # TAKEN FROM THE LOOP, NOT INFERRED. It used to be derived from `holes_left`, a key
+            # the report no longer carries - which made it read True for any run with no warning
+            # defect, including a run the loop had explicitly reported as a failure.
+            "resolved": bool(measured.get("resolved", False)),
+            # WHY THE LOOP STOPPED. "Every error cleared" and "I ran out of operations" leave the
+            # same geometry and mean opposite things to the operator reading this.
+            "stopped_because": measured.get("stopped_because", ""),
             "route": advice.route,
-            "operations": operations,
+            # EVERY ATTEMPT, with its targets, verdict, reason and measured delta.
+            "operations": attempted,
             # WHAT THE REPAIR AIMED AT, kept with what it did: a reviewer approving this reads the
             # defects that justified it beside the operations that answered them.
             "targets": [dict(t) for t in advice.targets],
-            "holes_filled": measured.get("holes_filled", []),
-            "holes_left": measured.get("holes_left", []),
+            # WHAT WAS DELIBERATELY NOT ATTEMPTED AND WHY - the rims of a missing bore wall above
+            # all, which used to be a silent skip inside the fill executor.
+            "refusals": measured.get("refusals", []),
+            "defects_remaining": [dict(e) for e in repair_report.entities],
             "summary": repair_report.summary,
         },
     }

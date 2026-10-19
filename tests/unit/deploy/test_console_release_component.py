@@ -35,3 +35,11 @@ def test_publication_needs_no_per_component_change():
     assert "for comp in ${REC_COMPONENTS}" in text, (
         "publication stopped iterating the record's components; adding one would now "
         "silently not publish it")
+
+
+def test_console_image_proves_the_stream_relay_before_it_is_recorded():
+    # the relay answers a job-stream upgrade itself when the API is unreachable; Next alone drops
+    # the socket, and that is the 503 browsers saw on every live stream
+    text = VALIDATE.read_text(encoding="utf-8")
+    assert "console image: relays the live job stream" in text
+    assert "HEXERA_API_BASE_URL=http://127.0.0.1:9" in text

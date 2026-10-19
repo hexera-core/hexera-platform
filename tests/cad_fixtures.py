@@ -173,7 +173,7 @@ def write_open_shell_step(path: Path, unit: str = "MM", side: float = SIDE) -> P
     return path
 
 
-def write_missing_bore_wall_step(path: Path, unit: str = "MM") -> Path:
+def write_missing_bore_wall_step(path: Path, unit: str = "MM", profile: str = "round") -> Path:
     """A drilled plate whose BORE WALL is missing: two rims, and a trap for a hole-filler.
 
     THE PART-RUINING CASE, as a fixture. A 100x100x10 plate with an 8 mm through-hole, exported
@@ -183,6 +183,10 @@ def write_missing_bore_wall_step(path: Path, unit: str = "MM") -> Path:
 
     It exists so that the discriminator protecting against exactly that is tested on the real
     geometry rather than on a description of it.
+
+    `profile="hex"` cuts an 8 mm HEXAGONAL through-hole instead and drops its six flat walls: the
+    reviewer's reproduction of a fill sealing a non-round passage end to end, which a roundness
+    test let through. The cross-section of a through-hole does not change what sealing it does.
     """
     from OCP.BRepAdaptor import BRepAdaptor_Surface
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
@@ -197,15 +201,41 @@ def write_missing_bore_wall_step(path: Path, unit: str = "MM") -> Path:
     from OCP.TopoDS import TopoDS
 
     plate = BRepPrimAPI_MakeBox(100.0, 100.0, 10.0).Shape()
-    bore = BRepPrimAPI_MakeCylinder(
-        gp_Ax2(gp_Pnt(50, 50, -1), gp_Dir(0, 0, 1)), 8.0, 12.0).Shape()
+    if profile == "hex":
+        import math
+
+        from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+        from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+        from OCP.gp import gp_Vec
+
+        polygon = BRepBuilderAPI_MakePolygon()
+        for k in range(6):
+            a = 2 * math.pi * k / 6
+            polygon.Add(gp_Pnt(50 + 8 * math.cos(a), 50 + 8 * math.sin(a), -1))
+        polygon.Close()
+        bore = BRepPrimAPI_MakePrism(
+            BRepBuilderAPI_MakeFace(polygon.Wire()).Face(), gp_Vec(0, 0, 12)).Shape()
+    else:
+        bore = BRepPrimAPI_MakeCylinder(
+            gp_Ax2(gp_Pnt(50, 50, -1), gp_Dir(0, 0, 1)), 8.0, 12.0).Shape()
     drilled = BRepAlgoAPI_Cut(plate, bore).Shape()
+
+    def _is_bore_wall(face) -> bool:
+        if profile != "hex":
+            return BRepAdaptor_Surface(face).GetType() == GeomAbs_Cylinder
+        from OCP.BRepGProp import BRepGProp
+        from OCP.GProp import GProp_GProps
+
+        props = GProp_GProps()
+        BRepGProp.SurfaceProperties_s(face, props)
+        c = props.CentreOfMass()
+        return abs(c.X() - 50) < 20 and abs(c.Y() - 50) < 20 and 0 < c.Z() < 10
 
     keep = []
     explorer = TopExp_Explorer(drilled, TopAbs_FACE)
     while explorer.More():
         face = TopoDS.Face_s(explorer.Current())
-        if BRepAdaptor_Surface(face).GetType() != GeomAbs_Cylinder:
+        if not _is_bore_wall(face):
             keep.append(face)          # every face except the bore wall
         explorer.Next()
 
@@ -219,6 +249,159 @@ def write_missing_bore_wall_step(path: Path, unit: str = "MM") -> Path:
         raise RuntimeError(
             f"OCC refused write.step.unit={unit!r}; the STEP controller is not initialised, so "
             "this fixture would silently emit millimetres instead.")
+    writer.Transfer(sewing.SewedShape(), STEPControl_AsIs)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    writer.Write(str(path))
+    return path
+
+
+def write_missing_passage_wall_step(path: Path, kind: str, unit: str = "MM",
+                                   reverse: bool = False) -> Path:
+    """A plate with ONE THROUGH-PASSAGE whose walls are missing, in any of the shapes that sealed.
+
+    The adversarial re-review's builder, as a fixture: cut the passage with a tool, then drop
+    EVERY face the tool contributed (read from the boolean's own history, not guessed from
+    geometry), sew the rest. What is left is two rims and nothing joining them.
+
+    `kind`: `round`, `hex`, `slot`, `square`, `pent`, `tri` (an 8 mm-class passage straight through
+    a 100x100x10 plate); `angled<deg>` (a 4 mm-radius round hole tilted that many degrees from the
+    plate normal - its exit rim sits thickness x tan(deg) to the side); `wedge<deg>` (a straight
+    hole through a plate whose top face is tilted that many degrees - the two rims not parallel).
+    Every one of the angled and wedge cases was delivered "Repaired within the conservative caps"
+    with the hole sealed while the guard demanded parallel rims on one normal.
+
+    `dbar<offset>` (a D-section bar - flat top, round bottom) and `flipbar<offset>` (round top,
+    flat bottom) take a 4 mm-radius vertical hole `offset` mm off the bar's axis, so ONE RIM IS A
+    SADDLE on the curved side and the other is flat. `reverse=True` sews the faces in the opposite
+    order: the same part, and on that order the flat rim's fill was KEPT and the hole sealed, while
+    the original order was saved only by the stall limit stopping the run first.
+
+    `cotter<w>` (a slot `w` mm wide through an R=20 solid bar) and `tubeslot<w>` (the same slot
+    through the top wall of a tube with a 16 mm bore) leave two NARROW rims wrapped around curved
+    walls. A best-fit plane through such a loop is the slot's width direction, not the wall's
+    normal, and trusting it let both fills seal the slot.
+    """
+    import math
+
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepBuilderAPI import (
+        BRepBuilderAPI_MakeEdge,
+        BRepBuilderAPI_MakeFace,
+        BRepBuilderAPI_MakePolygon,
+        BRepBuilderAPI_MakeWire,
+        BRepBuilderAPI_Sewing,
+        BRepBuilderAPI_Transform,
+    )
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakePrism
+    from OCP.GC import GC_MakeArcOfCircle
+    from OCP.gp import gp_Ax1, gp_Ax2, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
+    from OCP.Interface import Interface_Static
+    from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp, TopExp_Explorer
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    def prism(wire, height=40.0):
+        return BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(wire).Face(),
+                                     gp_Vec(0, 0, height)).Shape()
+
+    def polygon(sides, radius, z=-15.0):
+        made = BRepBuilderAPI_MakePolygon()
+        for k in range(sides):
+            a = 2 * math.pi * k / sides + 0.3
+            made.Add(gp_Pnt(50 + radius * math.cos(a), 50 + radius * math.sin(a), z))
+        made.Close()
+        return made.Wire()
+
+    def slot(z=-15.0, length=14.0, radius=3.0):
+        h = length / 2
+        def at(x, y):
+            return gp_Pnt(50 + x, 50 + y, z)
+        wire = BRepBuilderAPI_MakeWire()
+        wire.Add(BRepBuilderAPI_MakeEdge(at(-h, -radius), at(h, -radius)).Edge())
+        wire.Add(BRepBuilderAPI_MakeEdge(GC_MakeArcOfCircle(
+            at(h, -radius), at(h + radius, 0), at(h, radius)).Value()).Edge())
+        wire.Add(BRepBuilderAPI_MakeEdge(at(h, radius), at(-h, radius)).Edge())
+        wire.Add(BRepBuilderAPI_MakeEdge(GC_MakeArcOfCircle(
+            at(-h, radius), at(-h - radius, 0), at(-h, -radius)).Value()).Edge())
+        return wire.Wire()
+
+    def cylinder(radius, height=40.0, at=(50, 50, -15)):
+        return BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(*at), gp_Dir(0, 0, 1)), radius,
+                                        height).Shape()
+
+    def rotated(shape, degrees, about=(50, 50, 5)):
+        turn = gp_Trsf()
+        turn.SetRotation(gp_Ax1(gp_Pnt(*about), gp_Dir(1, 0, 0)), math.radians(degrees))
+        return BRepBuilderAPI_Transform(shape, turn, True).Shape()
+
+    plate = BRepPrimAPI_MakeBox(100.0, 100.0, 10.0).Shape()
+    if kind == "round":
+        tool = cylinder(8.0)
+    elif kind in ("hex", "square", "pent", "tri"):
+        sides, radius = {"hex": (6, 8.0), "square": (4, 8.0), "pent": (5, 7.0), "tri": (3, 9.0)}[kind]
+        tool = prism(polygon(sides, radius))
+    elif kind == "slot":
+        tool = prism(slot())
+    elif kind.startswith("angled"):
+        tool = rotated(cylinder(4.0, 80.0, at=(50, 50, -35)), float(kind[len("angled"):]))
+    elif kind.startswith(("dbar", "flipbar")):
+        bar = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 50, 30), gp_Dir(1, 0, 0)), 30, 100).Shape()
+        flat_top = kind.startswith("dbar")
+        offset = float(kind[len("dbar" if flat_top else "flipbar"):])
+        trim = BRepPrimAPI_MakeBox(gp_Pnt(-1, 0, 50 if flat_top else -10), 102, 100,
+                                   40 if flat_top else 20).Shape()
+        plate = BRepAlgoAPI_Cut(bar, trim).Shape()
+        tool = cylinder(4.0, 80.0, at=(50, 50 + offset, -10))
+    elif kind.startswith(("cotter", "tubeslot")):
+        # a slot `w` wide (along the bar) and 30 mm across, cut straight down through an R=20 bar
+        # on the x axis: a cotter slot through the solid, or through only the top wall of a tube
+        # with a 16 mm bore. Each rim is a narrow loop WRAPPED around the curved wall, whose
+        # smallest spread is the slot's width, not the surface normal.
+        tube = kind.startswith("tubeslot")
+        w = float(kind[len("tubeslot" if tube else "cotter"):])
+        plate = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 50, 50), gp_Dir(1, 0, 0)), 20,
+                                         100).Shape()
+        if tube:
+            bore = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(-1, 50, 50), gp_Dir(1, 0, 0)), 16,
+                                            102).Shape()
+            plate = BRepAlgoAPI_Cut(plate, bore).Shape()
+        tool = BRepPrimAPI_MakeBox(gp_Pnt(50 - w / 2, 35, 50 if tube else 20), w, 30,
+                                   40 if tube else 60).Shape()
+    elif kind.startswith("wedge"):
+        slab = BRepPrimAPI_MakeBox(gp_Pnt(-50, -50, 10.0), 200, 200, 60).Shape()
+        cutter = rotated(slab, float(kind[len("wedge"):]), about=(50, 50, 10.0))
+        plate = BRepAlgoAPI_Cut(BRepPrimAPI_MakeBox(100.0, 100.0, 30.0).Shape(), cutter).Shape()
+        tool = cylinder(4.0)
+    else:
+        raise ValueError(f"unknown passage kind {kind!r}")
+
+    cut = BRepAlgoAPI_Cut(plate, tool)
+    walls = TopTools_IndexedMapOfShape()
+    tool_faces = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(tool, TopAbs_FACE, tool_faces)
+    for i in range(1, tool_faces.Extent() + 1):
+        face = tool_faces.FindKey(i)
+        modified = cut.Modified(face)
+        for piece in modified:
+            walls.Add(piece)
+        if not cut.IsDeleted(face) and modified.Size() == 0:
+            walls.Add(face)
+
+    keep = []
+    explorer = TopExp_Explorer(cut.Shape(), TopAbs_FACE)
+    while explorer.More():
+        if not walls.Contains(explorer.Current()):
+            keep.append(explorer.Current())   # every face except the passage's walls
+        explorer.Next()
+    sewing = BRepBuilderAPI_Sewing(1e-6)
+    for face in (reversed(keep) if reverse else keep):
+        sewing.Add(face)
+    sewing.Perform()
+
+    writer = STEPControl_Writer()
+    if not Interface_Static.SetCVal_s("write.step.unit", unit):
+        raise RuntimeError(f"OCC refused write.step.unit={unit!r}")
     writer.Transfer(sewing.SewedShape(), STEPControl_AsIs)
     path.parent.mkdir(parents=True, exist_ok=True)
     writer.Write(str(path))
@@ -274,3 +457,256 @@ def write_mixed_assembly_step(path: Path, unit: str = "MM", side: float = SIDE) 
     path.parent.mkdir(parents=True, exist_ok=True)
     writer.Write(str(path))
     return path
+
+
+def _write_step(shape, path: Path, unit: str) -> Path:
+    """Write one shape, refusing rather than silently emitting the wrong unit."""
+    from OCP.Interface import Interface_Static
+    from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
+
+    writer = STEPControl_Writer()
+    if not Interface_Static.SetCVal_s("write.step.unit", unit):
+        raise RuntimeError(
+            f"OCC refused write.step.unit={unit!r}; the STEP controller is not initialised, so "
+            "this fixture would silently emit millimetres instead.")
+    writer.Transfer(shape, STEPControl_AsIs)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    writer.Write(str(path))
+    return path
+
+
+def write_small_edge_step(path: Path, unit: str = "MM") -> Path:
+    """A plate with a SLIVER EDGE: a long thin notch cut into the y=0 face, ending in a 0.002 mm tip.
+
+    WHAT A SMALL EDGE ACTUALLY IS AND WHY IT IS NOT CONTRIVED. A mesher sizes its cells off the
+    local feature size, so an edge 0.002 mm long on a 100 mm plate forces cells five orders of
+    magnitude smaller than the part - which is how a mesh job runs for hours and then runs out of
+    memory. They arrive from tangent-continuous fillets, from translation round-off, and from
+    booleans that just miss: this one is built by cutting a very thin wedge off a corner, which is
+    the boolean case. The notch runs from x=0 to x=20 and narrows to 0.002 mm, so its end face is a
+    sliver 0.002 mm wide whose top and bottom edges (at x=20) are each 0.002 mm long.
+
+    `localize_scan` reports those two edges as `small_edge` (and the sliver face as `small_face`) because its length is under
+    SMALL_EDGE_LENGTH_FRACTION (1e-4) of the part's diagonal. The plate's diagonal is about 141 mm,
+    so the threshold is about 0.014 mm and the sliver below is well under it.
+    """
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakePrism
+    from OCP.gp import gp_Pnt, gp_Vec
+
+    plate = BRepPrimAPI_MakeBox(100.0, 100.0, 10.0).Shape()
+    # A wedge whose tip is 0.002 mm wide: cutting it leaves an edge of that length at the tip.
+    polygon = BRepBuilderAPI_MakePolygon()
+    for point in (gp_Pnt(0.0, -1.0, -1.0), gp_Pnt(20.0, -1.0, -1.0),
+                  gp_Pnt(20.0, 0.002, -1.0), gp_Pnt(0.0, 0.0, -1.0)):
+        polygon.Add(point)
+    polygon.Close()
+    wedge = BRepPrimAPI_MakePrism(
+        BRepBuilderAPI_MakeFace(polygon.Wire(), True).Face(), gp_Vec(0.0, 0.0, 12.0)).Shape()
+    return _write_step(BRepAlgoAPI_Cut(plate, wedge).Shape(), path, unit)
+
+
+def write_cylinder_cap_hole_step(path: Path, unit: str = "MM") -> Path:
+    """A Ø40 x 100 mm cylinder with a CURVED OPENING: one 60° x 20 mm patch of its wall is gone.
+
+    THE HOLE NO FLAT LID FITS. The side wall is written as three cylindrical faces - the 60° strip
+    below z=40, the 60° strip above z=60, and the remaining 300° - so the 60° x 20 mm window
+    between them is simply not there. What is left is ONE closed free loop of four edges (two arcs
+    of r=20 at z=40 and z=60, two axial lines), lying on the cylinder rather than in any plane:
+    `BRepBuilderAPI_MakeFace(wire, OnlyPlane=True)` declines it, which is what routes the opening
+    past `fill_planar_hole` to `fill_nonplanar_hole`.
+
+    SMALL BY CONSTRUCTION: the loop's box diagonal is about 28 mm against the part's ~115 mm, a
+    span ratio near 0.25, well under the 0.75 hole-versus-missing-wall cap. The missing surface
+    is 20 x (60° arc of r=20) = 418.9 mm², which is what a correct patch should declare.
+    """
+    import math
+
+    from OCP.BRepBuilderAPI import (
+        BRepBuilderAPI_MakeEdge,
+        BRepBuilderAPI_MakeFace,
+        BRepBuilderAPI_MakeWire,
+        BRepBuilderAPI_Sewing,
+    )
+    from OCP.Geom import Geom_CylindricalSurface
+    from OCP.gp import gp_Ax2, gp_Ax3, gp_Circ, gp_Dir, gp_Pnt
+
+    radius, height = 20.0, 100.0
+    window = math.radians(60.0)
+    wall = Geom_CylindricalSurface(gp_Ax3(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), radius)
+    faces = [BRepBuilderAPI_MakeFace(wall, u0, u1, v0, v1, 1e-7).Face()
+             for u0, u1, v0, v1 in ((0.0, window, 0.0, 40.0), (0.0, window, 60.0, height),
+                                    (window, 2 * math.pi, 0.0, height))]
+    for z in (0.0, height):
+        rim = BRepBuilderAPI_MakeEdge(gp_Circ(gp_Ax2(gp_Pnt(0, 0, z), gp_Dir(0, 0, 1)),
+                                              radius)).Edge()
+        faces.append(BRepBuilderAPI_MakeFace(BRepBuilderAPI_MakeWire(rim).Wire(), True).Face())
+
+    sewing = BRepBuilderAPI_Sewing(1e-6)
+    for face in faces:
+        sewing.Add(face)
+    sewing.Perform()
+    return _write_step(sewing.SewedShape(), path, unit)
+
+
+def _bar_with_tool_walls_dropped(tools: list, path: Path, unit: str) -> Path:
+    """A Ø40 x 100 mm bar on the x axis, cut by `tools`, with EVERY face a tool contributed dropped.
+
+    The walls are read from the boolean's own history (as `write_missing_passage_wall_step` does),
+    so what is left is the bar's own faces with the openings the tools left in them, and nothing
+    joining those openings.
+    """
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp, TopExp_Explorer
+    from OCP.TopoDS import TopoDS_Compound
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    bar = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(1, 0, 0)), 20.0, 100.0).Shape()
+    builder = BRep_Builder()
+    tool = TopoDS_Compound()
+    builder.MakeCompound(tool)
+    for piece in tools:
+        builder.Add(tool, piece)
+    cut = BRepAlgoAPI_Cut(bar, tool)
+    walls = TopTools_IndexedMapOfShape()
+    tool_faces = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(tool, TopAbs_FACE, tool_faces)
+    for i in range(1, tool_faces.Extent() + 1):
+        face = tool_faces.FindKey(i)
+        modified = cut.Modified(face)
+        for piece in modified:
+            walls.Add(piece)
+        if not cut.IsDeleted(face) and modified.Size() == 0:
+            walls.Add(face)
+
+    sewing = BRepBuilderAPI_Sewing(1e-6)
+    explorer = TopExp_Explorer(cut.Shape(), TopAbs_FACE)
+    while explorer.More():
+        if not walls.Contains(explorer.Current()):
+            sewing.Add(explorer.Current())   # every face except what the tools contributed
+        explorer.Next()
+    sewing.Perform()
+    return _write_step(sewing.SewedShape(), path, unit)
+
+
+def write_cross_drilled_cylinder_step(path: Path, unit: str = "MM") -> Path:
+    """A Ø40 x 100 mm bar (axis x) CROSS-DRILLED Ø8 along z through its axis at x = 50, bore wall gone.
+
+    TWO SADDLES, NO FLAT RIM. The bore leaves the bar's lateral face twice, at z = ±(19.6..20), and
+    each opening is a closed free loop that lies on the cylinder rather than in any plane - so the
+    planar pairing rule cannot see either of them, and the non-planar fill would close both,
+    sealing the customer's cross-hole end to end. Each loop is an inner boundary of the lateral
+    face, never a lone face's outer wire, so both are candidate rims.
+    """
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+
+    bore = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(50, 0, -30), gp_Dir(0, 0, 1)), 4.0, 60.0).Shape()
+    return _bar_with_tool_walls_dropped([bore], path, unit)
+
+
+def write_two_unrelated_curved_holes_step(path: Path, unit: str = "MM") -> Path:
+    """The same Ø40 x 100 mm bar with TWO Ø8 WINDOWS in its top, at x = 30 and x = 70 - not one hole.
+
+    Each window is a blind Ø8 pocket 10 mm into the bar's top (z from 10 up through the surface)
+    with its wall and floor dropped, so the openings are two saddle loops on the lateral face 40 mm
+    apart ALONG the bar, on no common axis. No passage joins them: the line between them runs along
+    the skin, so they must not pair, and each stays a small curved hole the non-planar fill may
+    close.
+    """
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+
+    windows = [BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(x, 0, 10), gp_Dir(0, 0, 1)), 4.0,
+                                        20.0).Shape() for x in (30.0, 70.0)]
+    return _bar_with_tool_walls_dropped(windows, path, unit)
+
+
+def write_loose_faces_step(path: Path, unit: str = "MM") -> Path:
+    """SIX BOX FACES AT THE RIGHT PLACES, NEVER JOINED - no solid, no joined shell, nothing sewn.
+
+    HOW THIS DIFFERS FROM THE OPEN SHELL AND THE MIXED ASSEMBLY, both of which already exist.
+    `write_open_shell_step` is a sewn shell declared a solid with one face MISSING: the defect is
+    a hole. `write_mixed_assembly_step` puts a loose body BESIDE a sound solid: the defect is that
+    a whole-shape judgement must not be made. This one is a single body that is complete but
+    unjoined: every face is present, the geometry closes, and the topology says nothing connects.
+
+    It is the commonest way a surface export arrives, and it is what sewing exists for - so it is
+    the fixture a targeted `sew_faces` has to be proved on. The repair must END with a shell, and
+    `_as_solid_if_closed` should then promote it.
+
+    WHAT THE KERNEL AND THE LOCALISER SAY ABOUT IT. After a STEP round trip `measure` reports 0
+    solids and SIX shells (the reader wraps each loose face in a shell of its own, so "unjoined"
+    reads as one shell per face, and sewing makes the shell count FALL from 6 to 1), and `localize_scan` reports six
+    `open_shell` defects from ShapeAnalysis_FreeBounds, each a closed free boundary of four edges:
+    every edge of the box is unshared, so every one is a free boundary. That is the real signature
+    of an unsewn surface export, not a face missing.
+    """
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS, TopoDS_Compound
+
+    box = BRepPrimAPI_MakeBox(SIDE, SIDE, SIDE).Shape()
+    builder = BRep_Builder()
+    loose = TopoDS_Compound()
+    builder.MakeCompound(loose)
+    explorer = TopExp_Explorer(box, TopAbs_FACE)
+    while explorer.More():
+        # EACH FACE ADDED TO A COMPOUND INDIVIDUALLY. Adding the box itself would carry its shell
+        # and its solid along, which is the opposite of this fixture.
+        builder.Add(loose, TopoDS.Face_s(explorer.Current()))
+        explorer.Next()
+    return _write_step(loose, path, unit)
+
+
+def write_pierced_floor_step(path: Path, unit: str = "MM") -> Path:
+    """A SOLID WHOSE FACES CROSS: a 10 mm cube with its top corner pulled through its own floor.
+
+    The cube's corner (10, 10, 10) is moved to (5, 5, -5), below the middle of the floor. The
+    three faces that met there no longer fit as quads, so they are split into triangles, and the
+    four triangles that reach the moved corner from a vertex above z=0 pass through the floor's
+    interior on their way down. Sewn and closed, it is one shell and one solid.
+
+    `BRepCheck_Analyzer` CALLS IT VALID. It tests each face and edge on its own and never asks
+    whether two faces cross, which is why a part like this reaches a mesher and fails there. The
+    face scan's analyzer (`BOPAlgo_ArgumentAnalyzer`, self-interference only) reports the floor
+    crossing four triangles - a five-face tangle, one more than MAX_HEAL_FACES. Every face is
+    planar, so re-trimming cannot uncross any of them: the honest outcomes are `not_isolated` for
+    the whole tangle and `crossing_remains` for any part of it a directive names.
+    """
+    from OCP.BRepBuilderAPI import (
+        BRepBuilderAPI_MakeFace,
+        BRepBuilderAPI_MakePolygon,
+        BRepBuilderAPI_MakeSolid,
+        BRepBuilderAPI_Sewing,
+    )
+    from OCP.gp import gp_Pnt
+    from OCP.TopoDS import TopoDS
+
+    def flat(*points):
+        polygon = BRepBuilderAPI_MakePolygon()
+        for point in points:
+            polygon.Add(gp_Pnt(*point))
+        polygon.Close()
+        return BRepBuilderAPI_MakeFace(polygon.Wire(), True).Face()
+
+    v = [(0, 0, 0), (10, 0, 0), (10, 10, 0), (0, 10, 0),
+         (0, 0, 10), (10, 0, 10), (5, 5, -5), (0, 10, 10)]
+    faces = [flat(v[0], v[1], v[2], v[3]), flat(v[0], v[1], v[5], v[4]),
+             flat(v[3], v[0], v[4], v[7]),
+             flat(v[1], v[2], v[6]), flat(v[1], v[6], v[5]), flat(v[2], v[3], v[6]),
+             flat(v[3], v[7], v[6]), flat(v[4], v[5], v[6]), flat(v[4], v[6], v[7])]
+    sewing = BRepBuilderAPI_Sewing(1e-6)
+    for face in faces:
+        sewing.Add(face)
+    sewing.Perform()
+    solid = BRepBuilderAPI_MakeSolid(TopoDS.Shell_s(sewing.SewedShape())).Solid()
+    return _write_step(solid, path, unit)

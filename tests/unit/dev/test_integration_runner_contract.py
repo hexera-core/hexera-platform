@@ -157,6 +157,8 @@ def _full_pass(extra: str = "") -> str:
                     "test_a_snapshot_naming_another_tenant_is_not_authorized")
             + _case("test_checkpoint_restart_postgres",
                     "test_the_abandoned_worker_is_fenced_at_each_point[after_admission]")
+            + _case("test_claim_sees_cancel_postgres",
+                    "test_a_cancel_that_lands_after_the_workers_first_read_stops_the_delivery")
             + extra)
 
 
@@ -375,11 +377,13 @@ def _quartered(tmp_path: Path) -> list[str]:
               "test_a_snapshot_naming_another_tenant_is_not_authorized"),
         _case("test_checkpoint_restart_postgres",
               "test_the_abandoned_worker_is_fenced_at_each_point[after_admission]"),
+        _case("test_claim_sees_cancel_postgres",
+              "test_a_cancel_that_lands_after_the_workers_first_read_stops_the_delivery"),
     ]
     per = len(filler) // 4
     shards = [filler[i * per:(i + 1) * per] for i in range(4)]
-    # One named guarantee each into three different shards - which is the real arrangement: the
-    # three live in different modules, so no shard can hold them all.
+    # One named guarantee each into a different shard - which is the real arrangement: they live
+    # in different modules, so no shard can hold them all.
     for i, c in enumerate(named):
         shards[i].append(c)
     return [_shard_of(tmp_path, i + 1, "".join(s)) for i, s in enumerate(shards)]

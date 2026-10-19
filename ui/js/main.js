@@ -17,16 +17,19 @@ import { getJob } from "./api/endpoints.js";
 import { dispatch, resultSurface } from "./core/events.js";
 import { beginRun, get as getState, isTerminalStatus, set as setState, waitingCopy }
   from "./core/state.js";
+import { CheckProgress } from "./render/check_progress.js";
 import { Notice } from "./render/notice.js";
+import { openRepairPanel } from "./render/repair.js";
 import { Stage, closeLightbox, openLightbox, setCancelHandler, setResultHandler }
   from "./render/stage.js";
-import { configure as configureStream, replay, start as startStream, terminalResult }
+import { configure as configureStream, lastSeq, replay, start as startStream, terminalResult }
   from "./realtime/stream.js";
 import { confirmCancel } from "./shell/cancel.js";
 import { clearNewRunOffer, configureComposer, disableInput, enableInput, mountComposer,
   offerNewRun, setPlaceholder, showRunFile } from "./shell/composer.js";
 import { refreshHealth } from "./shell/settings.js";
 import { configureDispute } from "./viewer/dispute.js";
+import { offerReview, openParked } from "./review/review.js";
 import { openGeometryStage } from "./viewer/geometry_stage.js";
 import { openViewer } from "./viewer/viewer.js";
 
@@ -45,10 +48,37 @@ function onEvent(ev) {
   setState.laneCursor(dispatch(ev, Stage, getState.laneCursor()));
 }
 
+/* LIVE STEPS THAT CANNOT REACH THE PAGE. The run itself is fine - the poller still reads its
+   status every few seconds and its result arrives the same way - so the page says what is missing
+   and what still works, instead of a bare "Generating mesh" that looks stuck. */
+const STREAM_DOWN_NOTICE = "Live steps are not reaching this page right now. The run keeps going "
+  + "on the server: its status is checked every few seconds, and the steps are filled in when it "
+  + "finishes. Reloading the page also brings them back.";
+const STREAM_DOWN_SUB = "running · live steps unavailable, checking status every few seconds";
+const STEPS_MISSING = "The step-by-step log could not be loaded on this page, so the steps above "
+  + "are incomplete. The result below is the server's own. Reload the page to see the full log.";
+let streamDown = false;
+
+async function finishRun(job, { streamDown: missedSteps = false } = {}) {
+  if (missedSteps) {
+    // CATCH UP BEFORE THE RESULT: the log is complete once a job has ended, so one replay from the
+    // last step this page drew fills the timeline in, in order, through the same dispatch.
+    const run = getState.jobId();
+    const read = await replay(run, lastSeq());
+    // A NEW RUN STARTED WHILE THIS ONE WAS CATCHING UP ("Run again" is offered at once): the
+    // stage is the new run's now, and this run's ending must not be drawn over it.
+    if (getState.jobId() !== run) return;
+    if (!read) Stage.chat("assistant", STEPS_MISSING);
+  }
+  Stage.final(terminalResult(job, getState.outcomeMessage()));
+}
+
 configureStream({
   onEvent,
-  onTerminal(job) {
-    Stage.final(terminalResult(job, getState.outcomeMessage()));
+  onTerminal(job, how) {
+    streamDown = false;
+    Notice.release("stream");
+    finishRun(job, how);
     // ONLY THE CONVERSATION A RUN CAME FROM CAN RUN IT AGAIN. A run opened from a link has no
     // conversation on this page: with no session at all a message would go nowhere, so the box
     // stays closed and says what does work here - a new upload, which opens a new session. A
@@ -71,11 +101,37 @@ configureStream({
   // WHILE THE JOB WAITS FOR A WORKER the header says so, with the backend's estimate; once a
   // worker has it the line goes back to "working…" and the timeline takes over.
   // The run's clock follows the server's: it counts from when the job was created.
-  onStatus: (job) => { Stage.waiting(waitingCopy(job)); Stage.clock(job.created_at); },
+  onStatus: (job) => {
+    Stage.waiting(waitingCopy(job) || (streamDown ? STREAM_DOWN_SUB : ""));
+    Stage.clock(job.created_at);
+    parkedRun(job);
+  },
   onPollTrouble: () => Notice.hold("poll",
     "Having trouble reaching the server for status updates - still retrying.", "warn"),
   onPollRecovered: () => Notice.release("poll"),
+  onStreamTrouble: () => {
+    streamDown = true;
+    // the header's sub-line follows on the next status poll, a few seconds away
+    Notice.hold("stream", STREAM_DOWN_NOTICE, "warn");
+  },
+  onStreamRecovered: () => {
+    streamDown = false;
+    Notice.release("stream");
+  },
 });
+
+/* A RUN PARKED FOR REVIEW. The repair stopped on defects the rules were unsure about: the run
+   page says how many and that nothing was changed without the engineer, and opens the review. The
+   review's "Run it" resumes the SAME job, so the stream carries on from here. */
+const _parkedShown = new Set();
+function parkedRun(job) {
+  if (!job || job.status !== "pending_review") return;
+  const id = job.job_id || job.id || getState.jobId();
+  if (_parkedShown.has(id)) return;
+  _parkedShown.add(id);
+  const opts = { onRun: (r) => { _parkedShown.delete(id); Stage.chat("assistant", r.said); } };
+  openParked(id, Stage.col(), opts).then((el) => { el?.querySelector("button")?.click(); });
+}
 
 /* what "a run finished" means: attach the viewer, or do not */
 setResultHandler((data, anchor) => {
@@ -93,10 +149,19 @@ setResultHandler((data, anchor) => {
     openViewer(job, anchor,
       { metrics: { attempts: data.attempts, pass: false }, files: data.files || [],
         unreviewed: true, findings: data.findings || [], reasoning: data.reasoning || "" });
+  } else {
+    // A TERMINAL failure - no valid mesh was ever produced. Any mesh file left in the workspace
+    // is structurally INVALID; showing it as "your mesh" would be a lie, and the outcome message
+    // has already explained what happened.
+    //
+    // BUT A REPAIR IS NOT THE MESH. If we fixed the customer's geometry on the way, that file is
+    // a deliverable in its own right and it exists whatever the mesher went on to do - so it is
+    // handed over here rather than withheld because a later stage failed.
+    openRepairPanel(job, anchor, data);
   }
-  // else: a TERMINAL failure - no valid mesh was ever produced. Any mesh file left in the
-  // workspace is structurally INVALID; showing it as "your mesh" would be a lie. The outcome
-  // message already explains what happened - that is the whole result.
+  // A QUIET WAY BACK to the defects the repair was unsure about, only when the run was delivered
+  // and the server says it holds an offered review (it answers nothing otherwise).
+  offerReview(job, anchor, { onRun: (r) => Stage.chat("assistant", r.said) });
 });
 
 /* what "start a new run" means: one definition, used by three callers. `origin` is the
@@ -135,6 +200,8 @@ configureComposer({
     { anchorEl: Stage.col(), retry, fallback: () => { Stage.geometryCheck(d, confirm); } }),
   // the card, when it stands in for the stage, follows the check in place
   geometryCard: (d) => Stage.geometryCheckUpdate(d),
+  // the check's live line, in the conversation while the part is checked
+  checkProgress: (p, opts) => CheckProgress.show(Stage.col(), p, opts),
 });
 
 configureDispute({
@@ -215,7 +282,7 @@ function bootLive() {
     if (isTerminalStatus(job.status)) {
       // REPLAY THE WHOLE RUN FIRST. A finished job still has its event log, and the point of
       // keeping one is that a user can see HOW they got their mesh, not just that they got it.
-      await replay(deepLinkJob);
+      if (!(await replay(deepLinkJob))) Stage.chat("assistant", STEPS_MISSING);
       Stage.final(terminalResult(job, getState.outcomeMessage()));
       return;
     }

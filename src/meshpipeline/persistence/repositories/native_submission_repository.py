@@ -106,6 +106,16 @@ select 1 from simulation_jobs
  where id = %(job)s and execution_generation = %(gen)s and active_worker_token = %(token)s
 """
 
+#: THE CLAIM'S OWNERSHIP, plus a status that has not ended. A cancel clears the token
+#: (persistence/lease.evict_owner) and a takeover rotates it; the reaper failing a job whose lease
+#: lapsed leaves the token and ends the status. Any of the three means nobody will collect a run
+#: this worker is still waiting on.
+_STILL_OWNED = """
+select 1 from simulation_jobs
+ where id = %(job)s and execution_generation = %(gen)s and active_worker_token = %(token)s
+   and status::text <> all(%(ended)s)
+"""
+
 #: A transition is allowed only from `claimed`, except the explicit reconciliation of an
 #: `indeterminate` row into `accepted`. `accepted` is terminal; `failed` never returns to
 #: `claimed`; nothing returns to `claimed` at all.
@@ -168,6 +178,17 @@ def claim(*, job_id, execution_generation: int, worker_token, engine: str, paylo
                             reference, failure,
                             detail="an earlier invocation holds this operation and its outcome "
                                    "is not durably known; it must not be submitted again")
+
+
+def still_owned(*, job_id, execution_generation: int, worker_token) -> bool:
+    # Read-only and synchronous, for the thread a remote mesh is waited on from: that thread has
+    # no event loop, so the run's async session factory is not usable there.
+    from meshpipeline.persistence.job_state import TERMINAL_STATES
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(_STILL_OWNED, {"job": str(job_id), "gen": int(execution_generation),
+                                   "token": str(worker_token),
+                                   "ended": sorted(s.name for s in TERMINAL_STATES)})
+        return cur.fetchone() is not None
 
 
 def token_fingerprint(worker_token) -> str:

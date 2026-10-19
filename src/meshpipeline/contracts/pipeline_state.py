@@ -78,7 +78,42 @@ class PipelineState(TypedDict):
     # the route, the targets, the operations - or why it declined. `attempted: False` is the
     # ordinary case and is never an error: every refusal on that path leaves the run on the file
     # the customer sent, which is the same outcome as not having tried.
+    #   repair_status     "repaired" unless the report's DEFECTS include an error or fatal entry
+    #                     (status_for, cad/repair/conservative.py). It checks no caps and ignores
+    #                     warnings, so warnings left behind still read "repaired" - NOT a statement
+    #                     that the run succeeded; read `resolved` for that. Distinct from the
+    #                     top-level `repair_status`, the inspection's verdict on the customer's file.
+    #   resolved          taken from the loop: complete scan, no error defects, nothing left at a
+    #                     fingerprint a failed attempt targeted. Absent in the report reads False.
+    #   operations        every operation the loop TRIED, in order, each with its targets, verdict
+    #                     (kept / rolled_back / failed), reason, the basis on which its target's fate
+    #                     was judged (kernel history or a geometric inference), its own evidence and
+    #                     the measured before/after. Attempts, not successes: a rolled-back operation
+    #                     is the evidence an operator wants and the training example a later model
+    #                     planner needs.
+    #   stopped_because   why the loop ended - resolved, no_candidate, op_budget, time_budget,
+    #                     stalled, scan_incomplete. NOT inferable from the geometry: a run that
+    #                     cleared every error and one that ran out of operations leave the same shape.
+    #   refusals          what was deliberately not attempted, and why. The paired rims of a missing
+    #                     bore wall are the case this exists for.
+    #   defects_remaining the located defects LEFT after the repair, so nothing reads "repaired" next
+    #                     to the list the file arrived with.
     repair_attempt: dict
+    # REVIEW ITEMS THE REPAIR NODE MINTED for defects it left to a person (application/
+    # repair_review_minting.py): plain dicts, empty unless CAD_REPAIR_REVIEW_ENABLED. The node mints;
+    # the terminal path persists them.
+    repair_review_candidates: list[dict]
+    # HOW MANY UNSURE DEFECTS THE MINT CAP DROPPED (application/repair_review_minting.MINT_CAP):
+    # absent or 0 unless the part had more than the cap. Declared, or the graph drops it between
+    # the node and the terminal path - and the review would present a capped queue as the part.
+    repair_review_truncated: int
+    # DIRECTIVES A PARKED RUN'S RE-RUN PLAYS FIRST (cad/repair/directives.py): the kept operations
+    # replayed, then the engineer's decisions. Empty on every run that did not resume from a park.
+    repair_directives: list[dict]
+    # WHAT BECAME OF EACH ENGINEER DIRECTIVE THIS RUN PLAYED ([{item_id, source, outcome, reason}],
+    # only those with an item): the terminal path writes them back onto their items. Must be
+    # declared, or the graph drops it between the node and the terminal path.
+    repair_directive_outcomes: list[dict]
     # SET ONLY WHEN A REPAIR WAS PROMOTED (pipeline/repair_promote.py): the identity of the
     # original upload this run stopped meshing, the repaired bytes that replaced it, and the
     # engine the replacement was proved to stage for. Empty on every run that meshed what the

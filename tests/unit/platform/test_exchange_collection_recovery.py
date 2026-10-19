@@ -333,21 +333,28 @@ def test_a_replacement_collector_recovers_without_a_second_submission(bucket, tm
     assert second["provider_reference"] == "", "a collection minted a new provider reference"
 
 
-def test_the_first_collectors_partial_workspace_is_not_reused_by_the_replacement(bucket, tmp_path):
-    # Production owns this cleanup, and owns it harder than "delete what I wrote": safe_extract_tar
-    # rmtree()s the whole DESTINATION on refusal, so a refused collection removes the workspace
-    # directory itself. Nothing partial can survive for a later collector to mistake for output.
-    # That is also exactly why the INPUT object must be preserved - it is what a replacement
-    # rebuilds the workspace from, and this batch is what stops it being deleted.
+def _staging_left(parent) -> list[str]:
+    # the extractor stages beside the destination as .<name>.extract_*; none may outlive the call
+    return [p.name for p in parent.iterdir() if ".extract_" in p.name]
+
+
+def test_a_refused_collection_leaves_no_partial_output_and_keeps_the_workspace(bucket, tmp_path):
+    # A refused archive is extracted into a staging directory beside the workspace, never into
+    # it, so nothing partial can reach the workspace for a later collector to mistake for output -
+    # and the workspace's own files (staged inputs, plan, builder records) are not destroyed with
+    # it. The INPUT object is preserved too: it is what a replacement rebuilds from.
     coords = coordinates_for(KEY)
     good = _tar_gz({"mesh.msh": b"solver"})
-    b = bucket(_seeded(coords, output=_tar_gz({"../escaped.txt": b"x"}),
+    b = bucket(_seeded(coords, output=_tar_gz({"mesh.msh": b"partial", "../escaped.txt": b"x"}),
                        result={"rc": 0, "timed_out": False}))
     ws1 = tmp_path / "w1"
     ws1.mkdir()
     (ws1 / "staged.foam").write_bytes(b"pre-existing")
     assert _collect(ws1)["rc"] != 0
-    assert not ws1.exists(), "the refused extraction left a workspace a later collector could read"
+    assert sorted(p.name for p in ws1.iterdir()) == ["staged.foam"], (
+        "the refused extraction left partial output in the workspace")
+    assert (ws1 / "staged.foam").read_bytes() == b"pre-existing"
+    assert not _staging_left(tmp_path), "a staging directory was left behind"
     assert not (tmp_path / "escaped.txt").exists()
     assert b.deleted == []
     assert coords.input_object_key in b.objects, (
@@ -358,6 +365,82 @@ def test_the_first_collectors_partial_workspace_is_not_reused_by_the_replacement
     ws2.mkdir()
     assert _collect(ws2)["rc"] == 0
     assert (ws2 / "mesh.msh").exists()
+    assert sorted(b.deleted) == sorted(_exchange_keys(coords))
+
+
+def _attempt_workspace(root):
+    # what an attempt's workspace holds when its mesh result comes back
+    ws = root / "attempt_1"
+    (ws / "system").mkdir(parents=True)
+    (ws / "constant" / "triSurface").mkdir(parents=True)
+    (ws / "system" / "meshDict").write_bytes(b"maxCellSize 0.1;\n")
+    (ws / "constant" / "triSurface" / "part.stl").write_bytes(b"solid part\nendsolid part\n")
+    (ws / "builder_records.json").write_bytes(b'{"rounds": 1}')
+    return ws
+
+
+def _files(ws) -> dict[str, bytes]:
+    return {p.relative_to(ws).as_posix(): p.read_bytes() for p in sorted(ws.rglob("*"))
+            if p.is_file()}
+
+
+def _limits(**over):
+    from dataclasses import replace
+
+    from meshpipeline.sandbox.safe_extract import default_limits
+    return replace(default_limits(), **over)
+
+
+@pytest.mark.parametrize(("limits", "archive"), [
+    # the archive cap - the fclib spray-can nozzle came back as 606 MB against a 512 MiB cap
+    pytest.param(_limits(max_archive_bytes=64), {"polyMesh/points": b"p" * 4096}, id="archive-cap"),
+    # caps only seen once extraction has begun, where the old cleanup removed the destination
+    pytest.param(_limits(max_entries=2), {"a": b"1", "b": b"2", "c": b"3"}, id="entry-cap"),
+    pytest.param(_limits(max_file_bytes=8), {"polyMesh/points": b"p" * 64}, id="per-file-cap"),
+    pytest.param(_limits(max_total_uncompressed_bytes=8), {"a": b"1" * 6, "b": b"2" * 6},
+                 id="total-cap"),
+])
+def test_a_returned_archive_over_a_limit_keeps_the_workspace_and_reports_uncollected(
+        limits, archive, bucket, tmp_path, monkeypatch):
+    from meshpipeline.contracts.mesh_execution import RUN_UNCOLLECTED_TAG
+    coords = coordinates_for(KEY)
+    # the remote's copy of the payload comes back beside the new mesh: the overwrite must not land
+    returned = {"system/meshDict": b"REMOTE COPY", **archive}
+    b = bucket(_seeded(coords, output=_tar_gz(returned),
+                       result={"rc": 0, "timed_out": False, "quality": {"cells": 7_000_000}}))
+    monkeypatch.setattr(crc, "result_extraction_limits", lambda: limits)
+    ws = _attempt_workspace(tmp_path)
+    before = _files(ws)
+
+    out = _collect(ws)
+
+    assert out["rc"] != 0
+    assert out["log_tail"].startswith(RUN_UNCOLLECTED_TAG), out["log_tail"]
+    assert "cells=7000000" in out["log_tail"], "the remote's own summary was dropped"
+    assert _files(ws) == before, "a refused returned archive changed the caller's workspace"
+    assert not _staging_left(tmp_path), (
+        "the staging directory was left beside the workspace")
+    assert b.deleted == [] and _exchange_keys(coords) <= set(b.objects)
+
+
+def test_a_returned_workspace_is_merged_over_the_attempt_workspace(bucket, tmp_path):
+    # the success path through the staging directory: the remote's files replace same-named ones,
+    # new ones are added, and the caller's files the archive does not carry are kept
+    coords = coordinates_for(KEY)
+    b = bucket(_seeded(coords, output=_tar_gz({
+        "system/meshDict": b"maxCellSize 0.05;\n",
+        "constant/polyMesh/points": b"pts", "log.cartesianMesh": b"End"}),
+        result={"rc": 0, "timed_out": False}))
+    ws = _attempt_workspace(tmp_path)
+    assert _collect(ws)["rc"] == 0
+    assert _files(ws) == {
+        "builder_records.json": b'{"rounds": 1}',
+        "constant/polyMesh/points": b"pts",
+        "constant/triSurface/part.stl": b"solid part\nendsolid part\n",
+        "log.cartesianMesh": b"End",
+        "system/meshDict": b"maxCellSize 0.05;\n",
+    }
+    assert not _staging_left(tmp_path)
     assert sorted(b.deleted) == sorted(_exchange_keys(coords))
 
 

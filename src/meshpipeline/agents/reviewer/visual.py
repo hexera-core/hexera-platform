@@ -148,7 +148,8 @@ async def node_reviewer(state: PipelineState) -> dict:
     if _reused is not None:
         return _reuse_review(_reused, retry_count=retry_count, workspace=workspace,
                              history=_history, evidence_key=_evidence,
-                             requirement_caveats=state.get("requirement_caveats") or [])
+                             requirement_caveats=state.get("requirement_caveats") or [],
+                             engine=engine, engine_params=state.get("engine_params") or {})
 
  # one plan, one obligation set
     # THE PHASE IS THE RETRY COUNTER'S MEANING, not a new flag: a dispute's first review runs
@@ -202,6 +203,7 @@ async def node_reviewer(state: PipelineState) -> dict:
         evidence_key=_evidence,
         review_history=_history,
         requirement_caveats=tuple(state.get("requirement_caveats") or ()),
+        engine_params=tuple(sorted(dict(state.get("engine_params") or {}).items())),
     )
 
     ok, problems = validate_plan(spec, plan)
@@ -441,14 +443,20 @@ def _evidence_key(*, engine: str, purpose: str, request: str, brief: str, confir
 
 
 def _history_entry(*, attempt: int, workspace: Path, evidence_key: str, verdict: str,
-                   findings: list[dict], feedback: str, requirement_caveats) -> dict:
+                   findings: list[dict], feedback: str, requirement_caveats,
+                   engine: str = "", engine_params=None) -> dict:
+    # THE ENGINE THAT BUILT THIS MESH, and its parameters: a run that switched engines and then
+    # delivers this attempt (application/review_delivery) must deliver it under its own engine -
+    # job 0d0fc370 delivered snappy's attempt 1 under cfMesh's name and every upload was refused.
     return {"attempt": int(attempt), "workspace": str(workspace), "evidence_key": evidence_key,
             "verdict": verdict, "findings": findings, "feedback": feedback[:4000],
-            "requirement_caveats": list(requirement_caveats or [])}
+            "requirement_caveats": list(requirement_caveats or []),
+            "engine": str(engine or ""), "engine_params": dict(engine_params or {})}
 
 
 def _reuse_review(entry: dict, *, retry_count: int, workspace: Path, history: tuple,
-                  evidence_key: str, requirement_caveats) -> dict:
+                  evidence_key: str, requirement_caveats, engine: str = "",
+                  engine_params=None) -> dict:
     """The earlier review of this identical mesh, as THIS attempt's verdict. Its requests for a
     rebuild are spent - the rebuild produced this same mesh - so none of them asks again; a finding
     that made the mesh the wrong problem still does."""
@@ -473,7 +481,8 @@ def _reuse_review(entry: dict, *, retry_count: int, workspace: Path, history: tu
         review_history=[*history, _history_entry(
             attempt=retry_count, workspace=workspace, evidence_key=evidence_key,
             verdict=verdict, findings=findings, feedback=feedback,
-            requirement_caveats=requirement_caveats)],
+            requirement_caveats=requirement_caveats, engine=engine,
+            engine_params=engine_params)],
     )
 
 
@@ -531,7 +540,8 @@ async def _translate_outcome(inputs: VisualReviewInteractionInputs,
         review_history=[*inputs.review_history, _history_entry(
             attempt=inputs.retry_count, workspace=inputs.workspace,
             evidence_key=inputs.evidence_key, verdict=verdict, findings=findings,
-            feedback=feedback, requirement_caveats=inputs.requirement_caveats)],
+            feedback=feedback, requirement_caveats=inputs.requirement_caveats,
+            engine=inputs.engine, engine_params=dict(inputs.engine_params))],
         # The baseline is written by the phase that establishes it and never overwritten by the
         # phase that is judged against it - otherwise the comparison would be with itself.
         **({"dispute_flag_findings": HF.as_dicts(outcome.flag_findings)}

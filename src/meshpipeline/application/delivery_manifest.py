@@ -63,7 +63,7 @@ def build(*, job_id: str, artifacts, final_result: Mapping | None = None) -> dic
     lineage: dict = dict(_raw_lineage) if isinstance(_raw_lineage, Mapping) else {}
     repaired = bool(lineage)
 
-    return {
+    parcel = {
         "manifest_version": DELIVERY_MANIFEST_VERSION,
         "job_id": str(job_id),
         "artifacts": entries,
@@ -86,6 +86,11 @@ def build(*, job_id: str, artifacts, final_result: Mapping | None = None) -> dic
         "repair_lineage": dict(lineage),
         "source_identity": _mapping(lineage.get("original")) if repaired else {},
     }
+    # WHAT IS MISSING, SAID IN THE PARCEL ITSELF. `required_ready` answers "did the mesh arrive";
+    # a repaired delivery whose repaired file never uploaded is still incomplete, and a customer
+    # reading the manifest must see that rather than a clean bill.
+    parcel["evidence_gaps"] = evidence_gaps(parcel)
+    return parcel
 
 
 def evidence_gaps(parcel: Mapping) -> list[str]:

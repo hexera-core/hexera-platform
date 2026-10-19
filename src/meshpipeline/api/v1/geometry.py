@@ -225,12 +225,15 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     session = await _owned_session(session_id, owner_id, organization_id)
     from meshpipeline.application import geometry_hold as gh
     from meshpipeline.application.geometry_check import (
+        NAMING_SOFT_LIMIT_S,
+        SCOUT_SOFT_LIMIT_S,
         check_object_key,
         naming_pending,
         naming_requested,
         retry_step,
         time_boxed,
     )
+    from meshpipeline.application.geometry_progress import progress_view, read_progress
     from meshpipeline.contracts.object_storage import get_object_store
     from meshpipeline.persistence.session import get_db
 
@@ -264,6 +267,9 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     payload["unit_needed"] = unit_needed(session)
     if payload.get("status") == "failed":
         payload.setdefault("retry", retry_step(payload))
+    # the check as reported, for the live line, before the stage's fields are added to it
+    reported = {k: payload.get(k) for k in ("status", "written_at", "seconds", "naming_seconds", "check_mode",
+                                            "source", "step", "retry", "reason", "timed_out")}
     if payload.get("status") in ("ready", "scouted") or payload.get("facts"):
         # the stage opens on a scouted check too, with the code's labels, and keeps them on a
         # naming that failed; the pictures are for the card, which only shows once the check
@@ -302,6 +308,11 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     confirmed = _read_json(check_object_key(str(session_id), "confirmed.json"))
     if confirmed is not None:
         payload["confirmed"] = confirmed
+    # THE LIVE LINE the chat shows while the part is checked: the step running now, the steps
+    # done with their times, a note when one runs long, and the way on when one fails
+    payload["progress"] = progress_view(reported, requested, read_progress(str(session_id)),
+                                        scout_limit_s=SCOUT_SOFT_LIMIT_S, naming_limit_s=NAMING_SOFT_LIMIT_S,
+                                        confirmed=confirmed is not None)
     return payload
 
 

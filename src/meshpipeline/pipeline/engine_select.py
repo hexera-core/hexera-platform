@@ -73,6 +73,20 @@ async def _measured_ladder(state, engine: str) -> dict:
         return {}
 
 
+#: Who settled a pinned engine, said in the log as it happened (engine_fallback's provenance values):
+#: an engine the system recommended and the user confirmed is not one the user named, and the
+#: ladder may still move it.
+_PINNED_BY = {"user_direct": "user named it",
+              "suggested_confirmed": "recommended, confirmed by the user",
+              "system": "system"}
+
+
+def _pinned_by(state) -> str:
+    from meshpipeline.pipeline.engine_fallback import engine_source
+    src = engine_source(state)
+    return "dispute" if src == "dispute" else _PINNED_BY.get(src, f"source {src or 'unknown'}")
+
+
 async def node_engine_select(state: PipelineState) -> dict:
     job_id = state.get("job_id", "unknown")
 
@@ -83,7 +97,7 @@ async def node_engine_select(state: PipelineState) -> dict:
         get_spec(state["engine"])
         source = "dispute" if state.get("user_dispute") else "user"
         logger.info("node_engine_select: engine %r pinned (%s) - job_id=%s",
-                    state.get("engine"), source, job_id)
+                    state.get("engine"), _pinned_by(state), job_id)
         seeded = await _measured_ladder(state, state["engine"])
         st = {**state, "engine_ladder": seeded} if seeded else state
         _log_selection(job_id, {"chosen": state.get("engine"), "source": source,

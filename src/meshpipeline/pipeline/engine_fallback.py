@@ -17,6 +17,26 @@ method. This module is that fallback, with one rule above every other:
     no layers where layers were asked for, a staircased wall for a body-fitted one - is OFFERED,
     in plain words, as the run's last sentence, and never delivered silently.
 
+WHEN THE RUN MAY MOVE TO ANOTHER ENGINE ON ITS OWN - deterministic, from measured or declared
+facts only, never from an AI judgement:
+
+  1. the engine produced no usable mesh: it crashed, stopped before writing a complete mesh,
+     refused the input, or its mesh is broken (checkMesh's fatal defects) - ENGINE;
+  2. the measured validity checks (fixed thresholds: cell quality, resolution floor, cell budget,
+     boundaries captured, the trial solve) still fail AFTER this engine's own levers were tried
+     on a retry - FIXABLE, on its second failure on this engine (_levers_spent);
+  3. and in either case only to an engine whose DECLARED capability covers the approved plan's
+     requirements (plan_requirements: prism layers, an external flow's wake refinement) and the
+     case's separate passages (FlowSupport.max_passages, below).
+
+THE REVIEW NEVER MOVES A RUN. The reviewer's verdict and concerns are an AI judgement of a mesh
+that already passed every gate. They lead only to the mesh being delivered with the concerns
+listed, or to a same-engine improvement retry through the builder's declared levers, with the
+best valid attempt delivered when a later one does worse (application/review_delivery). Job
+0d0fc370: snappyHexMesh built a 2.3M-cell production-grade external mesh, the review left one
+non-blocking layer-coverage concern, and the ladder moved the run to cfMesh, whose mesh had no
+wake refinement - REVIEW is the class that can never switch.
+
 More rules:
 * An engine the USER named (engine_source user_direct) is theirs. It is never switched without
   asking - the ladder only offers. A dispute rebuild keeps the engine of the mesh it disputes.
@@ -33,6 +53,11 @@ More rules:
   engine in the measured order at once - never the same engine again, and the builder is told so
   before it spends the attempt re-running it (moves_on_from_broken_mesh). The switch is said to the
   user as it happens and again beside the delivered mesh (switch_note, delivered_note).
+* AN ENGINE THAT WOULD CERTAINLY REFUSE IS NO RUNG. Every engine declares how many separate fluid
+  passages one job of it meshes (FlowSupport.max_passages). A case whose openings lie on more -
+  counted at the start of the run, then read off each attempt's own staging - never moves to it:
+  snappyHexMesh fills the one passage its seed point is in and refuses the rest before it runs.
+  When no other engine is left, the offer says so and gives the outs that work (_passages_offer).
 """
 from __future__ import annotations
 
@@ -110,11 +135,13 @@ def measure_order(state: Mapping) -> dict:
                         review_brief_txt=str(state.get("review_brief_txt", "") or ""),
                         patches=patches)
     rec = recommend(traits, able, brief=brief)
+    counted = ({"passages": int(traits.passages), "passages_source": PASSAGES_MEASURED}
+               if traits.passages else {})
     return {"order": rec.ranking,
             "order_source": "measured" if traits.measured else "flow",
             "order_recommended": rec.engine, "order_shape": rec.shape,
             "order_table": rec.table_version,
-            "order_reasons": {f.engine: f.reason for f in rec.fits}}
+            "order_reasons": {f.engine: f.reason for f in rec.fits}, **counted}
 
 
 async def seed_measured_order(state: Mapping, *, timeout_s: float = ORDER_WAIT_S) -> dict:
@@ -152,6 +179,10 @@ FIXABLE = "fixable"
 #: Another engine cannot change it: the request itself (the far-field size asked for), the
 #: approval (a boundary our own authoring wrote wrong), or a multi-region split. Never switch.
 NEVER = "never"
+#: The mesh passed every gate and the REVIEW did not pass it. An AI judgement, never a measured
+#: failure of the engine: it may ask this engine for an improvement retry, and the run delivers
+#: its best reviewed mesh - it never moves the run to another engine (the module's rule above).
+REVIEW = "review"
 
 #: WHAT A DIFFERENT ENGINE CAN DO about each failure cause. The causes are the executor's
 #: (contracts/failure_cause.py), named by the gate that failed - this module keeps no second
@@ -215,6 +246,7 @@ _REASON_BY_CAUSE: dict[FailureCause, str] = {
     FailureCause.RUN_INFRASTRUCTURE: "the mesh run did not complete on our side",
 }
 _REASON_REVIEW = "the mesh did not pass review"
+_REASON_CONCERNS = "its mesh passed every check, and the review left concerns"
 _REASON_GENERIC = "it did not produce a mesh that passed its checks"
 
 
@@ -321,17 +353,74 @@ def _declared_evidence(state: Mapping, engine: str, *, form: str | None = None):
         geometry_form=(form if form is not None else geometry_form_of_state(state)) or None)
 
 
-def able_engines(state: Mapping, *, form: str | None = None,
-                 exclude: tuple[str, ...] = ()) -> list[str]:
-    """Every implemented engine, in ladder order, that admits the WHOLE approved request - the
-    boundaries, the geometry kind and the file's form (or `form`, when asking what another file
-    would allow). The one answer the ladder, the refusal note and the closing offer all give."""
+# #
+# the passages the case holds
+# #
+
+#: Where a run's passage count came from: the last attempt's own staging (what the mesher saw),
+#: or the measurement at the start of the run (cad/shape_traits: `passages`).
+PASSAGES_STAGED = "staged"
+PASSAGES_MEASURED = "measured"
+
+
+def passages_of(state: Mapping) -> int | None:
+    """HOW MANY SEPARATE FLUID PASSAGES the run's case holds, as its ladder record carries it - the
+    count every engine's declared capability is held to (FlowSupport.max_passages). None when
+    nothing has counted them: then no engine is ruled out for it."""
+    n = record_of(state).get("passages")
+    return n if isinstance(n, int) and not isinstance(n, bool) and n > 0 else None
+
+
+def with_staged_passages(state: Mapping) -> Mapping:
+    """The state with its ladder record carrying the passage count the LAST ATTEMPT'S OWN STAGING
+    read (cad/fluid_passages.staged_passage_count, beside the case in the attempt workspace) - the
+    count the mesher itself saw, so it outranks the start-of-run measurement. Unchanged when the
+    attempt left no reading."""
+    from meshpipeline.cad.fluid_passages import staged_passage_count
+    ws = str(state.get("openfoam_workspace") or "")
+    n = staged_passage_count(ws) if ws else None
+    if n is None:
+        return state
+    rec = record_of(state)
+    if rec.get("passages") == n and rec.get("passages_source") == PASSAGES_STAGED:
+        return state
+    return {**state, "engine_ladder": {**rec, "passages": n, "passages_source": PASSAGES_STAGED}}
+
+
+def covers_case(engine: str, state: Mapping) -> bool:
+    """Whether one job of `engine` meshes the case's passages (capability.covers_passages)."""
+    from meshpipeline.engines.capability import covers_passages, flow_of
+    from meshpipeline.engines.registry import get_spec
+    try:
+        spec = get_spec(engine)
+    except Exception:  # noqa: BLE001 - an unknown engine is judged by everything else, not this
+        return True
+    return covers_passages(spec, flow_of(state.get("purpose", "")), passages_of(state))
+
+
+def held_back_by_passages(state: Mapping, *, exclude: tuple[str, ...] = ()) -> list[str]:
+    """The engines, in ladder order, that would take the whole approved request but for the case's
+    passages: one job of them meshes fewer than the case holds."""
+    return [n for n in _admitting(state, exclude=exclude) if not covers_case(n, state)]
+
+
+def _admitting(state: Mapping, *, form: str | None = None,
+               exclude: tuple[str, ...] = ()) -> list[str]:
     from meshpipeline.engines.capability import flow_of
     from meshpipeline.engines.registry import engine_names, get_spec
     implemented = set(engine_names())
     return [n for n in fallback_order(flow_of(state.get("purpose", "")), state)
             if n in implemented and n not in exclude
             and not get_spec(n).admit(_declared_evidence(state, n, form=form))]
+
+
+def able_engines(state: Mapping, *, form: str | None = None,
+                 exclude: tuple[str, ...] = ()) -> list[str]:
+    """Every implemented engine, in ladder order, that admits the WHOLE approved request - the
+    boundaries, the geometry kind and the file's form (or `form`, when asking what another file
+    would allow) - and whose declaration meshes as many separate passages as the case holds. The
+    one answer the ladder, the refusal note and the closing offer all give."""
+    return [n for n in _admitting(state, form=form, exclude=exclude) if covers_case(n, state)]
 
 
 def takers_by_form(state: Mapping) -> dict[str, list[str]]:
@@ -355,6 +444,62 @@ def _format_words(spec) -> str:
     return _FORMAT_WORDS.get(fmt, f"a {fmt} file" if fmt else "a different file")
 
 
+#: A brief that says it wants no wake refinement.
+_NO_WAKE = re.compile(
+    r"\b(?:no|without|skip)\s+(?:the\s+)?wake(?:\s+(?:refinement|region|box(?:es)?))?\b", re.I)
+
+#: The plan requirements an engine's declaration is held to (DeliveredMesh), in plain words.
+REQ_PRISM_LAYERS = "prism_layers"
+REQ_WAKE = "wake_refinement"
+_REQUIREMENT_WORDS: dict[str, str] = {
+    REQ_PRISM_LAYERS: "no reliable near-wall prism layers, which the approved plan builds",
+    REQ_WAKE: "no refinement of the wake behind the body, which the approved plan builds",
+}
+
+
+def plan_requirements(state: Mapping, approved_spec: Any = None) -> tuple[str, ...]:
+    """WHAT THE APPROVED PLAN DELIVERS that another engine must also deliver to be "the same
+    mesh" - from declared and approved facts only (the approved engine's DeliveredMesh, the flow,
+    the brief and the approved detail level), never from a review:
+
+    * prism layers - the brief asks for them, or the approved engine builds them on a run that is
+      not a draft and whose brief does not say "no layers";
+    * the wake refinement - an external flow on an engine that refines the wake on its own, unless
+      the brief says it wants none."""
+    from meshpipeline.engines.capability import flow_of
+    if approved_spec is None:
+        try:
+            from meshpipeline.engines.registry import get_spec
+            approved_spec = get_spec(approved_engine(state))
+        except Exception:  # noqa: BLE001 - an unknown engine has no plan to hold others to
+            return ()
+    dm = getattr(approved_spec, "delivered_mesh", None)
+    request = str(state.get("request_txt", "") or "")
+    brief = str(state.get("review_brief_txt", "") or "")
+    text = f"{request}\n{brief}"
+    layers = layer_request(request, brief)
+    said_no_layers = bool(_NO_LAYERS.findall(text)) and not layers.requested
+    draft = str(state.get("effective_mesh_fidelity") or "").lower() == "draft"
+    out: list[str] = []
+    if layers.requested or (dm is not None and dm.prism_layers and not draft
+                            and not said_no_layers):
+        out.append(REQ_PRISM_LAYERS)
+    if (flow_of(state.get("purpose", "")) == "external" and dm is not None
+            and getattr(dm, "wake_refinement", False) and not _NO_WAKE.findall(text)):
+        out.append(REQ_WAKE)
+    return tuple(out)
+
+
+def uncovered(spec: Any, requirements: tuple[str, ...]) -> tuple[str, ...]:
+    """The approved plan's requirements this engine's declaration does NOT cover (() = all)."""
+    dm = getattr(spec, "delivered_mesh", None)
+    if dm is None:
+        return tuple(requirements)
+    have = {REQ_PRISM_LAYERS: bool(dm.prism_layers),
+            REQ_WAKE: bool(getattr(dm, "wake_refinement", False))}
+    return tuple(r for r in requirements if not have.get(r, False))
+
+
 def _changes(approved_spec, spec, layers: LayerRequest) -> tuple[str, ...]:
     from meshpipeline.engines.base import WALL_FITS
     a, c = approved_spec.delivered_mesh, spec.delivered_mesh
@@ -371,6 +516,20 @@ def _changes(approved_spec, spec, layers: LayerRequest) -> tuple[str, ...]:
     if layers.requested and not c.prism_layers:
         out.append("no reliable near-wall prism layers, which your request asks for")
     return tuple(out)
+
+
+def _plan_changes(spec, layers: LayerRequest, requirements: tuple[str, ...]) -> list[str]:
+    """What the approved PLAN builds that this engine's declaration does not (plan_requirements),
+    in plain words - beyond what _changes already says about layers the request asked for."""
+    if getattr(spec, "delivered_mesh", None) is None:
+        return []           # _changes already said the meshes cannot be compared
+    missing = uncovered(spec, requirements)
+    out: list[str] = []
+    if REQ_PRISM_LAYERS in missing and not layers.requested:
+        out.append(_REQUIREMENT_WORDS[REQ_PRISM_LAYERS])
+    if REQ_WAKE in missing:
+        out.append(_REQUIREMENT_WORDS[REQ_WAKE])
+    return out
 
 
 def _params_carry_over(state: Mapping, spec) -> bool:
@@ -406,6 +565,8 @@ def ladder(state: Mapping) -> list[Rung]:
         return rungs
     layers = layer_request(str(state.get("request_txt", "") or ""),
                            str(state.get("review_brief_txt", "") or ""))
+    # what the approved plan delivers: an engine that cannot is not "the same mesh"
+    requirements = plan_requirements(state, approved_spec)
     implemented = set(engine_names())
     for name in fallback_order(flow, state):
         if name == approved or name not in implemented:
@@ -413,7 +574,12 @@ def ladder(state: Mapping) -> list[Rung]:
         spec = get_spec(name)
         if spec.admit(_declared_evidence(state, name)):
             continue            # it cannot build what was declared: not a rung at all
+        if not covers_case(name, state):
+            # one job of it meshes fewer separate passages than the case holds: it would refuse
+            # the case before meshing (snappyHexMesh fills the one its seed point is in)
+            continue
         changes = list(_changes(approved_spec, spec, layers))
+        changes += _plan_changes(spec, layers, requirements)
         if not _params_carry_over(state, spec):
             changes.append(f"{engine_label(name)}'s own settings would take their defaults")
         rungs.append(Rung(name, not changes, tuple(changes)))
@@ -448,7 +614,13 @@ def classify(state: Mapping) -> Failure | None:
                            "the far-field domain came out short of the size you asked for",
                            StopClass.CHECK_FAILED.value)
         if str(state.get("reviewer_verdict", "") or "").upper() == "FAIL":
-            return Failure(FIXABLE, "review", _REASON_REVIEW, StopClass.REVIEW_REBUILD.value)
+            # a validated mesh the review did not pass: never the engine's own failing. With no
+            # wrong-problem finding it is not a failure at all - the mesh is delivered with the
+            # review's concerns listed (application/final_result.review_concerns_caveat)
+            from meshpipeline.agents.reviewer.review_policy import blocking_findings
+            wrong = blocking_findings(list(state.get("reviewer_axis_findings") or []))
+            return Failure(REVIEW, "review", _REASON_REVIEW if wrong else _REASON_CONCERNS,
+                           StopClass.REVIEW_REBUILD.value)
         return None
     gate = str(state.get("executor_failed_gate", "") or "")
     facts = state.get("executor_failure_facts")
@@ -647,6 +819,17 @@ def _measures_its_input(engine: str) -> bool:
     return ic is not None and (ic.require_no_self_intersection or ic.min_thickness_ratio > 0)
 
 
+def _levers_spent(record: Mapping, engine: str) -> bool:
+    """THIS ENGINE'S OWN LEVERS WERE TRIED: the record holds at least two failed attempts on it
+    that started a mesher, the one that just ended included - the first failure bought a retry
+    with its levers, and the measured checks still failed after it. Only then may a FIXABLE
+    failure move the run (rule 2 above)."""
+    mine = [a for a in (record.get("attempts") or [])
+            if isinstance(a, Mapping) and a.get("engine") == engine
+            and a.get("kind") in (FIXABLE, ENGINE) and a.get("built") is not False]
+    return len(mine) >= 2
+
+
 def _repeats(record: Mapping, engine: str, failure: Failure) -> bool:
     mine = [a for a in (record.get("attempts") or [])
             if isinstance(a, Mapping) and a.get("engine") == engine]
@@ -668,15 +851,29 @@ def decide(state: Mapping, *, record: Mapping, now: float | None = None) -> Deci
         return Decision(why="the fallback ladder is switched off", failure=failure)
     if failure.kind == NEVER:
         return Decision(why="another engine cannot change this failure", failure=failure)
+    if failure.kind == REVIEW:
+        # THE RULE: an AI review of a gate-passing mesh never moves the run. It is delivered with
+        # its concerns, or improved on this engine with the best attempt kept.
+        return Decision(why="a review never moves the run to another engine - the mesh passed "
+                            "every measured check, so this engine's own levers answer it",
+                        failure=failure)
+    engine = str(state.get("engine") or "")
+    if failure.kind == FIXABLE and not _levers_spent(record, engine):
+        return Decision(why="a measured check failed - this engine's own levers are tried first",
+                        failure=failure)
     if not may_switch_on_its_own(state):
         return Decision(why=f"the engine is not ours to change (source {engine_source(state) or 'unknown'})",
                         failure=failure)
-    engine = str(state.get("engine") or "")
     tried = set(tried_engines({**state, "engine_ladder": record}))
     open_rungs = [r for r in ladder({**state, "engine_ladder": record})
                   if r.same_contract and r.engine not in tried
                   and not _measures_its_input(r.engine)]
     if not open_rungs:
+        st = {**state, "engine_ladder": record}
+        if [e for e in held_back_by_passages(st) if e not in tried]:
+            # the engines left would refuse the case: the run stays on the one that meshes it
+            return Decision(why=(f"no untried engine meshes {passages_of(st)} separate passages "
+                                 "in one job"), failure=failure)
         return Decision(why="no untried engine delivers the approved mesh", failure=failure)
     # attempts left, the next one included (the reviewer-feedback bonus is not the ladder's)
     left = bcfg.MAX_BUILDER_RETRIES + 1 - int(state.get("retry_count", 0) or 0)
@@ -829,11 +1026,54 @@ def _fewer_layers(state: Mapping, engine: str, failure: Failure) -> dict | None:
                      "run up.")}
 
 
+def _and(items: list[str]) -> str:
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def _per_job(st: Mapping, held: list[str], n: int) -> str:
+    """'meshes only one passage per job' (or 'mesh', for several engines; 'fewer than n passages'
+    when one of them declares more than one) - what the held-back engines' declarations say."""
+    from meshpipeline.engines.capability import flow_of
+    from meshpipeline.engines.registry import get_spec
+    flow = flow_of(st.get("purpose", ""))
+    one = all((get_spec(e).max_passages_for(flow) or 1) <= 1 for e in held)
+    verb = "meshes" if len(held) == 1 else "mesh"
+    return f"{verb} only one passage per job" if one else f"{verb} fewer than {n} passages per job"
+
+
+def _passages_offer(st: Mapping, engine: str, head: str, *, tried: set[str]) -> dict | None:
+    """THE OUT WHEN THE ONLY OTHER ENGINES WOULD REFUSE THE CASE: its openings lie on several
+    separate passages, and every untried engine that takes the request meshes fewer per job
+    (FlowSupport.max_passages). Switching to one would buy a certain refusal, so the user is told
+    so and given the two ways that work - one file per passage, which every engine can take, or
+    the same engine on the whole case again (only when one job of it meshes them all)."""
+    n = passages_of(st)
+    held = [e for e in held_back_by_passages(st) if e not in tried]
+    if not n or n < 2 or not held:
+        return None
+    names = _and([engine_label(e) for e in held])
+    me = engine_label(engine)
+    again = covers_case(engine, st) and bool(engine)
+    ways = ("Two ways on: split the file into one file per passage, each with its own openings, "
+            f"and upload them one at a time - {names} can mesh each of them too; or reply "
+            f"\"use {me}\" and I will run {me} on the whole case again." if again else
+            "The way on: split the file into one file per passage, each with its own openings, "
+            f"and upload them one at a time - {names} can mesh each of them.")
+    return {"kind": "passages", "engine": engine if again else "", "same_contract": again,
+            "changes": [], "reply": f"use {me}" if again else "", "passages": n,
+            "held_back": held,
+            "text": (f"{head} The openings lie on {n} separate passages that do not connect, and "
+                     f"{names} {_per_job(st, held, n)}, so I did not switch to "
+                     f"{'it' if len(held) == 1 else 'them'}. {ways}").strip()}
+
+
 def offer(state: Mapping, record: Mapping) -> dict | None:
     """THE ONE THING TO OFFER when a run ends without a mesh, or None. In order: another engine
     that delivers the approved mesh (it could not be switched to - it was the user's engine, or
     the attempts or the time ran out), the same engine with fewer layers, then another engine
-    with the differences stated. Never a switch the user did not ask for."""
+    with the differences stated, then - when the only engines left would refuse the case's
+    separate passages - one file per passage or the same engine again. Never a switch the user
+    did not ask for."""
     failure = classify(state)
     if failure is None or failure.kind == NEVER or engine_source(state) == SOURCE_DISPUTE:
         return None
@@ -873,6 +1113,13 @@ def offer(state: Mapping, record: Mapping) -> dict | None:
                          "and I will set that run up.").strip()}
     fewer = _fewer_layers(state, engine, failure)
     if fewer is not None:
+        held = [e for e in held_back_by_passages(st) if e not in tried]
+        if held and not rungs:
+            # say why no other engine was tried: they would refuse the case's passages
+            fewer = {**fewer, "text": (f"{fewer['text']} (No other engine was tried: the openings "
+                                       f"lie on {passages_of(st)} separate passages, and "
+                                       f"{_and([engine_label(e) for e in held])} "
+                                       f"{_per_job(st, held, passages_of(st) or 0)}.)")}
         return fewer
     if rungs:
         to = rungs[0].engine
@@ -882,6 +1129,9 @@ def offer(state: Mapping, record: Mapping) -> dict | None:
                 "text": (f"{head} {engine_label(to)} can mesh it, but not exactly as you "
                          f"approved: {diff}. I did not switch without asking. Reply "
                          f"\"use {engine_label(to)}\" if that works for you.").strip()}
+    split = _passages_offer(st, engine, head, tried=tried)
+    if split is not None:
+        return split
     if by_design:
         # NO ENGINE takes this file for this request: the out is the file - which form the
         # engines that admit this very request take, and how to get it
@@ -899,6 +1149,7 @@ def offer(state: Mapping, record: Mapping) -> dict | None:
 def final_record(state: Mapping, *, succeeded: bool, system_failure: bool) -> dict:
     """The ladder record the run ends with: every attempt, every switch, the engine that built
     the delivered mesh, and - on a mesh failure - the one offer."""
+    state = with_staged_passages(state)
     failure = None if succeeded else classify(state)
     rec = with_attempt(state, failure)
     rec["delivered_by"] = str(state.get("engine") or "") if succeeded else ""
@@ -908,12 +1159,47 @@ def final_record(state: Mapping, *, succeeded: bool, system_failure: bool) -> di
     return rec
 
 
+def attempts_account(record: Mapping) -> list[str]:
+    """A failed run's lines on WHAT EACH ATTEMPT DID, in plain words - [] for a run with fewer
+    than two attempts that built anything (the account above it already says the one reason)."""
+    rows = [a for a in (record.get("attempts") or []) if isinstance(a, Mapping)
+            and int(a.get("attempt", 0) or 0) > 0 and a.get("built") is not False]
+    if len(rows) < 2:
+        return []
+    out = ["What each attempt did:"]
+    for a in sorted(rows, key=lambda r: int(r.get("attempt", 0) or 0)):
+        reason = str(a.get("reason") or ("it passed" if a.get("kind") == "passed"
+                                         else _REASON_GENERIC))
+        out.append(f"  - Attempt {a.get('attempt')} ({engine_label(str(a.get('engine') or ''))}): "
+                   f"{reason}.")
+    return out
+
+
 def delivered_note(record: Mapping) -> str:
-    """The success message's line about a switch, or '' when the approved engine built it."""
+    """The success message's line about WHICH attempt and engine built the delivered mesh, or ''
+    when it is simply the last attempt on the approved engine."""
     switches = [s for s in (record.get("switches") or []) if isinstance(s, Mapping)]
-    if not switches or not record.get("delivered_by"):
+    by = str(record.get("delivered_by") or "")
+    if not by:
+        return ""
+    picked = record.get("delivered_from")
+    picked = picked if isinstance(picked, Mapping) else {}
+    if picked:
+        # THE BEST VALID MESH (application/review_delivery): the run built more than one, or a
+        # later attempt did worse - say which attempt is delivered, by which engine, why it was
+        # chosen, and what it is short of, measured
+        why = str(picked.get("why") or "it measured best of this run's meshes")
+        short = [str(s) for s in (picked.get("short_of") or []) if str(s).strip()]
+        text = (f"This is the mesh from attempt {picked.get('attempt')}, built with "
+                f"{engine_label(by)}: {why}.")
+        if short:
+            text += " It is short of: " + "; ".join(short) + "."
+        return text
+    if not switches:
         return ""
     first, last = switches[0], switches[-1]
+    if by != str(last.get("to") or ""):
+        return ""
     return (f"The first engine, {engine_label(str(first.get('from')))}, could not mesh this shape "
             f"({first.get('reason')}), so this mesh was built with "
             f"{engine_label(str(last.get('to')))} - same boundaries, same units, same settings "
@@ -943,6 +1229,11 @@ async def node_engine_fallback(state: PipelineState) -> dict:
     seeded = await seed_measured_order(state)
     if seeded:
         state = {**state, "engine_ladder": seeded}
+    # THE PASSAGES THE MESHER SAW: the attempt that just ended staged the case and counted its
+    # separate passages; no engine that meshes fewer per job is a rung after that
+    staged = with_staged_passages(state)
+    if staged is not state:
+        state = {**state, "engine_ladder": dict(staged["engine_ladder"])}
     failure = classify(state)
     record = with_attempt(state, failure)
     decision = decide(state, record=record)
@@ -983,13 +1274,17 @@ async def node_engine_fallback(state: PipelineState) -> dict:
     }
 
 
-__all__ = ["ENGINE", "FIXABLE", "NEVER", "SOURCE_DISPUTE", "SOURCE_SUGGESTED",
+__all__ = ["ENGINE", "FIXABLE", "NEVER", "REQ_PRISM_LAYERS", "REQ_WAKE", "REVIEW",
+           "SOURCE_DISPUTE", "SOURCE_SUGGESTED",
            "SOURCE_SYSTEM", "SOURCE_USER", "Decision", "Failure", "LayerRequest", "Rung",
-           "able_engines", "approved_engine", "attempts_made", "classify", "decide",
+           "able_engines", "approved_engine", "attempts_account", "attempts_made", "classify",
+           "decide",
+           "plan_requirements", "uncovered",
            "delivered_note", "engine_source", "fallback_order", "fresh_start_brief",
            "final_record", "ladder", "layer_request", "may_switch_on_its_own", "measure_order",
            "measured_ranking", "mesher_started", "moves_on_from_broken_mesh", "broken_cells",
-           "seed_measured_order",
+           "seed_measured_order", "PASSAGES_MEASURED", "PASSAGES_STAGED", "covers_case",
+           "held_back_by_passages", "passages_of", "with_staged_passages",
            "node_engine_fallback", "offer", "refused_by_design", "remaining_seconds",
            "rung_seconds", "switch_note", "takers_by_form", "tried_engines", "with_attempt",
            "with_switch"]

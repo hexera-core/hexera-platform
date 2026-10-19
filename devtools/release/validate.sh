@@ -387,8 +387,13 @@ if [ -n "${IMAGE_ID[console]}" ]; then
   # An image that builds and cannot serve is a green gate and a broken deploy. The container is
   # started on a published port with the two settings Auth.js requires at boot; the values are
   # deliberately not credentials - nothing here authenticates anyone.
+  #
+  # HEXERA_API_BASE_URL names a port nothing listens on, for the stream-relay check below: the
+  # relay must answer a job-stream upgrade itself (502, "could not be reached") - Next alone drops
+  # the socket with no reply, which is what reached browsers as a 503 on every live stream.
   _cid="$(docker run --rm -d --label "amp-release=${STAMP}" -P \
             -e AUTH_SECRET=gate-c-not-a-real-secret \
+            -e HEXERA_API_BASE_URL=http://127.0.0.1:9 \
             "${IMAGE_TAG[console]}" 2>/dev/null || true)"
   if [ -n "${_cid}" ]; then
     _port="$(docker port "${_cid}" 8080/tcp 2>/dev/null | head -1 | sed 's/.*://')"
@@ -397,6 +402,11 @@ if [ -n "${IMAGE_ID[console]}" ]; then
       curl -fsS --max-time 5 "http://127.0.0.1:${_port}/api/internal/health" >/dev/null 2>&1 && { _ok=0; break; }
       sleep 2
     done
+    _relay="$(curl -s --http1.1 --max-time 10 -o - -w ' %{http_code}' \
+      -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' \
+      -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+      "http://127.0.0.1:${_port}/api/v1/ws/00000000-0000-4000-8000-000000000000/stream?ticket=gate-c&since=0" \
+      2>/dev/null || true)"
     docker rm -f -v "${_cid}" >/dev/null 2>&1 || true
     if [ "${_ok}" = "0" ]; then
       record "console image: serves its health route" passed 1
@@ -404,11 +414,20 @@ if [ -n "${IMAGE_ID[console]}" ]; then
       record "console image: serves its health route" failed 1 \
         "the container started but never answered /api/internal/health"
     fi
+    case "${_relay}" in
+      *"live stream"*" 502")
+        record "console image: relays the live job stream" passed 1 ;;
+      *)
+        record "console image: relays the live job stream" failed 1 \
+          "a job-stream upgrade was not answered by the relay (got: ${_relay:-no reply}); is the --import preload missing from the CMD?" ;;
+    esac
   else
     record "console image: serves its health route" failed 1 "the container did not start"
+    record "console image: relays the live job stream" not_run 1 "the container did not start"
   fi
 else
   record "console image: serves its health route" not_run 1 "no console image was built"
+  record "console image: relays the live job stream" not_run 1 "no console image was built"
 fi
 if [ -n "${IMAGE_ID[admin]}" ]; then
   # An image that builds and cannot serve is a green gate and a broken deploy. The admin console

@@ -201,3 +201,16 @@ def test_the_wake_estimate_is_pure_over_the_row_and_zero_hides_it(monkeypatch):
     assert worker_wake_estimate(row(JobStatus.failed, None)) is None
     monkeypatch.setattr(rtcfg, "WORKER_WAKE_MINUTES", 0)
     assert worker_wake_estimate(row(JobStatus.pending, None)) is None
+
+
+def test_every_customer_visible_artifact_has_a_name_a_person_would_recognise():
+    # A download button labelled from the enum reads "Repaired cad", which looks like a defect on
+    # the one file a repaired run exists to hand back. Every class a customer may download is
+    # named here on purpose; the fallback is for internal classes nobody is offered.
+    from meshpipeline.application.delivery_manifest import _CUSTOMER_VISIBLE
+
+    labelled = {t: sim_module._artifact_label(t, "cfmesh") for t in _CUSTOMER_VISIBLE}
+    unnamed = {t: label for t, label in labelled.items()
+               if label == t.replace("_", " ").capitalize()}
+    assert not unnamed, f"these fell through to the enum's own spelling: {unnamed}"
+    assert labelled["repaired_cad"] == "Repaired geometry (.step)", labelled["repaired_cad"]

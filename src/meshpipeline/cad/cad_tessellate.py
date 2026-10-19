@@ -1297,12 +1297,18 @@ def tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection
     # B-rep wire scan can see: the B-rep is watertight, the TRIANGLES are not, and the
     # carve leaks through the gap into the exterior void. Read back what was written
     # (file space, so vertices compare exactly), seal every open rim ring into the wall.
-    staged = {nm: read_stl_triangles(p) for nm, p in stls.items()}
+    # a group of no faces writes no file at all, so a missing one reads as no triangles
+    staged = {nm: (read_stl_triangles(p) if Path(p).exists() else []) for nm, p in stls.items()}
     for nm in stls:
-        if nm != "wall" and not staged[nm]:
-            raise RuntimeError(
-                f"internal-flow port {nm!r} tessellated to zero triangles - its face "
-                f"cannot become a boundary patch (geometry too degenerate to mesh?)")
+        if staged[nm]:
+            continue
+        if nm == "wall":
+            # every flat face read as an opening: nothing was left over to be the wall
+            from meshpipeline.cad.internal_surface import EMPTY_WALL, InternalSurfaceError
+            raise InternalSurfaceError(EMPTY_WALL)
+        raise RuntimeError(
+            f"internal-flow port {nm!r} tessellated to zero triangles - its face "
+            f"cannot become a boundary patch (geometry too degenerate to mesh?)")
     rim_membranes, open_rims = seal_open_rims(
         [t for ts in staged.values() for t in ts])
     if rim_membranes:

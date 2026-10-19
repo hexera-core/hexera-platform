@@ -169,16 +169,19 @@ def test_a_later_gate_failure_delivers_the_earlier_reviewed_mesh(tmp_path):
                                      jlog=jlog).succeeded
 
 
-def test_the_better_reviewed_mesh_wins_and_ties_go_to_the_latest(tmp_path):
+def test_the_better_mesh_wins_and_ties_go_to_the_earlier_attempt(tmp_path):
     clean = _attempt(tmp_path, 1, [dict(CRM_FINDINGS[1])])
     worse = _attempt(tmp_path, 2, [dict(CRM_FINDINGS[1], blocking="wrong_scale")])
     state = _state(openfoam_workspace=worse["workspace"], review_history=[clean, worse],
                    reviewer_axis_findings=worse["findings"])
     assert select(state)["openfoam_workspace"] == clean["workspace"]
+    # the same measurements on a later attempt: the earlier one is delivered (rule 6)
     same = _attempt(tmp_path, 3, [dict(CRM_FINDINGS[1])])
     state = _state(openfoam_workspace=same["workspace"], review_history=[clean, same],
-                   reviewer_axis_findings=same["findings"])
-    assert select(state) == state
+                   reviewer_axis_findings=same["findings"], retry_count=3)
+    picked = select(state)
+    assert picked["openfoam_workspace"] == clean["workspace"]
+    assert picked["engine_ladder"]["delivered_from"]["attempt"] == 1
 
 
 def test_an_unreadable_earlier_mesh_keeps_the_runs_own_outcome(tmp_path):

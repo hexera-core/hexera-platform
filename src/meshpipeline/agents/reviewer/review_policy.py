@@ -266,4 +266,23 @@ def blocking_findings(axis_findings) -> list[dict]:
 
 __all__ = ["LEVERS", "MIN_QUOTE_CHARS", "NOT_WRONG_PROBLEM", "NO_LEVER", "WRONG_PROBLEM",
            "Judgement", "asks_for_rebuild", "blocking_findings", "brief_quote_found",
+           "concern_retry_spent",
            "builder_levers", "judge", "judge_all", "measured_veto", "measurements_from"]
+
+
+def concern_retry_spent(state) -> bool:
+    """ONE IMPROVEMENT RETRY FOR CONCERNS PER RUN. True when the review that just concluded found
+    nothing that makes the mesh the wrong problem, and an EARLIER review of this run already did
+    the same and asked for an improvement (which the run has spent). The run then ends and
+    delivers its best valid mesh with the concerns listed (application/review_delivery) - a
+    concern never buys a second rebuild, and never another engine (pipeline/engine_fallback)."""
+    if blocking_findings(list(state.get("reviewer_axis_findings") or [])):
+        return False
+    now = int(state.get("retry_count", 0) or 0)
+    for h in state.get("review_history") or []:
+        if not isinstance(h, dict) or int(h.get("attempt") or 0) >= now:
+            continue
+        rows = [f for f in (h.get("findings") or []) if isinstance(f, dict)]
+        if h.get("verdict") == "FAIL" and not blocking_findings(rows) and asks_for_rebuild(rows):
+            return True
+    return False

@@ -1,0 +1,824 @@
+{
+ "write_cross_drilled_cylinder_step": [
+  {
+   "code": "open_shell",
+   "entity": "edge:3",
+   "entity_index": 3,
+   "entity_type": "edge",
+   "fingerprint": "edge:b832c406a1f87df3",
+   "kernel_status": "FreeBounds",
+   "location": {
+    "bbox_max": [
+     54.0,
+     4.0,
+     20.0
+    ],
+    "bbox_min": [
+     46.0,
+     -4.0,
+     19.595918
+    ],
+    "centroid": [
+     50.0,
+     0.0,
+     19.797959
+    ],
+    "unit": "mm"
+   },
+   "measurements": {
+    "boundary_edges": [
+     3,
+     6
+    ],
+    "boundary_length": 25.19674,
+    "closed_loop": true,
+    "relative_size": 0.219309
+   },
+   "message": "A closed free boundary of 2 edge(s) bounds an opening in the surface.",
+   "region": "unknown",
+   "severity": "error"
+  },
+  {
+   "code": "open_shell",
+   "entity": "edge:7",
+   "entity_index": 7,
+   "entity_type": "edge",
+   "fingerprint": "edge:d478fa31b6a8b6d9",
+   "kernel_status": "FreeBounds",
+   "location": {
+    "bbox_max": [
+     54.0,
+     4.0,
+     -19.595918
+    ],
+    "bbox_min": [
+     46.0,
+     -4.0,
+     -20.0
+    ],
+    "centroid": [
+     50.0,
+     0.0,
+     -19.797959
+    ],
+    "unit": "mm"
+   },
+   "measurements": {
+    "boundary_edges": [
+     7
+    ],
+    "boundary_length": 25.19674,
+    "closed_loop": true,
+    "relative_size": 0.219309
+   },
+   "message": "A closed free boundary of 1 edge(s) bounds an opening in the surface.",
+   "region": "unknown",
+   "severity": "error"
+  }
+ ],
+ "write_cylinder_cap_hole_step": [
+  {
+   "code": "open_shell",
+   "entity": "edge:6",
+   "entity_index": 6,
+   "entity_type": "edge",
+   "fingerprint": "edge:5ce8ead851380564",
+   "kernel_status": "FreeBounds",
+   "location": {
+    "bbox_max": [
+     20.0,
+     17.320508,
+     60.0
+    ],
+    "bbox_min": [
+     10.0,
+     -0.0,
+     40.0
+    ],
+    "centroid": [
+     15.0,
+     8.660254,
+     50.0
+    ],
+    "unit": "mm"
+   },
+   "measurements": {
+    "boundary_edges": [
+     6,
+     11,
+     10,
+     4
+    ],
+    "boundary_length": 81.887902,
+    "closed_loop": true,
+    "relative_size": 0.712743
+   },
+   "message": "A closed free boundary of 4 edge(s) bounds an opening in the surface.",
+   "region": "unknown",
+   "severity": "error"
+  }
+ ],
+ "write_loose_faces_step": [
+  {
+   "code": "open_shell",
+   "entity": "edge:1",
+   "entity_index": 1,
+   "entity_type": "edge",
+   "fingerprint": "edge:46b3b27f5b7ba58a",
+   "kernel_status": "FreeBounds",
+   "location": {
+    "bbox_max": [
+     0.0,
+     10.0,
+     10.0
+    ],
+    "bbox_min": [
+     -0.0,
+     -0.0,
+     -0.0
+    ],
+    "centroid": [
+     0.0,
+     5.0,
+     5.0
+    ],
+    "unit": "mm"
+   },
+   "measurements": {
+    "boundary_edges": [
+     1,
+     4,
+     3,
+     2
+    ],
+    "boundary_length": 40.0,
+    "closed_loop": true,
+    "relative_size": 2.309401
+   },
+   "message": "A closed free boundary of 4 edge(s) bounds an opening in the surface.",
+   "region": "unknown",
+   "severity": "error"
+  },
+  {
+   "code": "open_shell",
+   "entity": "edge:6",
+   "entity_index": 6,
+   "entity_type": "edge",
+   "fingerprint": "edge:3e5c5d5f4ab6ff2e",
+   "kernel_status": "FreeBounds",
+   "location": {
+    "bbox_max": [
+     10.0,
+     10.0,
+     10.0
+    ],
+    "bbox_min": [
+     10.0,
+     -0.0,
+     -0.0
+    ],
+    "centroid": [
+     10.0,
+     5.0,
+     5.0
+    ],
+    "unit": "mm"
+   },
+   "measurements": {
+    "boundary_edges": [
+     6,
+     7,
+     8,
+     5
+    ],
+    "boundary_length": 40.0,
+    "closed_loop": true,
+    "relative_size": 2.309401
+   },
+   "message": "A closed free boundary of 4 edge(s) bounds an opening in the surface.",
+   "region": "unknown",
+   "severity": "error"
+  },
+  {
+   "code": "open_shell",
+   "entity": "edge:9",
+   "entity_index": 9,
+   "entity_type": "edge",
+   "fingerprint": "edge:1b27fd3b4564ecb7",
+   "kernel_status": "FreeBounds",
+   "location": {
+    "bbox_max": [
+     10.0,
+     0.0,
+     10.0
+    ],
+    "bbox_min": [
+     -0.0,
+     -0.0,
+     -0.0
+    ],
+    "centroid": [
+     5.0,
+     0.0,
+     5.0
+    ],
+    "unit": "mm"
+   },
+   "measurements": {
+    "boundary_edges": [
+     9,
+     12,
+     11,
+     10
+    ],
+    "boundary_length": 40.0,
+    "closed_loop": true,
+    "relative_size": 2.309401
+   },
+   "message": "A closed free boundary of 4 edge(s) bounds an opening in the surface.",
+   "region": "unknown",
+   "severity": "error"
+  },
+  {
+   "code": "open_shell",
+   "entity": "edge:14",
+   "entity_index": 14,
+   "entity_type": "edge",
+   "fingerprint": "edge:b65c68dd0e73c342",
+   "kernel_status": "FreeBounds",
+   "location": {
+    "bbox_max": [
+     10.0,
+     10.0,
+     10.0
+    ],
+    "bbox_min": [
+     -0.0,
+     10.0,
+     -0.0
+    ],
+    "centroid": [
+     5.0,
+     10.0,
+     5.0
+    ],
+    "unit": "mm"
+   },
+   "measurements": {
+    "boundary_edges": [
+     14,
+     15,
+     16,
+     13
+    ],
+    "boundary_length": 40.0,
+    "closed_loop": true,
+    "relative_size": 2.309401
+   },
+   "message": "A closed free boundary of 4 edge(s) bounds an opening in the surface.",
+   "region": "unknown",
+   "severity": "error"
+  },
+  {
+   "code": "open_shell",
+   "entity": "edge:17",
+   "entity_index": 17,
+   "entity_type": "edge",
+   "fingerprint": "edge:cb6473343d28101e",
+   "kernel_status": "FreeBounds",
+   "location": {
+    "bbox_max": [
+     10.0,
+     10.0,
+     0.0
+    ],
+    "bbox_min": [
+     -0.0,
+     -0.0,
+     -0.0
+    ],
+    "centroid": [
+     5.0,
+     5.0,
+     0.0
+    ],
+    "unit": "mm"
+   },
+   "measurements": {
+    "boundary_edges": [
+     17,
+     20,
+     19,
+     18
+    ],
+    "boundary_length": 40.0,
+    "closed_loop": true,
+    "relative_size": 2.309401
+   },
+   "message": "A closed free boundary of 4 edge(s) bounds an opening in the surface.",
+   "region": "unknown",
+   "severity": "error"
+  },
+  {
+   "code": "open_shell",
+   "entity": "edge:22",
+   "entity_index": 22,
+   "entity_type": "edge",
+   "fingerprint": "edge:a7f9dc1388d75d25",
+   "kernel_status": "FreeBounds",
+   "location": {
+    "bbox_max": [
+     10.0,
+     10.0,
+     10.0
+    ],
+    "bbox_min": [
+     -0.0,
+     -0.0,
+     10.0
+    ],
+    "centroid": [
+     5.0,
+     5.0,
+     10.0
+    ],
+    "unit": "mm"
+   },
+   "measurements": {
+    "boundary_edges": [
+     22,
+     23,
+     24,
+     21
+    ],
+    "boundary_length": 40.0,
+    "closed_loop": true,
+    "relative_size": 2.309401
+   },
+   "message": "A closed free boundary of 4 edge(s) bounds an opening in the surface.",
+   "region": "unknown",
+   "severity": "error"
+  }
+ ],
+ "write_missing_bore_wall_step": [
+  {
+   "code": "open_shell",
+   "entity": "edge:10",
+   "entity_index": 10,
+   "entity_type": "edge",
+   "fingerprint": "edge:372e010dab934712",
+   "kernel_status": "FreeBounds",
+   "location": {
+    "bbox_max": [
+     58.0,
+     58.0,
+     10.0
+    ],
+    "bbox_min": [
+     42.0,
+     42.0,
+     10.0
+    ],
+    "centroid": [
+     50.0,
+     50.0,
+     10.0
+    ],
+    "unit": "mm"
+   },
+   "measurements": {
+    "boundary_edges": [
+     10
+    ],
+    "boundary_length": 50.265482,
+    "closed_loop": true,
+    "relative_size": 0.354545
+   },
+   "message": "A closed free boundary of 1 edge(s) bounds an opening in the surface.",
+   "region": "unknown",
+   "severity": "error"
+  },
+  {
+   "code": "open_shell",
+   "entity": "edge:14",
+   "entity_index": 14,
+   "entity_type": "edge",
+   "fingerprint": "edge:adb607eb318c84f4",
+   "kernel_status": "FreeBounds",
+   "location": {
+    "bbox_max": [
+     58.0,
+     58.0,
+     0.0
+    ],
+    "bbox_min": [
+     42.0,
+     42.0,
+     -0.0
+    ],
+    "centroid": [
+     50.0,
+     50.0,
+     0.0
+    ],
+    "unit": "mm"
+   },
+   "measurements": {
+    "boundary_edges": [
+     14
+    ],
+    "boundary_length": 50.265482,
+    "closed_loop": true,
+    "relative_size": 0.354545
+   },
+   "message": "A closed free boundary of 1 edge(s) bounds an opening in the surface.",
+   "region": "unknown",
+   "severity": "error"
+  }
+ ],
+ "write_mixed_assembly_step": [
+  {
+   "code": "open_shell",
+   "entity": "edge:13",
+   "entity_index": 13,
+   "entity_type": "edge",
+   "fingerprint": "edge:a24ea502a9f82809",
+   "kernel_status": "FreeBounds",
+   "location": {
+    "bbox_max": [
+     20.0,
+     10.0,
+     10.0
+    ],
+    "bbox_min": [
+     20.0,
+     -0.0,
+     -0.0
+    ],
+    "centroid": [
+     20.0,
+     5.0,
+     5.0
+    ],
+    "unit": "mm"
+   },
+   "measurements": {
+    "boundary_edges": [
+     13,
+     16,
+     15,
+     14
+    ],
+    "boundary_length": 40.0,
+    "closed_loop": true,
+    "relative_size": 1.206045
+   },
+   "message": "A closed free boundary of 4 edge(s) bounds an opening in the surface.",
+   "region": "unknown",
+   "severity": "error"
+  },
+  {
+   "code": "open_shell",
+   "entity": "edge:18",
+   "entity_index": 18,
+   "entity_type": "edge",
+   "fingerprint": "edge:cdaf239428308477",
+   "kernel_status": "FreeBounds",
+   "location": {
+    "bbox_max": [
+     30.0,
+     10.0,
+     10.0
+    ],
+    "bbox_min": [
+     30.0,
+     -0.0,
+     -0.0
+    ],
+    "centroid": [
+     30.0,
+     5.0,
+     5.0
+    ],
+    "unit": "mm"
+   },
+   "measurements": {
+    "boundary_edges": [
+     18,
+     19,
+     20,
+     17
+    ],
+    "boundary_length": 40.0,
+    "closed_loop": true,
+    "relative_size": 1.206045
+   },
+   "message": "A closed free boundary of 4 edge(s) bounds an opening in the surface.",
+   "region": "unknown",
+   "severity": "error"
+  },
+  {
+   "code": "open_shell",
+   "entity": "edge:21",
+   "entity_index": 21,
+   "entity_type": "edge",
+   "fingerprint": "edge:12b369b0fcbfcd5b",
+   "kernel_status": "FreeBounds",
+   "location": {
+    "bbox_max": [
+     30.0,
+     0.0,
+     10.0
+    ],
+    "bbox_min": [
+     20.0,
+     -0.0,
+     -0.0
+    ],
+    "centroid": [
+     25.0,
+     0.0,
+     5.0
+    ],
+    "unit": "mm"
+   },
+   "measurements": {
+    "boundary_edges": [
+     21,
+     24,
+     23,
+     22
+    ],
+    "boundary_length": 40.0,
+    "closed_loop": true,
+    "relative_size": 1.206045
+   },
+   "message": "A closed free boundary of 4 edge(s) bounds an opening in the surface.",
+   "region": "unknown",
+   "severity": "error"
+  },
+  {
+   "code": "open_shell",
+   "entity": "edge:26",
+   "entity_index": 26,
+   "entity_type": "edge",
+   "fingerprint": "edge:c5a405d7930ee244",
+   "kernel_status": "FreeBounds",
+   "location": {
+    "bbox_max": [
+     30.0,
+     10.0,
+     10.0
+    ],
+    "bbox_min": [
+     20.0,
+     10.0,
+     -0.0
+    ],
+    "centroid": [
+     25.0,
+     10.0,
+     5.0
+    ],
+    "unit": "mm"
+   },
+   "measurements": {
+    "boundary_edges": [
+     26,
+     27,
+     28,
+     25
+    ],
+    "boundary_length": 40.0,
+    "closed_loop": true,
+    "relative_size": 1.206045
+   },
+   "message": "A closed free boundary of 4 edge(s) bounds an opening in the surface.",
+   "region": "unknown",
+   "severity": "error"
+  },
+  {
+   "code": "open_shell",
+   "entity": "edge:29",
+   "entity_index": 29,
+   "entity_type": "edge",
+   "fingerprint": "edge:24b66617a7621133",
+   "kernel_status": "FreeBounds",
+   "location": {
+    "bbox_max": [
+     30.0,
+     10.0,
+     0.0
+    ],
+    "bbox_min": [
+     20.0,
+     -0.0,
+     -0.0
+    ],
+    "centroid": [
+     25.0,
+     5.0,
+     0.0
+    ],
+    "unit": "mm"
+   },
+   "measurements": {
+    "boundary_edges": [
+     29,
+     32,
+     31,
+     30
+    ],
+    "boundary_length": 40.0,
+    "closed_loop": true,
+    "relative_size": 1.206045
+   },
+   "message": "A closed free boundary of 4 edge(s) bounds an opening in the surface.",
+   "region": "unknown",
+   "severity": "error"
+  },
+  {
+   "code": "open_shell",
+   "entity": "edge:34",
+   "entity_index": 34,
+   "entity_type": "edge",
+   "fingerprint": "edge:c88c43ed033cb486",
+   "kernel_status": "FreeBounds",
+   "location": {
+    "bbox_max": [
+     30.0,
+     10.0,
+     10.0
+    ],
+    "bbox_min": [
+     20.0,
+     -0.0,
+     10.0
+    ],
+    "centroid": [
+     25.0,
+     5.0,
+     10.0
+    ],
+    "unit": "mm"
+   },
+   "measurements": {
+    "boundary_edges": [
+     34,
+     35,
+     36,
+     33
+    ],
+    "boundary_length": 40.0,
+    "closed_loop": true,
+    "relative_size": 1.206045
+   },
+   "message": "A closed free boundary of 4 edge(s) bounds an opening in the surface.",
+   "region": "unknown",
+   "severity": "error"
+  }
+ ],
+ "write_open_shell_step": [
+  {
+   "code": "open_shell",
+   "entity": "edge:10",
+   "entity_index": 10,
+   "entity_type": "edge",
+   "fingerprint": "edge:a7f9dc1388d75d25",
+   "kernel_status": "FreeBounds",
+   "location": {
+    "bbox_max": [
+     10.0,
+     10.0,
+     10.0
+    ],
+    "bbox_min": [
+     -0.0,
+     -0.0,
+     10.0
+    ],
+    "centroid": [
+     5.0,
+     5.0,
+     10.0
+    ],
+    "unit": "mm"
+   },
+   "measurements": {
+    "boundary_edges": [
+     10,
+     12,
+     4,
+     7
+    ],
+    "boundary_length": 40.0,
+    "closed_loop": true,
+    "relative_size": 2.309401
+   },
+   "message": "A closed free boundary of 4 edge(s) bounds an opening in the surface.",
+   "region": "unknown",
+   "severity": "error"
+  }
+ ],
+ "write_small_edge_step": [
+  {
+   "code": "small_edge",
+   "entity": "edge:9",
+   "entity_index": 9,
+   "entity_type": "edge",
+   "fingerprint": "edge:edd59db5eab5bf18",
+   "kernel_status": "",
+   "location": {
+    "bbox_max": [
+     20.0,
+     0.002,
+     10.0
+    ],
+    "bbox_min": [
+     20.0,
+     -0.0,
+     10.0
+    ],
+    "centroid": [
+     20.0,
+     0.001,
+     10.0
+    ],
+    "unit": "mm"
+   },
+   "measurements": {
+    "length": 0.002,
+    "length_fraction": 1.4107e-05
+   },
+   "message": "This edge is far shorter than the part's scale; it will force tiny cells.",
+   "region": "unknown",
+   "severity": "warning"
+  },
+  {
+   "code": "small_edge",
+   "entity": "edge:14",
+   "entity_index": 14,
+   "entity_type": "edge",
+   "fingerprint": "edge:ef0027a6ed8c2a9e",
+   "kernel_status": "",
+   "location": {
+    "bbox_max": [
+     20.0,
+     0.002,
+     0.0
+    ],
+    "bbox_min": [
+     20.0,
+     -0.0,
+     -0.0
+    ],
+    "centroid": [
+     20.0,
+     0.001,
+     0.0
+    ],
+    "unit": "mm"
+   },
+   "measurements": {
+    "length": 0.002,
+    "length_fraction": 1.4107e-05
+   },
+   "message": "This edge is far shorter than the part's scale; it will force tiny cells.",
+   "region": "unknown",
+   "severity": "warning"
+  },
+  {
+   "code": "small_face",
+   "entity": "face:6",
+   "entity_index": 6,
+   "entity_type": "face",
+   "fingerprint": "face:9c69116d9a5fa6b8",
+   "kernel_status": "",
+   "location": {
+    "bbox_max": [
+     20.0,
+     0.002,
+     10.0
+    ],
+    "bbox_min": [
+     20.0,
+     -0.0,
+     -0.0
+    ],
+    "centroid": [
+     20.0,
+     0.001,
+     5.0
+    ],
+    "unit": "mm"
+   },
+   "measurements": {
+    "area": 0.02,
+    "area_fraction": 8.33e-07
+   },
+   "message": "This face is a sliver relative to the part; it may not mesh cleanly.",
+   "region": "unknown",
+   "severity": "warning"
+  }
+ ]
+}

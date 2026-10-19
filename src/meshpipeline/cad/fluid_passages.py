@@ -341,6 +341,57 @@ def stranded_openings(surface_path: Path, patches: list[dict]) -> dict[str, str]
     return dict(plan.stranded)
 
 
+def passage_count(tris, patches: list[dict], *, input_kind: str = "") -> int | None:
+    """HOW MANY SEPARATE PASSAGES the mesher's staging would mesh for these declared openings - the
+    count every engine's capability is held to (EngineSpec: FlowSupport.max_passages) before an
+    engine is recommended or switched to. `tris` is the surface in METRES (the staging binds an
+    opening by its near_mm / 1000); `input_kind` is what the user confirmed the file is. Run through the very staging the internal drivers use
+    (cad/internal_surface, then plan_passages), on a skin small enough to stage in seconds. None
+    when it cannot be told - fewer than two openings, a skin or a declaration too large, a staging
+    that refuses (its own words reach the user at meshing), any error: a count is evidence, never
+    a failure."""
+    import tempfile
+
+    from meshpipeline.cad.internal_surface import InternalSurfaceError, stage_triangles, write_staged
+
+    ports = [p for p in patches or [] if isinstance(p, dict) and p.get("type") in ("inlet", "outlet")]
+    if len(ports) < 2 or len(ports) > VET_MAX_OPENINGS:
+        return None
+    try:
+        tris = np.asarray(tris, dtype=np.float64).reshape(-1, 3, 3)
+        if len(tris) > VET_MAX_TRIANGLES:
+            return None
+        staged = stage_triangles(tris, intake_patches=[dict(p) for p in patches if isinstance(p, dict)],
+                                 input_kind=input_kind)
+        with tempfile.TemporaryDirectory(prefix="passages_") as tmp:
+            rec = write_staged(staged, Path(tmp))
+            plan = plan_passages(read_passages(rec["stls"], rec.get("wall_name") or "wall"))
+    except InternalSurfaceError:
+        return None
+    except Exception:  # noqa: BLE001 - a count that cannot be made is no evidence
+        import logging
+        logging.getLogger(__name__).info("the passages could not be counted", exc_info=True)
+        return None
+    return len(plan.meshed) if plan.reading.read and plan.meshed else None
+
+
+def staged_passage_count(ws) -> int | None:
+    """How many separate passages an attempt's own staging meshed (or refused to), from the
+    PASSAGES_READ_FILE plan_staged writes beside every internal case it reads - the count the
+    mesher itself saw. None when the workspace holds no reading, or one that could not read the
+    surface."""
+    import json
+
+    try:
+        rec = json.loads((Path(ws) / PASSAGES_READ_FILE).read_text())
+    except (OSError, TypeError, ValueError):
+        return None
+    if not isinstance(rec, dict) or not rec.get("read"):
+        return None
+    passages = rec.get("passages")
+    return len(passages) if isinstance(passages, list) and passages else None
+
+
 def _piece_labels(F: np.ndarray, n_verts: int) -> np.ndarray:
     from scipy.sparse import coo_matrix
     from scipy.sparse.csgraph import connected_components
@@ -387,5 +438,5 @@ def _winding(T: np.ndarray, p: np.ndarray) -> float:
 
 
 __all__ = ["INSIDE_WINDING", "MAX_PASSAGES", "MAX_PIECES", "PASSAGES_FILE", "PASSAGES_READ_FILE", "POCKET_SHARE", "Passage", "PassagePlan", "PassageReading",
-           "passage_surface_files", "passage_surfaces", "plan_passages", "plan_staged", "read_passages",
-           "stranded_openings", "write_passage"]
+           "passage_count", "passage_surface_files", "passage_surfaces", "plan_passages", "plan_staged",
+           "read_passages", "staged_passage_count", "stranded_openings", "write_passage"]

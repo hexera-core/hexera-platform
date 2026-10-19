@@ -338,14 +338,19 @@ def write_canonical_stl(mesh: SurfaceMesh, path: Path) -> tuple[str, ...]:
 
 def read_stl(path: Path) -> SurfaceMesh:
     """Any STL - binary, ASCII, upper or lower case, one solid or many - as a SurfaceMesh."""
+    from meshpipeline.cad.stl_io import StlReadError, stl_layout
+
     data = Path(path).read_bytes()
-    if len(data) >= 84:
-        n = int(np.frombuffer(data[80:84], dtype="<u4")[0])
-        if n > 0 and 84 + 50 * n <= len(data) and not _looks_ascii(data):
-            rec = np.frombuffer(data[84:84 + 50 * n],
-                                dtype=[("n", "<f4", (3,)), ("v", "<f4", (3, 3)), ("a", "<u2")])
-            corners = rec["v"].astype(np.float64)
-            return _from_corners(corners)
+    try:
+        layout = stl_layout(data[:4096], len(data))
+    except StlReadError as exc:
+        raise SurfaceError(str(exc)) from exc
+    if layout.binary and layout.triangles > 0:
+        # the layout reads the records the file holds, whatever its count field or header says
+        rec = np.frombuffer(data[84:84 + 50 * layout.triangles],
+                            dtype=[("n", "<f4", (3,)), ("v", "<f4", (3, 3)), ("a", "<u2")])
+        corners = rec["v"].astype(np.float64)
+        return _from_corners(corners)
     return _read_ascii_stl(data.decode("latin-1"))
 
 
