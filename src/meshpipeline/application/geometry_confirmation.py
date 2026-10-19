@@ -69,20 +69,23 @@ def renamed_openings_sentence(before, after) -> str:
         return ""
     said = ", ".join(f"opening {i} is called {n}" for i, n in moved)
     # the chat shows the whole confirmation to the user, so this says it to them, not to the model
-    return f"Openings shared a name, so {said}; any of them can be renamed on the picture."
+    return (f"Openings shared a name (with each other or with the walls), so {said}; any of them "
+            "can be renamed on the picture.")
 
 
 def distinct_opening_names(openings) -> list:
     """The openings with every real opening's name its own. Two that would reach a mesher as one
     name ("inlet" and "Inlet", "outlet 1" and "outlet_1") keep the first and number the rest
     ("inlet_2", "inlet_3") - what patch_names does for a declaration - instead of refusing the
-    confirmation. A sticker marked not an opening never becomes a patch, so its name is left as it
-    is and compared with nothing."""
+    confirmation. The built-in wall an internal flow adds (patches_from) is taken before any
+    sticker, so a sticker called "wall" or "Wall" becomes wall_2 here, where it is said, rather
+    than a second "wall" the intake has to ask about. A sticker marked not an opening never
+    becomes a patch, so its name is left as it is and compared with nothing."""
     from meshpipeline.contracts.patch_names import same_patch_name
 
     longest = 40                                      # the stage form's name box (ConfirmedOpening)
     out = []
-    kept: list[str] = []
+    kept: list[str] = [BUILT_IN_WALL]
     for o in openings:
         if getattr(o, "role", None) == "not_an_opening":
             out.append(o)
@@ -459,9 +462,16 @@ def confirmed_opening_names(session_id) -> tuple[str, ...]:
                  if isinstance(o, dict) and o.get("name") and o.get("role") != "not_an_opening")
 
 
+#: The one wall an internal flow's confirmation declares for every surface that is not an opening.
+BUILT_IN_WALL = "wall"
+
+
 def patches_from(body) -> list[dict]:
     """The session's declared patches, in the shape the intake's submit tool already takes:
-    name and role, plus the size and location fields the port binding reads."""
+    name and role, plus the size and location fields the port binding reads. The openings come
+    named apart from the built-in wall (distinct_opening_names, at the stage); a caller that did
+    not name them apart still never gets two boundaries one mesher name - the wall then takes the
+    next free name instead."""
     patches: list[dict] = []
     if body.flow == "external":
         return patches
@@ -490,7 +500,12 @@ def patches_from(body) -> list[dict]:
             entry["near_mm"] = [float(v) for v in o.centroid_mm]
         patches.append(entry)
     if body.flow == "internal" and patches:
-        patches.append({"name": "wall", "type": "wall"})
+        from meshpipeline.contracts.patch_names import same_patch_name
+
+        wall, n = BUILT_IN_WALL, 2
+        while any(same_patch_name(wall, p["name"]) for p in patches):
+            wall, n = f"{BUILT_IN_WALL}_{n}", n + 1
+        patches.append({"name": wall, "type": "wall"})
     return patches
 
 
@@ -583,7 +598,7 @@ def sizeless_record(record: dict, *, scale_to_metres: float, unit: str) -> dict:
             **plain, "message": message, "patches": patches_from(body), "reread": {"sizes_dropped": True}}
 
 
-__all__ = ["CONFIRMED_MARK", "assembly_sentence", "body_of", "confirmation_message", "declared_case", "distinct_opening_names",
+__all__ = ["BUILT_IN_WALL", "CONFIRMED_MARK", "assembly_sentence", "body_of", "confirmation_message", "declared_case", "distinct_opening_names",
            "renamed_openings_sentence",
            "patches_from", "replace_declaration",
            "reread_record", "sizeless_record", "thermal_confirmation_message", "thermal_declared",
