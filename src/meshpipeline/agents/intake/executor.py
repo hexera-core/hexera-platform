@@ -180,17 +180,17 @@ class IntakeToolExecutor:
         # Never fatal and never blocking: no file, or a file this cannot describe, simply says
         # nothing and the verdict is what it always was.
         try:
-            import meshpipeline.settings.runtime as rtcfg
-            from meshpipeline.cad.regions import regions_for_session
+            from meshpipeline.cad.regions import regions_for_file
 
-            return regions_for_session(str(self.state.session_id or ""), rtcfg.JOBS_DIR).as_facts()
+            return regions_for_file(self._staged_upload()).as_facts()
         except Exception as exc:
             logger.debug("Intake: geometry regions unavailable (%s)", exc)
             return {}
 
     def _staged_upload(self) -> str:
-        # The upload as staged beside the session (the file cad/regions reads), or ''.
-        return measured_choice.staged_upload(str(self.state.session_id or ""))
+        # The session's upload as a local file (staged, or fetched back from its stored source), or ''.
+        return measured_choice.staged_upload(str(self.state.session_id or ""),
+                                             self.state.source_ref)
 
     def _geometry_form(self) -> str:
         # WHAT KIND OF FILE the user uploaded - a CAD solid or a surface mesh - asked of the one
