@@ -334,7 +334,7 @@ def _crossings(shape, diag: float, findings: list[Finding], measured: dict) -> b
     # a body inside another's material, or sharing a face while running into it, crosses nothing:
     # read by the winding number of points just inside each body (crossings.nested_bodies)
     body_tri = body_of_face[face_of]
-    C = pts[tris]
+    C = pts[tris] - (pts.min(axis=0) + pts.max(axis=0)) / 2.0      # about the part, not the origin
     sv = np.einsum("ij,ij->i", C[:, 0], np.cross(C[:, 1], C[:, 2]))
     ok_b = body_tri >= 0
     vol = np.bincount(body_tri[ok_b], weights=sv[ok_b], minlength=int(body_tri.max()) + 1 if ok_b.any() else 0)

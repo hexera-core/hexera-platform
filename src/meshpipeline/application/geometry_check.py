@@ -403,7 +403,7 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
         facts.setdefault("notes", []).extend(n for n in canonical.notes if n not in facts["notes"])
         # whether the upload is CLEAN (cad/validity): the contract a mesh is promised on
         facts["validity"] = clean_verdict(fetched, canonical)
-        if facts["validity"].get("clean") is False:
+        if facts["validity"].get("clean") is not True and facts["validity"].get("kind") != "unchecked":
             facts["notes"].append(facts["validity"]["summary"])
         # a thermal model's physics (ECXML: materials, powers, fans, vents...), kept whole beside
         # the session's check so a later solver step - or the user - has all of it
@@ -457,7 +457,7 @@ def clean_verdict(uploaded: Path, canonical) -> dict:
     except Exception as exc:  # noqa: BLE001 - the check is evidence; the scout must still land
         logger.warning("geometry check: the clean check could not run (%s: %s)", type(exc).__name__,
                        str(exc)[:200])
-        return {"clean": None, "kind": "unchecked", "complete": False, "reasons": [],
+        return {"clean": None, "kind": "check_failed", "complete": False, "reasons": [],
                 "summary": f"the clean check could not run ({type(exc).__name__})"}
 
 

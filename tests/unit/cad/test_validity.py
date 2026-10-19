@@ -254,3 +254,24 @@ def test_brep_nested_and_matching_side_overlaps():
 
     assert "bodies_overlap" in _codes(check_shape(_compound(_box(), _box(x=2.0, y=2.0, z=2.0, dx=2.0, dy=2.0, dz=2.0))))
     assert "bodies_overlap" in _codes(check_shape(_compound(_box(), _box(x=5.0))))
+
+
+def test_an_inward_piece_in_a_box_corner_but_outside_the_body_is_inside_out():
+    big = _icosphere(radius=10.0)
+    sp, sf = _icosphere(centre=(8.5, 8.5, 8.5), radius=0.5)       # in the box, outside the ball
+    assert "inside_out" in _codes(check_triangles(*_two(big, (sp, sf[:, ::-1]))))
+
+
+def test_a_part_far_from_the_origin_keeps_its_volume():
+    p = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=float) + [1e8, 1e8, 0.0]
+    f = np.array([[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]])
+    r = check_triangles(p, f)
+    assert not ({"zero_volume", "inside_out"} & _codes(r)), r.as_dict()
+
+
+def test_too_many_bodies_is_not_verified(monkeypatch):
+    from meshpipeline.cad import crossings
+
+    monkeypatch.setattr(crossings, "MAX_NEST_BODIES", 1)
+    r = check_triangles(*_two(_tri_box((0, 0, 0), (1, 1, 1)), _tri_box((3, 0, 0), (4, 1, 1))))
+    assert not r.clean and "not_verified" in _codes(r)

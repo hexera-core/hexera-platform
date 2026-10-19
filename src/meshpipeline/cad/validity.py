@@ -169,7 +169,7 @@ def check_file(path, *, source_format: str | None = None) -> ValidityReport:
         except Exception as exc:  # noqa: BLE001 - a reader crash is a fact about the file
             return _unreadable(f"{type(exc).__name__}: {exc}", t0)
         if canonical.kind is GeometryKind.surface:      # a STEP made of triangles
-            return check_surface_file(canonical.path, "stl")
+            return check_faceted_step(p)
         return check_cad_file(canonical.path)
 
 
@@ -179,7 +179,7 @@ def check_canonical(uploaded, canonical) -> ValidityReport:
     A triangle file is judged on the triangles in the upload, BEFORE the ingest's safe cleanup
     (which drops doubled triangles and turns flipped ones): what was sent is what is certified.
     Exact CAD is judged on its canonical STEP (the bytes themselves, or the ingest's conversion of
-    another CAD format). A STEP made of triangles is judged as triangles."""
+    another CAD format). A STEP made of triangles is judged on its facets as written."""
     from meshpipeline.contracts.intake_formats import GeometryKind, format_for_key
 
     if canonical.source_format == "ecxml":
@@ -189,6 +189,8 @@ def check_canonical(uploaded, canonical) -> ValidityReport:
     if canonical.kind is GeometryKind.surface:
         if fmt is not None and fmt.kind is GeometryKind.surface:
             return check_surface_file(Path(uploaded), canonical.source_format)
+        if canonical.source_format == "step":
+            return check_faceted_step(Path(uploaded))
         return check_surface_file(Path(canonical.path), "stl")
     return check_cad_file(Path(canonical.path))
 
@@ -219,6 +221,21 @@ def check_surface_file(path, key: str = "stl") -> ValidityReport:
                            f"{str(exc)[:160]})", t0)
     return check_triangles(mesh.points, mesh.triangles, float32=key == "stl", t0=t0,
                            units="file units")
+
+
+def check_faceted_step(path) -> ValidityReport:
+    """A STEP made of triangles, judged on its facets as written - before the ingest's cleanup."""
+    from meshpipeline.cad.ingest.step_facets import FacetedReadError, read_faceted, read_faceted_occ
+
+    t0 = time.time()
+    try:
+        try:
+            pts, tris = read_faceted(Path(path))
+        except FacetedReadError:
+            pts, tris = read_faceted_occ(Path(path))
+    except Exception as exc:  # noqa: BLE001 - an unreadable file is a reason, not a crash
+        return _unreadable(f"the faceted STEP file could not be read ({type(exc).__name__})", t0)
+    return check_triangles(pts, tris, t0=t0, units="file units")
 
 
 def unchecked(why: str, t0: float) -> ValidityReport:
@@ -409,7 +426,9 @@ def _topology(pts: np.ndarray, T: np.ndarray, diag: float,
                            _places(pts[pinched], diag)))
 
     # every closed piece encloses volume and faces outward (a cavity faces in, inside another)
-    C = pts[T]
+    # volumes taken about the part's own centre: far from the origin, triple products of raw
+    # coordinates cancel to nothing
+    C = pts[T] - (pts.min(axis=0) + pts.max(axis=0)) / 2.0
     sv = np.einsum("ij,ij->i", C[:, 0], np.cross(C[:, 1], C[:, 2])) / 6.0
     vol = np.bincount(piece, weights=sv, minlength=n_pieces)
     open_piece = np.zeros(n_pieces, dtype=bool)
@@ -428,21 +447,8 @@ def _topology(pts: np.ndarray, T: np.ndarray, diag: float,
                            f"{n} closed piece(s) enclose no volume (a closed double-sided sheet)", n,
                            tuple({"at": _r((plo[k] + phi[k]) / 2), "size": _r1(float(np.linalg.norm(phi[k] - plo[k])))}
                                  for k in np.flatnonzero(zero)[:MAX_PLACES])))
-    neg = np.flatnonzero(closed & ~zero & (vol < 0))
-    pos = np.flatnonzero(closed & ~zero & (vol > 0))
-    inside_out = []
-    for k in neg.tolist():
-        held = (np.all(plo[pos] <= plo[k], axis=1) & np.all(phi[pos] >= phi[k], axis=1)
-                & (box[pos] > box[k])) if len(pos) else np.zeros(0, dtype=bool)
-        if not held.any():
-            inside_out.append(k)
-    if inside_out:
-        n = len(inside_out)
-        out.append(Finding("inside_out", ERROR,
-                           f"{n} closed piece(s) face inward (inside out) and sit inside no other piece",
-                           n, tuple({"at": _r((plo[k] + phi[k]) / 2),
-                                     "size": _r1(float(np.linalg.norm(phi[k] - plo[k])))}
-                                    for k in inside_out[:MAX_PLACES])))
+    # an inward-facing piece is a cavity only if it sits in another piece's material: read by
+    # winding numbers with the overlaps (_crossing_findings)
     body = np.where((closed & ~zero)[piece], piece, -1).astype(np.int64)
     return out, body, vol < 0
 
@@ -509,8 +515,14 @@ def _crossing_findings(pts: np.ndarray, T: np.ndarray, piece: np.ndarray, inward
             seen = set()
     else:
         seen = set()
-    # a body wholly inside another, or sharing a face while running into it, crosses nothing
+    # a body wholly inside another, or sharing a face while running into it, crosses nothing; and
+    # a piece facing inward must sit in material (a cavity) - read by winding numbers
     nest = nested_bodies(pts, T, piece, inward)
+    if nest.inside_out:
+        n = len(nest.inside_out)
+        findings.append(Finding("inside_out", ERROR,
+                                f"{n} closed piece(s) face inward (inside out) and sit inside no other piece",
+                                n, tuple({"at": _r(at)} for _k, at in nest.inside_out[:MAX_PLACES])))
     extra = [(k, j, at) for k, j, at in nest.found if (min(k, j), max(k, j)) not in seen]
     overlaps.extend({"at": _r(at), "bodies": [int(k) + 1, int(j) + 1]} for k, j, at in extra[:MAX_PLACES])
     n_pairs = len(seen) + len(extra)
@@ -520,8 +532,8 @@ def _crossing_findings(pts: np.ndarray, T: np.ndarray, piece: np.ndarray, inward
                                 n_pairs, tuple(overlaps[:MAX_PLACES])))
     if not nest.complete:
         findings.append(Finding("not_verified", ERROR,
-                                "there are too many bodies inside each other's boxes to finish "
-                                "the overlap search, so whether bodies overlap was not checked"))
+                                "there are too many bodies, or too many inside each other's boxes, "
+                                "to finish the overlap search, so whether bodies overlap was not checked"))
     if not found.complete:
         findings.append(Finding("not_verified", ERROR,
                                 "the surface is too dense to finish the crossing search within its "

@@ -298,8 +298,10 @@ def _interval(p: np.ndarray, d: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return np.nanmin(v, axis=1), np.nanmax(v, axis=1)
 
 
-#: Winding-number evaluations (sample points x triangles) the nesting search may spend.
+#: Winding-number evaluations (sample points x triangles) the nesting search may spend, and the
+#: most closed bodies it reads; past either it says it did not finish.
 MAX_WINDING_WORK = 400_000_000
+MAX_NEST_BODIES = 20_000
 #: Sample points per body: just inside the centres of its largest triangles, by NEST_DEPTH of the
 #: body's size - inside its own material, so a point is inside another body only if they share it.
 NEST_SAMPLES = 16
@@ -308,11 +310,14 @@ NEST_DEPTH = 1e-5
 
 @dataclass(frozen=True)
 class Nesting:
-    """Bodies whose surface lies inside another body's material without crossing it: (body, the
-    body it sits in, the sample point), and whether every body was looked at."""
+    """What the winding numbers say. `found`: bodies whose surface lies inside another body's
+    material (body, the body it sits in, the sample point). `inside_out`: inward-facing bodies
+    that sit in no material (a cavity must sit in the material round it). `complete`: whether
+    every body was read."""
 
     found: tuple[tuple[int, int, tuple[float, float, float]], ...]
-    complete: bool
+    inside_out: tuple[tuple[int, tuple[float, float, float]], ...] = ()
+    complete: bool = True
 
 
 def nested_bodies(points: np.ndarray, triangles: np.ndarray, body: np.ndarray,
@@ -329,8 +334,11 @@ def nested_bodies(points: np.ndarray, triangles: np.ndarray, body: np.ndarray,
     T = np.asarray(triangles, dtype=np.int64)
     body = np.asarray(body, dtype=np.int64)
     ids = np.unique(body[body >= 0])
-    if len(ids) < 2:
-        return Nesting((), True)
+    inward = np.asarray(inward, dtype=bool)
+    if len(ids) > MAX_NEST_BODIES:
+        return Nesting((), (), False)
+    if not len(ids):
+        return Nesting((), (), True)
     C = P[T]
     order = np.argsort(body, kind="stable")
     starts = np.searchsorted(body[order], ids, side="left")
@@ -340,6 +348,7 @@ def nested_bodies(points: np.ndarray, triangles: np.ndarray, body: np.ndarray,
     bhi = np.array([C[members[k]].reshape(-1, 3).max(axis=0) for k in ids.tolist()])
     area = np.linalg.norm(np.cross(C[:, 1] - C[:, 0], C[:, 2] - C[:, 0]), axis=1)
     found: list = []
+    loose: list = []
     work = 0
     for n, k in enumerate(ids.tolist()):
         mine = members[k]
@@ -349,7 +358,10 @@ def nested_bodies(points: np.ndarray, triangles: np.ndarray, body: np.ndarray,
         q = C[top].mean(axis=1) - NEST_DEPTH * float(np.linalg.norm(bhi[n] - blo[n])) * nrm
         held = np.flatnonzero(np.all(blo <= q.max(axis=0), axis=1) & np.all(bhi >= q.min(axis=0), axis=1))
         held = held[held != n]
+        expect = 1.0 if bool(inward[k]) else 0.0
         if not len(held):
+            if expect:
+                loose.append((k, tuple(float(v) for v in q[0])))
             continue
         total = np.zeros(len(q))
         best, best_w = -1, 0.0
@@ -357,16 +369,17 @@ def nested_bodies(points: np.ndarray, triangles: np.ndarray, body: np.ndarray,
             tj = members[int(ids[j])]
             work += len(q) * len(tj)
             if work > max_work:
-                return Nesting(tuple(found), False)
+                return Nesting(tuple(found), tuple(loose), False)
             w = _winding(q, C[tj])
             total += w
             if float(np.abs(w).max()) > best_w:
                 best, best_w = int(ids[j]), float(np.abs(w).max())
-        expect = 1.0 if bool(np.asarray(inward)[k]) else 0.0
         bad = np.flatnonzero(total > expect + 0.75)
         if len(bad):
             found.append((k, best, tuple(float(v) for v in q[bad[0]])))
-    return Nesting(tuple(found), True)
+        elif expect and float(total.max()) < 0.25:
+            loose.append((k, tuple(float(v) for v in q[0])))
+    return Nesting(tuple(found), tuple(loose), True)
 
 
 def _winding(q: np.ndarray, tri: np.ndarray, chunk: int = 200_000) -> np.ndarray:
