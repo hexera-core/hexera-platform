@@ -151,6 +151,8 @@ export function replay(jobId, since = 0) {
     };
     const t = setTimeout(finish, REPLAY_TIMEOUT_MS);   // never wait on a dead socket
     w.onmessage = (e) => {
+      // the page has moved on to another run: this one's log must not land on that run's stage
+      if (getState.jobId() !== jobId) { finish(); return; }
       let ev;
       try { ev = JSON.parse(e.data); } catch (err) { console.error("bad event", err); return; }
       if (ev.type === "closing") {

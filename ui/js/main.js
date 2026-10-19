@@ -60,7 +60,11 @@ async function finishRun(job, { streamDown: missedSteps = false } = {}) {
   if (missedSteps) {
     // CATCH UP BEFORE THE RESULT: the log is complete once a job has ended, so one replay from the
     // last step this page drew fills the timeline in, in order, through the same dispatch.
-    const read = await replay(getState.jobId(), lastSeq());
+    const run = getState.jobId();
+    const read = await replay(run, lastSeq());
+    // A NEW RUN STARTED WHILE THIS ONE WAS CATCHING UP ("Run again" is offered at once): the
+    // stage is the new run's now, and this run's ending must not be drawn over it.
+    if (getState.jobId() !== run) return;
     if (!read) Stage.chat("assistant", STEPS_MISSING);
   }
   Stage.final(terminalResult(job, getState.outcomeMessage()));
