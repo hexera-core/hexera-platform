@@ -12,6 +12,7 @@ from meshpipeline.agents.loop.runner import run_agent_loop
 from meshpipeline.agents.loop.tracing import ExecutionTraceContext
 from meshpipeline.agents.reviewer.eligibility import (
     AxisFinding,
+    advisory_gaps,
     deterministic_evidence_complete,
 )
 from meshpipeline.agents.reviewer.loop_policy import (
@@ -339,10 +340,15 @@ def _evidence_catalog(ledger: EvidenceLedger) -> str:
     for v in ledger.render_views():
         if v.usable and v.view_id:
             lines.append(f"  {v.evidence_id}: opening '{v.view_id}' view of the mesh")
+    gaps = sorted(advisory_gaps(ledger))
+    gap_text = ("NOT MEASURED on this run (advisory): " + ", ".join(f"'{k}'" for k in gaps)
+                + ". Do not cite these; say in the axis that calls for one that it was not "
+                "measured, and raise a concern if the slices or views suggest a problem there."
+                ) if gaps else ""
     if not lines:
-        return ""
+        return gap_text
     return ("Evidence already on file - cite these ids in the axes that call for a metric, gate or "
-            "the opening view:\n" + "\n".join(lines))
+            "the opening view:\n" + "\n".join(lines) + (f"\n{gap_text}" if gap_text else ""))
 
 
 def _append_evidence_id(content: Any, evidence_id: str) -> Any:

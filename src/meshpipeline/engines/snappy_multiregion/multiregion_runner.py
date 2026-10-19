@@ -1304,7 +1304,10 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
         domain=domain or "multi-region coupled",
         body_bbox=(tuple(allmins), tuple(allmaxs)),
         mesh_bounds=(allmins[0], allmins[1], allmins[2], allmaxs[0], allmaxs[1], allmaxs[2]),
-        volume_path=str((ws / "constant").resolve()),
+        # No volume file is exported here, and constant/ (a directory) is no VTU the review can
+        # slice: publishing it promised interior slices no review could cut, so no multi-region
+        # review ever reached the model. No volume is published until one is exported.
+        volume_path=None,
         mesh_units=COMPLETED_MESH_UNIT.value,
         mesh_mode="snappy_multiregion",
         flow_topology=flow_topology,

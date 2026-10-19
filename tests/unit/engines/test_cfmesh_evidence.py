@@ -128,7 +128,8 @@ def test_region_less_cfmesh_gains_no_false_region_obligation():
 
 def test_authored_region_becomes_an_exact_obligation_that_cannot_be_waived():
     obs = _SPEC.expected_target_obligations(
-        {"inspection_regions": [{"name": "wake"}]}, {})
+        {"inspection_regions": [{"name": "wake"}],
+         "mesh_paths": {"volume": "VTK/case_0/internal.vtu"}}, {})
     region_obs = [o for o in obs if o.kind is TargetKind.REGION]
     assert region_obs and region_obs[0].exact_ids == ("region:wake",)
     # authored 'wake' region NOT inspected -> missing, blocks PASS
