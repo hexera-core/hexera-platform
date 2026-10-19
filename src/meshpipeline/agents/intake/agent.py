@@ -1052,11 +1052,16 @@ async def _measured_recommendation(state, state_messages):
     kind = declared[1] if declared else str(state.get("input_kind") or "")
     if not purpose:
         return None
-    staged = measured_choice.staged_upload(str(state.get("session_id") or ""))
+    import asyncio
+
+    from meshpipeline.pipeline.geometry_state import geometry_ref
+    ref = geometry_ref(state)
+    # off the event loop: the first turn may fetch the stored upload back to measure it
+    staged = await asyncio.to_thread(measured_choice.staged_upload,
+                                     str(state.get("session_id") or ""), ref)
     if not staged:
         return None
-    from meshpipeline.pipeline.geometry_state import geometry_ref
-    form = measured_choice.upload_form(staged, geometry_ref(state))
+    form = measured_choice.upload_form(staged, ref)
     return await measured_choice.rank_in_time(
         path=staged, purpose=purpose, input_kind=kind, form=form, engines=_IMPLEMENTED_ENGINES,
         patches=list(state.get("intake_patches") or []),
