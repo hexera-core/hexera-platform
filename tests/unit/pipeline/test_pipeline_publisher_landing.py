@@ -28,7 +28,7 @@ MAINTENANCE = {"application/maintenance/cleanup.py": 1}
 GATED_PREFIX = "a"
 SYNC_EVENTS = {"stage", "note", "check", "closing", "error", "warn", "meshed", "meshing",
                "rationale", "reasoning", "attempt", "verdict", "file", "search", "screenshot",
-               "action", "tool_call", "tool_result"}
+               "action", "tool_call", "tool_result", "plan", "mesh_stage"}
 
 
 def _tree(rel: str) -> ast.AST:

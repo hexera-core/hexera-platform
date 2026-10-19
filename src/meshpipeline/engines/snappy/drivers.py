@@ -347,6 +347,23 @@ def _native_payload_members(workspace) -> list[str]:
 REMOTE_WORKSPACE_FACTS: tuple[str, ...] = ("flow_topology",)
 
 
+def plan_refinements(*, surface_level=None, wake: bool = False, boxes: int = 0,
+                     cells_across=None, near_wall: bool = False) -> list[str]:
+    """Where the plan puts finer cells, in a few plain words each, for the run's live line."""
+    out: list[str] = []
+    if cells_across:
+        out.append(f"about {int(cells_across)} cells across the bore")
+    if surface_level is not None:
+        out.append(f"surface refinement level {surface_level}")
+    if wake:
+        out.append("finer cells in the wake")
+    if near_wall:
+        out.append("a finer band near the wall")
+    if boxes:
+        out.append(f"{int(boxes)} refinement box{'es' if int(boxes) != 1 else ''}")
+    return out
+
+
 async def _run_snappy_timed(R, workspace, cap, publish: ExecutionEventPublisher,
                             engine, purpose, *, run,
                             native_attempt: int = 1):
@@ -375,7 +392,12 @@ async def _run_snappy_timed(R, workspace, cap, publish: ExecutionEventPublisher,
         pass
     _start = _t.monotonic()
     import asyncio as _a
-    result = await _a.to_thread(R.run_snappy, workspace, timeout=cap)
+
+    from meshpipeline.contracts import mesh_progress as _mp
+    # THE MESHER'S OWN STAGE ("adding wall layers"), relayed to the live line while it runs
+    with _mp.relaying(_mp.publishing_sink(publish, _a.get_running_loop(),
+                                          op_prefix=_mp.stage_op_prefix(workspace, native_attempt))):
+        result = await _a.to_thread(R.run_snappy, workspace, timeout=cap)
     # BEFORE the result is judged, published, recorded or delivered. If ownership was
     # lost here, this raises and NO success result is published for the run above.
     await run.fence("accept native mesh output")
@@ -905,6 +927,13 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                             + _sealed_note(_cavities)
                             + (f"; {summary['wake_note']}" if summary.get("wake_note") else ""),
                     op_id=f"snappy:carving:{attempt}")
+            # THE PLAN, as the run's live line shows it: how big, how many wall layers, where finer
+            await publish.aplan(cells=strategy.get("max_cells"), layers=summary.get("n_layers"),
+                                refinements=plan_refinements(
+                                    surface_level=summary.get("surface_level"),
+                                    wake=bool(summary.get("wake_note")),
+                                    boxes=len(strategy.get("local_boxes") or [])),
+                                op_id=f"snappy:plan:{attempt}")
             # RUN (deterministic; Cloud Run Job / local) + user-facing instrumentation
             _t_mesh = _time.monotonic()
             result = await _run_snappy_timed(
@@ -1799,6 +1828,12 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                          f"refinement level {summary['surface_level']}, {n_layers} "
                          f"boundary layers" + (f"; {_band_note}" if _band_note else ""),
                     op_id=f"internal:filling:{attempt}")
+            await publish.aplan(cells=_budget, layers=n_layers,
+                                refinements=plan_refinements(
+                                    surface_level=summary.get("surface_level"),
+                                    cells_across=cells_across, near_wall=bool(_band_note),
+                                    boxes=len(strategy.get("local_boxes") or [])),
+                                op_id=f"internal:plan:{attempt}")
             run.note_authoring()
             _t_mesh = _time.monotonic()
             result = await _run_snappy_timed(

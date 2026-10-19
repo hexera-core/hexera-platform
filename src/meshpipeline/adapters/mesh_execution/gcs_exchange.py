@@ -46,6 +46,15 @@ RESULT_UPLOAD_CHUNK_BYTES = 16 * 1024 * 1024
 RESULT_UPLOAD_TIMEOUT_S = 300
 
 
+def upload_progress(output_uri: str, stage: dict) -> None:
+    """The stage the mesher is at, beside where its result will land, for the waiting worker to
+    read (cloud_run_client._poll_gcs_json). Small, and overwritten as the stage moves on."""
+    from meshpipeline.artifact_keys import progress_key_beside
+    out_bucket, out_key = split_gs(output_uri)
+    storage_client().bucket(out_bucket).blob(progress_key_beside(out_key)).upload_from_string(
+        json.dumps(stage), content_type="application/json", timeout=30)
+
+
 def upload_result(output_uri: str, workspace: str, result: dict) -> None:
     gcs = storage_client()
     out_bucket, out_key = split_gs(output_uri)

@@ -233,6 +233,10 @@ def _install_native_double(monkeypatch, native: list, *, internal: bool = False)
             # read, never injected: whatever the production context carried into this thread
             "own": fence.current_ownership(),
         })
+        # the stage a real mesher reports while it runs (runtime/mesh_runner's beacon, relayed by
+        # the waiting adapter): the relay and its publication stay production's
+        from meshpipeline.contracts import mesh_progress
+        mesh_progress.report({"key": "layers", "label": "adding wall layers"})
         poly = ws / "constant" / "polyMesh"
         poly.mkdir(parents=True, exist_ok=True)
         (poly / "boundary").write_text(_BOUNDARY_INTERNAL if internal else _BOUNDARY)
@@ -497,6 +501,8 @@ def _canonical(rec: dict, *, accepted: bool) -> str:
         return f"{fn}::meshing#1"
     if method == "meshed":
         return f"{fn}::meshed#1"
+    if method == "plan":
+        return f"{fn}::plan#1"
     if method == "error":
         # two mutually exclusive refusals share the method: binding (declared ports vs the
         # measured openings) and separability (no closeable openings at all)
@@ -666,6 +672,7 @@ ACCEPTED_SITES = {
     "_build_snappy_deterministic::note#1": 1,       # half-model detected
     "_build_snappy_deterministic::note#2": 1,       # meshing pass opened
     "_build_snappy_deterministic::note#4": 1,       # carving the body
+    "_build_snappy_deterministic::plan#1": 1,       # the plan, for the run's live line
     "_run_snappy_timed::meshing#1": 1,
     "_build_snappy_deterministic::meshed#1": 1,
     "_build_snappy_deterministic::note#5": 1,       # production-grade
@@ -676,6 +683,7 @@ EXHAUSTED_SITES = {
     "_build_snappy_deterministic::note#1": 1,
     "_build_snappy_deterministic::note#2": 3,
     "_build_snappy_deterministic::note#4": 3,
+    "_build_snappy_deterministic::plan#1": 3,
     "_run_snappy_timed::meshing#1": 3,
     "_build_snappy_deterministic::meshed#1": 3,
     "_build_snappy_deterministic::note#6": 3,       # fell short, re-planning
@@ -1086,6 +1094,7 @@ INTERNAL_ACCEPTED = {
     f"{INTERNAL_FN}::note#1": 1,       # fluid volume identified
     f"{INTERNAL_FN}::note#2": 1,       # meshing pass opened
     f"{INTERNAL_FN}::note#4": 1,       # filling the cavity
+    f"{INTERNAL_FN}::plan#1": 1,       # the plan, for the run's live line
     "_run_snappy_timed::meshing#1": 1,
     f"{INTERNAL_FN}::meshed#1": 1,
     f"{INTERNAL_FN}::note#5": 1,       # production-grade
@@ -1095,6 +1104,7 @@ INTERNAL_EXHAUSTED = {
     f"{INTERNAL_FN}::note#1": 1,
     f"{INTERNAL_FN}::note#2": 3,
     f"{INTERNAL_FN}::note#4": 3,
+    f"{INTERNAL_FN}::plan#1": 3,
     "_run_snappy_timed::meshing#1": 3,
     f"{INTERNAL_FN}::meshed#1": 3,
     f"{INTERNAL_FN}::note#6": 3,       # fell short, re-planning
@@ -1204,7 +1214,7 @@ async def test_the_internal_union_reaches_all_ten_sites_and_no_external_one(
 
     expected = {f"{INTERNAL_FN}::{n}" for n in
                 ("error#1", "error#2", "note#1", "note#2", "note#3", "note#4", "note#5",
-                 "note#6", "note#7", "meshed#1")} | {"_run_snappy_timed::meshing#1"}
+                 "note#6", "note#7", "meshed#1", "plan#1")} | {"_run_snappy_timed::meshing#1"}
     assert union == expected, f"the internal union is not the ten owned sites: {union}"
 
 

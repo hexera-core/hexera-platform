@@ -657,7 +657,12 @@ async def _run_async(req: JobRequest) -> dict:
             with _own(ownership, session_factory=AsyncSessionLocal):
                 _e = execution_publisher(job_id, "engine_select")
                 await _e.astage(op_id="pinned")
-                await _e.anote(f"Mesh engine: {name} - the one you asked for", op_id="pinned")
+                from meshpipeline.engines.registry import engine_label as _label
+                try:
+                    _shown = _label(name)
+                except Exception:  # noqa: BLE001 - the engine's own name still says which
+                    _shown = name
+                await _e.anote(f"Mesh engine: {_shown} - the one you asked for", op_id="pinned")
 
         _pinned_engine = await pin_selected_engine(initial_state, req.mesh_engine, jlog=jlog,
                                                    publish=_announce_engine)
