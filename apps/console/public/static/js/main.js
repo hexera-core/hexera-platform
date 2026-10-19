@@ -21,7 +21,7 @@ import { CheckProgress } from "./render/check_progress.js";
 import { Notice } from "./render/notice.js";
 import { Stage, closeLightbox, openLightbox, setCancelHandler, setResultHandler }
   from "./render/stage.js";
-import { configure as configureStream, replay, start as startStream, terminalResult }
+import { configure as configureStream, lastSeq, replay, start as startStream, terminalResult }
   from "./realtime/stream.js";
 import { confirmCancel } from "./shell/cancel.js";
 import { clearNewRunOffer, configureComposer, disableInput, enableInput, mountComposer,
@@ -46,10 +46,37 @@ function onEvent(ev) {
   setState.laneCursor(dispatch(ev, Stage, getState.laneCursor()));
 }
 
+/* LIVE STEPS THAT CANNOT REACH THE PAGE. The run itself is fine - the poller still reads its
+   status every few seconds and its result arrives the same way - so the page says what is missing
+   and what still works, instead of a bare "Generating mesh" that looks stuck. */
+const STREAM_DOWN_NOTICE = "Live steps are not reaching this page right now. The run keeps going "
+  + "on the server: its status is checked every few seconds, and the steps are filled in when it "
+  + "finishes. Reloading the page also brings them back.";
+const STREAM_DOWN_SUB = "running · live steps unavailable, checking status every few seconds";
+const STEPS_MISSING = "The step-by-step log could not be loaded on this page, so the steps above "
+  + "are incomplete. The result below is the server's own. Reload the page to see the full log.";
+let streamDown = false;
+
+async function finishRun(job, { streamDown: missedSteps = false } = {}) {
+  if (missedSteps) {
+    // CATCH UP BEFORE THE RESULT: the log is complete once a job has ended, so one replay from the
+    // last step this page drew fills the timeline in, in order, through the same dispatch.
+    const run = getState.jobId();
+    const read = await replay(run, lastSeq());
+    // A NEW RUN STARTED WHILE THIS ONE WAS CATCHING UP ("Run again" is offered at once): the
+    // stage is the new run's now, and this run's ending must not be drawn over it.
+    if (getState.jobId() !== run) return;
+    if (!read) Stage.chat("assistant", STEPS_MISSING);
+  }
+  Stage.final(terminalResult(job, getState.outcomeMessage()));
+}
+
 configureStream({
   onEvent,
-  onTerminal(job) {
-    Stage.final(terminalResult(job, getState.outcomeMessage()));
+  onTerminal(job, how) {
+    streamDown = false;
+    Notice.release("stream");
+    finishRun(job, how);
     // ONLY THE CONVERSATION A RUN CAME FROM CAN RUN IT AGAIN. A run opened from a link has no
     // conversation on this page: with no session at all a message would go nowhere, so the box
     // stays closed and says what does work here - a new upload, which opens a new session. A
@@ -72,10 +99,22 @@ configureStream({
   // WHILE THE JOB WAITS FOR A WORKER the header says so, with the backend's estimate; once a
   // worker has it the line goes back to "working…" and the timeline takes over.
   // The run's clock follows the server's: it counts from when the job was created.
-  onStatus: (job) => { Stage.waiting(waitingCopy(job)); Stage.clock(job.created_at); },
+  onStatus: (job) => {
+    Stage.waiting(waitingCopy(job) || (streamDown ? STREAM_DOWN_SUB : ""));
+    Stage.clock(job.created_at);
+  },
   onPollTrouble: () => Notice.hold("poll",
     "Having trouble reaching the server for status updates - still retrying.", "warn"),
   onPollRecovered: () => Notice.release("poll"),
+  onStreamTrouble: () => {
+    streamDown = true;
+    // the header's sub-line follows on the next status poll, a few seconds away
+    Notice.hold("stream", STREAM_DOWN_NOTICE, "warn");
+  },
+  onStreamRecovered: () => {
+    streamDown = false;
+    Notice.release("stream");
+  },
 });
 
 /* what "a run finished" means: attach the viewer, or do not */
@@ -218,7 +257,7 @@ function bootLive() {
     if (isTerminalStatus(job.status)) {
       // REPLAY THE WHOLE RUN FIRST. A finished job still has its event log, and the point of
       // keeping one is that a user can see HOW they got their mesh, not just that they got it.
-      await replay(deepLinkJob);
+      if (!(await replay(deepLinkJob))) Stage.chat("assistant", STEPS_MISSING);
       Stage.final(terminalResult(job, getState.outcomeMessage()));
       return;
     }

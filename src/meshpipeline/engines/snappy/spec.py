@@ -314,7 +314,8 @@ SPEC = EngineSpec(
             solvers=("OpenFOAM",),   # the polyMesh feeds OpenFOAM's FV solvers
         ),
         # an OpenFOAM hex-dominant mesh snapped ONTO the surface, with inflated prism layers
-        delivered_mesh=DeliveredMesh(cells="hex-dominant", walls="body-fitted", prism_layers=True),
+        delivered_mesh=DeliveredMesh(cells="hex-dominant", walls="body-fitted", prism_layers=True,
+                                     wake_refinement=True),
         run_policy=RunPolicy(
             required_files=("system/blockMeshDict", "system/snappyHexMeshDict"),
             # a production snappy mesh legitimately takes 20-35 min off-box

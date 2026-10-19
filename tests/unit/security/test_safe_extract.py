@@ -162,6 +162,109 @@ def test_many_tiny_files_over_count(tmp_path):
     _expect_reject(tmp_path, _tar([(f"f{i}", b"x") for i in range(200)]), lim, "over")
 
 
+# extracting over a destination that already holds the caller's files
+def _occupied(tmp_path):
+    dest = tmp_path / "ws"
+    (dest / "system").mkdir(parents=True)
+    (dest / "system" / "meshDict").write_bytes(b"caller plan")
+    (dest / "records.json").write_bytes(b"caller records")
+    return dest
+
+
+def _staging_left(parent) -> list[str]:
+    # the extractor stages beside the destination as .<name>.extract_*; none may outlive the call
+    return [p.name for p in parent.iterdir() if ".extract_" in p.name]
+
+
+def _tree(dest):
+    return {p.relative_to(dest).as_posix(): p.read_bytes() if p.is_file() else None
+            for p in sorted(dest.rglob("*"))}
+
+
+@pytest.mark.parametrize(("buf", "over"), [
+    pytest.param(lambda: _tar([("a", b"0" * 100000)]), {"max_archive_bytes": 10}, id="archive"),
+    pytest.param(lambda: _tar([("a", b"x"), ("b", b"y")]), {"max_entries": 1}, id="entries"),
+    pytest.param(lambda: _tar([("system/meshDict", b"0" * 100)]), {"max_file_bytes": 5},
+                 id="per-file"),
+    pytest.param(lambda: _tar([("a", b"0" * 20)]), {"max_total_uncompressed_bytes": 15},
+                 id="total"),
+    pytest.param(lambda: _tar([("system/meshDict", b"x"), ("../evil", b"x")]), {},
+                 id="traversal"),
+    pytest.param(lambda: io.BytesIO(b"not a tar at all, definitely garbage bytes"), {},
+                 id="corrupt"),
+])
+def test_a_refusal_leaves_an_occupied_destination_exactly_as_it_was(buf, over, tmp_path):
+    dest = _occupied(tmp_path)
+    before = _tree(dest)
+    with pytest.raises(WorkspaceExtractionError):
+        safe_extract_tar(fileobj=buf(), dest=dest, limits=ExtractionLimits(
+            **{**_SMALL.__dict__, **over}))
+    assert _tree(dest) == before, "a refused archive changed or removed the caller's files"
+    assert not _staging_left(tmp_path), "the staging directory was left"
+
+
+def test_a_failure_moving_into_place_is_refused_and_staging_removed(tmp_path, monkeypatch):
+    import meshpipeline.sandbox.safe_extract as se
+    dest = _occupied(tmp_path)
+
+    def _no_space(*_a, **_k):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(se.shutil, "move", _no_space)
+    with pytest.raises(WorkspaceExtractionError, match="moving members into place"):
+        safe_extract_tar(fileobj=_tar([("new", b"x")]), dest=dest, limits=_SMALL)
+    assert (dest / "records.json").read_bytes() == b"caller records"
+    assert not _staging_left(tmp_path)
+
+
+def test_a_valid_archive_merges_over_an_occupied_destination(tmp_path):
+    dest = _occupied(tmp_path)
+    written = safe_extract_tar(fileobj=_tar([("system/meshDict", b"remote plan"),
+                                             ("constant/polyMesh/points", b"pts")]),
+                               dest=dest, limits=_SMALL)
+    assert written == len(b"remote plan") + len(b"pts")
+    assert _tree(dest) == {
+        "constant": None, "constant/polyMesh": None, "constant/polyMesh/points": b"pts",
+        "records.json": b"caller records",                  # not in the archive: kept
+        "system": None, "system/meshDict": b"remote plan",  # in the archive: replaced
+    }
+    assert not _staging_left(tmp_path)
+
+
+@pytest.mark.parametrize("entries", [
+    pytest.param([("records.json/inner", b"x")], id="directory-over-file"),
+    pytest.param([("system", b"x")], id="file-over-directory"),
+])
+def test_a_type_conflict_with_the_destination_is_refused_before_anything_moves(entries, tmp_path):
+    dest = _occupied(tmp_path)
+    before = _tree(dest)
+    with pytest.raises(WorkspaceExtractionError, match="would replace"):
+        safe_extract_tar(fileobj=_tar([("zz_new", b"n"), *entries]), dest=dest, limits=_SMALL)
+    assert _tree(dest) == before
+    assert not _staging_left(tmp_path)
+
+
+def test_a_symlink_already_in_the_destination_is_never_written_through(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    dest = _occupied(tmp_path)
+    (dest / "constant").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(WorkspaceExtractionError, match="symlink"):
+        safe_extract_tar(fileobj=_tar([("constant/polyMesh/points", b"pts")]), dest=dest,
+                         limits=_SMALL)
+    assert list(outside.iterdir()) == []
+    assert (dest / "constant").is_symlink()
+
+
+def test_an_empty_destination_is_still_removed_on_refusal(tmp_path):
+    dest = tmp_path / "ws"
+    dest.mkdir()
+    with pytest.raises(WorkspaceExtractionError):
+        safe_extract_tar(fileobj=_tar([("a", b"x"), ("b", b"y")]), dest=dest,
+                         limits=ExtractionLimits(**{**_SMALL.__dict__, "max_entries": 1}))
+    assert not dest.exists()
+
+
 # error hygiene + config validation
 def test_error_does_not_leak_archive_contents(tmp_path):
     secret = b"SUPER_SECRET_TOKEN_abc"

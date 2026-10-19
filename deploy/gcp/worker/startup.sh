@@ -125,11 +125,22 @@ chown "${WORKER_UID}:${WORKER_UID}" /var/lib/hexera/workspaces /var/lib/hexera/d
 # is running a check first - which only works if that name is predictable from inside the container.
 WORKER_HOSTNAME="$(hostname)"
 
+# A LIVE PROCESS IS NOT A WORKING WORKER. Shared dev, 2026-10-16: the geometry worker's broker
+# connection was reset, its reconnect hung, and the container stayed "Up" for three days while no
+# geometry check ran - `--restart always` only acts on a process that exits. So both containers carry
+# a healthcheck that fails once the consumer's own event loop stops beating
+# (src/meshpipeline/runtime/worker_liveness.py), and the watchdog installed below restarts a
+# container docker has marked unhealthy. The start period covers boot and the first connect; three
+# failed checks 30 s apart on top of a 120 s staleness limit restarts a stuck worker in ~4 minutes.
+HEALTH_FLAGS=(--health-cmd "python -m meshpipeline.runtime.worker_liveness check"
+              --health-interval 30s --health-timeout 15s --health-retries 3 --health-start-period 180s)
+
 # --stop-timeout: when the VM is deleted, docker's own shutdown may stop this container before the
 # shutdown script does (shutdown.sh). Docker's default is 10 seconds and then SIGKILL; this gives
 # the running job the same 75 seconds to hand itself back to the queue whichever stop comes first.
 docker rm -f hexera-worker >/dev/null 2>&1 || true
 docker run -d --name hexera-worker --restart always --stop-timeout 75 --hostname "${WORKER_HOSTNAME}" \
+  "${HEALTH_FLAGS[@]}" \
   --env-file /etc/hexera/worker.env \
   -v /var/lib/hexera/workspaces:/srv/workspaces \
   -v /var/lib/hexera/data:/srv/data \
@@ -150,12 +161,39 @@ docker run -d --name hexera-worker --restart always --stop-timeout 75 --hostname
 # depth beside the fleet's, and scales on the fleet's alone).
 docker rm -f hexera-geometry-worker >/dev/null 2>&1 || true
 docker run -d --name hexera-geometry-worker --restart always --stop-timeout 30 --hostname "${WORKER_HOSTNAME}" \
+  "${HEALTH_FLAGS[@]}" \
   --env-file /etc/hexera/worker.env \
   -v /var/lib/hexera/workspaces:/srv/workspaces \
   -v /var/lib/hexera/data:/srv/data \
   "${WORKER_IMAGE}" \
   celery -A meshpipeline.runtime.celery_worker worker \
     --queues geometry_checks --concurrency 2 --loglevel info --hostname geometry@%h
+
+# THE WATCHDOG (watchdog.sh, delivered as the `watchdog-script` metadata key): restarts a container
+# docker has marked unhealthy, and publishes the `hexera/*` guest attributes - each container's image
+# reference and health - that create-worker-fleet.sh reads to prove a rolled VM runs the new digest.
+# A systemd unit, so it outlives this script and comes back if it dies. Cleared first: a reboot
+# reruns this script, and a shutdown mark left by an earlier stop must not keep the watchdog idle.
+rm -f /run/hexera-shutting-down
+md watchdog-script > /usr/local/bin/hexera-worker-watchdog
+chmod 755 /usr/local/bin/hexera-worker-watchdog
+cat > /etc/systemd/system/hexera-worker-watchdog.service <<'UNIT'
+[Unit]
+Description=Hexera worker watchdog - restart an unhealthy worker container, publish what runs here
+After=docker.service
+Requires=docker.service
+
+[Service]
+ExecStart=/usr/local/bin/hexera-worker-watchdog
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable hexera-worker-watchdog
+systemctl restart hexera-worker-watchdog
 
 # NOTHING ELSE RUNS HERE. The queue-depth exporter used to: a systemd unit beside every worker,
 # publishing the group-wide backlog against this instance's own resource. That made the fleet the
