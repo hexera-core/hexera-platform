@@ -4,11 +4,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from pathlib import Path
 
 from meshpipeline.contracts.geometry_units import LengthUnit
 from meshpipeline.contracts.mesh_units import validate_completed_mesh_unit
+
+logger = logging.getLogger(__name__)
 
 
 def _patch_face_counts(workspace: Path) -> dict:
@@ -84,6 +87,25 @@ def _engine_serves_region_slices(mesh_mode: str) -> bool:
         return False
 
 
+def _published_volume(ws: Path, volume_path: str | None) -> str | None:
+    """The volume the manifest may publish: a FILE a reader can open, or None.
+
+    `mesh_paths.volume` is a file artifact for every engine (a VTU/VTP the review slices, the
+    deliverable deck for gmsh, the lumen mesh for vmtk). A directory published there (an
+    OpenFOAM `constant/`) is no volume any renderer reads: the review dropped it as absent while
+    the manifest still promised slices through it, so every such review ended before the model
+    was asked (EXPECTED_TARGET_MISSING). Absence is a real, stated state; a stand-in path is not.
+    """
+    if not volume_path:
+        return None
+    p = Path(volume_path)
+    if (p if p.is_absolute() else ws / p).is_dir():
+        logger.warning("manifest: volume %r is a directory, not a volume file - none published",
+                       p.name)
+        return None
+    return volume_path
+
+
 def _validation_block(types: set, owner: bool, fc: dict, roles: dict) -> dict:
     return {
         "has_wall": "wall" in types,
@@ -111,6 +133,7 @@ def write_manifest(workspace, *, patch_types: dict, patch_entities: dict,
     mesh_units = validate_completed_mesh_unit(
         mesh_units.value if isinstance(mesh_units, LengthUnit) else mesh_units).value
     ws = Path(workspace)
+    volume_path = _published_volume(ws, volume_path)
     fc = _patch_face_counts(ws)
     roles = dict(patch_types)
     types = set(roles.values())
@@ -186,10 +209,12 @@ def write_manifest(workspace, *, patch_types: dict, patch_entities: dict,
         "patch_face_counts": fc, "quality": quality,
         "mesh_paths": {"surface": str((ws / "mesh.msh").resolve()), "volume": volume_path},
         # the engine's own slices when it names them (a thermal model's: across the board and
-        # through the hottest parts), else the generic ones through the body
+        # through the hottest parts), else the generic ones through the body. Every slice is a
+        # cut through the VOLUME: with none published there is nothing to cut, so none is promised.
         "inspection_regions": (([dict(r) for r in inspection_regions] if inspection_regions
                                 else _inspection_regions(body_bbox) if body_bbox else [])
-                               if _engine_serves_region_slices(mesh_mode) else []),
+                               if volume_path and _engine_serves_region_slices(mesh_mode)
+                               else []),
         "validation": _validation_block(types, owner, fc, roles),
     }
     (ws / "mesh_manifest.json").write_text(json.dumps(manifest, indent=2, default=str))

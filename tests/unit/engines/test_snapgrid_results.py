@@ -178,11 +178,12 @@ def test_the_manifest_carries_the_thermal_slices_for_the_review(stb, tmp_path):
     planes = R.slice_planes(json.loads((case / R.SIDECAR_NAME).read_text()))
     m = write_manifest(tmp_path, patch_types={}, patch_entities={}, bbox=(0, 0, 0, 1, 1, 1),
                        quality={"cells": 1}, body_bbox=((0, 0, 0), (1, 1, 1)), mesh_units="m",
-                       mesh_mode="snapgrid", inspection_regions=planes)
+                       mesh_mode="snapgrid", inspection_regions=planes,
+                       volume_path="VTK/case_0/internal.vtu")
     assert [r["name"] for r in m["inspection_regions"]] == [p["name"] for p in planes]
     generic = write_manifest(tmp_path, patch_types={}, patch_entities={}, bbox=(0, 0, 0, 1, 1, 1),
                              quality={"cells": 1}, body_bbox=((0, 0, 0), (1, 1, 1)), mesh_units="m",
-                             mesh_mode="snapgrid")
+                             mesh_mode="snapgrid", volume_path="VTK/case_0/internal.vtu")
     assert {r["name"] for r in generic["inspection_regions"]} >= {"slice_x_centre", "slice_z_centre"}
 
 

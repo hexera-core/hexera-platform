@@ -15,6 +15,7 @@ from meshpipeline.contracts.review_evidence import (
     InspectionTarget,
     RenderArtifactRequirement,
     ReviewRenderer,
+    TargetKind,
 )
 from meshpipeline.engines.ground_plane import ground_patch_name, is_ground
 from meshpipeline.engines.purposes import PURPOSES, Purpose, is_compatible, topology_of  # noqa: F401
@@ -587,9 +588,19 @@ class EngineSpec:
         from meshpipeline.contracts.evidence_ledger import TargetObligation
         resolver = self._load_target_obligations()
         if resolver is not None:
-            return tuple(resolver(manifest or {}, engine_params or {}, purpose))
-        return tuple(TargetObligation(kind=t.kind, provenance=f"{t.target_id} (declared required)")
-                     for t in self.inspection_targets if t.required)
+            obs = tuple(resolver(manifest or {}, engine_params or {}, purpose))
+        else:
+            obs = tuple(TargetObligation(kind=t.kind,
+                                         provenance=f"{t.target_id} (declared required)")
+                        for t in self.inspection_targets if t.required)
+        # ONE RULE FOR EVERY ENGINE: an obligation follows what the run produced. Every region is
+        # a cut through the VOLUME, so a run that published no volume owes no region inspection -
+        # demanding one ended the review before the model was asked (EXPECTED_TARGET_MISSING) on
+        # a mesh that passed every gate. A volume that IS published but cannot be opened is still
+        # refused by the artifact resolver; nothing is waived here.
+        if not ((manifest or {}).get("mesh_paths") or {}).get("volume"):
+            obs = tuple(o for o in obs if o.kind is not TargetKind.REGION)
+        return obs
 
     @property
     def review_renderer(self):
