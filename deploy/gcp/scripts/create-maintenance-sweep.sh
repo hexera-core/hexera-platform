@@ -102,8 +102,15 @@ for entry in "${JOB_ENV[@]}"; do
 done
 
 JOB_SECRETS=()
+# MESH_API_KEY and USER_TOKEN_SECRET are not used by any sweep, but settings/policy.py refuses to
+# boot a non-dev ENV without them (the guard against self-asserted identities), and the sweep
+# imports settings through application/maintenance. prod-maintenance-sweep-f9dn2 proved it: the
+# first prod execution died on that guard while every dev deployment passed on the ENV=dev
+# exemption. Mount the same secrets the API mounts.
 for pair in "POSTGRES_PASSWORD:POSTGRES_PASSWORD_SECRET" \
-            "MINIO_SECRET_KEY:MINIO_SECRET_KEY_SECRET"; do
+            "MINIO_SECRET_KEY:MINIO_SECRET_KEY_SECRET" \
+            "MESH_API_KEY:MESH_API_KEY_SECRET" \
+            "USER_TOKEN_SECRET:USER_TOKEN_SECRET_SECRET"; do
   holder="${pair##*:}"
   secret_name="${!holder:-}"
   [ -n "${secret_name}" ] || continue
