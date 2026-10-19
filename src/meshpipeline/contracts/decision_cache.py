@@ -75,7 +75,8 @@ def _canon_text(text: str) -> str:
             raw = base64.b64decode(m.group(2), validate=False)
         except (ValueError, TypeError):
             raw = m.group(2).encode()
-        return f"<{m.group(1)} sha256:{hashlib.sha256(raw).hexdigest()}>"
+        # "sha" glued to the digest: the long-hex rule below must not erase which picture it was
+        return f"<{m.group(1)} sha{hashlib.sha256(raw).hexdigest()}>"
     t = _DATA_URL.sub(_data, text)
     t = re.sub(r"(https?://[^\s\"'?]+)\?[^\s\"']*", r"\1", t)     # signed-URL query strings
     t = _UUID.sub("<id>", t)
@@ -130,15 +131,27 @@ def _to_record(r: ModelRoundResult) -> dict:
 
 
 def _from_record(d: dict) -> ModelRoundResult:
+    """A replayed round: the recorded answer, with NO new usage - no provider was called, so no
+    tokens and no attempts are counted for this run (the record keeps the original usage)."""
     calls = tuple(ToolCallRequest(**c) for c in d.get("tool_calls") or ())
-    prov = ProviderAttemptInfo(**(d.get("provider") or {}))
-    keep = {k: d[k] for k in ("assistant_text", "finish_reason", "input_tokens",
-                              "cached_input_tokens", "output_tokens", "reasoning_tokens") if k in d}
+    p = d.get("provider") or {}
+    prov = ProviderAttemptInfo(attempts=0, provider=str(p.get("provider") or ""), model=str(p.get("model") or ""))
+    keep = {k: d[k] for k in ("assistant_text", "finish_reason") if k in d}
     return ModelRoundResult(tool_calls=calls, provider=prov, **keep)
 
 
 def _usable(r: ModelRoundResult) -> bool:
     return r.ok and bool(r.tool_calls or (r.assistant_text or "").strip())
+
+
+def _replayable(r: ModelRoundResult) -> bool:
+    """An answer may be replayed only when it carries nothing of the run that produced it: no
+    id, path, time or token (a preview token is minted per run, and a replayed one would be
+    refused). Such an answer is still recorded; the model is simply asked again."""
+    for c in r.tool_calls:
+        if "token" in c.arguments.lower() or _canon_text(c.arguments) != c.arguments:
+            return False
+    return _canon_text(r.assistant_text or "") == (r.assistant_text or "")
 
 
 class ObjectStoreDecisions:
@@ -223,6 +236,12 @@ class CachingModelRouter:
                      user_id: str) -> ModelRoundResult:
         if self._mode == "off":
             return await call()
+        if not user_id:
+            # no owner, no shared record: a decision is never shared across accounts
+            result = await call()
+            _log(job_id, {"step": step, "source": "model (no owner: not kept)",
+                          "at": round(time.time(), 1), "decision": _summary(result)})
+            return result
         try:
             model = str(self._model_of(step) or "")
             key, ph, ih = decision_key(step=step, model=model, messages=messages, tools=tools,
@@ -239,7 +258,7 @@ class CachingModelRouter:
             except Exception:  # noqa: BLE001 - the record is an aid, never a dependency
                 logger.warning("decision cache: lookup failed; asking the model", exc_info=True)
                 rec = None
-            if rec and isinstance(rec.get("result"), dict):
+            if rec and isinstance(rec.get("result"), dict) and _replayable(_from_record(rec["result"])):
                 result = _from_record(rec["result"])
                 _log(job_id, {**entry, "source": "record", "decision": _summary(result)})
                 return result

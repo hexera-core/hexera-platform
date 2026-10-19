@@ -73,8 +73,11 @@ STAMP_VERSION = 1
 #: Files of the case a mesher reads as its PLAN (dictionaries, specs) rather than its geometry.
 _PLAN_SUFFIXES = (".json", ".geo", ".txt", ".dict")
 _PLAN_DIRS = ("system",)
-#: Never hashed: what the run itself writes.
-_SKIP_PARTS = ("processor", "_rescue", "VTK", "postProcessing")
+#: Never hashed: what a run writes (a later pass in the same workspace must not see an earlier
+#: pass's mesh, logs, timing or stamp as a changed input).
+_SKIP_PARTS = ("processor", "_rescue", "VTK", "postProcessing", "polyMesh")
+_SKIP_FILES = frozenset({STAMP_FILE, "run_reproducibility.json", "mesh_quality.json", "mesh_timing.json",
+                         "return_scope.json", "mesh_manifest.json", "quality.json"})
 _HASH_CHUNK = 4 * 1024 * 1024
 
 
@@ -229,7 +232,8 @@ def workspace_hashes(workspace) -> dict[str, Any]:
     files = 0
     for p in sorted(ws.rglob("*")):
         rel = p.relative_to(ws).as_posix()
-        if not p.is_file() or any(part.startswith(_SKIP_PARTS) for part in Path(rel).parts):
+        if (not p.is_file() or any(part.startswith(_SKIP_PARTS) for part in Path(rel).parts)
+                or p.name in _SKIP_FILES or p.suffix == ".log" or p.name.startswith("log.")):
             continue
         files += 1
         for h in (payload,) + ((plan,) if _is_plan(rel) else ()):

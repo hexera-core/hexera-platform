@@ -50,6 +50,10 @@ def test_the_case_hash_sees_the_plan_and_ignores_what_the_run_writes(tmp_path):
     a = det.workspace_hashes(tmp_path)
     (tmp_path / "processor0").mkdir()
     (tmp_path / "processor0" / "junk").write_text("x")
+    (tmp_path / det.STAMP_FILE).write_text('{"seconds": 12.3}')       # an earlier pass's record
+    (tmp_path / "snappyHexMesh.log").write_text("Finished")
+    (tmp_path / "constant" / "polyMesh").mkdir(parents=True)
+    (tmp_path / "constant" / "polyMesh" / "owner").write_text("1")
     assert det.workspace_hashes(tmp_path) == a
     (tmp_path / "system" / "meshDict").write_text("maxCellSize 2;")
     b = det.workspace_hashes(tmp_path)

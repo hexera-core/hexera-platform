@@ -46,6 +46,7 @@ def test_the_same_question_gets_the_same_answer():
     assert inner.calls == 1
     assert a.tool_calls == b.tool_calls
     assert b.reasoning_text == ""                    # transport only: never kept
+    assert b.provider.attempts == 0 and b.input_tokens == 0   # a replay is no new usage
     log = dc.decisions_for("j2")
     assert log[-1]["source"] == "record" and log[-1]["decision"]["tool_calls"][0]["name"] == "run_mesh"
     assert dc.decisions_for("j1")[-1]["source"] == "model"
@@ -82,4 +83,26 @@ def test_off_mode_is_the_old_behaviour():
 def test_an_image_counts_by_its_bytes_and_a_signed_url_by_its_path():
     a = dc._canon_text("see data:image/png;base64,aGVsbG8= and https://s/x.png?sig=1&t=2")
     b = dc._canon_text("see data:image/png;base64,aGVsbG8= and https://s/x.png?sig=9&t=8")
-    assert a == b and "sha256:" in a
+    assert a == b and "<image/png sha" in a
+    c = dc._canon_text("see data:image/png;base64,d29ybGQ= and https://s/x.png?sig=1&t=2")
+    assert c != a                                      # another picture is another question
+
+
+def test_an_answer_carrying_a_run_token_is_asked_again():
+    class _Tok(_Model):
+        async def call_builder_model(self, messages, **kw):
+            self.calls += 1
+            return ModelRoundResult(tool_calls=(ToolCallRequest(
+                id="c1", name="submit_requirements", arguments='{"preview_token": "abc"}'),))
+    inner = _Tok()
+    r = dc.CachingModelRouter(inner, model_of=lambda s: "m", store=dc.MemoryDecisions(), mode="reuse")
+    asyncio.run(r.call_builder_model(_conv(), user_id="u"))
+    asyncio.run(r.call_builder_model(_conv(), user_id="u"))
+    assert inner.calls == 2
+
+
+def test_no_owner_means_no_shared_record():
+    inner, r = _router()
+    asyncio.run(r.call_builder_model(_conv(), job_id="j5"))
+    asyncio.run(r.call_builder_model(_conv(), job_id="j5"))
+    assert inner.calls == 2 and dc.decisions_for("j5")[-1]["source"].startswith("model (no owner")
