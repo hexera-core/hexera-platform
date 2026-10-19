@@ -401,6 +401,10 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
         # what kind of geometry this is and what it came from, for whoever decides what to offer
         facts.update(canonical.facts())
         facts.setdefault("notes", []).extend(n for n in canonical.notes if n not in facts["notes"])
+        # whether the upload is CLEAN (cad/validity): the contract a mesh is promised on
+        facts["validity"] = clean_verdict(fetched, canonical)
+        if facts["validity"].get("clean") is False:
+            facts["notes"].append(facts["validity"]["summary"])
         # a thermal model's physics (ECXML: materials, powers, fans, vents...), kept whole beside
         # the session's check so a later solver step - or the user - has all of it
         thermal = thermal_sidecar
@@ -439,6 +443,22 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
     if upright is not None:
         result["upright_sheet"] = upright
     return result
+
+
+def clean_verdict(uploaded: Path, canonical) -> dict:
+    """THE CLEAN CONTRACT on the upload (cad/validity): clean yes or no, and every reason with
+    where on the part it is. A file this calls clean is one the product promises to mesh, so a
+    clean file that then fails is a product bug, never the user's. It informs and never refuses:
+    a file that is not clean still goes on, with the reasons said. Never fails the scout."""
+    try:
+        from meshpipeline.cad.validity import check_canonical
+
+        return dict(check_canonical(uploaded, canonical).as_dict())
+    except Exception as exc:  # noqa: BLE001 - the check is evidence; the scout must still land
+        logger.warning("geometry check: the clean check could not run (%s: %s)", type(exc).__name__,
+                       str(exc)[:200])
+        return {"clean": None, "kind": "unchecked", "complete": False, "reasons": [],
+                "summary": f"the clean check could not run ({type(exc).__name__})"}
 
 
 def stickered(facts: dict) -> list[dict]:
