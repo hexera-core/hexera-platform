@@ -801,6 +801,8 @@ def _store_upright_sheet(session_id: str, skin: Path, work: Path, store) -> dict
 def _scout_exact(local_path: Path, work: Path, interp_ref, ref) -> tuple[dict, Path]:
     """A STEP or IGES file: OpenCASCADE reads real faces, so the openings come out exact."""
     from meshpipeline.application import geometry_progress as gp
+    from meshpipeline.cad.fluid_volume_check import read_fluid_volume, wants_fluid_volume
+    from meshpipeline.cad.normalise import occ_scale_transform
     from meshpipeline.cad.scout import read_cad, scout_cad, write_view_stl
 
     prepared, unit_note = _prepared_coordinates(local_path, interp_ref, ref)
@@ -821,6 +823,11 @@ def _scout_exact(local_path: Path, work: Path, interp_ref, ref) -> tuple[dict, P
     gp.mark(gp.OPENINGS, triangles=gp.skin_triangles(skin))
     facts["holes"] = skin_holes(skin)
     if not declared:
+        # AN ASSEMBLY'S FLUID is the space inside its parts, closed off where it meets the outside
+        # (cad/fluid_volume_check): its openings are what the user confirms, not every flat face
+        if wants_fluid_volume(facts):
+            read_fluid_volume(facts, local_path, work=work, kind="cad",
+                              scale=occ_scale_transform(prepared).ScaleFactor())
         read_whole_shape(facts, skin)
     return facts, skin
 
@@ -925,8 +932,15 @@ def _scout_triangles(local_path: Path, work: Path, interp_ref, ref,
     gp.mark(gp.OPENINGS, triangles=gp.skin_triangles(skin))
     if not file_scale:
         # a thermal model's placed parts (file_scale) state their regions and openings themselves
+        from meshpipeline.cad.fluid_volume_check import read_fluid_volume
+        # several closed parts in one triangle file: the fluid is the space inside them, as for a
+        # CAD assembly (the skin is in metres)
+        read_fluid_volume(facts, skin, work=work, scale=1.0, kind="triangles")
         read_whole_shape(facts, skin)
-        vet_openings(facts, skin)
+        if facts.get("openings_from") != "fluid_volume":
+            # the extracted openings bound the fluid by construction; the skin's own passages
+            # (several parts' skins together) say nothing about them
+            vet_openings(facts, skin)
     return facts, skin
 
 
