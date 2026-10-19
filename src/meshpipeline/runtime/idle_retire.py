@@ -468,8 +468,14 @@ class IdleRetirer:
             while self._tap.taking() and self._clock() < deadline:
                 self._sleep(0.5)
             if self._tap.taking():
+                # The stop is run BY the consumer's event loop (CeleryTap.stop_taking), so a stop
+                # that never lands means that loop is not running - shared dev 2026-10-16 to 10-19,
+                # a broker connection that hung: this line every two minutes for three days, and the
+                # VM never moved onto a new template. The container's liveness check
+                # (runtime/worker_liveness.py) restarts such a worker; until then, staying is safe.
                 logger.warning("idle self-retire: the worker did not stop taking work within %.0fs "
-                               "- staying", DRAIN_CONFIRM_SECONDS)
+                               "- its consumer's event loop is not answering (a stuck broker "
+                               "connection?) - staying", DRAIN_CONFIRM_SECONDS)
                 self._backoff(ERROR_BACKOFF_SECONDS)
                 return Action.STAY
             self._sleep(DRAIN_SETTLE_SECONDS)
