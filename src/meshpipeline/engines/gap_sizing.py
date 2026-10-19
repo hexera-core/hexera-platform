@@ -123,16 +123,29 @@ def _cells(n: float) -> str:
     return f"{n:.0f}"
 
 
-def box_cost(boxes, cell_m: float) -> float:
-    """Cells a set of narrow-passage boxes adds: each box's fluid at its own cell (cell_m halved
-    `level_bump` times). The fluid is the passage its wall points bound, as a round tube holds it
-    (`fluid_m3`, area x r / 2 - exact for a tube, where narrow_passage_regions' own `volume_m3`
-    counts it twice over), never more than the box."""
+def box_cost(boxes, cell_m: float, *, whole_box: bool = False) -> float:
+    """Cells a set of narrow-passage boxes adds: each box's volume at its own cell (cell_m halved
+    `level_bump` times). `whole_box`: the mesher refines EVERY cell inside the box, fluid or not
+    (snappyHexMesh refines the whole background before it keeps the fluid side), so the box's own
+    volume is what it costs - offline, vmr_0092's 61 boxes priced at their fluid read 3.8 M and
+    snappy's shell refinement passed 5.7 M one level in. Otherwise only the passage the wall
+    points bound, as a round tube holds it (`fluid_m3`, area x r / 2 - exact for a tube, where
+    narrow_passage_regions' own `volume_m3` counts it twice over), never more than the box."""
     total = 0.0
     for b in boxes or ():
         c = float(b.get("cell_m") or float(cell_m) / (2 ** int(b.get("level_bump", 1))))
-        if c > 0.0:
-            total += float(b.get("fluid_m3", b.get("volume_m3")) or 0.0) / c ** 3
+        if c <= 0.0:
+            continue
+        if b.get("refine_m3") is not None:
+            # refined by distance from the spot's own wall (the snappy driver's surfaces)
+            v = float(b["refine_m3"])
+        elif whole_box and b.get("min") is not None and b.get("max") is not None:
+            v = 1.0
+            for k in range(3):
+                v *= max(0.0, float(b["max"][k]) - float(b["min"][k]))
+        else:
+            v = float(b.get("fluid_m3", b.get("volume_m3")) or 0.0)
+        total += v / c ** 3
     return total
 
 
@@ -320,20 +333,21 @@ PLAN_BOX_SHARE = 0.5
 
 def plan_gaps(regions_at, *, cell_m: float, budget: int, limit: int,
               base_cells: float | None = None, target: float = GAP_CELLS_ACROSS,
-              accept_fewer: bool = False) -> GapPlan:
+              accept_fewer: bool = False, whole_box: bool = False) -> GapPlan:
     """The gap plan of one pass. `regions_at(t)` returns the narrow-passage boxes that put `t`
     cells across every narrow spot (engines/passage.narrow_passage_regions with no budget, the
     spots always DETECTED at the rule's count so the same spots are named at any t). `cell_m` is
     the cell the boxes refine from, `budget` the plan's cell budget, `limit` the compute limit.
     `base_cells` is the mesh without the boxes; by default the plan's budget less the share its
-    narrow spots were always allowed (PLAN_BOX_SHARE). Nothing here meshes anything."""
+    narrow spots were always allowed (PLAN_BOX_SHARE). `whole_box` as in box_cost: the mesher
+    refines the whole box (snappyHexMesh). Nothing here meshes anything."""
     budget = int(budget)
     limit = int(limit)
     base = float((1.0 - PLAN_BOX_SHARE) * budget if base_cells is None else base_cells)
     full = list(regions_at(float(target)) or [])
     if not full:
         return GapPlan(NO_NARROW, [], float(target), 0.0, base, budget, budget, limit)
-    full_cost = box_cost(full, cell_m)
+    full_cost = box_cost(full, cell_m, whole_box=whole_box)
     narrowest = min(full, key=lambda b: float(b["radius_m"]))
     common: dict[str, Any] = {"narrowest_m": 2.0 * float(narrowest["radius_m"]), "spots": len(full),
               "where_m": tuple(round(0.5 * (float(narrowest["min"][k]) + float(narrowest["max"][k])),
@@ -356,12 +370,12 @@ def plan_gaps(regions_at, *, cell_m: float, budget: int, limit: int,
     lo, hi = MIN_ACCEPTED_CELLS, float(target)
     if room > 0.0:
         low = list(regions_at(lo) or [])
-        if box_cost(low, cell_m) <= room:
-            best = (lo, low, box_cost(low, cell_m))
+        if box_cost(low, cell_m, whole_box=whole_box) <= room:
+            best = (lo, low, box_cost(low, cell_m, whole_box=whole_box))
             for _ in range(12):
                 mid = 0.5 * (lo + hi)
                 rs = list(regions_at(mid) or [])
-                c = box_cost(rs, cell_m)
+                c = box_cost(rs, cell_m, whole_box=whole_box)
                 if c <= room:
                     best, lo = (mid, rs, c), mid
                 else:

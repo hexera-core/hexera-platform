@@ -346,6 +346,9 @@ def _native_payload_members(workspace) -> list[str]:
     _line = ws / "constant" / "triSurface" / CONTACT_LINE_FILE
     if _line.is_file():
         members.append(_line.relative_to(ws).as_posix())
+    # the narrow spots' refinement surfaces (_narrow_surfaces) - read by the mesher, never patches
+    members += sorted(p.relative_to(ws).as_posix()
+                      for p in (ws / "constant" / "triSurface" / "refine").glob("*.stl"))
     # THE FACTS THE REMOTE READS. native.py measures the passage beside the mesh when the
     # workspace says the flow is internal - and it reads that from the `flow_topology` file.
     # Left out of this list, the file never reached the mesher: every Cloud Run execution logged
@@ -1206,7 +1209,9 @@ def _staged_passage_field(t: dict, srcs: dict, wall_key: str, intake_patches: li
                     "describe - no local refinement")
         return None
     pts, faces, r = staged_passage_field(t, srcs, wall_key, intake_patches, field=raw)
-    return pts, r, point_areas(pts, faces)
+    # the faces travel too: a narrow spot's own wall is what its refinement is measured from
+    # (_narrow_surfaces), so the cells refined are the passage's, not a box round it
+    return pts, r, point_areas(pts, faces), faces
 
 
 #: The cells across a narrow passage its local refinement aims at (engines/passage).
@@ -1234,6 +1239,58 @@ def _narrow_passage_boxes(field, *, wall_cell: float, budget_cells: float | None
         return []
 
 
+#: How far past the middle of a narrow passage its distance refinement reaches (a share of the
+#: widest radius read there): the cells AT the middle must be inside it too.
+_REACH_MARGIN = 1.25
+
+
+def _reach(box: dict) -> float:
+    """How far from a narrow spot's wall its refinement reaches: to the middle of the passage
+    (its widest reading) and a little past it, so walls on both sides fill the whole width."""
+    return _REACH_MARGIN * float(box.get("radius_max_m") or box.get("radius_m") or 0.0)
+
+
+def _narrow_surfaces(workspace: Path, regions: list, field) -> tuple[list, list]:
+    """(distance regions, boxes left) for the narrow spots of a pass. Each octree level's spots
+    become ONE refinement surface - the staged wall's own triangles there, written under
+    constant/triSurface/refine (never a patch: it is referenced only as a refinement region,
+    and the review reads only the top-level surfaces) - refined to that level within a passage
+    width of it. A spot with no triangles of its own keeps its box."""
+    import numpy as np
+
+    from meshpipeline.cad.stl_io import write_stl_binary
+    if field is None or len(field) < 4 or field[3] is None or not regions:
+        return [], list(regions)
+    pts = np.asarray(field[0], dtype=float)
+    faces = np.asarray(field[3], dtype=np.int64)
+    by_level: dict[int, list] = {}
+    for b in regions:
+        by_level.setdefault(int(b.get("level_bump", 1)), []).append(b)
+    out_dir = Path(workspace) / "constant" / "triSurface" / "refine"
+    if out_dir.exists():
+        for old in out_dir.glob("*.stl"):
+            old.unlink()
+    surfaces, boxes = [], []
+    for level, group in sorted(by_level.items()):
+        ids = [np.asarray(b.get("point_ids"), dtype=np.int64) for b in group
+               if b.get("point_ids") is not None and len(b.get("point_ids"))]
+        if not ids:
+            boxes += group
+            continue
+        mark = np.zeros(len(pts), dtype=bool)
+        mark[np.concatenate(ids)] = True
+        tris = faces[mark[faces].any(axis=1)]
+        if not len(tris):
+            boxes += group
+            continue
+        out_dir.mkdir(parents=True, exist_ok=True)
+        name = f"narrowGap{level}"
+        write_stl_binary(out_dir / f"{name}.stl", pts[tris])
+        surfaces.append({"name": name, "file": f"refine/{name}.stl", "level_bump": level,
+                         "distance_m": max(_reach(b) for b in group)})
+    return surfaces, boxes
+
+
 #: Cells of each octree level snappy keeps before grading to the next (nCellsBetweenLevels 3,
 #: render_internal_case), plus one: the wall's own cell fills about this many cells deep.
 _WALL_SHELL_CELLS = 4.0
@@ -1255,18 +1312,28 @@ def _gap_plan(field, *, wall_cell: float, target: float, budget: int, band_m: fl
     if field is None:
         return empty
     try:
+        import numpy as np
         base = (1.0 - GS.PLAN_BOX_SHARE) * float(budget)
-        if len(field) > 2 and field[2] is not None:
-            a, r = field[2], field[1]
+        a, r = field[2], field[1]
+        if a is not None:
             base = max(base, GS.fill_cells(a, r, base_cell)
                        + GS.fill_cells(a, r, surface_cell, depth=_WALL_SHELL_CELLS * surface_cell)
                        + (GS.fill_cells(a, r, near_cell, depth=band_m) if band_m > 0.0 else 0.0))
 
         def at(t: float) -> list:
-            return list(_narrow_passage_boxes(field, wall_cell=wall_cell, budget_cells=None,
-                                              target=t, detect=float(target)) or [])
+            boxes = list(_narrow_passage_boxes(field, wall_cell=wall_cell, budget_cells=None,
+                                               target=t, detect=float(target)) or [])
+            if len(field) > 3 and field[3] is not None:
+                # refined BY DISTANCE from the spot's own wall (_narrow_surfaces): the cells
+                # within a passage width of it, on both sides - not the whole box round it
+                for b in boxes:
+                    ids = b.get("point_ids")
+                    if ids is not None and len(ids):
+                        b["refine_m3"] = 2.0 * float(np.asarray(a)[ids].sum()) * _reach(b)
+            return boxes
         return GS.plan_gaps(at, cell_m=wall_cell, budget=int(budget), limit=limit,
-                            base_cells=base, target=float(target), accept_fewer=accept_fewer)
+                            base_cells=base, target=float(target), accept_fewer=accept_fewer,
+                            whole_box=True)
     except Exception:  # noqa: BLE001 - a plan we cannot make leaves the pass as planned
         logger.exception("gap plan failed - meshing the pass as planned")
         return empty
@@ -1874,6 +1941,8 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                          accept_fewer=accepted_fewer(state.get("engine_params")))
         _gap.write(workspace)
         _narrow_regions = _over_band(list(_gap.regions), _near_offset)
+        _narrow_surfaces_, _narrow_regions = _narrow_surfaces(workspace, _narrow_regions,
+                                                              _passage_field)
         if not _gap.stops and _gap.budget > _budget:
             _budget = int(_gap.budget)
         strategy = {**strategy, "near_band_m": round(_band_m, 6),
@@ -1918,7 +1987,7 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
         # NARROW PASSAGES, against the cell at the wall too (the gap plan above): what is refined
         # where, and what the budget became - or, over the limit, why the pass is not meshed and
         # what the user can choose instead
-        if _narrow_regions or _gap.stops:
+        if _gap.regions or _gap.stops:
             await publish.anote(
                 _gap.words(_near_cell)
                 + ("" if not _gap.stops else
@@ -1961,7 +2030,8 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                 port_sizes=_port_sizes, sealed_before=_sealed_before,
                 thin_regions=[*_thin_regions, *_narrow_regions,
                               *(strategy.get("local_boxes") or [])],
-                near_band_depth=_band_m if _band_set else None)
+                near_band_depth=_band_m if _band_set else None,
+                distance_regions=_narrow_surfaces_)
             _stop_on_repeated_case(workspace, _reviewed_ws, job_id=job_id,
                                    where=f"internal pass {attempt}")
             if _repeats_timed_out_case(workspace, _timeout_case):

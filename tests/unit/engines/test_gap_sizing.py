@@ -185,3 +185,45 @@ def test_the_gap_between_two_bodies_is_boxed_and_one_body_alone_is_not():
     assert ceiling >= 2_000_000
     assert "Gaps between parts" in plan.words(0.005, auto=True)
     assert body_gap_field(_two_blocks(0.002)[:12], samples=2000) is None, "one body: no gap"
+
+
+# SNAPPY REFINES A NARROW SPOT BY DISTANCE FROM ITS OWN WALL, NOT BY A BOX ROUND IT
+
+def test_a_narrow_spot_is_refined_by_distance_from_its_own_wall_never_as_a_patch(tmp_path):
+    from meshpipeline.cad.stl_io import read_stl_triangles
+    from meshpipeline.engines.snappy import drivers as D
+    from meshpipeline.engines.snappy.snappy_runner import render_internal_case
+    # a strip of wall: 40 points along x, two rows; the first half bounds a 2 mm passage
+    xs = np.linspace(0.0, 0.2, 40)
+    pts = np.concatenate([np.c_[xs, np.zeros(40), np.zeros(40)],
+                          np.c_[xs, np.full(40, 0.005), np.zeros(40)]])
+    faces = np.array([[i, i + 1, 40 + i] for i in range(39)]
+                     + [[i + 1, 41 + i, 40 + i] for i in range(39)])
+    r = np.where(pts[:, 0] < 0.1, 0.001, 0.02)
+    areas = np.full(len(pts), 2.5e-5)
+    field = (pts, r, areas, faces)
+    plan = D._gap_plan(field, wall_cell=0.002, target=13.0, budget=2_000_000, band_m=0.0,
+                       near_cell=0.002, surface_cell=0.002, base_cell=0.008,
+                       accept_fewer=False)
+    assert plan.regions and all("refine_m3" in b for b in plan.regions)
+    ws = tmp_path / "case"
+    (ws / "system").mkdir(parents=True)
+    surfaces, boxes = D._narrow_surfaces(ws, list(plan.regions), field)
+    assert surfaces and not boxes
+    stl = ws / "constant" / "triSurface" / surfaces[0]["file"]
+    tris = np.asarray(read_stl_triangles(stl)).reshape(-1, 3, 3)
+    assert len(tris) and tris[:, :, 0].max() <= 0.1 + 0.2 / 39 + 1e-9, "the narrow wall only"
+    assert surfaces[0]["distance_m"] == pytest.approx(D._REACH_MARGIN * 0.001)
+    render_internal_case(
+        ws, names={"wall": "wall", "inlet": "inlet"},
+        features={"wall": "w.eMesh", "inlet": "i.eMesh"}, interior_point=(0, 0, 0),
+        bbox_min=(-0.1, -0.1, -0.1), bbox_max=(0.1, 0.1, 0.1), base_cell=0.01,
+        surface_level=2, feature_level=3, n_layers=0, wall_key="wall",
+        distance_regions=surfaces)
+    text = (ws / "system" / "snappyHexMeshDict").read_text()
+    name = surfaces[0]["name"]
+    assert f'{name} {{ type triSurfaceMesh; file "refine/{name}.stl"; name {name}; }}' in text
+    assert f"{name} {{ mode distance; levels ((" in text
+    surfaces_block = text.split("refinementSurfaces")[1].split("resolveFeatureAngle")[0]
+    assert name not in surfaces_block, "a refinement surface, never a patch"
+    assert f"constant/triSurface/refine/{name}.stl" in D._native_payload_members(ws)

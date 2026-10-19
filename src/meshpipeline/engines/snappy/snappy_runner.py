@@ -982,7 +982,7 @@ def _plan_body_gaps(field, *, wall_cell: float, budget: int, base_cells: float |
                                                budget_cells=None) or [])
         plan = GS.plan_gaps(at, cell_m=wall_cell, budget=int(budget),
                             limit=int(polcfg.CELL_HARD_LIMIT), base_cells=base_cells,
-                            accept_fewer=True)
+                            accept_fewer=True, whole_box=True)
     except Exception:  # noqa: BLE001 - a plan we cannot make leaves the case as planned
         logger.warning("render_snappy_case: the body-gap plan failed - meshing as planned",
                        exc_info=True)
@@ -1207,7 +1207,8 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
                          wall_key: str = "wall", port_sizes: dict[str, float] | None = None,
                          sealed_before: frozenset[str] | set[str] = frozenset(),
                          thin_regions: list | None = None,
-                         near_band_depth: float | None = None) -> dict:
+                         near_band_depth: float | None = None,
+                         distance_regions: list | None = None) -> dict:
     ws = Path(workspace)
     ext = [float(bbox_max[i] - bbox_min[i]) for i in range(3)]
     maxext = max(ext)
@@ -1313,6 +1314,16 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
                  f"min ({_lo[0]:.6g} {_lo[1]:.6g} {_lo[2]:.6g}); "
                  f"max ({_hi[0]:.6g} {_hi[1]:.6g} {_hi[2]:.6g}); }} ")
         thin_refine += f"thinZone{_i} {{ mode inside; levels ((1e15 {_lvl})); }} "
+    # NARROW SPOTS BY DISTANCE (engines/gap_sizing): each level's narrow wall, as its own
+    # refinement surface, refines the cells within a passage width of it - the passage, on both
+    # sides of the wall, not a box round it. Never a refinementSurface, so never a patch.
+    _dist = list(distance_regions or [])
+    for _dr in _dist:
+        _lvl = min(_HARD_MAX_LEVEL, smin + int(_dr.get("level_bump", 1)))
+        geom += (f"{_dr['name']} {{ type triSurfaceMesh; file \"{_dr['file']}\"; "
+                 f"name {_dr['name']}; }} ")
+        thin_refine += (f"{_dr['name']} {{ mode distance; "
+                        f"levels (({float(_dr['distance_m']):.6g} {_lvl})); }} ")
     # a small port's rim must be feature-snapped at least as finely as its surface is
     # refined, or snapping re-opens the very cells the refinement just won
     feat_entries = "".join(
@@ -1345,7 +1356,8 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
     # minVol from the finest wall cell this case refines to (layer_min_vol): a passage a few
     # millimetres across has layer cells far below the tutorials' absolute 1e-13 m^3
     _top = max([smax, flevel, near_level, *port_lvls.values(),
-                *(min(_HARD_MAX_LEVEL, smin + int(r.get("level_bump", 1))) for r in _thin)])
+                *(min(_HARD_MAX_LEVEL, smin + int(r.get("level_bump", 1)))
+                  for r in [*_thin, *_dist])])
     _min_vol = layer_min_vol(min(dext[i] / max(div[i], 1) for i in range(3)) / (2 ** _top),
                              n_layers=n_layers, min_thickness_rel=0.05)
     (ws / "system" / "snappyHexMeshDict").write_text(
@@ -1377,6 +1389,9 @@ mergeTolerance 1e-6; debug 0;
             "n_layers": n_layers, "domain_min": [round(x, 4) for x in dmin],
             "domain_max": [round(x, 4) for x in dmax], "patches": list(names.values()),
             "port_levels": {names[p]: port_lvls[p] for p in port_lvls if p in names},
+            "narrow_surfaces": [{"name": d["name"], "distance_m": round(float(d["distance_m"]), 7),
+                                 "level": min(_HARD_MAX_LEVEL, smin + int(d.get("level_bump", 1)))}
+                                for d in _dist],
             "thin_regions": [{"level": min(_HARD_MAX_LEVEL,
                                            smin + int(r.get("level_bump", 1))),
                               "thinnest_m": r.get("thinnest_m"),

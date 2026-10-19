@@ -1154,10 +1154,20 @@ def narrow_passage_regions(points, radius, *, cell_m: float, areas=None,
     narrow = np.isfinite(r) & (r > 0.0) & (2.0 * r / float(cell_m) < float(detect))
     if not narrow.any():
         return out
+    where_narrow = np.flatnonzero(narrow)
     P, R = pts[narrow], r[narrow]
     A = (np.asarray(areas, dtype=float)[narrow]
          if areas is not None and len(areas) == len(pts) else None)
     need = 2.0 * R / float(target)
+    # a spot DETECTED narrow that the planned cell already puts `target` across (detect above
+    # target: engines/gap_sizing asks what fewer cells across would cost) needs no level at all
+    keep = float(cell_m) > need * (1.0 + 1e-9)
+    if not keep.all():
+        where_narrow = where_narrow[keep]
+        P, R, need = P[keep], R[keep], need[keep]
+        A = A[keep] if A is not None else None
+        if not len(R):
+            return out
     level = np.clip(np.ceil(np.log2(np.maximum(float(cell_m) / need, 1.0)) - 1e-9), 1,
                     int(max_level_bump)).astype(np.int64)
     classes = sorted(set(level.tolist()))
@@ -1187,13 +1197,17 @@ def narrow_passage_regions(points, radius, *, cell_m: float, areas=None,
         box_volume = float(np.prod(np.maximum(hi - lo, 0.0)))
         fluid = (min(box_volume, float((A[idx] * rg).sum())) if A is not None else box_volume)
         boxes.append({"min": lo.tolist(), "max": hi.tolist(), "radius_m": rmin,
+                      "radius_max_m": float(rg.max()),
                       "cell_needed_m": 2.0 * rmin / float(target), "level_bump": int(b),
                       "n_points": int(len(idx)), "volume_m3": fluid,
                       # the passage the points bound, as a tube holds it (area x r / 2): what
                       # engines/gap_sizing costs a box at, where the budget held here keeps the
                       # cautious twice-over figure above
                       "fluid_m3": (min(box_volume, 0.5 * float((A[idx] * rg).sum()))
-                                   if A is not None else box_volume)})
+                                   if A is not None else box_volume),
+                      # which of the given points the box was drawn round (their wall can be
+                      # refined by distance instead of by the whole box: engines/gap_sizing)
+                      "point_ids": where_narrow[idx]})
 
     def _cost(bs) -> float:
         return sum(b["volume_m3"] / (float(cell_m) / (2 ** b["level_bump"])) ** 3 for b in bs)
