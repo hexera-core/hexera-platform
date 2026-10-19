@@ -296,3 +296,90 @@ def _interval(p: np.ndarray, d: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         vals.append(np.where(d[:, i] == 0.0, p[:, i], np.nan))
     v = np.stack(vals, axis=1)
     return np.nanmin(v, axis=1), np.nanmax(v, axis=1)
+
+
+#: Winding-number evaluations (sample points x triangles) the nesting search may spend.
+MAX_WINDING_WORK = 400_000_000
+#: Sample points per body: just inside the centres of its largest triangles, by NEST_DEPTH of the
+#: body's size - inside its own material, so a point is inside another body only if they share it.
+NEST_SAMPLES = 16
+NEST_DEPTH = 1e-5
+
+
+@dataclass(frozen=True)
+class Nesting:
+    """Bodies whose surface lies inside another body's material without crossing it: (body, the
+    body it sits in, the sample point), and whether every body was looked at."""
+
+    found: tuple[tuple[int, int, tuple[float, float, float]], ...]
+    complete: bool
+
+
+def nested_bodies(points: np.ndarray, triangles: np.ndarray, body: np.ndarray,
+                  inward: np.ndarray, *, max_work: int = MAX_WINDING_WORK) -> Nesting:
+    """Overlaps a crossing search cannot see: a body wholly inside another's material, or two that
+    share faces in one plane while one runs into the other (boxes overlapping with matching
+    sides). Read by the generalised winding number (the solid angle a closed surface fills, over
+    4 pi) of a few points just inside each body, counted from every OTHER body: 0 is open space
+    (or a cavity), 1 is inside material. An outward body's points must read 0; a cavity's
+    (`inward` True: its points sit in the material round it) must read 1. A body touching another
+    face to face keeps its points on its own side, so touching is never an overlap. `body` (m,) gives each triangle's closed body, -1 for
+    none; `inward` (n_bodies,)."""
+    P = np.asarray(points, dtype=np.float64)
+    T = np.asarray(triangles, dtype=np.int64)
+    body = np.asarray(body, dtype=np.int64)
+    ids = np.unique(body[body >= 0])
+    if len(ids) < 2:
+        return Nesting((), True)
+    C = P[T]
+    order = np.argsort(body, kind="stable")
+    starts = np.searchsorted(body[order], ids, side="left")
+    ends = np.searchsorted(body[order], ids, side="right")
+    members = {int(k): order[s:e] for k, s, e in zip(ids.tolist(), starts.tolist(), ends.tolist())}
+    blo = np.array([C[members[k]].reshape(-1, 3).min(axis=0) for k in ids.tolist()])
+    bhi = np.array([C[members[k]].reshape(-1, 3).max(axis=0) for k in ids.tolist()])
+    area = np.linalg.norm(np.cross(C[:, 1] - C[:, 0], C[:, 2] - C[:, 0]), axis=1)
+    found: list = []
+    work = 0
+    for n, k in enumerate(ids.tolist()):
+        mine = members[k]
+        top = mine[np.argsort(-area[mine], kind="stable")[:NEST_SAMPLES]]
+        nrm = np.cross(C[top, 1] - C[top, 0], C[top, 2] - C[top, 0])
+        nrm /= np.maximum(np.linalg.norm(nrm, axis=1), 1e-300)[:, None]
+        q = C[top].mean(axis=1) - NEST_DEPTH * float(np.linalg.norm(bhi[n] - blo[n])) * nrm
+        held = np.flatnonzero(np.all(blo <= q.max(axis=0), axis=1) & np.all(bhi >= q.min(axis=0), axis=1))
+        held = held[held != n]
+        if not len(held):
+            continue
+        total = np.zeros(len(q))
+        best, best_w = -1, 0.0
+        for j in held.tolist():
+            tj = members[int(ids[j])]
+            work += len(q) * len(tj)
+            if work > max_work:
+                return Nesting(tuple(found), False)
+            w = _winding(q, C[tj])
+            total += w
+            if float(np.abs(w).max()) > best_w:
+                best, best_w = int(ids[j]), float(np.abs(w).max())
+        expect = 1.0 if bool(np.asarray(inward)[k]) else 0.0
+        bad = np.flatnonzero(total > expect + 0.75)
+        if len(bad):
+            found.append((k, best, tuple(float(v) for v in q[bad[0]])))
+    return Nesting(tuple(found), True)
+
+
+def _winding(q: np.ndarray, tri: np.ndarray, chunk: int = 200_000) -> np.ndarray:
+    """The generalised winding number of points q (s, 3) about triangles tri (n, 3, 3)."""
+    out = np.zeros(len(q))
+    for s in range(0, len(tri), chunk):
+        t = tri[s:s + chunk]
+        a = t[None, :, 0] - q[:, None]
+        b = t[None, :, 1] - q[:, None]
+        c = t[None, :, 2] - q[:, None]
+        la, lb, lc = (np.linalg.norm(v, axis=2) for v in (a, b, c))
+        det = np.einsum("sni,sni->sn", a, np.cross(b, c))
+        den = (la * lb * lc + np.einsum("sni,sni->sn", a, b) * lc
+               + np.einsum("sni,sni->sn", a, c) * lb + np.einsum("sni,sni->sn", b, c) * la)
+        out += 2.0 * np.arctan2(det, den).sum(axis=1)
+    return out / (4.0 * math.pi)

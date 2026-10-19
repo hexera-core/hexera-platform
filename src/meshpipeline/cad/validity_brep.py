@@ -301,7 +301,7 @@ def _crossings(shape, diag: float, findings: list[Finding], measured: dict) -> b
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Copy
     from OCP.BRepMesh import BRepMesh_IncrementalMesh
 
-    from meshpipeline.cad.crossings import find_crossings
+    from meshpipeline.cad.crossings import find_crossings, nested_bodies
     from meshpipeline.cad.validity import MAX_VERIFIED_TRIANGLES
 
     try:
@@ -325,14 +325,27 @@ def _crossings(shape, diag: float, findings: list[Finding], measured: dict) -> b
     if not found.complete:
         findings.append(Finding("not_verified", ERROR,
                                 "the surface is too dense to finish the crossing search within its budget"))
-    if not found.count:
-        return complete
     fi, fj = face_of[found.pairs[:, 0]], face_of[found.pairs[:, 1]]
     mid = (pts[tris[found.pairs[:, 0]]].mean(axis=1) + pts[tris[found.pairs[:, 1]]].mean(axis=1)) / 2
     keep = fi != fj
     fp = np.unique(np.sort(np.c_[fi[keep], fj[keep]], axis=1), axis=0)
-    adjacent = _adjacent_faces(work, faces)
+    adjacent = _adjacent_faces(work, faces) if len(fp) else set()
     within, between = [], set()
+    # a body inside another's material, or sharing a face while running into it, crosses nothing:
+    # read by the winding number of points just inside each body (crossings.nested_bodies)
+    body_tri = body_of_face[face_of]
+    C = pts[tris]
+    sv = np.einsum("ij,ij->i", C[:, 0], np.cross(C[:, 1], C[:, 2]))
+    ok_b = body_tri >= 0
+    vol = np.bincount(body_tri[ok_b], weights=sv[ok_b], minlength=int(body_tri.max()) + 1 if ok_b.any() else 0)
+    nest = nested_bodies(pts, tris, body_tri, vol < 0)
+    nested = {(min(k, j), max(k, j)) for k, j, _at in nest.found if j >= 0}
+    if not nest.complete:
+        complete = False
+        findings.append(Finding("not_verified", ERROR,
+                                "there are too many bodies inside each other's boxes to finish the "
+                                "overlap search"))
+    between |= nested
     for a, b in fp.tolist():
         ba, bb = body_of_face[a], body_of_face[b]
         if ba != bb and ba >= 0 and bb >= 0:
@@ -359,11 +372,14 @@ def _crossings(shape, diag: float, findings: list[Finding], measured: dict) -> b
                                 {"faces": [[int(a) + 1, int(b) + 1] for a, b in real[:20]]}))
     # between bodies: they must share volume, not just touch
     bodies = _bodies(work)
-    overlap, unknown = [], 0
+    overlap: list[tuple[int, int, float | None]] = []
+    unknown = 0
     pairs = sorted(between)
     for a, b in pairs[:MAX_BODY_PAIRS]:
         share = _common_share(bodies[a], bodies[b])
-        if share is None:
+        if share is None and (a, b) in nested:
+            overlap.append((a, b, None))        # shells: the winding number is the evidence
+        elif share is None:
             unknown += 1
         elif share > OVERLAP_SHARE:
             overlap.append((a, b, share))
@@ -376,7 +392,8 @@ def _crossings(shape, diag: float, findings: list[Finding], measured: dict) -> b
         findings.append(Finding("bodies_overlap", ERROR,
                                 f"{len(overlap)} pair(s) of separate bodies pass into each other",
                                 len(overlap),
-                                tuple({"at": c, "bodies": [a + 1, b + 1], "shared_volume_share": _r1(s)}
+                                tuple({"at": c, "bodies": [a + 1, b + 1],
+                                       "shared_volume_share": None if s is None else _r1(s)}
                                       for a, b, s in overlap[:MAX_PLACES]
                                       if (c := _centre_common(bodies[a], bodies[b])) is not None)))
     elif between:

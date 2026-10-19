@@ -62,8 +62,8 @@ ZERO_VOLUME_RATIO = 1e-9
 MAX_VERIFIED_TRIANGLES = 4_000_000
 #: Places listed per reason (the count says how many there are in all).
 MAX_PLACES = 10
-#: The number precision a triangle file is assumed to keep, relative to its largest coordinate.
-PRECISION = 1e-6
+#: Faces closer than this many steps of the file's own number precision count as touching.
+PRECISION_STEPS = 4
 
 ERROR, WARNING, INFO = "error", "warning", "info"
 
@@ -266,8 +266,10 @@ def check_triangles(points, triangles, *, float32: bool = False, t0: float | Non
     lo, hi = pts.min(axis=0), pts.max(axis=0)
     ext = hi - lo
     diag = float(np.linalg.norm(ext))
-    measured.update(vertices=int(len(pts)), bbox_min=_r(lo), bbox_max=_r(hi), diag=_r1(diag))
-    findings.extend(_plausibility(lo, hi, diag, float32=float32))
+    step, digits = precision_of(pts)
+    measured.update(vertices=int(len(pts)), bbox_min=_r(lo), bbox_max=_r(hi), diag=_r1(diag),
+                    number_precision=digits)
+    findings.extend(_plausibility(lo, hi, diag, float32=float32 or digits == "32-bit"))
     if diag <= 0.0:
         return verdict("triangles", findings, measured, complete=True, t0=t0, units=units)
 
@@ -294,7 +296,7 @@ def check_triangles(points, triangles, *, float32: bool = False, t0: float | Non
         n = int((cnt - 1)[cnt > 1].sum())
         findings.append(Finding("duplicate_faces", ERROR, f"{n} triangle(s) are written twice", n,
                                 _places(C[good][first[cnt > 1]].mean(axis=1), diag)))
-    topo, piece = _topology(pts, Tg, diag, measured)
+    topo, piece, inward = _topology(pts, Tg, diag, measured)
     findings.extend(topo)
     complete = True
     if crossings:
@@ -305,7 +307,8 @@ def check_triangles(points, triangles, *, float32: bool = False, t0: float | Non
                                     f"{MAX_VERIFIED_TRIANGLES:,}, so whether the surface passes "
                                     "through itself was not checked", 1))
         else:
-            complete = _crossing_findings(pts, Tg, piece, diag, findings, measured)
+            complete = _crossing_findings(pts, Tg, piece, inward, diag, findings, measured,
+                                          tolerance=PRECISION_STEPS * step)
     return verdict("triangles", findings, measured, complete=complete, t0=t0, units=units)
 
 
@@ -331,16 +334,17 @@ def _plausibility(lo, hi, diag: float, *, float32: bool) -> list[Finding]:
 
 
 def _topology(pts: np.ndarray, T: np.ndarray, diag: float,
-              measured: dict) -> tuple[list[Finding], np.ndarray]:
+              measured: dict) -> tuple[list[Finding], np.ndarray, np.ndarray]:
     """Closed, manifold, oriented, solid - from the edges the triangles share. Also returns which
-    piece (triangles joined across edges) each triangle belongs to."""
+    closed piece (triangles joined across edges) each triangle belongs to (-1: an open or
+    non-manifold piece, or one enclosing nothing) and whether each piece faces inward."""
     from scipy.sparse import coo_matrix
     from scipy.sparse.csgraph import connected_components
 
     out: list[Finding] = []
     m = len(T)
     if m == 0:
-        return out, np.zeros(0, dtype=np.int64)
+        return out, np.zeros(0, dtype=np.int64), np.zeros(0, dtype=bool)
     he = np.concatenate([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]])          # half-edges
     face = np.tile(np.arange(m), 3)
     corner = np.concatenate([np.arange(m) * 3, np.arange(m) * 3 + 1, np.arange(m) * 3 + 2])
@@ -439,7 +443,8 @@ def _topology(pts: np.ndarray, T: np.ndarray, diag: float,
                            n, tuple({"at": _r((plo[k] + phi[k]) / 2),
                                      "size": _r1(float(np.linalg.norm(phi[k] - plo[k])))}
                                     for k in inside_out[:MAX_PLACES])))
-    return out, np.asarray(piece, dtype=np.int64)
+    body = np.where((closed & ~zero)[piece], piece, -1).astype(np.int64)
+    return out, body, vol < 0
 
 
 def _open_finding(pts: np.ndarray, bedges: np.ndarray, diag: float, n_open: int) -> Finding:
@@ -475,18 +480,21 @@ def _open_finding(pts: np.ndarray, bedges: np.ndarray, diag: float, n_open: int)
     return Finding("open_boundary", ERROR, msg, int(n_loops), tuple(places), details)
 
 
-def _crossing_findings(pts: np.ndarray, T: np.ndarray, piece: np.ndarray, diag: float,
-                       findings: list[Finding], measured: dict) -> bool:
-    from meshpipeline.cad.crossings import MAX_HITS, find_crossings
+def _crossing_findings(pts: np.ndarray, T: np.ndarray, piece: np.ndarray, inward: np.ndarray,
+                       diag: float, findings: list[Finding], measured: dict, *,
+                       tolerance: float) -> bool:
+    """No crossing, and no closed piece inside another's material. `piece`: each triangle's
+    closed piece, -1 for none (a crossing there is still a crossing, of the surface itself)."""
+    from meshpipeline.cad.crossings import MAX_HITS, find_crossings, nested_bodies
 
-    # faces that touch are only as coplanar as the file can write them: 32-bit numbers (STL, GLB,
-    # PLY) or a few printed digits (OBJ) - a few parts in ten million of the largest coordinate
-    found = find_crossings(pts, T, tolerance=PRECISION * float(np.max(np.abs(pts))))
+    # faces that touch are only as coplanar as the file can write them
+    found = find_crossings(pts, T, tolerance=tolerance)
     measured["crossing_pairs_tested"] = int(found.tested)
+    overlaps: list = []
     if found.count:
         I, J = found.pairs[:, 0], found.pairs[:, 1]
         mid = (pts[T[I]].mean(axis=1) + pts[T[J]].mean(axis=1)) / 2
-        between = piece[I] != piece[J]
+        between = (piece[I] != piece[J]) & (piece[I] >= 0) & (piece[J] >= 0)
         if (~between).any():
             n = int((~between).sum())
             findings.append(Finding("self_intersection", ERROR,
@@ -495,17 +503,48 @@ def _crossing_findings(pts: np.ndarray, T: np.ndarray, piece: np.ndarray, diag: 
                                     _places(mid[~between], diag)))
         if between.any():
             bp = np.unique(np.sort(np.c_[piece[I[between]], piece[J[between]]], axis=1), axis=0)
-            findings.append(Finding("bodies_overlap", ERROR,
-                                    f"{len(bp)} pair(s) of separate bodies pass into each other",
-                                    len(bp), _places(mid[between], diag)))
+            overlaps.extend(_places(mid[between], diag)[:MAX_PLACES])
+            seen = {(int(a), int(b)) for a, b in bp}
+        else:
+            seen = set()
+    else:
+        seen = set()
+    # a body wholly inside another, or sharing a face while running into it, crosses nothing
+    nest = nested_bodies(pts, T, piece, inward)
+    extra = [(k, j, at) for k, j, at in nest.found if (min(k, j), max(k, j)) not in seen]
+    overlaps.extend({"at": _r(at), "bodies": [int(k) + 1, int(j) + 1]} for k, j, at in extra[:MAX_PLACES])
+    n_pairs = len(seen) + len(extra)
+    if n_pairs:
+        findings.append(Finding("bodies_overlap", ERROR,
+                                f"{n_pairs} pair(s) of separate bodies pass into each other",
+                                n_pairs, tuple(overlaps[:MAX_PLACES])))
+    if not nest.complete:
+        findings.append(Finding("not_verified", ERROR,
+                                "there are too many bodies inside each other's boxes to finish "
+                                "the overlap search, so whether bodies overlap was not checked"))
     if not found.complete:
         findings.append(Finding("not_verified", ERROR,
                                 "the surface is too dense to finish the crossing search within its "
                                 "budget, so whether it passes through itself was not checked"))
-    return found.complete
+    return found.complete and nest.complete
 
 
 # ------------------------------------------------------------------------------- helpers -------
+def precision_of(pts: np.ndarray) -> tuple[float, str]:
+    """The step between neighbouring numbers this file can write near its largest coordinate,
+    read from the coordinates themselves: 32-bit numbers (an STL, most GLB and PLY), a fixed count
+    of printed decimals (most OBJ, ASCII STL, DAE), or full 64-bit numbers."""
+    big = float(np.max(np.abs(pts))) if pts.size else 0.0
+    if big == 0.0:
+        return 0.0, "64-bit"
+    if np.array_equal(pts.astype(np.float32).astype(np.float64), pts):
+        return big * 2.0 ** -23, "32-bit"
+    for d in range(0, 13):
+        if np.array_equal(np.round(pts, d), pts):
+            return max(10.0 ** -d, big * 2.0 ** -52), f"{d} decimals"
+    return big * 2.0 ** -52, "64-bit"
+
+
 def _next_corner(c: np.ndarray) -> np.ndarray:
     """The corner a half-edge ends at: the next corner of the same triangle."""
     return (c // 3) * 3 + (c % 3 + 1) % 3

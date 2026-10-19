@@ -213,3 +213,44 @@ def test_offset_limit_scales_with_the_part(ratio):
     p, f = _icosphere()
     r = check_triangles(p + ratio * 2.0, f, float32=True)
     assert r.clean == (ratio < 1e4)
+
+
+def _tri_box(lo, hi):
+    """An outward box as 12 triangles."""
+    x0, y0, z0 = lo
+    x1, y1, z1 = hi
+    p = np.array([[x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0],
+                  [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]], dtype=float)
+    f = np.array([[0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7], [0, 1, 5], [0, 5, 4],
+                  [1, 2, 6], [1, 6, 5], [2, 3, 7], [2, 7, 6], [3, 0, 4], [3, 4, 7]])
+    return p, f
+
+
+def test_a_body_inside_another_or_overlapping_on_matching_sides_is_an_overlap():
+    big = _tri_box((0, 0, 0), (10, 10, 10))
+    assert check_triangles(*big).clean
+    inside = _two(big, _tri_box((3, 3, 3), (6, 6, 6)))
+    assert "bodies_overlap" in _codes(check_triangles(*inside))
+    matching = _two(big, _tri_box((5, 0, 0), (15, 10, 10)))     # shares four side planes
+    assert "bodies_overlap" in _codes(check_triangles(*matching))
+    touching = _two(big, _tri_box((10, 0, 0), (20, 10, 10)))    # face to face
+    assert "bodies_overlap" not in _codes(check_triangles(*touching))
+
+
+def test_a_body_in_a_cavity_is_not_an_overlap():
+    p, f = _two(_tri_box((0, 0, 0), (10, 10, 10)), (lambda b: (b[0], b[1][:, ::-1]))(_tri_box((2, 2, 2), (8, 8, 8))))
+    p, f = _two((p, f), _tri_box((4, 4, 4), (6, 6, 6)))
+    assert check_triangles(p, f).clean
+
+
+def test_far_from_the_origin_a_64_bit_file_still_shows_its_overlap():
+    a, b = _icosphere(), _icosphere(centre=(1.2, 0.0, 0.0))
+    p, f = _two(a, b)
+    assert "bodies_overlap" in _codes(check_triangles(p + 1e6, f))
+
+
+def test_brep_nested_and_matching_side_overlaps():
+    from meshpipeline.cad.validity_brep import check_shape
+
+    assert "bodies_overlap" in _codes(check_shape(_compound(_box(), _box(x=2.0, y=2.0, z=2.0, dx=2.0, dy=2.0, dz=2.0))))
+    assert "bodies_overlap" in _codes(check_shape(_compound(_box(), _box(x=5.0))))
