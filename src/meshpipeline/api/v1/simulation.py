@@ -436,9 +436,8 @@ async def get_surface_vtk(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     from meshpipeline.render.vtk_export import surface_to_vtk
     data = await _viewer_data(job_id, owner_id, organization_id=organization_id)
     surface = data.get("surface")
-    delivered = bool(surface) and (surface.get("kind") == "polymesh"
-                                   or (surface.get("kind") == "stl" and surface.get("is_mesh") is True))
-    if not delivered:
+    if not surface or not (surface.get("kind") == "polymesh"
+                           or (surface.get("kind") == "stl" and surface.get("is_mesh") is True)):
         raise HTTPException(404, "No delivered mesh surface was stored for this job")
     try:
         body = await asyncio.to_thread(surface_to_vtk, surface)
