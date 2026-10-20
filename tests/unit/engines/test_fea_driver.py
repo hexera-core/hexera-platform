@@ -174,3 +174,21 @@ def test_no_other_engine_gains_a_driver():
     for name, spec in ENGINE_CATALOG.items():
         if name != "gmsh":
             assert spec.build_driver_for(state) is spec.build_driver
+
+
+def test_a_guard_trip_pulls_no_lever_and_ends_the_attempt(tmp_path, monkeypatch):
+    """The clock only guards (D3): a run past its guard is our infrastructure, never a reason to
+    change the plan - no lever is pulled and nothing is delivered from it."""
+    from meshpipeline.engines import runtime
+
+    ws = _stage(fx.plate_with_hole(), tmp_path / "trip")
+    monkeypatch.setitem(P.LEVELS, "draft", SMALL)
+    calls = []
+    monkeypatch.setattr(runtime, "get_engine", lambda _n: SimpleNamespace(
+        run_cartesian_mesh=lambda w, timeout: calls.append(timeout) or {"rc": -1, "timed_out": True}))
+    ok, marker, _o = asyncio.run(FD.drive(ws, {"effective_mesh_fidelity": "draft"}, job_id="t-trip",
+                                          publish=None, run=_Run()))
+    assert not ok and marker == FD.GUARD_TRIP and len(calls) == 1
+    rec = json.loads((ws / "fea_passes.json").read_text())
+    assert rec["levers"] == [] and rec["guard_trip"]["unit"] == "elements"
+    assert not any(e["rule"].startswith("LAD-fea-") and e["decided"] == "lever" for e in dr.cited_for("t-trip"))

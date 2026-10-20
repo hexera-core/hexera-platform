@@ -41,6 +41,8 @@ NO_SOURCE = "fea_source_missing"
 NOT_ONE_PART = "fea_not_one_part"
 OVER_LEVEL = "fea_over_level"
 BUILD_FAILED = "fea_build_failed"
+#: The mesher ran past its guard clock: our infrastructure, not the part (no lever is pulled).
+GUARD_TRIP = "fea_guard_trip"
 #: What the remote mesher receives besides the plan: the solid and the facts the deck reads.
 PAYLOAD = ("geometry.step", "cad_face_names.json", P.PLAN_FILE, "gmsh_spec.json")
 #: Where each pass's deliverables are kept until the best one is chosen.
@@ -126,6 +128,27 @@ def make_plan(record: dict, surface, diag_m: float, *, fidelity: str, levers: li
                        "thinnest_wall_mm": (record.get("thickness") or {}).get("min_mm"),
                        "bodies": record.get("bodies"), "notes": list(record.get("notes") or [])}
     return plan
+
+
+#: The FEA fill's slow rate (elements per second of the whole native run). None until the FEA lab
+#: (build steps 7-8) has measured one: the guard is then the engine's old fixed cap.
+FEA_FILL_RATE: float | None = None
+GUARD_FACTOR = 3.0
+
+
+def planned_work(plan: dict, cap_s: float) -> dict:
+    """The pass's planned work and its guard clock, in D3's terms (#259, contracts/work_limits:
+    PlannedWork / guard_for). Planned work - the plan's element estimate - decides everything; the
+    clock is only a guard, GUARD_FACTOR times the planned time at the slow rate, never under the old
+    cap and never over it here (gmsh's floor and ceiling are both its 1,500 s cap).
+    REBASE NOTE: once #259 merges this becomes `work_limits.PlannedWork(where="fea.gmsh",
+    unit="elements", ...)` and a trip is recorded with `determinism.note_guard_trip`."""
+    amount = float((plan.get("estimate") or {}).get("elements") or 0)
+    planned_s = amount / FEA_FILL_RATE if FEA_FILL_RATE and amount > 0 else None
+    guard = int(cap_s if planned_s is None else min(cap_s, max(cap_s, GUARD_FACTOR * planned_s)))
+    return {"where": "fea.gmsh", "unit": "elements", "amount": amount or None, "rate": FEA_FILL_RATE,
+            "floor_s": float(cap_s), "ceiling_s": float(cap_s), "planned_s": planned_s, "guard_s": guard,
+            "factor": GUARD_FACTOR}
 
 
 def write_plan(ws: Path, plan: dict) -> None:
@@ -221,6 +244,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
 
     levers: list[dict] = []
     passes: list[dict] = []
+    tripped: dict | None = None
     policy = get_spec(ENGINE).run_policy
     cap = int(policy.run_timeout()) if policy is not None else 1500
     for n in range(1, L.MAX_PASSES + 1):
@@ -244,9 +268,17 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         _clear_outputs(ws)
         note_native_pass(ws, n)
         note_native_payload(ws, [p for p in PAYLOAD if (ws / p).exists()])
+        # PLANNED WORK DECIDES, THE CLOCK ONLY GUARDS (D3's interface, mirrored - see planned_work)
+        work = planned_work(plan, cap)
         await run.fence("start native mesh")
-        result = await asyncio.to_thread(get_engine(ENGINE).run_cartesian_mesh, ws, timeout=cap)
+        result = await asyncio.to_thread(get_engine(ENGINE).run_cartesian_mesh, ws, timeout=work["guard_s"])
         await run.fence("accept native mesh output")
+        if result.get("timed_out"):
+            # A GUARD TRIP is our infrastructure, never the part's: it pulls no lever and changes no
+            # plan. The attempt ends here; the run's own retry takes it again (D3: replayed once)
+            run.note_native_run(produced_usable_mesh=False)
+            tripped = {**work, "pass": n}
+            break
         q = _read_quality(ws) if result.get("rc") in (0, 4) else {}
         made = bool(q) and (ws / "mesh.inp").exists()
         run.note_native_run(produced_usable_mesh=made and result.get("rc") == 0)
@@ -260,6 +292,14 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                         "inputs": lever.get("inputs") or {}, "words": lever["words"]}])
         levers.append(lever)
 
+    if tripped is not None and not any(f["valid"] for f in passes):
+        (ws / "fea_passes.json").write_text(json.dumps({"passes": passes, "delivered": None, "levers": levers,
+                                                        "guard_trip": tripped}, indent=1))
+        logger.warning("fea driver: the mesher ran past its guard clock (%ss, pass %s) - job_id=%s",
+                       tripped["guard_s"], tripped["pass"], job_id)
+        await run.fence("deliver builder outcome")
+        outcome = run.outcome(produced_deliverable=False, exhausted=False, failure_marker=GUARD_TRIP)
+        return False, GUARD_TRIP, outcome
     best, rule = L.best_pass(passes)
     _cite(job_id, [{"stage": "fea_ladder", "decided": "delivered pass", "value": best, "rule": "LAD-fea-5",
                     "inputs": {"passes": passes, "deciding": rule},
@@ -291,5 +331,5 @@ def driver_for(state):
     return drive if applies(state) else None
 
 
-__all__ = ["BUILD_FAILED", "NOT_ONE_PART", "NO_SOURCE", "OVER_LEVEL", "applies", "drive", "driver_for",
-           "make_plan", "measure_staged", "write_plan"]
+__all__ = ["BUILD_FAILED", "GUARD_TRIP", "NOT_ONE_PART", "NO_SOURCE", "OVER_LEVEL", "applies", "drive", "driver_for",
+           "make_plan", "measure_staged", "planned_work", "write_plan"]
