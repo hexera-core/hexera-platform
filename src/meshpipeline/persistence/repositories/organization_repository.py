@@ -11,6 +11,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from meshpipeline.persistence.models import Organization
 
 
+class LiveSubscriptionManualPlanError(ValueError):
+    """A manual plan was requested for an organization with a live provider subscription."""
+
+
+_LIVE_SUBSCRIPTION_STATUSES = frozenset({"active", "trialing", "past_due", "unpaid", "incomplete"})
+
+
 class OrganizationRepository:
 
     async def create(self, db: AsyncSession, *, name: str, slug: str) -> Organization:
@@ -67,6 +74,23 @@ class OrganizationRepository:
             row.plan = plan.strip().lower()[:64]
         row.subscription_status = (status or "").strip()[:32]
         row.current_period_end = current_period_end
+        await db.flush()
+
+    async def set_manual_plan(self, db: AsyncSession, *, organization_id: uuid.UUID,
+                              plan: str) -> None:
+        # OPERATOR-MANAGED BILLING. A plan with empty subscription_status is the existing
+        # spend_gate convention for an invoiced/manual account: it may run beyond balance, while
+        # carrying no provider subscription id that a webhook might later pretend to own.
+        row = await db.get(Organization, organization_id)
+        if row is None:
+            return
+        status = (row.subscription_status or "").strip().lower()
+        if row.stripe_subscription_id and status in _LIVE_SUBSCRIPTION_STATUSES:
+            raise LiveSubscriptionManualPlanError(
+                "cannot set a manual plan while a provider subscription is live")
+        row.plan = plan.strip().lower()[:64]
+        row.subscription_status = ""
+        row.current_period_end = None
         await db.flush()
 
     async def list_with_billing(self, db: AsyncSession, *, limit: int | None = 100

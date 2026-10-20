@@ -25,6 +25,10 @@ test("builds dynamic product API routes with encoded path segments", () => {
     "/api/v1/admin/ops/organizations/org%20one/credit-grants",
   );
   assert.equal(
+    hexeraApiRoutes.adminOpsOrganizationManualPlan("org one"),
+    "/api/v1/admin/ops/organizations/org%20one/manual-plan",
+  );
+  assert.equal(
     hexeraApiRoutes.adminOpsOrganizations(0),
     "/api/v1/admin/ops/organizations?limit=0",
   );

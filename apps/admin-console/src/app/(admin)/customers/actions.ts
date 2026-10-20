@@ -6,7 +6,12 @@ import { headers } from "next/headers";
 import { getIapVerifier, iapAudience, verifyIapActor, type IapActor } from "@/lib/auth/iap";
 import { readAdminTargets } from "@/lib/gcp/config";
 
-import { applyCreditGrant, applyInvoiceRaise, type CustomerActionResult } from "./operations";
+import {
+  applyCreditGrant,
+  applyInvoiceRaise,
+  applyManualPlan,
+  type CustomerActionResult,
+} from "./operations";
 
 async function verifiedActor(): Promise<IapActor> {
   const targets = readAdminTargets(process.env);
@@ -41,5 +46,14 @@ export async function raiseCustomerInvoice(formData: FormData) {
   const actor = await verifiedActor();
   throwIfFailed(await applyInvoiceRaise(formData, { actor }));
   revalidatePath("/billing");
+  revalidatePath(`/customers/${organizationId}`);
+}
+
+export async function setCustomerManualPlan(formData: FormData) {
+  const organizationId = String(formData.get("organization_id") ?? "");
+  const actor = await verifiedActor();
+  throwIfFailed(await applyManualPlan(formData, { actor }));
+  revalidatePath("/billing");
+  revalidatePath("/customers");
   revalidatePath(`/customers/${organizationId}`);
 }

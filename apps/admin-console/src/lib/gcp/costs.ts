@@ -21,11 +21,22 @@ export type BudgetSummary = {
   basis: string;
   currency: string | null;
   displayName: string;
+  projectCount: number | null;
   scopedToProject: boolean;
   thresholdPercents: readonly number[];
 };
 
 export type SpendRow = { amount: number; currency: string; service: string };
+
+export type CostPosture = {
+  budgetAmount: number;
+  budgetName: string;
+  currency: string;
+  largestService: SpendRow | null;
+  percentUsed: number;
+  remaining: number;
+  spent: number;
+};
 
 // A billing export starts writing from the day it is switched on, and the first table appears
 // hours later. Between configuring BILLING_EXPORT_TABLE and that first write, BigQuery answers
@@ -100,6 +111,29 @@ function toNumber(value: number | string | { toNumber(): number } | null | undef
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+export function budgetPosture(
+  budgets: readonly BudgetSummary[],
+  spend: readonly SpendRow[],
+): CostPosture | null {
+  const budget =
+    budgets
+      .filter((candidate) => candidate.amount !== null && candidate.projectCount === 1)
+      .sort((left, right) => Number(right.scopedToProject) - Number(left.scopedToProject))[0] ??
+    null;
+  if (!budget || budget.amount === null) return null;
+
+  const spent = spend.reduce((sum, row) => sum + row.amount, 0);
+  return {
+    budgetAmount: budget.amount,
+    budgetName: budget.displayName,
+    currency: budget.currency ?? spend[0]?.currency ?? "USD",
+    largestService: spend[0] ?? null,
+    percentUsed: budget.amount > 0 ? Math.round((spent / budget.amount) * 100) : 0,
+    remaining: budget.amount - spent,
+    spent,
+  };
+}
+
 export async function readBillingAccount(
   client: BillingReader,
   projectId: string,
@@ -142,6 +176,7 @@ export async function readBudgets(
       basis: specified ? "specified" : "last period",
       currency: specified?.currencyCode || null,
       displayName: budget.displayName || budget.name || "unnamed budget",
+      projectCount: (budget.budgetFilter?.projects ?? []).length || null,
       scopedToProject: (budget.budgetFilter?.projects ?? []).length > 0,
       thresholdPercents: (budget.thresholdRules ?? [])
         .map((rule) => Math.round((rule.thresholdPercent ?? 0) * 100))

@@ -4,12 +4,28 @@ import { randomUUID } from "node:crypto";
 import { Alert, EmptyState, FieldList, Panel, StatRow } from "@/app/_components/panel";
 import { isLaunchAdminSurfaceEnabled } from "@/app/_components/sections";
 import { compactDate, readCustomer, signedNumber } from "@/lib/admin/read";
-import { money, readInvoices, when } from "@/lib/billing/read";
+import { manualPlanChoices, money, readInvoices, readPlans, when } from "@/lib/billing/read";
 
-import { grantCustomerCredits, raiseCustomerInvoice } from "../actions";
+import { grantCustomerCredits, raiseCustomerInvoice, setCustomerManualPlan } from "../actions";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+
+function seconds(value: number | null): string {
+  if (value === null) return "-";
+  if (value < 60) return `${value}s`;
+  const minutes = Math.floor(value / 60);
+  const rest = value % 60;
+  return rest ? `${minutes}m ${rest}s` : `${minutes}m`;
+}
+
+function payloadPreview(payload: unknown): string {
+  try {
+    return JSON.stringify(payload, null, 2);
+  } catch {
+    return String(payload);
+  }
+}
 
 export default async function CustomerPage({
   params,
@@ -19,13 +35,15 @@ export default async function CustomerPage({
   if (!isLaunchAdminSurfaceEnabled()) notFound();
 
   const { organizationId } = await params;
-  const [customer, invoices] = await Promise.all([
+  const [customer, invoices, plans] = await Promise.all([
     readCustomer(organizationId),
     readInvoices(organizationId),
+    readPlans(),
   ]);
   const org = customer.data?.organization;
   const creditGrantOperationId = randomUUID();
   const invoiceOperationId = randomUUID();
+  const planChoices = manualPlanChoices(plans);
 
   if (customer.error) {
     return (
@@ -89,6 +107,40 @@ export default async function CustomerPage({
           </div>
           <button className="admin-button" type="submit">Grant credits</button>
         </form>
+      </Panel>
+
+      <Panel title="Manual billing plan" heading="operator-managed tier">
+        {planChoices === null ? (
+          <>
+            <Alert>{plans.error ?? "The plan catalogue could not be read."}</Alert>
+            <EmptyState note="Manual plan changes are disabled until the plan catalogue loads." />
+          </>
+        ) : (
+          <form action={setCustomerManualPlan} className="admin-form">
+            <input type="hidden" name="organization_id" value={org.id} />
+            <div className="admin-field-grid">
+              <label className="admin-field-input">
+                <span>Plan</span>
+                <select defaultValue={org.plan} name="plan">
+                  <option value="">Free / no manual plan</option>
+                  {planChoices.map((plan) => (
+                    <option key={plan.name} value={plan.name}>
+                      {plan.name}
+                      {plan.purchasable ? "" : " (manual)"}
+                    </option>
+                  ))}
+                </select>
+                <small>A manual plan has no provider subscription status and can run beyond balance.</small>
+              </label>
+              <label className="admin-field-input">
+                <span>Reason</span>
+                <input name="reason" maxLength={128} required />
+                <small>Recorded in the admin audit log.</small>
+              </label>
+            </div>
+            <button className="admin-button" type="submit">Set manual plan</button>
+          </form>
+        )}
       </Panel>
 
       <Panel title="Invoices" heading="payment-provider records and manual billing">
@@ -187,7 +239,16 @@ export default async function CustomerPage({
         {customer.data.recent_runs.length ? (
           <table className="admin-table">
             <thead>
-              <tr><th>Created</th><th>Status</th><th>Owner</th><th>Task</th><th>Dispatch</th><th>Attempts</th></tr>
+              <tr>
+                <th>Created</th>
+                <th>Status</th>
+                <th>Owner</th>
+                <th>Task</th>
+                <th>Dispatch</th>
+                <th>Attempts</th>
+                <th>Duration</th>
+                <th>Charged</th>
+              </tr>
             </thead>
             <tbody>
               {customer.data.recent_runs.map((run) => (
@@ -198,12 +259,36 @@ export default async function CustomerPage({
                   <td>{run.task_label || "-"}</td>
                   <td>{run.pipeline_dispatch_state || run.pipeline_backend || "-"}</td>
                   <td>{run.attempts.toLocaleString("en-US")}</td>
+                  <td>{seconds(run.duration_seconds)}</td>
+                  <td>{run.charged_credits.toLocaleString("en-US")}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         ) : (
           <EmptyState note="This organisation has no runs yet." />
+        )}
+      </Panel>
+
+      <Panel title="Usage by period" heading="credits granted and spent for this organisation">
+        {customer.data.usage_periods.length ? (
+          <table className="admin-table">
+            <thead>
+              <tr><th>Period</th><th>Granted</th><th>Spent</th><th>Entries</th></tr>
+            </thead>
+            <tbody>
+              {customer.data.usage_periods.map((period) => (
+                <tr key={period.period ?? "unknown"}>
+                  <td>{compactDate(period.period)}</td>
+                  <td>{period.granted.toLocaleString("en-US")}</td>
+                  <td>{period.spent.toLocaleString("en-US")}</td>
+                  <td>{period.entries.toLocaleString("en-US")}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <EmptyState note="No usage has been recorded for this organisation." />
         )}
       </Panel>
 
@@ -227,6 +312,44 @@ export default async function CustomerPage({
           </table>
         ) : (
           <EmptyState note="No credit ledger entries for this organisation." />
+        )}
+      </Panel>
+
+      <Panel title="Traces" heading="recent durable capture operations">
+        {customer.data.traces.length ? (
+          <table className="admin-table">
+            <thead>
+              <tr>
+                <th>Seq</th>
+                <th>When</th>
+                <th>Job</th>
+                <th>Generation</th>
+                <th>Attempt</th>
+                <th>Name</th>
+                <th>Payload</th>
+              </tr>
+            </thead>
+            <tbody>
+              {customer.data.traces.map((trace) => (
+                <tr key={trace.seq}>
+                  <td>{trace.seq.toLocaleString("en-US")}</td>
+                  <td>{compactDate(trace.created_at)}</td>
+                  <td>{trace.job_id}</td>
+                  <td>{trace.execution_generation.toLocaleString("en-US")}</td>
+                  <td>{trace.attempt === null ? "-" : trace.attempt.toLocaleString("en-US")}</td>
+                  <td>{trace.name || trace.record_type}</td>
+                  <td>
+                    <details>
+                      <summary>{trace.kind}</summary>
+                      <pre className="admin-json">{payloadPreview(trace.payload)}</pre>
+                    </details>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <EmptyState note="No durable trace records have been captured for this organisation." />
         )}
       </Panel>
     </>

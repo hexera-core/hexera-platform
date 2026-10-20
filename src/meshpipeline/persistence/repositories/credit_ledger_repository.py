@@ -92,6 +92,43 @@ class CreditLedgerRepository:
                  "entries": int(row[3] or 0)}
                 for row in res.all()]
 
+    async def usage_by_period_for_org(self, db: AsyncSession, *, organization_id: uuid.UUID,
+                                      months: int = 6) -> list[dict]:
+        """Credits granted and spent per month for one organisation. Admin routes only."""
+        bucket = func.date_trunc("month", CreditLedgerEntry.created_at).label("period")
+        res = await db.execute(
+            select(bucket,
+                   func.coalesce(func.sum(case((CreditLedgerEntry.entry_type
+                                                == CreditEntryType.grant,
+                                                CreditLedgerEntry.amount), else_=0)), 0),
+                   func.coalesce(func.sum(case((CreditLedgerEntry.entry_type
+                                                == CreditEntryType.debit,
+                                                -CreditLedgerEntry.amount), else_=0)), 0),
+                   func.count())
+            .where(CreditLedgerEntry.organization_id == organization_id)
+            .group_by(bucket)
+            .order_by(bucket.desc())
+            .limit(months))
+        return [{"period": row[0].isoformat() if row[0] else None,
+                 "granted": int(row[1] or 0), "spent": int(row[2] or 0),
+                 "entries": int(row[3] or 0)}
+                for row in res.all()]
+
+    async def charges_by_job_id(self, db: AsyncSession, *, organization_id: uuid.UUID,
+                                job_ids: list[uuid.UUID]) -> dict[uuid.UUID, int]:
+        """Recorded debit amount for each job id, keyed by job id. Admin routes only."""
+        if not job_ids:
+            return {}
+        reason_to_job = {f"mesh job {job_id}"[:128]: job_id for job_id in job_ids}
+        res = await db.execute(
+            select(CreditLedgerEntry.reason,
+                   func.coalesce(func.sum(-CreditLedgerEntry.amount), 0))
+            .where(CreditLedgerEntry.organization_id == organization_id,
+                   CreditLedgerEntry.entry_type == CreditEntryType.debit,
+                   CreditLedgerEntry.reason.in_(reason_to_job))
+            .group_by(CreditLedgerEntry.reason))
+        return {reason_to_job[row[0]]: int(row[1] or 0) for row in res.all()}
+
     async def unmetered_total(self, db: AsyncSession) -> dict:
         """How much consumption has been debited but not yet reported to the provider's meter."""
         # THE SWEEP'S BACKLOG, which is what an operator actually needs to see: a number that keeps

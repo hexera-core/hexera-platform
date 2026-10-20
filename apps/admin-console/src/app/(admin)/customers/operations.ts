@@ -1,6 +1,6 @@
 import { recordAdminAction, type AdminAuditEntry } from "@/lib/audit";
 import type { IapActor } from "@/lib/auth/iap";
-import { grantCredits } from "@/lib/admin/read";
+import { grantCredits, setManualPlan } from "@/lib/admin/read";
 import { raiseInvoice } from "@/lib/billing/read";
 
 export type CustomerActionResult = {
@@ -13,6 +13,7 @@ type CustomerMutationDeps = {
   audit?: (entry: AdminAuditEntry) => void;
   grant?: typeof grantCredits;
   invoice?: typeof raiseInvoice;
+  plan?: typeof setManualPlan;
 };
 
 function requiredString(form: FormData, field: string): string {
@@ -99,6 +100,36 @@ export async function applyInvoiceRaise(
         description,
         invoiceId: result.data.invoice.id,
       },
+      resource: organizationId,
+    });
+    return { ok: true };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error), ok: false };
+  }
+}
+
+export async function applyManualPlan(
+  form: FormData,
+  deps: CustomerMutationDeps,
+): Promise<CustomerActionResult> {
+  const audit = deps.audit ?? recordAdminAction;
+  const planWriter = deps.plan ?? setManualPlan;
+
+  try {
+    const organizationId = requiredString(form, "organization_id");
+    const planRaw = form.get("plan");
+    const plan = typeof planRaw === "string" ? planRaw.trim().toLowerCase() : "";
+    const reason = requiredString(form, "reason");
+
+    const result = await planWriter({ organizationId, plan });
+    if (result.error || !result.data) {
+      return { error: result.error ?? "Manual plan change failed.", ok: false };
+    }
+
+    audit({
+      action: "customer.manual_plan.set",
+      actor: deps.actor.email,
+      after: { plan, reason },
       resource: organizationId,
     });
     return { ok: true };

@@ -6,12 +6,18 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 
 import meshpipeline.settings.billing as billcfg
 import meshpipeline.settings.plans as plancfg
 from meshpipeline.api.v1.admin_billing import admin_dep
 from meshpipeline.application import credit_service
-from meshpipeline.persistence.models import CreditLedgerEntry, Organization, SimulationJob
+from meshpipeline.persistence.models import (
+    CaptureOperation,
+    CreditLedgerEntry,
+    Organization,
+    SimulationJob,
+)
 from meshpipeline.persistence.session import get_db
 
 router = APIRouter()
@@ -21,6 +27,10 @@ class CreditGrantRequest(BaseModel):
     amount: int = Field(gt=0, le=10_000_000)
     operation_id: uuid.UUID
     reason: str = Field(min_length=1, max_length=128)
+
+
+class ManualPlanRequest(BaseModel):
+    plan: str = Field(max_length=64)
 
 
 @router.get("/activity", dependencies=[Depends(admin_dep)])
@@ -51,9 +61,17 @@ async def read_organization(organization_id: str) -> dict:
             raise HTTPException(status_code=404, detail="organisation not found")
         balance = await credit_service.balance(db, organization_id=organization)
         ledger = await ledger_repo().list_for_org(db, organization_id=organization, limit=50)
+        usage_periods = await ledger_repo().usage_by_period_for_org(
+            db, organization_id=organization, months=12)
         members = await membership_repo().list_members(db, organization_id=organization)
         runs = await job_repo().list_recent_admin(db, organization_id=organization, limit=25)
+        charges = await ledger_repo().charges_by_job_id(
+            db,
+            organization_id=organization,
+            job_ids=[row[0].id for row in runs],
+        )
         stats = (await _stats(db, organization_id=organization)).get(org.id, {})
+        traces = await _trace_rows(db, organization, limit=75)
     return {
         "billing_enabled": billcfg.enabled(),
         "organization": _organization(org, balance, stats),
@@ -63,7 +81,9 @@ async def read_organization(organization_id: str) -> dict:
              "role": getattr(role, "value", role)}
             for user, role in members
         ],
-        "recent_runs": [_run(row[0], row[1], row[2]) for row in runs],
+        "recent_runs": [_run(row[0], row[1], row[2], charges=charges) for row in runs],
+        "traces": [_trace(row) for row in traces],
+        "usage_periods": usage_periods,
     }
 
 
@@ -89,6 +109,33 @@ async def grant_credits(organization_id: str, body: CreditGrantRequest) -> dict:
             raise HTTPException(status_code=409, detail=str(exc))
         balance = await credit_service.balance(db, organization_id=organization)
     return {"balance": balance}
+
+
+@router.post("/organizations/{organization_id}/manual-plan", dependencies=[Depends(admin_dep)])
+async def set_manual_plan(organization_id: str, body: ManualPlanRequest) -> dict:
+    organization = _parse(organization_id)
+    plan = body.plan.strip().lower()
+    if plan and plan not in plancfg.PLANS:
+        raise HTTPException(status_code=422, detail="unknown plan")
+    async with get_db() as db:
+        org = await organization_repo().get_by_id(db, organization)
+        if org is None:
+            raise HTTPException(status_code=404, detail="organisation not found")
+        if _has_live_subscription(org):
+            raise HTTPException(
+                status_code=409,
+                detail="cannot set a manual plan while a provider subscription is live",
+            )
+        try:
+            await organization_repo().set_manual_plan(db, organization_id=organization, plan=plan)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        org.plan = plan
+        org.subscription_status = ""
+        org.current_period_end = None
+        balance = await credit_service.balance(db, organization_id=organization)
+        stats = (await _stats(db, organization_id=organization)).get(org.id, {})
+    return {"organization": _organization(org, balance, stats)}
 
 
 async def _stats(db, *, organization_id: uuid.UUID | None = None) -> dict:
@@ -118,10 +165,14 @@ def _organization(org: Organization, balance: int, stats: dict) -> dict:
     }
 
 
-def _run(job: SimulationJob, task_label: str | None, organization_name: str | None) -> dict:
+def _run(job: SimulationJob, task_label: str | None, organization_name: str | None, *,
+         charges: dict[uuid.UUID, int] | None = None) -> dict:
+    duration_seconds = _duration_seconds(job)
     return {
         "attempts": job.current_attempt,
+        "charged_credits": int((charges or {}).get(job.id, 0)),
         "created_at": job.created_at.isoformat() if job.created_at else None,
+        "duration_seconds": duration_seconds,
         "ended_at": job.ended_at.isoformat() if job.ended_at else None,
         "failed_reason": getattr(job.failed_reason, "value", job.failed_reason),
         "id": str(job.id),
@@ -143,6 +194,16 @@ def _run(job: SimulationJob, task_label: str | None, organization_name: str | No
     }
 
 
+def _duration_seconds(job: SimulationJob) -> int | None:
+    started = getattr(job, "started_at", None)
+    if not started:
+        return None
+    finished = getattr(job, "ended_at", None) or getattr(job, "updated_at", None)
+    if not finished:
+        return None
+    return max(0, int((finished - started).total_seconds()))
+
+
 def _ledger(row: CreditLedgerEntry) -> dict:
     return {
         "amount": row.amount,
@@ -153,6 +214,39 @@ def _ledger(row: CreditLedgerEntry) -> dict:
         "overage": int(getattr(row, "overage", 0) or 0),
         "reason": row.reason,
     }
+
+
+async def _trace_rows(db, organization_id: uuid.UUID, *, limit: int = 75) -> list[CaptureOperation]:
+    bounded = max(1, min(limit, 250))
+    result = await db.execute(
+        select(CaptureOperation)
+        .join(SimulationJob, SimulationJob.id == CaptureOperation.job_id)
+        .where(SimulationJob.organization_id == organization_id)
+        .order_by(CaptureOperation.seq.desc())
+        .limit(bounded))
+    return list(result.scalars().all())
+
+
+def _trace(row: CaptureOperation) -> dict:
+    return {
+        "attempt": row.attempt,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "execution_generation": row.execution_generation,
+        "job_id": str(row.job_id),
+        "kind": row.kind,
+        "name": row.name,
+        "payload": row.payload,
+        "record_type": row.record_type,
+        "seq": int(row.seq),
+    }
+
+
+_LIVE_SUBSCRIPTION_STATUSES = frozenset({"active", "trialing", "past_due", "unpaid", "incomplete"})
+
+
+def _has_live_subscription(org: Organization) -> bool:
+    status = (org.subscription_status or "").strip().lower()
+    return bool(org.stripe_subscription_id) and status in _LIVE_SUBSCRIPTION_STATUSES
 
 
 def _parse(organization_id: str) -> uuid.UUID:

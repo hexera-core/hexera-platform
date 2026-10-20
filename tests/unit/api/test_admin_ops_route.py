@@ -25,11 +25,13 @@ class _Row:
 class _OrgRepo:
     def __init__(self):
         self.seen_limits = []
+        self.manual_plans = []
         self.organization = _Row(
             id=uuid.uuid4(),
             name="Acme",
             slug="acme",
             plan="team",
+            stripe_subscription_id="",
             subscription_status="active",
             stripe_customer_id="cus_1",
             current_period_end=None,
@@ -43,6 +45,9 @@ class _OrgRepo:
 
     async def get_by_id(self, db, organization_id):
         return self.organization if organization_id == self.organization.id else None
+
+    async def set_manual_plan(self, db, *, organization_id, plan):
+        self.manual_plans.append({"organization_id": organization_id, "plan": plan})
 
 
 class _JobRepo:
@@ -85,10 +90,22 @@ class _JobRepo:
 
 class _LedgerRepo:
     def __init__(self):
+        self.charges = {}
         self.entries = []
 
     async def list_for_org(self, db, *, organization_id, limit=25, before=None):
         return self.entries
+
+    async def charges_by_job_id(self, db, *, organization_id, job_ids):
+        return {job_id: self.charges[job_id] for job_id in job_ids if job_id in self.charges}
+
+    async def usage_by_period_for_org(self, db, *, organization_id, months=6):
+        return [{
+            "entries": 3,
+            "granted": 1000,
+            "period": "2026-09-01T00:00:00+00:00",
+            "spent": 420,
+        }]
 
 
 class _Members:
@@ -152,13 +169,39 @@ def test_customers_list_can_request_every_organization(monkeypatch):
 
 def test_org_detail_includes_members_ledger_and_recent_runs(monkeypatch):
     orgs = _OrgRepo()
-    client = _client(monkeypatch, orgs, _JobRepo(orgs.organization.id), _LedgerRepo())
+    jobs = _JobRepo(orgs.organization.id)
+    jobs.job.status = "succeeded"
+    jobs.job.ended_at = datetime(2026, 9, 26, 10, 7, tzinfo=UTC)
+    ledger = _LedgerRepo()
+    ledger.charges[jobs.job.id] = 1234
+    trace_event = _Row(
+        attempt=2,
+        created_at=datetime(2026, 9, 26, 10, 3, tzinfo=UTC),
+        execution_generation=1,
+        job_id=jobs.job.id,
+        kind="event",
+        name="builder_attempt",
+        payload={"engine": "snappy"},
+        record_type="span_event",
+        seq=7,
+    )
+
+    async def _traces(db, organization_id, *, limit=50):
+        return [trace_event]
+
+    monkeypatch.setattr(admin_ops, "_trace_rows", _traces)
+    client = _client(monkeypatch, orgs, jobs, ledger)
 
     body = client.get(f"/api/v1/admin/ops/organizations/{orgs.organization.id}", headers=HEADERS).json()
 
     assert body["organization"]["name"] == "Acme"
     assert body["members"][0]["email"] == "owner@example.com"
-    assert body["recent_runs"][0]["status"] == "running"
+    assert body["recent_runs"][0]["status"] == "succeeded"
+    assert body["recent_runs"][0]["duration_seconds"] == 360
+    assert body["recent_runs"][0]["charged_credits"] == 1234
+    assert body["usage_periods"][0]["spent"] == 420
+    assert body["traces"][0]["name"] == "builder_attempt"
+    assert body["traces"][0]["payload"] == {"engine": "snappy"}
 
 
 def test_credit_grant_appends_a_positive_ledger_entry(monkeypatch):
@@ -232,6 +275,56 @@ def test_credit_grant_rejects_blank_reason(monkeypatch):
     assert res.status_code == 422
 
 
+def test_manual_plan_sets_operator_managed_enterprise_tier(monkeypatch):
+    orgs = _OrgRepo()
+    orgs.organization.subscription_status = ""
+    client = _client(monkeypatch, orgs, _JobRepo(orgs.organization.id), _LedgerRepo())
+
+    res = client.post(
+        f"/api/v1/admin/ops/organizations/{orgs.organization.id}/manual-plan",
+        headers=HEADERS,
+        json={"plan": "enterprise"},
+    )
+
+    assert res.status_code == 200
+    assert orgs.manual_plans == [{
+        "organization_id": orgs.organization.id,
+        "plan": "enterprise",
+    }]
+    assert res.json()["organization"]["plan"] == "enterprise"
+    assert res.json()["organization"]["status"] == ""
+
+
+def test_manual_plan_rejects_live_provider_subscriptions(monkeypatch):
+    orgs = _OrgRepo()
+    orgs.organization.stripe_subscription_id = "sub_live"
+    orgs.organization.subscription_status = "active"
+    client = _client(monkeypatch, orgs, _JobRepo(orgs.organization.id), _LedgerRepo())
+
+    res = client.post(
+        f"/api/v1/admin/ops/organizations/{orgs.organization.id}/manual-plan",
+        headers=HEADERS,
+        json={"plan": "enterprise"},
+    )
+
+    assert res.status_code == 409
+    assert orgs.manual_plans == []
+
+
+def test_manual_plan_rejects_unknown_tier(monkeypatch):
+    orgs = _OrgRepo()
+    client = _client(monkeypatch, orgs, _JobRepo(orgs.organization.id), _LedgerRepo())
+
+    res = client.post(
+        f"/api/v1/admin/ops/organizations/{orgs.organization.id}/manual-plan",
+        headers=HEADERS,
+        json={"plan": "platinum"},
+    )
+
+    assert res.status_code == 422
+    assert orgs.manual_plans == []
+
+
 def test_every_route_carries_the_guard(monkeypatch):
     orgs = _OrgRepo()
     client = _client(monkeypatch, orgs, _JobRepo(orgs.organization.id), _LedgerRepo())
@@ -244,6 +337,11 @@ def test_every_route_carries_the_guard(monkeypatch):
             "POST",
             f"/api/v1/admin/ops/organizations/{orgs.organization.id}/credit-grants",
             {"amount": 1, "operation_id": str(uuid.uuid4()), "reason": "guard probe"},
+        ),
+        (
+            "POST",
+            f"/api/v1/admin/ops/organizations/{orgs.organization.id}/manual-plan",
+            {"plan": "enterprise"},
         ),
     ]
 

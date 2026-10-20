@@ -1,5 +1,8 @@
+import Link from "next/link";
+
 import { Alert, EmptyState, Panel, StatRow } from "@/app/_components/panel";
 import {
+  billingAttention,
   credits,
   money,
   planLabel,
@@ -44,6 +47,10 @@ export default async function BillingPage() {
 
   const orgRows = organizations.data?.organizations ?? [];
   const detailed = orgRows.slice(0, DETAIL_LIMIT);
+  const attention = billingAttention(
+    orgRows,
+    usage.data?.pending_meter ?? { credits: 0, entries: 0 },
+  );
 
   // THE DETAIL READS ARE PARALLEL and each still returns its own error: one tenant whose invoices
   // cannot be fetched must not blank the ledger of the tenant above it.
@@ -62,7 +69,7 @@ export default async function BillingPage() {
       <h1>Billing</h1>
       <p className="admin-lede">
         Customer billing — what each organisation is on, what it has spent, and what it has been
-        invoiced. For what the platform itself costs to run, see <a href="/costs">Costs</a>.
+        invoiced. For what the platform itself costs to run, see <Link href="/costs">Costs</Link>.
       </p>
 
       {billingEnabled ? null : (
@@ -109,6 +116,41 @@ export default async function BillingPage() {
         )}
       </Panel>
 
+      <Panel title="Billing attention" heading="manual follow-ups">
+        {organizations.error || usage.error ? (
+          <EmptyState note="Attention items need organizations and usage to read successfully." />
+        ) : attention.length > 0 ? (
+          <table className="admin-table">
+            <thead>
+              <tr>
+                <th>Severity</th>
+                <th>Customer</th>
+                <th>Reason</th>
+              </tr>
+            </thead>
+            <tbody>
+              {attention.map((item, index) => (
+                <tr key={`${item.kind}-${item.organizationId ?? "global"}-${index}`}>
+                  <td>{item.severity}</td>
+                  <td>
+                    {item.organizationId ? (
+                      <Link href={`/customers/${item.organizationId}`}>
+                        {item.organizationName ?? item.organizationId}
+                      </Link>
+                    ) : (
+                      "all customers"
+                    )}
+                  </td>
+                  <td>{item.detail}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <EmptyState note="No negative free balances, unpaid subscriptions, manual plans without provider customers, or meter backlog." />
+        )}
+      </Panel>
+
       <Panel title="Credit balance" heading="derived from credit_ledger, never stored">
         {organizations.error ? (
           <Alert>{organizations.error}</Alert>
@@ -127,7 +169,9 @@ export default async function BillingPage() {
             <tbody>
               {orgRows.map((org) => (
                 <tr key={org.id}>
-                  <td>{org.name}</td>
+                  <td>
+                    <Link href={`/customers/${org.id}`}>{org.name}</Link>
+                  </td>
                   <td>{planLabel(org.plan)}</td>
                   <td>{subscriptionLabel(org)}</td>
                   <td>{credits(org.balance)}</td>

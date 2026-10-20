@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { credits, money, planLabel, when } from "./read";
+import { billingAttention, credits, manualPlanChoices, money, planLabel, when } from "./read";
 
 test("money divides the provider's smallest unit rather than trusting a decimal", () => {
   // The provider sends cents. Rendering 250000 as $250,000.00 instead of $2,500.00 is the kind of
@@ -42,4 +42,84 @@ test("when renders a dash for absent or unparseable timestamps", () => {
   assert.equal(when(null), "—");
   assert.equal(when("not a date"), "—");
   assert.equal(when("2026-09-22T12:00:00+00:00"), "2026-09-22");
+});
+
+test("billing attention names manual follow-ups without hiding meter backlog", () => {
+  const items = billingAttention(
+    [
+      {
+        balance: -25,
+        created_at: null,
+        current_period_end: null,
+        has_billing_account: false,
+        id: "org-free",
+        included_credits: 0,
+        name: "Free Overrun",
+        plan: "",
+        slug: "free-overrun",
+        status: "",
+        stripe_customer_id: "",
+      },
+      {
+        balance: 100,
+        created_at: null,
+        current_period_end: null,
+        has_billing_account: true,
+        id: "org-enterprise",
+        included_credits: 1000,
+        name: "Enterprise Trial",
+        plan: "enterprise",
+        slug: "enterprise-trial",
+        status: "",
+        stripe_customer_id: "",
+      },
+      {
+        balance: 50,
+        created_at: null,
+        current_period_end: null,
+        has_billing_account: true,
+        id: "org-late",
+        included_credits: 1000,
+        name: "Late Card",
+        plan: "team",
+        slug: "late-card",
+        status: "past_due",
+        stripe_customer_id: "cus_123",
+      },
+    ],
+    { credits: 42, entries: 3 },
+  );
+
+  assert.deepEqual(
+    items.map((item) => [item.kind, item.organizationId ?? "", item.severity]),
+    [
+      ["meter_backlog", "", "warn"],
+      ["negative_balance", "org-free", "warn"],
+      ["manual_without_customer", "org-enterprise", "info"],
+      ["past_due", "org-late", "warn"],
+    ],
+  );
+});
+
+test("manual plan choices are unavailable when the plan catalogue read failed", () => {
+  assert.equal(manualPlanChoices({ data: null, error: "Product API returned 503." }), null);
+  assert.deepEqual(
+    manualPlanChoices({
+      data: {
+        billing_enabled: true,
+        plans: [
+          {
+            included_credits: 1,
+            max_concurrent_jobs: 1,
+            max_jobs_per_owner: 1,
+            name: "enterprise",
+            purchasable: false,
+            rate_limit_per_minute: 1,
+          },
+        ],
+      },
+      error: null,
+    })?.map((plan) => plan.name),
+    ["enterprise"],
+  );
 });

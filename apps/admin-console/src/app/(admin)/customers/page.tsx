@@ -1,9 +1,11 @@
+import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { Alert, EmptyState, Panel, StatRow } from "@/app/_components/panel";
 import { isLaunchAdminSurfaceEnabled } from "@/app/_components/sections";
 import {
   compactDate,
+  filterCustomers,
   readCustomers,
   signedNumber,
   sortCustomers,
@@ -13,25 +15,29 @@ import {
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-function nextHref(key: string, sort: string, direction: string): string {
+function nextHref(key: string, sort: string, direction: string, query: string): string {
   const nextDirection = sort === key && direction !== "asc" ? "asc" : "desc";
-  return `/customers?sort=${encodeURIComponent(key)}&direction=${nextDirection}`;
+  const params = new URLSearchParams({ direction: nextDirection, sort: key });
+  if (query.trim()) params.set("q", query.trim());
+  return `/customers?${params.toString()}`;
 }
 
 function SortHeader({
   children,
   direction,
   name,
+  query,
   sort,
 }: {
   children: React.ReactNode;
   direction: string;
   name: string;
+  query: string;
   sort: string;
 }) {
   return (
     <th>
-      <a href={nextHref(name, sort, direction)}>{children}</a>
+      <Link href={nextHref(name, sort, direction, query)}>{children}</Link>
     </th>
   );
 }
@@ -46,8 +52,13 @@ export default async function CustomersPage({
   const params = await searchParams;
   const sort = typeof params.sort === "string" ? params.sort : "name";
   const direction = typeof params.direction === "string" ? params.direction : "asc";
+  const query = typeof params.q === "string" ? params.q : "";
   const customers = await readCustomers();
-  const rows = sortCustomers(customers.data?.organizations ?? [], sort, direction);
+  const rows = sortCustomers(
+    filterCustomers(customers.data?.organizations ?? [], query),
+    sort,
+    direction,
+  );
 
   const totalBalance = rows.reduce((sum, org) => sum + org.balance, 0);
   const activeRuns = rows.reduce((sum, org) => sum + org.active_runs, 0);
@@ -71,26 +82,39 @@ export default async function CustomersPage({
       </Panel>
 
       <Panel title="Organisations" heading="click a heading to sort">
+        <form action="/customers" className="admin-search" role="search">
+          <label className="admin-field-input">
+            <span>Search customers</span>
+            <input
+              defaultValue={query}
+              name="q"
+              placeholder="Name, slug, plan or Stripe customer"
+              type="search"
+            />
+          </label>
+          <button className="admin-button" type="submit">Search</button>
+          {query ? <Link href="/customers">Clear</Link> : null}
+        </form>
         {customers.error ? (
           <Alert>{customers.error}</Alert>
         ) : rows.length ? (
           <table className="admin-table">
             <thead>
               <tr>
-                <SortHeader name="name" sort={sort} direction={direction}>Organisation</SortHeader>
-                <SortHeader name="plan" sort={sort} direction={direction}>Plan</SortHeader>
-                <SortHeader name="status" sort={sort} direction={direction}>Status</SortHeader>
-                <SortHeader name="balance" sort={sort} direction={direction}>Balance</SortHeader>
-                <SortHeader name="runs" sort={sort} direction={direction}>Runs</SortHeader>
-                <SortHeader name="active" sort={sort} direction={direction}>Active</SortHeader>
-                <SortHeader name="last-run" sort={sort} direction={direction}>Last run</SortHeader>
-                <SortHeader name="created" sort={sort} direction={direction}>Created</SortHeader>
+                <SortHeader name="name" sort={sort} direction={direction} query={query}>Organisation</SortHeader>
+                <SortHeader name="plan" sort={sort} direction={direction} query={query}>Plan</SortHeader>
+                <SortHeader name="status" sort={sort} direction={direction} query={query}>Status</SortHeader>
+                <SortHeader name="balance" sort={sort} direction={direction} query={query}>Balance</SortHeader>
+                <SortHeader name="runs" sort={sort} direction={direction} query={query}>Runs</SortHeader>
+                <SortHeader name="active" sort={sort} direction={direction} query={query}>Active</SortHeader>
+                <SortHeader name="last-run" sort={sort} direction={direction} query={query}>Last run</SortHeader>
+                <SortHeader name="created" sort={sort} direction={direction} query={query}>Created</SortHeader>
               </tr>
             </thead>
             <tbody>
               {rows.map((org: AdminOrganization) => (
                 <tr key={org.id}>
-                  <td><a href={`/customers/${org.id}`}>{org.name}</a></td>
+                  <td><Link href={`/customers/${org.id}`}>{org.name}</Link></td>
                   <td>{org.plan || "free"}</td>
                   <td>{org.status || (org.has_billing_account ? "no subscription" : "free")}</td>
                   <td>{signedNumber(org.balance)}</td>
@@ -103,7 +127,9 @@ export default async function CustomersPage({
             </tbody>
           </table>
         ) : (
-          <EmptyState note="No organisations exist in this deployment yet." />
+          <EmptyState
+            note={query ? "No organisations match that search." : "No organisations exist in this deployment yet."}
+          />
         )}
       </Panel>
     </>
