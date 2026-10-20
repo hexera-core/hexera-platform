@@ -367,6 +367,7 @@ class Evidence:
     invalid: int = 0            # runs at the quoted level whose mesh came out invalid
     shaped: int = 0             # passes at the quoted level whose cell shape was measured
     over_limit: int = 0         # ...and of those, how many went past NON_ORTHO_LIMIT
+    layered: int = 0            # passes at the quoted level whose layer coverage was measured
     per_form: bool = False      # the level fixes the file's form: one run per shape
     near_runs: int = 0          # the few runs at a more specific level than `level`
     near_passed: int = 0
@@ -462,6 +463,7 @@ def evidence_for(table: Table, engine: str, *, flow: str, cls: str, form: str,
         invalid=sum(r.invalid for r in rows),
         shaped=sum(r.non_ortho is not None for r in ok),
         over_limit=sum(r.non_ortho is not None and r.non_ortho > NON_ORTHO_LIMIT for r in ok),
+        layered=sum(r.layers_pct is not None for r in ok),
         per_form=bool(key[2]), **near)
 
 
@@ -691,7 +693,7 @@ def quality_fault(ev: Evidence) -> str:
     if ev.shaped >= MIN_SHAPES and ev.over_limit_share > FAULT_SHARE:
         return (f"{ev.over_limit} of its {ev.shaped} meshes had cells more than "
                 f"{NON_ORTHO_LIMIT:.0f} degrees out of square")
-    if ev.passed >= MIN_SHAPES and ev.layers_pct is not None and ev.layers_pct < FAULT_LAYERS_PCT:
+    if ev.layered >= MIN_SHAPES and ev.layers_pct is not None and ev.layers_pct < FAULT_LAYERS_PCT:
         return f"its meshes had near-wall layers on only {ev.layers_pct:.0f}% of the wall"
     return ""
 
@@ -773,7 +775,7 @@ def recommend(traits: ShapeTraits, engines: Sequence[str], *, table: Table | Non
                        and f.score > top.score and quality_fault(f.evidence)]
         if passed_over:
             reason += "; " + "; ".join(
-                f"recommended over {f.label}, which passes more often, because "
+                f"recommended over {f.label}, whose record scores higher on passes, because "
                 f"{quality_fault(f.evidence)}" for f in passed_over)
             fits = tuple(replace(f, reason=reason) if f is top else f
                          for f in fits)
