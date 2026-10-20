@@ -187,6 +187,21 @@ def split_fillet_bracket():
     return BRepAlgoAPI_Fuse(half(0.0), half(15.0)).Shape()
 
 
+def part_filleted_bracket():
+    """The bracket with its inside corner filleted (4 mm) for y 15..30 only and left sharp for
+    y 0..15: one smooth stretch of a triangle file runs from the base round the fillet to the
+    upright, past the sharp 15 mm stretch."""
+    def half(y0, fillet):
+        shape = _fuse(_box(0, y0, 0, 60, 15, 6), _box(0, y0, 0, 6, 15, 40))
+        if not fillet:
+            return shape
+        inner = _edges_where(shape, lambda b: abs(b[0] - 6) < 1e-3 and abs(b[3] - 6) < 1e-3
+                             and abs(b[2] - 6) < 1e-3 and abs(b[5] - 6) < 1e-3)
+        return _fillet(shape, inner, 4.0)
+
+    return _fuse(half(0.0, False), half(15.0, True))
+
+
 def two_blocks():
     """Two separate 10 mm cubes in one file."""
     from OCP.BRep import BRep_Builder

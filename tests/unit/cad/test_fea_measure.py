@@ -197,3 +197,18 @@ def test_a_fan_of_triangles_round_one_point_welds_without_blowing_up():
 
     xyz, t = _weld(fan.reshape(-1, 3), np.arange(3 * k).reshape(-1, 3))
     assert len(xyz) == k + 1 and t.shape == (k, 3)
+
+
+def test_a_sharp_stretch_beside_a_fillet_is_still_a_corner_in_an_stl():
+    # the base and the upright are one smooth region round the filleted half; the sharp half's
+    # edge lies inside that region and is still a capped 90 degree inside corner, 15 mm long
+    for rec in (measure_triangles(fx.stl_triangles(fx.part_filleted_bracket())),
+                measure_cad(fx.part_filleted_bracket(), mm_per_unit=1.0)):
+        # (the fillet's end face at y = 15 makes a small step with its own short corners too)
+        corners = [h for h in rec["hot_spots"] if h["type"] == ff.SHARP_CORNER
+                   and h["length_mm"] == pytest.approx(15.0, rel=0.01)]
+        assert [(round(h["angle_deg"]), h["capped"]) for h in corners] == [(90, True)]
+        assert corners[0]["at_mm"] == [pytest.approx(6.0, abs=1e-3), pytest.approx(7.5, abs=0.5),
+                                       pytest.approx(6.0, abs=1e-3)]
+        assert any(h["type"] == "fillet" and h["radius_mm"] == pytest.approx(4.0, rel=STL_RADIUS)
+                   for h in rec["hot_spots"])

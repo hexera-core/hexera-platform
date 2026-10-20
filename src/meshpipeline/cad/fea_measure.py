@@ -324,7 +324,7 @@ def _record(s: ff.Surface, arcs: list[ff.Arc], *, bodies: int, basis: str, kinds
         local = wall(c["labels"])
         spots.append({"type": ff.SHARP_CORNER, "shape": SHAPE_WORDS[ff.SHARP_CORNER],
                       "angle_deg": _r(c["angle_deg"]), "length_mm": _r(c["length_mm"]),
-                      "faces": [s.names[k] for k in c["labels"]], "at_mm": _pt(c["at_mm"]),
+                      "faces": list(dict.fromkeys(s.names[k] for k in c["labels"])), "at_mm": _pt(c["at_mm"]),
                       "basis": "exact" if basis == "cad" else "triangles",
                       # THE CAP (Areen, 20 Oct): a perfectly sharp inside corner's stress never
                       # settles under refinement, so the plan stops refining it at a set level; the

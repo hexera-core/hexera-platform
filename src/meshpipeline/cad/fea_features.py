@@ -224,8 +224,9 @@ def sharp_corners(s: Surface, pairs: EdgePairs, *, turn_deg: float = SHARP_TURN_
     """Every run of valley edges between the same two faces that turn by at least `turn_deg`:
     the faces, the air-side angle (90 for a square inside corner, smaller is sharper), the length
     and a point at its middle."""
-    sel = np.flatnonzero(pairs.concave & (pairs.turn_deg >= turn_deg)
-                         & (s.label[pairs.tri_a] != s.label[pairs.tri_b]))
+    # read off the edges themselves, not the face labels: a triangle file's smooth region can run
+    # round a part-filleted edge, so both sides of its sharp stretch carry the same label
+    sel = np.flatnonzero(pairs.concave & (pairs.turn_deg >= turn_deg))
     if not len(sel):
         return []
     la, lb = s.label[pairs.tri_a[sel]], s.label[pairs.tri_b[sel]]
