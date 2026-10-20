@@ -138,6 +138,48 @@ async def set_manual_plan(organization_id: str, body: ManualPlanRequest) -> dict
     return {"organization": _organization(org, balance, stats)}
 
 
+@router.get("/jobs/{job_id}/why", dependencies=[Depends(admin_dep)])
+async def read_job_why(job_id: str) -> dict:
+    """THE RUN'S WHY RECORD (docs/RULES.md): every decision it made on its own, the rule behind
+    it and the facts that rule read, from the run's terminal capture record. 404 when the run
+    kept none (still running, or data collection was off)."""
+    job = _parse_job(job_id)
+    async with get_db() as db:
+        row = await _terminal_record(db, job)
+    payload = row.payload if row is not None and isinstance(row.payload, dict) else {}
+    configs = payload.get("agent_model_configs")
+    repro = configs.get("reproducibility") if isinstance(configs, dict) else None
+    why = repro.get("why") if isinstance(repro, dict) else None
+    if not isinstance(why, dict):
+        raise HTTPException(status_code=404, detail="no why record for this run")
+    from meshpipeline.contracts.decision_record import sentences
+    decisions = [d for d in (why.get("decisions") or []) if isinstance(d, dict)]
+    return {
+        "job_id": str(job),
+        "recorded_at": row.created_at.isoformat() if row is not None and row.created_at else None,
+        "rules_version": str(why.get("rules_version") or ""),
+        "decisions": decisions,
+        "sentences": sentences(decisions),
+    }
+
+
+async def _terminal_record(db, job_id: uuid.UUID) -> CaptureOperation | None:
+    result = await db.execute(
+        select(CaptureOperation)
+        .where(CaptureOperation.job_id == job_id)
+        .where(CaptureOperation.name == "final_result_built")
+        .order_by(CaptureOperation.seq.desc())
+        .limit(1))
+    return result.scalars().first()
+
+
+def _parse_job(job_id: str) -> uuid.UUID:
+    try:
+        return uuid.UUID(job_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="no why record for this run")
+
+
 async def _stats(db, *, organization_id: uuid.UUID | None = None) -> dict:
     stats_reader = getattr(job_repo(), "stats_by_organization", None)
     if stats_reader is None:

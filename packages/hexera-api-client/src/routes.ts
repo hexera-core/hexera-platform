@@ -20,6 +20,9 @@ export const hexeraApiRoutes = {
   // its own credential (X-Admin-Key / ADMIN_API_KEY), which is deliberately NOT the MESH_API_KEY
   // the console and worker hold. Anything calling these is an operator tool, never a customer one.
   adminOpsActivity: `${HEXERA_API_PREFIX}/admin/ops/activity`,
+  // One run's "why" record: every decision it made on its own and the rule behind it.
+  adminOpsJobWhy: (jobId: PathSegment): ApiPath =>
+    `${HEXERA_API_PREFIX}/admin/ops/jobs/${segment(jobId)}/why`,
   adminOpsOrganization: (organizationId: PathSegment): ApiPath =>
     `${HEXERA_API_PREFIX}/admin/ops/organizations/${segment(organizationId)}`,
   adminOpsOrganizationCreditGrants: (organizationId: PathSegment): ApiPath =>

@@ -1,7 +1,7 @@
-# Responsibility: Build one run's reproducibility record: what went in, what every AI step decided and on what, what the mesher ran with, and every time a clock changed a decision.
+# Responsibility: Build one run's reproducibility record: what went in, what every AI step decided and on what, what the mesher ran with, every time a clock changed a decision, and why each decision was made (the rule behind it).
 # Owns: the record's shape and the file it is written to beside the run's workspace.
 # Boundaries: reads what the run already holds (state, the mesher's stamp, the decision log); it decides nothing and a record that cannot be made never touches a verdict.
-# Collaborates with: contracts/decision_cache (AI decisions), engines/determinism (the mesh stamp and worker-side time notes), application/pipeline_run (calls it at the end of a run).
+# Collaborates with: contracts/decision_cache (AI decisions), engines/determinism (the mesh stamp and worker-side time notes), application/why_record (the `why` section, docs/RULES.md), application/pipeline_run (calls it at the end of a run).
 from __future__ import annotations
 
 import hashlib
@@ -15,7 +15,8 @@ logger = logging.getLogger(__name__)
 
 #: Beside the run's workspace (the mesher's own stamp is engines/determinism.STAMP_FILE).
 RUN_RECORD_FILE = "run_reproducibility.json"
-RECORD_VERSION = 1
+#: 2: the `why` section (application/why_record): every decision with the rule behind it.
+RECORD_VERSION = 2
 
 
 def _file_sha256(path: str) -> str | None:
@@ -76,6 +77,11 @@ def build(job_id: str, state: Mapping[str, Any]) -> dict[str, Any]:
         rec["worker_time_limited"] = det.drain_process_notes()
     except Exception:  # noqa: BLE001 - a record never touches a verdict
         logger.warning("run reproducibility record incomplete", exc_info=True)
+    try:
+        from meshpipeline.application import why_record
+        rec["why"] = why_record.build(job_id, state)
+    except Exception:  # noqa: BLE001 - a record never touches a verdict
+        logger.warning("run why record incomplete", exc_info=True)
     return rec
 
 

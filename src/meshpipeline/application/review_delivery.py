@@ -15,7 +15,9 @@ CANDIDATES are the attempts that produced a complete, valid mesh: the executor v
 other, so every reviewed mesh in state.review_history is one) and its manifest still reads with no
 fatal defect. An invalid mesh is never delivered.
 
-THE RANKING is a fixed order of MEASURED facts (rank_key), never an AI judgement:
+THE RANKING is a fixed order of MEASURED facts (rank_key), never an AI judgement. Each position of
+rank_key is one rule in docs/RULES.md (DEL-1..10, in order), and the delivery account names the
+rule that decided (`rule`):
 
   1. passes every fixed quality limit the engine declares (yes before no);
   2. the number of quality checks it fails (fewer first);
@@ -192,12 +194,22 @@ _WHY = (
 )
 
 
-def why_chosen(best: Candidate, other: Candidate) -> str:
-    """The first measured fact, in the fixed order, that put `best` ahead of `other`."""
+def _deciding(best: Candidate, other: Candidate) -> int:
     for i, (x, y) in enumerate(zip(rank_key(best), rank_key(other), strict=True)):
         if x != y:
-            return _WHY[i]
-    return _WHY[-1]
+            return i
+    return len(_WHY) - 1
+
+
+def why_chosen(best: Candidate, other: Candidate) -> str:
+    """The first measured fact, in the fixed order, that put `best` ahead of `other`."""
+    return _WHY[_deciding(best, other)]
+
+
+def rule_chosen(best: Candidate, other: Candidate) -> str:
+    """The rulebook's ID (docs/RULES.md, DEL-1..10) for that same fact."""
+    from meshpipeline.contracts.decision_record import DELIVERY_RULES
+    return DELIVERY_RULES[_deciding(best, other)]
 
 
 def _read_manifest(ws: str) -> Mapping | None:
@@ -271,14 +283,17 @@ def _why_not_last(state: Mapping) -> str:
 def _account(state: Mapping, best: Candidate, pool: list[Candidate]) -> dict:
     """Which attempt is delivered, by which engine, why it beat the others, and what it is short
     of - the ladder record's `delivered_from` (engine_fallback.delivered_note says it)."""
+    from meshpipeline.contracts.decision_record import DELIVERY_ONLY_ONE
     others = [c for c in pool if c is not best]
     if others:
         runner = min(others, key=rank_key)
         why = (f"it was chosen over attempt {runner.attempt} ({runner.engine}) because "
                f"{why_chosen(best, runner)}")
+        rule = rule_chosen(best, runner)
     else:
         why = f"it is the only valid mesh this run built - {_why_not_last(state)}"
-    return {"attempt": best.attempt, "engine": best.engine, "why": why,
+        rule = DELIVERY_ONLY_ONE
+    return {"attempt": best.attempt, "engine": best.engine, "why": why, "rule": rule,
             "short_of": best.shortfalls(),
             "candidates": [{"attempt": c.attempt, "engine": c.engine,
                             "rank": [None if isinstance(x, float) and not math.isfinite(x) else x
@@ -356,4 +371,4 @@ def select(state: Mapping) -> dict:
     return out
 
 
-__all__ = ["Candidate", "candidates", "rank_key", "select", "why_chosen"]
+__all__ = ["Candidate", "candidates", "rank_key", "rule_chosen", "select", "why_chosen"]
