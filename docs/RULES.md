@@ -4,7 +4,7 @@ Every decision a mesh run makes on its own is made by a written rule. Each rule 
 and each decision the run records in its "why" record names the rule behind it
 (`contracts/decision_record.py`). This file is the one home for those rules.
 
-Rulebook version: **4**
+Rulebook version: **5**
 
 How the book is kept honest:
 
