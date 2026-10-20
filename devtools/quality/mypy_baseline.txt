@@ -11,7 +11,6 @@ src/meshpipeline/agents/builder/tools/meshing.py::union-attr::Item "None" of "Ru
 src/meshpipeline/agents/builder/tools/meshing.py::union-attr::Item "None" of "RunPolicy | None" has no attribute "submit_hint"
 src/meshpipeline/agents/builder/tools/meshing.py::union-attr::Item "None" of "RunPolicy | None" has no attribute "submit_marker"
 src/meshpipeline/agents/builder/tools/meshing.py::union-attr::Item "None" of "RunPolicy | None" has no attribute "submit_ok_key"
-src/meshpipeline/agents/builder/tools/meshing.py::union-attr::Item "None" of "RunPolicy | None" has no attribute "timeout_hint"
 src/meshpipeline/agents/intake/agent.py::arg-type::Argument 1 to "_confirmation_block" has incompatible type "PipelineState"; expected "dict[Any, Any]"
 src/meshpipeline/agents/intake/validation.py::union-attr::Item "None" of "InputContract | None" has no attribute "dimensionalities"
 src/meshpipeline/api/v1/chat.py::arg-type::Argument 1 to "node_intake" has incompatible type "dict[Any, Any]"; expected "PipelineState"

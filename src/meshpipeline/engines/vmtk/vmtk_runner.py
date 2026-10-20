@@ -14,7 +14,7 @@ import meshpipeline.settings.runtime as rtcfg
 from meshpipeline.contracts.intake_formats import is_cad
 from meshpipeline.contracts.mesh_units import COMPLETED_MESH_UNIT
 from meshpipeline.engines.base import RunPolicy
-from meshpipeline.engines.determinism import note_time_limit
+from meshpipeline.engines.determinism import note_guard_trip
 from meshpipeline.sandbox.safe_exec import (
     NativeOutcome,
     describe_native_result,
@@ -700,11 +700,23 @@ def _refit_to_wall(ws: Path, strategy: dict, notes: list[str]) -> dict | None:
     return refit
 
 
-#: the share of the remaining clock a LAYERED ladder step may take while a layer-free step waits
-LAYERED_SHARE = 0.6
-_LADDER_MIN_SECONDS = 60   # a ladder step is not started with less of the budget left ...
-_LADDER_MIN_FRACTION = 0.1  # ... or less than this share of it, whichever is smaller
-_now = time.monotonic       # the run clock; tests substitute it
+#: THE RUN'S CLOCK IS A GUARD ONLY (contracts/work_limits, docs/RULES.md TIME-1..3). The ladder is
+#: planned work - a fixed list of steps, each run when the step before it measurably failed (no
+#: fill, a folded layer) - and the clock decides none of it: no step is skipped for the time left,
+#: no layered step is cut to a share of it. Every native step runs with what is left of the run's
+#: guard as its subprocess timeout; a step that guard stops is a guard trip, the run stops there,
+#: and the attempt is replayed as an infrastructure failure.
+_now = time.monotonic       # the run clock (the guard); tests substitute it
+
+
+def _guard_tripped(result: dict, step: str, timeout: float, notes: list[str]) -> bool:
+    """Whether a native step was stopped by the run's guard - recorded as a trip (TIME-3)."""
+    if not result.get("timed_out"):
+        return False
+    notes.append(f"[vmtk] {step} ran past the run's guard clock ({int(timeout)} s) - an "
+                 "infrastructure stop: the attempt is run again as it was")
+    note_guard_trip("vmtk", step=step, guard_s=float(timeout))
+    return True
 
 #: vmtkmeshgenerator announces each stage on its own line; the last one seen says where a run
 #: that did not fill actually died. transition_013 died in "Remeshing surface" - the generator's
@@ -795,23 +807,17 @@ def _shuffled(wall, seed: int):
     return out
 
 
-def _remesh_folded_wall(ws: Path, strategy: dict, left, floor: float,
-                        notes: list[str]) -> dict | None:
-    """Runs _SURFACE_RETRIES while the remeshed wall (lumen.vtp) is folded. Returns the last
-    surface run's result, or None when the first remesh was clean and nothing ran. The staged
-    wall on disk ends as the one the last remesh read, so a re-run reproduces it."""
+def _remesh_folded_wall(ws: Path, strategy: dict, left, notes: list[str]) -> dict | None:
+    """Runs _SURFACE_RETRIES while the remeshed wall (lumen.vtp) is folded - every one of them,
+    whatever the time (planned work, TIME-1). Returns the last surface run's result, or None when
+    the first remesh was clean and nothing ran. The staged wall on disk ends as the one the last
+    remesh read, so a re-run reproduces it."""
     defects = _wall_defects(ws / _LUMEN)
     if not defects:
         return None
     staged_wall = _read_surface(ws / _LUMEN_OPEN)
     result: dict | None = None
     for i, retry in enumerate(_SURFACE_RETRIES):
-        if left() < floor:
-            notes.append(f"[vmtk] the remeshed wall is folded ({_defect_label(defects)}) and "
-                         f"under {floor:g} s of the budget is left to remesh it again")
-            note_time_limit("vmtk.surface", "a folded wall was not remeshed again: under the "
-                            "floor of the budget left", left_s=float(left()), floor_s=floor)
-            return result
         how = f"with collapses held to {retry['collapse_angle']:g} rad"
         if retry["shuffle"] is not None:
             how += ", on the staged wall stored in another order"
@@ -849,24 +855,27 @@ def _run_vmtk_local(workspace, *, timeout: int, **_ignored) -> dict:
     notes: list[str] = []
     result: dict = {}
     staged = bool(resolve_strategy(strategy).get("sizing_array"))
-    # ONE BUDGET for the whole run: the surface stage and every ladder step share `timeout`, so
-    # a staged run cannot outlive the deadline the caller sized it by. Each stage used to get
+    # ONE GUARD for the whole run: the surface stage and every ladder step share `timeout`, so
+    # a staged run cannot outlive the guard the caller sized it by. Each stage used to get
     # the full timeout again - up to six times over - and could run past the builder's own
-    # deadline, which then killed the attempt before the builder saw any feedback.
+    # deadline, which then killed the attempt before the builder saw any feedback. The guard
+    # decides nothing: a step it stops is a guard trip and the run ends there (TIME-3).
     deadline = _now() + float(timeout)
 
     def left() -> int:
         return max(1, int(deadline - _now()))
 
-    floor = min(_LADDER_MIN_SECONDS, _LADDER_MIN_FRACTION * float(timeout))
     if staged:
         # the surface stage once (again while its remesh folds the wall); the generator per
         # ladder step
         surface, _ = build_staged_stages(ladder[0])
-        result = _run_pype(ws, surface, timeout=left())
+        budget = left()
+        result = _run_pype(ws, surface, timeout=budget)
         if _surface_ran(ws, result):
-            result = _remesh_folded_wall(ws, ladder[0], left, floor, notes) or result
+            budget = left()
+            result = _remesh_folded_wall(ws, ladder[0], left, notes) or result
         if not _surface_ran(ws, result):
+            _guard_tripped(result, "the surface stage", budget, notes)
             (ws / "log.vmtk").write_text("\n".join([*notes, result.get("log_tail") or ""]))
             return result
         from meshpipeline.engines.vmtk.budget import plan_words
@@ -880,39 +889,23 @@ def _run_vmtk_local(workspace, *, timeout: int, **_ignored) -> dict:
     i = 0
     while i < len(ladder):
         strat = ladder[i]
-        if i and deadline - _now() < floor:
-            notes.append(f"[vmtk] {len(ladder) - i} ladder step(s) not started: under "
-                         f"{floor:g} s of the {int(timeout)} s budget left")
-            note_time_limit("vmtk.ladder", f"{len(ladder) - i} ladder step(s) not started",
-                            left_s=deadline - _now(), floor_s=floor, budget_s=float(timeout))
-            break
         last = i
         argv = build_staged_stages(strat)[1] if staged else build_pype(strat)
         if staged and _keeps_staged_winding(strat):
             argv = _winding_kept(ws, argv)
         if i:
             (ws / _MESH).unlink(missing_ok=True)
-        layered = staged and int(strat.get("boundary_layers") or 0) > 0
-        bare_after = next((j for j in range(i + 1, len(ladder))
-                           if int(ladder[j].get("boundary_layers") or 0) <= 0), None)
-        # A LAYERED STEP NEVER TAKES THE WHOLE CLOCK while a layer-free step waits behind it:
-        # vmtk's layer generator scales with the wall's triangles, and on the Fluent aorta (328k
-        # wall triangles, 4 sublayers) the first layered attempt ran out the full 3000 s - no
-        # fill at all, where a layer-free fill was minutes away
+        # EVERY STEP GETS WHAT IS LEFT OF THE RUN'S GUARD. A layered step used to get only a 60%
+        # share of the clock while a layer-free step waited behind it, so whether a run kept its
+        # layers depended on how fast the machine was (the Fluent aorta, 328k wall triangles, ran
+        # out its share). A step that does not finish inside the guard is now a guard trip; a
+        # wall too big to layer in one run is for the plan to see in its cells (D6), not a clock.
         step_budget = left()
-        if layered and bare_after is not None:
-            step_budget = max(int(floor), int(left() * LAYERED_SHARE))
         result = _run_pype(ws, argv, timeout=step_budget)
         nxt: int | None = i + 1 if i + 1 < len(ladder) else None
-        if layered and bare_after is not None and result.get("timed_out"):
-            # a thinner stack is no faster to grow: straight on to the layer-free fill
-            notes.append(f"[vmtk] attempt {i + 1} ({_step_label(strat)}): the layered fill ran out "
-                         f"its {step_budget} s share of the budget - next: "
-                         f"{_step_label(ladder[bare_after])}")
-            note_time_limit("vmtk.ladder", "a layered fill ran out its share of the budget; "
-                            "the layer-free fill was run instead", budget_s=float(step_budget))
-            i = bare_after
-            continue
+        if _guard_tripped(result, f"ladder step {i + 1} ({_step_label(strat)})", step_budget,
+                          notes):
+            break
         if _fill_completed(ws, result):
             if not staged or int(strat.get("boundary_layers") or 0) <= 0:
                 break
@@ -920,10 +913,7 @@ def _run_vmtk_local(workspace, *, timeout: int, **_ignored) -> dict:
             if folded is None or folded <= OVERLAP_TOLERANCE:
                 break
             nxt = _thinner(ladder, i)
-            if nxt is not None and deadline - _now() < floor:
-                note_time_limit("vmtk.ladder", "a folded boundary layer was kept: no time for a "
-                                "thinner stack", left_s=deadline - _now(), floor_s=floor)
-            if nxt is None or deadline - _now() < floor:
+            if nxt is None:
                 break
             notes.append(f"[vmtk] attempt {i + 1} ({_step_label(strat)}): the fill completed but "
                          f"its boundary layer folded into itself (the tetrahedra overlap by "
@@ -946,8 +936,10 @@ def _run_vmtk_local(workspace, *, timeout: int, **_ignored) -> dict:
     if notes:
         effective = dict(ladder[last])
         effective["repair_note"] = "; ".join(notes)
-        # the shipped spec says what was actually run (the deliverable re-runs from it)
-        spec_path.write_text(json.dumps(effective, indent=2))
+        if not result.get("timed_out"):
+            # the shipped spec says what was actually run (the deliverable re-runs from it). A run
+            # its guard stopped keeps the spec it started from: its replay must start the same.
+            spec_path.write_text(json.dumps(effective, indent=2))
         result["log_tail"] = "\n".join(notes) + "\n" + (result.get("log_tail") or "")
         result["repair_note"] = effective["repair_note"]
     (ws / "log.vmtk").write_text(result.get("log_tail") or "")
@@ -955,10 +947,15 @@ def _run_vmtk_local(workspace, *, timeout: int, **_ignored) -> dict:
         # THE OPENFOAM CASE ships with the mesh. vmtk writes VTK only; the customer of an
         # "OpenFOAM case" bundle (the deliverable's label) got a .vtu and a conversion to do.
         # The mesh image has OpenFOAM, the worker (where finalize runs) does not, so it is
-        # written here, with whatever budget the fill left. A miss is a note, never a failure:
-        # the volume mesh stands on its own.
-        result["openfoam_case"] = export_openfoam_case(ws, timeout=left())
+        # written here, always (a conversion, a fixed amount of work): its guard is at least its
+        # own EXPORT_GUARD_S, never only what the fill happened to leave. A miss is a note, never
+        # a failure: the volume mesh stands on its own. A guard trip is a trip (TIME-3).
+        result["openfoam_case"] = export_openfoam_case(ws, timeout=max(left(), EXPORT_GUARD_S))
     return result
+
+
+#: The least guard the OpenFOAM-case export runs under (its old default).
+EXPORT_GUARD_S = 600
 
 
 _OPENFOAM_CASE = "openfoam_case"
@@ -978,7 +975,7 @@ def export_openfoam_case(workspace, *, bashrc: str = rtcfg.OPENFOAM_BASHRC,
     relative to the workspace, or None when it could not be written (logged, non-fatal)."""
     ws = Path(workspace)
     mp = ws / _MESH
-    if not mp.exists() or timeout < _LADDER_MIN_SECONDS:
+    if not mp.exists():
         return None
     try:
         from meshpipeline.engines.vmtk.viewer_surface import _staged_cap_names
@@ -1013,6 +1010,9 @@ def export_openfoam_case(workspace, *, bashrc: str = rtcfg.OPENFOAM_BASHRC,
             shutil.rmtree(case / "constant" / "polyMesh", ignore_errors=True)
             return None
         return _OPENFOAM_CASE
+    except subprocess.TimeoutExpired:
+        note_guard_trip("vmtk.export", guard_s=float(timeout))
+        return None
     except Exception:  # noqa: BLE001 - the .vtu is the mesh; the case is a convenience
         logger.exception("vmtk: OpenFOAM case export failed")
         return None

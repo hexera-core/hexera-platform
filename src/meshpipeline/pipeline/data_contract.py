@@ -482,6 +482,7 @@ STATE_FIELDS: dict[str, str] = {
     "solvability_failed":    "cheap solvability gate outcome (deterministic guardrail)",
     "api_failure":           "provider failure marker for honest failure taxonomy",
     "infra_retry_count":     "transient-infra replay counter: same mesh attempt re-run after a provider/dependency brownout (node_infra_retry)",
+    "guard_replay_count":    "guard-clock replay counter (docs/RULES.md TIME-3): the same mesh attempt re-run after a guard clock stopped it (node_guard_replay); past work_limits.GUARD_REPLAYS the run ends as ran out of time",
     "review_rerun_count":    "reviews of the same validated mesh started again after one ended without a verdict (node_review_retry); not a mesh attempt - reset to 0 by every builder attempt, because it counts reviews of ONE mesh",
     "request_txt":           "user requirements (see contract)",
     "review_brief_txt":      "acceptance criteria (see contract)",

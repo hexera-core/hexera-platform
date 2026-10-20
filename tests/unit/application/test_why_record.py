@@ -73,7 +73,6 @@ def test_a_pick_on_little_evidence_says_so(tmp_path):
     ("this engine could not build a mesh", "SW-2", True),
     ("the same failure repeated here", "SW-3", True),
     ("the shared attempts go to the untried engine", "SW-4", True),
-    ("too little time left for a cfMesh run", "SW-13", False),
     ("no untried engine meshes 3 separate passages in one job", "SW-11", False),
     ("the engine is not ours to change (source user_direct)", "SW-8", False),
 ])
@@ -82,11 +81,31 @@ def test_a_switch_reason_maps_to_its_rule(why, rule, moved):
     value, got = dr.switch({"why": why, "from": "snappy", "to": "cfmesh", "kind": kind})
     assert got == rule
     assert value == ("cfmesh" if moved else "snappy")
-    assert dr.switch_source(got) == ("guard-clock" if rule == "SW-13" else "rule")
+    # since D3 no clock decides a switch (docs/RULES.md TIME-1)
+    assert dr.switch_source(got) == "rule"
 
 
 def test_an_unknown_switch_reason_has_no_rule():
     assert dr.switch_rule("because the moon was full") == ""
+    # SW-13 ("too little time left") is retired: an old record carrying it maps to no rule
+    assert dr.switch_rule("too little time left for a cfMesh run") == ""
+
+
+def test_the_guard_entries_replay_from_their_recorded_inputs():
+    from meshpipeline.contracts.work_limits import guard_for
+    work = guard_for("snappy", cells=2_000_000).as_dict()
+    entries = [
+        dr.Entry(stage=dr.STAGE_WORK_LIMIT, decided="guard_s", value=4000, rule="TIME-2",
+                 inputs=work).as_dict(),
+        dr.Entry(stage=dr.STAGE_GUARD, decided="after_trip", value="replay", rule="TIME-3",
+                 inputs={"replays": 0, "allowed": 1}, source=dr.SOURCE_GUARD_CLOCK).as_dict(),
+        dr.Entry(stage=dr.STAGE_GUARD, decided="after_trip", value="ran_out_of_time",
+                 rule="TIME-3", inputs={"replays": 1, "allowed": 1},
+                 source=dr.SOURCE_GUARD_CLOCK).as_dict()]
+    assert dr.replay(entries) == []
+    # a record whose guard is not the one its planned work gives is caught
+    bad = [{**entries[0], "value": 2400}]
+    assert dr.replay(bad) and "TIME-2" in dr.replay(bad)[0]
 
 
 @pytest.mark.parametrize("kind,to", [("never", "cfmesh"), ("review", "cfmesh"), ("engine", "snappy"),

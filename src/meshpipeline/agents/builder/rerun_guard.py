@@ -11,9 +11,9 @@ mesher starts, its case is compared with every case an EARLIER attempt of this r
 verdict: when it is byte for byte one of them, the run is refused before the announcement, with
 what that earlier run came to, and the builder must change something meaningful or stop.
 
-Only a JUDGED run counts: one that came back with a mesh, a mesher failure or a timeout. A run our
-infrastructure dropped, or one the last launch check refused, says nothing about the case, so the
-same case may run again. Runs inside one attempt are the engine's own business (its pass logic and
+Only a JUDGED run counts: one that came back with a mesh or a mesher failure. A run our
+infrastructure dropped, one the last launch check refused, or one a guard clock stopped
+(docs/RULES.md TIME-3) says nothing about the case, so the same case may run again. Runs inside one attempt are the engine's own business (its pass logic and
 the submission replay identity), so only another attempt's run is ever matched.
 
 In-process by design, like the record of native runs: every attempt of a run is built by the same
@@ -107,10 +107,12 @@ def remember(workspace: Path, digest: str, result: dict) -> None:
     """Record what a run of this case came to - when it came to a verdict at all."""
     if not digest or not isinstance(result, dict) or not _is_attempt(workspace):
         return
-    if result.get("system_failure") or result.get("patch_contract_mismatch"):
-        return          # our infrastructure, or a launch refusal: nothing was learned about the case
-    outcome = ("it ran out of time" if result.get("timed_out") else
-               "it built a mesh that passed its checks" if result.get("success") else
+    if (result.get("system_failure") or result.get("patch_contract_mismatch")
+            or result.get("timed_out") or result.get("guard_tripped")):
+        # our infrastructure, a launch refusal, or a guard clock (TIME-3): nothing was learned
+        # about the case, and the replay must be free to run it again
+        return
+    outcome = ("it built a mesh that passed its checks" if result.get("success") else
                "its mesh did not pass its checks")
     gen = _generation(workspace)
     _LEDGER.setdefault(gen, {})[digest] = {"attempt": Path(workspace).name, "outcome": outcome}

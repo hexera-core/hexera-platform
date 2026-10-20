@@ -279,6 +279,14 @@ async def run_committed_scenarios(mp, tmp, jobs: list, seen: list | None = None,
                                                 "retry_count": 1,
                                                 "infra_retry_count": 0})))["job_id"])
 
+    # The guard-clock replay's note (docs/RULES.md TIME-3), through the same boundary.
+    from meshpipeline.pipeline.graph import node_guard_replay
+
+    jobs.append((await step("guard-replay:same-attempt",
+                            N._owned(mp, nodes, node_guard_replay,
+                                     lambda j: {"job_id": str(j), "retry_count": 1,
+                                                "guard_replay_count": 0})))["job_id"])
+
     # The builder policy's own close-out: two valid meshes, no submission, so the loop ends with
     # the policy making the submission and announcing it.
     jobs.append((await step("builder-policy:auto-submit-close-out",

@@ -74,6 +74,11 @@ def test_run_mesh_refuses_dispatch_when_loop_budget_too_small(tmp_path, monkeypa
     assert out["error"] == "not_enough_loop_budget_for_remote_run"
     assert out["required_reserve_seconds"] == T._RUN_MESH_FEEDBACK_RESERVE
     assert "guidance" in out
+    # docs/RULES.md TIME-5: the attempt's own guard ran out - a guard trip beside the case (the
+    # attempt is replayed as it was), never a cue to reduce the work
+    from meshpipeline.engines.determinism import guard_trips
+    assert out["guard_tripped"] is True and "reduce" not in out["guidance"].lower()
+    assert [t["where"] for t in guard_trips(tmp_path)] == ["builder.attempt"]
 
 
 def test_run_mesh_caps_dispatch_timeout_to_remaining_budget(tmp_path, monkeypatch):

@@ -4486,6 +4486,21 @@
   "roots": []
  },
  {
+  "context": "pipeline/executor.py::_guard_failure::check#1|ExecutionEventPublisher|execution-owned|pipeline/executor.py::callers of _guard_failure()",
+  "path": "pipeline/executor.py",
+  "qualname": "_guard_failure",
+  "semantic": "check",
+  "method": "acheck",
+  "ordinal": 1,
+  "receiver": "pub",
+  "authority": "ExecutionEventPublisher",
+  "lifecycle": "execution-owned",
+  "gated_required": true,
+  "roots": [
+   "pipeline/executor.py::callers of _guard_failure()"
+  ]
+ },
+ {
   "context": "pipeline/executor.py::node_executor::check#1|ExecutionEventPublisher|execution-owned|pipeline/executor.py::execution_publisher",
   "path": "pipeline/executor.py",
   "qualname": "node_executor",
@@ -4720,6 +4735,21 @@
   "lifecycle": "not-a-publisher",
   "gated_required": false,
   "roots": []
+ },
+ {
+  "context": "pipeline/graph.py::node_guard_replay::note#1|ExecutionEventPublisher|execution-owned|pipeline/graph.py::execution_publisher",
+  "path": "pipeline/graph.py",
+  "qualname": "node_guard_replay",
+  "semantic": "note",
+  "method": "anote",
+  "ordinal": 1,
+  "receiver": "execution_publisher(job_id, agent='builder')",
+  "authority": "ExecutionEventPublisher",
+  "lifecycle": "execution-owned",
+  "gated_required": true,
+  "roots": [
+   "pipeline/graph.py::execution_publisher"
+  ]
  },
  {
   "context": "pipeline/graph.py::node_infra_retry::note#1|ExecutionEventPublisher|execution-owned|pipeline/graph.py::execution_publisher",

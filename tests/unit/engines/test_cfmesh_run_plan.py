@@ -1,6 +1,6 @@
-# Responsibility: Verify a cfMesh external case is timed before it runs - the run gets the time its plan
-# needs up to a ceiling, a plan that cannot fit is made coarser or refused before it starts, and a run
-# that timed out still untangling broken cells is read as the broken mesh it is.
+# Responsibility: Verify a cfMesh external case is timed before it runs - the run gets the guard its planned
+# cells give it up to a ceiling, a plan that cannot fit is made coarser or refused before it starts, and a
+# run its guard stopped is a guard trip whatever it was doing (docs/RULES.md TIME-2, TIME-3).
 # Boundaries: engines/cfmesh (cfmesh_runner run plan, native.untangle_stall) and the run_mesh verdict; no
 # OpenFOAM runs.
 from __future__ import annotations
@@ -33,13 +33,20 @@ def test_the_estimate_counts_the_background_and_the_walls_shell_and_layers():
                             n_layers=2) is None
 
 
-def test_a_planned_run_gets_the_time_it_needs_between_the_base_cap_and_the_ceiling(monkeypatch):
+def test_a_planned_run_gets_the_guard_its_planned_cells_give_between_the_base_cap_and_the_ceiling(
+        monkeypatch):
+    from meshpipeline.contracts.work_limits import FILL_RATES, GUARD_FACTOR
     monkeypatch.setattr(rtcfg, "OPENFOAM_COMMAND_TIMEOUT", 1500)
     assert R.base_run_cap_s() == 1200 and R.run_ceiling_s() == 3000
     assert R.run_cap_for(None) == 1200
-    assert R.run_cap_for(300.0) == 1200                  # a quick run keeps the base cap
-    assert R.run_cap_for(1600.0) == int(1.25 * 1600)     # a long one gets its estimate and room
+    assert R.run_cap_for(20.0) == 1200                   # a quick run keeps the base cap
+    # docs/RULES.md TIME-2: 3 x the planned cells at the slow rate, the rescue's runs counted
+    cells = 100.0 * R.CELLS_PER_SECOND
+    want = int(GUARD_FACTOR * cells / FILL_RATES["cfmesh"] * R.RESCUE_RUNS)
+    assert 1200 < want < 3000 and R.run_cap_for(100.0) == want
     assert R.run_cap_for(9000.0) == 3000                 # never past the ceiling
+    assert R.run_guard(cells).as_dict()["guard_s"] == want
+    # whether a plan FITS one run is still a planning rule, decided before the run
     assert R.fits_one_run(2400.0) and not R.fits_one_run(2401.0)
 
 
@@ -117,16 +124,13 @@ class _FakeCfMesh:
         return {"cells": 10, "mesh_ok": not self.fatal, "fatal": list(self.fatal)}
 
 
-@pytest.mark.parametrize("res,fatal", [
-    ({"rc": 0, "timed_out": False, "log_tail": ""}, ["negative-volume cells"]),
-    ({"rc": -1, "timed_out": True, "log_tail": BWB_TAIL}, [])])
-def test_a_broken_mesh_is_not_run_again_when_the_run_will_move_on(tmp_path, monkeypatch, res,
-                                                                  fatal):
+def test_a_broken_mesh_is_not_run_again_when_the_run_will_move_on(tmp_path, monkeypatch):
     import meshpipeline.engines.runtime as rt
     from meshpipeline.agents.builder.tool_context import BuilderToolContext
     from meshpipeline.agents.builder.tools import meshing
 
-    monkeypatch.setattr(rt, "get_engine", lambda n="": _FakeCfMesh(res, fatal))
+    res = {"rc": 0, "timed_out": False, "log_tail": ""}
+    monkeypatch.setattr(rt, "get_engine", lambda n="": _FakeCfMesh(res, ["negative-volume cells"]))
     prepared = meshing.PreparedMeshRun(engine="cfmesh", cap=60)
     moving = BuilderToolContext(workspace=tmp_path, geometry=None, engine="cfmesh",
                                 broken_mesh_moves_to="snappy")
@@ -138,20 +142,28 @@ def test_a_broken_mesh_is_not_run_again_when_the_run_will_move_on(tmp_path, monk
     assert "moves_on_to" not in kept and "Do NOT run_mesh again" not in kept["guidance"]
 
 
-def test_the_run_verdict_of_a_stalled_run_is_a_broken_mesh_that_moves_the_run_on(tmp_path):
+@pytest.mark.parametrize("moves_to", ["snappy", ""])
+def test_a_run_stopped_by_its_guard_is_a_guard_trip_never_a_broken_mesh(tmp_path, monkeypatch,
+                                                                        moves_to):
+    # docs/RULES.md TIME-3: what a run was doing when its guard clock stopped it (still untangling
+    # broken cells, here) depends on how busy the machine was - so it decides nothing: no move to
+    # another engine, no "too fine", no broken-mesh refusal. The attempt ends and is replayed.
+    import meshpipeline.engines.runtime as rt
     from meshpipeline.agents.builder.tool_context import BuilderToolContext
     from meshpipeline.agents.builder.tools import meshing
+    from meshpipeline.engines import determinism as det
     from meshpipeline.engines.preflight import read_refusal
 
+    res = {"rc": -1, "timed_out": True, "log_tail": BWB_TAIL}
+    monkeypatch.setattr(rt, "get_engine", lambda n="": _FakeCfMesh(res, []))
     ctx = BuilderToolContext(workspace=tmp_path, geometry=None, engine="cfmesh",
-                             broken_mesh_moves_to="snappy")
-    stall = meshing._broken_at_time_out(get_spec("cfmesh").run_policy, BWB_TAIL)
-    out = meshing._stalled_verdict(ctx, stall, BWB_TAIL)
-    assert out["moves_on_to"] == "snappy" and "end your turn" in out["guidance"]
-    assert "snappyHexMesh" in out["guidance"]
-    rec = read_refusal(tmp_path)
-    assert rec is not None and rec.cause == "mesh_quality" and rec.facts["fatal"] == stall
-    # on an engine the user named there is nowhere to move: the builder is told what to change
-    mine = meshing._stalled_verdict(BuilderToolContext(workspace=tmp_path, geometry=None,
-                                                       engine="cfmesh"), stall, BWB_TAIL)
-    assert "moves_on_to" not in mine and "boundaryLayers" in mine["guidance"]
+                             broken_mesh_moves_to=moves_to)
+    out = meshing._run_and_judge(ctx, meshing.PreparedMeshRun(engine="cfmesh", cap=60))
+    assert out["success"] is False and out["guard_tripped"] is True
+    assert "moves_on_to" not in out and "end your turn" in out["guidance"]
+    assert read_refusal(tmp_path) is None
+    trips = det.guard_trips(tmp_path)
+    assert [t["where"] for t in trips] == ["cfmesh"] and trips[0]["rule"] == "TIME-3"
+    assert "43,771 bad faces" in trips[0]["repairing"]          # words for the record only
+    # ...and a second run_mesh in the same attempt is refused: the attempt ends on the trip
+    assert meshing._attempt_tripped(tmp_path)

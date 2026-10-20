@@ -332,7 +332,12 @@ def prepare_mesh_run(ctx: BuilderToolContext) -> PreparedMeshRun:
         logger.warning("run_mesh: the case in %s already ran in %s (%s) - refusing an identical "
                        "re-run", workspace, _earlier.get("attempt"), _earlier.get("outcome"))
         return PreparedMeshRun(refusal=rerun_guard.refusal(_earlier))
-    # The cap is ENGINE-DECLARED (spec.run_policy): a draft mesher fails fast,
+    # A GUARD CLOCK ALREADY STOPPED THIS ATTEMPT (docs/RULES.md TIME-3): the attempt ends on it and
+    # is replayed as it was. A run reconfigured after it would be a lever chosen by a clock.
+    if _attempt_tripped(workspace):
+        return PreparedMeshRun(refusal=_GUARD_REFUSAL)
+    # The cap is the run's GUARD (contracts/work_limits, TIME-2): ENGINE-DECLARED (spec.run_policy)
+    # or, when the engine planned the case, set from its planned cells. A draft mesher fails fast,
     # a production off-box mesher gets its legitimate 20-35 min - BUT it must FIT inside
     # the remaining builder-loop budget, or the outer loop kills the attempt mid-run and
     # the builder never receives any feedback. (Forensic finding: four multiregion attempts
@@ -351,23 +356,26 @@ def prepare_mesh_run(ctx: BuilderToolContext) -> PreparedMeshRun:
         if _planned:
             logger.info("run_mesh: the planned case gets %ds (declared cap %ds)", _planned, _cap)
             _cap = int(_planned)
+    _cite_run_guard(ctx, ename, workspace, int(_cap))
     if loop_deadline is not None:
         _remaining = int(loop_deadline - _time.monotonic())
         _usable = _remaining - _RUN_MESH_FEEDBACK_RESERVE
         if _usable < _RUN_MESH_MIN_ATTEMPT:
+            # THE ATTEMPT'S OWN GUARD has run out (TIME-5): a guard trip, recorded beside the case,
+            # and the attempt is replayed as it was - never a cue to "reduce the work", which would
+            # make the mesh depend on how long the turns before it took
+            from meshpipeline.contracts.work_limits import TIME_JOB_GUARD
+            from meshpipeline.engines.determinism import note_guard_trip
+            note_guard_trip("builder.attempt", workspace=workspace, rule=TIME_JOB_GUARD,
+                            left_s=float(max(0, _remaining)), needed_s=float(
+                                _RUN_MESH_FEEDBACK_RESERVE + _RUN_MESH_MIN_ATTEMPT))
             return PreparedMeshRun(refusal={
-                "success": False,
+                **_GUARD_REFUSAL,
                 "error": "not_enough_loop_budget_for_remote_run",
                 "remaining_loop_seconds": max(0, _remaining),
                 "requested_run_timeout": _cap,
                 "required_reserve_seconds": _RUN_MESH_FEEDBACK_RESERVE,
                 "minimum_attempt_seconds": _RUN_MESH_MIN_ATTEMPT,
-                "guidance": ("Too little builder-loop budget remains for a meaningful mesh run. "
-                             "Do NOT retry run_mesh now. If the mesh strategy is already sound, "
-                             "the next attempt will re-run it with a fresh budget; otherwise "
-                             "REDUCE the configured work first - lower the cell budget and/or "
-                             "refinement in your engine's configure palette - so the run "
-                             "finishes faster."),
             })
         if _usable < _cap:
             logger.info("run_mesh: capping dispatch timeout %ds -> %ds to fit the remaining "
@@ -413,7 +421,8 @@ def execute_prepared_mesh_run(ctx: BuilderToolContext, prepared: PreparedMeshRun
 
 def _broken_at_time_out(policy, log_tail) -> list[str]:
     """The broken cells a timed-out run was still failing to repair (the engine's own reading of
-    its log, RunPolicy.timed_out_defects) - [] for a run that was only slow."""
+    its log, RunPolicy.timed_out_defects) - [] for a run that was only slow. Words for the record
+    only: what a run was doing when its guard tripped decides nothing (TIME-3)."""
     hook = getattr(policy, "timed_out_defects", None)
     if hook is None:
         return []
@@ -424,35 +433,57 @@ def _broken_at_time_out(policy, log_tail) -> list[str]:
         return []
 
 
-def _stalled_verdict(ctx: BuilderToolContext, broken: list[str], log_tail) -> dict:
-    """A run that ran out of time still repairing broken cells IS a broken mesh: more time does not
-    mend it. Recorded for the executor as one (the failure the user reads and the fallback ladder
-    moves on from), and said to the builder so it does not buy the same run again."""
-    from meshpipeline.contracts.failure_cause import FailureCause
-    from meshpipeline.engines.preflight import PreflightRefusal
-    from meshpipeline.engines.registry import engine_label
-    what = "; ".join(broken)
-    PreflightRefusal(
-        gate="finalize", cause=FailureCause.MESH_QUALITY.value,
-        builder_text=f"[MESH_STALLED_BROKEN] the mesher ran out of time still repairing broken "
-                     f"cells: {what}",
-        facts={"engine": engine_label(ctx.engine) or ctx.engine, "fatal": list(broken),
-               "timed_out": True, "meshers_started": 1}).write(ctx.workspace)
-    out = {"success": False, "timed_out": True, "fatal_defects": list(broken),
-           "log_tail": log_tail}
-    if ctx.broken_mesh_moves_to:
-        nxt = engine_label(ctx.broken_mesh_moves_to) or ctx.broken_mesh_moves_to
-        out["moves_on_to"] = ctx.broken_mesh_moves_to
-        out["guidance"] = (f"Not valid: the mesher ran out of time still repairing broken cells "
-                           f"({what}) - more time does not mend that. Do NOT run_mesh again and do "
-                           f"NOT reconfigure - end your turn now. The run moves on to {nxt}, "
-                           "which builds the same approved mesh.")
-    else:
-        out["guidance"] = (f"Not valid: the mesher ran out of time still repairing broken cells "
-                           f"({what}) - more time does not mend that. Change the case so the wall "
-                           "is easier to fit (fewer or thinner boundaryLayers, a coarser wall "
-                           "cell) before any run_mesh; if it stalls again, stop.")
-    return out
+#: What run_mesh says when a guard clock stopped this attempt (docs/RULES.md TIME-3).
+_GUARD_REFUSAL = {
+    "success": False, "guard_tripped": True,
+    "guidance": ("A guard clock stopped this attempt's mesh run - an infrastructure stop, not a "
+                 "result about the mesh or your settings. Do NOT run_mesh again and do NOT "
+                 "reconfigure - end your turn now. The attempt is run again, unchanged.")}
+
+
+def _cite_run_guard(ctx: BuilderToolContext, engine: str, workspace, cap: int) -> None:
+    """The run's guard in its why record (TIME-2): the planned work it came from when the engine
+    planned the case (its run plan's `guard`), else the engine's declared cap. Never raises."""
+    import json as _json
+
+    from meshpipeline.contracts import decision_record as dr
+    from meshpipeline.contracts.work_limits import TIME_GUARD, PlannedWork
+    try:
+        planned = (_json.loads((workspace / "system" / "run_plan.json").read_text()) or {}
+                   ).get("guard")
+    except (OSError, ValueError, AttributeError):
+        planned = None
+    if not (isinstance(planned, dict) and planned.get("guard_s") == cap):
+        planned = PlannedWork(where=engine, unit="cells", amount=None, rate=None,
+                              floor_s=float(cap), ceiling_s=float(cap)).as_dict()
+    dr.cite(str(getattr(ctx, "job_id", "") or ""), stage=dr.STAGE_WORK_LIMIT, decided="guard_s",
+            value=cap, rule=TIME_GUARD, inputs=planned,
+            words=f"{engine} run: guard {cap // 60} min"
+                  + (" from its planned cells" if planned.get("amount") else
+                     " (its declared cap: no planned cells)"))
+
+
+def _attempt_tripped(workspace) -> bool:
+    """Whether a guard clock already stopped a run of the attempt in `workspace`."""
+    from meshpipeline.contracts.mesh_execution import native_runs
+    from meshpipeline.contracts.work_limits import TIME_WAIT
+    from meshpipeline.engines.determinism import guard_trips
+    if any(t.get("rule") != TIME_WAIT for t in guard_trips(workspace)):
+        return True
+    launched = [r for r in (native_runs(workspace) or []) if not r.get("refused_before_launch")]
+    return bool(launched and launched[-1].get("timed_out"))
+
+
+def _guard_verdict(ctx: BuilderToolContext, engine: str, cap: int, broken: list[str],
+                   log_tail) -> dict:
+    """A run its guard clock stopped (TIME-3): recorded beside the case as a guard trip, said to
+    the builder as the end of its turn. Not a broken mesh and not "too fine": what the run was
+    doing when the clock stopped it depends on how busy the machine was."""
+    from meshpipeline.engines.determinism import guard_trips, note_guard_trip
+    if not guard_trips(ctx.workspace):
+        note_guard_trip(engine, workspace=ctx.workspace, guard_s=float(cap),
+                        repairing=("; ".join(broken) or None))
+    return {**_GUARD_REFUSAL, "timed_out": True, "log_tail": log_tail}
 
 
 def _run_and_judge(ctx: BuilderToolContext, prepared: PreparedMeshRun) -> dict:
@@ -493,13 +524,12 @@ def _run_and_judge(ctx: BuilderToolContext, prepared: PreparedMeshRun) -> dict:
                              "Nothing was meshed: the case rendered from the patch contract does "
                              "not build the approved patches (an internal error, not your "
                              "strategy). Do NOT reconfigure - STOP and end your turn.")}
-    if res["timed_out"]:
-        _stalled = _broken_at_time_out(_policy, res.get("log_tail"))
-        if _stalled:
-            return _stalled_verdict(ctx, _stalled, res.get("log_tail"))
-        return {"success": False, "timed_out": True,
-                "guidance": f"meshing exceeded {_cap // 60} min - too fine. {_policy.timeout_hint}",
-                "log_tail": res["log_tail"]}
+    if res["timed_out"] or _attempt_tripped(workspace):
+        # THE RUN'S GUARD CLOCK TRIPPED - the run itself, or a step inside it (its stamp says
+        # which). An infrastructure stop (TIME-3): the attempt ends and is replayed as it was.
+        return _guard_verdict(ctx, engine, int(_cap),
+                              _broken_at_time_out(_policy, res.get("log_tail")),
+                              res.get("log_tail"))
     # rc=-3 is the remote runner's INFRASTRUCTURE failure marker (adapters.mesh_execution.cloud_run_client._fail:
     # job trigger/poll/download broke) - a SYSTEM failure, not a mesh/strategy problem.
     # Without this branch it surfaced like a mesher failure and the model "fixed" a

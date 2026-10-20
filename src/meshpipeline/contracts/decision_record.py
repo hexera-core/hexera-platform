@@ -36,7 +36,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 #: docs/RULES.md "Rulebook version". Raised whenever a rule changes what it decides.
-RULES_VERSION = "2"
+RULES_VERSION = "3"
 
 SOURCE_RULE = "rule"
 SOURCE_USER = "user"
@@ -48,6 +48,10 @@ STAGE_ENGINE_PICK = "engine_pick"
 STAGE_SWITCH = "switch"
 STAGE_DELIVERED = "delivered"
 STAGE_VERDICT = "verdict"
+#: the guard a step was given from its planned work (TIME-2), and what a run did after a guard
+#: tripped (TIME-3) - contracts/work_limits decides both again from the recorded inputs
+STAGE_WORK_LIMIT = "work_limit"
+STAGE_GUARD = "guard"
 
 
 @dataclass(frozen=True)
@@ -138,12 +142,12 @@ SWITCH_RULES: tuple[tuple[str, str], ...] = (
     ("no untried engine delivers the approved mesh", "SW-10"),
     ("no untried engine meshes ", "SW-11"),
     ("no regular attempt is left", "SW-12"),
-    ("too little time left for a ", "SW-13"),
+    # SW-13 ("too little time left for a ... run") is retired: since D3 no clock decides a switch
     ("the fallback ladder is switched off", "SW-14"),
     ("the last attempt did not fail", "SW-15"),
 )
-#: the switch rules a clock decides
-_CLOCK_SWITCH_RULES = frozenset({"SW-13"})
+#: the switch rules a clock decides: none since D3 (SW-13 retired, docs/RULES.md TIME-1)
+_CLOCK_SWITCH_RULES: frozenset[str] = frozenset()
 
 
 def switch_rule(why: str) -> str:
@@ -326,12 +330,31 @@ VERDICT_RULES = {OUTCOME_CLEAN: VER_CLEAN, OUTCOME_CONCERNS: VER_CONCERNS,
 # the replay
 # #
 
+# #
+# TIME: the guards (contracts/work_limits decides; these name and replay it)
+# #
+
+def work_limit(inputs: Mapping[str, Any]) -> tuple[Any, str]:
+    """(the guard seconds, TIME-2) from a step's recorded planned work - no clock is an input."""
+    from meshpipeline.contracts.work_limits import work_limit as _work_limit
+    return _work_limit(inputs)
+
+
+def guard(inputs: Mapping[str, Any]) -> tuple[Any, str]:
+    """(what the run did after a guard trip, TIME-3): replay the attempt, or end it as "ran out of
+    time" - from how many replays it already had, never from how long anything took."""
+    from meshpipeline.contracts.work_limits import after_trip
+    return after_trip(inputs)
+
+
 #: stage -> the pure rule function that decides it again from the recorded inputs
 REPLAYERS: dict[str, Callable[[Mapping[str, Any]], tuple[Any, str]]] = {
     STAGE_ENGINE_PICK: engine_pick,
     STAGE_SWITCH: switch,
     STAGE_DELIVERED: delivered,
     STAGE_VERDICT: verdict,
+    STAGE_WORK_LIMIT: work_limit,
+    STAGE_GUARD: guard,
 }
 
 
@@ -430,4 +453,5 @@ __all__ = ["DELIVERY_ONLY_ONE", "DELIVERY_RULES", "REPLAYERS", "RULES_VERSION", 
            "OUTCOME_CONCERNS", "OUTCOME_FAIL", "OUTCOME_CLEAN", "OUTCOME_WRONG_PROBLEM",
            "STAGE_VERDICT", "VERDICT_RULES", "VER_CONCERNS", "VER_FAIL", "VER_CLEAN",
            "VER_WRONG_PROBLEM", "WRONG_PROBLEM_CHECKS", "WRONG_PROBLEM_GATES", "failed_gating",
-           "limit_met", "missed_limits", "verdict"]
+           "limit_met", "missed_limits", "verdict",
+           "STAGE_GUARD", "STAGE_WORK_LIMIT", "guard", "work_limit"]

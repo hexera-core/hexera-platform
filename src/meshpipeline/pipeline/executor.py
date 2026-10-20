@@ -134,6 +134,58 @@ def _broken_mesh(workspace, before: tuple[int, int] | None) -> list[str]:
     return [str(x) for x in fatal if str(x).strip()] if isinstance(fatal, list) else []
 
 
+def _attempt_ending(trips) -> list[dict]:
+    """The guard trips that end an attempt (TIME-3, TIME-5). A wait's guard (TIME-4: the engine
+    order, the intake recommendation, the geometry naming) is that step failing, not the
+    attempt."""
+    from meshpipeline.contracts.work_limits import TIME_WAIT
+    return [dict(t) for t in (trips or ()) if isinstance(t, dict) and t.get("rule") != TIME_WAIT]
+
+
+def _guard_trip(state, workspace) -> dict:
+    """The guard trip that stopped this attempt ({} when none): one recorded beside the case
+    (engines/determinism.guard_trips: the builder's own clocks, a step inside a native run), or
+    the attempt's last native run stopped at its guard (contracts/mesh_execution.native_runs)."""
+    from meshpipeline.engines import determinism as det
+    trips = _attempt_ending(det.guard_trips(workspace))
+    if trips:
+        return trips[0]
+    try:
+        from meshpipeline.contracts.mesh_execution import native_runs
+        runs = native_runs(workspace)
+    except Exception:  # noqa: BLE001 - a record that cannot be read says nothing
+        runs = None
+    launched = [r for r in (runs or []) if not r.get("refused_before_launch")]
+    if launched and launched[-1].get("timed_out"):
+        return {"where": str(launched[-1].get("engine") or state.get("engine") or "the mesher"),
+                "native_run": True}
+    return {}
+
+
+async def _guard_failure(state, trip: dict, pub) -> dict:
+    """The executor's account of an attempt a guard clock stopped: ENGINE_TIMED_OUT with the trip
+    as its `guard` fact, so route_after_executor replays it (TIME-3) and, past the replay, the user
+    reads "ran out of time" - never a verdict about the mesh."""
+    from meshpipeline.contracts.failure_cause import FailureCause
+    from meshpipeline.contracts.work_limits import trip_words
+    job_id = state.get("job_id", "unknown")
+    words = trip_words(trip)
+    logger.warning("Executor: %s - an infrastructure stop, nothing judged - job_id=%s",
+                   words, job_id)
+    await pub.acheck("The mesh run finished inside its guard clock", ok=False)
+    facts: dict = {"engine": _engine_label(state), "guard": dict(trip)}
+    started = _meshers_started(state.get("openfoam_workspace", ""))
+    if started is not None:
+        facts["meshers_started"] = started
+    return {
+        "executor_success": False,
+        "executor_output": f"[GUARD_CLOCK] {words}",
+        "executor_failed_gate": "finalize",
+        "executor_failure_cause": FailureCause.ENGINE_TIMED_OUT.value,
+        "executor_failure_facts": facts,
+    }
+
+
 def _no_mesh_cause(state, workspace, cause: str, facts: dict) -> tuple[str, dict]:
     """(cause, facts) for an attempt that ended with no mesh and no refusal on record, read from
     the attempt's record of native runs (contracts/mesh_execution.native_runs):
@@ -221,6 +273,15 @@ async def node_executor(state: PipelineState) -> dict:
             "executor_failure_facts": {},
         }
 
+    # A GUARD CLOCK STOPPED THIS ATTEMPT (docs/RULES.md TIME-3): a native run, a step inside it, a
+    # measurement or the builder's own attempt ran past the guard its planned work gave it. That
+    # is an infrastructure stop, never a result about the shape - so nothing on disk is judged
+    # (a mesh kept "as built because time ran out" is not what a quiet machine delivers), and the
+    # graph replays the attempt (route_after_executor).
+    _trip = _guard_trip(state, workspace)
+    if _trip:
+        return await _guard_failure(state, _trip, _pub)
+
     # A PRE-FLIGHT REFUSAL: the builder found, before the mesher ran, that what it was about to
     # mesh could not pass, and stopped - no mesh exists. Two pre-flights record one:
     #   * engines/preflight.py - a far-field box the extent gate would block on every pass, or an
@@ -251,13 +312,24 @@ async def node_executor(state: PipelineState) -> dict:
     _mfst_domain = _domain or ("internal flow" if _internal else "")
     _manifest_before = _manifest_stamp(workspace)
     # ENGINE-ADAPTER seam: each engine declares its own finalize (flow engines →
-    # each flow bundle's finalize clone; gmsh → its own finalize).
-    result: dict = ({"success": False, "output": _refusal.builder_text, "stdout": "", "stderr": ""}
-              if _refusal is not None else
-              await asyncio.to_thread(
-                  get_engine(state.get("engine", "")).finalize, workspace,
-                  state.get("intake_patches", []) or [], state.get("engine", ""), _mfst_domain,
-                  _internal, state.get("engine_params", {}) or {}, _flow_topology))
+    # each flow bundle's finalize clone; gmsh → its own finalize). Its measurements run under
+    # guard clocks too: a trip in them ends the attempt the same way (TIME-3).
+    from meshpipeline.engines import determinism as _det
+    with _det.recording() as _finalize_rec:
+        result: dict = ({"success": False, "output": _refusal.builder_text, "stdout": "",
+                         "stderr": ""}
+                        if _refusal is not None else
+                        await asyncio.to_thread(
+                            get_engine(state.get("engine", "")).finalize, workspace,
+                            state.get("intake_patches", []) or [], state.get("engine", ""),
+                            _mfst_domain, _internal, state.get("engine_params", {}) or {},
+                            _flow_topology))
+    _trips = _attempt_ending(_finalize_rec.guard_trips)
+    if _trips:
+        _det.write_guard_trips(workspace, _trips)
+        return await _guard_failure(state, _trips[0], _pub)
+    # no guard tripped: the attempt is judged on what it built, and will not be replayed
+    _det.drop_attempt_start(workspace)
 
     executor_success = result["success"]
     solvability_failed = False

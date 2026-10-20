@@ -103,6 +103,12 @@ async def node_builder(state: PipelineState) -> dict:
         # is authored, and no execution success is written - the executor still owns that verdict.
         logger.error("Builder aggregate budget exhausted (%ds total) - job_id=%s: failing "
                      "truthfully", bcfg.BUILDER_TOTAL_TIMEOUT_SECONDS, job_id)
+        # a JOB GUARD (docs/RULES.md TIME-5): it ends the run as ran out of time, and decides
+        # nothing else - recorded so the run's record says a clock ended it
+        from meshpipeline.contracts.work_limits import TIME_JOB_GUARD
+        from meshpipeline.engines.determinism import note_guard_trip
+        note_guard_trip("builder.total", rule=TIME_JOB_GUARD,
+                        guard_s=float(bcfg.BUILDER_TOTAL_TIMEOUT_SECONDS))
         await _publish.anote("Mesh design exceeded its overall time budget",
                              op_id=f"budget-exhausted:{attempt.retry_count}")
         return _patch(retry_count=bcfg.MAX_BUILDER_RETRIES + 1,      # → failure sink
@@ -158,8 +164,22 @@ async def node_builder(state: PipelineState) -> dict:
     # Supersession and cancellation propagate out of here untouched: a stale generation writes
     # nothing, and a cancelled attempt is not a failed one.
     if _staging is None:
-        outcome = await invoke.run_attempt(attempt, state, job_id=job_id, publish=_publish,
-                                           timeout_s=budget.attempt_timeout_s)
+        # THE ATTEMPT'S GUARD TRIPS (docs/RULES.md TIME-3, TIME-5): every guard clock that trips
+        # while this attempt is built - a measurement in the driver, the attempt's own clock - is
+        # written beside its case, where the executor reads it and ends the attempt as ours.
+        from meshpipeline.contracts.work_limits import TIME_JOB_GUARD
+        from meshpipeline.engines import determinism as _det
+        # ...and the workspace as the attempt found it, so a guard replay starts from there
+        _det.mark_attempt_start(attempt.workspace)
+        with _det.recording() as _attempt_rec:
+            outcome = await invoke.run_attempt(attempt, state, job_id=job_id, publish=_publish,
+                                               timeout_s=budget.attempt_timeout_s)
+            if outcome.timed_out:
+                _det.note_guard_trip("builder.attempt", rule=TIME_JOB_GUARD,
+                                     guard_s=float(budget.attempt_timeout_s))
+        _det.write_guard_trips(attempt.workspace, [
+            t for t in _attempt_rec.guard_trips
+            if t not in _det.guard_trips(attempt.workspace)])
     else:
         logger.error("Builder: engine staging failed - the attempt ends on it, nothing runs - "
                      "job_id=%s: %s", job_id, _staging.builder_text)

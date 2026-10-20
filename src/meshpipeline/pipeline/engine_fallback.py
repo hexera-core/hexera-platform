@@ -65,7 +65,6 @@ from __future__ import annotations
 
 import logging
 import re
-import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -101,8 +100,11 @@ def measured_ranking(state: Mapping | None) -> list[str]:
     return [str(e) for e in order if e] if isinstance(order, list) else []
 
 
-#: How long the start of a run waits for its geometry to be measured and ranked.
-ORDER_WAIT_S = 60.0
+#: The GUARD on the start of a run's wait for its geometry to be measured and ranked (docs/RULES.md
+#: TIME-4): the run waits for the measurement - a fixed amount of work, seconds on any part - and
+#: this only stops a hung one. A trip is that measurement failing (recorded as a guard trip), the
+#: same path as any other failure of it; never a different order because time ran out.
+ORDER_WAIT_S = 900.0
 
 
 def measure_order(state: Mapping) -> dict:
@@ -158,9 +160,9 @@ async def seed_measured_order(state: Mapping, *, timeout_s: float = ORDER_WAIT_S
     except Exception as exc:  # noqa: BLE001 - a timeout or a failure leaves the declared order
         logger.info("engine ladder: no measured order for this run (%s)", type(exc).__name__)
         if isinstance(exc, TimeoutError):
-            from meshpipeline.engines.determinism import note_time_limit
-            note_time_limit("engine_ladder", "the measured engine order was not ready in time: "
-                            "the declared order stands", budget_s=float(timeout_s))
+            from meshpipeline.contracts.work_limits import TIME_WAIT
+            from meshpipeline.engines.determinism import note_guard_trip
+            note_guard_trip("engine_ladder", rule=TIME_WAIT, guard_s=float(timeout_s))
         return {}
     return {**record_of(state), **info} if info else {}
 
@@ -896,15 +898,10 @@ def decide(state: Mapping, *, record: Mapping, now: float | None = None) -> Deci
         return Decision(why="a retry here fits and still leaves every untried rung an attempt",
                         failure=failure)
     target = open_rungs[0].engine
-    clock = time.time() if now is None else now
-    if remaining_seconds(state, now=clock) < rung_seconds(target):
-        # a clock decided this, not the shape: recorded so a run that differs here is explained
-        from meshpipeline.engines.determinism import note_time_limit
-        note_time_limit("engine_fallback", f"no switch to {target}: too little time left",
-                        left_s=remaining_seconds(state, now=clock),
-                        needed_s=rung_seconds(target))
-        return Decision(why=f"too little time left for a {engine_label(target)} run",
-                        failure=failure)
+    # NO CLOCK HERE (D3, docs/RULES.md TIME-1; SW-13 retired): the time left never decides a
+    # switch. The run's guards (the builder and pipeline clocks) only guard; a next rung that runs
+    # past them is a guard trip, an infrastructure failure - not a reason to stay. `now` is kept
+    # for callers and is not read.
     broken = broken_cells(state.get("executor_failure_facts")
                           if isinstance(state.get("executor_failure_facts"), Mapping) else None)
     return Decision(switch_to=target, why=(

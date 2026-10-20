@@ -566,15 +566,17 @@ def test_no_switch_without_a_regular_attempt_left(quiet):
     assert "engine" not in out
 
 
-def test_no_switch_without_the_time_for_the_new_engine(quiet):
-    tight = time.time() + lad.rung_seconds("snappy") / 2
-    out = _node(_external(builder_deadline_epoch=tight))
-    assert "engine" not in out
-    # the run still ends with the engine offered
-    offer = lad.final_record(_external(builder_deadline_epoch=tight, retry_count=2),
-                             succeeded=False, system_failure=False)["offer"]
-    assert offer["engine"] == "snappy" and offer["same_contract"] is True
-    assert "no attempt or time left" in offer["text"]
+@pytest.mark.parametrize("left_s", [None, 10.0, 600.0, 99_999.0])
+def test_the_switch_is_the_same_whatever_the_time_left(quiet, left_s):
+    # docs/RULES.md TIME-1 (SW-13 retired): "too little time left for the new engine" used to keep
+    # the run where it was, so a busy machine took a different engine. The time left is no input.
+    deadline = 0.0 if left_s is None else time.time() + left_s
+    out = _node(_external(builder_deadline_epoch=deadline, pipeline_deadline_epoch=deadline))
+    assert out.get("engine") == _node(_external()).get("engine") == "snappy"
+    state = _external(builder_deadline_epoch=deadline)
+    rec = lad.with_attempt(state, lad.classify(state))
+    for now in (0.0, time.time(), time.time() + 1e6):
+        assert lad.decide(state, record=rec, now=now) == lad.decide(state, record=rec)
 
 
 def test_a_switch_spends_the_runs_own_attempt_counter(quiet):

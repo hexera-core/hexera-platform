@@ -1,7 +1,7 @@
 # Responsibility: Make one input give one mesh: pin what a native mesher may vary by (threads, ranks, hash order) and stamp every run with what it ran under.
-# Owns: the determinism settings, the native environment they pin, the record of every time a wall clock changed a decision, and the reproducibility stamp written beside the mesh.
+# Owns: the determinism settings, the native environment they pin, the record of every guard clock that tripped (and of the clocks that still decide), and the reproducibility stamp written beside the mesh.
 # Boundaries: mesh side and worker side alike; it records and pins, it never judges a mesh. Engines read their pinned values from here instead of from the host.
-# Collaborates with: engines/dispatch.run_engine_local (opens a run, pins, stamps), engines/snappy/native (ranks), engines/gmsh/driver (seed), the time-limited call sites (note_time_limit).
+# Collaborates with: engines/dispatch.run_engine_local (opens a run, pins, stamps), engines/snappy/native (ranks), engines/gmsh/driver (seed), contracts/work_limits (the guards: note_guard_trip), pipeline/executor (reads a trip back: guard_trips), the CAD repair steps (note_time_limit).
 """REPEATABILITY: SAME CLEAN FILE IN, SAME RESULT OUT.
 
 A mesher's result may depend on more than its input and its plan:
@@ -16,9 +16,12 @@ A mesher's result may depend on more than its input and its plan:
   * the wall clock - a pass skipped "because too little time is left" depends on how loaded the
     machine was during the passes before it.
 
-This module fixes the first three by default (MESH_DETERMINISTIC) and records the fourth: every
-time a time limit changed what a run did, `note_time_limit` says so, and the stamp carries it, so a
-result that differs between two runs can be told apart from one that hit a clock.
+This module fixes the first three by default (MESH_DETERMINISTIC). The fourth is gone from the mesh
+path (D3, contracts/work_limits): planned work decides, and a clock is only a GUARD. A guard that
+trips is recorded by `note_guard_trip` - in the stamp's `guard_trips`, and in GUARD_TRIPS_FILE in
+the attempt's workspace, which the executor reads - and the attempt ends as an infrastructure
+failure. `note_time_limit` is left for the clocks that still decide (the CAD repair steps, TIME-6),
+so a clean mesh run's `time_limited` is empty.
 """
 from __future__ import annotations
 
@@ -77,7 +80,8 @@ _PLAN_DIRS = ("system",)
 #: pass's mesh, logs, timing or stamp as a changed input).
 _SKIP_PARTS = ("processor", "_rescue", "VTK", "postProcessing", "polyMesh")
 _SKIP_FILES = frozenset({STAMP_FILE, "run_reproducibility.json", "mesh_quality.json", "mesh_timing.json",
-                         "return_scope.json", "mesh_manifest.json", "quality.json"})
+                         "return_scope.json", "mesh_manifest.json", "quality.json",
+                         "guard_trips.json"})
 _HASH_CHUNK = 4 * 1024 * 1024
 
 
@@ -163,6 +167,7 @@ def snappy_ranks(cpu_quota: int | None, memory_bytes: int, *, hard_max: int = 12
 class _RunRecord:
     def __init__(self) -> None:
         self.time_limited: list[dict[str, Any]] = []
+        self.guard_trips: list[dict[str, Any]] = []
         self.settings: dict[str, Any] = {}
         self.lock = threading.Lock()
 
@@ -180,7 +185,8 @@ def _record() -> _RunRecord:
 
 @contextlib.contextmanager
 def recording() -> Iterator[_RunRecord]:
-    """One run's record: every note_time_limit / note_setting inside the block lands in it."""
+    """One run's record: every note_time_limit / note_guard_trip / note_setting inside the block
+    lands in it (an inner block takes the notes made inside it)."""
     rec = _RunRecord()
     token = _CURRENT.set(rec)
     try:
@@ -190,17 +196,132 @@ def recording() -> Iterator[_RunRecord]:
 
 
 def note_time_limit(where: str, decision: str, **facts: Any) -> None:
-    """A wall-clock limit changed what this run did (a pass skipped, a measurement abandoned, a
-    step cut short). Two runs that differ and both carry such a note are told apart from a
-    mesher that varies on its own. Facts are numbers or short words (budget_s, left_s, ...)."""
+    """A wall-clock limit changed what this run did. Only the clocks that still DECIDE call this:
+    the CAD inspection and repair steps (docs/RULES.md TIME-6, left for the repair work, #201).
+    Every other clock is a guard (note_guard_trip). Facts are numbers or short words (budget_s,
+    left_s, ...)."""
+    from meshpipeline.contracts.work_limits import TIME_REPAIR_CLOCK
     rec = _record()
-    entry = {"where": str(where), "decision": str(decision),
+    entry = {"where": str(where), "decision": str(decision), "rule": TIME_REPAIR_CLOCK,
              **{k: (round(v, 1) if isinstance(v, float) else v) for k, v in facts.items()}}
     with rec.lock:
         if rec is _PROCESS and len(rec.time_limited) >= _PROCESS_MAX:
             rec.time_limited.pop(0)
         rec.time_limited.append(entry)
     logger.info("time limit changed a decision: %s", entry)
+
+
+#: Beside the attempt's case: every guard that tripped while it was built or checked. The executor
+#: reads it (guard_trips) and the attempt ends as an infrastructure failure (TIME-3).
+GUARD_TRIPS_FILE = "guard_trips.json"
+
+
+def note_guard_trip(where: str, *, workspace: Any = None, rule: str = "", **facts: Any) -> dict:
+    """A GUARD CLOCK TRIPPED (contracts/work_limits, TIME-3): a step ran past the guard its planned
+    work gave it. Recorded in the open run's record (the stamp's `guard_trips`) and, with
+    `workspace`, in GUARD_TRIPS_FILE there. Nothing is decided here: the caller ends its step and
+    the executor ends the attempt on the trip. Returns the entry."""
+    from meshpipeline.contracts.work_limits import TIME_TRIP
+    entry = {"where": str(where), "rule": str(rule or TIME_TRIP),
+             **{k: (round(v, 1) if isinstance(v, float) else v) for k, v in facts.items()
+                if v is not None}}
+    rec = _record()
+    with rec.lock:
+        if rec is _PROCESS and len(rec.guard_trips) >= _PROCESS_MAX:
+            rec.guard_trips.pop(0)
+        rec.guard_trips.append(entry)
+    if workspace:
+        write_guard_trips(workspace, [entry])
+    logger.warning("guard clock tripped (an infrastructure event, never a decision): %s", entry)
+    return entry
+
+
+def write_guard_trips(workspace: Any, trips: list[dict[str, Any]]) -> None:
+    """Add `trips` to the workspace's GUARD_TRIPS_FILE (never raises)."""
+    if not trips:
+        return
+    path = Path(workspace) / GUARD_TRIPS_FILE
+    try:
+        have = json.loads(path.read_text()) if path.exists() else []
+        have = have if isinstance(have, list) else []
+        path.write_text(json.dumps([*have, *trips], default=str))
+    except (OSError, ValueError):
+        logger.warning("could not record a guard trip in %s", workspace, exc_info=True)
+
+
+def guard_trips(workspace: Any) -> list[dict[str, Any]]:
+    """Every guard trip recorded for the case in `workspace`: GUARD_TRIPS_FILE (worker side) and
+    the last native run's stamp (mesh side). [] when there is none."""
+    ws = Path(workspace)
+    out: list[dict[str, Any]] = []
+    try:
+        data = json.loads((ws / GUARD_TRIPS_FILE).read_text())
+    except (OSError, ValueError):
+        data = []
+    if isinstance(data, list):
+        out.extend(d for d in data if isinstance(d, dict))
+    seen = {json.dumps(d, sort_keys=True, default=str) for d in out}
+    for d in ((read_stamp(ws) or {}).get("guard_trips") or []):
+        if isinstance(d, dict) and json.dumps(d, sort_keys=True, default=str) not in seen:
+            out.append(d)
+    return out
+
+
+def clear_guard_trips(workspace: Any) -> None:
+    """Forget the trips of the case in `workspace`, so the replay of the attempt starts clean: the
+    trips file and the stamp that carried them. Never raises."""
+    for name in (GUARD_TRIPS_FILE, STAMP_FILE):
+        with contextlib.suppress(OSError):
+            (Path(workspace) / name).unlink(missing_ok=True)
+
+
+def _start_copy(workspace: Any) -> Path:
+    """Where an attempt's workspace is kept as it was when the attempt started: beside it, never
+    inside it (nothing in it may reach a mesher's payload or the case's hash)."""
+    ws = Path(workspace)
+    return ws.parent / f".{ws.name}.start"
+
+
+def mark_attempt_start(workspace: Any) -> None:
+    """Keep a copy of `workspace` as the attempt starts, so a guard replay starts the attempt from
+    exactly there (TIME-3: "the same attempt, as it was") - and so decides the same way. Once: a
+    replay keeps the copy of the attempt it replays. Never raises."""
+    import shutil
+    ws, copy = Path(workspace), _start_copy(workspace)
+    if copy.exists() or not ws.is_dir():
+        return
+    try:
+        shutil.copytree(ws, copy, symlinks=True)
+    except OSError:
+        logger.warning("could not keep the attempt's start in %s", copy, exc_info=True)
+        shutil.rmtree(copy, ignore_errors=True)
+
+
+def restore_attempt_start(workspace: Any) -> bool:
+    """Put `workspace` back as the attempt found it (its start copy): everything the attempt wrote
+    - plan memories, meshes, logs, a reshuffled surface - is gone, so its replay starts where the
+    attempt did. False when there is no copy (the workspace is left as it is). Never raises."""
+    import shutil
+    ws, copy = Path(workspace), _start_copy(workspace)
+    if not copy.is_dir():
+        return False
+    try:
+        for child in list(ws.iterdir()) if ws.is_dir() else []:
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+        shutil.copytree(copy, ws, symlinks=True, dirs_exist_ok=True)
+        return True
+    except OSError:
+        logger.warning("could not restore the attempt's start in %s", workspace, exc_info=True)
+        return False
+
+
+def drop_attempt_start(workspace: Any) -> None:
+    """The attempt was judged without a guard trip: its start copy is no longer needed."""
+    import shutil
+    shutil.rmtree(_start_copy(workspace), ignore_errors=True)
 
 
 def note_setting(name: str, value: Any, basis: str = "") -> None:
@@ -214,6 +335,13 @@ def drain_process_notes() -> list[dict[str, Any]]:
     """The time-limit notes made outside any open run since the last drain (worker side)."""
     with _PROCESS.lock:
         out, _PROCESS.time_limited = _PROCESS.time_limited, []
+    return out
+
+
+def drain_process_guard_trips() -> list[dict[str, Any]]:
+    """The guard trips noted outside any open run since the last drain (worker side)."""
+    with _PROCESS.lock:
+        out, _PROCESS.guard_trips = _PROCESS.guard_trips, []
     return out
 
 
@@ -296,7 +424,8 @@ def stamp(engine: str, *, record: _RunRecord | None = None, hashes: dict | None 
           foam_version: str = "", started: float | None = None,
           ) -> dict[str, Any]:
     """The reproducibility stamp of one native run: what went in (hashes), what it ran with
-    (engine, versions, image, threads, ranks, seeds), and every time a clock changed a decision."""
+    (engine, versions, image, threads, ranks, seeds), every guard clock that tripped, and every
+    time a clock still changed a decision."""
     rec = record or _record()
     env = native_environment(engine)
     out: dict[str, Any] = {
@@ -315,6 +444,7 @@ def stamp(engine: str, *, record: _RunRecord | None = None, hashes: dict | None 
         "pinned": env,
         "settings": dict(rec.settings),
         "time_limited": list(rec.time_limited),
+        "guard_trips": list(rec.guard_trips),
     }
     if engine in ("snappy",):
         out["decomposition"] = SNAPPY_DECOMPOSITION
@@ -355,9 +485,12 @@ def comparable(a: dict, b: dict) -> list[str]:
 
 
 __all__ = [
-    "GMSH_RANDOM_SEED", "GMSH_THREADS", "MESH_CFMESH_THREADS", "MESH_DETERMINISTIC",
-    "MESH_SNAPPY_RANKS", "MESH_THREADS", "SNAPPY_DECOMPOSITION", "STAMP_FILE", "comparable",
-    "drain_process_notes", "native_environment", "note_setting", "note_time_limit",
+    "GMSH_RANDOM_SEED", "GMSH_THREADS", "GUARD_TRIPS_FILE", "MESH_CFMESH_THREADS",
+    "MESH_DETERMINISTIC", "MESH_SNAPPY_RANKS", "MESH_THREADS", "SNAPPY_DECOMPOSITION", "STAMP_FILE",
+    "clear_guard_trips", "comparable", "drain_process_guard_trips", "drain_process_notes", "drop_attempt_start", "guard_trips", "mark_attempt_start",
+    "native_environment",
+    "note_guard_trip", "note_setting", "note_time_limit", "restore_attempt_start",
+    "write_guard_trips",
     "pin_process_environment", "read_stamp", "recording", "snappy_ranks", "stamp", "threads_for",
     "tool_versions", "workspace_hashes", "write_stamp",
 ]

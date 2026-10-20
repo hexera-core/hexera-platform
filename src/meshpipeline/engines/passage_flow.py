@@ -614,11 +614,12 @@ def passage_flow_of_polymesh(workspace, quality: dict | None, *,
         record = flow_evidence(pts, tris, port_of_tri, wall_of_tri=wall_of_tri, floor=floor,
                                deadline=deadline, wall_edges=edges[wall_of_edge])
     except EvidenceOverdue:
-        logger.warning("passage flow reading abandoned after %.0f s; the floor is judged as "
-                       "measured", budget_s)
-        from meshpipeline.engines.determinism import note_time_limit
-        note_time_limit("passage.flow", "the passage flow reading was abandoned: the floor is "
-                        "judged without it", budget_s=float(budget_s))
+        # PLANNED WORK (the voxel copy's fixed size); the clock is its guard. A reading past it
+        # is a guard trip (docs/RULES.md TIME-3): the attempt is replayed as an infrastructure
+        # failure, never judged "without the reading" because time ran out.
+        logger.warning("passage flow reading ran past its %.0f s guard", budget_s)
+        from meshpipeline.engines.determinism import note_guard_trip
+        note_guard_trip("passage.flow", guard_s=float(budget_s))
         return {}
     except Exception:  # noqa: BLE001 - evidence, not a verdict
         logger.warning("passage flow reading of the polyMesh failed", exc_info=True)

@@ -67,27 +67,16 @@ def test_the_kill_switch_turns_reruns_off():
             {**_VALIDATED, "api_failure": "reviewer_stalled"}) == "node_failure_handler"
 
 
-def test_no_rerun_once_the_run_is_out_of_time():
-    spent = {**_VALIDATED, "api_failure": "reviewer_stalled",
-             "pipeline_deadline_epoch": time.time() - 5}
-    assert G.route_after_reviewer(spent) == "node_failure_handler"
-    left = {**spent, "pipeline_deadline_epoch": time.time() + 3600}
-    assert G.route_after_reviewer(left) == "node_review_retry"
-
-
-def test_no_rerun_when_the_wait_and_a_usable_review_no_longer_fit():
-    # a transient failure waits the backoff out first; with less than that plus a usable review
-    # window left, sleeping would only delay the run's own timeout
-    with patch.object(rcfg, "REVIEWER_RERUN_BACKOFF_S", 90):
-        near = time.time() + 90 + G.REVIEW_RERUN_MIN_WINDOW_S - 30
-        transient = {**_VALIDATED, "api_failure": "reviewer_timeout",
-                     "pipeline_deadline_epoch": near}
-        assert G.route_after_reviewer(transient) == "node_failure_handler"
-        # a stall does not wait, so the same time still fits a review
-        stalled = {**transient, "api_failure": "reviewer_stalled"}
-        assert G.route_after_reviewer(stalled) == "node_review_retry"
-        short = {**stalled, "pipeline_deadline_epoch": time.time() + 60}
-        assert G.route_after_reviewer(short) == "node_failure_handler"
+@pytest.mark.parametrize("marker", ["reviewer_stalled", "reviewer_timeout"])
+@pytest.mark.parametrize("left_s", [-5.0, 60.0, 3600.0, None])
+def test_whether_a_review_runs_again_never_depends_on_the_time_left(marker, left_s):
+    # docs/RULES.md TIME-1: the rerun is decided by its count alone. The run's deadline is a guard
+    # (TIME-5): a rerun it stops ends the run as ours, like any review that cannot conclude.
+    state = {**_VALIDATED, "api_failure": marker}
+    if left_s is not None:
+        state["pipeline_deadline_epoch"] = time.time() + left_s
+    assert G.route_after_reviewer(state) == "node_review_retry"
+    assert G.route_after_reviewer({**state, "review_rerun_count": 2}) == "node_failure_handler"
 
 
 def test_a_verdict_still_routes_as_before():
