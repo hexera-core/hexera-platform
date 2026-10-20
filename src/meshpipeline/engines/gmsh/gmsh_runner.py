@@ -71,6 +71,10 @@ def tessellate_to_stl(geom_path, out_stl, *, context=None, prepared=None) -> Pat
         gmsh.model.occ.synchronize()
         # the metre-normalised B-rep IS the staged geometry - the driver reads this, unscaled
         gmsh.write(str(staged_brep))
+        # gmsh's STEP writer drops the names a CAD file gives single faces: record them from the
+        # upload, by where each face is, for the FEA deck to write beside Face_k
+        from meshpipeline.cad.face_names import record_for_staging
+        record_for_staging(gmsh, geom_path, ws)
         # The staged SURFACE (input.stl) is a picture of that B-rep for the report and review,
         # never what the driver meshes. A size floor keeps a degenerate CAD edge from asking for
         # a zero size (CRM high-lift: "Wrong mesh element size lc = 0" stopped staging, lab
