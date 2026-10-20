@@ -59,6 +59,7 @@ Usage (from the repository root, in the venv that has OCP and pyvista):
         --cases /home/areen/overnight/lab/testset/cases --cases /home/areen/overnight/recommend/cases \\
         --cases /home/areen/overnight/vmtk-tubular/cases --root /home/areen/overnight/lab/testset \\
         --e2e /home/areen/overnight/e2e/sweeps/baseline-main/results \\
+        --e2e-index /home/areen/overnight/e2e/index.jsonl \\
         --split /home/areen/overnight/e2e/holdout_files.json
 
 To add e2e sweeps to the lab record a table already ships with (the lab's out/ has moved on, and
@@ -68,6 +69,7 @@ re-reading it would change rows the build is not about):
         --lab-results /home/areen/overnight/lab/out --root /home/areen/overnight/lab/testset \\
         --cases /home/areen/overnight/lab/testset/cases ... \\
         --e2e /home/areen/overnight/e2e/sweeps/baseline-main/results \\
+        --e2e-index /home/areen/overnight/e2e/index.jsonl \\
         --split /home/areen/overnight/e2e/holdout_files.json
 """
 from __future__ import annotations

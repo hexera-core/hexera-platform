@@ -403,6 +403,14 @@ def test_seven_of_eight_never_outranks_fourteen_of_nineteen():
     assert "only 8 runs on thin gaps or annuli, fewer than the 20 the ranking trusts" in cf.reason
 
 
+def test_soundness_never_reorders_two_engines_without_a_fault():
+    # 7/8's own lower bound (52.9%) clears the "sound" bar and 14/20's (48.1%) does not; that bar
+    # only separates sound engines from FAULTED ones, so the padded lower bound ranks these two
+    rows = _record("cfmesh", GAP, 7, 8) + _record("snappy", GAP, 14, 20)
+    rec = F.recommend(_t(GAP), ["cfmesh", "snappy"], table=_table(rows))
+    assert rec.ranking == ["snappy", "cfmesh"], [f.as_dict() for f in rec.fits]
+
+
 def test_a_proven_record_says_how_sure_it_is():
     rows = _record("cfmesh", GAP, 30, 30)
     fit = F.recommend(_t(GAP), ["cfmesh"], table=_table(rows)).fit_of("cfmesh")
@@ -447,6 +455,16 @@ def test_a_challenger_overrides_home_only_when_it_clearly_wins(vmtk_home):
     bad = _record("vmtk", TUBE, 14, 19) + _record("cfmesh", TUBE, 30, 30, shapes=10, prefix="c",
                                                      quality={"max_non_ortho": 85.0})
     assert F.recommend(_t(TUBE), ["vmtk", "cfmesh"], table=_table(bad)).engine == "vmtk"
+
+
+def test_an_engine_that_did_not_clear_eng3_never_jumps_the_home_engine(vmtk_home):
+    # cfMesh clears ENG-3 against VMTK; snappy's 40/40 sits on only 7 shapes, so it does not. VMTK
+    # loses first place to cfMesh, never to snappy
+    rows = (_record("vmtk", TUBE, 14, 19) + _record("cfmesh", TUBE, 30, 30, shapes=10, prefix="c")
+            + _record("snappy", TUBE, 40, 40, shapes=7, prefix="n"))
+    rec = F.recommend(_t(TUBE), ["vmtk", "cfmesh", "snappy"], table=_table(rows))
+    assert rec.ranking == ["cfmesh", "vmtk", "snappy"], [f.as_dict() for f in rec.fits]
+    assert rec.fit_of("cfmesh").rule == "ENG-3"
 
 
 def test_a_home_engine_never_tried_on_its_class_cannot_be_overridden(vmtk_home):

@@ -112,3 +112,15 @@ def test_the_pick_record_names_the_rule_the_recommendation_used():
     assert dr.engine_pick({**base, "recommended_rule": "ENG-3"}) == ("vmtk", "ENG-3")
     assert dr.engine_pick(base) == ("vmtk", "ENG-4")
     assert dr.engine_pick({**base, "recommended_rule": "ENG-6"}) == ("vmtk", "ENG-4")
+
+
+def test_the_best_of_several_meshes_still_says_it_is_another_kind():
+    # review_delivery picked attempt 2 of a run that moved VMTK -> snappyHexMesh (SW-16): the
+    # delivered note names the attempt AND the change of mesh kind
+    record = {"delivered_by": "snappy",
+              "delivered_from": {"attempt": 2, "why": "it measured best of this run's meshes"},
+              "switches": [{"attempt": 1, "from": "vmtk", "to": "snappy", "reason": "it timed out",
+                            "changes": ["you would get an OpenFOAM mesh instead of a VTK one"]}]}
+    note = lad.delivered_note(record)
+    assert "attempt 2" in note
+    assert "another kind of mesh than the one approved: you get an OpenFOAM mesh" in note

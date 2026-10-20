@@ -1295,6 +1295,12 @@ def delivered_note(record: Mapping) -> str:
                 f"{engine_label(by)}: {why}.")
         if short:
             text += " It is short of: " + "; ".join(short) + "."
+        # SW-16: a mesh from an engine the run moved to across mesh kinds says what kind it is
+        kind = [str(c) for s in switches if str(s.get("to") or "") == by
+                for c in (s.get("changes") or []) if str(c).strip()]
+        if kind:
+            text += (" It is another kind of mesh than the one approved: "
+                     + "; ".join(c.replace("you would get ", "you get ", 1) for c in kind) + ".")
         return text
     if not switches:
         return ""

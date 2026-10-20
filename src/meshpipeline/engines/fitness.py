@@ -846,18 +846,22 @@ def recommend(traits: ShapeTraits, engines: Sequence[str], *, table: Table | Non
     # ENG-3: a home engine keeps first place unless the measured record clearly says otherwise
     overrides: dict[str, str] = {}
     for h in [s for s in scored if s.home]:
-        beater = next((c for c in sorted(scored, key=_eng4_key(source_format))
+        beater = next((c for c in sorted(scored, key=_eng4_key(source_format, faulted=True))
                        if not c.home and c.turf != "outside" and _clearly_beats(c.ev, h.ev)), None)
         if beater is not None:
             overrides[h.name] = beater.name
         elif h.ev.proven and quality_fault(h.ev):
             overrides[h.name] = ""
+    beaters = {b for b in overrides.values() if b}
     for s in scored:
         s.keeps_home = s.home and s.name not in overrides
+        # ENG-3 is won per challenger: a home engine that a challenger clearly beat still ranks
+        # ahead of every engine that did NOT clear ENG-3 against it
+        s.tier = (0 if s.keeps_home else 1 if s.name in beaters
+                  else 2 if s.home and overrides.get(s.name) else 3)
 
-    scored.sort(key=_eng4_key(source_format))
+    scored.sort(key=_eng4_key(source_format, faulted=any(quality_fault(s.ev) for s in scored)))
     best = next((s.name for s in scored if s.turf != "outside"), "")
-    beaters = {b for b in overrides.values() if b}
 
     def rule(s: _Scored) -> str:
         if s.turf == "outside":
@@ -915,6 +919,8 @@ class _Scored:
     ladder: int
     home: bool
     keeps_home: bool = False
+    #: ENG-2/3 place: 0 keeps home, 1 clearly beat a home engine, 2 a home engine so beaten, 3 rest
+    tier: int = 3
 
 
 def _sound(s: _Scored) -> bool:
@@ -940,7 +946,10 @@ def _short(ev: Evidence) -> str:
     return f"{ev.ranked_passed} of {ev.ranked_runs}"
 
 
-def _eng4_key(source_format: str):
+def _eng4_key(source_format: str, *, faulted: bool = True):
+    """`faulted`: some engine on the list has a quality fault. Only then does a sound record go
+    first: soundness separates sound engines from faulted ones, and never reorders two engines
+    without a fault (the padded lower bound does that, so 7 of 8 never jumps 14 of 20)."""
     def key(s: _Scored):
         # outside last (ENG-1); an engine that reads the upload's own format first; a home engine
         # that keeps its place (ENG-2/3); then ENG-4: a sound record before a QUALITY FAULT
@@ -950,8 +959,8 @@ def _eng4_key(source_format: str):
         # the declared ladder order. Measured before declared: cfMesh declares thick bodies home
         # and made broken meshes on 7 of 8 DrivAer cars. Time never breaks a tie.
         ev = s.ev
-        return (s.turf == "outside", not reads_own_format(s.name, source_format), not s.keeps_home,
-                not _sound(s), -math.floor(s.score / TIE_STEP + 1e-9), validity_step(ev),
+        return (s.turf == "outside", not reads_own_format(s.name, source_format), s.tier,
+                faulted and not _sound(s), -math.floor(s.score / TIE_STEP + 1e-9), validity_step(ev),
                 quality_step(ev), _TURF_ORDER.get(s.turf, 1),
                 -(ev.layers_pct if ev.layers_pct is not None else -1.0), s.ladder, s.name)
     return key
