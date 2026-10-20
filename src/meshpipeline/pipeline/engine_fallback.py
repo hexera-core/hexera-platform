@@ -657,6 +657,24 @@ def classify(state: Mapping) -> Failure | None:
     return Failure(kind, cause.value, _REASON_BY_CAUSE[cause], stopped)
 
 
+def another_engine_takes_over(state: Mapping) -> bool:
+    """Whether the ladder moves this failed run to another engine NOW - asked by the graph's router
+    before it ends a run whose failure a retry of the SAME engine cannot change (route_after_executor).
+    A deterministic refusal is the engine's own: snappyHexMesh refusing a case whose staging found
+    16 separate passages refuses it on every re-run, and cfMesh meshes them side by side. The router
+    ended such runs before the ladder could move them (a shell-and-tube bundle, e2e 2026-10-20).
+    False whenever the ladder would not switch: the run then ends exactly as before."""
+    try:
+        failure = classify(state)
+        if failure is None or failure.kind == NEVER:
+            return False
+        st = with_staged_passages(state)
+        return bool(decide(st, record=with_attempt(st, failure)).switch_to)
+    except Exception:  # noqa: BLE001 - a question the ladder cannot answer keeps the run's end
+        logger.warning("engine ladder: could not tell whether another engine takes over", exc_info=True)
+        return False
+
+
 def broken_cells(facts: Mapping | None) -> list[str]:
     """The fatal defects a failed attempt's mesh carries (the quality gate's and finalize's own
     `fatal` fact) - [] when the mesh was not broken, or there was none."""
@@ -1299,7 +1317,7 @@ __all__ = ["ENGINE", "FIXABLE", "NEVER", "REQ_PRISM_LAYERS", "REQ_WAKE", "REVIEW
            "delivered_note", "engine_source", "fallback_order", "fresh_start_brief",
            "final_record", "ladder", "layer_request", "may_switch_on_its_own", "measure_order",
            "measured_ranking", "mesher_started", "moves_on_from_broken_mesh", "broken_cells",
-           "seed_measured_order", "PASSAGES_MEASURED", "PASSAGES_STAGED", "covers_case",
+           "seed_measured_order", "PASSAGES_MEASURED", "PASSAGES_STAGED", "another_engine_takes_over", "covers_case",
            "held_back_by_passages", "passages_of", "with_staged_passages",
            "node_engine_fallback", "offer", "refused_by_design", "remaining_seconds",
            "rung_seconds", "switch_note", "takers_by_form", "tried_engines", "with_attempt",
