@@ -446,14 +446,22 @@ class GapEstimate:
                 "the narrowest spots get as many cells across as the limit holds, and the mesh "
                 f"is still checked for {GAP_FLOOR_CELLS:.0f} across its narrowest wall.")
 
-    def guidance(self) -> str:
-        """What the intake model is told to do with the user's pick."""
+    def guidance(self, takers: tuple[str, ...] | None = None) -> str:
+        """What the intake model is told to do with the user's pick. `takers` are the engines (by
+        label) that declare the narrow_gaps choice; None = not said. An engine without it would
+        refuse the parameter, so the model is told to send it only with one of them."""
         if not self.over_limit:
             return ""
+        if takers is not None and not takers:
+            return ("None of the engines listed takes this choice: leave "
+                    f"{NARROW_GAPS_PARAM} out whatever the user picks.")
+        only = (f" This choice is only for {' and '.join(takers)}: with any other engine leave "
+                f"{NARROW_GAPS_PARAM} out (it does not take it)." if takers else "")
         return (f"If the user picks (1), submit engine_params {NARROW_GAPS_PARAM}="
                 f"'{WITHIN_LIMIT}'. Otherwise leave {NARROW_GAPS_PARAM} out: the run then checks "
                 "the limit again before meshing and, if it still cannot hold the rule, refines the "
-                "narrowest spots as far as the limit holds and holds the mesh to the full floor.")
+                "narrowest spots as far as the limit holds and holds the mesh to the full floor."
+                + only)
 
 
 def estimate_from_traits(traits, *, limit: int | None = None) -> GapEstimate | None:

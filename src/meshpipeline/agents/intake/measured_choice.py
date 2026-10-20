@@ -182,6 +182,19 @@ def gap_estimate(rec):
         return None
 
 
+def _gap_choice_takers(rec) -> tuple[str, ...]:
+    """The engines on the ranking whose declaration takes the narrow_gaps choice (by label): only
+    those may be sent it - another engine refuses an unknown parameter at intake."""
+    from meshpipeline.engines.fitness import _spec
+    from meshpipeline.engines.gap_sizing import NARROW_GAPS_PARAM
+    out = []
+    for f in rec.fits:
+        params = getattr(_spec(f.engine), "intake_params", ()) or ()
+        if any(getattr(p, "key", "") == NARROW_GAPS_PARAM for p in params):
+            out.append(_display(f.engine))
+    return tuple(dict.fromkeys(out))
+
+
 def _fit(fit) -> str:
     from meshpipeline.engines.fitness import fit_words
     words = fit_words(fit)
@@ -233,7 +246,7 @@ def prompt_block(rec, *, settled: bool) -> str:
         # the gap rule's cost, measured: said to the user only when it is over the limit (the
         # engine question carries it); background for questions otherwise
         sizing = (f"  {gaps.sentence()}"
-                  + (f" {gaps.guidance()}" if gaps.over_limit else
+                  + (f" {gaps.guidance(_gap_choice_takers(rec))}" if gaps.over_limit else
                      " (Background only - the run sizes the narrow spots itself; do not raise "
                      "it unasked.)") + "\n")
     return ("\n\nMEASURED ENGINE RECOMMENDATION (the application measured the uploaded geometry "

@@ -246,3 +246,12 @@ def test_a_narrow_spot_is_refined_by_distance_from_its_own_wall_never_as_a_patch
     surfaces_block = text.split("refinementSurfaces")[1].split("resolveFeatureAngle")[0]
     assert name not in surfaces_block, "a refinement surface, never a patch"
     assert f"constant/triSurface/refine/{name}.stl" in D._native_payload_members(ws)
+
+
+def test_the_fewer_cells_choice_is_offered_only_for_engines_that_take_it():
+    est = G.estimate_from_traits({"gap_cells": 2.0e7}, limit=8_000_000)
+    assert est is not None and est.over_limit
+    words = est.guidance(("snappyHexMesh", "cfMesh"))
+    assert "only for snappyHexMesh and cfMesh" in words and G.WITHIN_LIMIT in words
+    none = est.guidance(())
+    assert G.WITHIN_LIMIT not in none and "leave narrow_gaps out" in none
