@@ -139,6 +139,11 @@ def retry_can_help(cause: object, facts: Mapping | None = None) -> bool:
         # a deterministic driver that stopped before its mesher stops the same way on the same
         # inputs (job d20ad762 ran the identical refusal twice); a model-led build may not
         return not (isinstance(facts, Mapping) and facts.get("deterministic"))
+    if (c is FailureCause.CELL_BUDGET and isinstance(facts, Mapping) and facts.get("before_meshing")
+            and facts.get("deterministic")):
+        # a computed plan costed over its level before meshing (the FEA plan, PLAN-fea-8): the same
+        # part at the same level costs the same next time - the user's choice is what changes it
+        return False
     return c not in _NOT_RETRYABLE
 
 
@@ -472,6 +477,20 @@ def describe(cause: object, facts: Mapping | None = None, *,
             return what, ("You can try another mesher, or mesh a smaller part of the geometry "
                           "where the passage is narrowest.")
         return what, f"You can run it again ({_RUN_AGAIN}), or ask for a finer mesh."
+    if c is FailureCause.CELL_BUDGET and f.get("fea") and f.get("before_meshing"):
+        # THE FEA PLAN'S BUDGET CHECK (engines/fea_*.py, PLAN-fea-8): the plan was costed before meshing
+        cells, level = f.get("cells"), str(f.get("level") or "chosen")
+        need = (f"about {_num(int(cells))} elements"
+                if isinstance(cells, (int, float)) and f.get("complete", True)
+                else "more elements than any detail level holds")
+        what = (f"Stopped before meshing: the mesh rules for this part (elements through every wall "
+                f"and round every hole, fillet and notch) need {need}, more than the {level} level "
+                "holds. No time was spent on a mesh.")
+        outs = [str(o) for o in (f.get("options") or []) if o]
+        if outs:
+            return what, "Your options: " + " Or: ".join(outs)
+        return what, ("No detail level holds every rule. Simplify the part where it is finest (the "
+                      "smallest holes, fillets and corners), or mesh a smaller piece of it.")
     if c is FailureCause.CELL_BUDGET:
         cells, limit = f.get("cells"), f.get("limit")
         what = ("The mesh came out too big for one job"

@@ -129,13 +129,22 @@ async def _run_shared_loop(attempt: BuilderAttempt, state, *, job_id: str,
     )
 
 
+def _driver_for(spec, state):
+    """The engine's deterministic driver for this run (EngineSpec.build_driver_for), or None."""
+    if getattr(type(spec), "build_driver_for", None) is None:
+        return getattr(spec, "build_driver", None)       # a declaration without per-run drivers
+    return spec.build_driver_for(state)
+
+
 async def run_attempt(attempt: BuilderAttempt, state, *, job_id: str,
                       publish: ExecutionEventPublisher,
                       timeout_s: int) -> TurnOutcome:
     from meshpipeline.application import execution_fence as fence
 
     try:
-        driver = get_spec(attempt.engine).build_driver
+        # the engine's deterministic driver FOR THIS RUN (gmsh: the FEA driver for a 3D structural
+        # solid, and the model-led loop for everything else)
+        driver = _driver_for(get_spec(attempt.engine), state)
         if driver is not None:
             spec_authored, final_text, stop = await _run_engine_driver(
                 driver, attempt, state, job_id=job_id, publish=publish, timeout_s=timeout_s)

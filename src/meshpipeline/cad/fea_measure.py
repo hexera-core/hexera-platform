@@ -18,7 +18,7 @@ which); application/fea_check.in_unit re-reads them in the unit the user confirm
     {"version": 1, "basis": "cad" | "triangles", "unit": "mm", "scale_to_m": 0.001,
      "bodies": 1, "face_names": "Face_k" | "Region_k",
      "faces": {"Face_1": {"kind", "area_mm2", "centroid_mm", "thickness_min_mm",
-                          "thickness_median_mm"}, ...},
+                          "thickness_median_mm", "radius_mm", "concave"}, ...},
      "thickness": {"min_mm", "face", "at_mm", "rays", "method"},
      "hot_spots": [{"id": "H1", "type": "hole" | "fillet" | "notch" | "sharp_corner",
                     "shape": "hole" | "fillet" | "notch" | "groove" | "inside corner",
@@ -75,6 +75,12 @@ def measure_cad_file(path: Path | str, *, mm_per_unit: float) -> dict:
 def measure_cad(shape, *, mm_per_unit: float) -> dict:
     """Measure an OpenCASCADE shape whose coordinates are `mm_per_unit` millimetres each. The
     shape is tessellated in place (it is the caller's read; nothing else is changed)."""
+    return measure_cad_surface(shape, mm_per_unit=mm_per_unit)[0]
+
+
+def measure_cad_surface(shape, *, mm_per_unit: float) -> tuple[dict, ff.Surface]:
+    """measure_cad, and the labelled triangle surface it measured (millimetres, label k is
+    Face_{k+1}): the FEA plan (engines/fea_*.py) sizes its zones on the same triangles."""
     started = time.time()
     surface, faces, kinds = _brep_surface(shape, float(mm_per_unit))
     arcs = []
@@ -83,7 +89,8 @@ def measure_cad(shape, *, mm_per_unit: float) -> dict:
         arc = _face_arc(face, kinds[k], surface, idx, float(mm_per_unit))
         if arc is not None:
             arcs.append(arc)
-    return _record(surface, arcs, bodies=_cad_bodies(shape), basis="cad", kinds=kinds, started=started)
+    record = _record(surface, arcs, bodies=_cad_bodies(shape), basis="cad", kinds=kinds, started=started)
+    return record, surface
 
 
 def _brep_surface(shape, mm: float):
@@ -285,6 +292,9 @@ def _record(s: ff.Surface, arcs: list[ff.Arc], *, bodies: int, basis: str, kinds
         notes.append(f"The walls were not measured: the surface has {len(s.tris)} triangles, over "
                      f"the {MAX_RAY_TRIANGLES} measured quickly.")
     per = thick["per_label"]
+    # a face that is one round (a cylinder, a torus, a fitted fillet): its radius and which way
+    # it bends, so a plan can give a convex round enough elements to keep its shape
+    round_of = {next(iter(a.labels)): a for a in arcs if len(a.labels) == 1}
     faces = {}
     for k, name in enumerate(s.names):
         idx = np.flatnonzero(s.label == k)
@@ -293,6 +303,9 @@ def _record(s: ff.Surface, arcs: list[ff.Arc], *, bodies: int, basis: str, kinds
         area = float(s.areas[idx].sum())
         row = {"kind": (kinds[k] if kinds else "region"), "area_mm2": _r(area),
                "centroid_mm": _pt(np.average(s.centroids[idx], axis=0, weights=np.maximum(s.areas[idx], 1e-300)))}
+        if k in round_of:
+            row["radius_mm"] = _r(round_of[k].radius)
+            row["concave"] = bool(round_of[k].concave)
         if k in per:
             row["thickness_min_mm"] = _r(per[k][0])
             row["thickness_median_mm"] = _r(per[k][1])
@@ -353,4 +366,5 @@ def _record(s: ff.Surface, arcs: list[ff.Arc], *, bodies: int, basis: str, kinds
             "notes": notes, "seconds": round(time.time() - started, 2)}
 
 
-__all__ = ["FACT_KEY", "VERSION", "measure_cad", "measure_cad_file", "measure_triangles"]
+__all__ = ["FACT_KEY", "VERSION", "measure_cad", "measure_cad_file", "measure_cad_surface",
+           "measure_triangles"]

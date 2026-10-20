@@ -28,6 +28,11 @@ RESOLUTION_FLOOR_CELLS = 6
 #: (engines/vmtk/criteria.py PASSAGE_MIN_CELLS_ACROSS); industry practice is 20-40.
 PASSAGE_FLOOR_CELLS = 12
 
+#: The floor for a mesh built from an FEA plan: elements through the thinnest wall, read the way
+#: engines/fea_checks.py reads it (wall thickness over the element size on its face). The plan asks
+#: for 2 (PLAN-fea-3); the 10% under it is the scatter of that reading (checks.TOLERANCE).
+FEA_WALL_FLOOR = 1.8
+
 
 def _gate_gmsh_manifest_valid(ctx: GateCtx) -> tuple[bool, str]:
     ws = Path(ctx.workspace)
@@ -92,6 +97,21 @@ def _gate_resolution_floor(ctx: GateCtx) -> tuple[bool, str]:
     quality.json already carries (size_h, bounds), so no mesh-image change is
     required for it to take effect."""
     q = (ctx.manifest_or_load().get("quality") or {})
+    # AN FEA PLAN'S MESH (engines/fea_*.py): the solid's own rule is judged - at least
+    # FEA_WALL_FLOOR elements through every wall (PLAN-fea-3), measured on the mesh - not a flow
+    # cross-section's count across the narrowest box side
+    fea = q.get("fea") or {}
+    if fea.get("plan"):
+        tw = fea.get("through_wall_min")
+        if tw is not None and float(tw) < FEA_WALL_FLOOR:
+            short = ((fea.get("rules") or {}).get("through_wall") or {}).get("short") or []
+            where = ", ".join(str(w.get("face")) for w in short[:5] if isinstance(w, dict))
+            return False, refuse(
+                f"[RESOLUTION] {float(tw):g} elements through the thinnest wall"
+                + (f" ({where})" if where else "") + f" - an FEA mesh needs at least {FEA_WALL_FLOOR:g} "
+                "through every wall to carry bending.",
+                FailureCause.UNDER_RESOLVED, cells_across=float(tw), needed=FEA_WALL_FLOOR)
+        return True, ""
     # THE MEASURED PASSAGE GATES when the driver could measure it: an under-resolved branch
     # or scroll cannot hide behind a well-resolved main run or a wide bounding box.
     local = q.get("passage_cells_across_local") or {}

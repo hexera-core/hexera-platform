@@ -4,7 +4,7 @@ Every decision a mesh run makes on its own is made by a written rule. Each rule 
 and each decision the run records in its "why" record names the rule behind it
 (`contracts/decision_record.py`). This file is the one home for those rules.
 
-Rulebook version: **2**
+Rulebook version: **3**
 
 How the book is kept honest:
 
@@ -144,6 +144,46 @@ version in the same PR.
 
 The table is `contracts/decision_record.WRONG_PROBLEM_CHECKS`.
 
+## PLAN-fea: the FEA meshing plan
+
+A structural solid (purpose Structural / FEA, 3D, no face named by the user) is meshed by the
+deterministic FEA driver (`engines/fea_*.py`), not the builder loop. The plan is computed from the part's
+measurements (FEA build step 3: walls, hot spots, bodies) and is the same for every engine; each
+engine is one adapter that meshes it (gmsh first, `engines/gmsh/fea_adapter.py`). The plan is
+written to `fea_plan.json` beside the mesh, with these sentences in plain words. No model is asked
+anything: AI changes to the plan are off (Areen's decision 4, 20 Oct).
+
+| ID | Status | Rule |
+|---|---|---|
+| PLAN-fea-1 | in force | **Quadratic tetrahedra, solid only.** Version 1 meshes the solid with 10-node tetrahedra; thin walls are meshed as solid too (shells are version 1.1). |
+| PLAN-fea-2 | in force | **The detail level sets the element count.** Quick about 100,000, Standard about 500,000 (the default), Fine about 2,000,000. The base element size is solved so the estimate comes to 85% of the level, and is never coarser than the part's diagonal over 10. |
+| PLAN-fea-3 | in force | **At least 2 elements through every wall.** Every face's measured wall gets elements of at most half its thickness, held through the wall. |
+| PLAN-fea-4 | in force | **Hot spots: 10 elements per quarter-turn** of every hole, fillet and notch or groove, and 3 through the wall beside it, held out to one radius. |
+| PLAN-fea-5 | in force | **Sharp inside corners are capped** at a quarter of the wall beside them, and refined no further: their stress never settles under refinement, so more elements there buy nothing. |
+| PLAN-fea-6 | in force | **Gentle growth:** element sizes grow by at most 1.3 from one element to the next away from every refined zone. |
+| PLAN-fea-7 | in force | **Every other round keeps its shape:** 3 elements per quarter-turn of a round face that is not a hot spot. |
+| PLAN-fea-8 | in force | **The element count is checked before meshing.** Over the level (more than 25% past its count), the run stops before any mesher starts, with the options: the first level up that holds every rule, and fewer elements at the named spots (6 per quarter-turn, 2 through the wall beside them). |
+| PLAN-fea-9 | in force | **One part only** (version 1). A file of several bodies stops before meshing with the plain message the stage shows. |
+
+The numbers are `engines/fea_plan.py`. The estimate is read from the plan's own size field over the
+part's volume (`engines/fea_size_field.py`), and the plan records it, so the plan can be worked out
+again from what it recorded.
+
+## LAD-fea: the FEA driver's fixed lever ladder
+
+One attempt runs at most 3 passes. After a pass, the first trigger that holds pulls its lever, each
+lever at most once. The passes do not use up the run's attempts.
+
+| ID | Status | Rule |
+|---|---|---|
+| LAD-fea-1 | in force | **Elements under the quality floor** (worst SICN under 0.1): the next pass grows sizes more gently (1.2) and optimises three times instead of once. |
+| LAD-fea-2 | in force | **No mesh came back** (the fill failed): the next pass uses gmsh's other 3D algorithm (HXT instead of Delaunay). |
+| LAD-fea-3 | in force | **A plan rule fell short on the mesh** (through a wall, or round a hot spot): the zones that fell short are made 20% finer. |
+| LAD-fea-4 | in force | **More elements than the level holds** after meshing: the base size is coarsened to aim at 85% of the level; every rule is kept. |
+| LAD-fea-5 | in force | **The best pass is delivered:** a valid mesh first, then every rule met, then within the level, then the better worst element, then the earlier pass. |
+
+The ladder is `engines/fea_ladder.py`.
+
 ## Reserved families
 
 These ID families are reserved. Their rules are written by the PRs that build them, and no code
@@ -151,6 +191,6 @@ may cite them before then.
 
 | Family | For | Written by |
 |---|---|---|
-| `PLAN-<engine>-n` | the numbers of each engine's computed plan | D4 to D8 |
+| `PLAN-<engine>-n` | the numbers of each engine's computed plan (`PLAN-fea` above is the FEA path's) | D4 to D8 |
 | `LAD-<engine>-n` | each engine's fixed ladder of approved levers | D4 to D8 |
 | `TIME-n` | planned-work limits and the guard clocks | D3 |

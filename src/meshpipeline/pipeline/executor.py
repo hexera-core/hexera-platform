@@ -81,7 +81,9 @@ def _gate_statement(engine: str, gate_key: str) -> str:
         pass
     return {"domain_extent": "The far-field domain is the size you asked for",
             # agents/builder/attempt.STAGING_GATE: the engine's own preparation of the file
-            "staging": "The engine prepared its input from your file"}.get(
+            "staging": "The engine prepared its input from your file",
+            # engines/fea_driver.py: the FEA plan's checks before meshing (PLAN-fea-8, PLAN-fea-9)
+            "fea_plan": "The FEA mesh plan fits the detail level, for one solid part"}.get(
         gate_key, "The mesh setup matches what you approved")
 
 
@@ -161,7 +163,10 @@ def _no_mesh_cause(state, workspace, cause: str, facts: dict) -> tuple[str, dict
     if started == 0:
         try:
             from meshpipeline.engines.registry import get_spec
-            deterministic = get_spec(state.get("engine", "")).build_driver is not None
+            _spec = get_spec(state.get("engine", ""))
+            deterministic = (_spec.build_driver_for(state)
+                             if getattr(type(_spec), "build_driver_for", None) is not None
+                             else _spec.build_driver) is not None
         except Exception:  # noqa: BLE001 - an unknown engine claims nothing
             deterministic = False
         return FailureCause.NOT_BUILT.value, {**facts, "deterministic": deterministic}

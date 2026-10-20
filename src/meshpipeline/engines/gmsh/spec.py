@@ -47,6 +47,11 @@ def _recommend():
     return recommend
 
 
+def _run_driver():
+    from meshpipeline.engines.fea_driver import driver_for
+    return driver_for
+
+
 def _gates() -> tuple:
     from meshpipeline.engines.gmsh.gates import GMSH_GATES
     return GMSH_GATES
@@ -258,6 +263,9 @@ SPEC = EngineSpec(
             "and by isolating groups (toggle_patch)."
         ),
         _load_gates=_gates,
+        # FEA BUILD STEP 4: a 3D structural solid is meshed by the deterministic FEA driver from a
+        # computed plan (engines/fea_*.py); every other gmsh run keeps the builder loop
+        _load_run_driver=_run_driver,
         _load_viewer_surface=_viewer_surface,
         _load_review_renderer=_review_renderer,
         render_artifacts=_RENDER_ARTIFACTS,
@@ -273,6 +281,8 @@ SPEC = EngineSpec(
             members=(
                 M("mesh.inp"),
                 M("gmsh_spec.json"),
+                # the FEA plan the deck was meshed from (engines/fea_*.py), when there is one
+                M("fea_plan.json", required=False),
                 # the CAD the deck was built from, and the alternate decks: gmsh writes these
                 # only when the corresponding export is requested, so they are conditional.
                 M("geometry.step", required=False),
