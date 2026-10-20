@@ -23,7 +23,7 @@ import { esc } from "../core/format.js";
 import { applyFlow, bindAxis, bindUnit, changedAnswers, editsLine, extentAlong, followSuggestion, followUnit, formHtml,
   markConfirmed, noteDrawn, readExternal, readForm, rowHtml, servedProposal, shown, tableHead, unitChoiceHint,
   unitChoiceNeeded, unitOf } from "../render/geometry_form.js";
-import { bindFeaPanel, feaPanelHtml } from "../render/fea_form.js";
+import { bindFeaPanel, bindMeasure, feaPanelHtml, followMeasure, lightSpotRow } from "../render/fea_form.js";
 import { bindThermalPanel, partDetails, thermalPanelHtml, watts } from "../render/thermal_form.js";
 import { circleThrough, clickIndex, firstHit, snapAt } from "./open_ends.js";
 import { bindMouse, isUpAxis, orient, saveUp, savedUp, shield, upSelectHtml, upVector } from "./view_controls.js";
@@ -464,8 +464,15 @@ function initScene(sessionId, box, surf, p) {
      hole, fillet, notch and sharp inside corner the mesh will be refined at, and a tag with its
      number that follows it every frame. Shown only - version 1 refines them all automatically, so
      a tag lights its line in the panel and nothing more. */
-  const spots = [];
-  (p.hot_spots || []).forEach((h) => {
+  let spots = [];
+  function setSpots(list) {
+    spots.forEach((s) => { ren.removeActor(s.actor); s.el.remove(); });
+    spots = [];
+    (list || []).forEach(addSpot);
+    bindMeasure(panel, lightSpot);
+    rw.render();
+  }
+  function addSpot(h) {
     if (!h.at_mm || h.at_mm.length !== 3) return;
     const c = h.at_mm.map((v) => v / 1000);
     const mp = vtk.Rendering.Core.vtkMapper.newInstance();
@@ -478,16 +485,13 @@ function initScene(sessionId, box, surf, p) {
     el.title = `${h.id}: ${h.shape || h.type}${h.capped ? " (refinement capped)" : ""}`;
     el.onclick = (ev) => { ev.stopPropagation(); lightSpot(h.id); };
     host.appendChild(el);
-    spots.push({ id: h.id, c, el });
-  });
+    spots.push({ id: h.id, c, el, actor: ac });
+  }
   function lightSpot(id) {
     spots.forEach((s) => s.el.classList.toggle("sel", s.id === id));
-    panel.querySelectorAll(".fea-spot-row").forEach((r) => r.classList.toggle("sel", r.dataset.spot === id));
+    lightSpotRow(panel, id);
   }
-  panel.querySelectorAll(".fea-spot-row").forEach((r) => {
-    r.addEventListener("mouseenter", () => lightSpot(r.dataset.spot));
-    r.addEventListener("click", () => lightSpot(r.dataset.spot));
-  });
+  if (p.hot_spots) setSpots(p.hot_spots);
 
   /* LOOK INTO A MOUTH - the close-up the pictures had, now a camera move: from outside, straight
      down the opening's normal, framed on it */
@@ -932,7 +936,7 @@ function initScene(sessionId, box, surf, p) {
   };
   return {
     stop: () => { alive = false; ro.disconnect(); clearDecor(); clearMeasure(); document.removeEventListener("keydown", onKey); delete window._vdbg["gstage:" + sessionId]; },
-    rebind, refresh: refreshExternal,
+    rebind, refresh: refreshExternal, setSpots,
   };
 }
 
@@ -985,7 +989,17 @@ async function openFeaStage(sessionId, d, confirm, opts) {
   return {
     release: () => { if (scene) scene.stop(); release(); },
     // a unit settled in the chat reaches an untouched box; nothing else moves
-    update: (d2) => { const q = (d2 && d2.proposal) || {}; followUnit(panel, p, q.unit, q.unit_basis); },
+    update: (d2) => {
+      const q = (d2 && d2.proposal) || {};
+      followUnit(panel, p, q.unit, q.unit_basis);
+      // THE MEASUREMENT CAN LAND AFTER THE STAGE OPENED (the check was still naming): its lines and
+      // tags are drawn then
+      const m = d2 && d2.fea && d2.fea.measure;
+      if (m && followMeasure(panel, m, p, null)) {
+        p.hot_spots = m.hot_spots || [];
+        if (scene) scene.setSpots(p.hot_spots);
+      }
+    },
     isNaming: () => false,
   };
 }

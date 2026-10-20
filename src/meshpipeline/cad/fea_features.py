@@ -286,6 +286,7 @@ class Arc:
     major: float = 0.0                # a torus's distance from axis to tube centre, mm
     basis: str = "exact"              # "exact" (the CAD's own surface) | "fit" (fitted to triangles)
     at: np.ndarray | None = None      # a point on the surface, for the pin
+    points: np.ndarray | None = None  # points on the surface: where a cylinder's arc actually runs
 
 
 def _covered_deg(angles: np.ndarray) -> float:
@@ -444,6 +445,7 @@ def fit_round(p: np.ndarray, n: np.ndarray, w: np.ndarray, diag: float) -> Arc |
         keep = nxt
     assert arc is not None
     arc.at = _nearest(p[keep], w[keep])
+    arc.points = p[keep]
     return arc
 
 
@@ -463,7 +465,8 @@ def _nearest(c: np.ndarray, w: np.ndarray) -> np.ndarray:
 
 def merge_coaxial(arcs: list[Arc]) -> list[Arc]:
     """Cylinders of one radius on one axis are one feature: a hole a CAD system drew as two half
-    cylinders goes all the way round. Their arcs add up (to 360 at most)."""
+    cylinders goes all the way round. The merged arc is the angle their points actually cover
+    round the axis, so a fillet split lengthwise into two pieces stays a 90 degree fillet."""
     out: list[Arc] = []
     for arc in sorted(arcs, key=lambda a: (a.kind, a.radius)):
         twin = None
@@ -488,7 +491,14 @@ def merge_coaxial(arcs: list[Arc]) -> list[Arc]:
         lo, hi = min(z), max(z)
         twin.centre = twin.centre + twin.axis * 0.5 * (lo + hi)
         twin.length = float(hi - lo)
-        twin.span_deg = min(360.0, twin.span_deg + arc.span_deg)
+        if twin.points is not None and arc.points is not None:
+            pts = np.vstack([twin.points, arc.points])
+            e1, e2 = _frame(twin.axis)
+            rel = pts - twin.centre
+            twin.points = pts
+            twin.span_deg = max(twin.span_deg, arc.span_deg, _covered_deg(np.arctan2(rel @ e2, rel @ e1)))
+        else:                         # no points to read the cover from: the arcs side by side
+            twin.span_deg = min(360.0, twin.span_deg + arc.span_deg)
         twin.labels |= arc.labels
         if arc.basis == "fit":
             twin.basis = "fit"
@@ -569,6 +579,44 @@ def components(m: int, a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return rank[comp]
 
 
+def nesting_depth(xyz: np.ndarray, tris: np.ndarray, comp: np.ndarray) -> np.ndarray:
+    """For each piece (comp: a piece number per triangle), how many other pieces enclose it: 0 for
+    an outer skin, 1 for a sealed cavity's wall inside it, 2 for an island in that cavity. Read by
+    the parity of a ray from one of its points through each piece whose box holds it."""
+    n = int(comp.max()) + 1 if len(comp) else 0
+    depth = np.zeros(n, dtype=np.int64)
+    if n < 2:
+        return depth
+    pts = xyz[tris]                                          # (m, 3, 3)
+    lo = np.full((n, 3), np.inf)
+    hi = np.full((n, 3), -np.inf)
+    np.minimum.at(lo, comp, pts.min(axis=1))
+    np.maximum.at(hi, comp, pts.max(axis=1))
+    first = np.zeros(n, dtype=np.int64)
+    first[comp[::-1]] = np.arange(len(comp))[::-1]
+    d = np.array([0.3119, 0.5741, 0.7570])
+    d /= np.linalg.norm(d)
+    for i in range(n):
+        o = xyz[tris[first[i], 0]]
+        for j in range(n):
+            if j == i or np.any(lo[i] < lo[j]) or np.any(hi[i] > hi[j]):
+                continue
+            tj = pts[comp == j]
+            a, e1, e2 = tj[:, 0], tj[:, 1] - tj[:, 0], tj[:, 2] - tj[:, 0]
+            p = np.cross(d, e2)
+            det = np.einsum("ij,ij->i", p, e1)
+            ok = np.abs(det) > 1e-14
+            inv = np.where(ok, 1.0 / np.where(ok, det, 1.0), 0.0)
+            tv = o - a
+            u = np.einsum("ij,ij->i", tv, p) * inv
+            q = np.cross(tv, e1)
+            v = (q @ d) * inv
+            t = np.einsum("ij,ij->i", e2, q) * inv
+            if int(np.count_nonzero(ok & (u >= 0) & (v >= 0) & (u + v <= 1) & (t > 0))) % 2 == 1:
+                depth[i] += 1
+    return depth
+
+
 def bodies_of(tris: np.ndarray, pairs: EdgePairs) -> int:
     """How many separate pieces the triangles make (joined across shared edges)."""
     if not len(tris):
@@ -578,5 +626,5 @@ def bodies_of(tris: np.ndarray, pairs: EdgePairs) -> int:
 
 __all__ = ["FILLET", "HOLE", "HOLE_SPAN_DEG", "MAX_HOT_SPOTS", "NOTCH", "NOTCH_SPAN_DEG", "SHARP_CORNER",
            "SHARP_TURN_DEG", "SMOOTH_TURN_DEG", "THICKNESS_RAYS", "Arc", "EdgePairs", "Surface",
-           "bodies_of", "components", "curved_patches", "edge_pairs", "face_samples", "fit_round", "kind_of", "merge_coaxial", "patch_samples",
+           "bodies_of", "components", "curved_patches", "edge_pairs", "face_samples", "fit_round", "kind_of", "merge_coaxial", "nesting_depth", "patch_samples",
            "sharp_corners", "smooth_regions", "wall_thickness"]

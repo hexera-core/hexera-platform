@@ -138,22 +138,27 @@ def _brep_surface(shape, mm: float):
 
 
 def _weld(xyz: np.ndarray, tris: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """One vertex where several faces' tessellations put the same point (their shared edges)."""
+    """One vertex where several faces' tessellations put the same point (their shared edges).
+    Exact repeats go first (a triangle soup repeats a vertex once per triangle: a fan of 20,000
+    round one point would otherwise be 200 million near pairs); only the distinct points are then
+    joined within a hair of each other."""
     from scipy.spatial import cKDTree
 
-    diag = float(np.linalg.norm(xyz.max(axis=0) - xyz.min(axis=0))) or 1.0
-    pairs = cKDTree(xyz).query_pairs(1e-7 * diag, output_type="ndarray")
-    rep = np.arange(len(xyz))
+    exact, back = np.unique(xyz, axis=0, return_inverse=True)
+    back = back.reshape(-1)
+    diag = float(np.linalg.norm(exact.max(axis=0) - exact.min(axis=0))) or 1.0
+    pairs = cKDTree(exact).query_pairs(1e-7 * diag, output_type="ndarray")
+    rep = np.arange(len(exact))
     if len(pairs):
         from scipy.sparse import coo_matrix
         from scipy.sparse.csgraph import connected_components
 
-        g = coo_matrix((np.ones(len(pairs)), (pairs[:, 0], pairs[:, 1])), shape=(len(xyz), len(xyz)))
+        g = coo_matrix((np.ones(len(pairs)), (pairs[:, 0], pairs[:, 1])), shape=(len(exact), len(exact)))
         _n, comp = connected_components(g, directed=False)
         _u, first = np.unique(comp, return_index=True)
         rep = first[comp]
     used, inverse = np.unique(rep, return_inverse=True)
-    return xyz[used], inverse[tris]
+    return exact[used], inverse[back][tris]
 
 
 def _kind_word(t) -> str:
@@ -196,7 +201,7 @@ def _face_arc(face, kind: str, s: ff.Surface, idx: np.ndarray, mm: float) -> ff.
         z = (verts - o) @ d
         return ff.Arc(kind="cylinder", radius=cyl.Radius() * mm, span_deg=min(360.0, math.degrees(u1 - u0)),
                       concave=float(N @ radial) < 0, axis=d, centre=o + d * 0.5 * (z.min() + z.max()),
-                      labels=label, length=float(z.max() - z.min()), basis="exact", at=at)
+                      labels=label, length=float(z.max() - z.min()), basis="exact", at=at, points=verts)
     tor = a.Torus()
     pos = tor.Position()
     o = np.array([pos.Location().X(), pos.Location().Y(), pos.Location().Z()]) * mm
@@ -238,12 +243,15 @@ def measure_triangles(tris_mm) -> dict:
         raise ValueError("too few triangles to measure")
     s = ff.Surface(xyz=xyz, tris=t, label=np.zeros(len(t), dtype=np.int64), names=["Region_1"])
     pairs = ff.edge_pairs(s)
-    # OUTWARD: each piece is turned so it encloses a positive volume (a file wound inside out, or
-    # one piece of it, would read every valley as a ridge)
+    # OUTWARD: each closed piece faces away from the material (a file wound inside out, or one
+    # piece of it, would read every valley as a ridge). A piece inside another is a sealed cavity's
+    # wall, whose normals point into the cavity: it encloses a NEGATIVE volume when right, so the
+    # sign each piece should have follows how deep it sits (outer skin +, cavity -, island +).
     comp = ff.components(len(t), pairs.tri_a, pairs.tri_b)
     a, b, c = (xyz[t[:, k]] for k in range(3))
     vol = np.bincount(comp, weights=np.einsum("ij,ij->i", a, np.cross(b, c)) / 6.0)
-    flip = vol[comp] < 0
+    depth = ff.nesting_depth(xyz, t, comp)
+    flip = (vol[comp] < 0) != (depth[comp] % 2 == 1)
     if flip.any():
         t = t.copy()
         t[flip] = t[flip][:, [0, 2, 1]]
@@ -258,7 +266,8 @@ def measure_triangles(tris_mm) -> dict:
         if arc is not None:
             arc.labels = {int(x) for x in np.unique(label[tri_idx])}
             arcs.append(arc)
-    bodies = int(np.count_nonzero(np.abs(vol) > 1e-12 * s.diag ** 3))
+    # a body is an outer skin: a cavity's wall belongs to the body around it
+    bodies = int(np.count_nonzero((np.abs(vol) > 1e-12 * s.diag ** 3) & (depth % 2 == 0)))
     return _record(s, arcs, bodies=bodies, basis="triangles", kinds=None, started=started, pairs=pairs)
 
 

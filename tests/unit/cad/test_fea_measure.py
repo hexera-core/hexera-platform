@@ -163,3 +163,37 @@ def test_face_k_is_the_decks_face_k(tmp_path, build):
             assert face["centroid_mm"] == [pytest.approx(v, abs=0.05) for v in c]
     finally:
         gmsh.finalize()
+
+
+def test_a_sealed_cavity_is_a_wall_not_another_body():
+    # a correctly wound STL of a hollow cube: the cavity's skin faces into the cavity, and stays so
+    tris = fx.stl_triangles(fx.hollow_box())
+    rec = measure_triangles(tris)
+    assert rec["bodies"] == 1
+    assert rec["thickness"]["min_mm"] == pytest.approx(fx.HOLLOW["thickness"], rel=STL_WALL)
+    # the material wraps each of the cavity's 12 edges: 12 square inside corners, as on the CAD
+    cad = measure_cad(fx.hollow_box(), mm_per_unit=1.0)
+    for r in (rec, cad):
+        assert [(h["type"], round(h["angle_deg"])) for h in r["hot_spots"]] == [(ff.SHARP_CORNER, 90)] * 12
+    assert cad["bodies"] == 1 and cad["thickness"]["min_mm"] == pytest.approx(5.0, rel=CAD_WALL)
+
+
+def test_a_fillet_split_into_two_faces_stays_a_fillet():
+    rec = measure_cad(fx.split_fillet_bracket(), mm_per_unit=1.0)
+    fillets = [h for h in rec["hot_spots"] if h["type"] != ff.SHARP_CORNER]
+    assert [(h["type"], h["radius_mm"]) for h in fillets] == [("fillet", pytest.approx(4.0))]
+    assert len(fillets[0]["faces"]) == 2 and fillets[0]["span_deg"] == pytest.approx(90.0, abs=1.0)
+
+
+def test_a_fan_of_triangles_round_one_point_welds_without_blowing_up():
+    import numpy as np
+
+    # 20,000 thin triangles round one centre: that point repeats 20,000 times in the soup
+    k = 20000
+    ang = np.linspace(0, 2 * np.pi, k + 1)
+    rim = np.column_stack([np.cos(ang), np.sin(ang), np.zeros(k + 1)]) * 10.0
+    fan = np.stack([np.zeros((k, 3)), rim[:-1], rim[1:]], axis=1)
+    from meshpipeline.cad.fea_measure import _weld
+
+    xyz, t = _weld(fan.reshape(-1, 3), np.arange(3 * k).reshape(-1, 3))
+    assert len(xyz) == k + 1 and t.shape == (k, 3)

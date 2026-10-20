@@ -165,6 +165,28 @@ def v_notched_bar():
     return _cut(_box(0, 0, 0, 100, 20, 30), prism)
 
 
+#: a 40 mm cube with a sealed 30 mm cavity in the middle: 5 mm walls, one body
+HOLLOW = {"thickness": 5.0}
+
+
+def hollow_box():
+    return _cut(_box(0, 0, 0, 40, 40, 40), _box(5, 5, 5, 30, 30, 30))
+
+
+def split_fillet_bracket():
+    """The filleted bracket drawn as two 15 mm slices fused without merging their faces: the
+    fillet arrives as two faces of the same 90 degree arc, one behind the other."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
+
+    def half(y0):
+        shape = _fuse(_box(0, y0, 0, 60, 15, 6), _box(0, y0, 0, 6, 15, 40))
+        inner = _edges_where(shape, lambda b: abs(b[0] - 6) < 1e-3 and abs(b[3] - 6) < 1e-3
+                             and abs(b[2] - 6) < 1e-3 and abs(b[5] - 6) < 1e-3)
+        return _fillet(shape, inner, 4.0)
+
+    return BRepAlgoAPI_Fuse(half(0.0), half(15.0)).Shape()
+
+
 def two_blocks():
     """Two separate 10 mm cubes in one file."""
     from OCP.BRep import BRep_Builder
