@@ -414,6 +414,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Xvfb - defensive fallback X server (DISPLAY is NOT exported; EGL is used); see worker_entrypoint.sh
     xvfb \
     && rm -rf /var/lib/apt/lists/*
+# REPEATABLE PLANS: Python salts its string hash per process, so code that walks a set of names
+# can write patches or regions in another order on the next run. The worker plans meshes; it
+# serves no untrusted request parsing (the api stage keeps hash randomisation).
+ENV PYTHONHASHSEED=0
 USER USER_A
 ENTRYPOINT ["/srv/worker_entrypoint.sh"]
 CMD ["celery", "-A", "meshpipeline.runtime.celery_worker", "worker", \
@@ -454,6 +458,8 @@ RUN chmod +x entrypoint.sh worker_entrypoint.sh
 # NO PYTHONPATH: `meshpipeline` resolves from site-packages. A checkout path here would let the
 # image import a source tree that the wheel does not actually ship.
 ENV PYTHONUNBUFFERED=1
+# REPEATABLE MESHES (engines/determinism.py): one string-hash order in every mesh-side process.
+ENV PYTHONHASHSEED=0
 
 # The git tree this image was built from. The integration runner compares it against the working
 # tree before it lets the image touch a database: an image built from an older tree runs older

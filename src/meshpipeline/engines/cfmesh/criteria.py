@@ -129,7 +129,8 @@ REVIEW_AXES: tuple[ReviewAxis, ...] = (
                   "against the number the request asked for (coverage %, mean layers per wall "
                   "face, the share of the wall with all of them). Those numbers are ground truth; "
                   "the layer band is far too thin to count in a render. Fewer layers than "
-                  "requested is a shortfall even where the stack that exists is clean. Use a "
+                  "requested is a shortfall even where the stack that exists is clean - beyond "
+                  "the small local thinning the mesh info states is normal. Use a "
                   "near-wall slice to see WHERE layers are missing, and only judge from the "
                   "slice alone when the mesh info says the count could not be measured."),
         concern="The near-wall cells needed to resolve flow at the surface are missing",

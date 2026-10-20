@@ -1,7 +1,7 @@
 {
  "purpose": "Every execution-owned publication context in the current tree, and the executed scenario that proved it. Derived from the publication manifest and the behavioural certification run; the manifest remains the authority for WHICH contexts exist.",
- "denominator": 70,
- "proven": 70,
+ "denominator": 73,
+ "proven": 73,
  "unproven": 0,
  "historical_reconciliation": {
   "historical_execution_rows": 63,
@@ -26,7 +26,7 @@
     "reason": "published through the factory parameter from the terminal pipeline_run publisher; not execution-owned and intentionally ungated"
    }
   ],
-  "new_since_reconciliation": 9
+  "new_since_reconciliation": 12
  },
  "rows": [
   {
@@ -658,6 +658,33 @@
    "mapping_reason": "the executor reports the gate a recorded pre-flight refusal stands in for as failed, instead of finalizing an empty workspace",
    "status": "proven",
    "proof_scenario": "pipeline-executor:preflight_record"
+  },
+  {
+   "canonical_id": "contracts/mesh_progress.py::publishing_sink._publish_stage::mesh_stage#1",
+   "historical_alias": "",
+   "historical_id": "",
+   "mapping": "new",
+   "mapping_reason": "the run's live line says what the running mesher is doing, as it reports it",
+   "status": "proven",
+   "proof_scenario": "snappy-driver:accept"
+  },
+  {
+   "canonical_id": "engines/snappy/drivers.py::_build_internal_deterministic::plan#1",
+   "historical_alias": "",
+   "historical_id": "",
+   "mapping": "new",
+   "mapping_reason": "the run's live line states the internal mesh plan: cells, wall layers, where it refines",
+   "status": "proven",
+   "proof_scenario": "snappy-driver:internal-accept"
+  },
+  {
+   "canonical_id": "engines/snappy/drivers.py::_build_snappy_deterministic::plan#1",
+   "historical_alias": "",
+   "historical_id": "",
+   "mapping": "new",
+   "mapping_reason": "the run's live line states the external mesh plan: cells, wall layers, where it refines",
+   "status": "proven",
+   "proof_scenario": "snappy-driver:accept"
   }
  ]
 }

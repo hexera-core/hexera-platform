@@ -1809,12 +1809,12 @@ def _fidelity(model, objs, parts, regions, named, before, fused, domain, fate, r
         allowed, required = _file_contacts(parts, domain, tol)
         invented = contacts - allowed
         if invented:
-            pair = sorted(next(iter(invented)))
+            pair = min(sorted(x) for x in invented)
             raise FidelityError(f"joining the parts made {pair[0]} and {pair[1]} touch, but the "
                                 "file keeps them apart")
         lost = required - contacts
         if lost:
-            pair = sorted(next(iter(lost)))
+            pair = min(sorted(x) for x in lost)
             raise FidelityError(f"{pair[0]} and {pair[1]} touch in the file, but the joined "
                                 "solids do not share the face between them")
     planned = plan_region_names(model)

@@ -78,6 +78,9 @@ async def node_repair_inspect(state: PipelineState) -> dict:
     except TimeoutError:
         logger.warning("node_repair_inspect: inspection exceeded %.1fs - continuing without it "
                        "- job_id=%s", rcfg.CAD_INSPECT_TIMEOUT_S, job_id)
+        from meshpipeline.engines.determinism import note_time_limit
+        note_time_limit("cad_inspect", "the inspection ran past its time limit: repair "
+                        "status inconclusive", budget_s=float(rcfg.CAD_INSPECT_TIMEOUT_S))
         return {
             "repair_status": RepairStatus.inconclusive.value,
             "repair_report": {"service_failure": "inspection_timed_out",

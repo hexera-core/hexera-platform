@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 import meshpipeline.engines.snappy.settings as scfg
 import meshpipeline.settings.policy as polcfg
+from meshpipeline.engines.ground_contact import describe as describe_contact
 from meshpipeline.engines.ground_plane import VERTICAL_AXIS, ground_patch_name
 from meshpipeline.engines.port_binding import BindError as _PortBindError
 from meshpipeline.engines.preflight import PreflightRefusal, PreflightStop, check_domain
@@ -192,6 +193,10 @@ class TimedOutCaseRepeats(Exception):
 
 def _write_timed_out_plan(workspace: Path, strategy: dict) -> None:
     import json as _json
+
+    from meshpipeline.engines.determinism import note_time_limit
+    note_time_limit("snappy.plan", "a pass ran out of time: every later pass of this run is "
+                    "planned no finer than it")
     try:
         (Path(workspace) / _TIMED_OUT_PLAN).write_text(_json.dumps(strategy, default=str))
     except Exception:  # noqa: BLE001 - durable memory is best-effort; the in-run one still holds
@@ -316,7 +321,8 @@ def _write_plan_memory(workspace: Path, strategy: dict) -> None:
 
 
 def _native_payload_members(workspace) -> list[str]:
-    """What THIS engine's remote run consumes: the case dicts and the staged triSurface STLs.
+    """What THIS engine's remote run consumes: the case dicts, the staged triSurface STLs and
+    the one feature file the driver authors itself (a raised floor's contact line).
 
     Everything else in the attempt's workspace is either local-only (input.stl feeds the
     planner here, plan memory and gate facts feed the judge here) or a PRIOR pass's collected
@@ -333,6 +339,12 @@ def _native_payload_members(workspace) -> list[str]:
     members = ["system"]
     members += sorted(p.relative_to(ws).as_posix()
                       for p in (ws / "constant" / "triSurface").glob("*.stl"))
+    # the one feature file this driver AUTHORS rather than the remote deriving it: the line where
+    # a raised floor cuts a body standing on the ground (snappy_runner.render_snappy_case)
+    from meshpipeline.engines.snappy.snappy_runner import CONTACT_LINE_FILE
+    _line = ws / "constant" / "triSurface" / CONTACT_LINE_FILE
+    if _line.is_file():
+        members.append(_line.relative_to(ws).as_posix())
     # THE FACTS THE REMOTE READS. native.py measures the passage beside the mesh when the
     # workspace says the flow is internal - and it reads that from the `flow_topology` file.
     # Left out of this list, the file never reached the mesher: every Cloud Run execution logged
@@ -345,6 +357,23 @@ def _native_payload_members(workspace) -> list[str]:
 #: Workspace fact files the REMOTE side of a native snappy run reads (engines/snappy/native.py).
 #: Each must travel in the submission payload, or the remote reads a workspace without it.
 REMOTE_WORKSPACE_FACTS: tuple[str, ...] = ("flow_topology",)
+
+
+def plan_refinements(*, surface_level=None, wake: bool = False, boxes: int = 0,
+                     cells_across=None, near_wall: bool = False) -> list[str]:
+    """Where the plan puts finer cells, in a few plain words each, for the run's live line."""
+    out: list[str] = []
+    if cells_across:
+        out.append(f"about {int(cells_across)} cells across the bore")
+    if surface_level is not None:
+        out.append(f"surface refinement level {surface_level}")
+    if wake:
+        out.append("finer cells in the wake")
+    if near_wall:
+        out.append("a finer band near the wall")
+    if boxes:
+        out.append(f"{int(boxes)} refinement box{'es' if int(boxes) != 1 else ''}")
+    return out
 
 
 async def _run_snappy_timed(R, workspace, cap, publish: ExecutionEventPublisher,
@@ -375,7 +404,12 @@ async def _run_snappy_timed(R, workspace, cap, publish: ExecutionEventPublisher,
         pass
     _start = _t.monotonic()
     import asyncio as _a
-    result = await _a.to_thread(R.run_snappy, workspace, timeout=cap)
+
+    from meshpipeline.contracts import mesh_progress as _mp
+    # THE MESHER'S OWN STAGE ("adding wall layers"), relayed to the live line while it runs
+    with _mp.relaying(_mp.publishing_sink(publish, _a.get_running_loop(),
+                                          op_prefix=_mp.stage_op_prefix(workspace, native_attempt))):
+        result = await _a.to_thread(R.run_snappy, workspace, timeout=cap)
     # BEFORE the result is judged, published, recorded or delivered. If ownership was
     # lost here, this raises and NO success result is published for the run above.
     await run.fence("accept native mesh output")
@@ -692,7 +726,31 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                         f"symmetry to mesh the whole body on the ground, or drop '{_ground}'.")
     if _refusal:
         await publish.aerror(_refusal, op_id=_refusal_op)
+        # RECORDED for the executor, not only said on the live line: without the record the run
+        # ended as "stopped while preparing the mesh - the notes above say what it stopped on"
+        # (job dce77409: a symmetry plane approved through a whole body), and the reason never
+        # reached the closing message. It is the approved SETUP the box cannot carry, not the file.
+        from meshpipeline.contracts.failure_cause import FailureCause
+        PreflightRefusal(
+            gate="finalize", cause=FailureCause.NOT_BUILT.value,
+            builder_text=f"[SETUP_UNUSABLE] {_refusal}",
+            facts={"engine": "snappyHexMesh", "reason": _refusal, "setup": True,
+                   "before_meshing": True, "deterministic": True,
+                   "meshers_started": 0}).write(workspace)
         return False
+    # WHERE THE FLOOR GOES, measured once per build from the body itself (the geometry is fixed
+    # across passes). A body resting on a flat face keeps the floor at its lowest point; one that
+    # meets it at points or lines - wheels, a nose curling down onto the floor - gets the floor
+    # raised a few millimetres into it, so the contact is a flat patch and not a wedge of fluid
+    # that closes to nothing (engines/ground_contact.py). A body that cannot be measured keeps
+    # the floor at its lowest point, which is how every grounded case was built before.
+    _contact = None
+    if _ground:
+        try:
+            _contact = R.measure_ground_contact(workspace)
+        except Exception:  # noqa: BLE001 - a measurement, never a reason to stop the build
+            logger.warning("ground contact not measured - the floor goes at the body's lowest "
+                           "point (job_id=%s)", job_id, exc_info=True)
     _layout: list[str] = []
     if symmetry is not None:
         # `axis` is the INDEX every other consumer indexes with (snappy_runner's _BOX_FACES and
@@ -706,9 +764,11 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             f"and meshing one side only (boundary '{symmetry['name']}')")
     if _ground:
         _layout.append(
-            f"The body stands on the ground - the floor of the domain sits at its lowest point "
-            f"(z = {float(analysis['bbox_min'][VERTICAL_AXIS]):.4g} m) and is the wall "
-            f"'{_ground}'; the other box faces stay far field.")
+            "The body stands on the ground - "
+            + (describe_contact(_contact) if _contact is not None else
+               f"the floor of the domain sits at its lowest point "
+               f"(z = {float(analysis['bbox_min'][VERTICAL_AXIS]):.4g} m)")
+            + f". The floor is the wall '{_ground}'; the other box faces stay far field.")
     if _layout:
         await publish.anote(
             ("; ".join(_layout)),
@@ -827,7 +887,7 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             dmin, dmax = R.domain_from_strategy(analysis, strategy, symmetry,
                                                 flow_axis=state.get("flow_axis"),
                                                 ruler_m=state.get("reference_length_m"),
-                                                ground=bool(_ground))
+                                                ground=bool(_ground), contact=_contact)
             # DOMAIN PRE-FLIGHT, before the box is written: the post-mesh extent gate measures
             # exactly this prepared box, so a box it would block is known now. Re-plan instead of
             # meshing it (nothing is written yet, so the previous pass's files stay as they were).
@@ -884,7 +944,8 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                 # the wake behind the body, along the declared flow, in the approved ruler
                 wake=WakeRequest(knobs=strategy.get("wake"), flow_axis=state.get("flow_axis"),
                                  ruler_m=state.get("reference_length_m")
-                                 or strategy.get("reference_length_m")))
+                                 or strategy.get("reference_length_m")),
+                contact=_contact)
             # the honest record travels with the case: the manifest reports the per-region
             # layer decisions this pass actually authored (stale records are removed)
             LP.write_layer_policy(workspace, _policy)
@@ -905,6 +966,13 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                             + _sealed_note(_cavities)
                             + (f"; {summary['wake_note']}" if summary.get("wake_note") else ""),
                     op_id=f"snappy:carving:{attempt}")
+            # THE PLAN, as the run's live line shows it: how big, how many wall layers, where finer
+            await publish.aplan(cells=strategy.get("max_cells"), layers=summary.get("n_layers"),
+                                refinements=plan_refinements(
+                                    surface_level=summary.get("surface_level"),
+                                    wake=bool(summary.get("wake_note")),
+                                    boxes=len(strategy.get("local_boxes") or [])),
+                                op_id=f"snappy:plan:{attempt}")
             # RUN (deterministic; Cloud Run Job / local) + user-facing instrumentation
             _t_mesh = _time.monotonic()
             result = await _run_snappy_timed(
@@ -1814,6 +1882,12 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                          f"refinement level {summary['surface_level']}, {n_layers} "
                          f"boundary layers" + (f"; {_band_note}" if _band_note else ""),
                     op_id=f"internal:filling:{attempt}")
+            await publish.aplan(cells=_budget, layers=n_layers,
+                                refinements=plan_refinements(
+                                    surface_level=summary.get("surface_level"),
+                                    cells_across=cells_across, near_wall=bool(_band_note),
+                                    boxes=len(strategy.get("local_boxes") or [])),
+                                op_id=f"internal:plan:{attempt}")
             run.note_authoring()
             _t_mesh = _time.monotonic()
             result = await _run_snappy_timed(

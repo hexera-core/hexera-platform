@@ -7,7 +7,9 @@
 # Boundaries: numpy and scipy over triangles, in metres. No OpenCASCADE, no engine, no storage, no
 # model, and nothing about what the part is: every rule here is measured on the triangles. The
 # B-rep path for a CAD solid stays in cad/cad_tessellate.tessellate_internal; stage_internal()
-# below picks one of the two for a source file.
+# below picks one of the two for a source file. A surface holding several closed parts that touch
+# (an assembly in one triangle file) is handed to cad/fluid_volume first: its fluid is the space
+# inside the parts, not any one skin.
 from __future__ import annotations
 
 import json
@@ -212,6 +214,16 @@ def stage_internal_surface(surface_path, out_dir, *, intake_patches: list | None
     are taken, the largest called inlet and the rest outlet (outlet_1, outlet_2, ...)."""
     from meshpipeline.cad.scout_mesh import read_triangles
     tris = read_triangles(Path(surface_path))
+    if str(input_kind or "").strip() != "fluid-domain":
+        # AN ASSEMBLY IN ONE TRIANGLE FILE (several closed parts): the fluid is the space inside
+        # them, closed off at the declared openings (cad/fluid_volume) - as for a CAD assembly
+        from meshpipeline.cad.fluid_volume import MAX_TRIANGLES, closed_pieces, stage_bounded
+        from meshpipeline.engines.port_binding import declaration_targets
+        if len(tris) <= MAX_TRIANGLES and closed_pieces(tris) >= 2:
+            staged_fv = stage_bounded(surface_path, out_dir, kind="triangles",
+                                      declared=declaration_targets(intake_patches or []))
+            if staged_fv is not None:
+                return staged_fv
     staged = stage_triangles(tris, intake_patches=intake_patches, input_kind=input_kind,
                              surface_path=Path(surface_path))
     return write_staged(staged, Path(out_dir))
@@ -1365,7 +1377,7 @@ def _seed(V, F, L, ports: dict[str, _Opening]) -> tuple[np.ndarray, dict]:
         patch = np.flatnonzero(L == name)
         if len(patch):
             a = np.linalg.norm(np.cross(T[patch, 1] - T[patch, 0], T[patch, 2] - T[patch, 0]), axis=1)
-            pick = patch[np.argsort(-a)[:12]]
+            pick = patch[np.argsort(-a, kind="stable")[:12]]
             for f in pick.tolist():
                 c = T[f].mean(axis=0)
                 for depth in (0.1, 0.25, 0.5):

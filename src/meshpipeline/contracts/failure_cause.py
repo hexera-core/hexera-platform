@@ -498,6 +498,13 @@ def describe(cause: object, facts: Mapping | None = None, *,
     if c is FailureCause.NOT_BUILT:
         who = str(f.get("engine") or engine or "The engine")
         reason = clean_reason(f.get("reason"))
+        if f.get("setup") and reason:
+            # the APPROVED SETUP is what the engine cannot build (a symmetry plane with no cut
+            # face to sit on, a floor along the flow) - never "your file", which is sound
+            return (f"No mesh was built: {who} cannot build the setup you approved. {reason}. "
+                    "No mesher was started, and your geometry was not the problem.",
+                    "Running it again would stop the same way. Tell me what to change in this "
+                    "chat - the boundaries or the engine.")
         what = (f"No mesh was built: {who} could not prepare its input from your file ({reason}), "
                 "so no mesher was started." if reason else
                 f"No mesh was built: {who} stopped while preparing the mesh, before the mesher "

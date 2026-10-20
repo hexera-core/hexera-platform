@@ -105,18 +105,20 @@ def bound(tmp_path_factory):
 
 
 def test_the_declared_bore_binds_the_duct_end_rings_not_the_flange_annuli(bound):
+    # THE PARTS TOUCH (each flange hugs the duct), so the staging is the fluid the assembly holds
+    # (cad/fluid_volume): each declared opening is the duct's own bore, capped flat in its end
+    # plane - the area the flow crosses - never the flange's ~20,400 mm2 annulus round the mouth
     t, out, wall_key, _note = bound
+    assert t["source"] == "fluid_volume"
     assert wall_key == "duct_wall"
     assert set(out["openings"]) == {"feed", "drain"}
-    ring_metal = math.pi * ((R_OUT / 1000.0) ** 2 - (R_BORE / 1000.0) ** 2)
     flange_metal = math.pi * ((R_FLANGE / 1000.0) ** 2 - (R_OUT / 1000.0) ** 2)
+    bore = math.pi * (R_BORE / 1000.0) ** 2
     for rec in out["openings"].values():
-        # the bound face is the duct wall's thin END RING (its metal measures ~1269 mm²),
-        # never the flange's ~20,400 mm² annulus around the same mouth
-        assert rec["area"] == pytest.approx(ring_metal, rel=0.05), rec
+        assert rec["area"] == pytest.approx(bore, rel=0.02), rec
+        assert rec["flow_area"] == pytest.approx(bore, rel=0.02)
         assert abs(rec["area"] - flange_metal) > flange_metal * 0.5
-        bore = math.pi * (R_BORE / 1000.0) ** 2
-        assert rec["opening"]["area"] == pytest.approx(bore, rel=0.02)
+        assert "opening" not in rec                   # a plain bore: nothing stands in it
     assert out["openings"]["feed"]["centroid"][2] == pytest.approx(0.0, abs=1e-4)
     assert out["openings"]["drain"]["centroid"][2] == pytest.approx(LEN / 1000.0, abs=1e-4)
 
@@ -129,19 +131,21 @@ def test_the_flange_bores_at_a_mouth_are_not_sealed_as_undeclared_openings(bound
     assert t["sealed"]["undeclared_openings"] == []
 
 
-def test_the_port_stls_span_the_full_mouth(bound):
+def test_the_port_stls_span_the_whole_bore(bound):
+    # the port patch is the fluid's own face at the mouth: the whole bore, closed - the duct's
+    # metal end ring bounds no fluid and is no part of it
     t, out, _wall_key, _note = bound
-    full_mouth = math.pi * (R_OUT / 1000.0) ** 2      # end ring + bore cap
+    bore = math.pi * (R_BORE / 1000.0) ** 2
     for name in ("feed", "drain"):
-        assert _stl_area(out["stls"][name]) == pytest.approx(full_mouth, rel=0.02)
+        assert _stl_area(out["stls"][name]) == pytest.approx(bore, rel=0.02)
+    assert t["facts"]["open_edges"] == 0 and t["facts"]["one_patch_per_opening"]
 
 
 def test_the_binding_evidence_carries_the_opening_the_declaration_matched(bound):
     _t, out, _wall_key, note = bound
     for row in out["binding"]["ports"]:
-        assert row["opening_area_m2"] == pytest.approx(
-            math.pi * (R_BORE / 1000.0) ** 2, rel=0.02)
-    assert "ring face; opening" in note
+        assert row["area_m2"] == pytest.approx(math.pi * (R_BORE / 1000.0) ** 2, rel=0.02)
+    assert "feed (inlet)" in note and "drain (outlet)" in note
 
 
 def test_a_genuine_undeclared_hole_is_still_sealed_despite_nearby_ports(tmp_path):

@@ -21,11 +21,16 @@ THE RANKING is a fixed order of MEASURED facts (rank_key), never an AI judgement
   2. the number of quality checks it fails (fewer first);
   3. the approved plan's requirements it misses (engine_fallback.plan_requirements: prism layers
      present on the wall, the wake refinement present; plus each measured requirement near-miss);
-  4. the worst cells: max non-orthogonality, then max skewness (lower first);
+  4. the worst cells: max non-orthogonality, then max skewness (lower first) - read first to
+     the whole degree (NON_ORTHO_STEP), where a review that PASSED breaks the tie, then exactly;
   5. layer coverage (higher first);
   6. the earlier attempt wins a tie.
 
-The review's concerns are LISTED on the delivery, never ranked. The one review fact that sets a
+The review's concerns are LISTED on the delivery, never ranked against a measured difference. The
+one place a passed review counts is a tie on everything measured above to the whole degree:
+two meshes 0.01 degrees apart are the same mesh to a solver, and a run that built one its review
+passed must not deliver the other with the review's concerns (job 35d86388 delivered attempt 2,
+55.79 degrees, with a concern, over attempt 3, 55.80, which passed). The one review fact that sets a
 candidate aside is a CONFIRMED wrong-problem finding (agents/reviewer/review_policy: cited, backed
 by an inspection, not contradicted by a measurement) - the only way a review fails a run at all,
 so ranking such a mesh first would fail a run that holds a deliverable one. It only orders
@@ -86,6 +91,8 @@ class Candidate:
     max_skewness: float | None = None
     layer_coverage_pct: float | None = None
     wrong_problem: int = 0
+    #: its own review did not pass (it left concerns) - read only on a measured tie (rank_key)
+    review_left_concerns: bool = False
 
     def shortfalls(self) -> list[str]:
         """What this mesh is short of, measured, in plain words."""
@@ -96,6 +103,8 @@ class Candidate:
 _UNMET_WORDS = {"prism_layers": "no prism layers measured on the wall",
                 "layers_unmeasured": "no prism-layer coverage was measured on the wall",
                 "wake_refinement": "no wake refinement behind the body"}
+#: Worst non-orthogonality is compared to this many degrees before a passed review breaks a tie.
+NON_ORTHO_STEP = 1.0
 #: The wall coverage (percent) at or under which a mesh counts as carrying no prism layers at all -
 #: a stray layer cell or two is not the layered wall the plan builds.
 _LAYERS_PRESENT_PCT = 1.0
@@ -142,12 +151,14 @@ def _measure(state: Mapping, *, attempt: int, engine: str, workspace: str, manif
     # review fails a run) - never a concern
     from meshpipeline.agents.reviewer.review_policy import blocking_findings
     blocking = len(blocking_findings([dict(f) for f in findings if isinstance(f, Mapping)]))
+    verdict = str(entry.get("verdict") or (state.get("reviewer_verdict") if current else "") or "")
     return Candidate(attempt=attempt, engine=engine, workspace=workspace, manifest=manifest,
                      entry=entry, current=current, failed_checks=failed, unmet=tuple(unmet),
                      max_non_ortho=_num(quality.get("max_non_ortho")),
                      max_skewness=_num(quality.get("max_skewness")),
                      layer_coverage_pct=_num(quality.get("layer_coverage_pct")),
-                     wrong_problem=blocking)
+                     wrong_problem=blocking,
+                     review_left_concerns=verdict.strip().upper() == "FAIL")
 
 
 def rank_key(c: Candidate) -> tuple:
@@ -158,6 +169,8 @@ def rank_key(c: Candidate) -> tuple:
             bool(c.failed_checks),
             len(c.failed_checks),
             len(c.unmet),
+            (math.floor(c.max_non_ortho / NON_ORTHO_STEP) if c.max_non_ortho is not None else inf),
+            c.review_left_concerns,
             c.max_non_ortho if c.max_non_ortho is not None else inf,
             c.max_skewness if c.max_skewness is not None else inf,
             -(c.layer_coverage_pct or 0.0),
@@ -170,6 +183,8 @@ _WHY = (
     "it passes every fixed quality limit and the other does not",
     "it fails fewer quality checks",
     "it meets more of the approved plan (layers, wake refinement, stated sizes)",
+    "its worst cells are better shaped (lower non-orthogonality)",
+    "its review passed and the other's left concerns, and they measure the same",
     "its worst cells are better shaped (lower non-orthogonality)",
     "its worst cells are better shaped (lower skewness)",
     "more of its wall is covered by prism layers",

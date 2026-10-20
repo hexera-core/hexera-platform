@@ -103,6 +103,89 @@ def materialize(ref: GeometrySourceRef, interpretation: GeometryInterpretationRe
     return MaterializedGeometry(ref=ref, interpretation=interpretation, local_path=canonical)
 
 
+# #
+# THE INTAKE'S COPY of a session's upload. The intake measures the file the user sent (the engine
+# ranking, what kind of file it is, the parts it names), and it used to read it "where the upload
+# route staged it" - JOBS_DIR/<session>/. The upload route deletes that staging file the moment
+# the object is stored, a direct (large) upload never stages there, and a hosted API runs as many
+# instances with no shared disk. So the intake read nothing on every real upload: no measured
+# engine recommendation, no part names for the per-part checks, a faceted STEP taken for CAD.
+# The bytes are fetched back from the session's own stored source, verified against its digest,
+# and kept beside the session for later turns, within a size bound and a total bound: a hosted
+# API's disk is memory.
+# #
+
+#: The largest upload the intake fetches back to measure. Bigger files are measured on the worker.
+INTAKE_COPY_MAX_BYTES = 256 * 1024 * 1024
+#: The most the intake's copies may hold on this host at once; the least recently used go first.
+INTAKE_COPY_TOTAL_BYTES = 1024 * 1024 * 1024
+_INTAKE_COPY_BASENAME = "intake_copy"
+
+
+def _staged_beside(root: Path) -> Path | None:
+    from meshpipeline.contracts.intake_formats import format_for_suffix
+    try:
+        staged = sorted(p for p in root.iterdir()
+                        if p.is_file() and format_for_suffix(p.suffix.lower()))
+    except OSError:
+        return None
+    return staged[0] if staged else None
+
+
+def _evict_intake_copies(jobs_dir: Path, keep: Path, incoming: int) -> None:
+    copies = []
+    for p in jobs_dir.glob(f"*/{_INTAKE_COPY_BASENAME}.*"):
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        if p != keep:
+            copies.append((st.st_mtime, st.st_size, p))
+    total = sum(size for _t, size, _p in copies) + incoming
+    for _t, size, p in sorted(copies):
+        if total <= INTAKE_COPY_TOTAL_BYTES:
+            break
+        p.unlink(missing_ok=True)
+        total -= size
+
+
+def session_upload_path(session_id: str, ref: GeometrySourceRef | None) -> str:
+    """The session's upload as a local file the intake can read, or '' when there is none.
+
+    The file staged beside the session when there is one; else the session's stored source,
+    fetched back once and verified. Never raises: no file simply leaves the intake to answer
+    from the names it has, as before."""
+    import meshpipeline.settings.runtime as rtcfg
+    if not session_id:
+        return ""
+    jobs_dir = Path(rtcfg.JOBS_DIR)
+    root = jobs_dir / str(session_id)
+    staged = _staged_beside(root) if root.is_dir() else None
+    if staged is not None:
+        return str(staged)
+    if ref is None or int(getattr(ref, "size_bytes", 0) or 0) > INTAKE_COPY_MAX_BYTES:
+        return ""
+    dest = root / f"{_INTAKE_COPY_BASENAME}{safe_suffix(ref.suffix_hint)}"
+    part = dest.with_name(dest.name + ".part")
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        _evict_intake_copies(jobs_dir, dest, int(ref.size_bytes))
+        get_object_store().download_file(object_key=ref.object_key, destination=part)
+        digest, size = sha256_of(part)
+        if size != int(ref.size_bytes) or digest != ref.sha256:
+            logger.warning("intake copy: the stored bytes do not match the source record - "
+                           "session_id=%s", session_id)
+            part.unlink(missing_ok=True)
+            return ""
+        part.replace(dest)
+    except Exception as exc:  # noqa: BLE001 - no copy leaves the intake answering from names
+        logger.info("intake copy: the upload could not be fetched (%s) - session_id=%s",
+                    type(exc).__name__, session_id)
+        part.unlink(missing_ok=True)
+        return ""
+    return str(dest)
+
+
 def ecxml_form_for(engine: str) -> str:
     """How an ECXML upload is made canonical for `engine`: "placed" (the parts where the file puts
     them, nothing joined) for an engine that reads the ECXML itself (EngineSpec.reads_source_formats:

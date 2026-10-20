@@ -6,7 +6,12 @@ import logging
 from typing import TYPE_CHECKING
 
 from meshpipeline.engines.purposes import flow_topology
-from meshpipeline.engines.registry import default_engine, engines_producing_topology, get_spec
+from meshpipeline.engines.registry import (
+    default_engine,
+    engine_label,
+    engines_producing_topology,
+    get_spec,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +47,25 @@ def _ladder_facts(state, chosen: str) -> dict:
     except Exception as exc:  # noqa: BLE001
         logger.debug("engine_select: could not compute the ladder: %s", exc)
         return {}
+
+
+#: Why an engine was chosen, in a few plain words, by who chose it.
+_WHY = {
+    "measured": "it did best in our lab on shapes like this one",
+    "topology_internal": "the usual engine for flow through a part",
+    "default": "the usual engine for this kind of run",
+}
+
+
+def engine_choice_words(engine: str, source: str) -> str:
+    """The engine and why, in one line: "Mesh engine: cfMesh - it did best in our lab on shapes
+    like this one"."""
+    try:
+        name = engine_label(engine)
+    except Exception:  # noqa: BLE001 - a label we cannot read is the engine's own name
+        name = engine
+    why = _WHY.get(source, "")
+    return f"Mesh engine: {name}" + (f" - {why}" if why else "")
 
 
 async def _publish(job_id: str, text: str, op_id: str) -> None:
@@ -130,7 +154,8 @@ async def node_engine_select(state: PipelineState) -> dict:
             forced, source = measured, "measured"
         logger.info("node_engine_select: topology=internal → %s (spec: %s) - job_id=%s",
                     forced, candidates, job_id)
-        await _publish(job_id, f"Mesh engine: {forced}", "forced")
+        # THE ENGINE, BY NAME AND WHY: the run's live line shows this one sentence
+        await _publish(job_id, engine_choice_words(forced, source), "forced")
         st = {**state, "engine_ladder": seeded} if seeded else state
         _log_selection(job_id, {"chosen": forced, "source": source,
                                 "model": None, "usage": None, **_ladder_facts(st, forced)})
@@ -140,7 +165,7 @@ async def node_engine_select(state: PipelineState) -> dict:
     engine = default_engine()
     logger.info("node_engine_select: no pin, no declaration → default %s - job_id=%s",
                 engine, job_id)
-    await _publish(job_id, f"Mesh engine: {engine}", "resolved")
+    await _publish(job_id, engine_choice_words(engine, "default"), "resolved")
     _log_selection(job_id, {"chosen": engine, "source": "default",
                             "model": None, "usage": None, **_ladder_facts(state, engine)})
     return {"engine": engine}

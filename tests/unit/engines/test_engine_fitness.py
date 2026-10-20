@@ -332,3 +332,46 @@ def test_an_engine_never_tried_on_this_kind_of_shape_ranks_below_one_tried_and_m
     vmtk = rec.fit_of("vmtk")
     assert vmtk.evidence.level > 0 and vmtk.evidence.weight == F.PRIOR_RUNS
     assert vmtk.reason.startswith("no lab results on shapes exactly like this")
+
+
+def test_a_quality_fault_outweighs_the_pass_rate_and_the_reason_says_so():
+    # the long record passes every try, but most of its meshes are past the cell-shape limit; the
+    # short record passes every try with none past it. The rate alone recommended the long record.
+    rows = [_row(f"w{i}", "cfmesh", SMOOTH, seconds=300.0, layers_pct=100.0,
+                 quality={"max_non_ortho": 80.0 if i < 24 else 60.0}) for i in range(38)]
+    rows += [_row(f"w{i}", "snappy", SMOOTH, seconds=240.0, layers_pct=91.0,
+                  quality={"max_non_ortho": 64.0}) for i in range(6)]
+    rec = F.recommend(_t(SMOOTH), ["cfmesh", "snappy"], table=_table(rows))
+    cf, sn = rec.fit_of("cfmesh"), rec.fit_of("snappy")
+    assert cf.score > sn.score                       # cfMesh still has the better pass record
+    assert rec.engine == "snappy", [f.as_dict() for f in rec.fits]
+    assert F.quality_fault(cf.evidence) and not F.quality_fault(sn.evidence)
+    assert "recommended over cfMesh" in rec.reason and "24 of its 38 meshes" in rec.reason
+    assert F.fit_words(cf) == "quality concerns"
+    assert [f.engine for f in rec.fits] == ["snappy", "cfmesh"]      # both stay; the user picks
+
+
+def test_a_quality_fault_never_lifts_an_engine_that_mostly_fails_or_was_never_tried():
+    rows = [_row(f"w{i}", "cfmesh", SMOOTH, quality={"max_non_ortho": 80.0}) for i in range(20)]
+    rows += [_row(f"w{i}", "snappy", SMOOTH, "pass" if i < 2 else "fail") for i in range(10)]
+    rec = F.recommend(_t(SMOOTH), ["cfmesh", "snappy", "gmsh"], table=_table(rows))
+    assert rec.engine == "cfmesh", [f.as_dict() for f in rec.fits]
+    assert "recommended over" not in rec.reason
+
+
+def test_layers_on_under_half_the_wall_are_a_quality_fault():
+    rows = [_row(f"t{i}", "cfmesh", TUBE, seconds=30.0, layers_pct=20.0) for i in range(30)]
+    rows += [_row(f"t{i}", "snappy", TUBE, seconds=300.0, layers_pct=95.0) for i in range(8)]
+    rec = F.recommend(_t(TUBE), ["cfmesh", "snappy"], table=_table(rows))
+    assert rec.engine == "snappy"
+    assert "near-wall layers on only 20% of the wall" in rec.reason
+
+
+def test_a_layer_fault_needs_as_many_measured_layers_as_shapes():
+    # one measured coverage among many passes is not a record of thin layers
+    rows = [_row(f"t{i}", "cfmesh", TUBE, seconds=30.0, layers_pct=20.0 if i == 0 else None)
+            for i in range(30)]
+    rows += [_row(f"t{i}", "snappy", TUBE, seconds=300.0, layers_pct=95.0) for i in range(8)]
+    rec = F.recommend(_t(TUBE), ["cfmesh", "snappy"], table=_table(rows))
+    assert not F.quality_fault(rec.fit_of("cfmesh").evidence)
+    assert rec.engine == "cfmesh"

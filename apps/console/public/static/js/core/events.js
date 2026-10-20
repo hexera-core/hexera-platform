@@ -90,6 +90,9 @@ const HANDLERS = {
   rationale:   (ev, r, st) => r.rationale(st, ev),
   meshing:     (ev, r, st) => { r.node(st); r.startMesh(ev.engine, ev.budget_s, ev.history); },
   meshed:      (ev, r) => r.endMesh(ev.cells ? ev.cells.toLocaleString() + " cells" : ""),
+  // the mesh the run will build, and what the running mesher says it is doing
+  plan:        (ev, r, st) => r.plan(st, ev.summary || ""),
+  mesh_stage:  (ev, r) => r.meshStage(ev.label || ""),
   // the verdict is kept on its lane, so the lane's mark can never contradict it
   verdict:     (ev, r, st) => r.verdict(st, ev.verdict === "PASS", verdictText(ev.verdict)),
   closing:     () => {},          // the stream holds it for the result card

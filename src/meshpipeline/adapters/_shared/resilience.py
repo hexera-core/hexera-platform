@@ -80,6 +80,18 @@ class CircuitBreaker:
             self._state = CircuitState.CLOSED
             self._half_open_inflight = 0
 
+    def release_probe(self) -> None:
+        # Hand back a half-open probe slot that allow() took. Every caller that was admitted
+        # calls this once the call is over, whatever way it ended - success, any failure,
+        # timeout or cancellation. Without it a probe that ends recording neither success nor
+        # failure keeps the only slot forever, and this process refuses every later call.
+        # No-op outside HALF_OPEN (record_success/record_failure already reset the count) and
+        # never below zero; a late release from an earlier half-open window can at worst let
+        # one extra probe through, which is harmless.
+        with self._lock:
+            if self._state == CircuitState.HALF_OPEN and self._half_open_inflight > 0:
+                self._half_open_inflight -= 1
+
     def record_failure(self) -> None:
         with self._lock:
             self._consecutive_failures += 1
@@ -148,29 +160,33 @@ async def call_with_resilience(
                             f"circuit '{name}' is open")
 
     last: SystemFailure | None = None
-    for attempt in range(max_retries + 1):
-        try:
-            result = await asyncio.wait_for(_run(fn), timeout)
-            breaker.record_success()
-            return result
-        except TimeoutError as exc:
-            last = SystemFailure(dependency, FailureClass.PROVIDER_TRANSIENT,
-                                 f"timed out after {timeout}s", cause=exc)
-        except SystemFailure as exc:
-            last = exc
-        except Exception as exc:
-            last = classify_exception(exc, dependency)
+    try:
+        for attempt in range(max_retries + 1):
+            try:
+                result = await asyncio.wait_for(_run(fn), timeout)
+                breaker.record_success()
+                return result
+            except TimeoutError as exc:
+                last = SystemFailure(dependency, FailureClass.PROVIDER_TRANSIENT,
+                                     f"timed out after {timeout}s", cause=exc)
+            except SystemFailure as exc:
+                last = exc
+            except Exception as exc:
+                last = classify_exception(exc, dependency)
 
-        breaker.record_failure()
-        _metric_inc("resilience_failure", name)
-        logger.warning("resilience[%s]: attempt %d/%d failed - %s",
-                       name, attempt + 1, max_retries + 1, last.operator_detail[:160])
+            breaker.record_failure()
+            _metric_inc("resilience_failure", name)
+            logger.warning("resilience[%s]: attempt %d/%d failed - %s",
+                           name, attempt + 1, max_retries + 1, last.operator_detail[:160])
 
-        if (not last.failure_class.is_retryable
-                or attempt == max_retries
-                or not breaker.allow()):
-            break
-        await asyncio.sleep(_backoff(attempt, base_delay, max_delay))
+            if (not last.failure_class.is_retryable
+                    or attempt == max_retries
+                    or not breaker.allow()):
+                break
+            await asyncio.sleep(_backoff(attempt, base_delay, max_delay))
+    finally:
+        # a cancelled call must not keep a half-open probe slot
+        breaker.release_probe()
 
     if fallback is not None:
         logger.warning("resilience[%s]: exhausted - running fallback", name)

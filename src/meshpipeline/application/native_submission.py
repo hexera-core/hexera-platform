@@ -132,10 +132,18 @@ def attempt_scoped_operation(workspace: Any) -> str:
     (contracts.mesh_execution.note_native_pass) because the workspace is the only thing that
     crosses this seam.
 
+    An engine with no driver records no pass, and the same collapse hit it a third time: the
+    shared builder tool loop (cfMesh, gmsh, the multi-region engine) is told to change the case
+    and run_mesh again within the attempt, and that second run was refused as a conflicting replay
+    of the first. For such a workspace the run number the run_mesh seam counts
+    (contracts.mesh_execution.NATIVE_RUN_FACT) joins the identity from the SECOND run on. The
+    first run keeps the attempt-scoped identity unchanged, so a claim made before this rule still
+    names the same operation.
+
     A workspace that names no attempt and records no pass keeps the generation-scoped identity -
     exactly the old behaviour, fail closed.
     """
-    from meshpipeline.contracts.mesh_execution import read_native_pass
+    from meshpipeline.contracts.mesh_execution import read_native_pass, read_native_run
     from meshpipeline.persistence.repositories.native_submission_repository import (
         NATIVE_MESH_SUBMISSION,
     )
@@ -144,9 +152,12 @@ def attempt_scoped_operation(workspace: Any) -> str:
     operation = (NATIVE_MESH_SUBMISSION if m is None
                  else f"{NATIVE_MESH_SUBMISSION}:attempt_{int(m.group(1))}")
     pass_index = read_native_pass(workspace)
-    if pass_index is None:
-        return operation
-    return f"{operation}:pass_{pass_index}"
+    if pass_index is not None:
+        return f"{operation}:pass_{pass_index}"
+    run_index = read_native_run(workspace)
+    if run_index is not None and run_index > 1:
+        return f"{operation}:run_{run_index}"
+    return operation
 
 
 class ClaimingMeshExecutor:

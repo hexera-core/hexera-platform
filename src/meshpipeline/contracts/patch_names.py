@@ -92,10 +92,22 @@ def unreserved(name: str) -> str:
     return f"{name[:MAX_NAME_LENGTH - len(RESERVED_SUFFIX)]}{RESERVED_SUFFIX}"
 
 
+def case_name(name: object, *, fallback: str = "patch") -> str:
+    """THE name a boundary carries in the case, from whatever the file or the user called it:
+    mesh-safe, then unreserved. Every place a name crosses into the case - the declared patch
+    (normalize_declaration), a file part written as a solid (cad/ingest/surface.safe_solid_name),
+    a part staged under a wall (engines/declared_boundary.stage_regions) and the matcher between
+    them (same_patch_name) - spells it this way, so a file part called "outer" and the wall the
+    user declared as "outer" both arrive as outer_patch instead of one of them staying "outer"."""
+    return unreserved(mesh_safe(name, fallback=fallback))
+
+
 def same_patch_name(a: object, b: object) -> bool:
-    """Whether two names would reach a mesher as one name: equal once made mesh-safe, without
-    regard to capitals. The comparison the region rule and the engines' region mapping share."""
-    return mesh_safe(a).casefold() == mesh_safe(b).casefold()
+    """Whether two names would reach a mesher as one name: equal once spelled as the case spells
+    them (case_name), without regard to capitals. The comparison the region rule and the
+    engines' region mapping share - "outer" and "outer_patch" are one boundary, because the
+    declaration renames the first to the second."""
+    return case_name(a).casefold() == case_name(b).casefold()
 
 
 # THE WORDS PEOPLE USE FOR EACH BOUNDARY ROLE. Keyed by the word as it is compared (lower case,
@@ -454,6 +466,6 @@ def declaration_note(changes: DeclarationChanges) -> str:
 
 __all__ = ["ALL_ROLES", "GROUND_WORDS", "MAX_NAME_LENGTH", "MESH_SAFE_NAME", "RESERVED_PATCH_NAMES",
            "RESERVED_SUFFIX", "DeclarationChanges", "GroundRule", "Rename", "Retype",
-           "canonical_role", "declaration_note", "is_ground_word", "is_mesh_safe", "is_reserved",
+           "canonical_role", "case_name", "declaration_note", "is_ground_word", "is_mesh_safe", "is_reserved",
            "mesh_safe", "normalize_declaration", "normalize_patches", "rename_note",
            "role_candidates", "role_hint", "same_patch_name", "unreserved"]

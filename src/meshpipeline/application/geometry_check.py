@@ -441,6 +441,10 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
         # what kind of geometry this is and what it came from, for whoever decides what to offer
         facts.update(canonical.facts())
         facts.setdefault("notes", []).extend(n for n in canonical.notes if n not in facts["notes"])
+        # whether the upload is CLEAN (cad/validity): the contract a mesh is promised on
+        facts["validity"] = clean_verdict(fetched, canonical)
+        if facts["validity"].get("clean") is not True and facts["validity"].get("kind") != "unchecked":
+            facts["notes"].append(facts["validity"]["summary"])
         # a thermal model's physics (ECXML: materials, powers, fans, vents...), kept whole beside
         # the session's check so a later solver step - or the user - has all of it
         thermal = thermal_sidecar
@@ -480,6 +484,22 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
     if upright is not None:
         result["upright_sheet"] = upright
     return result
+
+
+def clean_verdict(uploaded: Path, canonical) -> dict:
+    """THE CLEAN CONTRACT on the upload (cad/validity): clean yes or no, and every reason with
+    where on the part it is. A file this calls clean is one the product promises to mesh, so a
+    clean file that then fails is a product bug, never the user's. It informs and never refuses:
+    a file that is not clean still goes on, with the reasons said. Never fails the scout."""
+    try:
+        from meshpipeline.cad.validity import check_canonical
+
+        return dict(check_canonical(uploaded, canonical).as_dict())
+    except Exception as exc:  # noqa: BLE001 - the check is evidence; the scout must still land
+        logger.warning("geometry check: the clean check could not run (%s: %s)", type(exc).__name__,
+                       str(exc)[:200])
+        return {"clean": None, "kind": "check_failed", "complete": False, "reasons": [],
+                "summary": f"the clean check could not run ({type(exc).__name__})"}
 
 
 def stickered(facts: dict) -> list[dict]:
@@ -781,6 +801,8 @@ def _store_upright_sheet(session_id: str, skin: Path, work: Path, store) -> dict
 def _scout_exact(local_path: Path, work: Path, interp_ref, ref) -> tuple[dict, Path]:
     """A STEP or IGES file: OpenCASCADE reads real faces, so the openings come out exact."""
     from meshpipeline.application import geometry_progress as gp
+    from meshpipeline.cad.fluid_volume_check import read_fluid_volume, wants_fluid_volume
+    from meshpipeline.cad.normalise import occ_scale_transform
     from meshpipeline.cad.scout import read_cad, scout_cad, write_view_stl
 
     prepared, unit_note = _prepared_coordinates(local_path, interp_ref, ref)
@@ -801,6 +823,11 @@ def _scout_exact(local_path: Path, work: Path, interp_ref, ref) -> tuple[dict, P
     gp.mark(gp.OPENINGS, triangles=gp.skin_triangles(skin))
     facts["holes"] = skin_holes(skin)
     if not declared:
+        # AN ASSEMBLY'S FLUID is the space inside its parts, closed off where it meets the outside
+        # (cad/fluid_volume_check): its openings are what the user confirms, not every flat face
+        if wants_fluid_volume(facts):
+            read_fluid_volume(facts, local_path, work=work, kind="cad",
+                              scale=occ_scale_transform(prepared).ScaleFactor())
         read_whole_shape(facts, skin)
     return facts, skin
 
@@ -905,8 +932,15 @@ def _scout_triangles(local_path: Path, work: Path, interp_ref, ref,
     gp.mark(gp.OPENINGS, triangles=gp.skin_triangles(skin))
     if not file_scale:
         # a thermal model's placed parts (file_scale) state their regions and openings themselves
+        from meshpipeline.cad.fluid_volume_check import read_fluid_volume
+        # several closed parts in one triangle file: the fluid is the space inside them, as for a
+        # CAD assembly (the skin is in metres)
+        read_fluid_volume(facts, skin, work=work, scale=1.0, kind="triangles")
         read_whole_shape(facts, skin)
-        vet_openings(facts, skin)
+        if facts.get("openings_from") != "fluid_volume":
+            # the extracted openings bound the fluid by construction; the skin's own passages
+            # (several parts' skins together) say nothing about them
+            vet_openings(facts, skin)
     return facts, skin
 
 
@@ -1122,6 +1156,10 @@ def _wait_for_scout(session_id: str) -> dict | None:
         if stored is not None and stored.get("status") != STATUS_PENDING:
             return stored
         if time.time() >= deadline:
+            if stored is None or stored.get("status") == STATUS_PENDING:
+                from meshpipeline.engines.determinism import note_time_limit
+                note_time_limit("geometry_check.naming", "the naming stopped waiting for the scout",
+                                budget_s=float(NAMING_WAIT_S))
             return stored
         time.sleep(2.0)
 
@@ -1432,6 +1470,7 @@ def _up_with_vision(sheet: Path, order, *, part: str, purpose_text: str, session
     except Exception as exc:  # noqa: BLE001 - provider weather; the shape still says what it can
         logger.warning("geometry check: which way is up unavailable from the pictures (%s: %s)",
                        type(exc).__name__, str(exc)[:200])
+        _note_vision_timeout(exc, "the up axis was not read from the pictures")
         return {"error": f"{type(exc).__name__}"}
     return answer if isinstance(answer, dict) else {"error": "malformed answer"}
 
@@ -1517,8 +1556,17 @@ def _name_with_vision(facts: dict, shots, *, purpose_text: str, session_id: str,
         answer = asyncio.run(asyncio.wait_for(_ask(), timeout=GEOMETRY_CHECK_VISION_TIMEOUT_S))
     except Exception as exc:  # noqa: BLE001 - provider weather; the check still ships
         logger.warning("geometry check: vision naming unavailable (%s: %s)", type(exc).__name__, str(exc)[:200])
+        _note_vision_timeout(exc, "the openings were not named from the pictures")
         return {"error": f"{type(exc).__name__}"}
     return answer if isinstance(answer, dict) else {"error": "malformed answer"}
+
+
+def _note_vision_timeout(exc: BaseException, what: str) -> None:
+    if isinstance(exc, TimeoutError):
+        from meshpipeline.engines.determinism import note_time_limit
+        from meshpipeline.settings.geometry_check import GEOMETRY_CHECK_VISION_TIMEOUT_S
+        note_time_limit("geometry_check.vision", f"{what}: the model ran past its time limit",
+                        budget_s=float(GEOMETRY_CHECK_VISION_TIMEOUT_S))
 
 
 def _proposal(facts: dict, vision: dict | None) -> dict:
