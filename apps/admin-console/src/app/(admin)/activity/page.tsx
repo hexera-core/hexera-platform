@@ -36,6 +36,7 @@ export default async function ActivityPage() {
                 <th>Dispatch</th>
                 <th>Attempts</th>
                 <th>Heartbeat</th>
+                <th>Why</th>
               </tr>
             </thead>
             <tbody>
@@ -55,6 +56,9 @@ export default async function ActivityPage() {
                   <td>{run.pipeline_dispatch_state || run.pipeline_backend || "-"}</td>
                   <td>{run.attempts.toLocaleString("en-US")}</td>
                   <td>{compactDate(run.lease_heartbeat_at)}</td>
+                  <td>
+                    <a href={`/jobs/${run.id}/why`}>why</a>
+                  </td>
                 </tr>
               ))}
             </tbody>

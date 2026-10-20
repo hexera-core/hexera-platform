@@ -244,6 +244,7 @@ export default async function CustomerPage({
                 <th>Attempts</th>
                 <th>Duration</th>
                 <th>Charged</th>
+                <th>Why</th>
               </tr>
             </thead>
             <tbody>
@@ -257,6 +258,9 @@ export default async function CustomerPage({
                   <td>{run.attempts.toLocaleString("en-US")}</td>
                   <td>{seconds(run.duration_seconds)}</td>
                   <td>{run.charged_credits.toLocaleString("en-US")}</td>
+                  <td>
+                    <a href={`/jobs/${run.id}/why`}>why</a>
+                  </td>
                 </tr>
               ))}
             </tbody>
