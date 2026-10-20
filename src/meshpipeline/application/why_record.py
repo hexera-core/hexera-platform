@@ -42,6 +42,7 @@ def _own_format(candidates: list[str], fmt: str) -> list[str]:
 
 _PICK_WORDS = {
     "ENG-4": "it ranked first on its lab record for {shape}{reason}.",
+    "ENG-4-thin": "it ranked first for {shape}, on little lab evidence{reason}.",
     "ENG-6": "the user named it, so it is never switched on its own.",
     "ENG-7": "it reads the uploaded {fmt} file itself.",
     "ENG-8": "nothing was measured or named, so the run took the declared default for its flow.",
@@ -63,11 +64,14 @@ def engine_pick_entry(state: Mapping) -> dr.Entry | None:
     fmt = _source_format(state)
     inputs = {"engine_source": engine_source(state), "approved": approved,
               "recommended": str(ladder.get("order_recommended") or ""),
+              "measured": ladder.get("order_source") == "measured",
               "own_format": _own_format(order or [approved], fmt)}
     value, rule = dr.engine_pick(inputs)
     reasons = _mapping(ladder.get("order_reasons"))
     reason = str(reasons.get(approved) or "")
-    words = _PICK_WORDS[rule].format(
+    # a ranking with little or no record for this shape class still ranks: say how little
+    thin = rule == "ENG-4" and reason.startswith(("little", "not yet", "no "))
+    words = _PICK_WORDS["ENG-4-thin" if thin else rule].format(
         shape=str(ladder.get("order_shape") or "shapes like this one"),
         reason=f": {reason}" if reason else "", fmt=fmt.upper() or "source",
         top=inputs["recommended"] or "no engine")

@@ -45,10 +45,23 @@ def _cites_only_rules_in_force(why: dict) -> None:
     ("system", "snappy", "cfmesh", [], "ENG-8"),
 ])
 def test_the_engine_pick_names_its_rule(source, approved, recommended, own, rule):
-    value, got = dr.engine_pick({"engine_source": source, "approved": approved,
+    value, got = dr.engine_pick({"engine_source": source, "approved": approved, "measured": True,
                                  "recommended": recommended, "own_format": own})
     assert (value, got) == (approved, rule)
     assert dr.engine_pick_source(got) == ("user" if rule in ("ENG-6", "ENG-9") else "rule")
+
+
+def test_a_ranking_without_a_measured_geometry_is_not_called_a_lab_record():
+    base = {"approved": "snappy", "recommended": "snappy", "measured": False, "own_format": []}
+    assert dr.engine_pick({**base, "engine_source": "system"}) == ("snappy", "ENG-8")
+    assert dr.engine_pick({**base, "engine_source": "suggested_confirmed"}) == ("snappy", "ENG-9")
+
+
+def test_a_pick_on_little_evidence_says_so(tmp_path):
+    state = _final_state(tmp_path)
+    state["engine_ladder"]["order_reasons"]["snappy"] = "little lab evidence on shapes like this"
+    pick = why_record.build("job-why", state)["decisions"][0]
+    assert pick["rule"] == "ENG-4" and "on little lab evidence" in pick["words"]
 
 
 # #
@@ -65,7 +78,8 @@ def test_the_engine_pick_names_its_rule(source, approved, recommended, own, rule
     ("the engine is not ours to change (source user_direct)", "SW-8", False),
 ])
 def test_a_switch_reason_maps_to_its_rule(why, rule, moved):
-    value, got = dr.switch({"why": why, "from": "snappy", "to": "cfmesh"})
+    kind = "engine" if rule in ("SW-1", "SW-2") else "fixable"
+    value, got = dr.switch({"why": why, "from": "snappy", "to": "cfmesh", "kind": kind})
     assert got == rule
     assert value == ("cfmesh" if moved else "snappy")
     assert dr.switch_source(got) == ("guard-clock" if rule == "SW-13" else "rule")
@@ -73,6 +87,15 @@ def test_a_switch_reason_maps_to_its_rule(why, rule, moved):
 
 def test_an_unknown_switch_reason_has_no_rule():
     assert dr.switch_rule("because the moon was full") == ""
+
+
+@pytest.mark.parametrize("kind,to", [("never", "cfmesh"), ("review", "cfmesh"), ("engine", "snappy"),
+                                     ("engine", "")])
+def test_a_switch_whose_facts_do_not_fit_its_reason_has_no_rule(kind, to):
+    entry = {"stage": "switch", "value": to, "rule": "SW-2",
+             "inputs": {"why": "this engine could not build a mesh", "kind": kind,
+                        "from": "snappy", "to": to}}
+    assert dr.replay([entry]), "a move the rule would not make passed its replay"
 
 
 # #

@@ -35,11 +35,11 @@ Each decision in the record also says where it came from:
 | ENG-1 | in force | **Only engines that can take the case are ranked.** An engine is a candidate only if its declared capability covers the flow, the file's form, the number of separate passages and the layers asked for. |
 | ENG-2 | planned (D1) | **Home turf first.** When the shape's measured facts put an engine "home", that engine comes first. |
 | ENG-3 | planned (D1) | **The scoreboard overrides home turf only when it clearly wins:** the challenger has at least 20 runs on this shape class, and its 95% lower bound is above the home engine's 95% upper bound. |
-| ENG-4 | in force | **The best lab record on shapes like this one comes first.** Engines are ranked by their measured record on this shape class (`engines/fitness.py`). An engine whose declared turf puts the shape outside is never recommended. Ties go to fewer broken meshes, then fewer bad cells, then the declared turf, layers and ladder order. |
+| ENG-4 | in force | **The best lab record on shapes like this one comes first.** The run's geometry is measured, and engines are ranked by their record on its shape class (`engines/fitness.py`). When that record is thin, the record says so. An engine whose declared turf puts the shape outside is never recommended. Ties go to fewer broken meshes, then fewer bad cells, then the declared turf, layers and ladder order. |
 | ENG-5 | in force | **The fallback ladder walks the same ranking**, after the approved engine, minus the engines already tried and the engines that would refuse the case. |
 | ENG-6 | in force | **The user's pick stands.** An engine the user named is never switched on its own; another engine is only offered. A dispute keeps the engine of the mesh it disputes. |
 | ENG-7 | in force | **An engine that reads the upload's own format comes first**, measured or not: a conversion loses what the file describes (an ECXML's parts, materials and powers). |
-| ENG-8 | in force | **Nothing measured, nothing named: the declared default.** With no measured ranking, a run nobody chose an engine for takes the engine the declarations name for its flow. |
+| ENG-8 | in force | **Nothing measured, nothing named: the declared default.** When the run's geometry could not be measured, a run nobody chose an engine for takes the engine the declarations name for its flow (or the flow-only order). |
 | ENG-9 | in force | **The user confirmed an engine the measured ranking did not put first** (for example, the ranking was not ready while the user was asked). The confirmed engine stands. This is a gap D1 closes: the proposal should always be the ranked one. |
 
 ## SW: whether a run moves to another engine after a failed attempt

@@ -83,18 +83,21 @@ _CONFIRMED = "suggested_confirmed"
 def engine_pick(inputs: Mapping[str, Any]) -> tuple[str, str]:
     """(the engine, the rule) the run's first engine follows from.
 
-    inputs: engine_source; approved (the engine the run started on); recommended (the measured
-    ranking's first engine, '' when nothing was ranked); own_format (the candidates that read the
-    upload's own format themselves, in ladder order)."""
+    inputs: engine_source; approved (the engine the run started on); recommended (the ranking's
+    first engine, '' when nothing was ranked); measured (the run's geometry was measured, so the
+    ranking read the lab record for its shape class - without it the ranking is no measured
+    evidence); own_format (the candidates that read the upload's own format themselves, in
+    ladder order)."""
     source = str(inputs.get("engine_source") or "")
     approved = str(inputs.get("approved") or "")
     recommended = str(inputs.get("recommended") or "")
     own = [str(e) for e in (inputs.get("own_format") or ()) if e]
+    measured = inputs.get("measured", True) is True
     if source in _USER_NAMED:
         return approved, "ENG-6"
     if own and approved == own[0]:
         return approved, "ENG-7"
-    if recommended and approved == recommended:
+    if measured and recommended and approved == recommended:
         return approved, "ENG-4"
     if source == _CONFIRMED:
         return approved, "ENG-9"
@@ -151,11 +154,23 @@ def switch_rule(why: str) -> str:
     return ""
 
 
+#: the failure kinds (engine_fallback's classes) each moving rule can follow: no mesh or a broken
+#: one is an ENGINE failure; a repeated or shared-attempt move follows a FIXABLE one
+_MOVES_ON = {"SW-1": ("engine",), "SW-2": ("engine",), "SW-3": ("fixable",), "SW-4": ("fixable",)}
+
+
 def switch(inputs: Mapping[str, Any]) -> tuple[str, str]:
-    """(the engine the attempt ran on, the rule). inputs: why, to, from."""
+    """(the engine the attempt ran on, the rule). inputs: why, kind (the failure class), from, to.
+
+    The recorded facts must fit the rule: a move needs a failure kind that rule moves on and a
+    different engine to move to, so a record whose reason and facts disagree has no rule ('')."""
     rule = switch_rule(str(inputs.get("why") or ""))
-    moved = rule in ("SW-1", "SW-2", "SW-3", "SW-4")
-    return str((inputs.get("to") if moved else inputs.get("from")) or ""), rule
+    if rule in _MOVES_ON:
+        kind, frm, to = str(inputs.get("kind") or ""), inputs.get("from"), inputs.get("to")
+        if kind not in _MOVES_ON[rule] or not to or to == frm:
+            return str(to or ""), ""
+        return str(to), rule
+    return str(inputs.get("from") or ""), rule
 
 
 def switch_source(rule: str) -> str:
