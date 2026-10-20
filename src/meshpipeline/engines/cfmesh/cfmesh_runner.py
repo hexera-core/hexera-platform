@@ -297,9 +297,15 @@ EXTERNAL_MAX_HALVINGS = 8
 #: native run (cartesianMesh, checkMesh, the export) over the 71 cfMesh meshes above half a million
 #: cells in that sweep (median 5,600; a tenth under 2,100).
 CELLS_PER_SECOND = 2000.0
-#: the cap a planned run gets: this many times its estimate (never under the base cap, never over
-#: the ceiling)
+#: a plan FITS one run when this many times its estimate is inside the ceiling (a planning rule:
+#: a plan that does not fit is made coarser before it runs)
 RUN_CAP_HEADROOM = 1.25
+#: THE RUN'S GUARD (contracts/work_limits, TIME-2) is set from the planned cells at cfMesh's SLOW
+#: rate, and counts the near-edge rescue as planned work: at most this many runs' worth of work in
+#: all - the mesher, then an optimiser pass, a protective re-mesh and its optimiser
+#: (engines/cfmesh/rescue.py) - so a rescue is never cut short by a clock sized for the mesher
+#: alone. Floor: the base cap; ceiling: run_ceiling_s.
+RESCUE_RUNS = 3.0
 #: the case's own record of its plan, read by the run cap (spec.run_policy.planned_timeout)
 RUN_PLAN_FILE = "system/run_plan.json"
 
@@ -332,13 +338,21 @@ def estimate_cells(*, volume: float, max_cell: float, wall_cell: float,
     return int(background + wall)
 
 
+def run_guard(estimated_cells: float | None):
+    """The planned work and GUARD of a cfMesh run planned to make `estimated_cells` cells
+    (contracts/work_limits.PlannedWork): GUARD_FACTOR times its planned time at the slow rate,
+    rescue included (RESCUE_RUNS), no less than the base cap, no more than the ceiling."""
+    from meshpipeline.contracts.work_limits import guard_for
+    return guard_for("cfmesh", cells=estimated_cells, steps=RESCUE_RUNS,
+                     floor_s=base_run_cap_s(), ceiling_s=run_ceiling_s())
+
+
 def run_cap_for(estimated_seconds: float | None) -> int:
-    """The cap of a run planned to take `estimated_seconds`: RUN_CAP_HEADROOM times the estimate,
-    no less than the base cap, no more than the ceiling."""
-    base = base_run_cap_s()
+    """The guard of a run planned to take `estimated_seconds` at the planning rate
+    (CELLS_PER_SECOND): see run_guard. The base cap when nothing was planned."""
     if not estimated_seconds or estimated_seconds <= 0:
-        return base
-    return int(min(run_ceiling_s(), max(base, RUN_CAP_HEADROOM * float(estimated_seconds))))
+        return base_run_cap_s()
+    return run_guard(float(estimated_seconds) * CELLS_PER_SECOND).guard_seconds
 
 
 def fits_one_run(estimated_seconds: float) -> bool:
@@ -401,7 +415,8 @@ def _plan_run(*, volume: float, max_cell: float, wall_cell: float, wall_area: fl
     seconds = est / CELLS_PER_SECOND
     plan: dict[str, Any] = {"estimated_cells": int(est), "cells_per_second": CELLS_PER_SECOND,
             "estimated_seconds": round(seconds, 1), "run_cap_s": run_cap_for(seconds),
-            "fits": fits_one_run(seconds), "wall_cell": wall_cell}
+            "fits": fits_one_run(seconds), "wall_cell": wall_cell,
+            "guard": run_guard(est).as_dict()}
     if levels:
         plan.update(coarsened_levels=levels, cells_before=int(asked), note=(
             f"The wall cells were made {levels} level{'s' if levels != 1 else ''} coarser "

@@ -1,5 +1,6 @@
 # Responsibility: Verify the near-edge rescue of a cfMesh mesh: when it triggers, the order of the levers, that the best
-# measured mesh is the one kept (the mesh as built included), and that it never runs past its deadline or leaves scratch.
+# measured mesh is the one kept (the mesh as built included), that the clock never skips a step (it is a guard: a step
+# it stops is a guard trip), and that it leaves no scratch.
 # No cfMesh binary runs: the runner and checkMesh are stand-ins that write and read a marker in the polyMesh.
 from __future__ import annotations
 
@@ -149,15 +150,41 @@ def test_a_missing_optimiser_binary_costs_nothing(tmp_path):
     assert out["rescue"]["tried"][0]["rc"] == 127
 
 
-def test_no_re_mesh_when_the_cap_does_not_hold_another_run(tmp_path):
+_NOT_FIXED = {"optimised(as built)": {"max_non_ortho": 84.3, "fatal": ["incorrectly oriented faces"]},
+              "remeshed": {"cells": 980_000, "max_non_ortho": 81.0, "fatal": []},
+              "optimised(remeshed)": {"cells": 980_000, "max_non_ortho": 77.0, "fatal": []}}
+
+
+@pytest.mark.parametrize("left,mesher", [(3600.0, 30.0), (400.0, 600.0), (90.0, 2000.0)])
+def test_the_same_mesh_gets_the_same_rescue_whatever_the_time_left(tmp_path, left, mesher):
+    # docs/RULES.md TIME-1: the steps are planned work. Before D3 a cap that "did not hold another
+    # run" (400 s left after a 600 s mesher) skipped the re-mesh and kept the mesh as built, so a
+    # busy machine delivered a different mesh. Now every case below runs the same steps and keeps
+    # the same mesh; the time left is only each step's guard.
     ws = _ws(tmp_path)
     calls: list = []
-    table = {"optimised(as built)": {"max_non_ortho": 84.3, "fatal": ["incorrectly oriented faces"]}}
-    out = _rescue(ws, dict(_BROKEN), table, calls, left=400.0, mesher=600.0)
+    out = _rescue(ws, dict(_BROKEN), dict(_NOT_FIXED), calls, left=left, mesher=mesher)
+    assert [c["cmd"].split("&& ")[-1].split()[0] for c in calls] == [
+        "improveMeshQuality", "cartesianMesh", "improveMeshQuality"]
+    assert out["rescue"]["kept"] == "re-meshed protecting the layers, then optimised"
+    assert out["max_non_ortho"] == 77.0 and "guard_tripped" not in out["rescue"]
+    assert all(c["timeout"] <= left for c in calls), "the time left is each step's guard"
+
+
+def test_a_step_its_guard_stops_is_a_guard_trip_and_the_rescue_stops(tmp_path):
+    from meshpipeline.engines import determinism as det
+    ws = _ws(tmp_path)
+    calls: list = []
+    with det.recording() as rec:
+        out = _rescue(ws, dict(_BROKEN), dict(_NOT_FIXED), calls, optimise_rc=-1)
+    # stopped at the first step: no re-mesh is started after a trip, the as-built mesh is back in
+    # place, and the trip is in the run's record (the attempt is replayed as ours, TIME-3)
     assert [c["cmd"].split("&& ")[-1].split()[0] for c in calls] == ["improveMeshQuality"]
-    assert calls[0]["timeout"] <= 400
-    assert any("no time left" in str(s.get("skipped")) for s in out["rescue"]["tried"])
+    assert out["rescue"]["guard_tripped"] == "optimised"
     assert (ws / "constant" / "polyMesh" / "owner").read_text() == "as built"
+    assert [(t["where"], t["step"]) for t in rec.guard_trips] == [("cfmesh.rescue", "optimised")]
+    assert rec.time_limited == []
+    assert "guard clock" in out["rescue"]["note"]
 
 
 def test_a_check_that_died_early_never_wins(tmp_path):
@@ -173,16 +200,18 @@ def test_a_check_that_died_early_never_wins(tmp_path):
     assert not RS.better({"fatal": []}, dict(_BROKEN))
 
 
-def test_a_candidate_with_no_time_left_to_measure_it_is_none(tmp_path, monkeypatch):
+def test_a_candidate_is_measured_whatever_the_clock_says(tmp_path, monkeypatch):
+    # before D3 a candidate with "no time left to measure it" was dropped and the mesh as built
+    # kept; the measurement is planned work, so the clock never decides it (TIME-1)
     ws = _ws(tmp_path)
     calls: list = []
     table = {"optimised(as built)": {"cells": 9, "max_non_ortho": 60.0, "fatal": []}}
-    clock = iter([0.0, 0.0] + [1e6] * 50)          # the optimiser runs, then the cap is spent
+    clock = iter([0.0, 0.0] + [1e6] * 50)          # the optimiser runs, then the clock is spent
     monkeypatch.setattr(RS.time, "monotonic", lambda: next(clock))
     out = RS.rescue(ws, dict(_BROKEN), bashrc="b", deadline=500.0, mesher_seconds=30.0,
                     check_seconds=10.0, measure=_measure(table), runner=_runner(calls), env={})
-    assert out["rescue"]["kept"] == "as built"
-    assert (ws / "constant" / "polyMesh" / "owner").read_text() == "as built"
+    assert out["rescue"]["kept"] == "optimised"
+    assert (ws / "constant" / "polyMesh" / "owner").read_text() == "optimised(as built)"
 
 
 def test_a_case_that_cannot_be_read_back_is_not_touched(tmp_path):

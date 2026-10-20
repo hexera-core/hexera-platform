@@ -802,11 +802,12 @@ def passage_of_polymesh(workspace, *, budget_s: float = PASSAGE_MEASURE_BUDGET_S
                 return passage_of_surface(pts, faces, wall=(wpts, wfaces), edges=wedges)
             return passage_of_surface(pts, faces, edges=edges)
     except MeasureOverdue:
-        logger.warning("passage measure abandoned after %.0f s; the mesh ships without it",
-                       budget_s)
-        from meshpipeline.engines.determinism import note_time_limit
-        note_time_limit("passage.measure", "the passage measure was abandoned: the mesh ships "
-                        "without it", budget_s=float(budget_s))
+        # PLANNED WORK (MAX_MEASURE_POINTS chords); the clock is its guard. A measure past it is
+        # a guard trip (docs/RULES.md TIME-3): the attempt is replayed as an infrastructure
+        # failure, never shipped "without the measure" because time ran out.
+        logger.warning("passage measure ran past its %.0f s guard", budget_s)
+        from meshpipeline.engines.determinism import note_guard_trip
+        note_guard_trip("passage.measure", guard_s=float(budget_s))
         return {}
     except Exception:  # noqa: BLE001 - evidence, not a verdict
         logger.warning("passage measure of the polyMesh failed", exc_info=True)

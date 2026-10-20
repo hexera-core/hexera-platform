@@ -74,7 +74,11 @@ def build(job_id: str, state: Mapping[str, Any]) -> dict[str, Any]:
                      "decisions": decisions_for(job_id)}
         ws = str(state.get("openfoam_workspace") or "")
         rec["mesh"] = det.read_stamp(ws) if ws else None
+        # the clocks that still decide (TIME-6: the CAD repair steps), and every guard clock that
+        # tripped outside a native run (TIME-3..5) - beside the case or in this process
         rec["worker_time_limited"] = det.drain_process_notes()
+        rec["guard_trips"] = [*(det.guard_trips(ws) if ws else []),
+                              *det.drain_process_guard_trips()]
     except Exception:  # noqa: BLE001 - a record never touches a verdict
         logger.warning("run reproducibility record incomplete", exc_info=True)
     try:

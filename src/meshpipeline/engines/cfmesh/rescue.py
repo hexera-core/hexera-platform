@@ -11,7 +11,9 @@ solver accepts (cfm-before / cfm-after / cfm-rerun, 2026-10-18). Its final untan
 ONE face. Delivered as it came, the run is a coin toss.
 
 So a mesh that comes out broken (checkMesh's fatal defects) or past NEAR_EDGE_NON_ORTHO is not
-handed over as it is. In the time its run cap still holds, this module tries, in order:
+handed over as it is. This module tries, in order (each step is PLANNED WORK - a fixed number of
+optimiser passes, one re-mesh of the same cells - and runs whenever it is triggered and its cell
+limit allows; the clock never skips one, docs/RULES.md TIME-1):
 
   1. OPTIMISE: cfMesh's own improveMeshQuality on the mesh as built - the optimiser cartesianMesh
      runs last, run again with more passes. Same cells, same layers, points moved.
@@ -29,6 +31,12 @@ plain words; the losing meshes are deleted before the workspace goes home.
 
 A mesh that is still broken after this is the engine's failing on the shape, and the fallback
 ladder moves the run on to the next engine (pipeline/engine_fallback: a broken mesh moves on).
+
+THE CLOCK IS A GUARD ONLY. Every step runs inside what is left of the run's guard (its planned
+time already counts the rescue: cfmesh_runner.RESCUE_RUNS). A step the guard stops is a guard trip
+(TIME-3): the rescue stops there, the trip is recorded in the run's stamp, and the attempt is
+replayed as an infrastructure failure - never "kept as built because time ran out", which a quiet
+machine would not have done.
 """
 from __future__ import annotations
 
@@ -42,7 +50,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from meshpipeline.engines.determinism import note_time_limit
+from meshpipeline.engines.determinism import note_guard_trip
 
 logger = logging.getLogger(__name__)
 
@@ -60,8 +68,6 @@ RESCUE_MAX_CELLS = 6_000_000
 #: ...and the biggest one re-meshed: a second cartesianMesh holds its own working set on top.
 #: Between the two, only the optimiser is tried.
 REMESH_MAX_CELLS = 4_000_000
-#: A re-mesh is started only when the time left holds this many times the first run's mesher time.
-REMESH_HEADROOM = 1.3
 #: improveMeshQuality's passes: cfMesh's defaults are 50 loops of 50 iterations and 2 surface
 #: iterations; more surface iterations let it move the wall points a fold sits on.
 OPTIMISE_ARGS = "-nLoops 50 -nIterations 50 -nSurfaceIterations 5"
@@ -159,10 +165,12 @@ def rescue(workspace, q: dict, *, bashrc: str, deadline: float, mesher_seconds: 
            runner: Callable[..., Any] | None = None, env: dict | None = None,
            is_2d: bool = False) -> dict:
     """The quality record of the mesh left in `workspace` after the rescue: `q` itself when the
-    mesh is not near its edge (or there is no time or room to try), else the best measured
+    mesh is not near its edge (or it is past a rescue's cell limit), else the best measured
     candidate's record, with `rescue` saying what was tried and kept. `deadline` is the monotonic
-    time no lever - nor the checkMesh that measures it - may run past; `mesher_seconds` and
-    `check_seconds` are the first cartesianMesh's and the first checkMesh's wall times."""
+    end of the run's GUARD: each step's own subprocess timeout is what is left of it, and a step it
+    stops is a guard trip (`guard_tripped` in the record), never a skip. `mesher_seconds` is the
+    first cartesianMesh's wall time, kept in the record only; `check_seconds` the first
+    checkMesh's - the room a step leaves for the measurement after it. Neither decides a step."""
     why = near_edge(q)
     if not why:
         return q
@@ -198,16 +206,19 @@ def rescue(workspace, q: dict, *, bashrc: str, deadline: float, mesher_seconds: 
     logger.warning("cfMesh mesh at its validity edge (%s) - trying the engine's own levers", why)
 
     def _left() -> float:
-        """Seconds a lever may still run: to the deadline, less the check that must follow it."""
-        return deadline - time.monotonic() - check_s
+        """The subprocess timeout a step runs under: what is left of the run's guard, less the
+        check that follows it (a guard, never a reason to skip the step)."""
+        return max(1.0, deadline - time.monotonic() - check_s)
+
+    def _trip(name: str, budget: float) -> None:
+        # THE GUARD STOPPED A STEP (TIME-3): recorded, and the rescue stops here. The attempt is
+        # replayed as an infrastructure failure; no candidate is kept or dropped because of it.
+        record["guard_tripped"] = name
+        record["tried"].append({"step": name, "guard_tripped": True, "guard_s": round(budget, 1)})
+        note_guard_trip("cfmesh.rescue", step=name, guard_s=float(budget))
 
     def _measure(name: str) -> dict | None:
         (ws / "mesh_quality.json").unlink(missing_ok=True)     # never a cached figure
-        if deadline - time.monotonic() < check_s:
-            logger.warning("rescue: no time left to measure the %s mesh - not a candidate", name)
-            note_time_limit("cfmesh.rescue", f"the {name} mesh was not measured, so not kept",
-                            left_s=deadline - time.monotonic(), needed_s=check_s)
-            return None
         try:
             return check(ws, bashrc=bashrc) or None
         except Exception:  # noqa: BLE001 - an unmeasured candidate is no candidate
@@ -229,20 +240,19 @@ def rescue(workspace, q: dict, *, bashrc: str, deadline: float, mesher_seconds: 
             shutil.rmtree(ws / _POLYMESH, ignore_errors=True)
 
     def _optimise(src_dir: Path, name: str) -> None:
-        budget = min(_left(), max(300.0, mesher_seconds))
-        if budget < 60.0:
-            record["tried"].append({"step": name, "skipped": "no time left in the run cap"})
-            note_time_limit("cfmesh.rescue", f"'{name}' skipped: no time left in the run cap",
-                            left_s=_left())
+        if record.get("guard_tripped"):
             return
+        # PLANNED WORK: OPTIMISE_ARGS' fixed passes, run to the end; the guard only guards
+        budget = _left()
         shutil.copytree(src_dir, ws / _POLYMESH)
         t = time.monotonic()
         rc = _run(run, ws, bashrc, env, f"improveMeshQuality {OPTIMISE_ARGS}",
                   "improveMeshQuality.log", budget)
-        step = {"step": name, "rc": rc, "seconds": round(time.monotonic() - t, 1)}
         if rc == -1:
-            note_time_limit("cfmesh.rescue", f"'{name}' was stopped at its time budget",
-                            budget_s=budget)
+            shutil.rmtree(ws / _POLYMESH, ignore_errors=True)
+            _trip(name, budget)
+            return
+        step = {"step": name, "rc": rc, "seconds": round(time.monotonic() - t, 1)}
         if rc != 0 or not (ws / _POLYMESH / "owner").exists():
             step["error"] = _tail(ws / "improveMeshQuality.log")
             record["tried"].append(step)
@@ -257,27 +267,26 @@ def rescue(workspace, q: dict, *, bashrc: str, deadline: float, mesher_seconds: 
         moved = True
         # 1. the engine's optimiser on the mesh as built
         _optimise(best_dir, "optimised")
-        # 2. a protective re-mesh, when the best is still near the edge and the time holds a run
+        # 2. a protective re-mesh, when the best is still near the edge (its cell limit decides,
+        #    never the time left)
         protective = protective_meshdict(asked_dict) if asked_dict else None
-        if near_edge(best_q) and protective is not None:
+        if near_edge(best_q) and protective is not None and not record.get("guard_tripped"):
             if cells > REMESH_MAX_CELLS:
                 record["tried"].append({"step": REMESHED, "skipped": (
                     f"{int(cells):,} cells is over the {REMESH_MAX_CELLS:,} a second run may "
                     "hold beside the first")})
-            elif _left() < REMESH_HEADROOM * max(mesher_seconds, 30.0):
-                record["tried"].append({"step": "re-meshed protecting the layers",
-                                        "skipped": "no time left in the run cap for another run"})
-                note_time_limit("cfmesh.rescue", "the protective re-mesh was skipped: no time "
-                                "left in the run cap", left_s=_left(),
-                                needed_s=REMESH_HEADROOM * max(mesher_seconds, 30.0))
             else:
                 meshdict.write_text(protective)
                 t = time.monotonic()
+                budget = _left()
                 rc = _run(run, ws, bashrc, env, "cartesianMesh", "cartesianMesh_rescue.log",
-                          _left())
+                          budget)
                 step = {"step": "re-meshed protecting the layers", "rc": rc,
                         "seconds": round(time.monotonic() - t, 1)}
-                if rc == 0 and (ws / _POLYMESH / "owner").exists():
+                if rc == -1:
+                    shutil.rmtree(ws / _POLYMESH, ignore_errors=True)
+                    _trip(REMESHED, budget)
+                elif rc == 0 and (ws / _POLYMESH / "owner").exists():
                     remesh_q = _measure("re-meshed")
                     remesh_dir = scratch / "remeshed_raw"
                     if remesh_q and near_edge(remesh_q):
@@ -329,9 +338,12 @@ def note(record: dict) -> str:
     head = f"The first cfMesh mesh was at its validity edge: {record.get('trigger')}."
     if record.get("skipped"):
         return f"{head} No second try: {record['skipped']}."
+    if record.get("guard_tripped"):
+        return (f"{head} The '{record['guard_tripped']}' step ran past the run's guard clock - an "
+                "infrastructure stop, not a result: this attempt is run again as it was.")
     tried = [s["step"] for s in record.get("tried") or [] if not s.get("skipped")]
     if record.get("kept") == "as built":
-        return (f"{head} Tried {', then '.join(tried) or 'nothing (no time left)'}; none measured "
+        return (f"{head} Tried {', then '.join(tried) or 'nothing'}; none measured "
                 "better, so the mesh as built is kept.")
     return (f"{head} Kept the {record.get('kept')} mesh: "
             f"{_words(before)} before, {_words(after)} after.")

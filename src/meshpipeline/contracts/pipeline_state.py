@@ -164,6 +164,11 @@ class PipelineState(TypedDict):
     # re-runs the SAME mesh attempt number - it is not a new mesh attempt.
     infra_retry_count: int
 
+    # GUARD-CLOCK replays consumed (docs/RULES.md TIME-3): an attempt a guard clock stopped is run
+    # again as the same attempt (node_guard_replay), at most work_limits.GUARD_REPLAYS times; past
+    # that the run ends as "ran out of time". Not a mesh attempt, and never a lever or a switch.
+    guard_replay_count: int
+
     # Reviews started again on the SAME validated mesh after one ended without a verdict
     # (node_review_retry). Not a mesh attempt: retry_count is untouched and nothing is rebuilt.
     review_rerun_count: int

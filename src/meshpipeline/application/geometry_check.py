@@ -1167,9 +1167,11 @@ def _wait_for_scout(session_id: str) -> dict | None:
             return stored
         if time.time() >= deadline:
             if stored is None or stored.get("status") == STATUS_PENDING:
-                from meshpipeline.engines.determinism import note_time_limit
-                note_time_limit("geometry_check.naming", "the naming stopped waiting for the scout",
-                                budget_s=float(NAMING_WAIT_S))
+                # a guard (docs/RULES.md TIME-4): the step fails and is retried, never answered
+                # from less
+                from meshpipeline.engines.determinism import note_guard_trip
+                note_guard_trip("geometry_check.naming", rule="TIME-4",
+                                guard_s=float(NAMING_WAIT_S))
             return stored
         time.sleep(2.0)
 
@@ -1572,11 +1574,13 @@ def _name_with_vision(facts: dict, shots, *, purpose_text: str, session_id: str,
 
 
 def _note_vision_timeout(exc: BaseException, what: str) -> None:
+    # a guard (docs/RULES.md TIME-4): the same path as a provider outage - the code's own reading
+    # stands and the user confirms the proposal; never a different answer chosen by the clock
     if isinstance(exc, TimeoutError):
-        from meshpipeline.engines.determinism import note_time_limit
+        from meshpipeline.engines.determinism import note_guard_trip
         from meshpipeline.settings.geometry_check import GEOMETRY_CHECK_VISION_TIMEOUT_S
-        note_time_limit("geometry_check.vision", f"{what}: the model ran past its time limit",
-                        budget_s=float(GEOMETRY_CHECK_VISION_TIMEOUT_S))
+        note_guard_trip("geometry_check.vision", rule="TIME-4", step=what,
+                        guard_s=float(GEOMETRY_CHECK_VISION_TIMEOUT_S))
 
 
 def _proposal(facts: dict, vision: dict | None) -> dict:

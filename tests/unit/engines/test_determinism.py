@@ -30,17 +30,38 @@ def test_snappy_ranks_come_from_the_job_not_the_host(monkeypatch):
 
 
 def test_a_time_limited_decision_is_recorded_in_its_run():
+    # only the CAD repair steps still decide by the clock (TIME-6)
     with det.recording() as rec:
-        det.note_time_limit("vmtk.ladder", "2 ladder step(s) not started", left_s=12.34)
+        det.note_time_limit("cad_repair", "the original file is meshed", budget_s=120.04)
         det.note_setting("snappy_ranks", 8, "quota")
-    assert rec.time_limited == [{"where": "vmtk.ladder", "decision": "2 ladder step(s) not started",
-                                 "left_s": 12.3}]
+    assert rec.time_limited == [{"where": "cad_repair", "decision": "the original file is meshed",
+                                 "rule": "TIME-6", "budget_s": 120.0}]
     assert rec.settings["snappy_ranks"] == {"value": 8, "basis": "quota"}
     # outside a run the note lands in the process list, drained once
     det.drain_process_notes()
-    det.note_time_limit("engine_fallback", "no switch")
-    assert [n["where"] for n in det.drain_process_notes()] == ["engine_fallback"]
+    det.note_time_limit("cad_inspect", "inconclusive")
+    assert [n["where"] for n in det.drain_process_notes()] == ["cad_inspect"]
     assert det.drain_process_notes() == []
+
+
+def test_a_guard_trip_lands_in_its_run_beside_the_case_and_clears_for_the_replay(tmp_path):
+    with det.recording() as rec:
+        det.note_guard_trip("passage.measure", guard_s=240.0)
+        det.note_guard_trip("snappy", workspace=tmp_path, step="pass 2", guard_s=4000.0)
+    assert [t["where"] for t in rec.guard_trips] == ["passage.measure", "snappy"]
+    assert rec.time_limited == []
+    # only the one given a workspace is beside the case
+    assert det.guard_trips(tmp_path) == [{"where": "snappy", "rule": "TIME-3", "step": "pass 2",
+                                          "guard_s": 4000.0}]
+    # a trip file is the run's output, never part of the case it hashes
+    assert det.workspace_hashes(tmp_path)["files"] == 0
+    det.clear_guard_trips(tmp_path)
+    assert det.guard_trips(tmp_path) == []
+    # outside a run: the process list, drained once
+    det.drain_process_guard_trips()
+    det.note_guard_trip("engine_ladder", rule="TIME-4", guard_s=900.0)
+    assert [t["rule"] for t in det.drain_process_guard_trips()] == ["TIME-4"]
+    assert det.drain_process_guard_trips() == []
 
 
 def test_the_case_hash_sees_the_plan_and_ignores_what_the_run_writes(tmp_path):
@@ -90,5 +111,17 @@ def test_dispatch_pins_and_stamps_every_native_run(tmp_path, monkeypatch):
     st = out["reproducibility"]
     assert st["engine"] == "gmsh" and st["seeds"]["Mesh.RandomSeed"] == det.GMSH_RANDOM_SEED
     assert st["settings"]["snappy_ranks"]["value"] == 8
-    assert st["time_limited"][0]["decision"].startswith("the native run was stopped")
+    # a run stopped at its cap is a GUARD TRIP (docs/RULES.md TIME-3), never a decision
+    assert st["time_limited"] == []
+    assert st["guard_trips"] == [{"where": "gmsh", "rule": "TIME-3", "guard_s": 60.0}]
     assert json.loads((tmp_path / det.STAMP_FILE).read_text())["engine"] == "gmsh"
+    assert det.guard_trips(tmp_path) == st["guard_trips"]
+
+
+def test_a_runner_that_names_its_tripped_step_is_not_noted_twice(tmp_path):
+    def runner(ws, *, bashrc, timeout):
+        det.note_guard_trip("vmtk", step="ladder step 1", guard_s=float(timeout))
+        return {"rc": -1, "timed_out": True}
+
+    out = dispatch._run_stamped(runner, tmp_path, engine="vmtk", bashrc="", timeout=60)
+    assert [t.get("step") for t in out["reproducibility"]["guard_trips"]] == ["ladder step 1"]

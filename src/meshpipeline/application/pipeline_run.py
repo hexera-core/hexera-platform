@@ -1101,6 +1101,13 @@ async def _run_async(req: JobRequest) -> dict:
         # asked ONCE, here: the plan's system-failure exclusion and the status's timeout account
         # must read the same answer
         _timed_out = _pb.is_exhausted(_pipeline_deadline)
+        if _timed_out:
+            # the pipeline's own clock is a guard (docs/RULES.md TIME-5): it ends the run as
+            # ours, and is recorded as such
+            import meshpipeline.settings.runtime as _rtcfg
+            from meshpipeline.engines.determinism import note_guard_trip
+            note_guard_trip("pipeline", rule="TIME-5",
+                            guard_s=float(_rtcfg.PIPELINE_TOTAL_TIMEOUT_SECONDS))
         _review_plan = _rrp.plan_review(
             final_state, status=final_status,
             system_failure=_rrp.is_system_failure(api_failure=bool(api_failure),
