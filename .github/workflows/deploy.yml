@@ -1397,6 +1397,13 @@ jobs:
       STRIPE_PRICE_EXTRA_CREDITS: ${{ github.event.inputs.slug == '' && vars.STRIPE_PRICE_EXTRA_CREDITS || '' }}
       EXTRA_CREDITS_AMOUNT: ${{ github.event.inputs.slug == '' && vars.EXTRA_CREDITS_AMOUNT || '' }}
       CONSOLE_BASE_URL: ${{ github.event.inputs.slug == '' && vars.CONSOLE_BASE_URL || '' }}
+      # A PERSONAL ENVIRONMENT'S OWN API SETTINGS, stated on purpose so a deploy keeps them. The API
+      # service's environment is declarative (create-api-service.sh): a flag set on the live service
+      # by hand made the next deploy of that environment refuse to run. Repository variable
+      # API_EXTRA_ENV_<SLUG>, '|'-separated KEY=VALUE pairs, e.g. API_EXTRA_ENV_AREEN =
+      # CREDIT_GATE_ENABLED=false. Non-secret settings only: create-api-service.sh refuses any
+      # secret-bearing name here. Shared dev and prod (no slug) never read one.
+      API_EXTRA_ENV: ${{ github.event.inputs.slug != '' && vars[format('API_EXTRA_ENV_{0}', github.event.inputs.slug)] || '' }}
       # The CAD repair loop and its review, switched on only by the `cad_repair` input. Unticked, both
       # expand to the empty string, which every consumer treats as "not stated" (`-z`), so the
       # shipped defaults stay in force.
