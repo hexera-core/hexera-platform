@@ -113,7 +113,7 @@ opentelemetry-util-http==0.62b1
 orjson==3.11.9
 ormsgpack==1.12.2
 packaging==23.2
-pillow==12.3.0
+pillow==13.0.0
 pip==26.1.2
 platformdirs==4.11.0
 pluggy==1.6.0
