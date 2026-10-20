@@ -157,6 +157,11 @@ class FinalResult:
     # defaults to {}, a reader of an older record reads {}, and an older reader ignores a key it
     # does not know.
     repair_lineage: dict = field(default_factory=dict)
+    # IS THE MESH THE PART (engines/cad_fidelity.py): the delivered mesh's boundary against the CAD
+    # both ways, its fluid volume against the CAD's, each opening against its confirmed size, and
+    # the size note's reading of its physical size - every number, so a scoreboard can show them.
+    # {} when no mesh was measured. Added without a schema bump, like engine_ladder.
+    cad_fidelity: dict = field(default_factory=dict)
 
     optional_warnings: list[str] = field(default_factory=list)
     missing_outputs: list[str] = field(default_factory=list)
@@ -233,6 +238,8 @@ class FinalResult:
             delivered_types=list(d.get("delivered_types", [])),
             repair_lineage=(dict(d["repair_lineage"])
                             if isinstance(d.get("repair_lineage"), Mapping) else {}),
+            cad_fidelity=(dict(d["cad_fidelity"])
+                          if isinstance(d.get("cad_fidelity"), Mapping) else {}),
             optional_warnings=list(d.get("optional_warnings", [])),
             missing_outputs=list(d.get("missing_outputs", [])),
             finalized_at=d.get("finalized_at", ""),
@@ -626,6 +633,11 @@ def with_engine_ladder(fr: FinalResult, record: Mapping | None) -> FinalResult:
     return dataclasses.replace(fr, engine_ladder=dict(record or {}))
 
 
+def with_cad_fidelity(fr: FinalResult, record: Mapping | None) -> FinalResult:
+    import dataclasses
+    return dataclasses.replace(fr, cad_fidelity=dict(record or {}))
+
+
 def with_repair_lineage(fr: FinalResult, record: Mapping | None) -> FinalResult:
     """Record that this result was built from repaired bytes rather than the upload.
 
@@ -718,6 +730,8 @@ def _render_outcome(fr: FinalResult) -> str:
                          if kinds == {NARROW_PASSAGES}
                          else "Delivered with a concern about its size:"
                          if kinds == {PHYSICAL_SCALE}
+                         else "Delivered with a note on how closely it follows your CAD:"
+                         if kinds == {CAD_FIDELITY}
                          else "Delivered with stated deviations:")
             for c in fr.requirement_caveats:
                 kind = (c or {}).get("kind") or "domain_extent"
@@ -761,12 +775,14 @@ def _render_outcome(fr: FinalResult) -> str:
                     lines.extend(_narrow_passage_lines(c))
                 elif kind == PHYSICAL_SCALE:
                     lines.extend(_physical_scale_lines(c))
+                elif kind == CAD_FIDELITY:
+                    lines.extend(_cad_fidelity_lines(c))
                 else:
                     lines.append("  - a stated deviation of an unrecognized kind "
                                  "(see the result record)")
             # the narrow-gap note says everything it needs in its own lines; the closing speaks
             # for the rest
-            core = kinds - {NARROW_PASSAGES, PHYSICAL_SCALE}
+            core = kinds - {NARROW_PASSAGES, PHYSICAL_SCALE, CAD_FIDELITY}
             if core == {"domain_extent"}:
                 lines.append("Every mesh-quality check passed; only the margins above fell "
                              "short of the request. Rebuild with relaxed constraints if "
@@ -1159,6 +1175,78 @@ def review_concerns_caveat(outcome: RunOutcome) -> dict | None:
     if not items:
         return None
     return {"kind": REVIEW_CONCERNS, "items": items}
+
+
+#: The caveat kind a delivery carries when a fidelity measure missed its bar (engines/cad_fidelity.py):
+#: a sound mesh whose boundary sits off the CAD in places, misses part of its surface, holds a
+#: different volume, or has an opening off its confirmed size - by less than makes it the wrong part.
+CAD_FIDELITY = "cad_fidelity"
+
+
+def cad_fidelity_caveat(outcome: RunOutcome) -> dict | None:
+    """THE one predicate for the fidelity note, read at terminal assembly from the delivered mesh's
+    own fidelity record (the gate wrote it into the manifest). None unless the executor validated
+    the mesh with no gate failed and at least one measure is a concern."""
+    if not outcome.executor_success or outcome.failed_gate:
+        return None
+    q = outcome.quality if isinstance(outcome.quality, Mapping) else {}
+    rec = q.get("cad_fidelity")
+    if not isinstance(rec, Mapping):
+        return None
+    from meshpipeline.engines.cad_fidelity import CONCERN, REBUILD, concerns
+    raw = rec.get("verdicts")
+    verdicts: Mapping = raw if isinstance(raw, Mapping) else {}
+    if not any(v in (CONCERN, REBUILD) for v in verdicts.values()):
+        return None
+    items = concerns(rec)
+    if not items:
+        return None
+    return {"kind": CAD_FIDELITY, "items": items,
+            "verdicts": {k: v for k, v in verdicts.items() if v in (CONCERN, REBUILD)}}
+
+
+def _cad_fidelity_lines(c: Mapping) -> list[str]:
+    lines = [f"  - {str(i).strip()}" for i in (c.get("items") or []) if str(i).strip()]
+    if lines:
+        lines.append("    The mesh is sound and every boundary you named is there. If these spots "
+                     "matter for your analysis, ask for a finer mesh there.")
+    return lines
+
+
+def _size_was_judged(outcome: RunOutcome) -> bool:
+    """Whether the size note had a rule to judge this mesh by - the same reading
+    physical_scale_caveat makes: the request's word for the part, else its shape and flow."""
+    from meshpipeline.contracts.unit_plausibility import expected_from_words, shape_kind
+    sides = [abs(float(v)) for v in (outcome.body_size_m or ()) if isinstance(v, (int, float))]
+    if len(sides) != 3:
+        return False
+    return bool(expected_from_words(outcome.words)
+                or shape_kind(outcome.flow_topology, sides, grounded=outcome.grounded))
+
+
+def cad_fidelity_record(outcome: RunOutcome, *, size_caveat: Mapping | None = None) -> dict:
+    """The numbers the result record carries (FinalResult.cad_fidelity): the fidelity measures of the
+    mesh the run ends with, and the size note's reading of its physical size."""
+    q = outcome.quality if isinstance(outcome.quality, Mapping) else {}
+    rec = q.get("cad_fidelity")
+    out = dict(rec) if isinstance(rec, Mapping) else {}
+    if not outcome.executor_success and not out:
+        return {}
+    sides = [float(v) for v in (outcome.body_size_m or ()) if isinstance(v, (int, float))]
+    size: dict = {"longest_m": max(sides) if len(sides) == 3 else None}
+    if size_caveat:
+        size.update(verdict="concern", what=size_caveat.get("what"), too=size_caveat.get("too"),
+                    other_unit=size_caveat.get("other_unit"),
+                    other_longest_m=size_caveat.get("other_longest_m"))
+    elif (size["longest_m"] is not None and outcome.executor_success and not outcome.failed_gate
+          and _size_was_judged(outcome)):
+        size["verdict"] = "pass"
+    else:
+        # no rule knows what this part should measure (a structural part the request names
+        # nothing for): its size was not checked, so it is not reported as passing
+        size["verdict"] = "unmeasured"
+    out["size"] = size
+    return out
 
 
 #: The caveat kind a delivery carries when the resolution floor set narrow SIDE passages aside:
