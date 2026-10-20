@@ -57,9 +57,12 @@ def test_driver_produces_deck_msh_and_quality(meshed_ws):
     assert q["cells"] > 0 and q["nodes"] > q["cells"] / 4
     assert q["element_order"] == 2
     assert q["min_sicn"] > 0.0 and not q["fatal"]
-    # the contracted group is a named ELSET (+NSET) in the Abaqus deck
+    # the contracted group is a named element-face SURFACE (+NSET) in the Abaqus deck, beside
+    # Face_k for every CAD face; the deck holds no flat 2D elements
     deck = (meshed_ws / "mesh.inp").read_text()
-    assert "ELSET=fixed_base" in deck
+    assert "*SURFACE, NAME=fixed_base, TYPE=ELEMENT" in deck and "NSET=fixed_base" in deck
+    assert "*SURFACE, NAME=Face_1, TYPE=ELEMENT" in deck
+    assert "TYPE=CPS" not in deck.upper()
 
 
 def test_finalize_writes_the_uniform_manifest(meshed_ws):

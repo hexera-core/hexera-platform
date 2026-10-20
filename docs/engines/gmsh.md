@@ -37,6 +37,29 @@ The driver runs as a module of the installed distribution rather than as a loose
 mesh image and the wheel cannot drift apart. It reads the STEP solid, applies the authored spec,
 meshes, and writes the deck plus the optional alternative formats.
 
+## The deck (`mesh.inp`)
+
+The deck is written by `engines/gmsh/abaqus_deck.py`, not by gmsh's own Abaqus writer. gmsh's
+writer put every named face in the file as flat 2D elements (CPS6) with no section, and
+CalculiX refused the file (`gen3delem`). The deck now holds:
+
+- the 3D elements only (`C3D10`, or `C3D4` for first order), all in `ELSET=solid`;
+- every CAD face as `Face_1 ... Face_N`: an element-face `*SURFACE` and an `*NSET` of the same
+  name, so supports and loads can be put on any face in the user's own solver;
+- each group the plan named (`fixed`, `load`, the default `free`, ...) as an extra surface and
+  node set over the same faces;
+- a face's own name from the CAD file, where the STEP gives one (`cad/face_names.py`), as one more
+  surface and node set beside its `Face_k`.
+
+The header lists which `Face_k` is which CAD face and states the length unit (metres). The
+Nastran `mesh.bdf`, when asked for, holds the volume elements only; Nastran face sets come with
+the Nastran writer (FEA build step 6).
+
+Tested for real in CalculiX 2.21 (static and modal solves on the named faces, textbook answers in
+`tests/unit/engines/test_gmsh_fea_accuracy.py`). Abaqus reads the same keyword subset, but the
+deck has **not yet been tested in the real Abaqus solver**: it is checked by file readers (meshio,
+and an input-rules check in `tests/unit/engines/test_gmsh_fea_deck.py`).
+
 ## Authoring controls
 
 | Parameter | Meaning |

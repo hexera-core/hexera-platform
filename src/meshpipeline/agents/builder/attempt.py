@@ -27,6 +27,7 @@ CARRY_FILES = (
     "attempt_log.txt", "input.stl", "geom.stl", "geom.fms",
     "geom_box.json",
     "geometry.step",      # the staged CAD solid (engines that mesh the BRep directly)
+    "cad_face_names.json",  # the names the CAD gave single faces (cad/face_names.py)
     # vmtk: the engine-opened lumen and its staging facts (engines/vmtk/lumen_staging.py)
     "lumen_open.vtp", "lumen.vtp", "vmtk_staging.json",
     ".last_plan.json",    # planner memory across an across-node retry
