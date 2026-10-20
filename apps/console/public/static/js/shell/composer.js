@@ -37,6 +37,9 @@ let deps = {
   // the open engine question's choice (every engine that can take the file, with its fit), and
   // the function that sends the user's pick
   engineChoice() {},
+  // the buttons under an application question (what the mesh is for, an FEA part's analysis
+  // type), and the function that sends the picked answer
+  choices() {},
 };
 export function configureComposer(d) { deps = { ...deps, ...d }; }
 
@@ -148,8 +151,9 @@ let _checkState = null;
 // what the stage waits on: the openings of a part, or the detail level of a thermal model
 let _checkMode = "";
 function stageWait() {
-  return _checkMode === "thermal" ? "Check the thermal model beside this chat and press Mesh this model…"
-    : "Check the openings beside this chat and press Proceed…";
+  if (_checkMode === "thermal") return "Check the thermal model beside this chat and press Mesh this model…";
+  if (_checkMode === "fea") return "Check your part and its unit beside this chat and press Proceed…";
+  return "Check the openings beside this chat and press Proceed…";
 }
 function holdInput(placeholder, ms) {
   _held = true; disableInput(); setPlaceholder(placeholder);
@@ -205,6 +209,7 @@ async function watchGeometryCheck(sessionId) {
       if (reply.continued_with) deps.chat("user", reply.continued_with);
       if (reply.next.reply) deps.chat("assistant", reply.next.reply);
       deps.engineChoice(reply.next.engine_choice || null, sendText);
+      deps.choices(reply.next.choices || [], sendText);
       deps.brief(reply.next.brief);
       if (reply.next.done && reply.next.job_id) { disableInput(); deps.onJobStarted(reply.next.job_id); }
     }
@@ -215,7 +220,7 @@ async function watchGeometryCheck(sessionId) {
     let d = null;
     try { d = await getGeometryCheck(sessionId); } catch { /* transient; try again */ }
     const status = d && d.status;
-    if (d) _checkMode = d.check_mode || "";
+    if (d) _checkMode = d.check_mode || (d.route === "fea" ? "fea" : "");
     if (d) {
       misses = 0; retryAs = d.retry || null;
       deps.checkProgress(d.progress || null, { retry: rowRetry });
@@ -260,7 +265,10 @@ async function watchGeometryCheck(sessionId) {
       if (isHeld()) holdInput(stageWait(), STAGE_WAIT_MS);
       if (!d.retry) return;
     } else if (status === "scouted") {
-      if (d.skin && !stage && !stageFailed) {
+      // THE STAGE OPENS ONCE THE PURPOSE IS KNOWN (`route`: what the user said the mesh is for):
+      // an FEA part gets its own stage, never the flow form with its stickers. A thermal model's
+      // file says it all by itself, so it opens at once.
+      if (d.skin && !stage && !stageFailed && (d.thermal || d.route)) {
         stage = await deps.geometryCheck(sessionId, d, confirmFn, retryFn);   // null when the stage cannot draw
         if (stage === null) stageFailed = true;                               // the card stands in
       }
@@ -332,6 +340,7 @@ async function sendText(txt) {
     const d = await sendMessage(sessionId, txt);
     deps.chat("assistant", d.reply);
     deps.engineChoice(d.engine_choice || null, sendText);
+    deps.choices(d.choices || [], sendText);
     deps.brief(d.brief);
     if (d.done && d.job_id) deps.onJobStarted(d.job_id);
     else if (String(d.reply || "").startsWith(DRAWING_PREFIX)) holdForDrawing();

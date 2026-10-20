@@ -192,6 +192,8 @@ configureComposer({
   chat: (role, text) => Stage.chat(role, text),
   brief: (b) => Stage.brief(b),
   engineChoice: (c, pick) => Stage.engineChoice(c, pick),
+  // the buttons under an application question: what the mesh is for, an FEA part's analysis type
+  choices: (list, pick) => Stage.choices(list, pick),
   supportedCopy: (t) => Stage.setSupportedCopy(t),
   onJobStarted: (id) => attachJob(id),
   // THE GEOMETRY CHECK TAKES THE STAGE, the way a delivered mesh does: the part in 3D with its

@@ -1109,6 +1109,16 @@ def _name(*, session_id: str, owner_id: str, purpose_text: str, interpretation: 
         landed = store_status(session_id, STATUS_READY, RETRY_NAMING, **result)
         logger.info("geometry naming %s - session=%s (a thermal model names itself)", landed["status"], session_id)
         return landed
+    if _is_fea(purpose_text):
+        # AN FEA PART has no openings, no flow and no far field to name: the stage shows the part,
+        # its size and unit, its bodies and the clean check, all measured. No model is asked.
+        proposal = _proposal(facts, {})
+        result = {k: v for k, v in stored.items() if k not in _STAMPED_KEYS + _FAILURE_KEYS}
+        result.update(named=True, facts=facts, vision={}, proposal=proposal,
+                      purpose_text=purpose_text[:2000], naming_seconds=round(time.time() - started, 1))
+        landed = store_status(session_id, STATUS_READY, RETRY_NAMING, **result)
+        logger.info("geometry naming %s - session=%s (an FEA part: nothing to name)", landed["status"], session_id)
+        return landed
 
     with tempfile.TemporaryDirectory(prefix=f"geometry_naming_{session_id[:8]}_") as tmp:
         store = get_object_store()
@@ -1744,6 +1754,18 @@ def unit_inference(proposal: dict, facts: dict | None = None, words: str = "") -
     fmt = str((facts or {}).get("source_format") or "").lower().lstrip(".")
     inferred = infer_unit(longest_file, expected=expected, shape=shape, format_unit=FORMAT_UNIT.get(fmt))
     return inferred.as_dict() if inferred is not None else None
+
+
+def _is_fea(purpose_text: str) -> bool:
+    """Whether the user's words send the part down the FEA path (application/purpose_map). The
+    latest answer speaks first when it settles the purpose alone - it may be the answer to the
+    purpose question - else everything said, read together, as the stage reads it."""
+    from meshpipeline.application.purpose_map import ROUTE_FEA, read_purpose
+
+    lines = [ln for ln in str(purpose_text or "").splitlines() if ln.strip()]
+    last = read_purpose(lines[-1]) if lines else None
+    reading = last if last is not None and last.settled else read_purpose(purpose_text)
+    return reading.route == ROUTE_FEA
 
 
 def _is_thermal(facts: dict | None) -> bool:

@@ -100,10 +100,18 @@ THERMAL_WORDS_NUDGE = (
     "electronics-cooling engineer's words - parts, layers, power, room air, the air box, the "
     "detail level - and ask nothing the file or the panel already settled."
 )
+#: An FEA part's reply that proposed a load, a support or a material the user never said
+#: (application/fea_wording).
+FEA_INVENTED_NUDGE = (
+    "[SYSTEM] Your reply was not sent: this is an FEA part, and the reply proposed a load, a "
+    "support or a material the user never stated. Version 1 names every face of the part, so the "
+    "user sets supports, loads and materials in their own solver. Write it again without them: "
+    "ask only what is still open (the analysis type, if it is), and record only what the user said."
+)
 #: Every user-role line the application writes into a turn. None of them is the user's words, and
 #: the transcript marks them so a reader can tell.
 SYNTHETIC_NUDGES = (BUDGET_NUDGE, REPEAT_NUDGE, DEFAULT_NUDGE, ENGINE_SETTLED_NUDGE,
-                    ENGINE_UNSETTLED_NUDGE, GARBLED_NUDGE, THERMAL_WORDS_NUDGE)
+                    ENGINE_UNSETTLED_NUDGE, GARBLED_NUDGE, THERMAL_WORDS_NUDGE, FEA_INVENTED_NUDGE)
 
 # How a user hands a question back. Phrase-level, like the recommendation gate, and deliberately
 # short: a false negative leaves the model to read the reply itself, while a false positive tells

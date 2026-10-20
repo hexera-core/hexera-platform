@@ -1,0 +1,186 @@
+# Responsibility: Hold the purpose-mapping phrase set: what a user may answer to "what are you
+# meshing this for?", and where each answer should go.
+# Boundaries: data only. tests/unit/application/test_purpose_map.py scores application/purpose_map
+# against it; devtools/quality/purpose_map_score.py prints the table.
+#
+# Labels (the route the answer should take, FEA design section 5 and the approved thermal split):
+#   flow         - CFD, through or around the part (the geometry check confirms which, on its stage)
+#   fea          - structural FEA (static, modal, buckling, and the "coming soon" kinds)
+#   fea_heat     - heat in a solid part: conduction, temperature in the part, thermal stress
+#                  (the FEA path; "coming soon" in V1, meshed as for static stress)
+#   electronics  - electronics cooling (the electronics-thermal flow)
+#   ask          - unclear: the one short two-button question is the right answer
+#
+# Origins:
+#   audit60  - the 60 phrases of the FEA audit (2026-10-19, ~/fea_audit/purpose_mapping.md), with the
+#              audit's labels mapped to routes. Two changes, said here so nobody has to find them:
+#              "thermal stress", "thermal expansion of this part" and "thermal-structural" were
+#              "structural" and are "fea_heat" now (the approved split puts thermal-stress words
+#              there; both are the FEA path), and "CFD" and "OpenFOAM" were "ambiguous" and are
+#              "flow" now (the geometry check asks through-or-around on its stage).
+#   dev      - 45 new phrases the rules were written against.
+#   holdout  - 45 new phrases written at the same time, scored once at the end, never tuned on.
+from __future__ import annotations
+
+AUDIT60 = [
+    ("stress testing", "fea"),
+    ("will this break?", "fea"),
+    ("deformation under load", "fea"),
+    ("FEA", "fea"),
+    ("structural analysis", "fea"),
+    ("vibration", "fea"),
+    ("modal analysis", "fea"),
+    ("natural frequencies of this part", "fea"),
+    ("crash simulation", "fea"),
+    ("drop test", "fea"),
+    ("fatigue life", "fea"),
+    ("buckling", "fea"),
+    ("static stress, steel", "fea"),
+    ("Abaqus", "fea"),
+    ("I want to check the deflection of this beam", "fea"),
+    ("how much load can this bracket take", "fea"),
+    ("strength check", "fea"),
+    ("von Mises stress", "fea"),
+    ("impact analysis", "fea"),
+    ("nonlinear contact analysis", "fea"),
+    ("thermal", "ask"),
+    ("heat sink", "electronics"),
+    ("how hot does it get?", "ask"),
+    ("thermal stress", "fea_heat"),
+    ("thermal expansion of this part", "fea_heat"),
+    ("heat conduction through this solid", "fea_heat"),
+    ("electronics cooling", "electronics"),
+    ("cooling of a chip with a fan", "electronics"),
+    ("steady-state temperature in this block, one face held at 100 C", "fea_heat"),
+    ("conjugate heat transfer", "electronics"),
+    ("airflow over it", "flow"),
+    ("flow through the pipe", "flow"),
+    ("pressure drop", "flow"),
+    ("aero", "flow"),
+    ("CFD", "flow"),
+    ("drag on this part at 30 m/s", "flow"),
+    ("wind load on this", "ask"),
+    ("water flowing through it", "flow"),
+    ("external aerodynamics", "flow"),
+    ("lift and drag", "flow"),
+    ("OpenFOAM", "flow"),
+    ("simulation", "ask"),
+    ("analysis", "ask"),
+    ("mesh it", "ask"),
+    ("I need a mesh", "ask"),
+    ("for ANSYS", "ask"),
+    ("fluid-structure interaction", "ask"),
+    ("stress from the pressure of the water flowing inside", "fea"),
+    ("pressure loading on the walls", "fea"),
+    ("will it overheat and crack?", "ask"),
+    ("vibration from the airflow", "ask"),
+    ("test it", "ask"),
+    ("strength and cooling", "ask"),
+    ("how strong is it", "fea"),
+    ("is it stiff enough", "fea"),
+    ("thermal-structural", "fea_heat"),
+    ("acoustics", "ask"),
+    ("heat transfer", "ask"),
+    ("temperature distribution", "ask"),
+    ("bolt preload check", "fea"),
+]
+
+DEV = [
+    ("check the max stress when 500 N is applied at the tip", "fea"),
+    ("find the first 10 mode shapes", "fea"),
+    ("what is the safety factor of this hook", "fea"),
+    ("Nastran SOL 103", "fea"),
+    ("bending stiffness of the beam", "fea"),
+    ("does this bracket survive a 50 g shock", "fea"),
+    ("tensile test simulation", "fea"),
+    ("I want to do FEM on this housing", "fea"),
+    ("compute deflection under self weight", "fea"),
+    ("contact pressure between the gear teeth", "fea"),
+    ("crashworthiness in LS-DYNA", "fea"),
+    ("load bearing capacity", "fea"),
+    ("check the strain in the rubber seal", "fea"),
+    ("pressure vessel burst check", "fea"),
+    ("stress anaylsis", "fea"),
+    ("air flow around a car at 120 km/h", "flow"),
+    ("pressure loss through the valve", "flow"),
+    ("wind tunnel test of the wing", "flow"),
+    ("flow rate through the nozzle", "flow"),
+    ("Fluent mesh", "flow"),
+    ("y+ of 1 on the blade", "flow"),
+    ("simulate the airflow in the room", "flow"),
+    ("cavitation in the propeller", "flow"),
+    ("external aero at Mach 0.8", "flow"),
+    ("how fast does the air move through the filter", "flow"),
+    ("blood flow in the artery", "flow"),
+    ("cooling the PCB with a fan", "electronics"),
+    ("thermal management of the battery enclosure", "electronics"),
+    ("junction temperature of the power module", "electronics"),
+    ("Icepak model", "electronics"),
+    ("forced convection over the board", "electronics"),
+    ("liquid cooling plate for the inverter", "electronics"),
+    ("conduction through the bracket", "fea_heat"),
+    ("thermal expansion stresses in the pipe flange", "fea_heat"),
+    ("steady heat conduction in the solid", "fea_heat"),
+    ("temperature distribution in the part", "fea_heat"),
+    ("thermal fatigue", "fea_heat"),
+    ("run a simulation", "ask"),
+    ("prepare it for analysis", "ask"),
+    ("heat", "ask"),
+    ("it gets hot", "ask"),
+    ("multiphysics", "ask"),
+    ("hello", "ask"),
+    ("flutter of the wing", "ask"),
+    ("help me with this part", "ask"),
+]
+
+HOLDOUT = [
+    ("I need to run a static structural analysis in Ansys Mechanical", "fea"),
+    ("linear buckling of this column", "fea"),
+    ("stress concentration around the hole", "fea"),
+    ("calculix static", "fea"),
+    ("will the shaft yield under torque", "fea"),
+    ("fatigue analysis of the weld", "fea"),
+    ("check if the frame deforms too much", "fea"),
+    ("mesh for solid mechanics", "fea"),
+    ("eigenfrequency analysis", "fea"),
+    ("topology optimisation", "fea"),
+    ("drop test from 1.5 m", "fea"),
+    ("harmonic response of the plate", "fea"),
+    ("random vibration for the launch", "fea"),
+    ("is the wall thick enough to hold 10 bar", "fea"),
+    ("structural mesh for abaqus please, quadratic tets", "fea"),
+    ("how much will it bend", "fea"),
+    ("internal flow in the manifold", "flow"),
+    ("CFD of the pump impeller", "flow"),
+    ("aerodynamic drag of the cyclist helmet", "flow"),
+    ("mixing in the tank", "flow"),
+    ("turbulent flow in the duct, k-omega SST", "flow"),
+    ("the water goes in here and out there", "flow"),
+    ("downforce on the rear wing", "flow"),
+    ("hydrodynamic resistance of the hull", "flow"),
+    ("gas flow in the combustor", "flow"),
+    ("star-ccm+ polyhedral mesh", "flow"),
+    ("will the CPU overheat", "electronics"),
+    ("heatsink performance with 20 W", "electronics"),
+    ("air cooling for the server rack", "electronics"),
+    ("Flotherm", "electronics"),
+    ("LED lamp cooling", "electronics"),
+    ("how warm do the chips get in the case", "electronics"),
+    ("temperature inside the part when one end is hot", "fea_heat"),
+    ("thermal strain", "fea_heat"),
+    ("thermo-mechanical analysis", "fea_heat"),
+    ("heat flowing through the wall of the block", "fea_heat"),
+    ("temperature rise inside the brake disc", "fea_heat"),
+    ("can you mesh this for me", "ask"),
+    ("I'm not sure yet", "ask"),
+    ("thermal analysis", "ask"),
+    ("for COMSOL", "ask"),
+    ("check the design", "ask"),
+    ("temperature", "ask"),
+    ("what happens in a storm", "ask"),
+    ("performance", "ask"),
+]
+
+#: (phrase, label, origin) for the whole set.
+PHRASES = ([(p, lab, "audit60") for p, lab in AUDIT60] + [(p, lab, "dev") for p, lab in DEV]
+           + [(p, lab, "holdout") for p, lab in HOLDOUT])

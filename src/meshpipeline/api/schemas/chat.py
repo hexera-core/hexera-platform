@@ -32,3 +32,7 @@ class ChatResponse(BaseModel):
     # take the file, with its measured fit and reason (agents/intake/measured_choice.choice_payload).
     # Present only while the question is open; the user's pick is sent back as an ordinary message.
     engine_choice: dict[str, Any] | None = None
+    # THE BUTTONS under an application question (application/purpose_map.choices_for): what the
+    # mesh is for, when the words did not say, and an FEA part's analysis type. Each is
+    # {label, send, soon}; a click sends `send` as an ordinary message. Empty for any other reply.
+    choices: list[dict[str, Any]] = []
