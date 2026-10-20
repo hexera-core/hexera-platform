@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 import meshpipeline.engines.snappy.settings as scfg
 import meshpipeline.settings.policy as polcfg
-from meshpipeline.engines.gap_sizing import accepted_fewer
+from meshpipeline.engines.gap_sizing import LIMITED, OVER_LIMIT, accepted_fewer
 from meshpipeline.engines.ground_contact import describe as describe_contact
 from meshpipeline.engines.ground_plane import VERTICAL_AXIS, ground_patch_name
 from meshpipeline.engines.port_binding import BindError as _PortBindError
@@ -1990,7 +1990,7 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
         if _gap.regions or _gap.stops:
             await publish.anote(
                 _gap.words(_near_cell)
-                + ("" if not _gap.stops else
+                + ("" if _gap.status not in (OVER_LIMIT, LIMITED) else
                    ". Options: " + " ".join(f"({i}) {o}" for i, o in
                                             enumerate(_gap.options(), 1))),
                 op_id=f"internal:narrow-passage:{attempt}")

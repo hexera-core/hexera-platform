@@ -597,7 +597,9 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
             # a case re-rendered within the limit drops the refusal an earlier render recorded
             (ws / PREFLIGHT_RECORD).unlink(missing_ok=True)
         _narrow = list(_gap.regions)
-        _narrow_note = _gap.words(wall_cell) if _gap.status in (GS.ACCEPTED_FEWER,) else ""
+        _narrow_note = (_gap.words(wall_cell) + (". Options: " + " ".join(
+            f"({i}) {o}" for i, o in enumerate(_gap.options(), 1)) if _gap.status == GS.LIMITED else "")
+            if _gap.status in (GS.ACCEPTED_FEWER, GS.LIMITED) else "")
     # the builder's own regions stop at the ceiling; a narrow passage's box is sized for it
     _blocks = (_object_refinement_blocks(strategy.get("features") or [], cell_floor=_floor)
                + _object_refinement_blocks(

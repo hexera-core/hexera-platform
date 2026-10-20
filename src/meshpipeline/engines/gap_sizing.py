@@ -28,11 +28,17 @@ lab sweep). Now the cost of meeting the rule everywhere is worked out BEFORE mes
   * it fits the plan's budget - meshed as planned;
   * it fits the compute limit (CELL_HARD_LIMIT, the only cell-count gate) - the run's budget is
     raised to what the rule needs, and the run says so;
-  * it does not fit even the limit - the run is not started. The user is told, in plain words,
-    what it would take and what they can choose instead (GapPlan.options): accept fewer cells
-    across the named narrowest spots (the most the limit affords), a larger cell limit, or a
-    smaller piece of the geometry. Choosing the first (engine param `narrow_gaps` = within_limit)
-    meshes it that way, and the gate judges it against what was accepted.
+  * it does not fit even the limit - the narrow spots are refined to as many cells across as
+    the limit holds, and the run says so with the user's choices (GapPlan.options): accept fewer
+    cells across the named narrowest spots, a larger cell limit, or a smaller piece of the
+    geometry. The mesh is still held to the gate's full floor: the estimate is cautious (it
+    prices every narrow spot at the rule, where the gate reads the narrowest wall's 5th
+    percentile), and a mesh it thought short has cleared the gate (a shell-side heat exchanger:
+    estimate 11.9 across at the limit, mesh 6.5 M cells, passed). Refusing it before meshing
+    would turn a delivered file into a failed one. Choosing the first option (engine param
+    `narrow_gaps` = within_limit) holds the mesh to the share of what was accepted instead.
+  * only when not even MIN_ACCEPTED_CELLS across fits the limit is the run not started: no mesh
+    of it could carry the flow, and the user is told why and what they can choose.
 The same arithmetic, on the geometry check's own chords (cad/shape_traits `gap_cells`), is what
 the user sees at approval (estimate_from_traits), so the limit is met or a choice is made before
 any mesh is paid for.
@@ -97,6 +103,8 @@ FITS = "fits"
 RAISED = "raised"
 OVER_LIMIT = "over_limit"
 ACCEPTED_FEWER = "accepted_fewer"
+#: over the limit, nobody chose fewer: refined to what the limit holds, judged at the full floor
+LIMITED = "limited"
 NO_NARROW = "none"
 
 
@@ -200,7 +208,7 @@ class GapPlan:
 
     def options(self) -> list[str]:
         """The user's choices when the limit cannot hold the rule, in plain words with numbers."""
-        if self.status not in (OVER_LIMIT, ACCEPTED_FEWER):
+        if self.status not in (OVER_LIMIT, ACCEPTED_FEWER, LIMITED):
             return []
         out = []
         where = (f", for example at ({', '.join(f'{v * 1000:.0f}' for v in self.where_m)}) mm"
@@ -228,7 +236,7 @@ class GapPlan:
         if auto:
             head = (f"Gaps between parts - {self.spots} region(s) down to "
                     f"{_mm(self.narrowest_m or 0.0)} across")
-            if self.status == ACCEPTED_FEWER:
+            if self.status in (ACCEPTED_FEWER, LIMITED):
                 return (f"{head}; {self.rule:.3g} cells across them would need about "
                         f"{_cells(self.needed * BUDGET_HEADROOM)} cells, over the "
                         f"{_cells(self.limit)} limit, so they are refined to about "
@@ -254,6 +262,12 @@ class GapPlan:
             return (f"{head}; {self.rule:.3g} cells across them would need about "
                     f"{_cells(self.needed * BUDGET_HEADROOM)} cells, over the {_cells(self.limit)} "
                     f"limit, so as you chose they are refined to about {self.target:.0f} across")
+        if self.status == LIMITED:
+            return (f"{head}; {self.rule:.3g} cells across every one of them would need about "
+                    f"{_cells(self.needed * BUDGET_HEADROOM)} cells, over the {_cells(self.limit)} "
+                    f"limit, so they are refined to about {self.target:.0f} across, as many as the "
+                    f"limit holds; the mesh is still checked for {GAP_FLOOR_CELLS:.0f} cells across "
+                    "its narrowest wall")
         return (f"{head}; {self.rule:.3g} cells across every one of them needs about "
                 f"{_cells(self.needed * BUDGET_HEADROOM)} cells, more than the {_cells(self.limit)} "
                 "one job may build - not meshed")
@@ -380,12 +394,13 @@ def plan_gaps(regions_at, *, cell_m: float, budget: int, limit: int,
                     best, lo = (mid, rs, c), mid
                 else:
                     hi = mid
-    # (anything under the rule's count reads under the gate's floor at the narrowest wall - 13
-    # nominal reads about 12 there - so fewer across is always the user's choice, never ours)
+    # (a LOWER FLOOR is always the user's choice, never ours: unchosen, the mesh is refined to
+    # what the limit holds and still held to the full floor - the gate measures, the estimate is
+    # cautious, and a refusal before meshing would fail files that deliver)
     aff, aff_cost = (best[0], best[2]) if best is not None else (None, None)
-    if accept_fewer and best is not None:
-        return GapPlan(ACCEPTED_FEWER, best[1], best[0], best[2], budget=limit, affordable=aff,
-                       affordable_cost=aff_cost, **common)
+    if best is not None:
+        return GapPlan(ACCEPTED_FEWER if accept_fewer else LIMITED, best[1], best[0], best[2],
+                       budget=limit, affordable=aff, affordable_cost=aff_cost, **common)
     return GapPlan(OVER_LIMIT, [], float(target), 0.0, budget=budget, affordable=aff,
                    affordable_cost=aff_cost, **common)
 
@@ -424,10 +439,12 @@ class GapEstimate:
                     "one job.")
         return (f"Cell sizing: {where}. {GAP_CELLS_ACROSS:.0f} cells across every gap needs at "
                 f"least about {_cells(self.cells * BUDGET_HEADROOM)} cells, more than the "
-                f"{_cells(self.limit)} one job may build. Before meshing, pick one: (1) accept "
+                f"{_cells(self.limit)} one job may build. You can pick one: (1) accept "
                 f"fewer cells across the narrowest spots - about {max(self.affordable, 1):.0f} or "
                 "more, as many as the limit holds, with the spots named in the result; (2) have "
-                "the cell limit raised; (3) mesh a smaller piece of the geometry.")
+                "the cell limit raised; (3) mesh a smaller piece of the geometry. With no pick, "
+                "the narrowest spots get as many cells across as the limit holds, and the mesh "
+                f"is still checked for {GAP_FLOOR_CELLS:.0f} across its narrowest wall.")
 
     def guidance(self) -> str:
         """What the intake model is told to do with the user's pick."""
@@ -435,8 +452,8 @@ class GapEstimate:
             return ""
         return (f"If the user picks (1), submit engine_params {NARROW_GAPS_PARAM}="
                 f"'{WITHIN_LIMIT}'. Otherwise leave {NARROW_GAPS_PARAM} out: the run then checks "
-                "the limit again before meshing and, if it still cannot hold the rule, stops with "
-                "the same choices instead of meshing.")
+                "the limit again before meshing and, if it still cannot hold the rule, refines the "
+                "narrowest spots as far as the limit holds and holds the mesh to the full floor.")
 
 
 def estimate_from_traits(traits, *, limit: int | None = None) -> GapEstimate | None:
@@ -459,7 +476,7 @@ def estimate_from_traits(traits, *, limit: int | None = None) -> GapEstimate | N
 
 
 __all__ = ["ACCEPTED_FEWER", "BUDGET_HEADROOM", "CEILING_SLACK", "FITS", "FLOOR_SHARE", "FULL_RULE", "GAP_CELLS_ACROSS",
-           "GAP_FLOOR_CELLS", "GAP_RECORD", "MIN_ACCEPTED_CELLS", "NARROW_GAPS_PARAM", "NARROW_GAPS_PARAM_SPEC", "NO_NARROW",
+           "GAP_FLOOR_CELLS", "GAP_RECORD", "LIMITED", "MIN_ACCEPTED_CELLS", "NARROW_GAPS_PARAM", "NARROW_GAPS_PARAM_SPEC", "NO_NARROW",
            "OVER_LIMIT", "PLAN_BOX_SHARE", "RAISED", "WITHIN_LIMIT", "GapEstimate", "GapPlan", "accepted_floor",
            "accepted_fewer", "box_cost", "estimate_from_traits", "fill_cells", "plan_gaps",
            "read_record"]

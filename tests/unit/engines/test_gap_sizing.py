@@ -82,20 +82,39 @@ def test_over_the_budget_but_within_the_limit_the_budget_is_raised_never_the_spo
     assert "cell budget was raised" in plan.words() and "before meshing" in plan.words()
 
 
-def test_over_the_limit_the_run_stops_before_meshing_with_the_users_options():
+def test_over_the_limit_it_meshes_what_the_limit_holds_and_still_offers_the_choices():
+    # the estimate is cautious: a refusal before meshing would fail files the gate passes (a
+    # shell-side heat exchanger read 11.9 across at the limit and its plain mesh passed). So the
+    # narrow spots are refined to what the limit holds and the mesh is held to the FULL floor.
     pts, r, areas, cell = _tree()
     at = _regions(pts, r, areas, cell)
     cost = G.box_cost(at(13.0), cell)
     base = 1000.0
     plan = G.plan_gaps(at, cell_m=cell, budget=int(base), limit=int(base + 0.3 * cost),
                        base_cells=base)
-    assert plan.status == G.OVER_LIMIT and plan.stops and plan.regions == []
+    assert plan.status == G.LIMITED and plan.regions and not plan.stops
     assert plan.affordable is not None and G.MIN_ACCEPTED_CELLS <= plan.affordable < 13
+    assert plan.target == pytest.approx(plan.affordable) and plan.budget == plan.limit
+    assert base + G.box_cost(plan.regions, cell) * G.BUDGET_HEADROOM <= plan.limit + 1
+    assert plan.floor() == G.GAP_FLOOR_CELLS          # not lowered: nobody chose fewer
+    assert "as many as the limit holds" in plan.words() and "still checked for 12" in plan.words()
     opts = plan.options()
     assert len(opts) == 3
     assert f"about {plan.affordable:.0f} cells across" in opts[0]
     assert "limit of one job raised" in opts[1]
     assert "smaller piece" in opts[2]
+
+
+def test_when_not_even_the_fewest_cells_fit_the_run_stops_before_meshing_with_the_choices():
+    pts, r, areas, cell = _tree()
+    at = _regions(pts, r, areas, cell)
+    base = 1000.0
+    # a limit the base mesh alone fills: no count of cells across the narrow spots fits
+    plan = G.plan_gaps(at, cell_m=cell, budget=int(base), limit=int(base), base_cells=base)
+    assert plan.status == G.OVER_LIMIT and plan.stops and plan.regions == []
+    assert plan.affordable is None
+    opts = plan.options()
+    assert len(opts) == 2 and "limit of one job raised" in opts[0] and "smaller piece" in opts[1]
     ref = plan.refusal()
     assert ref.gate == "resolution_floor"
     from meshpipeline.contracts.failure_cause import rebuild_over_limit, retry_can_help
