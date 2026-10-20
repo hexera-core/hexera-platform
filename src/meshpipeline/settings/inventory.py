@@ -528,6 +528,14 @@ INVENTORY: list[Group] = [
                     "bare wall patch keeps the failure a failure"),
     ]),
 
+    Group("Verdict", note="Who decides pass, delivered with concerns or fail. Off by default while the measured-limits verdict runs in shadow beside the review-led one; the rules are docs/RULES.md VER-1..4.", vars=[
+        EnvVar("VERDICT_BY_LIMITS", "false", kind="bool",
+               help="true = only measured quality limits decide the verdict and the AI reviewer "
+                    "only adds notes (no rebuild, no bonus attempt, no wrong-problem failure); "
+                    "false = shadow: the review-led verdict decides and the limits verdict is "
+                    "logged beside it"),
+    ]),
+
     Group("Workspace archive limits", note="Bounds on the workspace archive a remote mesh returns: a decompression bomb, a traversal entry or a runaway member is refused before anything is written.", vars=[
         EnvVar("WORKSPACE_ARCHIVE_MAX_BYTES", "536870912", kind="int", help="compressed archive ceiling"),
         EnvVar("WORKSPACE_ARCHIVE_MAX_ENTRIES", "20000", kind="int"),

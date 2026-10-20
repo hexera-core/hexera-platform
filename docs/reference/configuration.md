@@ -480,7 +480,7 @@ API: it logs that the directory is missing and leaves `/ui` and `/static` unmoun
 
 <!-- Regenerate: python -m meshpipeline.settings.inventory --reference -->
 
-Every supported setting (268 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
+Every supported setting (269 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
 
 | Setting | Exposure | Read by | Secret |
 |---|---|---|---|
@@ -626,6 +626,7 @@ Every supported setting (268 entries). `template` settings are the ones `.env.ex
 | `MESH_SCRIPT_SCAN_ENABLED` | template | app |  |
 | `RUN_PYTHON_REQUIRE_SANDBOX` | template | app |  |
 | `SOLVABILITY_GATE_ENABLED` | template | app |  |
+| `VERDICT_BY_LIMITS` | template | app |  |
 | `WORKSPACE_ARCHIVE_MAX_BYTES` | template | app |  |
 | `WORKSPACE_ARCHIVE_MAX_DEPTH` | template | app |  |
 | `WORKSPACE_ARCHIVE_MAX_ENTRIES` | template | app |  |

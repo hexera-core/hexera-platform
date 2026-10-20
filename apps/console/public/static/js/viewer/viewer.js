@@ -87,11 +87,16 @@ export async function openViewer(job,anchorEl,opts){
         </div></div>`:''}
       ${opts.concerns?`<div class="v-why v-concerns">
         <b>Every validity gate passed</b> - the mesh is structurally sound and solvable, so it is
-        delivered. The reviewer left these points open; weigh them before you rely on the results:
+        delivered. These points are open; weigh them before you rely on the results:
         ${(opts.concerns||[]).length
           ? '<ul class="v-concern-list">'+(opts.concerns||[]).map(c=>`<li>${esc(c)}</li>`).join('')+'</ul>'
           : ''}
         ${opts.reasoning?`<div class="v-reason">${esc(String(opts.reasoning).slice(0,600))}</div>`:''}
+        </div>`:''}
+      ${(opts.notes||[]).length?`<div class="v-why v-notes">
+        <b>Reviewer notes</b> - an AI reviewer looked at the mesh. Its notes are for you to weigh;
+        they do not decide the result:
+        <ul class="v-concern-list">${(opts.notes||[]).map(n=>`<li>${esc(n)}</li>`).join('')}</ul>
         </div>`:''}
       <div class="v-sec v-dl">${_dlHtml}</div>
       <div class="v-thermal" id="v-thermal-${job}"></div>

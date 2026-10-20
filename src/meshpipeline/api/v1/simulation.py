@@ -254,6 +254,14 @@ def _review_outcome(final_result) -> str | None:
         return None
 
 
+def _review_notes(final_result) -> list[str]:
+    from meshpipeline.application.final_result import review_notes_of
+    try:
+        return review_notes_of(final_result if isinstance(final_result, dict) else None)
+    except Exception:  # noqa: BLE001 - an old or malformed record never breaks a read
+        return []
+
+
 def _review_concerns(final_result) -> list[str]:
     from meshpipeline.application.final_result import review_concerns_of
     try:
@@ -345,6 +353,7 @@ async def get_job(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
             delivery_manifest=_manifest,
             review_outcome=_review_outcome(_fr_dict),
             review_concerns=_review_concerns(_fr_dict),
+            review_notes=_review_notes(_fr_dict),
             # a string or nothing: a row from before the column carries none, and a test double must
             # not be able to smuggle an object into the wire contract
             cancel_reason=(job.cancel_reason if isinstance(getattr(job, "cancel_reason", None), str)

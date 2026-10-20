@@ -922,6 +922,14 @@ async def _run_async(req: JobRequest) -> dict:
         # file that states none is the likely cause, and only the user can say which it is
         from meshpipeline.application.final_result import physical_scale_caveat
         _scale_caveat = physical_scale_caveat(_run_outcome)
+        # and, once the measured limits decide (VERDICT_BY_LIMITS), their verdict and the AI
+        # reviewer's notes - the notes shown, labelled, deciding nothing. Both None in shadow.
+        from meshpipeline.application.final_result import (
+            measured_verdict_caveat,
+            reviewer_notes_caveat,
+        )
+        _verdict_caveat = measured_verdict_caveat(_run_outcome)
+        _notes_caveat = reviewer_notes_caveat(_run_outcome)
         verdict, api_failure = _run_outcome.reviewer_verdict, _run_outcome.api_failure
 
         retry_count = _run_outcome.retry_count
@@ -940,6 +948,10 @@ async def _run_async(req: JobRequest) -> dict:
         # ONCE afterwards, so a client never sees 'succeeded' before the mesh is fetchable.
         _decision = derive_terminal_status(_run_outcome, job_id=job_id, jlog=jlog)
         final_status, _failed_reason = _decision.status, _decision.failed_reason
+        # THE VERDICT BY MEASURED LIMITS, beside the one that decided (docs/RULES.md VER-1..4):
+        # one `verdict shadow:` log line and the verdict's entry in the why record, every run.
+        from meshpipeline.application.final_result import record_verdict
+        record_verdict(job_id, _run_outcome, succeeded=_decision.succeeded, jlog=jlog)
 
         # FENCE before ANY terminal side effect. A worker whose generation/token was superseded
         # (its lease taken over while it ran) must produce NOTHING externally observable: it must not
@@ -1149,7 +1161,9 @@ async def _run_async(req: JobRequest) -> dict:
                                      + ([_concerns_caveat] if _concerns_caveat else [])
                                      + ([_review_caveat] if _review_caveat else [])
                                      + ([_narrow_caveat] if _narrow_caveat else [])
-                                     + ([_scale_caveat] if _scale_caveat else [])),
+                                     + ([_scale_caveat] if _scale_caveat else [])
+                                     + ([_verdict_caveat] if _verdict_caveat else [])
+                                     + ([_notes_caveat] if _notes_caveat else [])),
                 review_blocking=list(_review_blocking),
                 review_plan=_review_plan,
                 review_left=_review_left,
