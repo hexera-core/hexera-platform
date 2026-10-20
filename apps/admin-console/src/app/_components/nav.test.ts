@@ -19,9 +19,9 @@ test("every section has a route under /", () => {
 test("dev navigation keeps launch-only surfaces out of the way", () => {
   assert.deepEqual(
     buildAdminSections({ ENV: "dev" }).map((s) => s.label),
-    // Repair is NOT launch-only: a personal environment is where the repair loop is exercised,
-    // so the queue has to be openable there.
-    ["Fleet", "Costs", "Billing", "Repair"],
+    // Billing links to customer detail pages, so org management must be openable anywhere Billing
+    // is openable. Activity remains launch-only because it is only a cross-tenant traffic feed.
+    ["Fleet", "Costs", "Billing", "Customers", "Repair"],
   );
 });
 
