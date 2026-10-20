@@ -400,10 +400,6 @@ class Evidence:
 
     @property
     def low(self) -> bool:
-        """Too little to go on: fewer than MIN_RUNS runs on this class (or, with none on it, a
-        record that is not about shapes exactly like this)."""
-        if self.ranked_runs:
-            return not self.proven
         return self.level != 0 or self.shapes < MIN_SHAPES
 
     @property
@@ -506,24 +502,24 @@ def evidence_for(table: Table, engine: str, *, flow: str, cls: str, form: str,
     own = class_levels(levels, cls, detail)
     ranked_at = own[-1] if own else -1
     ranked_rows = stats[ranked_at][2] if ranked_at >= 0 else []
-    ranked = {"ranked_runs": len(ranked_rows), "ranked_passed": sum(r.passed for r in ranked_rows),
-              "ranked_shapes": len({r.shape for r in ranked_rows}),
-              "ranked_words": stats[ranked_at][1] if ranked_at >= 0 else ""}
+    ranked_words = stats[ranked_at][1] if ranked_at >= 0 else ""
     # THE RECORD QUOTED - and read for what the meshes were like (broken, out of square, layers) -
     # is the ranked one whenever the engine has runs on this class, so a reason and a quality
     # fault always speak of the runs the rank read; else the closest record there is
-    quoted = ranked_at if ranked_rows else next(
+    # (named by the most specific of this class's levels that holds those very same runs)
+    quoted = next(i for i in own if len(stats[i][2]) == len(ranked_rows)) if ranked_rows else next(
         (i for i in with_runs if len({r.shape for r in stats[i][2]}) >= MIN_SHAPES), with_runs[-1])
     key, words, rows = stats[quoted]
     ok = [r for r in rows if r.passed]
     near: dict[str, Any] = {}
-    if with_runs[0] < quoted and not ranked_rows:
+    if with_runs[0] < quoted:
         _, nwords, nrows = stats[with_runs[0]]
         near = {"near_runs": len(nrows), "near_passed": sum(r.passed for r in nrows),
                 "near_shapes": len({r.shape for r in nrows}), "near_words": nwords}
     return Evidence(
         runs=len(rows), passed=len(ok), shapes=len({r.shape for r in rows}), level=quoted,
-        words=words, **ranked,
+        words=words, ranked_runs=len(ranked_rows), ranked_passed=sum(r.passed for r in ranked_rows),
+        ranked_shapes=len({r.shape for r in ranked_rows}), ranked_words=ranked_words,
         layers_pct=_median([r.layers_pct for r in ok if r.layers_pct is not None]),
         cells=_int(_median([r.cells for r in ok if r.cells is not None])),
         seconds=_median([r.seconds for r in ok if r.seconds is not None]),
@@ -715,8 +711,7 @@ def evidence_words(ev: Evidence) -> str:
     if ev.level < 0:
         return "no lab results yet for shapes like this"
     broad = _counted(ev.passed, ev.runs, ev.shapes, ev.words, per_form=ev.per_form)
-    if not ev.low or ev.ranked_runs:
-        # a record on this class is quoted as it is; bound_words says when it is too short to trust
+    if not ev.low:
         return broad
     if ev.near_runs:
         near = (f"passed {ev.near_passed} of {ev.near_runs} tries on {ev.near_shapes} "
@@ -971,24 +966,15 @@ def ranked_engines(order: Sequence[str], ranking: Sequence[str]) -> list[str]:
     return sorted(known, key=lambda e: pos[e]) + rest
 
 
-#: flow -> (the table it was ranked from, the ranking): read once per table
-_FLOW_RANKINGS: dict[str, tuple[Table, tuple[str, ...]]] = {}
-
-
 def flow_ranking(flow: str) -> tuple[str, ...]:
     """ENG-5 WHEN NOTHING WAS MEASURED: every engine designed for the flow, ranked by the same rules
     on its record over that whole flow (no shape class, so no home engine). The fallback ladder
     walks this rather than a fixed order when a run's geometry could not be measured in time."""
     from meshpipeline.engines.capability import ladder_order
-    tab = committed_table()
-    kept = _FLOW_RANKINGS.get(flow)
-    if kept is not None and kept[0] is tab:
-        return kept[1]
     order = ladder_order(flow)
-    ranking = tuple(ranked_engines(order, recommend(ShapeTraits(flow=flow), order, table=tab).ranking)) \
-        if order else ()
-    _FLOW_RANKINGS[flow] = (tab, ranking)
-    return ranking
+    if not order:
+        return ()
+    return tuple(ranked_engines(order, recommend(ShapeTraits(flow=flow), order).ranking))
 
 
 __all__ = ["BLUNT", "BRANCHED", "CHAMBER", "DEFAULT_CELL_BUDGET", "DETAILED", "MIN_OVERRIDE_SHAPES",

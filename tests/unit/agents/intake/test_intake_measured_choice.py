@@ -43,7 +43,7 @@ def test_the_question_names_the_best_engine_with_its_evidence_and_lists_the_othe
                            "lab it passed 5 of 5 similar shapes (thin gaps or annuli, from CAD)")
     assert "near-wall layers on 96% of the wall" in text
     assert "Also able to mesh it: Gmsh (" in text and "passed 3 of 5, no reliable near-wall layers)" in text
-    assert "cfMesh (poor fit, passed 1 of 5" in text
+    assert "cfMesh (little evidence, passed 1 of 5" in text
     assert text.endswith("OK, or pick another engine?")
     assert text.count("?") == 1
 
