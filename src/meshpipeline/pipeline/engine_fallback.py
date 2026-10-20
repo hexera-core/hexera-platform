@@ -45,8 +45,8 @@ More rules:
 * THE RUNGS COME IN THE ORDER THAT SUITS THIS GEOMETRY. The run's geometry is measured at the
   start of the run and the engines that can mesh it are ranked by their lab record on shapes
   like it (engines/fitness.py, the same ranking the intake recommended from); the ladder walks
-  that order, after the engine the user picked. Only when nothing could be measured does it fall
-  back to the order the engines declare (EngineSpec.ladder_rank).
+  that order, after the engine the user picked. When nothing could be measured, the same rules
+  rank the engines on their record over the whole flow (fitness.flow_ranking): never a fixed order.
 * The budgets stay as they are. A switch spends one of the run's existing attempts and needs the
   time for the new engine's own run cap; the retries are shared across rungs rather than spent
   on the first one alone.
@@ -78,21 +78,19 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 def fallback_order(flow: str, state: Mapping | None = None) -> tuple[str, ...]:
-    """THE LADDER ORDER for a flow: every implemented engine designed for it, in the MEASURED
-    order for this run's geometry when the run has one (measured_ranking: best lab record on
-    shapes like it first), else in the order the engines DECLARE (EngineSpec.ladder_rank: most
-    robust input handling first - cfMesh wraps dirty surfaces - then the body-fitted hex mesher,
-    then the tetrahedral engines). Derived, never listed here, so a new engine joins the ladder
-    from its own spec. The approved engine always stays the first rung (ladder), and only the
-    rungs that pass the approved request's own admission rules - the file's form included - are
-    ever considered."""
+    """THE LADDER ORDER for a flow (ENG-5): every implemented engine designed for it, in the SAME
+    ranked order the recommendation gave this run's geometry (measured_ranking: the home engine
+    for its shape class first, then the 95% lower bounds of the lab record on shapes like it -
+    engines/fitness.py). When the run's geometry could not be measured, the same rules rank the
+    engines on their record over the whole flow (fitness.flow_ranking) - never a fixed order. An
+    engine the measured ranking left out keeps its place by that flow ranking. Derived, never
+    listed here, so a new engine joins the ladder from its own spec. The approved engine always
+    stays the first rung (ladder), and only the rungs that pass the approved request's own
+    admission rules - the file's form included - are ever considered."""
     from meshpipeline.engines.capability import ladder_order
-    order = ladder_order(flow)
-    ranking = measured_ranking(state)
-    if not ranking:
-        return order
-    from meshpipeline.engines.fitness import ranked_engines
-    return tuple(ranked_engines(order, ranking))
+    from meshpipeline.engines.fitness import flow_ranking, ranked_engines
+    order = ranked_engines(ladder_order(flow), flow_ranking(flow))
+    return tuple(ranked_engines(order, measured_ranking(state)))
 
 
 def measured_ranking(state: Mapping | None) -> list[str]:

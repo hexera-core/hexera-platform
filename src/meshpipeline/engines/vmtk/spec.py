@@ -248,6 +248,11 @@ SPEC = EngineSpec(
         # a tetrahedral lumen filler: after the hex meshers on the internal ladder
         ladder_rank=30,
         home_turf=HOME_TURF,
+        # THE HOME ENGINE for every tubular passage - long passages and branching ones about as
+        # wide as their openings (engines/fitness.py TUBE, BRANCHED, from the measured traits):
+        # recommended first there unless a turf row above marks the case weak or outside, or
+        # another engine's measured record clearly beats it (fitness ENG-2/ENG-3)
+        home_classes=("tube", "branched"),
         input_contract=InputContract(
             # internal flow from an STL/OBJ/PLY upload: cad/internal_surface closes it at the
             # confirmed openings (snappy/cfMesh/gmsh/vmtk internal paths read that record)

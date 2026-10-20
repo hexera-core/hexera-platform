@@ -82,10 +82,13 @@ def test_every_engine_that_produces_a_topology_is_on_its_ladder():
 
 
 def test_the_ladder_order_is_read_from_the_engines_declarations_not_a_list():
-    # most robust input handling first, then the body-fitted hex mesher, then the tet engines -
-    # declared by each engine (EngineSpec.ladder_rank), so a new engine joins from its spec alone
-    assert lad.fallback_order("external") == ("cfmesh", "snappy", "gmsh")
-    assert lad.fallback_order("internal") == ("cfmesh", "snappy", "vmtk", "gmsh")
+    # every engine designed for the flow, read from its own spec, so a new engine joins from its
+    # spec alone - and ranked by the measured rules over the whole flow, never a fixed order
+    from meshpipeline.engines.capability import ladder_order
+    from meshpipeline.engines.fitness import flow_ranking
+    for flow in ("external", "internal"):
+        assert set(lad.fallback_order(flow)) == set(ladder_order(flow))
+        assert lad.fallback_order(flow) == flow_ranking(flow)
     import inspect
     src = inspect.getsource(lad)
     assert '"cfmesh", "snappy"' not in src, "the ladder lists engines by hand again"
