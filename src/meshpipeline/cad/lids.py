@@ -141,7 +141,7 @@ def _refine(xy: np.ndarray, P: np.ndarray, tris: np.ndarray) -> tuple[np.ndarray
         room = budget - (len(p_all) - m)
         if len(bad) == 0 or room <= 0:
             break
-        bad = bad[np.argsort(-circ[bad])][:room]
+        bad = bad[np.argsort(-circ[bad], kind="stable")][:room]
         ids = len(p_all) + np.arange(len(bad))
         t = tris[bad]
         keep = np.ones(len(tris), dtype=bool)

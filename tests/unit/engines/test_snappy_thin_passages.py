@@ -306,6 +306,8 @@ class _Publish:
     async def atool_result(self, *_a, **_k): pass
     async def ameshing(self, *_a, **_k): pass
     async def ameshed(self, *_a, **_k): pass
+    async def aplan(self, *_a, **_k): pass
+    async def amesh_stage(self, *_a, **_k): pass
     async def areasoning(self, *_a, **_k): pass
 
 

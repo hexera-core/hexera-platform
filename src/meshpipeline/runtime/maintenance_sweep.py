@@ -43,8 +43,9 @@ ELSEWHERE: dict[str, str] = {
         "configured (deploy/gcp/scripts/create-meter-sweep.sh)",
     "tasks.cleanup.purge_expired_workspaces":
         "compose only. A workspace is a directory on the machine that ran the job; on the fleet "
-        "that is the instance's own disk, which goes when the autoscaler replaces the instance. "
-        "This job has no such disk, and marking a workspace purged that it never saw would be a lie.",
+        "that is the instance's own disk, and the worker clears finished jobs off it itself each "
+        "time it starts a job (application/maintenance/worker_disk.py). This job has no such disk, "
+        "and marking a workspace purged that it never saw would be a lie.",
 }
 
 

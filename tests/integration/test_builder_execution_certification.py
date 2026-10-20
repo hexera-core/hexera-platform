@@ -31,12 +31,12 @@ LOOP_ENGINES = ("cfmesh", "gmsh", "snappy_multiregion", "vmtk")
 #: under a spelling that does not exist.
 GATED = ("anote", "awarn", "aerror", "astage", "aattempt", "acheck", "aaction", "asearch",
          "ascreenshot", "afile", "areasoning", "arationale", "atool_call", "atool_result",
-         "ameshing", "ameshed", "averdict", "aclosing")
+         "ameshing", "ameshed", "aplan", "amesh_stage", "averdict", "aclosing")
 
 #: What the inner adapter must be asked to do when a gated call is authorized.
 INNER = ("note", "warn", "error", "stage", "attempt", "check", "action", "search",
          "screenshot", "file", "reasoning", "rationale", "tool_call", "tool_result",
-         "meshing", "meshed", "verdict", "closing")
+         "meshing", "meshed", "plan", "mesh_stage", "verdict", "closing")
 
 #: The 17 sites this checkpoint certifies, by canonical id.
 AGENT_SITES = ("node_builder::anote#budget", "node_builder::aattempt#1",

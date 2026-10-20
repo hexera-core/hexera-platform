@@ -84,8 +84,8 @@ def test_engine_resolution_runs_on_real_code_without_crashing(monkeypatch):
     assert out == {"engine": default_engine()}
 
     assert [a["op_id"] for a in announced] == ["forced", "resolved"], announced
-    assert [a["text"] for a in announced] == [f"Mesh engine: {_expected}",
-                                              f"Mesh engine: {default_engine()}"], announced
+    assert [a["text"] for a in announced] == [es.engine_choice_words(_expected, "topology_internal"),
+                                              es.engine_choice_words(default_engine(), "default")], announced
 
 
 def test_gmsh_deterministic_path_on_real_geometry():
@@ -180,3 +180,55 @@ def test_a_stalled_review_is_reviewed_again_and_its_verdict_ends_the_run(monkeyp
     assert reviews == [0, 1], "the second review must know it is a rerun"
     assert final["reviewer_verdict"] == "PASS" and not final.get("api_failure")
     assert final["review_rerun_count"] == 1 and final["retry_count"] == 1
+
+
+def test_a_rebuilt_mesh_is_not_reviewed_as_a_rerun_of_the_last_one(monkeypatch):
+    # The rerun count belongs to ONE mesh. Attempt 1's review stalls and is rerun, that rerun FAILs
+    # asking for a change, and the builder makes attempt 2: its review is a first look at a new
+    # mesh - not "reviewing the same mesh again", and not excluded from the same-mesh reuse.
+    import asyncio
+
+    import meshpipeline.agents.reviewer.review_policy as RP
+    import meshpipeline.agents.reviewer.settings as rcfg
+    from meshpipeline.agents.builder.turn_patch import TurnPatch
+    from meshpipeline.pipeline import graph as G
+
+    reviews: list[tuple[int, int]] = []
+
+    async def _noop(state):
+        return {}
+
+    async def _builder(state):
+        return TurnPatch(workspace="/w", request_txt="r", review_brief_txt="b",
+                         deadline_epoch=0.0,
+                         retry_count=int(state.get("retry_count", 0) or 0) + 1).state()
+
+    async def _executor(state):
+        return {"executor_success": True}
+
+    async def _reviewer(state):
+        reviews.append((int(state.get("retry_count", 0) or 0),
+                        int(state.get("review_rerun_count", 0) or 0)))
+        if len(reviews) == 1:
+            return {"api_failure": "reviewer_stalled"}
+        if len(reviews) == 2:
+            return {"reviewer_verdict": "FAIL", "reviewer_axis_findings": []}
+        return {"reviewer_verdict": "PASS"}
+
+    for name in ("node_intake", "node_engine_select", "node_geometry_admission",
+                 "node_classifier", "node_engine_fallback"):
+        monkeypatch.setattr(G, name, _noop)
+    monkeypatch.setattr(G, "node_builder", _builder)
+    monkeypatch.setattr(G, "node_executor", _executor)
+    monkeypatch.setattr(G, "node_reviewer", _reviewer)
+    monkeypatch.setattr(RP, "asks_for_rebuild", lambda findings: True)
+    monkeypatch.setattr(rcfg, "REVIEWER_RERUN_MAX", 2)
+    monkeypatch.setattr(rcfg, "REVIEWER_RERUN_BACKOFF_S", 0)
+
+    g = G.build_graph(checkpointer=MemorySaver())
+    final = asyncio.run(g.ainvoke(
+        {"job_id": "j-rebuilt", "retry_count": 0, "api_failure": ""},
+        config={"configurable": {"thread_id": "t-rebuilt"}}))
+    assert reviews == [(1, 0), (1, 1), (2, 0)], (
+        "attempt 2 is a new mesh: its review must not be counted as a rerun of attempt 1's")
+    assert final["reviewer_verdict"] == "PASS"

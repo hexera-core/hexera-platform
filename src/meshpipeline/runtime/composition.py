@@ -58,6 +58,21 @@ def _enqueue_geometry_naming(**kwargs) -> None:
     name_geometry.apply_async(kwargs=kwargs, task_id=f"geometry-naming-{kwargs.get('session_id', '')}")
 
 
+def _route_model(step: str) -> str:
+    """The model a step's route asks (the decision cache keys by it: a new model is a new key)."""
+    if step == "builder":
+        from meshpipeline.agents.builder.settings import BUILDER_ROUTE as route
+    elif step == "planner":
+        from meshpipeline.engines.snappy.settings import PLANNER_ROUTE as route
+    elif step == "intake":
+        from meshpipeline.agents.intake.settings import INTAKE_ROUTE as route
+    elif step == "reviewer":
+        from meshpipeline.agents.reviewer.settings import VISUAL_REVIEWER_ROUTE as route
+    else:
+        return ""
+    return f"{route.primary.provider}:{route.primary.model}"
+
+
 def install_adapters() -> None:
     from meshpipeline.adapters.dead_letter.redis import RedisDeadLetterSink
     from meshpipeline.adapters.delivery_guard.redis import RedisDeliveryGuard
@@ -93,7 +108,10 @@ def install_adapters() -> None:
         ws_ticket,
     )
 
-    model_inference.set_model_router(router)
+    # REPEATABLE AI STEPS (contracts/decision_cache.py): every model round is keyed by what the
+    # model is shown and its answer kept, so the same file gets the same decisions
+    from meshpipeline.contracts.decision_cache import CachingModelRouter
+    model_inference.set_model_router(CachingModelRouter(router, model_of=_route_model))
     event_stream.set_publisher_factory(JobPublisher)
     event_stream.set_subscription_factory(RedisEventSubscription)
     object_storage.set_object_store(build_object_store())

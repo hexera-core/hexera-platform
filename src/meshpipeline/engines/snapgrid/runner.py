@@ -350,8 +350,9 @@ def finalize(workspace_dir, intake_patches: list, engine: str, domain: str = "",
         mesh_bounds=(lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]),
         # the review's VOLUME: the whole mesh as VTK (native.export_volume), which is what the
         # renderer slices for the interior regions the manifest promises; a constant/ directory
-        # is no VTU, so the review found no volume and could not run at all (job d6a0ac60)
-        volume_path=str((ws / (review_volume(ws) or "constant")).resolve()),
+        # is no VTU, so the review found no volume and could not run at all (job d6a0ac60).
+        # No export, no volume: None, so the review owes no slice it cannot cut.
+        volume_path=(str((ws / vol).resolve()) if (vol := review_volume(ws)) else None),
         mesh_units=COMPLETED_MESH_UNIT.value, mesh_mode="snapgrid",
         flow_topology=flow_topology, engine_params=ep, inspection_regions=planes or None)
     out = (f"[SNAPGRID] regions={len(q['regions'])} cells={q['cells']} "

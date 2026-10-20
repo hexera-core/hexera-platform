@@ -28,7 +28,7 @@ POST_OWNERSHIP = {"application/pipeline_run.py": 5, "application/maintenance/cle
 
 SYNC_EVENTS = {"stage", "note", "check", "warn", "error", "verdict", "screenshot", "rationale",
                "reasoning", "attempt", "meshed", "meshing", "file", "search", "action",
-               "tool_call", "tool_result"}
+               "tool_call", "tool_result", "plan", "mesh_stage"}
 
 
 def _tree(rel: str) -> ast.AST:

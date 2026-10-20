@@ -55,17 +55,18 @@ def stage_regions(regions: dict, walls: list[str]) -> dict:
     `regions` maps each named solid of the input surface to its triangles. With one declared body
     wall (or none) the parts are one wall - the user approved one - so nothing is kept apart and
     the caller writes a single solid under that wall's name ({} is returned). With several, each
-    part is written under the declared wall it matches (mesh-safe and without regard to capitals,
-    the rule admission matched them by), parts that match the same wall are merged, and a part
-    that matches none keeps its own mesh-safe name - the pre-flight then names it before any mesh
-    runs, rather than the manifest check after one."""
-    from meshpipeline.contracts.patch_names import mesh_safe, same_patch_name
+    part is written under the declared wall it matches (as the case spells both, without regard
+    to capitals - the rule admission matched them by), parts that match the same wall are merged,
+    and a part that matches none keeps its own name as the case spells it (never a mesher's own,
+    such as snappy's "outer" box) - the pre-flight then names it before any mesh runs, rather
+    than the manifest check after one."""
+    from meshpipeline.contracts.patch_names import case_name, same_patch_name
 
     if len(regions or {}) <= 1 or len(walls or []) <= 1:
         return {}
     out: dict = {}
     for name, tris in regions.items():
-        target = next((w for w in walls if same_patch_name(w, name)), None) or mesh_safe(name)
+        target = next((w for w in walls if same_patch_name(w, name)), None) or case_name(name)
         out.setdefault(target, [])
         out[target] = list(out[target]) + list(tris)
     return out

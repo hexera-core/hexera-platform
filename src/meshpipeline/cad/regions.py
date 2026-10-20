@@ -152,17 +152,20 @@ def _ecxml_regions(path: Path) -> CadRegions:
     return CadRegions()
 
 
-__all__ = ["CadRegions", "components_of", "regions_for_session", "regions_of"]
+__all__ = ["CadRegions", "components_of", "regions_for_file", "regions_for_session", "regions_of"]
 
 
 #: Keyed by (path, size, mtime) so a replaced upload is re-read rather than answered from a stale
 #: entry. Reading a 25 MB STEP costs seconds; intake asks on every admission preview.
 _CACHE: dict[tuple[str, int, int], CadRegions] = {}
+#: How many files the cache keeps (oldest dropped first): the API process is long-lived.
+_CACHE_KEPT = 256
 
 
 def regions_for_session(session_id: str, jobs_dir) -> CadRegions:
-    # The staged upload, read where the API already wrote it. This is deliberately not a database
-    # lookup: the bytes are on disk beside the session, so the facts need no schema of their own.
+    # The upload staged beside the session, when one is. The intake itself reads the session's
+    # file through regions_for_file(agents.intake.measured_choice.staged_upload(...)), which also
+    # fetches the stored upload back when nothing is staged here (the upload route deletes it).
     from meshpipeline.contracts.intake_formats import format_for_suffix
 
     root = Path(jobs_dir) / str(session_id or "")
@@ -172,9 +175,21 @@ def regions_for_session(session_id: str, jobs_dir) -> CadRegions:
                     if p.is_file() and format_for_suffix(p.suffix.lower()))
     if not staged:
         return CadRegions()
-    path = staged[0]
-    stat = path.stat()
-    key = (str(path), stat.st_size, int(stat.st_mtime))
+    return regions_for_file(staged[0])
+
+
+def regions_for_file(path) -> CadRegions:
+    """What the file at `path` distinguishes (cached); nothing for no file."""
+    if not path:
+        return CadRegions()
+    p = Path(path)
+    try:
+        stat = p.stat()
+    except OSError:
+        return CadRegions()
+    key = (str(p), stat.st_size, stat.st_mtime_ns)
     if key not in _CACHE:
-        _CACHE[key] = regions_of(path)
+        while len(_CACHE) >= _CACHE_KEPT:
+            _CACHE.pop(next(iter(_CACHE)))
+        _CACHE[key] = regions_of(p)
     return _CACHE[key]

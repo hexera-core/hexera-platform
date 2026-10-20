@@ -28,19 +28,18 @@ logger = logging.getLogger(__name__)
 MEASURE_WAIT_S = 15.0
 
 
-def staged_upload(session_id: str) -> str:
-    """The upload as staged beside the session (the file cad/regions reads), or ''."""
+def staged_upload(session_id: str, source_ref=None) -> str:
+    """The session's upload as a local file to measure, or ''.
+
+    application/geometry_materializer.session_upload_path: the file staged beside the session,
+    else the session's stored source fetched back and verified. The upload route deletes its
+    staging file once the bytes are stored, so without the fetch a real upload left nothing here
+    to read and the measured recommendation never ran."""
     try:
-        from pathlib import Path
+        from meshpipeline.application.geometry_materializer import session_upload_path
 
-        import meshpipeline.settings.runtime as rtcfg
-        from meshpipeline.contracts.intake_formats import format_for_suffix
-
-        root = Path(rtcfg.JOBS_DIR) / str(session_id or "")
-        staged = sorted(p for p in root.iterdir()
-                        if p.is_file() and format_for_suffix(p.suffix.lower()))
-        return str(staged[0]) if staged else ""
-    except Exception:  # noqa: BLE001 - no staged file simply leaves the name to answer
+        return session_upload_path(str(session_id or ""), source_ref)
+    except Exception:  # noqa: BLE001 - no file simply leaves the name to answer
         return ""
 
 
@@ -126,6 +125,9 @@ async def rank_in_time(*, timeout_s: float = MEASURE_WAIT_S, **kw):
     except TimeoutError:
         logger.info("Intake: the geometry is still being measured - no engine recommendation "
                     "this turn")
+        from meshpipeline.engines.determinism import note_time_limit
+        note_time_limit("intake.recommendation", "no measured engine recommendation this turn: "
+                        "the measurement was not ready", budget_s=float(timeout_s))
     except Exception as exc:  # noqa: BLE001 - advice never breaks a turn
         logger.warning("Intake: engine recommendation unavailable (%s: %s)",
                        type(exc).__name__, str(exc)[:200])

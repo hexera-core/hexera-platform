@@ -91,6 +91,19 @@
   "roots": []
  },
  {
+  "context": "adapters/event_stream/redis.py::JobPublisher.mesh_stage::mesh_stage#1|NotAPublisher|not-a-publisher|",
+  "path": "adapters/event_stream/redis.py",
+  "qualname": "JobPublisher.mesh_stage",
+  "semantic": "mesh_stage",
+  "method": "mesh_stage",
+  "ordinal": 1,
+  "receiver": "E",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "adapters/event_stream/redis.py::JobPublisher.meshed::meshed#1|NotAPublisher|not-a-publisher|",
   "path": "adapters/event_stream/redis.py",
   "qualname": "JobPublisher.meshed",
@@ -122,6 +135,19 @@
   "qualname": "JobPublisher.note",
   "semantic": "note",
   "method": "note",
+  "ordinal": 1,
+  "receiver": "E",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "adapters/event_stream/redis.py::JobPublisher.plan::plan#1|NotAPublisher|not-a-publisher|",
+  "path": "adapters/event_stream/redis.py",
+  "qualname": "JobPublisher.plan",
+  "semantic": "plan",
+  "method": "plan",
   "ordinal": 1,
   "receiver": "E",
   "authority": "NotAPublisher",
@@ -1786,6 +1812,21 @@
   ]
  },
  {
+  "context": "application/execution_publisher.py::OwnershipCheckedPublisher.amesh_stage::mesh_stage#1|InternalEmitter|internal-emitter|application/execution_publisher.py::OwnershipCheckedPublisher",
+  "path": "application/execution_publisher.py",
+  "qualname": "OwnershipCheckedPublisher.amesh_stage",
+  "semantic": "mesh_stage",
+  "method": "mesh_stage",
+  "ordinal": 1,
+  "receiver": "self._inner",
+  "authority": "InternalEmitter",
+  "lifecycle": "internal-emitter",
+  "gated_required": false,
+  "roots": [
+   "application/execution_publisher.py::OwnershipCheckedPublisher"
+  ]
+ },
+ {
   "context": "application/execution_publisher.py::OwnershipCheckedPublisher.ameshed::meshed#1|InternalEmitter|internal-emitter|application/execution_publisher.py::OwnershipCheckedPublisher",
   "path": "application/execution_publisher.py",
   "qualname": "OwnershipCheckedPublisher.ameshed",
@@ -1821,6 +1862,21 @@
   "qualname": "OwnershipCheckedPublisher.anote",
   "semantic": "note",
   "method": "note",
+  "ordinal": 1,
+  "receiver": "self._inner",
+  "authority": "InternalEmitter",
+  "lifecycle": "internal-emitter",
+  "gated_required": false,
+  "roots": [
+   "application/execution_publisher.py::OwnershipCheckedPublisher"
+  ]
+ },
+ {
+  "context": "application/execution_publisher.py::OwnershipCheckedPublisher.aplan::plan#1|InternalEmitter|internal-emitter|application/execution_publisher.py::OwnershipCheckedPublisher",
+  "path": "application/execution_publisher.py",
+  "qualname": "OwnershipCheckedPublisher.aplan",
+  "semantic": "plan",
+  "method": "plan",
   "ordinal": 1,
   "receiver": "self._inner",
   "authority": "InternalEmitter",
@@ -2920,6 +2976,21 @@
   "roots": []
  },
  {
+  "context": "contracts/mesh_progress.py::publishing_sink._publish_stage::mesh_stage#1|ExecutionEventPublisher|execution-owned|contracts/mesh_progress.py::parameter",
+  "path": "contracts/mesh_progress.py",
+  "qualname": "publishing_sink._publish_stage",
+  "semantic": "mesh_stage",
+  "method": "amesh_stage",
+  "ordinal": 1,
+  "receiver": "publish",
+  "authority": "ExecutionEventPublisher",
+  "lifecycle": "execution-owned",
+  "gated_required": true,
+  "roots": [
+   "contracts/mesh_progress.py::parameter"
+  ]
+ },
+ {
   "context": "contracts/rationale.py::_asay::rationale#1|ExecutionEventPublisher|execution-owned|contracts/rationale.py::parameter",
   "path": "contracts/rationale.py",
   "qualname": "_asay",
@@ -3572,6 +3643,21 @@
   ]
  },
  {
+  "context": "engines/snappy/drivers.py::_build_internal_deterministic::plan#1|ExecutionEventPublisher|execution-owned|engines/snappy/drivers.py::parameter",
+  "path": "engines/snappy/drivers.py",
+  "qualname": "_build_internal_deterministic",
+  "semantic": "plan",
+  "method": "aplan",
+  "ordinal": 1,
+  "receiver": "publish",
+  "authority": "ExecutionEventPublisher",
+  "lifecycle": "execution-owned",
+  "gated_required": true,
+  "roots": [
+   "engines/snappy/drivers.py::parameter"
+  ]
+ },
+ {
   "context": "engines/snappy/drivers.py::_build_snappy_deterministic::error#1|ExecutionEventPublisher|execution-owned|engines/snappy/drivers.py::parameter",
   "path": "engines/snappy/drivers.py",
   "qualname": "_build_snappy_deterministic",
@@ -3711,6 +3797,21 @@
   "semantic": "note",
   "method": "anote",
   "ordinal": 7,
+  "receiver": "publish",
+  "authority": "ExecutionEventPublisher",
+  "lifecycle": "execution-owned",
+  "gated_required": true,
+  "roots": [
+   "engines/snappy/drivers.py::parameter"
+  ]
+ },
+ {
+  "context": "engines/snappy/drivers.py::_build_snappy_deterministic::plan#1|ExecutionEventPublisher|execution-owned|engines/snappy/drivers.py::parameter",
+  "path": "engines/snappy/drivers.py",
+  "qualname": "_build_snappy_deterministic",
+  "semantic": "plan",
+  "method": "aplan",
+  "ordinal": 1,
   "receiver": "publish",
   "authority": "ExecutionEventPublisher",
   "lifecycle": "execution-owned",
@@ -4038,6 +4139,19 @@
   "method": "search",
   "ordinal": 1,
   "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/snappy_multiregion/multiregion_runner.py::configure_mesh::plan#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/snappy_multiregion/multiregion_runner.py",
+  "qualname": "configure_mesh",
+  "semantic": "plan",
+  "method": "plan",
+  "ordinal": 1,
+  "receiver": "_thermal",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,

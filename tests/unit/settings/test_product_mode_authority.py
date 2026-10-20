@@ -31,6 +31,9 @@ LIBRARY_CONTRACTS = {
     "runtime/metrics_server.py",    # PROMETHEUS_MULTIPROC_DIR - prometheus_client's own contract
     "runtime/migrate.py",           # ALEMBIC_CONFIG - alembic's own contract
     "sandbox/backend.py",           # sets VTK/Mesa vars; reads nothing
+    # pins the native tools' own variables (OMP_*, BLAS, VTK_SMP, PYTHONHASHSEED) for a mesh run;
+    # it writes them and reads none
+    "engines/determinism.py",
     "settings/runtime.py",          # the removed-name rejection
     "runtime/startup.py",           # the removed-name rejection
     "sandbox/safe_exec.py",         # names the pattern it forbids, in a guard

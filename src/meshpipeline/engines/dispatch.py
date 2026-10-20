@@ -28,6 +28,44 @@ def engine_runners() -> dict:
     }
 
 
+def _run_stamped(runner, workspace: Any, *, engine: str, bashrc: str, timeout: int) -> Any:
+    """Run `runner` pinned to the determinism settings (engines/determinism.py) and stamp the
+    result: the case's hashes before the run, the threads/ranks/seeds/versions it ran with, and
+    every time a clock changed a decision. The stamp rides home beside the mesh (STAMP_FILE) and
+    in the result (`reproducibility`). A stamp that cannot be made never fails a run."""
+    import logging
+    import time
+
+    from meshpipeline.engines import determinism as det
+
+    log = logging.getLogger(__name__)
+    started = time.monotonic()
+    try:
+        hashes = det.workspace_hashes(workspace)
+    except Exception:  # noqa: BLE001 - the stamp is a record, never a prerequisite
+        log.warning("reproducibility: could not hash the case", exc_info=True)
+        hashes = {}
+    det.pin_process_environment(engine)
+    with det.recording() as rec:
+        out = runner(workspace, bashrc=bashrc, timeout=int(timeout))
+        if isinstance(out, dict) and out.get("timed_out"):
+            det.note_time_limit(engine, "the native run was stopped at its time limit",
+                                budget_s=float(timeout))
+        try:
+            foam = ""
+            if engine in _OPENFOAM_ENGINES or engine == "snapgrid":
+                from meshpipeline.engines.snappy.native import _foam_version
+                foam = _foam_version(bashrc)
+            stamp = det.stamp(engine, record=rec, hashes=hashes, foam_version=foam,
+                              started=started)
+            det.write_stamp(workspace, stamp)
+            if isinstance(out, dict):
+                out["reproducibility"] = stamp
+        except Exception:  # noqa: BLE001
+            log.warning("reproducibility: could not stamp the run", exc_info=True)
+    return out
+
+
 def run_engine_local(workspace: Any, *, engine: str, timeout: int) -> dict:
     from importlib import import_module
 
@@ -41,7 +79,8 @@ def run_engine_local(workspace: Any, *, engine: str, timeout: int) -> dict:
     if reason:
         return {"rc": -2, "timed_out": False, "log_tail": f"REJECTED: {reason}"}
     from meshpipeline.engines.cfmesh.foam_exec import _DEFAULT_BASHRC  # identical across the clones
-    out = runners[engine](workspace, bashrc=_DEFAULT_BASHRC, timeout=int(timeout))
+    out = _run_stamped(runners[engine], workspace, engine=engine, bashrc=_DEFAULT_BASHRC,
+                       timeout=int(timeout))
     # WHAT RIDES HOME (engines/return_scope.py): the workspace is archived and extracted under a
     # size ceiling after this; scratch and, when it would not fit, the optional volume export stay
     # behind - a built mesh is never lost on the way back for a file the delivery can do without

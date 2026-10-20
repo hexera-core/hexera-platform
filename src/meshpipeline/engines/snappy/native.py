@@ -134,13 +134,16 @@ def _rank_count(*, hard_max: int = 12, gib_per_rank: float = 3.0) -> int:
     was OOM-killed at the same stage an 8 GiB one was. Ranks must be capped by memory or
     buying a bigger container buys nothing.
     """
-    cpus = _container_cpus(os.cpu_count() or 1)
-    ranks = min(cpus, hard_max)
-    mem = _container_mem_bytes()
-    if mem:
-        by_mem = int(mem / (gib_per_rank * (1 << 30)))
-        ranks = min(ranks, max(1, by_mem))
-    return max(1, ranks)
+    # REPEATABLE (engines/determinism.py): the rank count decides how snappy cuts the domain,
+    # so it comes from the job's configuration (its CPU quota, or a pinned value), never from
+    # the host it lands on; memory may only lower it, and the stamp says when it did.
+    from meshpipeline.engines import determinism as det
+    ranks, basis = det.snappy_ranks(_container_cpus(0) or None, _container_mem_bytes(),
+                                    hard_max=hard_max, gib_per_rank=gib_per_rank,
+                                    host_cpus=os.cpu_count())
+    det.note_setting("snappy_ranks", ranks, basis)
+    det.note_setting("snappy_decomposition", det.SNAPPY_DECOMPOSITION if ranks >= 2 else "serial")
+    return ranks
 
 
 def _run_snappy_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
