@@ -3,8 +3,11 @@
 # Also say which stage a session's check opens on, from what the user said the mesh is for.
 # Boundaries: pure over the stored check's facts and the conversation; it stores nothing and
 # meshes nothing. The unit box and its suggestion stay the generic check's (api/v1/geometry).
+# It also serves what the measurement found (cad/fea_measure, FEA build step 3) - the thinnest wall
+# and the stress hot spots - for the stage to show, and re-reads that record in a confirmed unit.
 # Collaborates with: application/purpose_map.py (the route), api/v1/geometry.py (serves the view,
-# refuses a multi-body confirmation), ui/js/render/fea_form.js (draws it).
+# refuses a multi-body confirmation), ui/js/render/fea_form.js (draws it), cad/fea_measure.py (the
+# record), application/geometry_check.py (measures and stores it).
 from __future__ import annotations
 
 #: What a file of several bodies is told, in plain words (design 3.6). {n} is the body count.
@@ -64,8 +67,68 @@ def fea_view(facts: dict | None) -> dict:
     clean, said = clean_words(facts)
     blocked = multi_body_message(facts)
     return {"question": QUESTION, "bodies": body_count(facts), "clean": clean, "clean_summary": said,
-            "single_part_only": blocked, "can_proceed": not blocked}
+            "single_part_only": blocked, "can_proceed": not blocked, "measure": measure_view(facts)}
 
 
-__all__ = ["MULTI_BODY", "QUESTION", "STAGE_FEA", "STAGE_FLOW", "STAGE_THERMAL", "body_count",
-           "clean_words", "fea_view", "multi_body_message", "stage_route"]
+#: The most hot spots the stage is sent (pins and list); the count says how many there are.
+SHOWN_HOT_SPOTS = 60
+#: What the stage needs of a hot spot: what it is, how big, where, and whether it is capped.
+_SHOWN_KEYS = ("id", "type", "shape", "radius_mm", "angle_deg", "length_mm", "depth_mm", "faces",
+               "at_mm", "capped")
+#: Hot-spot words, one and many, in the order they are said.
+_NOUNS = {"hole": ("hole", "holes"), "fillet": ("fillet", "fillets"),
+          "notch": ("notch or groove", "notches or grooves"),
+          "sharp_corner": ("sharp inside corner", "sharp inside corners")}
+
+
+def measure_view(facts: dict | None) -> dict | None:
+    """The measurement as the stage shows it (V1: shown only, nothing to edit): the thinnest wall
+    and where, and the hot spots the plan will refine. None before anything was measured."""
+    from meshpipeline.cad.fea_measure import FACT_KEY
+
+    rec = (facts or {}).get(FACT_KEY)
+    if not isinstance(rec, dict):
+        return None
+    if not rec.get("measured"):
+        return {"measured": False, "reason": str(rec.get("reason") or "the part was not measured")}
+    spots = [{k: h[k] for k in _SHOWN_KEYS if k in h} for h in rec.get("hot_spots") or []]
+    thick = rec.get("thickness") or {}
+    counts = {str(k): int(v) for k, v in (rec.get("counts") or {}).items()}
+    shown = spots[:SHOWN_HOT_SPOTS]
+    return {"measured": True, "basis": rec.get("basis"), "thickness_min_mm": thick.get("min_mm"),
+            "thickness_face": thick.get("face"), "thickness_at_mm": thick.get("at_mm"),
+            "hot_spots": shown, "counts": counts, "more": max(0, sum(counts.values()) - len(shown)),
+            "summary": hot_spot_words(counts), "notes": list(rec.get("notes") or [])}
+
+
+def hot_spot_words(counts: dict[str, int]) -> str:
+    """"1 hole, 2 fillets and 1 sharp inside corner", or "no hot spots"."""
+    parts = [f"{counts[k]} {_NOUNS[k][0 if counts[k] == 1 else 1]}" for k in _NOUNS if counts.get(k)]
+    if not parts:
+        return "no hot spots"
+    return parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
+
+
+def in_unit(record: dict | None, scale_to_m: float | None) -> dict | None:
+    """The measurement re-read in the unit the user confirmed: every length scales by the ratio of
+    the confirmed unit to the one it was measured under (a file read as millimetres and confirmed
+    as inches has every length 25.4 times longer). For FEA build step 4, which plans in the
+    confirmed unit."""
+    if not isinstance(record, dict):
+        return record
+    measured_under = float(record.get("scale_to_m") or 0.0)
+    if not scale_to_m or measured_under <= 0:
+        return dict(record)
+    k = float(scale_to_m) / measured_under
+    if abs(k - 1.0) <= 1e-12:
+        return dict(record)
+    from meshpipeline.application.geometry_check import rescaled_lengths
+
+    out = rescaled_lengths(record, k)
+    out["scale_to_m"] = float(scale_to_m)
+    return out
+
+
+__all__ = ["MULTI_BODY", "QUESTION", "SHOWN_HOT_SPOTS", "STAGE_FEA", "STAGE_FLOW", "STAGE_THERMAL",
+           "body_count", "clean_words", "fea_view", "hot_spot_words", "in_unit", "measure_view",
+           "multi_body_message", "stage_route"]

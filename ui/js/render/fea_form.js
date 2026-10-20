@@ -1,6 +1,8 @@
 // Responsibility: Build the FEA part check - the part's size in the file's unit, the unit box, how
 // many bodies the file has and what the clean check found, and the one question "Is this your part
-// and are the units right?" - and read the answer back out of it.
+// and are the units right?" - and read the answer back out of it. Below them, what the measurement
+// found (FEA build step 3): the thinnest wall and the hot spots the mesh will be refined at, shown
+// only (version 1 refines them all automatically; nothing here edits them).
 // Boundaries: markup and a reading of it. No fluid, no openings, no flow axis and no stickers: an
 // FEA part is meshed as itself. It fetches nothing and starts no run; the stage and the card both
 // use it, and confirming is the callback they were handed.
@@ -26,6 +28,40 @@ function cleanHtml(f) {
   return `<span class="fea-clean ${cls}"><span class="ic">${mark}</span>${esc(f.clean_summary || "")}</span>`;
 }
 
+/** One hot spot in words, its size in the file's numbers: "Hole · radius 7.5 mm". */
+function spotWords(h, p) {
+  const u = `<span class="gc-u">${esc(unitOf(p))}</span>`;
+  const name = { hole: "Hole", fillet: "Fillet", notch: "Notch", groove: "Groove", "inside corner": "Sharp inside corner" }[h.shape] || "Hot spot";
+  const size = h.type === "sharp_corner"
+    ? `${esc(String(Math.round(h.angle_deg)))}°, refinement capped`
+    : `radius ${esc(shown(h.radius_mm, p))} ${u}`;
+  return `<b>${esc(name)}</b> · ${size}`;
+}
+
+/** What the measurement found (cad/fea_measure): the thinnest wall and the hot spots the mesh will
+ *  be refined at. Shown only: version 1 refines every one automatically. `m` is the server's
+ *  `fea.measure`; nothing at all before the part was measured. */
+export function measureHtml(m, p) {
+  if (!m) return "";
+  if (!m.measured) {
+    return `<div class="rc-row"><div class="rc-k">Hot spots</div><div class="rc-v fea-unmeasured">Not measured: ${esc(m.reason || "")}</div></div>`;
+  }
+  const u = `<span class="gc-u">${esc(unitOf(p))}</span>`;
+  const wall = m.thickness_min_mm == null ? "not measured"
+    : `${esc(shown(m.thickness_min_mm, p))} ${u}${m.thickness_face ? ` <span class="fea-where">(${esc(m.thickness_face)})</span>` : ""}`;
+  const spots = m.hot_spots || [];
+  const list = spots.slice(0, 8).map((h) =>
+    `<li class="fea-spot-row" data-spot="${esc(h.id)}"><span class="fea-spot-id">${esc(h.id)}</span><span>${spotWords(h, p)}</span></li>`).join("");
+  const rest = Math.max(0, spots.length - 8) + (m.more || 0);
+  const more = rest ? `<li class="fea-spot-more">and ${rest} more</li>` : "";
+  const capped = spots.some((h) => h.capped)
+    ? `<div class="gc-note">A perfectly sharp inside corner's stress never settles however fine the mesh, so refinement there stops at a set level.</div>` : "";
+  return `<div class="rc-row"><div class="rc-k">Thinnest wall</div><div class="rc-v fea-wall">${wall}</div></div>
+    <div class="rc-row"><div class="rc-k">Hot spots</div><div class="rc-v fea-spots-sum">${esc(m.summary || "")}</div></div>
+    ${spots.length ? `<ul class="fea-spots" aria-label="Hot spots the mesh will be refined at">${list}${more}</ul>
+    <div class="gc-note">The mesh is refined at these automatically.</div>${capped}` : ""}`;
+}
+
 /** The panel's body for one check: `f` is the server's `fea` view, `p` the proposal (size, unit). */
 export function feaPanelHtml(f, p) {
   const blocked = f.single_part_only || "";
@@ -40,6 +76,7 @@ export function feaPanelHtml(f, p) {
       <div class="rc-row"><div class="rc-k">Bodies</div><div class="rc-v fea-bodies">${esc(bodiesHtml(f))}</div></div>
       <div class="rc-row"><div class="rc-k">Clean check</div><div class="rc-v">${cleanHtml(f)}</div></div>
       ${why}
+      ${measureHtml(f.measure, p)}
       ${blocked ? `<div class="fea-blocked" role="alert">${esc(blocked)}</div>` : ""}
       <div class="gc-tools"><button class="gc-measure v-btn" type="button" title="measure between two points on the part">Measure</button><span class="gc-tools-hint">click two points to check a length</span></div>
       <p class="fea-q">${esc(f.question || "Is this your part and are the units right?")}</p>

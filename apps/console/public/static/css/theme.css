@@ -978,3 +978,15 @@ th,td{border-color:var(--border)}
   color:var(--text);font-size:var(--fs-sm);line-height:1.5}
 .fea-q{margin:14px 0 8px;color:var(--text);font-weight:600}
 .fea-card{padding:0 16px 12px}
+/* an FEA part's measurement: the thinnest wall and the hot spots, listed and tagged on the part
+   (shown only). The tags wear a quiet steel blue, apart from the stickers' yellow. */
+.fea-where{color:var(--text-faint)}
+.fea-unmeasured{color:var(--text-faint)}
+.fea-spots{list-style:none;margin:6px 0 0;padding:0;font-size:var(--fs-sm);line-height:1.5}
+.fea-spot-row{display:flex;gap:8px;align-items:baseline;padding:2px 6px;border-radius:var(--r-sm,4px);cursor:default}
+.fea-spot-row.sel{background:var(--surface-2)}
+.fea-spot-id{min-width:2.4em;color:var(--text-faint);font-variant-numeric:tabular-nums}
+.fea-spot-more{padding:2px 6px;color:var(--text-faint)}
+.fea-spot{min-width:26px;padding:0 4px;background:#6b9edb;color:#0e1620;font-size:11px;font-weight:600;
+  border-color:rgba(255,255,255,.85)}
+.fea-spot.sel{background:var(--accent);color:#fff}
