@@ -1,5 +1,5 @@
 # Responsibility: Keep each run's "why" record: every decision the run made on its own, the written rule (docs/RULES.md) behind it, and the inputs that rule read.
-# Owns: the record's entry shape, the rulebook version, the pure rule functions for the decisions already made by rule (engine pick, engine switch, delivered attempt), the replay that re-decides them from their recorded inputs, and the plain sentences an operator reads.
+# Owns: the record's entry shape, the rulebook version, the pure rule functions for the decisions made by rule (engine pick, engine switch, delivered attempt, the verdict), the replay that re-decides them from their recorded inputs, and the plain sentences an operator reads.
 # Boundaries: pure over plain data. It decides nothing for a run: the deciding code stays where it is, and this module names the rule and can re-derive the outcome. A record that cannot be built never touches a verdict.
 # Collaborates with: application/why_record (builds the record from a run's final state), application/run_reproducibility (writes it as the `why` section), application/review_delivery (cites the DEL rule), api/v1/admin_ops and devtools/why.py (read it).
 """THE WHY RECORD.
@@ -36,7 +36,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 #: docs/RULES.md "Rulebook version". Raised whenever a rule changes what it decides.
-RULES_VERSION = "1"
+RULES_VERSION = "2"
 
 SOURCE_RULE = "rule"
 SOURCE_USER = "user"
@@ -47,6 +47,7 @@ SOURCES = (SOURCE_RULE, SOURCE_USER, SOURCE_AI_LEVER, SOURCE_GUARD_CLOCK)
 STAGE_ENGINE_PICK = "engine_pick"
 STAGE_SWITCH = "switch"
 STAGE_DELIVERED = "delivered"
+STAGE_VERDICT = "verdict"
 
 
 @dataclass(frozen=True)
@@ -221,6 +222,107 @@ def _int(v: Any) -> int | None:
 
 
 # #
+# VER: pass, delivered with concerns, or fail - from measured limits only
+# #
+
+VER_FAIL = "VER-1"
+VER_CONCERNS = "VER-2"
+VER_CLEAN = "VER-3"
+VER_WRONG_PROBLEM = "VER-4"
+
+OUTCOME_CLEAN = "pass"
+OUTCOME_CONCERNS = "concerns"
+OUTCOME_FAIL = "fail"
+OUTCOME_WRONG_PROBLEM = "wrong_problem"
+
+#: VER-4's measured checks: each way a mesh can be a different problem than the one confirmed
+#: (the review taxonomy's classes) -> the executor gates that measure it. A mesh one of these gates
+#: refused never validates, so the run fails on the gate's own measured account; this table only
+#: names that failure VER-4 instead of VER-1. A class with no gate has no measured check yet: a
+#: review can never stand in for one (it is a note), and the class is listed so a check is built.
+WRONG_PROBLEM_CHECKS: Mapping[str, tuple[str, ...]] = {
+    "wrong_side_meshed": ("port_areas", "region_contract"),
+    "missing_geometry": ("file_fidelity",),
+    "wrong_scale": (),                # measured as a VER-2 concern (the believable-size row)
+    "wrong_flow_setup": ("domain_extent", "port_areas"),
+    "wrong_boundaries": ("patch_contract", "boundary_types", "port_areas"),
+    "no_flow_path": (),
+    "shape_changed": ("file_fidelity",),
+    "junk_regions": ("regions_split",),   # one-region engines: a VER-2 concern (regions row)
+    "requirement_absent": (),         # measured as a VER-2 concern (the requirement rows)
+}
+WRONG_PROBLEM_GATES = frozenset(g for gates in WRONG_PROBLEM_CHECKS.values() for g in gates)
+
+
+def _finite(v: Any) -> bool:
+    return not (isinstance(v, float) and not math.isfinite(v))
+
+
+def limit_met(measured: Any, op: str, limit: Any) -> bool | None:
+    """Does a measured value meet its limit? None when nothing (or nothing finite) was measured -
+    an unmeasured row is listed as such and decides nothing."""
+    if measured is None or not _finite(measured):
+        return None
+    if op == "empty":
+        return not measured
+    if op == "==":
+        return bool(measured == limit)
+    if isinstance(measured, bool):
+        return None
+    try:
+        m, lim = float(measured), float(limit)
+    except (TypeError, ValueError):
+        return None
+    if op == "<=":
+        return m <= lim
+    if op == ">=":
+        return m >= lim
+    if op == "<":
+        return m < lim
+    if op == ">":
+        return m > lim
+    return None
+
+
+def _rows(inputs: Mapping[str, Any], key: str) -> list[Mapping]:
+    return [r for r in (inputs.get(key) or ()) if isinstance(r, Mapping)]
+
+
+def missed_limits(inputs: Mapping[str, Any]) -> list[dict]:
+    """The production limits (VER-2) the measured numbers miss, each as measured vs limit."""
+    return [dict(r) for r in _rows(inputs, "limits")
+            if limit_met(r.get("measured"), str(r.get("op") or ""), r.get("limit")) is False]
+
+
+def failed_gating(inputs: Mapping[str, Any]) -> list[dict]:
+    """The gating rows (VER-1) the measured numbers fail."""
+    return [dict(r) for r in _rows(inputs, "gating")
+            if limit_met(r.get("measured"), str(r.get("op") or ""), r.get("limit")) is False]
+
+
+def verdict(inputs: Mapping[str, Any]) -> tuple[str, str]:
+    """(the outcome, the VER rule) from the measured numbers alone.
+
+    inputs: valid (the executor validated the delivered mesh: every gate passed); failed_gate (the
+    gate that refused the last attempt, '' when none); gating (rows: key, measured, op, limit);
+    limits (the production limits for this engine and purpose, the same shape). Nothing a review
+    said is read here: a review's notes are recorded beside the verdict, never in it."""
+    if inputs.get("valid") is not True or failed_gating(inputs):
+        gate = str(inputs.get("failed_gate") or "")
+        if gate in WRONG_PROBLEM_GATES:
+            return OUTCOME_WRONG_PROBLEM, VER_WRONG_PROBLEM
+        return OUTCOME_FAIL, VER_FAIL
+    if missed_limits(inputs):
+        return OUTCOME_CONCERNS, VER_CONCERNS
+    return OUTCOME_CLEAN, VER_CLEAN
+
+
+#: the rules a verdict can name, by outcome
+VERDICT_RULES = {OUTCOME_CLEAN: VER_CLEAN, OUTCOME_CONCERNS: VER_CONCERNS,
+                 OUTCOME_FAIL: VER_FAIL, OUTCOME_WRONG_PROBLEM: VER_WRONG_PROBLEM}
+
+
+# #
 # the replay
 # #
 
@@ -229,6 +331,7 @@ REPLAYERS: dict[str, Callable[[Mapping[str, Any]], tuple[Any, str]]] = {
     STAGE_ENGINE_PICK: engine_pick,
     STAGE_SWITCH: switch,
     STAGE_DELIVERED: delivered,
+    STAGE_VERDICT: verdict,
 }
 
 
@@ -323,4 +426,8 @@ __all__ = ["DELIVERY_ONLY_ONE", "DELIVERY_RULES", "REPLAYERS", "RULES_VERSION", 
            "ENGINE_PICK_ALSO", "Entry",
            "cite", "cited_for", "cited_rules", "delivered", "delivery_rule", "engine_pick",
            "engine_pick_source", "record", "replay", "sentences", "switch", "switch_rule",
-           "switch_source"]
+           "switch_source",
+           "OUTCOME_CONCERNS", "OUTCOME_FAIL", "OUTCOME_CLEAN", "OUTCOME_WRONG_PROBLEM",
+           "STAGE_VERDICT", "VERDICT_RULES", "VER_CONCERNS", "VER_FAIL", "VER_CLEAN",
+           "VER_WRONG_PROBLEM", "WRONG_PROBLEM_CHECKS", "WRONG_PROBLEM_GATES", "failed_gating",
+           "limit_met", "missed_limits", "verdict"]

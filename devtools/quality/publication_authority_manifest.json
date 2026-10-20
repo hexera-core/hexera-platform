@@ -2048,6 +2048,34 @@
   "roots": []
  },
  {
+  "context": "application/final_result.py::derive_terminal_status::error#1|NotAPublisher|not-a-publisher|application/final_result.py::callers of derive_terminal_status()",
+  "path": "application/final_result.py",
+  "qualname": "derive_terminal_status",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "jlog",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "application/final_result.py::callers of derive_terminal_status()"
+  ]
+ },
+ {
+  "context": "application/final_result.py::measured_verdict::verdict#1|NotAPublisher|not-a-publisher|",
+  "path": "application/final_result.py",
+  "qualname": "measured_verdict",
+  "semantic": "verdict",
+  "method": "verdict",
+  "ordinal": 1,
+  "receiver": "dr",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "application/geometry_confirmation.py::declared_case::search#1|NotAPublisher|not-a-publisher|",
   "path": "application/geometry_confirmation.py",
   "qualname": "declared_case",

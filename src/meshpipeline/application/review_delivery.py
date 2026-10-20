@@ -154,6 +154,11 @@ def _measure(state: Mapping, *, attempt: int, engine: str, workspace: str, manif
     from meshpipeline.agents.reviewer.review_policy import blocking_findings
     blocking = len(blocking_findings([dict(f) for f in findings if isinstance(f, Mapping)]))
     verdict = str(entry.get("verdict") or (state.get("reviewer_verdict") if current else "") or "")
+    from meshpipeline.application.final_result import limits_decide
+    if limits_decide():
+        # ONCE THE MEASURED LIMITS DECIDE, a review ranks nothing: DEL-1 and DEL-6 never separate
+        # two meshes, and a tie on everything measured goes to the earlier attempt (DEL-10)
+        blocking, verdict = 0, ""
     return Candidate(attempt=attempt, engine=engine, workspace=workspace, manifest=manifest,
                      entry=entry, current=current, failed_checks=failed, unmet=tuple(unmet),
                      max_non_ortho=_num(quality.get("max_non_ortho")),

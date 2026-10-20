@@ -285,6 +285,20 @@ def route_after_reviewer(
         logger.info("route_after_reviewer: dispute ACCEPT re-review (verdict=%s) - honouring "
                     "the verdict - job_id=%s", verdict, state.get("job_id"))
 
+    from meshpipeline.settings import policy as _polcfg
+    if _polcfg.VERDICT_BY_LIMITS:
+        # THE REVIEW ONLY ADDS NOTES (docs/RULES.md VER-1..4). A mesh reaches the reviewer only
+        # after every measured gate passed, so whatever the review says, the run ends here: the
+        # measured limits decide pass or concerns at terminal assembly, and the review's points
+        # are shown as notes. No rebuild, no bonus attempt, no wrong-problem failure. (A user's
+        # dispute in rebuild mode, above, is the user asking for a rebuild, not the review.)
+        logger.info("route_after_reviewer: review concluded (verdict=%s, a note only) → END; "
+                    "the measured limits decide (attempt=%d/%d) - job_id=%s", verdict,
+                    retry_count, bcfg.BUILDER_MAX_TOTAL_ATTEMPTS, state.get("job_id"))
+        return _END
+
+    # SHADOW (VERDICT_BY_LIMITS off): the review-led routing below still decides. Retired when the
+    # limits verdict is switched on: asks_for_rebuild, concern_retry_spent and the bonus attempt.
     if verdict == Verdict.PASS:
         logger.info(
             "route_after_reviewer: PASS - job_id=%s attempt=%d/%d",

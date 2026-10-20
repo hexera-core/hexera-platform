@@ -237,5 +237,7 @@ export function terminalResult(job, outcomeText) {
     // "delivered_with_concerns" - never shown as a pass - and carries those points
     reviewOutcome: job.review_outcome || "",
     concerns: job.review_concerns || [],
+    // the AI reviewer's notes, each labelled "Reviewer note" - shown, never a verdict
+    notes: job.review_notes || [],
   };
 }

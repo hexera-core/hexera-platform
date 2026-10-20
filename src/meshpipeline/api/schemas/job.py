@@ -59,6 +59,9 @@ class JobStatus_(BaseModel):
     # the run ends, or when no review outcome applies. `review_concerns` lists the open points.
     review_outcome: str | None = None
     review_concerns: list[str] = []
+    # the AI reviewer's notes on a run the measured limits decided, each labelled
+    # "Reviewer note: ..." - shown to the customer, deciding nothing (docs/RULES.md VER)
+    review_notes: list[str] = []
     # WHY THE OWNER CANCELLED, in their words. Set only on a `cancelled` job, and only when they
     # gave one; the closing line itself is the final_message, the same on every surface.
     cancel_reason: str | None = None

@@ -4,7 +4,7 @@ Every decision a mesh run makes on its own is made by a written rule. Each rule 
 and each decision the run records in its "why" record names the rule behind it
 (`contracts/decision_record.py`). This file is the one home for those rules.
 
-Rulebook version: **1**
+Rulebook version: **2**
 
 How the book is kept honest:
 
@@ -74,25 +74,75 @@ rule. An invalid mesh is never delivered.
 | ID | Status | Rule |
 |---|---|---|
 | DEL-0 | in force | **The only valid mesh** the run built is the one delivered. |
-| DEL-1 | in force | **A mesh the review confirmed is the wrong problem ranks last** (a cited, inspected wrong-problem finding, not a concern). |
+| DEL-1 | in force | **A mesh the review confirmed is the wrong problem ranks last** (a cited, inspected wrong-problem finding, not a concern). Shadow period only: once `VERDICT_BY_LIMITS` is on, a review ranks nothing and this position never separates two meshes. |
 | DEL-2 | in force | **A mesh that passes every fixed quality limit beats one that does not.** |
 | DEL-3 | in force | **Fewer failed quality checks wins.** |
 | DEL-4 | in force | **Meeting more of the approved plan wins** (layers on the wall, wake refinement, stated sizes). |
 | DEL-5 | in force | **Better worst cells win**, compared to the whole degree of non-orthogonality. |
-| DEL-6 | in force | **On a measured tie, the mesh whose review passed wins.** D2 retires this: a review will no longer rank meshes. |
+| DEL-6 | in force | **On a measured tie, the mesh whose review passed wins.** Shadow period only: once `VERDICT_BY_LIMITS` is on, a review ranks nothing and a tie on everything measured goes to the earlier attempt (DEL-10). |
 | DEL-7 | in force | **Lower worst non-orthogonality wins** (exact value). |
 | DEL-8 | in force | **Lower worst skewness wins.** |
 | DEL-9 | in force | **More wall covered by prism layers wins.** |
 | DEL-10 | in force | **The earlier attempt wins** when everything measured is the same. |
 
-## VER: pass, delivered with concerns, or fail (planned, D2)
+## VER: pass, delivered with concerns, or fail
+
+Decided by `contracts/decision_record.verdict` from measured numbers alone, read off the delivered
+mesh by `engines/verdict_limits.py`. Every finished run's why record carries one `verdict` entry:
+the outcome, the VER rule, and every row below with its measured number, its limit and its
+source, so the verdict replays from the record. Nothing the AI reviewer wrote is an input.
+
+**The AI reviewer only adds notes.** It still looks at the pictures. Its points are shown to the
+customer under "Reviewer notes", each one labelled "Reviewer note". It cannot change a status,
+start a rebuild, a bonus attempt or a retry, rank one mesh over another, or fail a job as the
+wrong problem. A user's own dispute ("rebuild it") is the user's decision and still rebuilds.
+
+**Shadow first.** The setting `VERDICT_BY_LIMITS` (off by default) switches the limits verdict on.
+While it is off, the review-led verdict still decides, and the limits verdict is worked out on
+every run beside it: one `verdict shadow:` log line (limits outcome, rule, review-led outcome,
+whether they agree, the limits missed) and the `verdict` entry in the why record.
 
 | ID | Status | Rule |
 |---|---|---|
-| VER-1 | planned (D2) | **Fail:** no valid mesh after the ladder and the switches. |
-| VER-2 | planned (D2) | **Delivered with concerns:** valid, but at least one production limit is missed; each one listed as measured vs. limit. |
-| VER-3 | planned (D2) | **Clean pass:** every gating row and every production limit is met. |
-| VER-4 | planned (D2) | **Wrong problem:** decided by measured checks only. |
+| VER-1 | in force | **Fail: no valid mesh.** The executor's gates refused the last attempt, or the mesh's own numbers fail one of the engine's gating rows (its `criteria.py` rows marked gating: checkMesh fatal defects, wall captured, ports captured, the quality floors, the cell ceiling, regions and interfaces). An invalid mesh is never delivered. |
+| VER-2 | in force | **Delivered with concerns:** the mesh is valid but misses at least one production limit (table below). Each one is listed as measured vs limit. |
+| VER-3 | in force | **Clean pass:** valid, and every production limit that applies is met (a limit whose number was not measured is listed as unmeasured and decides nothing). |
+| VER-4 | in force | **Wrong problem, by measured checks only.** The run failed at a gate that measures one of the ways a mesh can be a different problem than the one confirmed (table below). The gate's own measured account is what the user reads. |
+
+### VER-2 production limits, per engine and purpose
+
+| Limit | Engines | Applies to | Limit value | Source |
+|---|---|---|---|---|
+| Worst face non-orthogonality | snappy, cfMesh, multi-region | every flow | at most 70 degrees | checkMesh warns above 70 |
+| Worst face non-orthogonality | gmsh | external and internal flow (not FEA) | at most 85 degrees | gmsh's own gating bar, so a mesh past it never validates |
+| Share of skewed faces | cfMesh | every flow | at most 0.05% | the snappy-family gating bar (advisory for cfMesh, which often does not report it) |
+| Wall covered by prism layers | snappy, cfMesh, multi-region, VMTK | when the approved plan builds layers | at least 80% | lab history: below it wall shear and y+ are unreliable on a material share of the wall |
+| Layers built short of the layers asked | cfMesh | when the approved plan builds layers | none short | the layer census (layers in the meshDict vs the request) |
+| Connected cell regions | snappy, cfMesh, gmsh, VMTK | every flow | at most 1 | checkMesh's region count: a second region is cut off from the flow |
+| Cells across the narrowest passage | snappy, cfMesh, gmsh, VMTK | internal flow | at least the resolution floor (12) | the resolution floor's own reading; narrow side passages it set aside are listed here |
+| Stated requirements met | every engine | every flow | no near-miss | the executor's measured requirement checks (`requirement_caveats`) |
+| A believable size for what it is | every engine | every flow | no size concern | the unit-plausibility check on the delivered body |
+| The engine's own declared advisory lists | snap-grid | every flow | empty | `engines/snapgrid/criteria.py` (thin layers short, resolution short) |
+
+The table is `engines/verdict_limits.PRODUCTION_LIMITS`. A limit names engines and flows, never a
+file, a part or a model. Changing a number here means changing the table, this book and the
+version in the same PR.
+
+### VER-4 measured checks
+
+| Way the mesh is the wrong problem | Measured by | Today |
+|---|---|---|
+| The wrong side of the body was meshed | `port_areas`, `region_contract` | gates |
+| Part of the confirmed geometry is missing | `file_fidelity` | gate (snap-grid); CAD fidelity checks to come (#225) |
+| The wrong scale | the believable-size row of VER-2 | a concern, not a failure |
+| The flow setup contradicts what was confirmed | `domain_extent`, `port_areas` | gates |
+| A boundary contradicts what was confirmed | `patch_contract`, `boundary_types`, `port_areas` | gates |
+| No flow path from inlet to outlet | none yet | no measured check: a review claim is a note, and the shadow log lists it |
+| The meshed surface differs from the CAD | `file_fidelity` | gate (snap-grid); CAD fidelity checks to come (#225) |
+| Disconnected junk regions | `regions_split` (multi-region); the regions row of VER-2 | gate; a concern on one-region engines |
+| A stated requirement is absent | the requirement rows of VER-2 | a concern |
+
+The table is `contracts/decision_record.WRONG_PROBLEM_CHECKS`.
 
 ## Reserved families
 
