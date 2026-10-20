@@ -76,6 +76,16 @@ CAD_REPAIR_FILL_NONPLANAR_HOLES: bool = bool_env("CAD_REPAIR_FILL_NONPLANAR_HOLE
 #: it on.
 CAD_REPAIR_HEAL_SELF_INTERSECTIONS: bool = bool_env("CAD_REPAIR_HEAL_SELF_INTERSECTIONS", "false")
 
+#: Sweep away SLIVER FACES - the sub-tolerance strips and spots a Boolean that just missed leaves
+#: behind. Separate from CAD_REPAIR_ALLOW_FACE_REMOVAL on purpose: that knob waives the
+#: face-removal check for EVERY operation in a run, while this one consents to a single bounded
+#: operation (`operations.FixSmallFaces`) that re-measures each face it was aimed at, declares
+#: exactly how many faces it removed, and is refused the moment the count or the size of what
+#: actually went disagrees with that declaration. It still removes geometry the customer's file
+#: carried - a 0.002 mm strip nobody could machine, but geometry - so it is off by default and a
+#: deployment opts in.
+CAD_REPAIR_FIX_SMALL_FACES: bool = bool_env("CAD_REPAIR_FIX_SMALL_FACES", "false")
+
 #: The largest hole that may be patched, as a fraction of the part's diagonal measured across the
 #: hole's own bounding box. Past this it is not a hole, it is a missing wall - and a flat lid over
 #: a missing wall is a different part, not a repaired one.

@@ -46,6 +46,15 @@ logger = logging.getLogger(__name__)
 _SEVERITY_RANK = {DefectSeverity.fatal: 0, DefectSeverity.error: 1,
                   DefectSeverity.warning: 2, DefectSeverity.info: 3}
 
+#: Within one severity, the BIGGER entity first: repairing a shell can rewrite its faces and a
+#: face its edges, never the other way round, so aiming big-first lets one kept operation subsume
+#: the smaller findings before they are proposed at all. The old tie-break was alphabetical
+#: (edge < face), and on a part whose sliver FACE was also reported through twenty of its sliver
+#: EDGES the loop spent its whole stall budget on edge fixes that cannot remove a face and the
+#: face sweep was never proposed. An unknown entity type sorts last, not first: nothing is known
+#: about what it subsumes.
+_ENTITY_RANK = {"shell": 0, "face": 1, "wire": 2, "edge": 3, "vertex": 4}
+
 
 @dataclass(frozen=True, slots=True)
 class Candidate:
@@ -252,7 +261,8 @@ class RulesPlanner:
 
         ordered = sorted(
             defects,
-            key=lambda d: (_SEVERITY_RANK.get(d.severity, 9), d.entity_type, d.entity_index,
+            key=lambda d: (_SEVERITY_RANK.get(d.severity, 9),
+                           _ENTITY_RANK.get(d.entity_type, 9), d.entity_index,
                            d.code.value))
 
         held = held_fingerprints(defects, self._reserved)
