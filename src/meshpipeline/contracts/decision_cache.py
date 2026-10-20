@@ -67,6 +67,13 @@ _TOOL_ID = re.compile(r"\b(call|fc|toolu|tool)_[A-Za-z0-9_-]{6,}\b")
 _ABS_PATH = re.compile(r"(?<![\w.])/(?:[\w.@+-]+/)+([\w.@+-]+)")
 _TMP_SUFFIX = re.compile(r"\b(tmp|cr_ws_|lab-|ws_)[A-Za-z0-9_]{4,}\b")
 _DATA_URL = re.compile(r"data:([\w/+.-]+);base64,([A-Za-z0-9+/=]+)")
+# The whole URL token, its query string cut in code: one pass, no backtracking on "http://http://..."
+_URL = re.compile(r"https?://[^\s\"']*")
+
+
+def _drop_query(m: re.Match) -> str:
+    head, sep, _ = m.group(0).partition("?")
+    return head if sep and len(head) > head.index("://") + 3 else m.group(0)
 
 
 def _canon_text(text: str) -> str:
@@ -78,7 +85,7 @@ def _canon_text(text: str) -> str:
         # "sha" glued to the digest: the long-hex rule below must not erase which picture it was
         return f"<{m.group(1)} sha{hashlib.sha256(raw).hexdigest()}>"
     t = _DATA_URL.sub(_data, text)
-    t = re.sub(r"(https?://[^\s\"'?]+)\?[^\s\"']*", r"\1", t)     # signed-URL query strings
+    t = _URL.sub(_drop_query, t)                                     # signed-URL query strings
     t = _UUID.sub("<id>", t)
     t = _ISO_TIME.sub("<time>", t)
     t = _TOOL_ID.sub("<call>", t)
