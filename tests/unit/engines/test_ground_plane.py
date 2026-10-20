@@ -599,3 +599,37 @@ class TestTheDriver:
         errors = [(a, k) for name, a, k in pub.calls if name == "aerror"]
         assert errors and errors[0][1]["op_id"] == "snappy:ground-unusable"
         assert "horizontal axis" in errors[0][0][0]
+
+    def test_a_refused_setup_is_recorded_for_the_closing_message(self, driver, tmp_path):
+        # job dce77409: the refusal was only said on the live line, and the run closed on "the
+        # notes above say what it stopped on" - the record carries the reason to the executor
+        from meshpipeline.contracts.failure_cause import FailureCause, describe
+        from meshpipeline.engines.preflight import read_refusal
+        run, _seen = driver
+        ok, _pub = run(flow_axis="+z")
+        assert ok is False
+        rec = read_refusal(tmp_path)
+        assert rec is not None and rec.cause == FailureCause.NOT_BUILT.value
+        assert rec.facts["setup"] is True and rec.facts["deterministic"] is True
+        assert "horizontal axis" in rec.facts["reason"]
+        what, next_step = describe(rec.cause, rec.facts, engine="snappyHexMesh")
+        assert "horizontal axis" in what and "your geometry was not the problem" in what
+        assert "from your file" not in what and "notes above" not in what
+        assert "stop the same way" in next_step
+
+    def test_a_symmetry_plane_through_a_whole_body_is_recorded_with_its_reason(
+            self, driver, tmp_path, monkeypatch):
+        from meshpipeline.engines.preflight import read_refusal
+        monkeypatch.setattr(R, "detect_symmetry_plane", lambda *a, **k: None)
+        run, seen = driver
+        ok, _pub = run(patches=[("body", "wall"), ("farfield", "farfield"),
+                                ("symmetry", "symmetry")])
+        assert ok is False and "render" not in seen
+        rec = read_refusal(tmp_path)
+        assert rec is not None and "not a half-model" in rec.facts["reason"]
+
+    def test_a_built_case_leaves_no_refusal_record(self, driver, tmp_path):
+        from meshpipeline.engines.preflight import read_refusal
+        run, _seen = driver
+        ok, _pub = run()
+        assert ok is True and read_refusal(tmp_path) is None

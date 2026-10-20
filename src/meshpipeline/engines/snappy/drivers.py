@@ -726,6 +726,17 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                         f"symmetry to mesh the whole body on the ground, or drop '{_ground}'.")
     if _refusal:
         await publish.aerror(_refusal, op_id=_refusal_op)
+        # RECORDED for the executor, not only said on the live line: without the record the run
+        # ended as "stopped while preparing the mesh - the notes above say what it stopped on"
+        # (job dce77409: a symmetry plane approved through a whole body), and the reason never
+        # reached the closing message. It is the approved SETUP the box cannot carry, not the file.
+        from meshpipeline.contracts.failure_cause import FailureCause
+        PreflightRefusal(
+            gate="finalize", cause=FailureCause.NOT_BUILT.value,
+            builder_text=f"[SETUP_UNUSABLE] {_refusal}",
+            facts={"engine": "snappyHexMesh", "reason": _refusal, "setup": True,
+                   "before_meshing": True, "deterministic": True,
+                   "meshers_started": 0}).write(workspace)
         return False
     # WHERE THE FLOOR GOES, measured once per build from the body itself (the geometry is fixed
     # across passes). A body resting on a flat face keeps the floor at its lowest point; one that
