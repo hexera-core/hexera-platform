@@ -95,7 +95,7 @@ def test_the_holding_line_is_the_models_own_headline(view):
     assert gh.wait_reply(False) == gh.WAIT_REPLY
 
 
-async def _settle(monkeypatch, *, applies, stored=(False, ""), mode=""):
+async def _settle(monkeypatch, *, applies, stored=(False, ""), mode="", said="mesh it"):
     monkeypatch.setattr(gh, "hold_applies", lambda sid: applies)
     monkeypatch.setattr(gh, "queue_naming", lambda *a: True)
     monkeypatch.setattr(gh, "stored_thermal", lambda sid: stored)
@@ -106,9 +106,9 @@ async def _settle(monkeypatch, *, applies, stored=(False, ""), mode=""):
     repo = MagicMock(); repo.append_message = AsyncMock()
     locked = SimpleNamespace(id=SID, owner_id="alice", job_id=None, geometry_source_id=None,
                              geometry_interpretation_id=None, intake_gate={}, messages=[])
-    inbound = msg.InboundMessage(session_id=SID, owner_id="alice", content="mesh it", organization_id="o")
+    inbound = msg.InboundMessage(session_id=SID, owner_id="alice", content=said, organization_id="o")
     out = await msg._settle(inbound, AsyncMock(), gate={}, locked=locked,
-                            messages=[{"role": "user", "content": "mesh it"}], revision="r1",
+                            messages=[{"role": "user", "content": said}], revision="r1",
                             session_repo=repo, logger=MagicMock())
     return out, repo
 
@@ -131,8 +131,12 @@ async def test_before_the_check_has_read_the_file_the_format_says_it_is_a_therma
 
 @pytest.mark.asyncio
 async def test_an_ordinary_upload_keeps_the_generic_holding_line(monkeypatch):
-    out, _ = await _settle(monkeypatch, applies="queue")
+    out, _ = await _settle(monkeypatch, applies="queue", said="water through this elbow")
     assert out.reply == gh.HOLD_REPLY
+    # words that do not say what the mesh is for get the one purpose question first, with buttons
+    from meshpipeline.application import purpose_map as pm
+    out, _ = await _settle(monkeypatch, applies="queue")
+    assert out.status is msg.MessageStatus.purpose_question and out.reply == pm.DOMAIN_QUESTION
 
 
 # --------------------------------------------------------------------- the declaration ----

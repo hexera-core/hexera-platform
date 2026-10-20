@@ -10,6 +10,9 @@ export const CONFIRMED_MARK = "GEOMETRY CHECK (confirmed by the user):";
 /* how a whole thermal model's declaration begins after the mark (application/geometry_confirmation
    THERMAL_LEAD): it was confirmed on the thermal model panel, not on a picture */
 export const THERMAL_LEAD = "the thermal model";
+/* how an FEA part's declaration begins after the mark (application/geometry_confirmation FEA_LEAD):
+   it was confirmed on the FEA stage, with no fluid, openings or flow */
+export const FEA_LEAD = "a solid part for structural analysis (FEA)";
 
 /** A stored message as a person should read it: the marks the intake reads are taken off - and,
     for a thermal model, the intake's own enum words (input_kind, mesh_fidelity) too. */
@@ -21,6 +24,8 @@ export function displayText(text) {
     if (r.startsWith(THERMAL_LEAD + " ") || r === THERMAL_LEAD)
       return "Confirmed on the thermal model panel: " + r.slice(THERMAL_LEAD.length).trim()
         .replace(/, input_kind [a-z-]+/g, "").replace(/ \(mesh_fidelity [a-z]+\)/g, "");
+    if (r.startsWith(FEA_LEAD))
+      return "Confirmed on the stage: " + r.replace(/, input_kind solid-body:/, ":");
     return "Confirmed on the picture: " + r;
   }
   return t;
@@ -121,6 +126,12 @@ function sel(cls, opts, cur, disabled) {
     `<option value="${v}"${cur === v ? " selected" : ""}>${esc(l)}</option>`).join("")}</select>`;
 }
 
+/** The unit box: the dropdown, the two readings to pick from while the size makes the unit
+ *  doubtful, and the hint. `bindUnit` keeps it live; the FEA stage shows the same box. */
+export function unitBoxHtml(p) {
+  return `${sel("gc-sel gc-unit", UNITS, unitOf(p), p.unit_fixed)}${pickHtml(p)}<span class="gc-unit-hint">${esc(unitHint(p))}</span>`;
+}
+
 /** One row of the openings table. An opening the user added off any measured face has no size
  *  yet: its size cell is a box to type the diameter into. */
 export function rowHtml(o, p) {
@@ -159,7 +170,7 @@ export function formHtml(p) {
       <div class="rc-row"><div class="rc-k">On the ground</div><div class="rc-v"><label><input class="gc-ground" type="checkbox"${p.grounded ? " checked" : ""}> the part stands on the ground</label></div></div>
     </div>`;
   return `<div class="rc-row"><div class="rc-k">The file is</div><div class="rc-v">${sel("gc-sel gc-kind", KIND, p.input_kind)}</div></div>
-    <div class="rc-row"><div class="rc-k">The file's unit</div><div class="rc-v">${sel("gc-sel gc-unit", UNITS, unitOf(p), p.unit_fixed)}${pickHtml(p)}<span class="gc-unit-hint">${esc(unitHint(p))}</span></div></div>
+    <div class="rc-row"><div class="rc-k">The file's unit</div><div class="rc-v">${unitBoxHtml(p)}</div></div>
     <div class="rc-row"><div class="rc-k">The fluid flows</div><div class="rc-v">${sel("gc-sel gc-flow", [["internal", "through the part"], ["external", "around the part"]], p.flow)}</div></div>
     <div class="gc-int"${p.flow === "external" ? " hidden" : ""}>
     ${p.openings_reason ? `<div class="gc-note gc-why">${esc(sentence(p.openings_reason))}</div>` : ""}

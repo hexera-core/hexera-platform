@@ -263,8 +263,8 @@ INTAKE_TOOLS: list[dict] = [
                 "Call this when all required information has been gathered and you are ready "
                 "to submit the simulation requirements. This signals completion of the intake "
                 "conversation and triggers mesh generation. "
-                "All domain-specific parameters (flow conditions, load cases, material properties, "
-                "etc.) must be captured inside request_txt - do not submit until the user has "
+                "All domain-specific parameters the user stated (flow conditions, load cases, material "
+                "properties, etc.) must be captured inside request_txt - do not submit until the user has "
                 "confirmed every parameter you intend to include."
             ),
             "parameters": {
@@ -893,6 +893,66 @@ def _block_thermal_model() -> str:
     )
 
 
+def _block_purpose_map() -> str:
+    # The words for what the mesh is for are routed by the application (application/purpose_map),
+    # not guessed here: a 60-phrase audit on shared dev (2026-10-19) found thermal answers reached
+    # no thermal path at all (0 of 6) and unclear ones defaulted to CFD without asking.
+    from meshpipeline.application import purpose_map as pm
+    return (
+        "\n\nPURPOSE MAP - THE APPLICATION ROUTES WHAT THE MESH IS FOR:\n"
+        "The application reads the user's answer and sends the job down one path: CFD (a fluid "
+        "through or around the part), FEA (the part's own strength, stress or vibration), or "
+        "electronics cooling. When the words did not say, it asked ONE short question with two "
+        f"buttons - '{pm.DOMAIN_QUESTION}' or '{pm.THERMAL_QUESTION}' - and the user's "
+        "answer to it is their purpose. Never ask it again, in any wording.\n"
+        "- Electronics cooling (cooling, a fan, a heat sink, a chip, a board): the purpose is "
+        "conjugate heat transfer when the geometry check confirmed an assembly of solid parts; "
+        "otherwise it is the cooling air through or around the part, as the check confirmed. "
+        "Never structural.\n"
+        "- Heat moving through a solid part (conduction, the temperature inside the part, thermal "
+        "stress or expansion) is the FEA path's 'heat in a solid part', which is coming "
+        "soon: the part is meshed as for static stress (purpose Structural / FEA) - say so in one plain "
+        "line if the user asks for it, and never set it up as a flow.\n"
+        "- An ECXML upload is always the electronics thermal model (its own block above)."
+    )
+
+
+def _block_fea_path() -> str:
+    # The audit's bracket chat proposed '1 kN downward on the opposite end face' and 'steel
+    # E=210 GPa' that nobody had said, and promised refinement the engine could not do. FEA
+    # version 1 asks ONE thing (design section 3.2): every face is named for the user's solver.
+    from meshpipeline.application import purpose_map as pm
+    soon = ", ".join(pm.ANALYSIS_LABELS[k].lower() for k in pm.ANALYSIS_KEYS if k not in pm.V1_ANALYSES)
+    return (
+        "\n\nTHE FEA PATH - ONE QUESTION, NOTHING INVENTED:\n"
+        "When the 'GEOMETRY CHECK (confirmed by the user):' message continues "
+        "'a solid part for structural analysis (FEA)', the user confirmed their part, its unit "
+        "and its size on the FEA stage. The case is settled: purpose Structural / FEA, input kind "
+        "Solid body, dimensionality 3D. Never ask about any of it, about a fluid, openings, a flow "
+        "direction or a far field.\n"
+        f"- The ONLY required question is '{pm.ANALYSIS_QUESTION}' - static stress, vibration "
+        "(modal) or buckling. The application asks it with buttons; never ask it yourself when the "
+        "user already said it ('modal analysis', 'will it buckle'). "
+        f"These are coming soon: {soon}. If the user picks one, say in one plain line that it is "
+        "coming soon and the part is meshed as for static stress (the same solid mesh, every face "
+        "named), and carry on.\n"
+        "- Supports, loads and materials are OPTIONAL. Never ask for them, never propose them, and "
+        "never invent one: no forces, pressures, fixed faces or materials the user did not state, "
+        "in a reply, in request_txt or in review_brief_txt. Every face of the part is kept as a "
+        "named group in the delivered file, so the user applies supports and loads in their own "
+        "solver. A support or load the user states themselves is recorded as they said it.\n"
+        "- patches: [] (every face is named by the mesher), unless the user named faces with a "
+        "role themselves.\n"
+        "- Never promise refinement the engine does not do ('I will refine around the holes'): "
+        "the mesh is sized from the part.\n"
+        "- request_txt says: the part, its unit and size, the analysis type, a solid mesh of "
+        "quadratic tetrahedra with every face named, and any support, load or material ONLY if "
+        "the user stated it. review_brief_txt describes mesh quality only: the solid meshed whole, "
+        "every face present as a named group, well-shaped elements, thin walls and small features "
+        "kept."
+    )
+
+
 def _block_propose_first() -> str:
     return (
         "\n\nPROPOSE, THEN ASK - every question carries your best proposal:\n"
@@ -989,6 +1049,10 @@ INTAKE_PROMPT_BLOCKS: tuple = (
      _block_geometry_check),
     ("thermal_model", "a whole thermal model confirmed on its panel: the case, engine and level are settled; nothing is asked; no generic-CFD words",
      _block_thermal_model),
+    ("purpose_map", "the application routes what the mesh is for (CFD, FEA, electronics cooling, heat in a solid); unclear words got its one two-button question; never asked again",
+     _block_purpose_map),
+    ("fea_path", "an FEA part confirmed on its stage: the analysis type is the only required question; supports, loads and materials are optional, never asked or invented; coming-soon types meshed as static",
+     _block_fea_path),
     ("propose_first", "every question carries a proposed answer read from what is known; 'ok' or 'I do not know' accepts it; one unclear reply and the model moves on; no question twice; the engine goes through its one question, the unit is asked",
      _block_propose_first),
     ("ask_plainly", "one clear thing per reply in plain words, a short numbered list when values are confirmed together; nothing settled is restated; no 'assumption' bookkeeping in chat",

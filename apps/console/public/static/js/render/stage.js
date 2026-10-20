@@ -23,6 +23,8 @@ import { applyFlow, bindAxis, bindUnit, displayText, followAxis, followSuggestio
 import { changedAnswers, editsLine, noteDrawn, servedProposal } from "./geometry_form.js";
 // a thermal model (an ECXML upload) has its own panel, card or stage alike
 import { bindThermalPanel, thermalPanelHtml } from "./thermal_form.js";
+// an FEA part has its own panel too: its size, unit, bodies and clean check, and no flow form
+import { bindFeaPanel, feaPanelHtml } from "./fea_form.js";
 // the run card's live line: the step running now, in plain words
 import { createRunLine } from "./run_progress.js";
 const RunLine = createRunLine();
@@ -176,6 +178,7 @@ export const Stage = {
      session, replaced if the check is shown again. */
   geometryCheck(d,confirm){
     if(d&&d.thermal)return this.thermalCheck(d,confirm);
+    if(d&&d.fea)return this.feaCheck(d,confirm);
     const p=d.proposal||{},pics=d.pictures||[];
     // what the check proposed, kept apart from the card the user edits: Proceed says back what changed
     this._gcServed=servedProposal(null,p);
@@ -258,6 +261,40 @@ export const Stage = {
     bindThermalPanel(g.querySelector('.tm-card'),d.thermal,{confirm:async(body)=>{
       await confirm(body,'');g.querySelector('.tm-card').classList.add('ok');this.scrollBottom();}});
     this.scrollBottom();},
+
+  /* AN FEA PART AS A CARD: the same panel the FEA stage shows, without the picture - the size, the
+     unit box, the bodies, the clean check and the one question. No flow form, no stickers. */
+  feaCheck(d,confirm){
+    this.clearEmpty();
+    if(this._gcEl)this._gcEl.remove();
+    const p={...(d.proposal||{}),openings:[]};
+    const g=document.createElement('div');g.className='im assistant';
+    g.innerHTML=`<div class="who">Your part · for structural analysis</div>
+      <div class="req-card fea-card">${feaPanelHtml(d.fea||{},p)}</div>`;
+    this.col().appendChild(g);this._gcEl=g;this._gcP=p;
+    bindFeaPanel(g.querySelector('.fea-card'),d.fea||{},p,{confirm:(body,edits)=>confirm(body,edits),
+      done:()=>{g.querySelector('.fea-card').classList.add('ok');this.scrollBottom();}});
+    this.scrollBottom();},
+
+  /* THE BUTTONS UNDER AN APPLICATION QUESTION (application/purpose_map): what the mesh is for when
+     the words did not say, and an FEA part's analysis type. A click sends the button's words as the
+     user's own answer. A "coming soon" choice is greyed but still clickable: the part is then
+     meshed as for static stress, and the chat says so. One row per open question; the next reply
+     retires it. */
+  choices(list,pick){
+    const old=this._qcEl;
+    if(old){old.querySelectorAll('button').forEach(b=>{b.disabled=true;});old.classList.add('done');this._qcEl=null;}
+    if(!list||!list.length)return;
+    this.clearEmpty();
+    const g=document.createElement('div');g.className='im assistant qc';
+    g.innerHTML=`<div class="qc-row" role="group" aria-label="Pick an answer">${list.map((c,i)=>
+      `<button type="button" class="qc-btn${c.soon?' soon':''}" data-i="${i}"${c.soon?' title="Coming soon: meshed as for static stress for now"':''}>${esc(c.label)}</button>`).join('')}</div>`;
+    g.querySelectorAll('.qc-btn').forEach(b=>b.addEventListener('click',()=>{
+      const c=list[Number(b.dataset.i)]||{};
+      g.querySelectorAll('.qc-btn').forEach(x=>{x.disabled=true;});
+      b.classList.add('picked');g.classList.add('done');this._qcEl=null;
+      if(pick)pick(c.send||c.label);}));
+    this.col().appendChild(g);this._qcEl=g;this.scrollBottom();},
 
   geometryCheckUpdate(d){
     const g=this._gcEl,p=this._gcP;if(!g||!p||g.querySelector('.gc-done'))return;

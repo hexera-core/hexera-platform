@@ -303,6 +303,47 @@ def thermal_confirmation_message(body) -> str:
     return " ".join(parts)
 
 
+#: HOW AN FEA PART'S DECLARATION BEGINS, after the mark: the part itself for structural analysis
+#: (application/purpose_map routed the words to the FEA path). The console says it was confirmed on
+#: the stage (render/geometry_form.js displayText), and the intake reads the case from it.
+FEA_LEAD = "a solid part for structural analysis (FEA)"
+#: The check mode a confirmation carries for an FEA part (set by the server, never the form).
+FEA_CHECK = "fea"
+_FEA_CASE = "input_kind solid-body: the part itself is meshed, with no fluid around it."
+
+
+def fea_confirmation_message(body) -> str:
+    """The declaration of a part confirmed on the FEA stage: the part, meshed as a solid for
+    structural analysis, how many bodies the file has, what the clean check found, its size and
+    its unit. Nothing in it speaks of a fluid, openings, a flow axis or a far field."""
+    part = str(getattr(body, "part", "") or "").strip()
+    parts = [f"{CONFIRMED_MARK} {FEA_LEAD}" + (f" ({part})" if part else "") + f", {_FEA_CASE}"]
+    bodies = getattr(body, "bodies", None)
+    if isinstance(bodies, int) and bodies > 0:
+        parts.append("One body." if bodies == 1 else f"{bodies} bodies.")
+    clean = str(getattr(body, "clean_summary", "") or "").strip().rstrip(".")
+    if clean:
+        parts.append(f"Clean check: {clean}.")
+    size = getattr(body, "size_mm", None)
+    if size and len(size) == 3:
+        parts.append(f"Part size: {size[0]:.0f} x {size[1]:.0f} x {size[2]:.0f} mm.")
+    said = unit_sentence(body)
+    if said:
+        parts.append(said)
+    # the chat shows the declaration to the user, so it speaks to them
+    parts.append("Every face of the part is kept as a named group in the delivered file, so you set "
+                 "supports and loads in your own solver.")
+    return " ".join(parts)
+
+
+def fea_declared(messages: list[dict] | None) -> bool:
+    """Whether the conversation's declaration (its latest one) is an FEA part's."""
+    for m in reversed(list(messages or [])):
+        if isinstance(m, dict) and _is_declaration(m):
+            return str(m.get("content", "")).startswith(f"{CONFIRMED_MARK} {FEA_LEAD}")
+    return False
+
+
 def thermal_declared(messages: list[dict] | None) -> bool:
     """Whether the conversation's declaration is a whole thermal model's (its latest one)."""
     for m in reversed(list(messages or [])):
@@ -316,6 +357,8 @@ def confirmation_message(body) -> str:
     numbers the builder needs. Its opening phrase is the one the intake prompt block names."""
     if getattr(body, "check_mode", "") == "thermal":
         return thermal_confirmation_message(body)
+    if getattr(body, "check_mode", "") == FEA_CHECK:
+        return fea_confirmation_message(body)
     kind = _KIND_WORDS[body.input_kind]
     through = "through it" if body.flow == "internal" else "around it"
     # The kind is stated verbatim, in the intake's own enum, and it is the same word the session
@@ -407,13 +450,17 @@ def declared_case(messages: list[dict] | None) -> tuple[str, str] | None:
             # air among them, for a conjugate heat-transfer solve
             thermal = found is None and text.startswith(f"{CONFIRMED_MARK} {THERMAL_LEAD}") \
                 and _THERMAL_DECLARED.search(text) is not None
-            if not found and not thermal:
+            # an FEA part says its case in its own words too: the solid part, for structural work
+            fea = found is None and text.startswith(f"{CONFIRMED_MARK} {FEA_LEAD}") and _FEA_CASE in text
+            if not found and not thermal and not fea:
                 return None
             if any(isinstance(later, dict) and later.get("role") == "user"
                    and _RESTATES.search(str(later.get("content", ""))) for later in msgs[i + 1:]):
                 return None
             if thermal:
                 return "conjugate_heat_transfer", "solid-assembly"
+            if fea:
+                return "structural", "solid-body"
             assert found is not None
             kind, flow = found.groups()
             if kind == "solid-assembly":

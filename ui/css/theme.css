@@ -953,3 +953,28 @@ th,td{border-color:var(--border)}
 /* the panel as a card, when the stage cannot draw */
 .tm-card{padding:0;overflow:hidden}
 .tm-card .tm-foot{position:static;box-shadow:none}
+
+/* ------------------------------------------------------- question buttons ---- */
+/* the buttons under an application question (what the mesh is for, an FEA part's analysis type):
+   quiet chips; a "coming soon" one greyed but still clickable */
+.qc-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:2px}
+.qc-btn{height:32px;padding:0 13px;border:1px solid var(--border);border-radius:var(--r-md);
+  background:var(--surface-2);color:var(--text);font:500 var(--fs-sm)/1 var(--sans);cursor:pointer}
+.qc-btn:hover:not(:disabled){border-color:var(--border-strong);background:var(--surface-raised)}
+.qc-btn.soon{color:var(--text-faint);border-style:dashed}
+.qc-btn.picked{border-color:var(--accent);color:var(--text)}
+.qc.done .qc-btn:not(.picked){opacity:.45}
+.qc-btn:disabled{cursor:default}
+
+/* ------------------------------------------------------------ FEA part ---- */
+/* an FEA part's check: its size, unit, bodies and clean check, and the one question */
+.fea-form .rc-row{align-items:center}
+.fea-clean{display:inline-flex;gap:6px;align-items:baseline;line-height:1.45}
+.fea-clean .ic{font-weight:600}
+.fea-clean.ok .ic{color:var(--ok)}
+.fea-clean.bad .ic{color:var(--warn)}
+.fea-clean.unk .ic{color:var(--text-faint)}
+.fea-blocked{margin:12px 0 2px;padding:10px 12px;border:1px solid var(--warn);border-radius:var(--r-md);
+  color:var(--text);font-size:var(--fs-sm);line-height:1.5}
+.fea-q{margin:14px 0 8px;color:var(--text);font-weight:600}
+.fea-card{padding:0 16px 12px}

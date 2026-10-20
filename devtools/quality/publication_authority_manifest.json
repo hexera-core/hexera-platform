@@ -2022,6 +2022,32 @@
   ]
  },
  {
+  "context": "application/fea_wording.py::invented::search#1|NotAPublisher|not-a-publisher|",
+  "path": "application/fea_wording.py",
+  "qualname": "invented",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "application/fea_wording.py::invented::search#2|NotAPublisher|not-a-publisher|",
+  "path": "application/fea_wording.py",
+  "qualname": "invented",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "application/geometry_confirmation.py::declared_case::search#1|NotAPublisher|not-a-publisher|",
   "path": "application/geometry_confirmation.py",
   "qualname": "declared_case",
@@ -2480,6 +2506,94 @@
   "gated_required": false,
   "roots": [
    "application/post_terminal.py::callers of enqueue_conversation_export()"
+  ]
+ },
+ {
+  "context": "application/purpose_map.py::_topology::search#1|NotAPublisher|not-a-publisher|application/purpose_map.py::re.Pattern",
+  "path": "application/purpose_map.py",
+  "qualname": "_topology",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_INTERNAL",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "application/purpose_map.py::re.Pattern"
+  ]
+ },
+ {
+  "context": "application/purpose_map.py::_topology::search#2|NotAPublisher|not-a-publisher|application/purpose_map.py::re.Pattern",
+  "path": "application/purpose_map.py",
+  "qualname": "_topology",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "_EXTERNAL",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "application/purpose_map.py::re.Pattern"
+  ]
+ },
+ {
+  "context": "application/purpose_map.py::analysis_of::search#1|NotAPublisher|not-a-publisher|",
+  "path": "application/purpose_map.py",
+  "qualname": "analysis_of",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "rx",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "application/purpose_map.py::read_purpose::search#1|NotAPublisher|not-a-publisher|application/purpose_map.py::re.Pattern",
+  "path": "application/purpose_map.py",
+  "qualname": "read_purpose",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_COUPLED",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "application/purpose_map.py::re.Pattern"
+  ]
+ },
+ {
+  "context": "application/purpose_map.py::read_purpose::search#2|NotAPublisher|not-a-publisher|application/purpose_map.py::re.Pattern",
+  "path": "application/purpose_map.py",
+  "qualname": "read_purpose",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "_HEAT",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "application/purpose_map.py::re.Pattern"
+  ]
+ },
+ {
+  "context": "application/purpose_map.py::read_purpose::search#3|NotAPublisher|not-a-publisher|application/purpose_map.py::re.Pattern",
+  "path": "application/purpose_map.py",
+  "qualname": "read_purpose",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 3,
+  "receiver": "_FLOW_AS_LOAD",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "application/purpose_map.py::re.Pattern"
   ]
  },
  {

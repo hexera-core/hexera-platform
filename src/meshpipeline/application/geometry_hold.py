@@ -75,11 +75,31 @@ def should_hold(stored: dict | None, requested: dict | None, confirmed: dict | N
     return hold_decision(stored, requested, confirmed) == "queue"
 
 
-def hold_reply(thermal: bool, headline: str = "") -> str:
+#: What a message sent while an FEA part is still being checked is answered with.
+FEA_WAIT_REPLY = (
+    f"{DRAWING_MARK} still checking your part - it will appear beside this chat in a moment. "
+    "Check its size and unit there and press Proceed; I'll carry on from that."
+)
+
+
+def _route(reading) -> str:
+    return str(getattr(reading, "route", "") or "")
+
+
+def hold_reply(thermal: bool, headline: str = "", reading=None) -> str:
     """The holding line for this upload: the generic one (a picture with numbered openings to
-    check), or a thermal model's - its own headline when the check has read the file, else the
-    plain "opening your thermal model" line."""
+    check), an FEA part's (its size, unit and clean check; no openings), or a thermal model's - its
+    own headline when the check has read the file, else the plain "opening your thermal model"
+    line. `reading` is what the user's words say the mesh is for (application/purpose_map)."""
     if not thermal:
+        from meshpipeline.application import purpose_map as pm
+
+        if _route(reading) == pm.ROUTE_FEA:
+            return f"{DRAWING_MARK} {pm.fea_hold_text(reading)}"
+        if _route(reading) == pm.ROUTE_ELECTRONICS:
+            # cooling words on a file that is not an ECXML model: the cooling air is set up through
+            # the flow check, and the line says where the full electronics setup comes from
+            return f"{HOLD_REPLY} {pm.ELECTRONICS_NOTE}"
         return HOLD_REPLY
     said = str(headline or "").strip()
     if not said:
@@ -87,9 +107,13 @@ def hold_reply(thermal: bool, headline: str = "") -> str:
     return THERMAL_HOLD_REPLY.format(headline=said if said.endswith(".") else said + ".")
 
 
-def wait_reply(thermal: bool) -> str:
+def wait_reply(thermal: bool, reading=None) -> str:
     """What a message sent while the check is still drawing is answered with."""
-    return THERMAL_WAIT_REPLY if thermal else WAIT_REPLY
+    if thermal:
+        return THERMAL_WAIT_REPLY
+    from meshpipeline.application import purpose_map as pm
+
+    return FEA_WAIT_REPLY if _route(reading) == pm.ROUTE_FEA else WAIT_REPLY
 
 
 def stored_thermal(session_id: str) -> tuple[bool, str]:

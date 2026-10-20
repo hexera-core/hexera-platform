@@ -178,6 +178,7 @@ class IntakeLoopPolicy:
     repeated_questions: int = 0                # replies sent back for asking the same thing again
     engine_nudges: int = 0                     # replies sent back for how they spoke of the engine
     thermal_nudges: int = 0                    # thermal-model replies sent back for generic words
+    fea_nudges: int = 0                        # FEA replies sent back for an invented load or material
     #: The names a thermal model's file gives (its parts, fans, vents...): its own words, which the
     #: thermal vocabulary check leaves alone (application/thermal_wording.forbidden_words).
     thermal_names: tuple[str, ...] = ()
@@ -256,6 +257,19 @@ class IntakeLoopPolicy:
                 logger.info("Intake: a thermal model's reply used generic words (%s) - sent back "
                             "once for a rewrite", ", ".join(said))
                 return RoundDecision(message=turn.THERMAL_WORDS_NUDGE, complete=False)
+        # AN FEA PART'S REPLY INVENTS NOTHING. Supports, loads and materials are the user's, set
+        # in their own solver on the named faces; a reply that proposes one the user never said
+        # ("1 kN downward on the end face", "steel E = 210 GPa") goes back ONCE for a rewrite.
+        if (tuple(self.exec_state.declared_case or ())[:1] == ("structural",) and self.fea_nudges == 0
+                and (rounds_left is None or rounds_left > 0)):
+            from meshpipeline.application.fea_wording import invented
+
+            made_up = invented(self.plaintext_text, self.exec_state.user_texts)
+            if made_up:
+                self.fea_nudges += 1
+                logger.info("Intake: an FEA reply proposed what the user never said (%s) - sent "
+                            "back once for a rewrite", ", ".join(made_up))
+                return RoundDecision(message=turn.FEA_INVENTED_NUDGE, complete=False)
         # THE SAME QUESTION IS NEVER ASKED TWICE - enforced here, not left to the prompt. A reply
         # that asks what the user was already asked is sent back ONCE, inside the turn, with the
         # rule: their reply was their answer, take your own proposal and move on. Once, so a model

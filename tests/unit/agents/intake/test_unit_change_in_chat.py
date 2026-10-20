@@ -128,7 +128,8 @@ async def _settle(content, *, monkeypatch, gate=None, change=None, hold=None):
     repo.append_message = AsyncMock(); repo.set_intake_gate = AsyncMock()
     inbound = msg.InboundMessage(session_id=SID, owner_id="alice", content=content, organization_id="org-1")
     g = dict(gate or {})
-    outcome = await msg._settle(inbound, AsyncMock(), gate=g, locked=_locked(intake_gate=g), messages=[],
+    outcome = await msg._settle(inbound, AsyncMock(), gate=g, locked=_locked(intake_gate=g),
+                                messages=[{"role": "user", "content": content}],
                                 revision="r1", session_repo=repo, logger=MagicMock())
     return outcome, repo, seen
 
