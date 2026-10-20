@@ -795,8 +795,11 @@ async def test_the_native_boundary_received_the_production_workspace_and_case(ac
     assert call["authored"], "the native mesher was called before the case was authored"
     assert call["symmetry_in_case"], \
         "the accepted symmetry plane never reached the authored case"
-    assert call["timeout"] == 2400, \
-        f"the driver's per-mesh cap changed: {call['timeout']}"
+    # the per-pass GUARD from the pass's planned cells (docs/RULES.md TIME-2): never under the old
+    # 2,400 s cap, never over snappy's ceiling
+    from meshpipeline.contracts.work_limits import CEILINGS_S, FLOORS_S
+    assert FLOORS_S["snappy"] <= call["timeout"] <= CEILINGS_S["snappy"], \
+        f"the driver's per-pass guard is out of its range: {call['timeout']}"
     assert Path(call["workspace"]).is_absolute()
 
 

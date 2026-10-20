@@ -130,7 +130,8 @@ def _graph(seed_state):
     return g
 
 async def _run(monkeypatch, ws, *, reject="", fin_ok=True, gates=(True,"",""), gate_results=(("mesh_ok",True),),
-               extents=None, solv=None, retry=0, preflight=False, topology="internal"):
+               extents=None, solv=None, retry=0, preflight=False, topology="internal",
+               guard_trip=False):
     from meshpipeline.runtime.composition import install_adapters
     install_adapters()
     j=uuid.uuid4(); o=f"exec-{j.hex[:8]}"; await _seed(j,o)
@@ -138,6 +139,11 @@ async def _run(monkeypatch, ws, *, reject="", fin_ok=True, gates=(True,"",""), g
     # the workspace is shared by every scenario: only the pre-flight one holds a refusal record
     from meshpipeline.engines.preflight import PreflightRefusal, clear_refusal
     clear_refusal(ws)
+    from meshpipeline.engines import determinism as det
+    det.clear_guard_trips(ws)
+    if guard_trip:
+        # a guard clock stopped the attempt (docs/RULES.md TIME-3): nothing is judged
+        det.note_guard_trip("snappy", workspace=ws, guard_s=4000.0)
     if preflight:
         PreflightRefusal(gate="domain_extent", cause="domain_extent",
                          builder_text="[PREFLIGHT] the planned box is too small",
@@ -196,6 +202,8 @@ CANONICAL = {
     ("node_executor", "note"): 4,
     # the seventh: the gate a recorded pre-flight refusal stands in for, reported as failed
     ("node_executor", "check"): 7,
+    # a guard clock stopped the attempt: reported as such, nothing judged (TIME-3)
+    ("_guard_failure", "check"): 1,
 }
 SCENARIOS = [
     ("early_reject",  {"reject": "bad geometry"}),
@@ -205,6 +213,7 @@ SCENARIOS = [
     ("extent_reject", {"extents": (False, "too small"), "topology": "external"}),
     ("solv_fail",     {"solv": (False, "no converge"), "retry": 2}),
     ("preflight_record", {"preflight": True}),
+    ("guard-trip", {"guard_trip": True}),
 ]
 
 
@@ -222,7 +231,7 @@ async def test_every_executor_publication_runs_under_the_claimed_ownership(monke
         counts[(fn, method)] = counts.get((fn, method), 0) + 1
     assert counts == CANONICAL, (
         f"the executor publication surface changed: expected {CANONICAL}, observed {counts}")
-    assert len(union) == 12, f"expected 12 distinct executor calls, observed {len(union)}"
+    assert len(union) == 13, f"expected 13 distinct executor calls, observed {len(union)}"
 
 
 #: Operation identity per (owning function, method) and retry count, as PRODUCTION emitted it.
