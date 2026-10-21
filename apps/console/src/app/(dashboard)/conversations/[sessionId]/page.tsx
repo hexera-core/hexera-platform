@@ -40,7 +40,7 @@ export default async function ConversationPage({
           <p className="page__eyebrow">Conversation</p>
           <h1 className="page__title">What was said</h1>
           <p className="page__intro">
-            Your messages and Hexera's replies, in order, up to the run they started.
+            Your messages and the replies from Hexera, in order, up to the run they started.
           </p>
         </div>
         {history?.job_id ? (
