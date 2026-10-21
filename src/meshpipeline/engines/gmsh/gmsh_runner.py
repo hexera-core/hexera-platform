@@ -30,6 +30,13 @@ def quality_shortfalls(q: dict) -> list[dict]:
     floor = CFD_SICN_FLOOR if cfd else SICN_FLOOR
     out = []
     sicn = q.get("min_sicn")
+    if (q.get("fea") or {}).get("plan") and sicn is not None:
+        # AN FEA PLAN'S MESH fails only when it is not valid (a degenerate element); under the 0.1
+        # floor is a note on the delivery (Areen, 21 Oct)
+        if float(sicn) <= 0.0:
+            out.append({"key": "min_sicn", "label": "element quality (SICN)", "measured": float(sicn),
+                        "op": ">", "threshold": 0.0})
+        return out
     if sicn is None or float(sicn) < floor:
         out.append({"key": "min_sicn", "label": "element quality (SICN)",
                     "measured": None if sicn is None else float(sicn), "op": ">=",

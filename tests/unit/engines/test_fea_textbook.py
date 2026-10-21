@@ -1,5 +1,5 @@
-# Responsibility: Prove the FEA path gives the textbook answers (FEA build step 7): six classic cases, each built as CAD, meshed by the REAL FEA driver at the chosen detail levels, solved in CalculiX on the deck's own named faces, and compared with the closed-form answer within the design's stated tolerance.
-# Boundaries: needs CalculiX. The unit shards have none and skip; CI's "FEA accuracy (CalculiX)" lane installs Ubuntu's calculix-ccx and runs this module at Quick on every change, and at Standard on the weekly and manual runs (FEA_ACCURACY_LEVELS). Locally: HEXERA_CCX=~/fea_audit/ccx/ccx.
+# Responsibility: Prove the FEA path gives the textbook answers (FEA build step 7): six classic cases, each built as CAD, meshed by the REAL FEA driver as its rules recommend, solved in CalculiX on the deck's own named faces, and compared with the closed-form answer within the design's stated tolerance.
+# Boundaries: needs CalculiX. The unit shards have none and skip; CI's "FEA accuracy (CalculiX)" lane installs Ubuntu's calculix-ccx and runs this module on every change. Locally: HEXERA_CCX=~/fea_audit/ccx/ccx.
 """THE TEXTBOOK ACCURACY SUITE.
 
 | Case | Analysis | Closed form | Tolerance |
@@ -39,18 +39,11 @@ CCX = os.environ.get("HEXERA_CCX") or shutil.which("ccx") or ""
 REQUIRE_CCX = os.environ.get("FEA_ACCURACY_REQUIRE_CCX", "") == "1"
 pytestmark = pytest.mark.skipif(not REQUIRE_CCX and not (CCX and Path(CCX).exists()),
                                 reason="CalculiX (ccx) not installed - set HEXERA_CCX to run")
-#: the detail levels to run (pipeline/enums.MeshFidelity values): Quick by default
-LEVELS = [x.strip() for x in os.environ.get("FEA_ACCURACY_LEVELS", "draft").split(",") if x.strip()]
 REPORT = os.environ.get("FEA_ACCURACY_REPORT", "")
 #: THE MEMORY A SOLVE NEEDS. The static cases are LOADED (tractions, end forces - an iterative
 #: solve of prescribed displacements gave reactions 5-50x off) and use CalculiX's iterative Cholesky
-#: solver: about 0.5 GB
-#: and 20 s at Quick, where its direct solver (SPOOLES) took 5-6 GB and 100 s. A modal or buckling
-#: solve needs the direct solver (Lanczos); at Quick it peaks near 4 GB, at Standard (about five
-#: times the unknowns) it would need well over the 16 GB of a standard CI runner (one was shut down
-#: mid-solve). So at Standard those two cases run only where FEA_ACCURACY_EIGEN_STANDARD=1 says the
-#: machine has the memory (a larger runner); elsewhere they are skipped with this reason.
-EIGEN_AT_STANDARD = os.environ.get("FEA_ACCURACY_EIGEN_STANDARD", "") == "1"
+#: solver (its direct solver, SPOOLES, took 5-6 GB on a 100k mesh). A modal or buckling solve needs
+#: the direct solver (Lanczos).
 THREADS = os.environ.get("FEA_ACCURACY_THREADS", "2")
 E = 210e9
 
@@ -142,7 +135,7 @@ class _Run:
         return SimpleNamespace(produced_deliverable=produced_deliverable, terminal_value=failure_marker)
 
 
-def _mesh(case: str, level: str, ws: Path, monkeypatch) -> dict:
+def _mesh(case: str, ws: Path, monkeypatch) -> dict:
     import gmsh
     from tests import fea_fixtures as fx
 
@@ -164,9 +157,9 @@ def _mesh(case: str, level: str, ws: Path, monkeypatch) -> dict:
         gmsh.finalize()
     monkeypatch.setattr(runtime, "get_engine", lambda _n: SimpleNamespace(
         run_cartesian_mesh=lambda w, timeout: {"rc": fea_adapter.mesh(w)}))
-    ok, marker, _o = asyncio.run(FD.drive(ws, {"effective_mesh_fidelity": level, "purpose": "structural"},
-                                          job_id=f"acc-{case}-{level}", publish=None, run=_Run()))
-    assert ok, f"the driver did not mesh {case} at {level}: {marker}"
+    ok, marker, _o = asyncio.run(FD.drive(ws, {"purpose": "structural"}, job_id=f"acc-{case}", publish=None,
+                                          run=_Run()))
+    assert ok, f"the driver did not mesh {case}: {marker}"
     return json.loads((ws / "quality.json").read_text())
 
 
@@ -442,20 +435,16 @@ CASES = {
 }
 
 
-@pytest.mark.parametrize("level", LEVELS)
 @pytest.mark.parametrize("case", list(CASES))
-def test_the_fea_path_gives_the_textbook_answer(case, level, tmp_path, monkeypatch):
+def test_the_fea_path_gives_the_textbook_answer(case, tmp_path, monkeypatch):
     assert CCX and Path(CCX).exists(), f"CalculiX is required here and was not found ({CCX or 'no ccx'})"
     analysis, run, tol = CASES[case]
-    if analysis in ("modal", "buckling") and level not in ("draft",) and not EIGEN_AT_STANDARD:
-        pytest.skip(f"{analysis} at {level}: the direct eigensolver needs more memory than this runner has "
-                    "(set FEA_ACCURACY_EIGEN_STANDARD=1 on a larger machine)")
-    q = _mesh(case, level, tmp_path / case, monkeypatch)
+    q = _mesh(case, tmp_path / case, monkeypatch)
     got, want, what = run(tmp_path / case, q)
     err = got / want - 1.0
-    row = {"case": case, "analysis": analysis, "level": level, "elements": q["cells"], "what": what,
+    row = {"case": case, "analysis": analysis, "elements": q["cells"], "what": what,
            "got": float(got), "want": float(want), "error_pct": round(100 * err, 2), "tolerance_pct": round(100 * tol, 1),
            "pass": bool(abs(err) <= tol)}
     _record(row)
     print(json.dumps(row))
-    assert abs(err) <= tol, f"{case} at {level}: {what} {got:.5g} vs {want:.5g} ({100 * err:+.2f}%, tolerance {100 * tol:.0f}%)"
+    assert abs(err) <= tol, f"{case}: {what} {got:.5g} vs {want:.5g} ({100 * err:+.2f}%, tolerance {100 * tol:.0f}%)"

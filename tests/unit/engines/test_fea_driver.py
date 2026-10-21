@@ -21,9 +21,6 @@ from meshpipeline.engines import fea_driver as FD  # noqa: E402
 from meshpipeline.engines import fea_plan as P  # noqa: E402
 from meshpipeline.engines.gmsh import fea_adapter  # noqa: E402
 
-#: A made-up level small enough for a unit test (the plate fixture at ~40k elements).
-SMALL = P.Level("draft", "Quick", 40_000)
-
 
 def _stage(shape, ws: Path) -> Path:
     """Stage a part as the builder does for gmsh: the upload read in mm, written in metres."""
@@ -42,9 +39,9 @@ def _stage(shape, ws: Path) -> Path:
     return ws
 
 
-def _plan(ws: Path, level: P.Level = SMALL, **kw) -> dict:
+def _plan(ws: Path, **kw) -> dict:
     record, surface, diag = FD.measure_staged(ws)
-    plan = FD.make_plan(record, surface, diag, fidelity="", level=level, **kw)
+    plan = FD.make_plan(record, surface, diag, **kw)
     FD.write_plan(ws, plan)
     return plan
 
@@ -63,13 +60,14 @@ def test_the_plan_reads_the_part_in_metres(plate):
     assert hole["radius_m"] == pytest.approx(fx.PLATE["hole_radius"] * 1e-3, rel=1e-3)
     wall = min((z for z in plan["zones"] if z["kind"] == "wall"), key=lambda z: z["thickness_m"])
     assert wall["thickness_m"] == pytest.approx(fx.PLATE["thickness"] * 1e-3, rel=1e-3)
-    assert plan["fits"] and plan["base_size_m"] <= plan["coarsest_base_m"]
+    # PLAN-fea-14: the base is a tenth of the part's diagonal (the 120 x 60 x 4 mm plate)
+    assert plan["fits"] and plan["base_size_m"] == pytest.approx((120**2 + 60**2 + 4**2) ** 0.5 / 1e3 / P.MIN_DIVISIONS, rel=1e-3)
 
 
 def test_the_mesh_comes_out_near_its_estimate(plate):
     _ws, plan, q = plate
     assert 0.65 * plan["estimate"]["elements"] <= q["cells"] <= 1.35 * plan["estimate"]["elements"]
-    assert q["cells"] <= plan["detail"]["ceiling"]
+    assert q["cells"] <= plan["limit"]["elements"]
 
 
 def test_every_planned_rule_is_met_on_the_mesh(plate):
@@ -99,11 +97,10 @@ def test_the_same_plan_gives_the_same_mesh(plate, tmp_path):
     assert digest[0] == digest[1]
 
 
-def test_over_its_level_a_plan_stops_with_options(tmp_path):
+def test_over_the_limit_a_plan_does_not_fit_and_offers_no_stop(tmp_path):
     ws = _stage(fx.plate_with_hole(), tmp_path / "tiny")
-    plan = _plan(ws, level=P.Level("draft", "Quick", 300))
-    assert not plan["fits"]
-    assert plan["options"] and plan["options"][0]["option"] == "level_up"
+    plan = _plan(ws, limit=300)
+    assert not plan["fits"] and "options" not in plan
 
 
 class _Run:
@@ -120,14 +117,12 @@ class _Run:
         return SimpleNamespace(produced_deliverable=produced_deliverable, terminal_value=failure_marker)
 
 
-def _drive(ws: Path, monkeypatch, fidelity="draft"):
+def _drive(ws: Path, monkeypatch):
     from meshpipeline.engines import runtime
 
-    monkeypatch.setitem(P.LEVELS, "draft", SMALL)
     monkeypatch.setattr(runtime, "get_engine", lambda _n: SimpleNamespace(
         run_cartesian_mesh=lambda w, timeout: {"rc": fea_adapter.mesh(w)}))
-    return asyncio.run(FD.drive(ws, {"effective_mesh_fidelity": fidelity}, job_id=f"t-{ws.name}",
-                                publish=None, run=_Run()))
+    return asyncio.run(FD.drive(ws, {}, job_id=f"t-{ws.name}", publish=None, run=_Run()))
 
 
 def test_the_driver_meshes_and_cites_every_rule(tmp_path, monkeypatch):
@@ -135,7 +130,7 @@ def test_the_driver_meshes_and_cites_every_rule(tmp_path, monkeypatch):
     ok, marker, _o = _drive(ws, monkeypatch)
     assert ok, marker
     cited = {e["rule"] for e in dr.cited_for(f"t-{ws.name}")}
-    assert {"PLAN-fea-9", "PLAN-fea-1", "PLAN-fea-2", "PLAN-fea-5", "PLAN-fea-8", "LAD-fea-5"} <= cited
+    assert {"PLAN-fea-9", "PLAN-fea-1", "PLAN-fea-14", "PLAN-fea-5", "PLAN-fea-8", "PLAN-fea-13", "LAD-fea-5"} <= cited
     passes = json.loads((ws / "fea_passes.json").read_text())
     assert passes["delivered"] == 1 and passes["levers"] == []
 
@@ -182,11 +177,10 @@ def test_a_guard_trip_pulls_no_lever_and_ends_the_attempt(tmp_path, monkeypatch)
     from meshpipeline.engines import runtime
 
     ws = _stage(fx.plate_with_hole(), tmp_path / "trip")
-    monkeypatch.setitem(P.LEVELS, "draft", SMALL)
     calls = []
     monkeypatch.setattr(runtime, "get_engine", lambda _n: SimpleNamespace(
         run_cartesian_mesh=lambda w, timeout: calls.append(timeout) or {"rc": -1, "timed_out": True}))
-    ok, marker, _o = asyncio.run(FD.drive(ws, {"effective_mesh_fidelity": "draft"}, job_id="t-trip",
+    ok, marker, _o = asyncio.run(FD.drive(ws, {}, job_id="t-trip",
                                           publish=None, run=_Run()))
     assert not ok and marker == FD.GUARD_TRIP and len(calls) == 1
     rec = json.loads((ws / "fea_passes.json").read_text())
@@ -199,7 +193,7 @@ def test_a_guard_trip_pulls_no_lever_and_ends_the_attempt(tmp_path, monkeypatch)
 
 
 def test_a_ladder_that_runs_out_says_so_for_the_retry_policy(tmp_path, monkeypatch):
-    """Every pass the plan allows leaves elements under the floor: the attempt ends with the
+    """Every pass the plan allows leaves a degenerate element: the attempt ends with the
     driver's own verdict - deterministic, the ladder exhausted, where the worst elements are - so
     no second attempt builds the same mesh (job ab20566f)."""
     from meshpipeline.contracts.failure_cause import retry_can_help
@@ -207,18 +201,17 @@ def test_a_ladder_that_runs_out_says_so_for_the_retry_policy(tmp_path, monkeypat
     from meshpipeline.engines.preflight import read_refusal
 
     ws = _stage(fx.plate_with_hole(), tmp_path / "floor")
-    monkeypatch.setitem(P.LEVELS, "draft", SMALL)
 
     def bad_pass(w, timeout):
         rc = fea_adapter.mesh(w)
         q = json.loads((Path(w) / "quality.json").read_text())
-        q.update(min_sicn=0.02, elements_under_floor=5)
+        q.update(min_sicn=0.0, elements_under_floor=5, fatal=["degenerate elements (SICN <= 0)"])
         q.setdefault("fea", {}).setdefault("quality", {})["worst_at_m"] = {"scaled_jacobian": [0.01, 0.02, 0.003]}
         (Path(w) / "quality.json").write_text(json.dumps(q))
         return {"rc": rc}
 
     monkeypatch.setattr(runtime, "get_engine", lambda _n: SimpleNamespace(run_cartesian_mesh=bad_pass))
-    ok, marker, _o = asyncio.run(FD.drive(ws, {"effective_mesh_fidelity": "draft"}, job_id="t-floor",
+    ok, marker, _o = asyncio.run(FD.drive(ws, {}, job_id="t-floor",
                                           publish=None, run=_Run()))
     assert not ok and marker == FD.BUILD_FAILED
     ref = read_refusal(ws)
@@ -236,51 +229,97 @@ def test_a_small_part_is_measured_at_its_true_size(tmp_path):
     assert record["thickness"]["min_mm"] == pytest.approx(8.0, rel=0.005)
     assert diag == pytest.approx(8.0 * 3 ** 0.5 / 1000.0, rel=0.01)
     assert all(f["area_mm2"] == pytest.approx(64.0, rel=1e-6) for f in record["faces"].values())
-# ---------------------------------------------------- PLAN-fea-8: the budget never stops a run ----
-def _levels(monkeypatch, draft, standard, largest):
-    monkeypatch.setitem(P.LEVELS, "draft", P.Level("draft", "Quick", draft))
-    monkeypatch.setitem(P.LEVELS, "standard", P.Level("standard", "Standard", standard))
-    monkeypatch.setitem(P.LEVELS, "max", P.Level("max", "Fine", largest))
-
-
-def test_over_the_level_asked_for_the_next_level_that_holds_every_rule_is_used_and_said(tmp_path, monkeypatch):
-    ws = _stage(fx.plate_with_hole(), tmp_path / "up")
+# ------------------------------------------- PLAN-fea-8: under the limit, never a stop before meshing ----
+def test_the_rules_own_plan_is_meshed_when_it_fits(tmp_path):
+    ws = _stage(fx.plate_with_hole(), tmp_path / "fits")
     record, surface, diag = FD.measure_staged(ws)
-    _levels(monkeypatch, 2_000, 60_000, 200_000)
-    plan = FD.choose_plan(record, surface, diag, fidelity="draft")
-    assert plan["fits"] and plan["detail"]["key"] == "standard"
-    assert plan["auto_level"]["asked"] == "draft" and not plan.get("best_possible")
-    assert any("more than the Quick level asked for: meshed at the Standard level instead" in w for w in plan["words"])
-    assert any(d["rule"] == "PLAN-fea-8" and d["decided"] == "level" for d in plan["decisions"])
+    plan = FD.choose_plan(record, surface, diag)
+    assert plan["fits"] and not plan.get("coarsened") and "resolution_short" not in plan
+    assert plan["limit"]["elements"] == P.ELEMENT_LIMIT
 
 
-def test_when_no_level_holds_every_rule_the_largest_is_meshed_as_finely_as_it_allows(tmp_path, monkeypatch):
-    ws = _stage(fx.plate_with_hole(), tmp_path / "best")
+def test_over_the_limit_the_finest_zones_are_coarsened_and_what_is_short_is_named(tmp_path, monkeypatch):
+    ws = _stage(fx.plate_with_hole(), tmp_path / "coarse")
     record, surface, diag = FD.measure_staged(ws)
-    _levels(monkeypatch, 500, 1_000, 3_000)
-    plan = FD.choose_plan(record, surface, diag, fidelity="standard")
-    assert plan["fits"] and plan["detail"]["key"] == "max"
-    assert plan["best_possible"]["asked"] == "standard" and plan["zone_floor_m"] > 0
+    monkeypatch.setattr(P, "ELEMENT_LIMIT", 3_000)
+    plan = FD.choose_plan(record, surface, diag)
+    assert plan["fits"] and plan["coarsened"]["zone_floor_m"] > 0 and plan["zone_floor_m"] > 0
     assert plan["resolution_short"] and all(isinstance(w, str) for w in plan["resolution_short"])
-    assert any("as finely as it allows" in w for w in plan["words"])
+    assert any("more than the 3,000-element limit allows" in w for w in plan["words"])
     assert not any(w.startswith("Stopped") for w in plan["words"])
+    # never past what keeps elements valid
+    for z in plan["zones"]:
+        keep = P.keep_size(z)
+        assert keep is None or z["size_m"] <= keep * (1 + 1e-9) or z["size_m"] == z.get("rule_size_m")
 
 
-def test_the_driver_never_stops_for_budget_and_delivers_what_is_short_as_a_concern(tmp_path, monkeypatch):
+def test_the_driver_never_stops_before_meshing_and_names_what_is_short(tmp_path, monkeypatch):
     from meshpipeline.engines import runtime
     from meshpipeline.engines.preflight import read_refusal
     from meshpipeline.engines.verdict_limits import fea_limits
 
     ws = _stage(fx.plate_with_hole(), tmp_path / "never")
-    _levels(monkeypatch, 500, 1_000, 3_000)
+    monkeypatch.setattr(P, "ELEMENT_LIMIT", 3_000)
     monkeypatch.setattr(runtime, "get_engine", lambda _n: SimpleNamespace(
         run_cartesian_mesh=lambda w, timeout: {"rc": fea_adapter.mesh(w)}))
-    ok, marker, _o = asyncio.run(FD.drive(ws, {"effective_mesh_fidelity": "standard"}, job_id="t-never",
-                                          publish=None, run=_Run()))
+    ok, marker, _o = asyncio.run(FD.drive(ws, {}, job_id="t-never", publish=None, run=_Run()))
     ref = read_refusal(ws)
     assert ref is None or ref.cause != "cell_budget"
     q = json.loads((ws / "quality.json").read_text())
-    assert q["fea"]["best_possible"] and q["fea"]["resolution_short"]
+    assert q["fea"]["coarsened"] and q["fea"]["resolution_short"]
     assert ok, marker                                   # delivered, short where named
     row = next(r for r in fea_limits(q) if r["key"] == "fea_resolution_short")
     assert row["measured"] == q["fea"]["resolution_short"]
+
+
+def test_a_mesh_over_the_limit_after_meshing_is_planned_coarser():
+    from meshpipeline.engines import fea_ladder as L
+
+    plan = {"limit": {"elements": 1_000_000}}
+    facts = L.pass_facts(1, 0, {"cells": 2_000_000, "min_sicn": 0.3, "fatal": [], "fea": {"rules": {"short": []}}}, plan)
+    lever = L.next_lever(facts, [], plan)
+    assert lever["lever"] == "LAD-fea-4" and lever["factor"] < 1 and L.coarse_factor([lever]) == lever["factor"]
+
+
+# ------------------------------------------------ PLAN-fea-13: the guard grows with the planned work ----
+def test_the_guard_is_three_times_the_planned_time_between_the_old_cap_and_the_job_limit():
+    assert FD.guard_seconds(None, floor_s=1500, ceiling_s=13800) == 1500
+    assert FD.guard_seconds(100.0, floor_s=1500, ceiling_s=13800) == 1500        # never under the old cap
+    assert FD.guard_seconds(2000.0, floor_s=1500, ceiling_s=13800) == 6000      # 3 x the planned time
+    assert FD.guard_seconds(9000.0, floor_s=1500, ceiling_s=13800) == 13800     # never over the ceiling
+    plan = {"estimate": {"elements": 1_761_000}}
+    w = FD.planned_work(plan, 1500, rate=587.0, cls="simple", ceiling_s=13800)
+    assert w["planned_s"] == pytest.approx(3000.0, rel=1e-3) and w["guard_s"] == 9000 and w["class"] == "simple"
+
+
+def test_the_fill_rate_follows_the_parts_measured_complexity():
+    simple = {"faces": {f"Face_{k}": {} for k in range(10)}, "hot_spots": [{}] * 3}
+    moderate = {"faces": {f"Face_{k}": {} for k in range(90)}, "hot_spots": [{}] * 18}
+    complex_ = {"faces": {f"Face_{k}": {} for k in range(10)}, "hot_spots": [], "micro": [{}]}
+    rates = [FD.fill_rate(r) for r in (simple, moderate, complex_)]
+    assert [c for _r, c in rates] == ["simple", "moderate", "complex"]
+    assert rates[0][0] > rates[1][0] > rates[2][0]
+
+
+def test_a_level_is_never_planned_bigger_than_three_guards_fit_under_the_ceiling():
+    assert FD.runnable_elements(13800, 587.0) == int(587.0 * 13800 / 3)       # about 2.7M: Fine reachable
+    assert FD.runnable_elements(None, 587.0) is None
+
+
+def test_the_ceiling_is_what_the_attempt_has_left_and_never_more_than_the_job():
+    import time as _t
+
+    run = SimpleNamespace(deadline_s=2000.0, _started=_t.monotonic())
+    assert FD.ceiling_for(run) == pytest.approx(2000.0 - FD.ATTEMPT_RESERVE_S, abs=5)
+    assert FD.ceiling_for(SimpleNamespace()) == FD.MESH_JOB_LIMIT_S - FD.JOB_MARGIN_S
+
+
+def test_coarsening_never_goes_past_what_keeps_elements_valid_zone_by_zone():
+    wall = {"id": "W1", "kind": "wall", "faces": ["Face_1"], "size_m": 0.0002, "thickness_m": 0.0005}
+    hole = {"id": "H1", "kind": "hole", "faces": ["Face_2"], "size_m": 0.0001, "radius_m": 0.002}
+    out = {z["id"]: z for z in P.floored([wall, hole], 0.01)}
+    assert out["W1"]["size_m"] == pytest.approx(0.0005)                     # 1 element through the wall
+    assert out["H1"]["size_m"] == pytest.approx(P.QUARTER * 0.002 / 3)        # 3 per quarter-turn
+    assert out["W1"]["kept_valid"] and out["W1"]["short"]
+    strict = {z["id"]: z for z in P.floored([wall], 0.01, through=1.5)}
+    assert strict["W1"]["size_m"] == pytest.approx(0.0005 / 1.5)

@@ -61,7 +61,7 @@ def measure(mesh, plan: Mapping) -> dict:
     zones = [z for z in plan.get("zones") or [] if z["kind"] == "wall" or float(z["size_m"]) < base]
     names = sorted({f for z in zones for f in z.get("faces") or []})
     sizes = face_sizes(mesh, {n: t for n in names if (t := face_tag(n)) is not None})
-    per_quarter = P.HOT_SPOT_PER_QUARTER_MIN if plan.get("relaxed") else P.HOT_SPOT_PER_QUARTER
+    per_quarter = P.HOT_SPOT_PER_QUARTER
     walls, spots, corners, short = [], [], [], []
     for z in zones:
         got = [sizes[f] for f in z.get("faces") or [] if f in sizes]

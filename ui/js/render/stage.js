@@ -112,7 +112,9 @@ export const Stage = {
         ['label','Case']];
     // Prefer the server's display label. A field may be label-ONLY: the fidelity tier always
     // applies, even when the user stated no preference and there is no raw value.
-    let rows=ROWS.filter(([k])=>b[k]||b[k+'_label']).map(([k,l])=>
+    // AN FEA PART has no detail level to show: its mesh is the rules-based recommended one
+    const fea=b.purpose==='structural';
+    let rows=ROWS.filter(([k])=>(b[k]||b[k+'_label'])&&!(fea&&k==='mesh_fidelity')).map(([k,l])=>
       `<div class="rc-row"><div class="rc-k">${esc(l)}</div><div class="rc-v">${esc(b[k+'_label']||b[k])}</div></div>`).join('');
     if(b.engine_params&&Object.keys(b.engine_params).length)
       rows+=`<div class="rc-row"><div class="rc-k">Engine settings</div>`

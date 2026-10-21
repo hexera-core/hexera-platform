@@ -86,8 +86,8 @@ solver a pass / warnings / fail line by that solver's own published element chec
 solves them in CalculiX on the deck's own named faces: plate with a hole (Kt), cantilever (tip
 stiffness), Lame cylinder (bore hoop stress), U-grooved bar (Kt), cantilever modes and an Euler
 column. Each is held to its closed-form answer (3% on stress, 1% on stiffness, frequency and
-buckling load). CI's "FEA accuracy (CalculiX)" lane installs Ubuntu's `calculix-ccx` and runs it at
-Quick on every change and at Standard on the weekly and manual runs.
+buckling load). CI's "FEA accuracy (CalculiX)" lane installs Ubuntu's `calculix-ccx` and runs it on
+every change, on the mesh the rules recommend (there is no detail level).
 
 ## Authoring controls
 

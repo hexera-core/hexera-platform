@@ -945,6 +945,8 @@ def _block_fea_path() -> str:
         "role themselves.\n"
         "- Never promise refinement the engine does not do ('I will refine around the holes'): "
         "the mesh is sized from the part.\n"
+        "- Never ask about a detail level, an element count or mesh fidelity: an FEA part gets the mesh "
+        "its rules recommend (there is no detail level), held under the element limit by the plan.\n"
         "- request_txt says: the part, its unit and size, the analysis type, a solid mesh of "
         "quadratic tetrahedra with every face named, and any support, load or material ONLY if "
         "the user stated it. review_brief_txt describes mesh quality only: the solid meshed whole, "

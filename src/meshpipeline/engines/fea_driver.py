@@ -40,7 +40,6 @@ ENGINE = "gmsh"
 #: Failure markers this driver ends an attempt with.
 NO_SOURCE = "fea_source_missing"
 NOT_ONE_PART = "fea_not_one_part"
-OVER_LEVEL = "fea_over_level"
 BUILD_FAILED = "fea_build_failed"
 #: The mesher ran past its guard clock: our infrastructure, not the part (no lever is pulled).
 GUARD_TRIP = "fea_guard_trip"
@@ -56,8 +55,8 @@ PASS_FOLDER = "_fea_pass_{n}"  # noqa: S105 - a folder name, not a secret
 #: every file a pass writes that the delivery reads: the solver files ride with their mesh, so the
 #: pass restored is restored whole (a later, worse pass never leaves its .bdf / .cdb behind)
 DELIVERABLES = ("mesh.inp", "mesh.bdf", "mesh.cdb", "mesh.msh", "quality.json", P.PLAN_FILE, "gmsh_spec.json")
-#: The zones alone past this many elements are past every level: the histogram stops counting.
-STOP_ELEMENTS = 3.0 * P.LEVELS["max"].target
+#: The zones alone past this many elements are past the limit: the histogram stops counting.
+STOP_ELEMENTS = 1.5 * P.ELEMENT_LIMIT
 
 
 # #
@@ -121,35 +120,23 @@ def _histogram(surface, zone_list: list[dict], levers: list[dict], diag_m: float
     return field.histogram(coarsest=diag_m / P.MIN_DIVISIONS, per_h3=P.PER_H3, stop_elements=STOP_ELEMENTS)
 
 
-def make_plan(record: dict, surface, diag_m: float, *, fidelity: str, levers: list[dict] | None = None,
-              level: P.Level | None = None, zone_floor_m: float | None = None, relax: bool = True,
-              hist=None) -> dict:
-    """The plan for this part at this level (the run's fidelity, or `level` itself), with the
-    ladder's levers applied. `zone_floor_m`: PLAN-fea-8's best possible (the finest zones floored);
-    `relax`: work out the fewer-at-spots option when it does not fit; `hist`: the zones' histogram
-    when the caller already has it (it does not depend on the level)."""
-    from meshpipeline.engines.fea_size_field import SizeField
-
-    level = level or P.level_of(fidelity)
+def make_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | None = None,
+              limit: int = P.ELEMENT_LIMIT, zone_floor_m: float | None = None, hist=None,
+              through: float | None = None) -> dict:
+    """The plan for this part, with the ladder's levers applied: the zones the rules ask for, the
+    coarsest base the part allows, the estimate against `limit`. `zone_floor_m`: PLAN-fea-8's
+    coarsening (the finest zones floored, never past their validity minimums); `hist`: the zones'
+    histogram when the caller already has it."""
     levers = list(levers or [])
-    tighten = L.tightened(levers)
-    zone_list = P.zones(record, tighten=tighten)
+    zone_list = P.zones(record, tighten=L.tightened(levers))
     if zone_floor_m:
-        zone_list = P.floored(zone_list, float(zone_floor_m))
-    coarsest = diag_m / P.MIN_DIVISIONS
+        zone_list = P.floored(zone_list, float(zone_floor_m), through or P.KEEP_THROUGH)
     if hist is None:
         hist = _histogram(surface, zone_list, levers, diag_m)
-    plan = P.finish(record, zone_list, hist, level=level, diag_m=diag_m, base_factor=L.base_factor(levers),
-                    levers=levers, growth=L.growth(levers))
+    plan = P.finish(record, zone_list, hist, diag_m=diag_m, limit=limit, levers=levers, growth=L.growth(levers))
     if zone_floor_m:
         plan["zone_floor_m"] = float(zone_floor_m)
         plan["resolution_short"] = P.shortfalls(zone_list)
-    if not plan["fits"] and relax:
-        relaxed = P.zones(record, relaxed=True, tighten=tighten)
-        rfield = SizeField(surface, relaxed, growth=L.growth(levers), scale_to_m=1e-3)
-        rhist = rfield.histogram(coarsest=coarsest, per_h3=P.PER_H3, stop_elements=STOP_ELEMENTS)
-        plan = P.finish(record, zone_list, hist, level=level, diag_m=diag_m, base_factor=L.base_factor(levers),
-                        relaxed_hist=rhist, levers=levers, growth=L.growth(levers))
     plan["mesh"] = L.mesh_settings(levers)
     # WHAT THE RESULT SCREEN SHOWS (engines/fea_results.py): every face, and every hot spot where it is
     plan["faces"] = [{"name": n, "kind": (r or {}).get("kind"), "area_mm2": (r or {}).get("area_mm2"),
@@ -166,113 +153,152 @@ def make_plan(record: dict, surface, diag_m: float, *, fidelity: str, levers: li
     return plan
 
 
-#: PLAN-fea-8's search for the best possible within the largest level: the zone floor doubles from
-#: the finest zone this many times at most, then one step back where that still fits.
+#: PLAN-fea-8's coarsening search: the zone floor doubles from the finest zone this many times at
+#: most, then one step back where that still fits.
 FLOOR_STEPS = 14
 
 
-def _needed(plan: dict) -> tuple[int, bool, str]:
-    est = int((plan.get("estimate") or {}).get("elements") or 0)
-    complete = bool(plan.get("histogram_complete", True))
-    return est, complete, (f"about {est:,} elements" if complete else f"more than {est:,} elements")
+def complexity(record: dict) -> str:
+    """The part's complexity class, for its fill rate (PLAN-fea-13): measured, never guessed - the
+    CAD faces, the hot spots and the micro details. Complex geometry builds slower per element than
+    simple geometry of the same element count (Areen, 21 Oct)."""
+    faces = len(record.get("faces") or {})
+    spots = len(record.get("hot_spots") or [])
+    micro = len(record.get("micro") or [])
+    if faces > COMPLEX_FACES or spots > COMPLEX_SPOTS or micro:
+        return "complex"
+    if faces <= SIMPLE_FACES and spots <= SIMPLE_SPOTS:
+        return "simple"
+    return "moderate"
 
 
-def runnable_elements(cap_s: float | None) -> int | None:
-    """The most elements one pass can build inside the mesher's guard clock (`cap_s`), at the
-    measured fill rate with RUNNABLE_MARGIN to spare; None when either is unknown."""
-    if not FEA_FILL_RATE or not cap_s:
+def fill_rate(record: dict) -> tuple[float, str]:
+    """(elements per second of one native pass at the slow end of the part's class, the class)."""
+    cls = complexity(record)
+    return FILL_RATES[cls], cls
+
+
+def runnable_elements(ceiling_s: float | None, rate: float | None = None) -> int | None:
+    """The most elements one pass can plan so that GUARD_FACTOR times its planned time, at `rate`,
+    still fits under `ceiling_s` (the mesh job's limit, or what the attempt has left); None when
+    either is unknown."""
+    rate = rate if rate is not None else min(FILL_RATES.values())
+    if not rate or not ceiling_s:
         return None
-    return int(FEA_FILL_RATE * float(cap_s) * RUNNABLE_MARGIN)
+    return int(rate * float(ceiling_s) / GUARD_FACTOR)
 
 
-def _runnable(level: P.Level, cap: int | None) -> P.Level:
-    """The level, its target lowered so its ceiling is no more than the runnable size."""
-    if cap is None or level.target * P.OVER <= cap:
-        return level
-    return P.Level(level.key, level.label, int(cap / P.OVER))
+def element_limit(record: dict, ceiling_s: float | None) -> tuple[int, str]:
+    """PLAN-fea-8's limit for this part: ELEMENT_LIMIT, or less when the mesher could not build that
+    many inside its time guard at the part's slow fill rate (PLAN-fea-13); and why."""
+    rate, cls = fill_rate(record)
+    runnable = runnable_elements(ceiling_s, rate)
+    if runnable is not None and runnable < P.ELEMENT_LIMIT:
+        return runnable, (f"what the mesher builds within its time limit ({rate:g} elements a second for a {cls} "
+                          f"part, {GUARD_FACTOR:g} times over, inside {int(ceiling_s or 0)} s)")
+    return P.ELEMENT_LIMIT, "the element limit"
 
 
-def choose_plan(record: dict, surface, diag_m: float, *, fidelity: str, levers: list[dict] | None = None,
-                cap_s: float | None = None) -> dict:
-    """PLAN-fea-8, NEVER A STOP FOR BUDGET (Areen, 21 Oct): the plan at the level asked for when it
-    fits; else at the next level up that holds every rule (said); else the best possible within the
-    largest level - the finest zones floored until it fits, what that leaves short named
-    (resolution_short). The returned plan always fits."""
-    cap = runnable_elements(cap_s)
-    asked = _runnable(P.level_of(fidelity), cap)
+def choose_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | None = None,
+                ceiling_s: float | None = None) -> dict:
+    """PLAN-fea-8, NEVER A STOP BEFORE MESHING (Areen, 21 Oct): the rules' own plan when it fits under
+    the limit; else the finest zones coarsened until it fits, never past what keeps elements valid,
+    what that leaves short named (resolution_short); else - every zone at its validity minimum and
+    still over - meshed so anyway. The returned plan always meshes."""
     levers = list(levers or [])
+    limit, why = element_limit(record, ceiling_s)
     zone_list = P.zones(record, tighten=L.tightened(levers))
-    hist = _histogram(surface, zone_list, levers, diag_m)
-    plan = make_plan(record, surface, diag_m, fidelity=fidelity, levers=levers, level=asked, relax=False, hist=hist)
+    plan = make_plan(record, surface, diag_m, levers=levers, limit=limit)
+    plan["limit"]["why"] = why
     if plan["fits"]:
         return plan
-    needed, complete, said = _needed(plan)
-    who = {"asked": asked.key, "asked_label": asked.label, "needed": needed, "complete": complete,
-           "needed_words": said}
-    key = P.NEXT_LEVEL.get(asked.key)
-    while key:
-        up = make_plan(record, surface, diag_m, fidelity=fidelity, levers=levers,
-                       level=_runnable(P.LEVELS[key], cap), relax=False, hist=hist)
-        if up["fits"]:
-            up["auto_level"] = who
-            if up["detail"]["target"] != P.LEVELS[key].target:
-                up["runnable_cap"] = {"elements": cap, "rate": FEA_FILL_RATE, "cap_s": cap_s}
-            return _restate(record, up)
-        key = P.NEXT_LEVEL.get(key)
-    largest = _runnable(P.LEVELS[P.LARGEST], cap)
+    needed = int(plan["estimate"]["elements"])
+    said = f"about {needed:,} elements" if plan.get("histogram_complete", True) else f"more than {needed:,} elements"
     floor = min([float(z["size_m"]) for z in zone_list] or [diag_m / P.MIN_DIVISIONS])
-    best = None
+    best = plan
     for _ in range(FLOOR_STEPS):
         floor *= 2.0
-        best = make_plan(record, surface, diag_m, fidelity=fidelity, levers=levers, level=largest,
-                         zone_floor_m=floor, relax=False)
+        best = make_plan(record, surface, diag_m, levers=levers, limit=limit, zone_floor_m=floor)
         if best["fits"]:
             break
-    assert best is not None
-    if best["fits"]:
-        # one step back: the floor half way down still fits? then it gives back resolution
-        mid = 0.75 * floor
-        finer = make_plan(record, surface, diag_m, fidelity=fidelity, levers=levers, level=largest,
-                          zone_floor_m=mid, relax=False)
+    at_minimums = not best["fits"]
+    if at_minimums:
+        # EVEN AT THEIR VALIDITY MINIMUMS the zones need more than the limit: meshed so anyway - the
+        # least resolution that keeps every element valid - and said
+        best["fits"] = True
+    else:
+        # one step back: a floor a quarter lower still fits? then it gives back resolution
+        finer = make_plan(record, surface, diag_m, levers=levers, limit=limit, zone_floor_m=0.75 * floor)
         if finer["fits"]:
-            best, floor = finer, mid
-    best["best_possible"] = {**who, "zone_floor_m": floor}
-    if largest.target != P.LEVELS[P.LARGEST].target:
-        best["runnable_cap"] = {"elements": cap, "rate": FEA_FILL_RATE, "cap_s": cap_s}
+            best, floor = finer, 0.75 * floor
+    best["limit"]["why"] = why
+    best["coarsened"] = {"needed": needed, "needed_words": said, "zone_floor_m": floor, "at_minimums": at_minimums}
     return _restate(record, best)
 
 
 def _restate(record: dict, plan: dict) -> dict:
-    """The plan's words and decisions again, now that it says how its level was chosen."""
+    """The plan's words and decisions again, now that it says what was coarsened."""
     plan["words"] = P.words(record, plan)
     plan["decisions"] = P.decisions(record, plan)
     return plan
 
 
-#: The FEA fill's slow rate (elements per second of the whole native run). None until the FEA lab
-#: (build steps 7-8) has measured one: the guard is then the engine's old fixed cap.
-#: Measured 21 Oct on the FEA lab VMs (8 vCPU, 16 GiB cap like the mesh job, gmsh on one thread): 587,
-#: 716, 813 and 1,049 elements a second over four ~420k passes; the slowest-but-one, rounded down.
-FEA_FILL_RATE: float | None = 600.0
-#: A level is never planned above what one pass builds in this share of the guard clock: a plan the
-#: clock stops is a guard trip, never a mesh (step 8's VM lab: 1.7M planned at Fine tripped the
-#: 1,500 s guard on every part).
-RUNNABLE_MARGIN = 0.7
+#: PLAN-fea-13: THE FILL RATE BY COMPLEXITY - elements per second of one native gmsh pass, at the
+#: slow end of each class, measured on the FEA lab VMs (8 vCPU, the mesh job's 16 GiB, gmsh on one
+#: thread). PROVISIONAL until the 21 Oct re-run measures each class: the simple class's 587 is the
+#: slowest of four measured ~420k sprocket passes, and the complex class sits under the slowest
+#: implied by step 8's three guard trips (430-520k elements not done in 1,500 s: under ~285/s).
+FILL_RATES: dict[str, float] = {"simple": 587.0, "moderate": 400.0, "complex": 250.0}
+#: the class boundaries (CAD faces, hot spots); any micro detail makes a part complex
+SIMPLE_FACES, SIMPLE_SPOTS = 40, 20
+COMPLEX_FACES, COMPLEX_SPOTS = 200, 100
+#: the guard is GUARD_FACTOR times the planned time (D3's factor), never over the mesh job's own
+#: limit (deploy/gcp MESH_TIMEOUT_SECONDS, 14,400 s) less JOB_MARGIN_S, nor what the attempt has left
 GUARD_FACTOR = 3.0
+MESH_JOB_LIMIT_S = 14_400
+JOB_MARGIN_S = 600
+#: what an attempt keeps back after the last pass (the deck's writers, the hand-back)
+ATTEMPT_RESERVE_S = 300
 
 
-def planned_work(plan: dict, cap_s: float) -> dict:
+def guard_seconds(planned_s: float | None, *, floor_s: float, ceiling_s: float,
+                  factor: float = GUARD_FACTOR) -> int:
+    """D3's TIME-2 arithmetic (#259 work_limits.guard_seconds, mirrored): factor x the planned time,
+    never under the floor, never over the ceiling."""
+    floor = max(1.0, float(floor_s))
+    ceiling = max(floor, float(ceiling_s))
+    if planned_s is None:
+        return int(floor)
+    return int(min(ceiling, max(floor, factor * float(planned_s))))
+
+
+def ceiling_for(run) -> float:
+    """PLAN-fea-13's ceiling for one pass: the mesh job's own limit less its margin, and never more
+    than the attempt has left (its deadline, less ATTEMPT_RESERVE_S)."""
+    job = float(MESH_JOB_LIMIT_S - JOB_MARGIN_S)
+    deadline = getattr(run, "deadline_s", None)
+    started = getattr(run, "_started", None)
+    if deadline and started is not None:
+        left = float(deadline) - (time.monotonic() - float(started)) - ATTEMPT_RESERVE_S
+        return max(60.0, min(job, left))
+    return job
+
+
+def planned_work(plan: dict, cap_s: float, *, rate: float | None = None, cls: str = "",
+                 ceiling_s: float | None = None) -> dict:
     """The pass's planned work and its guard clock, in D3's terms (#259, contracts/work_limits:
-    PlannedWork / guard_for). Planned work - the plan's element estimate - decides everything; the
-    clock is only a guard, GUARD_FACTOR times the planned time at the slow rate, never under the old
-    cap and never over it here (gmsh's floor and ceiling are both its 1,500 s cap).
+    PlannedWork / guard_for). PLANNED WORK DECIDES, THE CLOCK ONLY GUARDS (PLAN-fea-13): the guard
+    is GUARD_FACTOR times the planned time at the part's slow fill rate, never under the engine's
+    old fixed cap (the floor) and never over the mesh job's limit or what the attempt has left.
     REBASE NOTE: once #259 merges this becomes `work_limits.PlannedWork(where="fea.gmsh",
     unit="elements", ...)` and a trip is recorded with `determinism.note_guard_trip`."""
     amount = float((plan.get("estimate") or {}).get("elements") or 0)
-    planned_s = amount / FEA_FILL_RATE if FEA_FILL_RATE and amount > 0 else None
-    guard = int(cap_s if planned_s is None else min(cap_s, max(cap_s, GUARD_FACTOR * planned_s)))
-    return {"where": "fea.gmsh", "unit": "elements", "amount": amount or None, "rate": FEA_FILL_RATE,
-            "floor_s": float(cap_s), "ceiling_s": float(cap_s), "planned_s": planned_s, "guard_s": guard,
+    rate = rate if rate is not None else min(FILL_RATES.values())
+    planned_s = amount / rate if rate and amount > 0 else None
+    ceiling = float(ceiling_s if ceiling_s is not None else cap_s)
+    guard = guard_seconds(planned_s, floor_s=float(cap_s), ceiling_s=ceiling)
+    return {"where": "fea.gmsh", "unit": "elements", "amount": amount or None, "rate": rate, "class": cls,
+            "floor_s": float(cap_s), "ceiling_s": ceiling, "planned_s": planned_s, "guard_s": guard,
             "factor": GUARD_FACTOR}
 
 
@@ -335,8 +361,9 @@ def ladder_words(passes: list[dict], levers: list[dict]) -> str:
     tried = ", ".join(lv["lever"] for lv in levers) or "no lever"
     readings = [float(p["min_sicn"]) for p in passes if p.get("min_sicn") is not None]
     worst = min(readings) if readings else None
-    return (f"no pass of the FEA plan met the element quality floor ({len(passes)} pass(es); levers {tried}; "
-            f"best worst element {worst}). The plan is deterministic: another attempt builds the same mesh.")
+    return (f"no pass of the FEA plan built a valid mesh - a degenerate or inverted element ({len(passes)} "
+            f"pass(es); levers {tried}; best worst element {worst}). The plan is deterministic: another attempt "
+            "builds the same mesh.")
 
 
 def _read_quality(ws: Path) -> dict:
@@ -376,7 +403,6 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     from meshpipeline.engines.runtime import get_engine
 
     ws = Path(workspace)
-    fidelity = str(state.get("effective_mesh_fidelity", "") or "")
     if not (ws / "geometry.step").exists():
         logger.warning("fea driver: no staged solid in %s - job_id=%s", ws, job_id)
         await run.fence("deliver builder outcome")
@@ -416,44 +442,45 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     tripped: dict | None = None
     policy = get_spec(ENGINE).run_policy
     cap = int(policy.run_timeout()) if policy is not None else 1500
+    rate, cls = fill_rate(record)
     chosen: dict = {}
     for n in range(1, L.MAX_PASSES + 1):
         if n == 1:
-            # PLAN-fea-8: the level asked for, the next that holds every rule, or the best possible
-            # within the largest - never a stop before meshing for budget
-            plan = await asyncio.to_thread(choose_plan, record, surface, diag_m, fidelity=fidelity, levers=levers,
-                                           cap_s=cap)
-            chosen = {"level": P.Level(plan["detail"]["key"], plan["detail"]["label"], plan["detail"]["target"]),
-                      "zone_floor_m": plan.get("zone_floor_m"), "runnable_cap": plan.get("runnable_cap"),
-                      "auto_level": plan.get("auto_level"), "best_possible": plan.get("best_possible")}
+            # PLAN-fea-8: the rules' own plan, coarsened to fit under the limit when it must - never a
+            # stop before meshing
+            plan = await asyncio.to_thread(choose_plan, record, surface, diag_m, levers=levers,
+                                           ceiling_s=ceiling_for(run))
+            chosen = {"limit": plan["limit"], "zone_floor_m": plan.get("zone_floor_m"),
+                      "coarsened": plan.get("coarsened")}
         else:
-            plan = await asyncio.to_thread(make_plan, record, surface, diag_m, fidelity=fidelity, levers=levers,
-                                           level=chosen["level"], zone_floor_m=chosen["zone_floor_m"])
-            for k in ("auto_level", "best_possible", "runnable_cap"):
-                if chosen.get(k):
-                    plan[k] = chosen[k]
+            floor_m = chosen["zone_floor_m"]
+            if L.coarse_factor(levers) < 1.0:
+                # LAD-fea-4: the built mesh was over the limit - the finest zones coarser, from the
+                # floor already in force (or the finest zone), never past their validity minimums
+                start = floor_m or min([float(z["size_m"]) for z in P.zones(record)] or [diag_m / P.MIN_DIVISIONS])
+                floor_m = start / L.coarse_factor(levers)
+            plan = await asyncio.to_thread(make_plan, record, surface, diag_m, levers=levers,
+                                           limit=int(chosen["limit"]["elements"]), zone_floor_m=floor_m)
+            plan["limit"] = chosen["limit"]
+            if chosen.get("coarsened"):
+                plan["coarsened"] = chosen["coarsened"]
+                plan["fits"] = True
             plan = _restate(record, plan)
         if n == 1:
             _cite(job_id, plan["decisions"])
         write_plan(ws, plan)
         run.note_authoring()
-        if not plan["fits"]:
-            if passes:
-                break                                  # a lever cannot buy past the level: keep what was built
-            est = plan["estimate"]["elements"]
-            _refuse(ws, cause=FailureCause.CELL_BUDGET.value,
-                    text=" ".join(w for w in plan["words"] if w.startswith(("Stopped", "Option", "No level"))),
-                    cells=est, limit=plan["detail"]["ceiling"], level=plan["detail"]["label"],
-                    complete=plan.get("histogram_complete", True),
-                    options=[o["words"] for o in plan.get("options") or []], fea=True)
-            await run.fence("deliver builder outcome")
-            outcome = run.outcome(produced_deliverable=False, failure_marker=OVER_LEVEL)
-            return False, OVER_LEVEL, outcome
         _clear_outputs(ws)
         note_native_pass(ws, n)
         note_native_payload(ws, [p for p in PAYLOAD if (ws / p).exists()])
         # PLANNED WORK DECIDES, THE CLOCK ONLY GUARDS (D3's interface, mirrored - see planned_work)
-        work = planned_work(plan, cap)
+        work = planned_work(plan, cap, rate=rate, cls=cls, ceiling_s=ceiling_for(run))
+        _cite(job_id, [{"stage": "fea_time", "decided": "guard", "value": work["guard_s"], "rule": "PLAN-fea-13",
+                        "inputs": {k: work[k] for k in ("amount", "rate", "class", "planned_s", "floor_s",
+                                                         "ceiling_s", "factor")} | {"pass": n},
+                        "words": (f"Pass {n}: about {int(work['amount'] or 0):,} elements at {work['rate']:g} a second "
+                                  f"(a {cls} part) is about {int(work['planned_s'] or 0)} s; the mesher may take "
+                                  f"{work['guard_s']} s.")}])
         await run.fence("start native mesh")
         native_t0 = time.monotonic()
         result = await asyncio.to_thread(get_engine(ENGINE).run_cartesian_mesh, ws, timeout=work["guard_s"])
@@ -530,5 +557,6 @@ def driver_for(state):
     return drive if applies(state) else None
 
 
-__all__ = ["FLOOR_STEPS", "RUNNABLE_MARGIN", "choose_plan", "runnable_elements", "BUILD_FAILED", "GUARD_TRIP", "NOT_ONE_PART", "NO_SOURCE", "OVER_LEVEL", "QUALITY_GATE", "applies", "drive",
+__all__ = ["FILL_RATES", "FLOOR_STEPS", "GUARD_FACTOR", "MESH_JOB_LIMIT_S", "ceiling_for", "choose_plan",
+           "complexity", "element_limit", "fill_rate", "guard_seconds", "runnable_elements", "BUILD_FAILED", "GUARD_TRIP", "NOT_ONE_PART", "NO_SOURCE", "QUALITY_GATE", "applies", "drive",
            "driver_for", "ladder_facts", "ladder_words", "make_plan", "measure_staged", "planned_work", "write_plan"]

@@ -138,7 +138,7 @@ def _driver_for(spec, state):
 
 async def run_attempt(attempt: BuilderAttempt, state, *, job_id: str,
                       publish: ExecutionEventPublisher,
-                      timeout_s: int) -> TurnOutcome:
+                      timeout_s: int, driver_timeout_s: int | None = None) -> TurnOutcome:
     from meshpipeline.application import execution_fence as fence
 
     try:
@@ -149,8 +149,11 @@ async def run_attempt(attempt: BuilderAttempt, state, *, job_id: str,
             logger.info("Builder: %s's deterministic driver (%s.%s) takes this attempt - no model loop "
                         "- job_id=%s", attempt.engine, getattr(driver, "__module__", "?"),
                         getattr(driver, "__name__", "?"), job_id)
+            # A DETERMINISTIC DRIVER plans its own work and guards each pass by it (the FEA driver,
+            # PLAN-fea-13): it may use what the builder has left, not the model loop's per-turn slice
             spec_authored, final_text, stop = await _run_engine_driver(
-                driver, attempt, state, job_id=job_id, publish=publish, timeout_s=timeout_s)
+                driver, attempt, state, job_id=job_id, publish=publish,
+                timeout_s=int(driver_timeout_s) if driver_timeout_s else timeout_s)
             return TurnOutcome(spec_authored=spec_authored, final_text=final_text,
                                driver_stop=stop)
         final_text, messages_out = await _run_shared_loop(

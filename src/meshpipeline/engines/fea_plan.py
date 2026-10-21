@@ -1,76 +1,55 @@
-# Responsibility: Compute the FEA meshing plan from a part's measurements: the element type, the base size for the chosen detail level, the zones (walls, hot spots, capped corners, rounds) with the size each one needs by rule, the element estimate, and whether it fits the level - with the options when it does not.
-# Boundaries: pure over plain data (the measurement record, the volume histogram, the level); no engine, no file, no model. Every number names the rule it comes from (docs/RULES.md PLAN-fea-n).
+# Responsibility: Compute the FEA meshing plan from a part's measurements: the element type, the zones the rules ask for (walls, hot spots, capped corners, rounds) with the size each one needs, the base size where no rule asks for finer, the element estimate against the element limit, and - when the rules need more than the limit - the finest zones coarsened until it fits, never past what keeps elements valid, with what that leaves short named.
+# Boundaries: pure over plain data (the measurement record, the volume histogram, the limit); no engine, no file, no model. Every number names the rule it comes from (docs/RULES.md PLAN-fea-n).
 # Collaborates with: cad/fea_measure.py (the record), engines/fea_size_field.py (the histogram), engines/fea_driver.py (runs it and records it), engines/gmsh/fea_adapter.py (meshes it).
-"""THE FEA PLAN (fea_plan.json), engine-neutral.
+"""THE FEA PLAN (fea_plan.json), engine-neutral: ONE rules-based plan (Areen, 21 Oct).
 
-    {"version": 1, "rules_version": "3",
-     "detail": {"key": "standard", "label": "Standard", "target": 500000, "ceiling": 625000},
+    {"version": 2,
      "element": {"family": "tetrahedra", "order": 2, "solid_only": true},
-     "base_size_m": .., "coarsest_base_m": .., "growth": 1.3, "per_h3": 4.5,
+     "base_size_m": .., "growth": 1.3, "per_h3": 4.5,
      "zones": [{"id": "W3", "kind": "wall" | "hole" | "fillet" | "notch" | "corner" | "round",
                 "faces": ["Face_3"], "size_m", "reach_m", "rule": "PLAN-fea-3", "why": "...",
                 "spot": "H1", "capped": bool, "thickness_m" | "radius_m"}],
      "histogram": [[size_m, volume_m3], ...],
-     "estimate": {"elements": .., "zones_at_coarsest": ..},
-     "fits": true, "options": [], "levers": [], "words": ["..."], "decisions": [...]}
+     "estimate": {"elements": ..}, "limit": {"elements": .., "why": ".."},
+     "fits": true, "coarsened": {...} | absent, "resolution_short": [...],
+     "levers": [], "cusps": [...], "micro": [...], "words": ["..."], "decisions": [...]}
 
 Lengths are metres (the unit gmsh and the deck work in); the measurement record is millimetres.
 
 THE RULES (docs/RULES.md):
   PLAN-fea-1  quadratic tetrahedra, solid only (version 1)
-  PLAN-fea-2  the detail level sets the element count; the base size is solved for it
   PLAN-fea-3  at least 2 elements through every wall
   PLAN-fea-4  hot spots: 10 elements per quarter-turn of a hole, fillet or notch, and 3 through
               the wall beside it
   PLAN-fea-5  sharp inside corners are capped at a quarter of the wall beside them
   PLAN-fea-6  sizes grow by at most 1.3 away from every zone
   PLAN-fea-7  every other round keeps its shape: 3 elements per quarter-turn
-  PLAN-fea-8  the estimate is checked before meshing and never stops the run: over the chosen level,
-              the next level that holds every rule is used (and said); when even the largest cannot,
-              the finest zones are floored until it fits, and what that leaves short is named
-              (resolution_short)
+  PLAN-fea-8  the estimate is checked against the element limit before meshing and never stops the
+              run: over it, the finest zones are coarsened until it fits, never past what keeps
+              elements valid, and what that leaves short is named (resolution_short)
   PLAN-fea-9  one part only (version 1)
-  PLAN-fea-10 a CUSP (two CAD edges of a face leaving a vertex together: the material runs to nothing)
-              cannot be meshed above the quality floor at any size: the elements touching it get
-              straight sides, are set aside from the floor, and are named as a concern
-  PLAN-fea-12 a MICRO DETAIL (an edge or face far smaller than the elements there) is set aside and
-              named the same way, saying stress right at it is not resolved
-  PLAN-fea-11 curving never makes an element worse: one that curving onto the CAD would leave worse
-              than straight, and under the floor, keeps straight sides
+  PLAN-fea-10 a CUSP is set aside from the quality floor with straight sides, and named
+  PLAN-fea-11 curving never makes an element worse
+  PLAN-fea-12 a MICRO DETAIL is set aside and named the same way
+  PLAN-fea-14 the base size is the coarsest the part allows; the rules refine where they ask
 """
 from __future__ import annotations
 
 import math
 from collections.abc import Mapping
-from dataclasses import dataclass
 
 from meshpipeline.engines.fea_size_field import Histogram, elements
 
-VERSION = 1
+VERSION = 2
 PLAN_FILE = "fea_plan.json"
 
-
-@dataclass(frozen=True)
-class Level:
-    key: str          # the run's effective_mesh_fidelity (pipeline/enums.MeshFidelity)
-    label: str        # what the user reads (design 3.5)
-    target: int       # about this many elements
-
-
-#: THE DETAIL LEVELS (Areen, design 3.5): Quick ~100k, Standard ~500k (default), Fine ~2M.
-LEVELS: dict[str, Level] = {
-    "draft": Level("draft", "Quick", 100_000),
-    "standard": Level("standard", "Standard", 500_000),
-    "max": Level("max", "Fine", 2_000_000),
-}
-NEXT_LEVEL = {"draft": "standard", "standard": "max", "max": None}
-DEFAULT_LEVEL = "standard"
-#: The base size is solved so the estimate comes to this share of the level (aimed under it, as the
-#: snappy budget is: the estimate is an estimate).
-AIM = 0.85
-#: "About" a level: a plan up to this much over the level's count is still that level.
-OVER = 1.25
-#: The base size is never coarser than the part's diagonal over this: a part is never one element.
+#: PLAN-fea-8: the most elements one FEA mesh is built with (Areen, 21 Oct).
+ELEMENT_LIMIT = 8_000_000
+#: The plan aims this far under its limit: the estimate is an estimate (step 8: built/planned
+#: median 0.93, 90th percentile 1.12 on 178 meshes).
+LIMIT_AIM = 0.85
+#: PLAN-fea-14: the base size is the part's diagonal over this - the coarsest the part allows (a
+#: part is never one element); every rule refines below it where it asks to.
 MIN_DIVISIONS = 10
 
 #: PLAN-fea-3: elements through every wall (version 1 is solid only).
@@ -78,9 +57,6 @@ WALL_ELEMENTS = 2
 #: PLAN-fea-4: elements per quarter-turn of a hole, fillet or notch, and through the wall beside it.
 HOT_SPOT_PER_QUARTER = 10
 STRESS_WALL_ELEMENTS = 3
-#: The fewest the rule allows (design 6: at least 6 per quarter-turn): the "fewer elements at the
-#: named spots" option meshes the hot spots at this, and the stress wall at the plain wall rule.
-HOT_SPOT_PER_QUARTER_MIN = 6
 #: PLAN-fea-12: a CAD detail (edge length, face width) under this fraction of the finest element the
 #: plan asks for is a MICRO DETAIL: the mesh cannot follow it, so the elements on it are set aside.
 MICRO_KEEP = 0.05
@@ -91,16 +67,16 @@ GROWTH = 1.3
 #: PLAN-fea-7: elements per quarter-turn of a round that is not a hot spot (its shape only).
 ROUND_PER_QUARTER = 3
 #: Tetrahedra per base size cubed, measured on gmsh's own Delaunay fill (lab ~/fea4_lab: a cube
-#: at 10/6/4 mm gave 4.9/4.6/4.2 per h^3, boundary included; the audit parts are checked against
-#: it in tests/unit/engines/test_fea_plan_lab.py's notes).
+#: at 10/6/4 mm gave 4.9/4.6/4.2 per h^3, boundary included).
 PER_H3 = 4.5
+#: PLAN-fea-8's VALIDITY MINIMUMS: coarsening a zone never goes past what keeps its elements valid -
+#: this many elements through a wall, and per quarter-turn of a round (step 8's VM lab: six coarsened
+#: plans put under one element across a 0.1-0.5 mm wall and failed).
+KEEP_THROUGH = 1.0
+KEEP_PER_QUARTER = 3
 
 QUARTER = math.pi / 2.0
 _MM = 1e-3
-
-
-def level_of(fidelity: str | None) -> Level:
-    return LEVELS.get(str(fidelity or "").strip().lower(), LEVELS[DEFAULT_LEVEL])
 
 
 def _f(v) -> float | None:
@@ -115,13 +91,10 @@ def _r(v: float) -> float:
     return float(f"{float(v):.6g}")
 
 
-def zones(record: Mapping, *, relaxed: bool = False, tighten: Mapping[str, float] | None = None) -> list[dict]:
+def zones(record: Mapping, *, tighten: Mapping[str, float] | None = None) -> list[dict]:
     """Every zone the rules ask for, from the measurement record (millimetres in, metres out).
-    `relaxed`: the hot spots at the fewest elements the rule allows (the over-budget option).
     `tighten`: zone id -> factor, the ladder's LAD-fea-3 (a zone that fell short, made finer)."""
     tighten = dict(tighten or {})
-    per_quarter = HOT_SPOT_PER_QUARTER_MIN if relaxed else HOT_SPOT_PER_QUARTER
-    stress_wall = WALL_ELEMENTS if relaxed else STRESS_WALL_ELEMENTS
     out: list[dict] = []
     spot_faces: set[str] = set()
     thinnest = _f((record.get("thickness") or {}).get("min_mm"))
@@ -144,16 +117,16 @@ def zones(record: Mapping, *, relaxed: bool = False, tighten: Mapping[str, float
         if r is None or not faces:
             continue
         spot_faces.update(faces)
-        arc = QUARTER * r / per_quarter
-        size = min(arc, t / stress_wall) if t else arc
-        why = f"{h.get('shape') or h.get('type')} of radius {_mm(r)}: {per_quarter} elements per quarter-turn"
-        if t and t / stress_wall < arc:
+        arc = QUARTER * r / HOT_SPOT_PER_QUARTER
+        size = min(arc, t / STRESS_WALL_ELEMENTS) if t else arc
+        why = f"{h.get('shape') or h.get('type')} of radius {_mm(r)}: {HOT_SPOT_PER_QUARTER} elements per quarter-turn"
+        if t and t / STRESS_WALL_ELEMENTS < arc:
             why = (f"{h.get('shape') or h.get('type')} of radius {_mm(r)} in a {_mm(t)} wall: "
-                   f"{stress_wall} elements through the wall beside it")
+                   f"{STRESS_WALL_ELEMENTS} elements through the wall beside it")
         out.append({"id": f"H{h.get('id', '')[1:]}", "kind": str(h.get("type")), "faces": faces,
                     "size_m": size * _MM, "reach_m": r * _MM, "rule": "PLAN-fea-4",
                     "spot": h.get("id"), "capped": False, "radius_m": r * _MM, "why": why,
-                    **({"thickness_m": t * _MM, "wall_elements": stress_wall} if t else {})})
+                    **({"thickness_m": t * _MM, "wall_elements": STRESS_WALL_ELEMENTS} if t else {})})
 
     face_rows = record.get("faces") or {}
     for name in sorted(face_rows, key=_face_order):
@@ -196,118 +169,36 @@ def _deg(v) -> str:
     return f"{x:.0f} degrees" if x is not None else "sharp"
 
 
-def base_size(hist: Histogram, *, target: float, coarsest: float, per_h3: float = PER_H3) -> float:
-    """PLAN-fea-2: the base size whose estimate is AIM of the target - the coarsest allowed when
-    even that is over it. Bisection on the log of the size: the same inputs give the same size."""
-    want = AIM * float(target)
-    if elements(hist, coarsest, per_h3) >= want:
-        return coarsest
-    lo, hi = math.log(coarsest) - math.log(1e6), math.log(coarsest)
-    for _ in range(80):
-        mid = 0.5 * (lo + hi)
-        if elements(hist, math.exp(mid), per_h3) > want:
-            lo = mid
-        else:
-            hi = mid
-    return math.exp(hi)
+def keep_size(z: dict, through: float = KEEP_THROUGH) -> float | None:
+    """The coarsest size a zone may be given and still keep its elements valid; None for no limit."""
+    sizes = []
+    if z.get("thickness_m"):
+        sizes.append(float(z["thickness_m"]) / through)
+    if z["kind"] in ("hole", "fillet", "notch", "round") and z.get("radius_m"):
+        sizes.append(QUARTER * float(z["radius_m"]) / KEEP_PER_QUARTER)
+    return min(sizes) if sizes else None
 
 
-def finish(record: Mapping, zone_list: list[dict], hist: Histogram, *, level: Level, diag_m: float,
-           base_factor: float = 1.0, relaxed_hist: Histogram | None = None,
-           levers: list[dict] | None = None, relaxed: bool = False, growth: float = GROWTH) -> dict:
-    """The whole plan, from the zones and their histogram (see the module text). `base_factor`
-    is the ladder's LAD-fea-4 (under 1: the base size is divided by it, so coarser; the rules
-    kept). `relaxed_hist` is the
-    histogram of the relaxed zones, asked for only when the plan does not fit."""
-    coarsest = diag_m / MIN_DIVISIONS
-    base = min(coarsest, base_size(hist, target=level.target, coarsest=coarsest) / float(base_factor))
-    est = elements(hist, base, PER_H3)
-    at_coarsest = elements(hist, coarsest, PER_H3)
-    ceiling = int(level.target * OVER)
-    fits = hist.complete and est <= ceiling
-    plan: dict = {
-        "version": VERSION,
-        "detail": {"key": level.key, "label": level.label, "target": level.target, "ceiling": ceiling},
-        "element": {"family": "tetrahedra", "order": 2, "solid_only": True},
-        "base_size_m": _r(base), "coarsest_base_m": _r(coarsest), "growth": float(growth), "per_h3": PER_H3,
-        "zones": zone_list, "histogram": hist.as_list(), "histogram_complete": hist.complete,
-        "estimate": {"elements": int(round(est)), "zones_at_coarsest": int(round(at_coarsest))},
-        "fits": bool(fits), "relaxed": bool(relaxed), "options": [], "levers": list(levers or []),
-        # PLAN-fea-10: the cusps the adapter sets aside (metres, the mesh's unit)
-        "cusps": [{"at_m": [_r(float(v) * _MM) for v in c["at_mm"]], "faces": list(c.get("faces") or []),
-                   "angle_deg": c.get("angle_deg")} for c in record.get("cusps") or []],
-    }
-    # PLAN-fea-12: the micro details far below the finest element this plan asks for
-    finest_mm = min([float(z["size_m"]) for z in zone_list] + [float(base)]) / _MM
-    plan["micro"] = [{"kind": m.get("kind"), "size_mm": m.get("size_mm"), "faces": list(m.get("faces") or []),
-                      "points_m": [[_r(float(v) * _MM) for v in p] for p in m.get("points_mm") or []]}
-                     for m in record.get("micro") or []
-                     if float(m.get("size_mm") or 0.0) < MICRO_KEEP * finest_mm]
-    if not fits:
-        plan["options"] = options(hist, relaxed_hist, level=level, coarsest=coarsest, zone_list=zone_list)
-    plan["words"] = words(record, plan)
-    plan["decisions"] = decisions(record, plan)
-    return plan
-
-
-def _fits_level(hist: Histogram | None, level: Level, coarsest: float) -> int | None:
-    """The estimate at `level` when the zones fit it, else None."""
-    if hist is None or not hist.complete:
-        return None
-    base = base_size(hist, target=level.target, coarsest=coarsest)
-    est = elements(hist, base, PER_H3)
-    return int(round(est)) if est <= level.target * OVER else None
-
-
-def options(hist: Histogram, relaxed_hist: Histogram | None, *, level: Level, coarsest: float,
-            zone_list: list[dict]) -> list[dict]:
-    """PLAN-fea-8's outs, in order: the first level up that holds every rule, and fewer elements
-    at the named spots (at this level, or else at the first level up that holds it)."""
-    out: list[dict] = []
-    nxt = NEXT_LEVEL.get(level.key)
-    while nxt:
-        n = _fits_level(hist, LEVELS[nxt], coarsest)
-        if n is not None:
-            out.append({"option": "level_up", "level": nxt, "label": LEVELS[nxt].label, "elements": n,
-                        "words": f"Use the {LEVELS[nxt].label} level: about {n:,} elements, every rule kept."})
-            break
-        nxt = NEXT_LEVEL.get(nxt)
-    key: str | None = level.key
-    while key:
-        n = _fits_level(relaxed_hist, LEVELS[key], coarsest)
-        if n is not None:
-            spots = costly_spots(zone_list)
-            where = (f"Stay at {level.label}" if key == level.key else f"Use the {LEVELS[key].label} level")
-            out.append({"option": "fewer_at_spots", "level": key, "label": LEVELS[key].label, "elements": n,
-                        "spots": spots,
-                        "words": (f"{where} and accept fewer elements at the named spots "
-                                  f"({HOT_SPOT_PER_QUARTER_MIN} per quarter-turn instead of "
-                                  f"{HOT_SPOT_PER_QUARTER}, {WALL_ELEMENTS} through the wall beside them"
-                                  + (f": {', '.join(spots)}" if spots else "") + f"): about {n:,} elements.")})
-            break
-        key = NEXT_LEVEL.get(key)
-    return out
-
-
-#: The largest level a run is meshed at (PLAN-fea-8: the best possible within it when no level holds
-#: every rule).
-LARGEST = "max"
-
-
-def floored(zone_list: list[dict], floor_m: float) -> list[dict]:
-    """PLAN-fea-8's best possible: every zone finer than `floor_m` meshed at `floor_m` instead, the
-    size its rule asked for kept (`rule_size_m`) so what it leaves short can be named."""
+def floored(zone_list: list[dict], floor_m: float, through: float = KEEP_THROUGH) -> list[dict]:
+    """PLAN-fea-8's coarsening: every zone finer than `floor_m` meshed at `floor_m` instead - but
+    never coarser than its validity minimum (keep_size) - the size its rule asked for kept
+    (`rule_size_m`) so what it leaves short can be named."""
     out = []
     for z in zone_list:
-        if float(z["size_m"]) < floor_m:
-            out.append({**z, "rule_size_m": z["size_m"], "size_m": float(floor_m), "short": True})
-        else:
-            out.append(dict(z))
+        size = float(z["size_m"])
+        if size < floor_m:
+            keep = keep_size(z, through)
+            new = float(floor_m) if keep is None else max(size, min(float(floor_m), keep))
+            if new > size:
+                out.append({**z, "rule_size_m": size, "size_m": new, "short": True,
+                            **({"kept_valid": True} if keep is not None and new < floor_m else {})})
+                continue
+        out.append(dict(z))
     return out
 
 
 def shortfalls(zone_list: list[dict], n: int = 12) -> list[str]:
-    """What the floored zones leave short of their rules, the worst first, in plain words
+    """What the coarsened zones leave short of their rules, the worst first, in plain words
     (resolution_short): elements through a wall, per quarter-turn of a round."""
     rows = []
     for z in zone_list:
@@ -335,20 +226,44 @@ def shortfalls(zone_list: list[dict], n: int = 12) -> list[str]:
     return words
 
 
-def costly_spots(zone_list: list[dict], n: int = 3) -> list[str]:
-    """The hot spots that cost the most (the finest first), named for the user."""
-    spots = sorted((z for z in zone_list if z["kind"] in ("hole", "fillet", "notch")),
-                   key=lambda z: (z["size_m"], z["id"]))
-    return [f"{z['spot']} ({z['kind']}, radius {z['radius_m'] * 1e3:.3g} mm)" for z in spots[:n]]
+def finish(record: Mapping, zone_list: list[dict], hist: Histogram, *, diag_m: float, limit: int,
+           levers: list[dict] | None = None, growth: float = GROWTH) -> dict:
+    """The whole plan, from the zones and their histogram (see the module text): the base size is
+    the coarsest the part allows (PLAN-fea-14), and the plan fits when its estimate is within
+    LIMIT_AIM of `limit` (PLAN-fea-8)."""
+    base = diag_m / MIN_DIVISIONS
+    est = elements(hist, base, PER_H3)
+    fits = hist.complete and est <= LIMIT_AIM * float(limit)
+    plan: dict = {
+        "version": VERSION,
+        "element": {"family": "tetrahedra", "order": 2, "solid_only": True},
+        "base_size_m": _r(base), "growth": float(growth), "per_h3": PER_H3,
+        "zones": zone_list, "histogram": hist.as_list(), "histogram_complete": hist.complete,
+        "estimate": {"elements": int(round(est))},
+        "limit": {"elements": int(limit)},
+        "fits": bool(fits), "levers": list(levers or []),
+        # PLAN-fea-10: the cusps the adapter sets aside (metres, the mesh's unit)
+        "cusps": [{"at_m": [_r(float(v) * _MM) for v in c["at_mm"]], "faces": list(c.get("faces") or []),
+                   "angle_deg": c.get("angle_deg")} for c in record.get("cusps") or []],
+    }
+    # PLAN-fea-12: the micro details far below the finest element this plan asks for
+    finest_mm = min([float(z["size_m"]) for z in zone_list] + [float(base)]) / _MM
+    plan["micro"] = [{"kind": m.get("kind"), "size_mm": m.get("size_mm"), "faces": list(m.get("faces") or []),
+                      "points_m": [[_r(float(v) * _MM) for v in p] for p in m.get("points_mm") or []]}
+                     for m in record.get("micro") or []
+                     if float(m.get("size_mm") or 0.0) < MICRO_KEEP * finest_mm]
+    plan["words"] = words(record, plan)
+    plan["decisions"] = decisions(record, plan)
+    return plan
 
 
 def words(record: Mapping, plan: Mapping) -> list[str]:
     """The plan in plain words (design 3.8: what was refined and why, where corners were capped)."""
-    d = plan["detail"]
     zs = plan["zones"]
     est = plan["estimate"]["elements"]
-    out = [f"Detail level {d['label']}: about {d['target']:,} elements. The base element size is "
-           f"{plan['base_size_m'] * 1e3:.3g} mm, set so the part comes to about that count.",
+    limit = int((plan.get("limit") or {}).get("elements") or ELEMENT_LIMIT)
+    out = [f"The mesh the rules recommend: the base element size is {plan['base_size_m'] * 1e3:.3g} mm (a tenth "
+           "of the part), and every rule below makes it finer where it asks to.",
            "Quadratic tetrahedra (10-node), a solid mesh; every CAD face is a named group."]
     walls = [z for z in zs if z["kind"] == "wall" and z["size_m"] < plan["base_size_m"]]
     if walls:
@@ -366,16 +281,15 @@ def words(record: Mapping, plan: Mapping) -> list[str]:
             by[z["kind"]] = by.get(z["kind"], 0) + 1
         said = ", ".join(f"{n} {k}{'' if n == 1 else ('es' if k == 'notch' else 's')}" for k, n in by.items())
         finest = min(spots, key=lambda z: z["size_m"])
-        per = HOT_SPOT_PER_QUARTER_MIN if plan.get("relaxed") else HOT_SPOT_PER_QUARTER
         base = plan["base_size_m"]
         if finest["size_m"] < base:
             refined = sum(1 for z in spots if z["size_m"] < base)
-            out.append(f"Hot spots: {said}. At least {per} elements per quarter-turn of each round; {refined} "
-                       f"refined below the base size, the finest, {finest['spot']}, to "
+            out.append(f"Hot spots: {said}. At least {HOT_SPOT_PER_QUARTER} elements per quarter-turn of each round; "
+                       f"{refined} refined below the base size, the finest, {finest['spot']}, to "
                        f"{finest['size_m'] * 1e3:.3g} mm elements.")
         else:
-            out.append(f"Hot spots: {said}. At least {per} elements per quarter-turn of each round; the base "
-                       "size is already that fine at every one of them.")
+            out.append(f"Hot spots: {said}. At least {HOT_SPOT_PER_QUARTER} elements per quarter-turn of each round; "
+                       "the base size is already that fine at every one of them.")
     corners = [z for z in zs if z["kind"] == "corner" and z["size_m"] < plan["base_size_m"]]
     if corners:
         out.append(f"Sharp inside corners: {len(corners)} capped at a quarter of the wall beside them (the "
@@ -388,46 +302,28 @@ def words(record: Mapping, plan: Mapping) -> list[str]:
     if cusps:
         out.append(f"Cusps: {len(cusps)} place(s) where two CAD edges of a face meet at almost no angle, so the "
                    "material runs to nothing there. No element there can be well shaped at any size: the ones "
-                   "touching them get straight sides and are set aside from the quality floor, and the delivery "
-                   "names each place. Every other element must meet the floor.")
+                   "touching them get straight sides and are set aside, and the delivery names each place.")
     micro = plan.get("micro") or []
     if micro:
         smallest = min(float(m.get("size_mm") or 0.0) for m in micro)
         out.append(f"Micro details: {len(micro)} CAD edge(s) or face(s) far smaller than the elements there "
                    f"(the smallest {smallest:.3g} mm). The mesh cannot follow them: the elements on them get "
-                   "straight sides and are set aside from the quality floor, and the delivery names each one. "
-                   "Stress right at them is not resolved - on a gear, that includes the contact stress at the "
-                   "tooth tips.")
+                   "straight sides and are set aside, and the delivery names each one. Stress right at them is "
+                   "not resolved - on a gear, that includes the contact stress at the tooth tips.")
     out.append("Curved elements: an element that curving onto the CAD would leave worse than straight keeps "
                "straight sides.")
     out.append(f"Sizes grow by at most {plan.get('growth', GROWTH)} from one element to the next away from "
                "these spots.")
-    capped = plan.get("runnable_cap") or {}
-    if capped:
-        out.append(f"The {d['label']} level is held here to about {d['target']:,} elements: what the mesher builds "
-                   "within its time limit.")
-    auto = plan.get("auto_level") or {}
-    best = plan.get("best_possible") or {}
-    if auto:
-        out.append(f"The rules need {auto['needed_words']}, more than the {auto['asked_label']} level asked "
-                   f"for: meshed at the {d['label']} level instead, every rule kept.")
-    if best:
-        out.append(f"The rules need {best['needed_words']}, more than even the {d['label']} level holds: "
-                   f"meshed at the {d['label']} level as finely as it allows. The finest zones get elements of "
-                   f"{float(best['zone_floor_m']) * 1e3:.3g} mm instead of what their rule asks, and what that leaves "
-                   "short is named: " + "; ".join(plan.get("resolution_short") or []) + ".")
-    if plan["fits"]:
-        out.append(f"Estimated before meshing: about {est:,} elements, within the {d['label']} level.")
-    else:
-        why = (f"about {est:,} elements" if plan.get("histogram_complete", True)
-               else "more elements than any level holds")
-        out.append(f"Stopped before meshing: the rules need {why}, over the {d['label']} level "
-                   f"(about {d['target']:,}).")
-        for o in plan.get("options") or []:
-            out.append("Option: " + o["words"])
-        if not plan.get("options"):
-            out.append("No level fits every rule. Simplify the part where it is finest (the smallest "
-                       "holes, fillets and corners), or mesh a smaller piece of it.")
+    coarse = plan.get("coarsened") or {}
+    if coarse:
+        out.append(f"The rules need {coarse['needed_words']}, more than the {limit:,}-element limit allows: the "
+                   f"finest zones were made coarser - to {float(coarse['zone_floor_m']) * 1e3:.3g} mm - until it fits, "
+                   "never past 1 element through any wall or 3 per quarter-turn of any round. What that leaves "
+                   "short: " + "; ".join(plan.get("resolution_short") or []) + ".")
+        if coarse.get("at_minimums"):
+            out.append("Even with every zone at those minimums the part needs more than the limit: meshed so "
+                       "anyway, as the least resolution that keeps every element valid.")
+    out.append(f"Estimated before meshing: about {est:,} elements (the limit is {limit:,}).")
     for lever in plan.get("levers") or []:
         out.append(str(lever.get("words") or ""))
     return [w for w in out if w]
@@ -436,15 +332,14 @@ def words(record: Mapping, plan: Mapping) -> list[str]:
 def decisions(record: Mapping, plan: Mapping) -> list[dict]:
     """The why-record entries the plan makes (contracts/decision_record.cite shape), one per rule
     that decided something on this part."""
-    d = plan["detail"]
     zs = plan["zones"]
+    limit = int((plan.get("limit") or {}).get("elements") or ELEMENT_LIMIT)
     out = [
         {"stage": "fea_plan", "decided": "element", "value": "quadratic tetrahedra, solid", "rule": "PLAN-fea-1",
          "inputs": {"solid_only": True}, "words": "Version 1 meshes the solid with 10-node tetrahedra."},
-        {"stage": "fea_plan", "decided": "base size", "value": plan["base_size_m"], "rule": "PLAN-fea-2",
-         "inputs": {"level": d["key"], "target": d["target"], "aim": AIM, "coarsest_m": plan["coarsest_base_m"],
-                    "per_h3": PER_H3},
-         "words": f"Base size {plan['base_size_m'] * 1e3:.3g} mm for the {d['label']} level."},
+        {"stage": "fea_plan", "decided": "base size", "value": plan["base_size_m"], "rule": "PLAN-fea-14",
+         "inputs": {"min_divisions": MIN_DIVISIONS, "per_h3": PER_H3},
+         "words": f"Base size {plan['base_size_m'] * 1e3:.3g} mm: a tenth of the part, the rules refine below it."},
     ]
     for rule, kinds, what in (("PLAN-fea-3", ("wall",), "walls"), ("PLAN-fea-4", ("hole", "fillet", "notch"), "hot spots"),
                               ("PLAN-fea-5", ("corner",), "capped corners"), ("PLAN-fea-7", ("round",), "rounds")):
@@ -457,33 +352,25 @@ def decisions(record: Mapping, plan: Mapping) -> list[dict]:
     if cusps:
         out.append({"stage": "fea_plan", "decided": "cusps set aside", "value": len(cusps), "rule": "PLAN-fea-10",
                     "inputs": {"places_m": [c["at_m"] for c in cusps]},
-                    "words": f"{len(cusps)} cusp(s): the elements touching them are set aside from the quality floor."})
+                    "words": f"{len(cusps)} cusp(s): the elements touching them are set aside."})
     micro = plan.get("micro") or []
     if micro:
         out.append({"stage": "fea_plan", "decided": "micro details set aside", "value": len(micro),
                     "rule": "PLAN-fea-12",
                     "inputs": {"smallest_mm": min(float(m.get("size_mm") or 0.0) for m in micro), "keep": MICRO_KEEP},
-                    "words": f"{len(micro)} micro detail(s): the elements on them are set aside from the quality floor."})
+                    "words": f"{len(micro)} micro detail(s): the elements on them are set aside."})
     out.append({"stage": "fea_plan", "decided": "curving", "value": "never worse than straight", "rule": "PLAN-fea-11",
                 "inputs": {}, "words": "An element curving would leave worse than straight keeps straight sides."})
     out.append({"stage": "fea_plan", "decided": "growth", "value": plan["growth"], "rule": "PLAN-fea-6", "inputs": {},
                 "words": f"Element sizes grow by at most {plan.get('growth', GROWTH)} away from every zone."})
-    if plan.get("auto_level") or plan.get("best_possible"):
-        a = plan.get("auto_level") or plan.get("best_possible") or {}
-        out.append({"stage": "fea_plan", "decided": "level", "rule": "PLAN-fea-8",
-                    "value": "best possible" if plan.get("best_possible") else d["key"],
-                    "inputs": {"asked": a.get("asked"), "needed": a.get("needed"), "complete": a.get("complete"),
-                               "zone_floor_m": (plan.get("best_possible") or {}).get("zone_floor_m")},
-                    "words": (f"Asked for {a.get('asked_label')}; meshed at {d['label']}"
-                              + (" as finely as it allows, short where named." if plan.get("best_possible")
-                                 else ", every rule kept."))})
-    out.append({"stage": "fea_plan", "decided": "budget", "value": "fits" if plan["fits"] else "over",
-                "rule": "PLAN-fea-8",
-                "inputs": {"estimate": plan["estimate"]["elements"], "ceiling": d["ceiling"],
-                           "complete": plan.get("histogram_complete", True)},
-                "alternatives": [o["option"] for o in plan.get("options") or []],
-                "words": (f"About {plan['estimate']['elements']:,} elements against the {d['label']} level's "
-                          f"{d['ceiling']:,}: " + ("meshed." if plan["fits"] else "stopped before meshing."))})
+    coarse = plan.get("coarsened") or {}
+    out.append({"stage": "fea_plan", "decided": "limit", "rule": "PLAN-fea-8",
+                "value": "coarsened to fit" if coarse else "fits",
+                "inputs": {"estimate": plan["estimate"]["elements"], "limit": limit, "aim": LIMIT_AIM,
+                           "needed": coarse.get("needed"), "zone_floor_m": coarse.get("zone_floor_m"),
+                           "at_minimums": coarse.get("at_minimums")},
+                "words": (f"About {plan['estimate']['elements']:,} elements against the {limit:,} limit: "
+                          + ("the finest zones coarsened to fit, short where named." if coarse else "meshed as planned."))})
     return out
 
 
@@ -499,8 +386,7 @@ def one_part(record: Mapping) -> str:
     return ""
 
 
-__all__ = ["AIM", "CORNER_DIVISIONS", "DEFAULT_LEVEL", "GROWTH", "HOT_SPOT_PER_QUARTER",
-           "HOT_SPOT_PER_QUARTER_MIN", "LEVELS", "Level", "MIN_DIVISIONS", "NEXT_LEVEL", "OVER", "PER_H3",
-           "LARGEST", "PLAN_FILE", "ROUND_PER_QUARTER", "floored", "shortfalls", "STRESS_WALL_ELEMENTS", "VERSION", "WALL_ELEMENTS",
-           "base_size", "costly_spots", "decisions", "finish", "level_of", "one_part", "options", "words",
-           "zones"]
+__all__ = ["CORNER_DIVISIONS", "ELEMENT_LIMIT", "GROWTH", "HOT_SPOT_PER_QUARTER", "KEEP_PER_QUARTER",
+           "KEEP_THROUGH", "LIMIT_AIM", "MICRO_KEEP", "MIN_DIVISIONS", "PER_H3", "PLAN_FILE", "ROUND_PER_QUARTER",
+           "STRESS_WALL_ELEMENTS", "VERSION", "WALL_ELEMENTS", "decisions", "finish", "floored", "keep_size",
+           "one_part", "shortfalls", "words", "zones"]

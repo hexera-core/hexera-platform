@@ -235,13 +235,12 @@ def mesh(workspace) -> int:
             "fea_rules_short": len(rules.get("short") or []) if rules else None,
             # THE PLAN'S RULES AS MET (engines/fea_checks.py): the gate reads the through-wall
             # count in place of the flow floor (engines/gmsh/gates.py)
-            "fea": {"plan": True, "detail": (plan.get("detail") or {}).get("key"),
+            "fea": {"plan": True, "limit": (plan.get("limit") or {}).get("elements"),
                     "estimate": (plan.get("estimate") or {}).get("elements"),
-                    # PLAN-fea-8: how the level was chosen, and what a best-possible plan leaves short
-                    **({"auto_level": plan["auto_level"]} if plan.get("auto_level") else {}),
-                    **({"best_possible": plan["best_possible"],
+                    # PLAN-fea-8: what a plan coarsened to fit leaves short
+                    **({"coarsened": plan["coarsened"],
                         "resolution_short": list(plan.get("resolution_short") or [])}
-                       if plan.get("best_possible") else {}),
+                       if plan.get("coarsened") else {}),
                     "through_wall_min": tw, "rules": rules, "quality": shape, "exports": exports},
         }, indent=1))
         print(f"[GMSH-FEA] elements={n_elem} (planned ~{(plan.get('estimate') or {}).get('elements')}) "
