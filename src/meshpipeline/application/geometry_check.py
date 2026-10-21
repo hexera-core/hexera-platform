@@ -1112,6 +1112,11 @@ def _name(*, session_id: str, owner_id: str, purpose_text: str, interpretation: 
     if _is_fea(purpose_text):
         # AN FEA PART has no openings, no flow and no far field to name: the stage shows the part,
         # its size and unit, its bodies and the clean check, all measured. No model is asked.
+        # What the FEA plan sizes from is measured here, in the unit just settled: the walls and
+        # the stress hot spots (FEA build step 3)
+        from meshpipeline.cad.fea_measure import FACT_KEY
+
+        facts[FACT_KEY] = fea_measurements(stored, facts, interpretation)
         proposal = _proposal(facts, {})
         result = {k: v for k, v in stored.items() if k not in _STAMPED_KEYS + _FAILURE_KEYS}
         result.update(named=True, facts=facts, vision={}, proposal=proposal,
@@ -1155,6 +1160,63 @@ def _name(*, session_id: str, owner_id: str, purpose_text: str, interpretation: 
     logger.info("geometry naming %s - session=%s in %.1fs (model %s)", landed["status"], session_id,
                 result["naming_seconds"], "answered" if "error" not in vision else "unavailable")
     return landed
+
+
+#: An upload larger than this is not measured for FEA in the naming step (the record says so; the
+#: plan then sizes from the part's size alone). Version 1's parts are single parts, far smaller.
+FEA_MEASURE_MAX_MB = 80.0
+
+
+class _TooBig(ValueError):
+    """A file past FEA_MEASURE_MAX_MB."""
+
+
+def fea_measurements(stored: dict, facts: dict, interpretation: dict | None) -> dict:
+    """THE FEA MEASUREMENT of the stored check's upload (cad/fea_measure): bodies, the wall under
+    every face and the hot spots, in millimetres under the facts' unit (`scale_to_m` says which;
+    application/fea_check.in_unit re-reads it in another). A CAD file is read on its faces, in the
+    coordinates the scout read it in; a triangle file on its triangles. Never fails the naming: a
+    part it cannot measure says why, and the plan sizes from what the check has."""
+    from meshpipeline.cad.fea_measure import VERSION, measure_cad, measure_triangles
+
+    scale = float(facts.get("scale_to_m") or 0.001)
+    started = time.time()
+    try:
+        from meshpipeline.cad.ingest import canonicalise
+        from meshpipeline.cad.normalise import occ_scale_transform
+        from meshpipeline.cad.scout import read_cad
+        from meshpipeline.cad.scout_mesh import read_triangles
+        from meshpipeline.contracts.geometry_source import GeometryInterpretationRef, GeometrySourceRef
+        from meshpipeline.contracts.intake_formats import GeometryKind
+
+        ref = GeometrySourceRef.from_payload(stored["source"])
+        interp_ref = GeometryInterpretationRef.from_payload(interpretation) if interpretation else None
+        with tempfile.TemporaryDirectory(prefix="fea_measure_") as tmp:
+            work = Path(tmp)
+            fetched = _fetch(ref, work)
+            size_mb = fetched.stat().st_size / 1e6
+            if size_mb > FEA_MEASURE_MAX_MB:
+                raise _TooBig(f"the file is {size_mb:.0f} MB, over the {FEA_MEASURE_MAX_MB:.0f} MB measured "
+                              "for a single part")
+            canonical = canonicalise(fetched, work, stem="geometry", ecxml_form="placed")
+            if canonical.kind is GeometryKind.cad:
+                # the scout's own reading: the confirmed unit when there is one, else the file's
+                prepared, _note = _prepared_coordinates(canonical.path, interp_ref, ref)
+                mm_per_unit = 1000.0 * float(occ_scale_transform(prepared).ScaleFactor())
+                record = measure_cad(read_cad(canonical.path), mm_per_unit=mm_per_unit)
+            else:
+                record = measure_triangles(read_triangles(canonical.path) * scale * 1000.0)
+        record.update(measured=True, scale_to_m=scale)
+    except Exception as exc:  # noqa: BLE001 - the measurement informs the plan; the check still lands
+        logger.warning("geometry check: the FEA measurement did not run (%s: %s)", type(exc).__name__,
+                       str(exc)[:200])
+        reason = str(exc) if isinstance(exc, _TooBig) else f"the part could not be measured ({type(exc).__name__})"
+        record = {"version": VERSION, "measured": False, "reason": reason, "scale_to_m": scale,
+                  "seconds": round(time.time() - started, 2)}
+    logger.info("geometry check: FEA measurement %s in %.1fs - %d hot spot(s)",
+                "done" if record.get("measured") else "skipped", time.time() - started,
+                len(record.get("hot_spots") or []))
+    return record
 
 
 def _wait_for_scout(session_id: str) -> dict | None:

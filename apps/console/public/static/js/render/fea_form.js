@@ -1,6 +1,8 @@
 // Responsibility: Build the FEA part check - the part's size in the file's unit, the unit box, how
 // many bodies the file has and what the clean check found, and the one question "Is this your part
-// and are the units right?" - and read the answer back out of it.
+// and are the units right?" - and read the answer back out of it. Below them, what the measurement
+// found (FEA build step 3): the thinnest wall and the hot spots the mesh will be refined at, shown
+// only (version 1 refines them all automatically; nothing here edits them).
 // Boundaries: markup and a reading of it. No fluid, no openings, no flow axis and no stickers: an
 // FEA part is meshed as itself. It fetches nothing and starts no run; the stage and the card both
 // use it, and confirming is the callback they were handed.
@@ -26,6 +28,83 @@ function cleanHtml(f) {
   return `<span class="fea-clean ${cls}"><span class="ic">${mark}</span>${esc(f.clean_summary || "")}</span>`;
 }
 
+/** One hot spot in words, its size in the file's numbers: "Hole · radius 7.5 mm". */
+function spotWords(h, p) {
+  const u = `<span class="gc-u">${esc(unitOf(p))}</span>`;
+  const name = { hole: "Hole", fillet: "Fillet", notch: "Notch", groove: "Groove", "inside corner": "Sharp inside corner" }[h.shape] || "Hot spot";
+  const size = h.type === "sharp_corner"
+    ? `${esc(String(Math.round(h.angle_deg)))}°, refinement capped`
+    : `radius ${esc(shown(h.radius_mm, p))} ${u}`;
+  return `<b>${esc(name)}</b> · ${size}`;
+}
+
+/** What the measurement found (cad/fea_measure): the thinnest wall and the hot spots the mesh will
+ *  be refined at. Shown only: version 1 refines every one automatically. `m` is the server's
+ *  `fea.measure`; nothing at all before the part was measured. */
+export function measureHtml(m, p) {
+  return `<div class="fea-measure" data-state="${measureState(m)}">${measureBody(m, p)}</div>`;
+}
+
+/** The lines first shown; the rest open with "and N more", or when their tag is clicked. */
+const FIRST_SPOTS = 8;
+const measureState = (m) => (!m ? "none" : m.measured ? "measured" : "unmeasured");
+
+function measureBody(m, p) {
+  if (!m) return "";
+  if (!m.measured) {
+    return `<div class="rc-row"><div class="rc-k">Hot spots</div><div class="rc-v fea-unmeasured">Not measured: ${esc(m.reason || "")}</div></div>`;
+  }
+  const u = `<span class="gc-u">${esc(unitOf(p))}</span>`;
+  const wall = m.thickness_min_mm == null ? "not measured"
+    : `${esc(shown(m.thickness_min_mm, p))} ${u}${m.thickness_face ? ` <span class="fea-where">(${esc(m.thickness_face)})</span>` : ""}`;
+  const spots = m.hot_spots || [];
+  const list = spots.map((h, i) =>
+    `<li class="fea-spot-row" data-spot="${esc(h.id)}"${i >= FIRST_SPOTS ? " hidden" : ""}><span class="fea-spot-id">${esc(h.id)}</span><span>${spotWords(h, p)}</span></li>`).join("");
+  const folded = Math.max(0, spots.length - FIRST_SPOTS);
+  const more = folded ? `<li class="fea-spot-more"><button type="button" class="fea-spot-open">and ${folded} more</button></li>` : "";
+  // spots past the ones the server sent (it sends the sharpest and smallest first) are only counted
+  const unsent = m.more ? `<li class="fea-spot-unsent">${m.more} more not listed</li>` : "";
+  const capped = spots.some((h) => h.capped)
+    ? `<div class="gc-note">A perfectly sharp inside corner's stress never settles however fine the mesh, so refinement there stops at a set level.</div>` : "";
+  return `<div class="rc-row"><div class="rc-k">Thinnest wall</div><div class="rc-v fea-wall">${wall}</div></div>
+    <div class="rc-row"><div class="rc-k">Hot spots</div><div class="rc-v fea-spots-sum">${esc(m.summary || "")}</div></div>
+    ${spots.length ? `<ul class="fea-spots" aria-label="Hot spots the mesh will be refined at">${list}${more}${unsent}</ul>
+    <div class="gc-note">The mesh is refined at these automatically.</div>${capped}` : ""}`;
+}
+
+/** Wire the hot-spot list: "and N more" opens the rest, and `light(id)` (if given) runs when a
+ *  line is pointed at or clicked. */
+export function bindMeasure(root, light) {
+  const open = root.querySelector(".fea-spot-open");
+  if (open) open.onclick = () => { root.querySelectorAll(".fea-spot-row[hidden]").forEach((r) => { r.hidden = false; }); open.closest("li").remove(); };
+  if (!light) return;
+  root.querySelectorAll(".fea-spot-row").forEach((r) => {
+    r.addEventListener("mouseenter", () => light(r.dataset.spot));
+    r.addEventListener("click", () => light(r.dataset.spot));
+  });
+}
+
+/** Light one hot spot's line, opening it first when it is folded away (a tag past the first
+ *  eight was clicked). */
+export function lightSpotRow(root, id) {
+  root.querySelectorAll(".fea-spot-row").forEach((r) => {
+    const on = r.dataset.spot === id;
+    if (on && r.hidden) { r.hidden = false; r.scrollIntoView({ block: "nearest" }); }
+    r.classList.toggle("sel", on);
+  });
+}
+
+/** A measurement that lands after the panel was drawn (the stage opened while the check was
+ *  still naming): the wall and hot-spot lines are drawn in place. True when they changed. */
+export function followMeasure(root, m, p, light) {
+  const box = root.querySelector(".fea-measure");
+  if (!box || box.dataset.state === measureState(m)) return false;
+  box.dataset.state = measureState(m);
+  box.innerHTML = measureBody(m, p);
+  bindMeasure(box, light);
+  return true;
+}
+
 /** The panel's body for one check: `f` is the server's `fea` view, `p` the proposal (size, unit). */
 export function feaPanelHtml(f, p) {
   const blocked = f.single_part_only || "";
@@ -40,6 +119,7 @@ export function feaPanelHtml(f, p) {
       <div class="rc-row"><div class="rc-k">Bodies</div><div class="rc-v fea-bodies">${esc(bodiesHtml(f))}</div></div>
       <div class="rc-row"><div class="rc-k">Clean check</div><div class="rc-v">${cleanHtml(f)}</div></div>
       ${why}
+      ${measureHtml(f.measure, p)}
       ${blocked ? `<div class="fea-blocked" role="alert">${esc(blocked)}</div>` : ""}
       <div class="gc-tools"><button class="gc-measure v-btn" type="button" title="measure between two points on the part">Measure</button><span class="gc-tools-hint">click two points to check a length</span></div>
       <p class="fea-q">${esc(f.question || "Is this your part and are the units right?")}</p>
@@ -64,6 +144,7 @@ export function readFeaForm(root, p) {
 export function bindFeaPanel(root, f, p, { confirm, done }) {
   bindUnit(root, p);
   const form = root.querySelector(".fea-form") || root;
+  bindMeasure(form);
   const btn = form.querySelector(".gc-proceed"), hint = form.querySelector(".gc-hint");
   if (!btn) return;
   btn.onclick = async () => {
