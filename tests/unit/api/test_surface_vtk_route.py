@@ -1,5 +1,5 @@
 # Responsibility: Verify the ParaView export route serves the stored viewer payload as a VTK file,
-# refuses a job without a polyMesh surface, and shows a foreign tenant nothing.
+# refuses a job without a delivered mesh surface, and shows a foreign tenant nothing.
 from __future__ import annotations
 
 import base64
@@ -39,11 +39,36 @@ def test_the_vtk_route_serves_the_stored_surface_with_its_fields(monkeypatch):
     assert store.reads == ["jobs/x/viewer_data.json"]        # the bytes came from the store
 
 
+def _tet_payload(*, is_mesh: bool) -> dict:
+    tri = np.array([0, 0, 0, 1, 0, 0, 0, 1, 0], dtype="<f4")
+    surface = {"kind": "stl", "mesh_units": "m", "is_mesh": is_mesh,
+               "patches": [{"name": "wall", "type": "wall", "tri_count": 1,
+                            "positions_b64": base64.b64encode(tri.tobytes()).decode("ascii")}]}
+    return {**_PAYLOAD, "engine": "vmtk", "surface": surface}
+
+
+def test_a_delivered_tetrahedral_mesh_exports_too(monkeypatch):
+    # VMTK and Gmsh deliver the boundary of their mesh as triangles (kind=stl, is_mesh): it exports
+    store = _Store({"jobs/x/viewer_data.json": json.dumps(_tet_payload(is_mesh=True)).encode()})
+    client, _ = _client(monkeypatch, store=store)
+    r = client.get(f"/api/v1/simulation/{JOB}/surface.vtk")
+    assert r.status_code == 200, r.text
+    assert r.content.startswith(b"# vtk DataFile Version 3.0") and b"POLYGONS 1 4\n" in r.content
+
+
 def test_an_input_surface_fallback_has_no_vtk_export(monkeypatch):
+    # the input skin shown when no mesh was delivered is never exported as a mesh
+    store = _Store({"jobs/x/viewer_data.json": json.dumps(_tet_payload(is_mesh=False)).encode()})
+    client, _ = _client(monkeypatch, store=store)
+    r = client.get(f"/api/v1/simulation/{JOB}/surface.vtk")
+    assert r.status_code == 404
+    assert "No delivered mesh surface" in r.json()["detail"]
+
+
+def test_a_mesh_surface_with_no_patches_has_no_vtk_export(monkeypatch):
     client, _ = _client(monkeypatch)                          # the stl payload of the base fixture
     r = client.get(f"/api/v1/simulation/{JOB}/surface.vtk")
     assert r.status_code == 404
-    assert "polyMesh" in r.json()["detail"]
 
 
 def test_a_foreign_owner_sees_nothing(monkeypatch):

@@ -967,7 +967,8 @@ function initViewer(job,surf,uiCfg){
      built by the API from the stored payload. Fetched with the API headers (a plain link would
      carry none) and handed to the browser as a download; the button says what it is doing. */
   (function vtkExport(){
-    if(surf.kind!=='polymesh')return;
+    // a polyMesh, or the triangle surface of a tetrahedral engine's DELIVERED mesh (VMTK, Gmsh)
+    if(surf.kind!=='polymesh'&&!(surf.kind==='stl'&&surf.is_mesh===true))return;
     const bar=document.querySelector('#viewer-'+job+' .v-dl');if(!bar)return;
     const a=document.createElement('a');a.className='v-dlbtn';a.href='#';a.id='v-vtk-'+job;
     a.title='the boundary with its quality fields, for ParaView';

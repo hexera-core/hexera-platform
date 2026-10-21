@@ -436,3 +436,22 @@ def test_the_thin_feature_note_never_promises_what_the_budget_cut(internal, monk
     assert thin and thin[0].startswith("Thin feature detected - 3.0 mm across"), thin
     assert says in thin[0]
     assert "so it is captured" not in thin[0]
+
+
+def test_the_pass_after_a_timeout_never_raises_the_gap_ceiling_again(internal, monkeypatch):
+    # a valve cage adapter on a loaded lab VM (2026-10-21): the gap plan raised the ceiling, the
+    # pass ran out of time, and the next pass raised it back to the very case that timed out -
+    # byte for byte, so it was never run. After a timeout the gap plan is held to the pass budget.
+    from meshpipeline.engines import gap_sizing as G
+    calls = []
+
+    def _plan(field, *, budget, limit=None, **_k):
+        calls.append((int(budget), limit))
+        return G.GapPlan(G.NO_NARROW, budget_in=int(budget), budget=int(budget),
+                         limit=int(limit or 8_000_000))
+
+    monkeypatch.setattr(drv, "_gap_plan", _plan)
+    _ws, (ok, _value, _outcome), _pub = internal.go()
+    assert ok is True and internal.runs == [1, 2]
+    assert calls[0][1] is None, "the first pass is planned against the cell limit"
+    assert calls[1][1] is not None and calls[1][1] <= calls[0][0], calls
