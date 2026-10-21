@@ -841,6 +841,12 @@ def _bound_groups(gmsh, surfaces, ports, *, cad: bool = False) -> list[dict]:
 
 def main(workspace: str) -> int:
     ws = Path(workspace)
+    # AN FEA PLAN (engines/fea_*.py, FEA build step 4): the solid is meshed exactly as the plan says,
+    # by the FEA adapter - the plan is the whole spec, and nothing below applies to it
+    from meshpipeline.engines.fea_plan import PLAN_FILE
+    if (ws / PLAN_FILE).exists():
+        from meshpipeline.engines.gmsh.fea_adapter import mesh as mesh_by_plan
+        return mesh_by_plan(ws)
     try:
         spec = json.loads((ws / "gmsh_spec.json").read_text())
     except (OSError, json.JSONDecodeError) as exc:

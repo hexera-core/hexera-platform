@@ -556,6 +556,9 @@ class EngineSpec:
     # None → generic behavior.
     _load_run_enricher: Callable[[], Callable | None] = lambda: None
     _load_build_driver: Callable[[], Callable | None] = lambda: None
+    # A deterministic driver for SOME of this engine's runs only: (state) -> driver or None. gmsh
+    # declares the FEA driver here (a 3D structural solid); its other runs keep the model-led loop.
+    _load_run_driver: Callable[[], Callable | None] = lambda: None
     _load_viewer_surface: Callable[[], Callable | None] = lambda: None
     # REVIEW RENDERER - the engine's own answer to "how is this mesh shown to a reviewer".
     # Same lazy-load precedent as viewer_surface, and for the same reason: the module pulls a
@@ -621,6 +624,20 @@ class EngineSpec:
     @property
     def build_driver(self):
         return self._load_build_driver()
+
+    def build_driver_for(self, state):
+        """The deterministic driver THIS run takes: one the engine declares for the run's own
+        case (its run driver), else the engine's build_driver, else None (the model-led
+        loop). Reads the run's state only; it changes nothing about which engine is picked."""
+        chooser = self._load_run_driver()
+        if chooser is not None:
+            try:
+                chosen = chooser(state or {})
+            except Exception:  # noqa: BLE001 - a chooser that cannot read the state picks nothing
+                chosen = None
+            if chosen is not None:
+                return chosen
+        return self.build_driver
 
     # (Review modality is no longer an authored flag. Every engine enters ONE unified
     # hybrid-assurance review; whether rendered evidence is obliged is DERIVED -
