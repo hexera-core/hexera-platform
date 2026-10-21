@@ -111,6 +111,10 @@ def _gate_resolution_floor(ctx: GateCtx) -> tuple[bool, str]:
                 "FEA wall rule (at least 2 through every wall) cannot be confirmed.",
                 FailureCause.UNDER_RESOLVED, unmeasured=["elements through the walls"],
                 needed=FEA_WALL_FLOOR)
+        if float(tw) < FEA_WALL_FLOOR and fea.get("best_possible"):
+            # PLAN-fea-8: the best possible within the largest level, short where the plan says -
+            # delivered with that named (resolution_short), never refused for it
+            return True, ""
         if float(tw) < FEA_WALL_FLOOR:
             short = ((fea.get("rules") or {}).get("through_wall") or {}).get("short") or []
             where = ", ".join(str(w.get("face")) for w in short[:5] if isinstance(w, dict))

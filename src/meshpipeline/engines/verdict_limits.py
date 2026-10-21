@@ -208,6 +208,16 @@ def fea_limits(quality: Mapping) -> list[dict]:
     from meshpipeline.engines.fea_quality import LIMITS as FEA_LIMITS
     rows = [{"key": k, "label": lab, "op": op, "limit": lim, "measured": _plain(quality.get(k)),
              "source": src} for k, lab, op, lim, src in (*FEA_LIMITS, FEA_RULES_ROW)]
+    fea_m: Mapping = fea if isinstance(fea, Mapping) else {}
+    best = fea_m.get("best_possible") if isinstance(fea_m.get("best_possible"), Mapping) else None
+    if best:
+        # PLAN-fea-8: no level held every rule, so the mesh is the best possible within the largest;
+        # what that leaves short is named, as a concern (Areen, 21 Oct: never a stop for budget)
+        rows.append({"key": "fea_resolution_short", "op": "empty", "limit": [],
+                     "measured": [str(x) for x in fea_m.get("resolution_short") or []],
+                     "label": (f"The rules need {best.get('needed_words') or 'more elements'}, more than the largest "
+                               "level holds - meshed as finely as it allows; short of the rules where named"),
+                     "source": "docs/RULES.md PLAN-fea-8 (engines/fea_driver.choose_plan)"})
     raw_aside = quality.get("fea_set_aside")
     aside: Mapping = raw_aside if isinstance(raw_aside, Mapping) else {}
     if aside.get("elements") and aside.get("places_mm") and aside.get("cusp_elements", 1):

@@ -25,7 +25,10 @@ THE RULES (docs/RULES.md):
   PLAN-fea-5  sharp inside corners are capped at a quarter of the wall beside them
   PLAN-fea-6  sizes grow by at most 1.3 away from every zone
   PLAN-fea-7  every other round keeps its shape: 3 elements per quarter-turn
-  PLAN-fea-8  the estimate is checked before meshing; over the level, the run stops with options
+  PLAN-fea-8  the estimate is checked before meshing and never stops the run: over the chosen level,
+              the next level that holds every rule is used (and said); when even the largest cannot,
+              the finest zones are floored until it fits, and what that leaves short is named
+              (resolution_short)
   PLAN-fea-9  one part only (version 1)
   PLAN-fea-10 a CUSP (two CAD edges of a face leaving a vertex together: the material runs to nothing)
               cannot be meshed above the quality floor at any size: the elements touching it get
@@ -286,6 +289,52 @@ def options(hist: Histogram, relaxed_hist: Histogram | None, *, level: Level, co
     return out
 
 
+#: The largest level a run is meshed at (PLAN-fea-8: the best possible within it when no level holds
+#: every rule).
+LARGEST = "max"
+
+
+def floored(zone_list: list[dict], floor_m: float) -> list[dict]:
+    """PLAN-fea-8's best possible: every zone finer than `floor_m` meshed at `floor_m` instead, the
+    size its rule asked for kept (`rule_size_m`) so what it leaves short can be named."""
+    out = []
+    for z in zone_list:
+        if float(z["size_m"]) < floor_m:
+            out.append({**z, "rule_size_m": z["size_m"], "size_m": float(floor_m), "short": True})
+        else:
+            out.append(dict(z))
+    return out
+
+
+def shortfalls(zone_list: list[dict], n: int = 12) -> list[str]:
+    """What the floored zones leave short of their rules, the worst first, in plain words
+    (resolution_short): elements through a wall, per quarter-turn of a round."""
+    rows = []
+    for z in zone_list:
+        if not z.get("short"):
+            continue
+        size = float(z["size_m"])
+        where = ", ".join(z.get("faces") or []) or str(z.get("id"))
+        if z["kind"] == "wall" and z.get("thickness_m"):
+            got = float(z["thickness_m"]) / size
+            rows.append((got / WALL_ELEMENTS, f"{where}: about {got:.2g} elements through the "
+                         f"{float(z['thickness_m']) * 1e3:.3g} mm wall instead of {WALL_ELEMENTS}"))
+        elif z["kind"] in ("hole", "fillet", "notch") and z.get("radius_m"):
+            got = QUARTER * float(z["radius_m"]) / size
+            rows.append((got / HOT_SPOT_PER_QUARTER, f"{z.get('spot') or z['id']} ({z['kind']}, radius "
+                         f"{float(z['radius_m']) * 1e3:.3g} mm, {where}): about {got:.2g} elements per quarter-turn "
+                         f"instead of {HOT_SPOT_PER_QUARTER}"))
+        else:
+            ratio = float(z.get("rule_size_m") or size) / size
+            rows.append((ratio, f"{z['id']} ({z['kind']}, {where}): elements {1 / ratio:.2g} times the size its "
+                         "rule asks for"))
+    rows.sort(key=lambda r: r[0])
+    words = [w for _r, w in rows[:n]]
+    if len(rows) > n:
+        words.append(f"and {len(rows) - n} more zone(s) coarser than their rule")
+    return words
+
+
 def costly_spots(zone_list: list[dict], n: int = 3) -> list[str]:
     """The hot spots that cost the most (the finest first), named for the user."""
     spots = sorted((z for z in zone_list if z["kind"] in ("hole", "fillet", "notch")),
@@ -353,6 +402,16 @@ def words(record: Mapping, plan: Mapping) -> list[str]:
                "straight sides.")
     out.append(f"Sizes grow by at most {plan.get('growth', GROWTH)} from one element to the next away from "
                "these spots.")
+    auto = plan.get("auto_level") or {}
+    best = plan.get("best_possible") or {}
+    if auto:
+        out.append(f"The rules need {auto['needed_words']}, more than the {auto['asked_label']} level asked "
+                   f"for: meshed at the {d['label']} level instead, every rule kept.")
+    if best:
+        out.append(f"The rules need {best['needed_words']}, more than even the {d['label']} level holds: "
+                   f"meshed at the {d['label']} level as finely as it allows. The finest zones get elements of "
+                   f"{float(best['zone_floor_m']) * 1e3:.3g} mm instead of what their rule asks, and what that leaves "
+                   "short is named: " + "; ".join(plan.get("resolution_short") or []) + ".")
     if plan["fits"]:
         out.append(f"Estimated before meshing: about {est:,} elements, within the {d['label']} level.")
     else:
@@ -405,6 +464,15 @@ def decisions(record: Mapping, plan: Mapping) -> list[dict]:
                 "inputs": {}, "words": "An element curving would leave worse than straight keeps straight sides."})
     out.append({"stage": "fea_plan", "decided": "growth", "value": plan["growth"], "rule": "PLAN-fea-6", "inputs": {},
                 "words": f"Element sizes grow by at most {plan.get('growth', GROWTH)} away from every zone."})
+    if plan.get("auto_level") or plan.get("best_possible"):
+        a = plan.get("auto_level") or plan.get("best_possible") or {}
+        out.append({"stage": "fea_plan", "decided": "level", "rule": "PLAN-fea-8",
+                    "value": "best possible" if plan.get("best_possible") else d["key"],
+                    "inputs": {"asked": a.get("asked"), "needed": a.get("needed"), "complete": a.get("complete"),
+                               "zone_floor_m": (plan.get("best_possible") or {}).get("zone_floor_m")},
+                    "words": (f"Asked for {a.get('asked_label')}; meshed at {d['label']}"
+                              + (" as finely as it allows, short where named." if plan.get("best_possible")
+                                 else ", every rule kept."))})
     out.append({"stage": "fea_plan", "decided": "budget", "value": "fits" if plan["fits"] else "over",
                 "rule": "PLAN-fea-8",
                 "inputs": {"estimate": plan["estimate"]["elements"], "ceiling": d["ceiling"],
@@ -429,6 +497,6 @@ def one_part(record: Mapping) -> str:
 
 __all__ = ["AIM", "CORNER_DIVISIONS", "DEFAULT_LEVEL", "GROWTH", "HOT_SPOT_PER_QUARTER",
            "HOT_SPOT_PER_QUARTER_MIN", "LEVELS", "Level", "MIN_DIVISIONS", "NEXT_LEVEL", "OVER", "PER_H3",
-           "PLAN_FILE", "ROUND_PER_QUARTER", "STRESS_WALL_ELEMENTS", "VERSION", "WALL_ELEMENTS",
+           "LARGEST", "PLAN_FILE", "ROUND_PER_QUARTER", "floored", "shortfalls", "STRESS_WALL_ELEMENTS", "VERSION", "WALL_ELEMENTS",
            "base_size", "costly_spots", "decisions", "finish", "level_of", "one_part", "options", "words",
            "zones"]

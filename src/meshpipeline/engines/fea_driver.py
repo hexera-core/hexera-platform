@@ -113,22 +113,37 @@ def measure_staged(ws: Path) -> tuple[dict, Any, float]:
     return record, surface, diag_m
 
 
+def _histogram(surface, zone_list: list[dict], levers: list[dict], diag_m: float):
+    from meshpipeline.engines.fea_size_field import SizeField
+
+    field = SizeField(surface, zone_list, growth=L.growth(levers), scale_to_m=1e-3)
+    return field.histogram(coarsest=diag_m / P.MIN_DIVISIONS, per_h3=P.PER_H3, stop_elements=STOP_ELEMENTS)
+
+
 def make_plan(record: dict, surface, diag_m: float, *, fidelity: str, levers: list[dict] | None = None,
-              level: P.Level | None = None) -> dict:
+              level: P.Level | None = None, zone_floor_m: float | None = None, relax: bool = True,
+              hist=None) -> dict:
     """The plan for this part at this level (the run's fidelity, or `level` itself), with the
-    ladder's levers applied."""
+    ladder's levers applied. `zone_floor_m`: PLAN-fea-8's best possible (the finest zones floored);
+    `relax`: work out the fewer-at-spots option when it does not fit; `hist`: the zones' histogram
+    when the caller already has it (it does not depend on the level)."""
     from meshpipeline.engines.fea_size_field import SizeField
 
     level = level or P.level_of(fidelity)
     levers = list(levers or [])
     tighten = L.tightened(levers)
     zone_list = P.zones(record, tighten=tighten)
+    if zone_floor_m:
+        zone_list = P.floored(zone_list, float(zone_floor_m))
     coarsest = diag_m / P.MIN_DIVISIONS
-    field = SizeField(surface, zone_list, growth=L.growth(levers), scale_to_m=1e-3)
-    hist = field.histogram(coarsest=coarsest, per_h3=P.PER_H3, stop_elements=STOP_ELEMENTS)
+    if hist is None:
+        hist = _histogram(surface, zone_list, levers, diag_m)
     plan = P.finish(record, zone_list, hist, level=level, diag_m=diag_m, base_factor=L.base_factor(levers),
                     levers=levers, growth=L.growth(levers))
-    if not plan["fits"]:
+    if zone_floor_m:
+        plan["zone_floor_m"] = float(zone_floor_m)
+        plan["resolution_short"] = P.shortfalls(zone_list)
+    if not plan["fits"] and relax:
         relaxed = P.zones(record, relaxed=True, tighten=tighten)
         rfield = SizeField(surface, relaxed, growth=L.growth(levers), scale_to_m=1e-3)
         rhist = rfield.histogram(coarsest=coarsest, per_h3=P.PER_H3, stop_elements=STOP_ELEMENTS)
@@ -147,6 +162,68 @@ def make_plan(record: dict, surface, diag_m: float, *, fidelity: str, levers: li
     plan["measure"] = {"faces": len(record.get("faces") or {}), "counts": record.get("counts") or {},
                        "thinnest_wall_mm": (record.get("thickness") or {}).get("min_mm"),
                        "bodies": record.get("bodies"), "notes": list(record.get("notes") or [])}
+    return plan
+
+
+#: PLAN-fea-8's search for the best possible within the largest level: the zone floor doubles from
+#: the finest zone this many times at most, then one step back where that still fits.
+FLOOR_STEPS = 14
+
+
+def _needed(plan: dict) -> tuple[int, bool, str]:
+    est = int((plan.get("estimate") or {}).get("elements") or 0)
+    complete = bool(plan.get("histogram_complete", True))
+    return est, complete, (f"about {est:,} elements" if complete else f"more than {est:,} elements")
+
+
+def choose_plan(record: dict, surface, diag_m: float, *, fidelity: str, levers: list[dict] | None = None) -> dict:
+    """PLAN-fea-8, NEVER A STOP FOR BUDGET (Areen, 21 Oct): the plan at the level asked for when it
+    fits; else at the next level up that holds every rule (said); else the best possible within the
+    largest level - the finest zones floored until it fits, what that leaves short named
+    (resolution_short). The returned plan always fits."""
+    asked = P.level_of(fidelity)
+    levers = list(levers or [])
+    zone_list = P.zones(record, tighten=L.tightened(levers))
+    hist = _histogram(surface, zone_list, levers, diag_m)
+    plan = make_plan(record, surface, diag_m, fidelity=fidelity, levers=levers, level=asked, relax=False, hist=hist)
+    if plan["fits"]:
+        return plan
+    needed, complete, said = _needed(plan)
+    who = {"asked": asked.key, "asked_label": asked.label, "needed": needed, "complete": complete,
+           "needed_words": said}
+    key = P.NEXT_LEVEL.get(asked.key)
+    while key:
+        up = make_plan(record, surface, diag_m, fidelity=fidelity, levers=levers, level=P.LEVELS[key],
+                       relax=False, hist=hist)
+        if up["fits"]:
+            up["auto_level"] = who
+            return _restate(record, up)
+        key = P.NEXT_LEVEL.get(key)
+    largest = P.LEVELS[P.LARGEST]
+    floor = min([float(z["size_m"]) for z in zone_list] or [diag_m / P.MIN_DIVISIONS])
+    best = None
+    for _ in range(FLOOR_STEPS):
+        floor *= 2.0
+        best = make_plan(record, surface, diag_m, fidelity=fidelity, levers=levers, level=largest,
+                         zone_floor_m=floor, relax=False)
+        if best["fits"]:
+            break
+    assert best is not None
+    if best["fits"]:
+        # one step back: the floor half way down still fits? then it gives back resolution
+        mid = 0.75 * floor
+        finer = make_plan(record, surface, diag_m, fidelity=fidelity, levers=levers, level=largest,
+                          zone_floor_m=mid, relax=False)
+        if finer["fits"]:
+            best, floor = finer, mid
+    best["best_possible"] = {**who, "zone_floor_m": floor}
+    return _restate(record, best)
+
+
+def _restate(record: dict, plan: dict) -> dict:
+    """The plan's words and decisions again, now that it says how its level was chosen."""
+    plan["words"] = P.words(record, plan)
+    plan["decisions"] = P.decisions(record, plan)
     return plan
 
 
@@ -311,8 +388,21 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     tripped: dict | None = None
     policy = get_spec(ENGINE).run_policy
     cap = int(policy.run_timeout()) if policy is not None else 1500
+    chosen: dict = {}
     for n in range(1, L.MAX_PASSES + 1):
-        plan = await asyncio.to_thread(make_plan, record, surface, diag_m, fidelity=fidelity, levers=levers)
+        if n == 1:
+            # PLAN-fea-8: the level asked for, the next that holds every rule, or the best possible
+            # within the largest - never a stop before meshing for budget
+            plan = await asyncio.to_thread(choose_plan, record, surface, diag_m, fidelity=fidelity, levers=levers)
+            chosen = {"level": P.LEVELS[plan["detail"]["key"]], "zone_floor_m": plan.get("zone_floor_m"),
+                      "auto_level": plan.get("auto_level"), "best_possible": plan.get("best_possible")}
+        else:
+            plan = await asyncio.to_thread(make_plan, record, surface, diag_m, fidelity=fidelity, levers=levers,
+                                           level=chosen["level"], zone_floor_m=chosen["zone_floor_m"])
+            for k in ("auto_level", "best_possible"):
+                if chosen.get(k):
+                    plan[k] = chosen[k]
+            plan = _restate(record, plan)
         if n == 1:
             _cite(job_id, plan["decisions"])
         write_plan(ws, plan)
@@ -408,5 +498,5 @@ def driver_for(state):
     return drive if applies(state) else None
 
 
-__all__ = ["BUILD_FAILED", "GUARD_TRIP", "NOT_ONE_PART", "NO_SOURCE", "OVER_LEVEL", "QUALITY_GATE", "applies", "drive",
+__all__ = ["FLOOR_STEPS", "choose_plan", "BUILD_FAILED", "GUARD_TRIP", "NOT_ONE_PART", "NO_SOURCE", "OVER_LEVEL", "QUALITY_GATE", "applies", "drive",
            "driver_for", "ladder_facts", "ladder_words", "make_plan", "measure_staged", "planned_work", "write_plan"]

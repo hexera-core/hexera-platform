@@ -4,7 +4,7 @@ Every decision a mesh run makes on its own is made by a written rule. Each rule 
 and each decision the run records in its "why" record names the rule behind it
 (`contracts/decision_record.py`). This file is the one home for those rules.
 
-Rulebook version: **7**
+Rulebook version: **8**
 
 How the book is kept honest:
 
@@ -173,7 +173,7 @@ anything: AI changes to the plan are off (Areen's decision 4, 20 Oct).
 | PLAN-fea-5 | in force | **Sharp inside corners are capped** at a quarter of the wall beside them, and refined no further: their stress never settles under refinement, so more elements there buy nothing. |
 | PLAN-fea-6 | in force | **Gentle growth:** element sizes grow by at most 1.3 from one element to the next away from every refined zone. |
 | PLAN-fea-7 | in force | **Every other round keeps its shape:** 3 elements per quarter-turn of a round face that is not a hot spot. |
-| PLAN-fea-8 | in force | **The element count is checked before meshing.** Over the level (more than 25% past its count), the run stops before any mesher starts, with the options: the first level up that holds every rule, and fewer elements at the named spots (6 per quarter-turn, 2 through the wall beside them). |
+| PLAN-fea-8 | in force | **The budget never stops a run.** The element estimate is checked before meshing. Over the level asked for, the next level that holds every rule is used, and the user is told. When even the largest level (Fine) cannot hold every rule, the run is meshed at the largest level as finely as it allows: the finest zones are given a floor size, doubled from the finest until the estimate fits, and what that leaves short of the rules is named (`resolution_short`: elements through each such wall, per quarter-turn of each such round) and delivered as a concern. Never a refusal before meshing for budget (Areen's decision, 21 Oct). |
 | PLAN-fea-9 | in force | **One part only** (version 1). A file of several bodies stops before meshing with the plain message the stage shows. |
 | PLAN-fea-10 | in force | **A cusp is set aside, and named.** Where two CAD edges of one face leave a vertex within 5 degrees of each other (a bore or boss just touching a straight face; a nut's chamfer meeting its flats), the material runs to nothing and no element there can be well shaped at any size. The plan finds every cusp before meshing (`cad/fea_measure.cad_cusps`); the elements touching one get straight sides (always valid: a positive Jacobian), are set aside from the quality floor, and the mesh is delivered with a concern naming each place: the material runs to nothing here, so stress at this point is not meaningful; round it off in CAD for a clean mesh. Every other element must meet the floor (Areen's decision, 21 Oct). |
 | PLAN-fea-12 | in force | **A micro detail is set aside, and named.** A CAD edge shorter, or a face narrower, than 1/20 of the finest element the plan asks for (a sprocket's teeth drawn with 0.001 mm flat strips, a socket's 0.004 mm edges) pins the elements on it into bad shapes at any size the level allows. The plan finds them before meshing (`cad/fea_measure.cad_micro`); the elements on them get straight sides (always valid), are set aside from the quality floor, and the delivery names each detail and says that stress right at it is not resolved - on a gear, the contact stress at the tooth tips. Every other element must meet the floor (Areen's decision, 21 Oct). |
