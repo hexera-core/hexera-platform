@@ -80,6 +80,15 @@ whether its solver has really run it; the bundle carries them all. The result sc
 solver a pass / warnings / fail line by that solver's own published element checks
 (`engines/fea_solvers.py`).
 
+## Textbook accuracy (FEA build step 7)
+
+`tests/unit/engines/test_fea_textbook.py` meshes six classic parts with the real FEA driver and
+solves them in CalculiX on the deck's own named faces: plate with a hole (Kt), cantilever (tip
+stiffness), Lame cylinder (bore hoop stress), U-grooved bar (Kt), cantilever modes and an Euler
+column. Each is held to its closed-form answer (3% on stress, 1% on stiffness, frequency and
+buckling load). CI's "FEA accuracy (CalculiX)" lane installs Ubuntu's `calculix-ccx` and runs it at
+Quick on every change and at Standard on the weekly and manual runs.
+
 ## Authoring controls
 
 | Parameter | Meaning |

@@ -192,3 +192,18 @@ def test_a_cfd_workspace_offers_no_solver_files(tmp_path):
 
     (tmp_path / "mesh.bdf").write_text("x")
     assert fea_export_plan(uuid.uuid4(), tmp_path) == []
+
+
+def test_every_deck_number_fits_calculix_s_twenty_character_field(plate):
+    # CalculiX reads a data line's numbers as Fortran f20.0 fields: a longer one is cut silently
+    # ("-5.76226301486252e-18" read as -0.576 turned elements inside out, FEA step 7)
+    text = (plate / "mesh.inp").read_text()
+    block = text.split("*NODE\n", 1)[1].split("*", 1)[0]
+    assert all(len(f.strip()) <= 20 for ln in block.strip().splitlines() for f in ln.split(","))
+
+
+def test_a_tiny_coordinate_is_written_short():
+    from meshpipeline.engines.gmsh.abaqus_deck import _coord
+
+    assert len(_coord(-5.76226301486252e-18)) <= 20 and len(_coord(-1.234567890123456e-100)) <= 20
+    assert _coord(-0.0) == "0"

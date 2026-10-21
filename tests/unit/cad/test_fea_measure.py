@@ -212,3 +212,15 @@ def test_a_sharp_stretch_beside_a_fillet_is_still_a_corner_in_an_stl():
                                        pytest.approx(6.0, abs=1e-3)]
         assert any(h["type"] == "fillet" and h["radius_mm"] == pytest.approx(4.0, rel=STL_RADIUS)
                    for h in rec["hot_spots"])
+
+
+def test_a_ray_that_grazes_a_neighbouring_face_reads_no_wall():
+    # a quarter ring 50-100 mm, 20 mm high: rays from beside its cut planes run along them, and once
+    # read a 0.26 mm "wall" on the outer face (FEA step 7's Lame case stopped as over budget)
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
+
+    ring = fx._cut(fx._cyl(0, 0, 0, 100, 20), fx._cyl(0, 0, -1, 50, 22))
+    quarter = BRepAlgoAPI_Common(ring, fx._box(0, 0, -1, 101, 101, 22)).Shape()
+    rec = measure_cad(fx._unify(quarter), mm_per_unit=1.0)
+    # the true chords near the outer edge are 17-20 mm; a grazing hit read 0.26
+    assert rec["thickness"]["min_mm"] >= 15.0

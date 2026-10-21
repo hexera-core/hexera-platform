@@ -140,19 +140,38 @@ class _Rays:
             self.loc = None
 
     def first(self, origins: np.ndarray, dirs: np.ndarray, reach: float) -> np.ndarray:
-        """Distance along each unit direction to the first surface (nan where none within reach)."""
+        """Distance along each unit direction to the first surface (nan where none within reach,
+        and nan where the ray only GRAZES the triangle it meets - see GRAZE_COS)."""
         if self.loc is not None:
             from vtkmodules.vtkCommonCore import reference
 
             out = np.full(len(origins), np.nan)
+            cell = np.full(len(origins), -1, dtype=np.int64)
             t, sub, cid = reference(0.0), reference(0), reference(0)
             x, pc = [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]
             for i, (o, d) in enumerate(zip(origins, dirs, strict=True)):
                 end = o + d * reach
                 if self.loc.IntersectWithLine(o.tolist(), end.tolist(), 0.0, t, x, pc, sub, cid):  # type: ignore[call-overload]
                     out[i] = float(t) * reach  # type: ignore[arg-type]
-            return out
+                    cell[i] = int(cid)  # type: ignore[call-overload]
+            return _not_grazing(self.s, dirs, out, cell)
         return _numpy_first(self.s, origins, dirs, reach)
+
+
+#: A ray that meets a triangle at more than about 80 degrees from its normal is GRAZING it: a ray
+#: from a point beside an edge runs along the neighbouring face and "hits" it at once. That is not
+#: a wall (a 100 mm ring read a 0.26 mm wall on its outer face that way), so it reads nothing; the
+#: opposite side of a real wall is met nearly head on.
+GRAZE_COS = 0.17
+
+
+def _not_grazing(s: Surface, dirs: np.ndarray, dist: np.ndarray, cell: np.ndarray) -> np.ndarray:
+    ok = cell >= 0
+    out = dist.copy()
+    cos = np.zeros(len(dist))
+    cos[ok] = np.abs(np.einsum("ij,ij->i", dirs[ok], s.normals[cell[ok]]))
+    out[ok & (cos < GRAZE_COS)] = np.nan
+    return out
 
 
 def _numpy_first(s: Surface, origins: np.ndarray, dirs: np.ndarray, reach: float) -> np.ndarray:
@@ -160,6 +179,7 @@ def _numpy_first(s: Surface, origins: np.ndarray, dirs: np.ndarray, reach: float
     e1 = s.xyz[s.tris[:, 1]] - a
     e2 = s.xyz[s.tris[:, 2]] - a
     out = np.full(len(origins), np.nan)
+    cell = np.full(len(origins), -1, dtype=np.int64)
     for i in range(0, len(origins), 64):
         o, d = origins[i:i + 64, None, :], dirs[i:i + 64, None, :]
         p = np.cross(d, e2[None])
@@ -175,7 +195,8 @@ def _numpy_first(s: Surface, origins: np.ndarray, dirs: np.ndarray, reach: float
         t = np.where(hit, t, np.inf)
         best = t.min(axis=1)
         out[i:i + 64] = np.where(np.isfinite(best), best, np.nan)
-    return out
+        cell[i:i + 64] = np.where(np.isfinite(best), t.argmin(axis=1), -1)
+    return _not_grazing(s, dirs, out, cell)
 
 
 def wall_thickness(s: Surface, *, rays: int = THICKNESS_RAYS, seed: int = 0) -> dict:
