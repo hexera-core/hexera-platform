@@ -127,6 +127,14 @@ on:
         required: false
         default: false
         type: boolean
+      # The review rides the cad_repair tick by default. Unticking THIS while cad_repair is ticked
+      # leaves the review at its shipped default (off), so the loop repairs autonomously under its
+      # caps - the posture a demonstration of the autonomous pass needs, and nothing else changes.
+      cad_repair_review:
+        description: "cad_repair_review - keep the repair review on when cad_repair is ticked (untick for the autonomous posture: repairs run under caps without parking for a person)"
+        required: false
+        default: true
+        type: boolean
       # THE LLM PLANNER'S POSTURE, chosen here like cad_repair. "off" exports nothing, so the API and
       # fleet keep the shipped default (rules only). "shadow" asks the model and records beside the
       # rules without acting; "live" lets its plan act inside the repair caps. Declarative: a redeploy
@@ -1408,7 +1416,7 @@ jobs:
       # expand to the empty string, which every consumer treats as "not stated" (`-z`), so the
       # shipped defaults stay in force.
       CAD_REPAIR_ENABLED: ${{ inputs.cad_repair && 'true' || '' }}
-      CAD_REPAIR_REVIEW_ENABLED: ${{ inputs.cad_repair && 'true' || '' }}
+      CAD_REPAIR_REVIEW_ENABLED: ${{ inputs.cad_repair && inputs.cad_repair_review && 'true' || '' }}
       # Planar hole filling rides the same tick. What protects a through-hole is the paired-rim
       # guard (both ends of a missing passage, any cross-section, refuse filling for the run); the
       # session caps only bound the size and volume drift of a fill that is kept.
