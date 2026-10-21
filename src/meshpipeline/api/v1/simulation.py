@@ -143,8 +143,13 @@ def _is_cancelled(job) -> bool:
     return getattr(status, "value", status) == _JS.cancelled.value
 
 
-def _artifact_label(artifact_type, engine: str) -> str:
+def _artifact_label(artifact_type, engine: str, logical_key: str = "") -> str:
     _t = getattr(artifact_type, "value", str(artifact_type))
+    # an FEA mesh's solver files, one per solver, each saying whether that solver has really run it
+    from meshpipeline.engines.fea_writers import EXPORT_ARTIFACTS
+    for _key, _file, _label in EXPORT_ARTIFACTS:
+        if logical_key == _key:
+            return _label
     if _t == "mesh":
         return "Surface preview (.msh)"
     if _t == "repair_report":
@@ -299,7 +304,8 @@ async def get_job(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
                     download_url=await svc.signed_url(a.storage_key),
                     size_bytes=a.size_bytes,
                     created_at=a.created_at,
-                    label=_artifact_label(a.artifact_type, _engine),
+                    label=_artifact_label(a.artifact_type, _engine,
+                                          str(getattr(a, "logical_key", "") or "")),
                 )
             )
 

@@ -96,6 +96,9 @@ def _ws(tmp_path, *, mesh=True, bundle=True):
             (ws / "mesh.msh").write_bytes(b"surface-preview")
         return ws
     ws = build_workspace(tmp_path, "gmsh")
+    # a gmsh case with no FEA plan: its only `mesh` row is the preview (an FEA mesh adds one
+    # download per solver file, tests/unit/engines/test_fea_export.py)
+    (ws / "fea_plan.json").unlink(missing_ok=True)
     if mesh:
         (ws / "mesh.msh").write_bytes(b"surface-preview")
     return ws

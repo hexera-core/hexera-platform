@@ -200,6 +200,23 @@ def verify_archive(path: Path, spec) -> None:
         raise BundleContractError(f"{spec.name}: archive does not carry the declared marker")
 
 
+def fea_export_plan(job_id: uuid.UUID, workspace: Path) -> list[_Planned]:
+    """AN FEA MESH'S SOLVER FILES, one download each (FEA build step 6: mesh once, export many - the
+    user picks the solver at download). Each is an optional `mesh` row under its own logical key;
+    the bundle still carries them all. Nothing for any other run."""
+    from meshpipeline.engines.fea_writers import EXPORT_ARTIFACTS
+    if not (workspace / "fea_plan.json").exists():
+        return []
+    from meshpipeline.artifact_keys import export_key
+    out = []
+    for logical, file_name, _label in EXPORT_ARTIFACTS:
+        src = workspace / file_name
+        if src.exists() and src.stat().st_size > 0:
+            out.append(_Planned(ArtifactType.mesh, logical, export_key(str(job_id), file_name),
+                                "text/plain", src, required=False))
+    return out
+
+
 def _build_plan(job_id: uuid.UUID, workspace: Path, scratch: list[Path],
                 engine: str) -> list[_Planned]:
     plan: list[_Planned] = []
@@ -218,6 +235,8 @@ def _build_plan(job_id: uuid.UUID, workspace: Path, scratch: list[Path],
         plan.append(_Planned(ArtifactType.mesh, ArtifactType.mesh.value,
                              mesh_artifact_key(str(job_id)),
                              "application/octet-stream", mesh_path, required=False))
+
+    plan.extend(fea_export_plan(job_id, workspace))
 
     # REQUIRED: the engine-declared deliverable bundle (spec.deliverable) - what the user is promised.
     # requiredness is decided by the ONE artifact policy, keyed on the engine whose

@@ -21,6 +21,22 @@ function faceRow(f) {
     + `<td>${esc(f.kind || "")}</td><td class="n">${f.area_mm2 != null ? esc(fmt(f.area_mm2)) + "<small> mm²</small>" : "—"}</td></tr>`;
 }
 
+const SOLVER_OUT = { pass: "PASS", warnings: "WARNINGS", fail: "FAIL", unmeasured: "NOT FULLY CHECKED" };
+
+function solverRow(sv) {
+  const cls = sv.outcome === "fail" ? " fail" : sv.outcome === "pass" ? "" : " concerns";
+  const rows = (sv.rows || []).map((r) => `<li class="fe-sv-${esc(r.status)}">${esc(r.label)}: ${esc(fmt(r.measured))}`
+    + `${r.warn != null ? ` <small>(warns ${esc(OP[r.op] ? (r.op === "<=" ? "over" : "under") : r.op)} ${esc(fmt(r.warn))})</small>` : ""}`
+    + `${r.error != null ? ` <small>(fails ${esc(r.op === "<=" ? "over" : "under")} ${esc(fmt(r.error))})</small>` : ""}`
+    + `<small class="fe-src">${esc(r.source)}</small></li>`).join("");
+  return `<div class="fe-sv" data-solver="${esc(sv.solver)}">
+      <div class="fe-sv-h"><b>${esc(sv.label)}</b> <span class="v-pill${cls}">${esc(SOLVER_OUT[sv.outcome] || "")}</span>
+        <span class="fe-sv-file">${esc(sv.file)} · ${esc(sv.element)}${sv.file_ready === false ? " · not written" : ""}</span></div>
+      <div class="fe-sv-t${sv.tested ? " ok" : ""}">${esc(sv.tested_words || "")}</div>
+      <details><summary>${esc(sv.words || "")}</summary><ul class="fe-sv-rows">${rows}</ul></details>
+    </div>`;
+}
+
 function spotRow(h) {
   const short = h.short ? ` <small class="fe-short">short of its rule</small>` : "";
   return `<li class="fe-spot" data-spot="${esc(h.id)}" data-face="${esc((h.faces || [])[0] || "")}" tabindex="0">`
@@ -46,6 +62,12 @@ export function feaResultsHtml(job, f) {
       <div class="tr-wrap"><table class="tr-tab"><tbody>${(ck.rows || []).map(checkRow).join("")}</tbody></table></div>
       <div class="tr-hint">${esc(ck.solvers || "")}</div>
     </div>
+    ${(f.solvers || []).length ? `<div class="v-sec fe-solvers">
+      <div class="v-sec-h">Per solver</div>
+      ${(f.solvers || []).map(solverRow).join("")}
+      <div class="tr-hint">Each solver's own published element checks. Pick your solver's file from the downloads above;
+        every file has the same node and element numbers and the same named faces.</div>
+    </div>` : ""}
     <div class="v-sec fe-plan">
       <div class="v-sec-h">The plan, in words</div>
       <ul class="tr-q">${(f.plan_words || []).map((w) => `<li>${esc(w)}</li>`).join("")}</ul>
@@ -77,6 +99,7 @@ export function feaDownloads(bar, job, f) {
     `Through-wall check: ${(f.through_wall || {}).words || ""}`, `Units: ${(f.units || {}).words || ""}`, "",
     "Quality, against each limit:"]
     .concat((ck.rows || []).map((r) => `  ${r.ok === false ? "MISS" : r.ok ? "ok  " : "n/a "} ${r.words}`))
+    .concat(["", "Per solver:"], (f.solvers || []).map((sv) => `  ${sv.label} (${sv.file}): ${SOLVER_OUT[sv.outcome] || ""} - ${sv.tested_words}`))
     .concat(["", "The plan:"], (f.plan_words || []).map((w) => `  - ${w}`))
     .concat(["", "Hot spots:"], (f.hot_spots || []).map((h) => `  ${h.id} ${h.words} (${(h.faces || []).join(", ")})`))
     .concat(["", "Named faces:"], (f.faces || []).map((x) => `  ${x.label}`));

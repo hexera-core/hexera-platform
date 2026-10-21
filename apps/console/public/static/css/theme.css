@@ -540,6 +540,19 @@ th,td{border-color:var(--border)}
 .fe-spot b{font:var(--fs-sm)/1.4 var(--mono);margin-right:4px}
 .fe-spot small{display:block;color:var(--text-faint);font-size:var(--fs-xs)}
 .fe-spot .fe-short{display:inline;color:var(--warn)}
+.fe-sv{padding:8px 0;border-bottom:1px solid var(--divider)}
+.fe-sv:last-of-type{border-bottom:0}
+.fe-sv-h{display:flex;flex-wrap:wrap;align-items:center;gap:8px;color:var(--text);font:var(--fs-md)/1.4 var(--sans)}
+.fe-sv-file{color:var(--text-faint);font:var(--fs-xs)/1.4 var(--mono)}
+.fe-sv-t{margin-top:2px;color:var(--warn);font:var(--fs-sm)/1.4 var(--sans)}
+.fe-sv-t.ok{color:var(--text-muted)}
+.fe-sv details{margin-top:4px}
+.fe-sv summary{color:var(--text-muted);font:var(--fs-sm)/1.4 var(--sans);cursor:pointer}
+.fe-sv-rows{margin:4px 0 0;padding:0 0 0 14px;color:var(--text);font:var(--fs-sm)/1.5 var(--sans)}
+.fe-sv-rows small{color:var(--text-faint)}
+.fe-sv-rows .fe-src{display:block;font-size:var(--fs-xs)}
+.fe-sv-warnings{color:var(--warn)}
+.fe-sv-fail{color:var(--danger,var(--warn))}
 
 /* MESH PARTS - a list, and the one selected part's inspector under it */
 .v-bnd{display:block;padding:16px 0 10px;border-top:1px solid var(--divider);background:transparent}

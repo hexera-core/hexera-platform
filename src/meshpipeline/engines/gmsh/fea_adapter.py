@@ -160,6 +160,7 @@ def mesh(workspace) -> int:
         gmsh.write(str(ws / "mesh.msh"))
         rules: dict = {}
         shape: dict = {}
+        solid = None
         try:
             from meshpipeline.engines import fea_quality
             from meshpipeline.engines.gmsh.abaqus_deck import from_gmsh
@@ -170,6 +171,18 @@ def mesh(workspace) -> int:
             shape = fea_quality.measure(solid)
         except Exception as exc:  # noqa: BLE001 - evidence; an unmeasured row decides as unmeasured
             print(f"[GMSH-FEA] plan rules or element quality not measured: {exc}", file=sys.stderr)
+        # MESH ONCE, EXPORT MANY (design 8): the Nastran and Ansys files from the same mesh, with the
+        # deck's numbers and face names; the user picks one at download
+        exports: dict = {}
+        try:
+            from meshpipeline.contracts.mesh_units import COMPLETED_MESH_UNIT
+            from meshpipeline.engines import fea_writers
+            if solid is None:
+                raise ValueError("no internal mesh was read")
+            exports = fea_writers.write_all(ws, solid, cad_names=deck.get("cad_face_names") or {},
+                                            units=COMPLETED_MESH_UNIT.value, source="Hexera gmsh engine")
+        except Exception as exc:  # noqa: BLE001 - the deck stands; a missing file is offered as missing
+            print(f"[GMSH-FEA] Nastran / Ansys files not written: {exc}", file=sys.stderr)
         if shape.get("fea_inverted"):
             fatal.append(f"{shape['fea_inverted']} inverted element(s) (Jacobian not above zero)")
         tw = (rules.get("through_wall") or {}).get("min")
@@ -191,7 +204,7 @@ def mesh(workspace) -> int:
             # count in place of the flow floor (engines/gmsh/gates.py)
             "fea": {"plan": True, "detail": (plan.get("detail") or {}).get("key"),
                     "estimate": (plan.get("estimate") or {}).get("elements"),
-                    "through_wall_min": tw, "rules": rules, "quality": shape},
+                    "through_wall_min": tw, "rules": rules, "quality": shape, "exports": exports},
         }, indent=1))
         print(f"[GMSH-FEA] elements={n_elem} (planned ~{(plan.get('estimate') or {}).get('elements')}) "
               f"nodes={n_nodes} order={order} min_sicn={min_sicn:.3f} through_wall_min={tw} "

@@ -102,6 +102,7 @@
    "geometry.step",
    "gmsh_spec.json",
    "mesh.bdf",
+   "mesh.cdb",
    "mesh.inp",
    "mesh.unv"
   ],
