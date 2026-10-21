@@ -178,12 +178,13 @@ FLOOR_FRACTION = 1e-5
 #: A ray goes on through at most this many surfaces that are not its wall (another body's face, or
 #: one under the floor) before it gives up and reads nothing.
 MAX_HOPS = 4
-#: A ray that ends on a face SHARING AN EDGE with its own, meeting it this far off head on or more
-#: (cos under TAPER_COS, about 60 degrees), is reading a TAPER: the wedge where two faces meet at an
-#: acute angle, whose thickness runs to nothing at their edge however fine the mesh - not a wall.
-#: A flat strip beside a round read 0.08 to 0.44 mm that way on the same car. Across a rod whose
-#: round face is split in two halves, the ray meets the other half head on, and that still counts.
-TAPER_COS = 0.5
+#: A ray that ends on a face meeting its own at an ACUTE CONVEX EDGE (the material between them
+#: narrower than TAPER_DEG) is reading a TAPER: the wedge's thickness runs to nothing at that edge
+#: however fine the mesh, so it is a sharp edge, not a wall. A flat strip beside a round read 0.08
+#: to 0.44 mm that way on the F1 car, and a V-slot extrusion's 45 degree lip 0.05 mm where its
+#: median is 1.2 mm. Across a rod whose round face is split in two halves the halves meet smoothly,
+#: and that reading still counts.
+TAPER_DEG = 88.0
 #: A FACE'S WALL needs this many of its rays to agree: its wall is the thinnest reading that at
 #: least this many readings (itself included) sit within AGREE_RATIO of, so one stray ray cannot set
 #: a face's wall, nor the part's. A face fewer of its rays read (a sliver, a strip its rays only
@@ -229,14 +230,15 @@ def wall_reach(s: Surface, origins: np.ndarray, dirs: np.ndarray, labels: np.nda
     * the ray meets it head on enough (GRAZE_COS) and from inside the material, its outward normal
       along the ray. A ray that grazes a face, or meets one from outside (it slipped out of the
       solid through a crack in the tessellation), reads nothing;
-    * it is not a TAPER: a face sharing an edge with the ray's own, met at a slant (TAPER_COS)."""
+    * it is not a TAPER: a face meeting the ray's own at an acute convex edge (TAPER_DEG)."""
     rays = _Rays(s)
     n = len(origins)
     m = len(s.names)
     pairs = edge_pairs(s)
     la, lb = s.label[pairs.tri_a], s.label[pairs.tri_b]
-    apart = la != lb
-    touching = np.unique(np.concatenate([la[apart] * m + lb[apart], lb[apart] * m + la[apart]]))
+    # an acute convex edge: the faces' normals turn by more than 180 - TAPER_DEG across it
+    acute = (la != lb) & ~pairs.concave & (pairs.turn_deg > 180.0 - TAPER_DEG)
+    wedges = np.unique(np.concatenate([la[acute] * m + lb[acute], lb[acute] * m + la[acute]]))
     floor0 = FLOOR_FRACTION * s.diag
     no_tol = np.zeros(len(s.names))
     tol = s.tol_mm if s.tol_mm is not None else no_tol
@@ -257,7 +259,7 @@ def wall_reach(s: Surface, origins: np.ndarray, dirs: np.ndarray, labels: np.nda
         foreign = (s.body[hit] != s.body[labels[live]]) if s.body is not None else np.zeros(len(live), dtype=bool)
         through = foreign | (total < floor)
         cos = np.einsum("ij,ij->i", dirs[live], s.normals[cell])
-        taper = np.isin(labels[live] * m + hit, touching) & (cos < TAPER_COS)
+        taper = np.isin(labels[live] * m + hit, wedges)
         good = ~through & (cos >= GRAZE_COS) & ~taper
         out[live[good]] = total[good]
         # on through the face that is not this ray's wall, from just past it

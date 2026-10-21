@@ -243,9 +243,10 @@ def pinned_plate():
 BEVEL = {"angle": 75.0, "thickness": 5.0}
 
 
-def beveled_plate():
-    """A 50 x 50 x 5 mm plate whose x = 0 side is beveled: it meets the bottom at 75 degrees (a
-    TAPER, the material running to nothing at that edge) and the top at 105. Its wall is 5 mm."""
+def beveled_plate(angle: float | None = None):
+    """A 50 x 50 x 5 mm plate whose x = 0 side is beveled: it meets the bottom at `angle` degrees (75
+    by default; a TAPER, the material running to nothing at that edge) and the top at 180 - angle.
+    Its wall is 5 mm."""
     import math
 
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
@@ -253,7 +254,7 @@ def beveled_plate():
     from OCP.gp import gp_Pnt, gp_Vec
 
     t = BEVEL["thickness"]
-    lean = t / math.tan(math.radians(BEVEL["angle"]))
+    lean = t / math.tan(math.radians(angle if angle is not None else BEVEL["angle"]))
     poly = BRepBuilderAPI_MakePolygon()
     for x, z in ((0.0, 0.0), (50.0, 0.0), (50.0, t), (lean, t)):
         poly.Add(gp_Pnt(x, 0.0, z))

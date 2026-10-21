@@ -239,8 +239,10 @@ def test_two_touching_bodies_are_not_a_wall_between_them():
                if f.get("thickness_min_mm") is not None)
 
 
-def test_a_taper_is_not_a_wall():
-    rec = measure_cad(fx.beveled_plate(), mm_per_unit=1.0)
+@pytest.mark.parametrize("angle", [30.0, 45.0, 75.0])
+def test_a_taper_is_not_a_wall(angle):
+    # the F1 car's strip beside a round met it at about 75 degrees; a V-slot lip at 45
+    rec = measure_cad(fx.beveled_plate(angle), mm_per_unit=1.0)
     assert rec["thickness"]["min_mm"] == pytest.approx(fx.BEVEL["thickness"], rel=CAD_WALL)
 
 
