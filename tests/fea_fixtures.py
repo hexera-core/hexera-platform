@@ -263,6 +263,17 @@ def beveled_plate(angle: float | None = None):
     return BRepPrimAPI_MakePrism(face, gp_Vec(0.0, 50.0, 0.0)).Shape()
 
 
+def tangent_boss():
+    """A 40 x 20 x 10 mm plate with a round boss (radius 5, 5 high) on top whose foot is tangent to the
+    plate's y = 0 edge: on the top face the boss's circle meets that straight edge at no angle - a
+    CUSP at (10, 0, 10). A sound solid: the boss and the plate's side face share only that point."""
+    return _fuse(_box(0, 0, 0, 40, 20, 10), _cyl(10, 5, 10, 5, 5))
+
+
+#: where the tangent boss's cusp is (mm)
+TANGENT_BOSS_CUSPS = [(10.0, 0.0, 10.0)]
+
+
 # ------------------------------------------------------------------------------- the files ----
 def write_step(shape, path: Path) -> Path:
     from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer

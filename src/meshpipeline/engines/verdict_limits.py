@@ -208,6 +208,17 @@ def fea_limits(quality: Mapping) -> list[dict]:
     from meshpipeline.engines.fea_quality import LIMITS as FEA_LIMITS
     rows = [{"key": k, "label": lab, "op": op, "limit": lim, "measured": _plain(quality.get(k)),
              "source": src} for k, lab, op, lim, src in (*FEA_LIMITS, FEA_RULES_ROW)]
+    raw_aside = quality.get("fea_set_aside")
+    aside: Mapping = raw_aside if isinstance(raw_aside, Mapping) else {}
+    if aside.get("elements"):
+        # PLAN-fea-10: the elements set aside at a cusp are delivered with a CONCERN that names each
+        # place (Areen's decision, 21 Oct): never silently, never as a pass
+        places = [f"({', '.join(f'{float(v):g}' for v in p)}) mm" for p in aside.get("places_mm") or []]
+        rows.append({"key": "fea_cusps", "op": "empty", "limit": [], "measured": places,
+                     "label": (f"{int(aside['elements'])} element(s) at a cusp in the CAD, set aside from the quality "
+                               "floor - the material runs to nothing here, so stress at this point is not meaningful; "
+                               "round it off in CAD for a clean mesh"),
+                     "source": "docs/RULES.md PLAN-fea-10 (cad/fea_measure.cad_cusps)"})
     return rows
 
 

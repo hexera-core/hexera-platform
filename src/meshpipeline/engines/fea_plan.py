@@ -27,6 +27,11 @@ THE RULES (docs/RULES.md):
   PLAN-fea-7  every other round keeps its shape: 3 elements per quarter-turn
   PLAN-fea-8  the estimate is checked before meshing; over the level, the run stops with options
   PLAN-fea-9  one part only (version 1)
+  PLAN-fea-10 a CUSP (two CAD edges of a face leaving a vertex together: the material runs to nothing)
+              cannot be meshed above the quality floor at any size: the elements touching it get
+              straight sides, are set aside from the floor, and are named as a concern
+  PLAN-fea-11 curving never makes an element worse: one that curving onto the CAD would leave worse
+              than straight, and under the floor, keeps straight sides
 """
 from __future__ import annotations
 
@@ -220,6 +225,9 @@ def finish(record: Mapping, zone_list: list[dict], hist: Histogram, *, level: Le
         "zones": zone_list, "histogram": hist.as_list(), "histogram_complete": hist.complete,
         "estimate": {"elements": int(round(est)), "zones_at_coarsest": int(round(at_coarsest))},
         "fits": bool(fits), "relaxed": bool(relaxed), "options": [], "levers": list(levers or []),
+        # PLAN-fea-10: the cusps the adapter sets aside (metres, the mesh's unit)
+        "cusps": [{"at_m": [_r(float(v) * _MM) for v in c["at_mm"]], "faces": list(c.get("faces") or []),
+                   "angle_deg": c.get("angle_deg")} for c in record.get("cusps") or []],
     }
     if not fits:
         plan["options"] = options(hist, relaxed_hist, level=level, coarsest=coarsest, zone_list=zone_list)
@@ -316,6 +324,14 @@ def words(record: Mapping, plan: Mapping) -> list[str]:
     rounds = [z for z in zs if z["kind"] == "round" and z["size_m"] < plan["base_size_m"]]
     if rounds:
         out.append(f"{len(rounds)} other round face(s) keep their shape: {ROUND_PER_QUARTER} elements per quarter-turn.")
+    cusps = plan.get("cusps") or []
+    if cusps:
+        out.append(f"Cusps: {len(cusps)} place(s) where two CAD edges of a face meet at almost no angle, so the "
+                   "material runs to nothing there. No element there can be well shaped at any size: the ones "
+                   "touching them get straight sides and are set aside from the quality floor, and the delivery "
+                   "names each place. Every other element must meet the floor.")
+    out.append("Curved elements: an element that curving onto the CAD would leave worse than straight keeps "
+               "straight sides.")
     out.append(f"Sizes grow by at most {plan.get('growth', GROWTH)} from one element to the next away from "
                "these spots.")
     if plan["fits"]:
@@ -355,6 +371,13 @@ def decisions(record: Mapping, plan: Mapping) -> list[dict]:
             out.append({"stage": "fea_plan", "decided": what, "value": len(sel), "rule": rule,
                         "inputs": {"finest_m": min(z["size_m"] for z in sel)},
                         "words": f"{len(sel)} {what} zone(s), the finest {min(z['size_m'] for z in sel) * 1e3:.3g} mm."})
+    cusps = plan.get("cusps") or []
+    if cusps:
+        out.append({"stage": "fea_plan", "decided": "cusps set aside", "value": len(cusps), "rule": "PLAN-fea-10",
+                    "inputs": {"places_m": [c["at_m"] for c in cusps]},
+                    "words": f"{len(cusps)} cusp(s): the elements touching them are set aside from the quality floor."})
+    out.append({"stage": "fea_plan", "decided": "curving", "value": "never worse than straight", "rule": "PLAN-fea-11",
+                "inputs": {}, "words": "An element curving would leave worse than straight keeps straight sides."})
     out.append({"stage": "fea_plan", "decided": "growth", "value": plan["growth"], "rule": "PLAN-fea-6", "inputs": {},
                 "words": f"Element sizes grow by at most {plan.get('growth', GROWTH)} away from every zone."})
     out.append({"stage": "fea_plan", "decided": "budget", "value": "fits" if plan["fits"] else "over",
