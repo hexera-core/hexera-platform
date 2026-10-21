@@ -66,7 +66,8 @@ def test_within_the_budget_nothing_changes():
     cost = G.box_cost(at(13.0), cell)
     plan = G.plan_gaps(at, cell_m=cell, budget=int(10 * cost), limit=int(100 * cost))
     assert plan.status == G.FITS and plan.budget == int(10 * cost)
-    assert not plan.stops and plan.options() == []
+    assert plan.ceiling() == int(10 * cost), "a plan that fits keeps its own ceiling"
+    assert not plan.resolution_short and plan.options() == []
     assert "refining them locally to 13 across" in plan.words()
 
 
@@ -92,9 +93,11 @@ def test_over_the_limit_it_meshes_what_the_limit_holds_and_still_offers_the_choi
     base = 1000.0
     plan = G.plan_gaps(at, cell_m=cell, budget=int(base), limit=int(base + 0.3 * cost),
                        base_cells=base)
-    assert plan.status == G.LIMITED and plan.regions and not plan.stops
+    assert plan.status == G.LIMITED and plan.regions and plan.resolution_short
     assert plan.affordable is not None and G.MIN_ACCEPTED_CELLS <= plan.affordable < 13
-    assert plan.target == pytest.approx(plan.affordable) and plan.budget == plan.limit
+    assert plan.target == pytest.approx(plan.affordable)
+    assert plan.budget == plan.ceiling() <= plan.limit
+    assert plan.record()["resolution_short"] is True
     assert base + G.box_cost(plan.regions, cell) * G.BUDGET_HEADROOM <= plan.limit + 1
     assert plan.floor() == G.GAP_FLOOR_CELLS          # not lowered: nobody chose fewer
     assert "as many as the limit holds" in plan.words() and "still checked for 12" in plan.words()
@@ -105,21 +108,59 @@ def test_over_the_limit_it_meshes_what_the_limit_holds_and_still_offers_the_choi
     assert "smaller piece" in opts[2]
 
 
-def test_when_not_even_the_fewest_cells_fit_the_run_stops_before_meshing_with_the_choices():
+def test_when_not_even_the_fewest_cells_fit_the_run_still_meshes_as_planned_never_stops():
+    # the shell-side heat exchanger (lab, 2026-10-21): on cfMesh its plain mesh nearly filled the
+    # limit, so not even 4 across fit, and the run was stopped before meshing - a file snappyHexMesh
+    # delivers at 6.5 M cells. Now the run meshes as before gap sizing and the record says why.
     pts, r, areas, cell = _tree()
     at = _regions(pts, r, areas, cell)
     base = 1000.0
     # a limit the base mesh alone fills: no count of cells across the narrow spots fits
     plan = G.plan_gaps(at, cell_m=cell, budget=int(base), limit=int(base), base_cells=base)
-    assert plan.status == G.OVER_LIMIT and plan.stops and plan.regions == []
-    assert plan.affordable is None
+    assert plan.status == G.OVER_LIMIT and plan.regions == [] and plan.resolution_short
+    assert not hasattr(plan, "stops") and not hasattr(plan, "refusal")
+    assert plan.affordable is None and plan.ceiling() == int(base)
+    words = plan.words()
+    assert "not meshed" not in words and "refined only as far as the planned cell budget" in words
+    assert "still checked for 12" in words
     opts = plan.options()
     assert len(opts) == 2 and "limit of one job raised" in opts[0] and "smaller piece" in opts[1]
-    ref = plan.refusal()
-    assert ref.gate == "resolution_floor"
-    from meshpipeline.contracts.failure_cause import rebuild_over_limit, retry_can_help
-    assert rebuild_over_limit(ref.facts) and not retry_can_help(ref.cause, ref.facts)
-    assert ref.facts["before_meshing"] is True
+    assert plan.record()["resolution_short"] is True
+
+
+def test_the_wall_layers_are_priced_and_the_ceiling_leaves_room_for_them():
+    # snappyHexMesh's ceiling stops its REFINEMENT; the wall layers come on top. Priced without
+    # them the plan raised the ceiling to the limit: 7.1 M refined + 5.9 M layer cells = 13.0 M
+    # on an 8 M limit (the shell-side heat exchanger, lab 2026-10-21).
+    pts, r, areas, cell = _tree()
+    at = _regions(pts, r, areas, cell)
+    cost = G.box_cost(at(13.0), cell)
+    budget, limit = int(0.5 * cost), int(4 * cost)
+    bare = G.plan_gaps(at, cell_m=cell, budget=budget, limit=limit)
+    assert bare.status == G.RAISED and bare.after_cells == 0.0
+    layers = 2.5 * cost
+    plan = G.plan_gaps(at, cell_m=cell, budget=budget, limit=limit, base_after=layers)
+    # the same boxes no longer fit beside the layers: refined to what the limit holds instead
+    assert plan.status == G.LIMITED and plan.base_after == layers
+    assert plan.base_cells == pytest.approx(0.5 * budget + layers)
+    assert plan.ceiling() + plan.after_cells <= limit / G.BUDGET_HEADROOM + 1
+    assert plan.ceiling() < bare.ceiling()
+    # a box's own wall layers count toward it, and toward the plan's
+    boxes = at(13.0)
+    for b in boxes:
+        b["layer_cells"] = 10.0
+    assert G.box_cost(boxes, cell) == pytest.approx(cost + 10.0 * len(boxes))
+
+
+def test_the_ceiling_is_never_under_the_plans_own_budget():
+    pts, r, areas, cell = _tree()
+    at = _regions(pts, r, areas, cell)
+    cost = G.box_cost(at(13.0), cell)
+    # layers so large that the room left for refinement is under the plan's own budget
+    plan = G.plan_gaps(at, cell_m=cell, budget=int(cost), limit=int(3 * cost),
+                       base_cells=0.1 * cost, base_after=2.0 * cost)
+    assert plan.status in (G.LIMITED, G.OVER_LIMIT)
+    assert plan.ceiling() >= int(cost)
 
 
 def test_accepting_fewer_meshes_what_the_limit_holds_and_the_gate_judges_that():
@@ -129,7 +170,7 @@ def test_accepting_fewer_meshes_what_the_limit_holds_and_the_gate_judges_that():
     base = 1000.0
     plan = G.plan_gaps(at, cell_m=cell, budget=int(base), limit=int(base + 0.3 * cost),
                        base_cells=base, accept_fewer=True)
-    assert plan.status == G.ACCEPTED_FEWER and plan.regions and not plan.stops
+    assert plan.status == G.ACCEPTED_FEWER and plan.regions and plan.resolution_short
     assert base + G.box_cost(plan.regions, cell) * G.BUDGET_HEADROOM <= plan.limit + 1
     assert plan.floor() == pytest.approx(G.FLOOR_SHARE * plan.target)
     assert "as you chose" in plan.words()
@@ -246,6 +287,70 @@ def test_a_narrow_spot_is_refined_by_distance_from_its_own_wall_never_as_a_patch
     surfaces_block = text.split("refinementSurfaces")[1].split("resolveFeatureAngle")[0]
     assert name not in surfaces_block, "a refinement surface, never a patch"
     assert f"constant/triSurface/refine/{name}.stl" in D._native_payload_members(ws)
+
+
+def _strip_field():
+    xs = np.linspace(0.0, 0.2, 40)
+    pts = np.concatenate([np.c_[xs, np.zeros(40), np.zeros(40)],
+                          np.c_[xs, np.full(40, 0.005), np.zeros(40)]])
+    faces = np.array([[i, i + 1, 40 + i] for i in range(39)]
+                     + [[i + 1, 41 + i, 40 + i] for i in range(39)])
+    r = np.where(pts[:, 0] < 0.1, 0.001, 0.02)
+    return pts, r, np.full(len(pts), 2.5e-5), faces
+
+
+def test_the_snappy_gap_plan_prices_the_wall_layers_it_adds():
+    from meshpipeline.engines.snappy import drivers as D
+    field = _strip_field()
+    kw = {"wall_cell": 0.002, "target": 13.0, "budget": 2_000_000, "band_m": 0.0,
+          "near_cell": 0.002, "surface_cell": 0.002, "base_cell": 0.008, "accept_fewer": False}
+    bare = D._gap_plan(field, **kw)
+    plan = D._gap_plan(field, n_layers=5, **kw)
+    wall = float(field[2].sum())
+    # one wall face per wall cell squared, one layer cell per face per layer
+    assert plan.base_after == pytest.approx(5 * wall / 0.002 ** 2)
+    assert bare.base_after == 0.0
+    assert plan.regions and all(b["layer_cells"] > 0.0 for b in plan.regions)
+    assert plan.cost > bare.cost
+    # a pass held to a lower limit (after a raised mesh came out over the limit) is planned on it
+    held = D._gap_plan(field, n_layers=5, limit=1_000, **kw)
+    assert held.limit == 1_000 and held.ceiling() == 2_000_000 and held.status == G.OVER_LIMIT
+
+
+def test_a_retry_after_a_raised_mesh_over_the_limit_keeps_the_plans_own_budget(tmp_path):
+    from meshpipeline.engines.snappy import drivers as D
+    prev, cur = tmp_path / "attempt_1", tmp_path / "attempt_2"
+    prev.mkdir()
+    cur.mkdir()
+    rec = {"status": G.LIMITED, "budget_in": 2_000_000, "budget": 3_000_000,
+           "ceiling": 3_000_000}
+    (prev / G.GAP_RECORD).write_text(json.dumps(rec))
+    (prev / "mesh_manifest.json").write_text(json.dumps({"cell_count": 12_965_976}))
+    assert D._raised_over_limit(cur) == 2_000_000
+    # inside the limit, or a ceiling the gap plan did not raise: nothing to hold
+    (prev / "mesh_manifest.json").write_text(json.dumps({"cell_count": 6_542_645}))
+    assert D._raised_over_limit(cur) is None
+    (prev / "mesh_manifest.json").write_text(json.dumps({"cell_count": 12_965_976}))
+    (prev / G.GAP_RECORD).write_text(json.dumps({**rec, "budget": 2_000_000,
+                                                  "ceiling": 2_000_000}))
+    assert D._raised_over_limit(cur) is None
+    assert D._raised_over_limit(prev) is None, "a first attempt has no sibling"
+
+
+def test_cfmesh_never_stops_before_meshing_over_the_limit(tmp_path):
+    from meshpipeline.engines.cfmesh.cfmesh_runner import render_cfmesh_case
+    field = _strip_field()
+    ws = tmp_path / "case"
+    ws.mkdir()
+    out = render_cfmesh_case(
+        ws, surface_file="geom.fms", wall_patch="wall", patches=[], body_bbox=((0, 0, 0), (0.2, 0.005, 0.01)),
+        L=0.2, domain_min=(0, 0, 0), domain_max=(0.2, 0.005, 0.01), strategy={"n_layers": 3},
+        cell_budget=50, passage_radius={"p05": 0.001, "median": 0.02, "band": 0.02},
+        passage_field=field[:3])
+    assert "gap_stops" not in out
+    assert (ws / "system" / "meshDict").is_file()
+    rec = json.loads((ws / G.GAP_RECORD).read_text())
+    assert rec["status"] == G.OVER_LIMIT and rec["resolution_short"] is True
 
 
 def test_the_fewer_cells_choice_is_offered_only_for_engines_that_take_it():

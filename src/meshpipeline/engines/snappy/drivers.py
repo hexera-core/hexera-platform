@@ -67,6 +67,33 @@ def _prev_attempt_overshoot(workspace: Path) -> tuple[float, float] | None:
     return float(budget), float(actual)
 
 
+def _raised_over_limit(workspace: Path) -> int | None:
+    """The plan's own cell budget of the SIBLING attempt this retry follows, when that attempt's
+    gap plan raised its cell ceiling (engines/gap_sizing) and its mesh still came out over the cell
+    limit - else None. The retry then holds the narrow spots to that budget, as before gap sizing,
+    instead of raising it again past what was just measured to be too much."""
+    import json as _json
+    import re as _re
+
+    from meshpipeline.engines.gap_sizing import read_record
+
+    m = _re.fullmatch(r"attempt_(\d+)", workspace.name)
+    if m is None or int(m.group(1)) < 2:
+        return None
+    prev = workspace.parent / f"attempt_{int(m.group(1)) - 1}"
+    rec = read_record(prev)
+    if not rec:
+        return None
+    try:
+        cells = _json.loads((prev / "mesh_manifest.json").read_text()).get("cell_count")
+        raised = int(rec.get("ceiling") or rec.get("budget") or 0) > int(rec.get("budget_in") or 0)
+        if raised and cells and float(cells) > float(polcfg.CELL_HARD_LIMIT):
+            return int(rec["budget_in"])
+    except Exception:  # noqa: BLE001 - absent or partial records mean nothing to hold
+        return None
+    return None
+
+
 def _sibling_plan_memories(workspace: Path):
     """Plans of earlier sibling attempts, newest first. Same durable memory the overshoot
     correction reads; retries live in fresh attempt_N workspaces, so cross-attempt knowledge
@@ -1296,29 +1323,44 @@ def _narrow_surfaces(workspace: Path, regions: list, field) -> tuple[list, list]
 _WALL_SHELL_CELLS = 4.0
 
 
+def _layer_cells(wall_m2: float, cell_m: float, n_layers: int) -> float:
+    """The wall-layer cells snappyHexMesh adds on `wall_m2` of wall cut at `cell_m`: one per wall
+    face per layer (the lab's logs: 5 x 1.23 M wall faces = 5.9 M of a 13.0 M-cell mesh)."""
+    if n_layers <= 0 or cell_m <= 0.0 or not wall_m2 > 0.0:
+        return 0.0
+    return float(n_layers) * float(wall_m2) / float(cell_m) ** 2
+
+
 def _gap_plan(field, *, wall_cell: float, target: float, budget: int, band_m: float,
-              near_cell: float, surface_cell: float, base_cell: float, accept_fewer: bool):
+              near_cell: float, surface_cell: float, base_cell: float, accept_fewer: bool,
+              n_layers: int = 0, limit: int | None = None):
     """The pass's gap plan (engines/gap_sizing.plan_gaps): the narrow spots of the staged wall
     (`field`), boxed at `target` cells across from `wall_cell` (the cell at the wall), costed and
-    checked against the pass's `budget` and the compute limit BEFORE meshing. The mesh without
-    the boxes is costed on the same field - the fluid at the background cell (`base_cell`), the
-    wall's own cell (`surface_cell`) a few cells deep, the near-wall band (`band_m` deep, at
-    `near_cell`) - and never under the plan's own share (gap_sizing.PLAN_BOX_SHARE): the budget is
-    snappy's maxGlobalCells, a ceiling it stops refining at, so it errs high. A failed reading
-    plans nothing."""
+    checked against the pass's `budget` and the compute limit (`limit`, CELL_HARD_LIMIT unless
+    the pass is held lower) BEFORE meshing. The mesh without the boxes is costed on the same field
+    - the fluid at the background cell (`base_cell`), the wall's own cell (`surface_cell`) a few
+    cells deep, the near-wall band (`band_m` deep, at `near_cell`) - and never under the plan's own
+    share (gap_sizing.PLAN_BOX_SHARE): the budget is snappy's maxGlobalCells, a ceiling it stops
+    refining at, so it errs high. THE WALL LAYERS ARE PRICED TOO: snappy adds `n_layers` cells on
+    every wall face AFTER refinement, under no ceiling - one wall face per `wall_cell` squared of
+    the measured wall (the shell-side heat exchanger: 715 k priced, 684 k made), and a narrow
+    spot's finer wall carries its own (_layer_cells). A failed reading plans nothing."""
     from meshpipeline.engines import gap_sizing as GS
-    limit = int(polcfg.CELL_HARD_LIMIT)
+    limit = int(polcfg.CELL_HARD_LIMIT if limit is None else limit)
     empty = GS.GapPlan(GS.NO_NARROW, budget_in=int(budget), budget=int(budget), limit=limit)
     if field is None:
         return empty
     try:
         import numpy as np
         base = (1.0 - GS.PLAN_BOX_SHARE) * float(budget)
+        after = 0.0
         a, r = field[2], field[1]
         if a is not None:
             base = max(base, GS.fill_cells(a, r, base_cell)
                        + GS.fill_cells(a, r, surface_cell, depth=_WALL_SHELL_CELLS * surface_cell)
                        + (GS.fill_cells(a, r, near_cell, depth=band_m) if band_m > 0.0 else 0.0))
+            after = _layer_cells(float(np.nansum(np.asarray(a, dtype=float))), wall_cell,
+                                 n_layers)
 
         def at(t: float) -> list:
             boxes = list(_narrow_passage_boxes(field, wall_cell=wall_cell, budget_cells=None,
@@ -1329,11 +1371,15 @@ def _gap_plan(field, *, wall_cell: float, target: float, budget: int, band_m: fl
                 for b in boxes:
                     ids = b.get("point_ids")
                     if ids is not None and len(ids):
-                        b["refine_m3"] = 2.0 * float(np.asarray(a)[ids].sum()) * _reach(b)
+                        wall = float(np.asarray(a)[ids].sum())
+                        b["refine_m3"] = 2.0 * wall * _reach(b)
+                        cell = float(wall_cell) / (2 ** int(b.get("level_bump", 1)))
+                        b["layer_cells"] = (_layer_cells(wall, cell, n_layers)
+                                            - _layer_cells(wall, wall_cell, n_layers))
             return boxes
         return GS.plan_gaps(at, cell_m=wall_cell, budget=int(budget), limit=limit,
                             base_cells=base, target=float(target), accept_fewer=accept_fewer,
-                            whole_box=True)
+                            whole_box=True, base_after=after)
     except Exception:  # noqa: BLE001 - a plan we cannot make leaves the pass as planned
         logger.exception("gap plan failed - meshing the pass as planned")
         return empty
@@ -1836,6 +1882,11 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
     _gated_plan = _sibling_plan_memory(workspace) if _under else None
     # ... and WHERE it fell short, as the measure beside that mesh recorded it
     _measured_short = _sibling_under_floor(workspace) if _under else None
+    # THE GAP PLAN HELD TO THE PLAN'S OWN BUDGET (engines/gap_sizing): once a mesh whose cell
+    # ceiling the gap plan raised came out over the cell limit - in this attempt or the one before
+    # - the narrow spots get what the plan's own budget holds, as before gap sizing, never another
+    # raise past what was just measured to be too much (_raised_over_limit)
+    _hold_gaps: int | None = _raised_over_limit(workspace)
 
     for attempt in range(1, max_attempts + 1):
         _timed_out_now, _repeat_stop, _mesh_minutes = False, False, 0.0
@@ -1931,22 +1982,39 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
         # the cell budget is checked against what that costs BEFORE meshing - raised to it within
         # the compute limit, never met by dropping spots (the boxes used to be held to half the
         # plan's budget and the rest dropped: 15 of the 17 round-4 dev meshes refused for too few
-        # cells across their narrowest passage had been planned that way). Over the limit the
-        # pass is not meshed (below).
+        # cells across their narrowest passage had been planned that way). The wall layers snappy
+        # adds after refinement are priced in, and the ceiling leaves room for them under the
+        # limit (GapPlan.ceiling). Over the limit the pass is meshed as planned - never stopped.
+        if strategy.get("gap_budget_in"):
+            _budget = min(_budget, int(strategy["gap_budget_in"]))
+        if _hold_gaps is not None:
+            _budget = min(_budget, int(_hold_gaps))
         _planned_budget = _budget
         _narrow_target = float(strategy.get("narrow_target") or _PASSAGE_TARGET)
         _gap = _gap_plan(_passage_field, wall_cell=_near_cell, target=_narrow_target,
                          budget=_budget, band_m=_band_m, near_cell=_near_cell,
                          surface_cell=_wall_cell, base_cell=base_cell,
-                         accept_fewer=accepted_fewer(state.get("engine_params")))
+                         accept_fewer=accepted_fewer(state.get("engine_params")),
+                         n_layers=n_layers, limit=_hold_gaps)
         _gap.write(workspace)
         _narrow_regions = _over_band(list(_gap.regions), _near_offset)
         _narrow_surfaces_, _narrow_regions = _narrow_surfaces(workspace, _narrow_regions,
                                                               _passage_field)
-        if not _gap.stops and _gap.budget > _budget:
-            _budget = int(_gap.budget)
+        if _gap.status == OVER_LIMIT:
+            # not even the fewest cells across fit beside the rest of the mesh: the narrow spots
+            # get what the plan's own share of its budget holds, exactly as before gap sizing
+            _narrow_regions = _over_band(_narrow_passage_boxes(
+                _passage_field, wall_cell=_near_cell, target=_narrow_target,
+                budget_cells=max(50_000, int(strategy.get("narrow_budget") or 0.5 * _budget))),
+                _near_offset)
+        if _gap.ceiling() > _budget:
+            _budget = int(_gap.ceiling())
+        # the raised ceiling is this pass's alone: the plan's own budget travels beside it, so a
+        # later pass or attempt re-plans the narrow spots from the plan's budget, never on top of
+        # a raise (gap_budget_in, read back above)
         strategy = {**strategy, "near_band_m": round(_band_m, 6),
-                    **({"max_cells": _budget} if _budget != _planned_budget else {})}
+                    **({"max_cells": _budget, "gap_budget_in": int(_planned_budget)}
+                       if _budget != _planned_budget else {})}
         previous_plan = strategy
         await run.fence("write plan memory")
         _mem = await _op_begin(publish, "author_configuration", run, attempt)
@@ -1985,24 +2053,18 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                 + (f" ({_thin_note})" if _thin_note else ""),
                 op_id=f"internal:thin-feature:{attempt}")
         # NARROW PASSAGES, against the cell at the wall too (the gap plan above): what is refined
-        # where, and what the budget became - or, over the limit, why the pass is not meshed and
-        # what the user can choose instead
-        if _gap.regions or _gap.stops:
+        # where, and what the budget became - or, over the limit, how far the limit lets them be
+        # refined and what the user can choose instead (resolution_short in the gap record)
+        if _gap.regions or _gap.status == OVER_LIMIT:
             await publish.anote(
                 _gap.words(_near_cell)
                 + ("" if _gap.status not in (OVER_LIMIT, LIMITED) else
                    ". Options: " + " ".join(f"({i}) {o}" for i, o in
                                             enumerate(_gap.options(), 1))),
                 op_id=f"internal:narrow-passage:{attempt}")
-        if _gap.stops:
-            # KNOWN BEFORE MESHING: the limit cannot hold the rule, so no pass would clear the
-            # resolution floor. Reported as that gate (engines/preflight), with the facts that
-            # stop a retry and the user's options - never an hour of meshing first.
-            _gap.refusal().write(workspace)
-            await _op_end(publish, _mem, "author_configuration", {"stage": "gap-limit"}, False)
-            logger.warning("internal pass %d not meshed - %s - job_id=%s", attempt, _gap.words(),
-                           job_id)
-            return False
+        if _gap.resolution_short:
+            logger.info("internal pass %d: resolution short of the rule - %s - job_id=%s",
+                        attempt, _gap.words(), job_id)
 
         await publish.anote(f"Meshing pass {attempt} of {max_attempts} - "
                      f"{str(strategy.get('approach', 'default strategy'))[:80]}"
@@ -2095,6 +2157,21 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                               f"its refinement is raised for the next pass")
                 else:
                     (workspace / ".sealed_ports.json").unlink(missing_ok=True)
+            # OVER THE CELL LIMIT ON A CEILING THE GAP PLAN RAISED: the narrow spots cost more
+            # than priced. Delivered as it is, the mesh fails the manifest gate and the run moves
+            # to another engine, where this one meshes the file within the limit at its plan's own
+            # budget (a shell-side heat exchanger 13.0 M and a valve cage adapter 9.4 M against
+            # 6.5 M and 2.7 M before gap sizing, lab 2026-10-21). So the next pass keeps the
+            # plan's own budget, as before gap sizing.
+            _cells_now = int(q.get("cells") or 0)
+            if (production and _hold_gaps is None and _budget > _planned_budget
+                    and _cells_now > int(polcfg.CELL_HARD_LIMIT)):
+                production = False
+                _hold_gaps = int(_planned_budget)
+                reason = (f"{_cells_now:,} cells, over the {int(polcfg.CELL_HARD_LIMIT):,}-cell "
+                          "limit of one job: the narrow spots cost more than priced, so the next "
+                          "pass keeps the plan's own cell budget of "
+                          f"{int(_planned_budget):,}")
             run.note_native_run(produced_usable_mesh=last_valid)
         except (_fence.StaleWorkerFenced, StaleExecutionPublish, ReviewedCaseRepeats):
             raise                      # supersession stops the invocation; see the external build

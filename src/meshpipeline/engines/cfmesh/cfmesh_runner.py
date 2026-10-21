@@ -571,35 +571,49 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
         # finer - the very level the band just saved
         _detect = NARROW_DETECT_FACTOR * CFMESH_MIN_CELLS_ACROSS
 
+        _n_layers = max(0, int(strategy.get("n_layers", 0)))
+
         def _regions_at(t: float) -> list:
-            return list(narrow_passage_regions(
+            boxes = list(narrow_passage_regions(
                 passage_field[0], passage_field[1], cell_m=wall_cell, areas=_areas,
                 target=t, detect=_detect, budget_cells=None) or [])
+            if _areas is not None and _n_layers > 0:
+                # a box's finer wall carries its own wall layers, added after refinement
+                for b in boxes:
+                    ids, c = b.get("point_ids"), float(b.get("cell_needed_m") or 0.0)
+                    if ids is not None and len(ids) and 0.0 < c < wall_cell:
+                        wall = float(sum(float(_areas[i]) for i in ids))
+                        b["layer_cells"] = _n_layers * wall * (1.0 / c ** 2 - 1.0 / wall_cell ** 2)
+            return boxes
         import meshpipeline.settings.policy as _pol
         _limit = int(cell_budget) if cell_budget else int(_pol.CELL_HARD_LIMIT)
         _base = None
         if _areas is not None:
             _thick_m = float(_caps.get("refinement_thickness") or 0.0)
-            _n_layers = max(0, int(strategy.get("n_layers", 0)))
             _base = (GS.fill_cells(_areas, passage_field[1], max_cell)
                      + GS.fill_cells(_areas, passage_field[1], wall_cell,
                                      depth=_thick_m or None)
                      + _n_layers * float(sum(_areas)) / wall_cell ** 2)
+        # costed as cfMesh refines a box: EVERY cell inside it (objectRefinements), never only
+        # the passage the wall points bound - priced at its fluid, a valve cage adapter's boxes
+        # read 2.3 M and cartesianMesh made 20.2 M cells (lab, 2026-10-21)
         _gap = GS.plan_gaps(_regions_at, cell_m=wall_cell, budget=_limit, limit=_limit,
                             base_cells=_base, target=CFMESH_CELLS_ACROSS,
-                            accept_fewer=accept_fewer)
+                            accept_fewer=accept_fewer, whole_box=True)
         _gap.write(ws)
-        from meshpipeline.engines.preflight import PREFLIGHT_RECORD, read_refusal
-        if _gap.stops:
-            _gap.refusal().write(ws)
-        elif (_old := read_refusal(ws)) is not None and _old.builder_text.startswith(
-                "[PREFLIGHT] [RESOLUTION]"):
-            # a case re-rendered within the limit drops the refusal an earlier render recorded
-            (ws / PREFLIGHT_RECORD).unlink(missing_ok=True)
         _narrow = list(_gap.regions)
+        if _gap.status == GS.OVER_LIMIT:
+            # not even the fewest cells across fit beside the rest of the mesh (the plain mesh
+            # nearly fills the limit): meshed as before gap sizing - the boxes held to half the
+            # budget - and never stopped before meshing; the gate measures the mesh
+            _narrow = list(narrow_passage_regions(
+                passage_field[0], passage_field[1], cell_m=wall_cell, areas=_areas,
+                target=CFMESH_CELLS_ACROSS, detect=_detect,
+                budget_cells=(0.5 * cell_budget if cell_budget else None)) or [])
         _narrow_note = (_gap.words(wall_cell) + (". Options: " + " ".join(
-            f"({i}) {o}" for i, o in enumerate(_gap.options(), 1)) if _gap.status == GS.LIMITED else "")
-            if _gap.status in (GS.ACCEPTED_FEWER, GS.LIMITED) else "")
+            f"({i}) {o}" for i, o in enumerate(_gap.options(), 1))
+            if _gap.status in (GS.LIMITED, GS.OVER_LIMIT) else "")
+            if _gap.resolution_short else "")
     # the builder's own regions stop at the ceiling; a narrow passage's box is sized for it
     _blocks = (_object_refinement_blocks(strategy.get("features") or [], cell_floor=_floor)
                + _object_refinement_blocks(
@@ -675,9 +689,7 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
             "narrow_regions": [{"cell_size": round(b["cell_needed_m"], 6),
                                 "radius": round(b["radius_m"], 6)} for b in _narrow] or None,
             **({"narrow_note": _narrow_note} if _narrow_note else {}),
-            **({"gap_plan": _gap.record()} if _gap is not None and _gap.spots else {}),
-            **({"gap_stops": True, "gap_note": _gap.words(wall_cell),
-                "gap_options": _gap.options()} if _gap is not None and _gap.stops else {})}
+            **({"gap_plan": _gap.record()} if _gap is not None and _gap.spots else {})}
 
 
 def _bind_intake_shared(t: dict, declaration: list, *, bore: bool = True):
@@ -939,17 +951,6 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
         domain_min=bb_min, domain_max=bb_max, strategy=strategy, cell_budget=cell_budget,
         passage_radius=passage_radius, passage_field=_field,
         accept_fewer=accepted_fewer(read_engine_params(workspace)))
-    if summary.get("gap_stops"):
-        # KNOWN BEFORE THE RUN: the cell limit cannot hold the rule across the narrow spots, so
-        # no cfMesh run would clear the resolution floor. render_cfmesh_case recorded the refusal
-        # for the executor (engines/preflight: the facts stop a retry); the user gets the choices.
-        logger.warning("cfMesh internal: not meshed - %s", summary["gap_note"])
-        return {"success": False, "error": summary["gap_note"],
-                "options": summary.get("gap_options") or [],
-                "next": ("Do NOT call run_mesh and do NOT retry with another strategy - no "
-                         "strategy value changes this. Tell the user, in these words: "
-                         + summary["gap_note"] + ". Their choices: "
-                         + " ".join(summary.get("gap_options") or []))}
     _sizes = list((t.get("binding") or {}).get("size_notes") or [])
     return {"success": True, "wrote": ["system/meshDict"], "topology": "internal",
             "openings": t.get("openings"), "passage_radius": passage_radius, **summary,

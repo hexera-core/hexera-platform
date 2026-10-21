@@ -1,8 +1,8 @@
 # Responsibility: Size the cells of a mesh from its MEASURED narrowest gaps, and check before meshing that the cell limit can hold the rule.
 # Boundaries: engine-neutral arithmetic on a measured gap field (engines/passage reads it); it authors no case and judges no mesh.
 # Collaborates with: engines/passage.narrow_passage_regions (the boxes), the snappy and cfMesh drivers (which mesh them),
-#                    engines/preflight (the refusal when the limit cannot hold the rule), cad/shape_traits (the estimate the user
-#                    sees at approval), and every flow engine's resolution_floor gate (which judges the mesh by the same rule).
+#                    cad/shape_traits (the estimate the user sees at approval), and every flow engine's
+#                    resolution_floor gate (which judges the mesh by the same rule).
 """SIZE CELLS FROM THE MEASURED NARROWEST GAP.
 
 THE RULE. Every passage or gap the flow goes through gets at least GAP_CELLS_ACROSS cells across
@@ -37,8 +37,20 @@ lab sweep). Now the cost of meeting the rule everywhere is worked out BEFORE mes
     estimate 11.9 across at the limit, mesh 6.5 M cells, passed). Refusing it before meshing
     would turn a delivered file into a failed one. Choosing the first option (engine param
     `narrow_gaps` = within_limit) holds the mesh to the share of what was accepted instead.
-  * only when not even MIN_ACCEPTED_CELLS across fits the limit is the run not started: no mesh
-    of it could carry the flow, and the user is told why and what they can choose.
+  * not even MIN_ACCEPTED_CELLS across fits - the plain mesh already nearly fills the limit - and
+    the run meshes exactly as it did before this module (the boxes held to the plan's share,
+    OVER_LIMIT), says the rule could not be held and lists the choices. NEVER a stop before
+    meshing: a shell-side heat exchanger whose plain mesh fills most of the limit was stopped
+    that way on cfMesh, where the plain mesh passes the gate on snappyHexMesh (lab, 2026-10-21).
+In every case short of the rule the record says so (`resolution_short`), and the gate measures.
+
+THE LIMIT IS ON THE DELIVERED MESH, LAYERS INCLUDED. A mesher's cell ceiling (snappyHexMesh's
+maxGlobalCells) stops its REFINEMENT; the wall layers are added after it, one cell per wall face
+per layer. Priced without them, the gap plan raised the ceiling to the limit and the layers came
+on top: a shell-side heat exchanger 7.1 M refined + 5.9 M layer cells = 13.0 M, a valve cage
+adapter 6.8 M + 2.5 M = 9.4 M, both over the 8 M limit, both delivered on main at 6.5 M and 2.7 M
+(lab, 2026-10-21). So a plan prices the layers (`base_after`, each box's `layer_cells`), and the
+ceiling a mesher refines to (GapPlan.ceiling) leaves room for them under the limit.
 The same arithmetic, on the geometry check's own chords (cad/shape_traits `gap_cells`), is what
 the user sees at approval (estimate_from_traits), so the limit is met or a choice is made before
 any mesh is paid for.
@@ -138,12 +150,15 @@ def box_cost(boxes, cell_m: float, *, whole_box: bool = False) -> float:
     volume is what it costs - offline, vmr_0092's 61 boxes priced at their fluid read 3.8 M and
     snappy's shell refinement passed 5.7 M one level in. Otherwise only the passage the wall
     points bound, as a round tube holds it (`fluid_m3`, area x r / 2 - exact for a tube, where
-    narrow_passage_regions' own `volume_m3` counts it twice over), never more than the box."""
+    narrow_passage_regions' own `volume_m3` counts it twice over), never more than the box.
+    A box's `layer_cells` - the wall layers its finer wall cells carry, added after refinement -
+    count too (box_layers)."""
     total = 0.0
     for b in boxes or ():
         c = float(b.get("cell_m") or float(cell_m) / (2 ** int(b.get("level_bump", 1))))
         if c <= 0.0:
             continue
+        total += float(b.get("layer_cells") or 0.0)
         if b.get("refine_m3") is not None:
             # refined by distance from the spot's own wall (the snappy driver's surfaces)
             v = float(b["refine_m3"])
@@ -194,6 +209,11 @@ class GapPlan:
     where_m: tuple | None = None
     #: the count the rule asks across every narrow spot (13; an engine may ask more)
     rule: float = GAP_CELLS_ACROSS
+    #: the wall-layer cells of the mesh without the boxes (n_layers x its wall faces): added after
+    #: refinement, so no refinement ceiling holds them (`base_cells` includes them)
+    base_after: float = 0.0
+    #: ...and the wall-layer cells of the mesh as planned: base_after plus the chosen boxes' own
+    after_cells: float = 0.0
 
     @property
     def needed(self) -> float:
@@ -201,10 +221,24 @@ class GapPlan:
         return self.base_cells + self.full_cost
 
     @property
-    def stops(self) -> bool:
-        """Whether the run must not start: the rule does not fit the limit, and the user did not
-        accept fewer cells across the narrowest spots."""
-        return self.status == OVER_LIMIT
+    def resolution_short(self) -> bool:
+        """The narrow spots get fewer cells across than the rule: the limit could not hold it (or
+        the user chose fewer). Flagged in the run's record and its note; the mesh is measured by
+        the resolution gate as every mesh is."""
+        return self.status in (LIMITED, ACCEPTED_FEWER, OVER_LIMIT)
+
+    def ceiling(self) -> int:
+        """The cell ceiling the mesher REFINES to (snappyHexMesh's maxGlobalCells): the plan's own
+        budget, plus room for the boxes' refined cells (their estimate x CEILING_SLACK - a ceiling
+        at the estimate is one snappy stops a level short of), and never so high that the wall
+        layers added after refinement take the mesh over the limit. Never under the plan's own
+        budget: the mesh without the boxes is what the run built before this module. A plan that
+        refines nothing more than planned (FITS, OVER_LIMIT, none) keeps the plan's budget."""
+        if self.status in (FITS, OVER_LIMIT, NO_NARROW) or not self.regions:
+            return int(self.budget_in)
+        refined = max(0.0, self.cost - (self.after_cells - self.base_after))
+        room = self.limit / BUDGET_HEADROOM - self.after_cells
+        return int(max(self.budget_in, min(self.budget_in + refined * CEILING_SLACK, room)))
 
     def options(self) -> list[str]:
         """The user's choices when the limit cannot hold the rule, in plain words with numbers."""
@@ -268,9 +302,14 @@ class GapPlan:
                     f"limit, so they are refined to about {self.target:.0f} across, as many as the "
                     f"limit holds; the mesh is still checked for {GAP_FLOOR_CELLS:.0f} cells across "
                     "its narrowest wall")
+        # OVER_LIMIT: not even MIN_ACCEPTED_CELLS across fits beside the rest of the mesh - meshed
+        # as planned, never stopped before meshing (the module docstring)
         return (f"{head}; {self.rule:.3g} cells across every one of them needs about "
                 f"{_cells(self.needed * BUDGET_HEADROOM)} cells, more than the {_cells(self.limit)} "
-                "one job may build - not meshed")
+                f"one job may build, and not even {MIN_ACCEPTED_CELLS:.0f} across them fits beside "
+                "the rest of the mesh, so they are refined only as far as the planned cell budget "
+                f"goes; the mesh is still checked for {GAP_FLOOR_CELLS:.0f} cells across its "
+                "narrowest wall")
 
     def record(self) -> dict:
         return {"status": self.status, "target": round(self.target, 2),
@@ -282,7 +321,9 @@ class GapPlan:
                 "budget": int(self.budget), "limit": int(self.limit),
                 "needed": int(self.needed * BUDGET_HEADROOM),
                 "affordable": (round(self.affordable, 1) if self.affordable is not None
-                               else None)}
+                               else None),
+                "layer_cells": int(self.after_cells), "ceiling": self.ceiling(),
+                "resolution_short": self.resolution_short}
 
     def floor(self) -> float:
         """The floor the resolution gate holds this run to: the rule's, or - when the user
@@ -296,25 +337,6 @@ class GapPlan:
             (Path(workspace) / GAP_RECORD).write_text(json.dumps(self.record()), encoding="utf-8")
         except OSError:
             logger.warning("gap sizing: the record could not be written", exc_info=True)
-
-    def refusal(self):
-        """The pre-flight refusal of a run whose rule does not fit the cell limit: reported as the
-        resolution floor it stands in for, with the facts that stop a retry (rebuild over the
-        limit) and the user's options."""
-        from meshpipeline.contracts.failure_cause import FailureCause
-        from meshpipeline.engines.preflight import PreflightRefusal
-        opts = self.options()
-        return PreflightRefusal(
-            gate="resolution_floor", cause=FailureCause.UNDER_RESOLVED,
-            builder_text=("[PREFLIGHT] [RESOLUTION] " + self.words() + ". Options: "
-                          + " | ".join(opts)),
-            facts={"cells_across": round(self.affordable or 0.0, 1), "needed": GAP_FLOOR_CELLS,
-                   "rebuild_cells": int(self.needed * BUDGET_HEADROOM),
-                   "cell_limit": int(self.limit), "before_meshing": True,
-                   "narrowest_m": self.narrowest_m, "spots": self.spots,
-                   "accept_cells_across": (round(self.affordable, 1)
-                                           if self.affordable is not None else None),
-                   "options": opts})
 
 
 def read_record(workspace) -> dict | None:
@@ -347,20 +369,39 @@ PLAN_BOX_SHARE = 0.5
 
 def plan_gaps(regions_at, *, cell_m: float, budget: int, limit: int,
               base_cells: float | None = None, target: float = GAP_CELLS_ACROSS,
-              accept_fewer: bool = False, whole_box: bool = False) -> GapPlan:
+              accept_fewer: bool = False, whole_box: bool = False,
+              base_after: float = 0.0) -> GapPlan:
     """The gap plan of one pass. `regions_at(t)` returns the narrow-passage boxes that put `t`
     cells across every narrow spot (engines/passage.narrow_passage_regions with no budget, the
     spots always DETECTED at the rule's count so the same spots are named at any t). `cell_m` is
-    the cell the boxes refine from, `budget` the plan's cell budget, `limit` the compute limit.
-    `base_cells` is the mesh without the boxes; by default the plan's budget less the share its
-    narrow spots were always allowed (PLAN_BOX_SHARE). `whole_box` as in box_cost: the mesher
-    refines the whole box (snappyHexMesh). Nothing here meshes anything."""
+    the cell the boxes refine from, `budget` the plan's cell budget (the ceiling the mesher refines
+    to), `limit` the compute limit on the DELIVERED mesh. `base_cells` is the refined mesh without
+    the boxes; by default the plan's budget less the share its narrow spots were always allowed
+    (PLAN_BOX_SHARE). `base_after` is the wall-layer cells that mesh carries (added after
+    refinement, so under no ceiling); a box's own wall layers travel as its `layer_cells`.
+    `whole_box` as in box_cost: the mesher refines the whole box (snappyHexMesh). Nothing here
+    meshes anything."""
     budget = int(budget)
     limit = int(limit)
-    base = float((1.0 - PLAN_BOX_SHARE) * budget if base_cells is None else base_cells)
+    refined = float((1.0 - PLAN_BOX_SHARE) * budget if base_cells is None else base_cells)
+    after = max(0.0, float(base_after or 0.0))
+    base = refined + after
+
+    def layers(rs) -> float:
+        return float(sum(float(b.get("layer_cells") or 0.0) for b in rs or ()))
+
+    def plan(status, rs, t, cost, **kw) -> GapPlan:
+        p = GapPlan(status, rs, t, cost, base_after=after, after_cells=after + layers(rs),
+                    **kw)
+        if status in (RAISED, LIMITED, ACCEPTED_FEWER):
+            # the run's budget is the ceiling it refines to, the layers' room left under the limit
+            p.budget = max(int(p.budget_in), p.ceiling())
+        return p
+
     full = list(regions_at(float(target)) or [])
     if not full:
-        return GapPlan(NO_NARROW, [], float(target), 0.0, base, budget, budget, limit)
+        return GapPlan(NO_NARROW, [], float(target), 0.0, base, budget, budget, limit,
+                       base_after=after, after_cells=after)
     full_cost = box_cost(full, cell_m, whole_box=whole_box)
     narrowest = min(full, key=lambda b: float(b["radius_m"]))
     common: dict[str, Any] = {"narrowest_m": 2.0 * float(narrowest["radius_m"]), "spots": len(full),
@@ -369,14 +410,10 @@ def plan_gaps(regions_at, *, cell_m: float, budget: int, limit: int,
               "base_cells": base, "budget_in": budget, "limit": limit, "full_cost": full_cost,
               "rule": float(target)}
     need = math.ceil((base + full_cost) * BUDGET_HEADROOM)
-    if base + full_cost <= budget:
-        return GapPlan(FITS, full, float(target), full_cost, budget=budget, **common)
+    if refined + full_cost - layers(full) <= budget and need <= limit:
+        return plan(FITS, full, float(target), full_cost, budget=budget, **common)
     if need <= limit:
-        # the ceiling the mesher stops refining at gets room over the estimate (CEILING_SLACK),
-        # within the limit: a ceiling AT the estimate is one snappy stops one level short of
-        ceiling = min(limit, math.ceil((base + full_cost) * CEILING_SLACK))
-        return GapPlan(RAISED, full, float(target), full_cost, budget=max(budget, need, ceiling),
-                       **common)
+        return plan(RAISED, full, float(target), full_cost, budget=budget, **common)
     # OVER THE LIMIT: the most cells across the narrow spots the limit holds (bisection on the
     # count; the cost is a step function of it, one octree level per halving)
     room = limit / BUDGET_HEADROOM - base
@@ -399,10 +436,12 @@ def plan_gaps(regions_at, *, cell_m: float, budget: int, limit: int,
     # cautious, and a refusal before meshing would fail files that deliver)
     aff, aff_cost = (best[0], best[2]) if best is not None else (None, None)
     if best is not None:
-        return GapPlan(ACCEPTED_FEWER if accept_fewer else LIMITED, best[1], best[0], best[2],
-                       budget=limit, affordable=aff, affordable_cost=aff_cost, **common)
-    return GapPlan(OVER_LIMIT, [], float(target), 0.0, budget=budget, affordable=aff,
-                   affordable_cost=aff_cost, **common)
+        return plan(ACCEPTED_FEWER if accept_fewer else LIMITED, best[1], best[0], best[2],
+                    budget=limit, affordable=aff, affordable_cost=aff_cost, **common)
+    # not even MIN_ACCEPTED_CELLS across fits beside the rest: no boxes from this plan - the
+    # caller meshes as planned (its boxes held to the plan's share, as before this module)
+    return plan(OVER_LIMIT, [], float(target), 0.0, budget=budget, affordable=aff,
+                affordable_cost=aff_cost, **common)
 
 
 # #

@@ -459,22 +459,6 @@ def describe(cause: object, facts: Mapping | None = None, *,
         return _quality(f)
     if c is FailureCause.UNDER_RESOLVED:
         x, n = _as_number(f.get("cells_across")), f.get("needed")
-        if f.get("before_meshing") and rebuild_over_limit(f):
-            # THE CELL BUDGET, CHECKED UP FRONT (engines/gap_sizing): no mesh was made, because
-            # none within the limit could carry the rule - so say that, and the choices
-            rebuild = _as_number(f.get("rebuild_cells")) or 0.0
-            allowed = _as_number(f.get("cell_limit")) or 0.0
-            w = _as_number(f.get("narrowest_m"))
-            what = ("Stopped before meshing: enough cells across every narrow passage"
-                    + (f" (down to {w * 1000:.2g} mm)" if w else "")
-                    + f" would need about {rebuild / 1e6:.2g} million cells, more than the "
-                    f"{allowed / 1e6:.2g} million one job may build.")
-            acc = _as_number(f.get("accept_cells_across"))
-            return what, ("You can accept fewer cells across the narrowest spots"
-                          + (f" (about {acc:.0f})" if acc else "")
-                          + " - say so and run it again - have the cell limit raised, try "
-                          "another mesher, or mesh a smaller part of the geometry where the "
-                          "passage is narrowest.")
         if f.get("scope") == "main":
             # the side passages the flow can go round were set aside; the main way itself fell short
             what = ("The mesh is too coarse in the passages the flow must go through"
