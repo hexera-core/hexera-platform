@@ -360,3 +360,16 @@ def test_the_fewer_cells_choice_is_offered_only_for_engines_that_take_it():
     assert "only for snappyHexMesh and cfMesh" in words and G.WITHIN_LIMIT in words
     none = est.guidance(())
     assert G.WITHIN_LIMIT not in none and "leave narrow_gaps out" in none
+
+
+def test_the_external_gap_plan_prices_the_wall_layers_too():
+    from meshpipeline.cad.shape_traits import body_gap_field
+    from meshpipeline.engines.snappy.snappy_runner import _plan_body_gaps
+    field = body_gap_field(_two_blocks(0.002), samples=4000)
+    bare, _ = _plan_body_gaps(field, wall_cell=0.005, budget=2_000_000, base_cells=1e6)
+    plan, ceiling = _plan_body_gaps(field, wall_cell=0.005, budget=2_000_000, base_cells=1e6,
+                                    n_layers=5, wall_area=0.12)
+    assert bare.base_after == 0.0 and plan.base_after == pytest.approx(5 * 0.12 / 0.005 ** 2)
+    assert plan.regions and all(b.get("layer_cells", 0.0) > 0.0 for b in plan.regions)
+    assert ceiling >= 2_000_000
+    assert ceiling + plan.after_cells <= plan.limit / G.BUDGET_HEADROOM + 1 or ceiling == 2_000_000

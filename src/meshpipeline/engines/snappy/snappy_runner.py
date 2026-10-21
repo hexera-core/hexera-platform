@@ -872,7 +872,9 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
             gap_field, wall_cell=base_actual / (2 ** smax), budget=max_cells,
             base_cells=castellated_estimate(
                 area=analysis.get("surface_area"), divisions=div, base_cell=base_actual,
-                surface_level=smax, near=(b0d, near_band_level), far=(b1d, max(1, smin - 1))))
+                surface_level=smax, near=(b0d, near_band_level), far=(b1d, max(1, smin - 1))),
+            n_layers=max([n_layers, *layer_counts.values()]) if _any_layers else 0,
+            wall_area=analysis.get("surface_area"))
         for k, b in enumerate(_gap.regions if _gap is not None else []):
             _lvl = min(_HARD_MAX_LEVEL, smax + int(b.get("level_bump", 1)))
             _gap_geom += (f" {_GAP_BOX}{k} {{ type searchableBox; min {vf(b['min'])}; "
@@ -965,24 +967,46 @@ mergeTolerance 1e-6; debug 0;
 _GAP_BOX = "gapZone"
 
 
-def _plan_body_gaps(field, *, wall_cell: float, budget: int, base_cells: float | None):
+def _plan_body_gaps(field, *, wall_cell: float, budget: int, base_cells: float | None,
+                    n_layers: int = 0, wall_area: float | None = None):
     """(gap plan, the cell ceiling to mesh with) for the gaps between an external body's parts
     (engines/gap_sizing.plan_gaps on the body gap field): the boxes put 13 across every gap the
     wall cell leaves short, the ceiling rises to what they cost within the compute limit, and over
-    it the gaps get as many as the limit holds. (None, budget) when the plan cannot be made."""
+    it the gaps get as many as the limit holds. The wall layers snappy adds after refinement are
+    priced too - `n_layers` per wall face on the body's `wall_area`, and on each gap's finer wall -
+    so the ceiling leaves room for them under the limit, as the internal plan does.
+    (None, budget) when the plan cannot be made."""
+    import numpy as np
+
     import meshpipeline.settings.policy as polcfg
     from meshpipeline.engines import gap_sizing as GS
     from meshpipeline.engines.passage import narrow_passage_regions
     try:
         pts, half, areas = field
+        layers = max(0, int(n_layers))
+        a = np.asarray(areas, dtype=float) if areas is not None else None
+        try:
+            wall = float(wall_area) if wall_area is not None else 0.0
+        except (TypeError, ValueError):
+            wall = 0.0
+        after = (layers * wall / wall_cell ** 2
+                 if layers and wall > 0.0 and wall_cell > 0.0 else 0.0)
 
         def at(t: float) -> list:
-            return list(narrow_passage_regions(pts, half, cell_m=wall_cell, areas=areas,
-                                               target=t, detect=GS.GAP_CELLS_ACROSS,
-                                               budget_cells=None) or [])
+            boxes = list(narrow_passage_regions(pts, half, cell_m=wall_cell, areas=areas,
+                                                target=t, detect=GS.GAP_CELLS_ACROSS,
+                                                budget_cells=None) or [])
+            if layers and a is not None:
+                for b in boxes:
+                    ids = b.get("point_ids")
+                    if ids is not None and len(ids):
+                        c = float(wall_cell) / (2 ** int(b.get("level_bump", 1)))
+                        b["layer_cells"] = (layers * float(a[ids].sum())
+                                            * (1.0 / c ** 2 - 1.0 / wall_cell ** 2))
+            return boxes
         plan = GS.plan_gaps(at, cell_m=wall_cell, budget=int(budget),
                             limit=int(polcfg.CELL_HARD_LIMIT), base_cells=base_cells,
-                            accept_fewer=True, whole_box=True)
+                            accept_fewer=True, whole_box=True, base_after=after)
     except Exception:  # noqa: BLE001 - a plan we cannot make leaves the case as planned
         logger.warning("render_snappy_case: the body-gap plan failed - meshing as planned",
                        exc_info=True)
