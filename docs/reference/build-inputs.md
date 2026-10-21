@@ -32,6 +32,7 @@ implied away.
 | SearXNG | `searxng/searxng@sha256:3bc6ae0e…` | OCI digest | `docker-compose.yml` |
 | curl (CI) | `curlimages/curl:8.11.1@sha256:c1fe1679…` | OCI digest | `.github/workflows/ci.yml` |
 | CI actions | full 40-character commit SHAs | Git object identity | `.github/workflows/ci.yml` |
+| Python interpreter | python-build-standalone `3.11.17+20261013` release asset URL (replaced the deadsnakes PPA after its 2026-10-21 outage) | `ARG PYTHON_BUILD_SHA256` + post-install version check | `Dockerfile` |
 | micromamba | release `2.8.1-1` asset URL | `ARG MICROMAMBA_SHA256` + post-install version check | `Dockerfile` |
 | OpenFOAM repository installer | official endpoint | `ARG OPENFOAM_REPO_SCRIPT_SHA256` | `Dockerfile` |
 | OpenFOAM signing key | official endpoint | complete fingerprint `DC93C096…948D208F` | `Dockerfile` |
@@ -82,6 +83,7 @@ A build that fails on a mismatch is working.
 | Input | Preservation |
 |---|---|
 | Container images | third-party registry retention (Docker Hub) |
+| Python `3.11.17+20261013` | GitHub release asset retention |
 | micromamba `2.8.1-1` | GitHub release asset retention |
 | OpenFOAM packages | ESI repository retention; the version is pinned but the repository is not snapshotted |
 | Python distributions | PyPI retention |
