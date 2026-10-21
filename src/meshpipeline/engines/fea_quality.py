@@ -160,7 +160,9 @@ def measure(mesh) -> dict:
         over["fea_max_dihedral_deg"] += int(np.count_nonzero(m["max_dihedral"] > 170.0))
 
     def r(v: float) -> float | None:
-        return None if not math.isfinite(v) else float(f"{v:.4g}")
+        # FULL PRECISION: the verdict reads these, and 0.19999 rounded to 0.2 would pass a limit it
+        # misses. Only the words round (engines/verdict_limits.words, engines/fea_results.py).
+        return None if not math.isfinite(v) else float(v)
 
     figures = {"fea_min_scaled_jacobian": r(worst["scaled_jacobian"]),
                "fea_max_jacobian_ratio": r(worst["jac_ratio"]),

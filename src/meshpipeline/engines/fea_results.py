@@ -92,6 +92,11 @@ def results(workspace) -> dict | None:
         outcome, said = "fail", "The mesh fails a check no solver can work around."
     elif any(r["ok"] is False for r in rows):
         outcome, said = "concerns", "The mesh is valid; some elements sit past a solver's warning limit (listed)."
+    elif any(r["ok"] is None for r in rows):
+        # NOT MEASURED IS NOT MET: a figure missing (an older runner, a measurement that failed) is
+        # never said to pass
+        outcome, said = "unmeasured", ("Not fully checked: some figures were not measured on this mesh "
+                                        "(listed). The ones measured meet their limits.")
     else:
         outcome, said = "pass", "Every element meets the strictest limit of the solvers it is for."
 

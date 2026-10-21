@@ -5,7 +5,7 @@ import { esc } from "../core/format.js";
 
 const fmt = (v) => (v === null || v === undefined || v === "") ? "—"
   : (typeof v === "number" ? (Number.isInteger(v) ? v.toLocaleString() : Number(v.toPrecision(3)).toLocaleString()) : String(v));
-const OUTCOME = { pass: "PASS", concerns: "PASS WITH NOTES", fail: "FAIL" };
+const OUTCOME = { pass: "PASS", concerns: "PASS WITH NOTES", unmeasured: "NOT FULLY CHECKED", fail: "FAIL" };
 const OP = { "<=": "at most", ">=": "at least", "==": "exactly", "<": "under", ">": "over" };
 
 function checkRow(r) {
@@ -33,7 +33,7 @@ export function feaResultsHtml(job, f) {
   const ck = f.check || {}, tw = f.through_wall || {}, faces = f.faces || [], spots = f.hot_spots || [];
   const dl = f.download || {};
   return `<div class="v-sec tr fe" id="v-fea-sec-${esc(job)}">
-      <div class="v-sec-h">${esc(f.title || "FEA mesh")} <span class="v-pill${ck.outcome === "fail" ? " fail" : ck.outcome === "concerns" ? " concerns" : ""}">${esc(OUTCOME[ck.outcome] || "")}</span></div>
+      <div class="v-sec-h">${esc(f.title || "FEA mesh")} <span class="v-pill${ck.outcome === "fail" ? " fail" : (ck.outcome === "concerns" || ck.outcome === "unmeasured") ? " concerns" : ""}">${esc(OUTCOME[ck.outcome] || "")}</span></div>
       <div class="tr-sum">${esc(f.summary || "")}</div>
       <ul class="tr-q">
         <li>${esc(ck.words || "")}</li>
@@ -98,30 +98,30 @@ export function feaDownloads(bar, job, f) {
     point(at_m|null)}. */
 export function bindFeaResults(root, job, f, hooks) {
   if (!root || !f) return null;
+  // WHAT IS PICKED: a face ("face:Face_3") or a hot spot ("spot:H2") - one key, so picking a hot
+  // spot on the face already shown keeps the face and adds the marker, and only the same row
+  // clicked again goes back to the whole part
   let picked = null;
   const mark = () => {
-    root.querySelectorAll(".fe-face").forEach((tr) => tr.classList.toggle("sel", tr.dataset.face === picked));
-    root.querySelectorAll(".fe-spot").forEach((li) => li.classList.toggle("sel", li.dataset.face === picked && li.classList.contains("on")));
+    root.querySelectorAll(".fe-face").forEach((tr) => tr.classList.toggle("sel", picked === `face:${tr.dataset.face}`));
+    root.querySelectorAll(".fe-spot").forEach((li) => li.classList.toggle("on", picked === `spot:${li.dataset.spot}`));
   };
-  const pickFace = (name, at) => {
-    picked = picked === name ? null : name;
-    if (hooks && hooks.isolate) hooks.isolate(picked);
+  const pick = (key, face, at) => {
+    picked = picked === key ? null : key;
+    if (hooks && hooks.isolate) hooks.isolate(picked ? face : null);
     if (hooks && hooks.point) hooks.point(picked ? at || null : null);
     mark();
   };
   root.querySelectorAll(".fe-face").forEach((tr) => {
-    const go = () => { root.querySelectorAll(".fe-spot").forEach((li) => li.classList.remove("on")); pickFace(tr.dataset.face, null); };
+    const go = () => pick(`face:${tr.dataset.face}`, tr.dataset.face, null);
     tr.onclick = go;
     tr.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(); } };
   });
   root.querySelectorAll(".fe-spot").forEach((li) => {
     const h = (f.hot_spots || []).find((x) => x.id === li.dataset.spot) || {};
-    const go = () => {
-      root.querySelectorAll(".fe-spot").forEach((x) => x.classList.toggle("on", x === li));
-      pickFace(li.dataset.face, h.at_m || null);
-    };
+    const go = () => pick(`spot:${li.dataset.spot}`, li.dataset.face, h.at_m || null);
     li.onclick = go;
     li.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(); } };
   });
-  return { pick: (name) => { picked = name; mark(); } };
+  return { pick: (face) => { picked = face ? `face:${face}` : null; mark(); } };
 }

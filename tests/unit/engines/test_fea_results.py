@@ -147,3 +147,27 @@ def test_a_cfd_gmsh_workspace_gets_no_fea_block(tmp_path):
 
     (tmp_path / "quality.json").write_text(json.dumps({"cells": 10}))
     assert results(tmp_path) is None
+
+
+def test_figures_not_measured_are_never_called_a_pass(tmp_path):
+    from meshpipeline.engines.fea_results import results
+
+    (tmp_path / "fea_plan.json").write_text(json.dumps({"words": ["w"], "detail": {"label": "Quick"}}))
+    (tmp_path / "quality.json").write_text(json.dumps({
+        "cells": 10, "elements_under_floor": 0, "fea_inverted": 0,
+        "fea": {"plan": True, "through_wall_min": 3.0, "rules": {"walls_checked": True}}}))
+    f = results(tmp_path)
+    assert f["check"]["outcome"] == "unmeasured" and f["check"]["words"].startswith("Not fully checked")
+
+
+def test_the_verdict_reads_full_precision():
+    class Mesh:
+        node_ids = np.arange(1, 11)
+        xyz = PERFECT
+        elements = np.arange(1, 11)[None]
+
+    out = FQ.measure(Mesh())
+    assert out["fea_min_scaled_jacobian"] == pytest.approx(1.0, abs=1e-12)
+    q = {"fea": {"plan": True}, "fea_min_scaled_jacobian": 0.19999}
+    row = next(r for r in vl.fea_limits(q) if r["key"] == "fea_min_scaled_jacobian")
+    assert dr.limit_met(row["measured"], row["op"], row["limit"]) is False
