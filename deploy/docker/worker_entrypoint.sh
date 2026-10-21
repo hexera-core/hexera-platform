@@ -43,6 +43,6 @@ mkdir -p /data/training /data/beat || true
 # loads bundled VTK shared libs at import. Put the vtkmodules dir on the loader
 # path for the Celery process (OpenFOAM is sourced per-subprocess, so it does
 # not reset this for the worker itself).
-export LD_LIBRARY_PATH="/usr/local/lib/python3.11/dist-packages/vtkmodules:${LD_LIBRARY_PATH}"
+export LD_LIBRARY_PATH="/usr/local/lib/python3.11/site-packages/vtkmodules:${LD_LIBRARY_PATH}"
 
 exec "$@"
