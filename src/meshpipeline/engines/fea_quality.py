@@ -52,6 +52,9 @@ _SAMPLES = np.vstack([_CORNERS, [(_CORNERS[a] + _CORNERS[b]) / 2 for a, b in _ED
 #: a perfect tetrahedron's longest edge over its shortest height: 1 / sqrt(2/3)
 _PERFECT_ASPECT = 1.0 / math.sqrt(2.0 / 3.0)
 _CHUNK = 50_000
+#: the solver readings measure() also keeps the worst of: (key, smallest is worst)
+_EXTRA = (("min_face_angle", True), ("max_face_angle", False), ("edge_ratio", False), ("aspect_raw", False),
+          ("midside_offset", False), ("midside_bend", False))
 
 
 def _dN10(p: np.ndarray) -> np.ndarray:
@@ -124,8 +127,34 @@ def element_measures(X: np.ndarray) -> dict[str, np.ndarray]:
             c = np.clip(np.einsum("ij,ij->i", normals[i], normals[j]), -1.0, 1.0)
             angs.append(180.0 - np.degrees(np.arccos(c)))
     A = np.stack(angs)
-    return {"min_detj": min_detj, "jac_ratio": ratio, "scaled_jacobian": sj, "aspect": aspect,
-            "min_dihedral": A.min(axis=0), "max_dihedral": A.max(axis=0)}
+    # THE SOLVERS' OWN READINGS (engines/fea_solvers.py): the corner angles of each face triangle,
+    # the longest edge over the shortest, and where each midside node sits on its edge
+    fang = []
+    for a, b, c in faces:
+        for p0, p1, p2 in ((a, b, c), (b, c, a), (c, a, b)):
+            u, v = P[:, p1] - P[:, p0], P[:, p2] - P[:, p0]
+            cosv = np.einsum("ij,ij->i", u, v) / np.maximum(np.linalg.norm(u, axis=1) * np.linalg.norm(v, axis=1), 1e-300)
+            fang.append(np.degrees(np.arccos(np.clip(cosv, -1.0, 1.0))))
+    F = np.stack(fang)
+    edges = np.stack(n)
+    out = {"min_detj": min_detj, "jac_ratio": ratio, "scaled_jacobian": sj, "aspect": aspect,
+           "min_dihedral": A.min(axis=0), "max_dihedral": A.max(axis=0),
+           "min_face_angle": F.min(axis=0), "max_face_angle": F.max(axis=0),
+           "edge_ratio": edges.max(axis=0) / np.maximum(edges.min(axis=0), 1e-300),
+           "aspect_raw": aspect * _PERFECT_ASPECT}
+    if X.shape[1] == 10:
+        offs, bends = [], []
+        for k, (a, b) in enumerate(_EDGES):
+            pa, pb, pm = X[:, a], X[:, b], X[:, 4 + k]
+            L = np.maximum(np.linalg.norm(pb - pa, axis=1), 1e-300)
+            t = np.einsum("ij,ij->i", pm - pa, pb - pa) / L ** 2
+            offs.append(np.abs(t - 0.5))
+            u, v = pm - pa, pb - pm
+            cosv = np.einsum("ij,ij->i", u, v) / np.maximum(np.linalg.norm(u, axis=1) * np.linalg.norm(v, axis=1), 1e-300)
+            bends.append(np.degrees(np.arccos(np.clip(cosv, -1.0, 1.0))))
+        out["midside_offset"] = np.stack(offs).max(axis=0)
+        out["midside_bend"] = np.stack(bends).max(axis=0)
+    return out
 
 
 def measure(mesh) -> dict:
@@ -136,7 +165,8 @@ def measure(mesh) -> dict:
     xyz = np.asarray(mesh.xyz, dtype=float)
     els = index[np.asarray(mesh.elements)]
     worst = {"min_detj": math.inf, "scaled_jacobian": math.inf, "jac_ratio": 0.0, "aspect": 0.0,
-             "min_dihedral": 180.0, "max_dihedral": 0.0}
+             "min_dihedral": 180.0, "max_dihedral": 0.0,
+             **{k: (math.inf if lo else 0.0) for k, lo in _EXTRA}}
     inverted = 0
     over = {k: 0 for k, *_ in LIMITS}
     where = {}
@@ -147,7 +177,8 @@ def measure(mesh) -> dict:
         cen = X[:, :4].mean(axis=1)
         for key, arr, low in (("scaled_jacobian", m["scaled_jacobian"], True), ("jac_ratio", m["jac_ratio"], False),
                               ("aspect", m["aspect"], False), ("min_dihedral", m["min_dihedral"], True),
-                              ("max_dihedral", m["max_dihedral"], False), ("min_detj", m["min_detj"], True)):
+                              ("max_dihedral", m["max_dihedral"], False), ("min_detj", m["min_detj"], True),
+                              *((k, m[k], lo) for k, lo in _EXTRA if k in m)):
             i = int(np.argmin(arr) if low else np.argmax(arr))
             v = float(arr[i])
             if (low and v < worst[key]) or (not low and v > worst[key]):
@@ -169,7 +200,14 @@ def measure(mesh) -> dict:
                "fea_max_aspect_ratio": r(worst["aspect"]),
                "fea_min_dihedral_deg": r(worst["min_dihedral"]),
                "fea_max_dihedral_deg": r(worst["max_dihedral"])}
-    return {**figures, "fea_inverted": inverted, "elements": int(len(els)),
+    # the solvers' own readings (engines/fea_solvers.py), not production limits of their own
+    readings = {"fea_min_face_angle_deg": r(worst["min_face_angle"]),
+                "fea_max_face_angle_deg": r(worst["max_face_angle"]),
+                "fea_max_edge_ratio": r(worst["edge_ratio"]),
+                "fea_max_aspect_raw": r(worst["aspect_raw"]),
+                **({"fea_max_midside_offset": r(worst["midside_offset"]),
+                    "fea_max_midside_bend_deg": r(worst["midside_bend"])} if els.shape[1] == 10 else {})}
+    return {**figures, **readings, "fea_inverted": inverted, "elements": int(len(els)),
             "over_limit": over, "worst_at_m": where,
             "limits": [{"key": k, "label": lab, "op": op, "limit": lim, "source": src,
                         "measured": figures[k], "elements_over": over[k]} for k, lab, op, lim, src in LIMITS]}

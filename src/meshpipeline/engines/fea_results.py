@@ -9,7 +9,8 @@
      "through_wall": {"ok", "min", "needed", "words", "short": [{face, thickness_mm, elements}]},
      "plan_words": [...], "hot_spots": [{id, shape, words, faces, at_m, capped, per_quarter_turn}],
      "faces": [{name, cad_name, kind, area_mm2, label}],
-     "download": {"words", "contains": [...], "later": "..."}}
+     "download": {"words", "contains": [...], "later": "..."},
+     "solvers": [{solver, label, file, element, tested, tested_words, outcome, words, rows, file_ready}]}
 """
 from __future__ import annotations
 
@@ -21,12 +22,16 @@ from typing import Any
 
 #: the solver files the download holds today, and what is next (design 8: step 6 writes the rest)
 CONTAINS = (
-    ("mesh.inp", "Abaqus / CalculiX input deck: 10-node tetrahedra (C3D10), every CAD face a "
-                 "*SURFACE and a *NSET named Face_k, lengths in metres"),
+    ("mesh.inp", "CalculiX / Abaqus input deck: 10-node tetrahedra (C3D10), every CAD face a *SURFACE "
+                 "and a *NSET named Face_k"),
+    ("mesh.bdf", "Nastran bulk data to INCLUDE in your run deck: 10-node CTETRA, every CAD face a SET3 of "
+                 "its grids and a BSURFS of its element faces, numbered k"),
+    ("mesh.cdb", "Ansys MAPDL archive: SOLID187, every CAD face a node component FACE_k"),
     ("fea_plan.json", "the mesh plan: every size and the rule it came from"),
     ("geometry.step", "the CAD the mesh was built from, in metres"),
 )
-LATER = ("Nastran (.bdf) and Ansys (.cdb) files with every face named come next, picked at download.")
+SAME_NUMBERS = ("Every file has the same node and element numbers and the same Face_k, and its lengths in "
+                "metres. Each solver file is also its own download above: pick the one for your solver.")
 
 
 def _read(p: Path) -> dict:
@@ -59,6 +64,7 @@ def _shape_words(h: Mapping) -> str:
 def results(workspace) -> dict | None:
     """The block, or None for a workspace that holds no FEA plan."""
     from meshpipeline.contracts.decision_record import limit_met
+    from meshpipeline.engines.fea_solvers import judge
     from meshpipeline.engines.verdict_limits import fea_limits, words
 
     ws = Path(workspace)
@@ -150,10 +156,13 @@ def results(workspace) -> dict | None:
         "plan_words": list(plan.get("words") or []),
         "hot_spots": spots,
         "faces": faces,
-        "download": {"words": "The download holds:",
+        "download": {"words": "The full download holds:",
                      "contains": [{"file": f, "words": w} for f, w in CONTAINS if (ws / f).exists()],
-                     "later": LATER},
+                     "later": SAME_NUMBERS},
+        # PASS / WARNINGS / FAIL PER SOLVER, by each solver's own published checks
+        # (engines/fea_solvers.py), with its file and whether that solver has really run it
+        "solvers": [{**line, "file_ready": (ws / line["file"]).exists()} for line in judge({**q, **(fea.get("quality") or {})})],
     }
 
 
-__all__ = ["CONTAINS", "LATER", "results"]
+__all__ = ["CONTAINS", "SAME_NUMBERS", "results"]

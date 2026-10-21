@@ -301,6 +301,9 @@ SPEC = EngineSpec(
                 # ...or, for a triangle-surface upload, the closed fluid boundary it was filled from
                 M("fluid_boundary.stl", required=False),
                 M("mesh.bdf", required=False),
+                # an FEA mesh's Ansys MAPDL archive (engines/fea_writers.py; the .bdf above is its
+                # Nastran file on that path)
+                M("mesh.cdb", required=False),
                 M("mesh.unv", required=False),
             ),
         ),

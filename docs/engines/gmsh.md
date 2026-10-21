@@ -51,14 +51,34 @@ CalculiX refused the file (`gen3delem`). The deck now holds:
 - a face's own name from the CAD file, where the STEP gives one (`cad/face_names.py`), as one more
   surface and node set beside its `Face_k`.
 
-The header lists which `Face_k` is which CAD face and states the length unit (metres). The
-Nastran `mesh.bdf`, when asked for, holds the volume elements only; Nastran face sets come with
-the Nastran writer (FEA build step 6).
+The header lists which `Face_k` is which CAD face and states the length unit (metres).
 
 Tested for real in CalculiX 2.21 (static and modal solves on the named faces, textbook answers in
 `tests/unit/engines/test_gmsh_fea_accuracy.py`). Abaqus reads the same keyword subset, but the
 deck has **not yet been tested in the real Abaqus solver**: it is checked by file readers (meshio,
 and an input-rules check in `tests/unit/engines/test_gmsh_fea_deck.py`).
+
+## The solver files of an FEA mesh (FEA build step 6)
+
+A mesh built from an FEA plan is written once and exported for every version-1 solver
+(`engines/fea_writers.py`), with the same node and element numbers and the same `Face_k` in
+every file, lengths in metres:
+
+| File | Solver | Element | Every CAD face as | Tested |
+|---|---|---|---|---|
+| `mesh.inp` | CalculiX, Abaqus | C3D10 | `*SURFACE` (element faces) and `*NSET` named `Face_k` | solved in CalculiX; **Abaqus not yet tested in the real solver** |
+| `mesh.bdf` | Nastran (MSC / NX), bulk data to INCLUDE | 10-node CTETRA, PSOLID 1 -> MAT1 1 | `SET3` of its grids and `BSURFS` of its element faces, both numbered k (names in comments) | **not yet tested in the real solver** |
+| `mesh.cdb` | Ansys MAPDL | SOLID187 | node component `FACE_k` (and one per readable CAD name) | **not yet tested in the real solver** |
+
+The 10-node node order is the same in all three (corners, then the midpoints 1-2, 2-3, 3-1, 1-4,
+2-4, 3-4). Without Abaqus, Nastran or Ansys licences, these files are checked by reading them back:
+our own readers in the unit tests, and in the lab pyNastran, meshio and ansys-mapdl-reader, which
+find the same nodes, elements, face sets and positive element volumes as the deck.
+
+Each file is its own download (an optional `mesh` artifact under `export_*`), labelled with
+whether its solver has really run it; the bundle carries them all. The result screen gives each
+solver a pass / warnings / fail line by that solver's own published element checks
+(`engines/fea_solvers.py`).
 
 ## Authoring controls
 
