@@ -4,7 +4,7 @@ Every decision a mesh run makes on its own is made by a written rule. Each rule 
 and each decision the run records in its "why" record names the rule behind it
 (`contracts/decision_record.py`). This file is the one home for those rules.
 
-Rulebook version: **3**
+Rulebook version: **4**
 
 How the book is kept honest:
 
@@ -123,6 +123,16 @@ whether they agree, the limits missed) and the `verdict` entry in the why record
 | Stated requirements met | every engine | every flow | no near-miss | the executor's measured requirement checks (`requirement_caveats`) |
 | A believable size for what it is | every engine | every flow | no size concern | the unit-plausibility check on the delivered body |
 | The engine's own declared advisory lists | snap-grid | every flow | empty | `engines/snapgrid/criteria.py` (thin layers short, resolution short) |
+| Worst scaled Jacobian, over the whole curved element | every FEA adapter (gmsh today) | a mesh built from an FEA plan | at least 0.2 | Cubit/Verdict's acceptable range for tetrahedra |
+| Worst Jacobian ratio across an element's nodes | every FEA adapter | a mesh built from an FEA plan | at most 30 | Ansys MAPDL's corner-node warning |
+| Worst aspect ratio (1 is a perfect element) | every FEA adapter | a mesh built from an FEA plan | at most 20 | Ansys MAPDL's aspect-ratio warning |
+| Angles between the faces of an element | every FEA adapter | a mesh built from an FEA plan | between 5 and 170 degrees | Hexera's internal gate (design section 9) |
+| Mesh zones short of the FEA plan's rules | every FEA adapter | a mesh built from an FEA plan | none | `engines/fea_checks.py`: elements per quarter-turn and through the wall at each hot spot |
+
+The FEA rows are the strictest limit among the version-1 solvers (Abaqus/CalculiX, Nastran, Ansys;
+`engines/fea_quality.LIMITS`, read by `engines/verdict_limits.fea_limits`), measured on the solver's
+own element (`engines/fea_quality.py`). For an FEA mesh, VER-1 also refuses any inverted element
+(a Jacobian not above zero anywhere in the curved element) and fewer than 2 elements through a wall.
 
 The table is `engines/verdict_limits.PRODUCTION_LIMITS`. A limit names engines and flows, never a
 file, a part or a model. Changing a number here means changing the table, this book and the
