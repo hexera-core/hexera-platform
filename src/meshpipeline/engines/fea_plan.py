@@ -402,6 +402,10 @@ def words(record: Mapping, plan: Mapping) -> list[str]:
                "straight sides.")
     out.append(f"Sizes grow by at most {plan.get('growth', GROWTH)} from one element to the next away from "
                "these spots.")
+    capped = plan.get("runnable_cap") or {}
+    if capped:
+        out.append(f"The {d['label']} level is held here to about {d['target']:,} elements: what the mesher builds "
+                   "within its time limit.")
     auto = plan.get("auto_level") or {}
     best = plan.get("best_possible") or {}
     if auto:
