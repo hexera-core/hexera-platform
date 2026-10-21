@@ -385,7 +385,8 @@ def _modal(ws, q):
 *FREQUENCY
 6
 *END STEP
-""")
+""", threads="1")
+    # ONE THREAD, as the column: on 4 threads CalculiX 2.21's eigensolve once returned a 0 Hz mode
     block = dat.split("E I G E N V A L U E   O U T P U T", 1)[1]
     freqs = sorted(float(m.group(1)) for m in re.finditer(
         r"^\s*\d+\s+[-\d.E+]+\s+[-\d.E+]+\s+([-\d.E+]+)\s+[-\d.E+]+\s*$", block, re.M))
