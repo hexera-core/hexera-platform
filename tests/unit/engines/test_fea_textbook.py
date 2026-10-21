@@ -8,7 +8,7 @@
 | cantilever, L/h = 15, tip displacement | static | Timoshenko stiffness 1 / (L^3/3EI + L/kGA) | 1% |
 | thick-walled cylinder, b/a = 2, internal pressure | static | Lame hoop stress at the bore p (a^2+b^2)/(b^2-a^2) | 3% |
 | round bar with a U-groove, D = 50, d = 40, r = 5 (a quarter, symmetry) | static | Kt = 2.193 (converged axisymmetric reference; the published fits' 2.05-2.06 are about 6% low) | 3% |
-| cantilever, L/h = 50 | modal | Euler-Bernoulli f1 and f2 (lambda L = 1.87510, 4.69409) | 1% |
+| cantilever, L/h = 50 | modal | Euler-Bernoulli f1 and f2 (lambda L = 1.87510, 4.69409), each pair | 1% |
 | column, fixed-free, L/h = 50 | buckling | Euler P_cr = pi^2 EI / 4L^2 (a dead end load: a pressure follows the face and is not Euler's problem) | 1% |
 
 Poisson's ratio is 0 in the plate, the cantilever and the column cases, so a clamped or loaded face
@@ -35,7 +35,9 @@ import numpy as np
 import pytest
 
 CCX = os.environ.get("HEXERA_CCX") or shutil.which("ccx") or ""
-pytestmark = pytest.mark.skipif(not (CCX and Path(CCX).exists()),
+#: Set by CI's accuracy lane: there, a missing CalculiX is a failure, never a quiet skip.
+REQUIRE_CCX = os.environ.get("FEA_ACCURACY_REQUIRE_CCX", "") == "1"
+pytestmark = pytest.mark.skipif(not REQUIRE_CCX and not (CCX and Path(CCX).exists()),
                                 reason="CalculiX (ccx) not installed - set HEXERA_CCX to run")
 #: the detail levels to run (pipeline/enums.MeshFidelity values): Quick by default
 LEVELS = [x.strip() for x in os.environ.get("FEA_ACCURACY_LEVELS", "draft").split(",") if x.strip()]
@@ -97,8 +99,8 @@ LAME = {"a": 50.0, "b": 100.0, "h": 20.0, "p": 10e6}
 #: THE GROOVE'S REFERENCE. No closed form exists for a U-groove; the published fits give 2.06
 #: (Pilkey/Roark fit, the design's number) and 2.05 (Neuber's formula), and both are low: a fine 2D
 #: axisymmetric CalculiX model (CAX8, 0.2 / 0.1 / 0.05 / 0.025 mm at the root: 2.1947 / 2.1937 /
-#: 2.1935 / 2.1934; ~/fea5_lab/groove_axi.py) converges on 2.193 - independent of the product path
-#: (2D, its own mesh). That converged value is the reference here.
+#: 2.1935 / 2.1934; devtools/fea_reference/groove_axisymmetric.py reproduces it) converges on 2.193 -
+#: independent of the product path (2D, its own mesh). That converged value is the reference here.
 GROOVE = {"D": 50.0, "r": 5.0, "L": 200.0, "kt": 2.193}
 SLENDER = {"L": 500.0, "h": 10.0}
 
@@ -385,12 +387,20 @@ def _modal(ws, q):
 *END STEP
 """)
     block = dat.split("E I G E N V A L U E   O U T P U T", 1)[1]
-    freqs = [float(m.group(1)) for m in re.finditer(
-        r"^\s*\d+\s+[-\d.E+]+\s+[-\d.E+]+\s+([-\d.E+]+)\s+[-\d.E+]+\s*$", block, re.M)]
+    freqs = sorted(float(m.group(1)) for m in re.finditer(
+        r"^\s*\d+\s+[-\d.E+]+\s+[-\d.E+]+\s+([-\d.E+]+)\s+[-\d.E+]+\s*$", block, re.M))
     L, _h, inertia, area = _slender_props()
     base = math.sqrt(E * inertia / (rho * area)) / (2 * math.pi * L * L)
-    f1 = 1.87510 ** 2 * base
-    return min(freqs), f1, "first bending frequency (Hz)"
+    f1, f2 = 1.87510 ** 2 * base, 4.69409 ** 2 * base
+    # the square column bends both ways at the same frequency: modes 1-2 are the first bending
+    # pair, 3-4 the second (torsion and stretching come far above). Each pair is held to its own
+    # answer, and the worse of the two is reported.
+    assert len(freqs) >= 4, freqs
+    pairs = [(sum(freqs[0:2]) / 2, f1, "first bending frequency (Hz)"),
+             (sum(freqs[2:4]) / 2, f2, "second bending frequency (Hz)")]
+    for got, want, _what in pairs:
+        assert abs(freqs[1] / freqs[0] - 1) < 0.01 and abs(freqs[3] / freqs[2] - 1) < 0.01, freqs
+    return max(pairs, key=lambda t: abs(t[0] / t[1] - 1))
 
 
 def _buckling(ws, q):
@@ -434,6 +444,7 @@ CASES = {
 @pytest.mark.parametrize("level", LEVELS)
 @pytest.mark.parametrize("case", list(CASES))
 def test_the_fea_path_gives_the_textbook_answer(case, level, tmp_path, monkeypatch):
+    assert CCX and Path(CCX).exists(), f"CalculiX is required here and was not found ({CCX or 'no ccx'})"
     analysis, run, tol = CASES[case]
     if analysis in ("modal", "buckling") and level not in ("draft",) and not EIGEN_AT_STANDARD:
         pytest.skip(f"{analysis} at {level}: the direct eigensolver needs more memory than this runner has "

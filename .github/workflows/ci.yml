@@ -267,12 +267,15 @@ jobs:
       - name: Textbook cases, meshed and solved
         env:
           HEXERA_CCX: /usr/bin/ccx
+          FEA_ACCURACY_REQUIRE_CCX: "1"
           FEA_ACCURACY_LEVELS: ${{ matrix.level }}
           FEA_ACCURACY_REPORT: fea_accuracy.jsonl
           FEA_ACCURACY_THREADS: "4"
         run: python -m pytest -q -p no:cacheprovider -rs tests/unit/engines/test_fea_textbook.py
       - name: The table
         if: ${{ !cancelled() }}
+        env:
+          EXPECTED: ${{ matrix.level == 'standard' && 4 || 6 }}
         run: |
           set -euo pipefail
           python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
@@ -285,7 +288,12 @@ jobs:
               print(f"| {r['case']} | {r['analysis']} | {r['level']} | {r['elements']:,} | {r['what']} | "
                     f"{r['got']:.5g} | {r['want']:.5g} | {r['error_pct']:+.2f}% | {r['tolerance_pct']:g}% | "
                     f"{'yes' if r['pass'] else 'NO'} |")
+          if not rows:
+              print("**No case was solved.**")
           PY
+          # a lane that solved nothing has proven nothing: every case must have a row
+          # (Standard skips the two eigen cases on this runner, and says so)
+          test "$(grep -c . fea_accuracy.jsonl 2>/dev/null || echo 0)" -ge "$EXPECTED"
       - name: Keep the table
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
