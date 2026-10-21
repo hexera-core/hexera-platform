@@ -194,9 +194,11 @@ def _pick(nodes, ids, key):
     return min(ids, key=lambda i: key(nodes[i]))
 
 
-def _solve(ws: Path, job: str, deck: str, extra: str) -> tuple[str, str]:
+def _solve(ws: Path, job: str, deck: str, extra: str, threads: str = "") -> tuple[str, str]:
     (ws / f"{job}.inp").write_text(deck + extra)
-    env = {**os.environ, "OMP_NUM_THREADS": THREADS, "CCX_NPROC_EQUATION_SOLVER": THREADS}
+    n = threads or THREADS
+    env = {**os.environ, "OMP_NUM_THREADS": n, "CCX_NPROC_EQUATION_SOLVER": n, "CCX_NPROC_STIFFNESS": n,
+           "CCX_NPROC_RESULTS": n}
     proc = subprocess.run([CCX, job], cwd=ws, capture_output=True, text=True, timeout=7200, env=env)
     out = proc.stdout + proc.stderr
     assert proc.returncode == 0 and "*ERROR" not in out, out[-2000:]
@@ -410,7 +412,9 @@ def _buckling(ws, q):
 *CLOAD
 {cloads}
 *END STEP
-""")
+""", threads="1")
+    # ONE THREAD: CalculiX 2.21's buckling run on 4 threads returned factors of about 1.0 for this
+    # column (garbage; 2 threads and 1 gave 1,726.7 N) - so the column is solved on one
     block = dat.split("B U C K L I N G   F A C T O R   O U T P U T", 1)[1]
     factors = [float(m.group(1)) for m in re.finditer(r"^\s*\d+\s+([-\d.E+]+)\s*$", block, re.M)]
     p_cr = min(f for f in factors if f > 0) * 1.0
