@@ -135,6 +135,10 @@ def retry_can_help(cause: object, facts: Mapping | None = None) -> bool:
         return True
     if c is FailureCause.UNDER_RESOLVED and rebuild_over_limit(facts):
         return False
+    if isinstance(facts, Mapping) and facts.get("deterministic") and facts.get("ladder_exhausted"):
+        # a deterministic driver whose own ladder ran every pass it allows builds the same mesh
+        # from the same inputs (job ab20566f: a second identical 14-minute attempt)
+        return False
     if c is FailureCause.NOT_BUILT:
         # a deterministic driver that stopped before its mesher stops the same way on the same
         # inputs (job d20ad762 ran the identical refusal twice); a model-led build may not
@@ -330,7 +334,27 @@ def _contract(f: Mapping) -> tuple[str, str]:
     return what, nxt
 
 
+def _fea_quality(f: Mapping) -> tuple[str, str]:
+    """An FEA mesh whose plan's every pass left a few badly shaped elements: where they are, that
+    another run builds the same mesh, and what the user can change - never flow advice."""
+    n = int(_as_number(f.get("under_floor")) or 0)
+    where = f.get("worst_at_mm")
+    at = (f" near ({', '.join(f'{float(v):g}' for v in where)}) mm" if isinstance(where, list) and len(where) == 3
+          else "")
+    count = f"{n} element{'s' if n != 1 else ''}" if n else "a few elements"
+    what = (f"The FEA mesh was built, but {count}{at} came out too badly shaped for a solver to trust, "
+            f"in every pass the plan allows ({int(_as_number(f.get('passes')) or 1)}). The plan is fixed "
+            "by the part and the detail level, so another run would build the same mesh, and I stopped "
+            "rather than spend the time.")
+    nxt = ("This usually comes from one small CAD detail there: a face that meets its neighbour almost "
+           "tangentially, or a sliver face. You can choose the Fine detail level, or simplify that "
+           "detail in your CAD and upload the part again - then say \"run it again\".")
+    return what, nxt
+
+
 def _quality(f: Mapping) -> tuple[str, str]:
+    if f.get("fea"):
+        return _fea_quality(f)
     unmeasured = [str(u) for u in (f.get("unmeasured") or [])]
     if unmeasured:
         return (f"We could not measure {_names(unmeasured)} on the mesh, so we could not accept "
