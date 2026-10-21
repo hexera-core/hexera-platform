@@ -146,6 +146,18 @@ def face_sets(mesh: SolidMesh) -> list[FaceSet]:
     return out
 
 
+#: CalculiX reads every number of a data line as a Fortran f20.0 field: a value written in more than
+#: 20 characters is cut, silently ("-5.76226301486252e-18" was read as -0.576, which turned a
+#: groove's elements inside out - FEA build step 7's accuracy suite found it). 13 significant
+#: figures fit any value in 20 characters, and still resolve a nanometre on a 10 km part.
+COORD_DIGITS = 13
+
+
+def _coord(v: float) -> str:
+    s = f"{float(v):.{COORD_DIGITS}g}"
+    return "0" if s in ("-0", "0") else s
+
+
 def _write_ids(fh: IO[str], values, per: int = _PER_LINE) -> None:
     v = np.asarray(values, dtype=np.int64)
     for i in range(0, len(v), per):
@@ -239,7 +251,7 @@ def write_inp(path: Path | str, mesh: SolidMesh, aliases: dict[str, list[int]] |
     num = np.arange(1, len(elements) + 1)
     with open(path, "w", encoding="ascii", newline="\n") as fh:
         fh.write("\n".join(head) + "\n*NODE\n")
-        fh.writelines(f"{int(i)}, {x:.15g}, {y:.15g}, {z:.15g}\n"
+        fh.writelines(f"{int(i)}, {_coord(x)}, {_coord(y)}, {_coord(z)}\n"
                       for i, (x, y, z) in zip(ids[keep].tolist(), xyz[keep].tolist(), strict=True))
         vol_ranges = []
         for k, v in enumerate(vols, start=1):
