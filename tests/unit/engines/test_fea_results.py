@@ -81,13 +81,14 @@ def test_the_fea_limits_join_the_verdict_only_for_an_fea_mesh():
 # the result block, on a meshed part
 # #
 
-pytest.importorskip("OCP.BRepPrimAPI")
-gmsh = pytest.importorskip("gmsh")
-pytest.importorskip("vtkmodules.vtkFiltersCore")
 
 
 @pytest.fixture(scope="module")
 def plate(tmp_path_factory):
+    # the CAD stack only here: the pure checks above run without it
+    pytest.importorskip("OCP.BRepPrimAPI")
+    gmsh = pytest.importorskip("gmsh")
+    pytest.importorskip("vtkmodules.vtkFiltersCore")
     from tests import fea_fixtures as fx
 
     from meshpipeline.engines import fea_driver as FD

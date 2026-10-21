@@ -153,6 +153,21 @@ def ansys_name(raw: str) -> str:
     return s[:32]
 
 
+def unique_ansys_name(raw: str, taken: set[str]) -> str:
+    """ansys_name, made distinct from `taken` by a numbered suffix inside the 32 characters (two
+    long CAD names can share their first 32)."""
+    base = ansys_name(raw)
+    if base not in taken:
+        return base
+    k = 2
+    while True:
+        tail = f"_{k}"
+        nm = base[:32 - len(tail)] + tail
+        if nm not in taken:
+            return nm
+        k += 1
+
+
 def _cmblock(name: str, ids: np.ndarray) -> list[str]:
     ids = np.unique(np.asarray(ids, dtype=np.int64))
     out = [f"CMBLOCK,{name},NODE,{len(ids):>8d}", "(8i10)"]
@@ -203,9 +218,7 @@ def write_cdb(path: Path | str, prep: Prepared, *, cad_names: dict[str, str] | N
         if raw:
             by_cad.setdefault(raw, []).append(f.nodes)
     for raw, groups in by_cad.items():
-        nm = ansys_name(raw)
-        while nm in names_used:
-            nm = ansys_name(nm[:30] + "_C")
+        nm = unique_ansys_name(raw, names_used)
         names_used.add(nm)
         lines.extend(_cmblock(nm, np.concatenate(groups)))
     lines.append("FINISH")
@@ -324,5 +337,5 @@ def read_cdb(path: Path | str) -> ReadBack:
     return ReadBack(nodes, elements, faces, {})
 
 
-__all__ = ["EXPORT_ARTIFACTS", "NOT_TESTED", "Prepared", "ReadBack", "SOLVERS", "ansys_name", "prepare", "read_bdf", "read_cdb",
+__all__ = ["EXPORT_ARTIFACTS", "NOT_TESTED", "Prepared", "ReadBack", "SOLVERS", "ansys_name", "prepare", "unique_ansys_name", "read_bdf", "read_cdb",
            "write_all", "write_bdf", "write_cdb"]

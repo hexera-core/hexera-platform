@@ -52,7 +52,9 @@ MAX_RAY_TRIANGLES = 5_000_000
 PAYLOAD = ("geometry.step", "cad_face_names.json", P.PLAN_FILE, "gmsh_spec.json")
 #: Where each pass's deliverables are kept until the best one is chosen.
 PASS_FOLDER = "_fea_pass_{n}"  # noqa: S105 - a folder name, not a secret
-DELIVERABLES = ("mesh.inp", "mesh.msh", "quality.json", P.PLAN_FILE, "gmsh_spec.json")
+#: every file a pass writes that the delivery reads: the solver files ride with their mesh, so the
+#: pass restored is restored whole (a later, worse pass never leaves its .bdf / .cdb behind)
+DELIVERABLES = ("mesh.inp", "mesh.bdf", "mesh.cdb", "mesh.msh", "quality.json", P.PLAN_FILE, "gmsh_spec.json")
 #: The zones alone past this many elements are past every level: the histogram stops counting.
 STOP_ELEMENTS = 3.0 * P.LEVELS["max"].target
 
@@ -217,10 +219,12 @@ def _restore_pass(ws: Path, n: int) -> None:
     for name in DELIVERABLES:
         if (d / name).exists():
             shutil.copy2(d / name, ws / name)
+        else:
+            (ws / name).unlink(missing_ok=True)      # the delivered pass did not write it
 
 
 def _clear_outputs(ws: Path) -> None:
-    for name in ("mesh.inp", "mesh.msh", "quality.json"):
+    for name in ("mesh.inp", "mesh.bdf", "mesh.cdb", "mesh.msh", "quality.json"):
         (ws / name).unlink(missing_ok=True)
 
 

@@ -26,6 +26,12 @@ def test_ansys_component_names_follow_mapdl_rules():
     assert FW.ansys_name("Face_3") == "FACE_3"
     assert FW.ansys_name("3 mounting holes (M6)") == "C_3_MOUNTING_HOLES__M6_"
     assert len(FW.ansys_name("x" * 80)) == 32
+    # two long CAD names that share their first 32 characters stay distinct, and the search ends
+    taken = {FW.ansys_name("A" * 30 + "_C_left")}
+    second = FW.unique_ansys_name("A" * 30 + "_C_right", taken)
+    assert second not in taken and len(second) <= 32
+    taken.add(second)
+    assert FW.unique_ansys_name("A" * 30 + "_C_up", taken) not in taken
 
 
 GOOD = {"fea_inverted": 0, "fea_max_edge_ratio": 3.0, "fea_min_face_angle_deg": 15.0, "fea_max_face_angle_deg": 130.0,
@@ -57,13 +63,14 @@ def test_each_solver_judges_by_its_own_limits():
 # the files, on a meshed part
 # #
 
-pytest.importorskip("OCP.BRepPrimAPI")
-gmsh = pytest.importorskip("gmsh")
-pytest.importorskip("vtkmodules.vtkFiltersCore")
 
 
 @pytest.fixture(scope="module")
 def plate(tmp_path_factory):
+    # the CAD stack only here: the pure checks above run without it
+    pytest.importorskip("OCP.BRepPrimAPI")
+    gmsh = pytest.importorskip("gmsh")
+    pytest.importorskip("vtkmodules.vtkFiltersCore")
     from tests import fea_fixtures as fx
 
     from meshpipeline.engines import fea_driver as FD

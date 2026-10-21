@@ -99,7 +99,11 @@ export function feaDownloads(bar, job, f) {
     `Through-wall check: ${(f.through_wall || {}).words || ""}`, `Units: ${(f.units || {}).words || ""}`, "",
     "Quality, against each limit:"]
     .concat((ck.rows || []).map((r) => `  ${r.ok === false ? "MISS" : r.ok ? "ok  " : "n/a "} ${r.words}`))
-    .concat(["", "Per solver:"], (f.solvers || []).map((sv) => `  ${sv.label} (${sv.file}): ${SOLVER_OUT[sv.outcome] || ""} - ${sv.tested_words}`))
+    .concat(["", "Per solver:"], (f.solvers || []).flatMap((sv) => [`  ${sv.label} (${sv.file}): ${SOLVER_OUT[sv.outcome] || ""} - ${sv.tested_words}`]
+      .concat((sv.rows || []).map((r) => `      ${(r.status || "").toUpperCase().padEnd(10)} ${r.label}: ${fmt(r.measured)}`
+        + (r.warn != null ? `; warns ${r.op === "<=" ? "over" : "under"} ${fmt(r.warn)}` : "")
+        + (r.error != null ? `; fails ${r.op === "<=" ? "over" : "under"} ${fmt(r.error)}` : "")
+        + ` (${r.source})`))))
     .concat(["", "The plan:"], (f.plan_words || []).map((w) => `  - ${w}`))
     .concat(["", "Hot spots:"], (f.hot_spots || []).map((h) => `  ${h.id} ${h.words} (${(h.faces || []).join(", ")})`))
     .concat(["", "Named faces:"], (f.faces || []).map((x) => `  ${x.label}`));
