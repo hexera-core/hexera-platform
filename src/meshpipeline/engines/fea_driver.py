@@ -43,6 +43,11 @@ OVER_LEVEL = "fea_over_level"
 BUILD_FAILED = "fea_build_failed"
 #: The mesher ran past its guard clock: our infrastructure, not the part (no lever is pulled).
 GUARD_TRIP = "fea_guard_trip"
+#: The gate a guard trip is reported under (ours, never the part's).
+GUARD_GATE = "fea_guard"
+#: The plan measures every wall of a part up to this many surface triangles (the geometry check
+#: stops at cad/fea_measure.MAX_RAY_TRIANGLES for speed; the plan cannot hold an unmeasured wall).
+MAX_RAY_TRIANGLES = 5_000_000
 #: What the remote mesher receives besides the plan: the solid and the facts the deck reads.
 PAYLOAD = ("geometry.step", "cad_face_names.json", P.PLAN_FILE, "gmsh_spec.json")
 #: Where each pass's deliverables are kept until the best one is chosen.
@@ -98,7 +103,7 @@ def measure_staged(ws: Path) -> tuple[dict, Any, float]:
     # the staged STEP is in metres whatever unit its header names: the scale is read off the two
     # readers' boxes, so the record is millimetres either way
     mm_per_unit = 1000.0 * diag_m / diag_read
-    record, surface = measure_cad_surface(shape, mm_per_unit=mm_per_unit)
+    record, surface = measure_cad_surface(shape, mm_per_unit=mm_per_unit, max_ray_triangles=MAX_RAY_TRIANGLES)
     return record, surface, diag_m
 
 
@@ -173,11 +178,14 @@ def _cite(job_id: str, entries: list[dict]) -> None:
                 source=str(e.get("source") or dr.SOURCE_RULE), words=str(e.get("words") or ""))
 
 
-def _refuse(ws: Path, *, cause: str, text: str, **facts) -> None:
+def _refuse(ws: Path, *, cause: str, text: str, gate: str = "fea_plan", **facts) -> None:
     from meshpipeline.engines.preflight import PreflightRefusal
 
-    PreflightRefusal(gate="fea_plan", cause=cause, builder_text=f"[FEA_PLAN] {text}",
-                     facts={"engine": "gmsh", "before_meshing": True, "deterministic": True, **facts}).write(ws)
+    base = {"engine": "gmsh", "deterministic": True}
+    if gate == "fea_plan":
+        base["before_meshing"] = True
+    PreflightRefusal(gate=gate, cause=cause, builder_text=f"[{gate.upper()}] {text}",
+                     facts={**base, **facts}).write(ws)
 
 
 def _read_quality(ws: Path) -> dict:
@@ -241,6 +249,14 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         await run.fence("deliver builder outcome")
         outcome = run.outcome(produced_deliverable=False, failure_marker=NOT_ONE_PART)
         return False, NOT_ONE_PART, outcome
+    if not record.get("faces") or not any("thickness_min_mm" in (r or {}) for r in record["faces"].values()):
+        # PLAN-fea-3 cannot be planned on walls nobody measured: stop before meshing rather than
+        # deliver a mesh whose walls were never held to the rule
+        why = "the part's walls could not be measured, so the elements through them cannot be planned"
+        _refuse(ws, cause=FailureCause.NOT_BUILT.value, text=why, reason=why)
+        await run.fence("deliver builder outcome")
+        outcome = run.outcome(produced_deliverable=False, failure_marker=BUILD_FAILED)
+        return False, BUILD_FAILED, outcome
 
     levers: list[dict] = []
     passes: list[dict] = []
@@ -297,6 +313,11 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                                                         "guard_trip": tripped}, indent=1))
         logger.warning("fea driver: the mesher ran past its guard clock (%ss, pass %s) - job_id=%s",
                        tripped["guard_s"], tripped["pass"], job_id)
+        # told as OURS (run_infrastructure: the run may be taken again), never as the part's detail
+        # level. REBASE NOTE (#259): becomes determinism.note_guard_trip, which the graph replays once
+        _refuse(ws, cause=FailureCause.RUN_INFRASTRUCTURE.value, gate=GUARD_GATE,
+                text=f"the mesher ran past its guard clock ({tripped['guard_s']} s, pass {tripped['pass']})",
+                deterministic=False, ours=True, guard_trip=tripped)
         await run.fence("deliver builder outcome")
         outcome = run.outcome(produced_deliverable=False, exhausted=False, failure_marker=GUARD_TRIP)
         return False, GUARD_TRIP, outcome

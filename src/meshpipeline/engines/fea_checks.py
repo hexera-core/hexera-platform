@@ -76,9 +76,18 @@ def measure(mesh, plan: Mapping) -> dict:
         elif z["kind"] in ("hole", "fillet", "notch"):
             n = P.QUARTER * float(z["radius_m"]) / h
             ok = n >= per_quarter * TOLERANCE
-            spots.append({"zone": z["id"], "spot": z.get("spot"), "kind": z["kind"],
-                          "radius_mm": round(z["radius_m"] * 1e3, 4), "per_quarter_turn": round(n, 2),
-                          "needed": per_quarter, "ok": ok})
+            row = {"zone": z["id"], "spot": z.get("spot"), "kind": z["kind"],
+                   "radius_mm": round(z["radius_m"] * 1e3, 4), "per_quarter_turn": round(n, 2),
+                   "needed": per_quarter}
+            if z.get("thickness_m"):
+                # the stress wall beside it (PLAN-fea-4: 3 through it; 2 when the user took fewer)
+                need_wall = int(z.get("wall_elements") or P.STRESS_WALL_ELEMENTS)
+                through = float(z["thickness_m"]) / h
+                ok = ok and through >= need_wall * TOLERANCE
+                row.update(wall_mm=round(z["thickness_m"] * 1e3, 4), through_wall=round(through, 2),
+                           wall_needed=need_wall)
+            row["ok"] = ok
+            spots.append(row)
         elif z["kind"] == "corner":
             corners.append({"zone": z["id"], "spot": z.get("spot"), "size_mm": round(h * 1e3, 4),
                             "cap_mm": round(z["size_m"] * 1e3, 4)})
@@ -90,6 +99,9 @@ def measure(mesh, plan: Mapping) -> dict:
     worst_wall = min((w["elements"] for w in walls), default=None)
     worst_spot = min((s["per_quarter_turn"] for s in spots), default=None)
     return {
+        # the walls were measured and checked: False when the plan had no wall to hold to its rule
+        # (a part whose walls were not measured) - the gate refuses that, never passes it
+        "walls_checked": bool(walls),
         "through_wall": {"min": worst_wall, "needed": P.WALL_ELEMENTS, "walls": len(walls),
                          "short": [w for w in walls if not w["ok"]][:20]},
         "hot_spots": {"min_per_quarter_turn": worst_spot, "needed": per_quarter, "spots": len(spots),

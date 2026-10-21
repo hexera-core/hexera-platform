@@ -192,3 +192,7 @@ def test_a_guard_trip_pulls_no_lever_and_ends_the_attempt(tmp_path, monkeypatch)
     rec = json.loads((ws / "fea_passes.json").read_text())
     assert rec["levers"] == [] and rec["guard_trip"]["unit"] == "elements"
     assert not any(e["rule"].startswith("LAD-fea-") and e["decided"] == "lever" for e in dr.cited_for("t-trip"))
+    from meshpipeline.engines.preflight import read_refusal
+
+    ref = read_refusal(ws)
+    assert ref.gate == FD.GUARD_GATE and ref.cause == "run_infrastructure" and ref.facts["ours"]

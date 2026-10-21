@@ -103,7 +103,15 @@ def _gate_resolution_floor(ctx: GateCtx) -> tuple[bool, str]:
     fea = q.get("fea") or {}
     if fea.get("plan"):
         tw = fea.get("through_wall_min")
-        if tw is not None and float(tw) < FEA_WALL_FLOOR:
+        if tw is None or not (fea.get("rules") or {}).get("walls_checked"):
+            # NOT MEASURED IS NOT MET: a wall the plan could not hold to its rule (its thickness
+            # unmeasured), or rules the adapter could not measure on the mesh, never pass
+            return False, refuse(
+                "[RESOLUTION] the elements through the walls were not measured on this mesh, so the "
+                "FEA wall rule (at least 2 through every wall) cannot be confirmed.",
+                FailureCause.UNDER_RESOLVED, unmeasured=["elements through the walls"],
+                needed=FEA_WALL_FLOOR)
+        if float(tw) < FEA_WALL_FLOOR:
             short = ((fea.get("rules") or {}).get("through_wall") or {}).get("short") or []
             where = ", ".join(str(w.get("face")) for w in short[:5] if isinstance(w, dict))
             return False, refuse(

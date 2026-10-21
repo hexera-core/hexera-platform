@@ -139,7 +139,8 @@ def zones(record: Mapping, *, relaxed: bool = False, tighten: Mapping[str, float
                    f"{stress_wall} elements through the wall beside it")
         out.append({"id": f"H{h.get('id', '')[1:]}", "kind": str(h.get("type")), "faces": faces,
                     "size_m": size * _MM, "reach_m": r * _MM, "rule": "PLAN-fea-4",
-                    "spot": h.get("id"), "capped": False, "radius_m": r * _MM, "why": why})
+                    "spot": h.get("id"), "capped": False, "radius_m": r * _MM, "why": why,
+                    **({"thickness_m": t * _MM, "wall_elements": stress_wall} if t else {})})
 
     face_rows = record.get("faces") or {}
     for name in sorted(face_rows, key=_face_order):
@@ -202,10 +203,11 @@ def finish(record: Mapping, zone_list: list[dict], hist: Histogram, *, level: Le
            base_factor: float = 1.0, relaxed_hist: Histogram | None = None,
            levers: list[dict] | None = None, relaxed: bool = False, growth: float = GROWTH) -> dict:
     """The whole plan, from the zones and their histogram (see the module text). `base_factor`
-    is the ladder's LAD-fea-4 (the base coarsened, the rules kept). `relaxed_hist` is the
+    is the ladder's LAD-fea-4 (under 1: the base size is divided by it, so coarser; the rules
+    kept). `relaxed_hist` is the
     histogram of the relaxed zones, asked for only when the plan does not fit."""
     coarsest = diag_m / MIN_DIVISIONS
-    base = min(coarsest, base_size(hist, target=level.target, coarsest=coarsest) * float(base_factor))
+    base = min(coarsest, base_size(hist, target=level.target, coarsest=coarsest) / float(base_factor))
     est = elements(hist, base, PER_H3)
     at_coarsest = elements(hist, coarsest, PER_H3)
     ceiling = int(level.target * OVER)

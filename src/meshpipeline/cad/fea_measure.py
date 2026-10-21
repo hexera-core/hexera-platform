@@ -78,9 +78,12 @@ def measure_cad(shape, *, mm_per_unit: float) -> dict:
     return measure_cad_surface(shape, mm_per_unit=mm_per_unit)[0]
 
 
-def measure_cad_surface(shape, *, mm_per_unit: float) -> tuple[dict, ff.Surface]:
+def measure_cad_surface(shape, *, mm_per_unit: float,
+                        max_ray_triangles: int = MAX_RAY_TRIANGLES) -> tuple[dict, ff.Surface]:
     """measure_cad, and the labelled triangle surface it measured (millimetres, label k is
-    Face_{k+1}): the FEA plan (engines/fea_*.py) sizes its zones on the same triangles."""
+    Face_{k+1}): the FEA plan (engines/fea_*.py) sizes its zones on the same triangles. The plan
+    measures the walls of a larger surface than the geometry check does (`max_ray_triangles`): it
+    cannot hold walls to a rule it did not measure."""
     started = time.time()
     surface, faces, kinds = _brep_surface(shape, float(mm_per_unit))
     arcs = []
@@ -89,7 +92,8 @@ def measure_cad_surface(shape, *, mm_per_unit: float) -> tuple[dict, ff.Surface]
         arc = _face_arc(face, kinds[k], surface, idx, float(mm_per_unit))
         if arc is not None:
             arcs.append(arc)
-    record = _record(surface, arcs, bodies=_cad_bodies(shape), basis="cad", kinds=kinds, started=started)
+    record = _record(surface, arcs, bodies=_cad_bodies(shape), basis="cad", kinds=kinds, started=started,
+                     max_ray_triangles=max_ray_triangles)
     return record, surface
 
 
@@ -280,17 +284,18 @@ def measure_triangles(tris_mm) -> dict:
 
 # --------------------------------------------------------------------------------- record ----
 def _record(s: ff.Surface, arcs: list[ff.Arc], *, bodies: int, basis: str, kinds: list[str] | None,
-            started: float, pairs: ff.EdgePairs | None = None) -> dict:
+            started: float, pairs: ff.EdgePairs | None = None,
+            max_ray_triangles: int = MAX_RAY_TRIANGLES) -> dict:
     notes: list[str] = []
     pairs = pairs if pairs is not None else ff.edge_pairs(s)
     complete = True
-    if len(s.tris) <= MAX_RAY_TRIANGLES:
+    if len(s.tris) <= max_ray_triangles:
         thick = ff.wall_thickness(s)
     else:
         thick = {"per_label": {}, "min": None, "rays": 0}
         complete = False
         notes.append(f"The walls were not measured: the surface has {len(s.tris)} triangles, over "
-                     f"the {MAX_RAY_TRIANGLES} measured quickly.")
+                     f"the {max_ray_triangles} measured quickly.")
     per = thick["per_label"]
     # a face that is one round (a cylinder, a torus, a fitted fillet): its radius and which way
     # it bends, so a plan can give a convex round enough elements to keep its shape

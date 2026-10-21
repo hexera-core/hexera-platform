@@ -190,3 +190,63 @@ def test_the_user_reads_the_stop_and_its_options_and_no_retry_is_spent():
     assert retry_can_help(FailureCause.CELL_BUDGET, {"cells": 9_000_000, "limit": 8_000_000})
     assert describe(FailureCause.CELL_BUDGET, {"cells": 9_000_000, "limit": 8_000_000})[0].startswith(
         "The mesh came out too big")
+
+
+def test_the_over_level_lever_makes_the_base_coarser():
+    level = P.LEVELS["standard"]
+    plain = P.finish(RECORD, P.zones(RECORD), HIST, level=level, diag_m=0.2236)
+    lv = L.next_lever(L.pass_facts(1, 0, _q(cells=900_000), {**PLAN, "detail": {"ceiling": 625_000}}), [], PLAN)
+    coarser = P.finish(RECORD, P.zones(RECORD), HIST, level=level, diag_m=0.2236, base_factor=L.base_factor([lv]))
+    assert coarser["base_size_m"] > plain["base_size_m"]
+    assert coarser["estimate"]["elements"] < plain["estimate"]["elements"]
+
+
+class _Mesh:
+    """Two faces meshed at known edge lengths: Face_3 (a 5 mm wall) and Face_7 (a 10 mm hole)."""
+
+    def __init__(self, h3, h7):
+        import numpy as np
+
+        self.node_ids = np.arange(1, 7)
+        self.xyz = np.array([[0, 0, 0], [h3, 0, 0], [0, h3, 0], [1, 1, 1], [1 + h7, 1, 1], [1, 1 + h7, 1]], float)
+        self.faces = {3: np.array([[1, 2, 3]]), 7: np.array([[4, 5, 6]])}
+
+
+def _rules(rec, h3, h7):
+    from meshpipeline.engines import fea_checks
+
+    plan = P.finish(rec, P.zones(rec), HIST, level=P.LEVELS["standard"], diag_m=0.2236)
+    plan["base_size_m"] = 1.0                       # every zone binds
+    return fea_checks.measure(_Mesh(h3, h7), plan)
+
+
+def test_the_mesh_checks_hold_each_zone_to_its_rule():
+    ok = _rules(RECORD, 2e-3, 1e-3)
+    assert ok["short"] == [] and ok["walls_checked"] and ok["through_wall"]["min"] == 2.5
+    thin_wall = _rules(RECORD, 4e-3, 1e-3)               # 5 mm / 4 mm = 1.25 through
+    assert "W3" in thin_wall["short"]
+
+
+def test_a_hot_spot_is_held_to_three_through_its_own_wall():
+    rec = json.loads(json.dumps(RECORD))
+    rec["hot_spots"][1]["local_thickness_mm"] = 3.0
+    # 1.4 mm edges: 11.2 per quarter-turn, but only 2.1 through the 3 mm wall beside the hole
+    r = _rules(rec, 2e-3, 1.4e-3)
+    assert "H2" in r["short"]
+    spot = r["hot_spots"]["short"][0]
+    assert spot["through_wall"] == pytest.approx(2.14, abs=0.01) and spot["wall_needed"] == 3
+
+
+def test_unmeasured_walls_never_pass_the_gate():
+    from types import SimpleNamespace
+
+    from meshpipeline.engines.gmsh.gates import _gate_resolution_floor
+
+    def gate(fea):
+        ctx = SimpleNamespace(manifest_or_load=lambda: {"quality": {"fea": fea}})
+        return _gate_resolution_floor(ctx)[0]
+
+    assert gate({"plan": True, "through_wall_min": 2.4, "rules": {"walls_checked": True}})
+    assert not gate({"plan": True, "through_wall_min": 1.2, "rules": {"walls_checked": True}})
+    assert not gate({"plan": True, "through_wall_min": None, "rules": {}})
+    assert not gate({"plan": True, "through_wall_min": 3.0, "rules": {"walls_checked": False}})
