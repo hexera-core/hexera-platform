@@ -79,18 +79,18 @@ export async function openViewer(job,anchorEl,opts){
         <div class="v-row"><span class="v-status" id="v-status-${job}">loading…</span></div>
       </div>
       ${opts.unreviewed?`<div class="v-why">
-        <b>Every validity gate passed</b> - the mesh is structurally sound and solvable.
-        The reviewer would not sign it off on quality${(opts.findings||[]).length
+        <b>The mesh passed every validity check</b>, so it is sound and will solve.
+        The reviewer did not sign it off on quality${(opts.findings||[]).length
           ? ': <span class="v-axes">'+(opts.findings||[]).map(f=>esc(f)).join(' · ')+'</span>':'.'}
         ${opts.reasoning?`<div class="v-reason">${esc(String(opts.reasoning).slice(0,600))}</div>`:''}
         <div class="v-why-act">
-          Look at it yourself. If it is good enough for your study, say so - it will be
-          re-reviewed against <i>your</i> bar and delivered.
+          Look at it yourself. If it is good enough for your study, say so: it is checked again
+          against <i>your</i> standard and delivered.
           <button class="v-btn primary" id="v-accept-${job}">This is acceptable →</button>
         </div></div>`:''}
       ${opts.concerns?`<div class="v-why v-concerns">
-        <b>Every validity gate passed</b> - the mesh is structurally sound and solvable, so it is
-        delivered. These points are open; weigh them before you rely on the results:
+        <b>The mesh passed every validity check</b>, so it is sound, will solve, and is yours.
+        Weigh these open points before you rely on the results:
         ${(opts.concerns||[]).length
           ? '<ul class="v-concern-list">'+(opts.concerns||[]).map(c=>`<li>${esc(c)}</li>`).join('')+'</ul>'
           : ''}
@@ -132,7 +132,7 @@ export async function openViewer(job,anchorEl,opts){
           <button class="v-btn" id="v-submit-${job}">Request a change…</button>
           <button class="v-btn v-quiet" id="v-clearbtn-${job}" disabled>Clear marks</button>
         </div>
-        <p class="v-cost">A change request re-runs the pipeline - minutes, not seconds.</p>
+        <p class="v-cost">A change starts a new run. It takes a few minutes.</p>
       </div></div>
     <div class="v-canvas" id="v-canvas-${job}">
       <div class="v-loading" id="v-load-${job}"><svg class="v-spin" viewBox="0 0 24 24" aria-hidden="true"><circle class="sp-arm" cx="12" cy="12" r="7.2"/><path class="sp-hd" d="M19.20 8.16L22.40 14.56L16.00 14.56Z"/><path class="sp-hd" d="M4.80 15.84L1.60 9.44L8.00 9.44Z"/></svg><div>Loading mesh…</div></div>
@@ -182,10 +182,10 @@ export async function openViewer(job,anchorEl,opts){
       // to the SUCCESS path and are rendered by initViewer, which is where the copy that works
       // has always been.
       const l=document.getElementById('v-load-'+job);
-      if(l)l.innerHTML='<div>viewer unavailable</div>';
-      document.getElementById('v-status-'+job).textContent='viewer unavailable: '+e.message
+      if(l)l.innerHTML='<div>The 3D view could not load</div>';
+      document.getElementById('v-status-'+job).textContent='The 3D view could not load ('+e.message+').'
         +(String(e.message).includes('404')
-          ? ' - the job is owner-scoped: add &user=<owner> to the URL and reload' : '');}};
+          ? ' This run may belong to another account.' : ' The downloads still work.');}};
   const io=new IntersectionObserver(es=>{
     if(es.some(x=>x.isIntersecting)){io.disconnect();start();}},{threshold:0.05});
   io.observe(box);

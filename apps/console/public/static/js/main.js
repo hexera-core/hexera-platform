@@ -39,7 +39,7 @@ setNotifier({
     "You appear to be offline - reconnecting when your network returns.", "warn"),
   online: () => Notice.release("net"),
   unauthorized: () => Notice.hold("auth",
-    "This deployment rejected the request as unauthorized.", "error"),
+    "You are signed out, or this account cannot do that. Sign in again, then reload the page.", "error"),
   authorized: () => Notice.release("auth"),
 });
 
@@ -99,7 +99,7 @@ configureStream({
     offerNewRun();
   },
   // WHILE THE JOB WAITS FOR A WORKER the header says so, with the backend's estimate; once a
-  // worker has it the line goes back to "working…" and the timeline takes over.
+  // worker has it the line empties and the live line and the timeline take over.
   // The run's clock follows the server's: it counts from when the job was created.
   onStatus: (job) => {
     Stage.waiting(waitingCopy(job) || (streamDown ? STREAM_DOWN_SUB : ""));
@@ -270,8 +270,8 @@ function bootLive() {
       job = await getJob(deepLinkJob, { throwOnError: false });
     } catch { /* already reported by the HTTP boundary */ }
     if (!job) {
-      Stage.chat("assistant", "I could not open that job. If it belongs to another account, "
-        + "set the user in settings and reload.");
+      Stage.chat("assistant", "I could not open that run. The link may be wrong, or the run may belong to another "
+        + "account.");
       return;
     }
     beginRun(deepLinkJob);

@@ -33,10 +33,10 @@ export default async function OverviewPage() {
     <div className="page">
       <div className="page__head">
         <div>
-          <p className="page__eyebrow">Mesh studio</p>
-          <h1 className="page__title">Simulation cockpit</h1>
+          <p className="page__eyebrow">Overview</p>
+          <h1 className="page__title">Your meshes</h1>
           <p className="page__intro">
-            Track credit capacity, launch new studies and review the latest solver-ready mesh runs.
+            Upload a part, answer a few questions, and get a mesh ready for your solver.
           </p>
         </div>
         <Link className="btn btn--gold" href="/runs/new">
@@ -53,12 +53,12 @@ export default async function OverviewPage() {
         <div className="metric-card">
           <p className="label">Recent runs</p>
           <b>{runs ? runs.items.length.toLocaleString() : "--"}</b>
-          <span>latest studies in this workspace</span>
+          <span>shown below, newest first</span>
         </div>
         <div className="metric-card">
-          <p className="label">Pipeline</p>
+          <p className="label">How it works</p>
           <b>CAD → Mesh</b>
-          <span>agent-planned, cloud-executed, quality-gated</span>
+          <span>Hexera plans the mesh, builds it in the cloud and checks it before you get it</span>
         </div>
       </div>
 
@@ -66,7 +66,7 @@ export default async function OverviewPage() {
         <div className="panel__head">
           <div>
             <p className="label">Recent runs</p>
-            <p className="page__sub">The latest mesh attempts and review outcomes.</p>
+            <p className="page__sub">Your latest runs and how they ended.</p>
           </div>
           <Link className="nav__link" href="/usage">
             Credit ledger
@@ -76,14 +76,14 @@ export default async function OverviewPage() {
           <p className="empty panel__body">Could not reach the API just now.</p>
         ) : runs.items.length === 0 ? (
           <p className="empty panel__body">
-            Nothing has run yet. Upload a geometry file to start your first study.
+            Nothing has run yet. Press New run and upload a geometry file to start.
           </p>
         ) : (
           <table className="table">
             <thead>
               <tr>
                 <th>Status</th>
-                <th>Study</th>
+                <th>Run</th>
                 <th>Duration</th>
               </tr>
             </thead>

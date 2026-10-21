@@ -7,6 +7,13 @@ import { consoleFetch } from "@/lib/hexera-api/console-fetch";
 
 type Message = { role: string; content: string };
 
+/** Who said it, in the words the workbench uses: "You" and "Hexera", never the API's role names. */
+function speaker(role: string): string {
+  if (role === "user") return "You";
+  if (role === "assistant") return "Hexera";
+  return role;
+}
+
 type History = {
   session_id: string;
   messages: Message[];
@@ -30,10 +37,10 @@ export default async function ConversationPage({
     <div className="page">
       <div className="page__head">
         <div>
-          <p className="page__eyebrow">Study transcript</p>
-          <h1 className="page__title">Conversation</h1>
+          <p className="page__eyebrow">Conversation</p>
+          <h1 className="page__title">What was said</h1>
           <p className="page__intro">
-            The prompt trail and confirmations that shaped this mesh pipeline.
+            Your messages and Hexera's replies, in order, up to the run they started.
           </p>
         </div>
         {history?.job_id ? (
@@ -56,14 +63,14 @@ export default async function ConversationPage({
             <div>
               <p className="label">Messages</p>
               <p className="page__sub">
-                {history.awaiting_confirmation ? "Awaiting confirmation" : "Conversation history"}
+                {history.awaiting_confirmation ? "Waiting for you to confirm" : "Full conversation"}
               </p>
             </div>
           </div>
           <div className="message-stack">
             {history.messages.map((message, index) => (
               <div className="message-card" key={`${message.role}-${index}`}>
-                <p className="label">{message.role}</p>
+                <p className="label">{speaker(message.role)}</p>
                 <p style={{ whiteSpace: "pre-wrap" }}>{message.content}</p>
               </div>
             ))}
