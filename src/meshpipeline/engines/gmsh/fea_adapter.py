@@ -49,6 +49,14 @@ def _sampling(gmsh, tags: list[int], size: float) -> int:
     return int(min(SAMPLING_MAX, max(SAMPLING_MIN, n)))
 
 
+def _micro_place(m: dict) -> dict:
+    """A micro detail as the delivery names it: where (its middle point, mm), what and how small."""
+    pts = m.get("points_m") or [[0.0, 0.0, 0.0]]
+    mid = pts[len(pts) // 2]
+    return {"at_mm": [round(float(v) * 1000.0, 2) for v in mid], "kind": m.get("kind"),
+            "size_mm": m.get("size_mm"), "faces": list(m.get("faces") or [])}
+
+
 def size_fields(gmsh, plan: dict, surfaces: set[int]) -> int | None:
     """The plan's zones as gmsh fields; returns the background field (None when no zone binds)."""
     from meshpipeline.engines.fea_size_field import group_zones
@@ -140,7 +148,8 @@ def mesh(workspace) -> int:
         for _ in range(int(run.get("optimise_passes") or 1)):
             gmsh.model.mesh.optimize("Netgen")
         order = int((plan.get("element") or {}).get("order") or 2)
-        settled: dict = {"straightened": 0, "set_aside": [], "cusp_places_m": []}
+        settled: dict = {"straightened": 0, "set_aside": [], "cusp_places_m": [], "cusp_elements": 0,
+                         "micro_used": [], "micro_elements": 0}
         if order > 1:
             from meshpipeline.engines.gmsh import fea_settle
 
@@ -151,7 +160,7 @@ def mesh(workspace) -> int:
             gmsh.model.mesh.setOrder(order)
             # PLAN-fea-11 (never worse than straight) and PLAN-fea-10 (the cusps set aside)
             settled = fea_settle.settle(gmsh, straight, [c["at_m"] for c in plan.get("cusps") or []],
-                                        D.SICN_FLOOR)
+                                        D.SICN_FLOOR, micro=plan.get("micro") or [])
 
         etypes, etags, _ = gmsh.model.mesh.getElements(3)
         all_tags = [t for arr in etags for t in arr]
@@ -207,9 +216,12 @@ def mesh(workspace) -> int:
             "min_sicn": round(min_sicn, 4),
             # PLAN-fea-11 / PLAN-fea-10: elements given straight sides, and those set aside at a cusp
             "fea_straightened": int(settled["straightened"]),
-            "fea_set_aside": {"rule": "PLAN-fea-10", "elements": len(aside),
+            "fea_set_aside": {"rule": "PLAN-fea-10/PLAN-fea-12", "elements": len(aside),
+                              "cusp_elements": int(settled["cusp_elements"]),
+                              "micro_elements": int(settled["micro_elements"]),
                               "min_sicn": round(float(min(aside_q)), 4) if aside_q else None,
-                              "places_mm": [[round(v * 1000.0, 2) for v in p] for p in settled["cusp_places_m"]]},
+                              "places_mm": [[round(v * 1000.0, 2) for v in p] for p in settled["cusp_places_m"]],
+                              "micro": [_micro_place(plan["micro"][i]) for i in settled["micro_used"]]},
             "sicn_low_fraction": round(low / n_elem, 6) if n_elem else 1.0,
             "fatal": fatal, "size_h": base, "quality_bar": "fea", "sicn_floor": D.SICN_FLOOR,
             "elements_under_floor": low,

@@ -17,6 +17,10 @@ things can go wrong with a few elements, and neither is fixed by meshing again:
   algorithm, local refinement and other 2D algorithms all left the same slivers). The elements
   touching a cusp get straight sides and are SET ASIDE from the quality floor; every other element
   still has to meet it, and the delivery names each cusp (Areen's decision, 21 Oct).
+* A MICRO DETAIL (PLAN-fea-12). An edge or a face far smaller than the elements there (a sprocket's
+  teeth drawn with 0.001 mm flat strips, a socket's 0.004 mm edges) pins the elements on it into bad
+  shapes the same way. They are set aside the same way, and the delivery names each detail - and
+  says that stress right at it, a gear's tooth-tip contact stress included, is not resolved.
 """
 from __future__ import annotations
 
@@ -27,6 +31,8 @@ import numpy as np
 #: An element touches a cusp when one of its corners lies within this many of its own longest edges
 #: of the cusp point.
 CUSP_REACH = 2.0
+#: ...and a micro detail (PLAN-fea-12) when one of its corners lies this close to a point along it.
+MICRO_REACH = 2.0
 #: gmsh's 10-node tetrahedron: midside node 4+k sits on the edge between these corners (gmsh's own
 #: numbering; engines/gmsh/abaqus_deck.GMSH_TET10_TO_SOLVER reads the same). Matching a midside node
 #: to the nearest edge middle instead goes wrong on exactly the elements curving bent the most.
@@ -60,10 +66,13 @@ def straighten(gmsh, tag: int) -> int:
     return moved
 
 
-def settle(gmsh, straight: Mapping[int, float], cusps_m: Iterable, floor: float) -> dict:
-    """PLAN-fea-11 then PLAN-fea-10 on the current (curved) model. `straight` is each element's
-    minSICN before curving (tag -> value). Returns {"straightened": n, "set_aside": [tags],
-    "cusp_places_m": [[x, y, z], ...] (the cusps that had elements set aside)}."""
+def settle(gmsh, straight: Mapping[int, float], cusps_m: Iterable, floor: float,
+           micro: Iterable[Mapping] = ()) -> dict:
+    """PLAN-fea-11, then PLAN-fea-10 and PLAN-fea-12 on the current (curved) model. `straight` is
+    each element's minSICN before curving (tag -> value); `micro` the plan's micro details, each with
+    `points_m` along it. Returns {"straightened": n, "set_aside": [tags], "cusp_places_m": [...] (the
+    cusps that had elements set aside), "cusp_elements": n, "micro_used": [index into micro],
+    "micro_elements": n}."""
     tags, q = qualities(gmsh)
     straightened = 0
     for t, qq in zip(tags.tolist(), q.tolist(), strict=True):
@@ -71,21 +80,46 @@ def settle(gmsh, straight: Mapping[int, float], cusps_m: Iterable, floor: float)
             straighten(gmsh, t)
             straightened += 1
     pts = np.asarray([list(c) for c in cusps_m], dtype=float).reshape(-1, 3)
+    details = list(micro or ())
+    mpts, mown = [], []
+    for i, m in enumerate(details):
+        for p in m.get("points_m") or []:
+            mpts.append(p)
+            mown.append(i)
+    mtree = None
+    if mpts:
+        from scipy.spatial import cKDTree
+
+        mtree = cKDTree(np.asarray(mpts, dtype=float))
     set_aside: list[int] = []
     places: set[int] = set()
-    if len(pts):
+    used: set[int] = set()
+    n_cusp = n_micro = 0
+    if len(pts) or mtree is not None:
         tags, q = qualities(gmsh)
         for t in tags[q < floor].tolist():
             _nodes, c = _corners(gmsh, t)
             h = max(float(np.linalg.norm(c[i] - c[j])) for i, j in _EDGES)
-            d = np.linalg.norm(pts[:, None, :] - c[None, :, :], axis=2).min(axis=1)
-            k = int(np.argmin(d))
-            if d[k] < CUSP_REACH * h:
-                straighten(gmsh, t)
-                set_aside.append(int(t))
-                places.add(k)
+            if len(pts):
+                d = np.linalg.norm(pts[:, None, :] - c[None, :, :], axis=2).min(axis=1)
+                k = int(np.argmin(d))
+                if d[k] < CUSP_REACH * h:
+                    straighten(gmsh, t)
+                    set_aside.append(int(t))
+                    places.add(k)
+                    n_cusp += 1
+                    continue
+            if mtree is not None:
+                dist, idx = mtree.query(c)
+                j = int(np.argmin(dist))
+                if float(dist[j]) < MICRO_REACH * h:
+                    straighten(gmsh, t)
+                    set_aside.append(int(t))
+                    used.add(mown[int(idx[j])])
+                    n_micro += 1
     return {"straightened": straightened, "set_aside": set_aside,
-            "cusp_places_m": [pts[k].round(9).tolist() for k in sorted(places)]}
+            "cusp_places_m": [pts[k].round(9).tolist() for k in sorted(places)], "cusp_elements": n_cusp,
+            "micro_used": sorted(used), "micro_elements": n_micro}
 
 
-__all__ = ["CUSP_REACH", "GMSH_TET10_EDGES", "qualities", "settle", "straighten"]
+__all__ = ["CUSP_REACH", "GMSH_TET10_EDGES", "MICRO_REACH", "qualities", "settle", "straighten"]

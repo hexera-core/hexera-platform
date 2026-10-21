@@ -270,6 +270,13 @@ def tangent_boss():
     return _fuse(_box(0, 0, 0, 40, 20, 10), _cyl(10, 5, 10, 5, 5))
 
 
+def micro_step():
+    """A 20 x 10 x 10 mm block whose lower half sticks out 0.003 mm on its y = 10 side: a sliver face
+    0.003 mm wide along z = 5 and two 0.003 mm edges at its ends - MICRO DETAILS, far below any element
+    a part this size is meshed with."""
+    return _fuse(_box(0, 0, 0, 20, 10, 10), _box(0, 0, 0, 20, 10.003, 5))
+
+
 #: where the tangent boss's cusp is (mm)
 TANGENT_BOSS_CUSPS = [(10.0, 0.0, 10.0)]
 

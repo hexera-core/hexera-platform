@@ -134,8 +134,51 @@ def test_the_adapter_reports_the_floor_without_the_set_aside_elements(tmp_path):
     assert fea_adapter.mesh(ws) == 0
     q = json.loads((ws / "quality.json").read_text())
     aside = q["fea_set_aside"]
-    assert aside["rule"] == "PLAN-fea-10" and isinstance(aside["elements"], int)
+    assert aside["rule"] == "PLAN-fea-10/PLAN-fea-12" and isinstance(aside["elements"], int)
     assert "fea_straightened" in q
     # validity holds every element; the floor every element not set aside
     assert not q["fatal"] and q["fea_inverted"] == 0
     assert q["elements_under_floor"] == 0 and q["min_sicn"] >= 0.1
+
+
+# ------------------------------------------------------------------ micro details ----
+def test_a_micro_step_is_found_and_ordinary_parts_have_none():
+    from meshpipeline.cad.fea_measure import cad_micro
+
+    found = cad_micro(fx.micro_step(), 1.0, diag_mm=25.0)
+    kinds = sorted(m["kind"] for m in found)
+    assert "face" in kinds and kinds.count("edge") >= 2
+    assert all(m["size_mm"] < 0.01 and m["points_mm"] for m in found)
+    for build in (fx.plate_with_hole, fx.bracket, fx.tangent_boss):
+        assert cad_micro(build(), 1.0, diag_mm=60.0) == [], build.__name__
+
+
+def test_the_plan_keeps_micro_details_far_below_its_elements_and_the_adapter_sets_them_aside(tmp_path):
+    ws = _stage(fx.micro_step(), tmp_path / "micro")
+    record, surface, diag = FD.measure_staged(ws)
+    plan = FD.make_plan(record, surface, diag, fidelity="", level=SMALL)
+    assert plan["micro"] and all(m["points_m"] for m in plan["micro"])
+    assert "PLAN-fea-12" in {d["rule"] for d in plan["decisions"]}
+    assert any("contact stress at the tooth tips" in w for w in plan["words"])
+    FD.write_plan(ws, plan)
+    assert fea_adapter.mesh(ws) == 0
+    q = json.loads((ws / "quality.json").read_text())
+    aside = q["fea_set_aside"]
+    assert not q["fatal"] and q["fea_inverted"] == 0
+    assert q["elements_under_floor"] == 0
+    if aside["micro_elements"]:
+        assert aside["micro"] and all(m["size_mm"] < 0.01 for m in aside["micro"])
+
+
+def test_a_micro_detail_is_delivered_as_a_concern_that_says_what_is_not_resolved():
+    from meshpipeline.engines.verdict_limits import fea_limits
+
+    q = {"fea": {"plan": True}, "fea_set_aside": {"elements": 1181, "cusp_elements": 0, "micro_elements": 1181,
+                                                  "places_mm": [], "micro": [
+                                                      {"at_mm": [1.0, 2.0, 3.0], "kind": "face", "size_mm": 0.00106}]}}
+    rows = {r["key"]: r for r in fea_limits(q)}
+    assert "fea_cusps" not in rows
+    row = rows["fea_micro_details"]
+    assert row["measured"] == ["(1, 2, 3) mm, a face 0.00106 mm across"]
+    assert "the contact stress at the tooth tips is not resolved" in row["label"]
+    assert row["source"].startswith("docs/RULES.md PLAN-fea-12")

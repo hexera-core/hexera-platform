@@ -210,15 +210,27 @@ def fea_limits(quality: Mapping) -> list[dict]:
              "source": src} for k, lab, op, lim, src in (*FEA_LIMITS, FEA_RULES_ROW)]
     raw_aside = quality.get("fea_set_aside")
     aside: Mapping = raw_aside if isinstance(raw_aside, Mapping) else {}
-    if aside.get("elements"):
+    if aside.get("elements") and aside.get("places_mm") and aside.get("cusp_elements", 1):
         # PLAN-fea-10: the elements set aside at a cusp are delivered with a CONCERN that names each
         # place (Areen's decision, 21 Oct): never silently, never as a pass
         places = [f"({', '.join(f'{float(v):g}' for v in p)}) mm" for p in aside.get("places_mm") or []]
         rows.append({"key": "fea_cusps", "op": "empty", "limit": [], "measured": places,
-                     "label": (f"{int(aside['elements'])} element(s) at a cusp in the CAD, set aside from the quality "
+                     "label": (f"{int(aside.get('cusp_elements') or aside['elements'])} element(s) at a cusp in the CAD, set aside from the quality "
                                "floor - the material runs to nothing here, so stress at this point is not meaningful; "
                                "round it off in CAD for a clean mesh"),
                      "source": "docs/RULES.md PLAN-fea-10 (cad/fea_measure.cad_cusps)"})
+    micro = [m for m in aside.get("micro") or [] if isinstance(m, Mapping)]
+    if aside.get("micro_elements") and micro:
+        # PLAN-fea-12: each micro detail named, and that stress right at it is not resolved (Areen,
+        # 21 Oct: on a gear that is the contact stress at the tooth tips, and the note says so)
+        places = [f"({', '.join(f'{float(v):g}' for v in m.get('at_mm') or [])}) mm, a {m.get('kind')} "
+                  f"{float(m.get('size_mm') or 0.0):.3g} mm across" for m in micro]
+        rows.append({"key": "fea_micro_details", "op": "empty", "limit": [], "measured": places,
+                     "label": (f"{int(aside['micro_elements'])} element(s) on CAD details far smaller than the mesh, set "
+                               "aside from the quality floor - the mesh cannot follow these details, so stress right at "
+                               "them is not resolved (on a gear, the contact stress at the tooth tips is not resolved); "
+                               "remove or enlarge them in CAD for a clean mesh"),
+                     "source": "docs/RULES.md PLAN-fea-12 (cad/fea_measure.cad_micro)"})
     return rows
 
 

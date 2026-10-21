@@ -99,7 +99,79 @@ def measure_cad_surface(shape, *, mm_per_unit: float,
     record = _record(surface, arcs, bodies=_cad_bodies(shape), basis="cad", kinds=kinds, started=started,
                      max_ray_triangles=max_ray_triangles)
     record["cusps"] = cad_cusps(shape, float(mm_per_unit))
+    record["micro"] = cad_micro(shape, float(mm_per_unit), diag_mm=float(surface.diag))
     return record, surface
+
+
+#: MICRO DETAILS are recorded when an edge is shorter, or a face narrower, than this fraction of the
+#: part's diagonal; the plan keeps those far below its own element size (PLAN-fea-12).
+MICRO_FRACTION = 1e-3
+#: Each micro detail is described by points this far apart along it (as a fraction of its length),
+#: so a long thin strip is marked along its whole length, not only at its ends.
+MICRO_SAMPLES = 24
+
+
+def cad_micro(shape, mm: float, *, diag_mm: float) -> list[dict]:
+    """The CAD's micro details: edges shorter than MICRO_FRACTION of the part, and faces narrower than
+    that (twice the area over the perimeter) - a 0.004 mm edge on a screw's socket, the 0.001 mm flat
+    strips a sprocket's teeth were drawn with. Each: kind, size (mm), the faces it touches (Face_k)
+    and points along it (mm). The plan decides which are far below its element size."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from OCP.TopExp import TopExp, TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape, TopTools_IndexedMapOfShape
+
+    limit = MICRO_FRACTION * float(diag_mm) / mm          # in the file's own unit
+    fmap = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(shape, TopAbs_FACE, fmap)
+    e2f = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(shape, TopAbs_EDGE, TopAbs_FACE, e2f)
+
+    def length(e) -> float:
+        g = GProp_GProps()
+        BRepGProp.LinearProperties_s(e, g)
+        return float(g.Mass())
+
+    def along(e) -> list[list[float]]:
+        if BRep_Tool.Degenerated_s(e):
+            return []
+        c = BRepAdaptor_Curve(e)
+        u0, u1 = c.FirstParameter(), c.LastParameter()
+        return [_pt(np.array([(q := c.Value(u0 + (u1 - u0) * k / (MICRO_SAMPLES - 1))).X(), q.Y(), q.Z()]) * mm)
+                for k in range(MICRO_SAMPLES)]
+
+    out: list[dict] = []
+    for i in range(1, e2f.Extent() + 1):
+        e = TopoDS.Edge_s(e2f.FindKey(i))
+        if BRep_Tool.Degenerated_s(e):
+            continue
+        L = length(e)
+        if L < limit:
+            faces = sorted({fmap.FindIndex(f) for f in e2f.FindFromIndex(i)} - {0})
+            out.append({"kind": "edge", "size_mm": _r(L * mm), "faces": [f"Face_{k}" for k in faces],
+                        "points_mm": along(e)})
+    for k in range(1, fmap.Extent() + 1):
+        f = TopoDS.Face_s(fmap.FindKey(k))
+        g = GProp_GProps()
+        BRepGProp.SurfaceProperties_s(f, g)
+        area = float(g.Mass())
+        per, pts = 0.0, []
+        ex = TopExp_Explorer(f, TopAbs_EDGE)
+        edges = []
+        while ex.More():
+            edges.append(TopoDS.Edge_s(ex.Current()))
+            ex.Next()
+        per = sum(length(e) for e in edges)
+        if per > 0 and 2.0 * area / per < limit:
+            for e in edges:
+                pts += along(e)
+            out.append({"kind": "face", "size_mm": _r(2.0 * area / per * mm), "faces": [f"Face_{k}"],
+                        "points_mm": pts})
+    return out
 
 
 #: A CUSP: two edges of one face leave a vertex within this many degrees of each other (a bore or a
