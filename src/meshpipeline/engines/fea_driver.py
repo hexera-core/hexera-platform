@@ -97,14 +97,18 @@ def measure_staged(ws: Path) -> tuple[dict, Any, float]:
     from OCP.BRepBndLib import BRepBndLib
 
     b = Bnd_Box()
-    BRepBndLib.Add_s(shape, b, True)
+    # THE TIGHT BOX: OpenCASCADE's plain box is padded by the shapes' tolerances, about 6% of an 8 mm
+    # nut - every length of a small part's record (walls, radii, the cusps' places) came out short
+    BRepBndLib.AddOptimal_s(shape, b, False, False)
     x0, y0, z0, x1, y1, z1 = b.Get()
     diag_read = math.dist((x0, y0, z0), (x1, y1, z1))
     if diag_read <= 0 or diag_m <= 0:
         raise ValueError("the staged solid has no size")
     # the staged STEP is in metres whatever unit its header names: the scale is read off the two
-    # readers' boxes, so the record is millimetres either way
-    mm_per_unit = 1000.0 * diag_m / diag_read
+    # readers' boxes, so the record is millimetres either way - and a unit is a power of ten, so the
+    # ratio is snapped to one (the two boxes never agree to the last digit)
+    ratio = 1000.0 * diag_m / diag_read
+    mm_per_unit = 10.0 ** round(math.log10(ratio)) if ratio > 0 else ratio
     record, surface = measure_cad_surface(shape, mm_per_unit=mm_per_unit, max_ray_triangles=MAX_RAY_TRIANGLES)
     return record, surface, diag_m
 
