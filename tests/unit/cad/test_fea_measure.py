@@ -224,3 +224,42 @@ def test_a_ray_that_grazes_a_neighbouring_face_reads_no_wall():
     rec = measure_cad(fx._unify(quarter), mm_per_unit=1.0)
     # the true chords near the outer edge are 17-20 mm; a grazing hit read 0.26
     assert rec["thickness"]["min_mm"] >= 15.0
+
+
+# ------------------------------------------------------- walls that are not walls (21 Oct) ----
+# Areen's F1 car (6 bodies, 620 mm) read a 0.00064 mm "thinnest wall": a pin's face 0.0006 mm off
+# its hole's, through the tessellation's wobble. Then a strip beside a round read 0.12 mm across a
+# taper. Neither is a wall; neither may drive a plan.
+def test_two_touching_bodies_are_not_a_wall_between_them():
+    rec = measure_cad(fx.pinned_plate(), mm_per_unit=1.0)
+    assert rec["bodies"] == 2
+    # the hole's wall reads the plate round it, not the pin a hair away
+    assert rec["thickness"]["min_mm"] == pytest.approx(6.0, rel=CAD_WALL)
+    assert all(f["thickness_min_mm"] >= 6.0 * (1 - CAD_WALL) for f in rec["faces"].values()
+               if f.get("thickness_min_mm") is not None)
+
+
+def test_a_taper_is_not_a_wall():
+    rec = measure_cad(fx.beveled_plate(), mm_per_unit=1.0)
+    assert rec["thickness"]["min_mm"] == pytest.approx(fx.BEVEL["thickness"], rel=CAD_WALL)
+
+
+def test_a_head_on_reading_across_a_split_round_still_counts():
+    # a rod whose round face OpenCASCADE splits in two halves: a ray from one half meets the other
+    # head on, across the rod - its diameter is a wall, even though the halves share an edge
+    from tests.fea_fixtures import _cyl
+
+    rec = measure_cad(_cyl(0, 0, 0, 5, 80, axis=(1, 0, 0)), mm_per_unit=1.0)
+    assert rec["thickness"]["min_mm"] == pytest.approx(10.0, rel=0.01)
+
+
+@pytest.mark.parametrize(("readings", "wall"), [
+    ([0.03, 10.0, 10.2, 10.5, 11.0], 10.0),     # one stray ray does not set the face's wall
+    ([40.0, 40.3, 40.4, 52.0], 40.0),           # the true thinnest reading, not one above it
+    ([0.5, 0.55, 0.6, 9.0], 0.5),               # three readings that agree are a thin wall
+    ([0.1, 0.1], None),                         # too few rays read anything: no wall of its own
+    ([1.0, 2.0, 4.0, 8.0], None),               # readings that scatter agree on nothing
+])
+def test_a_faces_wall_needs_its_rays_to_agree(readings, wall):
+    got = ff.agreed_wall(sorted(readings))
+    assert (got if got is None else readings[got]) == (wall if wall is None else pytest.approx(wall))

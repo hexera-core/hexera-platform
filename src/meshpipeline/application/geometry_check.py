@@ -1818,6 +1818,11 @@ def unit_inference(proposal: dict, facts: dict | None = None, words: str = "") -
     return inferred.as_dict() if inferred is not None else None
 
 
+def is_fea_purpose(purpose_text: str) -> bool:
+    """Whether the user's words send the part down the FEA path (the progress line's words follow)."""
+    return _is_fea(purpose_text)
+
+
 def _is_fea(purpose_text: str) -> bool:
     """Whether the user's words send the part down the FEA path (application/purpose_map). The
     latest answer speaks first when it settles the purpose alone - it may be the answer to the

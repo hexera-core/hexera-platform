@@ -70,8 +70,11 @@ def fea_view(facts: dict | None) -> dict:
             "single_part_only": blocked, "can_proceed": not blocked, "measure": measure_view(facts)}
 
 
-#: The most hot spots the stage is sent (pins and list); the count says how many there are.
-SHOWN_HOT_SPOTS = 60
+#: The stage is sent EVERY hot spot the record holds (all of them, up to cad/fea_features.
+#: MAX_HOT_SPOTS): a hot spot the stage leaves out looks the same as one never found (Areen's F1
+#: car, 21 Oct: a rear-wing corner had no tag while its mirror twin had one). The stage draws a
+#: long list as small marks and the panel groups it by type.
+SHOWN_HOT_SPOTS = None
 #: What the stage needs of a hot spot: what it is, how big, where, and whether it is capped.
 _SHOWN_KEYS = ("id", "type", "shape", "radius_mm", "angle_deg", "length_mm", "depth_mm", "faces",
                "at_mm", "capped")
@@ -94,7 +97,7 @@ def measure_view(facts: dict | None) -> dict | None:
     spots = [{k: h[k] for k in _SHOWN_KEYS if k in h} for h in rec.get("hot_spots") or []]
     thick = rec.get("thickness") or {}
     counts = {str(k): int(v) for k, v in (rec.get("counts") or {}).items()}
-    shown = spots[:SHOWN_HOT_SPOTS]
+    shown = spots if SHOWN_HOT_SPOTS is None else spots[:SHOWN_HOT_SPOTS]
     return {"measured": True, "basis": rec.get("basis"), "thickness_min_mm": thick.get("min_mm"),
             "thickness_face": thick.get("face"), "thickness_at_mm": thick.get("at_mm"),
             "hot_spots": shown, "counts": counts, "more": max(0, sum(counts.values()) - len(shown)),

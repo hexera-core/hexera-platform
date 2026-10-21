@@ -323,7 +323,8 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     # done with their times, a note when one runs long, and the way on when one fails
     payload["progress"] = progress_view(reported, requested, read_progress(str(session_id)),
                                         scout_limit_s=SCOUT_SOFT_LIMIT_S, naming_limit_s=NAMING_SOFT_LIMIT_S,
-                                        confirmed=confirmed is not None)
+                                        confirmed=confirmed is not None,
+                                        fea=payload.get("route") == fea_check.STAGE_FEA)
     return payload
 
 

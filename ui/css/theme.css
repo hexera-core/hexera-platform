@@ -1026,3 +1026,11 @@ th,td{border-color:var(--border)}
 .fea-spot-open:hover{color:var(--text)}
 .fea-spot-unsent{padding:2px 6px;color:var(--text-faint)}
 .fea-spot-row[hidden]{display:none}
+/* the list in groups by type, each with its count; a long group opens whole with "Show all N" */
+.fea-spot-group{margin:4px 0 0}
+.fea-spot-head{padding:2px 6px;color:var(--text-faint);font-weight:600}
+.fea-spot-n{font-weight:400;font-variant-numeric:tabular-nums}
+.fea-spot-rows{list-style:none;margin:0;padding:0}
+/* many hot spots: each a small mark without its number, until it is pointed at or chosen */
+.fea-spot.mark{min-width:0;width:9px;height:9px;padding:0;font-size:0;line-height:0;border-width:1.5px}
+.fea-spot.mark:hover,.fea-spot.mark.sel{width:auto;min-width:26px;height:22px;padding:0 4px;font-size:11px;line-height:22px;z-index:8}

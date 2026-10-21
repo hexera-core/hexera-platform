@@ -39,7 +39,10 @@ from meshpipeline.cad import fea_features as ff
 
 logger = logging.getLogger(__name__)
 
-VERSION = 1
+#: 2 (21 Oct): a wall is read inside one body, past the model's floor, never across a taper,
+#: and only where a face's rays agree (cad/fea_features.wall_reach); 1 read the first
+#: surface any ray met.
+VERSION = 2
 #: Where the record lives in the geometry check's facts.
 FACT_KEY = "fea_measure"
 #: The CAD surface is tessellated for the measurement at a chord of this fraction of the part's
@@ -145,7 +148,36 @@ def _brep_surface(shape, mm: float):
     label = np.concatenate(labels)
     keep = (tris[:, 0] != tris[:, 1]) & (tris[:, 1] != tris[:, 2]) & (tris[:, 0] != tris[:, 2])
     names = [f"Face_{k}" for k in range(1, len(faces) + 1)]
-    return ff.Surface(xyz=xyz, tris=tris[keep], label=label[keep], names=names), faces, kinds
+    # which solid each face belongs to, and the face's own tolerance: a wall is read inside one
+    # body, and never thinner than the model itself is sure of (cad/fea_features.wall_reach)
+    tol = np.array([BRep_Tool.Tolerance_s(f) for f in faces], dtype=float) * mm
+    surface = ff.Surface(xyz=xyz, tris=tris[keep], label=label[keep], names=names,
+                         body=_face_bodies(shape, fmap), tol_mm=tol)
+    return surface, faces, kinds
+
+
+def _face_bodies(shape, fmap) -> np.ndarray:
+    """The body (solid, else shell) each face of `fmap` belongs to, in fmap's order; 0 for all when
+    the shape has neither."""
+    from OCP.TopAbs import TopAbs_FACE, TopAbs_SHELL, TopAbs_SOLID
+    from OCP.TopExp import TopExp, TopExp_Explorer
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    body = np.zeros(fmap.Extent(), dtype=np.int64)
+    for what in (TopAbs_SOLID, TopAbs_SHELL):
+        m = TopTools_IndexedMapOfShape()
+        TopExp.MapShapes_s(shape, what, m)
+        if not m.Extent():
+            continue
+        for b in range(1, m.Extent() + 1):
+            ex = TopExp_Explorer(m.FindKey(b), TopAbs_FACE)
+            while ex.More():
+                k = fmap.FindIndex(ex.Current())
+                if k > 0:
+                    body[k - 1] = b - 1
+                ex.Next()
+        break
+    return body
 
 
 def _weld(xyz: np.ndarray, tris: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

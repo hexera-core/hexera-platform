@@ -215,6 +215,53 @@ def two_blocks():
     return c
 
 
+def pinned_plate():
+    """A 40 x 40 x 6 mm plate with an 8 mm hole through its middle, and a pin filling the hole
+    exactly: two touching bodies in one file (an assembly's bolt in its hole). The pin's seam is
+    turned 7 degrees from the hole's, so their facets cross a hair apart, as two parts' do in a
+    real assembly. The plate's wall is 6 mm; the pin's is 6 mm along its axis and 8 across."""
+    import math
+
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+    from OCP.TopoDS import TopoDS_Compound
+
+    turn = math.radians(7.0)
+    pin = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(20, 20, 0), gp_Dir(0, 0, 1), gp_Dir(math.cos(turn), math.sin(turn), 0)),
+                                   4, 6).Shape()
+
+    c = TopoDS_Compound()
+    b = BRep_Builder()
+    b.MakeCompound(c)
+    b.Add(c, _cut(_box(0, 0, 0, 40, 40, 6), _cyl(20, 20, -1, 4, 8)))
+    b.Add(c, pin)
+    return c
+
+
+#: the beveled plate's acute edge (degrees) and thickness (mm)
+BEVEL = {"angle": 75.0, "thickness": 5.0}
+
+
+def beveled_plate():
+    """A 50 x 50 x 5 mm plate whose x = 0 side is beveled: it meets the bottom at 75 degrees (a
+    TAPER, the material running to nothing at that edge) and the top at 105. Its wall is 5 mm."""
+    import math
+
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+    from OCP.gp import gp_Pnt, gp_Vec
+
+    t = BEVEL["thickness"]
+    lean = t / math.tan(math.radians(BEVEL["angle"]))
+    poly = BRepBuilderAPI_MakePolygon()
+    for x, z in ((0.0, 0.0), (50.0, 0.0), (50.0, t), (lean, t)):
+        poly.Add(gp_Pnt(x, 0.0, z))
+    poly.Close()
+    face = BRepBuilderAPI_MakeFace(poly.Wire()).Face()
+    return BRepPrimAPI_MakePrism(face, gp_Vec(0.0, 50.0, 0.0)).Shape()
+
+
 # ------------------------------------------------------------------------------- the files ----
 def write_step(shape, path: Path) -> Path:
     from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer

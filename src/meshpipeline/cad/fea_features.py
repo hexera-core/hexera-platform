@@ -50,8 +50,10 @@ FIT_TOLERANCE = 0.03
 #: Wall-thickness rays across the whole part, and at least this many on every face.
 THICKNESS_RAYS = 6000
 MIN_FACE_RAYS = 8
-#: The most hot spots the record keeps (sharpest and smallest first); the count says if more.
-MAX_HOT_SPOTS = 200
+#: The most hot spots the record keeps (sharpest and smallest first); the count says if more. The
+#: plan refines only the ones kept, so this is a guard against a runaway count, set well above any
+#: real part: a 6-body F1 car has 208 (200 dropped 4 holes and 4 fillets from its plan, 21 Oct).
+MAX_HOT_SPOTS = 2000
 
 #: hot-spot types
 HOLE, FILLET, NOTCH, SHARP_CORNER = "hole", "fillet", "notch", "sharp_corner"
@@ -64,6 +66,11 @@ class Surface:
     tris: np.ndarray         # (m, 3) int
     label: np.ndarray        # (m,) int - index into names
     names: list[str]         # Face_1..Face_N (a CAD file) or Region_1..Region_N (a triangle file)
+    #: Which solid each label belongs to (a CAD file of several bodies), or None when unknown (a
+    #: triangle file: a sealed cavity's wall is a separate piece of the same body there).
+    body: np.ndarray | None = None
+    #: Each label's own model tolerance in mm (the CAD face's), or None when unknown.
+    tol_mm: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         a, b, c = (self.xyz[self.tris[:, k]] for k in range(3))
@@ -139,23 +146,23 @@ class _Rays:
         except ImportError:
             self.loc = None
 
-    def first(self, origins: np.ndarray, dirs: np.ndarray, reach: float) -> np.ndarray:
-        """Distance along each unit direction to the first surface (nan where none within reach,
-        and nan where the ray only GRAZES the triangle it meets - see GRAZE_COS)."""
-        if self.loc is not None:
-            from vtkmodules.vtkCommonCore import reference
+    def hits(self, origins: np.ndarray, dirs: np.ndarray, reach: float) -> tuple[np.ndarray, np.ndarray]:
+        """Distance along each unit direction to the first triangle met, and which triangle
+        (nan and -1 where none within reach). Nothing is judged here: see wall_reach."""
+        if self.loc is None:
+            return _numpy_hits(self.s, origins, dirs, reach)
+        from vtkmodules.vtkCommonCore import reference
 
-            out = np.full(len(origins), np.nan)
-            cell = np.full(len(origins), -1, dtype=np.int64)
-            t, sub, cid = reference(0.0), reference(0), reference(0)
-            x, pc = [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]
-            for i, (o, d) in enumerate(zip(origins, dirs, strict=True)):
-                end = o + d * reach
-                if self.loc.IntersectWithLine(o.tolist(), end.tolist(), 0.0, t, x, pc, sub, cid):  # type: ignore[call-overload]
-                    out[i] = float(t) * reach  # type: ignore[arg-type]
-                    cell[i] = int(cid)
-            return _not_grazing(self.s, dirs, out, cell)
-        return _numpy_first(self.s, origins, dirs, reach)
+        out = np.full(len(origins), np.nan)
+        cell = np.full(len(origins), -1, dtype=np.int64)
+        t, sub, cid = reference(0.0), reference(0), reference(0)
+        x, pc = [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]
+        for i, (o, d) in enumerate(zip(origins, dirs, strict=True)):
+            end = o + d * reach
+            if self.loc.IntersectWithLine(o.tolist(), end.tolist(), 0.0, t, x, pc, sub, cid):  # type: ignore[call-overload]
+                out[i] = float(t) * reach  # type: ignore[arg-type]
+                cell[i] = int(cid)
+        return out, cell
 
 
 #: A ray that meets a triangle at more than about 80 degrees from its normal is GRAZING it: a ray
@@ -163,18 +170,29 @@ class _Rays:
 #: a wall (a 100 mm ring read a 0.26 mm wall on its outer face that way), so it reads nothing; the
 #: opposite side of a real wall is met nearly head on.
 GRAZE_COS = 0.17
+#: THE FLOOR UNDER A READING, as a fraction of the part's diagonal: a surface met closer than this
+#: (or than twice the CAD faces' own tolerance, if that is more) is the place the ray started from -
+#: a coincident face, two bodies touching, the tessellation's own wobble - and the ray goes on
+#: through it. A 620 mm car read a 0.00064 mm "wall" in a pinned hole that way (20 Oct).
+FLOOR_FRACTION = 1e-5
+#: A ray goes on through at most this many surfaces that are not its wall (another body's face, or
+#: one under the floor) before it gives up and reads nothing.
+MAX_HOPS = 4
+#: A ray that ends on a face SHARING AN EDGE with its own, meeting it this far off head on or more
+#: (cos under TAPER_COS, about 60 degrees), is reading a TAPER: the wedge where two faces meet at an
+#: acute angle, whose thickness runs to nothing at their edge however fine the mesh - not a wall.
+#: A flat strip beside a round read 0.08 to 0.44 mm that way on the same car. Across a rod whose
+#: round face is split in two halves, the ray meets the other half head on, and that still counts.
+TAPER_COS = 0.5
+#: A FACE'S WALL needs this many of its rays to agree: its wall is the thinnest reading that at
+#: least this many readings (itself included) sit within AGREE_RATIO of, so one stray ray cannot set
+#: a face's wall, nor the part's. A face fewer of its rays read (a sliver, a strip its rays only
+#: graze) has no wall of its own: the faces round it cover the material under it.
+AGREEING_RAYS = 3
+AGREE_RATIO = 1.25
 
 
-def _not_grazing(s: Surface, dirs: np.ndarray, dist: np.ndarray, cell: np.ndarray) -> np.ndarray:
-    ok = cell >= 0
-    out = dist.copy()
-    cos = np.zeros(len(dist))
-    cos[ok] = np.abs(np.einsum("ij,ij->i", dirs[ok], s.normals[cell[ok]]))
-    out[ok & (cos < GRAZE_COS)] = np.nan
-    return out
-
-
-def _numpy_first(s: Surface, origins: np.ndarray, dirs: np.ndarray, reach: float) -> np.ndarray:
+def _numpy_hits(s: Surface, origins: np.ndarray, dirs: np.ndarray, reach: float) -> tuple[np.ndarray, np.ndarray]:
     a = s.xyz[s.tris[:, 0]]
     e1 = s.xyz[s.tris[:, 1]] - a
     e2 = s.xyz[s.tris[:, 2]] - a
@@ -196,13 +214,74 @@ def _numpy_first(s: Surface, origins: np.ndarray, dirs: np.ndarray, reach: float
         best = t.min(axis=1)
         out[i:i + 64] = np.where(np.isfinite(best), best, np.nan)
         cell[i:i + 64] = np.where(np.isfinite(best), t.argmin(axis=1), -1)
-    return _not_grazing(s, dirs, out, cell)
+    return out, cell
+
+
+def wall_reach(s: Surface, origins: np.ndarray, dirs: np.ndarray, labels: np.ndarray, *, eps: float) -> np.ndarray:
+    """How far each ray (from `eps` inside a face, along its inward normal) runs through the
+    material before it LEAVES it - the wall under its start - or nan where that cannot be read.
+
+    A surface met on the way is the far side of the wall only when it is a real exit:
+    * it belongs to the body the ray started in: another body's face is two parts touching, not a
+      wall, and the ray goes on through it;
+    * it lies past the floor (FLOOR_FRACTION of the part, or twice either face's own tolerance): a
+      surface closer than that is where the ray started, and the ray goes on through it;
+    * the ray meets it head on enough (GRAZE_COS) and from inside the material, its outward normal
+      along the ray. A ray that grazes a face, or meets one from outside (it slipped out of the
+      solid through a crack in the tessellation), reads nothing;
+    * it is not a TAPER: a face sharing an edge with the ray's own, met at a slant (TAPER_COS)."""
+    rays = _Rays(s)
+    n = len(origins)
+    m = len(s.names)
+    pairs = edge_pairs(s)
+    la, lb = s.label[pairs.tri_a], s.label[pairs.tri_b]
+    apart = la != lb
+    touching = np.unique(np.concatenate([la[apart] * m + lb[apart], lb[apart] * m + la[apart]]))
+    floor0 = FLOOR_FRACTION * s.diag
+    no_tol = np.zeros(len(s.names))
+    tol = s.tol_mm if s.tol_mm is not None else no_tol
+    travelled = np.zeros(n)
+    out = np.full(n, np.nan)
+    live = np.arange(n)
+    pos = origins.copy()
+    reach = 1.01 * s.diag
+    for _hop in range(MAX_HOPS + 1):
+        if not len(live):
+            break
+        dist, cell = rays.hits(pos[live], dirs[live], reach)
+        found = cell >= 0
+        live, dist, cell = live[found], dist[found], cell[found]
+        total = travelled[live] + dist + eps
+        hit = s.label[cell]
+        floor = np.maximum(floor0, 2.0 * np.maximum(tol[labels[live]], tol[hit]))
+        foreign = (s.body[hit] != s.body[labels[live]]) if s.body is not None else np.zeros(len(live), dtype=bool)
+        through = foreign | (total < floor)
+        cos = np.einsum("ij,ij->i", dirs[live], s.normals[cell])
+        taper = np.isin(labels[live] * m + hit, touching) & (cos < TAPER_COS)
+        good = ~through & (cos >= GRAZE_COS) & ~taper
+        out[live[good]] = total[good]
+        # on through the face that is not this ray's wall, from just past it
+        live = live[through]
+        travelled[live] = total[through]
+        pos[live] = origins[live] + dirs[live] * travelled[live, None]
+    return out
+
+
+def agreed_wall(readings) -> int | None:
+    """Which of a face's readings (sorted, thinnest first) is its wall: the first that at least
+    AGREEING_RAYS readings, itself included, sit within AGREE_RATIO of; None when none is."""
+    d = np.asarray(readings, dtype=float)
+    if len(d) < AGREEING_RAYS:
+        return None
+    backed = np.searchsorted(d, AGREE_RATIO * d, side="right") - np.arange(len(d)) >= AGREEING_RAYS
+    return int(np.argmax(backed)) if backed.any() else None
 
 
 def wall_thickness(s: Surface, *, rays: int = THICKNESS_RAYS, seed: int = 0) -> dict:
     """The wall under every face: points spread over each face by area (a fixed seed, so a part
-    reads the same twice), each with a ray along the inward normal to the first surface it meets.
-    {"per_label": {label: (min, median, point of the min)}, "min": (value, label, point), "rays"}"""
+    reads the same twice), each with a ray along the inward normal until it leaves the material
+    (wall_reach). A face's wall is the thinnest reading AGREEING_RAYS of its rays agree on.
+    {"per_label": {label: (wall, median, point of the wall)}, "min": (value, label, point), "rays"}"""
     rng = np.random.default_rng(seed)
     total = float(s.areas.sum()) or 1.0
     eps = 1e-6 * s.diag
@@ -226,14 +305,16 @@ def wall_thickness(s: Surface, *, rays: int = THICKNESS_RAYS, seed: int = 0) -> 
     if not origins:
         return {"per_label": {}, "min": None, "rays": 0}
     P, O, D, L = (np.concatenate(x) for x in (points, origins, dirs, labels))
-    dist = _Rays(s).first(O, D, 1.01 * s.diag) + eps
+    dist = wall_reach(s, O, D, L, eps=eps)
     per: dict[int, tuple[float, float, np.ndarray]] = {}
     best = None
     for lab in np.unique(L):
         k = np.flatnonzero((L == lab) & np.isfinite(dist))
-        if not len(k):
-            continue
-        j = k[int(np.argmin(dist[k]))]
+        order = k[np.argsort(dist[k], kind="stable")]
+        at = agreed_wall(dist[order])
+        if at is None:
+            continue        # too few rays read a wall here, or they scatter: no wall of its own
+        j = order[at]
         per[int(lab)] = (float(dist[j]), float(np.median(dist[k])), P[j])
         if best is None or dist[j] < best[0]:
             best = (float(dist[j]), int(lab), P[j])
@@ -648,5 +729,5 @@ def bodies_of(tris: np.ndarray, pairs: EdgePairs) -> int:
 
 __all__ = ["FILLET", "HOLE", "HOLE_SPAN_DEG", "MAX_HOT_SPOTS", "NOTCH", "NOTCH_SPAN_DEG", "SHARP_CORNER",
            "SHARP_TURN_DEG", "SMOOTH_TURN_DEG", "THICKNESS_RAYS", "Arc", "EdgePairs", "Surface",
-           "bodies_of", "components", "curved_patches", "edge_pairs", "face_samples", "fit_round", "kind_of", "merge_coaxial", "nesting_depth", "patch_samples",
+           "agreed_wall", "bodies_of", "components", "wall_reach", "curved_patches", "edge_pairs", "face_samples", "fit_round", "kind_of", "merge_coaxial", "nesting_depth", "patch_samples",
            "sharp_corners", "smooth_regions", "wall_thickness"]

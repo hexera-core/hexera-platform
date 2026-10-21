@@ -465,9 +465,14 @@ function initScene(sessionId, box, surf, p) {
      number that follows it every frame. Shown only - version 1 refines them all automatically, so
      a tag lights its line in the panel and nothing more. */
   let spots = [];
+  /* EVERY hot spot gets its mark: past SPOT_TAGS of them a numbered tag on each would bury the part,
+     so each is a small mark without a number (its number shows when it is pointed at or chosen) */
+  const SPOT_TAGS = 40;
+  let spotMarks = false;
   function setSpots(list) {
     spots.forEach((s) => { ren.removeActor(s.actor); s.el.remove(); });
     spots = [];
+    spotMarks = (list || []).length > SPOT_TAGS;
     (list || []).forEach(addSpot);
     bindMeasure(panel, lightSpot);
     rw.render();
@@ -481,7 +486,8 @@ function initScene(sessionId, box, surf, p) {
     const pp = ac.getProperty(); pp.setColor(SPOT[0], SPOT[1], SPOT[2]);
     pp.setAmbient(0.55); pp.setDiffuse(0.6); pp.setSpecular(0.2);
     ren.addActor(ac);
-    const el = document.createElement("div"); el.className = "v-pin fea-spot"; el.textContent = String(h.id);
+    const el = document.createElement("div"); el.className = "v-pin fea-spot" + (spotMarks ? " mark" : "");
+    el.textContent = String(h.id); el.dataset.spot = String(h.id);
     el.title = `${h.id}: ${h.shape || h.type}${h.capped ? " (refinement capped)" : ""}`;
     el.onclick = (ev) => { ev.stopPropagation(); lightSpot(h.id); };
     host.appendChild(el);
