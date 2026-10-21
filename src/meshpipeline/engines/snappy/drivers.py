@@ -1987,6 +1987,12 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
         # limit (GapPlan.ceiling). Over the limit the pass is meshed as planned - never stopped.
         if strategy.get("gap_budget_in"):
             _budget = min(_budget, int(strategy["gap_budget_in"]))
+        if _timeout_ref is not None and _hold_gaps is None:
+            # AFTER A TIMEOUT the narrow spots get no raise either: a pass that ran out of time is
+            # made smaller (_coarsen_after_timeout), and a gap plan raising the ceiling back to what
+            # just timed out authored that case byte for byte, so the pass was not run at all (a
+            # valve cage adapter on a loaded lab VM, 2026-10-21)
+            _hold_gaps = int(_budget)
         if _hold_gaps is not None:
             _budget = min(_budget, int(_hold_gaps))
         _planned_budget = _budget
