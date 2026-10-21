@@ -41,6 +41,8 @@ def _own_format(candidates: list[str], fmt: str) -> list[str]:
 
 
 _PICK_WORDS = {
+    "ENG-2": "it is the home engine for {shape}, so it goes first{reason}.",
+    "ENG-3": "its lab record for {shape} clearly beats the home engine's{reason}.",
     "ENG-4": "it ranked first on its lab record for {shape}{reason}.",
     "ENG-4-thin": "it ranked first for {shape}, on little lab evidence{reason}.",
     "ENG-6": "the user named it, so it is never switched on its own.",
@@ -64,6 +66,7 @@ def engine_pick_entry(state: Mapping) -> dr.Entry | None:
     fmt = _source_format(state)
     inputs = {"engine_source": engine_source(state), "approved": approved,
               "recommended": str(ladder.get("order_recommended") or ""),
+              "recommended_rule": str(ladder.get("order_rule") or ""),
               "measured": ladder.get("order_source") == "measured",
               "own_format": _own_format(order or [approved], fmt)}
     value, rule = dr.engine_pick(inputs)

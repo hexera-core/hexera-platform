@@ -514,6 +514,11 @@ class EngineSpec:
     #: take; these say how well it does there. Empty = nothing declared: every case it accepts is
     #: treated alike.
     home_turf: tuple[TurfRow, ...] = ()
+    #: THE SHAPE CLASSES THIS ENGINE IS THE HOME ENGINE FOR (engines/fitness.py class names, read
+    #: off the measured traits): on such a shape it is recommended first - unless its own turf
+    #: rows mark the case weak or outside, or the measured record of another engine clearly beats
+    #: it (fitness ENG-2/ENG-3). Empty = home nowhere: ranked on its record alone.
+    home_classes: tuple[str, ...] = ()
 
     def forms_for(self, flow: str) -> tuple[str, ...] | None:
         """The geometry forms this bundle consumes for `flow`, or None when it is not designed

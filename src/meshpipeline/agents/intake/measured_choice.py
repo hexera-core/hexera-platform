@@ -154,7 +154,9 @@ def statement(rec, engine: str) -> str:
     lab = (f"in our lab it {fit.reason}" if fit.reason.startswith("passed")
            else f"in our lab there is {fit.reason}" if fit.reason.startswith("little")
            else f"in our lab: {fit.reason}")
-    lines = [f"{head}I'd mesh it with {_display(engine)} - {lab}."]
+    # the home engine for this kind of shape says so first (fitness ENG-2)
+    home = ", the engine made for this kind of shape," if getattr(fit, "home", False) else ""
+    lines = [f"{head}I'd mesh it with {_display(engine)}{home} - {lab}."]
     if fit.heads_up:
         lines.append(f"Heads-up: {fit.heads_up.rstrip('.')}.")
     others = [f for f in rec.fits if f.engine != engine]

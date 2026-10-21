@@ -45,8 +45,8 @@ More rules:
 * THE RUNGS COME IN THE ORDER THAT SUITS THIS GEOMETRY. The run's geometry is measured at the
   start of the run and the engines that can mesh it are ranked by their lab record on shapes
   like it (engines/fitness.py, the same ranking the intake recommended from); the ladder walks
-  that order, after the engine the user picked. Only when nothing could be measured does it fall
-  back to the order the engines declare (EngineSpec.ladder_rank).
+  that order, after the engine the user picked. When nothing could be measured, the same rules
+  rank the engines on their record over the whole flow (fitness.flow_ranking): never a fixed order.
 * The budgets stay as they are. A switch spends one of the run's existing attempts and needs the
   time for the new engine's own run cap; the retries are shared across rungs rather than spent
   on the first one alone.
@@ -78,21 +78,19 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 def fallback_order(flow: str, state: Mapping | None = None) -> tuple[str, ...]:
-    """THE LADDER ORDER for a flow: every implemented engine designed for it, in the MEASURED
-    order for this run's geometry when the run has one (measured_ranking: best lab record on
-    shapes like it first), else in the order the engines DECLARE (EngineSpec.ladder_rank: most
-    robust input handling first - cfMesh wraps dirty surfaces - then the body-fitted hex mesher,
-    then the tetrahedral engines). Derived, never listed here, so a new engine joins the ladder
-    from its own spec. The approved engine always stays the first rung (ladder), and only the
-    rungs that pass the approved request's own admission rules - the file's form included - are
-    ever considered."""
+    """THE LADDER ORDER for a flow (ENG-5): every implemented engine designed for it, in the SAME
+    ranked order the recommendation gave this run's geometry (measured_ranking: the home engine
+    for its shape class first, then the 95% lower bounds of the lab record on shapes like it -
+    engines/fitness.py). When the run's geometry could not be measured, the same rules rank the
+    engines on their record over the whole flow (fitness.flow_ranking) - never a fixed order. An
+    engine the measured ranking left out keeps its place by that flow ranking. Derived, never
+    listed here, so a new engine joins the ladder from its own spec. The approved engine always
+    stays the first rung (ladder), and only the rungs that pass the approved request's own
+    admission rules - the file's form included - are ever considered."""
     from meshpipeline.engines.capability import ladder_order
-    order = ladder_order(flow)
-    ranking = measured_ranking(state)
-    if not ranking:
-        return order
-    from meshpipeline.engines.fitness import ranked_engines
-    return tuple(ranked_engines(order, ranking))
+    from meshpipeline.engines.fitness import flow_ranking, ranked_engines
+    order = ranked_engines(ladder_order(flow), flow_ranking(flow))
+    return tuple(ranked_engines(order, measured_ranking(state)))
 
 
 def measured_ranking(state: Mapping | None) -> list[str]:
@@ -142,6 +140,8 @@ def measure_order(state: Mapping) -> dict:
     return {"order": rec.ranking,
             "order_source": "measured" if traits.measured else "flow",
             "order_recommended": rec.engine, "order_shape": rec.shape,
+            # the rule that put the recommended engine first (fitness ENG-2/3/4), for the record
+            "order_rule": getattr(rec.fit_of(rec.engine), "rule", "") or "",
             "order_table": rec.table_version,
             "order_reasons": {f.engine: f.reason for f in rec.fits}, **counted}
 
@@ -302,10 +302,13 @@ class Rung:
     same_contract: bool
     #: what would differ from the approved mesh, in plain words (empty iff same_contract)
     changes: tuple[str, ...] = ()
+    #: the only differences are the KIND of mesh - its file format and its cell type - with every
+    #: requested layer, wall fit, plan requirement and setting kept (_kind_changes; rule SW-16)
+    kind_only: bool = False
 
     def as_dict(self) -> dict:
         return {"engine": self.engine, "same_contract": self.same_contract,
-                "changes": list(self.changes)}
+                "changes": list(self.changes), "kind_only": self.kind_only}
 
 
 def engine_label(name: str) -> str:
@@ -524,6 +527,27 @@ def _changes(approved_spec, spec, layers: LayerRequest) -> tuple[str, ...]:
     return tuple(out)
 
 
+#: Failures that leave NO mesh at all: a time-out, a crash, a run that never built (rule SW-16 moves
+#: a system-picked engine's run across mesh kinds on these, as on a broken mesh)
+_NO_MESH_CAUSES = frozenset({FailureCause.ENGINE_TIMED_OUT.value, FailureCause.ENGINE_CRASHED.value,
+                             FailureCause.NOT_BUILT.value})
+
+
+def _kind_changes(approved_spec, spec) -> tuple[str, ...]:
+    """The changes _changes states that are only the KIND of mesh - its file format and its cell
+    type (rule SW-16) - in the same words."""
+    a, c = approved_spec.delivered_mesh, spec.delivered_mesh
+    if a is None or c is None:
+        return ()
+    out: list[str] = []
+    if spec.export_formats[:1] != approved_spec.export_formats[:1]:
+        out.append(f"you would get {_format_words(spec)} instead of "
+                   f"{_format_words(approved_spec)}")
+    if c.cells != a.cells:
+        out.append(f"{c.cells} cells instead of {a.cells} ones")
+    return tuple(out)
+
+
 def _plan_changes(spec, layers: LayerRequest, requirements: tuple[str, ...]) -> list[str]:
     """What the approved PLAN builds that this engine's declaration does not (plan_requirements),
     in plain words - beyond what _changes already says about layers the request asked for."""
@@ -588,7 +612,9 @@ def ladder(state: Mapping) -> list[Rung]:
         changes += _plan_changes(spec, layers, requirements)
         if not _params_carry_over(state, spec):
             changes.append(f"{engine_label(name)}'s own settings would take their defaults")
-        rungs.append(Rung(name, not changes, tuple(changes)))
+        kind = _kind_changes(approved_spec, spec)
+        rungs.append(Rung(name, not changes, tuple(changes),
+                          kind_only=bool(changes) and set(changes) <= set(kind)))
     return rungs
 
 
@@ -657,6 +683,24 @@ def classify(state: Mapping) -> Failure | None:
         # is", which sends a user to repair a file that is fine
         return Failure(kind, cause.value, _by_design_reason(facts), stopped)
     return Failure(kind, cause.value, _REASON_BY_CAUSE[cause], stopped)
+
+
+def another_engine_takes_over(state: Mapping) -> bool:
+    """Whether the ladder moves this failed run to another engine NOW - asked by the graph's router
+    before it ends a run whose failure a retry of the SAME engine cannot change (route_after_executor).
+    A deterministic refusal is the engine's own: snappyHexMesh refusing a case whose staging found
+    16 separate passages refuses it on every re-run, and cfMesh meshes them side by side. The router
+    ended such runs before the ladder could move them (a shell-and-tube bundle, e2e 2026-10-20).
+    False whenever the ladder would not switch: the run then ends exactly as before."""
+    try:
+        failure = classify(state)
+        if failure is None or failure.kind == NEVER:
+            return False
+        st = with_staged_passages(state)
+        return bool(decide(st, record=with_attempt(st, failure)).switch_to)
+    except Exception:  # noqa: BLE001 - a question the ladder cannot answer keeps the run's end
+        logger.warning("engine ladder: could not tell whether another engine takes over", exc_info=True)
+        return False
 
 
 def broken_cells(facts: Mapping | None) -> list[str]:
@@ -796,6 +840,8 @@ class Decision:
     switch_to: str = ""
     why: str = ""               # the policy reason, for the log and the record
     failure: Failure | None = None
+    #: what the engine switched to changes about the mesh (SW-16: its kind), said to the user
+    changes: tuple[str, ...] = ()
 
     @property
     def switch(self) -> bool:
@@ -871,6 +917,32 @@ def decide(state: Mapping, *, record: Mapping, now: float | None = None) -> Deci
     open_rungs = [r for r in ladder({**state, "engine_ladder": record})
                   if r.same_contract and r.engine not in tried
                   and not _measures_its_input(r.engine)]
+    if not open_rungs and (failure.kind == ENGINE or failure.cause in _NO_MESH_CAUSES):
+        # SW-16: THE SYSTEM'S OWN PICK MADE NO MESH, OR A BROKEN ONE (may_switch_on_its_own,
+        # above: never a user-named engine). The next engine in the same ranking (ENG-5) takes the
+        # run even when it delivers another KIND of mesh - its file format and cell type, never
+        # fewer layers, a worse wall fit, a lost requirement or a setting - and the user is told
+        # what changes. VMTK, the home engine for tubes, timed out on the Fluent aorta in every
+        # lab run and broke on sharp orifice plates, and the run had no rung to go to (e2e,
+        # 2026-10-20).
+        kind_rungs = [r for r in ladder({**state, "engine_ladder": record})
+                      if r.kind_only and r.engine not in tried
+                      and not _measures_its_input(r.engine)]
+        left = bcfg.MAX_BUILDER_RETRIES + 1 - int(state.get("retry_count", 0) or 0)
+        if kind_rungs and left >= 1:
+            target_rung = kind_rungs[0]
+            clock = time.time() if now is None else now
+            if remaining_seconds(state, now=clock) < rung_seconds(target_rung.engine):
+                from meshpipeline.engines.determinism import note_time_limit
+                note_time_limit("engine_fallback", f"no switch to {target_rung.engine}: too little "
+                                "time left", left_s=remaining_seconds(state, now=clock),
+                                needed_s=rung_seconds(target_rung.engine))
+                return Decision(why=f"too little time left for a {engine_label(target_rung.engine)} "
+                                    "run", failure=failure)
+            return Decision(switch_to=target_rung.engine, failure=failure,
+                            changes=target_rung.changes,
+                            why="the system's own pick made no usable mesh, so the next ranked "
+                                "engine takes over with another kind of mesh")
     if not open_rungs:
         st = {**state, "engine_ladder": record}
         if [e for e in held_back_by_passages(st) if e not in tried]:
@@ -915,19 +987,30 @@ def decide(state: Mapping, *, record: Mapping, now: float | None = None) -> Deci
 
 
 def with_switch(record: Mapping, *, attempt: int, frm: str, to: str, failure: Failure,
-                why: str) -> dict:
+                why: str, changes: tuple[str, ...] = ()) -> dict:
     rec = dict(record)
     switches = [dict(s) for s in (rec.get("switches") or []) if isinstance(s, Mapping)]
     if not any(int(s.get("attempt", -1)) == attempt for s in switches):
         switches.append({"attempt": attempt, "from": frm, "to": to, "because": failure.cause,
-                         "kind": failure.kind, "reason": failure.reason, "why": why})
+                         "kind": failure.kind, "reason": failure.reason, "why": why,
+                         **({"changes": list(changes)} if changes else {})})
     rec["switches"] = switches
     return rec
 
 
-def switch_note(frm: str, to: str, failure: Failure) -> str:
+def switch_note(frm: str, to: str, failure: Failure, changes: tuple[str, ...] = ()) -> str:
+    if changes:
+        # SW-16: another kind of mesh - said plainly, before it is built
+        return (f"{engine_label(frm)} could not mesh this shape: {failure.reason}. Trying "
+                f"{engine_label(to)} next - same boundaries, same units and the same settings you "
+                f"approved, but {'; '.join(_unyou(c) for c in changes)}.")
     return (f"{engine_label(frm)} could not mesh this shape: {failure.reason}. Trying "
             f"{engine_label(to)} next - same boundaries, same units, same settings you approved.")
+
+
+def _unyou(change: str) -> str:
+    """'you would get X instead of Y' -> 'you will get X instead of Y' (the switch is happening)."""
+    return change.replace("you would get ", "you will get ", 1)
 
 
 def fresh_start_brief(frm: str, to: str, failure: Failure) -> str:
@@ -1212,12 +1295,24 @@ def delivered_note(record: Mapping) -> str:
                 f"{engine_label(by)}: {why}.")
         if short:
             text += " It is short of: " + "; ".join(short) + "."
+        # SW-16: a mesh from an engine the run moved to across mesh kinds says what kind it is
+        kind = [str(c) for s in switches if str(s.get("to") or "") == by
+                for c in (s.get("changes") or []) if str(c).strip()]
+        if kind:
+            text += (" It is another kind of mesh than the one approved: "
+                     + "; ".join(c.replace("you would get ", "you get ", 1) for c in kind) + ".")
         return text
     if not switches:
         return ""
     first, last = switches[0], switches[-1]
     if by != str(last.get("to") or ""):
         return ""
+    changes = [str(c) for s in switches for c in (s.get("changes") or []) if str(c).strip()]
+    if changes:
+        return (f"The first engine, {engine_label(str(first.get('from')))}, could not mesh this "
+                f"shape ({first.get('reason')}), so this mesh was built with "
+                f"{engine_label(str(last.get('to')))} - same boundaries, same units, same settings "
+                f"you approved, but {'; '.join(c.replace('you would get ', 'you get ', 1) for c in changes)}.")
     return (f"The first engine, {engine_label(str(first.get('from')))}, could not mesh this shape "
             f"({first.get('reason')}), so this mesh was built with "
             f"{engine_label(str(last.get('to')))} - same boundaries, same units, same settings "
@@ -1263,11 +1358,12 @@ async def node_engine_fallback(state: PipelineState) -> dict:
 
     frm, to = str(state.get("engine") or ""), decision.switch_to
     record = with_switch(record, attempt=attempt, frm=frm, to=to,
-                         failure=decision.failure, why=decision.why)
+                         failure=decision.failure, why=decision.why, changes=decision.changes)
     logger.warning("node_engine_fallback: %s could not mesh this shape (%s: %s) - attempt %d "
                    "moves to %s, which delivers the same approved mesh - job_id=%s",
                    frm, decision.failure.kind, decision.failure.cause, attempt, to, job_id)
-    await _publish(job_id, switch_note(frm, to, decision.failure), f"fallback:{attempt}")
+    await _publish(job_id, switch_note(frm, to, decision.failure, decision.changes),
+                   f"fallback:{attempt}")
     _log_selection(job_id, {
         "chosen": to, "source": "fallback", "from": frm,
         "because": decision.failure.cause, "failure_kind": decision.failure.kind,
@@ -1301,7 +1397,7 @@ __all__ = ["ENGINE", "FIXABLE", "NEVER", "REQ_PRISM_LAYERS", "REQ_WAKE", "REVIEW
            "delivered_note", "engine_source", "fallback_order", "fresh_start_brief",
            "final_record", "ladder", "layer_request", "may_switch_on_its_own", "measure_order",
            "measured_ranking", "mesher_started", "moves_on_from_broken_mesh", "broken_cells",
-           "seed_measured_order", "PASSAGES_MEASURED", "PASSAGES_STAGED", "covers_case",
+           "seed_measured_order", "PASSAGES_MEASURED", "PASSAGES_STAGED", "another_engine_takes_over", "covers_case",
            "held_back_by_passages", "passages_of", "with_staged_passages",
            "node_engine_fallback", "offer", "refused_by_design", "remaining_seconds",
            "rung_seconds", "switch_note", "takers_by_form", "tried_engines", "with_attempt",

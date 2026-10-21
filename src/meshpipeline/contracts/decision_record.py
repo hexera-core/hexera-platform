@@ -36,7 +36,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 #: docs/RULES.md "Rulebook version". Raised whenever a rule changes what it decides.
-RULES_VERSION = "4"
+RULES_VERSION = "5"
 
 SOURCE_RULE = "rule"
 SOURCE_USER = "user"
@@ -99,7 +99,10 @@ def engine_pick(inputs: Mapping[str, Any]) -> tuple[str, str]:
     if own and approved == own[0]:
         return approved, "ENG-7"
     if measured and recommended and approved == recommended:
-        return approved, "ENG-4"
+        # the recommendation's own rule: the home engine (ENG-2), a record that clearly beat it
+        # (ENG-3), or the ranked record (ENG-4)
+        rule = str(inputs.get("recommended_rule") or "")
+        return approved, rule if rule in ("ENG-2", "ENG-3") else "ENG-4"
     if source == _CONFIRMED:
         return approved, "ENG-9"
     # nobody named an engine and nothing was ranked: the run's own selection took the declared
@@ -141,6 +144,7 @@ SWITCH_RULES: tuple[tuple[str, str], ...] = (
     ("too little time left for a ", "SW-13"),
     ("the fallback ladder is switched off", "SW-14"),
     ("the last attempt did not fail", "SW-15"),
+    ("the system's own pick made no usable mesh", "SW-16"),
 )
 #: the switch rules a clock decides
 _CLOCK_SWITCH_RULES = frozenset({"SW-13"})
@@ -157,7 +161,8 @@ def switch_rule(why: str) -> str:
 
 #: the failure kinds (engine_fallback's classes) each moving rule can follow: no mesh or a broken
 #: one is an ENGINE failure; a repeated or shared-attempt move follows a FIXABLE one
-_MOVES_ON = {"SW-1": ("engine",), "SW-2": ("engine",), "SW-3": ("fixable",), "SW-4": ("fixable",)}
+_MOVES_ON = {"SW-1": ("engine",), "SW-2": ("engine",), "SW-3": ("fixable",), "SW-4": ("fixable",),
+             "SW-16": ("engine", "fixable")}
 
 
 def switch(inputs: Mapping[str, Any]) -> tuple[str, str]:

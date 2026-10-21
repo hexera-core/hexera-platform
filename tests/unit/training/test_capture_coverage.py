@@ -36,7 +36,7 @@ def test_pinned_engine_emits_event_with_user_source(capture_authority, monkeypat
                                  "model": None, "usage": None, "planner_required": True,
                                  "engine_source": "",
                                  "ladder": [{"engine": "snappy", "same_contract": True,
-                                             "changes": []}]}
+                                             "changes": [], "kind_only": False}]}
 
 
 def test_dispute_pin_emits_event_with_dispute_source(capture_authority, monkeypatch, tmp_path):
@@ -71,7 +71,8 @@ def test_internal_purpose_force_emits_event(capture_authority, monkeypatch, tmp_
                   "engine_source": ""}
     assert pl["chosen"] in engines_producing_topology("internal")
     # the ladder starts at the chosen engine; every rung can build an internal flow
-    assert ladder[0] == {"engine": default_engine(), "same_contract": True, "changes": []}
+    assert ladder[0] == {"engine": default_engine(), "same_contract": True, "changes": [],
+                         "kind_only": False}
     assert {r["engine"] for r in ladder} <= set(engines_producing_topology("internal"))
 
 

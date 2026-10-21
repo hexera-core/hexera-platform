@@ -16,7 +16,7 @@ from meshpipeline.agents.reviewer.visual import node_reviewer
 from meshpipeline.contracts.failure_cause import retry_can_help
 from meshpipeline.contracts.pipeline_state import PipelineState
 from meshpipeline.pipeline.classifier import node_classifier
-from meshpipeline.pipeline.engine_fallback import node_engine_fallback
+from meshpipeline.pipeline.engine_fallback import another_engine_takes_over, node_engine_fallback
 from meshpipeline.pipeline.engine_select import node_engine_select
 from meshpipeline.pipeline.enums import Verdict
 from meshpipeline.pipeline.executor import node_executor
@@ -225,6 +225,14 @@ def route_after_executor(
     # decides; an unknown or absent cause keeps the ladder as it was.
     _cause = state.get("executor_failure_cause", "") or ""
     if not retry_can_help(_cause, state.get("executor_failure_facts") or {}):
+        # ...the SAME engine's next attempt. Another engine may change it (its declared limit -
+        # a passage count, a form - is not the next engine's): when the ladder moves the run now,
+        # the classifier and the ladder take it (engines/fitness ENG-5)
+        if retry_count <= bcfg.MAX_BUILDER_RETRIES and another_engine_takes_over(state):
+            logger.info("route_after_executor: executor FAIL with cause %r, which another attempt "
+                        "on this engine cannot change - another engine takes over → classifier "
+                        "- job_id=%s", _cause, state.get("job_id"))
+            return "node_classifier"
         logger.warning(
             "route_after_executor: executor FAIL with cause %r, which another attempt cannot "
             "change - not retrying (attempt=%d/%d) → END - job_id=%s",

@@ -4,7 +4,7 @@ Every decision a mesh run makes on its own is made by a written rule. Each rule 
 and each decision the run records in its "why" record names the rule behind it
 (`contracts/decision_record.py`). This file is the one home for those rules.
 
-Rulebook version: **4**
+Rulebook version: **5**
 
 How the book is kept honest:
 
@@ -33,10 +33,10 @@ Each decision in the record also says where it came from:
 | ID | Status | Rule |
 |---|---|---|
 | ENG-1 | in force | **Only engines that can take the case are ranked.** An engine is a candidate only if its declared capability covers the flow, the file's form, the number of separate passages and the layers asked for. |
-| ENG-2 | planned (D1) | **Home turf first.** When the shape's measured facts put an engine "home", that engine comes first. |
-| ENG-3 | planned (D1) | **The scoreboard overrides home turf only when it clearly wins:** the challenger has at least 20 runs on this shape class, and its 95% lower bound is above the home engine's 95% upper bound. |
-| ENG-4 | in force | **The best lab record on shapes like this one comes first.** The run's geometry is measured, and engines are ranked by their record on its shape class (`engines/fitness.py`). When that record is thin, the record says so. An engine whose declared turf puts the shape outside is never recommended. Ties go to fewer broken meshes, then fewer bad cells, then the declared turf, layers and ladder order. |
-| ENG-5 | in force | **The fallback ladder walks the same ranking**, after the approved engine, minus the engines already tried and the engines that would refuse the case. |
+| ENG-2 | in force | **Home turf first.** An engine that declares the measured shape class its home (`EngineSpec.home_classes`: VMTK for tubes and branching passages) comes first, unless its own turf rows mark the case a weak spot or outside. Two home engines rank between themselves by ENG-4. |
+| ENG-3 | in force | **The lab record overrides home turf only when it clearly wins:** the challenger has at least 20 runs on at least 8 different shapes of this class, no quality fault, and a 95% lower bound above the home engine's 95% upper bound. A home engine whose own record of 20+ runs here shows a quality fault also loses first place. A home engine never tried on the class keeps it ("home turf unproven"). |
+| ENG-4 | in force | **The best lab record on shapes like this one comes first.** The run's geometry is measured, and engines are ranked by the Wilson 95% lower bound of their pass rate on its shape class (`engines/fitness.py`), each run short of 20 counted as a miss, so 7 of 8 never beats 14 of 19. The table is dev-side runs only, versioned (`docs/engines/fitness-changelog.md`). An engine with a quality fault ranks after the sound ones; an engine whose declared turf puts the shape outside is never recommended. Ties go to fewer broken meshes, then fewer bad cells, then the declared turf, layers and ladder order. Time never breaks a tie. |
+| ENG-5 | in force | **The fallback ladder walks the same ranking**, after the approved engine, minus the engines already tried and the engines that would refuse the case. With nothing measured, the same rules rank the engines on their record over the whole flow, never a fixed order. |
 | ENG-6 | in force | **The user's pick stands.** An engine the user named is never switched on its own; another engine is only offered. A dispute keeps the engine of the mesh it disputes. |
 | ENG-7 | in force | **An engine that reads the upload's own format comes first**, measured or not: a conversion loses what the file describes (an ECXML's parts, materials and powers). |
 | ENG-8 | in force | **Nothing measured, nothing named: the declared default.** When the run's geometry could not be measured, a run nobody chose an engine for takes the engine the declarations name for its flow (or the flow-only order). |
@@ -64,6 +64,7 @@ review. The order the run moves in is ENG-5.
 | SW-13 | in force | **Stay: too little time left** for the next engine's run. A clock decides this one (source `guard-clock`); D3 removes it. |
 | SW-14 | in force | **Stay: the fallback ladder is switched off** by a setting. |
 | SW-15 | in force | **No decision: the last attempt did not fail.** |
+| SW-16 | in force | **Move on, to another kind of mesh: the system's own pick made no mesh, or a broken one** (a time-out, a crash, a stop before meshing, broken cells), and no untried engine delivers the same kind. The next engine in the ranking takes the run when the only differences are the mesh's file format and cell type: never fewer layers, a worse wall fit, a lost requirement or a setting. The user is told what changes, as it happens and beside the delivered mesh. Never for an engine the user named (ENG-6). |
 
 ## DEL: which valid mesh a run delivers
 

@@ -1,6 +1,6 @@
 # Responsibility: Verify the fallback ladder walks the engines in the MEASURED order for the run's geometry - the
-# order the recommendation ranked them in - after the engine the user picked, and falls back to the declared
-# order only when nothing could be measured.
+# order the recommendation ranked them in - after the engine the user picked, and, when nothing could be
+# measured, in the same rules' order over the whole flow - never a fixed list.
 # Boundaries: pipeline/engine_fallback.py and pipeline/engine_select.py over a real STEP solid built here and a
 # synthetic fitness table; no mesher runs.
 from __future__ import annotations
@@ -51,11 +51,14 @@ def _tube_state(tmp_path, **kw) -> dict:
 
 @pytest.fixture
 def gmsh_best(monkeypatch):
-    """A table in which Gmsh passed every tube and the others failed most: the measured order for a
-    tube is then Gmsh first, against the declared cfMesh-first order."""
+    """A table in which Gmsh passed every one of 25 tubes and the others failed most - VMTK, the
+    home engine for tubes, 2 of its 5: Gmsh's record clearly beats the home engine's (fitness
+    ENG-3), so the measured order for a tube is Gmsh first, against the declared cfMesh-first order."""
     rows = []
-    for i in range(5):
-        for engine, ok in (("gmsh", True), ("snappy", i < 3), ("cfmesh", i < 1), ("vmtk", i < 2)):
+    for i in range(25):
+        for engine, ok in (("gmsh", True), ("snappy", i < 15), ("cfmesh", i < 5), ("vmtk", i < 2)):
+            if engine == "vmtk" and i >= 5:
+                continue
             rows.append({"shape": f"t{i}", "case": f"t{i}", "engine": engine, "format": "step",
                          "status": "pass" if ok else "fail", "traits": TUBE})
     table = F.table_from({"version": "test", "traits_version": TRAITS_VERSION, "rows": rows})
@@ -63,14 +66,16 @@ def gmsh_best(monkeypatch):
     return table
 
 
-def test_without_a_measured_order_the_declared_order_stands():
+def test_without_a_measured_order_the_flow_ranking_stands():
     assert lad.fallback_order("internal") == lad.fallback_order("internal", {"engine_ladder": {}})
+    assert lad.fallback_order("internal") == F.flow_ranking("internal")
     assert lad.measured_ranking({}) == []
 
 
-def test_the_measured_order_leads_and_engines_it_did_not_rank_keep_their_declared_place():
+def test_the_measured_order_leads_and_engines_it_did_not_rank_keep_their_flow_ranked_place():
     st = {"engine_ladder": {"order": ["vmtk", "snappy"]}}
-    assert lad.fallback_order("internal", st) == ("vmtk", "snappy", "cfmesh", "gmsh")
+    rest = [e for e in F.flow_ranking("internal") if e not in ("vmtk", "snappy")]
+    assert lad.fallback_order("internal", st) == ("vmtk", "snappy", *rest)
 
 
 def test_the_run_measures_its_geometry_and_ranks_the_engines_that_can_build_it(tmp_path, gmsh_best):
@@ -79,7 +84,7 @@ def test_the_run_measures_its_geometry_and_ranks_the_engines_that_can_build_it(t
     assert info["order"][0] == "gmsh" and info["order_recommended"] == "gmsh"
     assert set(info["order"]) == set(lad.able_engines(_tube_state(tmp_path)))
     assert info["order_shape"] == "a long passage about as wide as its openings"
-    assert info["order_reasons"]["gmsh"].startswith("passed 5 of 5 similar shapes")
+    assert info["order_reasons"]["gmsh"].startswith("passed 25 of 25 similar shapes")
     assert info["order_table"] == "test"
 
 
@@ -118,7 +123,8 @@ def test_the_users_engine_stays_first_and_the_measured_order_follows_it(tmp_path
 def test_the_closing_offer_names_the_best_measured_engine_not_the_first_declared(tmp_path, gmsh_best):
     # cfMesh and then snappyHexMesh failed. With no engine left that builds the same mesh (both
     # hex engines tried; cfMesh delivers what snappy does), the declared order would offer VMTK
-    # next; the measured order for this tube offers the engine with the best record on tubes.
+    # next; the measured order for this tube - and, before it is measured, the same rules over all
+    # internal flow - offers the engine with the best record.
     st = _tube_state(tmp_path, engine="snappy", engine_source=lad.SOURCE_USER, retry_count=2,
                      executor_success=False, executor_failed_gate="finalize",
                      executor_failure_cause="engine_crashed",
@@ -129,7 +135,7 @@ def test_the_closing_offer_names_the_best_measured_engine_not_the_first_declared
     plain = lad.final_record(st, succeeded=False, system_failure=False)["offer"]
     st["engine_ladder"] = {**st["engine_ladder"], **lad.measure_order(st)}
     measured = lad.final_record(st, succeeded=False, system_failure=False)["offer"]
-    assert plain["engine"] == "vmtk", plain
+    assert plain["engine"] == "gmsh", plain
     assert measured["engine"] == "gmsh", measured
     assert 'Reply "use Gmsh"' in measured["text"]
 
