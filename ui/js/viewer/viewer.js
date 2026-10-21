@@ -19,6 +19,9 @@ import { VIEWER_FALLBACK } from "./config.js";
 import { MOUSE_HINT, bindMouse, isUpAxis, orient, saveUp, savedUp, shield, upSelectHtml, upVector } from "./view_controls.js";
 // a delivered thermal model (an ECXML upload) is read part by part, with slices and its own files
 import { bindThermalResults, sliceColour, thermalDownloads, thermalResultsHtml } from "./thermal_results.js";
+// a delivered FEA mesh (a structural solid) is read face by face, with its quality against each
+// solver limit, its plan and its hot spots (FEA build step 5)
+import { bindFeaResults, feaDownloads, feaResultsHtml } from "./fea_results.js";
 
 let _vtkP=null;
 function loadVtk(){if(window.vtk)return Promise.resolve();
@@ -100,6 +103,7 @@ export async function openViewer(job,anchorEl,opts){
         </div>`:''}
       <div class="v-sec v-dl">${_dlHtml}</div>
       <div class="v-thermal" id="v-thermal-${job}"></div>
+      <div class="v-fea" id="v-fea-${job}"></div>
       <div class="v-facts" id="v-facts-${job}"></div>
       <!-- MESH PARTS: every selectable entity the loaded case actually declares -
            boundary patches, regions, cell zones, face zones, layer groups. The list
@@ -846,6 +850,8 @@ function initViewer(job,surf,uiCfg){
   statusEl.textContent=thermal&&surf.is_mesh
     // a thermal model says what it is in its own words: its parts, its cells, its power
     ?'your delivered thermal mesh · '+(thermal.summary||'')
+    // so does an FEA mesh: its elements, its level and its named faces
+    :surf.fea&&surf.is_mesh?'your delivered FEA mesh · '+(surf.fea.summary||'')
     :(surf.is_mesh?'your delivered mesh · '
                 :'input surface - the mesh itself could not be rendered · ')
     +(surf.patches||[]).map(p=>`${p.name}: ${(p.face_count||p.tri_count||0).toLocaleString()} faces`).join(' · ');
@@ -907,6 +913,36 @@ function initViewer(job,surf,uiCfg){
     window._vdbg[job+':thermal']={slice:name=>{api&&api.slice(name);showSlice(name);},
       sliceOn:()=>sliceOn,slices:()=>Object.fromEntries(Object.entries(sliceActors).map(([n,l])=>[n,l.length])),
       isolate:name=>{if(partsApi)partsApi.isolate(name);api&&api.pick(name);},
+      visible:()=>entries.filter(e=>e.actor.getVisibility()).map(e=>e.patch),
+      text:()=>host.innerText};
+  })();
+
+  /* A DELIVERED FEA MESH - its quality against each solver limit, the through-wall check, the
+     plan in words, its hot spots and every named face (viewer/fea_results.js). A face picked there
+     is shown alone through the parts panel; a hot spot also gets a marker where it is. */
+  (function feaResults(){
+    const fea=surf.fea||null,host=document.getElementById('v-fea-'+job);
+    if(!fea||!host)return;
+    let marker=null;
+    function point(at){
+      if(marker){ren.removeActor(marker);marker=null;}
+      const S=vtk.Filters&&vtk.Filters.Sources&&vtk.Filters.Sources.vtkSphereSource;
+      if(at&&at.length===3&&S){
+        const src=S.newInstance({center:at,radius:Math.max(diag*0.012,1e-9),thetaResolution:20,phiResolution:14});
+        const mapper=vtk.Rendering.Core.vtkMapper.newInstance();mapper.setInputConnection(src.getOutputPort());
+        marker=vtk.Rendering.Core.vtkActor.newInstance();marker.setMapper(mapper);
+        const pr=marker.getProperty();pr.setColor(_SEL[0],_SEL[1],_SEL[2]);pr.setAmbient(0.6);
+        if(marker.setPickable)marker.setPickable(false);
+        ren.addActor(marker);}
+      rw.render();}
+    host.innerHTML=feaResultsHtml(job,fea);
+    feaDownloads(document.querySelector('#viewer-'+job+' .v-dl'),job,fea);
+    const api=bindFeaResults(host,job,fea,{
+      isolate:name=>{if(partsApi)partsApi.isolate(name);},
+      point:at=>point(at)});
+    window._vdbg=window._vdbg||{};
+    window._vdbg[job+':fea']={isolate:name=>{if(partsApi)partsApi.isolate(name);api&&api.pick(name);},
+      point:at=>point(at),marker:()=>!!marker,
       visible:()=>entries.filter(e=>e.actor.getVisibility()).map(e=>e.patch),
       text:()=>host.innerText};
   })();

@@ -9,11 +9,13 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
-def read_msh(workspace) -> dict | None:
+def read_msh(workspace, *, by_face: bool = False) -> dict | None:
     """mesh.msh as the viewer needs it: points (P,3), the volume cells by kind (corner nodes
     only - a second-order element lists its corners first, and gmsh says how many), and the
     named boundary groups as polygons of point indices, in the order the surface is drawn.
-    None when there is no mesh yet; {} when the file could not be read (logged)."""
+    None when there is no mesh yet; {} when the file could not be read (logged). `by_face`: one
+    patch per CAD face, named Face_k as the FEA deck names it (an FEA mesh, whose groups are not
+    the user's faces), instead of one per physical group."""
     msh = Path(workspace) / "mesh.msh"
     if not msh.exists() or msh.stat().st_size == 0:
         return None
@@ -44,6 +46,24 @@ def read_msh(workspace) -> dict | None:
                 cells.append(block)
 
         patches: list = []
+        if by_face:
+            seen: set = set()
+            for dim, ptag in gmsh.model.getPhysicalGroups(2):
+                for ent in gmsh.model.getEntitiesForPhysicalGroup(dim, ptag):
+                    if int(ent) in seen:
+                        continue
+                    seen.add(int(ent))
+                    face_polys: list = []
+                    etypes, _etags, enodes = gmsh.model.mesh.getElements(2, ent)
+                    for et, nodes in zip(etypes, enodes):
+                        block = corners(et, nodes)
+                        if block.shape[1] in (3, 4):
+                            face_polys.extend(block.tolist())
+                    if face_polys:
+                        patches.append((f"Face_{int(ent)}", face_polys))
+            patches.sort(key=lambda np_: int(np_[0].split("_")[1]))
+            gmsh.model.remove()
+            return {"points": points, "cells": cells, "patches": patches}
         for dim, ptag in gmsh.model.getPhysicalGroups(2):
             name = gmsh.model.getPhysicalName(dim, ptag) or f"group_{ptag}"
             polys: list = []

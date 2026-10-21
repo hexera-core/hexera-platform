@@ -159,11 +159,19 @@ def mesh(workspace) -> int:
         deck = D._write_deck(gmsh, ws, discrete=False)
         gmsh.write(str(ws / "mesh.msh"))
         rules: dict = {}
+        shape: dict = {}
         try:
+            from meshpipeline.engines import fea_quality
             from meshpipeline.engines.gmsh.abaqus_deck import from_gmsh
-            rules = checks.measure(from_gmsh(gmsh, sorted(vols)), plan)
-        except Exception as exc:  # noqa: BLE001 - evidence; the driver then judges no rule
-            print(f"[GMSH-FEA] plan rules not measured: {exc}", file=sys.stderr)
+            solid = from_gmsh(gmsh, sorted(vols))
+            rules = checks.measure(solid, plan)
+            # THE ELEMENTS AS THE SOLVERS JUDGE THEM (engines/fea_quality.py): the gate refuses an
+            # inverted element (VER-1); the verdict holds the rest to the production limits (VER-2)
+            shape = fea_quality.measure(solid)
+        except Exception as exc:  # noqa: BLE001 - evidence; an unmeasured row decides as unmeasured
+            print(f"[GMSH-FEA] plan rules or element quality not measured: {exc}", file=sys.stderr)
+        if shape.get("fea_inverted"):
+            fatal.append(f"{shape['fea_inverted']} inverted element(s) (Jacobian not above zero)")
         tw = (rules.get("through_wall") or {}).get("min")
         (ws / "quality.json").write_text(json.dumps({
             "cells": n_elem, "nodes": n_nodes, "element_order": order,
@@ -174,15 +182,22 @@ def mesh(workspace) -> int:
             "bounds": D._final_node_bounds(gmsh),
             "groups": {"free": "free"}, "default_group": "free", "default_group_used": True,
             "deck": deck,
+            # the worst figures, top level, where the production limits read them
+            **{k: shape.get(k) for k in ("fea_min_scaled_jacobian", "fea_max_jacobian_ratio",
+                                          "fea_max_aspect_ratio", "fea_min_dihedral_deg",
+                                          "fea_max_dihedral_deg", "fea_inverted") if k in shape},
+            "fea_rules_short": len(rules.get("short") or []) if rules else None,
             # THE PLAN'S RULES AS MET (engines/fea_checks.py): the gate reads the through-wall
             # count in place of the flow floor (engines/gmsh/gates.py)
             "fea": {"plan": True, "detail": (plan.get("detail") or {}).get("key"),
                     "estimate": (plan.get("estimate") or {}).get("elements"),
-                    "through_wall_min": tw, "rules": rules},
+                    "through_wall_min": tw, "rules": rules, "quality": shape},
         }, indent=1))
         print(f"[GMSH-FEA] elements={n_elem} (planned ~{(plan.get('estimate') or {}).get('elements')}) "
               f"nodes={n_nodes} order={order} min_sicn={min_sicn:.3f} through_wall_min={tw} "
-              f"short={rules.get('short')}")
+              f"short={rules.get('short')} worst_sj={shape.get('fea_min_scaled_jacobian')} "
+              f"jac_ratio={shape.get('fea_max_jacobian_ratio')} aspect={shape.get('fea_max_aspect_ratio')} "
+              f"dihedral={shape.get('fea_min_dihedral_deg')}-{shape.get('fea_max_dihedral_deg')}")
         return 0 if not fatal else 4
     finally:
         gmsh.finalize()

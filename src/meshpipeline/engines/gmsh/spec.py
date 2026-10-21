@@ -88,6 +88,18 @@ def _viewer_surface():
     from meshpipeline.render.volume_quality import attach_volume_quality
 
     def _hook(workspace, *, roles, units, skip_names=()):
+        from pathlib import Path
+        if (Path(workspace) / "fea_plan.json").exists():
+            # AN FEA MESH (FEA build step 5): every CAD face its own clickable part, Face_k as the
+            # deck names it, and the FEA result block - FEA numbers, never a flow mesh's heatmap
+            from meshpipeline.engines.fea_results import results
+            mesh = read_msh(workspace, by_face=True)
+            resp = stl_response(surface_patches_of(mesh), roles, units, skip_names)
+            if resp:
+                fea = results(workspace)
+                if fea:
+                    resp["fea"] = fea
+            return resp
         # named boundary groups from mesh.msh → the shared kind=stl payload, coloured by the
         # quality of the cells behind each face - the same measurement an OpenFOAM mesh gets
         mesh = read_msh(workspace)

@@ -183,12 +183,32 @@ def inputs_for(*, engine: str, topology: str, manifest: Mapping | None, valid: b
                        "measured": _plain(measured), "source": lim.source})
     for row in _declared_advisory(engine):
         limits.append({**row, "measured": _plain(quality.get(row["key"]))})
+    limits.extend(fea_limits(quality))
     return {"engine": engine, "topology": topology, "valid": bool(valid),
             "failed_gate": str(failed_gate or ""), "layers_planned": bool(layers_planned),
             "gating": gating_rows(engine, mf) if valid else [],
             "limits": limits,
             # what the AI reviewer wrote, for the record only: never read by the verdict
             "review_notes": len(list(notes or ()))}
+
+
+#: The FEA plan's own rule row (VER-2): every hot spot met its count on the mesh (the walls are
+#: gating, engines/gmsh/gates.py).
+FEA_RULES_ROW = ("fea_rules_short", "Mesh zones short of the FEA plan's rules", "<=", 0,
+                 "engines/fea_checks.py (elements per quarter-turn and through the wall at each hot spot)")
+
+
+def fea_limits(quality: Mapping) -> list[dict]:
+    """THE FEA ROWS (VER-2), for a mesh built from an FEA plan only (quality.fea.plan): the element
+    quality limits - the strictest of the version-1 solvers (engines/fea_quality.LIMITS) - and the
+    plan's rules as met on the mesh. Engine-neutral: any engine's FEA adapter reports the same keys."""
+    fea = quality.get("fea") if isinstance(quality.get("fea"), Mapping) else {}
+    if not (fea or {}).get("plan"):
+        return []
+    from meshpipeline.engines.fea_quality import LIMITS as FEA_LIMITS
+    rows = [{"key": k, "label": lab, "op": op, "limit": lim, "measured": _plain(quality.get(k)),
+             "source": src} for k, lab, op, lim, src in (*FEA_LIMITS, FEA_RULES_ROW)]
+    return rows
 
 
 def _plain(v: Any) -> Any:
@@ -215,4 +235,5 @@ def words(row: Mapping) -> str:
     return f"{row.get('label')}: measured {measured}, limit {op}{limit_text}"
 
 
-__all__ = ["PRODUCTION_LIMITS", "Limit", "gating_rows", "inputs_for", "limits_for", "words"]
+__all__ = ["FEA_RULES_ROW", "PRODUCTION_LIMITS", "Limit", "fea_limits", "gating_rows", "inputs_for",
+           "limits_for", "words"]

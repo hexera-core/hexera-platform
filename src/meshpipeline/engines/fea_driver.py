@@ -129,6 +129,15 @@ def make_plan(record: dict, surface, diag_m: float, *, fidelity: str, levers: li
         plan = P.finish(record, zone_list, hist, level=level, diag_m=diag_m, base_factor=L.base_factor(levers),
                         relaxed_hist=rhist, levers=levers, growth=L.growth(levers))
     plan["mesh"] = L.mesh_settings(levers)
+    # WHAT THE RESULT SCREEN SHOWS (engines/fea_results.py): every face, and every hot spot where it is
+    plan["faces"] = [{"name": n, "kind": (r or {}).get("kind"), "area_mm2": (r or {}).get("area_mm2"),
+                       "thickness_min_mm": (r or {}).get("thickness_min_mm")}
+                      for n, r in sorted((record.get("faces") or {}).items(), key=lambda kv: P._face_order(kv[0]))]
+    plan["hot_spots"] = [{k: h.get(k) for k in ("id", "type", "shape", "faces", "radius_mm", "angle_deg",
+                                                "length_mm", "depth_mm", "local_thickness_mm", "capped")
+                           if h.get(k) is not None}
+                          | {"at_m": [round(float(c) * 1e-3, 9) for c in (h.get("at_mm") or [])]}
+                          for h in record.get("hot_spots") or []]
     plan["measure"] = {"faces": len(record.get("faces") or {}), "counts": record.get("counts") or {},
                        "thinnest_wall_mm": (record.get("thickness") or {}).get("min_mm"),
                        "bodies": record.get("bodies"), "notes": list(record.get("notes") or [])}

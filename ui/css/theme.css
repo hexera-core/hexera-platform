@@ -522,6 +522,25 @@ th,td{border-color:var(--border)}
 .tr-air,.tr-hint{margin-top:8px;color:var(--text-faint);font:var(--fs-sm)/1.5 var(--sans)}
 .tr-hint{margin-top:2px}
 
+/* A DELIVERED FEA MESH: the quality against each limit, the plan, the hot spots, the named faces */
+.v-fea:empty{display:none}
+.fe .v-sec-h{display:flex;align-items:center;gap:8px}
+.fe-ck td{white-space:normal}
+.fe-check .tr-wrap{max-height:none}
+.fe-ck td.nm span{font:var(--fs-sm)/1.4 var(--sans)}
+.fe-ck td.fe-mk{width:18px;color:var(--text-muted);text-align:center}
+.fe-ck.short td{color:var(--warn)}
+.fe-ck.unm td{color:var(--text-faint)}
+.fe-spot-list{margin:0;padding:0;list-style:none}
+.fe-spot{padding:6px 18px;margin:0 -18px;color:var(--text);font:var(--fs-md)/1.45 var(--sans);cursor:pointer;
+  transition:background .1s}
+.fe-spot:hover{background:var(--hover)}
+.fe-spot.on{background:var(--accent-soft);box-shadow:inset 2px 0 0 var(--accent)}
+.fe-spot:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.fe-spot b{font:var(--fs-sm)/1.4 var(--mono);margin-right:4px}
+.fe-spot small{display:block;color:var(--text-faint);font-size:var(--fs-xs)}
+.fe-spot .fe-short{display:inline;color:var(--warn)}
+
 /* MESH PARTS - a list, and the one selected part's inspector under it */
 .v-bnd{display:block;padding:16px 0 10px;border-top:1px solid var(--divider);background:transparent}
 .v-bnd-head{display:flex;align-items:center;gap:8px;padding:0 18px 6px;border:0}
