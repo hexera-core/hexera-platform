@@ -153,7 +153,7 @@ class _Rays:
                 end = o + d * reach
                 if self.loc.IntersectWithLine(o.tolist(), end.tolist(), 0.0, t, x, pc, sub, cid):  # type: ignore[call-overload]
                     out[i] = float(t) * reach  # type: ignore[arg-type]
-                    cell[i] = int(cid)  # type: ignore[call-overload]
+                    cell[i] = int(cid)
             return _not_grazing(self.s, dirs, out, cell)
         return _numpy_first(self.s, origins, dirs, reach)
 

@@ -40,6 +40,15 @@ pytestmark = pytest.mark.skipif(not (CCX and Path(CCX).exists()),
 #: the detail levels to run (pipeline/enums.MeshFidelity values): Quick by default
 LEVELS = [x.strip() for x in os.environ.get("FEA_ACCURACY_LEVELS", "draft").split(",") if x.strip()]
 REPORT = os.environ.get("FEA_ACCURACY_REPORT", "")
+#: THE MEMORY A SOLVE NEEDS. The static cases are LOADED (tractions, end forces - an iterative
+#: solve of prescribed displacements gave reactions 5-50x off) and use CalculiX's iterative Cholesky
+#: solver: about 0.5 GB
+#: and 20 s at Quick, where its direct solver (SPOOLES) took 5-6 GB and 100 s. A modal or buckling
+#: solve needs the direct solver (Lanczos); at Quick it peaks near 4 GB, at Standard (about five
+#: times the unknowns) it would need well over the 16 GB of a standard CI runner (one was shut down
+#: mid-solve). So at Standard those two cases run only where FEA_ACCURACY_EIGEN_STANDARD=1 says the
+#: machine has the memory (a larger runner); elsewhere they are skipped with this reason.
+EIGEN_AT_STANDARD = os.environ.get("FEA_ACCURACY_EIGEN_STANDARD", "") == "1"
 THREADS = os.environ.get("FEA_ACCURACY_THREADS", "2")
 E = 210e9
 
@@ -207,6 +216,18 @@ def _frd_stress(frd: str) -> dict[int, np.ndarray]:
     return out
 
 
+def _frd_disp(frd: str) -> dict[int, np.ndarray]:
+    """Nodal displacements (UX, UY, UZ) from the .frd."""
+    out: dict[int, np.ndarray] = {}
+    block = frd.split(" DISP ", 1)[1]
+    for ln in block.splitlines()[1:]:
+        if ln.startswith(" -3"):
+            break
+        if ln.startswith(" -1"):
+            out[int(ln[3:13])] = np.array([float(ln[13 + 12 * k:25 + 12 * k]) for k in range(3)])
+    return out
+
+
 def _total(dat: str, comp: int) -> float:
     """A component of the total reaction force printed by *NODE PRINT, TOTALS=ONLY."""
     tail = dat.split("total force", 1)[1]
@@ -238,7 +259,8 @@ def _plate(ws, q):
     a = _pick(nodes, ids, lambda p: p[1] + p[2])
     b = _pick(nodes, ids, lambda p: -p[1] + p[2])
     c = _pick(nodes, ids, lambda p: p[1] - p[2])
-    dat, frd = _solve(ws, "kt", deck, _material("STEEL", 0.0) + f"""*NSET, NSET=PA
+    gross = 1.0e6                                   # 1 MPa of tension on the end face
+    _dat, frd = _solve(ws, "kt", deck, _material("STEEL", 0.0) + f"""*NSET, NSET=PA
 {a}
 *NSET, NSET=PB
 {b}
@@ -250,18 +272,15 @@ PA, 2, 3, 0.0
 PB, 3, 3, 0.0
 PC, 2, 2, 0.0
 *STEP
-*STATIC
-*BOUNDARY
-{load}, 1, 1, 1.0e-4
+*STATIC, SOLVER=ITERATIVE CHOLESKY
+*DSLOAD
+{load}, P, {-gross:.6e}
 *NODE FILE
 S
-*NODE PRINT, NSET={fixed}, TOTALS=ONLY
-RF
 *END STEP
 """)
-    F = abs(_total(dat, 0))
-    smax = max(s[0] for s in _frd_stress(frd).values())
-    net = F / ((PLATE["W"] - PLATE["d"]) * PLATE["t"] * 1e-6)
+    smax = max(st[0] for st in _frd_stress(frd).values())
+    net = gross * PLATE["W"] / (PLATE["W"] - PLATE["d"])
     return smax / net, 2.0 + (1 - PLATE["d"] / PLATE["W"]) ** 3, "net-section Kt"
 
 
@@ -269,22 +288,25 @@ def _cantilever(ws, q):
     deck, nodes, nsets = _deck(ws)
     root = _face(nodes, nsets, lambda p: abs(p[0]) < 1e-9)
     tip = _face(nodes, nsets, lambda p: abs(p[0] - CANT["L"] * 1e-3) < 1e-9)
-    delta = 1.0e-4
-    dat, _frd = _solve(ws, "cb", deck, _material("STEEL", 0.0) + f"""*BOUNDARY
+    force = 1000.0                                  # 1 kN down the end face, shared over its nodes
+    ids = nsets[tip]
+    cloads = "\n".join(f"{i}, 3, {force / len(ids):.12e}" for i in ids)
+    _dat, frd = _solve(ws, "cb", deck, _material("STEEL", 0.0) + f"""*BOUNDARY
 {root}, 1, 3, 0.0
 *STEP
-*STATIC
-*BOUNDARY
-{tip}, 3, 3, {delta}
-*NODE PRINT, NSET={root}, TOTALS=ONLY
-RF
+*STATIC, SOLVER=ITERATIVE CHOLESKY
+*CLOAD
+{cloads}
+*NODE FILE
+U
 *END STEP
 """)
-    k_fe = abs(_total(dat, 2)) / delta
+    u = _frd_disp(frd)
+    delta = float(np.mean([u[i][2] for i in ids]))
     L, h = CANT["L"] * 1e-3, CANT["h"] * 1e-3
     inertia, area, G, kappa = h ** 4 / 12, h * h, E / 2.0, 5.0 / 6.0
     k_exact = 1.0 / (L ** 3 / (3 * E * inertia) + L / (kappa * G * area))
-    return k_fe, k_exact, "tip stiffness (N/m)"
+    return force / delta, k_exact, "tip stiffness (N/m)"
 
 
 def _lame(ws, q):
@@ -301,7 +323,7 @@ def _lame(ws, q):
 {bot}, 3, 3, 0.0
 {top}, 3, 3, 0.0
 *STEP
-*STATIC
+*STATIC, SOLVER=ITERATIVE CHOLESKY
 *DSLOAD
 {bore}, P, {p:.6e}
 *NODE FILE
@@ -326,24 +348,22 @@ def _groove(ws, q):
     top = _face(nodes, nsets, lambda x: abs(x[2] - L) < 1e-9)
     sx = _face(nodes, nsets, lambda x: abs(x[0]) < 1e-9)
     sy = _face(nodes, nsets, lambda x: abs(x[1]) < 1e-9)
-    dat, frd = _solve(ws, "groove", deck, _material("STEEL", 0.3) + f"""*BOUNDARY
+    gross = 1.0e6                                   # 1 MPa of tension on the end face
+    _dat, frd = _solve(ws, "groove", deck, _material("STEEL", 0.3) + f"""*BOUNDARY
 {bot}, 3, 3, 0.0
 {sx}, 1, 1, 0.0
 {sy}, 2, 2, 0.0
 *STEP
-*STATIC
-*BOUNDARY
-{top}, 3, 3, 1.0e-4
+*STATIC, SOLVER=ITERATIVE CHOLESKY
+*DSLOAD
+{top}, P, {-gross:.6e}
 *NODE FILE
 S
-*NODE PRINT, NSET={bot}, TOTALS=ONLY
-RF
 *END STEP
 """)
-    F = 4 * abs(_total(dat, 2))                      # the quarter carries a quarter of the load
-    d = (GROOVE["D"] - 2 * GROOVE["r"]) * 1e-3
-    smax = max(s[2] for s in _frd_stress(frd).values())
-    return smax / (F / (math.pi * d * d / 4)), GROOVE["kt"], "net-section Kt (converged axisymmetric reference)"
+    d = GROOVE["D"] - 2 * GROOVE["r"]
+    smax = max(st[2] for st in _frd_stress(frd).values())
+    return smax / (gross * (GROOVE["D"] / d) ** 2), GROOVE["kt"], "net-section Kt (converged axisymmetric reference)"
 
 
 def _slender_props():
@@ -411,6 +431,9 @@ CASES = {
 @pytest.mark.parametrize("case", list(CASES))
 def test_the_fea_path_gives_the_textbook_answer(case, level, tmp_path, monkeypatch):
     analysis, run, tol = CASES[case]
+    if analysis in ("modal", "buckling") and level not in ("draft",) and not EIGEN_AT_STANDARD:
+        pytest.skip(f"{analysis} at {level}: the direct eigensolver needs more memory than this runner has "
+                    "(set FEA_ACCURACY_EIGEN_STANDARD=1 on a larger machine)")
     q = _mesh(case, level, tmp_path / case, monkeypatch)
     got, want, what = run(tmp_path / case, q)
     err = got / want - 1.0
