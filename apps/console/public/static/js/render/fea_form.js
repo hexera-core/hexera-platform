@@ -45,9 +45,24 @@ export function measureHtml(m, p) {
   return `<div class="fea-measure" data-state="${measureState(m)}">${measureBody(m, p)}</div>`;
 }
 
-/** The lines first shown; the rest open with "and N more", or when their tag is clicked. */
+/** Each type's lines first shown; the rest of a type open with "Show all N", or when a tag on the
+ *  part is clicked. */
 const FIRST_SPOTS = 8;
 const measureState = (m) => (!m ? "none" : m.measured ? "measured" : "unmeasured");
+/** The hot spots are listed in groups, one per type, in the order the server sends them (sharpest
+ *  and smallest first). */
+const GROUP_WORDS = { sharp_corner: "Sharp inside corners", notch: "Notches and grooves", fillet: "Fillets", hole: "Holes" };
+
+/** The hot spots in groups by type: [[type, [spot, ...]], ...], in the order the types first come. */
+function spotGroups(spots) {
+  const groups = new Map();
+  spots.forEach((h) => {
+    const k = GROUP_WORDS[h.type] ? h.type : "other";
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(h);
+  });
+  return [...groups.entries()];
+}
 
 function measureBody(m, p) {
   if (!m) return "";
@@ -58,25 +73,36 @@ function measureBody(m, p) {
   const wall = m.thickness_min_mm == null ? "not measured"
     : `${esc(shown(m.thickness_min_mm, p))} ${u}${m.thickness_face ? ` <span class="fea-where">(${esc(m.thickness_face)})</span>` : ""}`;
   const spots = m.hot_spots || [];
-  const list = spots.map((h, i) =>
-    `<li class="fea-spot-row" data-spot="${esc(h.id)}"${i >= FIRST_SPOTS ? " hidden" : ""}><span class="fea-spot-id">${esc(h.id)}</span><span>${spotWords(h, p)}</span></li>`).join("");
-  const folded = Math.max(0, spots.length - FIRST_SPOTS);
-  const more = folded ? `<li class="fea-spot-more"><button type="button" class="fea-spot-open">and ${folded} more</button></li>` : "";
-  // spots past the ones the server sent (it sends the sharpest and smallest first) are only counted
-  const unsent = m.more ? `<li class="fea-spot-unsent">${m.more} more not listed</li>` : "";
+  // EVERY hot spot is listed, in a group per type; a long group shows its first lines and opens
+  // whole with "Show all N" (a spot left out looks the same as one never found)
+  const list = spotGroups(spots).map(([type, rows]) => {
+    const lines = rows.map((h, i) =>
+      `<li class="fea-spot-row" data-spot="${esc(h.id)}"${i >= FIRST_SPOTS ? " hidden" : ""}><span class="fea-spot-id">${esc(h.id)}</span><span>${spotWords(h, p)}</span></li>`).join("");
+    const folded = rows.length > FIRST_SPOTS
+      ? `<li class="fea-spot-more"><button type="button" class="fea-spot-open">Show all ${rows.length}</button></li>` : "";
+    return `<li class="fea-spot-group" data-type="${esc(type)}"><div class="fea-spot-head">${esc(GROUP_WORDS[type] || "Other hot spots")} <span class="fea-spot-n">${rows.length}</span></div>
+      <ul class="fea-spot-rows">${lines}${folded}</ul></li>`;
+  }).join("");
+  // only a part past the record's own limit (thousands of hot spots) has any the server did not send
+  const unsent = m.more ? `<li class="fea-spot-unsent">${m.more} more found than the measurement keeps</li>` : "";
   const capped = spots.some((h) => h.capped)
     ? `<div class="gc-note">A perfectly sharp inside corner's stress never settles however fine the mesh, so refinement there stops at a set level.</div>` : "";
   return `<div class="rc-row"><div class="rc-k">Thinnest wall</div><div class="rc-v fea-wall">${wall}</div></div>
     <div class="rc-row"><div class="rc-k">Hot spots</div><div class="rc-v fea-spots-sum">${esc(m.summary || "")}</div></div>
-    ${spots.length ? `<ul class="fea-spots" aria-label="Hot spots the mesh will be refined at">${list}${more}${unsent}</ul>
+    ${spots.length ? `<ul class="fea-spots" aria-label="Hot spots the mesh will be refined at">${list}${unsent}</ul>
     <div class="gc-note">The mesh is refined at these automatically.</div>${capped}` : ""}`;
 }
 
-/** Wire the hot-spot list: "and N more" opens the rest, and `light(id)` (if given) runs when a
- *  line is pointed at or clicked. */
+/** Wire the hot-spot list: a group's "Show all N" opens the rest of that group, and `light(id)`
+ *  (if given) runs when a line is pointed at or clicked. */
 export function bindMeasure(root, light) {
-  const open = root.querySelector(".fea-spot-open");
-  if (open) open.onclick = () => { root.querySelectorAll(".fea-spot-row[hidden]").forEach((r) => { r.hidden = false; }); open.closest("li").remove(); };
+  root.querySelectorAll(".fea-spot-open").forEach((open) => {
+    open.onclick = () => {
+      const group = open.closest(".fea-spot-rows");
+      group.querySelectorAll(".fea-spot-row[hidden]").forEach((r) => { r.hidden = false; });
+      open.closest("li").remove();
+    };
+  });
   if (!light) return;
   root.querySelectorAll(".fea-spot-row").forEach((r) => {
     r.addEventListener("mouseenter", () => light(r.dataset.spot));
@@ -84,8 +110,8 @@ export function bindMeasure(root, light) {
   });
 }
 
-/** Light one hot spot's line, opening it first when it is folded away (a tag past the first
- *  eight was clicked). */
+/** Light one hot spot's line, opening it first when it is folded away (a tag past its group's
+ *  first eight was clicked). */
 export function lightSpotRow(root, id) {
   root.querySelectorAll(".fea-spot-row").forEach((r) => {
     const on = r.dataset.spot === id;
