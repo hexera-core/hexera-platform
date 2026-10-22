@@ -1,0 +1,32 @@
+[
+  {
+    "part": "pin_fin_300um_staggered",
+    "across": 2,
+    "fluid_cells": 6336,
+    "solid_cells": 27456,
+    "passages": 1,
+    "cad_passages": 1,
+    "interface_faces": 10560,
+    "conformal": true,
+    "inlet_faces": 88,
+    "outlet_faces": 88,
+    "ports_checked": true,
+    "volume_error_pct": -15.261393,
+    "problems": 0
+  },
+  {
+    "part": "unit_cell_100um",
+    "across": 2,
+    "fluid_cells": 20800,
+    "solid_cells": 88400,
+    "passages": 1,
+    "cad_passages": 1,
+    "interface_faces": 23400,
+    "conformal": true,
+    "inlet_faces": 32,
+    "outlet_faces": 32,
+    "ports_checked": true,
+    "volume_error_pct": -27.541537,
+    "problems": 0
+  }
+]

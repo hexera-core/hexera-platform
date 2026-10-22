@@ -41,6 +41,7 @@ from pathlib import Path
 import cht
 import convergence as V
 import parts as P
+import regression as R
 
 from meshpipeline.engines.cfmesh import conjugate as C
 from meshpipeline.engines.cfmesh.case_scaffold import write_case_skeleton
@@ -824,6 +825,86 @@ def cmd_converge(a) -> int:
     return 0 if said else 1
 
 
+def cmd_regress(a) -> int:
+    """Re-measure every part that fits and say what moved since the recorded baseline.
+
+    THE ONE COMMAND TO RUN UNATTENDED. Everything else here answers a question about one part; this
+    answers "is the corpus what it was", which is the question after a change to the mesher.
+
+    Parts that will not fit in memory are SKIPPED AND SAID SO rather than refused, because a
+    corpus-wide run on a laptop would otherwise stop at the first chip-scale part. A silent skip
+    would be worse than either: it reads as a pass.
+    """
+    reg = registry(a.cad)
+    names = [n for n in sorted(reg) if not a.only or n in a.only]
+    if a.only:
+        missing = [n for n in a.only if n not in reg]
+        if missing:
+            print("no such part(s): " + ", ".join(missing), file=sys.stderr)
+            return 2
+    was = R.load(a.cad)
+    print("baseline      " + (f"{len(was)} record(s) in {a.cad}/{R.BASELINE}" if was
+                              else f"none yet; --update writes {a.cad}/{R.BASELINE}"))
+    print("resolution    " + str(a.across) + " cells across")
+    print()
+
+    now: dict[str, R.Record] = dict(was) if a.update else {}
+    skipped, failed, broken, measured = [], [], [], []
+    for name in names:
+        part = reg[name]
+        ws = RUNS / (name + "-regress" + str(a.across))
+        argv = ["--cad", str(a.cad), "mesh", name, "--across", str(a.across),
+                "--levels", str(a.levels), "--workspace", str(ws), "--fresh"]
+        if part.name == "murray_branching_4gen":
+            # The one part with no ports at all. It is still the hardest branching topology here.
+            argv.append("--no-ports")
+        print("=" * 100)
+        rc = main(argv)
+        report = ws / "mesh-report.json"
+        if not report.is_file():
+            # No report means it never got as far as a mesh: refused for memory, or the mesher
+            # died. Either way it is not a comparison.
+            skipped.append(name)
+            continue
+        record = R.Record.from_report(json.loads(report.read_text()))
+        measured.append(record)
+        now[record.key] = record
+        if rc != 0:
+            failed.append(record.key)
+
+    print("=" * 100)
+    print("what moved since the baseline")
+    print("=" * 100)
+    for record in measured:
+        cmp = R.compare(record, was.get(record.key))
+        if cmp.new:
+            print(f"  NEW      {record.key}: nothing recorded before")
+            continue
+        if cmp.ok and not cmp.drifts:
+            print(f"  same     {record.key}")
+            continue
+        head = "  CHANGED " if cmp.breaks else "  drifted "
+        print(head + record.key)
+        for b in cmp.breaks:
+            print(f"             BREAK  {b}")
+            broken.append(record.key)
+        for d in cmp.drifts:
+            print(f"             drift  {d}")
+
+    print()
+    print(f"  {len(measured)} part(s) measured, {len(set(broken))} changed in a way that matters, "
+          f"{len(failed)} failed their own checks, {len(skipped)} skipped")
+    if skipped:
+        print(f"  skipped (did not fit, or the mesher died): {', '.join(skipped)}")
+    if failed:
+        print(f"  failed their own checks: {', '.join(failed)}")
+    if a.update:
+        print("  baseline written to " + str(R.save(a.cad, now)))
+    elif set(broken):
+        print("  nothing written. Re-run with --update once the change is understood and wanted.")
+    return 1 if set(broken) else 0
+
+
 def cmd_import(a) -> int:
     src = Path(a.source)
     if not src.is_dir():
@@ -943,6 +1024,17 @@ def main(argv: list[str] | None = None) -> int:
                         help="what the finest mesh's answer is worth, from the coarser ones")
     sp.add_argument("part")
     sp.set_defaults(fn=cmd_converge)
+
+    sp = sub.add_parser("regress",
+                        help="re-measure every part and say what moved since the baseline")
+    sp.add_argument("--across", type=int, default=2,
+                    help="cells across; 2 keeps a corpus-wide run affordable")
+    sp.add_argument("--levels", type=int, default=C.DEFAULT_REFINEMENT_LEVELS)
+    sp.add_argument("--only", nargs="*", default=None, metavar="PART",
+                    help="just these parts")
+    sp.add_argument("--update", action="store_true",
+                    help="write what was measured as the new baseline")
+    sp.set_defaults(fn=cmd_regress)
 
     sp = sub.add_parser("import", help="bring new CAD in, scaling it to metres")
     sp.add_argument("--from", dest="source", required=True)
