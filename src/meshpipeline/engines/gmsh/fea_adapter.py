@@ -32,6 +32,12 @@ BAD_SURFACES = "[GMSH-FEA] BAD SURFACES:"
 #: Distance sampling per face, per direction (gmsh's "Sampling"): enough points that the spacing is
 #: about half the group's size, within these bounds.
 SAMPLING_MIN, SAMPLING_MAX = 20, 300
+#: The most points one Distance field samples (faces x Sampling^2). gmsh samples every face of a
+#: field at the one Sampling the field's largest face needs: a perforated plate's 1,467 hole and
+#: plate faces at 300 x 300 came to 132M points and ran the mesh job out of memory before any
+#: surface was meshed (fea0260). Past this, the faces are split into fields sampled at their own
+#: size (the same sizes: the smallest of thresholds over parts is the threshold over the whole).
+MAX_FIELD_POINTS = 2_000_000
 
 
 def _tag(name: str) -> int | None:
@@ -56,6 +62,23 @@ def _sampling(gmsh, tags: list[int], size: float) -> int:
     return int(min(SAMPLING_MAX, max(SAMPLING_MIN, n)))
 
 
+def sampled_parts(gmsh, tags: list[int], size: float) -> list[tuple[list[int], int]]:
+    """(faces, Sampling) for each Distance field a zone group's faces need: one field as before when
+    it stays within MAX_FIELD_POINTS; else each face at its own Sampling, in fields of at most
+    MAX_FIELD_POINTS points."""
+    n = _sampling(gmsh, tags, size)
+    if len(tags) * n * n <= MAX_FIELD_POINTS:
+        return [(tags, n)]
+    by: dict[int, list[int]] = {}
+    for t in tags:
+        by.setdefault(_sampling(gmsh, [t], size), []).append(t)
+    out = []
+    for k in sorted(by):
+        per = max(1, MAX_FIELD_POINTS // (k * k))
+        out.extend((by[k][i:i + per], k) for i in range(0, len(by[k]), per))
+    return out
+
+
 def _micro_place(m: dict) -> dict:
     """A micro detail as the delivery names it: where (its middle point, mm), what and how small."""
     pts = m.get("points_m") or [[0.0, 0.0, 0.0]]
@@ -75,31 +98,35 @@ def size_fields(gmsh, plan: dict, surfaces: set[int]) -> int | None:
         size = float(g["size"])
         if size >= base:
             continue
-        dist = gmsh.model.mesh.field.add("Distance")
+        dists = []
         if g["edge"]:
             curves = sorted({c for a, b in (fs for fs in g["edges"] if len(fs) == 2)
                              if (ta := _tag(a)) in surfaces and (tb := _tag(b)) in surfaces
                              for c in _shared_curves(gmsh, ta, tb)})
             if not curves:
-                gmsh.model.mesh.field.remove(dist)
                 continue
+            dist = gmsh.model.mesh.field.add("Distance")
             gmsh.model.mesh.field.setNumbers(dist, "CurvesList", curves)
             gmsh.model.mesh.field.setNumber(dist, "Sampling", SAMPLING_MAX)
+            dists.append(dist)
         else:
             tags = [t for f in g["faces"] if (t := _tag(f)) in surfaces]
             if not tags:
-                gmsh.model.mesh.field.remove(dist)
                 continue
-            gmsh.model.mesh.field.setNumbers(dist, "SurfacesList", tags)
-            gmsh.model.mesh.field.setNumber(dist, "Sampling", _sampling(gmsh, tags, size))
-        th = gmsh.model.mesh.field.add("Threshold")
+            for part, n in sampled_parts(gmsh, tags, size):
+                dist = gmsh.model.mesh.field.add("Distance")
+                gmsh.model.mesh.field.setNumbers(dist, "SurfacesList", part)
+                gmsh.model.mesh.field.setNumber(dist, "Sampling", n)
+                dists.append(dist)
         reach = float(g["reach"])
-        gmsh.model.mesh.field.setNumber(th, "InField", dist)
-        gmsh.model.mesh.field.setNumber(th, "SizeMin", size)
-        gmsh.model.mesh.field.setNumber(th, "SizeMax", base)
-        gmsh.model.mesh.field.setNumber(th, "DistMin", reach)
-        gmsh.model.mesh.field.setNumber(th, "DistMax", reach + (base - size) / max(g1, 1e-6))
-        ids.append(th)
+        for dist in dists:
+            th = gmsh.model.mesh.field.add("Threshold")
+            gmsh.model.mesh.field.setNumber(th, "InField", dist)
+            gmsh.model.mesh.field.setNumber(th, "SizeMin", size)
+            gmsh.model.mesh.field.setNumber(th, "SizeMax", base)
+            gmsh.model.mesh.field.setNumber(th, "DistMin", reach)
+            gmsh.model.mesh.field.setNumber(th, "DistMax", reach + (base - size) / max(g1, 1e-6))
+            ids.append(th)
     if not ids:
         return None
     if len(ids) == 1:

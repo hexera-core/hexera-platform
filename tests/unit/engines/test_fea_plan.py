@@ -243,3 +243,21 @@ def test_an_invalid_element_s_surfaces_ride_with_the_gentler_pass():
                                        "remesh_surfaces": [4]}
     # a valid mesh names no bad surface
     assert L.pass_facts(1, 0, _q(fea_bad_surfaces=[4]), PLAN)["bad_surfaces"] == []
+
+
+def test_a_distance_field_never_samples_past_its_point_budget(monkeypatch):
+    """fea0260: a perforated plate's 1,467 faces were sampled at the 300 x 300 its largest face needs -
+    132M points, out of memory before any surface was meshed. Past the budget each face is sampled at
+    its own size, in fields of at most MAX_FIELD_POINTS points."""
+    from types import SimpleNamespace
+
+    from meshpipeline.engines.gmsh import fea_adapter as A
+
+    boxes = {1: (0, 0, 0, 0.5, 0.5, 0.001)} | dict.fromkeys(range(2, 1500), (0, 0, 0, 0.003, 0.003, 0.001))
+    gm = SimpleNamespace(model=SimpleNamespace(getBoundingBox=lambda _d, t: boxes[t]))
+    few = A.sampled_parts(gm, [2, 3, 4], 0.0008)
+    assert few == [([2, 3, 4], A._sampling(gm, [2, 3, 4], 0.0008))]           # within budget: as before
+    parts = A.sampled_parts(gm, sorted(boxes), 0.0008)
+    assert sorted(t for p, _n in parts for t in p) == sorted(boxes)
+    assert all(len(p) * n * n <= A.MAX_FIELD_POINTS or len(p) == 1 for p, n in parts)
+    assert next(n for p, n in parts if 1 in p) == A.SAMPLING_MAX
