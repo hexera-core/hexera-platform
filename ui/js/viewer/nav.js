@@ -352,8 +352,40 @@ export function attachNav(o) {
   const sub1 = cam.onModified ? cam.onModified(() => { if (!dirty) scheduleCube(); }) : null;
 
   /* -------------------------------------------------------------------- the cube ---- */
-  let cubeEl = null, cubeBody = null, arrowsEl = null, cubeRaf = 0;
-  const cells = [];
+  let cubeEl = null, cubeBody = null, cubeView = null, arrowsEl = null, cubeRaf = 0;
+  const cells = [], faceDefs = [];
+  const HALF = 31, CELL_EDGE = 13;          // the face's half-width and its border cells, in CSS px
+  /** The face cell under a point of the page, as its view direction key, or null. */
+  function cellAt(cx, cy) {
+    if (!cubeView) return null;
+    const rc = cubeView.getBoundingClientRect(), k = rc.width / (2 * HALF) || 1;   // the phone's scale
+    const sx = (cx - (rc.left + rc.width / 2)) / k, sy = (cy - (rc.top + rc.height / 2)) / k;
+    const { r, u, b } = basis();
+    const base = sub(mul(r, sx), mul(u, sy));         // the screen point, at the cube's centre depth
+    let best = null;
+    faceDefs.forEach(({ n, a, d }) => {
+      const nb = dot(n, b); if (nb < 0.02) return;      // a face turned away is never hit
+      const t = (HALF - 1 - dot(n, base)) / nb, x = add(base, mul(b, t));
+      const fa = dot(a, x) / HALF, fd = dot(d, x) / HALF;
+      if (Math.abs(fa) > 1.001 || Math.abs(fd) > 1.001 || (best && t <= best.t)) return;
+      const col = (v) => { const px = (v + 1) * HALF; return px < CELL_EDGE ? -1 : px > 2 * HALF - CELL_EDGE ? 1 : 0; };
+      best = { t, key: keyOf(add(n, add(mul(a, col(fa)), mul(d, col(fd))))) };
+    });
+    return best ? best.key : null;
+  }
+  /** Where on the page a cell's centre is, or null when its face is turned away (tests, keyboard). */
+  function cellPoint(key) {
+    if (!cubeView) return null;
+    const v = key.split(",").map(Number);
+    const { r, u, b } = basis();
+    // a corner or an edge sits on several faces: the one turned toward the viewer shows it
+    const f = faceDefs.find(({ n }) => dot(n, v) === 1 && v.every((c, i) => c === n[i] || n[i] === 0) && dot(n, b) >= 0.05);
+    if (!f) return null;
+    const off = (c) => (c === 0 ? 0 : c * (HALF - CELL_EDGE / 2) / HALF);
+    const p = mul(add(f.n, add(mul(f.a, off(dot(f.a, v))), mul(f.d, off(dot(f.d, v))))), HALF);
+    const rc = cubeView.getBoundingClientRect(), k = rc.width / (2 * HALF) || 1;
+    return [rc.left + rc.width / 2 + dot(r, p) * k, rc.top + rc.height / 2 - dot(u, p) * k];
+  }
   function scheduleCube() { if (!cubeRaf) cubeRaf = requestAnimationFrame(() => { cubeRaf = 0; syncCube(); }); }
   function buildCube() {
     cubeEl = document.createElement("div");
@@ -369,11 +401,15 @@ export function attachNav(o) {
         <button type="button" class="nav-roll cw" data-roll="1" aria-label="Roll the view 90 degrees clockwise"><svg viewBox="0 0 24 24"><path d="M5 13a7 7 0 0 1 12.5-4.3"/><path d="M19 4.5v4.5h-4.5"/></svg></button>
       </div>`;
     cubeBody = cubeEl.querySelector(".nav-cube-body");
-    // one listener each for the whole cube, not three on every one of its 54 cells
-    cubeBody.addEventListener("pointerover", (e) => { const c = e.target.closest(".nav-cell"); hover(c ? c.dataset.dir : null); });
-    cubeBody.addEventListener("pointerleave", () => hover(null));
-    cubeBody.addEventListener("click", (e) => { const c = e.target.closest(".nav-cell");
-      if (c) goDir(c.dataset.dir.split(",").map(Number)); });
+    cubeView = cubeEl.querySelector(".nav-cube-view");
+    // WHICH CELL IS UNDER THE POINTER is worked out from the cube's own geometry, not left to the
+    // browser's 3D hit test: that test follows its paint order, which some browsers (and the CI
+    // runner) get wrong, so a click on TOP could land on the face drawn over it
+    cubeView.addEventListener("pointermove", (e) => { const k = cellAt(e.clientX, e.clientY); hover(k);
+      cubeView.style.cursor = k ? "pointer" : ""; });
+    cubeView.addEventListener("pointerleave", () => { hover(null); cubeView.style.cursor = ""; });
+    cubeView.addEventListener("click", (e) => { const k = cellAt(e.clientX, e.clientY);
+      if (k) goDir(k.split(",").map(Number)); });
     arrowsEl = cubeEl.querySelector(".nav-arrows");
     cubeEl.querySelector(".nav-home").onclick = () => home();
     arrowsEl.querySelectorAll("[data-step]").forEach((b) => { b.onclick = () => step(b.dataset.step); });
@@ -382,10 +418,11 @@ export function attachNav(o) {
     buildFaces();
   }
   function buildFaces() {
-    cubeBody.innerHTML = ""; cells.length = 0;
+    cubeBody.innerHTML = ""; cells.length = 0; faceDefs.length = 0;
     const T = TURNS[o.upAxis ? o.upAxis() : "+z"] || TURNS["+z"];
     FACES.forEach(([label, n0, a0]) => {
       const n = T(n0), a = T(a0), d = cross(a, n);
+      faceDefs.push({ n, a, d });
       const face = document.createElement("div");
       face.className = "nav-face"; face.dataset.face = label;
       face.style.transform = m3d([a, d, n], mul(n, 30));
@@ -446,7 +483,7 @@ export function attachNav(o) {
   if (o.cube !== false) buildCube();
 
   return {
-    animateTo, fit, home, setHome, lookFrom, goDir, step, roll, orbit, pan, zoomAt, draw,
+    animateTo, fit, home, setHome, lookFrom, goDir, step, roll, orbit, pan, zoomAt, draw, cellAt, cellPoint,
     /** the part's up axis changed: the cube's labels follow */
     rebuild() { if (cubeBody) buildFaces(); setHome(); },
     animating: () => !!anim || !!spin || !!zoomLeft,

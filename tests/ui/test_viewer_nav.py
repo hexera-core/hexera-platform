@@ -34,9 +34,13 @@ def _open(live) -> None:
 def _real_click(live, selector: str) -> None:
     """A click the browser makes - pointerdown, pointerup and click on whatever is on top there -
     the way a mouse does it. A synthetic .click() would skip the hit test, and that hit test is what
-    the canvas once stole every cube click with."""
-    x, y = live.evaluate(f"""(() => {{ const r = document.querySelector('{selector}').getBoundingClientRect();
-      return [r.left + r.width / 2, r.top + r.height / 2]; }})()""")
+    the canvas once stole every cube click with. A cube cell is named by its view direction ("0,0,1"
+    is the TOP face's centre) and clicked where the cube shows it."""
+    if selector[0].isdigit() or selector[0] == "-":
+        x, y = live.evaluate(f"{H}.nav().cellPoint('{selector}')")
+    else:
+        x, y = live.evaluate(f"""(() => {{ const r = document.querySelector('{selector}').getBoundingClientRect();
+          return [r.left + r.width / 2, r.top + r.height / 2]; }})()""")
     for t, buttons in (("mouseMoved", 0), ("mousePressed", 1), ("mouseReleased", 0)):
         live._send("Input.dispatchMouseEvent", {"type": t, "x": x, "y": y, "button": "left",
                                                 "buttons": buttons, "clickCount": 1})
@@ -55,7 +59,7 @@ def test_real_clicks_on_the_cube_turn_the_view_smoothly(live):
 
     # the TOP face, clicked as a mouse clicks it: the view turns there over a moment - never a jump
     start = _dir(live)
-    _real_click(live, ".nav-face[data-face=TOP] .nav-cell.centre")
+    _real_click(live, "0,0,1")
     live.settle(0.15)
     midway = _dir(live)
     _idle(live)
@@ -92,11 +96,10 @@ def test_rapid_cube_clicks_never_stall_the_page(live):
     live.evaluate("window.__long = []; new PerformanceObserver((l) => l.getEntries()"
                   ".forEach((e) => window.__long.push(Math.round(e.duration)))).observe({type: 'longtask'}); 0")
     for i in range(40):
-        visible = live.evaluate(f"""(() => [...{ROOT}.querySelectorAll('.nav-cell')].filter((c) => {{
-          const r = c.getBoundingClientRect(); return document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) === c;
-        }}).map((c) => c.dataset.dir))()""")
+        visible = live.evaluate(f"""(() => [...new Set([...{ROOT}.querySelectorAll('.nav-cell')].map((c) => c.dataset.dir))]
+          .filter((k) => {H}.nav().cellPoint(k)))()""")
         assert visible, "no cube cell can be clicked"
-        _real_click(live, f".nav-cell[data-dir=\"{visible[i % len(visible)]}\"]")
+        _real_click(live, visible[i % len(visible)])
         if i == 20:
             live.evaluate(f"""(() => {{ const s = document.getElementById('gs-up-{SESSION}');
               s.value = '-x'; s.dispatchEvent(new Event('change')); }})()""")

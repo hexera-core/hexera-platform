@@ -1111,7 +1111,9 @@ th,td{border-color:var(--border)}
 .nav-face{position:absolute;left:-31px;top:-31px;width:62px;height:62px;box-sizing:border-box;display:grid;
   grid-template-columns:13px 1fr 13px;grid-template-rows:13px 1fr 13px;background:#f2f3f5;
   border:1px dashed #a3a8b0;backface-visibility:hidden;-webkit-backface-visibility:hidden}
-.nav-cell{cursor:pointer;transition:background .12s}
+/* the cube is hit-tested from its geometry (viewer/nav.js), so its faces take no pointer */
+.nav-face{pointer-events:none}
+.nav-cell{transition:background .12s}
 .nav-cell.hot{background:var(--nav-blue-soft)}
 .nav-label{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;
   font:700 10.5px/1 var(--sans);letter-spacing:.04em;color:#6f757e}
