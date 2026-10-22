@@ -29,6 +29,7 @@ import logging
 import re
 import struct
 import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -51,6 +52,10 @@ SOLID_TO_FLUID = f"{SOLID_REGION}_to_{FLUID_REGION}"
 #: only where the coolant surface is. This is the realistic conjugate setup in any case, because a
 #: silicon block does not need 10 um cells in the middle of it.
 DEFAULT_REFINEMENT_LEVELS = 3
+
+#: Written as a named constant because an inline escape here has been mangled twice by
+#: tooling that rewrites backslashes; a name cannot be re-escaped by accident.
+_NEWLINE = chr(10)
 
 #: Each extra level halves the cell, so the interface cell is background / 2**levels.
 _LEVEL_DIVISOR = 2
@@ -219,6 +224,27 @@ class ConjugateReport:
     interface_faces_fluid: int = 0
     interface_faces_solid: int = 0
     problems: list[str] = field(default_factory=list)
+    #: Seconds per stage. MEASURED, because the cost is not where anyone expects it: on a
+    #: 100-channel part cartesianMesh took 617 s and the tagging and splitting after it took over
+    #: an hour. For a conjugate mesh the post-processing dominates by a wide margin, so a turnaround
+    #: promise that budgets only for the mesher is a promise about the wrong stage. Nothing here is
+    #: optimised yet; this is the measurement that says where to start.
+    seconds: dict[str, float] = field(default_factory=dict)
+
+    @property
+    def mesher_seconds(self) -> float:
+        return self.seconds.get("cartesianMesh", 0.0)
+
+    @property
+    def post_seconds(self) -> float:
+        """Everything after the mesher: tagging, splitting and the per-region checks."""
+        return sum(v for k, v in self.seconds.items() if k != "cartesianMesh")
+
+    @property
+    def post_share(self) -> float:
+        """The share of wall time spent after the mesher, 0 to 1."""
+        total = sum(self.seconds.values())
+        return (self.post_seconds / total) if total else 0.0
 
     @property
     def conformal(self) -> bool:
@@ -315,12 +341,23 @@ def verify(report: ConjugateReport, *, expect_fluid_volume_m3: float | None = No
 # #
 # running it
 # #
-def _foam(workspace: Path, script: str, log: Path, *, bashrc: str, timeout: int) -> int:
-    cmd = f"source {bashrc} >/dev/null 2>&1 || true\n{script}\n"
+def _foam(workspace: Path, script: str, log: Path, *, bashrc: str,
+          timeout: int) -> tuple[int, float]:
+    """Run one OpenFOAM stage and return its exit code AND how long it took.
+
+    The duration is returned rather than logged because the stage split is the finding: on a
+    100-channel part the mesher took 617 s and everything after it took over an hour, so a
+    turnaround budget that counts only the mesher is counting the wrong stage. See
+    ConjugateReport.seconds.
+    """
+    # chr(10) rather than an escape, because this line has been mangled twice by tooling that
+    # processes backslashes on the way through. A named constant cannot be re-escaped by accident.
+    cmd = _NEWLINE.join((f"source {bashrc} >/dev/null 2>&1 || true", script, ""))
+    t0 = time.monotonic()
     with log.open("w") as fh:
         proc = run_guarded(["bash", "-lc", cmd], cwd=str(workspace), env=_foam_env(),
                            stdout=fh, stderr=subprocess.STDOUT, timeout=timeout)
-    return proc.returncode
+    return proc.returncode, time.monotonic() - t0
 
 
 def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
@@ -337,12 +374,14 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
         background_cell_m=background_cell_m, levels=levels))
     (ws / "system" / "topoSetDict").write_text(render_toposetdict(fluid_file=fluid_stl))
 
+    seconds: dict[str, float] = {}
     for stage, script in (("cartesianMesh", "cartesianMesh"),
                           ("topoSet", "topoSet"),
                           ("splitMeshRegions", " ".join(SPLIT_ARGS))):
-        rc = _foam(ws, script, ws / f"{stage}.log", bashrc=bashrc, timeout=timeout)
+        rc, took = _foam(ws, script, ws / f"{stage}.log", bashrc=bashrc, timeout=timeout)
+        seconds[stage] = round(took, 1)
         if rc != 0:
-            raise ConjugateError(f"{stage} exited {rc}; see {stage}.log")
+            raise ConjugateError(f"{stage} exited {rc} after {took:.0f}s; see {stage}.log")
 
     regions = sorted(d.name for d in (ws / "constant").iterdir()
                      if d.is_dir() and (d / "polyMesh").is_dir())
@@ -355,10 +394,12 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
     reports = {}
     for name in (FLUID_REGION, SOLID_REGION):
         log = ws / f"checkMesh-{name}.log"
-        _foam(ws, f"checkMesh -region {name}", log, bashrc=bashrc, timeout=timeout)
+        _rc, took = _foam(ws, f"checkMesh -region {name}", log, bashrc=bashrc, timeout=timeout)
+        seconds[f"checkMesh:{name}"] = round(took, 1)
         reports[name] = read_region(log.read_text(errors="replace"), name)
 
-    rep = ConjugateReport(fluid=reports[FLUID_REGION], solid=reports[SOLID_REGION])
+    rep = ConjugateReport(fluid=reports[FLUID_REGION], solid=reports[SOLID_REGION],
+                          seconds=seconds)
     for region, patch, attr in ((FLUID_REGION, FLUID_TO_SOLID, "interface_faces_fluid"),
                                 (SOLID_REGION, SOLID_TO_FLUID, "interface_faces_solid")):
         b = ws / "constant" / region / "polyMesh" / "boundary"
