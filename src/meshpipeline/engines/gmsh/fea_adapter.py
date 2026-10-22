@@ -237,6 +237,11 @@ def mesh(workspace) -> int:
             # count in place of the flow floor (engines/gmsh/gates.py)
             "fea": {"plan": True, "detail": (plan.get("detail") or {}).get("key"),
                     "estimate": (plan.get("estimate") or {}).get("elements"),
+                    # PLAN-fea-8: how the level was chosen, and what a best-possible plan leaves short
+                    **({"auto_level": plan["auto_level"]} if plan.get("auto_level") else {}),
+                    **({"best_possible": plan["best_possible"],
+                        "resolution_short": list(plan.get("resolution_short") or [])}
+                       if plan.get("best_possible") else {}),
                     "through_wall_min": tw, "rules": rules, "quality": shape, "exports": exports},
         }, indent=1))
         print(f"[GMSH-FEA] elements={n_elem} (planned ~{(plan.get('estimate') or {}).get('elements')}) "

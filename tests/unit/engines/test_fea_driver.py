@@ -236,3 +236,51 @@ def test_a_small_part_is_measured_at_its_true_size(tmp_path):
     assert record["thickness"]["min_mm"] == pytest.approx(8.0, rel=0.005)
     assert diag == pytest.approx(8.0 * 3 ** 0.5 / 1000.0, rel=0.01)
     assert all(f["area_mm2"] == pytest.approx(64.0, rel=1e-6) for f in record["faces"].values())
+# ---------------------------------------------------- PLAN-fea-8: the budget never stops a run ----
+def _levels(monkeypatch, draft, standard, largest):
+    monkeypatch.setitem(P.LEVELS, "draft", P.Level("draft", "Quick", draft))
+    monkeypatch.setitem(P.LEVELS, "standard", P.Level("standard", "Standard", standard))
+    monkeypatch.setitem(P.LEVELS, "max", P.Level("max", "Fine", largest))
+
+
+def test_over_the_level_asked_for_the_next_level_that_holds_every_rule_is_used_and_said(tmp_path, monkeypatch):
+    ws = _stage(fx.plate_with_hole(), tmp_path / "up")
+    record, surface, diag = FD.measure_staged(ws)
+    _levels(monkeypatch, 2_000, 60_000, 200_000)
+    plan = FD.choose_plan(record, surface, diag, fidelity="draft")
+    assert plan["fits"] and plan["detail"]["key"] == "standard"
+    assert plan["auto_level"]["asked"] == "draft" and not plan.get("best_possible")
+    assert any("more than the Quick level asked for: meshed at the Standard level instead" in w for w in plan["words"])
+    assert any(d["rule"] == "PLAN-fea-8" and d["decided"] == "level" for d in plan["decisions"])
+
+
+def test_when_no_level_holds_every_rule_the_largest_is_meshed_as_finely_as_it_allows(tmp_path, monkeypatch):
+    ws = _stage(fx.plate_with_hole(), tmp_path / "best")
+    record, surface, diag = FD.measure_staged(ws)
+    _levels(monkeypatch, 500, 1_000, 3_000)
+    plan = FD.choose_plan(record, surface, diag, fidelity="standard")
+    assert plan["fits"] and plan["detail"]["key"] == "max"
+    assert plan["best_possible"]["asked"] == "standard" and plan["zone_floor_m"] > 0
+    assert plan["resolution_short"] and all(isinstance(w, str) for w in plan["resolution_short"])
+    assert any("as finely as it allows" in w for w in plan["words"])
+    assert not any(w.startswith("Stopped") for w in plan["words"])
+
+
+def test_the_driver_never_stops_for_budget_and_delivers_what_is_short_as_a_concern(tmp_path, monkeypatch):
+    from meshpipeline.engines import runtime
+    from meshpipeline.engines.preflight import read_refusal
+    from meshpipeline.engines.verdict_limits import fea_limits
+
+    ws = _stage(fx.plate_with_hole(), tmp_path / "never")
+    _levels(monkeypatch, 500, 1_000, 3_000)
+    monkeypatch.setattr(runtime, "get_engine", lambda _n: SimpleNamespace(
+        run_cartesian_mesh=lambda w, timeout: {"rc": fea_adapter.mesh(w)}))
+    ok, marker, _o = asyncio.run(FD.drive(ws, {"effective_mesh_fidelity": "standard"}, job_id="t-never",
+                                          publish=None, run=_Run()))
+    ref = read_refusal(ws)
+    assert ref is None or ref.cause != "cell_budget"
+    q = json.loads((ws / "quality.json").read_text())
+    assert q["fea"]["best_possible"] and q["fea"]["resolution_short"]
+    assert ok, marker                                   # delivered, short where named
+    row = next(r for r in fea_limits(q) if r["key"] == "fea_resolution_short")
+    assert row["measured"] == q["fea"]["resolution_short"]

@@ -92,8 +92,10 @@ def results(workspace) -> dict | None:
         met = limit_met(r.get("measured"), str(r.get("op")), r.get("limit"))
         if r["key"] == "through_wall_min" and met is False and isinstance(tw, (int, float)) and tw >= 1.8:
             met = True                    # the gate's reading scatter (engines/gmsh/gates.FEA_WALL_FLOOR)
+        # a best-possible plan's walls are short by choice and named (PLAN-fea-8): a concern there
+        held = r in gating and not (r["key"] == "through_wall_min" and fea.get("best_possible"))
         rows.append({**{k: r.get(k) for k in ("key", "label", "op", "limit", "measured")}, "ok": met,
-                     "gating": r in gating, "words": words(r)})
+                     "gating": held, "words": words(r)})
     if any(r["ok"] is False and r["gating"] for r in rows) or q.get("fatal"):
         outcome, said = "fail", "The mesh fails a check no solver can work around."
     elif any(r["ok"] is False for r in rows):
