@@ -146,6 +146,9 @@ async def run_attempt(attempt: BuilderAttempt, state, *, job_id: str,
         # solid, and the model-led loop for everything else)
         driver = _driver_for(get_spec(attempt.engine), state)
         if driver is not None:
+            logger.info("Builder: %s's deterministic driver (%s.%s) takes this attempt - no model loop "
+                        "- job_id=%s", attempt.engine, getattr(driver, "__module__", "?"),
+                        getattr(driver, "__name__", "?"), job_id)
             spec_authored, final_text, stop = await _run_engine_driver(
                 driver, attempt, state, job_id=job_id, publish=publish, timeout_s=timeout_s)
             return TurnOutcome(spec_authored=spec_authored, final_text=final_text,

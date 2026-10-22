@@ -423,10 +423,35 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
         flow_topology=flow_topology,
         engine_params=engine_params or {},
     )
+    _stamp_fea_plan(ws)
     out = (f"[GMSH] elements={q.get('cells')} nodes={q.get('nodes')} "
            f"order={q.get('element_order')} min_sicn={q.get('min_sicn')} "
            f"fatal={q.get('fatal', [])}")
     return {"success": not q.get("fatal"), "stdout": out, "stderr": "", "output": out}
+
+
+def _stamp_fea_plan(ws: Path) -> None:
+    """A mesh built from the deterministic FEA plan (engines/fea_driver) says so in its manifest:
+    the plan file, its level and estimate, and the ladder's passes - so nobody has to infer from
+    the logs whether the driver or the builder loop made it."""
+    import json
+
+    plan_p, passes_p, man_p = ws / "fea_plan.json", ws / "fea_passes.json", ws / "mesh_manifest.json"
+    if not (plan_p.exists() and man_p.exists()):
+        return
+    try:
+        plan = json.loads(plan_p.read_text())
+        ladder = json.loads(passes_p.read_text()) if passes_p.exists() else {}
+        man = json.loads(man_p.read_text())
+        man["fea_plan"] = {
+            "file": "fea_plan.json", "driver": "deterministic FEA driver (engines/fea_driver.py)",
+            "level": (plan.get("detail") or {}).get("key"), "estimate": (plan.get("estimate") or {}).get("elements"),
+            "base_size_m": plan.get("base_size_m"), "zones": len(plan.get("zones") or []),
+            "passes": len(ladder.get("passes") or []), "delivered_pass": ladder.get("delivered"),
+            "levers": [lv.get("lever") for lv in ladder.get("levers") or []]}
+        man_p.write_text(json.dumps(man, indent=2))
+    except (OSError, ValueError) as exc:
+        logger.info("gmsh finalize: the FEA plan was not stamped on the manifest (%s)", exc)
 
 
 def _pin_gmsh(gmsh) -> None:

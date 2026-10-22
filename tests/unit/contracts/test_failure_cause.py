@@ -149,3 +149,25 @@ class TestWhatARetryCanChange:
 
     def test_every_executor_seam_has_a_cause(self):
         assert set(SEAM_CAUSES) == {"finalize", "domain_extent", "solvability", "geometry"}
+
+
+class TestAnFeaLadderThatRanOut:
+    """Job ab20566f (a SolidWorks bearing bracket, static stress): every pass of the FEA plan left a
+    few elements under the floor, a second identical 14-minute attempt followed, and the user was
+    told to try fewer boundary layers."""
+
+    FACTS = {"engine": "gmsh", "deterministic": True, "fea": True, "ladder_exhausted": True,
+             "passes": 2, "levers": ["LAD-fea-1"], "under_floor": 18, "worst_at_mm": [-95.7, -723.5, 373.8]}
+
+    def test_no_retry_builds_the_same_mesh_again(self):
+        assert retry_can_help(FailureCause.MESH_QUALITY, self.FACTS) is False
+        # the same cause from the model-led loop keeps its retries
+        assert retry_can_help(FailureCause.MESH_QUALITY, {"engine": "gmsh"}) is True
+
+    def test_it_is_told_in_fea_words_with_where_and_what_to_change(self):
+        what, nxt = _say(FailureCause.MESH_QUALITY, **self.FACTS)
+        said = (what + " " + nxt).lower()
+        assert "18 elements near (-95.7, -723.5, 373.8) mm" in what and "2" in what
+        assert "same mesh" in said and "fine detail level" in said
+        for cfd in ("boundary layer", "layers", "flow", "cells"):
+            assert cfd not in said
