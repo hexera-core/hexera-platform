@@ -198,6 +198,7 @@ lever at most once. The passes do not use up the run's attempts.
 | LAD-fea-3 | in force | **A plan rule fell short on the mesh** (through a wall, or round a hot spot): the zones that fell short are made 20% finer - never on a plan coarsened to fit the limit, which is short there by choice and says so. |
 | LAD-fea-4 | in force | **More elements than the limit** after meshing (the estimate ran low): the next pass makes the finest zones coarser, aimed at 85% of the limit, never past what keeps elements valid. |
 | LAD-fea-6 | in force | **No identical retry.** The surfaces a failed pass went wrong on - the ones the fill named, or the ones an invalid element touches - are meshed the other way (gmsh's MeshAdapt surface algorithm instead of the default) on the next pass: together with LAD-fea-1 or LAD-fea-2, or on its own when those were pulled already. A surface the default algorithm leaves with no mesh is meshed again with MeshAdapt at once, in the same pass. When there is no surface left to change, the ladder stops rather than run the same pass twice. |
+| LAD-fea-7 | in force | **Out of memory: no retry.** A pass the mesh job's memory limit killed pulls no lever (the other 3D algorithm and gentler growth need as much memory or more); the attempt ends saying the plan needs more memory than the mesh job has. |
 | LAD-fea-5 | in force | **The best pass is delivered:** a valid mesh first, then every rule met, then within the limit, then the better worst element, then the earlier pass. |
 
 The ladder is `engines/fea_ladder.py`.

@@ -373,6 +373,8 @@ def ladder_facts(ws: Path, passes: list[dict], levers: list[dict]) -> dict:
     fq = (q.get("fea") or {}).get("quality") or {}
     where = (fq.get("worst_at_m") or {}).get("scaled_jacobian")
     facts: dict = {"fea": True, "ladder_exhausted": True, "passes": len(passes),
+                   "out_of_memory": bool(passes and passes[-1].get("out_of_memory")),
+                   "estimate": int((passes[-1].get("estimate") or 0) if passes else 0),
                    "levers": [lv["lever"] for lv in levers],
                    "under_floor": int(q.get("elements_under_floor") or 0),
                    "elements": int(q.get("cells") or 0)}
@@ -386,6 +388,11 @@ def ladder_facts(ws: Path, passes: list[dict], levers: list[dict]) -> dict:
 def ladder_words(passes: list[dict], levers: list[dict]) -> str:
     """The builder-facing line for an exhausted ladder (the user's sentence is failure_cause's)."""
     tried = ", ".join(lv["lever"] for lv in levers) or "no lever"
+    if passes and passes[-1].get("out_of_memory"):
+        # LAD-fea-7
+        return (f"the mesher ran out of memory building about {int(passes[-1].get('estimate') or 0):,} elements "
+                f"({len(passes)} pass(es); levers {tried}) - this plan needs more memory than the mesh job has; "
+                "another attempt on the same machine runs out the same way.")
     readings = [float(p["min_sicn"]) for p in passes if p.get("min_sicn") is not None]
     worst = min(readings) if readings else None
     return (f"no pass of the FEA plan built a valid mesh - a degenerate or inverted element ({len(passes)} "
@@ -528,12 +535,18 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         q = _read_quality(ws) if result.get("rc") in (0, 4) else {}
         made = bool(q) and (ws / "mesh.inp").exists()
         run.note_native_run(produced_usable_mesh=made and result.get("rc") == 0)
-        passes.append({**L.pass_facts(n, result.get("rc"), q, plan, log=str(result.get("log_tail") or "")),
-                       "native_s": native_s})
+        # LAD-fea-7: killed by the job's memory limit (the kernel's SIGKILL on the mesher)
+        killed = str(result.get("signal") or "") == "SIGKILL" or "killed by SIGKILL" in str(result.get("log_tail") or "")
+        passes.append({**L.pass_facts(n, result.get("rc"), q, plan, log=str(result.get("log_tail") or ""),
+                                      killed=killed), "native_s": native_s})
         if made:
             _keep_pass(ws, n)
         lever = L.next_lever(passes[-1], levers, plan)
         if lever is None:
+            if passes[-1].get("out_of_memory"):
+                _cite(job_id, [{"stage": "fea_ladder", "decided": "no lever", "value": "out of memory",
+                                "rule": "LAD-fea-7", "inputs": {"pass": n, "estimate": passes[-1].get("estimate")},
+                                "words": "The mesher ran out of memory; no lever builds this plan in less, so no retry."}])
             break
         _cite(job_id, [{"stage": "fea_ladder", "decided": "lever", "value": lever["lever"], "rule": lever["lever"],
                         "inputs": lever.get("inputs") or {}, "words": lever["words"]}])

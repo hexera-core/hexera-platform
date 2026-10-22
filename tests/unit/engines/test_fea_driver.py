@@ -395,3 +395,24 @@ def test_a_shape_the_measure_cannot_read_is_healed_and_measured_again(tmp_path, 
     record, _surface, _diag = FD.measure_staged(ws)
     assert len(seen) == 2 and record["faces"]
     assert any("healed" in n for n in record["notes"])
+
+
+def test_a_plan_the_memory_limit_killed_is_told_as_memory_and_not_retried(tmp_path, monkeypatch):
+    """LAD-fea-7: fea0054 and fea0221 spent an hour each on a second pass killed the same way."""
+    from meshpipeline.contracts.failure_cause import describe, retry_can_help
+    from meshpipeline.engines import runtime
+    from meshpipeline.engines.preflight import read_refusal
+
+    ws = _stage(fx.plate_with_hole(), tmp_path / "oom")
+    calls = []
+
+    def killed(w, timeout):
+        calls.append(w)
+        return {"rc": -9, "signal": "SIGKILL", "log_tail": "[NATIVE SIGNAL] python was killed by SIGKILL"}
+
+    monkeypatch.setattr(runtime, "get_engine", lambda _n: SimpleNamespace(run_cartesian_mesh=killed))
+    ok, _marker, _o = asyncio.run(FD.drive(ws, {}, job_id="t-oom", publish=None, run=_Run()))
+    ref = read_refusal(ws)
+    assert not ok and len(calls) == 1 and ref.facts["out_of_memory"]
+    assert "memory" in ref.builder_text and not retry_can_help(ref.cause, ref.facts)
+    assert "memory" in " ".join(describe(ref.cause, ref.facts))

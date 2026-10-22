@@ -13,6 +13,9 @@ the FIRST trigger that holds pulls its lever, if that lever was not pulled alrea
              (never on a plan coarsened to fit: it is short there by choice)
   LAD-fea-5  the best pass is delivered: a valid mesh first, then every rule met, then the better
              worst element, then the earlier pass.
+  LAD-fea-7  OUT OF MEMORY: a pass the mesh job's memory limit killed pulls no lever - the other
+             3D algorithm and gentler growth need as much memory or more - and the attempt ends
+             saying so (two lab parts spent an hour each on a second pass killed the same way).
   LAD-fea-6  NO IDENTICAL RETRY: the surfaces a failed pass went wrong on (the fill named them, or
              an invalid element touches them) are meshed the other way (gmsh's MeshAdapt) on the
              next pass - with LAD-fea-1 or LAD-fea-2, or on its own once those are pulled. A surface
@@ -84,7 +87,7 @@ def _remeshed(levers: list[dict]) -> set[int]:
     return {int(s) for lv in levers for s in lv.get("surfaces") or []}
 
 
-def pass_facts(n: int, rc, q: Mapping, plan: Mapping, log: str = "") -> dict:
+def pass_facts(n: int, rc, q: Mapping, plan: Mapping, log: str = "", killed: bool = False) -> dict:
     """What one pass measured, in the terms the ladder and the delivery read."""
     built = bool(q) and rc in (0, 4)
     rules = ((q.get("fea") or {}).get("rules") or {}) if built else {}
@@ -100,13 +103,18 @@ def pass_facts(n: int, rc, q: Mapping, plan: Mapping, log: str = "") -> dict:
             "short": list(rules.get("short") or []),
             "through_wall_min": (rules.get("through_wall") or {}).get("min"),
             "per_quarter_min": (rules.get("hot_spots") or {}).get("min_per_quarter_turn"),
-            "bad_surfaces": [] if valid else failed_surfaces(q if built else {}, log)}
+            "bad_surfaces": [] if valid else failed_surfaces(q if built else {}, log),
+            # LAD-fea-7: the mesher was killed by the job's memory limit
+            "out_of_memory": bool(killed and not built)}
 
 
 def next_lever(facts: Mapping, levers: list[dict], plan: Mapping) -> dict | None:
     """The lever this pass's failure pulls, or None (nothing failed, or its lever was pulled)."""
     pulled = {lv["lever"] for lv in levers}
     if len(levers) + 1 >= MAX_PASSES:
+        return None
+    if facts.get("out_of_memory"):
+        # LAD-fea-7: no lever builds this plan in less memory
         return None
     # LAD-fea-6: the surfaces this pass went wrong on that no lever has re-meshed yet
     fresh = sorted(set(facts.get("bad_surfaces") or []) - _remeshed(levers))

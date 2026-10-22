@@ -332,6 +332,16 @@ def _contract(f: Mapping) -> tuple[str, str]:
 def _fea_quality(f: Mapping) -> tuple[str, str]:
     """An FEA mesh whose plan's every pass left a few badly shaped elements: where they are, that
     another run builds the same mesh, and what the user can change - never flow advice."""
+    if f.get("out_of_memory"):
+        # LAD-fea-7: the mesher was killed by the mesh job's memory limit
+        est = int(_as_number(f.get("estimate")) or 0)
+        size = f" (about {est:,} elements)" if est else ""
+        return (f"The FEA mesh this part needs{size} is more than the mesh job's memory can hold, so the "
+                "mesher was stopped before it finished. The plan is fixed by the part, so another run would "
+                "stop the same way, and I stopped rather than spend the time.",
+                "This comes from walls or gaps far thinner than the part is long: every one needs elements "
+                "through it. Thicken or remove the thinnest walls in your CAD, or split the part, and upload "
+                "it again - then say \"run it again\".")
     n = int(_as_number(f.get("under_floor")) or 0)
     where = f.get("worst_at_mm")
     at = (f" near ({', '.join(f'{float(v):g}' for v in where)}) mm" if isinstance(where, list) and len(where) == 3

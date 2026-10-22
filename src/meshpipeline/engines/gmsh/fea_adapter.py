@@ -72,7 +72,7 @@ def sampled_parts(gmsh, tags: list[int], size: float) -> list[tuple[list[int], i
     by: dict[int, list[int]] = {}
     for t in tags:
         by.setdefault(_sampling(gmsh, [t], size), []).append(t)
-    out = []
+    out: list[tuple[list[int], int]] = []
     for k in sorted(by):
         per = max(1, MAX_FIELD_POINTS // (k * k))
         out.extend((by[k][i:i + per], k) for i in range(0, len(by[k]), per))
@@ -137,7 +137,7 @@ def size_fields(gmsh, plan: dict, surfaces: set[int]) -> int | None:
 
 
 def _empty_surfaces(gmsh, surfaces: set[int]) -> list[int]:
-    out = []
+    out: list[int] = []
     for s in sorted(surfaces):
         _types, tags, _nodes = gmsh.model.mesh.getElements(2, s)
         if not any(len(t) for t in tags):

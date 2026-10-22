@@ -261,3 +261,9 @@ def test_a_distance_field_never_samples_past_its_point_budget(monkeypatch):
     assert sorted(t for p, _n in parts for t in p) == sorted(boxes)
     assert all(len(p) * n * n <= A.MAX_FIELD_POINTS or len(p) == 1 for p, n in parts)
     assert next(n for p, n in parts if 1 in p) == A.SAMPLING_MAX
+
+
+def test_a_pass_killed_by_the_memory_limit_is_not_tried_again():
+    killed = L.pass_facts(1, -9, {}, PLAN, log="[NATIVE SIGNAL] python was killed by SIGKILL", killed=True)
+    assert killed["out_of_memory"] and L.next_lever(killed, [], PLAN) is None
+    assert L.next_lever(L.pass_facts(1, 1, {}, PLAN), [], PLAN)["lever"] == "LAD-fea-2"
