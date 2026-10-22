@@ -139,10 +139,17 @@ def pick(cad: Path, name: str) -> P.Part:
 # #
 # sizing and ports, which every command needs
 # #
-def plan(part: P.Part, cells_across: int, levels: int, lid_m: float,
+def plan(part: P.Part, cells_across: int, levels: int, lid_mm: float,
          inlet: str | None, outlet: str | None, no_ports: bool = False):
-    """Everything derived before anything is run: block, cell size, ports, cost."""
-    grow = {"zmax": lid_m} if lid_m else None
+    """Everything derived before anything is run: block, cell size, ports, cost.
+
+    `lid_mm` is in MILLIMETRES, like every other length a person types at this command line, and is
+    converted here because everything below this line is in metres. It was passed straight through
+    once: `--lid 0.1` meant to add 100 um of metal and added 100 mm, turning a 1.3 mm plate into a
+    101.3 mm one. Nothing failed. The mesh built, every check passed, and the block was eighty
+    times the part.
+    """
+    grow = {"zmax": lid_mm * 1e-3} if lid_mm else None
     lo, hi = C.block_bounds(part.solid_lo, part.solid_hi, grow)
     background = part.cell_for(cells_across, levels)
     open_ = C.open_faces(part.fluid_lo, part.fluid_hi, lo, hi)
@@ -177,6 +184,8 @@ def describe(part: P.Part, cells_across: int, levels: int, lo, hi, background: f
           f"lost to staircasing ({ev['note']})")
     print(f"estimate      {cells / 1e6:.2f} M cells, {_gb(nbytes)} at the mesher's peak "
           f"({_gb(cells * BYTES_PER_CELL)} once written); this machine has {_gb(memory_bytes())}")
+    if (why := C.background_complaint(lo, hi, background)):
+        print(f"SIZING       {why}")
     print(f"open faces    {', '.join(open_) if open_ else 'NONE: the coolant is sealed'}")
     if ports is None:
         print("flow          none: --no-ports was asked for, so this mesh is not for solving")
@@ -287,13 +296,22 @@ def mesh_json(part: P.Part, a, rep: C.ConjugateReport, background: float) -> dic
         "levels": a.levels,
         "background_cell_um": background * 1e6,
         "interface_cell_um": C.interface_cell_m(background, a.levels) * 1e6,
-        "lid_mm": a.lid * 1e3,
+        "lid_mm": a.lid,
+        "background_complaint": C.background_complaint(
+            *C.block_bounds(part.solid_lo, part.solid_hi,
+                            {"zmax": a.lid * 1e-3} if a.lid else None), background),
         "inlet": rep.ports.inlet if rep.ports else None,
         "outlet": rep.ports.outlet if rep.ports else None,
         "sealed_faces": list(rep.ports.walls) if rep.ports else [],
         "fluid_cells": rep.fluid.cells,
         "solid_cells": rep.solid.cells,
         "fluid_volume_mm3": rep.fluid.volume_m3 * 1e9,
+        "solid_volume_mm3": rep.solid.volume_m3 * 1e9,
+        # The mean cell each region actually came out at, against the background that was asked
+        # for. On a channel array the refinement band covers the metal too, so the solid lands
+        # near the interface size and the background is notional; recorded rather than assumed.
+        "fluid_mean_cell_um": rep.fluid.mean_cell_m * 1e6,
+        "solid_mean_cell_um": rep.solid.mean_cell_m * 1e6,
         "cad_fluid_volume_mm3": part.fluid_volume_m3 * 1e9,
         "fluid_volume_error_pct": (
             (rep.fluid.volume_m3 - part.fluid_volume_m3) / part.fluid_volume_m3 * 100),
@@ -603,8 +621,8 @@ def _add_mesh_args(sp) -> None:
     sp.add_argument("--levels", type=int, default=C.DEFAULT_REFINEMENT_LEVELS,
                     help="octree levels spent at the coolant surface")
     sp.add_argument("--lid", type=float, default=0.0, metavar="MM",
-                    help="grow the block's zmax face by this many mm of solid, which roofs over "
-                         "channels that are open at the top")
+                    help="grow the block's zmax face by this many MILLIMETRES of solid, which "
+                         "roofs over channels that are open at the top")
     sp.add_argument("--inlet", default=None, help="block face the coolant enters by")
     sp.add_argument("--outlet", default=None, help="block face it leaves by")
     sp.add_argument("--workspace", default=None)

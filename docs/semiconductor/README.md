@@ -230,37 +230,86 @@ cited from practice. The original table was one part per row:
 | 5 | 1.04% |
 | 12 | 0.12% |
 
-Seven parts were then meshed at 2 cells across and five at 5, and the spread is the finding:
+Eight parts were then meshed at 2 cells across and five at 5, and the spread is the finding:
 
 | cells across | error range | median | parts |
 |---|---|---|---|
-| 2 | 1.75% to 27.54% | 5.73% | 7 |
+| 2 | 0.05% to 27.54% | 5.53% | 8 |
 | 5 | 0.13% to 13.26% | 1.53% | 5 |
 | 12 | 0.12% | 0.12% | 1 |
 
-**The 3.21% was the best of seven, not the typical one.** Quoting it as what 2 cells across costs
-understates the worst by a factor of eight, and the sign moves too: at 2 across the errors ran from
--27.5% to +5.9%.
+**The 3.21% was neither the best nor the typical one**, and the range at a single resolution covers
+nearly three orders of magnitude. The sign moves too: at 2 across the errors ran from -27.5% to
++5.9%.
 
-What separates the good ones from the bad ones is not the cell count, it is how many differently
-placed walls the part averages over. A wall falling between two rows of cell centres loses a row of
-cells and one falling just outside gains one, so a part presenting the same wall placement over and
-over gets that error multiplied instead of cancelled:
+What sorts them is how many differently placed walls the part averages over. A wall falling between
+two rows of cell centres loses a row of cells and one falling just outside gains one, so a part
+presenting the same wall placement over and over gets that error multiplied instead of cancelled.
+Ordered by error, at 2 cells across:
 
-| part | what it presents | error at 2 across |
+| part | distinct passages | error at 2 across |
 |---|---|---|
-| `lee_garimella_2005_test1` | 10 passages | -1.7% |
-| `hotspot_array` | 24 passages, offset from each other | +2.2% |
-| `manifold_two_level` | 16 channels plus slots | +5.3% |
-| `murray_ported_4gen` | 31 segments at many angles | +5.7% |
-| `murray_branching_4gen` | the same, sealed | +5.9% |
-| `pin_fin_300um_staggered` | round posts, one gap width throughout | -15.3% |
-| `unit_cell_100um` | ONE prismatic channel, axis-aligned | -27.5% |
+| `corintis_straight_baseline_100um` | 100 | **-0.05%** |
+| `lee_garimella_2005_test1` | 10 | -1.75% |
+| `hotspot_array` | 24 | +2.20% |
+| `manifold_two_level` | 1 network, 16 channels | +5.33% |
+| `murray_ported_4gen` | 1 network, 31 segments | +5.73% |
+| `murray_branching_4gen` | 1 network, 31 segments | +5.92% |
+| `pin_fin_300um_staggered` | 1 chamber around posts | -15.26% |
+| `unit_cell_100um` | ONE prismatic channel | -27.54% |
 
-The two worst are the two with a single wall placement each, and a plain straight-channel cold plate
-is exactly that shape. The commonest geometry in this field is the one the average flatters most, so
-`staircase_error.single_passage_error_pct` is the figure to quote for a part with few similar
-passages and `volume_error_pct` is the one for a part with many.
+Monotone in passage count across all eight but for the inversion between 10 and 24, which is 0.45
+of a percentage point.
+
+### A prediction that was wrong, and what it cost to find out
+
+Before `corintis_straight_baseline_100um` was run, it was predicted to come out BADLY - near the
+unit cell - on the reasoning that its 100 channels are identical and at identical pitch, so they
+would share one alignment against the octree and have nothing to average against each other. It
+came in at -0.05%, the best of the eight. A hundred identical channels do average.
+
+The second-order effect is real but much smaller. The same part, same resolution, with the block
+grown on one face so the octree falls differently:
+
+| block | fluid volume | error |
+|---|---|---|
+| 0.200 x 32.500 x 1.300 mm | 1.88392 mm3 | -27.54% |
+| 0.200 x 32.500 x 1.350 mm | 1.77274 mm3 | -31.82% |
+| 0.200 x 32.500 x 1.400 mm | 1.89764 mm3 | -27.01% |
+| 0.200 x 32.500 x 1.500 mm | 1.88683 mm3 | -27.43% |
+
+So where the walls fall moves the error by about four points on a part already at twenty-seven,
+and it jumps rather than trending, which is what alignment looks like. Passage count is the first
+order term and alignment is the second.
+
+`staircase_error.single_passage_error_pct` is the figure to quote for a part with one passage or a
+few similar ones, and `volume_error_pct` is the one for a part with many.
+
+### One more thing a run now says before it starts
+
+`conjugate.background_complaint` reports when the background cell is larger than the block's
+thinnest direction, because cfMesh cannot place a 400 um cell inside a 200 um wide block and the
+octree levels asked for are then not the levels delivered. At 2 cells across it fires on
+`unit_cell_100um` (0.50 background cells across), `pin_fin_300um_staggered` (0.83) and
+`lee_garimella_2005_test1` (1.78).
+
+It was added expecting it to separate the accurate meshes from the inaccurate ones. It does not:
+those three parts measured -27.5%, -15.3% and -1.75%, the worst two and the third best. It is kept
+because the condition it reports is real on its own terms, and it says in its own message that it
+tells you nothing about accuracy.
+
+### The coarse background is mostly notional on these parts
+
+Worth correcting, because the module's own opening says octree levels are spent only where the
+coolant surface is. `refinementThickness` defaults to one background cell, so the fine band reaches
+a background cell into the metal from every coolant surface - and a channel array at 200 um pitch
+with a 400 um background has no metal outside the band at all.
+
+Measured on the 100-channel part at 2 cells across: the solid region came out at a 50 um mean cell
+against a 400 um background. The conjugate mesh was effectively uniform at the interface size. That
+is the whole reason the first cell estimate was 2.4 times short, and every run now records
+`solid_mean_cell_um` beside the background it was asked for, so the gap is visible rather than
+assumed.
 
 The mesh also reports what it actually achieved, as `cells_across_achieved`: the cube root of the
 mean cell volume against the part's narrowest passage. It is a lower bound, because refinement only
@@ -344,6 +393,7 @@ both ports carrying faces, and **every passage count matching the CAD's**, which
 
 | part | cells across | fluid cells | passages | volume vs CAD |
 |---|---|---|---|---|
+| `corintis_straight_baseline_100um` | 2 | 2,080,000 | **100 = 100** | -0.05% |
 | `unit_cell_100um` | 2 | 20,800 | 1 = 1 | -27.54% |
 | `unit_cell_100um` | 5 | 383,736 | 1 = 1 | +13.26% |
 | `manifold_two_level` | 2 | 38,834 | 1 = 1 | +5.33% |
@@ -357,7 +407,11 @@ both ports carrying faces, and **every passage count matching the CAD's**, which
 | `pin_fin_300um_staggered` | 2 | 6,336 | 1 = 1 | -15.26% |
 | `pin_fin_300um_staggered` | 5 | 110,640 | 1 = 1 | +3.97% |
 
-The manifold coming back as one passage is the one worth pausing on: it is two stacked channel
+The 100-channel part coming back as exactly 100 passages, and the 24-hotspot part as exactly 24,
+is what the connectivity check is for: a mesh one cell too coarse breaks a channel in half and
+`checkMesh` still says Mesh OK.
+
+The manifold coming back as one passage is the other one worth pausing on: it is two stacked channel
 levels joined only at three slots, and a mesh too coarse to hold those slots open would split it in
 two and still pass every geometric bar there is.
 

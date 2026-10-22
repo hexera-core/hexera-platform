@@ -25,35 +25,50 @@ A cut-cell mesher approximates an angled or curved wall with steps, so the volum
 systematically short until the steps are small against the passage. These are those errors.
 
 AND EACH OF THOSE THREE NUMBERS IS ONE PART, which the first table did not say and which turns out
-to be most of where the number comes from. Seven parts were meshed at 2 cells across on 2026-10-22
+to be most of where the number comes from. Eight parts were meshed at 2 cells across on 2026-10-22
 and five at 5 across, same mesher, same recipe:
 
     cells across    |error| range        median      parts
-         2          1.75% to 27.54%      5.73%       7
+         2          0.05% to 27.54%      5.53%       8
          5          0.13% to 13.26%      1.53%       5
 
-The 3.21% in the table above is the BEST of seven at that resolution, not the typical one, and
-quoting it as what 2 cells across costs understates the worst by a factor of eight. The sign moves
-too: at 2 across the errors ran from -27.5% to +5.9%.
+The range at ONE resolution covers nearly three orders of magnitude, so a single number for what
+2 cells across costs cannot be right whichever number is chosen. The sign moves too: at 2 across
+the errors ran from -27.5% to +5.9%.
 
-WHAT SEPARATES THE GOOD ONES FROM THE BAD ONES is not the cell count, it is how many differently
-placed walls the part averages over. A wall that falls between two rows of cell centres loses a row
-of cells, one that falls just outside gains one, and a part presenting the same wall placement over
-and over gets that error multiplied rather than cancelled:
+WHAT SORTS THEM is how many differently placed walls the part averages over. A wall that falls
+between two rows of cell centres loses a row of cells, one that falls just outside gains one, and a
+part presenting the same wall placement over and over gets that error multiplied rather than
+cancelled:
 
-    hotspot_array            24 passages, offset from each other        +2.2%
-    lee_garimella            10 passages                                -1.7%
-    manifold_two_level       16 channels plus slots                     +5.3%
-    murray_branching         31 segments at many angles                 +5.9%
-    unit_cell_100um          ONE prismatic channel, axis-aligned       -27.5%
-    pin_fin_300um            round posts, one gap width throughout     -15.3%
+    corintis_straight_100um  100 passages                              -0.05%
+    lee_garimella             10 passages                               -1.75%
+    hotspot_array             24 passages                               +2.20%
+    manifold_two_level        1 network, 16 channels                    +5.33%
+    murray_ported             1 network, 31 segments                    +5.73%
+    murray_branching          1 network, 31 segments                    +5.92%
+    pin_fin_300um             1 chamber around posts                   -15.26%
+    unit_cell_100um           ONE prismatic channel                    -27.54%
 
-The two worst are the two with a single wall placement each, and a plain straight-channel cold plate
-is exactly that shape. The commonest geometry in this field is the one the average flatters most.
+Monotone in passage count across all eight but for the inversion between 10 and 24, which is 0.45
+of a point. A plain straight-channel cold plate with a handful of wide passages is the bad end, and
+it is the commonest geometry in this field.
 
-So the first table is the right guide to WHAT FINER CELLS BUY - the spread closes from 25 points
+A PREDICTION THAT WAS WRONG, recorded because it is the one that would otherwise be made again.
+Before the 100-channel part was run it was expected to come out BADLY, near the unit cell, on the
+reasoning that its channels are identical and at identical pitch, so they would share one alignment
+against the octree and have nothing to average against each other. It came in at -0.05%, the best
+of the eight. A hundred identical channels do average.
+
+Alignment is real and second-order. The unit cell at 2 across, same resolution, with the block grown
+on one face so the octree falls differently: -27.54%, -31.82%, -27.01%, -27.43% for block heights of
+1.300, 1.350, 1.400 and 1.500 mm. Four points of movement on a part already at twenty-seven, and it
+jumps rather than trending, which is what alignment looks like.
+
+So the first table is the right guide to WHAT FINER CELLS BUY - the spread closes from 27 points
 wide at 2 across to 13 at 5, and had closed to nothing by 12 - and it is not a prediction for any
-one part. `single_passage_error_pct` is the figure to quote for a part with few, similar passages.
+one part. `single_passage_error_pct` is the figure to quote for a part with one passage or a few
+similar ones.
 
 WHAT THEY SAY ABOUT THE EXISTING FLOOR. PASSAGE_FLOOR_CELLS is 12, chosen from practice. The 12
 across measured here came in at 0.12% on volume, so the floor the gate already enforces is
@@ -79,7 +94,7 @@ MEASURED: tuple[tuple[int, float], ...] = ((2, 3.21), (5, 1.044), (12, 0.123))
 MEASURED_SINGLE_PASSAGE: tuple[tuple[int, float], ...] = ((2, 27.54), (5, 13.26))
 
 #: How many parts each row of each table rests on, so a reader can weigh it.
-MEASURED_PARTS: dict[int, int] = {2: 7, 5: 5, 12: 1}
+MEASURED_PARTS: dict[int, int] = {2: 8, 5: 5, 12: 1}
 
 #: The coarsest and finest resolutions anything was actually measured at. Outside this the answer
 #: is an extrapolation and says so rather than quietly pretending.
@@ -160,13 +175,13 @@ def annotate(cells_across: float) -> dict:
         "clamped_to_measured_range": clamped,
         "measured_range": [COARSEST_MEASURED, FINEST_MEASURED],
         "basis": (
-            "measured on real meshes, not cited from practice: 2 cells across a passage cost 1.75% "
-            "to 27.54% of fluid volume over seven parts (median 5.73%), 5 across cost 0.13% to "
-            "13.26% over five parts (median 1.53%), and 12 across cost 0.12%. What separates them "
-            "is how many differently placed walls the part averages over: a block of 24 offset "
-            "passages came in at 2.2% where a single prismatic channel with axis-aligned walls "
-            "came in at 27.5%. The worst_measured figure is that single channel, and a plain "
-            "straight-channel cold plate is nearer it than the median"),
+            "measured on real meshes, not cited from practice: 2 cells across a passage cost 0.05% "
+            "to 27.54% of fluid volume over eight parts (median 5.53%), 5 across cost 0.13% to "
+            "13.26% over five parts (median 1.53%), and 12 across cost 0.12%. What sorts them is "
+            "how many differently placed walls the part averages over: a 100-channel array came in "
+            "at 0.05% where a single prismatic channel came in at 27.5%. The worst_measured figure "
+            "is that single channel, and a cold plate with a handful of wide passages is nearer it "
+            "than the median"),
         "note": (
             "finer than anything measured; the figure is the 12-across result and the true error "
             "is smaller" if clamped and cells_across > FINEST_MEASURED else

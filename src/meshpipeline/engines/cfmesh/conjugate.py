@@ -58,10 +58,18 @@ FLUID_TO_SOLID = f"{FLUID_REGION}_to_{SOLID_REGION}"
 SOLID_TO_FLUID = f"{SOLID_REGION}_to_{FLUID_REGION}"
 
 #: Meshing the whole block instead of only the coolant multiplies the cell count by
-#: block volume / fluid volume. On a branching microchannel part that ratio is about 22, so a
-#: uniform fine cell is never the answer: the background stays coarse and octree levels are spent
-#: only where the coolant surface is. This is the realistic conjugate setup in any case, because a
-#: silicon block does not need 10 um cells in the middle of it.
+#: block volume / fluid volume. On a branching microchannel part that ratio is about 22, so the
+#: intent is that the background stays coarse and octree levels are spent only where the coolant
+#: surface is, because a silicon block does not need 10 um cells in the middle of it.
+#:
+#: THAT INTENT IS ONLY MET WHERE THE CHANNELS ARE FAR APART, and on these parts they are not.
+#: `refinementThickness` defaults to one background cell, so the fine band reaches a background
+#: cell into the metal from every coolant surface; a channel array at 200 um pitch with a 400 um
+#: background has no metal outside the band at all. Measured on the 100-channel part at 2 cells
+#: across: the solid region came out at a 50 um mean cell against a 400 um background, so the
+#: conjugate mesh was effectively uniform at the interface size. The cell estimate in semi.py
+#: models this directly rather than assuming the metal is coarse, which is what it assumed before
+#: and why it came in 2.4 times short.
 DEFAULT_REFINEMENT_LEVELS = 3
 
 #: Written as a named constant because an inline escape here has been mangled twice by
@@ -154,6 +162,41 @@ def block_bounds(lo: tuple[float, float, float], hi: tuple[float, float, float],
     if any(h <= l for l, h in zip(out_lo, out_hi)):
         raise ConjugateError(f"degenerate block bounds: {tuple(out_lo)} -> {tuple(out_hi)}")
     return tuple(out_lo), tuple(out_hi)  # type: ignore[return-value]
+
+
+#: How many background cells have to fit across the block's thinnest direction before the
+#: background cell is a size the mesh could actually use.
+#:
+#: Below this it is not. cfMesh cannot place a 400 um cell inside a 200 um wide block, so the levels
+#: asked for are not the levels delivered and the sizing request is partly notional. That is worth
+#: saying out loud before a run, because afterwards it looks like nothing at all.
+#:
+#: WHAT IT DOES NOT PREDICT is the volume error, and the measurements say so plainly. At 2 cells
+#: across this fires on unit_cell_100um, pin_fin_300um_staggered and lee_garimella_2005_test1, whose
+#: errors were -27.5%, -15.3% and -1.75%: the worst two and the third best. A guess that it would
+#: separate good meshes from bad ones was wrong, and it is kept because the condition it reports is
+#: real on its own terms.
+MIN_BACKGROUND_CELLS_ACROSS_BLOCK = 2.0
+
+
+def background_complaint(lo, hi, background_m: float) -> str:
+    """Empty when the background cell is a size this block could use, otherwise what is wrong.
+
+    See MIN_BACKGROUND_CELLS_ACROSS_BLOCK for what this does and does not tell you.
+    """
+    if background_m <= 0:
+        return ""
+    thinnest = min(hi[k] - lo[k] for k in range(3))
+    across = thinnest / background_m
+    if across >= MIN_BACKGROUND_CELLS_ACROSS_BLOCK:
+        return ""
+    return (
+        f"the background cell is {background_m * 1e6:.0f} um and the block is only "
+        f"{thinnest * 1e6:.0f} um across its thinnest direction, which is {across:.2f} background "
+        f"cells. Under {MIN_BACKGROUND_CELLS_ACROSS_BLOCK:g} the coarse background is not a size "
+        "this mesh can use, so the octree levels asked for are not the ones delivered. Fewer "
+        "levels, or a coarser cells-across, would give the background somewhere to live. It says "
+        "nothing about whether the mesh will be accurate.")
 
 
 def block_surface_stl(lo, hi) -> str:
@@ -758,6 +801,7 @@ __all__ = ["ConjugateError", "ConjugateReport", "RegionReport", "PortPlan",
            "SPLIT_ARGS", "DEFAULT_REFINEMENT_LEVELS", "BLOCK_FACES", "OPEN_FACE_RTOL",
            "CELL_TO_REGION",
            "block_bounds", "block_surface_stl", "open_faces", "plan_ports",
+           "background_complaint", "MIN_BACKGROUND_CELLS_ACROSS_BLOCK",
            "children_peak_rss_bytes",
            "render_meshdict", "render_toposetdict", "interface_cell_m",
            "read_region", "boundary_patches", "interface_faces", "verify", "build"]

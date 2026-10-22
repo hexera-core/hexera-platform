@@ -315,3 +315,20 @@ def test_cells_across_is_measured_from_the_mesh_and_reported_as_a_lower_bound():
     region = C.RegionReport("fluid", cells=1000, volume_m3=1000 * (20e-6 ** 3))
     assert region.mean_cell_m == pytest.approx(20e-6)
     assert region.cells_across(100e-6) == pytest.approx(5.0)
+
+def test_a_background_cell_too_big_for_the_block_is_reported():
+    # cfMesh cannot place a 400 um cell inside a 200 um wide block, so the octree levels asked for
+    # are not the ones delivered. Measured on unit_cell_100um at 2 cells across: a 200 um wide
+    # block against a 400 um background.
+    why = C.background_complaint((0.0, 0.0, 0.0), (0.0002, 0.0325, 0.0013), 400e-6)
+    assert "400 um" in why and "200 um" in why
+    assert "0.50 background cells" in why
+    # ...and it says what it does NOT tell you, because a guess that it would separate accurate
+    # meshes from inaccurate ones was wrong: it fired on the worst two parts and the third best.
+    assert "says nothing about whether the mesh will be accurate" in why
+
+
+def test_a_background_cell_the_block_can_hold_is_not_reported():
+    # corintis_straight_baseline_100um at 2 across: 1.1 mm thinnest against a 400 um background.
+    assert C.background_complaint((0.0, 0.0, 0.0), (0.0199, 0.0325, 0.0011), 400e-6) == ""
+    assert C.background_complaint((0.0, 0.0, 0.0), (0.01, 0.01, 0.01), 0.0) == ""
