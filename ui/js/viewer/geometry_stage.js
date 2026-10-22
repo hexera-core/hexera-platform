@@ -23,6 +23,7 @@ import { esc } from "../core/format.js";
 import { applyFlow, bindAxis, bindUnit, changedAnswers, editsLine, extentAlong, followSuggestion, followUnit, formHtml,
   markConfirmed, noteDrawn, readExternal, readForm, rowHtml, servedProposal, shown, tableHead, unitChoiceHint,
   unitChoiceNeeded, unitOf } from "../render/geometry_form.js";
+import { bindFeaPanel, bindMeasure, feaPanelHtml, followMeasure, lightSpotRow } from "../render/fea_form.js";
 import { bindThermalPanel, partDetails, thermalPanelHtml, watts } from "../render/thermal_form.js";
 import { circleThrough, clickIndex, firstHit, snapAt } from "./open_ends.js";
 import { bindMouse, isUpAxis, orient, saveUp, savedUp, shield, upSelectHtml, upVector } from "./view_controls.js";
@@ -47,6 +48,8 @@ export function b64u32(b) { const bin = atob(b), n = bin.length, u = new Uint8Ar
 const BACKGROUND = [0.035, 0.055, 0.075];
 const BODY = [0.74, 0.78, 0.84], EDGE = [0.30, 0.34, 0.40];
 const STICKER = [1.0, 0.83, 0.0], SEL = [1.0, 0.31, 0.0];
+// an FEA part's hot spots: a quiet steel blue, apart from the stickers' yellow
+const SPOT = [0.42, 0.62, 0.86];
 
 function spherePd(cx, cy, cz, r) {
   const la = 12, lo = 16, pts = [], polys = [];
@@ -102,6 +105,9 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
   // A WHOLE THERMAL MODEL (an ECXML upload) is shown as the file's own model, not as a part with
   // openings to name: its own panel and scene, below
   if (d && d.thermal) return openThermalStage(sessionId, d, confirm, opts);
+  // AN FEA PART (the user's words said structural) is shown as itself: its size, unit, bodies and
+  // clean check - no flow form, no openings, no stickers
+  if (d && d.fea) return openFeaStage(sessionId, d, confirm, opts);
   const p = d.proposal || {};
   // what the check proposed, kept apart from the form the user edits: Proceed says back what changed
   let served = servedProposal(null, p);
@@ -454,6 +460,45 @@ function initScene(sessionId, box, surf, p) {
       if (on) { tr.scrollIntoView({ block: "nearest" }); const inp = tr.querySelector(".gc-name"); if (inp && !inp.disabled) inp.focus({ preventScroll: true }); } });
     rw.render();
   }
+  /* AN FEA PART'S HOT SPOTS (the server's fea.measure, FEA build step 3): a small ball on every
+     hole, fillet, notch and sharp inside corner the mesh will be refined at, and a tag with its
+     number that follows it every frame. Shown only - version 1 refines them all automatically, so
+     a tag lights its line in the panel and nothing more. */
+  let spots = [];
+  /* EVERY hot spot gets its mark: past SPOT_TAGS of them a numbered tag on each would bury the part,
+     so each is a small mark without a number (its number shows when it is pointed at or chosen) */
+  const SPOT_TAGS = 40;
+  let spotMarks = false;
+  function setSpots(list) {
+    spots.forEach((s) => { ren.removeActor(s.actor); s.el.remove(); });
+    spots = [];
+    spotMarks = (list || []).length > SPOT_TAGS;
+    (list || []).forEach(addSpot);
+    bindMeasure(panel, lightSpot);
+    rw.render();
+  }
+  function addSpot(h) {
+    if (!h.at_mm || h.at_mm.length !== 3) return;
+    const c = h.at_mm.map((v) => v / 1000);
+    const mp = vtk.Rendering.Core.vtkMapper.newInstance();
+    mp.setInputData(spherePd(c[0], c[1], c[2], 0.008 * diag));
+    const ac = vtk.Rendering.Core.vtkActor.newInstance(); ac.setMapper(mp); ac.setPickable(false);
+    const pp = ac.getProperty(); pp.setColor(SPOT[0], SPOT[1], SPOT[2]);
+    pp.setAmbient(0.55); pp.setDiffuse(0.6); pp.setSpecular(0.2);
+    ren.addActor(ac);
+    const el = document.createElement("div"); el.className = "v-pin fea-spot" + (spotMarks ? " mark" : "");
+    el.textContent = String(h.id); el.dataset.spot = String(h.id);
+    el.title = `${h.id}: ${h.shape || h.type}${h.capped ? " (refinement capped)" : ""}`;
+    el.onclick = (ev) => { ev.stopPropagation(); lightSpot(h.id); };
+    host.appendChild(el);
+    spots.push({ id: h.id, c, el, actor: ac });
+  }
+  function lightSpot(id) {
+    spots.forEach((s) => s.el.classList.toggle("sel", s.id === id));
+    lightSpotRow(panel, id);
+  }
+  if (p.hot_spots) setSpots(p.hot_spots);
+
   /* LOOK INTO A MOUTH - the close-up the pictures had, now a camera move: from outside, straight
      down the opening's normal, framed on it */
   function look(id) {
@@ -867,6 +912,14 @@ function initScene(sessionId, box, surf, p) {
       const n = pn.o.n, facing = (n[0] * (x - cp[0]) + n[1] * (y - cp[1]) + n[2] * (z - cp[2])) < 0;
       pn.el.classList.toggle("back", !facing);
     });
+    spots.forEach((s) => {
+      const nd = ren.worldToNormalizedDisplay(s.c[0], s.c[1], s.c[2], aspect);
+      const ok = nd[2] > 0 && nd[2] < 1 && nd[0] >= 0 && nd[0] <= 1 && nd[1] >= 0 && nd[1] <= 1;
+      s.el.style.display = ok ? "" : "none";
+      if (!ok) return;
+      s.el.style.left = (nd[0] * rect.width) + "px";
+      s.el.style.top = ((1 - nd[1]) * rect.height) + "px";
+    });
     placeMeasureLabel(aspect, rect);
     requestAnimationFrame(pinLoop);
   })();
@@ -876,7 +929,7 @@ function initScene(sessionId, box, surf, p) {
   /* support/debug hook - the browser tier drives the stage through it, without pixel picking */
   window._vdbg = window._vdbg || {};
   window._vdbg["gstage:" + sessionId] = {
-    pins: () => pins.length, selected: () => sel, select, look, diag, add, addAt, rayAt, remove, iso,
+    pins: () => pins.length, spots: () => spots.map((s) => s.id), selected: () => sel, select, look, diag, add, addAt, rayAt, remove, iso,
     tracing: () => (trace ? trace.length : null), adding: () => addMode,
     measuring: () => measuring, measured: () => measuredNow(), measureAt, screenOf,
     openings: () => (p.openings || []).map((o) => Number(o.id)),
@@ -889,7 +942,71 @@ function initScene(sessionId, box, surf, p) {
   };
   return {
     stop: () => { alive = false; ro.disconnect(); clearDecor(); clearMeasure(); document.removeEventListener("keydown", onKey); delete window._vdbg["gstage:" + sessionId]; },
-    rebind, refresh: refreshExternal,
+    rebind, refresh: refreshExternal, setSpots,
+  };
+}
+
+/* ======================================================================================
+ * THE FEA PART STAGE - a part for structural analysis, shown as itself.
+ *
+ * The part in 3D, drawn as the flow stage draws it but with no stickers, no flow arrow and no far
+ * field; beside it its size in the file's unit, the unit box, how many bodies the file has and
+ * what the clean check found, and the one question: "Is this your part and are the units right?"
+ * A file of several bodies is told plainly that version 1 meshes one part at a time. Once the part
+ * is measured, its thinnest wall and its hot spots (holes, fillets, notches, sharp inside corners)
+ * are listed and tagged on the part - shown only, as version 1 refines them all automatically.
+ * ====================================================================================== */
+async function openFeaStage(sessionId, d, confirm, opts) {
+  const f = d.fea || {};
+  // the scene draws stickers from the proposal's openings: an FEA part has none, but it has the
+  // hot spots its measurement found (shown, never edited)
+  const p = { ...(d.proposal || {}), openings: [], hot_spots: (f.measure && f.measure.hot_spots) || [] };
+  const id = "gstage-" + sessionId;
+  document.getElementById(id)?.remove();
+  const box = document.createElement("div"); box.className = "viewer gc-stage fea-stage"; box.id = id;
+  box.innerHTML = `<div class="v-bar gc-panel fea-panel">${feaPanelHtml(f, p)}</div>
+    <div class="v-canvas gc-canvas" id="gs-canvas-${sessionId}">
+      <div class="v-loading" id="gs-load-${sessionId}"><div>Loading the part…</div></div>
+      <div class="v-tools">${upSelectHtml("gs-up-" + sessionId, savedUp("session", sessionId) || (isUpAxis(p.up_axis) ? p.up_axis : "+z"))}<button class="v-btn v-tool" id="gs-fit-${sessionId}" type="button" title="Frame the whole part">Fit</button></div>
+      <svg class="gc-axes" viewBox="0 0 84 84" aria-hidden="true">
+        ${["x", "y", "z"].map((k) => `<line class="ax ax-${k}" x1="42" y1="42" x2="42" y2="42"/><text class="ax-l ax-${k}" x="42" y="42">${k.toUpperCase()}</text>`).join("")}
+      </svg>
+    </div>`;
+  const release = takeOver(box, opts.anchorEl);
+  const panel = box.querySelector(".fea-panel");
+  let scene = null, closed = false;
+  bindFeaPanel(panel, f, p, {
+    confirm: (body, edits) => confirm(body, edits),
+    done: () => { closed = true; if (scene) scene.stop(); release(); },
+  });
+  try {
+    await loadVtk();
+    const surf = await getGeometrySkin(sessionId);
+    if (closed) return null;
+    scene = initScene(sessionId, box, surf, p);
+    document.getElementById("gs-load-" + sessionId)?.remove();
+  } catch (e) {
+    if (closed) return null;
+    console.warn("FEA stage unavailable, showing the card instead:", e && e.message);
+    release();
+    if (opts.fallback) opts.fallback();
+    return null;
+  }
+  return {
+    release: () => { if (scene) scene.stop(); release(); },
+    // a unit settled in the chat reaches an untouched box; nothing else moves
+    update: (d2) => {
+      const q = (d2 && d2.proposal) || {};
+      followUnit(panel, p, q.unit, q.unit_basis);
+      // THE MEASUREMENT CAN LAND AFTER THE STAGE OPENED (the check was still naming): its lines and
+      // tags are drawn then
+      const m = d2 && d2.fea && d2.fea.measure;
+      if (m && followMeasure(panel, m, p, null)) {
+        p.hot_spots = m.hot_spots || [];
+        if (scene) scene.setSpots(p.hot_spots);
+      }
+    },
+    isNaming: () => false,
   };
 }
 

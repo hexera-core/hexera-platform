@@ -480,7 +480,7 @@ API: it logs that the directory is missing and leaves `/ui` and `/static` unmoun
 
 <!-- Regenerate: python -m meshpipeline.settings.inventory --reference -->
 
-Every supported setting (263 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
+Every supported setting (270 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
 
 | Setting | Exposure | Read by | Secret |
 |---|---|---|---|
@@ -627,6 +627,7 @@ Every supported setting (263 entries). `template` settings are the ones `.env.ex
 | `MESH_SCRIPT_SCAN_ENABLED` | template | app |  |
 | `RUN_PYTHON_REQUIRE_SANDBOX` | template | app |  |
 | `SOLVABILITY_GATE_ENABLED` | template | app |  |
+| `VERDICT_BY_LIMITS` | template | app |  |
 | `WORKSPACE_ARCHIVE_MAX_BYTES` | template | app |  |
 | `WORKSPACE_ARCHIVE_MAX_DEPTH` | template | app |  |
 | `WORKSPACE_ARCHIVE_MAX_ENTRIES` | template | app |  |
@@ -653,6 +654,11 @@ Every supported setting (263 entries). `template` settings are the ones `.env.ex
 | `WEB_SEARCH_MAX_RESULTS` | template | app |  |
 | `WEB_SEARCH_TIMEOUT` | template | app |  |
 | `VMTK_BIN` | template | app |  |
+| `AI_DECISION_CACHE` | internal | app |  |
+| `MESH_CFMESH_THREADS` | internal | app |  |
+| `MESH_DETERMINISTIC` | internal | app |  |
+| `MESH_SNAPPY_RANKS` | internal | app |  |
+| `MESH_THREADS` | internal | app |  |
 | `SENTRY_DSN` | template | app | yes |
 | `BUILDER_MIN_P` | internal | app |  |
 | `BUILDER_TEMPERATURE` | internal | app |  |
@@ -683,6 +689,7 @@ Every supported setting (263 entries). `template` settings are the ones `.env.ex
 | `ALEMBIC_CONFIG` | external | app |  |
 | `CLOUD_RUN_EXECUTION` | external | app |  |
 | `GOOGLE_APPLICATION_CREDENTIALS` | external | app |  |
+| `MESH_SOURCE_TREE` | external | app |  |
 | `PIPELINE_EXECUTION_ID` | external | app |  |
 | `PROMETHEUS_MULTIPROC_DIR` | external | app |  |
 | `MODEL_DOMAIN_BUDGETS` | template | app |  |

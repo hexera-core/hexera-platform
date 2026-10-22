@@ -55,6 +55,7 @@ def tessellate_to_stl(geom_path, out_stl, *, context=None, prepared=None) -> Pat
     _mine = not gmsh.isInitialized()
     if _mine:
         gmsh.initialize(interruptible=False)
+        _pin_gmsh(gmsh)
     drawn = False
     try:
         gmsh.option.setNumber("General.Terminal", 0)
@@ -71,6 +72,10 @@ def tessellate_to_stl(geom_path, out_stl, *, context=None, prepared=None) -> Pat
         gmsh.model.occ.synchronize()
         # the metre-normalised B-rep IS the staged geometry - the driver reads this, unscaled
         gmsh.write(str(staged_brep))
+        # gmsh's STEP writer drops the names a CAD file gives single faces: record them from the
+        # upload, by where each face is, for the FEA deck to write beside Face_k
+        from meshpipeline.cad.face_names import record_for_staging
+        record_for_staging(gmsh, geom_path, ws)
         # The staged SURFACE (input.stl) is a picture of that B-rep for the report and review,
         # never what the driver meshes. A size floor keeps a degenerate CAD edge from asking for
         # a zero size (CRM high-lift: "Wrong mesh element size lc = 0" stopped staging, lab
@@ -168,6 +173,7 @@ def _inspect_fluid_boundary(ws: Path) -> dict:
     _mine = not gmsh.isInitialized()
     if _mine:
         gmsh.initialize(interruptible=False)
+        _pin_gmsh(gmsh)
     try:
         gmsh.option.setNumber("General.Terminal", 0)
         gmsh.model.add("inspect_surface")
@@ -203,6 +209,7 @@ def _inspect_surface(ws: Path, stl: Path) -> dict:
     _mine = not gmsh.isInitialized()
     if _mine:
         gmsh.initialize(interruptible=False)
+        _pin_gmsh(gmsh)
     try:
         gmsh.option.setNumber("General.Terminal", 0)
         gmsh.model.add("inspect_surface")
@@ -264,6 +271,7 @@ def inspect_stl(workspace, geometry_file: str = "input.stl", *, context=None) ->
     _mine = not gmsh.isInitialized()
     if _mine:
         gmsh.initialize(interruptible=False)
+        _pin_gmsh(gmsh)
     try:
         gmsh.option.setNumber("General.Terminal", 0)
         # the size the builder is told is the surface's, not OpenCascade's loose envelope
@@ -415,7 +423,40 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
         flow_topology=flow_topology,
         engine_params=engine_params or {},
     )
+    _stamp_fea_plan(ws)
     out = (f"[GMSH] elements={q.get('cells')} nodes={q.get('nodes')} "
            f"order={q.get('element_order')} min_sicn={q.get('min_sicn')} "
            f"fatal={q.get('fatal', [])}")
     return {"success": not q.get("fatal"), "stdout": out, "stderr": "", "output": out}
+
+
+def _stamp_fea_plan(ws: Path) -> None:
+    """A mesh built from the deterministic FEA plan (engines/fea_driver) says so in its manifest:
+    the plan file, its level and estimate, and the ladder's passes - so nobody has to infer from
+    the logs whether the driver or the builder loop made it."""
+    import json
+
+    plan_p, passes_p, man_p = ws / "fea_plan.json", ws / "fea_passes.json", ws / "mesh_manifest.json"
+    if not (plan_p.exists() and man_p.exists()):
+        return
+    try:
+        plan = json.loads(plan_p.read_text())
+        ladder = json.loads(passes_p.read_text()) if passes_p.exists() else {}
+        man = json.loads(man_p.read_text())
+        man["fea_plan"] = {
+            "file": "fea_plan.json", "driver": "deterministic FEA driver (engines/fea_driver.py)",
+            "level": (plan.get("detail") or {}).get("key"), "estimate": (plan.get("estimate") or {}).get("elements"),
+            "base_size_m": plan.get("base_size_m"), "zones": len(plan.get("zones") or []),
+            "passes": len(ladder.get("passes") or []), "delivered_pass": ladder.get("delivered"),
+            "levers": [lv.get("lever") for lv in ladder.get("levers") or []]}
+        man_p.write_text(json.dumps(man, indent=2))
+    except (OSError, ValueError) as exc:
+        logger.info("gmsh finalize: the FEA plan was not stamped on the manifest (%s)", exc)
+
+
+def _pin_gmsh(gmsh) -> None:
+    """One thread and a fixed seed (engines/determinism.py): threaded gmsh inserts points in the
+    order threads finish, so the same surface could come out as a different staging."""
+    from meshpipeline.engines.determinism import GMSH_RANDOM_SEED, GMSH_THREADS
+    gmsh.option.setNumber("General.NumThreads", GMSH_THREADS)
+    gmsh.option.setNumber("Mesh.RandomSeed", GMSH_RANDOM_SEED)

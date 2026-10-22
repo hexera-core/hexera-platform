@@ -37,9 +37,18 @@ _THERMAL_WORDS = {
     PICTURES: ("Drawing the model…", "Drew the model"),
     NAMING: ("Setting up the panel…", "Set up the panel"),
 }
+#: AN FEA PART (the user's words sent it to stress analysis) has no openings and nothing to name: the
+#: step that reads the drawn surface is said as that, and the "naming" is where its walls and hot
+#: spots are measured (application/geometry_check._name). Areen's F1 car showed "Found the openings"
+#: on its FEA check (21 Oct): no CFD words on the FEA path.
+_FEA_WORDS = {
+    OPENINGS: ("Reading the surface…", "Read the surface"),
+    NAMING: ("Measuring the walls and hot spots…", "Found the walls and hot spots"),
+}
 #: What a failed step is said as: "Reading your CAD took too long" / "Couldn't finish reading your CAD".
 _DOING = {QUEUED: "starting", READING: "reading your CAD", MEASURING: "measuring the shape",
           OPENINGS: "finding the openings", PICTURES: "drawing the pictures", NAMING: "naming what it sees"}
+_FEA_DOING = {OPENINGS: "reading the surface", NAMING: "measuring the walls and hot spots"}
 
 #: After this long with no worker on the scout, the line says it is waiting to start; after the
 #: second, why. Production always has a worker on the queue; a dev stack may not.
@@ -207,8 +216,26 @@ def soft_limit_s(key: str, work: dict | None) -> float:
     return 60.0
 
 
-def _words(key: str, thermal: bool) -> tuple[str, str]:
-    return (_THERMAL_WORDS.get(key) if thermal else None) or _WORDS[key]
+def _words(key: str, thermal: bool, fea: bool = False) -> tuple[str, str]:
+    return ((_THERMAL_WORDS.get(key) if thermal else None) or (_FEA_WORDS.get(key) if fea else None)
+            or _WORDS[key])
+
+
+def is_fea(stored: dict | None, requested: dict | None) -> bool:
+    """Whether the check is an FEA part's: its measurement is stored, or the words it was named
+    with (the request's, else the stored check's) send it to stress analysis."""
+    facts = (stored or {}).get("facts")
+    if isinstance(facts, dict):
+        from meshpipeline.cad.fea_measure import FACT_KEY
+
+        if FACT_KEY in facts:
+            return True
+    text = str((requested or {}).get("purpose_text") or (stored or {}).get("purpose_text") or "")
+    if not text.strip():
+        return False
+    from meshpipeline.application.geometry_check import is_fea_purpose
+
+    return is_fea_purpose(text)
 
 
 def _size_words(work: dict) -> str:
@@ -218,8 +245,12 @@ def _size_words(work: dict) -> str:
     return f"{mb:.0f} MB" if mb >= 10 else f"{mb:.1f} MB"
 
 
-def _slow_note(key: str, work: dict, thermal: bool) -> str:
+def _slow_note(key: str, work: dict, thermal: bool, fea: bool = False) -> str:
     """What the line adds once a step runs past its soft limit."""
+    if fea and key == NAMING:
+        return "Still measuring - a part with many faces takes longer"
+    if fea and key == OPENINGS:
+        return "Still reading - a part with many faces takes longer"
     size = _size_words(work)
     big = float(work.get("size_bytes") or 0) / 1e6 >= BIG_FILE_MB
     if key == READING:
@@ -239,9 +270,12 @@ def _slow_note(key: str, work: dict, thermal: bool) -> str:
     return ""
 
 
-def _advice(step: str, suffix: str, timed_out: bool, can_retry: bool) -> str:
+def _advice(step: str, suffix: str, timed_out: bool, can_retry: bool, fea: bool = False) -> str:
     """What to do about a failed step, in one or two short sentences."""
     s = (suffix or "").lower()
+    if step == NAMING and fea:
+        return ("The part is drawn: check its size and unit and press Proceed - the walls and hot spots "
+                "are measured again when it is meshed" + (", or try again." if can_retry else "."))
     if step == NAMING:
         return ("The picture is ready: name the openings on it yourself and press Proceed"
                 + (", or try again." if can_retry else "."))
@@ -290,7 +324,7 @@ def duration_words(seconds: float) -> str:
 
 def progress_view(stored: dict | None, requested: dict | None, progress: dict | None,
                   now: float | None = None, *, scout_limit_s: float, naming_limit_s: float,
-                  confirmed: bool = False) -> dict | None:
+                  confirmed: bool = False, fea: bool | None = None) -> dict | None:
     """THE LIVE LINE, as the chat shows it, from the check as reported (through its time box), the
     naming request and the worker's record. Pure. `state` is one of queued, running, waiting (on
     the user's answer), done, failed or unsupported; `live` says whether the mark animates - never
@@ -298,7 +332,9 @@ def progress_view(stored: dict | None, requested: dict | None, progress: dict | 
     carries its seconds; `note` is the "still working" line, and a failure carries `message`
     (as `current`), `reason` and `advice`. `scout_limit_s` / `naming_limit_s` are the worker's own
     limits, after which a step stops by itself. A check the user has `confirmed` is done whatever
-    the naming did: the user went on without it. None when there is no check, or it is off."""
+    the naming did: the user went on without it. `fea` says the part is on the FEA path (its steps
+    are said in FEA words); None works it out from the check. None when there is no check, or it
+    is off."""
     if not stored:
         return None
     at = time.time() if now is None else now
@@ -314,6 +350,9 @@ def progress_view(stored: dict | None, requested: dict | None, progress: dict | 
     if naming is not None and (not requested or float(naming.get("picked_at") or 0.0) < asked_at - 30.0):
         naming = None                    # an earlier naming's record, not this request's
     thermal = stored.get("check_mode") == "thermal" or (scout or {}).get("mode") == "thermal"
+    # an FEA part's steps are said in its own words: the route the API settled from the user's
+    # words (`fea`), else what the stored check and the naming request say
+    fea = not thermal and (fea if fea is not None else is_fea(stored, requested))
     work = dict((scout or {}).get("work") or {})
     suffix = str(work.get("suffix") or (stored.get("source") or {}).get("suffix_hint") or "")
     scout_steps = (scout or {}).get("steps") or {}
@@ -321,13 +360,13 @@ def progress_view(stored: dict | None, requested: dict | None, progress: dict | 
 
     steps: list[dict] = []
     for key in [k for k in SCOUT_STEPS if not (thermal and k == OPENINGS)] + [NAMING]:
-        doing, done = _words(key, thermal)
+        doing, done = _words(key, thermal, fea)
         seconds = _seconds((naming_steps if key == NAMING else scout_steps).get(key), at)
         steps.append({"key": key, "label": done, "doing": doing, "state": "todo", "seconds": _round(seconds)})
     by_key = {s["key"]: s for s in steps}
     if scout is not None and scout.get("marker"):
         by_key[QUEUED]["seconds"] = _round(max(0.0, float(scout["picked_at"]) - float(scout["marker"])))
-    view: dict = {"steps": steps, "thermal": thermal, "note": "", "live": False}
+    view: dict = {"steps": steps, "thermal": thermal, "fea": fea, "note": "", "live": False}
 
     if status == "unsupported":
         view.update(state="unsupported", current="This file can't be checked here",
@@ -335,9 +374,9 @@ def progress_view(stored: dict | None, requested: dict | None, progress: dict | 
                     advice="Carry on in the chat - I'll ask about the part there.", can_retry=False)
         return view
     if status == "pending":
-        return _scouting(view, by_key, scout, scout_steps, work, thermal, at, written_at, scout_limit_s)
+        return _scouting(view, by_key, scout, scout_steps, work, thermal, at, written_at, scout_limit_s, fea)
     if status == "failed" and stored.get("step") != "naming":
-        return _scout_failed(view, stored, by_key, scout, scout_steps, suffix)
+        return _scout_failed(view, stored, by_key, scout, scout_steps, suffix, fea)
     if status not in ("scouted", "ready", "failed"):
         return None
 
@@ -360,7 +399,7 @@ def progress_view(stored: dict | None, requested: dict | None, progress: dict | 
         view.update(state="done", current=f"Checked in {duration_words(total)}", total_s=_round(total))
         return view
     if status == "failed":
-        return _failed(view, stored, NAMING, nm, suffix)
+        return _failed(view, stored, NAMING, nm, suffix, fea)
     if not requested or requested.get("withdrawn"):
         nm["state"] = "waiting"
         view.update(state="waiting", current=("Model ready - answer in the chat and I'll set up the panel" if thermal
@@ -380,7 +419,7 @@ def progress_view(stored: dict | None, requested: dict | None, progress: dict | 
     elapsed = max(0.0, at - float(started if started is not None else picked))
     nm["seconds"] = _round(elapsed)
     view.update(state="running", live=True, current=nm["doing"], elapsed_s=_round(elapsed))
-    _add_slow_note(view, NAMING, elapsed, work, thermal, remaining=picked + naming_limit_s - at)
+    _add_slow_note(view, NAMING, elapsed, work, thermal, remaining=picked + naming_limit_s - at, fea=fea)
     return view
 
 
@@ -393,7 +432,7 @@ def _this_attempt(scout: dict, written_at: float) -> bool:
     return float(scout.get("picked_at") or 0.0) >= written_at - 1.0
 
 
-def _scouting(view, by_key, scout, scout_steps, work, thermal, at, written_at, scout_limit_s) -> dict:
+def _scouting(view, by_key, scout, scout_steps, work, thermal, at, written_at, scout_limit_s, fea=False) -> dict:
     """The scout is still running - or no worker has picked it up yet."""
     queued = by_key[QUEUED]
     if scout is None:
@@ -420,11 +459,11 @@ def _scouting(view, by_key, scout, scout_steps, work, thermal, at, written_at, s
     elapsed = float(act["seconds"] or 0.0)
     view.update(state="running", live=True, current=act["doing"], elapsed_s=_round(elapsed))
     _add_slow_note(view, active, elapsed, work, thermal,
-                   remaining=float(scout.get("picked_at") or at) + scout_limit_s - at)
+                   remaining=float(scout.get("picked_at") or at) + scout_limit_s - at, fea=fea)
     return view
 
 
-def _scout_failed(view, stored, by_key, scout, scout_steps, suffix) -> dict:
+def _scout_failed(view, stored, by_key, scout, scout_steps, suffix, fea=False) -> dict:
     """The scout failed: in the step its worker was in, else before any worker started it."""
     current = (scout or {}).get("current")
     failed_key = str(current) if current in by_key and current != NAMING else (READING if scout else QUEUED)
@@ -433,10 +472,11 @@ def _scout_failed(view, stored, by_key, scout, scout_steps, suffix) -> dict:
             break
         if s["key"] == QUEUED or s["key"] in scout_steps:
             s["state"] = "done"
-    return _failed(view, stored, failed_key, by_key[failed_key], suffix)
+    return _failed(view, stored, failed_key, by_key[failed_key], suffix, fea)
 
 
-def _add_slow_note(view: dict, key: str, elapsed: float, work: dict, thermal: bool, *, remaining: float) -> None:
+def _add_slow_note(view: dict, key: str, elapsed: float, work: dict, thermal: bool, *, remaining: float,
+                   fea: bool = False) -> None:
     limit = soft_limit_s(key, work)
     if elapsed < limit:
         return
@@ -446,25 +486,25 @@ def _add_slow_note(view: dict, key: str, elapsed: float, work: dict, thermal: bo
         view["note"] = f"This is taking much longer than usual. If it's stuck, {when}. You can carry on in the chat meanwhile."
         view["slow"] = "very"
     else:
-        view["note"] = _slow_note(key, work, thermal)
+        view["note"] = _slow_note(key, work, thermal, fea)
         view["slow"] = "yes"
 
 
-def _failed(view: dict, stored: dict, key: str, step: dict, suffix: str) -> dict:
+def _failed(view: dict, stored: dict, key: str, step: dict, suffix: str, fea: bool = False) -> dict:
     timed_out = bool(stored.get("timed_out"))
     can_retry = bool(stored.get("retry"))
     step["state"] = "failed"
     if key == QUEUED:
         message = "No worker picked it up in time." if timed_out else "Couldn't start the check."
     else:
-        doing = _DOING.get(key, "the check")
+        doing = (_FEA_DOING.get(key) if fea else None) or _DOING.get(key, "the check")
         message = f"{doing[:1].upper()}{doing[1:]} took too long." if timed_out else f"Couldn't finish {doing}."
     view.update(state="failed", current=message,
                 reason="" if timed_out else _plain_reason(str(stored.get("reason") or "")),
-                advice=_advice(key, suffix, timed_out, can_retry), can_retry=can_retry)
+                advice=_advice(key, suffix, timed_out, can_retry, fea), can_retry=can_retry)
     return view
 
 
 __all__ = ["MEASURING", "NAMING", "OPENINGS", "PICTURES", "QUEUED", "READING", "SCOUT_STEPS", "Tracker",
-           "duration_words", "mark", "note_work", "progress_key", "progress_view", "read_progress",
+           "duration_words", "is_fea", "mark", "note_work", "progress_key", "progress_view", "read_progress",
            "skin_triangles", "soft_limit_s", "track", "untrack"]

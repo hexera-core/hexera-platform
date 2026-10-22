@@ -143,8 +143,13 @@ def _is_cancelled(job) -> bool:
     return getattr(status, "value", status) == _JS.cancelled.value
 
 
-def _artifact_label(artifact_type, engine: str) -> str:
+def _artifact_label(artifact_type, engine: str, logical_key: str = "") -> str:
     _t = getattr(artifact_type, "value", str(artifact_type))
+    # an FEA mesh's solver files, one per solver, each saying whether that solver has really run it
+    from meshpipeline.engines.fea_writers import EXPORT_ARTIFACTS
+    for _key, _file, _label in EXPORT_ARTIFACTS:
+        if logical_key == _key:
+            return _label
     if _t == "mesh":
         return "Surface preview (.msh)"
     if _t == "repair_report":
@@ -254,6 +259,14 @@ def _review_outcome(final_result) -> str | None:
         return None
 
 
+def _review_notes(final_result) -> list[str]:
+    from meshpipeline.application.final_result import review_notes_of
+    try:
+        return review_notes_of(final_result if isinstance(final_result, dict) else None)
+    except Exception:  # noqa: BLE001 - an old or malformed record never breaks a read
+        return []
+
+
 def _review_concerns(final_result) -> list[str]:
     from meshpipeline.application.final_result import review_concerns_of
     try:
@@ -291,7 +304,8 @@ async def get_job(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
                     download_url=await svc.signed_url(a.storage_key),
                     size_bytes=a.size_bytes,
                     created_at=a.created_at,
-                    label=_artifact_label(a.artifact_type, _engine),
+                    label=_artifact_label(a.artifact_type, _engine,
+                                          str(getattr(a, "logical_key", "") or "")),
                 )
             )
 
@@ -345,6 +359,7 @@ async def get_job(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
             delivery_manifest=_manifest,
             review_outcome=_review_outcome(_fr_dict),
             review_concerns=_review_concerns(_fr_dict),
+            review_notes=_review_notes(_fr_dict),
             # a string or nothing: a row from before the column carries none, and a test double must
             # not be able to smuggle an object into the wire contract
             cancel_reason=(job.cancel_reason if isinstance(getattr(job, "cancel_reason", None), str)
@@ -413,14 +428,17 @@ async def get_surface_vtk(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
                           organization_id: str = Depends(org_dep)):
     """The delivered boundary with its quality fields as a legacy VTK file, for ParaView. The
     arrays are the viewer's own, so what ParaView colours is what the heatmap coloured. Built from
-    the stored viewer payload - no workspace is read."""
+    the stored viewer payload - no workspace is read. A polyMesh surface and the triangle surface
+    of a tetrahedral engine's DELIVERED mesh (VMTK, Gmsh: kind=stl marked is_mesh) both export;
+    an input skin shown in place of a mesh never does."""
     from fastapi.responses import Response
 
     from meshpipeline.render.vtk_export import surface_to_vtk
     data = await _viewer_data(job_id, owner_id, organization_id=organization_id)
     surface = data.get("surface")
-    if not surface or surface.get("kind") != "polymesh":
-        raise HTTPException(404, "No polyMesh surface was delivered for this job")
+    if not surface or not (surface.get("kind") == "polymesh"
+                           or (surface.get("kind") == "stl" and surface.get("is_mesh") is True)):
+        raise HTTPException(404, "No delivered mesh surface was stored for this job")
     try:
         body = await asyncio.to_thread(surface_to_vtk, surface)
     except ValueError as exc:

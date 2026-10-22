@@ -335,6 +335,9 @@ async def node_repair_attempt(state: PipelineState) -> dict:
     except TimeoutError:
         logger.warning("node_repair_attempt: the repair exceeded %.1fs - continuing on the "
                        "original - job_id=%s", rcfg.CAD_REPAIR_TIMEOUT_S, job_id)
+        from meshpipeline.engines.determinism import note_time_limit
+        note_time_limit("cad_repair", "the repair ran past its time limit: the original file "
+                        "is meshed", budget_s=float(rcfg.CAD_REPAIR_TIMEOUT_S))
         _shadow_row(job_id, shadow_plan, "not_executed")
         return {**_declined(f"the repair exceeded {rcfg.CAD_REPAIR_TIMEOUT_S:.0f}s",
                             route=advice.route), **await _triage_only(report, source),

@@ -182,6 +182,19 @@ class OwnershipCheckedPublisher:
             self._inner.meshed(cells, op_id=op_id)
 
     @_healing
+    async def aplan(self, cells: int | None = None, layers: int | None = None,
+                    refinements: list[str] | None = None, op_id: str = "") -> None:
+        _own = await self._authorized("plan")
+        with self._fenced(_own):
+            self._inner.plan(cells, layers, refinements, op_id=op_id)
+
+    @_healing
+    async def amesh_stage(self, key: str, label: str, op_id: str = "") -> None:
+        _own = await self._authorized("mesh_stage")
+        with self._fenced(_own):
+            self._inner.mesh_stage(key, label, op_id=op_id)
+
+    @_healing
     async def averdict(self, verdict: str, summary: str = "") -> None:
         _own = await self._authorized("verdict")
         with self._fenced(_own):

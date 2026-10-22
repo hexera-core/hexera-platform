@@ -16,9 +16,13 @@ import { getSurface } from "../api/endpoints.js";
 import { headers } from "../api/client.js";
 import { acceptMesh, flagDispute } from "./dispute.js";
 import { VIEWER_FALLBACK } from "./config.js";
+import { roundNumbers } from "../render/outcome.js";
 import { MOUSE_HINT, bindMouse, isUpAxis, orient, saveUp, savedUp, shield, upSelectHtml, upVector } from "./view_controls.js";
 // a delivered thermal model (an ECXML upload) is read part by part, with slices and its own files
 import { bindThermalResults, sliceColour, thermalDownloads, thermalResultsHtml } from "./thermal_results.js";
+// a delivered FEA mesh (a structural solid) is read face by face, with its quality against each
+// solver limit, its plan and its hot spots (FEA build step 5)
+import { bindFeaResults, feaDownloads, feaResultsHtml } from "./fea_results.js";
 
 let _vtkP=null;
 function loadVtk(){if(window.vtk)return Promise.resolve();
@@ -45,6 +49,23 @@ const _EDGE_HEAT=[0.24,0.23,0.22];
 const _SEL=[1.0,0.31,0.0],_SEL_EDGE=[0.62,0.22,0.02];
 const HEAT_HINT='Click a face to see its numbers · Drag still rotates';
 const _SEL_COLS=['#e8613c','#f2c744','#3fa650','#3f7fd9','#b455c8','#38c2c2'];
+
+/* THE REVIEW'S POINTS, one per row. A point arrives as one string - "Important: Cells degrade
+   where ..." or "Reviewer note: Wall layers: 4.71 of 5 ..." - so its lead word becomes a tag and
+   its label leads the row; long decimals are printed as an engineer would (71.0953 -> 71.1). */
+function reviewList(items){
+  const rows=(items||[]).map(x=>String(x||'').trim()).filter(Boolean).map(t=>{
+    const imp=/^important\s*[:-]\s*/i.test(t);
+    const body=t.replace(/^important\s*[:-]\s*/i,'').replace(/^reviewer note:\s*/i,'');
+    return `<li class="oc-row${imp?' important':''}">${imp?'<span class="oc-tag">Important</span>':''}`
+      +`<span class="oc-txt">${esc(roundNumbers(body))}</span></li>`;}).join('');
+  return rows?`<ul class="oc-list v-concern-list">${rows}</ul>`:'';
+}
+/* the reviewer's full reasoning, whole and folded away - it used to be cut at 600 characters */
+function reasonDetails(text){
+  const t=String(text||'').trim();
+  return t?`<details class="oc-more"><summary>Why the reviewer said this</summary><p>${esc(t)}</p></details>`:'';
+}
 
 export async function openViewer(job,anchorEl,opts){
   opts=opts||{};
@@ -76,25 +97,32 @@ export async function openViewer(job,anchorEl,opts){
         <div class="v-row"><span class="v-status" id="v-status-${job}">loading…</span></div>
       </div>
       ${opts.unreviewed?`<div class="v-why">
-        <b>Every validity gate passed</b> - the mesh is structurally sound and solvable.
-        The reviewer would not sign it off on quality${(opts.findings||[]).length
-          ? ': <span class="v-axes">'+(opts.findings||[]).map(f=>esc(f)).join(' · ')+'</span>':'.'}
-        ${opts.reasoning?`<div class="v-reason">${esc(String(opts.reasoning).slice(0,600))}</div>`:''}
+        <p class="v-why-h">Sound, but not signed off</p>
+        <p class="v-why-p">The mesh passed every validity check, so it will solve. The reviewer did
+        not sign it off on quality${(opts.findings||[]).length?':':'.'}</p>
+        ${reviewList(opts.findings)}
+        ${reasonDetails(opts.reasoning)}
         <div class="v-why-act">
-          Look at it yourself. If it is good enough for your study, say so - it will be
-          re-reviewed against <i>your</i> bar and delivered.
+          Look at it yourself. If it is good enough for your study, say so: it is checked again
+          against <i>your</i> standard and delivered.
           <button class="v-btn primary" id="v-accept-${job}">This is acceptable →</button>
         </div></div>`:''}
       ${opts.concerns?`<div class="v-why v-concerns">
-        <b>Every validity gate passed</b> - the mesh is structurally sound and solvable, so it is
-        delivered. The reviewer left these points open; weigh them before you rely on the results:
-        ${(opts.concerns||[]).length
-          ? '<ul class="v-concern-list">'+(opts.concerns||[]).map(c=>`<li>${esc(c)}</li>`).join('')+'</ul>'
-          : ''}
-        ${opts.reasoning?`<div class="v-reason">${esc(String(opts.reasoning).slice(0,600))}</div>`:''}
+        <p class="v-why-h">Points to weigh</p>
+        <p class="v-why-p">The mesh passed every validity check, so it is sound, will solve and is
+        yours. Look at these before you rely on the results:</p>
+        ${reviewList(opts.concerns)}
+        ${reasonDetails(opts.reasoning)}
+        </div>`:''}
+      ${(opts.notes||[]).length?`<div class="v-why v-notes">
+        <p class="v-why-h">Reviewer notes</p>
+        <p class="v-why-p">An AI reviewer looked at the mesh. Its notes are for you to weigh; they
+        do not decide the result.</p>
+        ${reviewList(opts.notes)}
         </div>`:''}
       <div class="v-sec v-dl">${_dlHtml}</div>
       <div class="v-thermal" id="v-thermal-${job}"></div>
+      <div class="v-fea" id="v-fea-${job}"></div>
       <div class="v-facts" id="v-facts-${job}"></div>
       <!-- MESH PARTS: every selectable entity the loaded case actually declares -
            boundary patches, regions, cell zones, face zones, layer groups. The list
@@ -123,7 +151,7 @@ export async function openViewer(job,anchorEl,opts){
           <button class="v-btn" id="v-submit-${job}">Request a change…</button>
           <button class="v-btn v-quiet" id="v-clearbtn-${job}" disabled>Clear marks</button>
         </div>
-        <p class="v-cost">A change request re-runs the pipeline - minutes, not seconds.</p>
+        <p class="v-cost">A change starts a new run. It takes a few minutes.</p>
       </div></div>
     <div class="v-canvas" id="v-canvas-${job}">
       <div class="v-loading" id="v-load-${job}"><svg class="v-spin" viewBox="0 0 24 24" aria-hidden="true"><circle class="sp-arm" cx="12" cy="12" r="7.2"/><path class="sp-hd" d="M19.20 8.16L22.40 14.56L16.00 14.56Z"/><path class="sp-hd" d="M4.80 15.84L1.60 9.44L8.00 9.44Z"/></svg><div>Loading mesh…</div></div>
@@ -173,10 +201,10 @@ export async function openViewer(job,anchorEl,opts){
       // to the SUCCESS path and are rendered by initViewer, which is where the copy that works
       // has always been.
       const l=document.getElementById('v-load-'+job);
-      if(l)l.innerHTML='<div>viewer unavailable</div>';
-      document.getElementById('v-status-'+job).textContent='viewer unavailable: '+e.message
+      if(l)l.innerHTML='<div>The 3D view could not load</div>';
+      document.getElementById('v-status-'+job).textContent='The 3D view could not load ('+e.message+').'
         +(String(e.message).includes('404')
-          ? ' - the job is owner-scoped: add &user=<owner> to the URL and reload' : '');}};
+          ? ' This run may belong to another account.' : ' The downloads still work.');}};
   const io=new IntersectionObserver(es=>{
     if(es.some(x=>x.isIntersecting)){io.disconnect();start();}},{threshold:0.05});
   io.observe(box);
@@ -841,6 +869,8 @@ function initViewer(job,surf,uiCfg){
   statusEl.textContent=thermal&&surf.is_mesh
     // a thermal model says what it is in its own words: its parts, its cells, its power
     ?'your delivered thermal mesh · '+(thermal.summary||'')
+    // so does an FEA mesh: its elements, its level and its named faces
+    :surf.fea&&surf.is_mesh?'your delivered FEA mesh · '+(surf.fea.summary||'')
     :(surf.is_mesh?'your delivered mesh · '
                 :'input surface - the mesh itself could not be rendered · ')
     +(surf.patches||[]).map(p=>`${p.name}: ${(p.face_count||p.tri_count||0).toLocaleString()} faces`).join(' · ');
@@ -906,6 +936,36 @@ function initViewer(job,surf,uiCfg){
       text:()=>host.innerText};
   })();
 
+  /* A DELIVERED FEA MESH - its quality against each solver limit, the through-wall check, the
+     plan in words, its hot spots and every named face (viewer/fea_results.js). A face picked there
+     is shown alone through the parts panel; a hot spot also gets a marker where it is. */
+  (function feaResults(){
+    const fea=surf.fea||null,host=document.getElementById('v-fea-'+job);
+    if(!fea||!host)return;
+    let marker=null;
+    function point(at){
+      if(marker){ren.removeActor(marker);marker=null;}
+      const S=vtk.Filters&&vtk.Filters.Sources&&vtk.Filters.Sources.vtkSphereSource;
+      if(at&&at.length===3&&S){
+        const src=S.newInstance({center:at,radius:Math.max(diag*0.012,1e-9),thetaResolution:20,phiResolution:14});
+        const mapper=vtk.Rendering.Core.vtkMapper.newInstance();mapper.setInputConnection(src.getOutputPort());
+        marker=vtk.Rendering.Core.vtkActor.newInstance();marker.setMapper(mapper);
+        const pr=marker.getProperty();pr.setColor(_SEL[0],_SEL[1],_SEL[2]);pr.setAmbient(0.6);
+        if(marker.setPickable)marker.setPickable(false);
+        ren.addActor(marker);}
+      rw.render();}
+    host.innerHTML=feaResultsHtml(job,fea);
+    feaDownloads(document.querySelector('#viewer-'+job+' .v-dl'),job,fea);
+    const api=bindFeaResults(host,job,fea,{
+      isolate:name=>{if(partsApi)partsApi.isolate(name);},
+      point:at=>point(at)});
+    window._vdbg=window._vdbg||{};
+    window._vdbg[job+':fea']={isolate:name=>{if(partsApi)partsApi.isolate(name);api&&api.pick(name);},
+      point:at=>point(at),marker:()=>!!marker,
+      visible:()=>entries.filter(e=>e.actor.getVisibility()).map(e=>e.patch),
+      text:()=>host.innerText};
+  })();
+
   /* support/debug hook (read-only-ish; used by headless verification) */
   window._vdbg=window._vdbg||{};
   window._vdbg[job]={
@@ -926,7 +986,8 @@ function initViewer(job,surf,uiCfg){
      built by the API from the stored payload. Fetched with the API headers (a plain link would
      carry none) and handed to the browser as a download; the button says what it is doing. */
   (function vtkExport(){
-    if(surf.kind!=='polymesh')return;
+    // a polyMesh, or the triangle surface of a tetrahedral engine's DELIVERED mesh (VMTK, Gmsh)
+    if(surf.kind!=='polymesh'&&!(surf.kind==='stl'&&surf.is_mesh===true))return;
     const bar=document.querySelector('#viewer-'+job+' .v-dl');if(!bar)return;
     const a=document.createElement('a');a.className='v-dlbtn';a.href='#';a.id='v-vtk-'+job;
     a.title='the boundary with its quality fields, for ParaView';

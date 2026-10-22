@@ -185,7 +185,14 @@ class BuilderToolExecutor:
             self._mesh_seq += 1
             await self._publish.ameshing(prepared.engine, prepared.cap, prepared.history,
                                          op_id=f"meshing:{self._mesh_seq}")
-        return await asyncio.to_thread(dispatch_prepared_mesh, self._context, prepared)
+        from meshpipeline.contracts import mesh_progress
+        # THE MESHER'S OWN STAGE, relayed to the run's live line while it runs (nowhere without
+        # a publisher)
+        sink = None if self._publish is None else mesh_progress.publishing_sink(
+            self._publish, asyncio.get_running_loop(),
+            op_prefix=mesh_progress.stage_op_prefix(self._context.workspace, self._mesh_seq))
+        with mesh_progress.relaying(sink):
+            return await asyncio.to_thread(dispatch_prepared_mesh, self._context, prepared)
 
     # The typed publisher this executor was given. A collaborator that needs to publish
     # asks for it here rather than reaching for a private attribute: `getattr` returns

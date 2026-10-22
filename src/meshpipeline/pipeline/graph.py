@@ -16,7 +16,7 @@ from meshpipeline.agents.reviewer.visual import node_reviewer
 from meshpipeline.contracts.failure_cause import retry_can_help
 from meshpipeline.contracts.pipeline_state import PipelineState
 from meshpipeline.pipeline.classifier import node_classifier
-from meshpipeline.pipeline.engine_fallback import node_engine_fallback
+from meshpipeline.pipeline.engine_fallback import another_engine_takes_over, node_engine_fallback
 from meshpipeline.pipeline.engine_select import node_engine_select
 from meshpipeline.pipeline.enums import Verdict
 from meshpipeline.pipeline.executor import node_executor
@@ -83,8 +83,8 @@ def review_can_rerun(state: PipelineState) -> bool:
     only for a non-verdict another look can change: the conversation stalled or ran out of rounds,
     the renderer fell over, or a provider or dependency browned out. A pre-loop refusal (a malformed
     assurance plan, missing deterministic evidence, absent review targets) and a provider that is
-    down for good repeat identically, so they go to the sink as before. Bounded per job by
-    REVIEWER_RERUN_MAX and by the run's own deadline."""
+    down for good repeat identically, so they go to the sink as before. Bounded per mesh by
+    REVIEWER_RERUN_MAX (every builder attempt resets the count) and by the run's own deadline."""
     import meshpipeline.agents.reviewer.settings as rcfg
     from meshpipeline.agents.reviewer.loop_policy import RERUNNABLE_MARKERS
     from meshpipeline.errors import classify_api_failure
@@ -106,6 +106,10 @@ def review_can_rerun(state: PipelineState) -> bool:
         from meshpipeline.application.pipeline_budget import remaining_seconds
         wait = rcfg.REVIEWER_RERUN_BACKOFF_S if transient else 0
         if remaining_seconds(float(deadline)) <= wait + REVIEW_RERUN_MIN_WINDOW_S:
+            from meshpipeline.engines.determinism import note_time_limit
+            note_time_limit("review_rerun", "a review without a verdict was not started again: "
+                            "too little time left", left_s=remaining_seconds(float(deadline)),
+                            needed_s=float(wait + REVIEW_RERUN_MIN_WINDOW_S))
             return False
     return True
 
@@ -221,6 +225,14 @@ def route_after_executor(
     # decides; an unknown or absent cause keeps the ladder as it was.
     _cause = state.get("executor_failure_cause", "") or ""
     if not retry_can_help(_cause, state.get("executor_failure_facts") or {}):
+        # ...the SAME engine's next attempt. Another engine may change it (its declared limit -
+        # a passage count, a form - is not the next engine's): when the ladder moves the run now,
+        # the classifier and the ladder take it (engines/fitness ENG-5)
+        if retry_count <= bcfg.MAX_BUILDER_RETRIES and another_engine_takes_over(state):
+            logger.info("route_after_executor: executor FAIL with cause %r, which another attempt "
+                        "on this engine cannot change - another engine takes over → classifier "
+                        "- job_id=%s", _cause, state.get("job_id"))
+            return "node_classifier"
         logger.warning(
             "route_after_executor: executor FAIL with cause %r, which another attempt cannot "
             "change - not retrying (attempt=%d/%d) → END - job_id=%s",
@@ -281,6 +293,20 @@ def route_after_reviewer(
         logger.info("route_after_reviewer: dispute ACCEPT re-review (verdict=%s) - honouring "
                     "the verdict - job_id=%s", verdict, state.get("job_id"))
 
+    from meshpipeline.settings import policy as _polcfg
+    if _polcfg.VERDICT_BY_LIMITS:
+        # THE REVIEW ONLY ADDS NOTES (docs/RULES.md VER-1..4). A mesh reaches the reviewer only
+        # after every measured gate passed, so whatever the review says, the run ends here: the
+        # measured limits decide pass or concerns at terminal assembly, and the review's points
+        # are shown as notes. No rebuild, no bonus attempt, no wrong-problem failure. (A user's
+        # dispute in rebuild mode, above, is the user asking for a rebuild, not the review.)
+        logger.info("route_after_reviewer: review concluded (verdict=%s, a note only) → END; "
+                    "the measured limits decide (attempt=%d/%d) - job_id=%s", verdict,
+                    retry_count, bcfg.BUILDER_MAX_TOTAL_ATTEMPTS, state.get("job_id"))
+        return _END
+
+    # SHADOW (VERDICT_BY_LIMITS off): the review-led routing below still decides. Retired when the
+    # limits verdict is switched on: asks_for_rebuild, concern_retry_spent and the bonus attempt.
     if verdict == Verdict.PASS:
         logger.info(
             "route_after_reviewer: PASS - job_id=%s attempt=%d/%d",

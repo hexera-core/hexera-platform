@@ -41,6 +41,26 @@ def failed_axes(axis_findings: list | None) -> list[str]:
                   if f.get("passed") is False and (not judged or f.get("improve") is True))
 
 
+def _reviewed_this_attempt(state) -> bool:
+    """True when the review that sent the run here judged THIS attempt's mesh and failed it. Keyed
+    on the attempt the review recorded (agents/reviewer/visual._history_entry), because a FAIL
+    verdict left in state from an earlier attempt is not this mesh's review."""
+    if str(state.get("reviewer_verdict") or "").upper() != "FAIL":
+        return False
+    history = [h for h in (state.get("review_history") or []) if isinstance(h, dict)]
+    if not history:
+        return False
+    last = history[-1]
+    if last.get("attempt") is None:
+        return False
+    try:
+        attempt = int(last.get("attempt") or 0)
+    except (TypeError, ValueError):
+        return False
+    return (attempt == int(state.get("retry_count", 0) or 0)
+            and str(last.get("verdict") or "").upper() == "FAIL")
+
+
 async def node_classifier(state: PipelineState) -> dict:
     job_id      = state.get("job_id", "unknown")
     retry_count = state.get("retry_count", 0)
@@ -48,12 +68,14 @@ async def node_classifier(state: PipelineState) -> dict:
     classifier_result: dict[str, Any]
 
     _caveats = state.get("requirement_caveats") or []
-    if state.get("executor_success", False) and _caveats:
+    if state.get("executor_success", False) and _caveats and not _reviewed_this_attempt(state):
         # QUALITY passed; a stated requirement near-missed. The gate's own measured diagnostic
         # (already in executor_output) is the summary VERBATIM, so the builder retries for the
-        # miss itself - never against a stale reviewer verdict from an earlier attempt. This
-        # branch can only be reached with retries remaining (the route sends a spent ladder to
-        # review instead), so freshness is structural: caveats are executor-owned per attempt.
+        # miss itself - never against a stale reviewer verdict from an earlier attempt. Reached
+        # with retries remaining (the route sends a spent ladder to review instead). When THIS
+        # attempt's mesh was reviewed and the review asked for a change - the reviewer-feedback
+        # retry on a caveated delivery candidate - the review's findings are what the builder
+        # gets (the reviewer branch below): the review was told the near-miss is accepted.
         gate_key = "domain_extent"
         classifier_result = {
             "section":      section_for_gate(engine, gate_key),

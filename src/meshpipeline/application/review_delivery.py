@@ -15,17 +15,24 @@ CANDIDATES are the attempts that produced a complete, valid mesh: the executor v
 other, so every reviewed mesh in state.review_history is one) and its manifest still reads with no
 fatal defect. An invalid mesh is never delivered.
 
-THE RANKING is a fixed order of MEASURED facts (rank_key), never an AI judgement:
+THE RANKING is a fixed order of MEASURED facts (rank_key), never an AI judgement. Each position of
+rank_key is one rule in docs/RULES.md (DEL-1..10, in order), and the delivery account names the
+rule that decided (`rule`):
 
   1. passes every fixed quality limit the engine declares (yes before no);
   2. the number of quality checks it fails (fewer first);
   3. the approved plan's requirements it misses (engine_fallback.plan_requirements: prism layers
      present on the wall, the wake refinement present; plus each measured requirement near-miss);
-  4. the worst cells: max non-orthogonality, then max skewness (lower first);
+  4. the worst cells: max non-orthogonality, then max skewness (lower first) - read first to
+     the whole degree (NON_ORTHO_STEP), where a review that PASSED breaks the tie, then exactly;
   5. layer coverage (higher first);
   6. the earlier attempt wins a tie.
 
-The review's concerns are LISTED on the delivery, never ranked. The one review fact that sets a
+The review's concerns are LISTED on the delivery, never ranked against a measured difference. The
+one place a passed review counts is a tie on everything measured above to the whole degree:
+two meshes 0.01 degrees apart are the same mesh to a solver, and a run that built one its review
+passed must not deliver the other with the review's concerns (job 35d86388 delivered attempt 2,
+55.79 degrees, with a concern, over attempt 3, 55.80, which passed). The one review fact that sets a
 candidate aside is a CONFIRMED wrong-problem finding (agents/reviewer/review_policy: cited, backed
 by an inspection, not contradicted by a measurement) - the only way a review fails a run at all,
 so ranking such a mesh first would fail a run that holds a deliverable one. It only orders
@@ -86,6 +93,8 @@ class Candidate:
     max_skewness: float | None = None
     layer_coverage_pct: float | None = None
     wrong_problem: int = 0
+    #: its own review did not pass (it left concerns) - read only on a measured tie (rank_key)
+    review_left_concerns: bool = False
 
     def shortfalls(self) -> list[str]:
         """What this mesh is short of, measured, in plain words."""
@@ -96,6 +105,8 @@ class Candidate:
 _UNMET_WORDS = {"prism_layers": "no prism layers measured on the wall",
                 "layers_unmeasured": "no prism-layer coverage was measured on the wall",
                 "wake_refinement": "no wake refinement behind the body"}
+#: Worst non-orthogonality is compared to this many degrees before a passed review breaks a tie.
+NON_ORTHO_STEP = 1.0
 #: The wall coverage (percent) at or under which a mesh counts as carrying no prism layers at all -
 #: a stray layer cell or two is not the layered wall the plan builds.
 _LAYERS_PRESENT_PCT = 1.0
@@ -142,12 +153,19 @@ def _measure(state: Mapping, *, attempt: int, engine: str, workspace: str, manif
     # review fails a run) - never a concern
     from meshpipeline.agents.reviewer.review_policy import blocking_findings
     blocking = len(blocking_findings([dict(f) for f in findings if isinstance(f, Mapping)]))
+    verdict = str(entry.get("verdict") or (state.get("reviewer_verdict") if current else "") or "")
+    from meshpipeline.application.final_result import limits_decide
+    if limits_decide():
+        # ONCE THE MEASURED LIMITS DECIDE, a review ranks nothing: DEL-1 and DEL-6 never separate
+        # two meshes, and a tie on everything measured goes to the earlier attempt (DEL-10)
+        blocking, verdict = 0, ""
     return Candidate(attempt=attempt, engine=engine, workspace=workspace, manifest=manifest,
                      entry=entry, current=current, failed_checks=failed, unmet=tuple(unmet),
                      max_non_ortho=_num(quality.get("max_non_ortho")),
                      max_skewness=_num(quality.get("max_skewness")),
                      layer_coverage_pct=_num(quality.get("layer_coverage_pct")),
-                     wrong_problem=blocking)
+                     wrong_problem=blocking,
+                     review_left_concerns=verdict.strip().upper() == "FAIL")
 
 
 def rank_key(c: Candidate) -> tuple:
@@ -158,6 +176,8 @@ def rank_key(c: Candidate) -> tuple:
             bool(c.failed_checks),
             len(c.failed_checks),
             len(c.unmet),
+            (math.floor(c.max_non_ortho / NON_ORTHO_STEP) if c.max_non_ortho is not None else inf),
+            c.review_left_concerns,
             c.max_non_ortho if c.max_non_ortho is not None else inf,
             c.max_skewness if c.max_skewness is not None else inf,
             -(c.layer_coverage_pct or 0.0),
@@ -171,18 +191,30 @@ _WHY = (
     "it fails fewer quality checks",
     "it meets more of the approved plan (layers, wake refinement, stated sizes)",
     "its worst cells are better shaped (lower non-orthogonality)",
+    "its review passed and the other's left concerns, and they measure the same",
+    "its worst cells are better shaped (lower non-orthogonality)",
     "its worst cells are better shaped (lower skewness)",
     "more of its wall is covered by prism layers",
     "it came first and measures the same",
 )
 
 
-def why_chosen(best: Candidate, other: Candidate) -> str:
-    """The first measured fact, in the fixed order, that put `best` ahead of `other`."""
+def _deciding(best: Candidate, other: Candidate) -> int:
     for i, (x, y) in enumerate(zip(rank_key(best), rank_key(other), strict=True)):
         if x != y:
-            return _WHY[i]
-    return _WHY[-1]
+            return i
+    return len(_WHY) - 1
+
+
+def why_chosen(best: Candidate, other: Candidate) -> str:
+    """The first measured fact, in the fixed order, that put `best` ahead of `other`."""
+    return _WHY[_deciding(best, other)]
+
+
+def rule_chosen(best: Candidate, other: Candidate) -> str:
+    """The rulebook's ID (docs/RULES.md, DEL-1..10) for that same fact."""
+    from meshpipeline.contracts.decision_record import DELIVERY_RULES
+    return DELIVERY_RULES[_deciding(best, other)]
 
 
 def _read_manifest(ws: str) -> Mapping | None:
@@ -256,14 +288,17 @@ def _why_not_last(state: Mapping) -> str:
 def _account(state: Mapping, best: Candidate, pool: list[Candidate]) -> dict:
     """Which attempt is delivered, by which engine, why it beat the others, and what it is short
     of - the ladder record's `delivered_from` (engine_fallback.delivered_note says it)."""
+    from meshpipeline.contracts.decision_record import DELIVERY_ONLY_ONE
     others = [c for c in pool if c is not best]
     if others:
         runner = min(others, key=rank_key)
         why = (f"it was chosen over attempt {runner.attempt} ({runner.engine}) because "
                f"{why_chosen(best, runner)}")
+        rule = rule_chosen(best, runner)
     else:
         why = f"it is the only valid mesh this run built - {_why_not_last(state)}"
-    return {"attempt": best.attempt, "engine": best.engine, "why": why,
+        rule = DELIVERY_ONLY_ONE
+    return {"attempt": best.attempt, "engine": best.engine, "why": why, "rule": rule,
             "short_of": best.shortfalls(),
             "candidates": [{"attempt": c.attempt, "engine": c.engine,
                             "rank": [None if isinstance(x, float) and not math.isfinite(x) else x
@@ -341,4 +376,4 @@ def select(state: Mapping) -> dict:
     return out
 
 
-__all__ = ["Candidate", "candidates", "rank_key", "select", "why_chosen"]
+__all__ = ["Candidate", "candidates", "rank_key", "rule_chosen", "select", "why_chosen"]

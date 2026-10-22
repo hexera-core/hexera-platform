@@ -326,6 +326,10 @@ class FakePublisher:
         self._rec("screenshot", op_id=op_id)
     def meshing(self, engine, budget_s) -> None:    self._rec("meshing", engine=engine, budget_s=budget_s)
     def meshed(self, cells=None) -> None:           self._rec("meshed", cells=cells)
+    def plan(self, cells=None, layers=None, refinements=None, op_id="") -> None:
+        self._rec("plan", cells=cells, layers=layers, refinements=refinements, op_id=op_id)
+    def mesh_stage(self, key, label, op_id="") -> None:
+        self._rec("mesh_stage", key=key, label=label, op_id=op_id)
     def verdict(self, verdict, summary="") -> None: self._rec("verdict", verdict=verdict)
     def closing(self, text, event_id="") -> None:
         # production passes the terminal identity so an early close and a later

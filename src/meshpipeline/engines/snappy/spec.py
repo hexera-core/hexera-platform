@@ -26,6 +26,7 @@ from meshpipeline.engines.base import (
 from meshpipeline.engines.base import (
     ValidationCoverage as _VC,
 )
+from meshpipeline.engines.gap_sizing import NARROW_GAPS_PARAM_SPEC
 from meshpipeline.engines.snappy._shared import _INSPECTION_TARGETS, _RENDER_ARTIFACTS
 from meshpipeline.engines.snappy.builder_guidance import BRIEFING
 
@@ -194,8 +195,9 @@ SPEC = EngineSpec(
         # NO `topology` param - it was redundant with the user's PURPOSE (external_cfd IS
         # external flow), so the two answers could disagree: `internal_cfd` +
         # `topology=external` was an accepted submission. DERIVED from the purpose now
-        # (engines.purposes.flow_topology).
-        intake_params=(),
+        # (engines.purposes.flow_topology). The one optional choice: fewer cells across the
+        # narrowest gaps when the cell limit cannot hold the rule (engines/gap_sizing).
+        intake_params=(NARROW_GAPS_PARAM_SPEC,),
         # body-fits a surface and fills a FLUID region → CFD only, in EITHER region
         capabilities=(MeshCapability("body-surface", "fluid-volume",
                                      topologies=("internal", "external")),

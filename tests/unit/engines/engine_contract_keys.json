@@ -97,10 +97,12 @@
    "timed_out"
   ],
   "deliverable": [
+   "fea_plan.json",
    "fluid_boundary.stl",
    "geometry.step",
    "gmsh_spec.json",
    "mesh.bdf",
+   "mesh.cdb",
    "mesh.inp",
    "mesh.unv"
   ],

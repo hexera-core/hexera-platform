@@ -301,7 +301,7 @@ def test_a_broken_or_failed_attempt_is_never_a_candidate(tmp_path):
 def test_rank_key_is_measured_facts_and_order_only(tmp_path):
     st = _cand_state(tmp_path, [dict(OK)])
     (c,) = candidates(st)
-    assert rank_key(c) == (False, False, 0, 0, 50.0, 2.0, -80.0, 1)
+    assert rank_key(c) == (False, False, 0, 0, 50, True, 50.0, 2.0, -80.0, 1)
 
 
 def test_no_valid_mesh_fails_with_each_attempts_reason_and_the_users_options():
@@ -333,3 +333,18 @@ def test_no_valid_mesh_fails_with_each_attempts_reason_and_the_users_options():
     assert "What each attempt did:" in msg
     assert msg.count("Attempt 1 (snappyHexMesh)") == 1 and "Attempt 2 (snappyHexMesh)" in msg
     assert rec["offer"] and rec["offer"]["text"] in msg            # the user's way on
+
+
+def test_a_passed_review_breaks_a_tie_measured_to_the_whole_degree(tmp_path):
+    # job 35d86388: attempt 2 (55.79 deg) had a review concern, attempt 3 (55.80 deg) passed review
+    st = _cand_state(tmp_path, [dict(OK, max_non_ortho=55.7914), dict(OK, max_non_ortho=55.8017)],
+                     reviewer_verdict="PASS", reviewer_axis_findings=[])
+    st["review_history"][-1]["verdict"] = "PASS"
+    assert _delivered(st) == 2
+    why = select(st)["engine_ladder"]["delivered_from"]["why"]
+    assert "its review passed" in why
+    # a whole degree apart is a measured difference: the better-shaped mesh wins, concerns or not
+    st2 = _cand_state(tmp_path / "b", [dict(OK, max_non_ortho=54.5), dict(OK, max_non_ortho=55.8)],
+                      reviewer_verdict="PASS", reviewer_axis_findings=[])
+    st2["review_history"][-1]["verdict"] = "PASS"
+    assert _delivered(st2) == 1

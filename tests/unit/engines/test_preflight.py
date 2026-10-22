@@ -141,6 +141,8 @@ class _Publish:
     async def atool_result(self, *a, **k): self._rec("atool_result", a, k)
     async def ameshing(self, *a, **k): self._rec("ameshing", a, k)
     async def ameshed(self, *a, **k): self._rec("ameshed", a, k)
+    async def aplan(self, *_a, **_k): pass
+    async def amesh_stage(self, *_a, **_k): pass
     async def averdict(self, *a, **k): self._rec("averdict", a, k)
     async def aclosing(self, *a, **k): self._rec("aclosing", a, k)
 
@@ -378,3 +380,32 @@ def test_the_run_mesh_name_check_leaves_its_refusal_for_the_executor(tmp_path):
     assert rec is not None and rec.gate == "patch_contract"
     assert rec.cause == FailureCause.CONTRACT_MISMATCH
     assert rec.facts["renamed"] == {"car wall": "car_wall"}
+
+
+def test_a_deterministic_ladder_that_ran_out_travels_with_the_failure_of_its_mesh(quiet_executor, monkeypatch,
+                                                                                    tmp_path):
+    """The FEA driver left a mesh and its own verdict that every pass was tried: the mesh is judged
+    as usual, and the verdict's facts ride along so the retry policy sees that another attempt
+    builds the same mesh (job ab20566f) and the user's sentence is the FEA one."""
+    from meshpipeline.contracts.failure_cause import retry_can_help
+
+    ex = quiet_executor
+    calls = []
+
+    class _Finalize:
+        name = "snappy"
+
+        def finalize(self, *a, **k):
+            calls.append(1)
+            return {"success": False, "output": "[QUALITY] min_sicn 0"}
+    monkeypatch.setattr(ex, "get_engine", lambda n="": _Finalize())
+    facts = {"engine": "gmsh", "deterministic": True, "fea": True, "ladder_exhausted": True, "passes": 2}
+    PreflightRefusal(gate="fea_quality", cause="mesh_quality", builder_text="x", facts=facts).write(tmp_path)
+    (tmp_path / "constant" / "polyMesh").mkdir(parents=True)
+    (tmp_path / "constant" / "polyMesh" / "owner").write_text("x")
+    out = asyncio.run(ex.node_executor({"openfoam_workspace": str(tmp_path), "job_id": "t",
+                                        "engine": "snappy", "intake_patches": []}))
+    assert calls == [1]                                   # the mesh on disk was judged
+    assert out["executor_failed_gate"] == "finalize"
+    assert out["executor_failure_facts"]["ladder_exhausted"] is True
+    assert retry_can_help(out["executor_failure_cause"], out["executor_failure_facts"]) is False

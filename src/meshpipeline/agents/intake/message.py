@@ -49,6 +49,10 @@ class MessageStatus(str, enum.Enum):
     unit_changed = "unit_changed"
     #: the geometry check is drawing the part: the turn is answered with a holding line
     geometry_hold = "geometry_hold"
+    #: the words did not say what the mesh is for (CFD, FEA, cooling, heat in a solid), or an FEA
+    #: part's analysis type is still open: the application's one short question, with buttons, is
+    #: the whole reply (application/purpose_map)
+    purpose_question = "purpose_question"
     #: the session does not exist for this owner
     not_found = "not_found"
 
@@ -114,7 +118,7 @@ class MessageOutcome:
     def answered(self) -> bool:
         return self.status in (MessageStatus.approval_deferred, MessageStatus.unit_question,
                                MessageStatus.already_dispatched, MessageStatus.geometry_hold,
-                               MessageStatus.unit_changed)
+                               MessageStatus.unit_changed, MessageStatus.purpose_question)
 
     @property
     def continues_to_intake(self) -> bool:
@@ -369,11 +373,52 @@ async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: 
         # confirms nothing without it. Until then the intake answers as it always did.
         return MessageOutcome(status=MessageStatus.proceed,
                               transition=GateTransition(revision=revision))
+    asked = await _settle_fea_analysis(inbound, db, messages=messages, revision=revision,
+                                       session_repo=session_repo, logger=logger)
+    if asked is not None:
+        return asked
     hold = await _settle_geometry_hold(inbound, db, locked=locked, messages=messages,
                                        revision=revision, session_repo=session_repo, logger=logger)
     if hold is not None:
         return hold
     return MessageOutcome(status=MessageStatus.proceed,
+                          transition=GateTransition(revision=revision))
+
+
+def analysis_question_due(messages: list) -> bool:
+    """Whether an FEA part's one required question is due: the user confirmed an FEA part on the
+    stage, the question was never asked, and nothing the user said names the analysis already
+    ("modal analysis" does; "FEA" does not). The words a purpose-question button sent are about
+    the path, not the analysis, and are not read for it."""
+    from meshpipeline.application import purpose_map as pm
+    from meshpipeline.application.geometry_confirmation import fea_declared
+
+    if not fea_declared(messages):
+        return False
+    if any(isinstance(m, dict) and m.get("role") == "assistant"
+           and str(m.get("content") or "").strip() == pm.ANALYSIS_QUESTION for m in messages):
+        return False
+    buttons = {c["send"] for q in pm.QUESTIONS.values() for c in pm.choices_for(q)}
+    said = [str(m.get("content") or "") for m in messages
+            if isinstance(m, dict) and m.get("role") == "user"
+            and str(m.get("content") or "").strip() not in buttons]
+    return not pm.analysis_of("\n".join(said))
+
+
+async def _settle_fea_analysis(inbound: InboundMessage, db, *, messages: list, revision: str,
+                               session_repo, logger) -> MessageOutcome | None:
+    """THE FEA PATH'S ONE REQUIRED QUESTION, asked by the application with its buttons once the
+    part is confirmed on the stage (design 3.2): "What will you analyze?" - static stress,
+    vibration, buckling, and the "coming soon" kinds, which are meshed as for static stress.
+    Supports, loads and materials are never asked: every face is named for the user's solver."""
+    if not analysis_question_due(messages):
+        return None
+    from meshpipeline.application import purpose_map as pm
+
+    reply = pm.ANALYSIS_QUESTION
+    await session_repo.append_message(db, inbound.session_id, "assistant", reply)
+    logger.info("intake message: an FEA part - the analysis type asked - session=%s", inbound.session_id)
+    return MessageOutcome(status=MessageStatus.purpose_question, reply=reply,
                           transition=GateTransition(revision=revision))
 
 
@@ -402,16 +447,34 @@ async def _settle_geometry_hold(inbound: InboundMessage, db, *, locked, messages
     if decision == "wait":
         # THE NAMING IS ALREADY RUNNING: a message sent meanwhile is answered with the wait line
         # and nothing else, so the intake cannot ask past the stage. Bounded by WAIT_GRACE_S.
-        reply = gh.wait_reply(thermal)
+        from meshpipeline.application import purpose_map as pm
+
+        # in the words the part is being checked under: the ones before this message
+        reply = gh.wait_reply(thermal, None if thermal else pm.reading_for(messages[:-1]))
         await session_repo.append_message(db, inbound.session_id, "assistant", reply)
         logger.info("intake message: still held for the geometry check - session=%s", inbound.session_id)
         return MessageOutcome(status=MessageStatus.geometry_hold, reply=reply,
                               transition=GateTransition(revision=revision))
+    # WHAT THE MESH IS FOR decides which check the part gets (application/purpose_map): CFD, FEA
+    # or electronics cooling. Words that do not say get ONE short question with two buttons, and
+    # the part is checked once it is answered. A thermal model's file says it all by itself.
+    reading = None
+    if not thermal:
+        from meshpipeline.application import purpose_map as pm
+
+        reading = pm.reading_for(messages)
+        question = pm.question_for(reading, messages)
+        if question:
+            await session_repo.append_message(db, inbound.session_id, "assistant", question)
+            logger.info("intake message: the purpose is unclear (%s) - asked once - session=%s",
+                        reading.why, inbound.session_id)
+            return MessageOutcome(status=MessageStatus.purpose_question, reply=question,
+                                  transition=GateTransition(revision=revision))
     interpretation = await gh.interpretation_payload(db, locked, inbound.owner_id,
                                                      inbound.organization_id)
     if not gh.queue_naming(session_id, inbound.owner_id, gh.purpose_from(messages), interpretation):
         return None
-    reply = gh.hold_reply(thermal, headline)
+    reply = gh.hold_reply(thermal, headline, reading)
     try:
         await session_repo.append_message(db, inbound.session_id, "assistant", reply)
     except Exception:

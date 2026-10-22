@@ -129,14 +129,32 @@ def _derive_obligations(plan) -> _Obligations:
         wildcard_kinds=frozenset(wildcard))
 
 
+def advisory_gaps(ledger: EvidenceLedger) -> frozenset[str]:
+    """ADVISORY metrics this run did not measure - a stated gap, never missing required evidence.
+
+    The engine marks a criterion advisory (gating=False) because failing it does not fail the
+    mesh; NOT MEASURING it cannot be worse than failing it. Treated as required evidence, one
+    unmeasured advisory number ended the review before the model was asked
+    (reviewer_evidence_missing, not rerunnable) on a mesh that passed every gate. So the gap is
+    recorded and shown to the reviewer as a gap, and nothing demands a citation of it. A GATING
+    metric that was not measured stays missing evidence.
+    """
+    gaps: set[str] = set()
+    for m in ledger.metrics():
+        if not m.usable and not m.gating and ledger.usable_metric(m.metric_key) is None:
+            gaps.add(m.metric_key)
+    return frozenset(gaps)
+
+
 # deterministic-evidence completeness (Part 6: before the provider may conclude)
 def deterministic_evidence_complete(plan, ledger: EvidenceLedger) -> tuple[bool, tuple[str, ...]]:
     missing: list[str] = []
     ob = _derive_obligations(plan)
+    gaps = advisory_gaps(ledger)
     for key in sorted(ob.gate_keys):
         if ledger.usable_gate(key) is None:
             missing.append(f"gate:{key}")
-    for key in sorted(ob.metric_keys):
+    for key in sorted(ob.metric_keys - gaps):
         if ledger.usable_metric(key) is None:
             missing.append(f"metric:{key}")
     return (not missing, tuple(missing))
@@ -247,9 +265,12 @@ def _axis_finding_suitable(ax, finding: AxisFinding, ledger: EvidenceLedger,
         return False, f"axis '{finding.axis_key}': " + "; ".join(problems)
     if not records:
         return False, f"axis '{finding.axis_key}' cites no usable evidence"
+    gaps = advisory_gaps(ledger)
     for req in tuple(getattr(ax, "requires", ())):
         if not _req_applicable(req, expected_kinds):
             continue
+        if isinstance(req, MetricRequirement) and req.key in gaps:
+            continue                # an unmeasured advisory metric: stated, not citable
         if not _citation_satisfies(req, records):
             return False, (f"axis '{finding.axis_key}' does not cite "
                            f"{_requirement_hint(req, ledger)}")
@@ -339,7 +360,7 @@ def _evidence_presence_reasons(plan, ledger: EvidenceLedger,
     for key in sorted(ob.gate_keys):
         if ledger.usable_gate(key) is None:
             reasons.append(f"required gate '{key}' has no usable evidence")
-    for key in sorted(ob.metric_keys):
+    for key in sorted(ob.metric_keys - advisory_gaps(ledger)):
         if ledger.usable_metric(key) is None:
             reasons.append(f"required metric '{key}' has no usable evidence")
     for vid in sorted(ob.view_ids):
@@ -480,6 +501,7 @@ def validate_plan(spec, plan) -> tuple[bool, tuple[str, ...]]:
 
 
 __all__ = [
+    "advisory_gaps",
     "AxisFinding",
     "Eligibility",
     "EligibilityDecision",

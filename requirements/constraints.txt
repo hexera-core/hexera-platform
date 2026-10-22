@@ -34,7 +34,7 @@ cachetools==5.5.2
 cadquery-ocp==7.9.3.1.1
 cadquery-ocp-proxy==7.9.3.1.1
 celery==5.4.0
-certifi==2026.7.22
+certifi==2026.10.19
 cffi==2.1.1
 charset-normalizer==3.4.9
 click==8.4.2
@@ -113,7 +113,7 @@ opentelemetry-util-http==0.62b1
 orjson==3.11.9
 ormsgpack==1.12.2
 packaging==23.2
-pillow==12.3.0
+pillow==13.0.0
 pip==26.1.2
 platformdirs==4.11.0
 pluggy==1.6.0

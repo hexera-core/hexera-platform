@@ -15,6 +15,15 @@ from meshpipeline.engines.quality_criteria import render_report as qc_render_rep
 logger = logging.getLogger(__name__)
 
 
+#: A COUNTED layer stack (cfMesh) MEETS the requested count when all the requested layers cover
+#: at least this share of the wall area...
+LAYERS_MET_FULL_PCT = 95.0
+#: ...and at least one layer covers this share: local collapse at sharp edges, junctions and port
+#: rims is normal for every layer mesher, and the reviewer held to 100% failed meshes with all
+#: five layers on 98.75% and 99.65% of the wall while passing snappy meshes at 93%.
+LAYERS_MET_ANY_PCT = 99.0
+
+
 def _esc(s: str) -> str:
     return s.replace("{", "{{").replace("}", "}}")
 
@@ -348,8 +357,12 @@ def build_review_prompt(
                 + (f" (the mesher was told {_told})" if _told and _told != _q["layers_requested"] else "")
                 + f": mean {_q.get('layers_mean')} layers per wall face, all {_q['layers_requested']} "
                 f"on {_q.get('layer_area_full_pct')}% of the wall area, at least one on "
-                f"{_q.get('layer_area_any_pct')}%. Fewer layers than requested is a shortfall on the "
-                f"layer axis, however clean the stack that exists.")
+                f"{_q.get('layer_area_any_pct')}%. The request is MET when all "
+                f"{_q['layers_requested']} cover at least {LAYERS_MET_FULL_PCT:g}% of the wall area "
+                f"and at least one covers {LAYERS_MET_ANY_PCT:g}%: a few percent of thinner stacks "
+                f"at sharp edges, junctions and port rims is normal for every layer mesher "
+                f"and is not a shortfall. Below that, fewer layers than requested is a shortfall "
+                f"on the layer axis, however clean the stack that exists.")
     elif _q.get("layer_coverage_source") == "unmeasured" and _q.get("layers_requested"):
         _meta.append(
             f"Near-wall prism layers: {_q['layers_requested']} were requested, but the delivered "

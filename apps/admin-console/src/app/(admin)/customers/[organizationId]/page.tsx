@@ -1,8 +1,6 @@
-import { notFound } from "next/navigation";
 import { randomUUID } from "node:crypto";
 
 import { Alert, EmptyState, FieldList, Panel, StatRow } from "@/app/_components/panel";
-import { isLaunchAdminSurfaceEnabled } from "@/app/_components/sections";
 import { compactDate, readCustomer, signedNumber } from "@/lib/admin/read";
 import { manualPlanChoices, money, readInvoices, readPlans, when } from "@/lib/billing/read";
 
@@ -32,8 +30,6 @@ export default async function CustomerPage({
 }: {
   params: Promise<{ organizationId: string }>;
 }) {
-  if (!isLaunchAdminSurfaceEnabled()) notFound();
-
   const { organizationId } = await params;
   const [customer, invoices, plans] = await Promise.all([
     readCustomer(organizationId),
@@ -248,6 +244,7 @@ export default async function CustomerPage({
                 <th>Attempts</th>
                 <th>Duration</th>
                 <th>Charged</th>
+                <th>Why</th>
               </tr>
             </thead>
             <tbody>
@@ -261,6 +258,9 @@ export default async function CustomerPage({
                   <td>{run.attempts.toLocaleString("en-US")}</td>
                   <td>{seconds(run.duration_seconds)}</td>
                   <td>{run.charged_credits.toLocaleString("en-US")}</td>
+                  <td>
+                    <a href={`/jobs/${run.id}/why`}>why</a>
+                  </td>
                 </tr>
               ))}
             </tbody>

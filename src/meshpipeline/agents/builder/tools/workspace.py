@@ -83,6 +83,7 @@ ACTIONS: dict[str, str] = {
 _PROTECTED_PATHS = frozenset({
     "input.stl",
     "geom.stl", "geom.fms", "geometry.step",   # staged input geometry (also carried across retries)
+    "cad_face_names.json",                     # the CAD face names staged beside it
     "system/controlDict",
     "system/fvSchemes",
     "system/fvSolution",

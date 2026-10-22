@@ -111,3 +111,9 @@
 .proc.done .proc-cancel{display:none}
 .tl-verd .pill.cancelled{border-color:var(--text-faint);color:var(--text-faint)}
 .tl-verd .pill.concerns{border-color:#b45309;color:#b45309}
+
+/* THE RUN'S LIVE LINE (js/render/run_progress.js) at the top of the card: the step running now,
+   drawn as the geometry check's line is (css/chat.css .gp) */
+.proc-live{padding:12px 22px 10px;border-bottom:1px solid var(--divider)}
+.proc-live:empty{display:none}
+.proc-live .gp{max-width:none}

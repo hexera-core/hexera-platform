@@ -75,12 +75,24 @@ async def get_chat_history(session_id: uuid.UUID, owner_id: str = Depends(owner_
         "messages": session.messages or [],
         # the open engine question's choice, so a reload draws it again
         "engine_choice": choice_payload(getattr(session, "intake_gate", None)),
+        # the buttons under the last reply when it is an application question, so a reload draws them
+        "choices": _last_choices(session.messages),
         # Awaiting confirmation only when intake is complete AND no job has
         # been dispatched yet (request_txt is cleared on dispatch, but be explicit).
         "awaiting_confirmation": bool(session.request_txt) and session.job_id is None,
         "job_id": str(session.job_id) if session.job_id else None,
     }
 
+
+
+def _last_choices(messages) -> list[dict]:
+    """The buttons under the conversation's last message, when it is an application question."""
+    from meshpipeline.application.purpose_map import choices_for
+
+    last = list(messages or [])[-1:]
+    if not last or not isinstance(last[0], dict) or last[0].get("role") != "assistant":
+        return []
+    return choices_for(str(last[0].get("content") or ""))
 
 
 def _require_session(session, session_id):
@@ -122,8 +134,10 @@ async def chat_message(body: ChatMessageIn, owner_id: str = Depends(owner_dep),
     if outcome.answered:
         # A turn the authority settled with no model call: the deferral question, or the units
         # question. The reply is the authority's; the route only carries it.
+        from meshpipeline.application.purpose_map import choices_for
         return ChatResponse(session_id=session_id, reply=outcome.reply,
-                            awaiting_confirmation=outcome.awaiting_confirmation)
+                            awaiting_confirmation=outcome.awaiting_confirmation,
+                            choices=choices_for(outcome.reply))
 
     session = _require_session(outcome.session, session_id)
     state = _build_intake_state(session, owner_id, previous_run=outcome.previous_run)

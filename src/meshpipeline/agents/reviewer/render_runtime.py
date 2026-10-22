@@ -3,10 +3,12 @@
 # Collaborates with: sandbox/review_session.py and sandbox/render_adapter.py.
 from __future__ import annotations
 
+import asyncio
 import base64
+import functools
 import logging
 import math
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -18,12 +20,16 @@ from meshpipeline.agents.reviewer.scene_text import (
     patch_colour_legend,
 )
 from meshpipeline.agents.reviewer.visual_surface import OpeningContext
+from meshpipeline.contracts.event_stream import StaleExecutionPublish
+from meshpipeline.contracts.execution_guard import StaleWorkerFenced
 from meshpipeline.contracts.mesh_units import completed_mesh_unit
 from meshpipeline.contracts.review_evidence import (
     CommandKind,
     EvidenceItem,
     RenderCommand,
     RenderContext,
+    ReviewEvidenceFailure,
+    ReviewRenderError,
     SessionUpdateResult,
     TargetKind,
 )
@@ -35,6 +41,41 @@ logger = logging.getLogger(__name__)
 # `fn` is not a viewer tool - the caller owns it (submit_findings / unknown).
 # Mirrors navigation.NOT_VIEWER_TOOL's role.
 NOT_VIEWER_TOOL: Any = object()
+
+
+@contextmanager
+def _renderer_faults(what: str):
+    """Turn any renderer fault into the reviewer's own render failure.
+
+    VTK, EGL, gmsh, a full memory or an unreadable picture raise whatever they raise. Left raw,
+    that exception left the reviewer and crashed the job, so a mesh that had passed every gate
+    was never delivered. As a ReviewRenderError it takes the reviewer's render-failure path: the
+    review is rerun and, failing again, the validated mesh is delivered with no verdict.
+    Cancellation, a lost claim (StaleWorkerFenced) and a stale publish still propagate untouched.
+    """
+    try:
+        yield
+    except (ReviewRenderError, StaleWorkerFenced, StaleExecutionPublish):
+        raise
+    except Exception as exc:
+        task = asyncio.current_task()
+        if task is not None and task.cancelling() > 0:
+            # a cleanup error masking the cancellation - cancellation is the real reason
+            raise asyncio.CancelledError from exc
+        logger.warning("reviewer renderer fault (%s)", what, exc_info=True)
+        raise ReviewRenderError(ReviewEvidenceFailure.RENDERER_UNAVAILABLE,
+                                f"{what}: {type(exc).__name__}: {exc}") from exc
+
+
+def _renderer_call(what: str):
+    """`_renderer_faults` around one async runtime method."""
+    def wrap(fn):
+        @functools.wraps(fn)
+        async def run(*args, **kwargs):
+            with _renderer_faults(what):
+                return await fn(*args, **kwargs)
+        return run
+    return wrap
 
 
 @dataclass(frozen=True)
@@ -87,9 +128,11 @@ class ReviewerRenderRuntime:
         self._last_evidence: EvidenceItem | None = None
 
  # scene facts
+    @_renderer_call("reading the scene")
     async def scene(self):
         return await self._lane.run(self._session.scene_context)
 
+    @_renderer_call("reading the renderer capabilities")
     async def capabilities(self):
         return await self._lane.run(self._session.capabilities)
 
@@ -105,6 +148,7 @@ class ReviewerRenderRuntime:
         return (await self.scene()).has_geometry
 
  # the initial visual context
+    @_renderer_call("rendering the opening view")
     async def initial_context(self) -> OpeningContext:
         scene = await self.scene()
         opening = await self._lane.run(self._session.opening_evidence)
@@ -284,6 +328,7 @@ class ReviewerRenderRuntime:
             self._last_evidence = ev
         return ev
 
+    @_renderer_call("running a viewer tool")
     async def execute_typed(self, fn: str, args: dict) -> TypedToolResult:
         self._last_evidence = None
         content = await self.execute_viewer_tool(fn, args)
@@ -314,7 +359,12 @@ class ReviewerRenderRuntime:
 async def open_runtime(spec: Any, context: RenderContext):
     lane = RendererExecutionLane()
     try:
-        async with open_review_session(spec, context, native_dispatch=lane.run) as session:
+        async with AsyncExitStack() as stack:
+            # Opening builds the backend (VTK, EGL, gmsh): a fault there is a render failure.
+            # Only the opening is wrapped - the caller's own exceptions pass through unchanged.
+            with _renderer_faults("opening the renderer"):
+                session = await stack.enter_async_context(
+                    open_review_session(spec, context, native_dispatch=lane.run))
             runtime = ReviewerRenderRuntime(
                 session=session,
                 # THE reader. A manifest that cannot state its unit stops the runtime here

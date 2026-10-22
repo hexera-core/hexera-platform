@@ -530,6 +530,14 @@ INVENTORY: list[Group] = [
                     "bare wall patch keeps the failure a failure"),
     ]),
 
+    Group("Verdict", note="Who decides pass, delivered with concerns or fail. Off by default while the measured-limits verdict runs in shadow beside the review-led one; the rules are docs/RULES.md VER-1..4.", vars=[
+        EnvVar("VERDICT_BY_LIMITS", "false", kind="bool",
+               help="true = only measured quality limits decide the verdict and the AI reviewer "
+                    "only adds notes (no rebuild, no bonus attempt, no wrong-problem failure); "
+                    "false = shadow: the review-led verdict decides and the limits verdict is "
+                    "logged beside it"),
+    ]),
+
     Group("Workspace archive limits", note="Bounds on the workspace archive a remote mesh returns: a decompression bomb, a traversal entry or a runaway member is refused before anything is written.", vars=[
         EnvVar("WORKSPACE_ARCHIVE_MAX_BYTES", "536870912", kind="int", help="compressed archive ceiling"),
         EnvVar("WORKSPACE_ARCHIVE_MAX_ENTRIES", "20000", kind="int"),
@@ -576,6 +584,14 @@ INVENTORY: list[Group] = [
         EnvVar("VMTK_BIN", "vmtk", help="vmtk runs as an isolated subprocess: its conda VTK cannot coexist with the app's"),
     ]),
 
+    Group("Repeatability", note="INTERNAL. Same clean file in, same result out (engines/determinism.py, contracts/decision_cache.py). Every native run is stamped with what it ran under (reproducibility.json beside the mesh); every AI decision is keyed by what the model was shown.", vars=[
+        EnvVar("MESH_DETERMINISTIC", "true", kind="bool", exposure="internal", help="pin native threads, snappy's MPI ranks and Python's hash order; off = the host decides, as before"),
+        EnvVar("MESH_THREADS", "8", kind="int", exposure="internal", help="OpenMP/BLAS/VTK threads of every native run (the Cloud Run mesh job's vCPUs), never the host's core count"),
+        EnvVar("MESH_CFMESH_THREADS", "", kind="int", exposure="internal", help="cfMesh's OpenMP threads; blank = MESH_THREADS. 1 = strictly serial, the only bit-repeatable cfMesh, at several times the run time"),
+        EnvVar("MESH_SNAPPY_RANKS", "", kind="int", exposure="internal", help="snappyHexMesh MPI ranks; blank = the job's CPU quota (at most 12), else MESH_THREADS; memory may still lower it (recorded in the stamp)"),
+        EnvVar("AI_DECISION_CACHE", "reuse", exposure="internal", help="off | record | reuse: reuse answers a model round asked before (same step, model, prompt hash, inputs, owner) from its record"),
+    ]),
+
     Group("Error reporting", vars=[
         EnvVar("SENTRY_DSN", "", kind="url", secret=True, help="leave blank to disable"),
     ]),
@@ -620,6 +636,7 @@ INVENTORY: list[Group] = [
     # EXTERNAL: nobody edits these in .env; a platform or a library supplies them.
     Group("Platform-supplied", note="EXTERNAL. Declared so the catalogue accounts for every name the code reads, but set by Cloud Run, Compose, the dispatcher or a library: not by editing .env.", vars=[
         EnvVar("CLOUD_RUN_EXECUTION", "", exposure="external", consumer="app", help="injected by Cloud Run; the execution this process belongs to"),
+        EnvVar("MESH_SOURCE_TREE", "", exposure="external", consumer="app", help="baked into the mesh image at build time (Dockerfile ARG): the git tree it was built from, recorded in every mesh's reproducibility stamp"),
         EnvVar("PIPELINE_EXECUTION_ID", derived="<CLOUD_RUN_EXECUTION>", exposure="external", consumer="app", help="the backend execution identity, falling back to the Cloud Run injection"),
         EnvVar("GOOGLE_APPLICATION_CREDENTIALS", "", kind="path", exposure="external", consumer="app", help="Compose mounts GOOGLE_ADC_FILE here and points google-auth at it"),
         EnvVar("PROMETHEUS_MULTIPROC_DIR", "", kind="path", exposure="external", consumer="app", help="prometheus_client's own variable; set by the worker entrypoint"),

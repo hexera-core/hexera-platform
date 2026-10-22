@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import uuid
 from collections.abc import MutableMapping
 from typing import Any
@@ -20,15 +21,28 @@ from meshpipeline.application.worker_handoff import WorkerDraining
 
 logger = logging.getLogger(__name__)
 
-# a stable per-PROCESS id. A redelivery that lands in the SAME process (an in-process
-# restart) shares it; a fresh process is a fresh execution. It is the last-resort backend execution
-# identity when neither a Cloud Run execution nor a Celery task id is available (direct/test runs).
-_PROCESS_RUN_ID = uuid.uuid4().hex
+# The last-resort backend execution identity, used whenever PIPELINE_EXECUTION_ID is empty (direct
+# runs, tests, and every Celery run: the Celery task id is never used here, and it would not help
+# because launch sets task_id=job_id). It is stable per OS PROCESS: a redelivery that lands in the
+# SAME live process shares it; a fresh process is a fresh execution. It is derived lazily and
+# re-derived when the pid changes, because Celery imports this module in the parent BEFORE forking
+# its pool children - an import-time value would be shared by every child and by every replacement
+# child after an OOM kill or hard time limit, and the lease would then treat a takeover by another
+# process as a same-execution resume (no generation bump, outgoing fence left live).
+_PROCESS_RUN_ID: tuple[int, str] | None = None
+
+
+def _process_run_id() -> str:
+    global _PROCESS_RUN_ID
+    pid = os.getpid()
+    if _PROCESS_RUN_ID is None or _PROCESS_RUN_ID[0] != pid:
+        _PROCESS_RUN_ID = (pid, uuid.uuid4().hex)
+    return _PROCESS_RUN_ID[1]
 
 
 def _backend_execution_id(job_id: str) -> tuple[str, str]:
     backend = (provcfg.PIPELINE_BACKEND or "direct").strip()[:32] or "direct"
-    exec_id = (provcfg.PIPELINE_EXECUTION_ID or "").strip() or f"proc-{_PROCESS_RUN_ID}"
+    exec_id = (provcfg.PIPELINE_EXECUTION_ID or "").strip() or f"proc-{_process_run_id()}"
     return backend, exec_id
 
 
@@ -473,6 +487,12 @@ def run_pipeline(
 # contract importing this module) is what keeps dispatch_contract from importing the orchestrator.
 from meshpipeline.application.dispatch_types import register_run_entry  # noqa: E402
 
+
+def _planner_model() -> str:
+    from meshpipeline.engines.snappy.settings import PLANNER_MODEL
+    return PLANNER_MODEL
+
+
 RUN_ENTRY = register_run_entry(run_pipeline)
 
 
@@ -582,6 +602,14 @@ async def _run_async(req: JobRequest) -> dict:
 
         jlog.info("STEP mode: owner=%s", owner_id)
 
+        # FREE THIS MACHINE'S DISK before the run writes to it. Finished jobs' workspaces and
+        # previews are on the worker's own disk, and nothing else can see it to delete them
+        # (application/maintenance/worker_disk.py). Kept: this job, and the parent of the dispute
+        # it may be about to re-review. Never raises.
+        from meshpipeline.application.maintenance import worker_disk as _wd
+        _dispute_parent = str((req.user_dispute or {}).get("of_job_id", "") or "")
+        await _wd.reclaim_quietly(AsyncSessionLocal, keep={job_id, _dispute_parent}, jlog=jlog)
+
         # THE execution entry. Whatever local path a previous process wrote into a checkpoint is
         # irrelevant here - this process resolves the tenant's row, reconciles it against the
         # approved snapshot, downloads into its OWN workspace and verifies the bytes before the
@@ -647,7 +675,8 @@ async def _run_async(req: JobRequest) -> dict:
                 # capture provenance for the OTHER LLM surfaces too - the corpus
                 # must record every model that shaped the sample
                 "intake":     {"model": provcfg.DEEPSEEK_MODEL, "temperature": icfg.INTAKE_TEMPERATURE, "max_tokens": icfg.INTAKE_MAX_TOKENS},
-                "planner":           {"model": bcfg.BUILDER_MODEL},
+                # the planner's OWN model (engines/snappy/settings.PLANNER_MODEL), not the builder's
+                "planner":           {"model": _planner_model()},
                 "engine_selector":   {"model": None},
                 "search_summarizer": {"model": provcfg.SEARCH_SUMMARIZER_MODEL,
                                       "temperature": provcfg.SEARCH_SUMMARIZER_TEMPERATURE,
@@ -667,7 +696,12 @@ async def _run_async(req: JobRequest) -> dict:
             with _own(ownership, session_factory=AsyncSessionLocal):
                 _e = execution_publisher(job_id, "engine_select")
                 await _e.astage(op_id="pinned")
-                await _e.anote(f"Mesh engine: {name} - the one you asked for", op_id="pinned")
+                from meshpipeline.engines.registry import engine_label as _label
+                try:
+                    _shown = _label(name)
+                except Exception:  # noqa: BLE001 - the engine's own name still says which
+                    _shown = name
+                await _e.anote(f"Mesh engine: {_shown} - the one you asked for", op_id="pinned")
 
         _pinned_engine = await pin_selected_engine(initial_state, req.mesh_engine, jlog=jlog,
                                                    publish=_announce_engine)
@@ -888,6 +922,14 @@ async def _run_async(req: JobRequest) -> dict:
         # file that states none is the likely cause, and only the user can say which it is
         from meshpipeline.application.final_result import physical_scale_caveat
         _scale_caveat = physical_scale_caveat(_run_outcome)
+        # and, once the measured limits decide (VERDICT_BY_LIMITS), their verdict and the AI
+        # reviewer's notes - the notes shown, labelled, deciding nothing. Both None in shadow.
+        from meshpipeline.application.final_result import (
+            measured_verdict_caveat,
+            reviewer_notes_caveat,
+        )
+        _verdict_caveat = measured_verdict_caveat(_run_outcome)
+        _notes_caveat = reviewer_notes_caveat(_run_outcome)
         verdict, api_failure = _run_outcome.reviewer_verdict, _run_outcome.api_failure
 
         retry_count = _run_outcome.retry_count
@@ -906,6 +948,10 @@ async def _run_async(req: JobRequest) -> dict:
         # ONCE afterwards, so a client never sees 'succeeded' before the mesh is fetchable.
         _decision = derive_terminal_status(_run_outcome, job_id=job_id, jlog=jlog)
         final_status, _failed_reason = _decision.status, _decision.failed_reason
+        # THE VERDICT BY MEASURED LIMITS, beside the one that decided (docs/RULES.md VER-1..4):
+        # one `verdict shadow:` log line and the verdict's entry in the why record, every run.
+        from meshpipeline.application.final_result import record_verdict
+        record_verdict(job_id, _run_outcome, succeeded=_decision.succeeded, jlog=jlog)
 
         # FENCE before ANY terminal side effect. A worker whose generation/token was superseded
         # (its lease taken over while it ran) must produce NOTHING externally observable: it must not
@@ -1115,7 +1161,9 @@ async def _run_async(req: JobRequest) -> dict:
                                      + ([_concerns_caveat] if _concerns_caveat else [])
                                      + ([_review_caveat] if _review_caveat else [])
                                      + ([_narrow_caveat] if _narrow_caveat else [])
-                                     + ([_scale_caveat] if _scale_caveat else [])),
+                                     + ([_scale_caveat] if _scale_caveat else [])
+                                     + ([_verdict_caveat] if _verdict_caveat else [])
+                                     + ([_notes_caveat] if _notes_caveat else [])),
                 review_blocking=list(_review_blocking),
                 review_plan=_review_plan,
                 review_left=_review_left,
@@ -1138,10 +1186,20 @@ async def _run_async(req: JobRequest) -> dict:
         # records - the training capture, the viewer preview and the conversation export - each
         # have their own policy and none may affect the outcome. post_terminal owns them.
         from meshpipeline.application import post_terminal as _pt
+        # THE RUN'S REPRODUCIBILITY RECORD (application/run_reproducibility.py): input hash, every
+        # AI decision and what it was asked, the mesher's stamp, the time-limited decisions - kept
+        # beside the workspace and in the capture record, so two runs of one file can be compared
+        try:
+            from meshpipeline.application import run_reproducibility as _repro
+            _repro_record = _repro.write(job_id, final_state)
+        except Exception as _exc:  # noqa: BLE001 - a record never touches a verdict
+            jlog.warning("run reproducibility record failed (%s)", _exc)
+            _repro_record = {}
         _pt.capture_terminal_record(
             job_id, generation=_generation, final_result=_result.to_dict(),
             terminal_message=_final_closing, geometry_source=_geometry_provenance(final_state),
-            agent_model_configs=final_state.get("agent_model_configs", {}), jlog=jlog)
+            agent_model_configs={**(final_state.get("agent_model_configs", {}) or {}),
+                                 "reproducibility": _repro_record}, jlog=jlog)
 
         _pt.copy_viewer_preview(job_id, final_state.get("openfoam_workspace", ""), jlog=jlog)
         _pt.enqueue_conversation_export(job_id, final_state, created_at=_job_created_at,

@@ -82,3 +82,14 @@
   #workbench .viewer.tm-stage .v-canvas{min-height:0}
   #workbench .viewer.tm-stage .v-bar{max-height:none}
 }
+
+/* A PHONE OR A NARROW WINDOW SCROLLS THE PAGE. The stacked grid above was held to one screen
+   height, so the viewport, the conversation and the input bar left the viewer panel a zero-height
+   row: the verdict, the downloads and the geometry check's Proceed button were cut off. The page
+   now grows to fit and scrolls; the conversation keeps its own scroll. */
+@media(max-width:900px){
+  #app.wb{height:auto;min-height:100vh;grid-template-rows:auto auto auto auto auto auto}
+  #app.wb>#workbench{min-height:85vh}
+  #app.wb>#stage{max-height:50vh}
+  #workbench .viewer:not(.tm-stage) .v-bar{max-height:none;overflow:visible}
+}

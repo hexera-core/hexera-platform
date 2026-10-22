@@ -132,6 +132,33 @@ async function request<T>(path: HexeraApiPath, init: RequestInit = {}): Promise<
   }
 }
 
+// ONE RUN'S WHY RECORD (docs/RULES.md in the platform repo): each decision the run made on its own,
+// the rule ID behind it, and the facts that rule read.
+export type AdminWhyDecision = {
+  also: string[];
+  alternatives: unknown[];
+  decided: string;
+  inputs: Record<string, unknown>;
+  rule: string;
+  rules_version: string;
+  source: string;
+  stage: string;
+  value: unknown;
+  words: string;
+};
+
+export type AdminJobWhy = {
+  decisions: AdminWhyDecision[];
+  job_id: string;
+  recorded_at: string | null;
+  rules_version: string;
+  sentences: string[];
+};
+
+export async function readJobWhy(jobId: string): Promise<Read<AdminJobWhy>> {
+  return request(hexeraApiRoutes.adminOpsJobWhy(jobId));
+}
+
 export async function readActivity(): Promise<Read<{ runs: AdminRun[] }>> {
   return request(hexeraApiRoutes.adminOpsActivity);
 }

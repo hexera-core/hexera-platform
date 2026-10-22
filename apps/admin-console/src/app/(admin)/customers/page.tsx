@@ -1,8 +1,6 @@
 import Link from "next/link";
-import { notFound } from "next/navigation";
 
 import { Alert, EmptyState, Panel, StatRow } from "@/app/_components/panel";
-import { isLaunchAdminSurfaceEnabled } from "@/app/_components/sections";
 import {
   compactDate,
   filterCustomers,
@@ -47,8 +45,6 @@ export default async function CustomersPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  if (!isLaunchAdminSurfaceEnabled()) notFound();
-
   const params = await searchParams;
   const sort = typeof params.sort === "string" ? params.sort : "name";
   const direction = typeof params.direction === "string" ? params.direction : "asc";

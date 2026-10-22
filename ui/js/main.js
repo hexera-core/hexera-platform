@@ -39,7 +39,7 @@ setNotifier({
     "You appear to be offline - reconnecting when your network returns.", "warn"),
   online: () => Notice.release("net"),
   unauthorized: () => Notice.hold("auth",
-    "This deployment rejected the request as unauthorized.", "error"),
+    "You are signed out, or this account cannot do that. Sign in again, then reload the page.", "error"),
   authorized: () => Notice.release("auth"),
 });
 
@@ -99,7 +99,7 @@ configureStream({
     offerNewRun();
   },
   // WHILE THE JOB WAITS FOR A WORKER the header says so, with the backend's estimate; once a
-  // worker has it the line goes back to "working…" and the timeline takes over.
+  // worker has it the line empties and the live line and the timeline take over.
   // The run's clock follows the server's: it counts from when the job was created.
   onStatus: (job) => {
     Stage.waiting(waitingCopy(job) || (streamDown ? STREAM_DOWN_SUB : ""));
@@ -144,7 +144,8 @@ setResultHandler((data, anchor) => {
     openViewer(job, anchor,
       { metrics: { attempts: data.attempts, pass: true }, files: data.files || [],
         concerns: data.reviewOutcome === "delivered_with_concerns" ? (data.concerns || []) : null,
-        reasoning: data.reviewOutcome === "delivered_with_concerns" ? (data.reasoning || "") : "" });
+        reasoning: data.reviewOutcome === "delivered_with_concerns" ? (data.reasoning || "") : "",
+        notes: data.notes || [] });
   } else if (surface === "unreviewed") {
     openViewer(job, anchor,
       { metrics: { attempts: data.attempts, pass: false }, files: data.files || [],
@@ -192,6 +193,8 @@ configureComposer({
   chat: (role, text) => Stage.chat(role, text),
   brief: (b) => Stage.brief(b),
   engineChoice: (c, pick) => Stage.engineChoice(c, pick),
+  // the buttons under an application question: what the mesh is for, an FEA part's analysis type
+  choices: (list, pick) => Stage.choices(list, pick),
   supportedCopy: (t) => Stage.setSupportedCopy(t),
   onJobStarted: (id) => attachJob(id),
   // THE GEOMETRY CHECK TAKES THE STAGE, the way a delivered mesh does: the part in 3D with its
@@ -267,8 +270,8 @@ function bootLive() {
       job = await getJob(deepLinkJob, { throwOnError: false });
     } catch { /* already reported by the HTTP boundary */ }
     if (!job) {
-      Stage.chat("assistant", "I could not open that job. If it belongs to another account, "
-        + "set the user in settings and reload.");
+      Stage.chat("assistant", "I could not open that run. The link may be wrong, or the run may belong to another "
+        + "account.");
       return;
     }
     beginRun(deepLinkJob);

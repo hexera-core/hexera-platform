@@ -124,6 +124,10 @@ class ConfirmIn(BaseModel):
     #: is a whole thermal model (contracts/intake_formats check_mode), whose air box's sides are the
     #: file's - so a confirmation with no openings declares none and asks nothing about them.
     check_mode: str = ""
+    #: SET BY THE SERVER for an FEA part (check_mode "fea"), from the stored check, never the form:
+    #: how many bodies the file has, and what the clean check found - said in the declaration.
+    bodies: int | None = None
+    clean_summary: str = ""
 
     @field_validator("extents")
     @classmethod
@@ -255,8 +259,15 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     # again - the read path is the one place that cannot be forgotten, and it stores nothing, so
     # a worker that was merely slow still lands its result.
     payload = time_boxed(stored, requested) or stored
+    from meshpipeline.application import fea_check
     from meshpipeline.contracts.geometry_fields import form_spec
     from meshpipeline.contracts.intake_formats import THERMAL_CHECK
+    # WHICH STAGE THE PART OPENS ON, from what the user said the mesh is for (application/
+    # purpose_map): "" until the words settle it, so an FEA part never sees the flow form first
+    payload["route"] = fea_check.stage_route(payload, getattr(session, "messages", None))
+    if payload["route"] == fea_check.STAGE_FEA:
+        # the part, its unit and size (the proposal), its bodies and the clean check - no flow form
+        payload["fea"] = fea_check.fea_view(payload.get("facts"))
     if payload.get("check_mode") != THERMAL_CHECK:
         # the generic form's fields; a thermal model is served as its `thermal` view instead
         payload["fields"] = form_spec()
@@ -312,7 +323,8 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     # done with their times, a note when one runs long, and the way on when one fails
     payload["progress"] = progress_view(reported, requested, read_progress(str(session_id)),
                                         scout_limit_s=SCOUT_SOFT_LIMIT_S, naming_limit_s=NAMING_SOFT_LIMIT_S,
-                                        confirmed=confirmed is not None)
+                                        confirmed=confirmed is not None,
+                                        fea=payload.get("route") == fea_check.STAGE_FEA)
     return payload
 
 
@@ -516,9 +528,28 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
     # A WHOLE THERMAL MODEL is the stored check's to say, never the form's
     from meshpipeline.contracts.intake_formats import THERMAL_CHECK
     _stored_check = _read_json(check_object_key(str(session_id), "scout.json")) or {}
+    # AN FEA PART is the user's words' to say (application/purpose_map), never the form's: the
+    # part itself is meshed, so there is no fluid, no opening and no flow to confirm
+    from meshpipeline.application import fea_check
+    _fea = fea_check.stage_route(_stored_check, session.messages) == fea_check.STAGE_FEA
     body = body.model_copy(update={
-        "check_mode": THERMAL_CHECK if _stored_check.get("check_mode") == THERMAL_CHECK else ""})
-    if body.check_mode == THERMAL_CHECK:
+        "check_mode": THERMAL_CHECK if _stored_check.get("check_mode") == THERMAL_CHECK
+        else fea_check.STAGE_FEA if _fea else ""})
+    if body.check_mode == fea_check.STAGE_FEA:
+        facts = _stored_check.get("facts") or {}
+        blocked = fea_check.multi_body_message(facts)
+        if blocked:
+            # VERSION 1 MESHES ONE PART AT A TIME: no guessing at how the parts connect
+            raise HTTPException(409, blocked)
+        proposed = _stored_check.get("proposal") or {}
+        body = body.model_copy(update={
+            "input_kind": "solid-body", "flow": None, "openings": [], "seed_point_mm": None,
+            "flow_axis": None, "extents": None, "grounded": False,
+            "size_mm": body.size_mm or proposed.get("size_mm"),
+            "scale_to_m": body.scale_to_m or proposed.get("scale_to_m") or facts.get("scale_to_m"),
+            "bodies": fea_check.body_count(facts),
+            "clean_summary": fea_check.clean_words(facts)[1]})
+    elif body.check_mode == THERMAL_CHECK:
         # the panel sends only the detail level: a thermal model is always an assembly of solid
         # parts with the air among them, so its kind and flow are the server's to fill - and its
         # name and size are the file's, as the check read them

@@ -21,6 +21,11 @@ def mesh_artifact_key(job: str) -> str:
     return f"{_PREFIX}/{job}/mesh.msh"
 
 
+def export_key(job: str, file_name: str) -> str:
+    """One solver file of an FEA mesh (mesh once, export many): jobs/<job>/exports/<file>."""
+    return f"{_PREFIX}/{job}/exports/{file_name}"
+
+
 def repair_report_key(job: str, digest: str = "") -> str:
     """Where an inspection report's bytes live.
 
@@ -42,3 +47,8 @@ def repaired_cad_key(job: str, digest: str, suffix: str = ".step") -> str:
 
 def result_key_beside(output_object_key: str) -> str:
     return output_object_key.rsplit("/", 1)[0] + "/result.json"
+
+
+def progress_key_beside(output_object_key: str) -> str:
+    """Where a running remote mesher says which stage it is at (runtime/mesh_runner's beacon)."""
+    return output_object_key.rsplit("/", 1)[0] + "/progress.json"

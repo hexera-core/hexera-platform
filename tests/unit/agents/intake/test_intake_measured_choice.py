@@ -43,7 +43,7 @@ def test_the_question_names_the_best_engine_with_its_evidence_and_lists_the_othe
                            "lab it passed 5 of 5 similar shapes (thin gaps or annuli, from CAD)")
     assert "near-wall layers on 96% of the wall" in text
     assert "Also able to mesh it: Gmsh (" in text and "passed 3 of 5, no reliable near-wall layers)" in text
-    assert "cfMesh (poor fit, passed 1 of 5" in text
+    assert "cfMesh (little evidence, passed 1 of 5" in text
     assert text.endswith("OK, or pick another engine?")
     assert text.count("?") == 1
 
@@ -66,6 +66,27 @@ def test_the_prompt_note_ranks_every_engine_and_tells_the_model_to_propose_the_r
     assert "1. snappyHexMesh - best fit" in note and "[RECOMMENDED]" in note
     assert "call propose_engine_selection with snappyHexMesh" in note
     assert mc.prompt_block(None, settled=False) == ""
+
+
+def test_a_gap_rule_over_the_cell_limit_is_put_to_the_user_with_the_question():
+    """THE CELL BUDGET, UP FRONT (engines/gap_sizing): when 13 cells across every measured gap
+    needs more than one job may build, the engine question says so with the choices - before any
+    mesh is paid for. Within the limit the question is unchanged."""
+    import dataclasses
+    rec = _rec()
+    assert "Cell sizing" not in mc.statement(rec, "snappy")
+    over = dataclasses.replace(rec, traits={**rec.traits, "gap_cells": 5.0e7,
+                                            "narrowest_gap": 0.0004})
+    text = mc.statement(over, "snappy")
+    assert "Cell sizing: the narrowest gap is about 0.4 mm across" in text
+    assert "more than the 8.0 M one job may build" in text
+    assert "(1) accept fewer cells across the narrowest spots" in text
+    assert "(2) have the cell limit raised" in text and "(3) mesh a smaller piece" in text
+    assert text.endswith("OK, or pick another engine?") and text.count("?") == 1
+    note = mc.prompt_block(over, settled=False)
+    assert "narrow_gaps='within_limit'" in note
+    within = dataclasses.replace(rec, traits={**rec.traits, "gap_cells": 2.0e5})
+    assert "do not raise it unasked" in mc.prompt_block(within, settled=False)
 
 
 def test_the_console_payload_exists_only_while_the_question_is_open():

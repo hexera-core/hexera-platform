@@ -47,6 +47,11 @@ def _recommend():
     return recommend
 
 
+def _run_driver():
+    from meshpipeline.engines.fea_driver import driver_for
+    return driver_for
+
+
 def _gates() -> tuple:
     from meshpipeline.engines.gmsh.gates import GMSH_GATES
     return GMSH_GATES
@@ -83,6 +88,18 @@ def _viewer_surface():
     from meshpipeline.render.volume_quality import attach_volume_quality
 
     def _hook(workspace, *, roles, units, skip_names=()):
+        from pathlib import Path
+        if (Path(workspace) / "fea_plan.json").exists():
+            # AN FEA MESH (FEA build step 5): every CAD face its own clickable part, Face_k as the
+            # deck names it, and the FEA result block - FEA numbers, never a flow mesh's heatmap
+            from meshpipeline.engines.fea_results import results
+            mesh = read_msh(workspace, by_face=True)
+            resp = stl_response(surface_patches_of(mesh), roles, units, skip_names)
+            if resp:
+                fea = results(workspace)
+                if fea:
+                    resp["fea"] = fea
+            return resp
         # named boundary groups from mesh.msh → the shared kind=stl payload, coloured by the
         # quality of the cells behind each face - the same measurement an OpenFOAM mesh gets
         mesh = read_msh(workspace)
@@ -258,6 +275,9 @@ SPEC = EngineSpec(
             "and by isolating groups (toggle_patch)."
         ),
         _load_gates=_gates,
+        # FEA BUILD STEP 4: a 3D structural solid is meshed by the deterministic FEA driver from a
+        # computed plan (engines/fea_*.py); every other gmsh run keeps the builder loop
+        _load_run_driver=_run_driver,
         _load_viewer_surface=_viewer_surface,
         _load_review_renderer=_review_renderer,
         render_artifacts=_RENDER_ARTIFACTS,
@@ -273,12 +293,17 @@ SPEC = EngineSpec(
             members=(
                 M("mesh.inp"),
                 M("gmsh_spec.json"),
+                # the FEA plan the deck was meshed from (engines/fea_*.py), when there is one
+                M("fea_plan.json", required=False),
                 # the CAD the deck was built from, and the alternate decks: gmsh writes these
                 # only when the corresponding export is requested, so they are conditional.
                 M("geometry.step", required=False),
                 # ...or, for a triangle-surface upload, the closed fluid boundary it was filled from
                 M("fluid_boundary.stl", required=False),
                 M("mesh.bdf", required=False),
+                # an FEA mesh's Ansys MAPDL archive (engines/fea_writers.py; the .bdf above is its
+                # Nastran file on that path)
+                M("mesh.cdb", required=False),
                 M("mesh.unv", required=False),
             ),
         ),

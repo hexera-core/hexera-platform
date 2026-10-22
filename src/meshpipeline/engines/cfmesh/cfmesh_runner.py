@@ -479,7 +479,8 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
                        passage_field: tuple | None = None,
                        max_halvings: int = 4, snap_wall: bool = False,
                        wall_area: float | None = None, fit_run: bool = False,
-                       wall_ceiling: float | None = None) -> dict:
+                       wall_ceiling: float | None = None,
+                       accept_fewer: bool = False) -> dict:
     ws = Path(workspace)
     strategy = strategy or {}
     ext = [float(domain_max[i] - domain_min[i]) for i in range(3)]
@@ -554,19 +555,65 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
     # 3 mm branches' cell and cartesianMesh had made no mesh after 47 minutes; sized from the
     # typical one, a tee came in at 11.5 across where the floor is 12 (2026-10-04).
     # passage_field: (points, radius, wall area per point) of the staged wall.
+    # SIZED FROM THE MEASURED NARROWEST GAP (engines/gap_sizing): every narrow spot gets its box
+    # at the full count, and what that costs - with the background, the wall band and the layers
+    # it comes on top of - is checked against the cell budget BEFORE cfMesh runs. The boxes used
+    # to be held to half the budget and the rest dropped, to be refused at the floor after the run.
     _narrow: list = []
     _narrow_note = ""
+    _gap = None
     if passage_field is not None and _caps:
+        from meshpipeline.engines import gap_sizing as GS
         from meshpipeline.engines.passage import narrow_passage_regions
-        _narrow = narrow_passage_regions(
-            passage_field[0], passage_field[1], cell_m=wall_cell,
-            areas=(passage_field[2] if len(passage_field) > 2 else None),
-            # 1% under the band's own minimum: a band put on an octree level is nudged 0.1% up
-            # (internal_band_cells), and its own walls must not read as narrow and be boxed one
-            # level finer - the very level the band just saved
-            target=CFMESH_CELLS_ACROSS, detect=NARROW_DETECT_FACTOR * CFMESH_MIN_CELLS_ACROSS,
-            budget_cells=(0.5 * cell_budget if cell_budget else None))
-        _narrow_note = str(getattr(_narrow, "note", "") or "")
+        _areas = passage_field[2] if len(passage_field) > 2 else None
+        # 1% under the band's own minimum: a band put on an octree level is nudged 0.1% up
+        # (internal_band_cells), and its own walls must not read as narrow and be boxed one level
+        # finer - the very level the band just saved
+        _detect = NARROW_DETECT_FACTOR * CFMESH_MIN_CELLS_ACROSS
+
+        _n_layers = max(0, int(strategy.get("n_layers", 0)))
+
+        def _regions_at(t: float) -> list:
+            boxes = list(narrow_passage_regions(
+                passage_field[0], passage_field[1], cell_m=wall_cell, areas=_areas,
+                target=t, detect=_detect, budget_cells=None) or [])
+            if _areas is not None and _n_layers > 0:
+                # a box's finer wall carries its own wall layers, added after refinement
+                for b in boxes:
+                    ids, c = b.get("point_ids"), float(b.get("cell_needed_m") or 0.0)
+                    if ids is not None and len(ids) and 0.0 < c < wall_cell:
+                        wall = float(sum(float(_areas[i]) for i in ids))
+                        b["layer_cells"] = _n_layers * wall * (1.0 / c ** 2 - 1.0 / wall_cell ** 2)
+            return boxes
+        import meshpipeline.settings.policy as _pol
+        _limit = int(cell_budget) if cell_budget else int(_pol.CELL_HARD_LIMIT)
+        _base = None
+        if _areas is not None:
+            _thick_m = float(_caps.get("refinement_thickness") or 0.0)
+            _base = (GS.fill_cells(_areas, passage_field[1], max_cell)
+                     + GS.fill_cells(_areas, passage_field[1], wall_cell,
+                                     depth=_thick_m or None)
+                     + _n_layers * float(sum(_areas)) / wall_cell ** 2)
+        # costed as cfMesh refines a box: EVERY cell inside it (objectRefinements), never only
+        # the passage the wall points bound - priced at its fluid, a valve cage adapter's boxes
+        # read 2.3 M and cartesianMesh made 20.2 M cells (lab, 2026-10-21)
+        _gap = GS.plan_gaps(_regions_at, cell_m=wall_cell, budget=_limit, limit=_limit,
+                            base_cells=_base, target=CFMESH_CELLS_ACROSS,
+                            accept_fewer=accept_fewer, whole_box=True)
+        _gap.write(ws)
+        _narrow = list(_gap.regions)
+        if _gap.status == GS.OVER_LIMIT:
+            # not even the fewest cells across fit beside the rest of the mesh (the plain mesh
+            # nearly fills the limit): meshed as before gap sizing - the boxes held to half the
+            # budget - and never stopped before meshing; the gate measures the mesh
+            _narrow = list(narrow_passage_regions(
+                passage_field[0], passage_field[1], cell_m=wall_cell, areas=_areas,
+                target=CFMESH_CELLS_ACROSS, detect=_detect,
+                budget_cells=(0.5 * cell_budget if cell_budget else None)) or [])
+        _narrow_note = (_gap.words(wall_cell) + (". Options: " + " ".join(
+            f"({i}) {o}" for i, o in enumerate(_gap.options(), 1))
+            if _gap.status in (GS.LIMITED, GS.OVER_LIMIT) else "")
+            if _gap.resolution_short else "")
     # the builder's own regions stop at the ceiling; a narrow passage's box is sized for it
     _blocks = (_object_refinement_blocks(strategy.get("features") or [], cell_floor=_floor)
                + _object_refinement_blocks(
@@ -641,7 +688,8 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
             "passage_caps": {k: round(v, 6) for k, v in _caps.items()} or None,
             "narrow_regions": [{"cell_size": round(b["cell_needed_m"], 6),
                                 "radius": round(b["radius_m"], 6)} for b in _narrow] or None,
-            **({"narrow_note": _narrow_note} if _narrow_note else {})}
+            **({"narrow_note": _narrow_note} if _narrow_note else {}),
+            **({"gap_plan": _gap.record()} if _gap is not None and _gap.spots else {})}
 
 
 def _bind_intake_shared(t: dict, declaration: list, *, bore: bool = True):
@@ -895,11 +943,14 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
 
     bb_min, bb_max = prep["body_bbox"]
     L = max(bb_max[i] - bb_min[i] for i in range(3))
+    from meshpipeline.engines.gap_sizing import accepted_fewer
+    from meshpipeline.engines.workspace_facts import read_engine_params
     summary = render_cfmesh_case(
         workspace, surface_file=prep["surface_file"], wall_patch=wall_patch,
         patches=_patches, body_bbox=prep["body_bbox"], L=L,
         domain_min=bb_min, domain_max=bb_max, strategy=strategy, cell_budget=cell_budget,
-        passage_radius=passage_radius, passage_field=_field)
+        passage_radius=passage_radius, passage_field=_field,
+        accept_fewer=accepted_fewer(read_engine_params(workspace)))
     _sizes = list((t.get("binding") or {}).get("size_notes") or [])
     return {"success": True, "wrote": ["system/meshDict"], "topology": "internal",
             "openings": t.get("openings"), "passage_radius": passage_radius, **summary,
@@ -971,7 +1022,7 @@ def configure_mesh(workspace, *, geometry_file: str, strategy: dict, wall_patch:
 
 def with_requested_layers(workspace, strategy: dict | None) -> tuple[dict, dict]:
     """The strategy with the layer count the REQUEST states ("5 prism layers") when the builder
-    gave none - a strategy without n_layers rendered no boundaryLayers at all - and a note for the
+    gave none or 0 - a strategy without layers rendered no boundaryLayers at all - and a note for the
     builder when it asked for fewer than the request: the delivered mesh is measured against the
     request's count (engines/layer_census), so 2 where 5 were asked reads as 2 of 5."""
     from meshpipeline.engines.layer_census import stated_layers
@@ -986,6 +1037,14 @@ def with_requested_layers(workspace, strategy: dict | None) -> tuple[dict, dict]
         return strategy, {"layers_requested": stated,
                           "layers_note": f"n_layers {stated}: the count the request states"}
     asked = int(strategy.get("n_layers") or 0)
+    if asked <= 0:
+        # NO LAYERS where the request states some is never the mesh asked for: the review
+        # rejects it and the attempt is spent (a valid run is submitted as it stands). Fewer
+        # than stated stays the builder's call - a concrete run_mesh failure can make a
+        # thinner stack necessary.
+        strategy["n_layers"] = stated
+        return strategy, {"layers_requested": stated, "layers_note": (
+            f"n_layers {stated}: the count the request states (the strategy asked for none)")}
     if asked < stated:
         return strategy, {"layers_requested": stated, "layers_note": (
             f"the request asks for {stated} prism layers and this strategy for {asked}: the "

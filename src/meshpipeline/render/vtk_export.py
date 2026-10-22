@@ -19,15 +19,36 @@ def _b64(text: str, dtype) -> np.ndarray:
     return np.frombuffer(base64.b64decode(text), dtype=dtype)
 
 
+def _as_polygons(p: dict) -> dict | None:
+    """A drawn patch as points + polygon records. A polyMesh patch already is; a triangle patch
+    (kind=stl: the delivered surface of a tetrahedral engine - VMTK, Gmsh - three corners per
+    triangle, little-endian floats) becomes one triangle record per triangle, in the order drawn,
+    which is the order its quality fields count them."""
+    if p.get("points_b64") and p.get("polys_b64"):
+        return p
+    if not p.get("positions_b64"):
+        return None
+    pos = np.frombuffer(base64.b64decode(p["positions_b64"]), dtype="<f4")
+    if not len(pos) or len(pos) % 9:
+        return None
+    n = len(pos) // 9
+    recs = np.empty((n, 4), dtype=np.uint32)
+    recs[:, 0] = 3
+    recs[:, 1:] = np.arange(3 * n, dtype=np.uint32).reshape(n, 3)
+    return {**p, "points_b64": base64.b64encode(pos.astype(np.float32).tobytes()).decode("ascii"),
+            "polys_b64": base64.b64encode(recs.tobytes()).decode("ascii")}
+
+
 def surface_to_vtk(surface: dict) -> bytes:
     """Legacy VTK PolyData, binary (big-endian, as the format requires): one polygon per drawn
     boundary face, in the order the viewer draws them. CELL_DATA carries `patch_id` (an index into
     the patch list named in the title line) and one float per quality field the payload holds -
-    the viewer's own arrays, byte for byte."""
-    patches = [p for p in (surface.get("patches") or [])
-               if p.get("points_b64") and p.get("polys_b64")]
+    the viewer's own arrays, byte for byte. Reads a polyMesh surface and the triangle surface a
+    tetrahedral engine delivers alike."""
+    patches = [q for q in (_as_polygons(p) for p in (surface.get("patches") or [])
+                           if isinstance(p, dict)) if q is not None]
     if not patches:
-        raise ValueError("the surface carries no polyMesh patches to export")
+        raise ValueError("the surface carries no mesh patches to export")
     qf = surface.get("quality_fields") or {}
     qpatches = qf.get("patches") or {}
     metrics = qf.get("metrics") or {}

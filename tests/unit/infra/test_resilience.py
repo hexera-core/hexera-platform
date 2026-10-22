@@ -204,3 +204,36 @@ async def test_resilience_timeout_classified_transient():
         await call_with_resilience(name="t", dependency="d", fn=fn,
                                    timeout=0.01, max_retries=0)
     assert ei.value.failure_class == FailureClass.PROVIDER_TRANSIENT
+
+
+def test_breaker_released_probe_frees_the_half_open_slot():
+    clk = _Clock()
+    cb = CircuitBreaker("x", failure_threshold=1, recovery_timeout=5, clock=clk)
+    cb.record_failure()
+    clk.advance(6)
+    assert cb.allow() is True            # probe takes the only slot
+    assert cb.allow() is False
+    cb.release_probe()                   # probe ended recording nothing
+    assert cb.state == CircuitState.HALF_OPEN
+    assert cb.allow() is True            # the next caller may probe
+    cb.release_probe(); cb.release_probe()   # extra releases never go below zero
+    assert cb.allow() is True and cb.allow() is False
+
+
+@pytest.mark.asyncio
+async def test_resilience_cancelled_probe_releases_the_half_open_slot():
+    import asyncio
+    b = R.get_breaker("t")
+    for _ in range(b.failure_threshold):
+        b.record_failure()
+    b._opened_at -= b.recovery_timeout + 1
+
+    async def stall():
+        await asyncio.sleep(10)
+
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(
+            call_with_resilience(name="t", dependency="d", fn=stall, timeout=30, max_retries=0),
+            0.05)
+    assert b.state == CircuitState.HALF_OPEN
+    assert b.allow() is True, "a cancelled probe kept the half-open slot"

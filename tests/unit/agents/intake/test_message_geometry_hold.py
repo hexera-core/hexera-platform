@@ -79,9 +79,11 @@ async def test_a_hold_whose_message_cannot_be_stored_withdraws_its_naming_reques
     withdrawn: list = []
     monkeypatch.setattr(gh, "withdraw_naming", lambda sid: withdrawn.append(sid))
     repo = MagicMock(); repo.append_message = AsyncMock(side_effect=RuntimeError("db down"))
-    inbound = msg.InboundMessage(session_id=SID, owner_id="alice", content="a pipe", organization_id="")
+    inbound = msg.InboundMessage(session_id=SID, owner_id="alice", content="water through a pipe",
+                                 organization_id="")
     with pytest.raises(RuntimeError):
-        await msg._settle(inbound, AsyncMock(), gate={}, locked=_locked(), messages=[],
+        await msg._settle(inbound, AsyncMock(), gate={}, locked=_locked(),
+                          messages=[{"role": "user", "content": "water through a pipe"}],
                           revision="r1", session_repo=repo, logger=MagicMock())
     assert withdrawn == [str(SID)]
 

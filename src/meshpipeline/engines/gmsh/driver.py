@@ -841,6 +841,12 @@ def _bound_groups(gmsh, surfaces, ports, *, cad: bool = False) -> list[dict]:
 
 def main(workspace: str) -> int:
     ws = Path(workspace)
+    # AN FEA PLAN (engines/fea_*.py, FEA build step 4): the solid is meshed exactly as the plan says,
+    # by the FEA adapter - the plan is the whole spec, and nothing below applies to it
+    from meshpipeline.engines.fea_plan import PLAN_FILE
+    if (ws / PLAN_FILE).exists():
+        from meshpipeline.engines.gmsh.fea_adapter import mesh as mesh_by_plan
+        return mesh_by_plan(ws)
     try:
         spec = json.loads((ws / "gmsh_spec.json").read_text())
     except (OSError, json.JSONDecodeError) as exc:
@@ -1153,17 +1159,25 @@ def main(workspace: str) -> int:
                 print(f"[GMSH] face quality not measured: {exc}", file=sys.stderr)
         _floor = CFD_SICN_FLOOR if _bar == "cfd" else SICN_FLOOR
 
-        gmsh.option.setNumber("Mesh.SaveGroupsOfNodes", 1)   # *NSET per group (BC targets)
-        gmsh.write(str(ws / "mesh.inp"))
-        gmsh.write(str(ws / "mesh.msh"))
-        for extra in spec.get("extra_exports", []) or []:
-            if extra in ("bdf", "unv"):
-                gmsh.write(str(ws / f"mesh.{extra}"))
-
         _role_by_name = {str(g["name"]): str(g.get("role", "free"))
                          for g in spec.get("groups", []) or []}
         _actual_group_names = [gmsh.model.getPhysicalName(dim, tag)
                                for dim, tag in gmsh.model.getPhysicalGroups(2)]
+        # THE DECK, written from the mesh (engines/gmsh/abaqus_deck.py), not by gmsh's Abaqus
+        # writer: that one adds every named face as flat CPS6 elements with no section, and
+        # CalculiX refuses the file. Here the deck holds only the 3D elements, and every CAD face
+        # is a named element-face *SURFACE + *NSET (Face_k), the plan's groups aliases over them.
+        _deck = _write_deck(gmsh, ws, discrete=discrete)
+        gmsh.write(str(ws / "mesh.msh"))
+        _extras = [e for e in spec.get("extra_exports", []) or [] if e in ("bdf", "unv")]
+        if "unv" in _extras:
+            gmsh.write(str(ws / "mesh.unv"))
+        if "bdf" in _extras:
+            # the Nastran deck without the boundary triangles: gmsh writes every element of a
+            # physical group, so the face groups would come out as CTRIA6 structure. Faces are
+            # named in mesh.inp; a Nastran face writer (SET3/BSURFS) is a later step.
+            gmsh.model.removePhysicalGroups(list(gmsh.model.getPhysicalGroups(2)))
+            gmsh.write(str(ws / "mesh.bdf"))
         (ws / "quality.json").write_text(json.dumps({
             "cells": n_elem, "nodes": n_nodes, "element_order": order,
             "min_sicn": round(min_sicn, 4),
@@ -1193,6 +1207,8 @@ def main(workspace: str) -> int:
             # unassigned) - finalize must not fabricate a group the mesh lacks:
             # a phantom entry fails the patch contract as an undeclared extra.
             "default_group_used": bool(leftover),
+            # what the delivered deck names: Face_k -> CAD face tag, and each group's faces
+            "deck": _deck,
             **({"surface_source": "input.stl, classified"} if classified else {}),
             **({"surface_source": "fluid_boundary.stl, staged"} if staged else {}),
             **_external,
@@ -1202,6 +1218,32 @@ def main(workspace: str) -> int:
         return 0 if not fatal else 4
     finally:
         gmsh.finalize()
+
+
+def _write_deck(gmsh, ws: Path, *, discrete: bool) -> dict:
+    """mesh.inp from the meshed model: the solid group's volumes, every CAD face that bounds
+    them as Face_k, each named surface group (the plan's, and the default group) as an alias,
+    and the CAD's own face names where it has them - read from the staging record for a B-rep,
+    and the surface's own names (an STL solid per patch) for a discrete surface."""
+    from meshpipeline.engines.gmsh.abaqus_deck import from_gmsh, write_inp
+    solid = [int(t) for _d, p in gmsh.model.getPhysicalGroups(3)
+             for t in gmsh.model.getEntitiesForPhysicalGroup(3, p)]
+    if not solid:
+        solid = [t for _, t in gmsh.model.getEntities(3)]
+    aliases = {gmsh.model.getPhysicalName(2, p):
+               [int(t) for t in gmsh.model.getEntitiesForPhysicalGroup(2, p)]
+               for _d, p in gmsh.model.getPhysicalGroups(2)}
+    names: dict[int, str] = {}
+    try:
+        if discrete:
+            names = {int(t): gmsh.model.getEntityName(2, t) for _, t in gmsh.model.getEntities(2)}
+        else:
+            from meshpipeline.cad.face_names import names_for_model
+            names = names_for_model(gmsh, ws)
+    except Exception as exc:  # noqa: BLE001 - a courtesy: every face is still Face_k
+        print(f"[GMSH] CAD face names not read: {exc}", file=sys.stderr)
+    return write_inp(ws / "mesh.inp", from_gmsh(gmsh, sorted(set(solid))), aliases,
+                     face_names=names, units="m", source="Hexera gmsh engine")
 
 
 #: Where the driver leaves the reason it stopped without a mesh, for finalize to tell the user.

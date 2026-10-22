@@ -35,10 +35,10 @@ export default async function ConversationsPage({
     <div className="page">
       <div className="page__head">
         <div>
-          <p className="page__eyebrow">Study intake</p>
-          <h1 className="page__title">Conversations</h1>
+          <p className="page__eyebrow">Conversations</p>
+          <h1 className="page__title">Your conversations</h1>
           <p className="page__intro">
-            The request history behind each mesh run, from initial study framing to confirmation.
+            What you and Hexera said before each run: your answers and what you confirmed.
           </p>
         </div>
       </div>
@@ -51,14 +51,14 @@ export default async function ConversationsPage({
         <section className="panel">
           <div className="panel__head">
             <div>
-              <p className="label">Conversation ledger</p>
-              <p className="page__sub">Study requests, message counts and linked runs.</p>
+              <p className="label">All conversations</p>
+              <p className="page__sub">Each conversation, its length and the run it started.</p>
             </div>
           </div>
           <table className="table">
             <thead>
               <tr>
-                <th>Study</th>
+                <th>Conversation</th>
                 <th>Messages</th>
                 <th>Started</th>
                 <th>Run</th>
@@ -69,7 +69,7 @@ export default async function ConversationsPage({
                 <tr key={conversation.id}>
                   <td>
                     <Link href={`/conversations/${conversation.id}`}>
-                      {conversation.task_label ?? "Untitled study"}
+                      {conversation.task_label ?? "Untitled"}
                     </Link>
                   </td>
                   <td>{conversation.message_count}</td>

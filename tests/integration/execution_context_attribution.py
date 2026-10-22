@@ -76,7 +76,8 @@ SEMANTIC = {"note": "note", "warn": "warn", "error": "error", "stage": "stage",
             "attempt": "attempt", "check": "check", "action": "action", "search": "search",
             "screenshot": "screenshot", "file": "file", "reasoning": "reasoning",
             "rationale": "rationale", "tool_call": "tool_call", "tool_result": "tool_result",
-            "meshing": "meshing", "meshed": "meshed", "verdict": "verdict", "closing": "closing"}
+            "meshing": "meshing", "meshed": "meshed", "plan": "plan", "mesh_stage": "mesh_stage",
+            "verdict": "verdict", "closing": "closing"}
 
 
 def _production_frame(naive: bool = False):
@@ -196,9 +197,12 @@ def assert_measurement_sound(result: dict) -> None:
     # stopped-before-meshing error (scenario snappy-driver:domain-preflight) and the executor's
     # report of a recorded refusal (scenario pipeline-executor:preflight_record) - 69. One more
     # came with narrow-passage sizing: the internal driver's narrow-passage disclosure (scenario
-    # snappy-driver:internal-narrow-passage) - so 70 is the calibrated denominator.
-    if result["target_total"] != 70:
-        problems.append(f"the manifest holds {result['target_total']} execution contexts, not 70")
+    # snappy-driver:internal-narrow-passage) - 70. Three more came with the run's live line: each
+    # snappy driver's mesh plan (scenarios snappy-driver:accept and snappy-driver:internal-accept)
+    # and the mesher's own stage, relayed while it runs (scenario snappy-driver:accept) - so 73 is
+    # the calibrated denominator.
+    if result["target_total"] != 73:
+        problems.append(f"the manifest holds {result['target_total']} execution contexts, not 73")
     if problems:
         raise AttributionUnsound("; ".join(problems))
 

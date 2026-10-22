@@ -15,6 +15,7 @@ from meshpipeline.contracts.review_evidence import (
     InspectionTarget,
     RenderArtifactRequirement,
     ReviewRenderer,
+    TargetKind,
 )
 from meshpipeline.engines.ground_plane import ground_patch_name, is_ground
 from meshpipeline.engines.purposes import PURPOSES, Purpose, is_compatible, topology_of  # noqa: F401
@@ -513,6 +514,11 @@ class EngineSpec:
     #: take; these say how well it does there. Empty = nothing declared: every case it accepts is
     #: treated alike.
     home_turf: tuple[TurfRow, ...] = ()
+    #: THE SHAPE CLASSES THIS ENGINE IS THE HOME ENGINE FOR (engines/fitness.py class names, read
+    #: off the measured traits): on such a shape it is recommended first - unless its own turf
+    #: rows mark the case weak or outside, or the measured record of another engine clearly beats
+    #: it (fitness ENG-2/ENG-3). Empty = home nowhere: ranked on its record alone.
+    home_classes: tuple[str, ...] = ()
 
     def forms_for(self, flow: str) -> tuple[str, ...] | None:
         """The geometry forms this bundle consumes for `flow`, or None when it is not designed
@@ -555,6 +561,9 @@ class EngineSpec:
     # None → generic behavior.
     _load_run_enricher: Callable[[], Callable | None] = lambda: None
     _load_build_driver: Callable[[], Callable | None] = lambda: None
+    # A deterministic driver for SOME of this engine's runs only: (state) -> driver or None. gmsh
+    # declares the FEA driver here (a 3D structural solid); its other runs keep the model-led loop.
+    _load_run_driver: Callable[[], Callable | None] = lambda: None
     _load_viewer_surface: Callable[[], Callable | None] = lambda: None
     # REVIEW RENDERER - the engine's own answer to "how is this mesh shown to a reviewer".
     # Same lazy-load precedent as viewer_surface, and for the same reason: the module pulls a
@@ -587,9 +596,19 @@ class EngineSpec:
         from meshpipeline.contracts.evidence_ledger import TargetObligation
         resolver = self._load_target_obligations()
         if resolver is not None:
-            return tuple(resolver(manifest or {}, engine_params or {}, purpose))
-        return tuple(TargetObligation(kind=t.kind, provenance=f"{t.target_id} (declared required)")
-                     for t in self.inspection_targets if t.required)
+            obs = tuple(resolver(manifest or {}, engine_params or {}, purpose))
+        else:
+            obs = tuple(TargetObligation(kind=t.kind,
+                                         provenance=f"{t.target_id} (declared required)")
+                        for t in self.inspection_targets if t.required)
+        # ONE RULE FOR EVERY ENGINE: an obligation follows what the run produced. Every region is
+        # a cut through the VOLUME, so a run that published no volume owes no region inspection -
+        # demanding one ended the review before the model was asked (EXPECTED_TARGET_MISSING) on
+        # a mesh that passed every gate. A volume that IS published but cannot be opened is still
+        # refused by the artifact resolver; nothing is waived here.
+        if not ((manifest or {}).get("mesh_paths") or {}).get("volume"):
+            obs = tuple(o for o in obs if o.kind is not TargetKind.REGION)
+        return obs
 
     @property
     def review_renderer(self):
@@ -610,6 +629,20 @@ class EngineSpec:
     @property
     def build_driver(self):
         return self._load_build_driver()
+
+    def build_driver_for(self, state):
+        """The deterministic driver THIS run takes: one the engine declares for the run's own
+        case (its run driver), else the engine's build_driver, else None (the model-led
+        loop). Reads the run's state only; it changes nothing about which engine is picked."""
+        chooser = self._load_run_driver()
+        if chooser is not None:
+            try:
+                chosen = chooser(state or {})
+            except Exception:  # noqa: BLE001 - a chooser that cannot read the state picks nothing
+                chosen = None
+            if chosen is not None:
+                return chosen
+        return self.build_driver
 
     # (Review modality is no longer an authored flag. Every engine enters ONE unified
     # hybrid-assurance review; whether rendered evidence is obliged is DERIVED -

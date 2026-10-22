@@ -32,6 +32,7 @@ from meshpipeline.cad.stl_io import (  # noqa: F401
 from meshpipeline.engines.domain_extent_gate import (
     extent_gate_for_request as check_domain_extents,  # noqa: F401  (engine-adapter seam; cross-engine-neutral case-level gate)
 )
+from meshpipeline.engines.ground_contact import GroundContact, measure_contact
 from meshpipeline.engines.ground_plane import VERTICAL_AXIS, ground_patch_name, is_ground
 from meshpipeline.engines.manifest import (  # noqa: F401
     _patch_face_counts,
@@ -432,20 +433,48 @@ def axis_roles(analysis: dict, symmetry: dict | None = None) -> tuple[int, int, 
     return stream, vert, span
 
 
-def _lay_floor(dmin: list, bmin) -> None:
+def _lay_floor(dmin: list, bmin, contact: GroundContact | None = None) -> None:
     """A body ON THE GROUND stands on the box's floor: the z-min face moves up to the body's
-    lowest point, with no gap under it. The part the geometry check calls grounded has a flat
-    face there (cad/scout_mesh.py), so that face lies on the floor - the way the OpenFOAM
-    windAroundBuildings case stands its buildings on the ground. A clearance would leave a sliver
-    of fluid under the body that no mesher resolves; the other margins are untouched."""
-    dmin[VERTICAL_AXIS] = float(bmin[VERTICAL_AXIS])
+    lowest point, with no gap under it. A clearance would leave a sliver of fluid under the body
+    that no mesher resolves; the other margins are untouched.
+
+    Where the floor sits is the contact's call (engines/ground_contact.py). A body resting on a
+    flat face keeps the floor at its lowest point, the way the OpenFOAM windAroundBuildings case
+    stands its buildings on the ground. A body that meets the floor at points or along lines -
+    wheels, a rounded nose - has the floor raised a measured few millimetres into it, so the
+    contact is a small flat patch instead of a wedge of fluid that closes to nothing. Without a
+    measured contact the floor goes at the lowest point, as it always has."""
+    dmin[VERTICAL_AXIS] = (float(contact.floor_z) if contact is not None
+                           else float(bmin[VERTICAL_AXIS]))
+
+
+#: The feature-edge file the renderer writes for the line where a raised floor cuts the body.
+#: The hyphen keeps it apart from every surfaceFeatureExtract output, whose names are the wall
+#: patch's, which never carry one.
+CONTACT_LINE_FILE = "ground-contact.eMesh"
+
+
+def _contact_line_emesh(contact: GroundContact) -> str:
+    """The contact line as an OpenFOAM featureEdgeMesh: the points, then the edges joining them -
+    the same form surfaceFeatureExtract writes, so snappyHexMesh reads it as a feature file."""
+    pts = "".join(f"({x:.9g} {y:.9g} {z:.9g})\n" for x, y, z in contact.line_points)
+    edges = "".join(f"({a} {b})\n" for a, b in contact.line_edges)
+    return (_HDR.format(cls="featureEdgeMesh", obj=CONTACT_LINE_FILE)
+            + f"{len(contact.line_points)}\n(\n{pts})\n{len(contact.line_edges)}\n(\n{edges})\n")
+
+
+def measure_ground_contact(workspace, geometry_file: str = "input.stl") -> GroundContact:
+    """How the staged body meets the ground: read its triangles and measure (metres in, as
+    every surface staged into a workspace is)."""
+    return measure_contact(read_stl_triangles(Path(workspace) / geometry_file))
 
 
 def domain_from_strategy(analysis: dict, strategy: dict | None = None,
                          symmetry: dict | None = None,
                          flow_axis: str | None = None,
                          ruler_m: float | None = None,
-                         ground: bool = False) -> tuple[list, list]:
+                         ground: bool = False,
+                         contact: GroundContact | None = None) -> tuple[list, list]:
     bmin, bmax, L = analysis["bbox_min"], analysis["bbox_max"], analysis["L"]
     if ground and flow_axis and flow_axis.strip().lower()[-1:] == "xyz"[VERTICAL_AXIS]:
         raise ValueError(f"a ground plane lies across z, so the flow cannot travel along "
@@ -490,7 +519,7 @@ def domain_from_strategy(analysis: dict, strategy: dict | None = None,
             else:
                 dmax[axx] = symmetry["pos"]
         if ground:
-            _lay_floor(dmin, bmin)
+            _lay_floor(dmin, bmin, contact)
         return dmin, dmax
 
     roles = axis_roles(analysis, symmetry)
@@ -534,7 +563,7 @@ def domain_from_strategy(analysis: dict, strategy: dict | None = None,
         else:
             dmax[ax] = symmetry["pos"]
     if ground:
-        _lay_floor(dmin, bmin)
+        _lay_floor(dmin, bmin, contact)
     return dmin, dmax
 
 
@@ -620,7 +649,9 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
                        farfield: str = "farfield",
                        class_regions: bool = True,
                        outside_points: list | None = None,
-                       wake: WakeRequest | None = None) -> dict:
+                       wake: WakeRequest | None = None,
+                       contact: GroundContact | None = None,
+                       gap_field: tuple | None = None) -> dict:
     ws = Path(workspace)
     strategy = strategy or {}
     rec = recommendation
@@ -681,6 +712,24 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
                     deficit, base, base_actual, smax, flevel)
     ang = rec["resolve_feature_angle"]
     max_cells = int(strategy.get("max_cells", 8_000_000))
+
+    # THE CONTACT LINE of a body the raised floor cuts (engines/ground_contact.py). The cut only
+    # helps if the mesh resolves it: on the Ahmed variant a floor raised 8 mm under 9 mm wall
+    # cells left ground faces skewed to 8.5 along the cut nose, and the same floor with the cells
+    # on the contact line refined to the depth of the cut meshed clean. So the line where body
+    # and floor meet becomes a feature edge of its own - refined until its cells are no larger
+    # than the cut is deep (never below the wall level, at most two levels above it), and
+    # snapped to, so the patch's rim is crisp. A seated or free body writes none of it.
+    _contact_feature = ""
+    _contact_file = ws / "constant" / "triSurface" / CONTACT_LINE_FILE
+    if ground and contact is not None and contact.line_edges and contact.penetration_m > 0:
+        clevel = int(math.ceil(math.log2(max(base_actual / contact.penetration_m, 1.0)) - 1e-9))
+        clevel = min(_HARD_MAX_LEVEL, smax + 2, max(smax, clevel))
+        _contact_file.parent.mkdir(parents=True, exist_ok=True)
+        _contact_file.write_text(_contact_line_emesh(contact))
+        _contact_feature = f' {{ file "{CONTACT_LINE_FILE}"; level {clevel}; }}'
+    elif _contact_file.exists():
+        _contact_file.unlink()              # a re-plan without a cut leaves no stale line behind
 
     def vf(p) -> str:
         return f"({p[0]:.6g} {p[1]:.6g} {p[2]:.6g})"
@@ -811,15 +860,35 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
         for k, t in enumerate(_wake_tiers))
     _wake_refine = "".join(f" {_WAKE_BOX}{k} {{ mode inside; levels ((1e15 {t.level})); }}"
                            for k, t in enumerate(_wake_tiers))
+    # THE GAPS BETWEEN THE BODY'S PARTS (engines/gap_sizing; cad/shape_traits.body_gap_field):
+    # a wheel and its arch, a flap and its slot get the rule's 13 cells across, boxed there only,
+    # with snappy's cell ceiling raised to what they cost - within the compute limit. External
+    # flow has no floor gate to refuse a mesh, so over the limit the gaps get as many as it holds,
+    # and the run says so. No field (one body, or none read) authors the historical dict.
+    _gap = None
+    _gap_geom = _gap_refine = ""
+    if gap_field is not None:
+        _gap, max_cells = _plan_body_gaps(
+            gap_field, wall_cell=base_actual / (2 ** smax), budget=max_cells,
+            base_cells=castellated_estimate(
+                area=analysis.get("surface_area"), divisions=div, base_cell=base_actual,
+                surface_level=smax, near=(b0d, near_band_level), far=(b1d, max(1, smin - 1))),
+            n_layers=max([n_layers, *layer_counts.values()]) if _any_layers else 0,
+            wall_area=analysis.get("surface_area"))
+        for k, b in enumerate(_gap.regions if _gap is not None else []):
+            _lvl = min(_HARD_MAX_LEVEL, smax + int(b.get("level_bump", 1)))
+            _gap_geom += (f" {_GAP_BOX}{k} {{ type searchableBox; min {vf(b['min'])}; "
+                          f"max {vf(b['max'])}; }}")
+            _gap_refine += f" {_GAP_BOX}{k} {{ mode inside; levels ((1e15 {_lvl})); }}"
 
     (ws / "system" / "snappyHexMeshDict").write_text(
         _HDR.format(cls="dictionary", obj="snappyHexMeshDict") + f"""
 castellatedMesh true; snap true; addLayers {'true' if _any_layers else 'false'};
-geometry {{ {surface_name}.stl {{ type triSurfaceMesh; name {surface_name};{_geo_regions} }}{_wake_geom} }}
+geometry {{ {surface_name}.stl {{ type triSurfaceMesh; name {surface_name};{_geo_regions} }}{_wake_geom}{_gap_geom} }}
 castellatedMeshControls {{ maxLocalCells {max_cells}; maxGlobalCells {max_cells}; minRefinementCells 10;
-  maxLoadUnbalance 0.10; nCellsBetweenLevels 3; features ( {{ file "{feature_file}"; level {flevel}; }} );
+  maxLoadUnbalance 0.10; nCellsBetweenLevels 3; features ( {{ file "{feature_file}"; level {flevel}; }}{_contact_feature} );
   refinementSurfaces {{ {surface_name} {{ level ({smin} {smax});{_ref_regions} }} }} resolveFeatureAngle {ang:.0f};
-  refinementRegions {{ {surface_name} {{ mode distance; levels (({b0d:.6g} {near_band_level}) ({b1d:.6g} {max(1, smin - 1)})); }}{_wake_refine} }}
+  refinementRegions {{ {surface_name} {{ mode distance; levels (({b0d:.6g} {near_band_level}) ({b1d:.6g} {max(1, smin - 1)})); }}{_wake_refine}{_gap_refine} }}
   locationInMesh {vf(loc)}; allowFreeStandingZoneFaces true;{_outside} }}
 snapControls {{ nSmoothPatch 3; tolerance 2.0; nSolveIter 50; nRelaxIter 8; nFeatureSnapIter 15;
   implicitFeatureSnap false; explicitFeatureSnap true; multiRegionFeatureSnap false; }}
@@ -867,7 +936,15 @@ mergeTolerance 1e-6; debug 0;
     if _synthetic:
         out["merged_regions"] = list(_synthetic)
     if ground:
-        out["ground"] = {"patch": ground, "floor_z": round(float(domain_min[VERTICAL_AXIS]), 6)}
+        _floor_rec: dict = {"patch": ground,
+                            "floor_z": round(float(domain_min[VERTICAL_AXIS]), 6)}
+        if contact is not None:
+            _floor_rec.update({"contact": contact.kind,
+                               "penetration_m": round(float(contact.penetration_m), 6),
+                               "contact_angle_deg": float(contact.contact_angle_deg)})
+        if _contact_feature:
+            _floor_rec["contact_line_level"] = clevel
+        out["ground"] = _floor_rec
     if _pts:
         out["sealed_points"] = [[round(float(v), 6) for v in p] for p in _pts]
     # the honest record of the wake this pass authored, beside the case (finalize puts it in the
@@ -879,7 +956,62 @@ mergeTolerance 1e-6; debug 0;
         _wr.write_text(json.dumps(out["wake"]))
     elif _wr.exists():
         _wr.unlink()
+    if _gap is not None and _gap.spots:
+        out["gap_plan"] = _gap.record()
+        out["gap_note"] = _gap.words(base_actual / (2 ** smax), auto=True)
+        _gap.write(ws)
     return out
+
+
+#: The searchable boxes round the gaps between a body's parts (render_snappy_case).
+_GAP_BOX = "gapZone"
+
+
+def _plan_body_gaps(field, *, wall_cell: float, budget: int, base_cells: float | None,
+                    n_layers: int = 0, wall_area: float | None = None):
+    """(gap plan, the cell ceiling to mesh with) for the gaps between an external body's parts
+    (engines/gap_sizing.plan_gaps on the body gap field): the boxes put 13 across every gap the
+    wall cell leaves short, the ceiling rises to what they cost within the compute limit, and over
+    it the gaps get as many as the limit holds. The wall layers snappy adds after refinement are
+    priced too - `n_layers` per wall face on the body's `wall_area`, and on each gap's finer wall -
+    so the ceiling leaves room for them under the limit, as the internal plan does.
+    (None, budget) when the plan cannot be made."""
+    import numpy as np
+
+    import meshpipeline.settings.policy as polcfg
+    from meshpipeline.engines import gap_sizing as GS
+    from meshpipeline.engines.passage import narrow_passage_regions
+    try:
+        pts, half, areas = field
+        layers = max(0, int(n_layers))
+        a = np.asarray(areas, dtype=float) if areas is not None else None
+        try:
+            wall = float(wall_area) if wall_area is not None else 0.0
+        except (TypeError, ValueError):
+            wall = 0.0
+        after = (layers * wall / wall_cell ** 2
+                 if layers and wall > 0.0 and wall_cell > 0.0 else 0.0)
+
+        def at(t: float) -> list:
+            boxes = list(narrow_passage_regions(pts, half, cell_m=wall_cell, areas=areas,
+                                                target=t, detect=GS.GAP_CELLS_ACROSS,
+                                                budget_cells=None) or [])
+            if layers and a is not None:
+                for b in boxes:
+                    ids = b.get("point_ids")
+                    if ids is not None and len(ids):
+                        c = float(wall_cell) / (2 ** int(b.get("level_bump", 1)))
+                        b["layer_cells"] = (layers * float(a[ids].sum())
+                                            * (1.0 / c ** 2 - 1.0 / wall_cell ** 2))
+            return boxes
+        plan = GS.plan_gaps(at, cell_m=wall_cell, budget=int(budget),
+                            limit=int(polcfg.CELL_HARD_LIMIT), base_cells=base_cells,
+                            accept_fewer=True, whole_box=True, base_after=after)
+    except Exception:  # noqa: BLE001 - a plan we cannot make leaves the case as planned
+        logger.warning("render_snappy_case: the body-gap plan failed - meshing as planned",
+                       exc_info=True)
+        return None, int(budget)
+    return plan, max(int(budget), int(plan.budget) if plan.regions else int(budget))
 
 
 def configure_mesh(workspace, *, geometry_file: str, strategy: dict, wall_patch: str,
@@ -888,18 +1020,22 @@ def configure_mesh(workspace, *, geometry_file: str, strategy: dict, wall_patch:
     from meshpipeline.cad.analysis import analyze_surface, recommend_refinement
     from meshpipeline.cad.prepared_surface import require_metre_surface
     from meshpipeline.engines.declared_boundary import body_walls, farfield_name
-    analysis = analyze_surface(require_metre_surface(surface, workspace, geometry_file))
+    measured = require_metre_surface(surface, workspace, geometry_file)
+    analysis = analyze_surface(measured)
     rec = recommend_refinement(analysis, max_cells=int(strategy.get("max_cells", 8_000_000)))
-    # a declared ground plane is the box's floor, laid by the domain whichever path authors it
+    # a declared ground plane is the box's floor, laid by the domain whichever path authors it -
+    # and where it sits is the body's contact's call, the same on both paths
     ground = ground_patch_name(contract_patches)
+    contact = measure_contact(read_stl_triangles(Path(measured.path))) if ground else None
     # the far field and the body walls under the names the user approved - never the model's args
     farfield = farfield_name(contract_patches)
     if args.get("domain_min") and args.get("domain_max"):
         dmin, dmax = list(args["domain_min"]), list(args["domain_max"])
         if ground:
-            _lay_floor(dmin, analysis["bbox_min"])
+            _lay_floor(dmin, analysis["bbox_min"], contact)
     else:
-        dmin, dmax = domain_from_strategy(analysis, strategy, ground=bool(ground))
+        dmin, dmax = domain_from_strategy(analysis, strategy, ground=bool(ground),
+                                          contact=contact)
     prep = prepare_surface(
         workspace, geometry_file=geometry_file, domain_min=dmin, domain_max=dmax,
         wall_patch=wall_patch, farfield_patch=farfield,
@@ -914,7 +1050,8 @@ def configure_mesh(workspace, *, geometry_file: str, strategy: dict, wall_patch:
         # no flow axis reaches this tool: the wake goes where the box has the most room behind
         # the body, which is downstream by every margin this function sizes
         wake=WakeRequest(knobs=strategy.get("wake"),
-                         ruler_m=strategy.get("reference_length_m")))
+                         ruler_m=strategy.get("reference_length_m")),
+        contact=contact)
     return {"success": True, "wrote": ["system/blockMeshDict", "system/snappyHexMeshDict"],
             **summary,
             "next": "Dicts written (valid + clamped to the budget). Call run_mesh NOW to build "
@@ -1094,7 +1231,8 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
                          wall_key: str = "wall", port_sizes: dict[str, float] | None = None,
                          sealed_before: frozenset[str] | set[str] = frozenset(),
                          thin_regions: list | None = None,
-                         near_band_depth: float | None = None) -> dict:
+                         near_band_depth: float | None = None,
+                         distance_regions: list | None = None) -> dict:
     ws = Path(workspace)
     ext = [float(bbox_max[i] - bbox_min[i]) for i in range(3)]
     maxext = max(ext)
@@ -1200,6 +1338,16 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
                  f"min ({_lo[0]:.6g} {_lo[1]:.6g} {_lo[2]:.6g}); "
                  f"max ({_hi[0]:.6g} {_hi[1]:.6g} {_hi[2]:.6g}); }} ")
         thin_refine += f"thinZone{_i} {{ mode inside; levels ((1e15 {_lvl})); }} "
+    # NARROW SPOTS BY DISTANCE (engines/gap_sizing): each level's narrow wall, as its own
+    # refinement surface, refines the cells within a passage width of it - the passage, on both
+    # sides of the wall, not a box round it. Never a refinementSurface, so never a patch.
+    _dist = list(distance_regions or [])
+    for _dr in _dist:
+        _lvl = min(_HARD_MAX_LEVEL, smin + int(_dr.get("level_bump", 1)))
+        geom += (f"{_dr['name']} {{ type triSurfaceMesh; file \"{_dr['file']}\"; "
+                 f"name {_dr['name']}; }} ")
+        thin_refine += (f"{_dr['name']} {{ mode distance; "
+                        f"levels (({float(_dr['distance_m']):.6g} {_lvl})); }} ")
     # a small port's rim must be feature-snapped at least as finely as its surface is
     # refined, or snapping re-opens the very cells the refinement just won
     feat_entries = "".join(
@@ -1232,7 +1380,8 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
     # minVol from the finest wall cell this case refines to (layer_min_vol): a passage a few
     # millimetres across has layer cells far below the tutorials' absolute 1e-13 m^3
     _top = max([smax, flevel, near_level, *port_lvls.values(),
-                *(min(_HARD_MAX_LEVEL, smin + int(r.get("level_bump", 1))) for r in _thin)])
+                *(min(_HARD_MAX_LEVEL, smin + int(r.get("level_bump", 1)))
+                  for r in [*_thin, *_dist])])
     _min_vol = layer_min_vol(min(dext[i] / max(div[i], 1) for i in range(3)) / (2 ** _top),
                              n_layers=n_layers, min_thickness_rel=0.05)
     (ws / "system" / "snappyHexMeshDict").write_text(
@@ -1264,6 +1413,9 @@ mergeTolerance 1e-6; debug 0;
             "n_layers": n_layers, "domain_min": [round(x, 4) for x in dmin],
             "domain_max": [round(x, 4) for x in dmax], "patches": list(names.values()),
             "port_levels": {names[p]: port_lvls[p] for p in port_lvls if p in names},
+            "narrow_surfaces": [{"name": d["name"], "distance_m": round(float(d["distance_m"]), 7),
+                                 "level": min(_HARD_MAX_LEVEL, smin + int(d.get("level_bump", 1)))}
+                                for d in _dist],
             "thin_regions": [{"level": min(_HARD_MAX_LEVEL,
                                            smin + int(r.get("level_bump", 1))),
                               "thinnest_m": r.get("thinnest_m"),

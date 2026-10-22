@@ -225,3 +225,45 @@ def test_a_revised_pass_dispatches_and_a_true_replay_disagreement_still_fails_cl
     assert replay.get("collected") is True
     assert provider.collected == 1
     assert claims.submissions == 2, "a replay must collect, never resubmit"
+
+
+def test_a_tool_loop_engine_reruns_inside_one_attempt(monkeypatch, tmp_path):
+    # cfMesh, gmsh and the multi-region engine have no driver, so they record no pass - and their
+    # builder is told "change the case, then run_mesh again" inside the same attempt. That second
+    # run carried the first run's identity with a new payload and was refused as a conflicting
+    # replay before dispatch: every in-attempt retry of those engines died as infrastructure.
+    from meshpipeline.application import execution_fence
+    from meshpipeline.contracts import mesh_execution as mx
+
+    ws = tmp_path / "generation_0" / "attempt_1"
+    (ws / "system").mkdir(parents=True)
+    own = SimpleNamespace(job_id=uuid.uuid4(), execution_generation=0, worker_token="tok")
+    monkeypatch.setattr(execution_fence, "current_ownership", lambda: own)
+    claims = _InMemoryClaims().install(monkeypatch)
+    monkeypatch.setattr(mx, "_executor", ClaimingMeshExecutor(_CountingProvider(claims)))
+    monkeypatch.setattr(mx, "_launch_check", None)
+
+    (ws / "system" / "meshDict").write_text("maxCellSize 0.01;")
+    assert mx.run_mesh(ws, engine="cfmesh", timeout=60)["rc"] == 0
+    # the first run keeps the attempt-scoped identity a claim made before this rule names
+    assert (str(own.job_id), 0, f"{NATIVE_MESH_SUBMISSION}:attempt_1") in claims.rows
+
+    (ws / "system" / "meshDict").write_text("maxCellSize 0.02;")
+    second = mx.run_mesh(ws, engine="cfmesh", timeout=60)
+    assert second["rc"] == 0, f"the reconfigured run was refused: {second}"
+    assert claims.submissions == 2
+    assert (str(own.job_id), 0, f"{NATIVE_MESH_SUBMISSION}:attempt_1:run_2") in claims.rows
+
+
+def test_a_driver_pass_still_names_the_operation_over_the_run_count(tmp_path):
+    # the run count is only for engines that number nothing: a driver's own pass wins, so its
+    # replay of pass 2 still deduplicates however many runs the seam has counted
+    from meshpipeline.contracts.mesh_execution import note_native_pass, note_native_run
+
+    ws = tmp_path / "attempt_1"
+    ws.mkdir()
+    note_native_run(ws)
+    note_native_run(ws)
+    note_native_run(ws)
+    note_native_pass(ws, 2)
+    assert attempt_scoped_operation(ws) == f"{NATIVE_MESH_SUBMISSION}:attempt_1:pass_2"

@@ -81,7 +81,10 @@ def _gate_statement(engine: str, gate_key: str) -> str:
         pass
     return {"domain_extent": "The far-field domain is the size you asked for",
             # agents/builder/attempt.STAGING_GATE: the engine's own preparation of the file
-            "staging": "The engine prepared its input from your file"}.get(
+            "staging": "The engine prepared its input from your file",
+            # engines/fea_driver.py: the FEA plan's checks before meshing (PLAN-fea-8, PLAN-fea-9)
+            "fea_plan": "The FEA mesh plan fits the detail level, for one solid part",
+            "fea_guard": "The FEA mesher finished within its guard clock"}.get(
         gate_key, "The mesh setup matches what you approved")
 
 
@@ -161,7 +164,10 @@ def _no_mesh_cause(state, workspace, cause: str, facts: dict) -> tuple[str, dict
     if started == 0:
         try:
             from meshpipeline.engines.registry import get_spec
-            deterministic = get_spec(state.get("engine", "")).build_driver is not None
+            _spec = get_spec(state.get("engine", ""))
+            deterministic = (_spec.build_driver_for(state)
+                             if getattr(type(_spec), "build_driver_for", None) is not None
+                             else _spec.build_driver) is not None
         except Exception:  # noqa: BLE001 - an unknown engine claims nothing
             deterministic = False
         return FailureCause.NOT_BUILT.value, {**facts, "deterministic": deterministic}
@@ -234,7 +240,13 @@ async def node_executor(state: PipelineState) -> dict:
     # a mesh on disk was built after the refusal was written and is judged as usual.
     from meshpipeline.engines.preflight import read_refusal
     _refusal = read_refusal(workspace) or _case_contract_refusal(workspace, job_id)
+    # A DETERMINISTIC DRIVER'S OWN VERDICT on the mesh it left (the FEA ladder ran out): the mesh is
+    # judged as usual, and the verdict's facts travel with the failure - the retry policy reads
+    # that another attempt builds the same mesh, and the user's sentence is the driver's own
+    _driver_verdict = None
     if _refusal is not None and _mesh_on_disk(state.get("engine", ""), workspace):
+        if (_refusal.facts or {}).get("ladder_exhausted"):
+            _driver_verdict = _refusal
         _refusal = None
     if _refusal is not None:
         logger.warning("Executor: pre-flight refused the case before meshing - gate=%s cause=%s "
@@ -521,6 +533,8 @@ async def node_executor(state: PipelineState) -> dict:
             except Exception:
                 pass
 
+    if not executor_success and _driver_verdict is not None:
+        failure_facts = {**dict(failure_facts), **dict(_driver_verdict.facts)}
     TrainingLogger(job_id).log("executor_run", op_id=f"executor:{_n}", payload={
         "success":    executor_success,
         "failed_gate": "" if executor_success else failed_gate,

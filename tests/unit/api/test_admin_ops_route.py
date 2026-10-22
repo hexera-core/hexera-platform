@@ -348,3 +348,45 @@ def test_every_route_carries_the_guard(monkeypatch):
     for method, path, body in probes:
         res = client.request(method, path, json=body)
         assert res.status_code == 403, f"{method} {path} did not require the admin credential"
+
+
+def test_job_why_reads_the_runs_rule_record_from_its_terminal_capture(monkeypatch):
+    orgs = _OrgRepo()
+    jobs = _JobRepo(orgs.organization.id)
+    decision = {"stage": "engine_pick", "decided": "engine", "value": "snappy", "rule": "ENG-4",
+                "words": "it ranked first on its lab record.", "inputs": {}, "alternatives": [],
+                "source": "rule", "also": ["ENG-1"], "rules_version": "1"}
+    row = _Row(created_at=datetime(2026, 10, 20, 9, 0, tzinfo=UTC), payload={
+        "agent_model_configs": {"reproducibility": {"why": {
+            "rules_version": "1", "decisions": [decision]}}}})
+    seen = []
+
+    async def _terminal(db, job_id):
+        seen.append(job_id)
+        return row
+
+    monkeypatch.setattr(admin_ops, "_terminal_record", _terminal)
+    client = _client(monkeypatch, orgs, jobs, _LedgerRepo())
+
+    body = client.get(f"/api/v1/admin/ops/jobs/{jobs.job.id}/why", headers=HEADERS).json()
+
+    assert seen == [jobs.job.id]
+    assert body["rules_version"] == "1"
+    assert body["decisions"][0]["rule"] == "ENG-4"
+    assert body["sentences"] == ["Engine snappy, rule ENG-4: it ranked first on its lab record."]
+
+
+def test_job_why_is_a_404_with_a_reason_when_the_run_kept_none(monkeypatch):
+    orgs = _OrgRepo()
+
+    async def _none(db, job_id):
+        return None
+
+    monkeypatch.setattr(admin_ops, "_terminal_record", _none)
+    client = _client(monkeypatch, orgs, _JobRepo(orgs.organization.id), _LedgerRepo())
+
+    for job in (str(uuid.uuid4()), "not-a-uuid"):
+        res = client.get(f"/api/v1/admin/ops/jobs/{job}/why", headers=HEADERS)
+        assert res.status_code == 404
+        assert res.json()["detail"] == "no why record for this run"
+    assert client.get(f"/api/v1/admin/ops/jobs/{uuid.uuid4()}/why").status_code in (401, 403, 404)

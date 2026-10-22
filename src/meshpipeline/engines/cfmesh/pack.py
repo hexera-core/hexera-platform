@@ -13,7 +13,7 @@ SEQUENCE:
      • domain_margin {up, down, side, vert} - far-field box margins as multiples of L (flow along +x). HONOR an explicit domain size from the request; else defaults (~10 up/side/vert, ~20 down) apply. Never undersize a stated domain.  (Or pass explicit domain_min/domain_max corners.)
      • max_cell_factor - background coarseness = largest_extent / factor. Higher = finer background. Default 40 (COARSE is wanted; a fine background is what explodes cell count). Clamped so the background alone can't exceed the budget.
      • wall_cell - wall-patch cell size in METRES (default L/20). This is where your resolution goes.
-     • n_layers, thickness_ratio, first_layer_thickness - near-wall boundary layers on the wall patch (metres). A usable CFD mesh HAS layers; add them once a coarse base is valid.
+     • n_layers, thickness_ratio, first_layer_thickness - near-wall boundary layers on the wall patch (metres). A usable CFD mesh HAS layers: set n_layers to the count the request states in your FIRST configure_mesh (a request that states layers and a strategy with none is raised to the stated count).
      • features - a list of volume refinements (objectRefinements), each {name, type: box|sphere|cone|line, cellSize, + geometry}: box needs centre + lengthX/Y/Z; sphere needs centre + radius; cone needs p0/p1/radius0/radius1; line needs p0/p1. Use for wakes, leading/trailing edges, junctions the brief calls out.
    The patch names/types come from the contract automatically - you do not name patches.
    INTERNAL FLOW (a pipe, duct, manifold - the flow is INSIDE the body): configure_mesh reads the passage radius and CAPS your sizes so that about 13 cells span the narrowest passage (wall band, one radius thick) and the typical one (background), and FLOORS them at 40 across. Its summary reports passage_caps and the sizes it actually rendered. You cannot coarsen below the caps or refine below the floor, so do not spend runs trying: the delivered cell count is whatever that density costs on this shape.
@@ -25,7 +25,7 @@ SEQUENCE:
 
 WORKFLOW IS LINEAR - do not loop back without a CONCRETE failure. A run_mesh that reports mesh_ok with no fatal defect and no undermeshed finding is a mesh to SUBMIT, not a mesh to re-plan: submit it in your next turn. A cell-count target in the request ("under N cells", a budget) is a preference; a valid mesh above it is submitted with the count noted, never withheld or re-cut to chase the number, because the resolution caps decide the count. Never leave an attempt without submitting a mesh that ran mesh_ok.
 
-STRATEGY, get a valid coarse base FIRST (order 1e5 cells, well under {CELL_CAP}), THEN add layers + feature refinement and reconfigure. Iterate ONLY on concrete run_mesh feedback - change the specific value it names, not the whole strategy. All lengths in METRES.
+STRATEGY: configure the WHOLE mesh the request asks for in your first configure_mesh - the stated layers, the feature refinement it calls out, sizes from the measured scales (well under {CELL_CAP}). A valid run is submitted, so what the first run builds is what the user gets: never run a coarse base without its layers to add them later. Iterate ONLY on concrete run_mesh feedback - change the specific value it names, not the whole strategy. All lengths in METRES.
 """
 
 CFMESH_TOOL_NAMES = {

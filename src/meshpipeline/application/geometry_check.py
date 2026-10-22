@@ -441,6 +441,10 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
         # what kind of geometry this is and what it came from, for whoever decides what to offer
         facts.update(canonical.facts())
         facts.setdefault("notes", []).extend(n for n in canonical.notes if n not in facts["notes"])
+        # whether the upload is CLEAN (cad/validity): the contract a mesh is promised on
+        facts["validity"] = clean_verdict(fetched, canonical)
+        if facts["validity"].get("clean") is not True and facts["validity"].get("kind") != "unchecked":
+            facts["notes"].append(facts["validity"]["summary"])
         # a thermal model's physics (ECXML: materials, powers, fans, vents...), kept whole beside
         # the session's check so a later solver step - or the user - has all of it
         thermal = thermal_sidecar
@@ -480,6 +484,22 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
     if upright is not None:
         result["upright_sheet"] = upright
     return result
+
+
+def clean_verdict(uploaded: Path, canonical) -> dict:
+    """THE CLEAN CONTRACT on the upload (cad/validity): clean yes or no, and every reason with
+    where on the part it is. A file this calls clean is one the product promises to mesh, so a
+    clean file that then fails is a product bug, never the user's. It informs and never refuses:
+    a file that is not clean still goes on, with the reasons said. Never fails the scout."""
+    try:
+        from meshpipeline.cad.validity import check_canonical
+
+        return dict(check_canonical(uploaded, canonical).as_dict())
+    except Exception as exc:  # noqa: BLE001 - the check is evidence; the scout must still land
+        logger.warning("geometry check: the clean check could not run (%s: %s)", type(exc).__name__,
+                       str(exc)[:200])
+        return {"clean": None, "kind": "check_failed", "complete": False, "reasons": [],
+                "summary": f"the clean check could not run ({type(exc).__name__})"}
 
 
 def stickered(facts: dict) -> list[dict]:
@@ -781,6 +801,8 @@ def _store_upright_sheet(session_id: str, skin: Path, work: Path, store) -> dict
 def _scout_exact(local_path: Path, work: Path, interp_ref, ref) -> tuple[dict, Path]:
     """A STEP or IGES file: OpenCASCADE reads real faces, so the openings come out exact."""
     from meshpipeline.application import geometry_progress as gp
+    from meshpipeline.cad.fluid_volume_check import read_fluid_volume, wants_fluid_volume
+    from meshpipeline.cad.normalise import occ_scale_transform
     from meshpipeline.cad.scout import read_cad, scout_cad, write_view_stl
 
     prepared, unit_note = _prepared_coordinates(local_path, interp_ref, ref)
@@ -801,6 +823,11 @@ def _scout_exact(local_path: Path, work: Path, interp_ref, ref) -> tuple[dict, P
     gp.mark(gp.OPENINGS, triangles=gp.skin_triangles(skin))
     facts["holes"] = skin_holes(skin)
     if not declared:
+        # AN ASSEMBLY'S FLUID is the space inside its parts, closed off where it meets the outside
+        # (cad/fluid_volume_check): its openings are what the user confirms, not every flat face
+        if wants_fluid_volume(facts):
+            read_fluid_volume(facts, local_path, work=work, kind="cad",
+                              scale=occ_scale_transform(prepared).ScaleFactor())
         read_whole_shape(facts, skin)
     return facts, skin
 
@@ -905,8 +932,15 @@ def _scout_triangles(local_path: Path, work: Path, interp_ref, ref,
     gp.mark(gp.OPENINGS, triangles=gp.skin_triangles(skin))
     if not file_scale:
         # a thermal model's placed parts (file_scale) state their regions and openings themselves
+        from meshpipeline.cad.fluid_volume_check import read_fluid_volume
+        # several closed parts in one triangle file: the fluid is the space inside them, as for a
+        # CAD assembly (the skin is in metres)
+        read_fluid_volume(facts, skin, work=work, scale=1.0, kind="triangles")
         read_whole_shape(facts, skin)
-        vet_openings(facts, skin)
+        if facts.get("openings_from") != "fluid_volume":
+            # the extracted openings bound the fluid by construction; the skin's own passages
+            # (several parts' skins together) say nothing about them
+            vet_openings(facts, skin)
     return facts, skin
 
 
@@ -1075,6 +1109,21 @@ def _name(*, session_id: str, owner_id: str, purpose_text: str, interpretation: 
         landed = store_status(session_id, STATUS_READY, RETRY_NAMING, **result)
         logger.info("geometry naming %s - session=%s (a thermal model names itself)", landed["status"], session_id)
         return landed
+    if _is_fea(purpose_text):
+        # AN FEA PART has no openings, no flow and no far field to name: the stage shows the part,
+        # its size and unit, its bodies and the clean check, all measured. No model is asked.
+        # What the FEA plan sizes from is measured here, in the unit just settled: the walls and
+        # the stress hot spots (FEA build step 3)
+        from meshpipeline.cad.fea_measure import FACT_KEY
+
+        facts[FACT_KEY] = fea_measurements(stored, facts, interpretation)
+        proposal = _proposal(facts, {})
+        result = {k: v for k, v in stored.items() if k not in _STAMPED_KEYS + _FAILURE_KEYS}
+        result.update(named=True, facts=facts, vision={}, proposal=proposal,
+                      purpose_text=purpose_text[:2000], naming_seconds=round(time.time() - started, 1))
+        landed = store_status(session_id, STATUS_READY, RETRY_NAMING, **result)
+        logger.info("geometry naming %s - session=%s (an FEA part: nothing to name)", landed["status"], session_id)
+        return landed
 
     with tempfile.TemporaryDirectory(prefix=f"geometry_naming_{session_id[:8]}_") as tmp:
         store = get_object_store()
@@ -1113,6 +1162,63 @@ def _name(*, session_id: str, owner_id: str, purpose_text: str, interpretation: 
     return landed
 
 
+#: An upload larger than this is not measured for FEA in the naming step (the record says so; the
+#: plan then sizes from the part's size alone). Version 1's parts are single parts, far smaller.
+FEA_MEASURE_MAX_MB = 80.0
+
+
+class _TooBig(ValueError):
+    """A file past FEA_MEASURE_MAX_MB."""
+
+
+def fea_measurements(stored: dict, facts: dict, interpretation: dict | None) -> dict:
+    """THE FEA MEASUREMENT of the stored check's upload (cad/fea_measure): bodies, the wall under
+    every face and the hot spots, in millimetres under the facts' unit (`scale_to_m` says which;
+    application/fea_check.in_unit re-reads it in another). A CAD file is read on its faces, in the
+    coordinates the scout read it in; a triangle file on its triangles. Never fails the naming: a
+    part it cannot measure says why, and the plan sizes from what the check has."""
+    from meshpipeline.cad.fea_measure import VERSION, measure_cad, measure_triangles
+
+    scale = float(facts.get("scale_to_m") or 0.001)
+    started = time.time()
+    try:
+        from meshpipeline.cad.ingest import canonicalise
+        from meshpipeline.cad.normalise import occ_scale_transform
+        from meshpipeline.cad.scout import read_cad
+        from meshpipeline.cad.scout_mesh import read_triangles
+        from meshpipeline.contracts.geometry_source import GeometryInterpretationRef, GeometrySourceRef
+        from meshpipeline.contracts.intake_formats import GeometryKind
+
+        ref = GeometrySourceRef.from_payload(stored["source"])
+        interp_ref = GeometryInterpretationRef.from_payload(interpretation) if interpretation else None
+        with tempfile.TemporaryDirectory(prefix="fea_measure_") as tmp:
+            work = Path(tmp)
+            fetched = _fetch(ref, work)
+            size_mb = fetched.stat().st_size / 1e6
+            if size_mb > FEA_MEASURE_MAX_MB:
+                raise _TooBig(f"the file is {size_mb:.0f} MB, over the {FEA_MEASURE_MAX_MB:.0f} MB measured "
+                              "for a single part")
+            canonical = canonicalise(fetched, work, stem="geometry", ecxml_form="placed")
+            if canonical.kind is GeometryKind.cad:
+                # the scout's own reading: the confirmed unit when there is one, else the file's
+                prepared, _note = _prepared_coordinates(canonical.path, interp_ref, ref)
+                mm_per_unit = 1000.0 * float(occ_scale_transform(prepared).ScaleFactor())
+                record = measure_cad(read_cad(canonical.path), mm_per_unit=mm_per_unit)
+            else:
+                record = measure_triangles(read_triangles(canonical.path) * scale * 1000.0)
+        record.update(measured=True, scale_to_m=scale)
+    except Exception as exc:  # noqa: BLE001 - the measurement informs the plan; the check still lands
+        logger.warning("geometry check: the FEA measurement did not run (%s: %s)", type(exc).__name__,
+                       str(exc)[:200])
+        reason = str(exc) if isinstance(exc, _TooBig) else f"the part could not be measured ({type(exc).__name__})"
+        record = {"version": VERSION, "measured": False, "reason": reason, "scale_to_m": scale,
+                  "seconds": round(time.time() - started, 2)}
+    logger.info("geometry check: FEA measurement %s in %.1fs - %d hot spot(s)",
+                "done" if record.get("measured") else "skipped", time.time() - started,
+                len(record.get("hot_spots") or []))
+    return record
+
+
 def _wait_for_scout(session_id: str) -> dict | None:
     """The stored scout, once it is no longer pending. The user's first answer can land while the
     worker is still drawing; the naming waits rather than answering from nothing."""
@@ -1122,6 +1228,10 @@ def _wait_for_scout(session_id: str) -> dict | None:
         if stored is not None and stored.get("status") != STATUS_PENDING:
             return stored
         if time.time() >= deadline:
+            if stored is None or stored.get("status") == STATUS_PENDING:
+                from meshpipeline.engines.determinism import note_time_limit
+                note_time_limit("geometry_check.naming", "the naming stopped waiting for the scout",
+                                budget_s=float(NAMING_WAIT_S))
             return stored
         time.sleep(2.0)
 
@@ -1432,6 +1542,7 @@ def _up_with_vision(sheet: Path, order, *, part: str, purpose_text: str, session
     except Exception as exc:  # noqa: BLE001 - provider weather; the shape still says what it can
         logger.warning("geometry check: which way is up unavailable from the pictures (%s: %s)",
                        type(exc).__name__, str(exc)[:200])
+        _note_vision_timeout(exc, "the up axis was not read from the pictures")
         return {"error": f"{type(exc).__name__}"}
     return answer if isinstance(answer, dict) else {"error": "malformed answer"}
 
@@ -1517,8 +1628,17 @@ def _name_with_vision(facts: dict, shots, *, purpose_text: str, session_id: str,
         answer = asyncio.run(asyncio.wait_for(_ask(), timeout=GEOMETRY_CHECK_VISION_TIMEOUT_S))
     except Exception as exc:  # noqa: BLE001 - provider weather; the check still ships
         logger.warning("geometry check: vision naming unavailable (%s: %s)", type(exc).__name__, str(exc)[:200])
+        _note_vision_timeout(exc, "the openings were not named from the pictures")
         return {"error": f"{type(exc).__name__}"}
     return answer if isinstance(answer, dict) else {"error": "malformed answer"}
+
+
+def _note_vision_timeout(exc: BaseException, what: str) -> None:
+    if isinstance(exc, TimeoutError):
+        from meshpipeline.engines.determinism import note_time_limit
+        from meshpipeline.settings.geometry_check import GEOMETRY_CHECK_VISION_TIMEOUT_S
+        note_time_limit("geometry_check.vision", f"{what}: the model ran past its time limit",
+                        budget_s=float(GEOMETRY_CHECK_VISION_TIMEOUT_S))
 
 
 def _proposal(facts: dict, vision: dict | None) -> dict:
@@ -1696,6 +1816,23 @@ def unit_inference(proposal: dict, facts: dict | None = None, words: str = "") -
     fmt = str((facts or {}).get("source_format") or "").lower().lstrip(".")
     inferred = infer_unit(longest_file, expected=expected, shape=shape, format_unit=FORMAT_UNIT.get(fmt))
     return inferred.as_dict() if inferred is not None else None
+
+
+def is_fea_purpose(purpose_text: str) -> bool:
+    """Whether the user's words send the part down the FEA path (the progress line's words follow)."""
+    return _is_fea(purpose_text)
+
+
+def _is_fea(purpose_text: str) -> bool:
+    """Whether the user's words send the part down the FEA path (application/purpose_map). The
+    latest answer speaks first when it settles the purpose alone - it may be the answer to the
+    purpose question - else everything said, read together, as the stage reads it."""
+    from meshpipeline.application.purpose_map import ROUTE_FEA, read_purpose
+
+    lines = [ln for ln in str(purpose_text or "").splitlines() if ln.strip()]
+    last = read_purpose(lines[-1]) if lines else None
+    reading = last if last is not None and last.settled else read_purpose(purpose_text)
+    return reading.route == ROUTE_FEA
 
 
 def _is_thermal(facts: dict | None) -> bool:

@@ -28,19 +28,18 @@ logger = logging.getLogger(__name__)
 MEASURE_WAIT_S = 15.0
 
 
-def staged_upload(session_id: str) -> str:
-    """The upload as staged beside the session (the file cad/regions reads), or ''."""
+def staged_upload(session_id: str, source_ref=None) -> str:
+    """The session's upload as a local file to measure, or ''.
+
+    application/geometry_materializer.session_upload_path: the file staged beside the session,
+    else the session's stored source fetched back and verified. The upload route deletes its
+    staging file once the bytes are stored, so without the fetch a real upload left nothing here
+    to read and the measured recommendation never ran."""
     try:
-        from pathlib import Path
+        from meshpipeline.application.geometry_materializer import session_upload_path
 
-        import meshpipeline.settings.runtime as rtcfg
-        from meshpipeline.contracts.intake_formats import format_for_suffix
-
-        root = Path(rtcfg.JOBS_DIR) / str(session_id or "")
-        staged = sorted(p for p in root.iterdir()
-                        if p.is_file() and format_for_suffix(p.suffix.lower()))
-        return str(staged[0]) if staged else ""
-    except Exception:  # noqa: BLE001 - no staged file simply leaves the name to answer
+        return session_upload_path(str(session_id or ""), source_ref)
+    except Exception:  # noqa: BLE001 - no file simply leaves the name to answer
         return ""
 
 
@@ -126,6 +125,9 @@ async def rank_in_time(*, timeout_s: float = MEASURE_WAIT_S, **kw):
     except TimeoutError:
         logger.info("Intake: the geometry is still being measured - no engine recommendation "
                     "this turn")
+        from meshpipeline.engines.determinism import note_time_limit
+        note_time_limit("intake.recommendation", "no measured engine recommendation this turn: "
+                        "the measurement was not ready", budget_s=float(timeout_s))
     except Exception as exc:  # noqa: BLE001 - advice never breaks a turn
         logger.warning("Intake: engine recommendation unavailable (%s: %s)",
                        type(exc).__name__, str(exc)[:200])
@@ -152,15 +154,47 @@ def statement(rec, engine: str) -> str:
     lab = (f"in our lab it {fit.reason}" if fit.reason.startswith("passed")
            else f"in our lab there is {fit.reason}" if fit.reason.startswith("little")
            else f"in our lab: {fit.reason}")
-    lines = [f"{head}I'd mesh it with {_display(engine)} - {lab}."]
+    # the home engine for this kind of shape says so first (fitness ENG-2)
+    home = ", the engine made for this kind of shape," if getattr(fit, "home", False) else ""
+    lines = [f"{head}I'd mesh it with {_display(engine)}{home} - {lab}."]
     if fit.heads_up:
         lines.append(f"Heads-up: {fit.heads_up.rstrip('.')}.")
     others = [f for f in rec.fits if f.engine != engine]
     if others:
         listed = "; ".join(f"{_display(f.engine)} ({_fit(f)})" for f in others)
         lines.append(f"Also able to mesh it: {listed}.")
+    gaps = gap_estimate(rec)
+    if gaps is not None and gaps.over_limit:
+        # THE CELL BUDGET, UP FRONT: the gap rule does not fit one job, so the user chooses now,
+        # not after an hour of meshing (engines/gap_sizing)
+        lines.append(gaps.sentence())
     lines.append("OK, or pick another engine?")
     return " ".join(lines)
+
+
+def gap_estimate(rec):
+    """What the gap rule (13 cells across every gap) costs on this upload, from the measurement the
+    recommendation was ranked on (engines/gap_sizing.estimate_from_traits); None unmeasured."""
+    from meshpipeline.engines.gap_sizing import estimate_from_traits
+    traits = getattr(rec, "traits", None) if rec is not None else None
+    try:
+        return estimate_from_traits(traits) if traits else None
+    except Exception:  # noqa: BLE001 - advice never breaks a turn
+        logger.warning("Intake: the gap estimate could not be read", exc_info=True)
+        return None
+
+
+def _gap_choice_takers(rec) -> tuple[str, ...]:
+    """The engines on the ranking whose declaration takes the narrow_gaps choice (by label): only
+    those may be sent it - another engine refuses an unknown parameter at intake."""
+    from meshpipeline.engines.fitness import _spec
+    from meshpipeline.engines.gap_sizing import NARROW_GAPS_PARAM
+    out = []
+    for f in rec.fits:
+        params = getattr(_spec(f.engine), "intake_params", ()) or ()
+        if any(getattr(p, "key", "") == NARROW_GAPS_PARAM for p in params):
+            out.append(_display(f.engine))
+    return tuple(dict.fromkeys(out))
 
 
 def _fit(fit) -> str:
@@ -208,9 +242,18 @@ def prompt_block(rec, *, settled: bool) -> str:
                "engine, answer from these lines in plain words. The user picks: any engine "
                "listed here that they name is theirs, without argument.") if rec.engine else (
                "No engine here is suited by its own declaration; if the user names one, take it.")
+    gaps = gap_estimate(rec)
+    sizing = ""
+    if gaps is not None:
+        # the gap rule's cost, measured: said to the user only when it is over the limit (the
+        # engine question carries it); background for questions otherwise
+        sizing = (f"  {gaps.sentence()}"
+                  + (f" {gaps.guidance(_gap_choice_takers(rec))}" if gaps.over_limit else
+                     " (Background only - the run sizes the narrow spots itself; do not raise "
+                     "it unasked.)") + "\n")
     return ("\n\nMEASURED ENGINE RECOMMENDATION (the application measured the uploaded geometry "
             "and compared it with lab runs of every engine on shapes measured to be like it - "
-            "evidence, not opinion):\n" + shape + rows + "\n" + use)
+            "evidence, not opinion):\n" + shape + sizing + rows + "\n" + use)
 
 
 def choice_payload(gate) -> dict | None:

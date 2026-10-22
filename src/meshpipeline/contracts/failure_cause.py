@@ -135,10 +135,19 @@ def retry_can_help(cause: object, facts: Mapping | None = None) -> bool:
         return True
     if c is FailureCause.UNDER_RESOLVED and rebuild_over_limit(facts):
         return False
+    if isinstance(facts, Mapping) and facts.get("deterministic") and facts.get("ladder_exhausted"):
+        # a deterministic driver whose own ladder ran every pass it allows builds the same mesh
+        # from the same inputs (job ab20566f: a second identical 14-minute attempt)
+        return False
     if c is FailureCause.NOT_BUILT:
         # a deterministic driver that stopped before its mesher stops the same way on the same
         # inputs (job d20ad762 ran the identical refusal twice); a model-led build may not
         return not (isinstance(facts, Mapping) and facts.get("deterministic"))
+    if (c is FailureCause.CELL_BUDGET and isinstance(facts, Mapping) and facts.get("before_meshing")
+            and facts.get("deterministic")):
+        # a computed plan costed over its level before meshing (the FEA plan, PLAN-fea-8): the same
+        # part at the same level costs the same next time - the user's choice is what changes it
+        return False
     return c not in _NOT_RETRYABLE
 
 
@@ -325,7 +334,27 @@ def _contract(f: Mapping) -> tuple[str, str]:
     return what, nxt
 
 
+def _fea_quality(f: Mapping) -> tuple[str, str]:
+    """An FEA mesh whose plan's every pass left a few badly shaped elements: where they are, that
+    another run builds the same mesh, and what the user can change - never flow advice."""
+    n = int(_as_number(f.get("under_floor")) or 0)
+    where = f.get("worst_at_mm")
+    at = (f" near ({', '.join(f'{float(v):g}' for v in where)}) mm" if isinstance(where, list) and len(where) == 3
+          else "")
+    count = f"{n} element{'s' if n != 1 else ''}" if n else "a few elements"
+    what = (f"The FEA mesh was built, but {count}{at} came out too badly shaped for a solver to trust, "
+            f"in every pass the plan allows ({int(_as_number(f.get('passes')) or 1)}). The plan is fixed "
+            "by the part and the detail level, so another run would build the same mesh, and I stopped "
+            "rather than spend the time.")
+    nxt = ("This usually comes from one small CAD detail there: a face that meets its neighbour almost "
+           "tangentially, or a sliver face. You can choose the Fine detail level, or simplify that "
+           "detail in your CAD and upload the part again - then say \"run it again\".")
+    return what, nxt
+
+
 def _quality(f: Mapping) -> tuple[str, str]:
+    if f.get("fea"):
+        return _fea_quality(f)
     unmeasured = [str(u) for u in (f.get("unmeasured") or [])]
     if unmeasured:
         return (f"We could not measure {_names(unmeasured)} on the mesh, so we could not accept "
@@ -472,6 +501,20 @@ def describe(cause: object, facts: Mapping | None = None, *,
             return what, ("You can try another mesher, or mesh a smaller part of the geometry "
                           "where the passage is narrowest.")
         return what, f"You can run it again ({_RUN_AGAIN}), or ask for a finer mesh."
+    if c is FailureCause.CELL_BUDGET and f.get("fea") and f.get("before_meshing"):
+        # THE FEA PLAN'S BUDGET CHECK (engines/fea_*.py, PLAN-fea-8): the plan was costed before meshing
+        cells, level = f.get("cells"), str(f.get("level") or "chosen")
+        need = (f"about {_num(int(cells))} elements"
+                if isinstance(cells, (int, float)) and f.get("complete", True)
+                else "more elements than any detail level holds")
+        what = (f"Stopped before meshing: the mesh rules for this part (elements through every wall "
+                f"and round every hole, fillet and notch) need {need}, more than the {level} level "
+                "holds. No time was spent on a mesh.")
+        outs = [str(o) for o in (f.get("options") or []) if o]
+        if outs:
+            return what, "Your options: " + " Or: ".join(outs)
+        return what, ("No detail level holds every rule. Simplify the part where it is finest (the "
+                      "smallest holes, fillets and corners), or mesh a smaller piece of it.")
     if c is FailureCause.CELL_BUDGET:
         cells, limit = f.get("cells"), f.get("limit")
         what = ("The mesh came out too big for one job"
@@ -498,6 +541,13 @@ def describe(cause: object, facts: Mapping | None = None, *,
     if c is FailureCause.NOT_BUILT:
         who = str(f.get("engine") or engine or "The engine")
         reason = clean_reason(f.get("reason"))
+        if f.get("setup") and reason:
+            # the APPROVED SETUP is what the engine cannot build (a symmetry plane with no cut
+            # face to sit on, a floor along the flow) - never "your file", which is sound
+            return (f"No mesh was built: {who} cannot build the setup you approved. {reason}. "
+                    "No mesher was started, and your geometry was not the problem.",
+                    "Running it again would stop the same way. Tell me what to change in this "
+                    "chat - the boundaries or the engine.")
         what = (f"No mesh was built: {who} could not prepare its input from your file ({reason}), "
                 "so no mesher was started." if reason else
                 f"No mesh was built: {who} stopped while preparing the mesh, before the mesher "

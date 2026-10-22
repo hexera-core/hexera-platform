@@ -173,6 +173,12 @@ DOMAIN_EXTENT_GATE_ENABLED: bool = optional_env("DOMAIN_EXTENT_GATE_ENABLED", "t
 # the engine fallback ladder (pipeline/engine_fallback.py): a run whose engine cannot mesh the
 # shape moves to the next engine that delivers the same approved mesh
 ENGINE_FALLBACK_ENABLED: bool = optional_env("ENGINE_FALLBACK_ENABLED", "true").lower() == "true"
+# THE VERDICT BY MEASURED LIMITS (docs/RULES.md VER-1..4, engines/verdict_limits.py). Off = SHADOW:
+# the review-led verdict still decides, and the limits verdict is worked out beside it, logged and
+# written into the run's why record so the two can be compared. On = the measured limits decide
+# pass, delivered with concerns or fail; the AI reviewer only adds notes, shown to the customer as
+# notes - it can no longer change a status, start a rebuild or a bonus attempt, or fail a job.
+VERDICT_BY_LIMITS: bool = optional_env("VERDICT_BY_LIMITS", "false").lower() == "true"
 MESH_SCRIPT_SCAN_ENABLED: bool = optional_env("MESH_SCRIPT_SCAN_ENABLED", "true").lower() == "true"
 RUN_PYTHON_REQUIRE_SANDBOX: bool = optional_env("RUN_PYTHON_REQUIRE_SANDBOX", "true").lower() == "true"
 

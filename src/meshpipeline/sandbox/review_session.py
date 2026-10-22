@@ -215,9 +215,12 @@ class ReviewSession:
             return self._demote(item, f"image size {size}B is outside the permitted range")
         self._images += 1
         if self._images > self._limits.max_images:
-            raise ReviewRenderError(
-                ReviewEvidenceFailure.RENDERER_UNAVAILABLE,
-                f"renderer exceeded the session image limit ({self._limits.max_images})")
+            # Refuse THIS view, never the whole review: raising here threw away every finding the
+            # reviewer was about to submit. The refusal is a tool result the model reads.
+            return self._demote(item, (
+                f"the view budget for this review ({self._limits.max_images} pictures) is spent, "
+                "so no more views can be taken - submit your findings from the views you "
+                "already have"))
         return item
 
     def _demote(self, item: EvidenceItem, why: str) -> EvidenceItem:

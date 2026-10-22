@@ -23,6 +23,13 @@ import { applyFlow, bindAxis, bindUnit, displayText, followAxis, followSuggestio
 import { changedAnswers, editsLine, noteDrawn, servedProposal } from "./geometry_form.js";
 // a thermal model (an ECXML upload) has its own panel, card or stage alike
 import { bindThermalPanel, thermalPanelHtml } from "./thermal_form.js";
+// an FEA part has its own panel too: its size, unit, bodies and clean check, and no flow form
+import { bindFeaPanel, feaPanelHtml, followMeasure } from "./fea_form.js";
+// the run card's live line: the step running now, in plain words
+import { createRunLine } from "./run_progress.js";
+// the closing message of a finished run, as a summary rather than a wall of lines
+import { outcomeHtml } from "./outcome.js";
+const RunLine = createRunLine();
 
 /* The lightbox is its own DOM region (#lb) but too small to be its own module. */
 export function openLightbox(src) {
@@ -64,7 +71,7 @@ export const Stage = {
     // one still counted as open).
     this._att=null;this._attSep=null;this._built=new Set();this._seq=0;this.meshBar=null;this._ended=false;
     // ...and so did the stopped clock and the last event's time
-    this.finished=false;this._evt=0;},
+    this.finished=false;this._evt=0;RunLine.reset();},
   // Fill the empty state's format line from the SERVER's capability description. Advisory and
   // best-effort: when capabilities are unavailable the line stays empty and the neutral lead
   // sentence still invites an upload, because the server is the authority on what it accepts.
@@ -84,6 +91,10 @@ export const Stage = {
     if(role==='user')g.innerHTML=`<div class="who">${esc(who||'You')}</div><div class="bub">${mdBlock(text)}</div>`;
     else g.innerHTML=`<div class="who">${esc(who||'Hexera')}</div><div class="txt">${mdBlock(prettyText(displayText(text)))}</div>`;
     this.col().appendChild(g);this.scrollBottom();},
+  // THE CLOSING ACCOUNT of a finished run, in the same voice as every other turn (render/outcome.js)
+  outcome(text,opts){this.clearEmpty();const g=document.createElement('div');g.className='im assistant';
+    g.innerHTML=`<div class="who">Hexera</div><div class="txt">${outcomeHtml(displayText(text),opts)}</div>`;
+    this.col().appendChild(g);this.scrollBottom();},
   // THE FINALIZED BRIEF, as the application settled it - not the model's prose
   // re-read here. Rendered once and then updated in place, because a later turn
   // re-sends the same brief and a conversation should not accumulate copies of it.
@@ -97,15 +108,16 @@ export const Stage = {
     const thermal=b.check_mode==='thermal'&&b.job_sheet;
     const ROWS=thermal?[['engine','Engine'],['mesh_fidelity','Detail level'],['label','Case']]
       :[['purpose','Purpose'],['engine','Engine'],['input_kind','Input'],
-        ['dimensionality','Dimensionality'],['mesh_fidelity','Mesh detail preference'],
+        ['dimensionality','Dimensions'],['mesh_fidelity','Detail level'],
         ['label','Case']];
     // Prefer the server's display label. A field may be label-ONLY: the fidelity tier always
     // applies, even when the user stated no preference and there is no raw value.
     let rows=ROWS.filter(([k])=>b[k]||b[k+'_label']).map(([k,l])=>
       `<div class="rc-row"><div class="rc-k">${esc(l)}</div><div class="rc-v">${esc(b[k+'_label']||b[k])}</div></div>`).join('');
     if(b.engine_params&&Object.keys(b.engine_params).length)
-      rows+=`<div class="rc-row"><div class="rc-k">Engine parameters</div>`
-           +`<div class="rc-v">${esc(JSON.stringify(b.engine_params))}</div></div>`;
+      rows+=`<div class="rc-row"><div class="rc-k">Engine settings</div>`
+           +`<div class="rc-v">${esc(Object.entries(b.engine_params).map(([k,v])=>
+             `${String(k).replace(/_/g,' ')}: ${typeof v==='object'?JSON.stringify(v):v}`).join(', '))}</div></div>`;
     (b.boundary_assignments||[]).forEach(p=>{
       rows+=`<div class="rc-row"><div class="rc-k">${esc(p.name)}</div>`
            +`<div class="rc-v">${esc(p.role||'')}</div></div>`;});
@@ -118,11 +130,11 @@ export const Stage = {
       return `<div class="rc-ck${good?'':(unknown?' unk':' bad')}">`
         +`<span class="ic">${good?'✓':(unknown?'?':'✕')}</span>`
         +`<span>${esc(c.label)}${c.detail?` <span class="rc-d">${esc(c.detail)}</span>`:''}</span></div>`;}).join('');
-    const html=`<div class="who">Requirements · submitted by Hexera</div>
+    const html=`<div class="who">Hexera · your request, as understood</div>
       <div class="req-card${(b.checks||[]).every(c=>c.status==='pass')?' ok':''}">
         ${thermal?`<div class="rc-h">Job sheet</div><p class="rc-sheet">${esc(b.job_sheet)}</p>`
-          :'<div class="rc-h">Structured brief</div>'}${rows}
-        ${ck?`<div class="rc-h rc-h2">Validated by the application</div>${ck}`:''}
+          :'<div class="rc-h">Mesh plan</div>'}${rows}
+        ${ck?`<div class="rc-h rc-h2">Checked</div>${ck}`:''}
       </div>`;
     if(this._briefEl){this._briefEl.innerHTML=html;}
     else{this.clearEmpty();
@@ -173,6 +185,7 @@ export const Stage = {
      session, replaced if the check is shown again. */
   geometryCheck(d,confirm){
     if(d&&d.thermal)return this.thermalCheck(d,confirm);
+    if(d&&d.fea)return this.feaCheck(d,confirm);
     const p=d.proposal||{},pics=d.pictures||[];
     // what the check proposed, kept apart from the card the user edits: Proceed says back what changed
     this._gcServed=servedProposal(null,p);
@@ -256,21 +269,59 @@ export const Stage = {
       await confirm(body,'');g.querySelector('.tm-card').classList.add('ok');this.scrollBottom();}});
     this.scrollBottom();},
 
+  /* AN FEA PART AS A CARD: the same panel the FEA stage shows, without the picture - the size, the
+     unit box, the bodies, the clean check and the one question. No flow form, no stickers. */
+  feaCheck(d,confirm){
+    this.clearEmpty();
+    if(this._gcEl)this._gcEl.remove();
+    const p={...(d.proposal||{}),openings:[]};
+    const g=document.createElement('div');g.className='im assistant';
+    g.innerHTML=`<div class="who">Your part · for structural analysis</div>
+      <div class="req-card fea-card">${feaPanelHtml(d.fea||{},p)}</div>`;
+    this.col().appendChild(g);this._gcEl=g;this._gcP=p;
+    bindFeaPanel(g.querySelector('.fea-card'),d.fea||{},p,{confirm:(body,edits)=>confirm(body,edits),
+      done:()=>{g.querySelector('.fea-card').classList.add('ok');this.scrollBottom();}});
+    this.scrollBottom();},
+
+  /* THE BUTTONS UNDER AN APPLICATION QUESTION (application/purpose_map): what the mesh is for when
+     the words did not say, and an FEA part's analysis type. A click sends the button's words as the
+     user's own answer. A "coming soon" choice is greyed but still clickable: the part is then
+     meshed as for static stress, and the chat says so. One row per open question; the next reply
+     retires it. */
+  choices(list,pick){
+    const old=this._qcEl;
+    if(old){old.querySelectorAll('button').forEach(b=>{b.disabled=true;});old.classList.add('done');this._qcEl=null;}
+    if(!list||!list.length)return;
+    this.clearEmpty();
+    const g=document.createElement('div');g.className='im assistant qc';
+    g.innerHTML=`<div class="qc-row" role="group" aria-label="Pick an answer">${list.map((c,i)=>
+      `<button type="button" class="qc-btn${c.soon?' soon':''}" data-i="${i}"${c.soon?' title="Coming soon: meshed as for static stress for now"':''}>${esc(c.label)}</button>`).join('')}</div>`;
+    g.querySelectorAll('.qc-btn').forEach(b=>b.addEventListener('click',()=>{
+      const c=list[Number(b.dataset.i)]||{};
+      g.querySelectorAll('.qc-btn').forEach(x=>{x.disabled=true;});
+      b.classList.add('picked');g.classList.add('done');this._qcEl=null;
+      if(pick)pick(c.send||c.label);}));
+    this.col().appendChild(g);this._qcEl=g;this.scrollBottom();},
+
   geometryCheckUpdate(d){
     const g=this._gcEl,p=this._gcP;if(!g||!p||g.querySelector('.gc-done'))return;
     const q=(d&&d.proposal)||{};
     if(d&&d.proposal)this._gcServed=servedProposal(this._gcServed,d.proposal);
-    followUnit(g,p,q.unit,q.unit_basis);followSuggestion(g,p,q.unit_suggestion);},
+    followUnit(g,p,q.unit,q.unit_basis);followSuggestion(g,p,q.unit_suggestion);
+    // an FEA part's measurement, when it lands after the card was drawn
+    if(d&&d.fea&&d.fea.measure)followMeasure(g,d.fea.measure,p,null);},
 
   ensureProc(){if(this.proc)return;this.clearEmpty();
     const p=document.createElement('div');p.className='proc';
     p.innerHTML=`<div class="proc-head"><svg class="proc-orb" viewBox="0 0 24 24" aria-hidden="true"><circle class="sp-arm" cx="12" cy="12" r="7.2"/><path class="sp-hd" d="M19.20 8.16L22.40 14.56L16.00 14.56Z"/><path class="sp-hd" d="M4.80 15.84L1.60 9.44L8.00 9.44Z"/></svg>
       <span class="proc-title">Generating mesh</span>
-      <span class="proc-sub" id="proc-sub">working…</span>
+      <span class="proc-sub" id="proc-sub"></span>
       <span class="proc-clock" id="proc-clock">0:00</span>
       <button class="proc-cancel" id="proc-cancel" type="button" hidden>Cancel run</button></div>
+      <div class="proc-live" id="proc-live"></div>
       <div class="tl" id="tl"></div>`;
     this.col().appendChild(p);this.proc=p;this.tl=p.querySelector('#tl');
+    RunLine.attach(p.querySelector('#proc-live'));RunLine.draw();
     p.querySelector('#proc-cancel').onclick=()=>onCancel();
     this.t0=Date.now();
     // one ticker drives every live duration - the run's total and the active stage's
@@ -281,16 +332,20 @@ export const Stage = {
       Object.values(this.nodes).forEach(n=>{
         if(n.t0&&!n.tEnd&&n.dur)n.dur.textContent=fmtDur(Date.now()-n.t0);});
       if(this.meshBar)this.tickMesh();
+      // the live line's notes follow the clock ("taking longer than similar runs")
+      if(!this.finished&&(this._lineTick=(this._lineTick||0)+1)%10===0)RunLine.draw();
     },500);},
 
   // WAITING FOR A WORKER. The sub-line under "Generating mesh" said "working…" from the
   // moment a job was created, including the five to ten minutes a job can sit `pending`
   // while the fleet wakes from zero - a silent spinner that read as a hang. The poller hands
   // every status here; a non-empty text is the wait (with the backend's estimate), an empty one
-  // means a worker has it and the line returns to "working…". A finished run is left alone.
+  // means a worker has it and the sub-line empties: the live line under the header says what is
+  // running, so a filler word there only repeated it. A finished run is left alone.
   waiting(text){if(!this.proc||this.proc.classList.contains('done'))return;
     const s=this.proc.querySelector('#proc-sub');if(!s)return;
-    s.textContent=text||'working…';},
+    s.textContent=text||'';
+    RunLine.model.waiting(text);RunLine.draw();},
   // The Cancel control is shown ONLY for a run this page is attached to live. A replayed run
   // renders the same card, and a control that could stop nothing must not be on it.
   showCancel(){const b=this.proc?.querySelector('#proc-cancel');if(b)b.hidden=false;},
@@ -326,15 +381,23 @@ export const Stage = {
     const hasHist=history&&history.typical_s>0;
     const ref=hasHist?history.typical_s*1000:budget*1000;
     const sub=hasHist
-      ?`similar runs ~${fmtDur(history.typical_s*1000)} (${fmtDur(history.p10_s*1000)}-${fmtDur(history.p90_s*1000)}, n=${history.n})`
-      :`no history yet · will run up to ${fmtDur(budget*1000)}`;
+      ?`similar runs take about ${fmtDur(history.typical_s*1000)} (usually ${fmtDur(history.p10_s*1000)} to ${fmtDur(history.p90_s*1000)})`
+      :`no similar runs yet · stops by itself after ${fmtDur(budget*1000)} at most`;
     const w=document.createElement('div');w.className='meshbar';
     w.innerHTML=`<div class="mb-top"><span class="mb-lbl">meshing · ${esc(engine||'')}</span>
         <span class="mb-num">0:00</span></div>
       <div class="mb-track"><div class="mb-fill"></div></div>
       <div class="mb-sub">${esc(sub)}</div>`;
     n.body.appendChild(w);this.scroll(n);
-    this.meshBar={el:w,t0:Date.now(),ref:ref,budget:budget*1000,hasHist:hasHist};},
+    this.meshBar={el:w,t0:Date.now(),ref:ref,budget:budget*1000,hasHist:hasHist};
+    RunLine.model.meshing(engine,budget,history,this.now());RunLine.draw();},
+  // WHAT THE RUNNING MESHER SAYS IT IS DOING ("adding wall layers"), under its bar and on the line
+  meshStage(label){
+    const m=this.meshBar;if(m&&label){const l=m.el.querySelector('.mb-lbl');if(l)l.textContent=`meshing · ${label}`;}
+    RunLine.model.meshStage(label,this.now());RunLine.draw();},
+  // THE PLAN the run will build (cells, wall layers, where it refines), in its lane and on the line
+  plan(agent,summary){if(summary)this.info(agent,'Plan: '+summary);
+    RunLine.model.plan(summary,this.now());RunLine.draw();},
   tickMesh(){const m=this.meshBar;if(!m)return;
     const el=Date.now()-m.t0;
     // Progress is against the reference time, capped at 100%. Past the typical time the
@@ -360,7 +423,8 @@ export const Stage = {
     if(sub)sub.textContent=`finished in ${fmtDur(el)}`;
     const num=m.el.querySelector('.mb-num');
     if(num&&cells)num.textContent=`${fmtDur(el)} · ${cells}`;
-    this.meshBar=null;},
+    this.meshBar=null;
+    RunLine.model.meshed(cells,this.now());RunLine.draw();},
   node(agent){this.ensureProc();
     if(this.nodes[agent])return this.nodes[agent];
     const n=document.createElement('div');n.className='tl-node open';
@@ -375,6 +439,7 @@ export const Stage = {
                        t0:this.now(),tEnd:null,count:0,
                        // what the lane's mark is read from: see markOf
                        agent,seq:++this._seq,worst:0};
+    RunLine.model.lane(agent,this.now());RunLine.draw();
     return this.nodes[agent];},
   done(a){const n=this.nodes[a];if(n&&!n.tEnd){n.dot.classList.remove('active');
     n.el.classList.remove('open');n.tEnd=Math.max(n.t0,this.now());
@@ -431,7 +496,8 @@ export const Stage = {
     // until one arrives, and then both appear together.
     if(n===1)sep.hidden=true;
     else this.tl.querySelectorAll('.tl-att[hidden]').forEach(e=>e.hidden=false);
-    this.tl.appendChild(sep);this._attSep=sep;},
+    this.tl.appendChild(sep);this._attSep=sep;
+    RunLine.model.attempt(n,this.now());RunLine.draw();},
   // AN ATTEMPT THAT BUILT NOTHING SAYS SO on its header: "Attempt 2" alone read as a second mesh
   // on runs where every attempt was refused before a mesher ever started.
   _closeAttempt(){const s=this._attSep;if(!s||s.dataset.closed)return;s.dataset.closed='1';
@@ -439,7 +505,8 @@ export const Stage = {
   // THE REVIEW'S VERDICT, kept on its lane: it decides the lane's mark (a FAIL is never a tick),
   // and a rebuild that follows rewords it as the request it was.
   verdict(agent,ok,text){this.info(agent,text,!ok);const n=this.node(agent);
-    n.verdict=ok?'PASS':'FAIL';n.verdictRow=n.body.lastElementChild;this.paint(n);},
+    n.verdict=ok?'PASS':'FAIL';n.verdictRow=n.body.lastElementChild;this.paint(n);
+    RunLine.model.verdict(ok,this.now());RunLine.draw();},
 
   // a passed/failed CHECK - the evidence the user is owed. The STATEMENT comes from
   // the engine (GateSpec.proves); the UI never translates an internal key.
@@ -452,6 +519,8 @@ export const Stage = {
   // `tone` is the note's own (info | warn | error): an error marks its lane failed, a warning
   // marks it warned. A caller that names no tone is read by `warn` alone, as before.
   info(agent,text,warn,tone){const n=this.node(agent);this.bump(n);const r=document.createElement('div');r.className='row';
+    // the engine lane's own sentence ("Mesh engine: cfMesh - ...") is the line's engine step, as said
+    if(agent==='engine_select'){RunLine.model.engine(text,this.now());RunLine.draw();}
     n.worst=Math.max(n.worst||0,tone==='error'?2:warn?1:0);
     r.innerHTML=`<div class="e-info${warn?' warn':''}">${esc(text)}</div>`;n.body.appendChild(r);this.scroll(n);this.paint(n);},
   // `action` arrives already in plain words - the tool roster is named on the backend,
@@ -609,6 +678,9 @@ export const Stage = {
       if(s)s.textContent='stopped when the run ended';this.meshBar.el.classList.add('stopped');this.meshBar=null;}
     // the open lanes close when the job ended, and the run's clock stops there
     this.at(data.endedAt);
+    {const t0=Date.parse(data.createdAt||''),t1=Date.parse(data.endedAt||'');
+     RunLine.model.final({...data,concerns,totalMs:t0>0&&t1>0?t1-t0:(this.t0?this.now()-this.t0:null)},this.now());
+     RunLine.draw();}
     Object.keys(this.nodes).forEach(k=>this.done(k));
     lanes.forEach(n=>this.paint(n));
     this.clock(data.createdAt,data.endedAt);
@@ -618,8 +690,9 @@ export const Stage = {
     const opened=this._att!=null||this._built.size>0;
     const att=attemptsLabel(opened,this._built.size,data.attempts);
     if(this.proc){this.proc.classList.add('done','r-'+outcome);   // the header's mark takes the verdict's colour
-      this.proc.querySelector('.proc-title').textContent=data.pass?'Mesh ready':cancelled?'Run cancelled':'Run ended';
-      this.proc.querySelector('#proc-sub').textContent=concerns?'delivered with concerns':data.pass?'completed':cancelled?'cancelled by you':'failed';
+      // ONE STATEMENT OF THE ENDING: the title says it; the live line under it gives the time
+      this.proc.querySelector('.proc-title').textContent=concerns?'Mesh ready, with concerns':data.pass?'Mesh ready':cancelled?'Run cancelled':'Run failed';
+      this.proc.querySelector('#proc-sub').textContent='';
       const cb=this.proc.querySelector('#proc-cancel');if(cb)cb.hidden=true;}
     // verdict row in the timeline. A cancelled run has no verdict: nobody judged a mesh.
     if(this.proc){const n=this.node('result');const v=document.createElement('div');v.className='tl-verd';
@@ -635,7 +708,10 @@ export const Stage = {
     // verified result reaches the user through the identity they have been talking to.
     // The text is rendered by application code from durable facts; nothing here reworks
     // it, and no second persona announces it.
-    if(data.text)this.chat('assistant',data.text);
+    // A message of several lines is the backend's structured account (final_result.render_message):
+    // drawn as a summary with its detail folded away. A one-line ending stays a plain chat line.
+    if(data.text&&String(data.text).includes('\n'))this.outcome(data.text,{concerns});
+    else if(data.text)this.chat('assistant',data.text);
 
     const anchor=document.createElement('div');this.col().appendChild(anchor);
     // The stage does not know what a viewer is. It states what happened and where the result
