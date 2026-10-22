@@ -95,7 +95,9 @@ def next_lever(facts: Mapping, levers: list[dict], plan: Mapping) -> dict | None
                 "words": (f"{facts['cells']:,} elements, over the level's {facts['ceiling']:,}, so the next pass "
                           f"coarsens the base size by {1 / factor:.3g} times; every rule is kept.")}
     if facts["short"]:
-        if "LAD-fea-3" in pulled:
+        if "LAD-fea-3" in pulled or plan.get("best_possible"):
+            # a best-possible plan is short where it says, by choice: tightening those zones only
+            # puts it over the largest level again (PLAN-fea-8)
             return None
         zones = sorted(facts["short"])
         return {"lever": "LAD-fea-3", "zones": zones, "inputs": {"short": zones},
