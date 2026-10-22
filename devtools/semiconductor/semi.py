@@ -39,6 +39,7 @@ import time
 from pathlib import Path
 
 import cht
+import convergence as V
 import parts as P
 
 from meshpipeline.engines.cfmesh import conjugate as C
@@ -124,7 +125,7 @@ def estimate_cells(part: P.Part, background_m: float, levels: int,
 VOLUME_TOL_MARGIN = 1.5
 
 
-def volume_tolerance(cells_across: int) -> tuple[float, str]:
+def volume_tolerance(cells_across: int, override: float | None = None) -> tuple[float, str]:
     """(tolerance, why) for the fluid-volume gate at this resolution.
 
     Derived from engines/staircase_error, which owns what a resolution costs, so the gate and the
@@ -134,6 +135,11 @@ def volume_tolerance(cells_across: int) -> tuple[float, str]:
     asks for nothing is loosened.
     """
     expected = single_passage_error_pct(float(cells_across)) / 100.0
+    if override is not None:
+        return override, (
+            f"{override:.0%}, named on the command line. The measurements put the staircase at "
+            f"{expected:.2%} for {cells_across} cells across, so this is a deliberate choice and "
+            "not the derived one")
     derived = VOLUME_TOL_MARGIN * expected
     if derived <= C.DEFAULT_VOLUME_TOL:
         return C.DEFAULT_VOLUME_TOL, (
@@ -200,7 +206,8 @@ def plan(part: P.Part, cells_across: int, levels: int, lid_mm: float,
 
 
 def describe(part: P.Part, cells_across: int, levels: int, lo, hi, background: float,
-             open_: tuple, ports: C.PortPlan | None, cells: float, nbytes: float) -> None:
+             open_: tuple, ports: C.PortPlan | None, cells: float, nbytes: float,
+             override: float | None = None) -> None:
     iface = C.interface_cell_m(background, levels)
     print(f"part          {part.name}")
     if part.note:
@@ -215,7 +222,7 @@ def describe(part: P.Part, cells_across: int, levels: int, lo, hi, background: f
     print(f"              expect {ev['expected_volume_error_pct']}% of the coolant volume lost to "
           f"staircasing on a part with many passages, {ev['worst_measured_volume_error_pct']}% on "
           f"one with a single passage ({ev['note']})")
-    tol, why = volume_tolerance(cells_across)
+    tol, why = volume_tolerance(cells_across, override)
     print(f"volume gate   {why}")
     print(f"estimate      {cells / 1e6:.2f} M cells, {_gb(nbytes)} at the mesher's peak "
           f"({_gb(cells * BYTES_PER_CELL)} once written); this machine has {_gb(memory_bytes())}")
@@ -275,7 +282,8 @@ def cmd_ports(a) -> int:
     part = pick(a.cad, a.part)
     try:
         describe(part, a.across, a.levels, *plan(part, a.across, a.levels, a.lid,
-                                                 a.inlet, a.outlet, a.no_ports))
+                                                 a.inlet, a.outlet, a.no_ports),
+                 override=a.volume_tol)
     except C.ConjugateError as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         return 1
@@ -297,7 +305,8 @@ def cmd_mesh(a) -> int:
     except C.ConjugateError as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         return 1
-    describe(part, a.across, a.levels, lo, hi, background, open_, ports, cells, nbytes)
+    describe(part, a.across, a.levels, lo, hi, background, open_, ports, cells, nbytes,
+             override=a.volume_tol)
     try:
         affordable(nbytes, a.force)
     except TooBig as exc:
@@ -331,7 +340,7 @@ def cmd_mesh(a) -> int:
         rep = C.build(ws, background_cell_m=background, levels=a.levels,
                       expect_fluid_volume_m3=part.fluid_volume_m3,
                       expect_fluid_pieces=part.passages,
-                      volume_tol=volume_tolerance(a.across)[0],
+                      volume_tol=volume_tolerance(a.across, a.volume_tol)[0],
                       ports=ports, narrowest_m=part.narrowest_m)
     except C.ConjugateError as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
@@ -349,7 +358,7 @@ def mesh_json(part: P.Part, a, rep: C.ConjugateReport, background: float) -> dic
         "background_cell_um": background * 1e6,
         "interface_cell_um": C.interface_cell_m(background, a.levels) * 1e6,
         "lid_mm": a.lid,
-        "volume_tol": volume_tolerance(a.across)[0],
+        "volume_tol": volume_tolerance(a.across, a.volume_tol)[0],
         "background_complaint": C.background_complaint(
             *C.block_bounds(part.solid_lo, part.solid_hi,
                             {"zmax": a.lid * 1e-3} if a.lid else None), background),
@@ -489,10 +498,13 @@ def solve_workspace(ws: Path, a) -> int:
         took = 0.0
         print("  reusing the solve already in this workspace; nothing was run")
     if not a.reuse:
-        # The previous run's readings go first. They are indistinguishable from this run's once
-        # they are on disk, and the one that wins is whichever stopped at the later iteration.
-        if (gone := cht.clear_post(ws)):
-            print(f"  cleared {gone} reading(s) left by an earlier solve in this workspace")
+        # The previous run's readings AND its state go first. Both are indistinguishable from
+        # this run's once they are on disk: the readings because the latest Time wins, and the
+        # state because each chunk restarts with `startFrom latestTime`.
+        readings, times = cht.clear_previous_run(ws)
+        if readings or times:
+            print(f"  cleared an earlier solve from this workspace: {readings} reading(s) and "
+                  f"{times} time directory(ies)")
         if spec.cores > 1:
             rc, took = _run_foam(ws, cht.decompose_command(), ws / "decomposePar.log", a.timeout)
             stage_seconds["decomposePar"] = round(took, 1)
@@ -660,6 +672,158 @@ def cmd_sweep(a) -> int:
     return 0 if all(r["mesh_rc"] == 0 for r in rows) else 1
 
 
+#: The quantities worth a convergence band, and where each one comes from.
+#:
+#: THE PEAK METAL TEMPERATURE IS THE HEADLINE. A chip-cooling answer is a junction temperature, so
+#: that is the number a band belongs on. The coolant rise is the second, and the port areas are
+#: here because they are the geometric cause: a staircased port carries less coolant, which is how
+#: a resolution error turns into a temperature error.
+#:
+#: The heat carried away is included as a CONTROL. It is set by the boundary condition and not by
+#: the mesh, so it ought to come out mesh-independent; a band on it that is not near zero means
+#: something other than discretisation is moving between the runs.
+QUANTITIES = (
+    ("peak temperature", "K", "t_max"),
+    ("coolant volume", "mm3", "@fluid_volume_mm3"),
+    ("coolant rise", "K", "_coolant_dt"),
+    ("inlet area", "m2", "inlet_area_m2"),
+    ("outlet area", "m2", "outlet_area_m2"),
+    ("heat to coolant", "W", "q_coolant_W"),
+)
+
+
+def _quantity(solve, key, mesh=None):
+    # A leading @ means the MESH report rather than the solve report. The coolant's own volume is
+    # studied because it is the geometry every other answer rests on, and because how it behaves
+    # across resolutions turned out not to be what a smooth staircase curve implies.
+    if key.startswith("@"):
+        return (mesh or {}).get(key[1:])
+    if key == "_coolant_dt":
+        a, b = solve.get("bulk_t_in"), solve.get("bulk_t_out")
+        return (b - a) if (a is not None and b is not None) else None
+    return solve.get(key)
+
+
+def _cell_size_m(mesh):
+    """The fluid region's representative cell size, from what the mesh came out at.
+
+    The FLUID's, because every quantity studied here is a fluid quantity; taking it over the whole
+    block would average in metal cells of a different size and the refinement ratios would be a
+    mixture of two sequences.
+    """
+    cells = mesh.get("fluid_cells") or 0
+    volume_m3 = (mesh.get("fluid_volume_mm3") or 0.0) * 1e-9
+    if cells <= 0 or volume_m3 <= 0:
+        return 0.0
+    return (volume_m3 / cells) ** (1.0 / 3.0)
+
+
+def _grids_for(runs, key):
+    """One Grid per run that actually has this quantity."""
+    out = []
+    for across, mesh, solve in runs:
+        value = _quantity(solve, key, mesh)
+        h = _cell_size_m(mesh)
+        if value is None or h <= 0:
+            continue
+        out.append(V.Grid(label=str(across) + " across", cells=mesh.get("fluid_cells") or 0,
+                          h=h, value=float(value), converged=bool(solve.get("converged"))))
+    return out
+
+
+def _runs_for(part):
+    """Every (cells-across, mesh report, solve report) this part has on disk, coarse to fine."""
+    found = []
+    for d in sorted(RUNS.glob(part.name + "-*across")):
+        mp, sp = d / "mesh-report.json", d / "solve-report.json"
+        if not (mp.is_file() and sp.is_file()):
+            continue
+        mesh = json.loads(mp.read_text())
+        solve = json.loads(sp.read_text())
+        if mesh.get("part") != part.name or not mesh.get("fluid_cells"):
+            continue
+        found.append((int(mesh["cells_across_asked"]), mesh, solve))
+    return sorted(found, key=lambda t: t[0])
+
+
+def cmd_converge(a) -> int:
+    """What the finest mesh's answer is worth, from the coarser ones.
+
+    Reads runs that already exist rather than making them, so it costs nothing and can be re-run
+    after a reader is fixed. `sweep` is what produces the runs.
+    """
+    part = pick(a.cad, a.part)
+    runs = _runs_for(part)
+    print("part          " + part.name)
+    if not runs:
+        print("no solved runs under " + str(RUNS) + "/" + part.name + "-*across. Make some with:",
+              file=sys.stderr)
+        print("  devtools/semiconductor/run.sh sweep " + part.name + " --across-list 2 4 8",
+              file=sys.stderr)
+        return 2
+    print("runs          " + ", ".join(str(n) + " across" for n, _m, _s in runs))
+    header = f"{'resolution':<14}{'fluid cells':>13}{'h um':>9}{'converged':>11}   "
+    print(header + "".join(f"{label:>18}" for label, _u, _k in QUANTITIES))
+    for across, mesh, solve in runs:
+        h = _cell_size_m(mesh) * 1e6
+        row = ""
+        for _label, _u, k in QUANTITIES:
+            v = _quantity(solve, k, mesh)
+            row += f"{('n/a' if v is None else format(v, '.6g')):>18}"
+        tag = str(across) + " across"
+        print(f"  {tag:<12}{mesh.get('fluid_cells') or 0:>13,}{h:>9.2f}"
+              f"{('yes' if solve.get('converged') else 'NO'):>11}   {row}")
+
+    print(chr(10) + "grid convergence, Richardson plus GCI on the three finest")
+    results = {}
+    said = 0
+    for label, unit, key in QUANTITIES:
+        result = V.analyse(label, _grids_for(runs, key))
+        results[key] = result
+        print(chr(10) + "  " + label + " [" + unit + "]")
+        for g in result.grids:
+            print(f"    {g.label:<12} h {g.h * 1e6:>8.2f} um   {g.value:>16.6g}")
+        if result.problems:
+            for prob in result.problems:
+                print("    CANNOT SAY: " + prob)
+        else:
+            said += 1
+            line = "    behaviour " + result.behaviour
+            if result.order is not None:
+                line += f", observed order {result.order:.3f}"
+            print(line)
+            if result.extrapolated is not None:
+                print(f"    extrapolated to zero cell size   {result.extrapolated:>16.6g}")
+            band = result.band
+            if result.gci is not None and band is not None:
+                print(f"    band on the finest mesh          {result.gci:>15.2%}  "
+                      f"[{band[0]:.6g}, {band[1]:.6g}]")
+            if result.relative_change is not None:
+                print(f"    raw change, two finest           {result.relative_change:>15.2%}"
+                      "  (what gets quoted when this is not done)")
+        for note in result.notes:
+            print("    note: " + note)
+
+    out = RUNS / (part.name + "-convergence.json")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"part": part.name, "runs": [n for n, _m, _s in runs],
+               "safety_factor": V.SAFETY_FACTOR, "quantities": {}}
+    for k, r in results.items():
+        payload["quantities"][k] = {
+            "label": r.quantity, "behaviour": r.behaviour, "order": r.order,
+            "extrapolated": r.extrapolated, "gci": r.gci,
+            "relative_change": r.relative_change,
+            "finest": r.grids[0].value if r.grids else None,
+            "band": list(r.band) if r.band else None,
+            "grids": [{"label": g.label, "cells": g.cells, "h_um": g.h * 1e6, "value": g.value}
+                      for g in r.grids],
+            "notes": r.notes, "problems": r.problems,
+        }
+    out.write_text(json.dumps(payload, indent=2))
+    print(chr(10) + "  written to " + str(out))
+    return 0 if said else 1
+
+
 def cmd_import(a) -> int:
     src = Path(a.source)
     if not src.is_dir():
@@ -706,6 +870,10 @@ def _add_mesh_args(sp) -> None:
     sp.add_argument("--workspace", default=None)
     sp.add_argument("--fresh", action="store_true", help="delete the workspace first")
     sp.add_argument("--force", action="store_true", help="run even if it will not fit in memory")
+    sp.add_argument("--volume-tol", type=float, default=None, metavar="FRACTION",
+                    help="how far the meshed coolant may be from the CAD, as a fraction. The "
+                         "default is derived from the staircase measurements for the resolution "
+                         "asked for; pass this to widen or tighten it deliberately")
     sp.add_argument("--no-ports", action="store_true",
                     help="mesh a part whose coolant is sealed, and skip the port check. The mesh "
                          "is then not solvable and is still worth having as a mesher test")
@@ -770,6 +938,11 @@ def main(argv: list[str] | None = None) -> int:
                     dest="across_list", metavar="N")
     sp.add_argument("--mesh-only", action="store_true", help="skip the solves")
     sp.set_defaults(fn=cmd_sweep)
+
+    sp = sub.add_parser("converge",
+                        help="what the finest mesh's answer is worth, from the coarser ones")
+    sp.add_argument("part")
+    sp.set_defaults(fn=cmd_converge)
 
     sp = sub.add_parser("import", help="bring new CAD in, scaling it to metres")
     sp.add_argument("--from", dest="source", required=True)
