@@ -16,6 +16,7 @@ import { getSurface } from "../api/endpoints.js";
 import { headers } from "../api/client.js";
 import { acceptMesh, flagDispute } from "./dispute.js";
 import { VIEWER_FALLBACK } from "./config.js";
+import { roundNumbers } from "../render/outcome.js";
 import { MOUSE_HINT, bindMouse, isUpAxis, orient, saveUp, savedUp, shield, upSelectHtml, upVector } from "./view_controls.js";
 // a delivered thermal model (an ECXML upload) is read part by part, with slices and its own files
 import { bindThermalResults, sliceColour, thermalDownloads, thermalResultsHtml } from "./thermal_results.js";
@@ -49,6 +50,23 @@ const _SEL=[1.0,0.31,0.0],_SEL_EDGE=[0.62,0.22,0.02];
 const HEAT_HINT='Click a face to see its numbers · Drag still rotates';
 const _SEL_COLS=['#e8613c','#f2c744','#3fa650','#3f7fd9','#b455c8','#38c2c2'];
 
+/* THE REVIEW'S POINTS, one per row. A point arrives as one string - "Important: Cells degrade
+   where ..." or "Reviewer note: Wall layers: 4.71 of 5 ..." - so its lead word becomes a tag and
+   its label leads the row; long decimals are printed as an engineer would (71.0953 -> 71.1). */
+function reviewList(items){
+  const rows=(items||[]).map(x=>String(x||'').trim()).filter(Boolean).map(t=>{
+    const imp=/^important\s*[:-]\s*/i.test(t);
+    const body=t.replace(/^important\s*[:-]\s*/i,'').replace(/^reviewer note:\s*/i,'');
+    return `<li class="oc-row${imp?' important':''}">${imp?'<span class="oc-tag">Important</span>':''}`
+      +`<span class="oc-txt">${esc(roundNumbers(body))}</span></li>`;}).join('');
+  return rows?`<ul class="oc-list v-concern-list">${rows}</ul>`:'';
+}
+/* the reviewer's full reasoning, whole and folded away - it used to be cut at 600 characters */
+function reasonDetails(text){
+  const t=String(text||'').trim();
+  return t?`<details class="oc-more"><summary>Why the reviewer said this</summary><p>${esc(t)}</p></details>`:'';
+}
+
 export async function openViewer(job,anchorEl,opts){
   opts=opts||{};
   if(document.getElementById('viewer-'+job)){document.getElementById('viewer-'+job).scrollIntoView({behavior:'smooth'});return;}
@@ -79,27 +97,28 @@ export async function openViewer(job,anchorEl,opts){
         <div class="v-row"><span class="v-status" id="v-status-${job}">loading…</span></div>
       </div>
       ${opts.unreviewed?`<div class="v-why">
-        <b>Every validity gate passed</b> - the mesh is structurally sound and solvable.
-        The reviewer would not sign it off on quality${(opts.findings||[]).length
-          ? ': <span class="v-axes">'+(opts.findings||[]).map(f=>esc(f)).join(' · ')+'</span>':'.'}
-        ${opts.reasoning?`<div class="v-reason">${esc(String(opts.reasoning).slice(0,600))}</div>`:''}
+        <p class="v-why-h">Sound, but not signed off</p>
+        <p class="v-why-p">The mesh passed every validity check, so it will solve. The reviewer did
+        not sign it off on quality${(opts.findings||[]).length?':':'.'}</p>
+        ${reviewList(opts.findings)}
+        ${reasonDetails(opts.reasoning)}
         <div class="v-why-act">
-          Look at it yourself. If it is good enough for your study, say so - it will be
-          re-reviewed against <i>your</i> bar and delivered.
+          Look at it yourself. If it is good enough for your study, say so: it is checked again
+          against <i>your</i> standard and delivered.
           <button class="v-btn primary" id="v-accept-${job}">This is acceptable →</button>
         </div></div>`:''}
       ${opts.concerns?`<div class="v-why v-concerns">
-        <b>Every validity gate passed</b> - the mesh is structurally sound and solvable, so it is
-        delivered. These points are open; weigh them before you rely on the results:
-        ${(opts.concerns||[]).length
-          ? '<ul class="v-concern-list">'+(opts.concerns||[]).map(c=>`<li>${esc(c)}</li>`).join('')+'</ul>'
-          : ''}
-        ${opts.reasoning?`<div class="v-reason">${esc(String(opts.reasoning).slice(0,600))}</div>`:''}
+        <p class="v-why-h">Points to weigh</p>
+        <p class="v-why-p">The mesh passed every validity check, so it is sound, will solve and is
+        yours. Look at these before you rely on the results:</p>
+        ${reviewList(opts.concerns)}
+        ${reasonDetails(opts.reasoning)}
         </div>`:''}
       ${(opts.notes||[]).length?`<div class="v-why v-notes">
-        <b>Reviewer notes</b> - an AI reviewer looked at the mesh. Its notes are for you to weigh;
-        they do not decide the result:
-        <ul class="v-concern-list">${(opts.notes||[]).map(n=>`<li>${esc(n)}</li>`).join('')}</ul>
+        <p class="v-why-h">Reviewer notes</p>
+        <p class="v-why-p">An AI reviewer looked at the mesh. Its notes are for you to weigh; they
+        do not decide the result.</p>
+        ${reviewList(opts.notes)}
         </div>`:''}
       <div class="v-sec v-dl">${_dlHtml}</div>
       <div class="v-thermal" id="v-thermal-${job}"></div>

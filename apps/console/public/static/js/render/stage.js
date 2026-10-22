@@ -27,6 +27,8 @@ import { bindThermalPanel, thermalPanelHtml } from "./thermal_form.js";
 import { bindFeaPanel, feaPanelHtml, followMeasure } from "./fea_form.js";
 // the run card's live line: the step running now, in plain words
 import { createRunLine } from "./run_progress.js";
+// the closing message of a finished run, as a summary rather than a wall of lines
+import { outcomeHtml } from "./outcome.js";
 const RunLine = createRunLine();
 
 /* The lightbox is its own DOM region (#lb) but too small to be its own module. */
@@ -88,6 +90,10 @@ export const Stage = {
   chat(role,text,who){this.clearEmpty();const g=document.createElement('div');g.className='im '+(role==='user'?'user':'assistant');
     if(role==='user')g.innerHTML=`<div class="who">${esc(who||'You')}</div><div class="bub">${mdBlock(text)}</div>`;
     else g.innerHTML=`<div class="who">${esc(who||'Hexera')}</div><div class="txt">${mdBlock(prettyText(displayText(text)))}</div>`;
+    this.col().appendChild(g);this.scrollBottom();},
+  // THE CLOSING ACCOUNT of a finished run, in the same voice as every other turn (render/outcome.js)
+  outcome(text,opts){this.clearEmpty();const g=document.createElement('div');g.className='im assistant';
+    g.innerHTML=`<div class="who">Hexera</div><div class="txt">${outcomeHtml(displayText(text),opts)}</div>`;
     this.col().appendChild(g);this.scrollBottom();},
   // THE FINALIZED BRIEF, as the application settled it - not the model's prose
   // re-read here. Rendered once and then updated in place, because a later turn
@@ -699,7 +705,10 @@ export const Stage = {
     // verified result reaches the user through the identity they have been talking to.
     // The text is rendered by application code from durable facts; nothing here reworks
     // it, and no second persona announces it.
-    if(data.text)this.chat('assistant',data.text);
+    // A message of several lines is the backend's structured account (final_result.render_message):
+    // drawn as a summary with its detail folded away. A one-line ending stays a plain chat line.
+    if(data.text&&String(data.text).includes('\n'))this.outcome(data.text,{concerns});
+    else if(data.text)this.chat('assistant',data.text);
 
     const anchor=document.createElement('div');this.col().appendChild(anchor);
     // The stage does not know what a viewer is. It states what happened and where the result
