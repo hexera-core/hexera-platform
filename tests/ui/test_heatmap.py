@@ -15,7 +15,7 @@ JOB = "heat-job"
 # colour - viewer.js's STOPS[0], _EDGE_HEAT and _EDGE
 CALM = [92, 120, 152]
 HEAT_EDGE = [0.24, 0.23, 0.22]
-PLAIN_EDGE = [0.25, 0.26, 0.28]      # the dark hairline on the steel-grey parts
+PLAIN_EDGE = [0.27, 0.25, 0.22]
 # the flat grey "Only bad cells" rests every face below 80% of the limit in - viewer.js's NEUTRAL
 NEUTRAL = [84, 87, 92]
 

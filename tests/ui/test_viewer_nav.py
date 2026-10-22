@@ -154,3 +154,23 @@ def test_two_fingers_pinch_to_zoom(live):
     }})()""")
     # the fingers moved from 40 px apart to 160: the part is shown four times larger
     assert out["after"] == pytest.approx(out["before"] / 4, rel=0.05), out
+
+
+def test_the_mesh_result_viewer_keeps_its_own_look_and_controls(live, tmp_path):
+    # The navigation above is the intake geometry renderer's only. The viewer of a produced mesh
+    # stays exactly as it was: no cube, its own palette and hairlines, the selected part orange,
+    # vtk's own camera style (left-drag turns, right-drag pans) and every cell line while moving.
+    from test_heatmap import PLAIN_EDGE, _payload
+    from test_heatmap import _open as open_mesh
+
+    job = "mesh-unchanged"
+    open_mesh(live, _payload(tmp_path), job)
+    out = live.evaluate(f"""(() => {{
+      const root = document.getElementById('viewer-{job}');
+      return {{nav: root.querySelectorAll('.nav-ui,.nav-cube').length,
+               edges: window._vdbg['{job}:heat'].edges()}}; }})()""")
+    assert out["nav"] == 0, "the mesh viewer grew the intake stage's controls"
+    assert out["edges"]["on"] is True and out["edges"]["color"] == pytest.approx(PLAIN_EDGE), out
+    src = live.evaluate("fetch('/static/js/viewer/viewer.js').then((r) => r.text())")
+    assert "nav.js" not in src and "attachNav" not in src, "the mesh viewer imports the stage navigation"
+    assert "const _PATCH_COLS=[[0.80,0.78,0.72]" in src and "const _SEL=[1.0,0.31,0.0]" in src
