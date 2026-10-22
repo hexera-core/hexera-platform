@@ -310,7 +310,7 @@ function initViewer(job,surf,uiCfg){
   const GRID_PX=uiCfg.grid_px, FINE_FILL=uiCfg.fine_fill,
         FRAME_FRAC=uiCfg.frame_frac, SPAN_F=uiCfg.flag_span_factor,
         MAX_FLAGS=uiCfg.max_flags;
-  // WHILE THE CAMERA MOVES the mesh is drawn at a lighter resolution, full again when it stops
+  // WHILE THE CAMERA MOVES a high-density screen draws one pixel per CSS pixel, full again when it stops
   let _lod=1;
   function setRenderScale(){
     const r=host.getBoundingClientRect(),k=_DPR*_lod;
@@ -828,7 +828,7 @@ function initViewer(job,surf,uiCfg){
       _clamping=true;try{ren.resetCamera();}finally{_clamping=false;}clampCam();},
     afterMove:clampCam,surfaces:()=>entries.map(en=>en.actor),
     fitButton:document.getElementById('v-fitbtn-'+job),shadow:!thermal,
-    onMotion:moving=>{_lod=moving?0.6:1;setRenderScale();
+    onMotion:moving=>{const l=moving?Math.min(1,1/_DPR):1;if(l!==_lod){_lod=l;setRenderScale();}
       if(_bigMesh)entries.forEach(en=>en.actor.getProperty().setEdgeVisibility(!moving));}});
   nav.setHome();
 

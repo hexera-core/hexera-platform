@@ -329,7 +329,7 @@ function initScene(sessionId, box, surf, p) {
   const ren = grw.getRenderer(), rw = grw.getRenderWindow();
   const apiRW = grw.getApiSpecificRenderWindow ? grw.getApiSpecificRenderWindow() : grw.getOpenGLRenderWindow();
   const DPR = Math.min(window.devicePixelRatio || 1, 2);
-  // WHILE THE CAMERA MOVES the picture is drawn at a lighter resolution, full again when it stops
+  // WHILE THE CAMERA MOVES a high-density screen draws one pixel per CSS pixel, full again when it stops
   let lod = 1;
   function setRenderScale() { const r = host.getBoundingClientRect(), k = DPR * lod;
     apiRW.setSize(Math.max(2, Math.round(r.width * k)), Math.max(2, Math.round(r.height * k))); }
@@ -439,7 +439,7 @@ function initScene(sessionId, box, surf, p) {
   const nav = attachNav({ host, grw, ren, rw, cam, upAxis: () => upAxis, frame: fit, home: iso,
     surfaces: () => skins.map((sk) => sk.actor).concat(edgeActor ? [edgeActor] : []), fitButton: fitBtn, shadow: true,
     onMotion: (moving) => {
-      lod = moving ? 0.6 : 1; setRenderScale();
+      const l = moving ? Math.min(1, 1 / DPR) : 1; if (l !== lod) { lod = l; setRenderScale(); }
       if (edgeActor && bigSkin) edgeActor.setVisibility(!moving);
     } });
   nav.setHome();
