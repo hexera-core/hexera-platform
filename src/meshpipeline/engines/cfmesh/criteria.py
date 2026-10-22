@@ -44,6 +44,35 @@ CRITERIA_ROWS: tuple[Criterion, ...] = (
         _FATAL_TOPOLOGY,
         _MAX_NON_ORTHO,
         Criterion(
+            # THE MEASUREMENT WAS ALREADY TAKEN AND NOTHING READ IT. `foam_exec.check_mesh` has
+            # parsed checkMesh's "Number of regions: N" into `regions` all along, but no criterion
+            # and no axis cited the key, so it never reached a report card and nobody saw it.
+            #
+            # WHY IT MATTERS. checkMesh prints that count with a leading asterisk - its own warning
+            # marker - and then still says "Mesh OK", because disconnection is not one of its fatal
+            # checks. So a mesh can pass every bar above and be UNSOLVABLE: an island of cells has
+            # no face path to the pressure reference cell, which leaves the pressure matrix
+            # singular, and the run dies inside the preconditioner rather than anywhere that names
+            # the cause. Measured on a microchannel case: a fluid domain came back as 15 pieces,
+            # one body of 5,386 cells plus 14 islands of 24 to 32, after passing kernel validity,
+            # volume, non-orthogonality and skewness. The cells were simply too coarse to hold a
+            # 119 um channel together.
+            #
+            # ADVISORY, NOT GATING, and deliberately so. More than one region is a defect for
+            # single-region flow and entirely correct for a conjugate case, where solid and fluid
+            # are two regions by design. Which one applies is the request's business, so this puts
+            # the number in front of the reviewer rather than guessing on their behalf.
+            key="regions", label="Mesh is one connected body", op="==", threshold=1,
+            gating=False,
+            rationale=(
+                "checkMesh counts how many disconnected pieces the mesh is in. One is expected for "
+                "a single flow domain; more means parts of it touch nothing, usually because the "
+                "cells are too coarse to hold a narrow passage together. checkMesh still reports "
+                "Mesh OK in that case, so this is the only place the count is stated. A conjugate "
+                "case is legitimately more than one, which is why this is advisory."),
+            evidence_url=_CFMESH_HOME,
+        ),
+        Criterion(
             # THE SAME ROW SNAPPY DECLARES (engines/snappy/criteria.py), on the same manifest key.
             # cfMesh prints no layer report, so finalize COUNTS the layers on the mesh
             # (engines/layer_census.py) against the layers the request asked for; without this row
