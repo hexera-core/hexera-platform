@@ -11,6 +11,7 @@
    "layer_coverage_pct",
    "max_non_ortho",
    "rc",
+   "regions",
    "timed_out"
   ],
   "deliverable": [
