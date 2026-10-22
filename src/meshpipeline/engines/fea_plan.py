@@ -42,6 +42,11 @@ from meshpipeline.engines.fea_size_field import Histogram, elements
 
 VERSION = 2
 PLAN_FILE = "fea_plan.json"
+#: THE STAGED SOLID the FEA path reads, first found (PLAN-fea-15): gmsh's own B-rep file, written
+#: beside the STEP when the part is staged - lossless, where gmsh's STEP writer and reader together
+#: lose faces on some parts (fea0080 could not be read back; fea0100 left a face with no surface
+#: mesh) - else the STEP.
+STAGED_SOLIDS = ("geometry.brep", "geometry.step")
 
 #: PLAN-fea-8: the most elements one FEA mesh is built with (Areen, 21 Oct).
 ELEMENT_LIMIT = 8_000_000

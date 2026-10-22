@@ -213,3 +213,33 @@ def test_the_walls_are_a_note_never_a_gate():
     assert gate({"plan": True, "through_wall_min": 2.4, "rules": {"walls_checked": True}})
     assert gate({"plan": True, "through_wall_min": 1.2, "rules": {"walls_checked": True}})
     assert gate({"plan": True, "through_wall_min": None, "rules": {}})
+
+
+# ------------------------------------------------------------- LAD-fea-6: no identical retry ----
+def test_the_surfaces_a_failed_fill_named_are_meshed_the_other_way_next():
+    from meshpipeline.engines.gmsh.fea_adapter import BAD_SURFACES, surfaces_named
+
+    assert surfaces_named("Invalid boundary mesh (overlapping facets) on surface 8 surface 8") == [8]
+    log = f"Warning : No elements in surface 9\n{BAD_SURFACES} 8,9\nTraceback (most recent call last):"
+    failed = L.pass_facts(1, 1, {}, PLAN, log=log)
+    assert not failed["built"] and failed["bad_surfaces"] == [8, 9]
+    lever = L.next_lever(failed, [], PLAN)
+    assert lever["lever"] == "LAD-fea-2" and lever["surfaces"] == [8, 9] and "MeshAdapt" in lever["words"]
+    assert L.mesh_settings([lever])["remesh_surfaces"] == [8, 9]
+    # the same surfaces again: nothing new to change, so no identical pass
+    assert L.next_lever(L.pass_facts(2, 1, {}, PLAN, log=log), [lever], PLAN) is None
+    # a new surface after LAD-fea-2: LAD-fea-6 on its own
+    again = L.pass_facts(2, 1, {}, PLAN, log=f"{BAD_SURFACES} 9,12")
+    six = L.next_lever(again, [lever], PLAN)
+    assert six["lever"] == "LAD-fea-6" and six["surfaces"] == [12]
+    assert L.mesh_settings([lever, six])["remesh_surfaces"] == [8, 9, 12]
+
+
+def test_an_invalid_element_s_surfaces_ride_with_the_gentler_pass():
+    bad = L.pass_facts(1, 0, _q(min_sicn=0.0, fatal=["degenerate elements (SICN <= 0)"], fea_bad_surfaces=[4]), PLAN)
+    lever = L.next_lever(bad, [], PLAN)
+    assert lever["lever"] == "LAD-fea-1" and lever["surfaces"] == [4]
+    assert L.mesh_settings([lever]) == {"algorithm3d": "delaunay", "optimise_passes": L.OPTIMISE_PASSES,
+                                       "remesh_surfaces": [4]}
+    # a valid mesh names no bad surface
+    assert L.pass_facts(1, 0, _q(fea_bad_surfaces=[4]), PLAN)["bad_surfaces"] == []

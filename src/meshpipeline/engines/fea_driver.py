@@ -49,7 +49,7 @@ GUARD_GATE = "fea_guard"
 #: stops at cad/fea_measure.MAX_RAY_TRIANGLES for speed; the plan cannot hold an unmeasured wall).
 MAX_RAY_TRIANGLES = 5_000_000
 #: What the remote mesher receives besides the plan: the solid and the facts the deck reads.
-PAYLOAD = ("geometry.step", "cad_face_names.json", P.PLAN_FILE, "gmsh_spec.json")
+PAYLOAD = (*P.STAGED_SOLIDS, "cad_face_names.json", P.PLAN_FILE, "gmsh_spec.json")
 #: Where each pass's deliverables are kept until the best one is chosen.
 PASS_FOLDER = "_fea_pass_{n}"  # noqa: S105 - a folder name, not a secret
 #: every file a pass writes that the delivery reads: the solver files ride with their mesh, so the
@@ -62,6 +62,12 @@ STOP_ELEMENTS = 1.5 * P.ELEMENT_LIMIT
 # #
 # measure and plan (in the worker, pure but for the reading of the staged solid)
 # #
+
+def staged_solid(ws: Path) -> Path | None:
+    """PLAN-fea-15: the staged solid the FEA path reads - gmsh's own B-rep file when the staging
+    wrote one, else the STEP; None when neither is there."""
+    return next((ws / n for n in P.STAGED_SOLIDS if (ws / n).exists()), None)
+
 
 def _metre_box(step: Path) -> tuple[list[float], float]:
     """The staged solid's box in metres, as gmsh reads it (the reader every gmsh run uses)."""
@@ -90,7 +96,7 @@ def measure_staged(ws: Path) -> tuple[dict, Any, float]:
     from meshpipeline.cad.fea_measure import measure_cad_surface
     from meshpipeline.cad.scout import read_cad
 
-    step = ws / "geometry.step"
+    step = staged_solid(ws) or ws / "geometry.step"
     _box, diag_m = _metre_box(step)
     shape = read_cad(step)
     from OCP.Bnd import Bnd_Box
@@ -109,7 +115,19 @@ def measure_staged(ws: Path) -> tuple[dict, Any, float]:
     # ratio is snapped to one (the two boxes never agree to the last digit)
     ratio = 1000.0 * diag_m / diag_read
     mm_per_unit = 10.0 ** round(math.log10(ratio)) if ratio > 0 else ratio
-    record, surface = measure_cad_surface(shape, mm_per_unit=mm_per_unit, max_ray_triangles=MAX_RAY_TRIANGLES)
+    try:
+        record, surface = measure_cad_surface(shape, mm_per_unit=mm_per_unit, max_ray_triangles=MAX_RAY_TRIANGLES)
+    except Exception as exc:  # noqa: BLE001 - healed and measured again; a second failure is the part's
+        # PLAN-fea-15: A SHAPE THE MEASURE CANNOT READ is healed (OpenCASCADE's ShapeFix: wires,
+        # edges, faces, shells) and measured again, so the part still gets a plan
+        from OCP.ShapeFix import ShapeFix_Shape
+
+        logger.warning("fea driver: the staged solid could not be measured as read (%s) - healing it", exc)
+        fix = ShapeFix_Shape(shape)
+        fix.Perform()
+        record, surface = measure_cad_surface(fix.Shape(), mm_per_unit=mm_per_unit,
+                                              max_ray_triangles=MAX_RAY_TRIANGLES)
+        record.setdefault("notes", []).append(f"the CAD was healed before it was measured ({exc})")
     return record, surface, diag_m
 
 
@@ -216,8 +234,16 @@ def choose_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | No
     said = f"about {needed:,} elements" if plan.get("histogram_complete", True) else f"more than {needed:,} elements"
     floor = min([float(z["size_m"]) for z in zone_list] or [diag_m / P.MIN_DIVISIONS])
     best = plan
+    last: list[float] | None = None
     for _ in range(FLOOR_STEPS):
         floor *= 2.0
+        sizes = [float(z["size_m"]) for z in P.floored(zone_list, floor)]
+        if sizes == last:
+            # every zone the floor reaches is already at its validity minimum: a coarser floor
+            # changes nothing, so the search stops here (fea0221 planned fourteen identical
+            # histograms, 330 s, before its first pass)
+            break
+        last = sizes
         best = make_plan(record, surface, diag_m, levers=levers, limit=limit, zone_floor_m=floor)
         if best["fits"]:
             break
@@ -245,10 +271,11 @@ def _restate(record: dict, plan: dict) -> dict:
 
 #: PLAN-fea-13: THE FILL RATE BY COMPLEXITY - elements per second of one native gmsh pass, at the
 #: slow end of each class, measured on the FEA lab VMs (8 vCPU, the mesh job's 16 GiB, gmsh on one
-#: thread). PROVISIONAL until the 21 Oct re-run measures each class: the simple class's 587 is the
-#: slowest of four measured ~420k sprocket passes, and the complex class sits under the slowest
-#: implied by step 8's three guard trips (430-520k elements not done in 1,500 s: under ~285/s).
-FILL_RATES: dict[str, float] = {"simple": 587.0, "moderate": 400.0, "complex": 250.0}
+#: thread). MEASURED 22 Oct on 12 lab parts of 68k-1.3M elements, after the deck writers matched
+#: every CAD face in one pass (they had sorted the whole mesh once per face: a 446-face sprocket
+#: built at 165 a second, now 1,539): the slowest of each class was simple 1,779, moderate 1,243,
+#: complex 1,539 elements a second. Each rate sits under its class's slowest with margin.
+FILL_RATES: dict[str, float] = {"simple": 1500.0, "moderate": 1100.0, "complex": 1000.0}
 #: the class boundaries (CAD faces, hot spots); any micro detail makes a part complex
 SIMPLE_FACES, SIMPLE_SPOTS = 40, 20
 COMPLEX_FACES, COMPLEX_SPOTS = 200, 100
@@ -403,7 +430,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     from meshpipeline.engines.runtime import get_engine
 
     ws = Path(workspace)
-    if not (ws / "geometry.step").exists():
+    if staged_solid(ws) is None:
         logger.warning("fea driver: no staged solid in %s - job_id=%s", ws, job_id)
         await run.fence("deliver builder outcome")
         outcome = run.outcome(produced_deliverable=False, failure_marker=NO_SOURCE)
@@ -419,6 +446,12 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         outcome = run.outcome(produced_deliverable=False, failure_marker=BUILD_FAILED)
         return False, BUILD_FAILED, outcome
 
+    staged = staged_solid(ws)
+    healed = any("healed" in str(n) for n in record.get("notes") or [])
+    _cite(job_id, [{"stage": "fea_plan", "decided": "staged solid", "value": staged.name if staged else None,
+                    "rule": "PLAN-fea-15", "inputs": {"healed": healed},
+                    "words": (f"The part was read from {staged.name if staged else 'the staged file'}"
+                              + (", healed before it was measured." if healed else "."))}])
     alone = P.one_part(record)
     _cite(job_id, [{"stage": "fea_plan", "decided": "one part", "value": not alone, "rule": "PLAN-fea-9",
                     "inputs": {"bodies": record.get("bodies")},
@@ -495,7 +528,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         q = _read_quality(ws) if result.get("rc") in (0, 4) else {}
         made = bool(q) and (ws / "mesh.inp").exists()
         run.note_native_run(produced_usable_mesh=made and result.get("rc") == 0)
-        passes.append({**L.pass_facts(n, result.get("rc"), q, plan), "native_s": native_s})
+        passes.append({**L.pass_facts(n, result.get("rc"), q, plan, log=str(result.get("log_tail") or "")),
+                       "native_s": native_s})
         if made:
             _keep_pass(ws, n)
         lever = L.next_lever(passes[-1], levers, plan)

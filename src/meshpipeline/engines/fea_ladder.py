@@ -13,9 +13,13 @@ the FIRST trigger that holds pulls its lever, if that lever was not pulled alrea
              (never on a plan coarsened to fit: it is short there by choice)
   LAD-fea-5  the best pass is delivered: a valid mesh first, then every rule met, then the better
              worst element, then the earlier pass.
+  LAD-fea-6  NO IDENTICAL RETRY: the surfaces a failed pass went wrong on (the fill named them, or
+             an invalid element touches them) are meshed the other way (gmsh's MeshAdapt) on the
+             next pass - with LAD-fea-1 or LAD-fea-2, or on its own once those are pulled. A surface
+             the default 2D algorithm leaves empty is meshed again with MeshAdapt in the same pass.
 
 A VALID MESH is the only thing that fails an FEA run (Areen, 21 Oct): no degenerate or inverted
-element. Every other figure - the 0.1 quality floor included - is a note on the delivery.
+element. Every other figure - the quality note floor included (SICN 0.1 straight, 0.01 curved) - is a note.
 """
 from __future__ import annotations
 
@@ -57,11 +61,30 @@ def tightened(levers: list[dict]) -> dict[str, float]:
 
 def mesh_settings(levers: list[dict]) -> dict:
     names = {lv["lever"] for lv in levers}
+    remesh = sorted(_remeshed(levers))
     return {"algorithm3d": "hxt" if "LAD-fea-2" in names else "delaunay",
-            "optimise_passes": OPTIMISE_PASSES if "LAD-fea-1" in names else 1}
+            "optimise_passes": OPTIMISE_PASSES if "LAD-fea-1" in names else 1,
+            **({"remesh_surfaces": remesh} if remesh else {})}
 
 
-def pass_facts(n: int, rc, q: Mapping, plan: Mapping) -> dict:
+def failed_surfaces(q: Mapping, log: str = "") -> list[int]:
+    """The surfaces a pass went wrong on: the invalid elements' (quality.json), else the ones the
+    failed fill named (the adapter's BAD SURFACES line in its output)."""
+    if q.get("fea_bad_surfaces"):
+        return sorted(int(s) for s in q["fea_bad_surfaces"])
+    from meshpipeline.engines.gmsh.fea_adapter import BAD_SURFACES
+
+    for line in reversed((log or "").splitlines()):
+        if line.startswith(BAD_SURFACES):
+            return sorted(int(s) for s in line[len(BAD_SURFACES):].replace(",", " ").split() if s.isdigit())
+    return []
+
+
+def _remeshed(levers: list[dict]) -> set[int]:
+    return {int(s) for lv in levers for s in lv.get("surfaces") or []}
+
+
+def pass_facts(n: int, rc, q: Mapping, plan: Mapping, log: str = "") -> dict:
     """What one pass measured, in the terms the ladder and the delivery read."""
     built = bool(q) and rc in (0, 4)
     rules = ((q.get("fea") or {}).get("rules") or {}) if built else {}
@@ -76,7 +99,8 @@ def pass_facts(n: int, rc, q: Mapping, plan: Mapping) -> dict:
             "over": bool(built and limit and cells > limit),
             "short": list(rules.get("short") or []),
             "through_wall_min": (rules.get("through_wall") or {}).get("min"),
-            "per_quarter_min": (rules.get("hot_spots") or {}).get("min_per_quarter_turn")}
+            "per_quarter_min": (rules.get("hot_spots") or {}).get("min_per_quarter_turn"),
+            "bad_surfaces": [] if valid else failed_surfaces(q if built else {}, log)}
 
 
 def next_lever(facts: Mapping, levers: list[dict], plan: Mapping) -> dict | None:
@@ -84,17 +108,21 @@ def next_lever(facts: Mapping, levers: list[dict], plan: Mapping) -> dict | None
     pulled = {lv["lever"] for lv in levers}
     if len(levers) + 1 >= MAX_PASSES:
         return None
+    # LAD-fea-6: the surfaces this pass went wrong on that no lever has re-meshed yet
+    fresh = sorted(set(facts.get("bad_surfaces") or []) - _remeshed(levers))
+    other = (f" The surface(s) it went wrong on ({_listed(fresh)}) are meshed with gmsh's MeshAdapt "
+             "(LAD-fea-6).") if fresh else ""
     if not facts["built"]:
         if "LAD-fea-2" in pulled:
-            return None
-        return {"lever": "LAD-fea-2", "inputs": {"rc": facts["rc"]},
-                "words": "No mesh came back from the fill, so the next pass uses gmsh's other 3D algorithm (HXT)."}
+            return _other_way(fresh, facts)
+        return {"lever": "LAD-fea-2", "inputs": {"rc": facts["rc"], "surfaces": fresh}, "surfaces": fresh,
+                "words": "No mesh came back from the fill, so the next pass uses gmsh's other 3D algorithm (HXT)." + other}
     if not facts["valid"]:
         if "LAD-fea-1" in pulled:
-            return None
-        return {"lever": "LAD-fea-1", "inputs": {"min_sicn": facts["min_sicn"]},
+            return _other_way(fresh, facts)
+        return {"lever": "LAD-fea-1", "inputs": {"min_sicn": facts["min_sicn"], "surfaces": fresh}, "surfaces": fresh,
                 "words": (f"A degenerate or inverted element (worst {facts['min_sicn']}), so the next pass grows "
-                          f"sizes more gently ({GENTLE_GROWTH}) and optimises {OPTIMISE_PASSES} times.")}
+                          f"sizes more gently ({GENTLE_GROWTH}) and optimises {OPTIMISE_PASSES} times." + other)}
     if facts["over"]:
         if "LAD-fea-4" in pulled:
             return None
@@ -112,6 +140,22 @@ def next_lever(facts: Mapping, levers: list[dict], plan: Mapping) -> dict | None
                 "words": (f"{len(zones)} zone(s) fell short of their rule on the mesh ({', '.join(zones[:6])}), "
                           f"so the next pass makes them {int(round((1 - TIGHTEN) * 100))}% finer.")}
     return None
+
+
+def _listed(tags: list[int]) -> str:
+    return ", ".join(str(s) for s in tags[:8]) + (", ..." if len(tags) > 8 else "")
+
+
+def _other_way(fresh: list[int], facts: Mapping) -> dict | None:
+    """LAD-fea-6 on its own: the lever this failure pulls was pulled already, so the next pass is
+    not the same pass again - the surfaces it went wrong on are meshed the other way. None when
+    there are none left to change (every one was re-meshed already, or none was named)."""
+    if not fresh:
+        return None
+    return {"lever": "LAD-fea-6", "inputs": {"surfaces": fresh, "rc": facts.get("rc"), "min_sicn": facts.get("min_sicn")},
+            "surfaces": fresh,
+            "words": (f"The pass went wrong again, on surface(s) {_listed(fresh)}, so the next pass meshes them "
+                      "with gmsh's MeshAdapt instead of the default.")}
 
 
 def _rank(f: Mapping) -> tuple:
@@ -134,5 +178,5 @@ def best_pass(passes: list[dict]) -> tuple[int | None, str]:
     return ranked[0]["pass"], _DECIDING[i]
 
 
-__all__ = ["AI_LEVERS", "MAX_PASSES", "best_pass", "coarse_factor", "growth", "mesh_settings", "next_lever",
-           "pass_facts", "tightened"]
+__all__ = ["AI_LEVERS", "MAX_PASSES", "best_pass", "coarse_factor", "failed_surfaces", "growth", "mesh_settings",
+           "next_lever", "pass_facts", "tightened"]

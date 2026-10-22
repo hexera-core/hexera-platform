@@ -323,3 +323,75 @@ def test_coarsening_never_goes_past_what_keeps_elements_valid_zone_by_zone():
     assert out["W1"]["kept_valid"] and out["W1"]["short"]
     strict = {z["id"]: z for z in P.floored([wall], 0.01, through=1.5)}
     assert strict["W1"]["size_m"] == pytest.approx(0.0005 / 1.5)
+
+
+# ------------------------------------------------------------------- fix pack, 22 Oct 2026 ----
+def test_an_unfinished_histogram_still_counts_what_it_has_not_resolved(tmp_path, monkeypatch):
+    """fea0221: the octree stopped before any leaf and the estimate read 0 elements, so the time
+    guard fell to its floor. Stopped short, the cubes not yet resolved are counted at their zones' size."""
+    from meshpipeline.engines import fea_size_field as SF
+
+    ws = _stage(fx.plate_with_hole(), tmp_path / "short")
+    record, surface, diag = FD.measure_staged(ws)
+    full = FD.make_plan(record, surface, diag)
+    monkeypatch.setattr(SF, "MAX_CUBES", 20)
+    cut = FD.make_plan(record, surface, diag)
+    assert not cut["histogram_complete"] and cut["estimate"]["elements"] > 0
+    assert full["histogram_complete"]
+
+
+def test_the_coarsening_search_stops_once_every_zone_is_at_its_minimum(tmp_path, monkeypatch):
+    ws = _stage(fx.plate_with_hole(), tmp_path / "minimums")
+    record, surface, diag = FD.measure_staged(ws)
+    monkeypatch.setattr(P, "ELEMENT_LIMIT", 10)
+    calls = []
+    real = FD.make_plan
+    monkeypatch.setattr(FD, "make_plan", lambda *a, **k: calls.append(k.get("zone_floor_m")) or real(*a, **k))
+    plan = FD.choose_plan(record, surface, diag)
+    assert plan["coarsened"]["at_minimums"] and plan["fits"]
+    assert len(calls) < FD.FLOOR_STEPS + 1
+
+
+def test_the_fea_path_reads_gmshs_own_brep_when_the_staging_wrote_one(tmp_path, monkeypatch):
+    """PLAN-fea-15: gmsh's STEP writer and reader together lose faces on some parts (fea0080 could
+    not be read back; fea0100 left a face with no surface mesh); the B-rep beside it is lossless."""
+    from meshpipeline.cad.scout import read_cad
+
+    ws = _stage(fx.plate_with_hole(), tmp_path / "brep")
+    assert FD.staged_solid(ws) == ws / "geometry.step"
+    gmsh.initialize()
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.model.occ.importShapes(str(ws / "geometry.step"))
+        gmsh.model.occ.synchronize()
+        gmsh.write(str(ws / "geometry.brep"))
+    finally:
+        gmsh.finalize()
+    assert FD.staged_solid(ws) == ws / "geometry.brep"
+    assert not read_cad(ws / "geometry.brep").IsNull()
+    record, _surface, diag = FD.measure_staged(ws)
+    by_step = FD.measure_staged(_stage(fx.plate_with_hole(), tmp_path / "step"))
+    assert len(record["faces"]) == len(by_step[0]["faces"]) and diag == pytest.approx(by_step[2], rel=1e-6)
+    _plan(ws)
+    (ws / "geometry.step").unlink()           # the adapter meshes the B-rep, not the STEP
+    assert fea_adapter.mesh(ws) == 0
+    assert "geometry.brep" in FD.PAYLOAD
+
+
+def test_a_shape_the_measure_cannot_read_is_healed_and_measured_again(tmp_path, monkeypatch):
+    from meshpipeline.cad import fea_measure
+
+    ws = _stage(fx.plate_with_hole(), tmp_path / "heal")
+    real = fea_measure.measure_cad_surface
+    seen = []
+
+    def once(shape, **kw):
+        seen.append(shape)
+        if len(seen) == 1:
+            raise RuntimeError("Could not fix wire in surface 3")
+        return real(shape, **kw)
+
+    monkeypatch.setattr(fea_measure, "measure_cad_surface", once)
+    record, _surface, _diag = FD.measure_staged(ws)
+    assert len(seen) == 2 and record["faces"]
+    assert any("healed" in n for n in record["notes"])

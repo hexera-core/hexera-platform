@@ -226,6 +226,16 @@ def read_cad(path):
 def _read_shape(path: Path):
     from OCP.IFSelect import IFSelect_RetDone
 
+    if path.suffix.lower() == ".brep":
+        # gmsh's own B-rep file (the staging writes it beside geometry.step)
+        from OCP.BRep import BRep_Builder
+        from OCP.BRepTools import BRepTools
+        from OCP.TopoDS import TopoDS_Shape
+
+        shape = TopoDS_Shape()
+        if not BRepTools.Read_s(shape, str(path), BRep_Builder()):
+            raise UnreadableCad(f"the file could not be read as CAD ({path.name})")
+        return shape
     if path.suffix.lower() in (".igs", ".iges"):
         from OCP.IGESControl import IGESControl_Reader as Reader
     else:

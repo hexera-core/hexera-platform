@@ -18,8 +18,11 @@ and CalculiX order the deck writes):
 * DIHEDRAL ANGLES: the angles between each pair of faces (70.5 degrees for a perfect one).
 
 THE LIMITS (Hexera's internal gate: the strictest of the version-1 solvers, design section 9;
-sources in Documents/HEXERA_FEA_RESEARCH.md section 3):
-  scaled Jacobian at least 0.2 (Cubit/Verdict's acceptable range for tetrahedra);
+sources in Documents/HEXERA_FEA_RESEARCH.md section 3). Every one is a NOTE: only an inverted
+element (a Jacobian not above zero) fails a mesh.
+  scaled Jacobian at least 0.2 for straight tetrahedra (Cubit/Verdict's acceptable range), and only
+  under 0.01 for curved (quadratic) ones (QUADRATIC_SCALED_JACOBIAN: a curved element's figure
+  reads its curving, and none of the version-1 solvers checks it - they check validity);
   Jacobian ratio at most 30 (Ansys MAPDL's corner-node warning);
   aspect ratio at most 20 (Ansys MAPDL's warning; Abaqus warns on its own measure at 10);
   dihedral angles between 5 and 170 degrees.
@@ -43,6 +46,26 @@ LIMITS: tuple[tuple[str, str, str, float, str], ...] = (
     ("fea_max_dihedral_deg", "Largest angle between two faces of an element (degrees)", "<=", 170.0,
      "Hexera's internal gate: the dihedral range 5 to 170 degrees"),
 )
+
+#: THE SHAPE-SCORE NOTE FOR CURVED (QUADRATIC) TETRAHEDRA (Areen, 22 Oct): the scaled Jacobian
+#: limit, and the SICN note floor, for 10-node elements. Their figure is the straight element's
+#: times the curving's Jacobian loss, so a valid curved element that follows a round reads well
+#: under 0.2 (all-260 run: 122 of 124 notes were this row alone); validity (above 0) stays the only
+#: blocker.
+QUADRATIC_SCALED_JACOBIAN = 0.01
+
+
+def limits_for(order: int) -> tuple[tuple[str, str, str, float, str], ...]:
+    """LIMITS for elements of this order: a quadratic mesh's scaled Jacobian is noted only under
+    QUADRATIC_SCALED_JACOBIAN."""
+    if int(order or 1) < 2:
+        return LIMITS
+    return tuple((k, lab, op, QUADRATIC_SCALED_JACOBIAN,
+                  "curved (quadratic) tetrahedra: a note only under 0.01 - the figure reads the curving; "
+                  "validity (above 0) is what the solvers check")
+                 if k == "fea_min_scaled_jacobian" else (k, lab, op, lim, src)
+                 for k, lab, op, lim, src in LIMITS)
+
 
 #: the reference tetrahedron's points the Jacobian is sampled at: the 4 corners, the 6 edge
 #: midpoints (in the deck's order) and the centroid, as (xi, eta, zeta)
@@ -180,6 +203,8 @@ def measure(mesh, set_aside=None) -> dict:
     worst = {"min_detj": math.inf, "scaled_jacobian": math.inf, "jac_ratio": 0.0, "aspect": 0.0,
              "min_dihedral": 180.0, "max_dihedral": 0.0,
              **{k: (math.inf if lo else 0.0) for k, lo in _EXTRA}}
+    limits = limits_for(2 if els.shape[1] == 10 else 1)
+    sj_limit = next(lim for k, _lab, _op, lim, _src in limits if k == "fea_min_scaled_jacobian")
     inverted = 0
     over = {k: 0 for k, *_ in LIMITS}
     where = {}
@@ -197,7 +222,7 @@ def measure(mesh, set_aside=None) -> dict:
             if (low and v < worst[key]) or (not low and v > worst[key]):
                 worst[key] = v
                 where[key] = [round(float(c), 6) for c in cen[i]]
-        over["fea_min_scaled_jacobian"] += int(np.count_nonzero(m["scaled_jacobian"] < 0.2))
+        over["fea_min_scaled_jacobian"] += int(np.count_nonzero(m["scaled_jacobian"] < sj_limit))
         over["fea_max_jacobian_ratio"] += int(np.count_nonzero(m["jac_ratio"] > 30.0))
         over["fea_max_aspect_ratio"] += int(np.count_nonzero(m["aspect"] > 20.0))
         over["fea_min_dihedral_deg"] += int(np.count_nonzero(m["min_dihedral"] < 5.0))
@@ -226,7 +251,7 @@ def measure(mesh, set_aside=None) -> dict:
             **({"set_aside": aside_report} if aside_report is not None else {}),
             "over_limit": over, "worst_at_m": where,
             "limits": [{"key": k, "label": lab, "op": op, "limit": lim, "source": src,
-                        "measured": figures[k], "elements_over": over[k]} for k, lab, op, lim, src in LIMITS]}
+                        "measured": figures[k], "elements_over": over[k]} for k, lab, op, lim, src in limits]}
 
 
-__all__ = ["LIMITS", "element_measures", "measure"]
+__all__ = ["LIMITS", "QUADRATIC_SCALED_JACOBIAN", "element_measures", "limits_for", "measure"]

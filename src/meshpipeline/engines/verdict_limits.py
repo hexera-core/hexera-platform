@@ -205,9 +205,11 @@ def fea_limits(quality: Mapping) -> list[dict]:
     fea = quality.get("fea") if isinstance(quality.get("fea"), Mapping) else {}
     if not (fea or {}).get("plan"):
         return []
-    from meshpipeline.engines.fea_quality import LIMITS as FEA_LIMITS
+    from meshpipeline.engines.fea_quality import limits_for
+    order = quality.get("element_order")
+    fea_rows = limits_for(int(order) if isinstance(order, (int, float)) and not isinstance(order, bool) else 1)
     rows = [{"key": k, "label": lab, "op": op, "limit": lim, "measured": _plain(quality.get(k)),
-             "source": src} for k, lab, op, lim, src in (*FEA_LIMITS, FEA_RULES_ROW)]
+             "source": src} for k, lab, op, lim, src in (*fea_rows, FEA_RULES_ROW)]
     fea_m: Mapping = fea if isinstance(fea, Mapping) else {}
     coarse = fea_m.get("coarsened") if isinstance(fea_m.get("coarsened"), Mapping) else None
     if coarse:

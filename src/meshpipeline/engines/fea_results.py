@@ -82,7 +82,8 @@ def results(workspace) -> dict | None:
     gating = [
         {"key": "fea_inverted", "label": "Inverted elements (a Jacobian not above zero)", "op": "==",
          "limit": 0, "measured": q.get("fea_inverted")},
-        {"key": "elements_under_floor", "label": "Elements under the quality floor (SICN 0.1)", "op": "==",
+        {"key": "elements_under_floor", "op": "==",
+         "label": f"Elements under the quality note floor (SICN {float(q.get('sicn_floor') or 0.1):g})",
          "limit": 0, "measured": q.get("elements_under_floor")},
         {"key": "through_wall_min", "label": "Elements through the thinnest wall", "op": ">=",
          "limit": 2, "measured": tw},

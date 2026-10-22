@@ -79,6 +79,9 @@ def tessellate_to_stl(geom_path, out_stl, *, context=None, prepared=None) -> Pat
         gmsh.model.occ.synchronize()
         # the metre-normalised B-rep IS the staged geometry - the driver reads this, unscaled
         gmsh.write(str(staged_brep))
+        # and gmsh's own B-rep file beside it: lossless, where the STEP round trip loses faces on
+        # some parts (the FEA path reads this first - engines/fea_plan.STAGED_SOLIDS, PLAN-fea-15)
+        gmsh.write(str(ws / "geometry.brep"))
         # gmsh's STEP writer drops the names a CAD file gives single faces: record them from the
         # upload, by where each face is, for the FEA deck to write beside Face_k
         from meshpipeline.cad.face_names import record_for_staging
