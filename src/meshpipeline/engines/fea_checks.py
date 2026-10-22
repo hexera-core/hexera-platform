@@ -45,6 +45,23 @@ def face_sizes(mesh, tags_by_name: Mapping[str, int]) -> dict[str, float]:
     return out
 
 
+def spot_size(mesh, tag: int | None, at_m, radius_m: float) -> float | None:
+    """Median length of the edges of the face's triangles that lie within `radius_m` of `at_m`
+    (a thin spot's element size); None when no triangle of the face is there."""
+    tri = mesh.faces.get(int(tag)) if tag is not None else None
+    if tri is None or not len(tri):
+        return None
+    index = {int(n): i for i, n in enumerate(np.asarray(mesh.node_ids).tolist())}
+    xyz = np.asarray(mesh.xyz, dtype=float)
+    t = np.vectorize(index.get, otypes=[np.int64])(np.asarray(tri)[:, :3])
+    near = np.linalg.norm(xyz[t].mean(axis=1) - np.asarray(at_m, dtype=float), axis=1) <= radius_m
+    if not near.any():
+        return None
+    t = t[near]
+    e = np.unique(np.sort(np.vstack([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]]), axis=1), axis=0)
+    return float(np.median(np.linalg.norm(xyz[e[:, 1]] - xyz[e[:, 0]], axis=1)))
+
+
 def face_tag(name: str) -> int | None:
     try:
         return int(str(name).rsplit("_", 1)[-1])
@@ -58,12 +75,24 @@ def measure(mesh, plan: Mapping) -> dict:
     base = float(plan.get("base_size_m") or math.inf)
     # every wall is judged (a wall the base size crosses is the easy case, and still the rule);
     # a hot spot or a corner only where its zone binds (finer than the base)
-    zones = [z for z in plan.get("zones") or [] if z["kind"] == "wall" or float(z["size_m"]) < base]
+    zones = [z for z in plan.get("zones") or [] if z["kind"] in ("wall", "wall_spot") or float(z["size_m"]) < base]
     names = sorted({f for z in zones for f in z.get("faces") or []})
     sizes = face_sizes(mesh, {n: t for n in names if (t := face_tag(n)) is not None})
     per_quarter = P.HOT_SPOT_PER_QUARTER
     walls, spots, corners, short = [], [], [], []
     for z in zones:
+        if z["kind"] == "wall_spot":
+            # a thin spot: the element size on its face within its ball
+            h_spot = spot_size(mesh, face_tag(z["faces"][0]), z["at_m"], float(z["radius_m"]))
+            if h_spot is None:
+                continue
+            n = float(z["thickness_m"]) / h_spot
+            ok = n >= P.WALL_ELEMENTS * TOLERANCE
+            walls.append({"zone": z["id"], "face": z["faces"][0], "thickness_mm": round(z["thickness_m"] * 1e3, 4),
+                          "elements": round(n, 2), "needed": P.WALL_ELEMENTS, "ok": ok, "spot": True})
+            if not ok:
+                short.append(z["id"])
+            continue
         got = [sizes[f] for f in z.get("faces") or [] if f in sizes]
         if not got:
             continue
@@ -111,4 +140,4 @@ def measure(mesh, plan: Mapping) -> dict:
     }
 
 
-__all__ = ["TOLERANCE", "face_sizes", "face_tag", "measure"]
+__all__ = ["TOLERANCE", "face_sizes", "face_tag", "measure", "spot_size"]

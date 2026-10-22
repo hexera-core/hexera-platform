@@ -206,15 +206,35 @@ def runnable_elements(ceiling_s: float | None, rate: float | None = None) -> int
     return int(rate * float(ceiling_s) / GUARD_FACTOR)
 
 
+def memory_elements(memory_gib: float | None = None) -> int:
+    """PLAN-fea-16: the most elements the mesher's peak memory, with MEMORY_MARGIN to spare, fits in
+    `memory_gib` - by the measured model peak = MEMORY_BASE_MB + BYTES_PER_ELEMENT x elements."""
+    gib = MESH_JOB_MEMORY_GIB if memory_gib is None else float(memory_gib)
+    room_mb = gib * 1024.0 / MEMORY_MARGIN - MEMORY_BASE_MB
+    return max(0, int(room_mb * 1024.0 * 1024.0 / BYTES_PER_ELEMENT))
+
+
 def element_limit(record: dict, ceiling_s: float | None) -> tuple[int, str]:
     """PLAN-fea-8's limit for this part: ELEMENT_LIMIT, or less when the mesher could not build that
-    many inside its time guard at the part's slow fill rate (PLAN-fea-13); and why."""
+    many inside its time guard at the part's slow fill rate (PLAN-fea-13), or hold them in the mesh
+    job's memory (PLAN-fea-16); and why."""
     rate, cls = fill_rate(record)
     runnable = runnable_elements(ceiling_s, rate)
-    if runnable is not None and runnable < P.ELEMENT_LIMIT:
-        return runnable, (f"what the mesher builds within its time limit ({rate:g} elements a second for a {cls} "
-                          f"part, {GUARD_FACTOR:g} times over, inside {int(ceiling_s or 0)} s)")
-    return P.ELEMENT_LIMIT, "the element limit"
+    memory = memory_elements()
+    limit, why = P.ELEMENT_LIMIT, "the element limit"
+    if runnable is not None and runnable < limit:
+        limit, why = runnable, (f"what the mesher builds within its time limit ({rate:g} elements a second for a "
+                                f"{cls} part, {GUARD_FACTOR:g} times over, inside {int(ceiling_s or 0)} s)")
+    if memory < limit:
+        limit, why = memory, (f"what fits in the mesh job's {MESH_JOB_MEMORY_GIB:g} GiB of memory "
+                              f"({BYTES_PER_ELEMENT:g} bytes an element, with {MEMORY_MARGIN:g} times to spare)")
+    return limit, why
+
+
+def limit_facts() -> dict:
+    """PLAN-fea-16's numbers, for the why record."""
+    return {"memory_gib": MESH_JOB_MEMORY_GIB, "bytes_per_element": BYTES_PER_ELEMENT,
+            "base_mb": MEMORY_BASE_MB, "margin": MEMORY_MARGIN, "memory_elements": memory_elements()}
 
 
 def choose_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | None = None,
@@ -227,9 +247,9 @@ def choose_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | No
     limit, why = element_limit(record, ceiling_s)
     zone_list = P.zones(record, tighten=L.tightened(levers))
     plan = make_plan(record, surface, diag_m, levers=levers, limit=limit)
-    plan["limit"]["why"] = why
+    plan["limit"].update(why=why, memory=limit_facts())
     if plan["fits"]:
-        return plan
+        return _restate(record, plan)
     needed = int(plan["estimate"]["elements"])
     said = f"about {needed:,} elements" if plan.get("histogram_complete", True) else f"more than {needed:,} elements"
     floor = min([float(z["size_m"]) for z in zone_list] or [diag_m / P.MIN_DIVISIONS])
@@ -257,8 +277,10 @@ def choose_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | No
         finer = make_plan(record, surface, diag_m, levers=levers, limit=limit, zone_floor_m=0.75 * floor)
         if finer["fits"]:
             best, floor = finer, 0.75 * floor
-    best["limit"]["why"] = why
-    best["coarsened"] = {"needed": needed, "needed_words": said, "zone_floor_m": floor, "at_minimums": at_minimums}
+    best["limit"].update(why=why, memory=limit_facts())
+    best["coarsened"] = {"needed": needed, "needed_words": said, "zone_floor_m": floor, "at_minimums": at_minimums,
+                         # PLAN-fea-16: even the least valid mesh may not fit in the job's memory - meshed anyway
+                         "over_memory": bool(at_minimums and int(best["estimate"]["elements"]) > memory_elements())}
     return _restate(record, best)
 
 
@@ -279,6 +301,14 @@ FILL_RATES: dict[str, float] = {"simple": 1500.0, "moderate": 1100.0, "complex":
 #: the class boundaries (CAD faces, hot spots); any micro detail makes a part complex
 SIMPLE_FACES, SIMPLE_SPOTS = 40, 20
 COMPLEX_FACES, COMPLEX_SPOTS = 200, 100
+#: PLAN-fea-16: THE MEMORY LIMIT. The mesh job's memory (deploy/gcp MESH_MEMORY: 32 GiB on dev and
+#: prod, the Cloud Run most at 8 vCPU) and the mesher's measured peak, MEMORY_BASE_MB plus
+#: BYTES_PER_ELEMENT for each element (FILLED BELOW from the lab's peak memory against elements),
+#: with MEMORY_MARGIN to spare.
+MESH_JOB_MEMORY_GIB = 32.0
+MEMORY_BASE_MB = 600.0
+BYTES_PER_ELEMENT = 3000.0
+MEMORY_MARGIN = 1.25
 #: the guard is GUARD_FACTOR times the planned time (D3's factor), never over the mesh job's own
 #: limit (deploy/gcp MESH_TIMEOUT_SECONDS, 14,400 s) less JOB_MARGIN_S, nor what the attempt has left
 GUARD_FACTOR = 3.0
@@ -604,6 +634,6 @@ def driver_for(state):
     return drive if applies(state) else None
 
 
-__all__ = ["FILL_RATES", "FLOOR_STEPS", "GUARD_FACTOR", "MESH_JOB_LIMIT_S", "ceiling_for", "choose_plan",
+__all__ = ["BYTES_PER_ELEMENT", "MESH_JOB_MEMORY_GIB", "limit_facts", "memory_elements", "FILL_RATES", "FLOOR_STEPS", "GUARD_FACTOR", "MESH_JOB_LIMIT_S", "ceiling_for", "choose_plan",
            "complexity", "element_limit", "fill_rate", "guard_seconds", "runnable_elements", "BUILD_FAILED", "GUARD_TRIP", "NOT_ONE_PART", "NO_SOURCE", "QUALITY_GATE", "applies", "drive",
            "driver_for", "ladder_facts", "ladder_words", "make_plan", "measure_staged", "planned_work", "write_plan"]

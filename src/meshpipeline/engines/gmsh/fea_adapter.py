@@ -98,6 +98,35 @@ def size_fields(gmsh, plan: dict, surfaces: set[int]) -> int | None:
         size = float(g["size"])
         if size >= base:
             continue
+        if g.get("balls"):
+            # PLAN-fea-3's thin spots: the wall's Threshold off its face, held only inside the spots'
+            # balls (each its size inside, growing at the plan's rate outside) - the larger of the two
+            tags = [t for f in g["faces"] if (t := _tag(f)) in surfaces]
+            if not tags:
+                continue
+            dist = gmsh.model.mesh.field.add("Distance")
+            gmsh.model.mesh.field.setNumbers(dist, "SurfacesList", tags)
+            gmsh.model.mesh.field.setNumber(dist, "Sampling", _sampling(gmsh, tags, size))
+            th = gmsh.model.mesh.field.add("Threshold")
+            reach = float(g["reach"])
+            for key, val in (("InField", dist), ("SizeMin", size), ("SizeMax", base), ("DistMin", reach),
+                             ("DistMax", reach + (base - size) / max(g1, 1e-6))):
+                gmsh.model.mesh.field.setNumber(th, key, float(val))
+            balls = []
+            for x, y, z, r in g["balls"]:
+                ball = gmsh.model.mesh.field.add("Ball")
+                for key, val in (("XCenter", x), ("YCenter", y), ("ZCenter", z), ("Radius", r), ("VIn", size),
+                                 ("VOut", base), ("Thickness", (base - size) / max(g1, 1e-6))):
+                    gmsh.model.mesh.field.setNumber(ball, key, float(val))
+                balls.append(ball)
+            near = balls[0]
+            if len(balls) > 1:
+                near = gmsh.model.mesh.field.add("Min")
+                gmsh.model.mesh.field.setNumbers(near, "FieldsList", balls)
+            both = gmsh.model.mesh.field.add("Max")
+            gmsh.model.mesh.field.setNumbers(both, "FieldsList", [th, near])
+            ids.append(both)
+            continue
         dists = []
         if g["edge"]:
             curves = sorted({c for a, b in (fs for fs in g["edges"] if len(fs) == 2)
@@ -189,6 +218,16 @@ def bad_surfaces(gmsh, tags, qualities) -> list[int]:
                     up = [int(s) for c in up for s in gmsh.model.getAdjacencies(1, c)[0]]
                 out.update(up)
     return sorted(out)
+
+
+def _peak_rss_mb() -> float | None:
+    """This process's peak resident memory (MB), or None where the platform does not say."""
+    try:
+        import resource
+
+        return round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0, 1)
+    except (ImportError, OSError):
+        return None
 
 
 def mesh(workspace) -> int:
@@ -342,6 +381,8 @@ def mesh(workspace) -> int:
                                           "fea_max_dihedral_deg", "fea_inverted") if k in shape},
             "fea_rules_short": len(rules.get("short") or []) if rules else None,
             "fea_bad_surfaces": traced,
+            # PLAN-fea-16: the mesher's peak memory, for the bytes-per-element model
+            "peak_rss_mb": _peak_rss_mb(),
             # THE PLAN'S RULES AS MET (engines/fea_checks.py): the gate reads the through-wall
             # count in place of the flow floor (engines/gmsh/gates.py)
             "fea": {"plan": True, "limit": (plan.get("limit") or {}).get("elements"),

@@ -319,3 +319,9 @@ def stl_triangles(shape, chord: float = 0.02, angle: float = 0.08):
             out.append([[pts[i - 1].X(), pts[i - 1].Y(), pts[i - 1].Z()] for i in ids])
         ex.Next()
     return np.asarray(out, dtype=float)
+
+
+def sliver_block():
+    """A 40 x 20 x 10 mm block with a 16 mm bore whose edge runs within 0.5 mm of one side: a wall
+    3 mm or more everywhere but one 0.5 mm sliver (fea0221's counterbore near its bore, made simple)."""
+    return _cut(_box(0, 0, 0, 40, 20, 10), _cyl(20, 11.5, -1, 8, 12))
