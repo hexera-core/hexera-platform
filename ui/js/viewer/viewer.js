@@ -17,7 +17,8 @@ import { headers } from "../api/client.js";
 import { acceptMesh, flagDispute } from "./dispute.js";
 import { VIEWER_FALLBACK } from "./config.js";
 import { roundNumbers } from "../render/outcome.js";
-import { MOUSE_HINT, bindMouse, isUpAxis, orient, saveUp, savedUp, shield, upSelectHtml, upVector } from "./view_controls.js";
+import { MOUSE_HINT, isUpAxis, orient, saveUp, savedUp, shield, upSelectHtml, upVector } from "./view_controls.js";
+import { SCENE_BG, SELECT_OPACITY, SELECT_TINT, attachNav } from "./nav.js";
 // a delivered thermal model (an ECXML upload) is read part by part, with slices and its own files
 import { bindThermalResults, sliceColour, thermalDownloads, thermalResultsHtml } from "./thermal_results.js";
 // a delivered FEA mesh (a structural solid) is read face by face, with its quality against each
@@ -32,21 +33,24 @@ function loadVtk(){if(window.vtk)return Promise.resolve();
     document.head.appendChild(s);});
   return _vtkP;}
 
-function b64f32(b){const bin=atob(b),n=bin.length,u=new Uint8Array(n);
-  for(let i=0;i<n;i++)u[i]=bin.charCodeAt(i);return new Float32Array(u.buffer);}
-function b64u8(b){const bin=atob(b),n=bin.length,u=new Uint8Array(n);
+/* THE BROWSER'S OWN DECODER when it has one (Uint8Array.fromBase64): a big mesh is tens of
+   megabytes of base64, and decoding it a character at a time was most of the wait before it drew */
+function b64u8(b){if(typeof Uint8Array.fromBase64==='function')return Uint8Array.fromBase64(b);
+  const bin=atob(b),n=bin.length,u=new Uint8Array(n);
   for(let i=0;i<n;i++)u[i]=bin.charCodeAt(i);return u;}
+function b64f32(b){return new Float32Array(b64u8(b).buffer);}
 function b64u32(b){return new Uint32Array(b64u8(b).buffer);}
 
 /* geometry fills: a warm drawing-office grey, each patch a step of tint so the parts read
    apart without shouting; the ORANGE selection is never ambiguous against any of them */
-const _PATCH_COLS=[[0.80,0.78,0.72],[0.64,0.77,0.75],[0.83,0.76,0.60],
-                   [0.72,0.72,0.70],[0.66,0.71,0.73],[0.76,0.70,0.66]];
-const _EDGE=[0.27,0.25,0.22];          /* hairline edges at rest */
+const _PATCH_COLS=[[0.74,0.74,0.75],[0.67,0.70,0.72],[0.76,0.73,0.68],
+                   [0.70,0.70,0.70],[0.66,0.68,0.72],[0.73,0.70,0.67]];
+const _EDGE=[0.45,0.46,0.48];          /* hairline edges at rest */
 /* darker while the faces carry colour, so every cell still reads against the data (the original
    heatmap's edge, lightened with the calm end of its scale so a whole part does not read dark) */
 const _EDGE_HEAT=[0.24,0.23,0.22];
-const _SEL=[1.0,0.31,0.0],_SEL_EDGE=[0.62,0.22,0.02];
+/* the selected part: a light blue, see-through (viewer/nav.js), with deeper blue cell lines */
+const _SEL=SELECT_TINT,_SEL_EDGE=[0.46,0.6,0.86];
 const HEAT_HINT='Click a face to see its numbers · Drag still rotates';
 const _SEL_COLS=['#e8613c','#f2c744','#3fa650','#3f7fd9','#b455c8','#38c2c2'];
 
@@ -212,14 +216,13 @@ export async function openViewer(job,anchorEl,opts){
 
 function initViewer(job,surf,uiCfg){
   const host=document.getElementById('v-canvas-'+job);
-  const grw=vtk.Rendering.Misc.vtkGenericRenderWindow.newInstance({background:[0.035,0.055,0.075]});
+  const grw=vtk.Rendering.Misc.vtkGenericRenderWindow.newInstance({background:SCENE_BG});
   grw.setContainer(host);
   const ren=grw.getRenderer(),rw=grw.getRenderWindow();
   const apiRW=grw.getApiSpecificRenderWindow?grw.getApiSpecificRenderWindow():grw.getOpenGLRenderWindow();
   grw.resize();
   const ro=new ResizeObserver(()=>{setRenderScale();rw.render();});ro.observe(host);
   host.addEventListener('contextmenu',e=>e.preventDefault());
-  bindMouse(grw);                     // left-drag turns, right-drag pans, the wheel zooms
 
   /* one IMMUTABLE actor per patch - real polygon cells */
   const entries=[];let totalFaces=0;
@@ -285,12 +288,12 @@ function initViewer(job,surf,uiCfg){
     surf.cell_count?surf.cell_count.toLocaleString()+' cells'
                    :totalFaces.toLocaleString()+' boundary faces';
 
-  document.getElementById('v-fitbtn-'+job).onclick=()=>{ren.resetCamera();clampCam();rw.render();};
   // WHICH WAY IS UP: turn the camera to the chosen axis, re-frame, and remember it for this job
   function setUp(axis){
     orient(cam,axis,VIEW_DIR);ren.resetCamera();clampCam();rw.render();
     if(upSel&&upSel.value!==axis)upSel.value=axis;
-    saveUp('job',job,axis);}
+    saveUp('job',job,axis);if(nav)nav.rebuild();}
+  let nav=null;
   if(upSel)upSel.onchange=()=>setUp(upSel.value);
   shield(host.querySelector('.v-tools'));
 
@@ -307,10 +310,12 @@ function initViewer(job,surf,uiCfg){
   const GRID_PX=uiCfg.grid_px, FINE_FILL=uiCfg.fine_fill,
         FRAME_FRAC=uiCfg.frame_frac, SPAN_F=uiCfg.flag_span_factor,
         MAX_FLAGS=uiCfg.max_flags;
+  // WHILE THE CAMERA MOVES the mesh is drawn at a lighter resolution, full again when it stops
+  let _lod=1;
   function setRenderScale(){
-    const r=host.getBoundingClientRect();
-    apiRW.setSize(Math.max(2,Math.round(r.width*_DPR)),
-                  Math.max(2,Math.round(r.height*_DPR)));}
+    const r=host.getBoundingClientRect(),k=_DPR*_lod;
+    apiRW.setSize(Math.max(2,Math.round(r.width*k)),
+                  Math.max(2,Math.round(r.height*k)));}
   function capRange(){
     const t=Math.tan(cam.getViewAngle()*Math.PI/360);
     if(stats&&stats.typ>0&&stats.p10>0){
@@ -460,7 +465,7 @@ function initViewer(job,surf,uiCfg){
         const s=p?st[p.id]:null;if(!s)return;
         const pr=en.actor.getProperty(),isSel=!!(selPart&&selPart.entity===en.patch);
         en.actor.setVisibility(!sliceOn&&!s.hidden&&(!isolated||isSel));
-        pr.setOpacity(s.opacity);
+        pr.setOpacity(isSel?Math.min(s.opacity,SELECT_OPACITY):s.opacity);
         if(isSel){pr.setColor(_SEL[0],_SEL[1],_SEL[2]);
                   pr.setEdgeColor(_SEL_EDGE[0],_SEL_EDGE[1],_SEL_EDGE[2]);pr.setAmbient(0.40);}
         else{pr.setColor(s.base[0],s.base[1],s.base[2]);
@@ -556,6 +561,20 @@ function initViewer(job,surf,uiCfg){
         g.appendChild(c);});
       chips.appendChild(g);});
 
+    // A CLICK ON THE MESH SELECTS ITS PART - the same selection as the list - and a click on empty
+    // space clears it. Marking a region and the heatmap's probe keep their own clicks.
+    let _down=null;
+    host.addEventListener('pointerdown',e=>{_down=[e.clientX,e.clientY];},true);
+    host.addEventListener('pointerup',e=>{
+      if(markMode||activeMetric||!_down)return;
+      if(e.target&&e.target.closest&&e.target.closest('.v-pin,.v-tools,.v-legend,.v-probe,.v-heatctl,.nav-ui'))return;
+      if(Math.hypot(e.clientX-_down[0],e.clientY-_down[1])>6)return;
+      pickPart(e,en=>{
+        const p=en?parts.find(x=>x.renderable&&x.entity===en.patch):null;
+        const next=p?p.id:null;
+        if(next===sel)return;
+        sel=next;if(!sel)isolated=false;paint();});},true);
+
     // THE THERMAL TABLE shows a part alone (or the whole model again) through the same state
     partsApi={isolate:(entity)=>{
       const p=entity?parts.find(x=>x.renderable&&x.entity===entity):null;
@@ -614,6 +633,15 @@ function initViewer(job,surf,uiCfg){
                          :(activeMetric?HEAT_HINT:MOUSE_HINT);}
   selBtn.onclick=()=>setMarkMode(!markMode);
 
+  /* the patch under the pointer, or null over empty space */
+  function pickPart(e,cb){
+    const rect=host.getBoundingClientRect(),size=apiRW.getSize();
+    const x=Math.round((e.clientX-rect.left)*(size[0]/rect.width));
+    const y=Math.round((rect.height-(e.clientY-rect.top))*(size[1]/rect.height));
+    selector.getSourceDataAsync(ren,x,y,x,y).then(src=>{
+      const sels=src?src.generateSelection(x,y,x,y):null;
+      const pr=sels&&sels.length?sels[0].getProperties():null;
+      cb(pr?entries.find(t=>t.actor===pr.prop)||null:null);}).catch(()=>cb(null));}
   function pickCell(e,cb){
     const rect=host.getBoundingClientRect(),size=apiRW.getSize();
     const x=Math.round((e.clientX-rect.left)*(size[0]/rect.width));
@@ -788,6 +816,21 @@ function initViewer(job,surf,uiCfg){
   cam.onModified(clampCam);
   clampCam();                    // opening view = closest allowed to Fit
   rw.render();
+
+  /* THE NAVIGATION: the ViewCube, the toolbar, eased view changes, the contact shadow, and a
+     lighter picture while the camera moves - cell lines off on a big mesh, fewer pixels - with
+     full detail the moment it stops (viewer/nav.js). Fit keeps the direction; Home is the
+     opening view. */
+  const _bigMesh=totalFaces>250000;
+  nav=attachNav({host,grw,ren,rw,cam,upAxis:()=>(upSel&&upSel.value)||'+z',
+    frame:()=>{_clamping=true;try{ren.resetCamera();}finally{_clamping=false;}clampCam();},
+    home:()=>{orient(cam,(upSel&&upSel.value)||'+z',VIEW_DIR);
+      _clamping=true;try{ren.resetCamera();}finally{_clamping=false;}clampCam();},
+    afterMove:clampCam,surfaces:()=>entries.map(en=>en.actor),
+    fitButton:document.getElementById('v-fitbtn-'+job),shadow:!thermal,
+    onMotion:moving=>{_lod=moving?0.6:1;setRenderScale();
+      if(_bigMesh)entries.forEach(en=>en.actor.getProperty().setEdgeVisibility(!moving));}});
+  nav.setHome();
 
   /* THE DELIVERED MESH'S OWN FIGURES, straight from the payload. The UI holds an
      ORDER and a label for the ones it knows how to name, and shows anything else
@@ -980,7 +1023,7 @@ function initViewer(job,surf,uiCfg){
     upAxis:()=>upSel?upSel.value:'+z',setUp:axis=>setUp(axis),
     view:()=>({focal:cam.getFocalPoint().slice(),position:cam.getPosition().slice(),
                dir:cam.getDirectionOfProjection().slice()}),
-    render:()=>rw.render()};
+    render:()=>rw.render(),nav:()=>nav};
 
   /* PARAVIEW EXPORT - the same boundary and the same per-face numbers as a legacy VTK file,
      built by the API from the stored payload. Fetched with the API headers (a plain link would

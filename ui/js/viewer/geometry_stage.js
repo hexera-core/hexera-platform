@@ -27,6 +27,7 @@ import { bindFeaPanel, bindMeasure, feaPanelHtml, followMeasure, lightSpotRow } 
 import { bindThermalPanel, partDetails, thermalPanelHtml, watts } from "../render/thermal_form.js";
 import { circleThrough, clickIndex, firstHit, snapAt } from "./open_ends.js";
 import { bindMouse, isUpAxis, orient, saveUp, savedUp, shield, upSelectHtml, upVector } from "./view_controls.js";
+import { SCENE_BG, SELECT_OPACITY, SELECT_TINT, attachNav } from "./nav.js";
 
 let _vtkP = null;
 export function loadVtk() {
@@ -37,16 +38,22 @@ export function loadVtk() {
     document.head.appendChild(s); });
   return _vtkP;
 }
-export function b64f32(b) { const bin = atob(b), n = bin.length, u = new Uint8Array(n);
-  for (let i = 0; i < n; i++) u[i] = bin.charCodeAt(i); return new Float32Array(u.buffer); }
-export function b64u32(b) { const bin = atob(b), n = bin.length, u = new Uint8Array(n);
-  for (let i = 0; i < n; i++) u[i] = bin.charCodeAt(i); return new Uint32Array(u.buffer); }
+/* the browser's own base64 decoder when it has one (Uint8Array.fromBase64): much faster on a big skin */
+function b64bytes(b) { if (typeof Uint8Array.fromBase64 === "function") return Uint8Array.fromBase64(b);
+  const bin = atob(b), n = bin.length, u = new Uint8Array(n);
+  for (let i = 0; i < n; i++) u[i] = bin.charCodeAt(i); return u; }
+export function b64f32(b) { return new Float32Array(b64bytes(b).buffer); }
+export function b64u32(b) { return new Uint32Array(b64bytes(b).buffer); }
 
-/* the console's own palette: the mesh viewer's dark background, a light grey part with soft
-   highlights, darker hairlines on the sharp corners; stickers in the yellow of the pictures, the
-   selected one in the product's orange, which nothing else on the stage wears */
-const BACKGROUND = [0.035, 0.055, 0.075];
-const BODY = [0.74, 0.78, 0.84], EDGE = [0.30, 0.34, 0.40];
+/* the stage's palette: the light CAD scene (viewer/nav.js), a matte grey part, quiet hairlines on
+   the sharp corners; stickers in the yellow of the pictures, the selected one in the product's
+   orange, which nothing else on the stage wears; a selected part is light blue and see-through */
+const BACKGROUND = SCENE_BG;
+/* a matte mid grey part and quiet hairlines, the way a CAD viewer draws it */
+const BODY = [0.68, 0.685, 0.70], EDGE = [0.32, 0.33, 0.35];
+/* a thermal model keeps the console's dark stage and its own parts' colours */
+const THERMAL_BG = [0.035, 0.055, 0.075];
+const THERMAL_BODY = [0.74, 0.78, 0.84], THERMAL_EDGE = [0.30, 0.34, 0.40];
 const STICKER = [1.0, 0.83, 0.0], SEL = [1.0, 0.31, 0.0];
 // an FEA part's hot spots: a quiet steel blue, apart from the stickers' yellow
 const SPOT = [0.42, 0.62, 0.86];
@@ -322,11 +329,12 @@ function initScene(sessionId, box, surf, p) {
   const ren = grw.getRenderer(), rw = grw.getRenderWindow();
   const apiRW = grw.getApiSpecificRenderWindow ? grw.getApiSpecificRenderWindow() : grw.getOpenGLRenderWindow();
   const DPR = Math.min(window.devicePixelRatio || 1, 2);
-  function setRenderScale() { const r = host.getBoundingClientRect();
-    apiRW.setSize(Math.max(2, Math.round(r.width * DPR)), Math.max(2, Math.round(r.height * DPR))); }
+  // WHILE THE CAMERA MOVES the picture is drawn at a lighter resolution, full again when it stops
+  let lod = 1;
+  function setRenderScale() { const r = host.getBoundingClientRect(), k = DPR * lod;
+    apiRW.setSize(Math.max(2, Math.round(r.width * k)), Math.max(2, Math.round(r.height * k))); }
   grw.resize();
   host.addEventListener("contextmenu", (e) => e.preventDefault());
-  bindMouse(grw);                     // left-drag turns, right-drag pans, the wheel zooms
 
   /* THE LIGHTS: a key from the upper left, a fill from the right and a faint rim from behind,
      all riding with the camera, so a turned part is always lit the way a CAD viewer lights it */
@@ -355,28 +363,33 @@ function initScene(sessionId, box, surf, p) {
       pd.getPointData().setNormals(vtk.Common.Core.vtkDataArray.newInstance({ name: "Normals", values: normals, numberOfComponents: 3 }));
     }
     const mapper = vtk.Rendering.Core.vtkMapper.newInstance(); mapper.setInputData(pd);
+    // THE FACES SIT A HAIR BEHIND THEIR EDGES, so a hairline on a silhouette is drawn whole, not dashed
+    const M = vtk.Rendering.Core.vtkMapper;
+    if (M.setResolveCoincidentTopologyToPolygonOffset) M.setResolveCoincidentTopologyToPolygonOffset();
+    if (mapper.setRelativeCoincidentTopologyPolygonOffsetParameters) mapper.setRelativeCoincidentTopologyPolygonOffsetParameters(1.5, 2);
     const actor = vtk.Rendering.Core.vtkActor.newInstance(); actor.setMapper(mapper); actor.setPickable(true);
     const pr = actor.getProperty();
     // a thermal model's placed parts each carry a colour of their own; any other skin is one body
     const col = Array.isArray(pt.color) && pt.color.length === 3 ? pt.color : BODY;
     pr.setColor(col[0], col[1], col[2]); pr.setEdgeVisibility(false);
     pr.setInterpolationToPhong();
-    pr.setAmbient(0.32); pr.setDiffuse(0.76); pr.setSpecular(0.12); pr.setSpecularPower(20);
+    pr.setAmbient(0.22); pr.setDiffuse(0.72); pr.setSpecular(0.05); pr.setSpecularPower(14);
     ren.addActor(actor);
-    skins.push({ actor, pd, pts, polys });
+    skins.push({ actor, pd, pts, polys, col });
   });
   /* THE PARTS - a thermal model drawn as its placed parts: the legend names each colour */
   if (surf.parts) host.appendChild(partsLegend(surf.patches || []));
   /* THE SHARP EDGES - dark hairlines where faces meet at an angle, and along open rims */
-  let edgeCount = 0;
+  let edgeCount = 0, edgeActor = null;
   if (surf.edges && surf.edges.lines_b64) {
     const pd = vtk.Common.DataModel.vtkPolyData.newInstance();
     pd.getPoints().setData(b64f32(surf.edges.points_b64), 3);
     const lines = b64u32(surf.edges.lines_b64); pd.getLines().setData(lines); edgeCount = lines.length / 3;
     const mp = vtk.Rendering.Core.vtkMapper.newInstance(); mp.setInputData(pd);
     const ac = vtk.Rendering.Core.vtkActor.newInstance(); ac.setMapper(mp); ac.setPickable(false);
-    const pp = ac.getProperty(); pp.setColor(...EDGE); pp.setLineWidth(1); pp.setLighting(false); pp.setOpacity(0.9);
+    const pp = ac.getProperty(); pp.setColor(...EDGE); pp.setLineWidth(1); pp.setLighting(false); pp.setOpacity(0.55);
     ren.addActor(ac);
+    edgeActor = ac;
   }
   const cam = ren.getActiveCamera();
   cam.azimuth(45); cam.elevation(25);
@@ -397,7 +410,9 @@ function initScene(sessionId, box, surf, p) {
     // resetCamera fits the part to the view's HEIGHT; a canvas taller than it is wide (the
     // drawer open on a small window) would crop the sides, so back off by the aspect
     const [w, h] = apiRW.getSize(), a = w / Math.max(h, 1);
-    if (a < 1) { cam.dolly(a); ren.resetCameraClippingRange(); }
+    // ...and leaves a margin round the part for the toolbar and the cube, wider on a small canvas
+    const margin = host.clientHeight < 520 ? 0.8 : 0.9;
+    cam.dolly(Math.min(a, 1) * margin); ren.resetCameraClippingRange();
     rw.render(); }
   /* THE OPENING VIEW: the drawing-office three-quarter view, framed on the part, with the axis the
      user says is up pointing up - the one they set for this check, else the one the check
@@ -416,8 +431,29 @@ function initScene(sessionId, box, surf, p) {
   const tools = box.querySelector(".v-tools");
   shield(tools);
   if (upSel) upSel.onchange = () => { upAxis = upSel.value; saveUp("session", sessionId, upAxis); iso(); };
+  /* THE NAVIGATION: the ViewCube, the toolbar, eased view changes, the contact shadow and the
+     lighter drawing while the part turns (viewer/nav.js). Fit keeps the direction; Home is the
+     opening three-quarter view. */
   const fitBtn = box.querySelector("#gs-fit-" + sessionId);
-  if (fitBtn) fitBtn.onclick = () => iso();
+  const bigSkin = skins.reduce((n, sk) => n + sk.pd.getNumberOfCells(), 0) > 400000;
+  const nav = attachNav({ host, grw, ren, rw, cam, upAxis: () => upAxis, frame: fit, home: iso,
+    surfaces: () => skins.map((sk) => sk.actor).concat(edgeActor ? [edgeActor] : []), fitButton: fitBtn, shadow: true,
+    onMotion: (moving) => {
+      lod = moving ? 0.6 : 1; setRenderScale();
+      if (edgeActor && bigSkin) edgeActor.setVisibility(!moving);
+    } });
+  nav.setHome();
+  if (upSel) upSel.onchange = () => { upAxis = upSel.value; saveUp("session", sessionId, upAxis); iso(); nav.rebuild(); };
+
+  /* A CLICK ON THE PART SELECTS IT: a light blue, see-through, so its holes and inner edges show.
+     A click on empty space clears it. Adding an opening or measuring keeps its own clicks. */
+  let picked = false;
+  function pick(on) {
+    picked = !!on;
+    skins.forEach((sk) => { const pr = sk.actor.getProperty(), c = on ? SELECT_TINT : sk.col;
+      pr.setColor(c[0], c[1], c[2]); pr.setOpacity(on ? SELECT_OPACITY : 1); });
+    rw.render();
+  }
 
   /* THE STICKERS - a ball on every opening, at the position the check measured, and an HTML pin
      with its number that follows it every frame. The pin is the thing to click: it is never
@@ -689,9 +725,13 @@ function initScene(sessionId, box, surf, p) {
   }
   host.addEventListener("pointerdown", (e) => { downXY = [e.clientX, e.clientY]; }, true);
   host.addEventListener("pointerup", (e) => {
-    if (!(addMode || measuring) || !downXY) return;
-    if (e.target && e.target.closest && e.target.closest(".gc-pin,.v-tools")) return;
+    if (!downXY) return;
+    if (e.target && e.target.closest && e.target.closest(".gc-pin,.v-tools,.nav-ui")) return;
     if (Math.hypot(e.clientX - downXY[0], e.clientY - downXY[1]) > 6) return;
+    if (!(addMode || measuring)) {
+      pick(!!snapAt({ ...clicksNow(), holes: [] }, rayAt(e.clientX, e.clientY)).hit);
+      return;
+    }
     if (measuring) measureAt(e.clientX, e.clientY);
     else addAt(rayAt(e.clientX, e.clientY));
   }, true);
@@ -938,10 +978,10 @@ function initScene(sessionId, box, surf, p) {
     camera: () => cam.getPosition(), cam: () => cam, edges: () => edgeCount, axes: () => { drawAxes(); return axesNow; },
     smooth: () => skins.some((s) => !!s.pd.getPointData().getNormals()),
     upAxis: () => upAxis, setUp: (a) => { if (upSel) { upSel.value = a; upSel.onchange(); } },
-    render: () => rw.render(),
+    render: () => rw.render(), nav: () => nav, picked: () => picked,
   };
   return {
-    stop: () => { alive = false; ro.disconnect(); clearDecor(); clearMeasure(); document.removeEventListener("keydown", onKey); delete window._vdbg["gstage:" + sessionId]; },
+    stop: () => { alive = false; ro.disconnect(); nav.destroy(); clearDecor(); clearMeasure(); document.removeEventListener("keydown", onKey); delete window._vdbg["gstage:" + sessionId]; },
     rebind, refresh: refreshExternal, setSpots,
   };
 }
@@ -1077,7 +1117,7 @@ async function openThermalStage(sessionId, d, confirm, opts) {
 
 function initThermalScene(sessionId, box, surf, t, panel) {
   const host = document.getElementById("gs-canvas-" + sessionId);
-  const grw = vtk.Rendering.Misc.vtkGenericRenderWindow.newInstance({ background: BACKGROUND });
+  const grw = vtk.Rendering.Misc.vtkGenericRenderWindow.newInstance({ background: THERMAL_BG });
   grw.setContainer(host);
   const ren = grw.getRenderer(), rw = grw.getRenderWindow();
   const apiRW = grw.getApiSpecificRenderWindow ? grw.getApiSpecificRenderWindow() : grw.getOpenGLRenderWindow();
@@ -1115,7 +1155,7 @@ function initThermalScene(sessionId, box, surf, t, panel) {
     const actor = vtk.Rendering.Core.vtkActor.newInstance(); actor.setMapper(mapper);
     const row = rows.get(pt.name) || {};
     // the list's colour is the part's colour: the same table on both sides (ecxml_place.PART_COLOURS)
-    const col = Array.isArray(row.color) ? row.color : Array.isArray(pt.color) ? pt.color : BODY;
+    const col = Array.isArray(row.color) ? row.color : Array.isArray(pt.color) ? pt.color : THERMAL_BODY;
     const pr = actor.getProperty();
     pr.setColor(col[0], col[1], col[2]); pr.setInterpolationToPhong();
     pr.setAmbient(0.32); pr.setDiffuse(0.76); pr.setSpecular(0.12); pr.setSpecularPower(20);
@@ -1128,7 +1168,7 @@ function initThermalScene(sessionId, box, surf, t, panel) {
     pd.getPoints().setData(b64f32(surf.edges.points_b64), 3); pd.getLines().setData(b64u32(surf.edges.lines_b64));
     const mp = vtk.Rendering.Core.vtkMapper.newInstance(); mp.setInputData(pd);
     edges = vtk.Rendering.Core.vtkActor.newInstance(); edges.setMapper(mp); edges.setPickable(false);
-    const pp = edges.getProperty(); pp.setColor(...EDGE); pp.setLineWidth(1); pp.setLighting(false); pp.setOpacity(0.9);
+    const pp = edges.getProperty(); pp.setColor(...THERMAL_EDGE); pp.setLineWidth(1); pp.setLighting(false); pp.setOpacity(0.9);
     ren.addActor(edges);
   }
   const cam = ren.getActiveCamera();
@@ -1298,7 +1338,6 @@ function initThermalScene(sessionId, box, surf, t, panel) {
   const ro = new ResizeObserver(() => { setRenderScale(); if (!touched) fit(); else rw.render(); });
   ro.observe(host);
   const tools = box.querySelector(".v-tools"); shield(tools);
-  if (upSel) upSel.onchange = () => { upAxis = upSel.value; saveUp("session", sessionId, upAxis); iso(); };
   const fitBtn = box.querySelector("#gs-fit-" + sessionId); if (fitBtn) fitBtn.onclick = () => { touched = false; iso(); };
   const allBtn = box.querySelector("#gs-all-" + sessionId); if (allBtn) allBtn.onclick = () => { select(null); panel.select(null); };
   const xrayBtn = box.querySelector("#gs-xray-" + sessionId);

@@ -1078,6 +1078,7 @@ th,td{border-color:var(--border)}
 @media(max-width:560px){
   .oc-facts{grid-template-columns:minmax(0,1fr)}
   .oc-fact dt{margin-top:4px}
+}
 /* ---------------------------------------------------------------- polish ---- */
 /* the run header holds a sub-line only when it has something the live line does not say */
 .proc-sub:empty{display:none}
@@ -1091,4 +1092,84 @@ th,td{border-color:var(--border)}
   .gp-time,.gp-toggle{flex:none}
   .proc-head{flex-wrap:wrap}
   #empty{padding-top:10vh}
+}
+
+/* ------------------------------------------------------------ 3D navigation ---- */
+/* the light CAD scene (viewer/nav.js): a soft grey canvas, the ViewCube top-right, the toolbar
+   along the bottom, the section's slider above it. Light controls on a light scene. */
+.nav-host{--nav-bg:#ececed;--nav-ink:#3b4048;--nav-faint:#9a9fa7;--nav-blue:#3d7fd6;
+  --nav-blue-soft:rgba(110,160,232,.42);background:var(--nav-bg)}
+.nav-host .v-loading{background:var(--nav-bg);color:#7a7f87}
+.nav-ui{position:absolute;z-index:6;font-family:var(--sans);-webkit-user-select:none;user-select:none}
+.nav-ui[hidden]{display:none}
+.nav-ui button{font-family:inherit}
+.nav-ui svg{display:block;width:100%;height:100%;fill:none;stroke:currentColor;stroke-width:1.6;
+  stroke-linecap:round;stroke-linejoin:round}
+
+/* the cube */
+.nav-cube{top:8px;right:10px;width:138px;height:118px}
+.nav-home{position:absolute;left:4px;top:2px;width:26px;height:26px;padding:3px;border:0;border-radius:6px;
+  background:transparent;color:var(--nav-faint);cursor:pointer;transition:color .15s}
+.nav-home:hover{color:var(--nav-blue)}
+.nav-cube-view{position:absolute;left:44px;top:26px;width:62px;height:62px}
+.nav-cube-body{position:absolute;left:31px;top:31px;width:0;height:0;transform-style:preserve-3d}
+.nav-face{position:absolute;left:-31px;top:-31px;width:62px;height:62px;box-sizing:border-box;display:grid;
+  grid-template-columns:13px 1fr 13px;grid-template-rows:13px 1fr 13px;background:#fafafb;
+  border:1px dashed #a3a8b0;backface-visibility:hidden;-webkit-backface-visibility:hidden}
+.nav-cell{cursor:pointer;transition:background .12s}
+.nav-cell.hot{background:var(--nav-blue-soft)}
+.nav-label{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;
+  font:700 10.5px/1 var(--sans);letter-spacing:.04em;color:#7e848c}
+/* looking straight at a face: four arrows to the faces around it, two to roll the view */
+.nav-arrows{position:absolute;inset:0;pointer-events:none}
+.nav-arr{position:absolute;width:0;height:0;padding:0;border:7px solid transparent;background:none;cursor:pointer;
+  pointer-events:auto;transition:border-color .12s}
+.nav-arr.up{left:68px;top:9px;border-bottom:8px solid #c2c6cc;border-top-width:0}
+.nav-arr.down{left:68px;top:97px;border-top:8px solid #c2c6cc;border-bottom-width:0}
+.nav-arr.left{left:28px;top:50px;border-right:8px solid #c2c6cc;border-left-width:0}
+.nav-arr.right{left:114px;top:50px;border-left:8px solid #c2c6cc;border-right-width:0}
+.nav-arr.up:hover{border-bottom-color:var(--nav-blue)}.nav-arr.down:hover{border-top-color:var(--nav-blue)}
+.nav-arr.left:hover{border-right-color:var(--nav-blue)}.nav-arr.right:hover{border-left-color:var(--nav-blue)}
+.nav-roll{position:absolute;width:20px;height:20px;padding:0;border:0;background:none;color:#b9bdc4;cursor:pointer;pointer-events:auto}
+.nav-roll.ccw{left:104px;top:4px}
+.nav-roll.cw{left:120px;top:22px}
+.nav-roll:hover{color:var(--nav-blue)}
+
+/* the toolbar */
+.nav-bar{left:50%;bottom:12px;transform:translateX(-50%);display:flex;gap:2px;padding:4px;border-radius:12px;
+  background:#fff;box-shadow:0 1px 2px rgba(20,24,32,.10),0 8px 24px -8px rgba(20,24,32,.18)}
+.nav-btn{display:flex;flex-direction:column;align-items:center;gap:3px;min-width:54px;padding:7px 6px 5px;border:0;
+  border-radius:9px;background:transparent;color:var(--nav-ink);font:500 11px/1 var(--sans);cursor:pointer;
+  transition:background .12s,color .12s}
+.nav-btn svg{width:20px;height:20px}
+.nav-btn:hover{background:#f1f3f6}
+.nav-btn[aria-pressed="true"]{color:var(--nav-blue);background:#e9f1fd}
+.nav-btn:focus-visible,.nav-home:focus-visible,.nav-arr:focus-visible,.nav-roll:focus-visible{outline:2px solid var(--nav-blue);outline-offset:1px}
+
+/* the section */
+.nav-section{left:50%;bottom:76px;transform:translateX(-50%);display:flex;align-items:center;gap:10px;padding:7px 10px;
+  border-radius:10px;background:#fff;box-shadow:0 1px 2px rgba(20,24,32,.10),0 8px 24px -8px rgba(20,24,32,.18);color:var(--nav-ink)}
+.nav-seg{display:flex;gap:2px;padding:2px;border-radius:7px;background:#f1f3f6}
+.nav-seg button,.nav-flip{min-width:26px;height:24px;padding:0 7px;border:0;border-radius:5px;background:transparent;
+  color:var(--nav-ink);font:600 11px/1 var(--sans);cursor:pointer}
+.nav-seg button[aria-pressed="true"]{background:#fff;color:var(--nav-blue);box-shadow:0 1px 2px rgba(0,0,0,.12)}
+.nav-flip{background:#f1f3f6}
+.nav-section input[type=range]{width:160px;accent-color:var(--nav-blue)}
+
+/* what else sits on the canvas, made quiet for a light scene */
+.nav-host .v-tools .v-up{background:#fff;border-color:#dfe2e6;color:var(--nav-ink)}
+.nav-host .v-tools .v-up select{background:transparent;color:var(--nav-ink)}
+.nav-host .v-hint,.nav-host .v-count{background:rgba(255,255,255,.85);color:#5b6068;bottom:80px}
+.nav-host .gc-axes{bottom:76px}
+.nav-host .gc-axes .ax{stroke:#8a9099}
+.nav-host .gc-axes .ax-l{fill:#6b717a}
+
+@media(max-width:560px){
+  .nav-cube{transform:scale(.82);transform-origin:top right}
+  .nav-btn{min-width:42px;padding:6px 4px 4px;font-size:10px}
+  .nav-btn svg{width:18px;height:18px}
+  .nav-section{bottom:68px;max-width:calc(100% - 20px)}
+  .nav-section input[type=range]{width:110px}
+  .nav-host .v-hint{display:none}
+  .nav-host .v-count{bottom:70px}
 }
