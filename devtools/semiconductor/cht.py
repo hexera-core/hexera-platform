@@ -660,6 +660,49 @@ def read_dat(path: Path) -> tuple[list[str], list[list]]:
 POST = "postProcessing"
 
 
+#: Directories a workspace keeps when a solve starts. Everything else that looks like a time is
+#: the previous run's state.
+_KEEP = frozenset({"0", "constant", "system", "triSurface"})
+
+
+def _is_time_dir(name: str) -> bool:
+    if name in _KEEP:
+        return False
+    try:
+        float(name)
+    except ValueError:
+        return False
+    return True
+
+
+def clear_previous_run(root: Path) -> tuple[int, int]:
+    """Delete the previous solve's readings AND its state. Returns (readings, time directories).
+
+    TWO HALVES OF ONE DEFECT: a workspace remembers the last run, and both halves are silent.
+    The readings half was found by review; this half was found by using it.
+    `chtMultiRegionSimpleFoam` is restarted once per chunk with `startFrom latestTime`, and
+    `latestTime` is whatever time directory is on disk - including the previous run's. Measured on
+    the pin-fin part: an earlier 1000-iteration run left processor*/250, 500, 750 and 1000 behind,
+    `decomposePar -force` rewrites the mesh and processor*/0 but leaves the rest, so the second
+    chunk of the next run asked to go from 500 to 1000, found 1000 already there, and returned in
+    two seconds having done nothing. Every chunk after it then continued from a state the previous
+    run wrote. Nothing failed and the iteration count in the log looked plausible.
+
+    `purgeWrite` does not help: it prunes within one run's own writes and knows nothing about the
+    run before.
+    """
+    ws = Path(root)
+    readings = clear_post(ws)
+    times = 0
+    roots = [ws] + sorted(d for d in ws.glob("processor*") if d.is_dir())
+    for base in roots:
+        for d in base.iterdir():
+            if d.is_dir() and _is_time_dir(d.name):
+                shutil.rmtree(d, ignore_errors=True)
+                times += 1
+    return readings, times
+
+
 def clear_post(root: Path) -> int:
     """Delete the whole postProcessing tree. Call before a solve, never before reading one.
 
@@ -955,4 +998,4 @@ __all__ = ["Coolant", "Metal", "SolveSpec", "SolveError", "SolveReport",
            "SOLVER", "inlet_vector", "solid_p", "decompose_dict", "decompose_command",
            "solver_command", "solve_commands", "chunks", "control_dict", "write_case",
            "read_log", "read_dat", "dat_files", "dat_value", "heat_through", "collect",
-           "POST", "clear_post", "progress"]
+           "POST", "clear_post", "clear_previous_run", "progress"]

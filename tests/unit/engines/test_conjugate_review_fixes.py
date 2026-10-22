@@ -138,3 +138,49 @@ def test_a_coarse_mesh_is_not_refused_for_being_coarse():
         interface_faces_fluid=23400, interface_faces_solid=23400)
     C.verify(wrong, expect_fluid_volume_m3=2.6e-09, expect_fluid_pieces=1, volume_tol=0.41)
     assert any("not the coolant" in p for p in wrong.problems)
+
+def test_the_previous_runs_state_is_cleared_as_well_as_its_readings(cht, tmp_path):
+    # The other half, and the one that was found by using it rather than by review. Each chunk
+    # restarts with `startFrom latestTime`, and latestTime is whatever time directory is on disk -
+    # including the previous run's. Measured on the pin-fin part: an earlier 1000-iteration run
+    # left processor*/250, 500, 750 and 1000 behind, `decomposePar -force` rewrites the mesh and
+    # processor*/0 but nothing else, so the second chunk of the next run asked to go from 500 to
+    # 1000, found 1000 already there, and returned in two seconds having done nothing. Every chunk
+    # after it continued from a state the previous run wrote.
+    for d in ("0", "constant", "system", "250", "500", "750", "1000"):
+        (tmp_path / d).mkdir()
+    for proc in ("processor0", "processor1"):
+        for d in ("0", "constant", "500", "1000"):
+            (tmp_path / proc / d).mkdir(parents=True)
+    post = tmp_path / cht.POST / "fluid" / "inletFlow" / "750"
+    post.mkdir(parents=True)
+    (post / "surfaceFieldValue.dat").write_text("# Time" + chr(9) + "sum(phi)" + chr(10) + "1000" + chr(9) + "-1.0" + chr(10))
+
+    readings, times = cht.clear_previous_run(tmp_path)
+    assert readings == 1
+    assert times == 4 + 2 + 2, "four at the case root and two inside each processor directory"
+
+    # What survives is the case itself and the initial fields, in the root and in every processor.
+    # Asserted as what went and what stayed rather than an exact listing, because the test
+    # environment puts its own directories in tmp_path.
+    for gone in ("250", "500", "750", "1000"):
+        assert not (tmp_path / gone).exists(), gone + " is a previous run's state"
+    for kept in ("0", "constant", "system"):
+        assert (tmp_path / kept).is_dir(), kept + " is this run's, not the last one's"
+    for proc in ("processor0", "processor1"):
+        assert sorted(d.name for d in (tmp_path / proc).iterdir()) == ["0", "constant"]
+    assert not (tmp_path / cht.POST).exists()
+
+
+def test_clearing_a_workspace_that_was_never_run_is_not_an_error(cht, tmp_path):
+    (tmp_path / "constant").mkdir()
+    assert cht.clear_previous_run(tmp_path) == (0, 0)
+
+
+def test_a_directory_that_merely_looks_numeric_is_kept_if_it_is_time_zero(cht, tmp_path):
+    # 0/ is the initial condition write_case just produced, not a previous run's state.
+    for d in ("0", "constant", "system", "triSurface"):
+        (tmp_path / d).mkdir()
+    assert cht.clear_previous_run(tmp_path) == (0, 0)
+    assert (tmp_path / "0").is_dir()
+    assert (tmp_path / "triSurface").is_dir()
