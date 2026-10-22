@@ -42,7 +42,8 @@ logger = logging.getLogger(__name__)
 #: 2 (21 Oct): a wall is read inside one body, past the model's floor, never across a taper,
 #: and only where a face's rays agree (cad/fea_features.wall_reach); 1 read the first
 #: surface any ray met.
-VERSION = 2
+VERSION = 3
+#: 3 (21 Oct): the record lists the CAD's cusps (cad_cusps, PLAN-fea-10).
 #: Where the record lives in the geometry check's facts.
 FACT_KEY = "fea_measure"
 #: The CAD surface is tessellated for the measurement at a chord of this fraction of the part's
@@ -97,7 +98,145 @@ def measure_cad_surface(shape, *, mm_per_unit: float,
             arcs.append(arc)
     record = _record(surface, arcs, bodies=_cad_bodies(shape), basis="cad", kinds=kinds, started=started,
                      max_ray_triangles=max_ray_triangles)
+    record["cusps"] = cad_cusps(shape, float(mm_per_unit))
+    record["micro"] = cad_micro(shape, float(mm_per_unit), diag_mm=float(surface.diag))
     return record, surface
+
+
+#: MICRO DETAILS are recorded when an edge is shorter, or a face narrower, than this fraction of the
+#: part's diagonal; the plan keeps those far below its own element size (PLAN-fea-12).
+MICRO_FRACTION = 1e-3
+#: Each micro detail is described by points this far apart along it (as a fraction of its length),
+#: so a long thin strip is marked along its whole length, not only at its ends.
+MICRO_SAMPLES = 24
+
+
+def cad_micro(shape, mm: float, *, diag_mm: float) -> list[dict]:
+    """The CAD's micro details: edges shorter than MICRO_FRACTION of the part, and faces narrower than
+    that (twice the area over the perimeter) - a 0.004 mm edge on a screw's socket, the 0.001 mm flat
+    strips a sprocket's teeth were drawn with. Each: kind, size (mm), the faces it touches (Face_k)
+    and points along it (mm). The plan decides which are far below its element size."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from OCP.TopExp import TopExp, TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape, TopTools_IndexedMapOfShape
+
+    limit = MICRO_FRACTION * float(diag_mm) / mm          # in the file's own unit
+    fmap = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(shape, TopAbs_FACE, fmap)
+    e2f = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(shape, TopAbs_EDGE, TopAbs_FACE, e2f)
+
+    def length(e) -> float:
+        g = GProp_GProps()
+        BRepGProp.LinearProperties_s(e, g)
+        return float(g.Mass())
+
+    def along(e) -> list[list[float]]:
+        if BRep_Tool.Degenerated_s(e):
+            return []
+        c = BRepAdaptor_Curve(e)
+        u0, u1 = c.FirstParameter(), c.LastParameter()
+        return [_pt(np.array([(q := c.Value(u0 + (u1 - u0) * k / (MICRO_SAMPLES - 1))).X(), q.Y(), q.Z()]) * mm)
+                for k in range(MICRO_SAMPLES)]
+
+    out: list[dict] = []
+    for i in range(1, e2f.Extent() + 1):
+        e = TopoDS.Edge_s(e2f.FindKey(i))
+        if BRep_Tool.Degenerated_s(e):
+            continue
+        L = length(e)
+        if L < limit:
+            faces = sorted({fmap.FindIndex(f) for f in e2f.FindFromIndex(i)} - {0})
+            out.append({"kind": "edge", "size_mm": _r(L * mm), "faces": [f"Face_{k}" for k in faces],
+                        "points_mm": along(e)})
+    for k in range(1, fmap.Extent() + 1):
+        f = TopoDS.Face_s(fmap.FindKey(k))
+        g = GProp_GProps()
+        BRepGProp.SurfaceProperties_s(f, g)
+        area = float(g.Mass())
+        per, pts = 0.0, []
+        ex = TopExp_Explorer(f, TopAbs_EDGE)
+        edges = []
+        while ex.More():
+            edges.append(TopoDS.Edge_s(ex.Current()))
+            ex.Next()
+        per = sum(length(e) for e in edges)
+        if per > 0 and 2.0 * area / per < limit:
+            for e in edges:
+                pts += along(e)
+            out.append({"kind": "face", "size_mm": _r(2.0 * area / per * mm), "faces": [f"Face_{k}"],
+                        "points_mm": pts})
+    return out
+
+
+#: A CUSP: two edges of one face leave a vertex within this many degrees of each other (a bore or a
+#: boss just touching a straight face; a nut's chamfer cone meeting its flats). The face - and the
+#: material beside it - runs to nothing there, so no element there can be well shaped at any size.
+CUSP_DEG = 5.0
+
+
+def cad_cusps(shape, mm: float) -> list[dict]:
+    """Every cusp of the CAD solid (PLAN-fea-10): where, in millimetres, the angle between the two
+    edges, and the faces they bound (Face_k, OpenCASCADE's order as everywhere here)."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.gp import gp_Pnt, gp_Vec
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_VERTEX
+    from OCP.TopExp import TopExp
+    from OCP.TopoDS import TopoDS
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape, TopTools_IndexedMapOfShape
+
+    fmap = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(shape, TopAbs_FACE, fmap)
+    v2e = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(shape, TopAbs_VERTEX, TopAbs_EDGE, v2e)
+    e2f = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(shape, TopAbs_EDGE, TopAbs_FACE, e2f)
+    out: list[dict] = []
+    for i in range(1, v2e.Extent() + 1):
+        v = TopoDS.Vertex_s(v2e.FindKey(i))
+        p = BRep_Tool.Pnt_s(v)
+        legs = []
+        seen: list = []
+        for e_shape in v2e.FindFromIndex(i):
+            e = TopoDS.Edge_s(e_shape)
+            if BRep_Tool.Degenerated_s(e) or any(e.IsSame(s) for s in seen):
+                continue
+            seen.append(e)
+            try:
+                c = BRepAdaptor_Curve(e)
+                u = BRep_Tool.Parameter_s(v, e)
+                q, d = gp_Pnt(), gp_Vec()
+                c.D1(u, q, d)
+            except Exception as exc:  # noqa: BLE001 - an edge we cannot read is no evidence of a cusp
+                logger.debug("fea measure: an edge's tangent could not be read for the cusp check (%s)", exc)
+                continue
+            if d.Magnitude() <= 0:
+                continue
+            first = abs(u - c.FirstParameter()) <= abs(u - c.LastParameter())
+            t = np.array([d.X(), d.Y(), d.Z()]) / d.Magnitude() * (1.0 if first else -1.0)
+            k = e2f.FindIndex(e)
+            faces = {fmap.FindIndex(f) for f in e2f.FindFromIndex(k)} if k else set()
+            legs.append((t, faces))
+        for a in range(len(legs)):
+            for b in range(a + 1, len(legs)):
+                common = legs[a][1] & legs[b][1]
+                if not common:
+                    continue
+                ang = math.degrees(math.acos(max(-1.0, min(1.0, float(np.dot(legs[a][0], legs[b][0]))))))
+                if ang < CUSP_DEG:
+                    out.append({"at_mm": _pt(np.array([p.X(), p.Y(), p.Z()]) * mm), "angle_deg": _r(ang),
+                                "faces": [f"Face_{k}" for k in sorted(legs[a][1] | legs[b][1]) if k > 0]})
+    # one entry per place (a vertex can host more than one pair)
+    unique: dict[tuple, dict] = {}
+    for c in out:
+        unique.setdefault(tuple(round(x, 4) for x in c["at_mm"]), c)
+    return list(unique.values())
 
 
 def _brep_surface(shape, mm: float):

@@ -226,3 +226,13 @@ def test_a_ladder_that_runs_out_says_so_for_the_retry_policy(tmp_path, monkeypat
     assert ref.facts["deterministic"] and ref.facts["ladder_exhausted"] and ref.facts["fea"]
     assert ref.facts["passes"] >= 2 and ref.facts["under_floor"] == 5 and ref.facts["worst_at_mm"] == [10.0, 20.0, 3.0]
     assert retry_can_help(ref.cause, ref.facts) is False
+
+
+def test_a_small_part_is_measured_at_its_true_size(tmp_path):
+    """The staged solid's scale is a power of ten: an 8 mm block reads 8 mm, not the 7.5 mm that
+    OpenCASCADE's tolerance-padded box once made of a small part (an M5 nut's cusps came out 6% in)."""
+    ws = _stage(fx._box(0, 0, 0, 8, 8, 8), tmp_path / "cube")
+    record, _surface, diag = FD.measure_staged(ws)
+    assert record["thickness"]["min_mm"] == pytest.approx(8.0, rel=0.005)
+    assert diag == pytest.approx(8.0 * 3 ** 0.5 / 1000.0, rel=0.01)
+    assert all(f["area_mm2"] == pytest.approx(64.0, rel=1e-6) for f in record["faces"].values())

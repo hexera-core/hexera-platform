@@ -27,6 +27,13 @@ THE RULES (docs/RULES.md):
   PLAN-fea-7  every other round keeps its shape: 3 elements per quarter-turn
   PLAN-fea-8  the estimate is checked before meshing; over the level, the run stops with options
   PLAN-fea-9  one part only (version 1)
+  PLAN-fea-10 a CUSP (two CAD edges of a face leaving a vertex together: the material runs to nothing)
+              cannot be meshed above the quality floor at any size: the elements touching it get
+              straight sides, are set aside from the floor, and are named as a concern
+  PLAN-fea-12 a MICRO DETAIL (an edge or face far smaller than the elements there) is set aside and
+              named the same way, saying stress right at it is not resolved
+  PLAN-fea-11 curving never makes an element worse: one that curving onto the CAD would leave worse
+              than straight, and under the floor, keeps straight sides
 """
 from __future__ import annotations
 
@@ -71,6 +78,9 @@ STRESS_WALL_ELEMENTS = 3
 #: The fewest the rule allows (design 6: at least 6 per quarter-turn): the "fewer elements at the
 #: named spots" option meshes the hot spots at this, and the stress wall at the plain wall rule.
 HOT_SPOT_PER_QUARTER_MIN = 6
+#: PLAN-fea-12: a CAD detail (edge length, face width) under this fraction of the finest element the
+#: plan asks for is a MICRO DETAIL: the mesh cannot follow it, so the elements on it are set aside.
+MICRO_KEEP = 0.05
 #: PLAN-fea-5: a sharp inside corner is refined to its wall over this, and no further.
 CORNER_DIVISIONS = 4
 #: PLAN-fea-6: the largest ratio between neighbouring element sizes away from a zone.
@@ -220,7 +230,16 @@ def finish(record: Mapping, zone_list: list[dict], hist: Histogram, *, level: Le
         "zones": zone_list, "histogram": hist.as_list(), "histogram_complete": hist.complete,
         "estimate": {"elements": int(round(est)), "zones_at_coarsest": int(round(at_coarsest))},
         "fits": bool(fits), "relaxed": bool(relaxed), "options": [], "levers": list(levers or []),
+        # PLAN-fea-10: the cusps the adapter sets aside (metres, the mesh's unit)
+        "cusps": [{"at_m": [_r(float(v) * _MM) for v in c["at_mm"]], "faces": list(c.get("faces") or []),
+                   "angle_deg": c.get("angle_deg")} for c in record.get("cusps") or []],
     }
+    # PLAN-fea-12: the micro details far below the finest element this plan asks for
+    finest_mm = min([float(z["size_m"]) for z in zone_list] + [float(base)]) / _MM
+    plan["micro"] = [{"kind": m.get("kind"), "size_mm": m.get("size_mm"), "faces": list(m.get("faces") or []),
+                      "points_m": [[_r(float(v) * _MM) for v in p] for p in m.get("points_mm") or []]}
+                     for m in record.get("micro") or []
+                     if float(m.get("size_mm") or 0.0) < MICRO_KEEP * finest_mm]
     if not fits:
         plan["options"] = options(hist, relaxed_hist, level=level, coarsest=coarsest, zone_list=zone_list)
     plan["words"] = words(record, plan)
@@ -316,6 +335,22 @@ def words(record: Mapping, plan: Mapping) -> list[str]:
     rounds = [z for z in zs if z["kind"] == "round" and z["size_m"] < plan["base_size_m"]]
     if rounds:
         out.append(f"{len(rounds)} other round face(s) keep their shape: {ROUND_PER_QUARTER} elements per quarter-turn.")
+    cusps = plan.get("cusps") or []
+    if cusps:
+        out.append(f"Cusps: {len(cusps)} place(s) where two CAD edges of a face meet at almost no angle, so the "
+                   "material runs to nothing there. No element there can be well shaped at any size: the ones "
+                   "touching them get straight sides and are set aside from the quality floor, and the delivery "
+                   "names each place. Every other element must meet the floor.")
+    micro = plan.get("micro") or []
+    if micro:
+        smallest = min(float(m.get("size_mm") or 0.0) for m in micro)
+        out.append(f"Micro details: {len(micro)} CAD edge(s) or face(s) far smaller than the elements there "
+                   f"(the smallest {smallest:.3g} mm). The mesh cannot follow them: the elements on them get "
+                   "straight sides and are set aside from the quality floor, and the delivery names each one. "
+                   "Stress right at them is not resolved - on a gear, that includes the contact stress at the "
+                   "tooth tips.")
+    out.append("Curved elements: an element that curving onto the CAD would leave worse than straight keeps "
+               "straight sides.")
     out.append(f"Sizes grow by at most {plan.get('growth', GROWTH)} from one element to the next away from "
                "these spots.")
     if plan["fits"]:
@@ -355,6 +390,19 @@ def decisions(record: Mapping, plan: Mapping) -> list[dict]:
             out.append({"stage": "fea_plan", "decided": what, "value": len(sel), "rule": rule,
                         "inputs": {"finest_m": min(z["size_m"] for z in sel)},
                         "words": f"{len(sel)} {what} zone(s), the finest {min(z['size_m'] for z in sel) * 1e3:.3g} mm."})
+    cusps = plan.get("cusps") or []
+    if cusps:
+        out.append({"stage": "fea_plan", "decided": "cusps set aside", "value": len(cusps), "rule": "PLAN-fea-10",
+                    "inputs": {"places_m": [c["at_m"] for c in cusps]},
+                    "words": f"{len(cusps)} cusp(s): the elements touching them are set aside from the quality floor."})
+    micro = plan.get("micro") or []
+    if micro:
+        out.append({"stage": "fea_plan", "decided": "micro details set aside", "value": len(micro),
+                    "rule": "PLAN-fea-12",
+                    "inputs": {"smallest_mm": min(float(m.get("size_mm") or 0.0) for m in micro), "keep": MICRO_KEEP},
+                    "words": f"{len(micro)} micro detail(s): the elements on them are set aside from the quality floor."})
+    out.append({"stage": "fea_plan", "decided": "curving", "value": "never worse than straight", "rule": "PLAN-fea-11",
+                "inputs": {}, "words": "An element curving would leave worse than straight keeps straight sides."})
     out.append({"stage": "fea_plan", "decided": "growth", "value": plan["growth"], "rule": "PLAN-fea-6", "inputs": {},
                 "words": f"Element sizes grow by at most {plan.get('growth', GROWTH)} away from every zone."})
     out.append({"stage": "fea_plan", "decided": "budget", "value": "fits" if plan["fits"] else "over",

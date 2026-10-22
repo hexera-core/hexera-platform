@@ -157,13 +157,26 @@ def element_measures(X: np.ndarray) -> dict[str, np.ndarray]:
     return out
 
 
-def measure(mesh) -> dict:
-    """The mesh's worst figures and how many elements miss each limit. `mesh`: SolidMesh."""
+def measure(mesh, set_aside=None) -> dict:
+    """The mesh's worst figures and how many elements miss each limit. `mesh`: SolidMesh.
+    `set_aside`: gmsh element tags set aside at a cusp (PLAN-fea-10) - left out of the figures and
+    the limits, reported on their own; an inverted element is counted wherever it is."""
     ids = np.asarray(mesh.node_ids)
     index = np.full(int(ids.max()) + 1, -1, dtype=np.int64)
     index[ids] = np.arange(len(ids))
     xyz = np.asarray(mesh.xyz, dtype=float)
     els = index[np.asarray(mesh.elements)]
+    aside_report: dict | None = None
+    tags = getattr(mesh, "element_tags", None)
+    if set_aside and tags is not None and len(tags) == len(els):
+        mask = np.isin(np.asarray(tags), np.asarray(list(set_aside), dtype=np.int64))
+        if mask.any():
+            m_aside = element_measures(xyz[els[mask]])
+            aside_report = {"elements": int(mask.sum()),
+                            "inverted": int(np.count_nonzero(m_aside["min_detj"] <= 0)),
+                            "min_scaled_jacobian": float(np.min(m_aside["scaled_jacobian"])),
+                            "min_dihedral_deg": float(np.min(m_aside["min_dihedral"]))}
+            els = els[~mask]
     worst = {"min_detj": math.inf, "scaled_jacobian": math.inf, "jac_ratio": 0.0, "aspect": 0.0,
              "min_dihedral": 180.0, "max_dihedral": 0.0,
              **{k: (math.inf if lo else 0.0) for k, lo in _EXTRA}}
@@ -207,7 +220,10 @@ def measure(mesh) -> dict:
                 "fea_max_aspect_raw": r(worst["aspect_raw"]),
                 **({"fea_max_midside_offset": r(worst["midside_offset"]),
                     "fea_max_midside_bend_deg": r(worst["midside_bend"])} if els.shape[1] == 10 else {})}
+    if aside_report is not None:
+        inverted += int(aside_report["inverted"])
     return {**figures, **readings, "fea_inverted": inverted, "elements": int(len(els)),
+            **({"set_aside": aside_report} if aside_report is not None else {}),
             "over_limit": over, "worst_at_m": where,
             "limits": [{"key": k, "label": lab, "op": op, "limit": lim, "source": src,
                         "measured": figures[k], "elements_over": over[k]} for k, lab, op, lim, src in LIMITS]}

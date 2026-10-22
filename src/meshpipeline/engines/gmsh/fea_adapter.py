@@ -49,6 +49,14 @@ def _sampling(gmsh, tags: list[int], size: float) -> int:
     return int(min(SAMPLING_MAX, max(SAMPLING_MIN, n)))
 
 
+def _micro_place(m: dict) -> dict:
+    """A micro detail as the delivery names it: where (its middle point, mm), what and how small."""
+    pts = m.get("points_m") or [[0.0, 0.0, 0.0]]
+    mid = pts[len(pts) // 2]
+    return {"at_mm": [round(float(v) * 1000.0, 2) for v in mid], "kind": m.get("kind"),
+            "size_mm": m.get("size_mm"), "faces": list(m.get("faces") or [])}
+
+
 def size_fields(gmsh, plan: dict, surfaces: set[int]) -> int | None:
     """The plan's zones as gmsh fields; returns the background field (None when no zone binds)."""
     from meshpipeline.engines.fea_size_field import group_zones
@@ -140,21 +148,37 @@ def mesh(workspace) -> int:
         for _ in range(int(run.get("optimise_passes") or 1)):
             gmsh.model.mesh.optimize("Netgen")
         order = int((plan.get("element") or {}).get("order") or 2)
+        settled: dict = {"straightened": 0, "set_aside": [], "cusp_places_m": [], "cusp_elements": 0,
+                         "micro_used": [], "micro_elements": 0}
         if order > 1:
+            from meshpipeline.engines.gmsh import fea_settle
+
+            # each element's straight shape, before curving: what PLAN-fea-11 compares against
+            st_tags, st_q = fea_settle.qualities(gmsh)
+            straight = dict(zip(st_tags.tolist(), st_q.tolist(), strict=True))
             gmsh.option.setNumber("Mesh.HighOrderOptimize", 2)
             gmsh.model.mesh.setOrder(order)
+            # PLAN-fea-11 (never worse than straight) and PLAN-fea-10 (the cusps set aside)
+            settled = fea_settle.settle(gmsh, straight, [c["at_m"] for c in plan.get("cusps") or []],
+                                        D.SICN_FLOOR, micro=plan.get("micro") or [])
 
         etypes, etags, _ = gmsh.model.mesh.getElements(3)
         all_tags = [t for arr in etags for t in arr]
         qualities = gmsh.model.mesh.getElementQualities(all_tags, "minSICN") if all_tags else []
         n_elem = len(all_tags)
         n_nodes = len(gmsh.model.mesh.getNodes()[0])
-        min_sicn = float(min(qualities)) if len(qualities) else 0.0
-        low = int(sum(1 for q in qualities if q < D.SICN_FLOOR))
+        aside = set(settled["set_aside"])
+        held = [q for t, q in zip(all_tags, qualities, strict=True) if int(t) not in aside]
+        # THE FLOOR holds every element but the ones set aside at a cusp (PLAN-fea-10); validity
+        # (no degenerate element) holds every element without exception
+        min_sicn = float(min(held)) if len(held) else (float(min(qualities)) if len(qualities) else 0.0)
+        min_all = float(min(qualities)) if len(qualities) else 0.0
+        low = int(sum(1 for q in held if q < D.SICN_FLOOR))
+        aside_q = [q for t, q in zip(all_tags, qualities, strict=True) if int(t) in aside]
         fatal = []
         if n_elem == 0:
             fatal.append("no volume elements generated")
-        if min_sicn <= 0.0:
+        if min_all <= 0.0:
             fatal.append("degenerate elements (SICN <= 0)")
         deck = D._write_deck(gmsh, ws, discrete=False)
         gmsh.write(str(ws / "mesh.msh"))
@@ -167,8 +191,9 @@ def mesh(workspace) -> int:
             solid = from_gmsh(gmsh, sorted(vols))
             rules = checks.measure(solid, plan)
             # THE ELEMENTS AS THE SOLVERS JUDGE THEM (engines/fea_quality.py): the gate refuses an
-            # inverted element (VER-1); the verdict holds the rest to the production limits (VER-2)
-            shape = fea_quality.measure(solid)
+            # inverted element (VER-1); the verdict holds the rest to the production limits (VER-2),
+            # the elements set aside at a cusp apart (PLAN-fea-10: reported on their own)
+            shape = fea_quality.measure(solid, set_aside=sorted(aside))
         except Exception as exc:  # noqa: BLE001 - evidence; an unmeasured row decides as unmeasured
             print(f"[GMSH-FEA] plan rules or element quality not measured: {exc}", file=sys.stderr)
         # MESH ONCE, EXPORT MANY (design 8): the Nastran and Ansys files from the same mesh, with the
@@ -189,6 +214,14 @@ def mesh(workspace) -> int:
         (ws / "quality.json").write_text(json.dumps({
             "cells": n_elem, "nodes": n_nodes, "element_order": order,
             "min_sicn": round(min_sicn, 4),
+            # PLAN-fea-11 / PLAN-fea-10: elements given straight sides, and those set aside at a cusp
+            "fea_straightened": int(settled["straightened"]),
+            "fea_set_aside": {"rule": "PLAN-fea-10/PLAN-fea-12", "elements": len(aside),
+                              "cusp_elements": int(settled["cusp_elements"]),
+                              "micro_elements": int(settled["micro_elements"]),
+                              "min_sicn": round(float(min(aside_q)), 4) if aside_q else None,
+                              "places_mm": [[round(v * 1000.0, 2) for v in p] for p in settled["cusp_places_m"]],
+                              "micro": [_micro_place(plan["micro"][i]) for i in settled["micro_used"]]},
             "sicn_low_fraction": round(low / n_elem, 6) if n_elem else 1.0,
             "fatal": fatal, "size_h": base, "quality_bar": "fea", "sicn_floor": D.SICN_FLOOR,
             "elements_under_floor": low,

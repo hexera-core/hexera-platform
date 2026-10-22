@@ -58,6 +58,8 @@ class SolidMesh:
     element_volume: np.ndarray           # (E,) the solid each element belongs to
     #: CAD face tag -> (M, 3+) node numbers of the boundary triangles meshed on it (corners first)
     faces: dict[int, np.ndarray] = field(default_factory=dict)
+    #: (E,) the mesher's own element numbers, in `elements` order (empty when not known)
+    element_tags: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
 
 
 @dataclass
@@ -295,10 +297,11 @@ def from_gmsh(gmsh, volumes: list[int]) -> SolidMesh:
     face that bounds one of them."""
     tags, coords, _ = gmsh.model.mesh.getNodes()
     xyz = np.asarray(coords, dtype=float).reshape(-1, 3)
-    conn_blocks, vol_blocks = [], []
+    conn_blocks, vol_blocks, tag_blocks = [], [], []
     for v in volumes:
-        etypes, _etags, enodes = gmsh.model.mesh.getElements(3, int(v))
-        for et, en in zip(etypes, enodes, strict=True):
+        etypes, etags_v, enodes = gmsh.model.mesh.getElements(3, int(v))
+        for et, et_tags, en in zip(etypes, etags_v, enodes, strict=True):
+            tag_blocks.append(np.asarray(et_tags, dtype=np.int64))
             nn = int(gmsh.model.mesh.getElementProperties(int(et))[3])
             if int(et) == 11:
                 c = np.asarray(en, dtype=np.int64).reshape(-1, 10)[:, list(GMSH_TET10_TO_SOLVER)]
@@ -322,4 +325,5 @@ def from_gmsh(gmsh, volumes: list[int]) -> SolidMesh:
         if blocks:
             faces[s] = np.concatenate(blocks)
     return SolidMesh(node_ids=np.asarray(tags, dtype=np.int64), xyz=xyz, elements=elements,
-                     element_volume=np.concatenate(vol_blocks), faces=faces)
+                     element_volume=np.concatenate(vol_blocks), faces=faces,
+                     element_tags=np.concatenate(tag_blocks))
