@@ -24,7 +24,7 @@ import hashlib
 import json
 import subprocess
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 BUNDLE_FILES = ("manifest.json", "rows.jsonl", "summary.json", "settings.json")
@@ -51,7 +51,7 @@ class BundleManifest:
     random_seed: int | None = None
     image_digest: str | None = None     # container image digest when run containerised
     release_artifact: str | None = None # artifact another engineer re-runs from
-    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
     schema_version: int = 1
 
 

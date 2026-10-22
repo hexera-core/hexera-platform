@@ -28,11 +28,12 @@ bb = _load()
 
 
 def _manifest(**overrides):
-    base = dict(
-        benchmark="cad-repair", track="occt-real-defect", corpus_name="OCCT 7.8.0 bug corpus",
-        corpus_provenance="fetched from OCCT bug tracker attachments; see docs/research",
-        redistribution_status="review-pending", input_hashes={"a.step": "0" * 64},
-        engine_commit="deadbeef", settings_digest="", hardware_class="dev-host-arm64")
+    base = {
+        "benchmark": "cad-repair", "track": "occt-real-defect",
+        "corpus_name": "OCCT 7.8.0 bug corpus",
+        "corpus_provenance": "fetched from OCCT bug tracker attachments; see docs/research",
+        "redistribution_status": "review-pending", "input_hashes": {"a.step": "0" * 64},
+        "engine_commit": "deadbeef", "settings_digest": "", "hardware_class": "dev-host-arm64"}
     base.update(overrides)
     return bb.BundleManifest(**base)
 
