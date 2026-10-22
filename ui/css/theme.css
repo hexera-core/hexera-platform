@@ -1035,6 +1035,49 @@ th,td{border-color:var(--border)}
 .fea-spot.mark{min-width:0;width:9px;height:9px;padding:0;font-size:0;line-height:0;border-width:1.5px}
 .fea-spot.mark:hover,.fea-spot.mark.sel{width:auto;min-width:26px;height:22px;padding:0 4px;font-size:11px;line-height:22px;z-index:8}
 
+/* ------------------------------------------------------- run outcome ---- */
+/* a finished run's closing account (render/outcome.js) and the review's points on the mesh panel:
+   a headline, rows one per point, small facts, the long words folded under "Details" */
+.oc{display:flex;flex-direction:column;gap:8px;max-width:72ch}
+.oc p{margin:0}
+.oc-head{font-weight:600;color:var(--text-bright);font-size:var(--fs-lg)}
+.oc-done .oc-head{color:var(--text-bright)}
+.oc-h{margin-top:4px!important;color:var(--text);font-weight:600}
+.oc-p{color:var(--text-muted);font-size:var(--fs-md)}
+.oc-failed .oc-p{color:var(--text)}
+.oc-sub{margin-top:-6px!important;color:var(--text-faint);font-size:var(--fs-sm)}
+.oc-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;
+  border:1px solid var(--border);border-radius:var(--r-md);overflow:hidden}
+.oc-row{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 8px;padding:8px 12px;
+  border-top:1px solid var(--divider);line-height:1.5}
+.oc-row:first-child{border-top:0}
+.oc-txt{flex:1 1 16ch;min-width:0;color:var(--text)}
+.oc-tag{flex:none;padding:1px 7px;border-radius:var(--r-sm);font-size:var(--fs-xs);font-weight:600;
+  letter-spacing:.02em;color:var(--warn);background:var(--warn-soft)}
+.oc-row .oc-more{flex:1 1 100%}
+.oc-facts{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:3px 16px;margin:2px 0 0;
+  font-size:var(--fs-md)}
+.oc-fact{display:contents}
+.oc-fact dt{color:var(--text-faint)}
+.oc-fact dd{margin:0;color:var(--text);overflow-wrap:anywhere}
+.oc-more{font-size:var(--fs-sm);color:var(--text-muted)}
+.oc-more summary{cursor:pointer;width:max-content;color:var(--text-faint);list-style:none;
+  display:inline-flex;align-items:center;gap:6px}
+.oc-more summary::-webkit-details-marker{display:none}
+.oc-more summary::after{content:"";width:5px;height:5px;border-right:1.5px solid currentColor;
+  border-bottom:1.5px solid currentColor;transform:translateY(-2px) rotate(45deg)}
+.oc-more[open] summary::after{transform:translateY(1px) rotate(-135deg)}
+.oc-more summary:hover{color:var(--text)}
+.oc-more p{margin:6px 0 0;padding-left:10px;border-left:2px solid var(--divider);line-height:1.55;
+  overflow-wrap:anywhere}
+/* on the mesh panel */
+.v-why .v-why-h{margin:0 0 2px;font-weight:600;color:var(--text)}
+.v-why .v-why-p{margin:0 0 8px}
+.v-why .oc-list{margin:0 0 8px}
+.v-why .oc-more{margin-top:2px}
+@media(max-width:560px){
+  .oc-facts{grid-template-columns:minmax(0,1fr)}
+  .oc-fact dt{margin-top:4px}
 /* ---------------------------------------------------------------- polish ---- */
 /* the run header holds a sub-line only when it has something the live line does not say */
 .proc-sub:empty{display:none}
