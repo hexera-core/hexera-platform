@@ -517,11 +517,17 @@ class ConjugateReport:
     #: Things worth knowing that do not make the mesh unusable. Kept apart from `problems` on
     #: purpose: a run that prints eight warnings and a pass reads exactly like a run that failed.
     notes: list[str] = field(default_factory=list)
-    #: The high-water mark of resident memory across every stage, in bytes, 0 when it could not be
-    #: read. MEASURED on every run, because guessing it wrong is how a job gets OOM-killed: a
-    #: predicted 4.9 GB build was killed by the kernel at 8.0 GB resident. The finished mesh's
-    #: footprint and the mesher's peak while building it are different numbers, and only the first
-    #: one was ever measured here. See semi.py's affordability check, which uses this.
+    #: The high-water mark of resident memory across every stage, in bytes. MEASURED on every run,
+    #: because guessing it wrong is how a job gets OOM-killed: a predicted 4.9 GB build was killed
+    #: by the kernel at 8.0 GB resident. The finished mesh's footprint and the mesher's peak while
+    #: building it are different numbers, and only the first was ever measured here.
+    #:
+    #: ZERO WHEN IT CANNOT BE ATTRIBUTED TO THIS BUILD, which is not the same as zero memory.
+    #: `RUSAGE_CHILDREN.ru_maxrss` is a maximum over every child the process has ever reaped, not
+    #: over this build's, so inside a sweep the second build inherits the first one's figure. It is
+    #: reported only when this build raised the mark; otherwise a smaller build would be recorded
+    #: as having used a bigger build's memory, and the fitted bytes-per-cell would be fitted on
+    #: that.
     peak_rss_bytes: int = 0
     #: Seconds per stage. MEASURED, because the cost is not where anyone expects it: on a
     #: 100-channel part cartesianMesh took 617 s and the tagging and splitting after it took over
@@ -613,8 +619,18 @@ def interface_faces(patches: dict[str, int], patch: str) -> int:
     return patches.get(patch, 0)
 
 
+#: How far the meshed coolant may be from the CAD before the tagging is not believed, when nobody
+#: says otherwise. It is the staircase allowance at the resolution the platform's own rule asks for,
+#: and it was the ONLY tolerance for a while, which made the gate ask a 2-cells-across mesh to be
+#: something it was never going to be. Measured errors at 2 across run to 27.5% and at 5 across to
+#: 13.3%, so a flat 5% refused six of the eight coarse meshes in this package for being coarse, and
+#: `check` and `sweep` never reached their solve. The caller passes a tolerance derived from
+#: engines/staircase_error for the resolution it actually asked for; see semi.volume_tolerance.
+DEFAULT_VOLUME_TOL = 0.05
+
+
 def verify(report: ConjugateReport, *, expect_fluid_volume_m3: float | None = None,
-           expect_fluid_pieces: int | None = None, volume_tol: float = 0.05,
+           expect_fluid_pieces: int | None = None, volume_tol: float = DEFAULT_VOLUME_TOL,
            narrowest_m: float | None = None) -> ConjugateReport:
     """Decide whether this mesh can be handed on, and say exactly why not when it cannot.
 
@@ -744,11 +760,13 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
           background_cell_m: float, levels: int = DEFAULT_REFINEMENT_LEVELS,
           thickness_m: float | None = None,
           expect_fluid_volume_m3: float | None = None,
-          expect_fluid_pieces: int | None = None,
+          expect_fluid_pieces: int | None = None, volume_tol: float = DEFAULT_VOLUME_TOL,
           ports: PortPlan | None = None, narrowest_m: float | None = None,
           bashrc: str = _DEFAULT_BASHRC, timeout: int = 3600) -> ConjugateReport:
     """Mesh the block, split it in two, and report what was actually produced."""
     ws = Path(workspace)
+    # The mark BEFORE this build, so the one after it can be attributed. See peak_rss_bytes.
+    rss_before = children_peak_rss_bytes()
     (ws / "system").mkdir(parents=True, exist_ok=True)
     (ws / "system" / "meshDict").write_text(render_meshdict(
         block_file=block_stl, fluid_file=fluid_stl,
@@ -787,18 +805,21 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
         if (polymesh / "boundary").is_file():
             reports[name].patches = boundary_patches(polymesh)
 
+    rss_after = children_peak_rss_bytes()
     rep = ConjugateReport(fluid=reports[FLUID_REGION], solid=reports[SOLID_REGION],
                           ports=ports, seconds=seconds,
-                          peak_rss_bytes=children_peak_rss_bytes())
+                          peak_rss_bytes=rss_after if rss_after > rss_before else 0)
     rep.interface_faces_fluid = interface_faces(rep.fluid.patches, FLUID_TO_SOLID)
     rep.interface_faces_solid = interface_faces(rep.solid.patches, SOLID_TO_FLUID)
     return verify(rep, expect_fluid_volume_m3=expect_fluid_volume_m3,
-                  expect_fluid_pieces=expect_fluid_pieces, narrowest_m=narrowest_m)
+                  expect_fluid_pieces=expect_fluid_pieces, volume_tol=volume_tol,
+                  narrowest_m=narrowest_m)
 
 
 __all__ = ["ConjugateError", "ConjugateReport", "RegionReport", "PortPlan",
            "FLUID_REGION", "SOLID_REGION", "FLUID_TO_SOLID", "SOLID_TO_FLUID",
-           "SPLIT_ARGS", "DEFAULT_REFINEMENT_LEVELS", "BLOCK_FACES", "OPEN_FACE_RTOL",
+           "SPLIT_ARGS", "DEFAULT_REFINEMENT_LEVELS", "DEFAULT_VOLUME_TOL",
+           "BLOCK_FACES", "OPEN_FACE_RTOL",
            "CELL_TO_REGION",
            "block_bounds", "block_surface_stl", "open_faces", "plan_ports",
            "background_complaint", "MIN_BACKGROUND_CELLS_ACROSS_BLOCK",

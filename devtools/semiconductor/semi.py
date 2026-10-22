@@ -43,7 +43,7 @@ import parts as P
 
 from meshpipeline.engines.cfmesh import conjugate as C
 from meshpipeline.engines.cfmesh.case_scaffold import write_case_skeleton
-from meshpipeline.engines.staircase_error import annotate
+from meshpipeline.engines.staircase_error import annotate, single_passage_error_pct
 
 #: Bytes of resident memory per cell in the FINISHED mesh, measured 2026-10-21.
 BYTES_PER_CELL = 909
@@ -113,6 +113,38 @@ def estimate_cells(part: P.Part, background_m: float, levels: int,
     return cells, FIXED_OVERHEAD_BYTES + cells * PEAK_BYTES_PER_CELL
 
 
+#: How much of the expected staircase error a mesh may exceed before the tagging is not believed.
+#:
+#: The gate is asking ONE question - did the right cells end up on which side - and the staircase
+#: is the noise it has to see through. A split that put half the metal in the coolant region is
+#: wrong by hundreds of per cent; a 2-cells-across mesh that came out 27% short of the CAD is a
+#: mesh doing exactly what 2 cells across does. One fixed number cannot tell those apart at both
+#: ends, and the fixed 5% called the second one a failure, so `check` and `sweep` never reached
+#: their solve on anything coarse.
+VOLUME_TOL_MARGIN = 1.5
+
+
+def volume_tolerance(cells_across: int) -> tuple[float, str]:
+    """(tolerance, why) for the fluid-volume gate at this resolution.
+
+    Derived from engines/staircase_error, which owns what a resolution costs, so the gate and the
+    evidence cannot disagree. The WORST curve is used rather than the average: a part with one
+    passage is the one most likely to be refused for being coarse, and the gate is not there to
+    judge accuracy. It never goes below the platform's own allowance, so at the resolution the rule
+    asks for nothing is loosened.
+    """
+    expected = single_passage_error_pct(float(cells_across)) / 100.0
+    derived = VOLUME_TOL_MARGIN * expected
+    if derived <= C.DEFAULT_VOLUME_TOL:
+        return C.DEFAULT_VOLUME_TOL, (
+            f"{C.DEFAULT_VOLUME_TOL:.0%}, the standing allowance; {cells_across} cells across is "
+            f"fine enough that the measured staircase ({expected:.2%}) is well inside it")
+    return derived, (
+        f"{derived:.0%}, which is {VOLUME_TOL_MARGIN:g}x the {expected:.1%} staircase error "
+        f"measured at {cells_across} cells across on the part that staircases worst. A flat "
+        f"{C.DEFAULT_VOLUME_TOL:.0%} would refuse this mesh for being exactly as coarse as asked")
+
+
 def _gb(n: float) -> str:
     return f"{n / 1024 ** 3:.1f} GB"
 
@@ -180,8 +212,11 @@ def describe(part: P.Part, cells_across: int, levels: int, lo, hi, background: f
     print(f"resolution    {cells_across} cells across  ->  interface {iface * 1e6:.3f} um, "
           f"background {background * 1e6:.3f} um ({levels} levels)")
     ev = annotate(float(cells_across))
-    print(f"              expect about {ev['expected_volume_error_pct']}% of the coolant volume "
-          f"lost to staircasing ({ev['note']})")
+    print(f"              expect {ev['expected_volume_error_pct']}% of the coolant volume lost to "
+          f"staircasing on a part with many passages, {ev['worst_measured_volume_error_pct']}% on "
+          f"one with a single passage ({ev['note']})")
+    tol, why = volume_tolerance(cells_across)
+    print(f"volume gate   {why}")
     print(f"estimate      {cells / 1e6:.2f} M cells, {_gb(nbytes)} at the mesher's peak "
           f"({_gb(cells * BYTES_PER_CELL)} once written); this machine has {_gb(memory_bytes())}")
     if (why := C.background_complaint(lo, hi, background)):
@@ -195,13 +230,22 @@ def describe(part: P.Part, cells_across: int, levels: int, lo, hi, background: f
         print(f"sealed        {', '.join(ports.walls)}")
 
 
+class TooBig(Exception):
+    """This run will not fit in memory. Raised rather than exiting, so a sweep keeps its rows.
+
+    It used to be a SystemExit, which is correct for one `mesh` and wrong inside `sweep`: the
+    refusal unwound straight out of the loop and threw away every resolution already meshed, which
+    is the expensive half of the work.
+    """
+
+
 def affordable(nbytes: float, force: bool) -> None:
     total = memory_bytes()
     if not total or force:
         return
     if nbytes > MEMORY_HEADROOM * total:
-        raise SystemExit(
-            f"REFUSED: this would need about {_gb(nbytes)} and the machine has {_gb(total)}. "
+        raise TooBig(
+            f"this would need about {_gb(nbytes)} and the machine has {_gb(total)}. "
             f"Coarsen it with --across, or run it on a bigger box, or pass --force to try anyway. "
             f"Forcing it does not make it fit: the mesher starts swapping and never finishes.")
 
@@ -254,11 +298,18 @@ def cmd_mesh(a) -> int:
         print(f"REFUSED: {exc}", file=sys.stderr)
         return 1
     describe(part, a.across, a.levels, lo, hi, background, open_, ports, cells, nbytes)
-    affordable(nbytes, a.force)
+    try:
+        affordable(nbytes, a.force)
+    except TooBig as exc:
+        print(f"REFUSED: {exc}", file=sys.stderr)
+        return 1
 
     ws = _workspace(a, part)
     if ws.exists() and a.fresh:
         shutil.rmtree(ws)
+    # A stale report from an earlier resolution in this directory would be read as this build's if
+    # the build fails before writing its own, and a sweep would show the wrong row as this one's.
+    (ws / "mesh-report.json").unlink(missing_ok=True)
     (ws / "constant" / "triSurface").mkdir(parents=True, exist_ok=True)
     write_case_skeleton(ws)
     (ws / "constant" / "triSurface" / "block.stl").write_text(C.block_surface_stl(lo, hi))
@@ -280,6 +331,7 @@ def cmd_mesh(a) -> int:
         rep = C.build(ws, background_cell_m=background, levels=a.levels,
                       expect_fluid_volume_m3=part.fluid_volume_m3,
                       expect_fluid_pieces=part.passages,
+                      volume_tol=volume_tolerance(a.across)[0],
                       ports=ports, narrowest_m=part.narrowest_m)
     except C.ConjugateError as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
@@ -297,9 +349,13 @@ def mesh_json(part: P.Part, a, rep: C.ConjugateReport, background: float) -> dic
         "background_cell_um": background * 1e6,
         "interface_cell_um": C.interface_cell_m(background, a.levels) * 1e6,
         "lid_mm": a.lid,
+        "volume_tol": volume_tolerance(a.across)[0],
         "background_complaint": C.background_complaint(
             *C.block_bounds(part.solid_lo, part.solid_hi,
                             {"zmax": a.lid * 1e-3} if a.lid else None), background),
+        # Explicit, because inlet_faces 0 means two different things: a port the coolant never
+        # reached, which is a failure, and a run that was never asked to check one.
+        "ports_checked": rep.ports is not None,
         "inlet": rep.ports.inlet if rep.ports else None,
         "outlet": rep.ports.outlet if rep.ports else None,
         "sealed_faces": list(rep.ports.walls) if rep.ports else [],
@@ -390,11 +446,10 @@ def solve_workspace(ws: Path, a) -> int:
     meta = json.loads(report_path.read_text())
     fluid_patches = sorted(meta["fluid_patches"])
     solid_patches = sorted(meta["solid_patches"])
-    heated = a.heated_face
     cores = a.cores if a.cores > 0 else min(8, os.cpu_count() or 1)
     spec = cht.SolveSpec(
         inlet=a.inlet or meta["inlet"], outlet=a.outlet or meta["outlet"],
-        heated_face=heated, inlet_velocity=a.velocity, heat_flux=a.flux,
+        heated_face=a.heated_face, inlet_velocity=a.velocity, heat_flux=a.flux,
         iterations=a.iterations, cores=cores)
 
     print(f"{chr(10)}solve         chtMultiRegionSimpleFoam on {spec.cores} core(s), at most "
@@ -405,11 +460,15 @@ def solve_workspace(ws: Path, a) -> int:
     print(f"driving       {spec.inlet_velocity} m/s in at {spec.inlet}, "
           f"{spec.heat_flux / 1e4:.0f} W/cm2 into {spec.heated_face}, "
           f"coolant in at {spec.inlet_temperature} K")
-    try:
-        cht.write_case(ws, spec, fluid_patches, solid_patches)
-    except cht.SolveError as exc:
-        print(f"REFUSED: {exc}", file=sys.stderr)
-        return 1
+    # NOT on --reuse. Re-judging a finished run must not touch the run: write_case rewrites the
+    # controlDict and every field in 0/, which is needless mutation of the thing being read and
+    # makes "nothing was run" a half-truth.
+    if not a.reuse:
+        try:
+            cht.write_case(ws, spec, fluid_patches, solid_patches)
+        except cht.SolveError as exc:
+            print(f"REFUSED: {exc}", file=sys.stderr)
+            return 1
 
     log = ws / "solve.log"
     stage_seconds: dict[str, float] = {}
@@ -426,6 +485,10 @@ def solve_workspace(ws: Path, a) -> int:
         took = 0.0
         print("  reusing the solve already in this workspace; nothing was run")
     if not a.reuse:
+        # The previous run's readings go first. They are indistinguishable from this run's once
+        # they are on disk, and the one that wins is whichever stopped at the later iteration.
+        if (gone := cht.clear_post(ws)):
+            print(f"  cleared {gone} reading(s) left by an earlier solve in this workspace")
         if spec.cores > 1:
             rc, took = _run_foam(ws, cht.decompose_command(), ws / "decomposePar.log", a.timeout)
             stage_seconds["decomposePar"] = round(took, 1)
@@ -573,7 +636,7 @@ def cmd_sweep(a) -> int:
         print(f"{r['across']:>7}{r.get('interface_cell_um', 0):>10.3f}"
               f"{(achieved or 0):>7.1f}"
               f"{(r.get('fluid_cells') or 0) / 1e6:>10.2f}M"
-              f"{r.get('fluid_volume_error_pct', float('nan')):>11.3f}"
+              f"{r.get('fluid_volume_error_pct', float('nan')):>+11.3f}"
               f"{r.get('interface_faces', 0):>13,}"
               f"{('ok' if r['mesh_rc'] == 0 else 'FAIL'):>6}"
               f"{('n/a' if dt is None else format(dt, '.2f') + ' K'):>13}"
@@ -601,7 +664,12 @@ def cmd_import(a) -> int:
         why = P.unit_complaint(lo, hi)
         print(f"  {f.name:<46}{tris:>9,} tri  "
               f"{(hi[0] - lo[0]) * 1e3:.3f} x {(hi[1] - lo[1]) * 1e3:.3f} x "
-              f"{(hi[2] - lo[2]) * 1e3:.3f} mm" + ("   " + why.split(".")[0] if why else ""))
+              f"{(hi[2] - lo[2]) * 1e3:.3f} mm" + ("   WRONG UNIT" if why else ""))
+        if why:
+            # In full, on its own line. It was being cut at the first full stop, which falls inside
+            # "1e-3" and inside every decimal in the message, so the one warning whose entire point
+            # is to say what to do about it printed as a fragment with the advice removed.
+            print(f"      {why}")
         n += 1
     for f in sorted(src.glob("manifest*.json")):
         shutil.copyfile(f, a.cad / f.name)

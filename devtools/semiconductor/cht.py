@@ -32,7 +32,9 @@ console log, because the log's wording is version-dependent and the .dat columns
 """
 from __future__ import annotations
 
+import math
 import re
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -447,13 +449,18 @@ def control_dict(spec: SolveSpec, *, start: int = 0, end: int | None = None) -> 
         # flows: a staircased port has a smaller area than the CAD's and that shows up here.
         _surface_value(FN_INLET, FLUID, spec.inlet, "sum", "phi"),
         _surface_value(FN_OUTLET, FLUID, spec.outlet, "sum", "phi"),
-        # Bulk temperature, weighted by mass flux rather than by area. A channel's area-average
-        # temperature is not its bulk temperature - the slow fluid at the wall is the hot fluid -
-        # and using the wrong one puts a few per cent into the energy balance that is nothing to
-        # do with the mesh.
-        _surface_value("inletBulkT", FLUID, spec.inlet, "weightedAreaAverage", "T", weight="phi"),
-        _surface_value("outletBulkT", FLUID, spec.outlet, "weightedAreaAverage", "T",
-                       weight="phi"),
+        # The NUMERATOR of the bulk temperature, sum(phi*T). Divided by sum(phi) above, which is
+        # the mass flow, that is exactly the flux-weighted mean: the bulk temperature.
+        #
+        # `weightedSum` and not `weightedAreaAverage`. A channel's area-average temperature is not
+        # its bulk temperature - the slow fluid at the wall is the hot fluid - so the weight has to
+        # be the mass flux. But `weightedAreaAverage` multiplies the weight by the face area as
+        # well, and phi is ALREADY a flux with the area in it, so weighting by phi there weights by
+        # area twice. On a channel whose outlet faces are all the same size that is the same answer;
+        # on anything with a mix of face sizes it is a biased one, and the bias lands in the energy
+        # balance looking like a mesh defect.
+        _surface_value("inletBulkT", FLUID, spec.inlet, "weightedSum", "T", weight="phi"),
+        _surface_value("outletBulkT", FLUID, spec.outlet, "weightedSum", "T", weight="phi"),
         _wall_heat_flux(FN_HEAT_FLUID, FLUID, (FLUID_TO_SOLID,)),
         _wall_heat_flux(FN_HEAT_SOLID, SOLID, (SOLID_TO_FLUID, spec.heated_face)),
     ]
@@ -617,6 +624,33 @@ def read_dat(path: Path) -> tuple[list[str], list[list]]:
     return header, rows
 
 
+#: Where a function object's tables go, and the one directory that has to be cleared between runs.
+POST = "postProcessing"
+
+
+def clear_post(root: Path) -> int:
+    """Delete the whole postProcessing tree. Call before a solve, never before reading one.
+
+    THE READINGS DO NOT KNOW WHICH RUN THEY CAME FROM. A solve writes
+    `postProcessing/<region>/<fn>/<startTime>/<fn>.dat`, and a chunked run writes one startTime
+    directory per chunk, so the only way to pick the final row is to take the greatest Time across
+    all of them. Run the same workspace again at a different operating point and stop sooner than
+    last time, and the greatest Time in the tree belongs to the PREVIOUS run: a 0.25 m/s re-solve
+    capped at 250 iterations reads back the 1 m/s run's 6.5 W and 20.18 K rise, prints them under
+    the new velocity, and still reports that mass balances and the heat closes, because both halves
+    of every comparison are stale together. There is no self-consistency check that catches that -
+    the stale numbers are perfectly consistent with each other.
+
+    So the tree is cleared when a solve starts. Returns how many files went, for the record.
+    """
+    base = Path(root) / POST
+    if not base.is_dir():
+        return 0
+    n = sum(1 for _ in base.rglob("*") if _.is_file())
+    shutil.rmtree(base, ignore_errors=True)
+    return n
+
+
 def dat_files(root: Path, function: str) -> list[Path]:
     """Every .dat this function object wrote, wherever OpenFOAM put it.
 
@@ -625,7 +659,7 @@ def dat_files(root: Path, function: str) -> list[Path]:
     `postProcessing/<function>/<startTime>/<file>.dat` in a single-region one. Hard-coding either
     shape gives a run that reports every reading as missing and looks like a failed solve.
     """
-    base = root / "postProcessing"
+    base = Path(root) / POST
     if not base.is_dir():
         return []
     return sorted(d for d in base.rglob("*.dat") if function in d.parts)
@@ -683,8 +717,15 @@ def heat_through(root: Path, function: str, patch: str) -> float | None:
     return dat_value(root, function, "integral", where=("patch", patch))
 
 
+#: `nan` and `-nan` ARE IN THE CHARACTER CLASS on purpose. A diverged OpenFOAM run prints
+#: "Initial residual = -nan", and a pattern that only matches digits does not fail on that line, it
+#: SKIPS it. The field then has no residual at all, so it is absent from `residuals`, so `unmet`
+#: never looks at it, so the worst possible run - every equation blown up - comes back converged
+#: with a clean verdict. Matching it and letting float() produce a nan is what makes it visible,
+#: and `unmet` treats a non-finite residual as unmet because `nan > target` is False.
 _RESIDUAL = re.compile(
-    r"Solving for (?P<field>\w+), Initial residual = (?P<value>[-0-9.eE+]+)")
+    r"Solving for (?P<field>\w+), Initial residual = (?P<value>-?(?:nan|inf|[0-9.eE+-]+))",
+    re.I)
 _REGION_MARK = re.compile(r"Solving for (?:fluid|solid) region (?P<region>\w+)")
 _MINMAX_T = re.compile(r"Min/max T:\s*([-0-9.eE+]+)\s+([-0-9.eE+]+)")
 _TIME = re.compile(r"^Time = ([0-9.eE+-]+)", re.M)
@@ -718,11 +759,15 @@ class SolveReport:
 
     @property
     def unmet(self) -> list[tuple[str, float, float]]:
-        """(field, residual reached, target) for every equation still above its target."""
+        """(field, residual reached, target) for every equation still above its target.
+
+        A NON-FINITE residual counts as unmet, and the explicit test is the point: `nan > target`
+        is False, so an equation that blew up would otherwise be read as having met its target.
+        """
         out = []
         for key, (_first, last) in sorted(self.residuals.items()):
             target = residual_target(key.split(":")[-1])
-            if last > target:
+            if not math.isfinite(last) or last > target:
                 out.append((key, last, target))
         return out
 
@@ -734,8 +779,16 @@ class SolveReport:
         return scale > 0 and abs(self.mass_in + self.mass_out) / scale < 1e-3
 
     def heat_gap(self, a: float | None, b: float | None) -> float | None:
+        """The relative gap between two readings of the same watts, or None if it cannot be taken.
+
+        A NON-FINITE reading returns infinity rather than None, so a diverged solve is a gap past
+        every tolerance rather than a missing comparison. `nan > tol` is False, so a nan reading
+        would otherwise be reported as heat agreeing to nan per cent and pass.
+        """
         if a is None or b is None or a == 0:
             return None
+        if not (math.isfinite(a) and math.isfinite(b)):
+            return math.inf
         return abs(abs(b) - abs(a)) / abs(a)
 
     @property
@@ -769,6 +822,14 @@ def read_log(text: str) -> tuple[int, dict[str, tuple[float, float]],
     return iterations, {k: (v[0], v[-1]) for k, v in res.items() if v}, lo, hi
 
 
+def _bulk(weighted_sum: float | None, mass_flow: float | None) -> float | None:
+    """sum(phi*T) / sum(phi), which is the bulk temperature, or None if either half is missing."""
+    if weighted_sum is None or not mass_flow:
+        return None
+    value = weighted_sum / mass_flow
+    return value if math.isfinite(value) else None
+
+
 def progress(log_text: str) -> tuple[int, bool]:
     """(iterations reached, whether every equation is at or below target) from a log so far.
 
@@ -792,8 +853,9 @@ def collect(workspace: Path, spec: SolveSpec, log_text: str) -> SolveReport:
     r.mass_out = dat_value(ws, FN_OUTLET, "sum(phi)")
     r.inlet_area = dat_value(ws, FN_INLET, "Area")
     r.outlet_area = dat_value(ws, FN_OUTLET, "Area")
-    r.bulk_t_in = dat_value(ws, "inletBulkT", "(T)")
-    r.bulk_t_out = dat_value(ws, "outletBulkT", "(T)")
+    # sum(phi*T) / sum(phi). Both halves carry the same sign, so the quotient is a temperature.
+    r.bulk_t_in = _bulk(dat_value(ws, "inletBulkT", "(T)"), r.mass_in)
+    r.bulk_t_out = _bulk(dat_value(ws, "outletBulkT", "(T)"), r.mass_out)
 
     r.interface_area = dat_value(ws, FN_HEAT_FLUID, "Area")
     r.q_fluid = heat_through(ws, FN_HEAT_FLUID, FLUID_TO_SOLID)
@@ -853,4 +915,5 @@ __all__ = ["Coolant", "Metal", "SolveSpec", "SolveError", "SolveReport",
            "RESIDUAL_TARGETS", "RESIDUAL_DEFAULT", "residual_target",
            "SOLVER", "inlet_vector", "solid_p", "decompose_dict", "decompose_command",
            "solver_command", "solve_commands", "chunks", "control_dict", "write_case",
-           "read_log", "read_dat", "dat_files", "dat_value", "heat_through", "collect"]
+           "read_log", "read_dat", "dat_files", "dat_value", "heat_through", "collect",
+           "POST", "clear_post", "progress"]

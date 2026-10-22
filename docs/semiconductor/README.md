@@ -17,9 +17,26 @@ devtools/semiconductor/run.sh solve  runs/<dir> --reuse         re-judge a run w
 devtools/semiconductor/run.sh import --from <dir> --scale 1e-3  bring new CAD in
 ```
 
-`run.sh` runs everything inside the mesh image, because OpenFOAM lives there and not on the host.
-Runs land in `runs/<part>-<N>across/` with their logs, both meshes, `mesh-report.json` and
-`solve-report.json`.
+`run.sh` runs everything inside the mesh image, because OpenFOAM lives there and not on the host,
+and as the calling user rather than root so a run does not leave files nobody can delete. Runs land
+in `runs/<part>-<N>across/` with their logs, both meshes, `mesh-report.json` and
+`solve-report.json`. `--help` on any subcommand is current; these are the ones worth knowing:
+
+| flag | what it is for |
+|---|---|
+| `--across N` | cells across the narrowest passage. The platform's own rule is 13 |
+| `--levels N` | octree levels spent at the coolant surface. The background is 2**N coarser |
+| `--lid MM` | grow the block's zmax face by this many MILLIMETRES of solid, roofing over channels that are open at the top |
+| `--inlet F --outlet F` | name the ports instead of letting the geometry choose them |
+| `--no-ports` | mesh a part whose coolant is sealed. The mesh is then not solvable and is still worth having |
+| `--force` | run even when the cost estimate says it will not fit. It does not make it fit |
+| `--dry-run` | write the dictionaries and stop |
+| `--cores N` | MPI ranks for the solve. Does not change the mesher, which does not scale |
+| `--iterations N` | a CAP, not a target. Reaching it means the run never converged |
+| `--chunk N` | iterations between convergence checks |
+| `--velocity M_S`, `--flux W_M2`, `--heated-face F` | what drives the solve |
+| `--reuse` | re-judge the solve already in a workspace without running it again |
+| `--fresh` | delete the workspace first |
 
 Nothing has to be typed twice. The coolant volume, the passage count and the narrowest feature come
 from `cad/semiconductor/parts.json`, which `index_parts.py` measures off the STLs. The cell size is
@@ -235,19 +252,21 @@ Eight parts were then meshed at 2 cells across and five at 5, and the spread is 
 | cells across | error range | median | parts |
 |---|---|---|---|
 | 2 | 0.05% to 27.54% | 5.53% | 8 |
-| 5 | 0.13% to 13.26% | 1.53% | 5 |
+| 5 | 0.13% to 13.26% | 1.06% | 6 |
 | 12 | 0.12% | 0.12% | 1 |
 
 **The 3.21% was neither the best nor the typical one**, and the range at a single resolution covers
 nearly three orders of magnitude. The sign moves too: at 2 across the errors ran from -27.5% to
 +5.9%.
 
-What sorts them is how many differently placed walls the part averages over. A wall falling between
-two rows of cell centres loses a row of cells and one falling just outside gains one, so a part
-presenting the same wall placement over and over gets that error multiplied instead of cancelled.
-Ordered by error, at 2 cells across:
+What sorts them is how many **differently placed walls** the part averages over. A wall falling
+between two rows of cell centres loses a row of cells and one falling just outside gains one, so a
+part presenting the same wall placement over and over gets that error multiplied instead of
+cancelled. Two things supply different placements, and each resolution shows one of them.
 
-| part | distinct passages | error at 2 across |
+At 2 cells across it is the passage count, almost perfectly:
+
+| part | distinct passages | error |
 |---|---|---|
 | `corintis_straight_baseline_100um` | 100 | **-0.05%** |
 | `lee_garimella_2005_test1` | 10 | -1.75% |
@@ -258,8 +277,24 @@ Ordered by error, at 2 cells across:
 | `pin_fin_300um_staggered` | 1 chamber around posts | -15.26% |
 | `unit_cell_100um` | ONE prismatic channel | -27.54% |
 
-Monotone in passage count across all eight but for the inversion between 10 and 24, which is 0.45
-of a percentage point.
+Monotone but for the inversion between 10 and 24, which is 0.45 of a percentage point.
+
+At 5 cells across it is not, and the exception is the informative one:
+
+| part | what it presents | error |
+|---|---|---|
+| `murray_ported_4gen` | 1 passage, 31 segments at many angles | **+0.13%** |
+| `murray_branching_4gen` | the same tree, sealed | +0.52% |
+| `lee_garimella_2005_test1` | 10 passages | +0.58% |
+| `manifold_two_level` | 1 network, 16 axis-aligned channels | +1.53% |
+| `pin_fin_300um_staggered` | 1 chamber around posts | +3.97% |
+| `unit_cell_100um` | ONE prismatic channel | +13.26% |
+
+The branching tree has one passage and beats the ten-passage part. Its walls run at every angle, so
+a single passage supplies as many distinct placements as ten parallel ones, and the error averages
+away inside it. **Axis-aligned walls are what cannot average**: the three worst at both resolutions
+are the three whose walls are all parallel to the octree. The two Murray rows are the same tree with
+and without ports, which is as close to a controlled pair as this set has.
 
 ### A prediction that was wrong, and what it cost to find out
 
@@ -401,6 +436,7 @@ both ports carrying faces, and **every passage count matching the CAD's**, which
 | `murray_branching_4gen` | 2 | 31,808 | 1 = 1 | +5.92% |
 | `murray_ported_4gen` | 2 | 32,218 | 1 = 1 | +5.73% |
 | `murray_ported_4gen` | 5 | 474,082 | 1 = 1 | +0.13% |
+| `murray_branching_4gen` | 5 | 469,880 | 1 = 1 | +0.52% |
 | `hotspot_array` | 2 | 383,520 | **24 = 24** | +2.20% |
 | `lee_garimella_2005_test1` | 2 | 52,400 | **10 = 10** | -1.75% |
 | `lee_garimella_2005_test1` | 5 | 784,576 | **10 = 10** | +0.58% |
