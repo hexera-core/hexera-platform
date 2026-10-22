@@ -26,6 +26,8 @@ def _dir(live) -> list[float]:
 
 
 def _open(live) -> None:
+    # an earlier test in the same browser may have stored another Up axis for this session
+    live.evaluate(f"localStorage.removeItem('hexera.view-up.session.{SESSION}'); 0")
     check = _check()
     check["proposal"]["flow"] = "internal"
     _open_stage(live, check)
@@ -59,7 +61,9 @@ def test_real_clicks_on_the_cube_turn_the_view_smoothly(live):
 
     # the TOP face, clicked as a mouse clicks it: the view turns there over a moment - never a jump
     start = _dir(live)
-    _real_click(live, "0,0,1")
+    top_key = live.evaluate(f"{ROOT}.querySelector('.nav-face[data-face=TOP] .nav-cell.centre').dataset.dir")
+    assert top_key == "0,0,1", top_key
+    _real_click(live, top_key)
     live.settle(0.15)
     midway = _dir(live)
     _idle(live)
