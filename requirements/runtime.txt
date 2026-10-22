@@ -118,12 +118,12 @@ rhino3dm==8.17.0
 
 
 # --- Observability: OpenTelemetry distributed tracing (env-gated, off by default) ---
-opentelemetry-sdk==1.41.1
-opentelemetry-exporter-otlp-proto-http==1.41.1
-opentelemetry-instrumentation-fastapi==0.62b1
-opentelemetry-instrumentation-httpx==0.62b1
-opentelemetry-instrumentation-celery==0.62b1
-opentelemetry-instrumentation-sqlalchemy==0.62b1
+opentelemetry-sdk==1.45.1
+opentelemetry-exporter-otlp-proto-http==1.45.1
+opentelemetry-instrumentation-fastapi==0.66b1
+opentelemetry-instrumentation-httpx==0.66b1
+opentelemetry-instrumentation-celery==0.66b1
+opentelemetry-instrumentation-sqlalchemy==0.66b1
 
 # Off-box compute: Cloud Run Job meshing (see adapters/mesh_execution/cloud_run_client.py).
 google-cloud-storage==2.18.2
