@@ -221,13 +221,17 @@ def bad_surfaces(gmsh, tags, qualities) -> list[int]:
 
 
 def _peak_rss_mb() -> float | None:
-    """This process's peak resident memory (MB), or None where the platform does not say."""
+    """This process's peak resident memory (MB), or None where the platform does not say. Read as
+    /proc's VmHWM, which starts afresh at exec: getrusage's ru_maxrss carries the parent's peak
+    across fork and exec, so a mesher started by a planner that peaked at 10 GB read 10 GB."""
     try:
-        import resource
-
-        return round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0, 1)
-    except (ImportError, OSError):
+        with open("/proc/self/status", encoding="ascii") as fh:
+            for line in fh:
+                if line.startswith("VmHWM:"):
+                    return round(float(line.split()[1]) / 1024.0, 1)
+    except (OSError, ValueError):
         return None
+    return None
 
 
 def mesh(workspace) -> int:

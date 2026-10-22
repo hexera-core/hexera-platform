@@ -235,7 +235,7 @@ def test_the_rules_own_plan_is_meshed_when_it_fits(tmp_path):
     record, surface, diag = FD.measure_staged(ws)
     plan = FD.choose_plan(record, surface, diag)
     assert plan["fits"] and not plan.get("coarsened") and "resolution_short" not in plan
-    assert plan["limit"]["elements"] == P.ELEMENT_LIMIT
+    assert plan["limit"]["elements"] == min(P.ELEMENT_LIMIT, FD.memory_elements())
 
 
 def test_over_the_limit_the_finest_zones_are_coarsened_and_what_is_short_is_named(tmp_path, monkeypatch):

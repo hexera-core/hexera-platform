@@ -302,12 +302,14 @@ FILL_RATES: dict[str, float] = {"simple": 1500.0, "moderate": 1100.0, "complex":
 SIMPLE_FACES, SIMPLE_SPOTS = 40, 20
 COMPLEX_FACES, COMPLEX_SPOTS = 200, 100
 #: PLAN-fea-16: THE MEMORY LIMIT. The mesh job's memory (deploy/gcp MESH_MEMORY: 32 GiB on dev and
-#: prod, the Cloud Run most at 8 vCPU) and the mesher's measured peak, MEMORY_BASE_MB plus
-#: BYTES_PER_ELEMENT for each element (FILLED BELOW from the lab's peak memory against elements),
-#: with MEMORY_MARGIN to spare.
+#: prod, the Cloud Run most at 8 vCPU) and the mesher's peak, MEASURED on the lab VMs (22 Oct, the
+#: gmsh driver's own VmHWM): 450 MB with nothing meshed, and 4.65 KB an element at 2.87M elements
+#: (13.3 GB) and 5.04 KB at 2.71M (13.5 GB) - the tetrahedra, their curved midside nodes, the quality
+#: arrays and the three solver files at once. BYTES_PER_ELEMENT is the worst of those, rounded up;
+#: MEMORY_MARGIN covers the parts the lab did not see. With 32 GiB that is about 5.3M elements.
 MESH_JOB_MEMORY_GIB = 32.0
-MEMORY_BASE_MB = 600.0
-BYTES_PER_ELEMENT = 3000.0
+MEMORY_BASE_MB = 450.0
+BYTES_PER_ELEMENT = 5100.0
 MEMORY_MARGIN = 1.25
 #: the guard is GUARD_FACTOR times the planned time (D3's factor), never over the mesh job's own
 #: limit (deploy/gcp MESH_TIMEOUT_SECONDS, 14,400 s) less JOB_MARGIN_S, nor what the attempt has left
