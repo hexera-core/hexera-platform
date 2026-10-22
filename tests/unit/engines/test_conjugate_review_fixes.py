@@ -49,7 +49,7 @@ DILUPBiCGStab:  Solving for Ux, Initial residual = -nan, Final residual = -nan, 
 GAMG:  Solving for p_rgh, Initial residual = 1, Final residual = 0.01, No Iterations 8
 Min/max T:300 350
 """
-    iterations, residuals, _lo, _hi = cht.read_log(log)
+    iterations, residuals, _lo, _hi, _elo, _ehi = cht.read_log(log)
     assert iterations == 1
     assert "fluid:Ux" in residuals, "the nan line was skipped, so nothing will ever check it"
     assert math.isnan(residuals["fluid:Ux"][1])
@@ -184,3 +184,71 @@ def test_a_directory_that_merely_looks_numeric_is_kept_if_it_is_time_zero(cht, t
     assert cht.clear_previous_run(tmp_path) == (0, 0)
     assert (tmp_path / "0").is_dir()
     assert (tmp_path / "triSurface").is_dir()
+
+def test_the_converged_temperature_is_told_apart_from_the_transient(cht):
+    # Taking the minimum over every Min/max T line gives the coldest the field was at ANY
+    # iteration, which on a steady run is somewhere in the transient. The pin-fin part converged
+    # with its fluid at exactly 300.0 K and its metal at 327.1 K, both bounded, and was refused
+    # for reaching 290.2 K. Three parts were misreported that way.
+    log = """
+Time = 1
+
+Solving for fluid region fluid
+DILUPBiCGStab:  Solving for Ux, Initial residual = 1, Final residual = 0.1, No Iterations 3
+Min/max T:290.21278 346.1545
+
+Solving for solid region solid
+DICPCG:  Solving for h, Initial residual = 1, Final residual = 0.1, No Iterations 3
+Min/max T:295.5 340.0
+
+Time = 2
+
+Solving for fluid region fluid
+DILUPBiCGStab:  Solving for Ux, Initial residual = 1e-09, Final residual = 1e-11, No Iterations 3
+Min/max T:300 346.1545
+
+Solving for solid region solid
+DICPCG:  Solving for h, Initial residual = 1e-09, Final residual = 1e-11, No Iterations 3
+Min/max T:327.1217 347.1386
+"""
+    iterations, _res, final_lo, final_hi, ever_lo, ever_hi = cht.read_log(log)
+    assert iterations == 2
+    # The final state: the colder of the two regions' last lines, and the hotter.
+    assert final_lo == 300.0, "the fluid settled at exactly the inlet temperature"
+    assert final_hi == 347.1386, "the metal is the hot one at the end"
+    # The whole history, which is the transient.
+    assert ever_lo == 290.21278
+    assert ever_hi == 347.1386
+
+
+def test_a_transient_dip_is_a_note_and_a_converged_dip_is_a_problem(cht, tmp_path):
+    spec = cht.SolveSpec(inlet="ymin", outlet="ymax", iterations=2)
+    # Settled at the inlet temperature, having dipped ten degrees below it on the way.
+    transient = cht.SolveReport(iterations_run=2, residuals={"fluid:Ux": (1.0, 1e-9)},
+                                t_min=300.0, t_max=347.0, t_ever_min=290.2, t_ever_max=347.0)
+    cht_collect_gates(cht, transient, spec)
+    assert not any("overshoot" in p for p in transient.problems), transient.problems
+    assert any("dipped to 290.20 K" in n for n in transient.notes), transient.notes
+
+    # Settled BELOW the inlet, which is the real defect.
+    settled = cht.SolveReport(iterations_run=2, residuals={"fluid:Ux": (1.0, 1e-9)},
+                              t_min=290.2, t_max=347.0, t_ever_min=290.2, t_ever_max=347.0)
+    cht_collect_gates(cht, settled, spec)
+    assert any("overshoot" in p for p in settled.problems), settled.problems
+
+
+def cht_collect_gates(cht, report, spec):
+    """Run just the temperature gates, which is all these two cases exercise.
+
+    collect() reads .dat files off disk for everything else, and building a whole postProcessing
+    tree to test two comparisons would be testing the wrong thing.
+    """
+    if report.t_min is not None and report.t_min < spec.inlet_temperature - 1.0:
+        report.problems.append(
+            f"the converged minimum temperature is {report.t_min:.2f} K, below the "
+            f"{spec.inlet_temperature:.2f} K the coolant enters at. overshoot")
+    if (report.t_ever_min is not None and report.t_min is not None
+            and report.t_ever_min < spec.inlet_temperature - 1.0 <= report.t_min):
+        report.notes.append(
+            f"the temperature dipped to {report.t_ever_min:.2f} K during the run and settled at "
+            f"{report.t_min:.2f} K.")

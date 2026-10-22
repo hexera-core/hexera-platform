@@ -84,10 +84,43 @@ on one face so the octree falls differently: -27.54%, -31.82%, -27.01%, -27.43% 
 1.300, 1.350, 1.400 and 1.500 mm. Four points of movement on a part already at twenty-seven, and it
 jumps rather than trending, which is what alignment looks like.
 
-So the first table is the right guide to WHAT FINER CELLS BUY - the spread closes from 27 points
-wide at 2 across to 13 at 5, and had closed to nothing by 12 - and it is not a prediction for any
-one part. `single_passage_error_pct` is the figure to quote for a part with one passage or a few
-similar ones.
+So the first table is the right guide to WHAT FINER CELLS BUY ON AVERAGE - the spread closes from
+27 points wide at 2 across to 13 at 5, and had closed to nothing by 12 - and it is not a prediction
+for any one part. `single_passage_error_pct` is the figure to quote for a part with one passage or a
+few similar ones.
+
+AND REFINING DOES NOT RELIABLY REDUCE IT. This is the finding that matters most for anyone reading
+a single number off a single mesh, and it was measured on purpose: every cells-across from 2 to 8
+on one part, and 4 to 7 on a second.
+
+    unit_cell_100um, one 100 um channel
+        2 across    h 44.91 um      -27.54%
+        3 across    h 33.97 um      -32.30%
+        4 across    h 24.52 um       -5.97%
+        5 across    h 19.72 um      +13.26%
+        6 across    h 16.60 um       -1.11%
+        7 across    h 14.32 um      -15.20%
+        8 across    h 12.50 um       -0.15%
+
+    manifold_two_level, two levels joined at slots
+        4 across    h 24.96 um       +0.05%
+        5 across    h 19.97 um       +1.53%
+        6 across    h 16.72 um       +2.18%
+
+Seven cells across is FOURTEEN TIMES WORSE than six on the first part. On the second the error grows
+steadily as the mesh is refined, from 0.05% to 2.18%. Neither sequence is monotone in the direction
+anyone would assume, and the two are not even the same shape, so this is a property of a part and a
+resolution together rather than of either alone.
+
+An even-versus-odd rule looked obvious on the first part - the even values fall monotonically,
+-27.54, -5.97, -1.11, -0.15, and the odd ones do not - and it is not there on the second. Recorded
+because it is the pattern anyone would reach for next.
+
+WHAT TO DO ABOUT IT. Not trust one mesh. `devtools/semiconductor/convergence.py` and `semi converge`
+exist for exactly this: three meshes of the same part give an observed order of convergence, an
+extrapolated value and a band, and they refuse to give a band when the sequence does not converge
+monotonically. A two-mesh comparison that happens to agree is the trap, because on these sequences
+two meshes can agree closely and both be far out.
 
 WHAT THEY SAY ABOUT THE EXISTING FLOOR. PASSAGE_FLOOR_CELLS is 12, chosen from practice. The 12
 across measured here came in at 0.12% on volume, so the floor the gate already enforces is

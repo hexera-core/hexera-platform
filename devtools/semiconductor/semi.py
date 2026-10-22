@@ -551,8 +551,11 @@ def solve_workspace(ws: Path, a) -> int:
         target = cht.residual_target(k.split(":")[-1])
         print(f"  {k:<16} {first:>11.3e} -> {last:>11.3e}   {decades:>5.1f} decades"
               f"   target {target:.0e}  {'met' if last <= target else 'NOT MET'}")
-    print(f"{chr(10)}temperature   {rep.t_min} K to {rep.t_max} K "
+    print(f"{chr(10)}temperature   {rep.t_min} K to {rep.t_max} K converged "
           f"(coolant enters at {spec.inlet_temperature} K)")
+    if rep.t_ever_min is not None and (rep.t_ever_min, rep.t_ever_max) != (rep.t_min, rep.t_max):
+        print(f"              {rep.t_ever_min} K to {rep.t_ever_max} K at some point during the "
+              "run, which is the transient and not the answer")
     if rep.bulk_t_in is not None and rep.bulk_t_out is not None:
         print(f"coolant rise  {rep.bulk_t_out - rep.bulk_t_in:.2f} K bulk, "
               f"{rep.bulk_t_in:.2f} -> {rep.bulk_t_out:.2f} K")
@@ -591,6 +594,7 @@ def solve_workspace(ws: Path, a) -> int:
         "velocity": spec.inlet_velocity, "heat_flux": spec.heat_flux,
         "residuals": {k: list(v) for k, v in rep.residuals.items()},
         "t_min": rep.t_min, "t_max": rep.t_max,
+        "t_ever_min": rep.t_ever_min, "t_ever_max": rep.t_ever_max,
         "bulk_t_in": rep.bulk_t_in, "bulk_t_out": rep.bulk_t_out,
         "mass_in": rep.mass_in, "mass_out": rep.mass_out,
         "inlet_area_m2": rep.inlet_area, "outlet_area_m2": rep.outlet_area,

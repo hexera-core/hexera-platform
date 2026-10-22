@@ -816,8 +816,14 @@ class SolveReport:
     converged: bool = False
     #: field -> (first initial residual, last initial residual), keyed region:field.
     residuals: dict[str, tuple[float, float]] = field(default_factory=dict)
+    #: The FINAL state, which is what the gates judge.
     t_min: float | None = None
     t_max: float | None = None
+    #: The coldest and hottest the field was at any iteration. A transient excursion, reported
+    #: because a large one says the relaxation is too aggressive, and NOT gated on, because it is
+    #: not the answer.
+    t_ever_min: float | None = None
+    t_ever_max: float | None = None
     mass_in: float | None = None
     mass_out: float | None = None
     inlet_area: float | None = None
@@ -872,11 +878,24 @@ class SolveReport:
 
 
 def read_log(text: str) -> tuple[int, dict[str, tuple[float, float]],
-                                 float | None, float | None]:
-    """Iterations reached, residuals per region:field, and the temperature range.
+                                 float | None, float | None, float | None, float | None]:
+    """Iterations reached, residuals per region:field, and FOUR temperatures.
 
-    The region marker matters: both regions solve a field called `h`, and a parse that does not
-    keep them apart reports the solid's energy residual as the fluid's.
+    (iterations, residuals, final_min, final_max, ever_min, ever_max).
+
+    THE FINAL STATE AND THE WHOLE HISTORY ARE DIFFERENT NUMBERS, and conflating them cost a
+    correct mesh its verdict. Taking the minimum over every `Min/max T` line in the log gives the
+    coldest the field was at ANY iteration, which on a steady SIMPLE run is somewhere in the
+    transient and not the answer. The pin-fin part converged with its fluid at exactly 300.0 K and
+    its metal at 327.1 K, both perfectly bounded, and was reported as reaching 290.2 K and refused
+    for non-physical overshoot. Three parts were being misreported that way.
+
+    So the gate uses the final values and the excursion is reported as what it is: a note about the
+    relaxation, not a defect in the mesh.
+
+    The region marker matters twice over: both regions solve a field called `h`, and both print
+    their own `Min/max T`, so a parse that does not keep them apart reports one region's final
+    temperature as the other's.
     """
     times = _TIME.findall(text)
     iterations = int(float(times[-1])) if times else 0
@@ -889,12 +908,23 @@ def read_log(text: str) -> tuple[int, dict[str, tuple[float, float]],
         if (m := _RESIDUAL.search(line)):
             key = f"{region}:{m.group('field')}"
             res.setdefault(key, []).append(float(m.group("value")))
-    lo = hi = None
-    pairs = _MINMAX_T.findall(text)
-    if pairs:
-        lo = min(float(a) for a, _ in pairs)
-        hi = max(float(b) for _, b in pairs)
-    return iterations, {k: (v[0], v[-1]) for k, v in res.items() if v}, lo, hi
+    # Per region, so the LAST line each one printed is that region's final state.
+    final: dict[str, tuple[float, float]] = {}
+    ever_lo = ever_hi = None
+    region = "?"
+    for line in text.splitlines():
+        if (m := _REGION_MARK.search(line)):
+            region = m.group("region")
+            continue
+        if (m := _MINMAX_T.search(line)):
+            lo_v, hi_v = float(m.group(1)), float(m.group(2))
+            final[region] = (lo_v, hi_v)
+            ever_lo = lo_v if ever_lo is None else min(ever_lo, lo_v)
+            ever_hi = hi_v if ever_hi is None else max(ever_hi, hi_v)
+    final_lo = min((v[0] for v in final.values()), default=None)
+    final_hi = max((v[1] for v in final.values()), default=None)
+    return (iterations, {k: (v[0], v[-1]) for k, v in res.items() if v},
+            final_lo, final_hi, ever_lo, ever_hi)
 
 
 def _bulk(weighted_sum: float | None, mass_flow: float | None) -> float | None:
@@ -912,7 +942,7 @@ def progress(log_text: str) -> tuple[int, bool]:
     final verdict uses. A cheaper check here than there would be a run that stops on one criterion
     and is judged on another.
     """
-    iterations, residuals, _lo, _hi = read_log(log_text)
+    iterations, residuals, _lo, _hi, _elo, _ehi = read_log(log_text)
     probe = SolveReport(residuals=residuals)
     return iterations, bool(residuals) and not probe.unmet
 
@@ -921,7 +951,8 @@ def collect(workspace: Path, spec: SolveSpec, log_text: str) -> SolveReport:
     """Everything measurable about the run, and the verdict on the mesh."""
     ws = Path(workspace)
     r = SolveReport()
-    r.iterations_run, r.residuals, r.t_min, r.t_max = read_log(log_text)
+    (r.iterations_run, r.residuals, r.t_min, r.t_max,
+     r.t_ever_min, r.t_ever_max) = read_log(log_text)
     r.converged = bool(r.residuals) and not r.unmet
 
     r.mass_in = dat_value(ws, FN_INLET, "sum(phi)")
@@ -929,8 +960,19 @@ def collect(workspace: Path, spec: SolveSpec, log_text: str) -> SolveReport:
     r.inlet_area = dat_value(ws, FN_INLET, "Area")
     r.outlet_area = dat_value(ws, FN_OUTLET, "Area")
     # sum(phi*T) / sum(phi). Both halves carry the same sign, so the quotient is a temperature.
-    r.bulk_t_in = _bulk(dat_value(ws, "inletBulkT", "(T)"), r.mass_in)
-    r.bulk_t_out = _bulk(dat_value(ws, "outletBulkT", "(T)"), r.mass_out)
+    #
+    # BY ITS EXACT COLUMN NAME, because the operation these function objects use has changed once
+    # already. A run written when the bulk temperature was a `weightedAreaAverage` has a column of
+    # temperatures where this expects a sum of phi*T, and dividing one by the mass flow gives a
+    # number near zero that is not a temperature and not flagged as anything. `--reuse` on a run
+    # that predates the current case has to say so rather than compute from it.
+    r.bulk_t_in = _bulk(dat_value(ws, "inletBulkT", "weightedSum(T)"), r.mass_in)
+    r.bulk_t_out = _bulk(dat_value(ws, "outletBulkT", "weightedSum(T)"), r.mass_out)
+    if r.bulk_t_in is None and dat_value(ws, "inletBulkT", "weightedAreaAverage(T)") is not None:
+        r.problems.append(
+            "the bulk temperatures in this workspace were written as weightedAreaAverage and this "
+            "reads weightedSum, so these readings predate the current case. They cannot be "
+            "re-judged; re-solve the workspace.")
 
     r.interface_area = dat_value(ws, FN_HEAT_FLUID, "Area")
     r.q_fluid = heat_through(ws, FN_HEAT_FLUID, FLUID_TO_SOLID)
@@ -962,9 +1004,17 @@ def collect(workspace: Path, spec: SolveSpec, log_text: str) -> SolveReport:
             "equation. The tail of the log says why.")
     if r.t_min is not None and r.t_min < spec.inlet_temperature - 1.0:
         r.problems.append(
-            f"the minimum temperature anywhere is {r.t_min:.2f} K, below the "
+            f"the converged minimum temperature is {r.t_min:.2f} K, below the "
             f"{spec.inlet_temperature:.2f} K the coolant enters at. Nothing in this case is a heat "
-            "sink, so there is no physical way to get colder than the inlet: this is overshoot.")
+            "sink, so there is no physical way to get colder than the inlet: this is overshoot, "
+            "and it is in the answer rather than on the way to it.")
+    if (r.t_ever_min is not None and r.t_min is not None
+            and r.t_ever_min < spec.inlet_temperature - 1.0 <= r.t_min):
+        r.notes.append(
+            f"the temperature dipped to {r.t_ever_min:.2f} K during the run and settled at "
+            f"{r.t_min:.2f} K. A transient excursion is not a defect - the answer is the converged "
+            "field - but one this far below the inlet says the relaxation is aggressive for this "
+            "mesh, so a run stopped early on it would be reporting a non-physical field.")
     if not r.mass_closes:
         r.problems.append(
             f"mass does not balance: {r.mass_in} kg/s in against {r.mass_out} out. They should sum "
