@@ -153,3 +153,48 @@ def test_seal_corpus_bundle_refuses_an_unknown_status_too(tmp_path):
     with pytest.raises(ValueError, match="redistribution_status"):
         rc.seal_corpus_bundle(writer, [], roots=[], files=[], settings={},
                               redistribution="probably-fine")
+
+
+def test_the_sealed_settings_name_every_switch_the_settings_module_declares():
+    """A flag must not be able to change a published number invisibly.
+
+    CAD_REPAIR_FIX_SMALL_FACES took the generated corpus from 0 to 5 repaired files while the
+    sealed settings stayed byte-identical, because the dict was hand-written. This holds the
+    sealed settings to the module, so the next flag is covered on the day it is added.
+    """
+    import meshpipeline.settings.cad_repair as rcfg
+
+    sealed = rc.repair_settings_of(rcfg)
+    declared = {name for name in vars(rcfg)
+                if name.isupper() and name.startswith(("CAD_REPAIR_", "CAD_INSPECT_"))}
+    missing = {name for name in declared
+               if name[len("CAD_REPAIR_"):].lower() not in sealed
+               and name[len("CAD_"):].lower() not in sealed}
+    assert not missing, f"settings the bundle would not record: {sorted(missing)}"
+    # the keys the earlier hand-written dict used are unchanged, so a reader of an older bundle
+    # is looking at the same names
+    assert sealed["enabled"] == rcfg.CAD_REPAIR_ENABLED
+    assert sealed["autonomous"] == rcfg.CAD_REPAIR_AUTONOMOUS
+    assert sealed["max_deviation_ratio"] == rcfg.CAD_REPAIR_MAX_DEVIATION_RATIO
+    assert sealed["inspect_timeout_s"] == rcfg.CAD_INSPECT_TIMEOUT_S
+    # and the two that were missing are in
+    assert sealed["fix_small_faces"] == rcfg.CAD_REPAIR_FIX_SMALL_FACES
+    assert sealed["allow_face_removal"] == rcfg.CAD_REPAIR_ALLOW_FACE_REMOVAL
+
+
+def test_two_runs_differing_only_in_a_consent_flag_seal_different_digests(tmp_path, monkeypatch):
+    """The settings digest is what tells two bundles apart; it has to move when consent does."""
+    import meshpipeline.settings.cad_repair as rcfg
+
+    def seal(where: str) -> str:
+        writer = rc.benchmark_bundle.BundleWriter(tmp_path / where)
+        sealed = rc.seal_corpus_bundle(writer, [], roots=[], files=[],
+                                       settings={"cad_repair": rc.repair_settings_of(rcfg)},
+                                       redistribution="internal")
+        manifest, _, _, _ = bb.load_bundle(sealed)
+        return manifest["settings_digest"]
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_FIX_SMALL_FACES", False)
+    off = seal("off")
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_FIX_SMALL_FACES", True)
+    assert seal("on") != off

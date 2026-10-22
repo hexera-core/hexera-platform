@@ -61,6 +61,29 @@ benchmark_bundle = _load_benchmark_bundle()
 _SUFFIXES = {".step", ".stp"}
 
 
+def repair_settings_of(rcfg) -> dict:
+    """Every switch and cap the repair actually read, BY REFLECTION over the settings module.
+
+    A published number is only reproducible if the bundle beside it names the permissions the
+    engine ran under. Hand-listing them does not survive the module growing: CAD_REPAIR_FIX_SMALL_FACES
+    took a corpus from 0 to 5 repaired files while the sealed settings - and so the settings
+    digest - stayed byte-identical to the run that had it off. Reflection means a flag cannot
+    change an outcome without appearing in the evidence; the hygiene test holds this to the module.
+
+    The CAD_REPAIR_ prefix is dropped (`enabled`, `autonomous`) and CAD_INSPECT_ keeps its own
+    (`inspect_timeout_s`), which is what the earlier hand-written dict called them.
+    """
+    settings: dict = {}
+    for name, value in vars(rcfg).items():
+        if not name.isupper():
+            continue
+        if name.startswith("CAD_REPAIR_"):
+            settings[name[len("CAD_REPAIR_"):].lower()] = value
+        elif name.startswith("CAD_INSPECT_"):
+            settings[name[len("CAD_"):].lower()] = value
+    return dict(sorted(settings.items()))
+
+
 def _inspect(path: Path) -> dict:
     from meshpipeline.cad.repair.brep import inspect_brep_file
 
@@ -681,13 +704,8 @@ def main() -> int:
         return 2
 
     import meshpipeline.settings.cad_repair as rcfg
-    print(f"CAD_REPAIR_ENABLED={rcfg.CAD_REPAIR_ENABLED}  "
-          f"AUTONOMOUS={rcfg.CAD_REPAIR_AUTONOMOUS}  "
-          f"FILL_PLANAR_HOLES={rcfg.CAD_REPAIR_FILL_PLANAR_HOLES}  "
-          f"FILL_NONPLANAR_HOLES={rcfg.CAD_REPAIR_FILL_NONPLANAR_HOLES}  "
-          f"HEAL_SELF_INTERSECTIONS={rcfg.CAD_REPAIR_HEAL_SELF_INTERSECTIONS}  "
-          f"max_deviation={rcfg.CAD_REPAIR_MAX_DEVIATION_RATIO}  "
-          f"max_tolerance_mm={rcfg.CAD_REPAIR_MAX_TOLERANCE_MM}")
+    repair_settings = repair_settings_of(rcfg)
+    print("  ".join(f"{k}={v}" for k, v in repair_settings.items()))
     print(f"{len(files)} file(s)\n")
 
     # THE RESOLVED OPTIONS, frozen verbatim into a bundle's settings.json: the CLI knobs and the
@@ -695,14 +713,7 @@ def main() -> int:
     settings = {
         "directories": list(args.directories), "limit": args.limit, "planner": args.planner,
         "reply_cache": args.reply_cache,
-        "cad_repair": {
-            "enabled": rcfg.CAD_REPAIR_ENABLED, "autonomous": rcfg.CAD_REPAIR_AUTONOMOUS,
-            "fill_planar_holes": rcfg.CAD_REPAIR_FILL_PLANAR_HOLES,
-            "fill_nonplanar_holes": rcfg.CAD_REPAIR_FILL_NONPLANAR_HOLES,
-            "heal_self_intersections": rcfg.CAD_REPAIR_HEAL_SELF_INTERSECTIONS,
-            "max_deviation_ratio": rcfg.CAD_REPAIR_MAX_DEVIATION_RATIO,
-            "max_tolerance_mm": rcfg.CAD_REPAIR_MAX_TOLERANCE_MM,
-        },
+        "cad_repair": repair_settings,
     }
 
     # A real directory rather than a per-run temp one: the repaired files ARE the evidence, and
