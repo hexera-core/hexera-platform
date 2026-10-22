@@ -1078,6 +1078,7 @@ th,td{border-color:var(--border)}
 @media(max-width:560px){
   .oc-facts{grid-template-columns:minmax(0,1fr)}
   .oc-fact dt{margin-top:4px}
+}
 /* ---------------------------------------------------------------- polish ---- */
 /* the run header holds a sub-line only when it has something the live line does not say */
 .proc-sub:empty{display:none}
