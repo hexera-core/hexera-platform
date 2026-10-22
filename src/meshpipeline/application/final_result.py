@@ -1183,8 +1183,24 @@ def review_blocking(outcome: RunOutcome) -> list[dict]:
         return []
     if not _concluded_on_valid_mesh(outcome) or outcome.reviewer_verdict != "FAIL":
         return []
+    if fea_measured_valid(outcome):
+        # AN FEA MESH THE MEASUREMENTS CALL VALID: the review explains it and adds concerns, it
+        # never fails the run - whatever a review recorded (agents/reviewer/review_policy judges
+        # the same way; this holds for a record judged before that rule)
+        return []
     from meshpipeline.agents.reviewer.review_policy import blocking_findings
     return blocking_findings(list(outcome.axis_findings))
+
+
+def fea_measured_valid(outcome: RunOutcome) -> bool:
+    """Whether the run is an FEA job (its saved purpose) whose delivered mesh the measured checks
+    call valid (engines/fea_review.measured_valid)."""
+    from meshpipeline.engines import fea_review
+    if not fea_review.is_fea(outcome.purpose):
+        return False
+    manifest = outcome.manifest if isinstance(outcome.manifest, Mapping) else {}
+    quality = manifest.get("quality") if isinstance(manifest.get("quality"), Mapping) else outcome.quality
+    return fea_review.measured_valid(quality if isinstance(quality, Mapping) else None) is True
 
 
 def review_concerns_caveat(outcome: RunOutcome) -> dict | None:

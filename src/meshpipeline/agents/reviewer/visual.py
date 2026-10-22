@@ -174,6 +174,12 @@ async def node_reviewer(state: PipelineState) -> dict:
                  "This is a problem on our side - please try again.",
             chain="[EXECUTOR_SUCCESS_ABSENT] reviewer reached without validated execution")
 
+    # AN FEA JOB (its saved purpose) is judged on the MEASURED FEA FACTS - named faces per solver
+    # file, counts, element types, walls, hot spots, coarsening, set-asides - the evidence the FEA
+    # checklist axes name; the 3D preview shows the part's surface as one group by design.
+    from meshpipeline.engines import fea_review
+    _fea_facts = fea_review.facts_text(workspace) if fea_review.is_fea(purpose) else ""
+
     inputs = VisualReviewInteractionInputs(
         job_id=job_id,
         step_basename=_source_basename(state),
@@ -183,7 +189,8 @@ async def node_reviewer(state: PipelineState) -> dict:
         review_save_dir=review_save_dir,
         mesh_units=completed_mesh_unit(manifest).value,
         review_brief=_with_adjudicated_deviations(
-            _brief_txt + (f"\n\n{_confirmed}" if _confirmed else ""),
+            _brief_txt + (f"\n\n{_confirmed}" if _confirmed else "")
+            + (f"\n\n{_fea_facts}" if _fea_facts else ""),
             state.get("requirement_caveats") or []),
         request=_request_txt,
         axis_names=list(plan.axis_names),
