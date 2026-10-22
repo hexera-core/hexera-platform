@@ -216,6 +216,20 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
                 break
             continue
 
+        if verdict.evidence.get("declined"):
+            # A DECLINE IS NOT A FAILED ATTEMPT: the operation judged the aim and ran nothing, so
+            # it says nothing about whether progress is possible - and it must not spend the stall
+            # budget, which exists to stop ATTEMPTED work being rolled back over and over. On
+            # hero.stp two multi_body declines of the heal ended the run `stalled` while 56 open
+            # shells a sew would have fixed were never proposed. Recorded against the AIM
+            # (operation + target set) so the planner cannot re-propose it from a sibling finding
+            # on the same tangle; a run of nothing-but-declines still terminates, because every
+            # decline bans its aim (the planner runs dry, `no_candidate`) and the log it joins
+            # still counts against `max_ops`.
+            history.mark_declined(candidate.op.name,
+                                  (t.fingerprint for t in candidate.targets))
+            continue
+
         # THE FEEDBACK. Without this the planner proposes the same failing pair until the budget
         # runs out, and nothing in the run has learned anything. In slice 8 this ledger is exactly
         # what the model is shown on its next turn.
