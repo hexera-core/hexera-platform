@@ -20,7 +20,9 @@ devtools/semiconductor/run.sh import --from <dir> --scale 1e-3  bring new CAD in
 `run.sh` runs everything inside the mesh image, because OpenFOAM lives there and not on the host,
 and as the calling user rather than root so a run does not leave files nobody can delete. Runs land
 in `runs/<part>-<N>across/` with their logs, both meshes, `mesh-report.json` and
-`solve-report.json`. `--help` on any subcommand is current; these are the ones worth knowing:
+`solve-report.json`. A solve clears the previous solve's readings out of that workspace before it
+starts, because once they are on disk nothing distinguishes them from this run's and the one that
+wins is whichever stopped at the later iteration. `--help` on any subcommand is current; these are the ones worth knowing:
 
 | flag | what it is for |
 |---|---|
@@ -171,8 +173,7 @@ state the same watts have to come out, and four independent readings of that num
 
 The solid side against the fluid side tests the **coupling**: a conformal interface that is not
 transferring what it says it is shows up here and nowhere else. The coolant against the heated face
-tests the whole chain, and it is the one that moves when staircasing has changed the wetted area,
-because heat crosses area while the staircase table only ever measured volume.
+tests the whole chain.
 
 Measured on `unit_cell_100um` at 5 cells across, 2026-10-22:
 
@@ -183,8 +184,36 @@ Measured on `unit_cell_100um` at 5 cells across, 2026-10-22:
 | in through the fluid interface | 6.5000 |
 | carried away by the coolant | 6.4731 |
 
-The first three agree to 0.00% and the coolant to 0.41%. Mass balanced exactly, the coolant rose
+The first three agree to 0.00% and the coolant to 0.42%. Mass balanced exactly, the coolant rose
 20.18 K, and every equation's residual fell between 7 and 11 decades.
+
+### What the energy audit does not test, and what does
+
+This was measured rather than assumed, and it changed what the harness claims. The same part at 2
+cells across, **27.5% short of its CAD on coolant volume**, closed all four readings to 0.00% and
+reported a mesh that held up.
+
+That is correct behaviour. Energy conservation is a property of the discretisation: watts in equal
+watts out on any closed mesh, right or wrong. The audit catches a broken mesh, not an inaccurate
+one.
+
+Where the resolution error goes instead is the **port area**, and from there straight into the
+answer:
+
+| cells across | inlet area | mass flow | coolant rise | energy balance |
+|---|---|---|---|---|
+| 2 | 5.368e-08 m2 | 5.529e-05 kg/s | **32.66 K** | 0.00% |
+| 5 | 8.650e-08 m2 | 8.909e-05 kg/s | **20.18 K** | 0.42% |
+
+The coarse mesh staircased 37.9% of the inlet away, so 37.9% less coolant flows at the same inlet
+velocity, so the same 6.5 W warms it by 61.8% more. 1/(1 - 0.379) is 1.610 and the measured rise
+ratio is 1.618: the arithmetic closes. **A 62% error in the one number a customer asks for, on a
+mesh whose energy balance is perfect.**
+
+So the four-way audit answers "is this mesh self-consistent and solvable" and the port areas and the
+coolant rise answer "is it converged". Both are printed, the verdict says in as many words that it
+is not a claim about accuracy, and `sweep` reports the inlet area and the coolant rise side by side
+across resolutions because comparing two of them is the only way to tell.
 
 Water with 25% propylene glycol against silicon at 148 W/m/K, 1 m/s in, 100 W/cm2 into zmin, coolant
 in at 300 K. Reynolds comes out near 70 in a 100 um channel, two orders below transition, so the run
@@ -361,6 +390,23 @@ that put half the metal in the coolant region would be perfectly conformal.
 
 **The fluid volume against the CAD** is what proves the tagging was right, which cells ended up on
 which side. The two together are the real test.
+
+Its tolerance is **derived from the resolution asked for**, not fixed. The gate is asking one
+question, did the right cells end up on which side, and the staircase is the noise it has to see
+through: a split that put half the metal in the coolant region is wrong by hundreds of per cent,
+while a 2-cells-across mesh that came out 27% short of the CAD is a mesh doing exactly what 2 cells
+across does. A flat 5% could not tell those apart, and against the measured errors above it refused
+six of the eight coarse meshes here, so `check` and `sweep` never reached their solve on anything
+coarse. The tolerance now comes from `engines/staircase_error` for the resolution requested, at 1.5
+times the worst measured curve and never below the standing 5%:
+
+| cells across | tolerance |
+|---|---|
+| 2 | 41% |
+| 5 | 20% |
+| 13 | 5%, the standing allowance |
+
+Every run prints which and why, because a tolerance nobody can see is worse than a strict one.
 
 **Connectivity** is the one `checkMesh` will not give you. It prints the piece count with its own
 warning asterisk and still says "Mesh OK", because disconnection is not fatal to it. On a coarse

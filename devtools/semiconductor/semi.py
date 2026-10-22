@@ -465,7 +465,11 @@ def solve_workspace(ws: Path, a) -> int:
     # makes "nothing was run" a half-truth.
     if not a.reuse:
         try:
-            cht.write_case(ws, spec, fluid_patches, solid_patches)
+            # The face counts too, so a named patch with nothing behind it is refused before the
+            # run rather than producing a verdict with nothing behind it either.
+            cht.write_case(ws, spec, fluid_patches, solid_patches,
+                           faces={**meta.get("fluid_patches", {}),
+                                  **meta.get("solid_patches", {})})
         except cht.SolveError as exc:
             print(f"REFUSED: {exc}", file=sys.stderr)
             return 1
@@ -561,6 +565,11 @@ def solve_workspace(ws: Path, a) -> int:
             print(f"    {line}")
     else:
         print(f"{chr(10)}the mesh held up: it solves, it conserves mass, and the heat closes")
+        print("  that is self-consistency and not accuracy. A mesh of this part 27.5% short of "
+              "its CAD closed")
+        print("  all four readings to 0.00% too. What moves with resolution is the PORT AREA and "
+              "the coolant")
+        print("  rise above, so compare those across two resolutions before trusting either.")
     (ws / "solve-report.json").write_text(json.dumps({
         "iterations_run": rep.iterations_run, "converged": rep.converged,
         "exit": rc, "seconds": round(took, 1), "cores": spec.cores,
@@ -623,8 +632,8 @@ def cmd_sweep(a) -> int:
     print(f"{part.name}: what resolution buys")
     print("=" * 100)
     print(f"{'across':>7}{'iface um':>10}{'got':>7}{'cells':>11}{'vol err %':>11}"
-          f"{'iface faces':>13}{'mesh':>6}{'coolant dT':>13}{'heat gap %':>12}{'solve':>7}"
-          f"{'iters':>7}")
+          f"{'iface faces':>13}{'mesh':>6}{'inlet m2':>12}{'coolant dT':>13}"
+          f"{'heat gap %':>12}{'solve':>7}{'iters':>7}")
     for r in rows:
         s = r.get("solve") or {}
         dt = (s.get("bulk_t_out") - s.get("bulk_t_in")
@@ -639,6 +648,7 @@ def cmd_sweep(a) -> int:
               f"{r.get('fluid_volume_error_pct', float('nan')):>+11.3f}"
               f"{r.get('interface_faces', 0):>13,}"
               f"{('ok' if r['mesh_rc'] == 0 else 'FAIL'):>6}"
+              f"{('n/a' if s.get('inlet_area_m2') is None else format(s['inlet_area_m2'], '.3e')):>12}"
               f"{('n/a' if dt is None else format(dt, '.2f') + ' K'):>13}"
               f"{('n/a' if gap is None else format(gap, '.2f')):>12}"
               f"{('ok' if r.get('solve_rc') == 0 else 'FAIL' if 'solve_rc' in r else '-'):>7}"

@@ -24,8 +24,28 @@ leave through the coolant, and three independent readings of that number have to
 
 Q_solid against Q_fluid tests the COUPLING: a conformal interface that is not actually transferring
 what it says it is shows up as a gap here and nowhere else. Q_in against Q_solid tests whether the
-solid conserves energy on this mesh. Q_coolant against Q_in tests the whole chain and is the one
-that moves when the staircase has changed the wetted area, because heat crosses area.
+solid conserves energy on this mesh. Q_coolant against Q_in tests the whole chain.
+
+WHAT IT DOES NOT TEST IS ACCURACY, and that was measured rather than reasoned about. The same part
+at 2 cells across, 27.5% short of its CAD on coolant volume, closed all four readings to 0.00% and
+reported a mesh that held up. It is right to: energy conservation is a property of the
+discretisation, and watts in equal watts out on any closed mesh, correct or not.
+
+Where the resolution error goes instead is the PORT AREA, and from there into the answer. Measured
+on unit_cell_100um, 2026-10-22:
+
+    cells across    inlet area      mass flow        coolant rise    energy balance
+         2          5.368e-08 m2    5.529e-05 kg/s      32.66 K          0.00%
+         5          8.650e-08 m2    8.909e-05 kg/s      20.18 K          0.42%
+
+The coarse mesh staircased 37.9% of the inlet away, so 37.9% less coolant flows at the same inlet
+velocity, so the same 6.5 W warms it by 61.8% more. 1/(1 - 0.379) is 1.610 and the measured rise
+ratio is 1.618: the arithmetic closes. That is a 62% error in the one number a customer asks for,
+on a mesh whose energy balance is perfect.
+
+So this harness answers "is this mesh self-consistent and solvable", and the port areas and the
+coolant rise answer "is it converged". Both are printed, and `writeArea true` on the port readings
+is there for exactly this reason.
 
 Everything is read from the .dat files OpenFOAM's function objects write, never scraped from the
 console log, because the log's wording is version-dependent and the .dat columns are not.
@@ -543,7 +563,7 @@ def chunks(total: int, size: int) -> list[tuple[int, int]]:
 
 
 def write_case(workspace: Path, spec: SolveSpec, fluid_patches: list[str],
-               solid_patches: list[str]) -> list[str]:
+               solid_patches: list[str], faces: dict[str, int] | None = None) -> list[str]:
     """Write every file the solve needs onto a workspace that already holds the two meshes.
 
     The patch lists come from the MESH, read out of each region's polyMesh/boundary, never from a
@@ -561,6 +581,18 @@ def write_case(workspace: Path, spec: SolveSpec, fluid_patches: list[str],
                 f"the {role} is {face}, and that region's mesh has no such patch. It has "
                 f"{sorted(present)}. Either the coolant does not reach that face or the part is "
                 "built the other way up.")
+        # A NAMED PATCH WITH ZERO FACES is the failure worth catching here, and the heated face is
+        # the one where it does most damage: a fixed flux on no faces integrates to zero watts, so
+        # the reference every energy comparison is taken against is zero, every comparison is
+        # skipped, and the run reports a mesh that held up without a single watt having been
+        # accounted for. The port gate in engines/cfmesh/conjugate already refuses this for the
+        # inlet and the outlet; nothing did for the heated face.
+        if faces is not None and faces.get(face, 0) <= 0:
+            raise SolveError(
+                f"the {role} patch {face} exists but carries no faces, so nothing is there to "
+                f"{'flow through' if role != 'heated face' else 'put heat through'}. On the heated "
+                "face that means zero watts in, which makes every energy comparison vacuous rather "
+                "than failed.")
     written = []
     for rel, text in (
         ("constant/regionProperties", region_properties()),
@@ -898,7 +930,14 @@ def collect(workspace: Path, spec: SolveSpec, log_text: str) -> SolveReport:
                          ("fluid side against the solid side", r.heat_gap(r.q_solid, r.q_fluid)),
                          ("the coolant against the heated face", r.heat_gap(r.q_in, r.q_coolant))):
         if value is None:
-            r.notes.append(f"could not compare heat, {label}: a reading is missing")
+            # A PROBLEM, not a note. A comparison that could not be made is not a comparison that
+            # passed, and the whole claim this harness makes is that four readings of the same watts
+            # agree. "could not compare heat" followed by "the heat closes" was the verdict saying
+            # something nothing had checked.
+            r.problems.append(
+                f"the heat could not be compared, {label}: a reading is missing. Either a function "
+                "object did not run or a reading came back as zero, and either way nothing here "
+                "has checked that the watts going in are the watts coming out.")
         elif value > spec.heat_tol:
             r.problems.append(
                 f"the heat read {label} differs by {value * 100:.1f}%, past the "
