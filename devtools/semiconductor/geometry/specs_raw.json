@@ -1,0 +1,1516 @@
+{
+ "specs": [
+  {
+   "key": "corintis",
+   "paper": "A. Boutsikakis, E. Soutter, M. Salazar de Troya, N. Esposito, D. Mukasheva, H. Bouras, R. van Erp (all Corintis, Lausanne, Switzerland), \"Glacierware: Hotspot-aware Microfluidic Cooling for High TDP Chips using Topology Optimization\", arXiv:2408.15024 (v1 25 Aug 2024, v2 22 Jan 2025; IEEE conference preprint format, 4 pages, no appendix). Read: https://arxiv.org/pdf/2408.15024 (v2, 6.3 MB) and https://arxiv.org/pdf/2408.15024v1 (3.3 MB). Abstract page: https://arxiv.org/abs/2408.15024v2. Open access, not paywalled. Full text extracted locally with pdftotext -layout AND re-extracted with PyMuPDF to confirm the micron symbol on every dimension; v1 and v2 were diffed on every numeric value and agree exactly, so v2 numbers below are the paper's only numbers. Local copies: C:\\Users\\rehaa\\AppData\\Local\\Temp\\claude\\C--Users-rehaa-OneDrive-Documents-GitHub-chandelier\\d31ea0b1-549f-4292-b3a1-c87888a1d0e2\\scratchpad\\pdfs\\glacierware_v2.pdf and glacierware_v2.txt (plus glacierware_v1.pdf/.txt). ALSO SEARCHED for other Corintis / van Erp / Matioli sources with stated dimensions and did NOT read them in this task (no geometry extracted, flagged for a follow-up pass): R. van Erp, R. Soleimanzadeh, L. Nela, G. Kampitsis, E. Matioli, \"Co-designing electronics with microfluidics for more sustainable cooling\", Nature 585, 211-216 (2020), doi:10.1038/s41586-020-2666-1 (cited as [5] in this paper, the embedded-manifold-microchannel GaN work, most likely second Corintis-lineage geometry source); van Erp et al., IEEE Trans. Power Electron. 2020 (3D-printed parallel manifold cold plates); van Erp et al., IEEE Trans. Power Electron. 39(8) 9717-9723 (2024) (in-chip cooling of a GaN power IC). The Microsoft collaboration coverage (Sept 2025, $24M round) is press only and contains no stated dimensions; a Yole piece claims ~70 um minimum manufacturable channel width, which is press, not a paper, so it is NOT usable as a dimension.",
+   "read_full_text": true,
+   "geometry_name": "corintis_glacierware_topopt_coldplate_20x32p5mm",
+   "geometry_type": "other - topology-optimised free-form microchannel network in a single copper channel layer (2.5D density field, black/white pixel image, not parameterised). Split-flow: one out-of-plane inlet on the vertical centreline, two edge outlets. The SAME paper also defines a fully parameterised secondary geometry set: 7 straight parallel channel cold plates with equal channel and fin widths (200, 175, 150, 125, 100, 75, 50 um), which ARE buildable from the stated numbers.",
+   "dimensions": [
+    {
+     "name": "chip_footprint_x",
+     "value_um": "20000",
+     "quote": "The present study considers a fictitious 20 mm x 32.5 mm chip.",
+     "domain": "overall"
+    },
+    {
+     "name": "chip_footprint_y",
+     "value_um": "32500",
+     "quote": "The present study considers a fictitious 20 mm x 32.5 mm chip.",
+     "domain": "overall"
+    },
+    {
+     "name": "cold_plate_footprint",
+     "value_um": "NOT_STATED",
+     "quote": "The chip is cooled using a copper cold plate attached to the silicon with an intermediate Thermal Interface Material (TIM).",
+     "domain": "overall"
+    },
+    {
+     "name": "silicon_die_thickness",
+     "value_um": "550",
+     "quote": "The silicon die is 550 um thick, with a thermal conductivity of 150 W/mK.",
+     "domain": "solid"
+    },
+    {
+     "name": "tim_thickness",
+     "value_um": "50",
+     "quote": "The TIM is modeled as a 50 um thick layer with a thermal conductivity of 8.5 W/mK.",
+     "domain": "solid"
+    },
+    {
+     "name": "copper_base_thickness",
+     "value_um": "300",
+     "quote": "The base layer is 300 um thick, and the channel layer is 800 um thick.",
+     "domain": "solid"
+    },
+    {
+     "name": "channel_layer_thickness_fin_height",
+     "value_um": "800",
+     "quote": "The base layer is 300 um thick, and the channel layer is 800 um thick.",
+     "domain": "solid"
+    },
+    {
+     "name": "channel_depth",
+     "value_um": "800",
+     "quote": "The base layer is 300 um thick, and the channel layer is 800 um thick.",
+     "domain": "fluid"
+    },
+    {
+     "name": "channel_width_minimum",
+     "value_um": "90.37",
+     "quote": "a convolution channel width distribution that seems to follow a beta distribution (see Fig. 2c) with a minimum of 90.37 um",
+     "domain": "fluid"
+    },
+    {
+     "name": "channel_width_mode",
+     "value_um": "134.74",
+     "quote": "a mode of 134.74 um",
+     "domain": "fluid"
+    },
+    {
+     "name": "channel_width_mean",
+     "value_um": "186.12",
+     "quote": "an average of 186.12 um",
+     "domain": "fluid"
+    },
+    {
+     "name": "channel_width_maximum",
+     "value_um": "370.93",
+     "quote": "and a maximum of 370.93 um",
+     "domain": "fluid"
+    },
+    {
+     "name": "channel_length",
+     "value_um": "NOT_STATED",
+     "quote": "No channel length is given; the optimised design is a branching network delivered as a black and white image, not channels of a stated length.",
+     "domain": "fluid"
+    },
+    {
+     "name": "number_of_channels",
+     "value_um": "NOT_STATED",
+     "quote": "One interesting characteristic of the generated design (Fig. 2a) is the fact that it contains fins and channels of different sizes and shapes.",
+     "domain": "fluid"
+    },
+    {
+     "name": "fin_thickness_optimised_design",
+     "value_um": "NOT_STATED",
+     "quote": "Regions with high heat flux are populated with smaller densely packed fins, while regions with lower heat flux, have larger lightly packed fins.",
+     "domain": "solid"
+    },
+    {
+     "name": "fin_pitch_optimised_design",
+     "value_um": "NOT_STATED",
+     "quote": "It is defined as the ratio between the total perimeter of the fins to the surface of the kernel and its units are [m-1].",
+     "domain": "solid"
+    },
+    {
+     "name": "inlet_width_or_diameter",
+     "value_um": "NOT_STATED",
+     "quote": "cold liquid coolant entering from the out-of-plane dimension along the vertical axis of symmetry",
+     "domain": "fluid"
+    },
+    {
+     "name": "inlet_position",
+     "value_um": "NOT_STATED (qualitative only: out-of-plane, on the vertical axis of symmetry, i.e. the 20 mm-direction centreline running the 32.5 mm length)",
+     "quote": "we have opted for the liquid coolant to enter the cold plate along the latter (cyan line) coming from the out-of-plane dimension.",
+     "domain": "fluid"
+    },
+    {
+     "name": "outlet_size",
+     "value_um": "NOT_STATED",
+     "quote": "it spreads outwards to the left and right, where it exits along the two outlets (red lines).",
+     "domain": "fluid"
+    },
+    {
+     "name": "outlet_position",
+     "value_um": "NOT_STATED (qualitative only: two outlets, full left and right edges of the cold plate)",
+     "quote": "exiting from the two outlets at the left and right edges of the cold plate",
+     "domain": "fluid"
+    },
+    {
+     "name": "number_of_outlets",
+     "value_um": "2 (count, not a length)",
+     "quote": "exiting from the two outlets at the left and right edges of the cold plate",
+     "domain": "fluid"
+    },
+    {
+     "name": "hotspot_count",
+     "value_um": "4 (count, not a length)",
+     "quote": "the power map has a total power of 738.66 W featuring four local hotspots of 400 W/cm2 each in an arrangement that presents double symmetry.",
+     "domain": "overall"
+    },
+    {
+     "name": "hotspot_footprint",
+     "value_um": "NOT_STATED",
+     "quote": "four local hotspots of 400 W/cm2 each in an arrangement that presents double symmetry",
+     "domain": "overall"
+    },
+    {
+     "name": "hotspot_positions",
+     "value_um": "NOT_STATED (only that the arrangement has two axes of symmetry, horizontal and vertical)",
+     "quote": "b) presents two axes of symmetry: horizontal and vertical.",
+     "domain": "overall"
+    },
+    {
+     "name": "baseline_straight_channel_widths",
+     "value_um": "200, 175, 150, 125, 100, 75, 50 (seven separate designs)",
+     "quote": "seven canonical designs of straight microchannels with equal channel and fin widths of 200, 175, 150, 125, 100, 75 and 50 um.",
+     "domain": "fluid"
+    },
+    {
+     "name": "baseline_straight_fin_widths",
+     "value_um": "200, 175, 150, 125, 100, 75, 50 (fin width stated equal to channel width in each design)",
+     "quote": "straight microchannels with equal channel and fin widths of 200, 175, 150, 125, 100, 75 and 50 um",
+     "domain": "solid"
+    },
+    {
+     "name": "baseline_straight_channel_pitch",
+     "value_um": "NOT_STATED as a number; follows arithmetically as channel+fin = 400, 350, 300, 250, 200, 150, 100 um",
+     "quote": "straight microchannels with equal channel and fin widths of 200, 175, 150, 125, 100, 75 and 50 um",
+     "domain": "solid"
+    },
+    {
+     "name": "baseline_straight_channel_depth",
+     "value_um": "NOT_STATED explicitly for the baselines; the paper states the channel layer of the modelled cold plate is 800 um",
+     "quote": "The base layer is 300 um thick, and the channel layer is 800 um thick.",
+     "domain": "fluid"
+    },
+    {
+     "name": "baseline_straight_channel_length",
+     "value_um": "NOT_STATED",
+     "quote": "No length is given for the straight-channel baselines.",
+     "domain": "fluid"
+    },
+    {
+     "name": "substrate_adiabatic_sidewalls",
+     "value_um": "NOT_STATED (no extra solid surround modelled)",
+     "quote": "using adiabatic boundary conditions for the side walls and adding the power map as a heat flux source term at the bottom",
+     "domain": "solid"
+    }
+   ],
+   "buildable": "PARTIALLY. Two different answers for the two geometries in this paper.\n\n(1) The topology-optimised cold plate (the headline geometry) is NOT buildable from the numbers alone. The four-layer stack is fully specified in Z: silicon die 550 um, TIM 50 um, copper base 300 um, channel layer 800 um, total 1700 um of modelled stack, on a 20 mm x 32.5 mm footprint. The channel depth is 800 um everywhere. What is missing is the in-plane channel layout itself: the design is a converged density field thresholded to a black-and-white pixel image, and the paper publishes only a statistical summary of it (channel width min 90.37 um, mode 134.74 um, mean 186.12 um, max 370.93 um, beta-shaped distribution) plus a picture of one quarter (Fig. 2a). A width histogram does not fix channel centrelines, branching topology, fin shapes or counts, so any CAD built from these numbers would be a different geometry with a similar width statistic. Also missing: cold plate footprint as distinct from chip footprint; inlet port width/length/diameter and its exact coordinate; outlet port cross-section and extent along the left and right edges; the hotspot footprints and coordinates (so the power map cannot be reconstructed either, only its total of 738.66 W and its 400 W/cm2 peak); fin thickness and pitch anywhere in the optimised field; the cartesian design grid resolution. CONCLUSION: to replicate this exactly you must re-run a topology optimisation with their objective (minimise max junction temperature) and their constraints (150 mbar, 1.5 LPM/kW), or digitise Fig. 2a - both are reconstructions, not the paper's geometry.\n\n(2) The seven straight-channel baselines ARE buildable and watertight from stated numbers: equal channel and fin widths of 200, 175, 150, 125, 100, 75 and 50 um (so pitch 400, 350, 300, 250, 200, 150, 100 um by arithmetic, not stated as such), cut into the 800 um channel layer over a 300 um copper base, under a 50 um TIM and a 550 um silicon die, across 20 mm x 32.5 mm. Channel length is NOT_STATED, but the split-flow routing means a channel runs from the vertical centreline out to one side edge, i.e. the 20 mm direction; I am NOT asserting 10 mm because the paper does not state it and the cold plate footprint is not given. Inlet and outlet port geometry is NOT_STATED for these too, so the ports must be chosen by the modeller. RECOMMENDATION: build target (2) as the verifiable case - it reproduces the green benchmark curve of Fig. 4 and the 125 um best-straight-channel reference point - and treat target (1) as a TO problem statement rather than a geometry to copy.",
+   "operating_point": "Driving condition is a prescribed pressure drop between inlet and outlet, not a prescribed flow rate. \"we conduct simulations for a range of pressure drops: 100, 150, 200, 250 and 300 mbar.\"\n\nDesign constraints: \"a pressure drop of 150 mbar and a flow rate per power of 1.5 LPM/kW inside the microfluidic design (1.11 LPM for 738.66 W)\". Junction temperature acceptance target: \"any junction temperature below 85 C is considered acceptable\". The 150 mbar microfluidic budget was set so the whole loop (including 90 degree elbows at the out-of-plane inlet/outlets, filters, valves, connectors) stays under 300 mbar.\n\nNominal operating point of the optimised design: 150 mbar, flow rate 1.09 LPM, which the paper notes \"corresponds to 1.47 LPM/kW\". Lower-power operating point also reported: the 85 C target \"is reached by the hotspot-aware design at just 100 mbar and 0.79 LPM.\"\n\nHeat load: total power 738.66 W over the 20 mm x 32.5 mm die (area 6.5 cm2), applied as a heterogeneous power map heat flux at the junction face (the silicon face away from the cold plate), with four hotspots at 400 W/cm2 each. Side walls adiabatic.\n\nCoolant: water with 25% propylene glycol, inlet temperature 25 C, thermal conductivity 0.478 W/mK, dynamic viscosity 0.00286 Pa s, specific heat capacity 3980 J/kgK. Coolant DENSITY IS NOT_STATED. REYNOLDS NUMBER IS NOT_STATED anywhere in the paper, and cannot be computed without the density.\n\nSolid properties: silicon 150 W/mK, TIM 8.5 W/mK (phase change material), copper 400 W/mK.\n\nSingle phase, conjugate heat transfer, Navier-Stokes with a Brinkman term during optimisation; the final evaluation is body-fitted high-fidelity CFD.",
+   "reported_results": "Optimised (hotspot-aware) design at 150 mbar / 1.09 LPM:\n- Maximum junction temperature 81.19 C, at four distinct hotspots of 81.19 C each; \"just below the initial target of 85 C\".\n- Junction temperature rise 56.19 K above the 25 C inlet.\n- Maximum copper fin temperature inside the microfluidic heat sink 48.99 C.\n- Maximum temperature at the cold plate layer 53.21 C; at the TIM layer 63.61 C; at the junction layer 81.19 C (three-level stack-up of the conductive drop).\n- Maximum coolant velocity 3.71 m/s inside the copper cold plate.\n- Optimised design also meets the 85 C target at 100 mbar / 0.79 LPM.\n\nVersus straight channels:\n- \"over the entire evaluated range of pressures, the hotpot-aware cooling design outperforms any straight parallel microchannel design by a 12.69% reduction in temperature rise or a 55% reduction in pressure drop for the same temperature rise.\" Conclusions round this to \"almost 13%\" / \"55% reduction in pressure drop ... within 150 mbar\".\n- Within the 1.5 LPM/kW and 150 mbar constraints the best straight channel is the 125 um design; against it the optimised design gives \"a 9.14% reduction of the junction temperature, which corresponds to an absolute decrease of 8.17 C.\"\n- For pressures below 300 mbar, the 100 um straight channels give the lowest temperature rise among the straight designs.\n- Only the 75, 100 and 125 um straight designs reach 85 C at all, and only marginally, needing more than 200 mbar and/or more than 1.11 LPM.\n- 50 um straight channels have a junction temperature higher than 105 C.\n\nNOT REPORTED anywhere in the paper: Nusselt number, heat transfer coefficient, thermal resistance in K/W or K cm2/W, friction factor, pumping power, per-design tabulated numbers behind Fig. 4 (only the plot), and any experimental data - \"Future work will focus on manufacturing and experimental evaluation of the cold plates to validate this performance increase.\" So the checkable targets are the temperatures, the 3.71 m/s peak velocity, and the 1.09 LPM at 150 mbar.",
+   "mesh_used": "POORLY SPECIFIED - treat as NOT_STATED for any grid-convergence purpose.\n\nOptimisation stage: two PDEs \"adapted to the 2.5D framework described in [1]\" solved by the Finite Element Method using the open-source package Firedrake; hydrodynamics is Navier-Stokes augmented with a Brinkman term, with hydrodynamic resistance derived from the density field; conjugate heat transfer solved across all four layers; design variables are a density scalar field in [0,1] \"on a piecewise constant function space defined on a cartesian grid\". The cartesian grid resolution, element count and element type are NOT_STATED. Convergence is reported only as iteration count: \"the evolution of the TO that converges to an optimized geometry after 200 iterations\", with frames shown at iterations 10, 20, 30, 100 and 200. Post-processing applies a 0.5 threshold to the density field plus a cleanup step for \"imperfections and geometry anomalies\".\n\nVerification stage: \"we construct a body-fitted mesh based on the black and white image of the generated geometry and we perform high fidelity thermal Computational Fluid Dynamics (CFD) by applying a pressure drop between inlet(s) and outlet.\" The mesher name, cell count, cell type (tet/hex/poly), boundary-layer or prism-layer treatment, near-wall resolution, y+ and turbulence model (if any) are all NOT_STATED. NO GRID CONVERGENCE / MESH INDEPENDENCE STUDY IS PRESENTED, and no solver validation against experiment. This is the single biggest gap for anyone trying to reproduce their numbers: the 81.19 C and 1.09 LPM at 150 mbar cannot be mesh-matched, only approached."
+  },
+  {
+   "key": "tuckerman-pease",
+   "paper": "TARGET PAPER (not readable): D. B. Tuckerman and R. F. W. Pease, \"High-Performance Heat Sinking for VLSI\", IEEE Electron Device Letters, vol. EDL-2, no. 5, May 1981, pp. 126-129. DOI 10.1109/EDL.1981.25367 (https://doi.org/10.1109/edl.1981.25367).\n\nPAYWALL STATUS: CLOSED. Verified by three independent checks, not by assumption: (1) Unpaywall https://api.unpaywall.org/v2/10.1109/EDL.1981.25367 returns \"is_oa\": false, \"oa_status\": \"closed\", \"oa_locations\": [], \"has_repository_copy\": false. (2) OpenAlex https://api.openalex.org/works/doi:10.1109/EDL.1981.25367 returns is_oa false, any_repository_has_fulltext false, zero OA locations. (3) Semantic Scholar https://api.semanticscholar.org/graph/v1/paper/DOI:10.1109/EDL.1981.25367 returns openAccessPdf status \"CLOSED\" with the abstract elided by the publisher. Searched and rejected: arXiv (pre-dates it), ResearchGate, CiteSeerX, OSTI, PMC, IA Scholar, archive.org Wayback. The ONE scanned copy on the open web (https://confluence.slac.stanford.edu/download/attachments/163485154/Pease1981.pdf?api=v2) is an IEEE Xplore stamped download behind Stanford SAML SSO; it redirects to slac-rs2.proxy.cirrusidentity.com and I did not authenticate. No Wayback snapshot of it exists.\n\nSOURCE ACTUALLY READ IN FULL (open, primary, same first author, same hardware): D. B. Tuckerman, \"Heat-Transfer Microstructures for Integrated Circuits\", Lawrence Livermore National Laboratory report UCRL-53515 / DE84009137, February 1984 (Ph.D. dissertation, Dept. of Electrical Engineering, Stanford University), 141 pp., DOE contract W-7405-ENG-48. OSTI record https://www.osti.gov/biblio/5215635 (OSTI holds no digital full text). Open full text read at https://archive.org/details/DTIC_ADA344846 (DTIC AD-A344846); OCR text https://archive.org/download/DTIC_ADA344846/DTIC_ADA344846_djvu.txt and page scans via https://archive.org/download/DTIC_ADA344846/page/leafNNN_w1800.jpg.\n\nThis report contains the SAME three water-cooled etched silicon microchannel heat sinks reported in the 1981 letter (samples 80D6, 80D19, 81F9), with far more geometric detail than the 4-page letter carries. The link is proven by the 1981 abstract's own headline numbers: the letter reports 790 W/cm2 and a 71 C substrate rise; UCRL-53515 Table 3-5 gives sample 81F9 at q\" = 790 W/cm2 with R = 0.090 cm2.C/W, and 790 x 0.090 = 71.1 C.\n\nINDEPENDENT CROSS-CHECK of the headline design, read in full: W. Qu and I. Mudawar, \"Analysis of three-dimensional heat transfer in micro-channel heat sinks\", Int. J. Heat Mass Transfer 45 (2002) 3973-3985, https://engineering.purdue.edu/mudawar/files/articles-all/2002/2002_3.pdf - citing Tuckerman and Pease [3] = the 1981 EDL letter: \"Tuckerman and Pease [3] fabricated a micro-channel heat sink by chemically etching parallel channels in a 1-cm2 silicon wafer. The channels had a width of 50 um and a depth of 302 um, and were separated by 50 um thick walls.\" That matches sample 81F9 exactly (50 um wide, 302 um deep, 100 um pitch so 50 um walls), confirming 81F9 is the design the 1981 letter is famous for.\n\nEVERY dimension below is quoted from UCRL-53515, NOT from the 1981 letter. None of it is from a figure, nothing is rounded, nothing is a typical value.",
+   "read_full_text": false,
+   "geometry_name": "straight_parallel_tuckerman_pease_81F9_50um",
+   "geometry_type": "straight parallel channels (plate-fin array of straight rectangular microchannels etched into the back of a silicon substrate, capped by a flat Pyrex cover plate with two rectangular through-slot manifolds)",
+   "dimensions": [
+    {
+     "name": "channel_width_wc_DESIGN_C_81F9_CANONICAL",
+     "value_um": "50",
+     "quote": "UCRL-53515 Table 3-5, p.81, column 81F9 (verified against page scan leaf99): 'w_c (um) ... 50'. Independently confirmed by Qu & Mudawar 2002 citing the 1981 letter: 'The channels had a width of 50 um'.",
+     "domain": "fluid"
+    },
+    {
+     "name": "channel_depth_H_DESIGN_C_81F9_CANONICAL",
+     "value_um": "302",
+     "quote": "UCRL-53515 Table 3-5, p.81, column 81F9: 'H (um) ... 302'. Nomenclature p.xii: 'H = fin height (in z-direction), cm'. Independently confirmed by Qu & Mudawar 2002: 'a depth of 302 um'.",
+     "domain": "fluid"
+    },
+    {
+     "name": "fin_wall_thickness_ww_DESIGN_C_81F9_CANONICAL",
+     "value_um": "50",
+     "quote": "UCRL-53515 Table 3-5, p.81, column 81F9 states the pitch directly: 'w_c + w_w (um) ... 100', with 'w_c (um) ... 50'; so w_w = 100 - 50 = 50 um. Stated directly by Qu & Mudawar 2002 citing the 1981 letter: 'were separated by 50 um thick walls'.",
+     "domain": "solid"
+    },
+    {
+     "name": "pitch_wc_plus_ww_DESIGN_C_81F9_CANONICAL",
+     "value_um": "100",
+     "quote": "UCRL-53515 Table 3-5, p.81, column 81F9: 'w_c + w_w (um) ... 100'.",
+     "domain": "overall"
+    },
+    {
+     "name": "channel_length_Ls_DESIGN_C_81F9_CANONICAL",
+     "value_um": "14000",
+     "quote": "UCRL-53515 Table 3-5, p.81, column 81F9: 'L_s (cm) ... 1.40'. Defined on p.80: 'The channel array (cold plate) dimensions are denoted by the subscript \"s\", i.e., length L_s and width W_s.' 1.40 cm = 14000 um.",
+     "domain": "fluid"
+    },
+    {
+     "name": "channel_array_width_Ws_DESIGN_C_81F9_CANONICAL",
+     "value_um": "20000",
+     "quote": "UCRL-53515 Table 3-5, p.81, column 81F9: 'W_s (cm) ... 2.0'. 2.0 cm = 20000 um. This is the width of the cold plate perpendicular to flow, i.e. the full span of the channel array.",
+     "domain": "fluid"
+    },
+    {
+     "name": "silicon_thickness_tSi_DESIGN_C_81F9_CANONICAL",
+     "value_um": "458",
+     "quote": "UCRL-53515 Table 3-5, p.81, column 81F9: 't_Si (um) ... 458'. Nomenclature p.xiii: 't = thickness (of silicon, solder, oil, etc. as subscripted), cm'.",
+     "domain": "solid"
+    },
+    {
+     "name": "base_thickness_below_channels_Hs_DESIGN_C_81F9_CANONICAL",
+     "value_um": "156",
+     "quote": "Computed from two stated values using the report's own definition. UCRL-53515 nomenclature p.xii: 'H_s = t_Si - H, residual substrate thickness, cm'. For 81F9, Table 3-5 gives t_Si = 458 um and H = 302 um, so H_s = 156 um. This is the silicon lid between the channel floors and the heated front face.",
+     "domain": "solid"
+    },
+    {
+     "name": "channel_width_wc_DESIGN_B_80D19",
+     "value_um": "55",
+     "quote": "UCRL-53515 Table 3-5, p.81, column 80D19: 'w_c (um) ... 55'.",
+     "domain": "fluid"
+    },
+    {
+     "name": "channel_depth_H_DESIGN_B_80D19",
+     "value_um": "287",
+     "quote": "UCRL-53515 Table 3-5, p.81, column 80D19: 'H (um) ... 287'.",
+     "domain": "fluid"
+    },
+    {
+     "name": "fin_wall_thickness_ww_DESIGN_B_80D19",
+     "value_um": "45",
+     "quote": "UCRL-53515 Table 3-5, p.81, column 80D19: 'w_c + w_w (um) ... 100' with 'w_c (um) ... 55'; so w_w = 100 - 55 = 45 um. Arithmetic from two stated table values, not read off a figure.",
+     "domain": "solid"
+    },
+    {
+     "name": "pitch_wc_plus_ww_DESIGN_B_80D19",
+     "value_um": "100",
+     "quote": "UCRL-53515 Table 3-5, p.81, column 80D19: 'w_c + w_w (um) ... 100'.",
+     "domain": "overall"
+    },
+    {
+     "name": "channel_length_Ls_DESIGN_B_80D19",
+     "value_um": "14000",
+     "quote": "UCRL-53515 Table 3-5, p.81, column 80D19: 'L_s (cm) ... 1.40'. 1.40 cm = 14000 um.",
+     "domain": "fluid"
+    },
+    {
+     "name": "channel_array_width_Ws_DESIGN_B_80D19",
+     "value_um": "20000",
+     "quote": "UCRL-53515 Table 3-5, p.81, column 80D19: 'W_s (cm) ... 2.0'. 2.0 cm = 20000 um.",
+     "domain": "fluid"
+    },
+    {
+     "name": "silicon_thickness_tSi_DESIGN_B_80D19",
+     "value_um": "430",
+     "quote": "UCRL-53515 Table 3-5, p.81, column 80D19: 't_Si (um) ... 430'.",
+     "domain": "solid"
+    },
+    {
+     "name": "base_thickness_below_channels_Hs_DESIGN_B_80D19",
+     "value_um": "143",
+     "quote": "Per the report's definition 'H_s = t_Si - H, residual substrate thickness' (nomenclature p.xii): 430 um - 287 um = 143 um, both from Table 3-5 column 80D19.",
+     "domain": "solid"
+    },
+    {
+     "name": "channel_width_wc_DESIGN_A_80D6",
+     "value_um": "56",
+     "quote": "UCRL-53515 Table 3-5, p.81, column 80D6: 'w_c (um) ... 56'.",
+     "domain": "fluid"
+    },
+    {
+     "name": "channel_depth_H_DESIGN_A_80D6",
+     "value_um": "320",
+     "quote": "UCRL-53515 Table 3-5, p.81, column 80D6: 'H (um) ... 320'.",
+     "domain": "fluid"
+    },
+    {
+     "name": "fin_wall_thickness_ww_DESIGN_A_80D6",
+     "value_um": "44",
+     "quote": "UCRL-53515 Table 3-5, p.81, column 80D6: 'w_c + w_w (um) ... 100' with 'w_c (um) ... 56'; so w_w = 100 - 56 = 44 um. Arithmetic from two stated table values.",
+     "domain": "solid"
+    },
+    {
+     "name": "pitch_wc_plus_ww_DESIGN_A_80D6",
+     "value_um": "100",
+     "quote": "UCRL-53515 Table 3-5, p.81, column 80D6: 'w_c + w_w (um) ... 100'.",
+     "domain": "overall"
+    },
+    {
+     "name": "channel_length_Ls_DESIGN_A_80D6",
+     "value_um": "14000",
+     "quote": "UCRL-53515 Table 3-5, p.81, column 80D6: 'L_s (cm) ... 1.40'. 1.40 cm = 14000 um.",
+     "domain": "fluid"
+    },
+    {
+     "name": "channel_array_width_Ws_DESIGN_A_80D6",
+     "value_um": "20000",
+     "quote": "UCRL-53515 Table 3-5, p.81, column 80D6: 'W_s (cm) ... 2.0'. 2.0 cm = 20000 um.",
+     "domain": "fluid"
+    },
+    {
+     "name": "silicon_thickness_tSi_DESIGN_A_80D6",
+     "value_um": "533",
+     "quote": "UCRL-53515 Table 3-5, p.81, column 80D6: 't_Si (um) ... 533'.",
+     "domain": "solid"
+    },
+    {
+     "name": "base_thickness_below_channels_Hs_DESIGN_A_80D6",
+     "value_um": "213",
+     "quote": "Per the report's definition 'H_s = t_Si - H, residual substrate thickness' (nomenclature p.xii): 533 um - 320 um = 213 um, both from Table 3-5 column 80D6.",
+     "domain": "solid"
+    },
+    {
+     "name": "number_of_channels_n",
+     "value_um": "NOT_STATED",
+     "quote": "NOT_STATED. UCRL-53515 defines the symbol ('n = number of channels in heat sink', nomenclature p.xii) but never gives a value for samples 80D6, 80D19 or 81F9, and Table 3-5 has no channel-count row. DO NOT GUESS: build the array by sweeping the stated 100 um pitch across the stated 2.0 cm array width W_s and let the count fall out; that yields 200 channels but the paper does not say 200.",
+     "domain": "fluid"
+    },
+    {
+     "name": "heated_area_length_L_flow_direction",
+     "value_um": "10000",
+     "quote": "UCRL-53515 p.80: 'A uniform heat flux was generated in a rectangular thin-film WSi2 resistor of nominal dimensions L x W = (1 cm) X (1 cm).' 1 cm = 10000 um. This is the heat-source patch, NOT the channel array, which is larger.",
+     "domain": "overall"
+    },
+    {
+     "name": "heated_area_width_W_transverse",
+     "value_um": "10000",
+     "quote": "UCRL-53515 p.80: 'nominal dimensions L x W = (1 cm) X (1 cm)'. 1 cm = 10000 um. p.80 also states the mismatch explicitly: 'The cooling channels covered a substantially larger rectangular area so as to make the registration between the heater resistor and the cooled substrate noncritical'.",
+     "domain": "overall"
+    },
+    {
+     "name": "inlet_and_outlet_manifold_width_in_cover_plate",
+     "value_um": "3000",
+     "quote": "UCRL-53515 p.64 (verified against page scan leaf82): 'Masking tape was used as a mask for the 3 mm X 16 mm manifolds'. 3 mm = 3000 um. Two such slots, inlet and outlet, cut through the Pyrex cover plate: 'the manifolds are a pair of long rectangular holes in the Pyrex cover plate'.",
+     "domain": "fluid"
+    },
+    {
+     "name": "inlet_and_outlet_manifold_length_in_cover_plate",
+     "value_um": "16000",
+     "quote": "UCRL-53515 p.64: 'the 3 mm X 16 mm manifolds'. 16 mm = 16000 um. The 16 mm span runs transverse to the channels, feeding them across the array.",
+     "domain": "fluid"
+    },
+    {
+     "name": "manifold_sidewall_draft_angle_degrees_NOT_A_LENGTH",
+     "value_um": "NOT_STATED",
+     "quote": "Not a length, so NOT_STATED in micrometres, but the angle IS given and matters for the solid: UCRL-53515 p.64: 'The sandblasting process is very directional, producing steep walls (typically 5 degrees from vertical).' Model the manifold slots with a 5 degree draft if you want the as-built part; vertical walls are the idealisation.",
+     "domain": "fluid"
+    },
+    {
+     "name": "manifold_centre_to_centre_spacing",
+     "value_um": "NOT_STATED",
+     "quote": "NOT_STATED. UCRL-53515 gives the slot size (3 mm x 16 mm) and the channel length (L_s = 1.40 cm) but never states where the two slots sit on the 25.4 x 34.5 mm cover plate. For CAD, place them so the wetted channel run between the inner slot edges equals the stated L_s = 1.40 cm, and record that placement as an assumption.",
+     "domain": "fluid"
+    },
+    {
+     "name": "cover_plate_thickness_pyrex_AS_SPECIFIED_IN_TABLE_3_1",
+     "value_um": "800",
+     "quote": "UCRL-53515 Table 3-1 step 9 'Cover plate fabrication', p.66 (verified against page scan leaf84): 'Start w/optically polished Pyrex 0.8 mm thick'. 0.8 mm = 800 um. CONFLICTS with the body text, see next entry.",
+     "domain": "solid"
+    },
+    {
+     "name": "cover_plate_thickness_pyrex_AS_STATED_IN_BODY_TEXT",
+     "value_um": "1000",
+     "quote": "UCRL-53515 p.64 (verified against page scan leaf82): 'The manifolds were fabricated in 1-mm thick, optically polished Pyrex by sandblasting'. 1 mm = 1000 um. This contradicts Table 3-1's 0.8 mm. The report does not reconcile them. Both are quoted; pick one and flag it.",
+     "domain": "solid"
+    },
+    {
+     "name": "cover_plate_material_NOT_A_LENGTH",
+     "value_um": "NOT_STATED",
+     "quote": "Material, not a length. UCRL-53515 p.63: the silicon is 'anodically bonded to a Pyrex cover plate'; p.62: 'Borosilicate glass such as Pyrex 7740 is commonly used when anodically bonding to' silicon. Bond: Table 3-1 step 10, 'Anodic bond @ 400 C'.",
+     "domain": "solid"
+    },
+    {
+     "name": "starting_wafer_thickness",
+     "value_um": "500",
+     "quote": "UCRL-53515 Table 3-1 step 1 'Starting material', p.66: '2\", <110>, 500-um thick, preferably double-polished, lightly-doped (>1 ohm-cm)'. The finished t_Si values in Table 3-5 (430-533 um) differ from this because of oxidation, lapping and process variation.",
+     "domain": "solid"
+    },
+    {
+     "name": "starting_wafer_diameter",
+     "value_um": "50800",
+     "quote": "UCRL-53515 Table 3-1 step 1, p.66: '2\", <110>, 500-um thick'. 2 inches = 50.8 mm = 50800 um. Wafer stock only; the finished part is diced from it.",
+     "domain": "solid"
+    },
+    {
+     "name": "silicon_die_length_after_dicing_before_bonding",
+     "value_um": "34500",
+     "quote": "UCRL-53515 Table 3-1 step 8 'Prepare for anodic bonding', p.66: 'Saw to 34.5 mm X 34.5 mm'. 34.5 mm = 34500 um.",
+     "domain": "overall"
+    },
+    {
+     "name": "silicon_die_width_after_dicing_before_bonding",
+     "value_um": "34500",
+     "quote": "UCRL-53515 Table 3-1 step 8, p.66: 'Saw to 34.5 mm X 34.5 mm'. 34.5 mm = 34500 um.",
+     "domain": "overall"
+    },
+    {
+     "name": "final_bonded_laminate_footprint_dimension_1",
+     "value_um": "25400",
+     "quote": "UCRL-53515 Table 3-1 step 10 'Cover plate bond', p.66: 'Saw to final size (25.4 mm X 34.5 mm)'. Same figure in the body text p.64: 'The Pyrex was cut to size (25.4 X 34.5 mm)'. 25.4 mm = 25400 um.",
+     "domain": "overall"
+    },
+    {
+     "name": "final_bonded_laminate_footprint_dimension_2",
+     "value_um": "34500",
+     "quote": "UCRL-53515 Table 3-1 step 10, p.66: 'Saw to final size (25.4 mm X 34.5 mm)'. 34.5 mm = 34500 um. This is the overall outline of the finished silicon+Pyrex assembly.",
+     "domain": "overall"
+    },
+    {
+     "name": "channel_nominal_etch_depth_process_target",
+     "value_um": "400",
+     "quote": "UCRL-53515 Table 3-1 step 7 'Microchannel etch', p.66: 'Fresh, clean, 50-50 KOH 52 C (tilted) / Etch 34 hrs (check @27 hrs); nom. depth 400 um'. This is the process TARGET, not an as-built depth; the as-built depths are the Table 3-5 H values (287, 302, 320 um). Do not build to 400 um.",
+     "domain": "fluid"
+    },
+    {
+     "name": "channel_depth_measurement_uncertainty",
+     "value_um": "5",
+     "quote": "UCRL-53515 p.65 (verified against page scan leaf83): 'The accuracy of this measurement is about +/- 5 um.' Applies to every H value in Table 3-5.",
+     "domain": "fluid"
+    },
+    {
+     "name": "max_etchable_channel_depth_in_500um_wafer",
+     "value_um": "280",
+     "quote": "UCRL-53515 p.63: 'These effects limit the microchannel depths to about 280 um in a 500-um thick wafer.' This constraint applies only to the ABANDONED headering scheme of Fig. 3-11a (manifolds etched into the silicon), not to the preferred Fig. 3-11c scheme used for the deeper samples.",
+     "domain": "fluid"
+    },
+    {
+     "name": "channel_masking_oxide_thickness",
+     "value_um": "1.1",
+     "quote": "UCRL-53515 Table 3-1 step 5 'Oxidation', p.66: '1200 C, 5' dry, 90' wet, 5' dry (back side up) slow push/pull! (t_ox = 1.1 um nom.)'. Mask layer, sacrificial, not part of the finished solid.",
+     "domain": "solid"
+    },
+    {
+     "name": "heater_isolation_SiO2_thickness",
+     "value_um": "0.5",
+     "quote": "UCRL-53515 Table 3-1 step 11 'Heater resistor fabrication', p.67: 'Sputter SiO2 (0.5 um) on front for isolation'. Sits between the silicon front face and the heater film.",
+     "domain": "solid"
+    },
+    {
+     "name": "WSi2_thin_film_heater_thickness",
+     "value_um": "2.34",
+     "quote": "UCRL-53515 Table 3-1 step 11, p.67: 'Sputter WSi2, 65' (2.34 um nom.)'. This is the heat source film on the front face.",
+     "domain": "solid"
+    },
+    {
+     "name": "heater_etch_mask_SiO2_thickness",
+     "value_um": "0.2",
+     "quote": "UCRL-53515 Table 3-1 step 11, p.67: 'Sputter SiO2 (0.2 um) for etch mask'. Sacrificial.",
+     "domain": "solid"
+    },
+    {
+     "name": "contact_metallization_Cr_Ag_thickness",
+     "value_um": "1",
+     "quote": "UCRL-53515 Table 3-1 step 13 'Contact metallization', p.67: 'Evaporate Cr/Ag (1 um)'.",
+     "domain": "solid"
+    },
+    {
+     "name": "heater_lithography_patterned_rectangle_length",
+     "value_um": "20000",
+     "quote": "UCRL-53515 Table 3-1 step 12 'Resistor lithography', p.67: 'NPR photolith (1 cm x 2 cm rectangle)'. 2 cm = 20000 um. NOTE this is the lithographic field; the ACTIVE heated area between the contacts is the (1 cm) x (1 cm) stated on p.80. Use 1 cm x 1 cm as the heat-source patch.",
+     "domain": "solid"
+    },
+    {
+     "name": "THEORETICAL_OPTIMUM_channel_width_wc",
+     "value_um": "58",
+     "quote": "UCRL-53515 p.26, Section 2.1.2.1: 'For a room-temperature water-cooled silicon heat sink on a (1 cm) X (1 cm) substrate, with a water pressure of P = 50 psi = 3.45X10^6 dynes/cm^2, our design procedure gives D = 116.6 um, hence the conservatively designed optimum is: w_c = w_w = D/2 = 58 um'. This is the PREDICTED optimum, never built.",
+     "domain": "fluid"
+    },
+    {
+     "name": "THEORETICAL_OPTIMUM_wall_width_ww",
+     "value_um": "58",
+     "quote": "UCRL-53515 p.26: 'w_c = w_w = D/2 = 58 um'. Predicted, not built.",
+     "domain": "solid"
+    },
+    {
+     "name": "THEORETICAL_OPTIMUM_hydraulic_diameter_D",
+     "value_um": "116.6",
+     "quote": "UCRL-53515 p.26: 'our design procedure gives D = 116.6 um'. Nomenclature p.xi: 'D = channel hydraulic diameter = 4 (cross-sectional area)/(perimeter), cm'.",
+     "domain": "fluid"
+    },
+    {
+     "name": "THEORETICAL_OPTIMUM_fin_height_H_truncated",
+     "value_um": "416",
+     "quote": "UCRL-53515 p.28, Section 2.1.2.2: 'For our 50-psi inlet water pressure, 1.32 a_c w_c ~ (1.32)(5.43)(58 um) = 416 um, which conveniently is less than a typical silicon wafer thickness!' The report calls this 'a good place to truncate the fins, because the thermal resistance is only 10% above its asymptotic limit'. Predicted, not built.",
+     "domain": "fluid"
+    },
+    {
+     "name": "THEORETICAL_OPTIMUM_substrate_footprint_side",
+     "value_um": "10000",
+     "quote": "UCRL-53515 p.26: 'a silicon heat sink on a (1 cm) X (1 cm) substrate, with a water pressure of P = 50 psi'. 1 cm = 10000 um.",
+     "domain": "overall"
+    },
+    {
+     "name": "epoxy_wicking_depth_into_grooves_SAWN_SAMPLES_ONLY",
+     "value_um": "1500",
+     "quote": "UCRL-53515 p.64: 'We applied a controlled amount of epoxy at the ends of the microchannels; capillary action drew the epoxy 1 or 2 mm into the grooves'. Range 1-2 mm = 1000-2000 um, midpoint 1500 um; the paper gives a RANGE, not a single value. IRRELEVANT to the three 1981 etched samples: 'When the grooves were fabricated by orientation-dependent etching, no sealant was needed because the grooves were designed to terminate within the silicon'.",
+     "domain": "solid"
+    },
+    {
+     "name": "distance_from_channel_end_to_die_edge_blind_groove_runout",
+     "value_um": "NOT_STATED",
+     "quote": "NOT_STATED, and it is needed for a watertight solid. UCRL-53515 p.64 says only that for the etched (ODE) samples 'the grooves were designed to terminate within the silicon, as depicted in Fig. 3-11c' - so the channels are BLIND pockets, closed at both ends by silicon, fed only from above through the Pyrex slots. The runout length between each groove end and the 34.5 mm die edge is never dimensioned in text or table.",
+     "domain": "solid"
+    },
+    {
+     "name": "channel_cross_section_shape_NOT_A_LENGTH",
+     "value_um": "NOT_STATED",
+     "quote": "Shape, not a length, and it is stated: UCRL-53515 Fig. 3-19 caption, p.83: 'Model of sawn grooves (circular bottoms), etched grooves (square bottoms).' The three 1981 samples are all 'Fabrication: Etched' per Table 3-5, so the channel cross-section is a plain RECTANGLE: flat floor, vertical sidewalls. This follows from the process: KOH orientation-dependent etching of a <110> wafer, where the <111> planes 'are perpendicular to the surface' (p.51), giving vertical walls.",
+     "domain": "fluid"
+    }
+   ],
+   "buildable": "YES for the canonical design (sample 81F9) and for designs 80D6 and 80D19, with ONE assumption you must record, plus ONE documented conflict.\n\nWHAT IS FULLY SPECIFIED (81F9): channel width 50 um, channel depth 302 um, fin/wall thickness 50 um, pitch 100 um, channel length 1.40 cm, channel-array width 2.0 cm, total silicon thickness 458 um, residual silicon base under the channel floors 156 um (= 458 - 302, using the report's own definition H_s = t_Si - H), rectangular channel cross-section with flat floor and vertical walls, Pyrex cover plate 0.8 mm (Table 3-1) or 1.0 mm (body text), two 3 mm x 16 mm rectangular through-slots in that cover plate as inlet and outlet manifolds with ~5 degrees of sandblast draft, overall bonded laminate outline 25.4 mm x 34.5 mm, heat-source patch 1 cm x 1 cm on the opposite (front) face.\n\nBUILD RECIPE: take a 34.5 x 34.5 mm silicon block 458 um thick. On the back face, cut a 2.0 cm wide x 1.40 cm long array of rectangular grooves, each 50 um wide x 302 um deep, on a 100 um pitch, with the grooves terminating inside the silicon (blind at both ends, no breakout to the die edge). Cap with a flat Pyrex plate 0.8 mm thick carrying two 3 x 16 mm through-slots that land over the two ends of the groove array. Trim the bonded stack to 25.4 x 34.5 mm. Put the 1 cm x 1 cm heat source centred on the front face. The fluid domain is the groove void plus the two slot volumes; the solid domain is the silicon (156 um base + 302 um tall fins) plus the Pyrex.\n\nTHE ONE ASSUMPTION: channel count n is NOT_STATED. Do not hard-code it. Sweep the stated 100 um pitch across the stated 2.0 cm array width and let the count emerge (that gives 200, but the report never writes 200). Equivalently, model one 100 um periodic unit cell (50 um fluid + 25 um of silicon on each side) and apply symmetry, which is how the report itself analyses it.\n\nTHE ONE CONFLICT: Pyrex cover-plate thickness is 0.8 mm in Table 3-1 step 9 and 1 mm in the body text on p.64. Both are quoted above. The report never reconciles them. It only affects the manifold slot depth, so it changes header pressure drop slightly and nothing in the channel core. Pick 0.8 mm (the process spec) and flag it.\n\nWHAT IS GENUINELY MISSING AND WOULD NEED AN ASSUMPTION: (1) the in-plane POSITION of the two manifold slots on the cover plate - the report gives slot size and channel length but never the slot centres; place them so the open channel run between the inner slot edges equals the stated 1.40 cm. (2) The runout distance from each blind groove end to the die edge. (3) The position of the 1 cm x 1 cm heater patch relative to the 1.40 cm channel array - the report says only that the array is deliberately larger so registration is 'noncritical', and that temperature was probed at x = 9 mm; centring the heater on the array is the natural reading but is not stated. (4) Fillet radii at the groove corners - none given; KOH-etched <110> grooves are modelled as sharp rectangles, which is what the report's own Fig. 3-19 does.\n\nDO NOT MODEL the 400 um figure as a channel depth: that is the process etch target in Table 3-1 step 7, not an as-built dimension. The as-built depths are 287, 302 and 320 um.\n\nONE MORE CAUTION FOR THE CAD: sample 81D7C3 in the same table (0.083 cm2.C/W at 1309 W/cm2, the best number in the whole report) is a SAWN PIN-FIN part, 55 um pins on a 90 um pitch, 400 um tall, and it is NOT one of the 1981 letter's straight-channel designs. Do not mix it into a straight-parallel-channel model.",
+   "operating_point": "COOLANT: water. UCRL-53515 p.69: 'Deionized water was supplied to a precision pressure regulator', filtered through a '15-um filter (Nupro SS-4F-15)'. Resistivity 18 Mohm. Fluid properties are NOT tabulated in the report; it works from standard water property correlations and notes the viscosity drops with temperature ('the viscosity of the water decreases with increasing temperature', p.81-82).\n\nCOOLANT INLET TEMPERATURE: NOT_STATED for the three heat-sink runs. The 1981 letter's abstract reports temperature rise 'above the input water temperature' without giving that temperature. The only inlet temperature stated anywhere in UCRL-53515 is for a separate long-duration erosion test: p.86, 'Deionized water (18 Mohm, 18 C), filtered to better than 15 um, flowed continuously through sample 83MR31E'. Do not apply 18 C to 81F9 without flagging it. The theoretical optimum of Section 2.1.2.1 is stated as 'room-temperature water-cooled'.\n\nPER-DESIGN OPERATING POINTS, all from UCRL-53515 Table 3-5, p.81 (verified against page scan leaf99), each at the maximum tested power:\n\nDESIGN C, sample 81F9 (the canonical one, matches the 1981 letter's headline): pressure drop P = 31 psi (= 2.14 bar = 214 kPa); volume flow rate f = 8.6 cm3/sec (= 8.6 mL/s = 0.516 L/min); heat flux q\" = 790 W/cm2 over the 1 cm x 1 cm heater, i.e. 790 W total.\n\nDESIGN B, sample 80D19: P = 17 psi (= 1.17 bar); f = 6.5 cm3/sec; q\" = 277 W/cm2.\n\nDESIGN A, sample 80D6: P = 15 psi (= 1.03 bar); f = 4.7 cm3/sec; q\" = 181 W/cm2.\n\nFLOW SPLIT CAVEAT, essential if you compare CFD to the reported numbers. The cold plate is wider than the heater, so not all the measured flow passes under the heat source. UCRL-53515 p.80: 'This discrepancy between the cold-plate area and the smaller heated area implies that not all the input flow is effective in cooling. For example, if W_s = 1.5 cm whereas W = 1.0 cm, then approximately 2/3 of the coolant flows underneath the heater resistor.' For 81F9, W_s = 2.0 cm against a 1.0 cm heater, so roughly half the tabulated 8.6 cm3/sec is under the heater. The report corrects for this with f_hot = f_cold - (1 - W/W_s) f_cold.\n\nREYNOLDS NUMBER: NOT_STATED for 80D6, 80D19 or 81F9. Related stated values, for different samples: Table 3-3 p.79 gives 'Maximum Re' of 330 and 390 for etched plate-fin samples 83MR31E and 83MY16B, and 900 for sawn sample 82AP26C1; Table 3-4 p.80 gives 900, 700 and 760 for pin-fin samples. p.80 notes 'the Reynolds numbers tested (up to 900)'. For the theoretical optimum, p.26: 'Re = 5.42(...)^(1/4) ~ 1560 under the stated conditions, hence the flow will indeed be laminar.' The flow regime throughout is single-phase laminar.\n\nDESIGN-INTENT OPERATING POINT (not an as-tested one): p.82, 'the design value of ~10 cm3/sec'; Section 2.1.2.1 designs at 'a water pressure of P = 50 psi = 3.45X10^6 dynes/cm2'. The package 'was operated continuously at 50 psi for over a month without problems' (p.64).\n\nMEASUREMENT LOCATION: UCRL-53515 p.80, 'measuring temperature T at the 90% downstream location (x = 9 mm)'. All Table 3-5 resistances are maximum (downstream) values, not averages. Match this probe point when comparing CFD.",
+   "reported_results": "THE CLASSIC VALIDATION NUMBERS. All thermal resistances below are AREA-NORMALISED, units cm2.C/W, defined in UCRL-53515 nomenclature p.xiii as 'R = LW theta, thermal resistance normalized to unit area'. Because the heater is exactly 1 cm2, the numeric value in cm2.C/W equals the plain C/W for these parts.\n\nFrom UCRL-53515 Table 3-5, p.81, 'Maximum (downstream) thermal resistance of various silicon microchannel heat sinks at maximum tested power' (verified twice: OCR text and the page scan):\n\nDESIGN C, sample 81F9 (CANONICAL): R = 0.090 cm2.C/W at q\" = 790 W/cm2, 31 psi, 8.6 cm3/sec. Cross-check against the 1981 letter's own abstract: 'At a power density of 790 W/cm2, a maximum substrate temperature rise of 71 C above the input water temperature was measured, in good agreement with theory.' 790 W/cm2 x 0.090 cm2.C/W = 71.1 C. This closes the loop between the two documents exactly.\n\nDESIGN B, sample 80D19: R = 0.113 cm2.C/W at q\" = 277 W/cm2, 17 psi, 6.5 cm3/sec. Implied rise 277 x 0.113 = 31.3 C.\n\nDESIGN A, sample 80D6: R = 0.110 cm2.C/W at q\" = 181 W/cm2, 15 psi, 4.7 cm3/sec. Implied rise 181 x 0.110 = 19.9 C.\n\nCONTEXT ROWS FROM THE SAME TABLE, NOT part of the 1981 letter's straight-channel set: sample 82A26C1 (etched plate fin, w_c 64 um, H 280 um): R = 0.280 at 34.6 W/cm2, 15 psi, 1.86 cm3/sec. Sample 81D7C3 (SAWN PIN-FIN, 55 um pins, 90 um pitch, H 400 um): R = 0.083 at 1309 W/cm2, 53 psi, 14.2 cm3/sec - the best number in the report, and the one behind the abstract's '0.083 C/W'. UCRL-53515 abstract: 'Thermal resistances as low as 0.083 C/W were measured from 1-cm2 thin-film resistors (e.g., a 108 C temperature rise at' 1309 W/cm2.\n\nSCALED EXTRAPOLATION the authors give, useful as a second CFD target: UCRL-53515 p.80: 'we could extrapolate the performance of sample 81F9 to R = 0.077 cm2.C/W and that of sample 81D7C3 to R = 0.067 cm2.C/W for the case where L_s = 1.0 cm and P = 30 psi; this requires scaling down all dimensions by (L/L_s)^(1/3).' The handicap being corrected: 'the use of a substrate length which is longer than the 1-cm channel width (L_s >= 1.4 cm in our samples) has handicapped us somewhat. Since optimized thermal resistance scales as L^(1/3) for constant pressure'.\n\nTHEORY TARGET: UCRL-53515 p.26, for the optimum 1 cm x 1 cm design at 50 psi, 'theta_opt = 0.055 C/W'. Correlation used: Nu_L = 8.882 after correcting for thermal entrance effects, from solving L/(D Re Pr) = 1/(12 Nu) graphically (Fig. 2-3). Governing relation: Eq. (2.31), theta_opt = (4/3) theta_conv = 2.95 (mu Phi / k_f Nu k_s^3 w^2 rho C P)^(1/3). Decomposition for comparing against CFD, Eq. (3-2): R(x) = R_cond + R_conv(x) + R_cal(x), with R_cal(x) = x W / (rho C f).\n\nNUSSELT NUMBER: no measured Nu is tabulated. The report reports thermal resistance, not Nu. Nu values quoted are theory inputs: Nu_inf for a fully developed profile from Fig. 2-4 as a function of aspect ratio, corrected for entrance effects via Fig. 2-3; Nu_L = 8.882 for the optimum design; Keyes' approximation gives Nu ~ 8.235.\n\nPRESSURE DROP / FLOW FRICTION, for validating the hydraulic side. UCRL-53515 Table 3-3, p.79, plate-fin samples, flow-friction parameter Phi = C_f Re: etched sample 83MR31E, Phi experimental 20.8 +/- 1.1 against 20.0 theory; etched 83MY16B, 20.6 +/- 1.1 against 19.9; sawn 82AP26C1, 19.6 +/- 1.0 against 18.6. Header loss coefficient K measured 2.6 to 5.3 against a theoretical expectation of about 1.6: p.33, 'K ~ 1.6, in fact we have measured K to be between 3 and 4.5, probably because the header' geometry is imperfect. The report's own summary, p.79: 'the experimental flow-friction characteristics of microscopic silicon plate-fin heat sinks are as predicted by theory, except that the header losses appear to be somewhat larger than expected'. NOTE Phi and K are NOT tabulated for 80D6, 80D19 or 81F9 specifically.\n\nBOILING LIMIT, for context: operating one sample into subcooled boiling at f = 0.35 cm3/sec, 'Energy calculations suggest that 15% of the water is being vaporized at burnout' (p.82), with a burnout margin of 'a factor of 2 beyond the initial boiling'.\n\nACCURACY: channel depth +/- 5 um; pressure gauges 0.25% of full scale (15, 30 or 60 psi FS); current sense resistor +/- 0.25%; surface temperature by movable copper-constantan beaded-junction thermocouple. A heater sheet-resistance gradient of 'up to 2.9%/cm' is corrected for, and is valid 'provided such measurements are made at the center of the thin-film heater'.",
+   "mesh_used": "NO MESH. NOT_STATED, and not applicable: there is no CFD in either document. This is a 1981/1984 experimental and analytical study that predates practical CFD for this problem, which is exactly why it is the canonical validation case rather than a simulation to be reproduced.\n\nWHAT WAS DONE INSTEAD OF MESHING. The analysis in UCRL-53515 Chapter 2 is closed-form one-dimensional fin theory coupled to laminar duct correlations, with no discretised domain anywhere. The ingredients, all from UCRL-53515:\n\n1. Thermal resistance split three ways, Eq. (3-2), p.82: R(x) = R_cond + R_conv(x) + R_cal(x), where R_cond = conduction through the residual silicon base, R_conv = convection into the coolant through the finned and prime surfaces, R_cal = caloric rise of the coolant along the channel.\n2. Convection from a fin-efficiency treatment: 'eta = combined temperature effectiveness of finned and prime surfaces' and 'eta_f = temperature fin effectiveness factor (finned area)', with normalised fin height m = H sqrt(Nu L k_f / A w_c) per Eq. (2.16).\n3. Nusselt number taken from a chart, not computed on a grid: 'Nu_inf is evaluated from Fig. 2-4 for an equivalent rectangular aspect ratio. A correction factor is then applied for thermal entrance effects, using Fig. 2-3' (p.83).\n4. Two bracketing variants are carried through rather than one answer: an 'optimistic theory' with R_cal(x) = x W / (rho C f) and a 'conservative theory' with R_cal = x W / (eta rho C f), and the measured points are expected to land between them: 'Here the optimistic and conservative theories are both shown and, as expected, the data generally fit between them' (p.84).\n5. Nonlinear corrections applied by hand at high power: 'In the case of large power fluxes (and hence high temperatures), [Nu] is also corrected for the nonlinear viscosity effects, as described in Section 2.2.4' (p.83).\n6. Groove cross-section handled by swapping wetted perimeters, not by remeshing: Fig. 3-19, p.83, 'Model of sawn grooves (circular bottoms), etched grooves (square bottoms)', with p_prime evaluated per case.\n\nGRID CONVERGENCE: none, and none possible. There is no grid. The validation evidence offered in its place is a parameter sweep against theory with no fitted constants: p.84, 'Fig. 3-20 plots theory and experiment for sample 82A26A2 at several different flow rates and positions, correlated in terms of the dimensionless axial position x* = x/(D Re Pr) ... The agreement with theory is quite good, in view of the fact that no adjustable parameters were used.'\n\nIF YOU ARE MESHING THIS YOURSELF: the geometry is a conjugate heat transfer problem over one 100 um periodic unit cell (50 um of water plus 25 um of silicon on each side for 81F9), 302 um tall channel on a 156 um silicon base, 14 mm long, with symmetry planes down the channel centreline and the fin centreline. Resolve the thermal entrance region: the report puts the design point at L/(D Re Pr) = 1/(12 Nu) = 0.010, i.e. 'an almost fully-developed temperature profile' but not fully developed, so an entrance-length-resolving streamwise grading matters more than cross-sectional refinement. The report's own cell count, element type and mesher: NOT_STATED, because none exist."
+  },
+  {
+   "key": "lee-garimella",
+   "paper": "Poh-Seng Lee, Suresh V. Garimella, Dong Liu, \"Investigation of heat transfer in rectangular microchannels\", International Journal of Heat and Mass Transfer 48 (2005) 1688-1704, doi:10.1016/j.ijheatmasstransfer.2004.11.019. Cooling Technologies Research Center, School of Mechanical Engineering, Purdue University, 585 Purdue Mall, West Lafayette, Indiana 47907-2088, USA. Open full-text PDF actually read: http://www2.egr.uh.edu/~dli9/2004_ijhmt-singlephase.pdf (17-page publisher PDF, downloaded and read in full; verified three ways - pdftotext -layout, PyMuPDF text extraction, and 200-450 dpi rendering of the table/figure pages to read Tables 1, 5, 6 and Figs. 2, 3, 4 visually). Not paywalled at that URL.",
+   "read_full_text": true,
+   "geometry_name": "lee_garimella_liu_2005_straight_parallel_10ch_copper_194_to_534um",
+   "geometry_type": "straight parallel channels - ten straight, constant-cross-section rectangular microchannels cut in parallel into the top face of a solid copper block, closed on top by a flat transparent lid (so the channel top wall is adiabatic plastic, not copper). Five separate test pieces, each one a different channel width at a nominally constant aspect ratio of 5. No manifold, no pin fins, no branching, no re-entrant features anywhere in the heated length.",
+   "dimensions": [
+    {
+     "name": "number_of_channels_N_all_five_test_pieces",
+     "value_um": "10 (dimensionless count, not a length - same for all five test pieces)",
+     "quote": "Table 1, Test matrix: column '# of channels' reads 10 for Test # 1, 2, 3, 4 and 5. Also in the abstract: 'Each test piece was made of copper and contained ten microchannels in parallel.'",
+     "domain": "overall"
+    },
+    {
+     "name": "test1_channel_width_w",
+     "value_um": "194",
+     "quote": "Table 1, Test matrix, Test # 1: 'W (lm)' = 194. (The journal PDF renders the Greek mu as 'l'; the header is W (um).) Confirmed in text: 'for the smallest microchannel (w = 194 lm, b = 884 lm), with Re = 1100'.",
+     "domain": "fluid"
+    },
+    {
+     "name": "test1_channel_depth_b",
+     "value_um": "884",
+     "quote": "Table 1, Test matrix, Test # 1: 'b (lm)' = 884. Confirmed in text: 'for the smallest microchannel (w = 194 lm, b = 884 lm), with Re = 1100'.",
+     "domain": "fluid"
+    },
+    {
+     "name": "test1_hydraulic_diameter_Dh",
+     "value_um": "318",
+     "quote": "Table 1, Test matrix, Test # 1: 'Dh (lm)' = 318.",
+     "domain": "fluid"
+    },
+    {
+     "name": "test1_aspect_ratio_alpha",
+     "value_um": "4.56 (dimensionless, = b/w; not a length)",
+     "quote": "Table 1, Test matrix, Test # 1: 'a (=b/w)' = 4.56. (The PDF renders Greek alpha as 'a'.)",
+     "domain": "fluid"
+    },
+    {
+     "name": "test2_channel_width_w",
+     "value_um": "229",
+     "quote": "Table 1, Test matrix, Test # 2: 'W (lm)' = 229.",
+     "domain": "fluid"
+    },
+    {
+     "name": "test2_channel_depth_b",
+     "value_um": "1250",
+     "quote": "Table 1, Test matrix, Test # 2: 'b (lm)' = 1250.",
+     "domain": "fluid"
+    },
+    {
+     "name": "test2_hydraulic_diameter_Dh",
+     "value_um": "387",
+     "quote": "Table 1, Test matrix, Test # 2: 'Dh (lm)' = 387.",
+     "domain": "fluid"
+    },
+    {
+     "name": "test2_aspect_ratio_alpha",
+     "value_um": "5.46 (dimensionless, = b/w; not a length)",
+     "quote": "Table 1, Test matrix, Test # 2: 'a (=b/w)' = 5.46.",
+     "domain": "fluid"
+    },
+    {
+     "name": "test3_channel_width_w",
+     "value_um": "300",
+     "quote": "Table 1, Test matrix, Test # 3: 'W (lm)' = 300.",
+     "domain": "fluid"
+    },
+    {
+     "name": "test3_channel_depth_b",
+     "value_um": "1520",
+     "quote": "Table 1, Test matrix, Test # 3: 'b (lm)' = 1520.",
+     "domain": "fluid"
+    },
+    {
+     "name": "test3_hydraulic_diameter_Dh",
+     "value_um": "501",
+     "quote": "Table 1, Test matrix, Test # 3: 'Dh (lm)' = 501.",
+     "domain": "fluid"
+    },
+    {
+     "name": "test3_aspect_ratio_alpha",
+     "value_um": "5.07 (dimensionless, = b/w; not a length)",
+     "quote": "Table 1, Test matrix, Test # 3: 'a (=b/w)' = 5.07.",
+     "domain": "fluid"
+    },
+    {
+     "name": "test4_channel_width_w",
+     "value_um": "339",
+     "quote": "Table 1, Test matrix, Test # 4: 'W (lm)' = 339.",
+     "domain": "fluid"
+    },
+    {
+     "name": "test4_channel_depth_b",
+     "value_um": "1895",
+     "quote": "Table 1, Test matrix, Test # 4: 'b (lm)' = 1895.",
+     "domain": "fluid"
+    },
+    {
+     "name": "test4_hydraulic_diameter_Dh",
+     "value_um": "575",
+     "quote": "Table 1, Test matrix, Test # 4: 'Dh (lm)' = 575.",
+     "domain": "fluid"
+    },
+    {
+     "name": "test4_aspect_ratio_alpha",
+     "value_um": "5.59 (dimensionless, = b/w; not a length)",
+     "quote": "Table 1, Test matrix, Test # 4: 'a (=b/w)' = 5.59.",
+     "domain": "fluid"
+    },
+    {
+     "name": "test5_channel_width_w",
+     "value_um": "534",
+     "quote": "Table 1, Test matrix, Test # 5: 'W (lm)' = 534. Confirmed in text: 'the heat transfer coefficients for the smallest microchannel (w = 194 lm) are almost three times the values for the largest microchannel (w = 534 lm)'.",
+     "domain": "fluid"
+    },
+    {
+     "name": "test5_channel_depth_b",
+     "value_um": "2910",
+     "quote": "Table 1, Test matrix, Test # 5: 'b (lm)' = 2910.",
+     "domain": "fluid"
+    },
+    {
+     "name": "test5_hydraulic_diameter_Dh",
+     "value_um": "903",
+     "quote": "Table 1, Test matrix, Test # 5: 'Dh (lm)' = 903. (Caution: the legend of Fig. 12 prints 'Dh = 902 lm' for the same test piece - a 1 um inconsistency in the paper. Use 903 from Table 1.)",
+     "domain": "fluid"
+    },
+    {
+     "name": "test5_aspect_ratio_alpha",
+     "value_um": "5.45 (dimensionless, = b/w; not a length)",
+     "quote": "Table 1, Test matrix, Test # 5: 'a (=b/w)' = 5.45.",
+     "domain": "fluid"
+    },
+    {
+     "name": "channel_length_L_all_five_test_pieces",
+     "value_um": "25400 (= 25.4 mm; identical for Tests 1-5)",
+     "quote": "Table 1, Test matrix: column 'L (mm)' reads 25.4 for Test # 1, 2, 3, 4 and 5. Confirmed in Table 5 ('Assessment of entrance lengths'), present-work rows: 'L (mm)' = 25.4.",
+     "domain": "fluid"
+    },
+    {
+     "name": "copper_block_face_width_X",
+     "value_um": "25400 (= 25.4 mm)",
+     "quote": "'The heat sink was machined from a square block of copper of dimensions 25.4 mm x 25.4 mm x 70 mm.'",
+     "domain": "solid"
+    },
+    {
+     "name": "copper_block_face_width_Y",
+     "value_um": "25400 (= 25.4 mm)",
+     "quote": "'The heat sink was machined from a square block of copper of dimensions 25.4 mm x 25.4 mm x 70 mm.'",
+     "domain": "solid"
+    },
+    {
+     "name": "copper_block_third_dimension",
+     "value_um": "70000 (= 70 mm)",
+     "quote": "'The heat sink was machined from a square block of copper of dimensions 25.4 mm x 25.4 mm x 70 mm.' The paper does NOT state which of the three block dimensions is the flow direction; it states only that 'The microchannels were cut into the top surface' and that L = 25.4 mm (Table 1), and that the heated base area is L^2 ('the effective average heat flux based on the base area (q'' = q/L2)'), i.e. a 25.4 mm x 25.4 mm heated footprint. Do not assume the 70 mm is the flow length.",
+     "domain": "solid"
+    },
+    {
+     "name": "heated_base_footprint_side",
+     "value_um": "25400 (= 25.4 mm, square; base area = L^2 = 25.4 mm x 25.4 mm = 6.4516 cm^2)",
+     "quote": "'Therefore, the effective average heat flux based on the base area (q'' = q/L2) is instead calculated using the measured sensible heat gain in Eq. (1).'",
+     "domain": "solid"
+    },
+    {
+     "name": "channel_wall_fin_thickness_ww",
+     "value_um": "NOT_STATED",
+     "quote": "The symbol exists and is defined - Nomenclature: 'ww channel wall thickness, lm' - and it is labelled on the cross-section drawing ('Fig. 3. Cross-section of the microchannel test piece (not to scale).', where wc, ww, b and s are called out) - but NO numeric value for ww appears anywhere in the text, in Table 1 (whose only columns are Test #, # of channels, W, b, L, Dh, alpha) or in any figure annotation. Fig. 3 is explicitly 'not to scale', so nothing may be measured off it.",
+     "domain": "solid"
+    },
+    {
+     "name": "channel_pitch_w_plus_ww",
+     "value_um": "NOT_STATED",
+     "quote": "No pitch, spacing or centre-to-centre distance is given anywhere in the paper; it would require ww, which is NOT_STATED. The total spanwise width occupied by the ten-channel array is likewise never stated.",
+     "domain": "overall"
+    },
+    {
+     "name": "substrate_thickness_t_in_CFD_model_only",
+     "value_um": "1500 (= 1.5 mm) - this is a modelling choice, NOT a measurement of the test piece",
+     "quote": "'The substrate thickness included in the model was chosen (somewhat arbitrarily) to be 1.5 mm, since the heat flux in the substrate can be expected to be relatively uniform due to its high thermal conductivity.' Labelled 't' in Fig. 4(a). Nomenclature: 't substrate thickness, mm'.",
+     "domain": "solid"
+    },
+    {
+     "name": "real_substrate_thickness_below_channels_in_test_piece",
+     "value_um": "NOT_STATED",
+     "quote": "The paper gives only the arbitrary 1.5 mm used in the CFD model (quoted above). The actual copper thickness beneath the channel floor in the hardware is never stated; the only related hardware dimension is s = 3.18 mm, the distance from the top-most thermocouple to the channel base, which is a thermocouple location, not the substrate thickness.",
+     "domain": "solid"
+    },
+    {
+     "name": "thermocouple_depth_s_topmost_TC_to_channel_base",
+     "value_um": "3180 (= 3.18 mm)",
+     "quote": "'The top-most thermocouple was at a distance of 3.18 mm from the base of the microchannels (distance s shown in Fig. 3).'",
+     "domain": "solid"
+    },
+    {
+     "name": "thermocouple_axial_spacing",
+     "value_um": "6350 (= 6.35 mm, four thermocouples T1-T4)",
+     "quote": "'Four copper-constantan (Type-T) thermocouples made from 36-gauge wire were embedded in the copper test section at 6.35 mm axial intervals.'",
+     "domain": "solid"
+    },
+    {
+     "name": "number_of_cartridge_heaters_and_hole_geometry",
+     "value_um": "4 heaters (count); hole diameter, hole depth, hole pitch and hole positions all NOT_STATED",
+     "quote": "'Holes were drilled into the bottom of the copper block to house four cartridge heaters that can provide a combined maximum power input of 800 W.' No hole dimensions are given; Fig. 2(a) is labelled '(a) side view (not to scale)'.",
+     "domain": "solid"
+    },
+    {
+     "name": "cfd_conjugate_domain_fluid_half_width",
+     "value_um": "w/2 for each test piece (97, 114.5, 150, 169.5, 267 um for Tests 1-5 respectively - these are halves of the stated widths, not independently stated)",
+     "quote": "Fig. 4(a) dimension callout reads 'w/2' across the fluid rectangle, with 'b' as its full height and 't' the substrate below; 'The computational domain, chosen from symmetry considerations, is shown in Fig. 4(a); the top surface was adiabatic while the two sides were designated symmetric boundary conditions. A uniform heat flux was applied at the bottom surface, simulating the heat flow from the cartridge heaters.'",
+     "domain": "fluid"
+    },
+    {
+     "name": "cfd_conjugate_domain_solid_half_fin_width",
+     "value_um": "NOT_STATED (it is ww/2, and ww is NOT_STATED)",
+     "quote": "Fig. 4(a) shows an L-shaped shaded solid region to the left of and beneath the fluid rectangle, with only 'w/2', 'b', 't' and 'q''' dimensioned. The solid column's width carries no label and no number.",
+     "domain": "solid"
+    },
+    {
+     "name": "inlet_plenum_outlet_plenum_and_port_geometry_and_positions",
+     "value_um": "NOT_STATED",
+     "quote": "Inlet and outlet plena are shown only pictorially in 'Fig. 2. Detailed view of the test section: (a) side view (not to scale), and (b) top view (to scale).' and are mentioned once in text - 'This was verified for the present conditions using a computational analysis which included inlet and exit manifolds' - with no dimensions, no port diameters and no positions given. Fig. 2(b) is 'to scale' but carries no dimension callouts, so nothing may legitimately be taken from it.",
+     "domain": "overall"
+    },
+    {
+     "name": "cover_lid_material_and_thickness",
+     "value_um": "NOT_STATED (material given: clear acrylic / Plexiglass)",
+     "quote": "'The test section consists of a copper test block, a clear acrylic lid, an insulating G10 bottom piece and fiberglass insulation.' Fig. 2(a) labels it 'Plexiglass top piece'. No thickness given. Thermally this lid forms the adiabatic fourth wall: 'the top surface was adiabatic'.",
+     "domain": "solid"
+    },
+    {
+     "name": "channel_corner_radius_floor_profile_and_surface_roughness",
+     "value_um": "NOT_STATED",
+     "quote": "'The microchannels were cut into the top surface using a jewelers saw on a CNC machine.' No corner radius, no saw kerf profile, no roughness value is reported. The channels are treated throughout as rectangular.",
+     "domain": "fluid"
+    },
+    {
+     "name": "dimensional_measurement_uncertainty_on_w_and_b",
+     "value_um": "+/- 15 (i.e. +/- 15 um on the microchannel dimensions)",
+     "quote": "'The primary contributions to the uncertainty come from the measurement of wall and fluid temperatures (+/-0.3 degC) and microchannel dimensions (+/-15 lm).'",
+     "domain": "fluid"
+    }
+   ],
+   "buildable": "PARTIALLY. A watertight FLUID solid is buildable today for all five cases; a watertight CONJUGATE (fluid + solid) assembly is NOT, because one dimension is missing.\n\nBUILDABLE NOW - the single-channel fluid domain, exactly as the paper's own simplified model: a rectangular prism w x b x 25.4 mm, for each of the five cases (194x884, 229x1250, 300x1520, 339x1895, 534x2910 um, all 25400 um long). Square corners, constant cross-section, no taper, no fillets. That is enough to reproduce the paper's thin-wall (H1) results, which are the ones that match the experiment to 5.2 per cent, and it is the geometry the validated 20 x 50 x 100 quarter-domain grid was built on. The quarter domain is w/2 x b/2 x 25.4 mm.\n\nNOT BUILDABLE - the 3D conjugate half-domain of Fig. 4(a) and the full ten-channel heat sink. Exactly what is missing:\n1. ww, the channel wall (fin) thickness. It is defined in the Nomenclature and drawn in Fig. 3, but no number is given anywhere. Without it there is no pitch, no half-fin width for the Fig. 4(a) solid, and no spanwise extent for the ten-channel array. This is the single blocking dimension.\n2. The real copper thickness beneath the channel floor. Only the CFD value is given, and the paper itself calls it arbitrary (\"chosen (somewhat arbitrarily) to be 1.5 mm\"). Use 1.5 mm to reproduce their CFD; do not use it as a measurement of the hardware.\n3. Which of the 25.4 / 25.4 / 70 mm block dimensions is the flow direction. The paper states L = 25.4 mm and base area = L^2, so the heated footprint is 25.4 x 25.4 mm, but it never says where the 70 mm lies relative to the channels.\n4. All inlet/outlet plenum and port geometry and positions, the cartridge-heater hole diameters/positions, and the acrylic lid thickness.\n5. Channel corner radius, saw-kerf floor profile and surface roughness.\n\nDO NOT measure ww off Fig. 3 (captioned \"not to scale\") and do not back it out of \"10 channels in a 25.4 mm block\" - the paper never says the array spans the full block face, so that would be an invented number. I also checked the companion pressure-drop paper (Liu and Garimella, AIAA J. Thermophys. Heat Transfer 18 (2004) 65-72) via the Purdue repository and could not obtain a fin width from it either; its public record is abstract-only.\n\nDOMAIN SPLIT for the conjugate case, as the paper defines it: FLUID = w/2 wide x b tall x 25.4 mm long (half channel, symmetry plane on the channel centreline). SOLID = a half-fin column of width ww/2 (UNKNOWN) and height b on one side, sitting on a substrate slab of thickness t = 1.5 mm that spans the full domain width (ww/2 + w/2). Boundary conditions that fix the orientation: top face adiabatic (it is the plastic lid), bottom face uniform heat flux, both side faces symmetry. Heat enters the fluid on three sides only - the heat transfer area per channel is stated as L(w + 2b), i.e. floor plus two side walls, top excluded.",
+   "operating_point": "FLUID: deionized water, single phase, liquid. Treated in the CFD as \"incompressible and Newtonian, with constant thermophysical properties over the range of temperatures considered (22-70 degC)\". No density, viscosity, k or cp values are tabulated; Prandtl number is given as Pr = 5.0 for the present work in Table 5. Water thermal conductivity in the Nusselt reduction was \"evaluated at the mean fluid temperature, Tm\". The loop also carries a 7 um filter upstream of the flowmeter.\n\nFLOW RATE: \"A needle valve downstream of the pressure tank allows fine adjustment of the flow rate from 0.1 to 2.2 l/min, which corresponds to a Reynolds number range of 300-3500.\" This is the total flow through the test section (all ten channels), measured by a flowmeter \"calibrated using a digital scale and stopwatch\". Per-channel flow rate and channel velocity are NOT_STATED. Flow is driven by pressurized nitrogen gas on a holding tank, not a pump.\n\nREYNOLDS NUMBER: nominal range 300-3500, based on channel hydraulic diameter. \"The experiments were conducted over the nominal Reynolds number range of 300-3500.\" Laminar-to-transition break observed at Re ~ 1500-2000: \"Beyond a range of Reynolds number of approximately 1500-2000, the experimental results show a change in slope, reflecting a transition from laminar flow.\" All numerical work was laminar only: \"Only flow rates in the laminar regime were considered.\"\n\nHEAT FLUX: \"An average heat flux at the base of q'' ~= 45 W/cm2 is maintained in the experiments\", defined on the L^2 = 25.4 x 25.4 mm base area. Four cartridge heaters, 800 W combined maximum. Worked example given: \"out of the 325.2 W of power dissipated by the cartridge heaters in Test #1 (at Re = 1596), 286.2 W was transferred to the coolant\", with \"In general, 85-90% of the power provided to the cartridge heaters was transferred to the water.\"\n\nSPECIFIC OPERATING POINTS NAMED IN THE PAPER:\n- Grid-independence and Figs. 5/6 point: Test #1 (w = 194 um, b = 884 um), Re = 1100.\n- Energy-balance example: Test #1, Re = 1596, 325.2 W in / 286.2 W to coolant.\n- Table 5 entrance-length cases, present work: Dh = 318 um, L = 25.4 mm, Re = 300 (x+ = 0.266, Lent,hyd/L = 0.19) and Re = 1500 (x+ = 0.053, Lent,hyd/L = 0.94); and Dh = 903 um, L = 25.4 mm, Re = 300 (x+ = 0.0938, Lent,hyd/L = 0.53) and Re = 1800 (x+ = 0.0156, Lent,hyd/L = 3.20). All with water, Pr = 5.0, fluid temperature range 22-70 degC. CAUTION: in the printed Table 5 the last two present-work rows show \"534\" in the Dh column; that is a typo for the Test #5 channel WIDTH. Back-calculating x+ = L/(Dh*Re) = 25400/(903*300) = 0.0938 confirms the intended Dh is 903 um, not 534 um.\n\nCFD BOUNDARY/INLET CONDITIONS: \"At the inlet, a fully developed velocity profile was specified for thermally developing flow simulations, while a uniform inlet velocity profile was used for simultaneously developing flow simulations. An outflow boundary condition was specified at the exit in both cases.\" Top adiabatic, two sides symmetry, bottom uniform heat flux (conjugate model). The paper concludes thermally developing (hydrodynamically developed) is the correct assumption for its experiment, because with real inlet/exit manifolds the development length collapsed to \"Lent,h/L ~= 0.04 for Re = 300\" versus 0.188 for a uniform inlet profile.\n\nMEASUREMENT UNCERTAINTY: Nusselt number 6-17 per cent; temperatures +/-0.3 degC; channel dimensions +/-15 um; wall-temperature extrapolation error less than 1 per cent; heat-flux-from-gradient method rejected because its uncertainty \"can be as large as 15% due to heat losses along the sides of the copper block\".",
+   "reported_results": "THE 5 PER CENT AGREEMENT STATEMENT, verbatim from the abstract: \"Numerical predictions obtained based on a classical, continuum approach were found to be in good agreement with the experimental data (showing an average deviation of 5%), suggesting that a conventional analysis approach can be employed in predicting heat transfer behavior in microchannels of the dimensions considered in this study. However, the entrance and boundary conditions imposed in the experiment need to be carefully matched in the predictive approaches.\"\n\nIts source in the body, Section 4.2: \"The average deviation between the experiments and the computational results for the thermally developing state for all five test geometries is 5.5% for results from [21] and 5.2% for the present results, as detailed in Table 6.\"\n\nTABLE 6 - \"Difference between experimental results and numerical predictions (for H1, thermally developing conditions)\", footnote \"Based on results for Re < 1500\". Columns: Test #, w (um), Deviation from [21] (Wibulswas) %, Deviation from present numerical predictions (thin wall model) %.\n  Test 1, w = 194 um: 3.4 +/- 2.1 | 6.5 +/- 3.5\n  Test 2, w = 229 um: 8.1 +/- 5.6 | 4.7 +/- 3.1\n  Test 3, w = 300 um: 6.1 +/- 4.9 | 4.5 +/- 3.4\n  Test 4, w = 339 um: 4.4 +/- 3.6 | 7.7 +/- 3.7\n  Test 5, w = 534 um: 5.5 +/- 3.0 | 2.4 +/- 1.5\n  Mean:               5.5 +/- 1.8 | 5.2 +/- 2.0\n(Means check out: (3.4+8.1+6.1+4.4+5.5)/5 = 5.5; (6.5+4.7+4.5+7.7+2.4)/5 = 5.16.)\n\nHARD NUSSELT NUMBERS A SIMULATION CAN BE CHECKED AGAINST (the only Nu values printed as numbers for the present geometry; all at Test #1, w = 194 um, b = 884 um, Re = 1100):\n  Full 3D conjugate model: Nu = 8.82 (grid 40x128x80), 9.05 (50x160x100), 9.00 (60x192x120).\n  Simplified thin-wall (H1) model, quarter domain: Nu = 8.78 (16x40x80), 8.87 (20x50x100), 8.97 (24x60x120).\nEverything else is plotted, not tabulated. Figs. 7-11 give experimental Nu vs Re for the 194, 229, 300, 339 and 534 um channels against Wibulswas [21] TD/SD, present thin-wall TD, present 3D conjugate TD and Gnielinski turbulent; Fig. 5 compares the four numerical treatments for 194 um over Re = 500-3000 on a Nu axis of 5-25. No Nu-vs-Re data table is published, so those curves would have to be digitised if needed - I am not reporting read-off values as data.\n\nBOUNDARY-CONDITION SENSITIVITY (useful as a model-choice check): \"results in Fig. 5 obtained using a uniform heat flux boundary condition deviate by a 12.4% standard deviation from the full conjugate analysis, compared to a smaller deviation of 7.1% for the uniform temperature boundary condition... predictions from the thin-wall approximation are in excellent agreement with the 3D conjugate analysis, deviating by less than 1.3%.\"\n\nHEAT TRANSFER COEFFICIENT: Fig. 12 plots h (W/m2K) against x* for all five hydraulic diameters (318, 387, 501, 575, 902 um as legended), h axis running to 25000 W/m2K, with dashed trend-line fits. Only comparative statement given numerically: \"the heat transfer coefficients for the smallest microchannel (w = 194 lm) are almost three times the values for the largest microchannel (w = 534 lm) over the overlapping x* range in the figure.\"\n\nTURBULENT/TRANSITIONAL REGIME: experiments extend to Re = 3500; \"the experimental Nusselt numbers are generally higher in this turbulent region than predictions from correlations in [15,16,28]\", while Petukhov and Dittus-Boelter lie above the data. No new correlation is proposed by this paper.\n\nFRICTION FACTOR AND PRESSURE DROP: NOT_STATED. The rig has the instrumentation - \"A differential pressure transducer with a carrier demodulator is used to measure the pressure drop across the test section\" and Fig. 2(b) shows pressure taps - but this paper publishes no measured dP, no f values and no f-Re plot. The friction factor f appears only inside the quoted Petukhov and Gnielinski turbulent Nusselt correlations in Table 3, i.e. f = (1.82 ln(Re) - 1.64)^-2. The pressure-drop data set is the companion paper: \"The present work complements the detailed flow field and pressure drop measurements of Liu and Garimella [10]\" (D. Liu, S.V. Garimella, Investigation of liquid flow in microchannels, AIAA J. Thermophys. Heat Transfer 18 (2004) 65-72, Dh 244-974 um, Re 230-6500).\n\nJUNCTION / WALL TEMPERATURE: no junction temperature is reported (this is a copper test block, not a chip). Wall temperature is obtained by extrapolation, Tw = T4 - (s*q''/kCu) with s = 3.18 mm. Fig. 6(a) plots the local side-wall temperature for the 194 um channel at Re = 1100 over a wall-temperature axis of 330-350 K and an axial axis 0-0.02+ m; Fig. 6(b) plots the corresponding local side-wall heat flux over 0 to 4E+06 W/m2. Neither is tabulated. The CFD property range quoted is 22-70 degC.\n\nCONTEXT TABLE (not this paper's own data): Table 2 reproduces Wibulswas's Nux vs x* for rectangular ducts at constant heat flux for alpha <= 0.1, 1.0, 2.0, 3.0, 4.0 and >= 10.0 - the reference curves their results are compared against. Table 3 lists the eleven conventional correlations used (Kays and Crawford fully developed, Sieder-Tate, Stephan, Shah and London, Hausen, Dittus-Boelter, Petukhov, Gnielinski, Adams). Table 4 summarises prior microchannel studies. Table 5 gives entrance lengths.",
+   "mesh_used": "TWO SEPARATE MESHES, both FLUENT 6 (reference [23], \"FLUENT 6 User's Guide, Lebanon, NH, Fluent Inc., 2000\"). Schemes: \"The convective and conductive terms were discretized using first-order upwind and second-order central-difference schemes, respectively.\"\n\n1) FULL 3D CONJUGATE MODEL (fluid + copper substrate, half-domain of Fig. 4(a)):\n\"The entire computational domain was discretized using a 50 x 160 x 100 (x-y-z) grid.\"\nGrid-convergence study, smallest microchannel (w = 194 um, b = 884 um) at Re = 1100: average Nu = 8.82, 9.05 and 9.00 for 40x128x80, 50x160x100 and 60x192x120 respectively. \"The predicted average Nusselt number changed by 2.6% from the first to the second mesh, and only by 0.5% upon further refinement to the finest grid. Hence the intermediate (50 x 160 x 100) grid was used in the fluid domain for the results presented in this work.\"\nTotal cells: 50 x 160 x 100 = 800,000.\n\n2) SIMPLIFIED / THIN-WALL (H1) MODEL - this is the grid referred to in the task brief:\n\"Utilizing symmetry conditions, only a quarter of the domain was modeled. A uniform mesh was used along the channel width and height, while the mesh in the channel length direction had a successive ratio of 1.08. For the microchannels considered in this study, with a nominal aspect ratio of 5, a computational grid of 20 x 50 x 100 cells was found to be adequate for the quarter domain shown in Fig. 4(b).\"\nGrid-convergence study, same case (w = 194 um, b = 884 um, Re = 1100): average Nu = 8.78, 8.87 and 8.97 for 16x40x80, 20x50x100 and 24x60x120 respectively. \"As the difference in Nusselt numbers between the two finer meshes was only 1.1%, the 20 x 50 x 100 mesh was considered sufficiently accurate for the present computations.\"\nTotal cells: 20 x 50 x 100 = 100,000. Quarter domain = w/2 x b/2 x L, fluid only, no solid; all four channel walls carry the thin highly-conductive zero-axial-conduction wall that realises H1.\n\nAXIAL GRADING: successive ratio 1.08 in the streamwise direction, on the quarter-domain mesh (100 cells over 25.4 mm). The paper does not state whether the grading is one-sided from the inlet or symmetric, and does not state the first-cell size.\n\nCELL TYPE: NOT_STATED explicitly. The counts are given as structured i-j-k triples (20 x 50 x 100, 50 x 160 x 100), which implies a structured hexahedral mesh, but the paper never uses the words hexahedral, structured or tetrahedral. MESHER: NOT_STATED (FLUENT 6 is named as the solver only; no mention of GAMBIT or any other preprocessor). y+ / near-wall treatment: NOT_STATED (all CFD is laminar). No GCI, Richardson extrapolation or order-of-convergence estimate is reported - grid independence is argued only from the per cent change in average Nu between successive meshes quoted above."
+  },
+  {
+   "key": "manifold-mmc",
+   "paper": "PRIMARY: K.W. Jung, C.R. Kharangate, H. Lee, J. Palko, F. Zhou, M. Asheghi, E.M. Dede, K.E. Goodson, \"Embedded cooling with 3D manifold for vehicle power electronics application: Single-phase thermal-fluid performance,\" International Journal of Heat and Mass Transfer, Vol. 130, pp. 1108-1119, 2019. DOI: 10.1016/j.ijheatmasstransfer.2018.10.108. Elsevier version is PAYWALLED (OpenAlex oa_status = closed); I read the author-hosted full-text PDF at the Chung-Ang University ATSLA lab (co-author Hyoungsoon Lee): https://atsla.cau.ac.kr/wp-content/uploads/2025/11/19_2019_jung.pdf (read in full, 12 pp.).\n\nCOMPANION (same device platform, same cold plate, different manifold conduit widths + different coolant) used ONLY where explicitly attributed below: K.W. Jung, E. Cho, H. Lee, C. Kharangate, F. Zhou, M. Asheghi, E.M. Dede, K.E. Goodson, \"Design Considerations for Silicon-Based Embedded Microchannel-3D Manifold Coolers (EMMCs): Part 1 - Experimental Study of Single-Phase Cooling Performance With R-245fa,\" ASME J. Electronic Packaging, Vol. 142(3), 031117, Sept. 2020. DOI: 10.1115/1.4047846. Read in full at https://atsla.cau.ac.kr/wp-content/uploads/2025/11/24_2020_jung.pdf\n\nThis is the Stanford/Goodson group + Toyota Research Institute of North America device named in the task brief. Other sources I fetched and read while searching, and why they were rejected as the primary target: Drummond/Back/Weibel/Garimella IJHMT 117 (2018) - Purdue e-Pubs and CORE both return a Cloudflare bot challenge, which I did not attempt to defeat, and the Elsevier \"bronze OA\" copy is behind the same ScienceDirect challenge, so I could not read its full text; D. Kong et al., Case Studies in Thermal Engineering 28 (2021) 101583 (read in full, https://atsla.cau.ac.kr/wp-content/uploads/2025/11/32_2021_kong.pdf) has a clean 12-case two-level table but states no channel count, channel length or substrate thickness; D. Kong et al., Int. J. Mechanical Sciences 248 (2023) 108228 (read in full, https://atsla.cau.ac.kr/wp-content/uploads/2023/02/Kong-et-al_2023_An-additively-manufactured-manifold-microchannel-heat-sink-for-high-heat-flux.pdf) is a 3D-printed AlSi10Mg MMC whose stated conduit widths do not close against its stated 10 x 10 mm2 heated area; J. Wilhite & C. Kharangate, TFAWS 2024 AT-08 (NASA GRC SiC MMC, read in full) states no channel length, pitch or conduit count; W. Xie et al., HTFF 185, MCM'20 (read in full) contradicts itself on chip size and gives no manifold dimensions; M.R. Babaei et al., IJE 35(5) 943-953 (2022) (read in full) puts Hm, Hs and Lm only in a figure.",
+   "read_full_text": true,
+   "geometry_name": "stanford_emmc_3d_manifold_25ch_75x150um",
+   "geometry_type": "manifold microchannel (MMC) - two-level \"embedded microchannel + 3D manifold\" (EMMC): a silicon cold-plate wafer carrying 25 straight parallel high-aspect microchannels, eutectic-bonded to a second silicon wafer carrying 6 inlet micro-conduits alternating with outlet micro-conduits that run PERPENDICULAR to the microchannels directly above them",
+   "dimensions": [
+    {
+     "name": "microchannel_height_Hcp",
+     "value_um": "75",
+     "quote": "Table 1 (\"Dimensions of structures in the cold plate and the 3-D manifold determined through prior studies in [15].\"), row Cold plate / Microchannels: \"Hcp  75 \u00b5m\". Corroborated in the abstract: \"Single-phase thermal-fluidic performance of an embedded silicon microchannel cold-plate (25 parallel channels: 75 \u00b5m \u00d7 150 \u00b5m) with a 3-D liquid distribution manifold (6 inlets: 700 \u00b5m \u00d7 150 \u00b5m) and vapor extraction conduits, is investigated using water as working fluid.\"",
+     "domain": "fluid"
+    },
+    {
+     "name": "microchannel_width_Wcp",
+     "value_um": "150",
+     "quote": "Table 1, row Cold plate / Microchannels: \"Wcp  150 \u00b5m\". Corroborated in the abstract: \"an embedded silicon microchannel cold-plate (25 parallel channels: 75 \u00b5m \u00d7 150 \u00b5m)\".",
+     "domain": "fluid"
+    },
+    {
+     "name": "microchannel_count_N",
+     "value_um": "25 (a COUNT, dimensionless - not a length)",
+     "quote": "Abstract: \"Single-phase thermal-fluidic performance of an embedded silicon microchannel cold-plate (25 parallel channels: 75 \u00b5m \u00d7 150 \u00b5m)\". Also stated in the companion ASME EMMC Part 1 abstract: \"The heat exchanger consists of a 5 \u00d7 5 mm2 heated area with 25 parallel 75 \u00d7 150 \u00b5m2 microchannels\".",
+     "domain": "fluid"
+    },
+    {
+     "name": "microchannel_fin_thickness_Wcp_fin",
+     "value_um": "50",
+     "quote": "Table 1, row Cold plate / Microchannels: \"Wcp,fin  50 \u00b5m\". Nomenclature defines the subscript: \"fin  microchannel wall between two adjacent microchannels in the cold plate\".",
+     "domain": "solid"
+    },
+    {
+     "name": "microchannel_pitch",
+     "value_um": "200 (DERIVED by addition of two stated numbers, Wcp 150 \u00b5m + Wcp,fin 50 \u00b5m; NOT quoted as a pitch anywhere in the paper)",
+     "quote": "No sentence states a pitch. Derived from Table 1: \"Wcp  150 \u00b5m\" and \"Wcp,fin  50 \u00b5m\". Consistency check against the stated footprint: 25 \u00d7 150 \u00b5m + 24 \u00d7 50 \u00b5m = 4950 \u00b5m, and with a half fin (25 \u00b5m) at each outer edge = 5000 \u00b5m, i.e. exactly the stated \"5 \u00d7 5 mm2 active region\".",
+     "domain": "overall"
+    },
+    {
+     "name": "microchannel_length_Lch",
+     "value_um": "NOT_STATED",
+     "quote": "The symbol is used but never given a value. Eq. (4c) uses it: \"DPfriction = 2Lch ...\". The only closely related stated number is the heated footprint: \"Uniform heat fluxes, from 60 to 250 W/cm2, were applied at the ... a serpentine Ti/Au heater covering a 5 \u00d7 5 mm2 active region of the cold plate\". A 5000 \u00b5m channel length is consistent with that and with the manifold conduit span (see manifold_conduit_span_check) but the paper never writes it down.",
+     "domain": "fluid"
+    },
+    {
+     "name": "manifold_inlet_conduit_height_Hmani_in",
+     "value_um": "700",
+     "quote": "Table 1, row Manifold / Inlet micro-conduits: \"Hmani,in  700 \u00b5m\". Corroborated in the abstract: \"a 3-D liquid distribution manifold (6 inlets: 700 \u00b5m \u00d7 150 \u00b5m)\".",
+     "domain": "fluid"
+    },
+    {
+     "name": "manifold_inlet_conduit_width_Wmani_in",
+     "value_um": "150",
+     "quote": "Table 1, row Manifold / Inlet micro-conduits: \"Wmani,in  150 \u00b5m\". Corroborated in the abstract: \"(6 inlets: 700 \u00b5m \u00d7 150 \u00b5m)\".",
+     "domain": "fluid"
+    },
+    {
+     "name": "manifold_inlet_conduit_count",
+     "value_um": "6 (a COUNT, dimensionless - not a length)",
+     "quote": "Abstract: \"with a 3-D liquid distribution manifold (6 inlets: 700 \u00b5m \u00d7 150 \u00b5m) and vapor extraction conduits\".",
+     "domain": "fluid"
+    },
+    {
+     "name": "manifold_outlet_conduit_height_Hmani_out",
+     "value_um": "1000",
+     "quote": "Table 1, row Manifold / Exit micro-conduits: \"Hmani,out  1000 \u00b5m\". Note this equals the full stated manifold wafer thickness (1000 \u00b5m), consistent with Fig. 2 caption: \"exit micro-conduits and holes for fluid inlet supply were etched from the backside\", i.e. the exit conduits are through-etched and vent out of the back face.",
+     "domain": "fluid"
+    },
+    {
+     "name": "manifold_outlet_conduit_width_Wmani_out",
+     "value_um": "520",
+     "quote": "Table 1, row Manifold / Exit micro-conduits: \"Wmani,out  520 \u00b5m\".",
+     "domain": "fluid"
+    },
+    {
+     "name": "manifold_outlet_conduit_count",
+     "value_um": "NOT_STATED (6 closes the stated footprint exactly - see manifold_conduit_span_check - but the paper states only the inlet count)",
+     "quote": "The paper states only \"(6 inlets: 700 \u00b5m \u00d7 150 \u00b5m)\" in the abstract. The outlet count is never written. Fig. 1 caption describes only the alternation: \"...followed by an 180\u00b0 U-turn to exit through the adjacent outlet micro-conduits of the manifold\".",
+     "domain": "fluid"
+    },
+    {
+     "name": "manifold_wall_thickness_Wmani_wall",
+     "value_um": "81",
+     "quote": "Table 1, row Manifold / Inlet micro-conduits: \"Wmani,wall  81 \u00b5m\". Nomenclature defines the subscript: \"wall  microchannel wall between inlet and outlet conduits in the manifold\".",
+     "domain": "solid"
+    },
+    {
+     "name": "manifold_pitch",
+     "value_um": "832 (DERIVED by addition of three stated numbers: Wmani,in 150 + Wmani,wall 81 + Wmani,out 520 + Wmani,wall 81 = 832 \u00b5m; NOT quoted as a pitch anywhere in the paper)",
+     "quote": "No sentence states a manifold pitch. Derived from Table 1 entries \"Wmani,in  150 \u00b5m\", \"Wmani,wall  81 \u00b5m\", \"Wmani,out  520 \u00b5m\".",
+     "domain": "overall"
+    },
+    {
+     "name": "manifold_conduit_span_check",
+     "value_um": "4992 (DERIVED consistency check, not a paper dimension: 6 \u00d7 150 + 6 \u00d7 520 + 12 \u00d7 81 = 900 + 3120 + 972 = 4992 \u00b5m, i.e. 6 inlet/outlet pairs span the stated 5 mm heated edge to within 8 \u00b5m)",
+     "quote": "Derived only. Built from Table 1 (\"Wmani,in  150 \u00b5m\", \"Wmani,out  520 \u00b5m\", \"Wmani,wall  81 \u00b5m\"), the abstract (\"6 inlets\") and \"a serpentine Ti/Au heater covering a 5 \u00d7 5 mm2 active region of the cold plate\". This is the check that makes the two levels commensurate; it is not a number the paper prints.",
+     "domain": "overall"
+    },
+    {
+     "name": "manifold_inlet_plenum_radius_Rmani_plen",
+     "value_um": "4000 (stated as 4 mm)",
+     "quote": "Table 1, row Manifold / Inlet plenums: \"Rmani,plen  4 mm\".",
+     "domain": "fluid"
+    },
+    {
+     "name": "manifold_inlet_plenum_length_Lmani_plen",
+     "value_um": "1450 (stated as 1.45 mm)",
+     "quote": "Table 1, row Manifold / Inlet plenums: \"Lmani,plen  1.45 mm\".",
+     "domain": "fluid"
+    },
+    {
+     "name": "manifold_inlet_plenum_h_hmani_plen",
+     "value_um": "12.5 - UNIT NOT_STATED in the table (the cell carries no unit token, unlike every other row). If mm it is 12 500 \u00b5m; if \u00b5m it is 12.5 \u00b5m. Do NOT build from this number without resolving the unit.",
+     "quote": "Table 1, row Manifold / Inlet plenums: \"hmani,plen  12.5\" - the unit column is blank for this row only (verified by word-coordinate extraction of the table region: the adjacent rows carry explicit 'mm' tokens at x=245.1 and x=254.3, and no unit token exists on the hmani,plen row). The nomenclature does not list hmani,plen.",
+     "domain": "fluid"
+    },
+    {
+     "name": "fluid_inlet_supply_hole_radius_Rmani_hole",
+     "value_um": "3250 (stated as 3.25 mm)",
+     "quote": "Table 1, row Manifold / Fluid inlet supply: \"Rmani,hole  3.25 mm\". Fig. 2 caption: \"exit micro-conduits and holes for fluid inlet supply were etched from the backside\".",
+     "domain": "fluid"
+    },
+    {
+     "name": "cold_plate_wafer_thickness",
+     "value_um": "500",
+     "quote": "Fig. 3 caption: \"Step 1: double-polished Si substrates with thickness of 500 \u00b5m, and 1000 \u00b5m were prepared for the cold plate and the 3D manifold structures, respectively.\"",
+     "domain": "solid"
+    },
+    {
+     "name": "manifold_wafer_thickness",
+     "value_um": "1000",
+     "quote": "Fig. 3 caption: \"Step 1: double-polished Si substrates with thickness of 500 \u00b5m, and 1000 \u00b5m were prepared for the cold plate and the 3D manifold structures, respectively.\"",
+     "domain": "solid"
+    },
+    {
+     "name": "substrate_base_thickness_dbase",
+     "value_um": "NOT_STATED in this paper. The companion ASME EMMC Part 1 paper states 425 \u00b5m for the same cold plate: \"and the heat is spread through thick Si bulk layer, 425 \u00b5m, that has isometric thermal conductivity of 130 W/m-K.\" (That same companion also rounds it once to 400 \u00b5m: \"...as we approach the conduction resistance limit of Rcond ~ 0.04 cm2-K/W (due to 400 \u00b5m thick silicon substrate)\".) 425 \u00b5m = 500 \u00b5m wafer - 75 \u00b5m channel depth, so it is self-consistent with this paper.",
+     "quote": "In the IJHMT paper the symbol is defined but never valued. Nomenclature: \"dbase  substrate base thickness, [\u00b5m]\"; it appears only inside Eq. (3b): \"Tbase,avg = Theater,avg - (qtrans \u00b7 dbase / ...)\".",
+     "domain": "solid"
+    },
+    {
+     "name": "manifold_SiO2_insulating_layer_thickness",
+     "value_um": "0.72 (stated as 720 nm)",
+     "quote": "Fig. 3 caption: \"720 nm of SiO2 layer on the manifold substrate insulated Si from the Au layer and it helps to induce better Au-Si eutectic reaction [22].\"",
+     "domain": "solid"
+    },
+    {
+     "name": "serpentine_heater_trace_width_Wheater",
+     "value_um": "250",
+     "quote": "Table 1, row Cold plate / Serpentine heater: \"Wheater  250 \u00b5m\".",
+     "domain": "solid"
+    },
+    {
+     "name": "serpentine_heater_trace_gap_Wheater_gap",
+     "value_um": "125",
+     "quote": "Table 1, row Cold plate / Serpentine heater: \"Wheater,gap  125 \u00b5m\".",
+     "domain": "solid"
+    },
+    {
+     "name": "RTD_trace_width_WRTD",
+     "value_um": "4",
+     "quote": "Table 1, row Cold plate / RTD: \"WRTD  4 \u00b5m\".",
+     "domain": "solid"
+    },
+    {
+     "name": "RTD_trace_gap_WRTD_gap",
+     "value_um": "4",
+     "quote": "Table 1, row Cold plate / RTD: \"WRTD,gap  4 \u00b5m\".",
+     "domain": "solid"
+    },
+    {
+     "name": "heater_metal_stack_thickness",
+     "value_um": "0.5 for the heater (500 nm) and 0.050-0.055 for the RTDs (50-55 nm)",
+     "quote": "Fig. 2 caption: \"thicknesses of the heater and the RTD are 500 nm, and 50-55 nm, respectively.\" Also in the text: \"a serpentine Ti/Au heater\" with the Ti adhesion layer given in the companion paper as 20 nm (\"a Ti/Au serpentine heater (20 and 500 nm of thickness, respectively)\").",
+     "domain": "solid"
+    },
+    {
+     "name": "heated_active_area",
+     "value_um": "5000 x 5000 (stated as 5 x 5 mm2)",
+     "quote": "\"Uniform heat fluxes, from 60 to 250 W/cm2, were applied at the ... a serpentine Ti/Au heater covering a 5 \u00d7 5 mm2 active region of the cold plate\". Also Fig. 2(a) caption: \"A Ti/Au serpentine heater with RTDs are placed on a 5 \u00d7 5 mm2 center area of the cold plate\"; Fig. 4 caption: \"(2) 5 mm-by-5 mm heated region\"; and Appendix B: \"...on 25 mm2 active area\".",
+     "domain": "overall"
+    },
+    {
+     "name": "heater_serpentine_footprint_area",
+     "value_um": "52 mm2 = 52 000 000 um2 (this is the metal trace footprint, NOT the die footprint and NOT the heated square)",
+     "quote": "Abstract: \"A metal serpentine bridge (52 mm2 of footprint) and multiple resistance temperature detectors (RTDs) are used for electrical Joule-heating and thermometry, respectively.\"",
+     "domain": "overall"
+    },
+    {
+     "name": "overall_die_footprint",
+     "value_um": "NOT_STATED",
+     "quote": "No sentence gives the outer dimensions of either silicon wafer die. The only area figures in the paper are the 5 x 5 mm2 heated region and the 52 mm2 serpentine footprint.",
+     "domain": "overall"
+    },
+    {
+     "name": "plenum_pin_fin_array_dimensions",
+     "value_um": "NOT_STATED",
+     "quote": "Fig. 2 caption: \"A set of pin fin arrays at the entrance and exit plenums are utilized to create uniform flow distribution.\" No pin diameter, height, pitch or count is given anywhere in the paper.",
+     "domain": "fluid"
+    },
+    {
+     "name": "gradual_contraction_region_inlet_width_Wgc_in",
+     "value_um": "NOT_STATED in this paper; the companion ASME EMMC Part 1 paper gives 1240 um (1.24 mm) for its variant",
+     "quote": "The IJHMT paper names the feature only qualitatively via the contraction coefficient: \"Kcontraction  the gradual contraction coefficient between a manifold inlet plenum and a manifold inlet conduit\". The companion ASME Table 1 gives, row Manifold / Inlet plenum: \"Wgc,in  1.24 mm\".",
+     "domain": "fluid"
+    },
+    {
+     "name": "gradual_contraction_region_length_Lgc",
+     "value_um": "NOT_STATED in this paper; the companion ASME EMMC Part 1 paper gives 1450 um (1.45 mm) for its variant",
+     "quote": "Companion ASME Table 1, row Manifold / Inlet plenum: \"Lgc  1.45 mm\". The ASME nomenclature defines \"gc = gradual contraction\".",
+     "domain": "fluid"
+    },
+    {
+     "name": "as_fabricated_tolerances",
+     "value_um": "+/-5 on microchannel and manifold widths; +/-25 on inlet micro-conduit height; +/-50 on inlet plenum height",
+     "quote": "\"The error in width dimension for microchannels in cold plate/manifold is \u00b15 \u00b5m, and the error in height of the inlet micro-conduit and inlet plenum are \u00b125 \u00b5m, and \u00b150 \u00b5m, respectively.\"",
+     "domain": "solid"
+    },
+    {
+     "name": "ALT_VARIANT_companion_ASME_manifold_inlet_conduit",
+     "value_um": "700 high x 250 wide, 4 conduits (companion ASME EMMC Part 1 paper, R-245fa device - a DIFFERENT manifold on the SAME cold plate)",
+     "quote": "Companion ASME EMMC Part 1 abstract: \"The heat exchanger consists of a 5 \u00d7 5 mm2 heated area with 25 parallel 75 \u00d7 150 \u00b5m2 microchannels, where the fluid is distributed by a 3D-manifold with four microconduits of 700 \u00d7 250 \u00b5m2.\" Its Table 1: \"Hmani,in 700 \u00b5m; Wmani,in 250 \u00b5m; Wmani,wall 85 \u00b5m; Hmani,out 1000 \u00b5m; Wmani,out 830 \u00b5m\".",
+     "domain": "fluid"
+    },
+    {
+     "name": "ALT_VARIANT_companion_ASME_manifold_outlet_conduit",
+     "value_um": "1000 high x 830 wide; manifold wall 85; this variant closes on the 5 mm edge EXACTLY: 4 x 250 + 4 x 830 + 8 x 85 = 1000 + 3320 + 680 = 5000 um (manifold pitch 1250 um x 4)",
+     "quote": "Companion ASME Table 1, rows Manifold / Outlet conduit: \"Hmani,out  1000 \u00b5m\", \"Wmani,out  830 \u00b5m\"; and Inlet conduit: \"Wmani,wall  85 \u00b5m\". The 5000 \u00b5m closure is my arithmetic, not the paper's.",
+     "domain": "fluid"
+    }
+   ],
+   "buildable": "YES for the fluid domain and the two-level intersection - this is the most completely dimensioned MMC I could read, and the two levels close against each other arithmetically - but you must supply FOUR numbers the paper does not state. Read this section before modelling.\n\nHOW THE TWO LEVELS CONNECT (quoted, since this was the hard part of the brief):\nThe device is two bonded silicon wafers. Fig. 1 caption: \"Conceptual design of an in-chip scale embedded microchannel-3D manifold cooler: the blue arrow depicts fluid flow and distribution of cold liquid through multiple inlet micro-conduits, followed by a 90\u00b0 turn to enter the cold plate microchannels, exchanging heat in a direct impingement flow configuration ..., followed by an 180\u00b0 U-turn to exit through the adjacent outlet micro-conduits of the manifold\". The manifold conduits run CROSSWISE over the channels: \"the fluid is divided into two streams at the intersections between the manifold inlet micro-conduits and the cold plate microchannels that are perpendicular to the direction to the manifold micro-conduits\". The companion ASME paper spells the same path out step by step: \"The fluid is supplied through the fluid inlet openings (1) from the backside of the manifold substrate and it is uniformly distributed within the inlet plenums (2). The distributed fluid passes the gradual contraction region (between 2 and 3) and keeps flowing through the inlet conduits (3) until it reaches to the intersections between the manifold inlet conduits and the CP microchannels (between 3 and 4). At the intersection, the fluid is diverged and the partial fluid moves toward the CP microchannels' heated section by making a 90 deg-turn. The diverged fluid proceeds along the CP microchannels and heat is transferred from the CP microchannels' surface to the fluid until it exits through the adjacent manifold outlet conduits (4) by making another 90 deg turn. The nondiverged fluid at the intersection keeps flowing along the manifold inlet conduits until it reaches to the next intersection and the same flow pattern as described earlier is repeated.\"\nWhich face each feature is etched from (this fixes the solid): Fig. 2 caption - \"As the inlet plenums and inlet micro-conduits are interconnected, these features were protected by a thin Al layer while exit micro-conduits and holes for fluid inlet supply were etched from the backside.\" Fig. 3 caption - \"Microchannels and other microscale features were anisotropically etched in the cold plate and the 3D manifold substrates. Double-sided anisotropic Si etch technique was used to define the microstructures with different etch depth in the 3D manifold.\" Hmani,out (1000 um) equals the full manifold wafer thickness, so the outlet conduits are through-etched and vent out of the manifold back face; the inlet conduits are 700 um deep from the bond face, leaving a 300 um silicon cap above them, and are fed sideways from the inlet plenum through the gradual-contraction region. Bond layer: Au-Si eutectic, 410-420 degC.\n\nSO: the fluid domain you can build without guessing is - a 25-channel field at 200 um pitch (150 um wide x 75 um deep, 50 um fins), overlaid at 90 degrees by 6 inlet conduits 150 um wide x 700 um tall alternating with outlet conduits 520 um wide x 1000 um tall, separated by 81 um walls, on an 832 um manifold pitch. Every channel/conduit crossing is an open 150 x 150 um window where the two levels merge.\n\nWHAT IS MISSING (supply these or the solid will not be watertight / will not match the paper):\n1. Microchannel length. NOT_STATED. The heated region is 5 x 5 mm and the 6 inlet/outlet pairs span 4992 um, so 5000 um is the only length consistent with the paper, but it is my arithmetic, not a quote. Decide this explicitly before cutting the channel field.\n2. Number of outlet micro-conduits. NOT_STATED (only \"6 inlets\" is stated). 6 is what closes the 5 mm edge. Assume 6 inlet + 6 outlet alternating.\n3. dbase, the silicon left under the channel floor. NOT_STATED in this paper. Use 425 um, which the companion ASME paper states for the identical cold plate (\"thick Si bulk layer, 425 \u00b5m\") and which equals 500 um wafer minus 75 um channel depth.\n4. hmani,plen = 12.5 with NO UNIT in Table 1. Every other row in that table carries mm or um; this one does not. 12.5 mm is larger than the whole device, 12.5 um is implausibly thin, so the plenum vertical dimension is genuinely unresolved from the text. Resolve it from the publisher's Fig. 2(b) before modelling the plenum, or model the plenum as a 4 mm-radius x 1.45 mm-long cavity and treat its height as a free parameter.\nALSO NOT_STATED and therefore not buildable to the paper: the outer die footprint of either wafer (only the 5 x 5 mm heated square and the 52 mm2 heater-trace footprint are given), and the pin-fin arrays in the entrance/exit plenums (their existence is stated, no pin diameter/height/pitch/count anywhere).\n\nVERIFICATION - I checked this geometry twice, as asked:\nPass 1, source fidelity. I did not trust pdftotext layout mode, which interleaved Table 1's label and value columns and shifted Rmani,plen / Lmani,plen / hmani,plen by one row. I re-extracted the table with PyMuPDF word coordinates and read the x-position of every token, which gave the correct label-value pairing above and also exposed the missing unit on hmani,plen. The abstract, Fig. 1/2/3 captions and the nomenclature were extracted the same way. Caution for anyone re-reading these PDFs: the Elsevier font maps the micro sign to the letter \"l\", so the raw text shows \"75 lm\" where the paper prints \"75 um\".\nPass 2, geometric closure and cross-source agreement. (a) Channel level: 25 x 150 + 24 x 50 = 4950 um, plus a 25 um half-fin at each edge = 5000 um, exactly the stated 5 x 5 mm2 heated area. (b) Manifold level: 6 x 150 + 6 x 520 + 12 x 81 = 4992 um, the same 5 mm edge to within 8 um. Both levels are therefore commensurate and the 6-inlet/6-outlet reading is right. (c) Solid: 500 um cold-plate wafer minus 75 um channel depth = 425 um, which is independently stated as 425 um in the companion ASME paper - two papers agreeing on a number neither derives from the other. (d) The companion ASME variant closes even harder on its own numbers: 4 x 250 + 4 x 830 + 8 x 85 = 5000 um exactly, on the identical 25-channel / 75 x 150 um cold plate. Four independent closures, no contradictions found. The only internal defect I found in the primary paper is the unitless hmani,plen.",
+   "operating_point": "Working fluid: liquid water, single-phase, deionized. \"Coolant, deionized (DI) water, is flowing through multiple inlet micro-conduits of the manifold\". Properties: \"Temperature-dependent thermal properties of liquid water (e.g. thermal conductivity, viscosity, density and specific heat) are considered.\" No property values are tabulated in the paper. Silicon thermal conductivity is not given in this paper; the companion ASME paper gives \"isometric thermal conductivity of 130 W/m-K\" for the Si bulk.\n\nInlet temperature: ~25 degC experimentally (\"single-phase water at inlet temperature ~25 degC\"); the CFD mesh study used Tin = 293 K.\n\nVolumetric flow rates (experiment): 0.03, 0.06 and 0.1 L/min. Abstract: \"for flow rates of 0.03, 0.06 and 0.1 l/min and heat fluxes of 60, 100 and 250 W/cm2 are reported.\" Fig. 6 also refers to 0.03, 0.07 and 0.1 L/min.\n\nHeat fluxes (experiment): 60, 100 and 250 W/cm2, applied uniformly over the 5 x 5 mm2 heated area. \"Uniform heat fluxes, from 60 to 250 W/cm2, were applied\".\n\nCFD test matrix (Table A.II.1, \"Test matrix for the numerical analysis\", columns Test # / Heat flux [W/cm2] / Supplied heat [W] / Mass flow rate [kg/s]):\n 1: 60, 15, 5.450E-4\n 2: 60, 15, 1.098E-3\n 3: 60, 15, 1.680E-3\n 4: 100, 25, 5.420E-4\n 5: 100, 25, 1.120E-3\n 6: 100, 25, 1.693E-3\n 7: 238.74, 59.69, 5.500E-4\n 8: 250, 62.50, 1.142E-3\n 9: 250, 62.50, 1.725E-3\n\nReynolds number: laminar throughout. Remax per CFD case (Table A.II.2, last column) = 40.10, 76.06, 113.14, 41.59, 78.78, 115.10, 47.07, 85.29, 121.53 for tests 1-9. So the channel Re spans roughly 40 to 122.\n\nCompanion ASME variant, for reference only (different coolant): single-phase R-245fa, flow rates 0.1 / 0.2 / 0.3 / 0.37 L/min, inlet 25 degC, system pressure 350 kPa (inlet pressure 254-283 kPa), heat fluxes 25 to 300 W/cm2; Pr 5.91-6.00, Re 739-756 and kf 0.0892-0.0898 W/m-K at 0.3 L/min (its Table 4).",
+   "reported_results": "These are the numbers a rebuilt simulation can be validated against.\n\nPressure drop (total, inlet plenum to outlet), water: very low. Abstract: \"is capable of removing 250 W/cm2 at a maximum temperature of 90 degC with less than 3 kPa pressure drop for a flow rate of 0.1 l/min.\" CFD total pressure drop per case (Table A.II.2, DPtotal [kPa], tests 1-9): 0.3679, 1.0321, 2.0377, 0.3522, 1.0496, 2.0491, 0.3237, 1.0389, 2.0649 kPa. So DPtotal is set almost entirely by flow rate and is essentially insensitive to heat flux - a good first check on a rebuild.\n\nTotal thermal resistance: \"thermal resistance (as low as 0.68 K/W)\". CFD Rtotal [K/W] per case (tests 1-9): 1.1869, 0.8453, 0.7041, 1.1745, 0.8285, 0.6974, 1.1195, 0.7948, 0.6774 K/W.\n\nHeat transfer coefficient: \"average heat transfer coefficient (~30,000-50,000 W/m2 K)\".\n\nTemperatures (CFD, Table A.II.2; Theater,max / Theater,avg-global / Tout in degC, tests 1-9):\n 1: 42.78 / 39.78 / 31.51\n 2: 37.68 / 35.90 / 28.27\n 3: 35.66 / 34.36 / 27.16\n 4: 54.09 / 49.25 / 35.80\n 5: 45.70 / 42.86 / 30.33\n 6: 42.39 / 40.29 / 28.52\n 7: 91.82 / 81.26 / 50.59\n 8: 74.28 / 67.84 / 37.93\n 9: 67.63 / 62.63 / 33.73\n\nHeadline: 250 W/cm2 removed at Tmax 90 degC with <3 kPa at 0.1 L/min. Extrapolated by CFD only: \"the possibility of removing up to ~850 W/cm2 using single-phase water at a maximum temperature of 166 degC at the same pressure drop and flow rate\", with onset of boiling at 850 W/cm2 (\"the onset of boiling occurs at 850 W/cm2, to be verified experimentally\"), and \"For water at inlet temperature of 25 degC, heat dissipation levels up to 500 W/cm2 is feasible for target junction temperature of 100 degC.\"\n\nAgreement and uncertainty: \"The results from conjugate thermal-fluidic numerical simulations agree well with the experimental data over the wide range of heat fluxes and flow conditions.\" Numerical heat loss check: \"numerical simulation indicated only 2-3% heat loss\". Temperature measurement uncertainty: \"The associated uncertainty of Theater,avg-global and Theater,max are estimated to 1.4-3.1% considering +/-1 degC uncertainty of the K-type thermocouple\". Instrument accuracies (Table 2): K-type thermocouple +/-1 degC (individually calibrated to <+/-0.5 degC), Ti/Au RTD +/-1 degC, Micro Motion CMFS010 Coriolis mass flow meter +/-0.10% of rate, NESLAB Thermoflex 3500 chiller +/-0.1 degC, Omega PX2300-5DI differential pressure +/-0.25% RSS FS (FS 0-5 psi). CFD uncertainty band: \"+/-10% uncertainty levels in CFD predictions associated with variations in micro-cooler channel and manifold conduits dimensions.\"\n\nCompanion ASME variant (R-245fa), for reference: \"The EMMC is capable of removing up to 300 W/cm2 with pressure drop ~28.7 kPa, total thermal resistance of ~0.15 cm2-K/W using single-phase R-245fa at the flow rate 0.37 L/min. The average HTC at the highest heat flux is ~50,000 W/m2-K.\" Maximum removable heat flux imaged by IR: 298 W/cm2 at 0.37 L/min. Overall fin efficiency 98.4 to 99.4%.",
+   "mesh_used": "PRIMARY PAPER (Jung et al., IJHMT 130, 2019): conjugate (solid+fluid) CFD in ANSYS Fluent 16.0.0, \"single-phase conjugate numerical simulations (ANSYS Fluent 16.0.0)\", built on \"the exact micro-cooler geometry (Table 1)\". Grid convergence was done properly and is quoted: \"A mesh size independence study is conducted with four different number of mesh elements, from 1.11E6 to 10.9E6, and the results are plotted in Fig. A.II.2. There is less than 0.31% change in the average heater temperature, Theater,avg, and 1.7% change in the total pressure drop, DPtotal, if the number of mesh element is higher than 3.19E6. Therefore, the number of mesh element used in this study was 5.39E6 based on the mesh independence study.\" The four levels are named explicitly: \"The number of mesh elements used in the study are from 1.11E6 to 3.19E6 to 5.40E6 to 1.09E7\", run at \"Tin = 293 K, Qin = 0.001 kg/s, q'' = 4,494,517 W/m2\". So: FINAL MESH 5.39E6 cells (5.4 million), converged within 0.31% on temperature and 1.7% on pressure drop above 3.19E6 cells. Separate solid and fluid domains were meshed (Fig. A.II.1: \"(a) Solid and (b) fluid domains for the conjugate numerical analysis\"). CELL TYPE: NOT_STATED. Turbulence/laminar model: NOT_STATED for this paper (channel Re is 40-122, i.e. laminar). Near-wall layer treatment: NOT_STATED.\n\nCOMPANION ASME PAPER (Jung et al., J. Electron. Packag. 142(3) 031117, 2020), same device family, for cross-reference: \"The experimental results are validated by conjugate numerical simulations, ANSYS FLUENT 18.1 (Canonsburg, PA), for the exact EMMC geometry (Table 1). ... The number of mesh elements varies from 5 to 32 \u00d7 106, and the results are plotted in Fig. 11. There are less than 0.6% change in the average and maximum heater temperature, and the total pressure drop if the number of mesh elements is more than 25 \u00d7 106. ... Therefore, we have used 25 \u00d7 106 of mesh elements in this study.\" Its solver conditions (Table 7, \"Thermofluidic and solver conditions for mesh independence study\"): supplied heat flux 4.464E6 W/m2, mass flow rate 8.263E-3 kg/s, inlet temperature 2.981E2 K, solver model \"SST k-omega (turbulent)\". Cell type again NOT_STATED.\n\nNote the order-of-magnitude gap between the two: 5.4E6 cells for the water device versus 25E6 cells for the R-245fa device on effectively the same geometry. If you are sizing a mesh for a rebuild, 25E6 is the better-converged target (0.6% on all three monitored quantities) and the SST k-omega choice is the one the group justified for capturing the 90-degree turns at the conduit/channel intersections."
+  },
+  {
+   "key": "pin-fin",
+   "paper": "Qiu, Y.; Hu, W.; Wu, C.; Chen, W. \"An Experimental Study of Microchannel and Micro-Pin-Fin Based On-Chip Cooling Systems with Silicon-to-Silicon Direct Bonding.\" Sensors 2020, 20(19), 5533. DOI 10.3390/s20195533. Zhejiang University, School of Aeronautics and Astronautics. Open access (CC BY).\n\nREAD IN FULL via two independent routes:\n1. Europe PMC publisher-deposited full-text XML: https://www.ebi.ac.uk/europepmc/webservices/rest/PMC7583888/fullTextXML (saved to C:\\Users\\rehaa\\AppData\\Local\\Temp\\claude\\C--Users-rehaa-OneDrive-Documents-GitHub-chandelier\\d31ea0b1-549f-4292-b3a1-c87888a1d0e2\\scratchpad\\papers\\pmc7583888.xml and .txt)\n2. PMC HTML: https://pmc.ncbi.nlm.nih.gov/articles/PMC7583888/\n\nNotes on access: www.mdpi.com/1424-8220/20/19/5533 returns HTTP 403 to fetching; the PMC PDF endpoint also refused. The Europe PMC XML is the publisher-deposited full text, so it is authoritative. Numbers were read from the raw unstripped XML as well as the tag-stripped text, and independently re-read from the PMC HTML rendering; every number agreed across all three.",
+   "read_full_text": true,
+   "geometry_name": "pin_fin_d300_p600_inline_staggered",
+   "geometry_type": "pin fin \u2014 circular micro-pin-fin array fully enclosed between two silicon plates (four-sided heating, not the usual three-sided glass-covered case). Two variants in one paper: inline (I-MPFHS) and staggered (S-MPFHS). The same paper also gives a straight-parallel-channel reference sink (MCHS) on an identical footprint, which is a free bonus geometry.",
+   "dimensions": [
+    {
+     "name": "pin_diameter",
+     "value_um": "300",
+     "quote": "It has twenty-four rows and all the micro pin fins are 300 \u03bcm in diameter.",
+     "domain": "solid"
+    },
+    {
+     "name": "pin_height",
+     "value_um": "300",
+     "quote": "The test chips have four layers, including a silicon substrate (200 \u03bcm), a microchannel or micro-pin-fin layer (300 \u03bcm), a silicon cover (500 \u03bcm) and a Ti (20 nm)/Pt (200 nm) electrode layer.",
+     "domain": "solid"
+    },
+    {
+     "name": "transverse_pitch",
+     "value_um": "600",
+     "quote": "The transverse and longitudinal distances between the centers of adjacent pin fins are 600 \u03bcm.",
+     "domain": "overall"
+    },
+    {
+     "name": "longitudinal_pitch",
+     "value_um": "600",
+     "quote": "The transverse and longitudinal distances between the centers of adjacent pin fins are 600 \u03bcm.",
+     "domain": "overall"
+    },
+    {
+     "name": "array_width_transverse",
+     "value_um": "6600",
+     "quote": "As shown in Figure 2a, the microchannel array is 6.6 mm wide and 14.4 mm long. ... the inline and the staggered micro-pin-fin arrays have the same size as the microchannel array.",
+     "domain": "overall"
+    },
+    {
+     "name": "array_length_flow_direction",
+     "value_um": "14400",
+     "quote": "As shown in Figure 2a, the microchannel array is 6.6 mm wide and 14.4 mm long. ... the inline and the staggered micro-pin-fin arrays have the same size as the microchannel array.",
+     "domain": "overall"
+    },
+    {
+     "name": "number_of_rows",
+     "value_um": "24 rows (count, not a length)",
+     "quote": "It has twenty-four rows and all the micro pin fins are 300 \u03bcm in diameter.",
+     "domain": "overall"
+    },
+    {
+     "name": "number_of_transverse_positions_per_row",
+     "value_um": "DERIVED, not quoted: 12 positions on the wall-rows (x = 0, 600, 1200 ... 6600 um, the two end ones bisected by the sidewalls) and 11 positions on the offset rows (x = 300, 900 ... 6300 um). Forced by 6600/600 = 11.0 exactly, and confirmed to 5 significant figures by the paper's own stated A_min and A_c (see buildable field).",
+     "quote": "The transverse and longitudinal distances between the centers of adjacent pin fins are 600 \u03bcm. [combined with] the microchannel array is 6.6 mm wide",
+     "domain": "overall"
+    },
+    {
+     "name": "inline_array_layout",
+     "value_um": "DERIVED, not quoted: all 24 rows identical, each 10 full pins at x = 600, 1200 ... 6000 um plus 2 half-pins bisected by the sidewalls at x = 0 and x = 6600 um. Row centres y = 300, 900 ... 14100 um. Reproduces the paper's A_c = 231.72 mm2 as 231.7221 mm2.",
+     "quote": "the inline and the staggered micro-pin-fin arrays have the same size as the microchannel array. It has twenty-four rows",
+     "domain": "overall"
+    },
+    {
+     "name": "staggered_array_layout",
+     "value_um": "DERIVED, not quoted: rows alternate. 12 wall-rows (10 full pins at x = 600 ... 6000 um + 2 half-pins at x = 0 and 6600 um) alternating with 12 offset rows (11 full pins at x = 300, 900 ... 6300 um). Reproduces the paper's A_c = 233.88 mm2 as 233.8821 mm2.",
+     "quote": "In S-MPFHS, the micro pin fins in the back row are in the middle of the two adjacent micro pin fins in the front row and so the fluid flowing through the front-row micro pin fins will impinge the back-row micro pin fins.",
+     "domain": "overall"
+    },
+    {
+     "name": "stagger_offset",
+     "value_um": "300 (DERIVED: exactly half the quoted 600 um transverse pitch, from the quoted wording 'in the middle of the two adjacent micro pin fins in the front row'; the number 300 um is never printed for the offset)",
+     "quote": "In S-MPFHS, the micro pin fins in the back row are in the middle of the two adjacent micro pin fins in the front row",
+     "domain": "overall"
+    },
+    {
+     "name": "longitudinal_end_clearance_first_last_row_to_array_edge",
+     "value_um": "150 (DERIVED: 24 rows at 600 um pitch exactly span 14400 um, so centres sit at 300 ... 14100 um, leaving 300-150 = 150 um from outermost pin surface to each end face)",
+     "quote": "It has twenty-four rows ... The transverse and longitudinal distances between the centers of adjacent pin fins are 600 \u03bcm. [combined with] 14.4 mm long",
+     "domain": "fluid"
+    },
+    {
+     "name": "minimum_free_flow_cross_section_A_min",
+     "value_um": "0.99 mm^2 = 990000 um^2 (an area, both pin-fin sinks and the microchannel sink)",
+     "quote": "Amin is the minimum vertical cross-sectional area of the flow region (0.99 mm2 for both the microchannel and the micro-pin-fin heat sinks).",
+     "domain": "fluid"
+    },
+    {
+     "name": "characteristic_length_for_Re",
+     "value_um": "300",
+     "quote": "L is the characterized length (the hydraulic diameter for the microchannel heat sink and the fin diameter for the micro pin fin heat sink, both equal to 300 \u03bcm)",
+     "domain": "fluid"
+    },
+    {
+     "name": "effective_convection_area_inline",
+     "value_um": "231.72 mm^2 (an area)",
+     "quote": "Ac is the effective convection area of the heat sink. (190.08 mm2 for the microchannel heat sink, 231.72 mm2 for the inline micro-pin-fin heat sink and 233.88 mm2 for the staggered micro-pin-fin heat sink).",
+     "domain": "fluid"
+    },
+    {
+     "name": "effective_convection_area_staggered",
+     "value_um": "233.88 mm^2 (an area)",
+     "quote": "Ac is the effective convection area of the heat sink. (190.08 mm2 for the microchannel heat sink, 231.72 mm2 for the inline micro-pin-fin heat sink and 233.88 mm2 for the staggered micro-pin-fin heat sink).",
+     "domain": "fluid"
+    },
+    {
+     "name": "silicon_substrate_thickness_below_fins",
+     "value_um": "200",
+     "quote": "The test chips have four layers, including a silicon substrate (200 \u03bcm), a microchannel or micro-pin-fin layer (300 \u03bcm), a silicon cover (500 \u03bcm) and a Ti (20 nm)/Pt (200 nm) electrode layer.",
+     "domain": "solid"
+    },
+    {
+     "name": "silicon_cover_thickness_above_fins",
+     "value_um": "500",
+     "quote": "The test chips have four layers, including a silicon substrate (200 \u03bcm), a microchannel or micro-pin-fin layer (300 \u03bcm), a silicon cover (500 \u03bcm) and a Ti (20 nm)/Pt (200 nm) electrode layer.",
+     "domain": "solid"
+    },
+    {
+     "name": "total_silicon_stack_thickness",
+     "value_um": "1000 (DERIVED: 200 + 300 + 500, all three quoted)",
+     "quote": "a silicon substrate (200 \u03bcm), a microchannel or micro-pin-fin layer (300 \u03bcm), a silicon cover (500 \u03bcm)",
+     "domain": "solid"
+    },
+    {
+     "name": "SiO2_insulation_thickness_both_sides",
+     "value_um": "0.05 (50 nm)",
+     "quote": "a 50 nm-thick SiO2 layer is grown on both sides of the chip by thermal oxidation to serve as electrical insulation",
+     "domain": "solid"
+    },
+    {
+     "name": "SixNy_insulation_thickness_backside",
+     "value_um": "0.5 (500 nm)",
+     "quote": "a 500 nm-thick SixNy is deposited on the backside of the chip by PECVD (Plasma Enhanced Chemical Vapor Deposition) to improve electrical insulativity",
+     "domain": "solid"
+    },
+    {
+     "name": "Ti_electrode_thickness",
+     "value_um": "0.02 (20 nm)",
+     "quote": "a 20 nm/200 nm-thick Ti/Pt electrode layer is sputtered on the backside of the silicon substrate using magnetron sputtering",
+     "domain": "solid"
+    },
+    {
+     "name": "Pt_electrode_thickness",
+     "value_um": "0.2 (200 nm)",
+     "quote": "a 20 nm/200 nm-thick Ti/Pt electrode layer is sputtered on the backside of the silicon substrate using magnetron sputtering",
+     "domain": "solid"
+    },
+    {
+     "name": "heater_footprint_each_of_six",
+     "value_um": "2900 x 4600",
+     "quote": "It consists of thirteen thin-film resistors, including six heaters (2.9 mm \u00d7 4.6 mm) and seven sensors (300 \u03bcm \u00d7 345 \u03bcm).",
+     "domain": "solid"
+    },
+    {
+     "name": "temperature_sensor_footprint_each_of_seven",
+     "value_um": "300 x 345",
+     "quote": "It consists of thirteen thin-film resistors, including six heaters (2.9 mm \u00d7 4.6 mm) and seven sensors (300 \u03bcm \u00d7 345 \u03bcm).",
+     "domain": "solid"
+    },
+    {
+     "name": "sensor_centre_to_centre_spacing_along_centreline",
+     "value_um": "2160",
+     "quote": "The sensors are placed along the centerline of the test chips to measure the temperature distribution of the power IC along the flow direction. The distance between the centers of adjacent sensors is 2.16 mm.",
+     "domain": "solid"
+    },
+    {
+     "name": "heater_tiling_arrangement",
+     "value_um": "NOT_STATED (the paper says only that the six heaters cover the whole array; a 2-wide x 3-long tiling would be 5800 x 13800 um inside the 6600 x 14400 um array, but the tiling is never stated and must not be inferred from Figure 2d)",
+     "quote": "The heaters cover the entire microchannel or micro-pin-fin array and act as a simulated power IC (integrated circuit).",
+     "domain": "solid"
+    },
+    {
+     "name": "inlet_hole_diameter",
+     "value_um": "NOT_STATED",
+     "quote": "Step 5: the inlet and the outlet on the silicon cover are drilled by laser etching.",
+     "domain": "fluid"
+    },
+    {
+     "name": "outlet_hole_diameter",
+     "value_um": "NOT_STATED",
+     "quote": "Step 5: the inlet and the outlet on the silicon cover are drilled by laser etching.",
+     "domain": "fluid"
+    },
+    {
+     "name": "inlet_outlet_hole_position",
+     "value_um": "NOT_STATED (only that both holes are in the 500 um silicon cover, i.e. top-fed and top-drained through the cover, one at each end of the 14400 um flow length; no coordinates given)",
+     "quote": "Step 5: the inlet and the outlet on the silicon cover are drilled by laser etching.",
+     "domain": "fluid"
+    },
+    {
+     "name": "inlet_outlet_plenum_or_manifold_geometry",
+     "value_um": "NOT_STATED (no plenum, header or distributor dimensions anywhere in the paper)",
+     "quote": "Step 5: the inlet and the outlet on the silicon cover are drilled by laser etching.",
+     "domain": "fluid"
+    },
+    {
+     "name": "overall_die_footprint",
+     "value_um": "NOT_STATED (only the 6600 x 14400 um heat-sink array is dimensioned; the die must be larger to carry the Ti/Pt bond pads and the two cover holes, but no die outline is given)",
+     "quote": "As shown in Figure 2a, the microchannel array is 6.6 mm wide and 14.4 mm long.",
+     "domain": "overall"
+    },
+    {
+     "name": "pin_sidewall_draft_angle_and_base_fillet",
+     "value_um": "NOT_STATED (DRIE-etched; the paper only asserts high perpendicularity, so model the pins as right circular cylinders with sharp roots)",
+     "quote": "The pictures show that the microchannel and micro-pin-fin surfaces are smooth and the perpendicularity is high, which minimizes the influence of fabrication error on the experimental results.",
+     "domain": "solid"
+    },
+    {
+     "name": "fabrication_geometric_tolerance",
+     "value_um": "1 (+/- 1 um, quoted as the geometric error in the uncertainty table)",
+     "quote": "Geometric error \u00b11 \u03bcm",
+     "domain": "overall"
+    },
+    {
+     "name": "BONUS_reference_sink_channel_width",
+     "value_um": "300",
+     "quote": "It includes eleven microchannels with a width and interval of 300 \u03bcm.",
+     "domain": "fluid"
+    },
+    {
+     "name": "BONUS_reference_sink_channel_wall_interval",
+     "value_um": "300",
+     "quote": "It includes eleven microchannels with a width and interval of 300 \u03bcm.",
+     "domain": "solid"
+    },
+    {
+     "name": "BONUS_reference_sink_channel_depth",
+     "value_um": "300",
+     "quote": "a microchannel or micro-pin-fin layer (300 \u03bcm)",
+     "domain": "fluid"
+    },
+    {
+     "name": "BONUS_reference_sink_number_of_channels",
+     "value_um": "11 channels (count, not a length)",
+     "quote": "It includes eleven microchannels with a width and interval of 300 \u03bcm.",
+     "domain": "fluid"
+    },
+    {
+     "name": "BONUS_reference_sink_channel_centreline_positions",
+     "value_um": "DERIVED, not quoted: x = 300, 900, 1500 ... 6300 um (11 channels on a 600 um pitch), giving 10 interior walls of 300 um and 2 edge walls of 150 um; 3300 + 3000 + 300 = 6600 um exactly. Confirmed by the quoted A_min = 0.99 mm2 and A_c = 190.08 mm2.",
+     "quote": "It includes eleven microchannels with a width and interval of 300 \u03bcm. [combined with] the microchannel array is 6.6 mm wide and 14.4 mm long",
+     "domain": "fluid"
+    },
+    {
+     "name": "BONUS_reference_sink_effective_convection_area",
+     "value_um": "190.08 mm^2 (an area)",
+     "quote": "Ac is the effective convection area of the heat sink. (190.08 mm2 for the microchannel heat sink, 231.72 mm2 for the inline micro-pin-fin heat sink and 233.88 mm2 for the staggered micro-pin-fin heat sink).",
+     "domain": "fluid"
+    }
+   ],
+   "buildable": "YES for the array and its enclosing silicon shell \u2014 this is an unusually well-closed geometry. NO for the inlet/outlet ports and the die outline.\n\nWHAT IS FULLY DETERMINED (watertight solid + watertight fluid domain):\nFluid domain = a 6600 x 14400 x 300 um rectangular box, minus 264 pin-equivalents of 300 um diameter right circular cylinders spanning the full 300 um height. Solid domain = 200 um substrate below + 500 um cover above + the pins + the 150 um edge walls, all silicon, bonded (no interface gap: silicon-to-silicon direct bonding).\n\nTHE LAYOUT IS NOT GUESSED \u2014 IT IS FORCED AND TRIPLE-CHECKED. The paper states the array width (6.6 mm), length (14.4 mm), pitch (600 um), diameter (300 um) and row count (24) but never prints the column count. Three independent arithmetic checks against numbers the paper does print pin it down exactly:\n  CHECK 1, minimum flow area. Paper states A_min = 0.99 mm2. A row of 10 full pins + 2 half-pins at the walls gives (6.6 - (10*0.3 + 2*0.15)) * 0.3 = 0.9900 mm2. An offset row of 11 full pins gives (6.6 - 11*0.3) * 0.3 = 0.9900 mm2. Both match exactly, so the transverse pitch tiles the 6.6 mm width with no leftover.\n  CHECK 2, inline convection area. Paper states 231.72 mm2. Taking 24 identical rows of 10 full + 2 wall-bisected half pins: 2*(6.6*14.4 - 264*pi*0.15^2) + 264*pi*0.3*0.3 + (2*14.4*0.3 - 48*0.3*0.3) = 231.7221 mm2. Matches to 5 significant figures.\n  CHECK 3, staggered convection area. Paper states 233.88 mm2. Taking 12 wall-rows alternating with 12 offset rows of 11 pins: same base and pin-side terms, sidewalls cut by only 24 half-pins instead of 48, giving 233.8821 mm2. Matches to 5 significant figures.\n  CHECK 2b, the reference channel sink. Paper states 190.08 mm2; 11 * 14.4 * (2*0.3 + 2*0.3) = 190.0800 mm2 exactly, which independently confirms the 300 um channel depth taken from the layer thickness, the 11 channels, and four-sided (all-wall) heating.\nBecause checks 2 and 3 land on the paper's own published areas to 5 significant figures under one single consistent interpretation, the pin count (264 pin-equivalents), the pin height (300 um), and the half-pins embedded in the sidewalls are confirmed rather than assumed.\n\nWHAT IS MISSING, and it does block a complete chip model:\n  1. Inlet and outlet hole diameter \u2014 NOT_STATED. The holes are laser-drilled through the 500 um cover, so they are top-fed, but no diameter exists anywhere in the text.\n  2. Inlet and outlet hole position \u2014 NOT_STATED. No coordinates.\n  3. Any inlet/outlet plenum or distributor \u2014 NOT_STATED. There may be none (flow may enter the array directly under the hole), but the paper does not say.\n  4. Overall die footprint \u2014 NOT_STATED. Only the array is dimensioned. The die is necessarily larger (bond pads, cover holes) but its outline is never given.\n  5. Pin draft angle and root fillet \u2014 NOT_STATED. Model as right cylinders with sharp roots; the paper only asserts high perpendicularity from DRIE.\n  6. Stagger offset as a printed number \u2014 NOT_STATED, but unambiguous in words (\"in the middle of the two adjacent micro pin fins in the front row\"), so 300 um, exactly half the quoted 600 um pitch.\n\nRECOMMENDED BUILD, and the caveat that comes with it. Build the array as the full 6600 x 14400 x 300 um box with flat inlet and outlet faces at y = 0 and y = 14400 um, sandwiched by the 200 um and 500 um silicon plates. That is watertight and defensible. But be aware the measured pressure drop was taken at ports upstream and downstream of the chip (\"A temperature port and a pressure port are installed at both the inlet and the outlet of the test chip\"), so it includes the laser-drilled hole losses and the 90-degree turn into the array. A box-inlet model will therefore UNDER-predict the reported dP. Nusselt number and thermal resistance are referenced to the array itself and to the quoted A_c, so those two are directly comparable to a box-inlet model; pressure drop is not. Do not use the dP numbers as a validation target without modelling the holes, which cannot be done from this paper.",
+   "operating_point": "FLUID: deionized water. Quote: \"A temperature port and a pressure port are installed at both the inlet and the outlet of the test chip to measure the temperature rise and pressure drop of the working fluid (deionized water).\"\n\nINLET TEMPERATURE: 298.15 K (25.0 C). Quote: \"The temperature of the thermostatic water tank is kept at 298.15 K with a temperature fluctuation of less than 0.05 K.\" Fluid property values (rho, mu, cp, k) are NOT_STATED anywhere in the paper \u2014 use water at 298.15 K.\n\nREYNOLDS NUMBER RANGE: 79.2 to 882.3. Quote: \"Three heat sink structures are tested in the Reynolds number range of 79.2 to 882.3, namely, a microchannel heat sink (MCHS), an inline micro-pin-fin heat sink (I-MPFHS) and a staggered micro-pin-fin heat sink (S-MPFHS).\"\nRe is defined on the PIN DIAMETER and the MINIMUM free-flow area, not on a hydraulic diameter and not on a frontal area. Quote: \"Re = rho*U*L/mu = rho*Q*L/(mu*Amin), where Q is the flow rate, L is the characterized length (the hydraulic diameter for the microchannel heat sink and the fin diameter for the micro pin fin heat sink, both equal to 300 \u03bcm), Amin is the minimum vertical cross-sectional area of the flow region (0.99 mm2 for both the microchannel and the micro-pin-fin heat sinks).\" Match this definition exactly or your Re will not be theirs.\n\nSpecific Re values quoted in the results: 339.3, 678.7 (\"under the conditions of Re = 339.3 and Re = 678.7\"), 814.4, and the band 271.5 < Re < 542.9. Vortex-shedding transition for the inline array is quoted at Re = 550: \"when Re is higher than 550, the flow stability in the separation zones of the inline micro pin fins decreases and the flow structure in the separation zones gradually evolves from a steady vortex pair to an unsteady K\u00e1rm\u00e1n vortex street.\"\n\nHEAT FLUX: 100 W/cm2 per heater. Quote: \"Each heater provides a heat flux of 100 W/cm2.\" Applied on the back of the 200 um substrate only (the heaters are on the substrate backside), over six 2.9 x 4.6 mm pads covering the whole array. Total power is NOT_STATED; 6 * 2.9 * 4.6 mm2 * 100 W/cm2 = 80.04 W is DERIVED from quoted numbers. Note the heating is four-sided in the sense that all four walls of each passage are silicon and conducting, which the paper stresses is the novelty: \"most conclusions about the performance of microchannel and micro-pin-fin heat sinks in such literature are based on three-sided heating cases, which use glass as cover plates [23,24,25,26]. Whether these conclusions are applicable to four-sided heating cases has not been systematically studied.\"\n\nFLOW RATE AND VELOCITY: NOT_STATED. No absolute Q or velocity appears in the paper; only the uncertainty \"Flow rate, Q \u00b10.5%\". DERIVED from the quoted Re definition with water at 298.15 K (rho = 997.0 kg/m3, mu = 8.90e-4 Pa s), Q = Re*mu*A_min/(rho*L):\n  Re =  79.2  ->  Q = 0.233 mL/s ( 14.0 mL/min), U_max = 0.236 m/s\n  Re = 271.5  ->  Q = 0.800 mL/s ( 48.0 mL/min), U_max = 0.808 m/s\n  Re = 339.3  ->  Q = 1.000 mL/s ( 60.0 mL/min), U_max = 1.010 m/s\n  Re = 542.9  ->  Q = 1.599 mL/s ( 96.0 mL/min), U_max = 1.615 m/s\n  Re = 678.7  ->  Q = 1.999 mL/s (120.0 mL/min), U_max = 2.020 m/s\n  Re = 814.4  ->  Q = 2.399 mL/s (144.0 mL/min), U_max = 2.423 m/s\n  Re = 882.3  ->  Q = 2.599 mL/s (156.0 mL/min), U_max = 2.625 m/s\nThese land on exact round mL/min values (60.0, 96.0, 120.0, 144.0, 156.0), which is strong evidence the authors set flow rate in round increments and that the recovered Q is right. U_max here is the velocity in the minimum section, Q/A_min, which is the velocity their Re is built on. Flow is laminar-to-transitional; the paper reports unsteady Karman vortex shedding above Re = 550 in the inline array, so a steady RANS run will not capture the inline high-Re behaviour.\n\nEXPERIMENTAL UNCERTAINTIES (quoted table): flow rate +/-0.5%, geometric error +/-1 um, inlet water temperature +/-0.2 K, outlet fluid temperature +/-0.2 K, sensor temperature +/-0.42 K, heater temperature +/-0.45 K, pressure drop +/-4.5% max, Reynolds number +/-0.8% max, Nusselt number +/-5.7% max, thermal resistance +/-5.0% max.",
+   "reported_results": "NUSSELT NUMBER (the single cleanest validation target, because the paper gives both the definition and the area it is normalised on):\nQuote: \"Under the condition of Re = 814.4, Nu of I-MPFHS reaches 11.70, while that of MCHS is only 8.54.\"\n  inline pin fin, Re = 814.4:  Nu = 11.70\n  straight channels, Re = 814.4: Nu = 8.54\nNu is built on h = q/(A_c*(T_h_avg - T_f)) with q from an energy balance q = rho*cp*Q*(T_o - T_i), T_f = (T_i + T_o)/2, and the characteristic length 300 um. To compare, you must use their A_c (231.72 mm2 inline, 233.88 mm2 staggered, 190.08 mm2 channels) and their L = 300 um. Staggered Nu is stated to be much higher than both but NO numeric staggered Nu value is given (figure only). Full Nu-vs-Re curves are in Figure 6 only, so no other numbers are extractable from the text.\n\nTHERMAL RESISTANCE (K/W), paired with pressure drop. These are the four quoted (theta, dP) points:\n  inline    I-MPFHS:  theta = 0.8513 K/W at dP =  1.16 kPa\n  channels  MCHS:     theta = 0.8250 K/W at dP =  1.18 kPa\n  staggered S-MPFHS:  theta = 0.9613 K/W at dP =  1.12 kPa\n  inline    I-MPFHS:  theta = 0.2166 K/W at dP = 27.70 kPa\n  staggered S-MPFHS:  theta = 0.2231 K/W at dP = 29.49 kPa\nQuote: \"When the pressure drop is lower than 1.5 kPa, the cooling capability of I-MPFHS (\u03b8 = 0.8513 K/W at ... = 1.16 kPa) is a little higher than MCHS (\u03b8 = 0.8250 K/W at ... = 1.18 kPa) and both of them are obviously better than S-MPFHS (\u03b8 = 0.9613 K/W at ... = 1.12 kPa) because of the severe endwall effect and high pressure drop in S-MPFHS.\" And: \"when the pressure drop is higher than 20 kPa, the cooling capability of I-MPFHS (\u03b8 = 0.2166 K/W at ... = 27.70 kPa) exceeds S-MPFHS (\u03b8 = 0.2231 K/W at ... = 29.49 kPa) because of the high heat transfer enhancement and the low pressure drop price brought by the unsteady vortex street in I-MPFHS.\"\ntheta is defined as the average temperature rise of the simulated power IC per unit power input: \"the average thermal resistance (\u03b8) represents the average temperature rise of the simulated power IC per unit power input.\"\n\nPRESSURE DROP vs Re: NOT_STATED as a table. Only the five dP values above, each tied to a theta. Quote: \"Figure 9 shows variations of the pressure drop with Re.\" The trend is stated: staggered dP much higher than inline and channels; inline dP similar to channels at low Re, diverging upward as Re rises. Remember the measured dP is port-to-port across the whole chip including the laser-drilled cover holes, so it is NOT directly comparable to an array-only CFD dP (see the buildable field).\n\nJUNCTION TEMPERATURE: NOT_STATED. No absolute junction or wall temperatures are given. Only thermal resistance and relative centreline temperature profiles (Figure 8), described qualitatively: \"the maximum temperature difference of MCHS is about twice the value of S-MPFHS at Re = 339.3, while it is about triple at Re = 678.7.\" The upstream/downstream split used in that discussion is quoted as 0 to 7.2 mm and 7.2 to 14.4 mm.\n\nHEADLINE CONCLUSION: \"I-MPFHS shows the most effective cooling capability when the rated pressure drop of the pump is lower than 1.5 kPa or higher than 20 kPa and S-MPFHS has the most effective cooling capability when the rated pressure drop of the pump is in the range of 1.5 to 20 kPa.\"",
+   "mesh_used": "NOT_STATED \u2014 there is no mesh, no cell count, no mesher and no grid-convergence study, because this is a purely experimental paper. There is no CFD model in it at all. The only numerical-flavoured content is the data-reduction algebra (Equations 1 to 7) and a Moffat-style uncertainty propagation.\n\nThe paper does cite prior numerical work on circular micro-pin-fin arrays (\"Both experimental and numerical studies on circular micro-pin-fin heat sinks show that staggered micro-pin-fin heat sinks have a much higher Nusselt number than inline micro-pin-fin heat sinks\"), so meshing precedent would have to come from those references (notably Mohammadi and Kosar, J. Therm. Anal. Calorim. 2019, 140:1057-1068, doi 10.1007/s10973-019-08840-2, and Mohammadi and Kosar, J. Heat Transf. 2017, 139:062402, doi 10.1115/1.4035655), not from this paper.\n\nMESHING GUIDANCE IMPLIED BY THE GEOMETRY RATHER THAN QUOTED: the smallest fluid gap is 300 um between adjacent pin surfaces and 150 um from the outermost pin surface to each sidewall, while the pin diameter and height are both 300 um, so the aspect ratios are benign and near-cubic. The two real mesher stresses are (a) the 24 half-cylinders tangent to each sidewall in the inline case and 12 per wall in the staggered case, which are the geometric features most likely to produce slivers, and (b) the 264 cylinder-to-plate root intersections top and bottom. The paper reports unsteady Karman vortex shedding above Re = 550 in the inline array, so a validation run there needs a transient solver and a wake-resolving mesh, not a steady one."
+  },
+  {
+   "key": "embedded-silicon",
+   "paper": "Ki Wook Jung, Sougata Hazra, Heungdong Kwon, Alisha Piazza, Edward Jih, Mehdi Asheghi, Man Prakash Gupta, Michael Degner, Kenneth E. Goodson, \"Thermal and Manufacturing Design Considerations for Silicon-Based Embedded Microchannel-Three-Dimensional Manifold Coolers - Part 2: Parametric Study of EMMCs for High Heat Flux (~1 kW/cm2) Power Electronics Cooling,\" ASME Journal of Electronic Packaging, Vol. 142, No. 3, September 2020, paper 031118. DOI 10.1115/1.4047883. FULL TEXT READ (open author copy, 11 pages): https://nanoheat.stanford.edu/wp-content/uploads/2020/09/Jung_Hazra_JEP_ParametericStudy_2020.pdf\n\nWHY THIS PAPER AND NOT THE 24x24 mm ONE: the 24x24 mm paper you named exists and is Tiwei Wei, Sougata Hazra, Yujui Lin, Man Prakash Gupta, Michael Degner, Mehdi Asheghi, Kenneth E. Goodson, \"Numerical Study of Large Footprint (24 x 24 mm2) Silicon-Based Embedded Microchannel Three-Dimensional Manifold Coolers,\" ASME J. Electron. Packag. 145(2):021008 (2023), DOI 10.1115/1.4055468. IT IS PAYWALLED AND HAS NO OPEN VERSION ANYWHERE - I checked Unpaywall (is_oa=false), OpenAlex (oa_status \"closed\", any_repository_has_fulltext=false), Semantic Scholar (openAccessPdf status CLOSED), arXiv, ResearchGate (403), OSTI, PMC, the Stanford NanoHeat publications server, and the authors' Purdue/UCLA pages. NOT_READ for that paper; its abstract gives only: full-scale CFD of a 24 x 24 mm2 embedded-microchannel + 3D manifold device, single-phase water, and that a 1.5 mm manifold inlet-channel height cuts pressure drop by a factor of 4 versus a 0.7 mm manifold while holding thermal resistance at 0.04 K.cm2/W. No buildable dimensions are obtainable from it.\n\nTHE \"24 MILLION ELEMENTS / 0.3 PER CENT\" CLAIM IN THE BRIEF TRACES TO THIS PAPER, NOT THE 24x24 ONE. This paper's Appendix A is the source: 24.3 x 10^6 and 23.1 x 10^6 elements, with \"less than 0.16-0.36% change in the total thermal resistance\". There is NO Richardson extrapolation in either paper - the brief's \"converged to 0.3 per cent by Richardson extrapolation\" is a conflation of two different facts and should not be repeated.\n\nALSO READ IN FULL (used only as named cross-checks, never silently merged):\n(1) van Erp, Soleimanzadeh, Nela, Kampitsis, Matioli, \"Co-designing electronics with microfluidics for more sustainable cooling,\" Nature 585, 211-216 (2020), DOI 10.1038/s41586-020-2666-1. Open EPFL copy READ IN FULL (42 pp): https://infoscience.epfl.ch/record/285280/files/Infoscience_Nature2020_vanerp.pdf . This is the one that is truly etched into the die itself, but it is EXPERIMENTAL ONLY - there is no CFD model and no mesh. Its stated dimensions, verbatim: \"Through micron-sized openings in the AlGaN/GaN layer, 125 um-deep and 20 um-wide channels were realized in the silicon substrate\"; \"A series of devices was fabricated with SPMCs with equal width and spacing of 100 um, 50 um and 25 um, and a channel depth of 250 um in GaN-on-Si power devices\"; \"mMMC chips with 2, 4 and 10 inlet and outlet manifold channels and identical 20 x 125 um microchannels were fabricated, referred to as 2x, 4x and 10x-manifold\"; epi stack \"2.9 nm GaN cap-layer, 20 nm AlGaN barrier, 420 nm GaN channel, 4.2 um buffer layer, on a 400 um-thick silicon\"; \"The staggered pattern, with 30 um-long slits spaced 2 um apart\"; \"The Bosch process was used to etch the silicon slits for approximately 115 um deep\"; \"the slits in the GaN epilayer were then sealed by electroplating approximately 7 um of copper\"; AC-DC converter chip \"microchannels were etched in the backside using deep reactive ion etching to a depth of approximately 500 um\" and \"50 um-wide cooling channels were integrated on the silicon substrate\". CRITICAL GAP: its Extended Data Table 1 (\"Table of all design parameters and measured values per chip\") is MISSING from the open EPFL manuscript - page 36 carries only the caption, no table - and nature.com/articles/s41586-020-2666-1/tables/1 redirects to an authentication wall. So the van Erp manifold channel widths, manifold channel depths, number of microchannels, die footprint and heated area are all NOT_STATED in anything I could read. van Erp is therefore NOT buildable from open sources.\n(2) Piazza, Hazra, Jung, Degner, Gupta, Jih, Asheghi, Goodson, \"Considerations and Challenges for Large Area Embedded Micro-channels with 3D Manifold in High Heat Flux Power Electronics Applications,\" 19th IEEE ITHERM 2020, pp. 77-82. READ IN FULL: https://nanoheat.stanford.edu/wp-content/uploads/2020/09/Piazza_Hazra_ITHERM_Simulations_2020.pdf . Same design family (explicitly built on design D7 of the paper above), scaled to 5, 10 and 20 mm footprints. Its Table I supplies the manifold heights in tabulated form and is the independent confirmation of them.\n(3) Sougata Hazra, PhD dissertation, Stanford, 2023, \"Novel thermal management solutions for extreme heat flux cooling,\" https://stacks.stanford.edu/file/druid:tj383mp2517/Hazra_diss_final-augmented.pdf . Read the relevant chapter. Confirms the citation of the Wei 24x24 paper as ref [83] and states that mesh elements in that study, in Jung's, and in Piazza's \"were all sized ~ 10 um or more to resolve 50 um channels\" - this is where the brief's \"10 micron minimum mesh\" comes from.",
+   "read_full_text": true,
+   "geometry_name": "emmc_3d_manifold_5mm_D9",
+   "geometry_type": "manifold microchannel (silicon embedded microchannel cold plate + separate silicon 3D manifold bonded beneath it; microchannels are etched into the backside of the silicon chip that carries the heat source on its front face). The paper presents a family of 9 designs D1-D9 built from 5 cold-plate variants CP0-CP4 and 2 manifold variants M0' and M3. The headline optimised design is D9 (= CP4 + M3). The most cross-validated design is D7 (= CP2 + M3), which is the design Piazza et al. scaled up.",
+   "dimensions": [
+    {
+     "name": "cp_microchannel_height_depth_Hcp_all_designs",
+     "value_um": "75",
+     "quote": "Table 1 Geometry of different cold-plate designs: CP design / Hcp (um) / Wcp (um) / Wcp,fin (um) / Hcp,sub (um) / Ncp -- CP0 75 150 50 500 25; CP1 75 150 50 200 25; CP2 75 50 50 200 50; CP3 75 10 40 200 100; CP4 75 10 15 200 200. (Hcp = 75 um for every cold-plate variant.)",
+     "domain": "fluid"
+    },
+    {
+     "name": "cp_microchannel_width_Wcp_CP0_CP1_design_D6",
+     "value_um": "150",
+     "quote": "Table 1: CP1 75 150 50 200 25. Confirmed in body text: 'the pressure drop is increased with reducing Wcp, from 150 um to 50 um to 10 um, for D6, D7, and D8 designs, respectively.'",
+     "domain": "fluid"
+    },
+    {
+     "name": "cp_microchannel_width_Wcp_CP2_design_D7",
+     "value_um": "50",
+     "quote": "Table 1: CP2 75 50 50 200 50. Body text: 'we further reduced the u-channel width from 150 um (D6) to 50 um (D7) and 10 um (D8) at the expense of larger pressure drops up to 80 kPa.'",
+     "domain": "fluid"
+    },
+    {
+     "name": "cp_microchannel_width_Wcp_CP3_CP4_designs_D8_D9",
+     "value_um": "10",
+     "quote": "Table 1: CP3 75 10 40 200 100; CP4 75 10 15 200 200.",
+     "domain": "fluid"
+    },
+    {
+     "name": "cp_microchannel_length_equals_cold_plate_footprint_side",
+     "value_um": "5000",
+     "quote": "'In this paper, we conducted full-scale CFD simulations of quarter-cut EMMC devices with a 5 mm x 5 mm cold-plate footprint, applied heat flux of 800 W/cm2, and single-phase water as a working fluid.' Independently confirmed by the paper's own Awet column: Table 7 gives Awet = 5.625, 6.25, 8.5, 17 (x10-5 m2) for D6-D9, which reproduces exactly as Ncp x (2*Hcp + 2*Wcp) x 5 mm for all four designs.",
+     "domain": "fluid"
+    },
+    {
+     "name": "cp_microchannel_hydraulic_diameter_D6",
+     "value_um": "100",
+     "quote": "Table 7 Key geometries (D6-D9): Dh,cp (um) = 100 (D6), 60 (D7), 17.65 (D8), 17.65 (D9). Also Table 11 'Hydraulic diameter (um)': D4 100, D5 100, D6 100, D7 60, D8 17.6, D9 17.6.",
+     "domain": "fluid"
+    },
+    {
+     "name": "cp_microchannel_hydraulic_diameter_D7",
+     "value_um": "60",
+     "quote": "Table 7 Key geometries (D6-D9): Dh,cp (um) = 100 (D6), 60 (D7), 17.65 (D8), 17.65 (D9).",
+     "domain": "fluid"
+    },
+    {
+     "name": "cp_microchannel_hydraulic_diameter_D8_D9",
+     "value_um": "17.65",
+     "quote": "Table 7 Key geometries (D6-D9): Dh,cp (um) = 100 (D6), 60 (D7), 17.65 (D8), 17.65 (D9).",
+     "domain": "fluid"
+    },
+    {
+     "name": "cp_fin_wall_thickness_Wcp_fin_CP0_CP1_CP2_designs_D4_D5_D6_D7",
+     "value_um": "50",
+     "quote": "Table 1: CP0 ... 50 ...; CP1 ... 50 ...; CP2 ... 50 .... Table 7 Key geometries (D6-D9): Wcp,fin (um) = 50 (D6), 50 (D7), 40 (D8), 15 (D9).",
+     "domain": "solid"
+    },
+    {
+     "name": "cp_fin_wall_thickness_Wcp_fin_CP3_design_D8",
+     "value_um": "40",
+     "quote": "Table 1: CP3 75 10 40 200 100. Body text: 'in order to manage the excessive pressure drop (~80 kPa) for design D8, we further reduce Wcp,fin from 40 to 15 um.'",
+     "domain": "solid"
+    },
+    {
+     "name": "cp_fin_wall_thickness_Wcp_fin_CP4_design_D9",
+     "value_um": "15",
+     "quote": "Table 1: CP4 75 10 15 200 200. Body text: 'Reducing Wcp,fin from 40 to 15 um accommodates more microchannels in the cold-plate.'",
+     "domain": "solid"
+    },
+    {
+     "name": "cp_substrate_thickness_above_channels_Hcp_sub_CP0_designs_D4_D5",
+     "value_um": "500",
+     "quote": "Table 1: CP0 75 150 50 500 25. Body text: 'In design D6, the silicon chip thickness was reduced from 500 to 200 um that resulted in a reduction in thermal resistance to 0.075 cm2 K/W.'",
+     "domain": "solid"
+    },
+    {
+     "name": "cp_substrate_thickness_above_channels_Hcp_sub_CP1_to_CP4_designs_D6_to_D9",
+     "value_um": "200",
+     "quote": "Table 1: CP1 ... 200 ...; CP2 ... 200 ...; CP3 ... 200 ...; CP4 ... 200 .... Body text: 'The substrate thickness of CP, Hcp,sub, is reduced by 300 um from D5 to D6, but other geometric dimensions are maintained.'",
+     "domain": "solid"
+    },
+    {
+     "name": "manifold_inlet_conduit_width_Wmani_in_M0prime_design_D4",
+     "value_um": "150",
+     "quote": "Table 2 Geometry of different manifold designs: Manifold design / Wmani,in (um) / Wmani,out (um) / Wmani,wall (um) / Lflow (um) / Wmani,wall/Lflow (%) / Nmani,in -- M0' 150 482 100 416 24.04 6; M3 217 215 200 416 48.08 6. Also Table 4 Key geometries (D4/D5): Wmani,in (um) = 150 (D4), 217 (D5).",
+     "domain": "fluid"
+    },
+    {
+     "name": "manifold_inlet_conduit_width_Wmani_in_M3_designs_D5_to_D9",
+     "value_um": "217",
+     "quote": "Table 2: M3 217 215 200 416 48.08 6. Body text: 'From D4 to D5, Wmani,in increases from 150 to 217 um.'",
+     "domain": "fluid"
+    },
+    {
+     "name": "manifold_outlet_conduit_width_Wmani_out_M0prime_design_D4",
+     "value_um": "482",
+     "quote": "Table 2: M0' 150 482 100 416 24.04 6. Body text explains why it is 3x wider: 'The baseline EMMC design D4 ... was originally intended for two-phase heat transfer. As such the outlet conduits are three times wider than inlet conduits to accommodate the sudden expansion of vapor volume.'",
+     "domain": "fluid"
+    },
+    {
+     "name": "manifold_outlet_conduit_width_Wmani_out_M3_designs_D5_to_D9",
+     "value_um": "215",
+     "quote": "Table 2: M3 217 215 200 416 48.08 6.",
+     "domain": "fluid"
+    },
+    {
+     "name": "manifold_wall_thickness_between_inlet_and_outlet_conduits_Wmani_wall_M0prime",
+     "value_um": "100",
+     "quote": "Table 2: M0' 150 482 100 416 24.04 6.",
+     "domain": "solid"
+    },
+    {
+     "name": "manifold_wall_thickness_between_inlet_and_outlet_conduits_Wmani_wall_M3",
+     "value_um": "200",
+     "quote": "Table 2: M3 217 215 200 416 48.08 6. Body text: 'the wall thickness between the manifold inlet/outlet conduits, Wmani,wall, is doubled in D4 and D5.'",
+     "domain": "solid"
+    },
+    {
+     "name": "manifold_inlet_conduit_height_depth_Hmani_in",
+     "value_um": "700",
+     "quote": "Fig. 1(b) dimension label, printed as text on the A-A' cut view: 'Hmani,in (0.7 mm)'. Figure caption: 'Fig. 1 (a) Conceptual design of the EMMC and (b) key geometric parameters of cold-plate and manifold in A-A' and B-B' cut views.' NOTE: this number is a printed text label on the drawing, not a value scaled off the drawing. Cross-check in the sister paper Piazza et al. ITHERM 2020 Table I gives hMF,in = 750 um for the same design family - the two papers differ by 50 um, so use 700 um when building this paper's geometry.",
+     "domain": "fluid"
+    },
+    {
+     "name": "manifold_outlet_conduit_height_depth_Hmani_out",
+     "value_um": "1000",
+     "quote": "Fig. 1(b) dimension label, printed as text on the A-A' cut view: 'Hmani,out (1 mm)'. The inlet conduit is blind/shallower and the outlet conduit runs the full manifold depth. Cross-check: Piazza et al. ITHERM 2020 Table I gives hMF = 1000 um for the same design family - exact agreement.",
+     "domain": "fluid"
+    },
+    {
+     "name": "unit_flow_path_length_Lflow_both_manifolds",
+     "value_um": "416",
+     "quote": "Table 2: Lflow (um) = 416 for both M0' and M3. Definition given in body text: 'A parameter called a unit length of fluid flow path, Lflow, is (Wmani,in + Wmani,out)/2 + Wmani,wall that is defined as the distance that the fluid has to flow from a manifold inlet conduit to an adjacent manifold outlet conduit.' Arithmetic check: M0' (150+482)/2+100 = 416; M3 (217+215)/2+200 = 416. Both exact.",
+     "domain": "fluid"
+    },
+    {
+     "name": "number_of_cold_plate_microchannels_Ncp_per_design",
+     "value_um": "25 (CP0/CP1, designs D4/D5/D6), 50 (CP2, D7), 100 (CP3, D8), 200 (CP4, D9) - counts, not micrometres",
+     "quote": "Table 1 column Ncp: CP0 25; CP1 25; CP2 50; CP3 100; CP4 200. Table 7: Ncp = 25 (D6), 50 (D7), 100 (D8), 200 (D9).",
+     "domain": "overall"
+    },
+    {
+     "name": "number_of_manifold_inlet_conduits_Nmani_in",
+     "value_um": "6 - a count, not micrometres",
+     "quote": "Table 2 column Nmani,in = 6 for both M0' and M3. Table 4 Key geometries (D4/D5): Nmani = 6 (D4), 6 (D5).",
+     "domain": "overall"
+    },
+    {
+     "name": "cp_microchannel_pitch_derived_Wcp_plus_Wcp_fin",
+     "value_um": "200 (D6), 100 (D7), 50 (D8), 25 (D9)",
+     "quote": "Not printed as its own number; it is the exact sum of two values printed side by side in Table 1 (Wcp + Wcp,fin): CP1 150+50=200; CP2 50+50=100; CP3 10+40=50; CP4 10+15=25. Self-consistency check against the stated Ncp and the stated 5 mm footprint: 25x200 = 50x100 = 100x50 = 200x25 = 5000 um exactly, for all four designs. Flagged as a sum of stated values, NOT scaled from a figure.",
+     "domain": "overall"
+    },
+    {
+     "name": "manifold_pitch_per_inlet_outlet_conduit_pair_derived",
+     "value_um": "832",
+     "quote": "Not printed as its own number; it is the exact sum of values printed in Table 2 (Wmani,in + Wmani,wall + Wmani,out + Wmani,wall): M0' 150+100+482+100 = 832; M3 217+200+215+200 = 832. Both manifolds share the same 832 um pitch, consistent with the identical stated Lflow of 416 um. Self-consistency check against the stated Nmani,in = 6 and the 5 mm footprint: 6 x 832 = 4992 um, i.e. 6 inlet conduits and 6 outlet conduits span the 5 mm cooled side. Flagged as a sum of stated values, NOT scaled from a figure.",
+     "domain": "overall"
+    },
+    {
+     "name": "cold_plate_footprint_side_length",
+     "value_um": "5000 x 5000",
+     "quote": "'we conducted full-scale CFD simulations of quarter-cut EMMC devices with a 5 mm x 5 mm cold-plate footprint'. Fig. 2 carries printed '5 mm' and '5 mm' leader labels on the cooled square.",
+     "domain": "overall"
+    },
+    {
+     "name": "heated_hot_spot_area",
+     "value_um": "5000 x 5000",
+     "quote": "'A constant heat flux, 11,985,378 W/m2, is applied at the top surface of the Au bodies to supply 800 W/cm2 on the 5 x 5 mm2 hot spot. All other solid outer walls are set to be adiabatic.'",
+     "domain": "overall"
+    },
+    {
+     "name": "gradual_contraction_cone_angle_theta_cone",
+     "value_um": "25.8 degrees (D4) and 23.3 degrees (D5) - an angle, not a length",
+     "quote": "Table 4 Key geometries (D4/D5): theta_cone (deg) = 25.8 (D4), 23.3 (D5). This is the cone half-angle of the gradual contraction from the inlet plenum (zone 1) into the manifold inlet conduits (zone 2). NOT_STATED for designs D6 through D9.",
+     "domain": "overall"
+    },
+    {
+     "name": "au_heater_thickness",
+     "value_um": "NOT_STATED",
+     "quote": "The paper names the heater solid but never dimensions it: 'The solid domain consists of two joined Si bodies and four disconnected Au metal bodies.' Only its conductivity is given (Table 3, 'Au thermal conductivity 298 W/m K'). For reference, the sister paper Piazza et al. ITHERM 2020 Table I gives t_heater = 200 um for the same design family, and notes 'A thicker gold layer was used in place of thin oxide and gold layers due to meshing constraints' - but that is a different paper and must not be silently substituted.",
+     "domain": "solid"
+    },
+    {
+     "name": "au_serpentine_heater_trace_width_and_pitch",
+     "value_um": "NOT_STATED",
+     "quote": "The serpentine pattern is described only qualitatively: 'The inner square shows the heated section where the serpentine patterns reflect the heat flux boundary condition imposed by a serpentine heater.' No trace width, gap or number of turns is given. The applied 11,985,378 W/m2 versus the 800 W/cm2 device-level flux implies the Au top face covers about 66.8 per cent of the 25 mm2 square, but the trace layout itself is not stated.",
+     "domain": "solid"
+    },
+    {
+     "name": "manifold_substrate_floor_thickness_below_outlet_conduits",
+     "value_um": "NOT_STATED",
+     "quote": "No thickness is given for the silicon left beneath the 1000 um-deep outlet conduits. The manifold is described only as 'two Si substrates, one for a CP with embedded microchannels, and a 3D manifold for liquid delivery and extraction conduits.'",
+     "domain": "solid"
+    },
+    {
+     "name": "overall_die_chip_footprint",
+     "value_um": "NOT_STATED",
+     "quote": "Only the cooled area is dimensioned ('a 5 mm x 5 mm cold-plate footprint'). Fig. 2 shows the silicon slab extending well beyond the cooled square to carry the plenums and ports, but no outer dimension is printed anywhere in the paper.",
+     "domain": "overall"
+    },
+    {
+     "name": "inlet_plenum_dimensions",
+     "value_um": "NOT_STATED",
+     "quote": "Shape only: 'zone 0: semicircular open area where the fluid is introduced to the device, zone 1: regions right after the inlet plenum where the gradual contraction begins'. No radius, width, depth or length is given.",
+     "domain": "fluid"
+    },
+    {
+     "name": "outlet_plenum_and_outlet_opening_dimensions",
+     "value_um": "NOT_STATED",
+     "quote": "Shape only: 'zone 3: open-ends of the manifold outlet conduits that are connected to the exit plenum, and zone 4: square open area where the fluid exits from the device.' No side length or depth is given.",
+     "domain": "fluid"
+    },
+    {
+     "name": "inlet_and_outlet_port_diameters_and_positions",
+     "value_um": "NOT_STATED",
+     "quote": "Fig. 2 labels 'Inlet' and 'Outlet' as vertical ports on opposite sides of the die and shows two symmetry planes, but no port diameter, pitch or standoff distance from the cooled square is given numerically anywhere in the paper.",
+     "domain": "fluid"
+    }
+   ],
+   "buildable": "PARTIALLY. The cooled core is fully buildable and watertight; the feed/plenum region is not.\n\nWHAT YOU CAN BUILD RIGHT NOW, WATERTIGHT, WITH NOTHING INFERRED: the complete 5 mm x 5 mm cooled block, both domains. Cold plate: 200 channels of 10 um width x 75 um depth on a 25 um pitch (design D9), under a 200 um silicon roof, channel length 5 mm. Manifold beneath it: 6 inlet conduits 217 um wide x 700 um deep alternating with 6 outlet conduits 215 um wide x 1000 um deep, separated by 200 um silicon walls, on an 832 um pair pitch, running perpendicular to the cold-plate channels. Every one of those numbers is printed in Table 1, Table 2 or the Fig. 1(b) dimension labels.\n\nTHE GEOMETRY SELF-VALIDATES, WHICH IS WHY I TRUST IT. Four independent arithmetic closures all come out exact, with no rounding: (a) channel pitch x channel count = 5000 um for all four cold-plate variants (25x200, 50x100, 100x50, 200x25); (b) the paper's own tabulated wetted area Awet = 5.625, 6.25, 8.5, 17 x 10-5 m2 for D6-D9 reproduces exactly as Ncp x (2*Hcp + 2*Wcp) x 5 mm, which independently pins the channel length at 5 mm and confirms Hcp = 75 um; (c) the tabulated hydraulic diameters 100, 60, 17.65, 17.65 um reproduce exactly from the tabulated Wcp and Hcp; (d) the tabulated Lflow = 416 um and Wmani,wall/Lflow = 24.04 / 48.08 per cent reproduce exactly for both manifolds, and 6 conduit pairs x 832 um = 4992 um fills the 5 mm side. A transcription error would break at least one of these; none break.\n\nWHAT IS MISSING AND BLOCKS A COMPLETE DEVICE MODEL - five items, all NOT_STATED:\n1. Au heater thickness and the serpentine trace layout. You cannot build the heater solid. Workaround that stays honest: drop the Au body entirely and apply 800 W/cm2 as a uniform flux on the top face of the cold-plate silicon. That changes the near-surface spreading slightly but nothing in the fluid domain.\n2. Manifold floor thickness beneath the 1000 um outlet conduits. Pick any value and state it as your own assumption; it is adiabatic in the paper's boundary conditions, so it does not affect the answer.\n3. Overall die footprint. The silicon extends past the 5 x 5 mm cooled square to carry the plenums; no outer dimension is printed.\n4. Inlet plenum (semicircular) and outlet opening (square) dimensions. None given.\n5. Inlet/outlet port diameters and their positions. None given.\n\nCONSEQUENCE FOR CFD: items 3, 4 and 5 mean you cannot reproduce the paper's reported TOTAL pressure drop, because dP1 (inlet opening to end of plenum) and dP4 (outlet conduit ends to exit opening) depend on geometry the paper never dimensions. You CAN reproduce dP3, the pressure drop across the active cooling region, which is the dominant term in the aggressive designs: Table 8 gives dP3 = 76.6 of 79.3 kPa for D8 and 34.2 of 36.9 kPa for D9, i.e. 93 per cent of the total. So a cooled-core-only model is a legitimate validation target for D8 and D9; it is not for D6, where dP3 is only 2.2 of 5.1 kPa.\n\nIF YOU WANT THE MISSING MANIFOLD HEIGHTS FROM A SECOND SOURCE: Piazza et al., ITHERM 2020, Table I, same design family, explicitly built on design D7 of this paper, gives length 5/10/20 mm, hCP 200 um, wCP,channel 50 um, wCP,wall 50 um, hCP,channel 75 um, t_heater 200 um, hMF 1000 um, hMF,in 750 um, wMF,in 215 um, wMF,wall 200 um, wMF,out 217 um. Note it agrees with this paper on hMF = 1000 um but says 750 um where Fig. 1(b) here says 0.7 mm, and it swaps the 215/217 labels between inlet and outlet. Treat it as a separate paper, not a patch.",
+   "operating_point": "Single operating point for the whole parametric study, from Table 3 \"Simulation conditions\" verbatim:\n- Mass flow rate at zone 0: \"8.3 x 10-3 kg/s or 0.2 l/min at 25 C\"\n- Heat fluxes at the heated surfaces: 800 W/cm2\n- Energy/viscous model: On/laminar\n- Fluid inlet temperature: 298.15 K\n- Au thermal conductivity: 298 W/m K\n- Si thermal conductivity: 130 W/m K\n- Water thermal conductivity: \"Piecewise-linear, temperature dependent\"\n\nApplied heat flux as a boundary condition: \"A constant heat flux, 11,985,378 W/m2, is applied at the top surface of the Au bodies to supply 800 W/cm2 on the 5 x 5 mm2 hot spot. All other solid outer walls are set to be adiabatic.\"\nOutlet: \"Zero gauge-pressure condition is applied on the bottom surface of the fluid outlet.\"\nSymmetry: \"The cut surfaces along the symmetry lines in the solid and fluid domains are set to be symmetric.\" Quarter model, two symmetry planes.\nWhy this point: \"For practical considerations, the heat flux of 800 W/cm2 and the flow rate of 0.2 lit/min are chosen to ensure that there will be no two-phase heat transfer, and that the overall pressure drop for the most aggressive design, D8, will stay below 100 kPa.\"\n\nReynolds numbers in the microchannels (Table 11, \"Renumber (u-channel)\"): D4 170, D5 150, D6 150, D7 130, D8 92, D9 46. Fully laminar throughout.\n\nWARNING - THE PAPER'S OWN FLOW NUMBER IS INTERNALLY INCONSISTENT AND YOU MUST NOT COPY IT BLIND. Table 3 prints \"8.3 x 10-3 kg/s or 0.2 l/min at 25 C\" as if the two were equal. They are not: 0.2 l/min of water at 25 C is about 3.3 x 10-3 kg/s, not 8.3 x 10-3 kg/s. The quantity in Table 3 is the inlet condition of the QUARTER-cut domain (\"Mass flow rate at zone 0\"), and the full device has two inlets, so one quarter should receive one quarter of the device total: 3.32 x 10-3 / 4 = 8.3 x 10-4 kg/s. The digits \"8.3\" match that quarter exactly, so the printed exponent is almost certainly a typo for 10-4. Fig. 8 independently labels the device-level condition as \"Qtotal = 0.2 l/min, q''heater = 800 W/cm2\", which supports the 0.2 l/min figure as the device total. RECOMMENDATION: drive the quarter model at 8.3 x 10-4 kg/s (device total 0.2 l/min, 3.32 x 10-3 kg/s) and sanity-check against the paper's reported outlet temperature of 39.2-39.7 C.\n\nFluid: single-phase deionised water, inlet 25 C / 298.15 K, temperature-dependent piecewise-linear thermal conductivity and temperature-dependent specific heat (\"Cp,f is the saturated specific heat of single-phase water that is temperature-dependent\"). Density and viscosity treatment NOT_STATED beyond being incompressible and laminar. Solids: silicon 130 W/m K, gold 298 W/m K.",
+   "reported_results": "All values below are the paper's own tabulated numbers, verified against the rendered page images, not the text layer.\n\nTABLE 11 \"Key CFD results (D4-D9)\" - columns are Theater,avg (C) / Rtotal (cm2 K/W) / Theater,max (C) / Rtotal,max (cm2 K/W) / Tf,in (C) / Tf,out (C) / Hydraulic diameter (um) / Reynolds number (u-channel):\nD4: 102.6 / 0.097 / 112.8 / 0.11 / 25 / 39.6 / 100 / 170\nD5: 98.3 / 0.092 / 107.7 / 0.10 / 25 / 39.7 / 100 / 150\nD6: 85.7 / 0.076 / 91.5 / 0.083 / 25 / 39.6 / 100 / 150\nD7: 77.8 / 0.066 / 82.9 / 0.072 / 25 / 39.6 / 60 / 130\nD8: 60.0 / 0.044 / 62.5 / 0.047 / 25 / 39.2 / 17.6 / 92\nD9: 57.6 / 0.041 / 59.9 / 0.044 / 25 / 39.2 / 17.6 / 46\n\nTABLE 5 \"Key CFD results (D4/D5)\": dPtotal = 8.1 / 5.0 kPa; dP2 = 5.4 / 2.4 kPa; Rtotal = 0.0970 / 0.0917 cm2 K/W; Rcomp (= Rcond + Rconv) = 0.0788 / 0.0732 cm2 K/W.\n\nTABLE 6 \"Key CFD results (D5/D6)\": dPtotal = 5.0 / 5.1 kPa; Rtotal = 0.0917 / 0.0758 cm2 K/W; Rcomp = 0.0732 / 0.0576 cm2 K/W.\n\nTABLE 8 \"Key CFD results (D6-D9)\" - rows dPtotal (kPa) / dP3 (kPa) / Rtotal (cm2 K/W) / Rconstant (= Rcond + Radv) (cm2 K/W) / Rconv (cm2 K/W):\nD6: 5.1 / 2.2 / 0.0758 / 0.0336 / 0.0423\nD7: 8.0 / 5.0 / 0.0660 / 0.0336 / 0.0324\nD8: 79.3 / 76.6 / 0.0437 / 0.0340 / 0.0098\nD9: 36.9 / 34.2 / 0.0408 / 0.0340 / 0.0068\n\nHEADLINE RESULT (abstract, verbatim): \"we implemented strategies such as: (i) symmetric distribution of manifold inlet/outlet conduits, (ii) reducing the thickness of cold-plate (CP) substrate, and (iii) increasing fluid-solid interfacial area in CP microchannels, which resulted in a reduction in thermal resistance from 0.1 for baseline design to 0.04 cm2 K/W, while the pressure drop increased from 8 to 37 kPa.\"\n\nKEY STEP-BY-STEP CLAIMS (body text, verbatim):\n- D4 to D5 (manifold symmetry): \"When the inlet/outlet conduits are symmetrically placed in the EMMC, the dPtotal for D5 design is reduced by 38.0% from baseline design D4\" and \"dP2 contributes to 96% of reduction in dPtotal.\"\n- D5 to D6 (thinner cold plate): \"the silicon chip thickness was reduced from 500 to 200 um that resulted in a reduction in thermal resistance to 0.075 cm2 K/W.\"\n- D6 to D7 to D8 (narrower channels): \"As the Ncp is doubled from D6 to D7, and from D7 to D8, the Rtotal linearly decreases by 13.0% and 33.8%, respectively.\"\n- D8 to D9 (thinner fins): \"we achieved nearly a factor of 2 improvement in pressure drop, from 80 kPa (D8) to 35 kPa (D9), and about 7% reduction in thermal resistance from Rtotal = 0.044 cm2 K/W (D8) to Rtotal = 0.041 cm2 K/W (D9).\"\n- Conduction/advection floor: \"Rconv is the only parameter that decreases with increasing number of Ncp, while Rcond and Radv remain constant (lower limit of 0.034 cm2 K/W).\"\n- Thermal-resistance split in the baseline: \"In the baseline EMMC design, the Rtotal ~ 0.097 cm2 K/W consists of advection (Radv), conduction (Rcond), and convection (Rconv) thermal resistances. For a given heat flux, the advection thermal resistance is fixed and represents ~18% of the total thermal resistance.\"\n- Max vs average temperature: \"The difference between average and maximum temperatures for the cases studied here is less than 10%.\"\n\nENERGY-BALANCE CAVEAT YOU SHOULD CARRY INTO ANY VALIDATION: \"while qtrans and dPtotal changes are less than 1%, even with excessively large number of mesh generated in the computational domain; there is a residual 3% difference between qsupply and qtrans. Therefore, going forward we will use qtrans that translates to less than 3% error in calculations of the Rtotal.\" So every Rtotal above carries a stated ~3 per cent systematic uncertainty.\n\nEXPERIMENTAL VALIDATION STATUS: not in this paper, but it states \"The chosen starting point or the baseline is design D4 since we have already fabricated, conducted tests, and conducted extensive CFD simulations. The CFD results agree well with the experimental data.\"",
+   "mesh_used": "ANSYS Fluent v16.0, steady, laminar, incompressible, conjugate (monolithic solid-fluid coupling). Quarter-cut domain of the full device, exploiting two symmetry planes. Hexahedral CutCell assembly meshing.\n\nMESH COUNTS ACTUALLY USED FOR THE REPORTED RESULTS:\n- D4: 24.3 x 10^6 elements\n- D7: 23.1 x 10^6 elements\n- D8: 50.0 x 10^6 elements\n- D9: 69.2 x 10^6 elements\nVerbatim: \"We have used 50.0 x 10^6 and 69.2 x 10^6 mesh elements for the CFD simulations with D8 and D9, respectively.\"\n\nGRID CONVERGENCE - TABLE 9 \"Mesh independence study for different EMMC designs (D4, D7)\", at q''supply = 800 W/cm2:\nD4 sweep: 14.3 / 18.9 / 24.3 / 33.5 x 10^6 elements\n  Theater,avg (C): 102.9 / 102.9 / 102.6 / 102.4\n  Rtotal (cm2 K/W): 0.0974 / 0.0974 / 0.0970 / 0.0968\n  dPtotal (kPa): 7.8 / 7.9 / 8.1 / 8.2\nD7 sweep: 14.9 / 19.0 / 23.1 / 26.8 x 10^6 elements\n  Theater,avg (C): 78.0 / 77.8 / 77.7 / 77.6\n  Rtotal (cm2 K/W): 0.0663 / 0.0660 / 0.0659 / 0.0658\n  dPtotal (kPa): 7.9 / 8.0 / 8.0 / 8.0\n\nCONVERGENCE CRITERION AND RESULT, verbatim: \"The number of mesh elements keeps increasing until the change in Rtotal and dPtotal is less than 1%.\" And: \"There are less than 0.16-0.36% change in the total thermal resistance and 0.34-0.64% change in the total pressure drop if the number of mesh element is higher than 24.3 x 10^6, 23.1 x 10^6 in D4, D7, respectively.\"\n\nTHIS IS THE SOURCE OF THE BRIEF'S \"0.3 PER CENT\". It is a direct mesh-refinement comparison, NOT Richardson extrapolation. The words \"Richardson\" and \"extrapolation\" do not appear anywhere in this paper, nor in the abstract of the 24x24 mm Wei paper, nor in Piazza et al., nor in Hazra's dissertation chapter on this work. Do not attribute Richardson extrapolation to any of them.\n\nTABLE 10 \"Important input/output parameters for meshing\" - the settings you need to reproduce the mesh:\n- Sizing growth rate: 1.075 / 1.06 / 1.05 / 1.04 across the D4 sweep; 1.07 / 1.058 / 1.05 / 1.04 across the D7 sweep (the growth rate is what was tightened to add elements)\n- Sizing max size: 1.024 x 10-3 m (1024 um), same for D4 and D7\n- Curvature min size: 4 x 10-6 m (4 um), same for D4 and D7\n- Proximity min size: 4 x 10-6 m (4 um), same for D4 and D7\n- Proximity size function sources: Edges\n- Assembly meshing method: CutCell\n- Inflation option: Smooth transition\n- Mesh element quality min: 0.272; element quality standard deviation 1.02 x 10-1 to 1.49 x 10-1; mean element quality 9.79 x 10-1 to 9.89 x 10-1\n\nNOTE ON THE BRIEF'S \"10 MICRON MINIMUM MESH\": this paper's stated minimum element size is 4 um (curvature and proximity min size, Table 10), not 10 um. The 10 um figure comes from Hazra's 2023 Stanford dissertation describing this family of studies in retrospect: \"device simulations in this study and also by Wei et al. [83], Jung et al. [77] and Piazza et al. [78] were all sized ~ 10 um or more to resolve 50 um channels.\" Treat 4 um as this paper's number and 10 um as the family-level characterisation.\n\nSCALE-UP COST, for context on why the 24 x 24 mm model was hard (Hazra dissertation, verbatim): \"Jung et al. had used ~ 23 - 24 million mesh elements to resolve microchannels of width 50 um ... To maintain similar mesh element sizes and resolution near the smallest microchannels, the larger cooler models would require > 70 (100 mm2 cooler) and > 150 (400 mm2 cooler) million mesh elements ... the simulations were finally performed with > 40 (100 mm2) and ~ 65 million (400 mm2) mesh elements with the simulation time of each data point for the large 400 mm2 devices being 3 - 4 days. Simulations of larger 24 x 24 and 25 x 25 mm2 cooler devices proved impossible using the workstation then ... However, an upgraded workstation was later used [83] to accurately model a large 600 mm2 coolers ... this exercise took more than 1 week to complete with the meshing step often crashing the system.\""
+  }
+ ]
+}

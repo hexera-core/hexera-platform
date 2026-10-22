@@ -801,10 +801,12 @@ def _render_outcome(fr: FinalResult) -> str:
                 # NEVER claim every check passed when a layer caveat exists: the pipeline's
                 # own quality review judged layer coverage short of its bar. 'Solver-ready'
                 # is scoped to what was actually measured.
-                lines.append("The mesh passes all structural quality gates and a "
-                             "pressure-operator solvability check - the case will run. The "
-                             "quality review judged near-wall layer coverage short of its "
-                             "bar; treat near-wall quantities accordingly.")
+                lines.append("The mesh passes all structural quality gates, and the pressure "
+                             "equation on it assembles and solves. That is the failure a bad mesh "
+                             "causes and not a promise that a full case converges - no momentum "
+                             "or energy equation has been run on it. The quality review judged "
+                             "near-wall layer coverage short of its bar; treat near-wall "
+                             "quantities accordingly.")
         lines.append("Mesh generation completed successfully.")
         if fr.engine:
             lines.append(f"Engine: {fr.engine}")

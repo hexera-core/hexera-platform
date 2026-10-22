@@ -4,33 +4,76 @@ Every assertion here corresponds to something that actually went wrong while the
 worked out on real geometry, so a future edit that reintroduces one of them fails a test instead of
 costing an hour of meshing.
 """
-import struct
-
 import pytest
 
 from meshpipeline.engines.cfmesh import conjugate as C
+from meshpipeline.engines.cfmesh.foam_exec import parse_check_mesh
 
 
-def _tri_normals(stl: bytes):
-    n = struct.unpack_from("<I", stl, 80)[0]
-    for i in range(n):
-        o = 84 + i * 50
-        nx, ny, nz = struct.unpack_from("<3f", stl, o)
-        verts = [struct.unpack_from("<3f", stl, o + 12 + k * 12) for k in range(3)]
-        yield (nx, ny, nz), verts
+def _ascii_tris(stl: str):
+    """(solid name, normal, three vertices) for every facet of an ASCII STL.
+
+    The block surface became ASCII with one named solid per face, because cfMesh takes its patch
+    names from those names and a binary STL carries none. A nameless box cannot have an inlet.
+    """
+    name = None
+    normal = None
+    verts = []
+    for line in stl.splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        if parts[0] == "solid":
+            name = parts[1]
+        elif parts[0] == "facet":
+            normal = tuple(float(v) for v in parts[2:5])
+            verts = []
+        elif parts[0] == "vertex":
+            verts.append(tuple(float(v) for v in parts[1:4]))
+        elif parts[0] == "endfacet":
+            yield name, normal, verts
 
 
 def test_the_block_is_twelve_triangles_wound_outward():
     # A box with one face wound inward still looks like a box and still tessellates, and cfMesh
     # then meshes the complement of what was intended.
-    stl = C.block_surface_stl((0, 0, 0), (2, 3, 4))
-    tris = list(_tri_normals(stl))
+    tris = list(_ascii_tris(C.block_surface_stl((0, 0, 0), (2, 3, 4))))
     assert len(tris) == 12
     centre = (1.0, 1.5, 2.0)
-    for n, verts in tris:
+    for _name, n, verts in tris:
         face_mid = tuple(sum(v[k] for v in verts) / 3 for k in range(3))
         outward = tuple(face_mid[k] - centre[k] for k in range(3))
         assert sum(n[k] * outward[k] for k in range(3)) > 0, "a face points inward"
+
+
+def test_every_block_face_is_its_own_named_solid():
+    # cfMesh names a patch after the STL solid it came from, and splitMeshRegions carries those
+    # patches into both regions. That is the whole mechanism by which the coolant gets an inlet:
+    # one anonymous box gives one patch covering every outer face, and then the faces the coolant
+    # reaches and the faces the metal reaches cannot be told apart.
+    tris = list(_ascii_tris(C.block_surface_stl((0, 0, 0), (2, 3, 4))))
+    by_name = {}
+    for name, _n, _v in tris:
+        by_name[name] = by_name.get(name, 0) + 1
+    assert set(by_name) == set(C.BLOCK_FACES)
+    assert set(by_name.values()) == {2}, "each face is two triangles"
+
+
+def test_a_named_face_can_be_grown_to_put_a_lid_over_the_coolant():
+    # A part whose channels are open at the top has its coolant flush with the block's own zmax.
+    # Growing zmax puts metal over them, so the channel roof stops being an outer boundary and
+    # becomes part of the interface, where heat can cross it.
+    lo, hi = C.block_bounds((0, 0, 0), (2, 3, 4), {"zmax": 0.5})
+    assert (lo, hi) == ((0, 0, 0), (2, 3, 4.5))
+    lo, hi = C.block_bounds((0, 0, 0), (2, 3, 4), {"ymin": 0.25})
+    assert (lo, hi) == ((0, -0.25, 0), (2, 3, 4))
+
+
+def test_a_face_cannot_be_grown_inward_and_an_unknown_face_is_refused():
+    with pytest.raises(C.ConjugateError):
+        C.block_bounds((0, 0, 0), (2, 3, 4), {"zmax": -0.5})
+    with pytest.raises(C.ConjugateError):
+        C.block_bounds((0, 0, 0), (2, 3, 4), {"top": 0.5})
 
 
 def test_a_degenerate_block_is_refused():
@@ -86,7 +129,9 @@ def test_region_parse_reads_what_checkmesh_prints():
         Max skewness = 0.286827 OK.
     Mesh OK.
     """
-    r = C.read_region(text, "fluid")
+    # Through foam_exec's parser, not a second one. A conjugate-only reader of checkMesh output
+    # was a second thing that could disagree with the first about what checkMesh said.
+    r = C.read_region(parse_check_mesh(text), "fluid")
     assert r.cells == 6088362
     assert r.volume_m3 == pytest.approx(6.3196e-09)
     assert r.pieces == 15
@@ -94,17 +139,25 @@ def test_region_parse_reads_what_checkmesh_prints():
     assert r.mesh_ok is True          # checkMesh says OK on a mesh that is 15 islands
 
 
-def test_interface_faces_are_read_per_side():
-    boundary = """
-    2
+def test_interface_faces_are_read_per_side(tmp_path):
+    # Read through polymesh_surface, which engines/passage and engines/passage_flow already use.
+    polymesh = tmp_path / "polyMesh"
+    polymesh.mkdir()
+    (polymesh / "boundary").write_text("""FoamFile { format ascii; }
+    3
     (
         zone0 { type wall; nFaces 17758; startFace 185929; }
         solid_to_fluid { type mappedWall; nFaces 10752; startFace 203687; }
+        zmax { type wall; nFaces 0; startFace 214439; }
     )
-    """
-    assert C.interface_faces(boundary, C.SOLID_TO_FLUID) == 10752
-    assert C.interface_faces(boundary, "zone0") == 17758
-    assert C.interface_faces(boundary, "not_a_patch") == 0
+    """)
+    patches = C.boundary_patches(polymesh)
+    assert C.interface_faces(patches, C.SOLID_TO_FLUID) == 10752
+    assert C.interface_faces(patches, "zone0") == 17758
+    assert C.interface_faces(patches, "not_a_patch") == 0
+    # A patch can survive the split with ZERO faces, which is a name with nothing behind it and
+    # the exact shape of a port the coolant does not reach.
+    assert C.interface_faces(patches, "zmax") == 0
 
 
 def _report(**kw):
@@ -153,3 +206,112 @@ def test_a_multi_passage_part_is_allowed_to_be_many_pieces():
                                               mesh_ok=True)),
                  expect_fluid_pieces=100)
     assert r.ok is True, r.problems
+
+
+# #
+# ports: a coolant region with no way in or out passes every geometric check and cannot be solved
+# #
+#: A plate 10 x 20 x 1 mm, with coolant running the length of it and flush with both ends.
+_BLOCK = ((0.0, 0.0, 0.0), (0.010, 0.020, 0.001))
+_THROUGH = ((0.002, 0.0, 0.0002), (0.008, 0.020, 0.0008))
+
+
+def test_open_faces_are_the_ones_the_coolant_reaches():
+    assert C.open_faces(_THROUGH[0], _THROUGH[1], *_BLOCK) == ("ymin", "ymax")
+
+
+def test_a_sealed_coolant_region_reaches_nothing():
+    sealed = ((0.002, 0.002, 0.0002), (0.008, 0.018, 0.0008))
+    assert C.open_faces(sealed[0], sealed[1], *_BLOCK) == ()
+
+
+def test_a_face_a_hair_short_of_the_block_still_counts_as_reached():
+    # The STL is written in float32, so a face that is exactly flush in the CAD lands a few parts
+    # in 10^7 off the plane. An absolute nanometre tolerance calls that sealed.
+    nearly = ((0.002, 2.0e-9, 0.0002), (0.008, 0.020 - 2.0e-9, 0.0008))
+    assert C.open_faces(nearly[0], nearly[1], *_BLOCK) == ("ymin", "ymax")
+
+
+#: The spans of ONE passage, which is what the flow axis is chosen from.
+_PASSAGE = (0.006, 0.020, 0.0006)
+
+
+def test_the_default_flow_axis_is_the_long_way_down_one_passage():
+    plan = C.plan_ports(("xmin", "xmax", "ymin", "ymax"), _PASSAGE)
+    assert (plan.inlet, plan.outlet) == ("ymin", "ymax")
+    # The sides the block was cut on are walls, and that is not a defect.
+    assert plan.walls == ("xmin", "xmax")
+
+
+def test_the_flow_axis_comes_from_the_passage_and_not_the_whole_coolant():
+    # Tuckerman and Pease, 1981: 200 channels, each 14 mm long, spread across 20 mm of silicon.
+    # The coolant's own bounding box is 20 mm in x against 14 in y, so ranking axes by it sends
+    # the flow ACROSS two hundred dead ends. One channel is 0.05 x 14 x 0.302, and picks y.
+    whole_fluid = (0.01995, 0.014, 0.000302)
+    one_channel = (0.00005, 0.014, 0.000302)
+    faces = ("xmin", "xmax", "ymin", "ymax")
+    assert C.plan_ports(faces, whole_fluid).inlet == "xmin"      # the wrong answer, kept as proof
+    assert C.plan_ports(faces, one_channel).inlet == "ymin"      # the right one
+
+
+def test_two_faces_that_are_not_opposite_are_used_and_the_guess_is_declared():
+    # A cold plate fed through its side and drained through its lid. Nothing in the geometry says
+    # which end is cold, so the direction is a guess and has to say so.
+    plan = C.plan_ports(("ymin", "zmax"), _PASSAGE)
+    assert (plan.inlet, plan.outlet) == ("ymin", "zmax")
+    assert "guess" in plan.reason
+
+
+def test_a_sealed_part_is_refused_with_the_reason():
+    with pytest.raises(C.ConjugateError, match="sealed inside the metal"):
+        C.plan_ports((), _PASSAGE)
+
+
+def test_a_port_the_coolant_does_not_reach_is_refused():
+    with pytest.raises(C.ConjugateError, match="does not reach"):
+        C.plan_ports(("ymin", "ymax"), _PASSAGE, inlet="zmin", outlet="ymax")
+
+
+def test_a_named_port_pair_overrides_the_default():
+    plan = C.plan_ports(("xmin", "xmax", "ymin", "ymax"), _PASSAGE,
+                        inlet="xmin", outlet="xmax")
+    assert (plan.inlet, plan.outlet) == ("xmin", "xmax")
+    assert plan.walls == ("ymin", "ymax")
+
+
+def test_an_inlet_patch_with_no_faces_is_a_failure_not_a_warning():
+    # This is the one checkMesh is happiest about. Every geometric bar passes on a sealed coolant
+    # region and it cannot be solved: nothing fixes its pressure, so the run dies in the
+    # preconditioner. The patch NAME survives the split whether or not any coolant reached it.
+    ports = C.PortPlan(inlet="ymin", outlet="ymax")
+    r = _report(ports=ports)
+    r.fluid.patches = {C.FLUID_TO_SOLID: 1065510, "ymin": 0, "ymax": 236}
+    C.verify(r, expect_fluid_volume_m3=6.311812e-09, expect_fluid_pieces=1)
+    assert r.ok is False
+    assert any("ZERO faces" in p for p in r.problems)
+    assert r.flowable is False
+
+
+def test_both_ports_carrying_faces_is_what_makes_a_mesh_flowable():
+    ports = C.PortPlan(inlet="ymin", outlet="ymax")
+    r = _report(ports=ports)
+    r.fluid.patches = {C.FLUID_TO_SOLID: 1065510, "ymin": 236, "ymax": 236}
+    C.verify(r, expect_fluid_volume_m3=6.311812e-09, expect_fluid_pieces=1)
+    assert r.ok is True, r.problems
+    assert r.flowable is True
+    assert r.inlet_faces == 236 and r.outlet_faces == 236
+
+
+def test_a_fatal_checkmesh_defect_is_carried_through_as_a_problem():
+    r = _report()
+    r.fluid.fatal = ("negative-volume cells",)
+    C.verify(r)
+    assert any("negative-volume cells" in p for p in r.problems)
+
+
+def test_cells_across_is_measured_from_the_mesh_and_reported_as_a_lower_bound():
+    # 100 um passage, cells averaging 20 um: five across. Evidence about what the mesh achieved,
+    # never a second sizing rule - engines/gap_sizing owns that one.
+    region = C.RegionReport("fluid", cells=1000, volume_m3=1000 * (20e-6 ** 3))
+    assert region.mean_cell_m == pytest.approx(20e-6)
+    assert region.cells_across(100e-6) == pytest.approx(5.0)

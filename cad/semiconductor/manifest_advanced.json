@@ -1,0 +1,47 @@
+[
+  {
+    "name": "unit_cell_100um",
+    "smallest_feature_um": 100.0,
+    "fluid_volume_mm3": 2.6,
+    "solid_volume_mm3": 5.85,
+    "spec_fluid_mm3": 2.6,
+    "volume_error_pct": 0.0,
+    "fluid_bodies": 1,
+    "stl_triangles_solid": 32,
+    "stl_triangles_fluid": 12,
+    "build_seconds": 4.1,
+    "cells_at_rule_M": 5.7,
+    "gb_at_rule": 4.8,
+    "checks_passed": 19
+  },
+  {
+    "name": "hotspot_array",
+    "smallest_feature_um": 60.0,
+    "fluid_volume_mm3": 10.08,
+    "solid_volume_mm3": 28.656,
+    "spec_fluid_mm3": 10.08,
+    "volume_error_pct": 0.0,
+    "fluid_bodies": 24,
+    "stl_triangles_solid": 1260,
+    "stl_triangles_fluid": 1056,
+    "build_seconds": 3.5,
+    "cells_at_rule_M": 102.5,
+    "gb_at_rule": 86.8,
+    "checks_passed": 19
+  },
+  {
+    "name": "manifold_two_level",
+    "smallest_feature_um": 100.0,
+    "fluid_volume_mm3": 4.56,
+    "solid_volume_mm3": 9.3,
+    "spec_fluid_mm3": 4.56,
+    "volume_error_pct": 0.0,
+    "fluid_bodies": 1,
+    "stl_triangles_solid": 1392,
+    "stl_triangles_fluid": 1212,
+    "build_seconds": 0.9,
+    "cells_at_rule_M": 10.0,
+    "gb_at_rule": 8.5,
+    "checks_passed": 19
+  }
+]

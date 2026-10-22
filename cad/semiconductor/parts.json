@@ -1,0 +1,469 @@
+[
+  {
+    "name": "corintis_straight_baseline_100um",
+    "solid_stl": "corintis_straight_baseline_100um_solid.stl",
+    "fluid_stl": "corintis_straight_baseline_100um_fluid.stl",
+    "narrowest_um": 100.0,
+    "fluid_volume_mm3": 259.999782855,
+    "solid_volume_mm3": 451.425177286,
+    "wetted_area_mm2": 5865.999138684,
+    "passages": 100,
+    "passage_extent_mm": [
+      0.100000005,
+      32.499998808,
+      0.79999998
+    ],
+    "extent_mm": [
+      19.9,
+      32.499999,
+      1.1
+    ],
+    "fluid_lo": [
+      0.0,
+      0.0,
+      0.0003000000142492354
+    ],
+    "fluid_hi": [
+      0.019899999722838402,
+      0.032499998807907104,
+      0.0010999999940395355
+    ],
+    "solid_lo": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "solid_hi": [
+      0.019899999722838402,
+      0.032499998807907104,
+      0.0010999999940395355
+    ],
+    "note": "One of the seven straight baselines the paper defines: 'seven canonical designs of straight microchannels with equal channel and fin widths of 200, 175, 150, 125, 100, 75 and 50 um'. Base 300 um and channel layer 800 um are quoted. The 20 x 32.5 mm footprint is the chip. 100 channels at 200 um pitch spans 20 mm exactly. NOT the optimised design, which cannot be rebuilt from the paper.",
+    "declared": {
+      "kind": "straight",
+      "fluid_volume_mm3": 260.0,
+      "exact_fluid_volume_mm3": 260.0,
+      "checks_passed": 20
+    }
+  },
+  {
+    "name": "embedded_silicon_D9_10um",
+    "solid_stl": "embedded_silicon_D9_10um_solid.stl",
+    "fluid_stl": "embedded_silicon_D9_10um_fluid.stl",
+    "narrowest_um": 10.0,
+    "fluid_volume_mm3": 0.749999527,
+    "solid_volume_mm3": 8.596875358,
+    "wetted_area_mm2": 170.299964802,
+    "passages": 200,
+    "passage_extent_mm": [
+      0.01,
+      4.999999888,
+      0.074999989
+    ],
+    "extent_mm": [
+      4.985,
+      5.0,
+      0.375
+    ],
+    "fluid_lo": [
+      0.0,
+      0.0,
+      0.00010000000474974513
+    ],
+    "fluid_hi": [
+      0.004985000006854534,
+      0.004999999888241291,
+      0.00017499999376013875
+    ],
+    "solid_lo": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "solid_hi": [
+      0.004985000006854534,
+      0.004999999888241291,
+      0.000375000003259629
+    ],
+    "note": "The most extreme case in the set: 10 um channels on a 25 um pitch, which makes the silicon fin between them 15 um. 200 channels at 25 um pitch spans the quoted 5 mm footprint exactly. Roof 200 um is quoted. This is the geometry that breaks meshers.",
+    "declared": {
+      "kind": "straight",
+      "fluid_volume_mm3": 0.75,
+      "exact_fluid_volume_mm3": 0.75,
+      "checks_passed": 20
+    }
+  },
+  {
+    "name": "hotspot_array",
+    "solid_stl": "hotspot_array_solid.stl",
+    "fluid_stl": "hotspot_array_fluid.stl",
+    "narrowest_um": 60.0,
+    "fluid_volume_mm3": 10.080003878,
+    "solid_volume_mm3": 28.655997208,
+    "wetted_area_mm2": 236.640023842,
+    "passages": 24,
+    "passage_extent_mm": [
+      0.120000448,
+      8.00000038,
+      0.499999995
+    ],
+    "extent_mm": [
+      5.38,
+      8.0,
+      0.9
+    ],
+    "fluid_lo": [
+      0.00010000000474974513,
+      0.0,
+      0.0002500000118743628
+    ],
+    "fluid_hi": [
+      0.005280000157654285,
+      0.00800000037997961,
+      0.000750000006519258
+    ],
+    "solid_lo": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "solid_hi": [
+      0.005379999987781048,
+      0.00800000037997961,
+      0.0008999999845400453
+    ],
+    "note": "",
+    "declared": {
+      "fluid_volume_mm3": 10.08,
+      "fluid_bodies": 24,
+      "checks_passed": 19
+    }
+  },
+  {
+    "name": "lee_garimella_2005_test1",
+    "solid_stl": "lee_garimella_2005_test1_solid.stl",
+    "fluid_stl": "lee_garimella_2005_test1_fluid.stl",
+    "narrowest_um": 194.0,
+    "fluid_volume_mm3": 43.560001185,
+    "solid_volume_mm3": 766.871050674,
+    "wetted_area_mm2": 551.053923489,
+    "passages": 10,
+    "passage_extent_mm": [
+      0.194000007,
+      25.399999693,
+      0.883999921
+    ],
+    "extent_mm": [
+      23.054,
+      25.4,
+      1.384
+    ],
+    "fluid_lo": [
+      0.0,
+      0.0,
+      0.0005000000237487257
+    ],
+    "fluid_hi": [
+      0.023053999990224838,
+      0.02539999969303608,
+      0.001383999944664538
+    ],
+    "solid_lo": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "solid_hi": [
+      0.023053999990224838,
+      0.02539999969303608,
+      0.001383999944664538
+    ],
+    "note": "Test piece 1 of five: ten channels cut into a copper block 25.4 mm square. Channel 194 x 884 um, 25.4 mm long. The fin width is NOT stated, so the 2.54 mm pitch here is ten channels spread evenly across the quoted 25.4 mm block face, which is an assumption and is recorded as one. Their validated grid was 20 x 50 x 100 on a quarter domain with axial ratio 1.08, agreeing with experiment to 5 per cent.",
+    "declared": {
+      "kind": "straight",
+      "fluid_volume_mm3": 43.559984,
+      "exact_fluid_volume_mm3": 43.559984,
+      "checks_passed": 20
+    }
+  },
+  {
+    "name": "manifold_two_level",
+    "solid_stl": "manifold_two_level_solid.stl",
+    "fluid_stl": "manifold_two_level_fluid.stl",
+    "narrowest_um": 100.0,
+    "fluid_volume_mm3": 4.560000321,
+    "solid_volume_mm3": 9.299999768,
+    "wetted_area_mm2": 73.760004306,
+    "passages": 1,
+    "passage_extent_mm": [
+      3.299999982,
+      4.00000019,
+      0.699999975
+    ],
+    "extent_mm": [
+      3.3,
+      4.0,
+      1.05
+    ],
+    "fluid_lo": [
+      0.0,
+      0.0,
+      0.00020000000949949026
+    ],
+    "fluid_hi": [
+      0.0032999999821186066,
+      0.004000000189989805,
+      0.0008999999845400453
+    ],
+    "solid_lo": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "solid_hi": [
+      0.0032999999821186066,
+      0.004000000189989805,
+      0.0010499999625608325
+    ],
+    "note": "",
+    "declared": {
+      "fluid_volume_mm3": 4.56,
+      "fluid_bodies": 1,
+      "checks_passed": 19
+    }
+  },
+  {
+    "name": "murray_branching_4gen",
+    "solid_stl": "murray_branching_4gen_solid.stl",
+    "fluid_stl": "murray_branching_4gen_fluid.stl",
+    "narrowest_um": 119.055,
+    "fluid_volume_mm3": 6.311769587,
+    "solid_volume_mm3": 130.315894733,
+    "wetted_area_mm2": 89.423959065,
+    "passages": 1,
+    "passage_extent_mm": [
+      11.224379763,
+      11.219139415,
+      0.800000038
+    ],
+    "extent_mm": [
+      11.464383,
+      11.459205,
+      1.04
+    ],
+    "fluid_lo": [
+      -0.00561218848451972,
+      -0.000149953382788226,
+      0.0
+    ],
+    "fluid_hi": [
+      0.005612191278487444,
+      0.01106918603181839,
+      0.000800000037997961
+    ],
+    "solid_lo": [
+      -0.005732191726565361,
+      -0.00027000016416423023,
+      -0.00012000014976365492
+    ],
+    "solid_hi": [
+      0.005732191726565361,
+      0.011189204640686512,
+      0.0009200001368299127
+    ],
+    "note": "",
+    "declared": {
+      "kind": "murray",
+      "fluid_volume_mm3": 6.311811784,
+      "exact_fluid_volume_mm3": null,
+      "checks_passed": 18
+    }
+  },
+  {
+    "name": "murray_ported_4gen",
+    "solid_stl": "murray_ported_4gen_solid.stl",
+    "fluid_stl": "murray_ported_4gen_fluid.stl",
+    "narrowest_um": 119.055,
+    "fluid_volume_mm3": 6.390575993,
+    "solid_volume_mm3": 130.257990962,
+    "wetted_area_mm2": 90.937587682,
+    "passages": 1,
+    "passage_extent_mm": [
+      11.224382557,
+      11.389186169,
+      0.970000168
+    ],
+    "extent_mm": [
+      11.464383,
+      11.459205,
+      1.04
+    ],
+    "fluid_lo": [
+      -0.005612191278487444,
+      -0.00032000013743527234,
+      0.0
+    ],
+    "fluid_hi": [
+      0.005612191278487444,
+      0.01106918603181839,
+      0.0009700001683086157
+    ],
+    "solid_lo": [
+      -0.005732191726565361,
+      -0.00027000016416423023,
+      -0.00012000014976365492
+    ],
+    "solid_hi": [
+      0.005732191726565361,
+      0.011189204640686512,
+      0.0009200001368299127
+    ],
+    "note": "The murray_branching_4gen tree with a feed and a drain: the trunk carried out through ymin, and one 119 um hole per leaf tip up through zmax. Fed from the side and drained through the lid, which is how a cold plate is plumbed. NOT a replica of any part.",
+    "declared": {
+      "kind": "branching",
+      "fluid_volume_mm3": 6.390617428,
+      "checks_passed": 22,
+      "fluid_bodies": 1
+    }
+  },
+  {
+    "name": "pin_fin_300um_staggered",
+    "solid_stl": "pin_fin_300um_staggered_solid.stl",
+    "fluid_stl": "pin_fin_300um_staggered_fluid.stl",
+    "narrowest_um": 300.0,
+    "fluid_volume_mm3": 22.916000943,
+    "solid_volume_mm3": 72.124001424,
+    "wetted_area_mm2": 237.84984738,
+    "passages": 1,
+    "passage_extent_mm": [
+      6.599999964,
+      14.399999753,
+      0.300000014
+    ],
+    "extent_mm": [
+      6.6,
+      14.4,
+      1.0
+    ],
+    "fluid_lo": [
+      -4.134575696375932e-19,
+      0.0,
+      0.00020000000949949026
+    ],
+    "fluid_hi": [
+      0.006599999964237213,
+      0.014399999752640724,
+      0.0005000000237487257
+    ],
+    "solid_lo": [
+      -4.134575696375932e-19,
+      0.0,
+      0.0
+    ],
+    "solid_hi": [
+      0.006599999964237213,
+      0.014399999752640724,
+      0.0010000000474974513
+    ],
+    "note": "Circular pins fully enclosed between two silicon plates, four-sided heating. 24 rows at 600 um pitch span 14.4 mm exactly; 264 pin-equivalents is confirmed by the paper's own minimum flow area. Pins modelled as right circular cylinders with sharp roots, because the paper states DRIE perpendicularity and gives no draft angle or root fillet.",
+    "declared": {
+      "kind": "pinfin",
+      "fluid_volume_mm3": 22.913681891,
+      "exact_fluid_volume_mm3": 22.913681891,
+      "checks_passed": 19
+    }
+  },
+  {
+    "name": "tuckerman_pease_1981_81F9",
+    "solid_stl": "tuckerman_pease_1981_81F9_solid.stl",
+    "fluid_stl": "tuckerman_pease_1981_81F9_fluid.stl",
+    "narrowest_um": 50.0,
+    "fluid_volume_mm3": 42.279990377,
+    "solid_volume_mm3": 85.639415819,
+    "wetted_area_mm2": 1977.239920662,
+    "passages": 200,
+    "passage_extent_mm": [
+      0.050000002,
+      14.000000432,
+      0.301999986
+    ],
+    "extent_mm": [
+      19.950001,
+      14.0,
+      0.458
+    ],
+    "fluid_lo": [
+      0.0,
+      0.0,
+      0.00015600000915583223
+    ],
+    "fluid_hi": [
+      0.019950000569224358,
+      0.014000000432133675,
+      0.0004579999949783087
+    ],
+    "solid_lo": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "solid_hi": [
+      0.019950000569224358,
+      0.014000000432133675,
+      0.0004579999949783087
+    ],
+    "note": "Design C, sample 81F9, the canonical microchannel heat sink and the paper that started the field. 200 channels at 100 um pitch spans the quoted 20 mm array width. Capped by a flat Pyrex cover, so roof is 0 here and the cover is a separate body. FULL TEXT WAS NOT READ by the extractor, so treat these as high-confidence secondary numbers.",
+    "declared": {
+      "kind": "straight",
+      "fluid_volume_mm3": 42.28,
+      "exact_fluid_volume_mm3": 42.28,
+      "checks_passed": 20
+    }
+  },
+  {
+    "name": "unit_cell_100um",
+    "solid_stl": "unit_cell_100um_solid.stl",
+    "fluid_stl": "unit_cell_100um_fluid.stl",
+    "narrowest_um": 100.0,
+    "fluid_volume_mm3": 2.599999962,
+    "solid_volume_mm3": 5.850000152,
+    "wetted_area_mm2": 58.659996853,
+    "passages": 1,
+    "passage_extent_mm": [
+      0.100000005,
+      32.499998808,
+      0.79999998
+    ],
+    "extent_mm": [
+      0.2,
+      32.499999,
+      1.3
+    ],
+    "fluid_lo": [
+      5.0000002374872565e-05,
+      0.0,
+      0.0003000000142492354
+    ],
+    "fluid_hi": [
+      0.0001500000071246177,
+      0.032499998807907104,
+      0.0010999999940395355
+    ],
+    "solid_lo": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "solid_hi": [
+      0.00020000000949949026,
+      0.032499998807907104,
+      0.0013000000035390258
+    ],
+    "note": "",
+    "declared": {
+      "fluid_volume_mm3": 2.6,
+      "fluid_bodies": 1,
+      "checks_passed": 19
+    }
+  }
+]

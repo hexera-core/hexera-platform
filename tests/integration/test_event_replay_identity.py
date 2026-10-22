@@ -225,13 +225,13 @@ def test_a_reconnecting_viewer_replays_each_operation_exactly_once():
         pub = _pub(job)
         pub.stage(op_id="check:0")
         pub.note("Checking the mesh", op_id="check:0")
-        pub.note("Trying a solver run on it", op_id="solvability:0")
+        pub.note("Solving the pressure equation on it", op_id="solvability:0")
 
     with _generation(3):
         _worker()                                   # crashed after the third publication
         _worker()                                   # takeover re-ran the node
 
-    assert _texts(job) == ["stage", "Checking the mesh", "Trying a solver run on it"]
+    assert _texts(job) == ["stage", "Checking the mesh", "Solving the pressure equation on it"]
 
 
 def test_suppressed_replays_consume_no_sequence_numbers():

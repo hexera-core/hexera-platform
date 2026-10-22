@@ -36,6 +36,11 @@ _CM = {
     "hexahedra": re.compile(r"hexahedra:\s+(\d+)"),
     "polyhedra": re.compile(r"polyhedra:\s+(\d+)"),
     "max_non_ortho": re.compile(r"non-orthogonality Max:\s+([\d.]+)"),
+    # The meshed volume, which is how a mesh gets compared with the CAD it came from. A
+    # conformal two-region split proves the two sides share a surface and nothing about WHICH
+    # cells ended up on which side; the fluid region's volume against the coolant's own is what
+    # proves that, and it has to come from the same reader as everything else checkMesh says.
+    "total_volume": re.compile(r"Total volume = ([0-9.eE+-]*[0-9])"),
     "max_skewness": re.compile(r"[Mm]ax skewness\s*=\s*([\d.eE+-]+)"),
     # checkMesh prints "N highly skew faces detected" ONLY when some exceed the threshold.
     # The COUNT (not the max) is what tells production-grade from broken: a handful of skewed
@@ -75,7 +80,16 @@ def check_mesh(workspace, *, bashrc: str = _DEFAULT_BASHRC, region: str = "") ->
     cmd = f"source {bashrc} >/dev/null 2>&1 && checkMesh -constant{_reg}"
     proc = run_guarded(["bash", "-lc", cmd], cwd=str(ws), env=_foam_env(),
                        capture_output=True, text=True, timeout=900)
-    out = proc.stdout + proc.stderr
+    return parse_check_mesh(proc.stdout + proc.stderr)
+
+
+def parse_check_mesh(out: str) -> dict:
+    """Everything checkMesh said, as numbers. Split out from check_mesh so it can be TESTED.
+
+    Reading checkMesh is the one piece of this that every cfMesh path depends on and none of them
+    could exercise without starting a subprocess, so the regexes went untested and a second reader
+    grew up beside this one in the conjugate path. One reader, callable with a string.
+    """
     q: dict = {"mesh_ok": "Mesh OK" in out}
     for k, pat in _CM.items():
         m = pat.search(out)

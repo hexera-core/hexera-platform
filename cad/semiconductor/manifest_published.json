@@ -1,0 +1,106 @@
+[
+  {
+    "name": "corintis_straight_baseline_100um",
+    "kind": "straight",
+    "smallest_feature_um": 100.0,
+    "fluid_volume_mm3": 260.0,
+    "exact_fluid_volume_mm3": 260.0,
+    "solid_volume_mm3": 451.425,
+    "stl_deflection_um": 5.0,
+    "stl_triangles_solid": 1596,
+    "stl_triangles_fluid": 1200,
+    "build_seconds": 5.5,
+    "checks_passed": 20,
+    "source": {
+      "paper": "Boutsikakis, Soutter, Salazar de Troya, Esposito, Mukasheva, Bouras, van Erp (Corintis), Glacierware: Hotspot-aware Microfluidic Cooling for High TDP Chips using Topology Optimization, arXiv:2408.15024",
+      "url": "https://arxiv.org/pdf/2408.15024",
+      "note": "One of the seven straight baselines the paper defines: 'seven canonical designs of straight microchannels with equal channel and fin widths of 200, 175, 150, 125, 100, 75 and 50 um'. Base 300 um and channel layer 800 um are quoted. The 20 x 32.5 mm footprint is the chip. 100 channels at 200 um pitch spans 20 mm exactly. NOT the optimised design, which cannot be rebuilt from the paper."
+    }
+  },
+  {
+    "name": "tuckerman_pease_1981_81F9",
+    "kind": "straight",
+    "smallest_feature_um": 50.0,
+    "fluid_volume_mm3": 42.28,
+    "exact_fluid_volume_mm3": 42.28,
+    "solid_volume_mm3": 85.6394,
+    "stl_deflection_um": 2.5,
+    "stl_triangles_solid": 3196,
+    "stl_triangles_fluid": 2400,
+    "build_seconds": 34.1,
+    "checks_passed": 20,
+    "source": {
+      "paper": "Tuckerman and Pease, High-performance heat sinking for VLSI, IEEE Electron Device Letters EDL-2(5), 1981",
+      "url": "https://ieeexplore.ieee.org/document/1482278",
+      "note": "Design C, sample 81F9, the canonical microchannel heat sink and the paper that started the field. 200 channels at 100 um pitch spans the quoted 20 mm array width. Capped by a flat Pyrex cover, so roof is 0 here and the cover is a separate body. FULL TEXT WAS NOT READ by the extractor, so treat these as high-confidence secondary numbers."
+    }
+  },
+  {
+    "name": "lee_garimella_2005_test1",
+    "kind": "straight",
+    "smallest_feature_um": 194.0,
+    "fluid_volume_mm3": 43.559984,
+    "exact_fluid_volume_mm3": 43.559984,
+    "solid_volume_mm3": 766.87111,
+    "stl_deflection_um": 9.7,
+    "stl_triangles_solid": 156,
+    "stl_triangles_fluid": 120,
+    "build_seconds": 0.1,
+    "checks_passed": 20,
+    "source": {
+      "paper": "Lee, Garimella and Liu, Investigation of heat transfer in rectangular microchannels, Int. J. Heat Mass Transfer 48 (2005) 1688-1704",
+      "url": "http://www2.egr.uh.edu/~dli9/2004_ijhmt-singlephase.pdf",
+      "note": "Test piece 1 of five: ten channels cut into a copper block 25.4 mm square. Channel 194 x 884 um, 25.4 mm long. The fin width is NOT stated, so the 2.54 mm pitch here is ten channels spread evenly across the quoted 25.4 mm block face, which is an assumption and is recorded as one. Their validated grid was 20 x 50 x 100 on a quarter domain with axial ratio 1.08, agreeing with experiment to 5 per cent."
+    }
+  },
+  {
+    "name": "embedded_silicon_D9_10um",
+    "kind": "straight",
+    "smallest_feature_um": 10.0,
+    "fluid_volume_mm3": 0.75,
+    "exact_fluid_volume_mm3": 0.75,
+    "solid_volume_mm3": 8.596875,
+    "stl_deflection_um": 0.5,
+    "stl_triangles_solid": 4004,
+    "stl_triangles_fluid": 2400,
+    "build_seconds": 34.1,
+    "checks_passed": 20,
+    "source": {
+      "paper": "Silicon embedded microchannel cold plate, design D9 (manifold microchannel study)",
+      "url": "see specs_raw.json for the full citation",
+      "note": "The most extreme case in the set: 10 um channels on a 25 um pitch, which makes the silicon fin between them 15 um. 200 channels at 25 um pitch spans the quoted 5 mm footprint exactly. Roof 200 um is quoted. This is the geometry that breaks meshers."
+    }
+  },
+  {
+    "name": "pin_fin_300um_staggered",
+    "kind": "pinfin",
+    "smallest_feature_um": 300.0,
+    "fluid_volume_mm3": 22.913681891,
+    "exact_fluid_volume_mm3": 22.913681891,
+    "solid_volume_mm3": 72.126318,
+    "stl_deflection_um": 15.0,
+    "stl_triangles_solid": 134328,
+    "stl_triangles_fluid": 134220,
+    "build_seconds": 34.1,
+    "checks_passed": 19,
+    "source": {
+      "paper": "An Experimental Study of Microchannel and Micro-Pin-Fin Based On-Chip Cooling Systems with Silicon-to-Silicon Direct Bonding",
+      "url": "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7583888/",
+      "note": "Circular pins fully enclosed between two silicon plates, four-sided heating. 24 rows at 600 um pitch span 14.4 mm exactly; 264 pin-equivalents is confirmed by the paper's own minimum flow area. Pins modelled as right circular cylinders with sharp roots, because the paper states DRIE perpendicularity and gives no draft angle or root fillet."
+    }
+  },
+  {
+    "name": "murray_branching_4gen",
+    "kind": "murray",
+    "smallest_feature_um": 119.055,
+    "fluid_volume_mm3": 6.311811784,
+    "exact_fluid_volume_mm3": null,
+    "solid_volume_mm3": 130.315851,
+    "stl_deflection_um": 5.953,
+    "stl_triangles_solid": 24340,
+    "stl_triangles_fluid": 24328,
+    "build_seconds": 4.9,
+    "checks_passed": 18,
+    "source": null
+  }
+]

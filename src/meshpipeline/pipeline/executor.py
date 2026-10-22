@@ -468,7 +468,15 @@ async def node_executor(state: PipelineState) -> dict:
                     # + solve the FV pressure-Poisson operator; gmsh returns None
                     # because its SICN>0 gate already IS its solvability guarantee.
                     _solv = get_engine(state.get("engine", "")).check_solvability
-                    await _pub.anote("Trying a solver run on it", op_id=f"solvability:{_n}")
+                    # "Solving the pressure equation on it", not "trying a solver run". What this
+                    # stage does is assemble the FV pressure-Poisson operator and solve it with
+                    # PCG+AMG (engines/cfmesh/solvability). That is a real solve and it is the one
+                    # a bad mesh fails - a disconnected island has no face path to the reference
+                    # cell - but it is not the case. No momentum, no energy, no turbulence, no
+                    # boundary conditions of the customer's. Calling it a solver run promises a
+                    # CFD result we have not produced.
+                    await _pub.anote("Solving the pressure equation on it",
+                                     op_id=f"solvability:{_n}")
                     _result = await asyncio.to_thread(
                         _solv, Path(workspace), solvability_metrics,
                     )
@@ -490,8 +498,8 @@ async def node_executor(state: PipelineState) -> dict:
                                    "equation does not solve", ok=False)
                     else:
                         logger.info("Executor: solvability gate PASSED - job_id=%s", job_id)
-                        await _pub.acheck("A solver run on this mesh converges - the pressure "
-                                   "equation assembles and solves", ok=True)
+                        await _pub.acheck("The pressure equation on this mesh assembles and "
+                                   "solves - the mesh is connected and non-degenerate", ok=True)
                 except Exception as _sv_exc:
                     # A CRASH in the solvability check (checkMesh subprocess can't run,
                     # OOM in the AMG solve, etc.) is a SYSTEM failure, not a verdict on

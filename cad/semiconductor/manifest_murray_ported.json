@@ -1,0 +1,26 @@
+[
+  {
+    "name": "murray_ported_4gen",
+    "kind": "branching",
+    "smallest_feature_um": 119.055,
+    "fluid_volume_mm3": 6.390617428,
+    "solid_volume_mm3": 130.257951,
+    "upper_bound_mm3": 7.436030669,
+    "stl_triangles_solid": 30506,
+    "stl_triangles_fluid": 30426,
+    "build_seconds": 24.7,
+    "reached_faces": [
+      "ymin",
+      "zmax"
+    ],
+    "feed_face": "ymin",
+    "drain_face": "zmax",
+    "checks_passed": 22,
+    "fluid_bodies": 1,
+    "source": {
+      "paper": "parametric, Murray's law",
+      "url": "",
+      "note": "The murray_branching_4gen tree with a feed and a drain: the trunk carried out through ymin, and one 119 um hole per leaf tip up through zmax. Fed from the side and drained through the lid, which is how a cold plate is plumbed. NOT a replica of any part."
+    }
+  }
+]

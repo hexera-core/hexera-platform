@@ -57,3 +57,6 @@ node_modules/
 .superpowers/
 # the licensed CFD corpus, linked locally for tests/unit/cad/test_corpus_units.py
 tests/fixtures/external/corpus
+runs/
+# the millimetre staging area the CAD authoring scripts write to; the corpus is cad/semiconductor
+devtools/semiconductor/cad/
