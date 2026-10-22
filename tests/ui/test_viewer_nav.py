@@ -1,5 +1,6 @@
-# Responsibility: Verify the 3D navigation every view shares - the ViewCube, the eased view changes, the
-# toolbar's tools, the section, and a click that selects the part - in a real browser.
+# Responsibility: Verify the 3D navigation every view shares - the ViewCube under real clicks, the eased
+# view changes, a click that selects the part and a second that lets it go, touch zoom, and a page that
+# never stalls however fast the cube is clicked - in a real browser.
 # Boundaries: the skin payload is the one the worker stores; only the network is stood in for.
 from __future__ import annotations
 
@@ -12,6 +13,7 @@ from test_geometry_stage_external import SESSION, _check, _open_stage
 pytestmark = pytest.mark.ui
 
 H = f"window._vdbg['gstage:{SESSION}']"
+ROOT = f"document.getElementById('gs-canvas-{SESSION}')"
 
 
 def _angle(a, b) -> float:
@@ -23,80 +25,92 @@ def _dir(live) -> list[float]:
     return live.evaluate(f"{H}.cam().getDirectionOfProjection().slice()")
 
 
-def test_the_cube_turns_the_view_smoothly_and_the_arrows_step_round_it(live):
+def _open(live) -> None:
     check = _check()
     check["proposal"]["flow"] = "internal"
     _open_stage(live, check)
-    root = f"document.getElementById('gs-canvas-{SESSION}')"
 
-    ui = live.evaluate(f"""(() => {{
-      const r = {root};
-      return {{cube: !!r.querySelector('.nav-cube'), faces: r.querySelectorAll('.nav-face').length,
-               cells: r.querySelectorAll('.nav-cell').length,
-               tools: [...r.querySelectorAll('.nav-bar .nav-btn span')].map(s => s.textContent),
-               fitInBar: !!r.querySelector('.nav-bar #gs-fit-{SESSION}'),
-               orbit: r.querySelector('[data-nav=orbit]').getAttribute('aria-pressed'),
-               arrows: r.querySelector('.nav-arrows').hidden}};
-    }})()""")
-    assert ui["cube"] and ui["faces"] == 6 and ui["cells"] == 54, ui
-    assert ui["tools"] == ["Home", "Fit", "Pan", "Zoom", "Orbit", "Section"], ui
-    assert ui["fitInBar"] is True and ui["orbit"] == "true", ui
-    assert ui["arrows"] is True, "the three-quarter view is not looking straight at a face"
 
-    # A CLICK ON THE TOP FACE turns the view there over a moment - never a jump
+def _real_click(live, selector: str) -> None:
+    """A click the browser makes - pointerdown, pointerup and click on whatever is on top there -
+    the way a mouse does it. A synthetic .click() would skip the hit test, and that hit test is what
+    the canvas once stole every cube click with."""
+    x, y = live.evaluate(f"""(() => {{ const r = document.querySelector('{selector}').getBoundingClientRect();
+      return [r.left + r.width / 2, r.top + r.height / 2]; }})()""")
+    for t, buttons in (("mouseMoved", 0), ("mousePressed", 1), ("mouseReleased", 0)):
+        live._send("Input.dispatchMouseEvent", {"type": t, "x": x, "y": y, "button": "left",
+                                                "buttons": buttons, "clickCount": 1})
+
+
+def _idle(live) -> None:
+    live.wait_for(f"!{H}.nav().animating()", timeout=5, what="the turn to finish")
+
+
+def test_real_clicks_on_the_cube_turn_the_view_smoothly(live):
+    _open(live)
+    ui = live.evaluate(f"""(() => {{ const r = {ROOT};
+      return {{faces: r.querySelectorAll('.nav-face').length, cells: r.querySelectorAll('.nav-cell').length,
+               toolbar: !!r.querySelector('.nav-bar'), arrows: r.querySelector('.nav-arrows').hidden}}; }})()""")
+    assert ui == {"faces": 6, "cells": 54, "toolbar": False, "arrows": True}, ui
+
+    # the TOP face, clicked as a mouse clicks it: the view turns there over a moment - never a jump
     start = _dir(live)
-    live.evaluate(f"{root}.querySelector('.nav-face[data-face=TOP] .nav-cell.centre').click()")
+    _real_click(live, ".nav-face[data-face=TOP] .nav-cell.centre")
     live.settle(0.15)
     midway = _dir(live)
-    live.wait_for(f"!{H}.nav().animating()", timeout=5, what="the turn to the top view to finish")
+    _idle(live)
     top = _dir(live)
     assert _angle(top, [0, 0, -1]) < 0.5, top
     assert 1.0 < _angle(start, midway) < _angle(start, top) - 1.0, (start, midway, top)
-    assert live.evaluate(f"{root}.querySelector('.nav-arrows').hidden") is False, \
-        "looking straight at a face shows the arrows"
 
-    # the right arrow steps to the face beside it: a quarter turn
-    live.evaluate(f"{root}.querySelector('.nav-arr.right').click()")
-    live.wait_for(f"!{H}.nav().animating()", timeout=5, what="the step to finish")
+    # looking straight at a face shows the arrows; the right arrow steps a quarter turn
+    assert live.evaluate(f"{ROOT}.querySelector('.nav-arrows').hidden") is False
+    _real_click(live, ".nav-arr.right")
+    _idle(live)
     side = _dir(live)
     assert abs(_angle(top, side) - 90) < 0.5, (top, side)
 
     # a roll keeps the direction and turns the picture a quarter
     up0 = live.evaluate(f"{H}.cam().getViewUp().slice()")
-    live.evaluate(f"{root}.querySelector('.nav-roll.cw').click()")
-    live.wait_for(f"!{H}.nav().animating()", timeout=5, what="the roll to finish")
+    _real_click(live, ".nav-roll.cw")
+    _idle(live)
     assert _angle(side, _dir(live)) < 0.5
     assert abs(_angle(up0, live.evaluate(f"{H}.cam().getViewUp().slice()")) - 90) < 0.5
 
     # HOME goes back to the opening view
-    live.evaluate(f"{root}.querySelector('.nav-home').click()")
-    live.wait_for(f"!{H}.nav().animating()", timeout=5, what="the way home to finish")
+    _real_click(live, ".nav-home")
+    _idle(live)
     assert _angle(_dir(live), start) < 0.5
     assert_clean(live, "the ViewCube")
 
 
-def test_tools_section_and_a_click_that_selects_the_part(live):
-    check = _check()
-    check["proposal"]["flow"] = "internal"
-    _open_stage(live, check)
-    root = f"document.getElementById('gs-canvas-{SESSION}')"
+def test_rapid_cube_clicks_never_stall_the_page(live):
+    # Every face, edge and corner the cube shows, clicked as fast as a user can, the Up axis
+    # flipped half way through: the main thread never blocks for 200 ms, and the camera stays a
+    # camera (no NaN) wherever it ends.
+    _open(live)
+    live.evaluate("window.__long = []; new PerformanceObserver((l) => l.getEntries()"
+                  ".forEach((e) => window.__long.push(Math.round(e.duration)))).observe({type: 'longtask'}); 0")
+    for i in range(40):
+        visible = live.evaluate(f"""(() => [...{ROOT}.querySelectorAll('.nav-cell')].filter((c) => {{
+          const r = c.getBoundingClientRect(); return document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) === c;
+        }}).map((c) => c.dataset.dir))()""")
+        assert visible, "no cube cell can be clicked"
+        _real_click(live, f".nav-cell[data-dir=\"{visible[i % len(visible)]}\"]")
+        if i == 20:
+            live.evaluate(f"""(() => {{ const s = document.getElementById('gs-up-{SESSION}');
+              s.value = '-x'; s.dispatchEvent(new Event('change')); }})()""")
+    _idle(live)
+    live.settle(0.3)
+    out = live.evaluate(f"""(() => ({{long: window.__long, pos: {H}.cam().getPosition().slice(),
+                                      up: {H}.cam().getViewUp().slice()}}))()""")
+    assert max(out["long"], default=0) < 200, out["long"]
+    assert all(math.isfinite(v) for v in out["pos"] + out["up"]), out
 
-    tools = live.evaluate(f"""(() => {{
-      const r = {root}, p = (t) => r.querySelector('[data-nav=' + t + ']').getAttribute('aria-pressed');
-      r.querySelector('[data-nav=pan]').click();
-      const pan = {{pan: p('pan'), orbit: p('orbit'), tool: {H}.nav().tool()}};
-      r.querySelector('[data-nav=orbit]').click();
-      r.querySelector('[data-nav=section]').click();
-      const sec = {{on: {H}.nav().section(), panel: !r.querySelector('.nav-section').hidden}};
-      r.querySelector('[data-nav=section]').click();
-      return {{pan, sec, off: {H}.nav().section()}};
-    }})()""")
-    assert tools["pan"] == {"pan": "true", "orbit": "false", "tool": "pan"}, tools
-    assert tools["sec"] == {"on": True, "panel": True} and tools["off"] is False, tools
 
-    # a real click on the middle of the part selects it; a click on empty canvas clears it
-    cx, cy, ex, ey = live.evaluate(f"""(() => {{
-      const r = {root}.getBoundingClientRect();
+def test_a_click_selects_the_part_a_second_click_lets_it_go(live):
+    _open(live)
+    cx, cy, ex, ey = live.evaluate(f"""(() => {{ const r = {ROOT}.getBoundingClientRect();
       return [r.left + r.width / 2, r.top + r.height / 2, r.left + 30, r.top + r.height - 30]; }})()""")
 
     def click(x, y):
@@ -107,17 +121,18 @@ def test_tools_section_and_a_click_that_selects_the_part(live):
 
     click(cx, cy)
     assert live.evaluate(f"{H}.picked()") is True
+    click(cx, cy)
+    assert live.evaluate(f"{H}.picked()") is False, "a second click on the part lets it go"
+    click(cx, cy)
     click(ex, ey)
-    assert live.evaluate(f"{H}.picked()") is False
-    assert_clean(live, "the toolbar, the section and selection")
+    assert live.evaluate(f"{H}.picked()") is False, "a click on empty space lets it go"
+    assert_clean(live, "selecting the part")
 
 
 def test_two_fingers_pinch_to_zoom(live):
-    check = _check()
-    check["proposal"]["flow"] = "internal"
-    _open_stage(live, check)
+    _open(live)
     out = live.evaluate(f"""(async () => {{
-      const host = document.getElementById('gs-canvas-{SESSION}'), r = host.getBoundingClientRect();
+      const host = {ROOT}, r = host.getBoundingClientRect();
       const cam = {H}.cam(), dist = () => {{ const f = cam.getFocalPoint(), p = cam.getPosition();
         return Math.hypot(p[0] - f[0], p[1] - f[1], p[2] - f[2]); }};
       const cx = r.left + r.width / 2, cy = r.top + r.height / 2, ev = (t, id, x) =>

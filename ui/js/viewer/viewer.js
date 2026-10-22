@@ -18,7 +18,7 @@ import { acceptMesh, flagDispute } from "./dispute.js";
 import { VIEWER_FALLBACK } from "./config.js";
 import { roundNumbers } from "../render/outcome.js";
 import { MOUSE_HINT, isUpAxis, orient, saveUp, savedUp, shield, upSelectHtml, upVector } from "./view_controls.js";
-import { SCENE_BG, SELECT_OPACITY, SELECT_TINT, attachNav } from "./nav.js";
+import { HOVER_LIFT, PART_GREY, SCENE_BG, SELECT_OPACITY, SELECT_TINT, attachNav } from "./nav.js";
 // a delivered thermal model (an ECXML upload) is read part by part, with slices and its own files
 import { bindThermalResults, sliceColour, thermalDownloads, thermalResultsHtml } from "./thermal_results.js";
 // a delivered FEA mesh (a structural solid) is read face by face, with its quality against each
@@ -43,9 +43,10 @@ function b64u32(b){return new Uint32Array(b64u8(b).buffer);}
 
 /* geometry fills: a warm drawing-office grey, each patch a step of tint so the parts read
    apart without shouting; the ORANGE selection is never ambiguous against any of them */
-const _PATCH_COLS=[[0.74,0.74,0.75],[0.67,0.70,0.72],[0.76,0.73,0.68],
-                   [0.70,0.70,0.70],[0.66,0.68,0.72],[0.73,0.70,0.67]];
-const _EDGE=[0.45,0.46,0.48];          /* hairline edges at rest */
+/* the parts: the matte steel grey of a CAD part (viewer/nav.js), each patch a shade apart */
+const _PATCH_COLS=[PART_GREY,[0.44,0.47,0.50],[0.51,0.50,0.47],
+                   [0.46,0.46,0.47],[0.43,0.46,0.49],[0.50,0.48,0.46]];
+const _EDGE=[0.25,0.26,0.28];          /* hairline edges at rest */
 /* darker while the faces carry colour, so every cell still reads against the data (the original
    heatmap's edge, lightened with the calm end of its scale so a whole part does not read dark) */
 const _EDGE_HEAT=[0.24,0.23,0.22];
@@ -260,6 +261,8 @@ function initViewer(job,surf,uiCfg){
     totalFaces+=nCells;});
 
   let edgeCol=_EDGE;             // what paint() draws edges with; the heatmap darkens it
+  // the patch under the pointer, drawn a little lighter (set by the navigation's hover)
+  let _hoverPatch=null,repaintHover=null;
   // A DELIVERED THERMAL MODEL: its parts table shows one part alone through the parts panel
   // (partsApi), and a ready-made slice replaces the surfaces while it is on (sliceOn)
   const thermal=surf.thermal||null;
@@ -468,7 +471,8 @@ function initViewer(job,surf,uiCfg){
         pr.setOpacity(isSel?Math.min(s.opacity,SELECT_OPACITY):s.opacity);
         if(isSel){pr.setColor(_SEL[0],_SEL[1],_SEL[2]);
                   pr.setEdgeColor(_SEL_EDGE[0],_SEL_EDGE[1],_SEL_EDGE[2]);pr.setAmbient(0.40);}
-        else{pr.setColor(s.base[0],s.base[1],s.base[2]);
+        else{const k=en.patch===_hoverPatch?HOVER_LIFT:1;
+             pr.setColor(Math.min(1,s.base[0]*k),Math.min(1,s.base[1]*k),Math.min(1,s.base[2]*k));
              pr.setEdgeColor(edgeCol[0],edgeCol[1],edgeCol[2]);pr.setAmbient(0.30);}
       });
       rw.render();
@@ -484,6 +488,12 @@ function initViewer(job,surf,uiCfg){
       if(onPartsPainted)onPartsPainted();
     }
     repaintParts=paint;
+    // hover only recolours: the inspector beside the mesh is left as it is
+    repaintHover=()=>{const selPart=sel?parts.find(x=>x.id===sel):null;
+      entries.forEach(en=>{const p=parts.find(x=>x.renderable&&x.entity===en.patch);const s=p?st[p.id]:null;
+        if(!s||(selPart&&selPart.entity===en.patch))return;const k=en.patch===_hoverPatch?HOVER_LIFT:1;
+        en.actor.getProperty().setColor(Math.min(1,s.base[0]*k),Math.min(1,s.base[1]*k),Math.min(1,s.base[2]*k));});
+      rw.render();};
 
     // INSPECT - one part at a time: its OpenFOAM identity, its own statistics,
     // and the controls that apply to IT. Nothing is on screen for a part the
@@ -571,7 +581,8 @@ function initViewer(job,surf,uiCfg){
       if(Math.hypot(e.clientX-_down[0],e.clientY-_down[1])>6)return;
       pickPart(e,en=>{
         const p=en?parts.find(x=>x.renderable&&x.entity===en.patch):null;
-        const next=p?p.id:null;
+        // a second click on the selected part lets it go, as a click on empty space does
+        const next=p&&p.id!==sel?p.id:null;
         if(next===sel)return;
         sel=next;if(!sel)isolated=false;paint();});},true);
 
@@ -724,8 +735,13 @@ function initViewer(job,surf,uiCfg){
 
   /* pin badges track their 3-D anchors every frame (stops when the viewer
      panel is removed from the document) */
+  // the marks follow the camera and only the camera: an idle viewer does no work per frame
+  let _badgeSig='';
   (function badgeLoop(){
     if(!document.body.contains(host))return;
+    {const sz=apiRW.getSize();let w=0;flags.forEach(f=>{w+=f.x+2*f.y+3*f.z;});
+     const sig=`${cam.getMTime()}|${sz[0]}x${sz[1]}|${flags.length}|${w}|${sizeEl.value}`;
+     if(sig===_badgeSig){requestAnimationFrame(badgeLoop);return;}_badgeSig=sig;}
     const rr=worldR();
     if(!_lastR||Math.abs(rr-_lastR)>_lastR*0.02){_lastR=rr;sizeLbl.textContent=fmtR(rr);}
     const size=apiRW.getSize(),aspect=size[0]/size[1];
@@ -817,17 +833,19 @@ function initViewer(job,surf,uiCfg){
   clampCam();                    // opening view = closest allowed to Fit
   rw.render();
 
-  /* THE NAVIGATION: the ViewCube, the toolbar, eased view changes, the contact shadow, and a
-     lighter picture while the camera moves - cell lines off on a big mesh, fewer pixels - with
-     full detail the moment it stops (viewer/nav.js). Fit keeps the direction; Home is the
-     opening view. */
+  /* THE NAVIGATION: the ViewCube, eased view changes, hover, and a lighter picture while the
+     camera moves - cell lines off on a big mesh, fewer pixels - with full detail the moment it
+     stops (viewer/nav.js). Fit keeps the direction; Home is the opening view. */
   const _bigMesh=totalFaces>250000;
   nav=attachNav({host,grw,ren,rw,cam,upAxis:()=>(upSel&&upSel.value)||'+z',
     frame:()=>{_clamping=true;try{ren.resetCamera();}finally{_clamping=false;}clampCam();},
     home:()=>{orient(cam,(upSel&&upSel.value)||'+z',VIEW_DIR);
       _clamping=true;try{ren.resetCamera();}finally{_clamping=false;}clampCam();},
-    afterMove:clampCam,surfaces:()=>entries.map(en=>en.actor),
-    fitButton:document.getElementById('v-fitbtn-'+job),shadow:!thermal,
+    afterMove:clampCam,
+    // lighter under the pointer - not while the heatmap colours the faces
+    onHover:prop=>{const en=prop&&!activeMetric?entries.find(t=>t.actor===prop):null;
+      const nx=en?en.patch:null;if(nx===_hoverPatch)return;_hoverPatch=nx;if(repaintHover)repaintHover();},
+    fitButton:document.getElementById('v-fitbtn-'+job),
     onMotion:moving=>{const l=moving?Math.min(1,1/_DPR):1;if(l!==_lod){_lod=l;setRenderScale();}
       if(_bigMesh)entries.forEach(en=>en.actor.getProperty().setEdgeVisibility(!moving));}});
   nav.setHome();

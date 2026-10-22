@@ -27,7 +27,7 @@ import { bindFeaPanel, bindMeasure, feaPanelHtml, followMeasure, lightSpotRow } 
 import { bindThermalPanel, partDetails, thermalPanelHtml, watts } from "../render/thermal_form.js";
 import { circleThrough, clickIndex, firstHit, snapAt } from "./open_ends.js";
 import { bindMouse, isUpAxis, orient, saveUp, savedUp, shield, upSelectHtml, upVector } from "./view_controls.js";
-import { SCENE_BG, SELECT_OPACITY, SELECT_TINT, attachNav } from "./nav.js";
+import { HOVER_LIFT, PART_GREY, SCENE_BG, SELECT_OPACITY, SELECT_TINT, attachNav } from "./nav.js";
 
 let _vtkP = null;
 export function loadVtk() {
@@ -50,7 +50,7 @@ export function b64u32(b) { return new Uint32Array(b64bytes(b).buffer); }
    orange, which nothing else on the stage wears; a selected part is light blue and see-through */
 const BACKGROUND = SCENE_BG;
 /* a matte mid grey part and quiet hairlines, the way a CAD viewer draws it */
-const BODY = [0.68, 0.685, 0.70], EDGE = [0.32, 0.33, 0.35];
+const BODY = PART_GREY, EDGE = [0.22, 0.23, 0.25];
 /* a thermal model keeps the console's dark stage and its own parts' colours */
 const THERMAL_BG = [0.035, 0.055, 0.075];
 const THERMAL_BODY = [0.74, 0.78, 0.84], THERMAL_EDGE = [0.30, 0.34, 0.40];
@@ -373,7 +373,7 @@ function initScene(sessionId, box, surf, p) {
     const col = Array.isArray(pt.color) && pt.color.length === 3 ? pt.color : BODY;
     pr.setColor(col[0], col[1], col[2]); pr.setEdgeVisibility(false);
     pr.setInterpolationToPhong();
-    pr.setAmbient(0.22); pr.setDiffuse(0.72); pr.setSpecular(0.05); pr.setSpecularPower(14);
+    pr.setAmbient(0.16); pr.setDiffuse(0.86); pr.setSpecular(0.10); pr.setSpecularPower(18);
     ren.addActor(actor);
     skins.push({ actor, pd, pts, polys, col });
   });
@@ -431,13 +431,13 @@ function initScene(sessionId, box, surf, p) {
   const tools = box.querySelector(".v-tools");
   shield(tools);
   if (upSel) upSel.onchange = () => { upAxis = upSel.value; saveUp("session", sessionId, upAxis); iso(); };
-  /* THE NAVIGATION: the ViewCube, the toolbar, eased view changes, the contact shadow and the
-     lighter drawing while the part turns (viewer/nav.js). Fit keeps the direction; Home is the
-     opening three-quarter view. */
+  /* THE NAVIGATION: the ViewCube, eased view changes, hover, and the lighter drawing while the part
+     turns (viewer/nav.js). Fit keeps the direction; Home is the opening three-quarter view. */
   const fitBtn = box.querySelector("#gs-fit-" + sessionId);
   const bigSkin = skins.reduce((n, sk) => n + sk.pd.getNumberOfCells(), 0) > 400000;
   const nav = attachNav({ host, grw, ren, rw, cam, upAxis: () => upAxis, frame: fit, home: iso,
-    surfaces: () => skins.map((sk) => sk.actor).concat(edgeActor ? [edgeActor] : []), fitButton: fitBtn, shadow: true,
+    fitButton: fitBtn,
+    onHover: (prop) => { hoverOn = !!prop && skins.some((sk) => sk.actor === prop); paintPart(); },
     onMotion: (moving) => {
       const l = moving ? Math.min(1, 1 / DPR) : 1; if (l !== lod) { lod = l; setRenderScale(); }
       if (edgeActor && bigSkin) edgeActor.setVisibility(!moving);
@@ -445,15 +445,17 @@ function initScene(sessionId, box, surf, p) {
   nav.setHome();
   if (upSel) upSel.onchange = () => { upAxis = upSel.value; saveUp("session", sessionId, upAxis); iso(); nav.rebuild(); };
 
-  /* A CLICK ON THE PART SELECTS IT: a light blue, see-through, so its holes and inner edges show.
-     A click on empty space clears it. Adding an opening or measuring keeps its own clicks. */
-  let picked = false;
-  function pick(on) {
-    picked = !!on;
-    skins.forEach((sk) => { const pr = sk.actor.getProperty(), c = on ? SELECT_TINT : sk.col;
-      pr.setColor(c[0], c[1], c[2]); pr.setOpacity(on ? SELECT_OPACITY : 1); });
+  /* THE PART UNDER THE POINTER is a little lighter. A CLICK ON IT SELECTS IT - a light blue,
+     see-through, so its holes and inner edges show - and a second click, or a click on empty space,
+     lets it go. Adding an opening or measuring keeps its own clicks. */
+  let picked = false, hoverOn = false;
+  function paintPart() {
+    skins.forEach((sk) => { const pr = sk.actor.getProperty();
+      const c = picked ? SELECT_TINT : hoverOn ? sk.col.map((v) => Math.min(1, v * HOVER_LIFT)) : sk.col;
+      pr.setColor(c[0], c[1], c[2]); pr.setOpacity(picked ? SELECT_OPACITY : 1); });
     rw.render();
   }
+  function pick(on) { picked = !!on; paintPart(); }
 
   /* THE STICKERS - a ball on every opening, at the position the check measured, and an HTML pin
      with its number that follows it every frame. The pin is the thing to click: it is never
@@ -729,7 +731,8 @@ function initScene(sessionId, box, surf, p) {
     if (e.target && e.target.closest && e.target.closest(".gc-pin,.v-tools,.nav-ui")) return;
     if (Math.hypot(e.clientX - downXY[0], e.clientY - downXY[1]) > 6) return;
     if (!(addMode || measuring)) {
-      pick(!!snapAt({ ...clicksNow(), holes: [] }, rayAt(e.clientX, e.clientY)).hit);
+      const hit = !!snapAt({ ...clicksNow(), holes: [] }, rayAt(e.clientX, e.clientY)).hit;
+      pick(hit && !picked);
       return;
     }
     if (measuring) measureAt(e.clientX, e.clientY);
@@ -934,12 +937,24 @@ function initScene(sessionId, box, surf, p) {
   }
 
   let alive = true;
+  /* THE PINS FOLLOW THE CAMERA - and only the camera. The loop looks every frame but moves the
+     pins, the tags and the axes only when something they depend on changed: the camera, the
+     canvas size, the pins themselves or the measurement. An idle stage used to re-place every pin
+     and re-measure the page sixty times a second. */
+  let pinSig = "";
   (function pinLoop() {
     if (!alive || !document.body.contains(host)) return;
-    drawAxes();
-    const size = apiRW.getSize(), aspect = size[0] / size[1], rect = host.getBoundingClientRect();
-    const cp = cam.getPosition();
+    const size = apiRW.getSize();
     const externalNow = (form.querySelector(".gc-flow") || {}).value === "external";
+    let where = 0;
+    pins.forEach((pn) => { where += pn.o.c[0] + 2 * pn.o.c[1] + 3 * pn.o.c[2]; });
+    spots.forEach((sp) => { where += sp.c[0] - sp.c[1] + sp.c[2]; });
+    const sig = `${cam.getMTime()}|${size[0]}x${size[1]}|${pins.length}|${spots.length}|${where}|${externalNow}|${measurePts.length}|${!!measureLabel}`;
+    if (sig === pinSig) { requestAnimationFrame(pinLoop); return; }
+    pinSig = sig;
+    drawAxes();
+    const aspect = size[0] / size[1], rect = host.getBoundingClientRect();
+    const cp = cam.getPosition();
     pins.forEach((pn) => {
       if (externalNow) { pn.el.style.display = "none"; return; }
       const [x, y, z] = pn.o.c;
@@ -978,7 +993,7 @@ function initScene(sessionId, box, surf, p) {
     camera: () => cam.getPosition(), cam: () => cam, edges: () => edgeCount, axes: () => { drawAxes(); return axesNow; },
     smooth: () => skins.some((s) => !!s.pd.getPointData().getNormals()),
     upAxis: () => upAxis, setUp: (a) => { if (upSel) { upSel.value = a; upSel.onchange(); } },
-    render: () => rw.render(), nav: () => nav, picked: () => picked,
+    render: () => rw.render(), nav: () => nav, picked: () => picked, hovered: () => hoverOn,
   };
   return {
     stop: () => { alive = false; ro.disconnect(); nav.destroy(); clearDecor(); clearMeasure(); document.removeEventListener("keydown", onKey); delete window._vdbg["gstage:" + sessionId]; },

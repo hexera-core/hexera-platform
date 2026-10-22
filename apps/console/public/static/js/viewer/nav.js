@@ -1,13 +1,16 @@
 // Responsibility: How every 3D view here is moved and framed - the camera controller (orbit, pan, zoom,
-// damping, zoom toward the cursor, touch), the animated view changes, the ViewCube, the bottom toolbar,
-// the section plane, the light scene (background and contact shadow) and the lighter drawing while moving.
+// damping, zoom toward the cursor, touch), the animated view changes, the ViewCube, hover and the
+// lighter drawing while moving.
 // Boundaries: it moves a camera and draws its own controls; it knows nothing about meshes, stickers or
 // heatmaps. A view hands it what it needs (the renderer, its surfaces, how to frame) and keeps the rest.
 
 import { upVector } from "./view_controls.js";
 
-/* THE SCENE: a soft light grey, the way a CAD viewer shows a part */
-export const SCENE_BG = [0.925, 0.925, 0.93];
+/* THE SCENE: the console's own dark canvas, as it always was */
+export const SCENE_BG = [0.035, 0.055, 0.075];
+/* A PART: a matte mid steel grey, a little lighter under the pointer */
+export const PART_GREY = [0.478, 0.49, 0.502];
+export const HOVER_LIFT = 1.16;
 /* A SELECTED PART: a light blue, see-through, so its holes and inner edges show */
 export const SELECT_TINT = [0.62, 0.74, 0.98];
 export const SELECT_OPACITY = 0.55;
@@ -83,11 +86,6 @@ const m3d = (cols, t) => `matrix3d(${cols[0][0]},${cols[0][1]},${cols[0][2]},0,$
 
 const ICON = {
   home: '<path d="M4 11.5 12 5l8 6.5"/><path d="M6.5 10v8.5h11V10"/><path d="M10.5 18.5v-4.5h3v4.5"/>',
-  fit: '<path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/><circle cx="12" cy="12" r="1.6"/>',
-  pan: '<path d="M12 3v18M3 12h18"/><path d="M9.5 5.5 12 3l2.5 2.5M9.5 18.5 12 21l2.5-2.5M5.5 9.5 3 12l2.5 2.5M18.5 9.5 21 12l-2.5 2.5"/>',
-  zoom: '<circle cx="10.5" cy="10.5" r="5.5"/><path d="m15 15 5 5"/>',
-  orbit: '<path d="M19 12a7 7 0 1 1-2.1-5"/><path d="M17.5 3.5 17 7l-3.5-.5"/>',
-  section: '<path d="M4 8.5 12 4l8 4.5v7L12 20l-8-4.5z"/><path d="M4 8.5l8 4.5 8-4.5M12 13v7"/><path d="M2.5 13.5h19" stroke-dasharray="2 2"/>',
 };
 const svg = (name) => `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">${ICON[name]}</svg>`;
 
@@ -98,23 +96,26 @@ const svg = (name) => `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="fa
  *      upAxis: () => "+z" | ...,           which axis of the part points up
  *      frame: () => void,                  frame the part INSTANTLY, keeping the direction
  *      home: () => void,                   the opening view, INSTANTLY
- *      surfaces: () => [vtkActor],         what the section cuts and the shadow sits under
  *      afterMove: () => void,              the view's own clamp, after every move
  *      onMotion: (moving) => void,         lighter drawing while the camera moves, full when still
- *      fitButton, toolbar, cube, shadow, section: booleans / element }
+ *      onHover: (actor | null) => void,    the surface under a still pointer, to light it
+ *      fitButton: the view's own Fit button, cube: boolean }
  */
 export function attachNav(o) {
   const { host, ren, rw, cam } = o;
   const inter = o.grw && o.grw.getInteractor ? o.grw.getInteractor() : null;
-  // the controller below owns the pointer: vtk's own style would turn the camera a second time
+  // THE CONTROLLER BELOW OWNS THE POINTER. vtk's interactor is unhooked from the page entirely, not
+  // just left without a style: it still captured every press on the canvas container, so a real
+  // click on the ViewCube ended on the container and never reached the cube.
   if (inter && inter.setInteractorStyle) { try { inter.setInteractorStyle(null); } catch { /* older vtk */ } }
+  if (inter && inter.unbindEvents) { try { inter.unbindEvents(); } catch { /* not bound */ } }
   host.classList.add("nav-host");
   host.style.touchAction = "none";
 
   /* ------------------------------------------------------------ drawing on demand ---- */
   let dirty = false, raf = 0, moving = false, idleTimer = 0, alive = true;
   const listeners = [];
-  function after() { if (o.afterMove) o.afterMove(); ren.resetCameraClippingRange(); if (groundRen) groundRen.resetCameraClippingRange(); }
+  function after() { if (o.afterMove) o.afterMove(); ren.resetCameraClippingRange(); }
   function motion() {
     if (!moving) { moving = true; if (o.onMotion) o.onMotion(true); }
     clearTimeout(idleTimer);
@@ -134,12 +135,21 @@ export function attachNav(o) {
 
   /* ------------------------------------------------------------------ the camera ---- */
   const up = () => upVector(o.upAxis ? o.upAxis() : "+z");
+  /* THE CAMERA'S FRAME, never degenerate: a view-up lying along the view direction (looking
+     straight along the part's up axis, say) gives no right-hand vector, and every move after it
+     turned the camera into NaNs. A safe axis stands in. */
   function basis() {
     const f = cam.getFocalPoint(), p = cam.getPosition();
-    const b = unit(sub(p, f)), u0 = cam.getViewUp(), r = unit(cross(u0, b)), u = cross(b, r);
-    return { f, p, b, u, r, d: len(sub(p, f)) };
+    const b = unit(sub(p, f)), u0 = cam.getViewUp();
+    let r = cross(u0, b);
+    if (len(r) < 1e-6) r = cross(Math.abs(b[2]) < 0.9 ? [0, 0, 1] : [0, 1, 0], b);
+    r = unit(r);
+    return { f, p, b, u: cross(b, r), r, d: len(sub(p, f)) || 1 };
   }
+  const finite = (...vs) => vs.every((v) => v.every(Number.isFinite));
   function place(f, b, u, d) {
+    // a NaN or a zero distance is never handed to the camera: the view stays where it was
+    if (!finite(f, b, u) || !(d > 0) || !Number.isFinite(d) || len(b) < 0.5 || len(u) < 0.5) return;
     cam.setFocalPoint(f[0], f[1], f[2]);
     cam.setPosition(f[0] + b[0] * d, f[1] + b[1] * d, f[2] + b[2] * d);
     cam.setViewUp(u[0], u[1], u[2]);
@@ -180,7 +190,8 @@ export function attachNav(o) {
   let anim = null;
   /** Turn and glide to a view {focal, position, up} over about three quarters of a second. */
   function animateTo(to, ms = ANIM_MS) {
-    stopSpin();
+    stopSpin(); zoomLeft = 0;
+    stopAnim();                 // a turn started over another ends the earlier one cleanly
     const from = basis();
     const tb = unit(sub(to.position, to.focal)), tr = unit(cross(to.up, tb)), tu = cross(tb, tr);
     const td = len(sub(to.position, to.focal));
@@ -190,7 +201,8 @@ export function attachNav(o) {
     return new Promise((res) => { anim.done = res; draw(); });
   }
   function stepAnim(t) {
-    const a = anim, k = Math.min(1, (t - a.t0) / a.ms), e = ease(k);
+    // timed by the clock, never by frames: a tab in the background still lands on time
+    const a = anim, k = Math.min(1, Math.max(0, (performance.now() - a.t0) / a.ms)), e = ease(k);
     const c = quatCols(slerp(a.qa, a.qb, e));
     const d = a.da * Math.pow(a.db / a.da, e);
     place(lerp(a.fa, a.fb, e), unit(c[2]), unit(c[1]), d);
@@ -219,19 +231,21 @@ export function attachNav(o) {
   }
 
   /* -------------------------------------------------------------- the pointer ---- */
-  let tool = "orbit";
   const pts = new Map();
   let drag = null, spin = null, pinch = null, zoomLeft = 0, zoomAtXY = [0, 0];
   const hist = [];
   function stopSpin() { spin = null; }
   function stepSpin(t) {
-    const dt = Math.min(48, t - (spin.t || t)); spin.t = t;
+    const dt = Math.min(48, Math.max(0, t - (spin.t || t))); spin.t = t;
+    spin.left = (spin.left ?? 2500) - dt;          // a released turn settles within a few seconds
+    if (spin.left <= 0) { spin = null; return false; }
     spin.vx *= Math.exp(-dt / INERTIA_DECAY_MS); spin.vy *= Math.exp(-dt / INERTIA_DECAY_MS);
     if (Math.abs(spin.vx) + Math.abs(spin.vy) < 0.002) { spin = null; return false; }
     orbit(spin.vx * dt, spin.vy * dt);
     return true;
   }
   function stepZoom() {
+    if (!Number.isFinite(zoomLeft)) { zoomLeft = 0; return false; }
     const part = zoomLeft * 0.28;
     zoomAt(Math.pow(ZOOM_STEP, -part), zoomAtXY[0], zoomAtXY[1]);
     zoomLeft -= part;
@@ -249,7 +263,7 @@ export function attachNav(o) {
       pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), m: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] };
       drag = null; return;
     }
-    const mode = e.button === 2 || e.button === 1 || e.shiftKey ? "pan" : tool;
+    const mode = e.button === 2 || e.button === 1 || e.shiftKey ? "pan" : "orbit";
     drag = { mode, x: e.clientX, y: e.clientY };
     hist.length = 0; hist.push([performance.now(), 0, 0]);
   }
@@ -295,11 +309,39 @@ export function attachNav(o) {
     e.preventDefault();
     stopAnim(); stopSpin();
     const k = e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 400 : 1;
-    zoomLeft += Math.max(-400, Math.min(400, e.deltaY * k));
+    const dy = Number.isFinite(e.deltaY) ? e.deltaY : 0;
+    zoomLeft = Math.max(-1200, Math.min(1200, zoomLeft + Math.max(-400, Math.min(400, dy * k))));
     zoomAtXY = [e.clientX, e.clientY];
     draw();
   }
+  /* HOVER: the surface under a still pointer, read by the GPU (one read in flight, at most one a
+     frame), handed to the view to light it a little. Nothing is read while a button is down. */
+  const apiRW = o.grw && o.grw.getApiSpecificRenderWindow ? o.grw.getApiSpecificRenderWindow() : null;
+  const selector = o.onHover && apiRW && apiRW.getSelector ? apiRW.getSelector() : null;
+  let hoverBusy = false, hoverAt = null, hoverRaf = 0, hovered = null;
+  function hoverRead() {
+    hoverRaf = 0;
+    if (!selector || hoverBusy || !hoverAt || drag || pts.size || anim || spin) return;
+    const [cx, cy] = hoverAt; hoverAt = null;
+    const r = host.getBoundingClientRect(), size = apiRW.getSize();
+    const x = Math.round((cx - r.left) * (size[0] / r.width)), y = Math.round((r.height - (cy - r.top)) * (size[1] / r.height));
+    hoverBusy = true;
+    selector.getSourceDataAsync(ren, x, y, x, y).then((src) => {
+      const sel = src ? src.generateSelection(x, y, x, y) : null;
+      const prop = sel && sel.length ? sel[0].getProperties().prop || null : null;
+      if (prop !== hovered) { hovered = prop; o.onHover(prop); }
+    }).catch(() => {}).finally(() => { hoverBusy = false; if (hoverAt && !hoverRaf) hoverRaf = requestAnimationFrame(hoverRead); });
+  }
+  function hoverMove(e) {
+    if (!selector || e.pointerType === "touch") return;
+    if (e.buttons || onControls(e)) { if (hovered) { hovered = null; o.onHover(null); } return; }
+    hoverAt = [e.clientX, e.clientY];
+    if (!hoverRaf) hoverRaf = requestAnimationFrame(hoverRead);
+  }
+  function hoverOut() { hoverAt = null; if (hovered) { hovered = null; o.onHover(null); } }
   const on = (el, t, fn, opts) => { el.addEventListener(t, fn, opts); listeners.push([el, t, fn, opts]); };
+  on(host, "pointermove", hoverMove);
+  on(host, "pointerleave", hoverOut);
   on(host, "pointerdown", down);
   on(host, "pointermove", move);
   on(host, "pointerup", up_);
@@ -327,6 +369,11 @@ export function attachNav(o) {
         <button type="button" class="nav-roll cw" data-roll="1" aria-label="Roll the view 90 degrees clockwise"><svg viewBox="0 0 24 24"><path d="M5 13a7 7 0 0 1 12.5-4.3"/><path d="M19 4.5v4.5h-4.5"/></svg></button>
       </div>`;
     cubeBody = cubeEl.querySelector(".nav-cube-body");
+    // one listener each for the whole cube, not three on every one of its 54 cells
+    cubeBody.addEventListener("pointerover", (e) => { const c = e.target.closest(".nav-cell"); hover(c ? c.dataset.dir : null); });
+    cubeBody.addEventListener("pointerleave", () => hover(null));
+    cubeBody.addEventListener("click", (e) => { const c = e.target.closest(".nav-cell");
+      if (c) goDir(c.dataset.dir.split(",").map(Number)); });
     arrowsEl = cubeEl.querySelector(".nav-arrows");
     cubeEl.querySelector(".nav-home").onclick = () => home();
     arrowsEl.querySelectorAll("[data-step]").forEach((b) => { b.onclick = () => step(b.dataset.step); });
@@ -347,9 +394,6 @@ export function attachNav(o) {
         const c = document.createElement("div");
         c.className = "nav-cell" + (i || j ? (i && j ? " corner" : " edge") : " centre");
         c.dataset.dir = keyOf(dir);
-        c.addEventListener("pointerenter", () => hover(c.dataset.dir));
-        c.addEventListener("pointerleave", () => hover(null));
-        c.addEventListener("click", () => goDir(dir));
         face.appendChild(c); cells.push(c);
       }
       const t = document.createElement("span"); t.className = "nav-label"; t.textContent = label;
@@ -395,169 +439,22 @@ export function attachNav(o) {
     return lookFrom(axisSnap(b), axisSnap(sign > 0 ? mul(r, -1) : r));
   }
 
-  /* ------------------------------------------------------------------ the toolbar ---- */
-  let barEl = null, secEl = null;
-  function buildBar() {
-    barEl = document.createElement("div");
-    barEl.className = "nav-ui nav-bar";
-    barEl.setAttribute("role", "toolbar"); barEl.setAttribute("aria-label", "View");
-    const btn = (id, label, extra = "") => `<button type="button" class="nav-btn" data-nav="${id}" ${extra}>${svg(id)}<span>${label}</span></button>`;
-    barEl.innerHTML = btn("home", "Home") + '<span class="nav-fit-slot"></span>'
-      + btn("pan", "Pan", 'aria-pressed="false"') + btn("zoom", "Zoom", 'aria-pressed="false"')
-      + btn("orbit", "Orbit", 'aria-pressed="true"')
-      + (o.section !== false ? btn("section", "Section", 'aria-pressed="false"') : "");
-    // THE FIT BUTTON IS THE VIEW'S OWN, moved here: its id and its listeners stay as they were
-    const slot = barEl.querySelector(".nav-fit-slot");
-    let fb = o.fitButton;
-    if (!fb) { fb = document.createElement("button"); fb.type = "button"; }
-    fb.className = "nav-btn"; fb.dataset.nav = "fit"; fb.removeAttribute("title");
-    fb.innerHTML = `${svg("fit")}<span>Fit</span>`; fb.setAttribute("aria-label", "Fit the part to the view");
-    fb.onclick = () => fit();
-    slot.replaceWith(fb);
-    barEl.querySelector('[data-nav="home"]').onclick = () => home();
-    ["pan", "zoom", "orbit"].forEach((t) => { barEl.querySelector(`[data-nav="${t}"]`).onclick = () => setTool(t); });
-    const sb = barEl.querySelector('[data-nav="section"]');
-    if (sb) sb.onclick = () => setSection(!section);
-    host.appendChild(barEl);
-  }
-  function setTool(t) {
-    tool = t;
-    if (barEl) ["pan", "zoom", "orbit"].forEach((k) => {
-      const b = barEl.querySelector(`[data-nav="${k}"]`); if (b) b.setAttribute("aria-pressed", String(k === t)); });
-  }
-
-  /* ------------------------------------------------------------------ the section ---- */
-  let section = false, plane = null, secAxis = 0, secAt = 0.5, secFlip = false;
-  function bounds() {
-    const b = [Infinity, -Infinity, Infinity, -Infinity, Infinity, -Infinity];
-    (o.surfaces ? o.surfaces() : []).forEach((a) => { if (!a.getVisibility()) return; const q = a.getBounds();
-      for (let i = 0; i < 6; i += 2) { b[i] = Math.min(b[i], q[i]); b[i + 1] = Math.max(b[i + 1], q[i + 1]); } });
-    return b[0] <= b[1] ? b : null;
-  }
-  function applySection() {
-    const acts = o.surfaces ? o.surfaces() : [];
-    acts.forEach((a) => { const m = a.getMapper(); if (m && m.removeAllClippingPlanes) m.removeAllClippingPlanes(); });
-    if (section && plane) acts.forEach((a) => { const m = a.getMapper(); if (m && m.addClippingPlane) m.addClippingPlane(plane); });
-    rw.render();
-  }
-  function placePlane() {
-    const b = bounds(); if (!b || !plane) return;
-    const n = [0, 0, 0]; n[secAxis] = secFlip ? 1 : -1;
-    const org = [(b[0] + b[1]) / 2, (b[2] + b[3]) / 2, (b[4] + b[5]) / 2];
-    org[secAxis] = b[secAxis * 2] + (b[secAxis * 2 + 1] - b[secAxis * 2]) * secAt;
-    plane.setNormal(...n); plane.setOrigin(...org);
-  }
-  function setSection(onNow) {
-    section = !!onNow;
-    if (section && !plane && window.vtk && vtk.Common.DataModel.vtkPlane) plane = vtk.Common.DataModel.vtkPlane.newInstance();
-    if (section) {
-      // the cut faces the viewer: along the axis the camera looks most nearly down
-      const bb = basis().b, a = bb.map(Math.abs);
-      secAxis = a.indexOf(Math.max(...a)); secFlip = bb[secAxis] < 0; secAt = 0.5;
-    }
-    if (barEl) { const sb = barEl.querySelector('[data-nav="section"]'); if (sb) sb.setAttribute("aria-pressed", String(section)); }
-    if (!secEl && section) {
-      secEl = document.createElement("div");
-      secEl.className = "nav-ui nav-section";
-      secEl.innerHTML = `<div class="nav-seg" role="group" aria-label="Cut across">${["X", "Y", "Z"].map((x, i) =>
-        `<button type="button" data-ax="${i}">${x}</button>`).join("")}</div>
-        <input type="range" min="0" max="1000" value="500" aria-label="Where the cut is">
-        <button type="button" class="nav-flip" aria-label="Show the other side">Flip</button>`;
-      secEl.querySelectorAll("[data-ax]").forEach((b) => { b.onclick = () => { secAxis = Number(b.dataset.ax); secAt = 0.5; syncSection(); }; });
-      const rng = secEl.querySelector("input");
-      rng.oninput = () => { secAt = Number(rng.value) / 1000; placePlane(); rw.render(); };
-      secEl.querySelector(".nav-flip").onclick = () => { secFlip = !secFlip; placePlane(); rw.render(); };
-      host.appendChild(secEl);
-    }
-    if (secEl) secEl.hidden = !section;
-    syncSection();
-  }
-  function syncSection() {
-    if (secEl) {
-      secEl.querySelectorAll("[data-ax]").forEach((b) => b.setAttribute("aria-pressed", String(Number(b.dataset.ax) === secAxis)));
-      secEl.querySelector("input").value = String(Math.round(secAt * 1000));
-    }
-    placePlane(); applySection();
-  }
-
-  /* ------------------------------------------------------------- the contact shadow ---- */
-  /* THE GROUND IS ITS OWN LAYER: a renderer drawn first, behind the part, sharing its camera. It
-     never widens a fit or the clipping range, and the part always sits on top of it. */
-  let shadow = null, groundRen = null, shadowAt = null;
-  function ground() {
-    if (groundRen || !window.vtk) return groundRen;
-    groundRen = vtk.Rendering.Core.vtkRenderer.newInstance({ background: o.background || SCENE_BG });
-    groundRen.setActiveCamera(cam);
-    if (groundRen.setInteractive) groundRen.setInteractive(false);
-    rw.removeRenderer(ren); rw.addRenderer(groundRen); rw.addRenderer(ren);
-    if (rw.setNumberOfLayers) rw.setNumberOfLayers(2);
-    groundRen.setLayer(0); ren.setLayer(1);
-    if (ren.setPreserveColorBuffer) ren.setPreserveColorBuffer(true);
-    return groundRen;
-  }
-  function buildShadow() {
-    if (shadow) { groundRen.removeActor(shadow); shadow = null; }
-    const b = bounds(); if (!b || !window.vtk) return;
-    const U = up(), ax = U.map(Math.abs).indexOf(1), lo = U[ax] > 0 ? b[ax * 2] : b[ax * 2 + 1];
-    const others = [0, 1, 2].filter((i) => i !== ax);
-    const c = [(b[0] + b[1]) / 2, (b[2] + b[3]) / 2, (b[4] + b[5]) / 2];
-    const span = Math.hypot(b[1] - b[0], b[3] - b[2], b[5] - b[4]) || 1;
-    c[ax] = lo - Math.sign(U[ax]) * span * 0.002;
-    const ex = others.map((i) => (b[i * 2 + 1] - b[i * 2]) / 2 * 1.55 + span * 0.05);
-    const RINGS = 18, SEG = 64, pts = [], col = [], polys = [];
-    for (let i = 0; i <= RINGS; i++) {
-      const t = i / RINGS, f = Math.min(1, Math.max(0, (1 - t) / 0.5)), alpha = Math.round(78 * f * f * (3 - 2 * f));
-      for (let j = 0; j < SEG; j++) {
-        const a = 2 * Math.PI * j / SEG, p = c.slice();
-        p[others[0]] += Math.cos(a) * ex[0] * t; p[others[1]] += Math.sin(a) * ex[1] * t;
-        pts.push(...p); col.push(28, 30, 36, alpha);
-      }
-    }
-    for (let i = 0; i < RINGS; i++) for (let j = 0; j < SEG; j++) {
-      const a = i * SEG + j, bq = i * SEG + (j + 1) % SEG;
-      polys.push(4, a, bq, bq + SEG, a + SEG);
-    }
-    const pd = vtk.Common.DataModel.vtkPolyData.newInstance();
-    pd.getPoints().setData(Float32Array.from(pts), 3);
-    pd.getPolys().setData(Uint32Array.from(polys));
-    pd.getPointData().setScalars(vtk.Common.Core.vtkDataArray.newInstance({ numberOfComponents: 4, values: Uint8Array.from(col), name: "shadow" }));
-    const mp = vtk.Rendering.Core.vtkMapper.newInstance(); mp.setInputData(pd);
-    if (mp.setColorModeToDirectScalars) mp.setColorModeToDirectScalars();
-    if (mp.setScalarModeToUsePointData) mp.setScalarModeToUsePointData();
-    shadow = vtk.Rendering.Core.vtkActor.newInstance(); shadow.setMapper(mp); shadow.setPickable(false);
-    const pr = shadow.getProperty(); pr.setLighting(false); pr.setOpacity(0.999);
-    if (pr.setBackfaceCulling) pr.setBackfaceCulling(false);
-    shadowAt = { centre: c, axis: ax, sign: Math.sign(U[ax]) };
-    ground().addActor(shadow);
-    groundRen.resetCameraClippingRange();
-  }
-  function syncShadow() {
-    if (!shadow) return;
-    const s = shadowAt, p = cam.getPosition();
-    // seen from below, the ground would hide the part's underside
-    shadow.setVisibility((p[s.axis] - s.centre[s.axis]) * s.sign > 0);
-  }
+  /* THE FIT BUTTON is the view's own: it stays where it is and now glides to the framing */
+  if (o.fitButton) o.fitButton.onclick = () => fit();
 
   /* ------------------------------------------------------------------------ build ---- */
-  if (o.toolbar !== false) buildBar();
   if (o.cube !== false) buildCube();
-  if (o.shadow) buildShadow();
-  const sub2 = cam.onModified ? cam.onModified(syncShadow) : null;
-  syncShadow();
 
   return {
-    animateTo, fit, home, setHome, lookFrom, goDir, step, roll, setTool, tool: () => tool,
-    setSection, section: () => section, orbit, pan, zoomAt, draw,
-    /** the part's up axis changed: the cube's labels and the shadow follow */
-    rebuild() { if (cubeBody) buildFaces(); if (o.shadow) buildShadow(); syncShadow(); setHome(); },
-    refreshShadow() { if (o.shadow) { buildShadow(); syncShadow(); } },
+    animateTo, fit, home, setHome, lookFrom, goDir, step, roll, orbit, pan, zoomAt, draw,
+    /** the part's up axis changed: the cube's labels follow */
+    rebuild() { if (cubeBody) buildFaces(); setHome(); },
     animating: () => !!anim || !!spin || !!zoomLeft,
     destroy() {
       alive = false; clearTimeout(idleTimer); if (raf) cancelAnimationFrame(raf);
       listeners.forEach(([el, t, fn, opts]) => el.removeEventListener(t, fn, opts));
-      [sub1, sub2].forEach((s) => s && s.unsubscribe && s.unsubscribe());
-      [cubeEl, barEl, secEl].forEach((el) => el && el.remove());
-      if (groundRen) { groundRen.removeAllViewProps && groundRen.removeAllViewProps(); }
+      if (sub1 && sub1.unsubscribe) sub1.unsubscribe();
+      if (cubeEl) cubeEl.remove();
     },
   };
 }
