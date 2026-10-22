@@ -1078,4 +1078,17 @@ th,td{border-color:var(--border)}
 @media(max-width:560px){
   .oc-facts{grid-template-columns:minmax(0,1fr)}
   .oc-fact dt{margin-top:4px}
+/* ---------------------------------------------------------------- polish ---- */
+/* the run header holds a sub-line only when it has something the live line does not say */
+.proc-sub:empty{display:none}
+.proc-sub:empty+.proc-clock{margin-left:auto}
+.proc-title{white-space:nowrap}
+.v-bar b.v-title{white-space:nowrap}
+/* a narrow screen: the live line keeps its mark, words, time and toggle on one row, the words wrap */
+@media(max-width:560px){
+  .gp-head{flex-wrap:nowrap;align-items:flex-start}
+  .gp-now{flex:1 1 0;min-width:0}
+  .gp-time,.gp-toggle{flex:none}
+  .proc-head{flex-wrap:wrap}
+  #empty{padding-top:10vh}
 }

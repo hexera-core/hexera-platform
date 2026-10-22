@@ -108,15 +108,16 @@ export const Stage = {
     const thermal=b.check_mode==='thermal'&&b.job_sheet;
     const ROWS=thermal?[['engine','Engine'],['mesh_fidelity','Detail level'],['label','Case']]
       :[['purpose','Purpose'],['engine','Engine'],['input_kind','Input'],
-        ['dimensionality','Dimensionality'],['mesh_fidelity','Mesh detail preference'],
+        ['dimensionality','Dimensions'],['mesh_fidelity','Detail level'],
         ['label','Case']];
     // Prefer the server's display label. A field may be label-ONLY: the fidelity tier always
     // applies, even when the user stated no preference and there is no raw value.
     let rows=ROWS.filter(([k])=>b[k]||b[k+'_label']).map(([k,l])=>
       `<div class="rc-row"><div class="rc-k">${esc(l)}</div><div class="rc-v">${esc(b[k+'_label']||b[k])}</div></div>`).join('');
     if(b.engine_params&&Object.keys(b.engine_params).length)
-      rows+=`<div class="rc-row"><div class="rc-k">Engine parameters</div>`
-           +`<div class="rc-v">${esc(JSON.stringify(b.engine_params))}</div></div>`;
+      rows+=`<div class="rc-row"><div class="rc-k">Engine settings</div>`
+           +`<div class="rc-v">${esc(Object.entries(b.engine_params).map(([k,v])=>
+             `${String(k).replace(/_/g,' ')}: ${typeof v==='object'?JSON.stringify(v):v}`).join(', '))}</div></div>`;
     (b.boundary_assignments||[]).forEach(p=>{
       rows+=`<div class="rc-row"><div class="rc-k">${esc(p.name)}</div>`
            +`<div class="rc-v">${esc(p.role||'')}</div></div>`;});
@@ -129,11 +130,11 @@ export const Stage = {
       return `<div class="rc-ck${good?'':(unknown?' unk':' bad')}">`
         +`<span class="ic">${good?'✓':(unknown?'?':'✕')}</span>`
         +`<span>${esc(c.label)}${c.detail?` <span class="rc-d">${esc(c.detail)}</span>`:''}</span></div>`;}).join('');
-    const html=`<div class="who">Requirements · submitted by Hexera</div>
+    const html=`<div class="who">Hexera · your request, as understood</div>
       <div class="req-card${(b.checks||[]).every(c=>c.status==='pass')?' ok':''}">
         ${thermal?`<div class="rc-h">Job sheet</div><p class="rc-sheet">${esc(b.job_sheet)}</p>`
-          :'<div class="rc-h">Structured brief</div>'}${rows}
-        ${ck?`<div class="rc-h rc-h2">Validated by the application</div>${ck}`:''}
+          :'<div class="rc-h">Mesh plan</div>'}${rows}
+        ${ck?`<div class="rc-h rc-h2">Checked</div>${ck}`:''}
       </div>`;
     if(this._briefEl){this._briefEl.innerHTML=html;}
     else{this.clearEmpty();
@@ -314,7 +315,7 @@ export const Stage = {
     const p=document.createElement('div');p.className='proc';
     p.innerHTML=`<div class="proc-head"><svg class="proc-orb" viewBox="0 0 24 24" aria-hidden="true"><circle class="sp-arm" cx="12" cy="12" r="7.2"/><path class="sp-hd" d="M19.20 8.16L22.40 14.56L16.00 14.56Z"/><path class="sp-hd" d="M4.80 15.84L1.60 9.44L8.00 9.44Z"/></svg>
       <span class="proc-title">Generating mesh</span>
-      <span class="proc-sub" id="proc-sub">working…</span>
+      <span class="proc-sub" id="proc-sub"></span>
       <span class="proc-clock" id="proc-clock">0:00</span>
       <button class="proc-cancel" id="proc-cancel" type="button" hidden>Cancel run</button></div>
       <div class="proc-live" id="proc-live"></div>
@@ -339,10 +340,11 @@ export const Stage = {
   // moment a job was created, including the five to ten minutes a job can sit `pending`
   // while the fleet wakes from zero - a silent spinner that read as a hang. The poller hands
   // every status here; a non-empty text is the wait (with the backend's estimate), an empty one
-  // means a worker has it and the line returns to "working…". A finished run is left alone.
+  // means a worker has it and the sub-line empties: the live line under the header says what is
+  // running, so a filler word there only repeated it. A finished run is left alone.
   waiting(text){if(!this.proc||this.proc.classList.contains('done'))return;
     const s=this.proc.querySelector('#proc-sub');if(!s)return;
-    s.textContent=text||'working…';
+    s.textContent=text||'';
     RunLine.model.waiting(text);RunLine.draw();},
   // The Cancel control is shown ONLY for a run this page is attached to live. A replayed run
   // renders the same card, and a control that could stop nothing must not be on it.
@@ -379,8 +381,8 @@ export const Stage = {
     const hasHist=history&&history.typical_s>0;
     const ref=hasHist?history.typical_s*1000:budget*1000;
     const sub=hasHist
-      ?`similar runs ~${fmtDur(history.typical_s*1000)} (${fmtDur(history.p10_s*1000)}-${fmtDur(history.p90_s*1000)}, n=${history.n})`
-      :`no history yet · will run up to ${fmtDur(budget*1000)}`;
+      ?`similar runs take about ${fmtDur(history.typical_s*1000)} (usually ${fmtDur(history.p10_s*1000)} to ${fmtDur(history.p90_s*1000)})`
+      :`no similar runs yet · stops by itself after ${fmtDur(budget*1000)} at most`;
     const w=document.createElement('div');w.className='meshbar';
     w.innerHTML=`<div class="mb-top"><span class="mb-lbl">meshing · ${esc(engine||'')}</span>
         <span class="mb-num">0:00</span></div>
@@ -688,8 +690,9 @@ export const Stage = {
     const opened=this._att!=null||this._built.size>0;
     const att=attemptsLabel(opened,this._built.size,data.attempts);
     if(this.proc){this.proc.classList.add('done','r-'+outcome);   // the header's mark takes the verdict's colour
-      this.proc.querySelector('.proc-title').textContent=data.pass?'Mesh ready':cancelled?'Run cancelled':'Run ended';
-      this.proc.querySelector('#proc-sub').textContent=concerns?'delivered with concerns':data.pass?'completed':cancelled?'cancelled by you':'failed';
+      // ONE STATEMENT OF THE ENDING: the title says it; the live line under it gives the time
+      this.proc.querySelector('.proc-title').textContent=concerns?'Mesh ready, with concerns':data.pass?'Mesh ready':cancelled?'Run cancelled':'Run failed';
+      this.proc.querySelector('#proc-sub').textContent='';
       const cb=this.proc.querySelector('#proc-cancel');if(cb)cb.hidden=true;}
     // verdict row in the timeline. A cancelled run has no verdict: nobody judged a mesh.
     if(this.proc){const n=this.node('result');const v=document.createElement('div');v.className='tl-verd';

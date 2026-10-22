@@ -196,3 +196,33 @@ def test_a_guard_trip_pulls_no_lever_and_ends_the_attempt(tmp_path, monkeypatch)
 
     ref = read_refusal(ws)
     assert ref.gate == FD.GUARD_GATE and ref.cause == "run_infrastructure" and ref.facts["ours"]
+
+
+def test_a_ladder_that_runs_out_says_so_for_the_retry_policy(tmp_path, monkeypatch):
+    """Every pass the plan allows leaves elements under the floor: the attempt ends with the
+    driver's own verdict - deterministic, the ladder exhausted, where the worst elements are - so
+    no second attempt builds the same mesh (job ab20566f)."""
+    from meshpipeline.contracts.failure_cause import retry_can_help
+    from meshpipeline.engines import runtime
+    from meshpipeline.engines.preflight import read_refusal
+
+    ws = _stage(fx.plate_with_hole(), tmp_path / "floor")
+    monkeypatch.setitem(P.LEVELS, "draft", SMALL)
+
+    def bad_pass(w, timeout):
+        rc = fea_adapter.mesh(w)
+        q = json.loads((Path(w) / "quality.json").read_text())
+        q.update(min_sicn=0.02, elements_under_floor=5)
+        q.setdefault("fea", {}).setdefault("quality", {})["worst_at_m"] = {"scaled_jacobian": [0.01, 0.02, 0.003]}
+        (Path(w) / "quality.json").write_text(json.dumps(q))
+        return {"rc": rc}
+
+    monkeypatch.setattr(runtime, "get_engine", lambda _n: SimpleNamespace(run_cartesian_mesh=bad_pass))
+    ok, marker, _o = asyncio.run(FD.drive(ws, {"effective_mesh_fidelity": "draft"}, job_id="t-floor",
+                                          publish=None, run=_Run()))
+    assert not ok and marker == FD.BUILD_FAILED
+    ref = read_refusal(ws)
+    assert ref.gate == FD.QUALITY_GATE and ref.cause == "mesh_quality"
+    assert ref.facts["deterministic"] and ref.facts["ladder_exhausted"] and ref.facts["fea"]
+    assert ref.facts["passes"] >= 2 and ref.facts["under_floor"] == 5 and ref.facts["worst_at_mm"] == [10.0, 20.0, 3.0]
+    assert retry_can_help(ref.cause, ref.facts) is False

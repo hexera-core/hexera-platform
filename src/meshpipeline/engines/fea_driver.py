@@ -199,6 +199,37 @@ def _refuse(ws: Path, *, cause: str, text: str, gate: str = "fea_plan", **facts)
                      facts={**base, **facts}).write(ws)
 
 
+#: The gate an exhausted ladder is reported under (the FEA quality floor it could not meet).
+QUALITY_GATE = "fea_quality"
+
+
+def ladder_facts(ws: Path, passes: list[dict], levers: list[dict]) -> dict:
+    """What the user's sentence and the retry policy read when the ladder ran out: that it is
+    deterministic and exhausted, how many passes and which levers, and where the worst elements
+    are (millimetres) with how many sit under the floor."""
+    q = _read_quality(ws)
+    fq = (q.get("fea") or {}).get("quality") or {}
+    where = (fq.get("worst_at_m") or {}).get("scaled_jacobian")
+    facts: dict = {"fea": True, "ladder_exhausted": True, "passes": len(passes),
+                   "levers": [lv["lever"] for lv in levers],
+                   "under_floor": int(q.get("elements_under_floor") or 0),
+                   "elements": int(q.get("cells") or 0)}
+    if isinstance(where, list) and len(where) == 3:
+        facts["worst_at_mm"] = [round(float(v) * 1000.0, 1) for v in where]
+    if (q.get("bad_spread_mm")) is not None:
+        facts["spread_mm"] = q["bad_spread_mm"]
+    return facts
+
+
+def ladder_words(passes: list[dict], levers: list[dict]) -> str:
+    """The builder-facing line for an exhausted ladder (the user's sentence is failure_cause's)."""
+    tried = ", ".join(lv["lever"] for lv in levers) or "no lever"
+    readings = [float(p["min_sicn"]) for p in passes if p.get("min_sicn") is not None]
+    worst = min(readings) if readings else None
+    return (f"no pass of the FEA plan met the element quality floor ({len(passes)} pass(es); levers {tried}; "
+            f"best worst element {worst}). The plan is deterministic: another attempt builds the same mesh.")
+
+
 def _read_quality(ws: Path) -> dict:
     try:
         return json.loads((ws / "quality.json").read_text())
@@ -342,6 +373,14 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     if best is not None:
         _restore_pass(ws, best)
     (ws / "fea_passes.json").write_text(json.dumps({"passes": passes, "delivered": best, "levers": levers}, indent=1))
+    if not ok and passes:
+        # THE LADDER RAN OUT on a mesh it built: every pass this plan allows was tried, so the same
+        # part at the same level builds the same mesh again. Said as the FEA's own outcome; the
+        # executor still judges the mesh on disk, and this record tells the retry policy (and the
+        # user's sentence) that another attempt on this engine cannot change it (job ab20566f
+        # spent a second identical 14-minute attempt)
+        _refuse(ws, cause=FailureCause.MESH_QUALITY.value, gate=QUALITY_GATE,
+                text=ladder_words(passes, levers), **ladder_facts(ws, passes, levers))
     await run.fence("deliver builder outcome")
     outcome = run.outcome(produced_deliverable=ok, exhausted=not ok, failure_marker="" if ok else BUILD_FAILED)
     return outcome.produced_deliverable, (outcome.terminal_value or BUILD_FAILED), outcome
@@ -365,5 +404,5 @@ def driver_for(state):
     return drive if applies(state) else None
 
 
-__all__ = ["BUILD_FAILED", "GUARD_TRIP", "NOT_ONE_PART", "NO_SOURCE", "OVER_LEVEL", "applies", "drive", "driver_for",
-           "make_plan", "measure_staged", "planned_work", "write_plan"]
+__all__ = ["BUILD_FAILED", "GUARD_TRIP", "NOT_ONE_PART", "NO_SOURCE", "OVER_LEVEL", "QUALITY_GATE", "applies", "drive",
+           "driver_for", "ladder_facts", "ladder_words", "make_plan", "measure_staged", "planned_work", "write_plan"]
