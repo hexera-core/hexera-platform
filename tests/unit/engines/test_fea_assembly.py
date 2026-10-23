@@ -138,7 +138,7 @@ def test_a_bonded_assembly_is_one_conformal_mesh_with_every_part_and_face_named(
     ok, marker, _o = _drive(ws, monkeypatch)                  # no answer: bonded, the default
     assert ok, marker
     cited = {e["rule"] for e in dr.cited_for(f"t-{ws.name}")}
-    assert "PLAN-fea-16" in cited
+    assert "PLAN-fea-17" in cited
     plan = json.loads((ws / "fea_plan.json").read_text())
     assert plan["assembly"]["mode"] == "bonded" and plan["assembly"]["pairs"] == 1
     assert {z["id"] for z in plan["zones"] if z["kind"] == "part"} == {"P1", "P2"}

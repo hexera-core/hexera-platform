@@ -95,7 +95,7 @@ def viewer_face_names(workspace) -> dict[int, str] | None:
 
 def assembly_block(asm: Mapping) -> dict | None:
     """An assembly's lines on the result screen: its parts with their element counts, how they are
-    joined and every joint as written (PLAN-fea-16); None for a single part."""
+    joined and every joint as written (PLAN-fea-17); None for a single part."""
     if not asm:
         return None
     mode = str(asm.get("mode") or "")

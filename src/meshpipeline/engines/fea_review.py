@@ -126,7 +126,7 @@ def facts(workspace) -> dict:
 
 
 def assembly_checklist(asm: Mapping | None, plan: Mapping, named_faces: int | None) -> dict:
-    """THE REVIEWER'S CHECKLIST FOR AN ASSEMBLY (PLAN-fea-16), measured from the records: every part
+    """THE REVIEWER'S CHECKLIST FOR AN ASSEMBLY (PLAN-fea-17), measured from the records: every part
     present (each has elements), every interface shared (bonded: one joint per touching pair) or
     paired (contact / tied: one pair per touching or overlapping pair), every face named."""
     a = _m(asm)

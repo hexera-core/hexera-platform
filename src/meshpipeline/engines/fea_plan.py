@@ -27,7 +27,7 @@ THE RULES (docs/RULES.md):
   PLAN-fea-8  the estimate is checked against the element limit before meshing and never stops the
               run: over it, the finest zones are coarsened until it fits, never past what keeps
               elements valid, and what that leaves short is named (resolution_short)
-  PLAN-fea-16 an assembly: every part sized by its own rules (its base a tenth of the part), the
+  PLAN-fea-17 an assembly: every part sized by its own rules (its base a tenth of the part), the
               element limit over the whole assembly; bonded parts share their nodes where they touch,
               contact parts are meshed apart with named contact pairs
   PLAN-fea-10 a CUSP is set aside from the quality floor with straight sides, and named
@@ -162,7 +162,7 @@ def zones(record: Mapping, *, tighten: Mapping[str, float] | None = None) -> lis
                         "size_m": QUARTER * r / ROUND_PER_QUARTER * _MM, "reach_m": 0.0,
                         "rule": "PLAN-fea-7", "radius_m": r * _MM, "capped": False,
                         "why": f"a round of radius {_mm(r)} on {name}: {ROUND_PER_QUARTER} elements per quarter-turn"})
-    # PLAN-fea-16: EVERY PART OF AN ASSEMBLY HAS ITS OWN BASE SIZE - a tenth of the part, as
+    # PLAN-fea-17: EVERY PART OF AN ASSEMBLY HAS ITS OWN BASE SIZE - a tenth of the part, as
     # PLAN-fea-14 gives a single part - so a bolt beside a flange is sized as the bolt it is
     for part in record.get("part_bases") or []:
         d = _f(part.get("diag_mm"))
@@ -172,7 +172,7 @@ def zones(record: Mapping, *, tighten: Mapping[str, float] | None = None) -> lis
         size = d / MIN_DIVISIONS
         named = f" ({part['name']})" if part.get("name") else ""
         out.append({"id": f"P{part.get('n')}", "kind": "part", "faces": faces, "size_m": size * _MM,
-                    "reach_m": 0.0, "rule": "PLAN-fea-16", "capped": False, "part": part.get("id"),
+                    "reach_m": 0.0, "rule": "PLAN-fea-17", "capped": False, "part": part.get("id"),
                     "why": f"{part.get('id')}{named} is {_mm(d)} across: its base size is a tenth of it"})
     for z in out:
         k = tighten.get(z["id"])
@@ -277,7 +277,7 @@ def finish(record: Mapping, zone_list: list[dict], hist: Histogram, *, diag_m: f
         "cusps": [{"at_m": [_r(float(v) * _MM) for v in c["at_mm"]], "faces": list(c.get("faces") or []),
                    "angle_deg": c.get("angle_deg")} for c in record.get("cusps") or []],
     }
-    # PLAN-fea-16: an assembly's parts, its staged file and how they are joined (the driver's)
+    # PLAN-fea-17: an assembly's parts, its staged file and how they are joined (the driver's)
     if record.get("assembly_plan"):
         plan["assembly"] = dict(record["assembly_plan"])
     # PLAN-fea-12: the micro details far below the finest element this plan asks for
@@ -374,7 +374,7 @@ def words(record: Mapping, plan: Mapping) -> list[str]:
 
 
 def assembly_words(asm: Mapping) -> list[str]:
-    """PLAN-fea-16 in plain words: the parts, how they are joined, and the notes (an empty list for
+    """PLAN-fea-17 in plain words: the parts, how they are joined, and the notes (an empty list for
     a single part)."""
     if not asm:
         return []
@@ -420,7 +420,7 @@ def decisions(record: Mapping, plan: Mapping) -> list[dict]:
                         "words": f"{len(sel)} {what} zone(s), the finest {min(z['size_m'] for z in sel) * 1e3:.3g} mm."})
     asm = plan.get("assembly") or {}
     if asm:
-        out.append({"stage": "fea_plan", "decided": "assembly", "value": asm.get("mode"), "rule": "PLAN-fea-16",
+        out.append({"stage": "fea_plan", "decided": "assembly", "value": asm.get("mode"), "rule": "PLAN-fea-17",
                     "inputs": {"parts": len(asm.get("parts") or []), "connection": asm.get("connection"),
                                "pairs": asm.get("pairs")},
                     "words": " ".join(assembly_words(asm)[:2])})

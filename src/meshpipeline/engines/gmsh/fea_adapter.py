@@ -109,7 +109,7 @@ def size_fields(gmsh, plan: dict, surfaces: set[int], face_tags: dict[str, list[
         if g.get("balls"):
             # PLAN-fea-3's thin spots: the wall's Threshold off its face, held only inside the spots'
             # balls (each its size inside, growing at the plan's rate outside) - the larger of the two
-            tags = [t for f in g["faces"] if (t := _tag(f)) in surfaces]
+            tags = list(dict.fromkeys(t for f in g["faces"] for t in tags_of(f)))
             if not tags:
                 continue
             dist = gmsh.model.mesh.field.add("Distance")
@@ -333,7 +333,7 @@ def mesh(workspace) -> int:
     plan = json.loads((ws / PLAN_FILE).read_text())
     # PLAN-fea-15: the staged solid the plan was measured on (gmsh's own B-rep first)
     geom = next((ws / n for n in STAGED_SOLIDS if (ws / n).exists()), ws / "geometry.step")
-    # AN ASSEMBLY (PLAN-fea-16): the parts as the driver staged them - fused where they are bonded,
+    # AN ASSEMBLY (PLAN-fea-17): the parts as the driver staged them - fused where they are bonded,
     # side by side where they touch or are tied - and what each face and solid of that file is
     asm = plan.get("assembly") or None
     sidecar: dict = {}
@@ -524,7 +524,7 @@ def mesh(workspace) -> int:
                         "resolution_short": list(plan.get("resolution_short") or [])}
                        if plan.get("coarsened") else {}),
                     "through_wall_min": tw, "rules": rules, "quality": shape, "exports": exports,
-                    # PLAN-fea-16: the parts, how they are joined, and every joint as written
+                    # PLAN-fea-17: the parts, how they are joined, and every joint as written
                     **({"assembly": assembly_out} if asm else {})},
         }, indent=1))
         print(f"[GMSH-FEA] elements={n_elem} (planned ~{(plan.get('estimate') or {}).get('elements')}) "

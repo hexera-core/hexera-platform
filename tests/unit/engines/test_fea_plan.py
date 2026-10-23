@@ -102,7 +102,7 @@ def test_an_assembly_sizes_each_part_by_its_own_base():
         {"n": 2, "id": "Part_2", "name": "", "diag_mm": 20.0, "faces": ["Part_2_Face_1", "Part_2_Face_2"]}]}
     zs = {z["id"]: z for z in P.zones(record)}
     assert zs["P1"]["size_m"] == pytest.approx(0.02) and zs["P2"]["size_m"] == pytest.approx(0.002)
-    assert zs["P2"]["faces"] == ["Part_2_Face_1", "Part_2_Face_2"] and zs["P2"]["rule"] == "PLAN-fea-16"
+    assert zs["P2"]["faces"] == ["Part_2_Face_1", "Part_2_Face_2"] and zs["P2"]["rule"] == "PLAN-fea-17"
     words = P.assembly_words({"parts": [{"id": "Part_1", "name": "Flange"}, {"id": "Part_2", "name": ""}],
                               "mode": "contact", "pairs": 1, "notes": ["Part_2 is small."]})
     assert words[0].startswith("An assembly of 2 parts: Part_1 (Flange), Part_2.")

@@ -98,7 +98,7 @@ LAME = {"a": 50.0, "b": 100.0, "h": 20.0, "p": 10e6}
 #: independent of the product path (2D, its own mesh). That converged value is the reference here.
 GROOVE = {"D": 50.0, "r": 5.0, "L": 200.0, "kt": 2.193}
 SLENDER = {"L": 500.0, "h": 10.0}
-#: THE ASSEMBLY CASES (PLAN-fea-16): two cubes of this side (mm) along x, and the end pressure (Pa)
+#: THE ASSEMBLY CASES (PLAN-fea-17): two cubes of this side (mm) along x, and the end pressure (Pa)
 BLOCKS = {"a": 100.0, "p": 1.0e6}
 #: how each assembly case's parts are joined (the stage's one answer)
 CONNECTION = {"bonded_tension": "bonded", "contact_compression": "contact"}

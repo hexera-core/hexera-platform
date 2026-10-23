@@ -7,7 +7,7 @@ One attempt:
 
 1. measure the staged solid (cad/fea_measure on geometry.step, the metre B-rep every gmsh run
    meshes), so Face_k in the plan is Face_k in the mesh and in the deck;
-2. PLAN-fea-16: an assembly (several bodies) is staged as its parts, fused where they are bonded or
+2. PLAN-fea-17: an assembly (several bodies) is staged as its parts, fused where they are bonded or
    side by side where they only touch, every face named Part_k_Face_j;
 3. compute the plan (engines/fea_plan.py) and its element estimate;
 4. PLAN-fea-8: over the detail level, stop BEFORE meshing, with the options (a pre-flight
@@ -141,7 +141,7 @@ def connection_of(state) -> str:
 
 
 def prepare_assembly(ws: Path, record: dict, surface, *, connection: str, source_path: str = "") -> dict:
-    """PLAN-fea-16: an assembly's record for the plan, and its staged file for the mesher. Every
+    """PLAN-fea-17: an assembly's record for the plan, and its staged file for the mesher. Every
     face is renamed Part_k_Face_j (on the record and on the surface the size field reads), each part
     gets its own base size, and the parts are staged as the connection asks (cad/fea_assembly.stage).
     Returns the record (the same dict, renamed in place)."""
@@ -547,7 +547,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                     "words": (f"The part was read from {staged.name if staged else 'the staged file'}"
                               + (", healed before it was measured." if healed else "."))}])
     if int(record.get("bodies") or 1) > 1:
-        # PLAN-fea-16: AN ASSEMBLY - its parts staged as the user said they are joined (bonded by
+        # PLAN-fea-17: AN ASSEMBLY - its parts staged as the user said they are joined (bonded by
         # default), every face Part_k_Face_j, each part sized by its own rules
         connection = connection_of(state)
         try:
@@ -562,7 +562,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             return False, BUILD_FAILED, outcome
         asm = record.get("assembly_plan") or {}
         _cite(job_id, [{"stage": "fea_plan", "decided": "assembly", "value": asm.get("mode"),
-                        "rule": "PLAN-fea-16",
+                        "rule": "PLAN-fea-17",
                         "inputs": {"bodies": record.get("bodies"), "connection": connection,
                                    "pairs": asm.get("pairs"), "interfaces": asm.get("interfaces")},
                         "words": " ".join(P.assembly_words(asm)[:2])}])

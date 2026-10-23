@@ -130,7 +130,7 @@ def test_the_driver_meshes_and_cites_every_rule(tmp_path, monkeypatch):
     ok, marker, _o = _drive(ws, monkeypatch)
     assert ok, marker
     cited = {e["rule"] for e in dr.cited_for(f"t-{ws.name}")}
-    assert "PLAN-fea-16" not in cited                        # one part: no assembly
+    assert "PLAN-fea-17" not in cited                        # one part: no assembly
     assert {"PLAN-fea-1", "PLAN-fea-14", "PLAN-fea-5", "PLAN-fea-8", "PLAN-fea-13", "LAD-fea-5"} <= cited
     passes = json.loads((ws / "fea_passes.json").read_text())
     assert passes["delivered"] == 1 and passes["levers"] == []

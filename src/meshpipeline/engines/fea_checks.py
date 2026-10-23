@@ -48,10 +48,13 @@ def face_sizes(mesh, tags_by_name: Mapping[str, int | list[int]]) -> dict[str, f
     return out
 
 
-def spot_size(mesh, tag: int | None, at_m, radius_m: float) -> float | None:
+def spot_size(mesh, tag: int | list[int] | None, at_m, radius_m: float) -> float | None:
     """Median length of the edges of the face's triangles that lie within `radius_m` of `at_m`
-    (a thin spot's element size); None when no triangle of the face is there."""
-    tri = mesh.faces.get(int(tag)) if tag is not None else None
+    (a thin spot's element size); None when no triangle of the face is there. An assembly's face
+    may be several mesh surfaces (a list of tags)."""
+    tags = [] if tag is None else [int(t) for t in tag] if isinstance(tag, list) else [int(tag)]
+    blocks = [np.asarray(mesh.faces[t])[:, :3] for t in tags if mesh.faces.get(t) is not None and len(mesh.faces[t])]
+    tri = np.concatenate(blocks) if blocks else None
     if tri is None or not len(tri):
         return None
     index = {int(n): i for i, n in enumerate(np.asarray(mesh.node_ids).tolist())}
@@ -90,7 +93,9 @@ def measure(mesh, plan: Mapping, *, tags_by_name: Mapping[str, list[int]] | None
     for z in zones:
         if z["kind"] == "wall_spot":
             # a thin spot: the element size on its face within its ball
-            h_spot = spot_size(mesh, face_tag(z["faces"][0]), z["at_m"], float(z["radius_m"]))
+            face = z["faces"][0]
+            where = list(tags_by_name.get(face) or []) if tags_by_name is not None else face_tag(face)
+            h_spot = spot_size(mesh, where, z["at_m"], float(z["radius_m"]))
             if h_spot is None:
                 continue
             n = float(z["thickness_m"]) / h_spot
