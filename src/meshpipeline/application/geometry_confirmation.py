@@ -523,7 +523,27 @@ ONE_MOUTH_QUESTION = ("The space inside this part has only one opening, so the f
                       "Did you mean flow around it?")
 
 
-def flow_question(inside: dict | None, openings) -> str:
+#: INS-7: an internal-flow part with no way through whose surface is open or in loose pieces is
+#: told it needs CAD repair, never offered flow around it (a broken surface is no part to flow
+#: round either). The repair stage closes it; this stage only says what it found.
+CAD_REPAIR_MESSAGE = ("This part's surface is not closed in one piece ({what}), so the space the fluid "
+                      "fills cannot be found. It needs CAD repair first.")
+
+
+def needs_cad_repair(surface: dict | None) -> str:
+    """INS-7's words for a surface with open edges that edge no opening, or loose pieces, else ""."""
+    if not isinstance(surface, dict):
+        return ""
+    what = []
+    stray, pieces = int(surface.get("open_edges_not_openings") or 0), int(surface.get("pieces") or 1)
+    if stray:
+        what.append(f"{stray} open edge{'s' if stray != 1 else ''} that edge no opening")
+    if pieces > 1:
+        what.append(f"{pieces} loose pieces")
+    return CAD_REPAIR_MESSAGE.format(what=" and ".join(what)) if what else ""
+
+
+def flow_question(inside: dict | None, openings, surface: dict | None = None) -> str:
     """The stage's question when "the fluid flows through it" cannot be meshed as said, else "".
     `inside` is the check's map facts (scout `inside`); `openings` the openings as confirmed (dicts
     or rows with a `role`). A part the map could not read is never questioned: the intake asks."""
@@ -534,6 +554,9 @@ def flow_question(inside: dict | None, openings) -> str:
         return ""
     if inside.get("has_inside"):
         return ""                 # there is a way through: the openings are the user's to place
+    broken = needs_cad_repair(surface)
+    if broken:
+        return broken             # INS-7: said, never healed; no "flow around it" for a broken surface
     mouths = max([int(n) for n in inside.get("mouths_per_passage") or []] or [0])
     return ONE_MOUTH_QUESTION if mouths == 1 else NO_INSIDE_QUESTION
 

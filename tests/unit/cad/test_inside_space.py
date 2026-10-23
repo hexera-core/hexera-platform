@@ -175,3 +175,46 @@ def test_a_map_past_its_loop_budget_is_no_map(monkeypatch):
     tris = _tube(0.05, 0.04)
     assert ins.read_inside_or_none(surface(tris)) is None
     assert len(find_holes(tris)) == 2                       # the shape rules' two bore mouths
+
+
+def test_a_broken_surface_is_told_it_needs_cad_repair_not_asked_about_flow_around_it():
+    """INS-7: detection only - open edges that edge no opening, or loose pieces, are said; nothing is healed."""
+    from meshpipeline.application.geometry_confirmation import NO_INSIDE_QUESTION, flow_question, needs_cad_repair
+    none = {"rule": "INS-1", "has_inside": False, "mouths_per_passage": []}
+    clean = {"rule": "INS-7", "open_edges": 0, "open_edges_not_openings": 0, "pieces": 1}
+    rims_only = {"rule": "INS-7", "open_edges": 64, "open_edges_not_openings": 0, "pieces": 1}
+    torn = {"rule": "INS-7", "open_edges": 40, "open_edges_not_openings": 12, "pieces": 1}
+    loose = {"rule": "INS-7", "open_edges": 0, "open_edges_not_openings": 0, "pieces": 3}
+    assert flow_question(none, [], clean) == NO_INSIDE_QUESTION
+    assert flow_question(none, [], rims_only) == NO_INSIDE_QUESTION      # open pipe ends are openings
+    q = flow_question(none, [], torn)
+    assert "needs CAD repair" in q and "12 open edges" in q and "flow around" not in q
+    assert "3 loose pieces" in flow_question(none, [], loose)
+    assert needs_cad_repair(None) == "" and needs_cad_repair(clean) == ""
+    # a part with a way through is never told this here: the question is not asked at all
+    assert flow_question({"rule": "INS-1", "has_inside": True, "mouths_per_passage": [2]}, [], torn) == ""
+
+
+def test_the_surface_health_counts_only_open_edges_off_the_openings():
+    import math as _m
+
+    from meshpipeline.cad.open_ends import find_holes, surface
+    from meshpipeline.cad.scout_mesh import surface_health
+
+    def ring(r, z, n=24):
+        return [(r * _m.cos(2 * _m.pi * i / n), r * _m.sin(2 * _m.pi * i / n), z) for i in range(n)]
+
+    def band(a, b):
+        out = []
+        for i in range(len(a)):
+            out += [(a[i], a[(i + 1) % len(a)], b[(i + 1) % len(a)]), (a[i], b[(i + 1) % len(a)], b[i])]
+        return out
+
+    tube = np.asarray(band(ring(0.05, 0.0), ring(0.05, 1.0)), dtype=float)
+    m = surface(tube)
+    h = surface_health(m, find_holes(mesh=m))
+    assert h["open_edges"] == 48 and h["open_edges_not_openings"] == 0 and h["pieces"] == 1
+    torn = np.delete(tube, [len(tube) // 2], axis=0)       # one triangle missing from the wall
+    m = surface(torn)
+    h = surface_health(m, find_holes(mesh=m))
+    assert h["open_edges_not_openings"] >= 3

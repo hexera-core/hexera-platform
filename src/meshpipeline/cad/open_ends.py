@@ -125,23 +125,23 @@ class Hole:
     def annular(self) -> bool:
         return 0.0 < self.filled < self.area
 
-    def as_dict(self, mm_per_unit: float = 1000.0) -> dict:
+    def as_dict(self, mm_per_unit: float = 1000.0, decimals: int = 2) -> dict:
         """The hole as the stage reads it: metres and the reading's millimetres side by side, the
         loops thinned to LOOP_POINTS points (metres)."""
-        r6 = lambda v: [round(float(x), 6) for x in v]  # noqa: E731
+        r6 = lambda v: [round(float(x), decimals + 4) for x in v]  # noqa: E731
         out = {"kind": self.kind, "shape": self.shape,
-               "centroid_m": r6(self.centroid), "centroid_mm": [round(float(x) * mm_per_unit, 2) for x in self.centroid],
+               "centroid_m": r6(self.centroid), "centroid_mm": [round(float(x) * mm_per_unit, decimals) for x in self.centroid],
                "normal": [round(float(x), 5) for x in self.normal],
-               "area_mm2": round(self.area * mm_per_unit * mm_per_unit, 2),
-               "diameter_mm": round(self.equivalent_diameter * mm_per_unit, 2),
+               "area_mm2": round(self.area * mm_per_unit * mm_per_unit, 2 * decimals - 2),
+               "diameter_mm": round(self.equivalent_diameter * mm_per_unit, decimals),
                "loop_m": [r6(p) for p in _thin(self.loop)],
                "planarity": round(self.planarity, 4), "confidence": round(self.confidence, 2)}
         if self.shape != "circle":
-            out["width_mm"], out["height_mm"] = round(self.wh[0] * mm_per_unit, 2), round(self.wh[1] * mm_per_unit, 2)
+            out["width_mm"], out["height_mm"] = round(self.wh[0] * mm_per_unit, decimals), round(self.wh[1] * mm_per_unit, decimals)
         if self.outer is not None:
             out["outer_m"] = [r6(p) for p in _thin(self.outer)]
         if self.annular:
-            out["inner_diameter_mm"] = round(2.0 * math.sqrt(self.filled / math.pi) * mm_per_unit, 2)
+            out["inner_diameter_mm"] = round(2.0 * math.sqrt(self.filled / math.pi) * mm_per_unit, decimals)
         out.update(measured_flow_area(self.area, self.filled, self.shape, mm_per_unit))
         if not self.passage:
             out["passage"] = False

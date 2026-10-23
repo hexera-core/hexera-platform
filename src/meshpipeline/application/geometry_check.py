@@ -965,10 +965,20 @@ def skin_holes(skin: Path, facts: dict | None = None) -> list[dict]:
     try:
         tris = np.asarray(read_stl_triangles(Path(skin)), dtype=float).reshape(-1, 3, 3)
         mesh = surface(tris)
-        holes = [h.as_dict() for h in find_holes(mesh=mesh)] if mesh is not None else []
+        found = find_holes(mesh=mesh) if mesh is not None else []
+        holes = [h.as_dict() for h in found]
         if facts is not None:
             imap = inside_map(mesh) if mesh is not None else None
             facts["inside"] = imap.facts() if imap is not None else {"rule": "INS-1", "mapped": False}
+            if mesh is not None:
+                from meshpipeline.cad.scout_mesh import surface_health
+                health = surface_health(mesh, found)
+                if int(facts.get("solids") or 0) >= 1:
+                    # a CAD solid is closed by its B-rep: the skin's open edges are where its
+                    # tessellation's faces meet unwelded, not gaps in the part
+                    health["open_edges_not_openings"] = 0
+                    health["from"] = "cad solids"
+                facts["surface"] = health
             if imap is not None:
                 vet_by_map(facts, imap)
         return holes
@@ -1075,7 +1085,7 @@ def keep_a_stageable_proposal(facts: dict, local_path: Path, skin: Path, scale: 
         return facts
     if _stages(skin, plain) is not True:
         return facts
-    kept = {k: facts[k] for k in ("inside", "read_as", "unit_assumed", "scale_to_m") if k in facts}
+    kept = {k: facts[k] for k in ("inside", "surface", "read_as", "unit_assumed", "scale_to_m") if k in facts}
     out = dict(facts)
     for k in ("openings", "seed_point_m", "seed_point_mm", "body_kind", "input_kind", "flow", "confidence", "faces",
               "holes"):
@@ -1812,7 +1822,9 @@ def _proposal(facts: dict, vision: dict | None) -> dict:
     if isinstance(facts.get("inside"), dict):
         from meshpipeline.application.geometry_confirmation import flow_question
         proposal["inside"] = dict(facts["inside"])
-        proposal["flow_question"] = flow_question(facts["inside"], proposal["openings"])
+        if isinstance(facts.get("surface"), dict):
+            proposal["surface"] = dict(facts["surface"])
+        proposal["flow_question"] = flow_question(facts["inside"], proposal["openings"], facts.get("surface"))
     if vision is None:
         return _upright(proposal, facts, None, None)
     if "error" in vision:

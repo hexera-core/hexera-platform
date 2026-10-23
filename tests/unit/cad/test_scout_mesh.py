@@ -361,3 +361,18 @@ def test_the_shape_rules_openings_are_proposed_when_only_they_stage(stl, monkeyp
     assert any("hole finder" in n for n in out["notes"])
     monkeypatch.setattr(gc, "_stages", lambda skin, f: True)
     assert gc.keep_a_stageable_proposal(facts, path, path, 1.0) is facts
+
+
+def test_a_part_in_metres_read_as_millimetres_keeps_its_digits_for_the_rescale(stl):
+    """A 50 mm part in metres reads 0.05 "mm" until the user says its unit; its lengths must survive
+    the x1000 rescale (geometry_check.rescaled_lengths), not come back rounded to 10 mm."""
+    from meshpipeline.application.geometry_check import rescaled_lengths
+    from meshpipeline.cad.scout import length_decimals
+
+    p = stl("m_tube", _tube(r=0.00325, length=0.05))
+    facts = scout_mesh(p, scale_to_m=0.001).as_dict()
+    back = rescaled_lengths(facts, 1000.0)
+    d = [o["diameter_mm"] for o in back["openings"]]
+    assert d and all(abs(x - 6.5) < 0.3 for x in d), d
+    assert abs(back["size_mm"][2] - 50.0) < 0.01
+    assert length_decimals((0.05, 0.05, 0.03)) == 2 and length_decimals((5e-5, 5e-5, 3e-5)) == 5

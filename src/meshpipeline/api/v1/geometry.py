@@ -578,7 +578,8 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
         # fewer than two openings on it, is asked about here - one plain question, with flowing
         # around it the one-click way out - never a job that can only fail
         from meshpipeline.application.geometry_confirmation import flow_question
-        question = flow_question((_stored_check.get("facts") or {}).get("inside"), body.openings)
+        _facts = _stored_check.get("facts") or {}
+        question = flow_question(_facts.get("inside"), body.openings, _facts.get("surface"))
         if question:
             raise HTTPException(409, question)
     if body.input_kind == "solid-assembly" and not body.regions:

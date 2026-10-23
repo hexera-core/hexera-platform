@@ -28,6 +28,7 @@ from meshpipeline.cad.scout import (
     _bladed,
     _name_openings,
     _wall_pairs,
+    length_decimals,
     measured_faces,
 )
 
@@ -178,7 +179,7 @@ def scout_mesh(path: Path, *, scale_to_m: float, mapped: bool = True) -> ScoutRe
             if cap.tube_end:
                 tube_lids.add(id(candidates[-1]))
 
-    measured = measured_faces(candidates)
+    measured = measured_faces(candidates, length_decimals(bbox_max - bbox_min))
     side_mouths = [c for c in candidates if getattr(c, "side", False)]
     candidates = [c for c in candidates if not getattr(c, "side", False)]
     rings = [c for c in candidates if c.kind == "ring"]
@@ -333,12 +334,40 @@ def scout_mesh(path: Path, *, scale_to_m: float, mapped: bool = True) -> ScoutRe
         "flow_axis_guess": "+x" if size[0] >= size[1] else "+y",
         # every hole, for the stage: "Add an opening" snaps to these, so a sticker added by hand
         # lands where the measuring step would have put it
-        "holes": [h.as_dict() for h in holes],
+        "holes": [h.as_dict(decimals=length_decimals(bbox_max - bbox_min)) for h in holes],
         # the part's inside-space map, as the stage reads it (INS-1): whether the fluid has
         # somewhere to flow through
         "inside": imap.facts() if imap is not None else {"rule": "INS-1", "mapped": False},
+        # THE SURFACE AS DRAWN (INS-7): open edges that edge no opening, and loose pieces - found
+        # and said, never healed (the CAD repair stage's work)
+        "surface": surface_health(mesh, holes, edges=edges, counts=counts, pieces=n_components),
     }
     return result
+
+
+def surface_health(mesh, holes, *, edges: np.ndarray | None = None, counts: np.ndarray | None = None,
+                   pieces: int | None = None) -> dict:
+    """What the drawn surface itself says (INS-7): its open edges that lie on no hole's loop (a hole
+    is an opening as the hole finder reads it: a map mouth or a shape-rule rim), and how many
+    loose pieces hold a real share of it. Detection only - nothing is closed, joined or turned."""
+    if edges is None or counts is None or pieces is None:
+        edges, edge_faces, counts = _edges(mesh.faces)
+        comp = _components(len(mesh.faces), edge_faces[counts == 2])
+        area = np.bincount(comp, weights=mesh.area, minlength=int(comp.max()) + 1) if len(comp) else np.zeros(1)
+        pieces = max(int(np.sum(area >= MIN_PIECE_SHARE * float(area.sum()))), 1)
+    open_e = edges[counts == 1]
+    stray = 0
+    if len(open_e):
+        on_loop = np.zeros(len(mesh.verts), dtype=bool)
+        loops = [np.asarray(h.loop, dtype=float).reshape(-1, 3) for h in holes if h.loop is not None]
+        if loops:
+            from scipy.spatial import cKDTree
+            span = float(np.linalg.norm(mesh.verts.max(axis=0) - mesh.verts.min(axis=0))) or 1.0
+            d, i = cKDTree(mesh.verts).query(np.concatenate(loops), distance_upper_bound=1e-6 * span)
+            on_loop[i[np.isfinite(d)]] = True
+        stray = int(np.sum(~(on_loop[open_e[:, 0]] & on_loop[open_e[:, 1]])))
+    return {"rule": "INS-7", "open_edges": int(len(open_e)), "open_edges_not_openings": stray,
+            "pieces": int(pieces)}
 
 
 # ------------------------------------------------------------------------------ the lumen ----
