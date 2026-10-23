@@ -472,3 +472,66 @@ def test_the_pruned_size_field_equals_measuring_every_zone_everywhere():
         sd[box <= 0] = g.faces(pts[box <= 0])
         want = np.minimum(want, g.size + 0.3 * np.maximum(0.0, sd))
     assert np.allclose(got, want, rtol=1e-12, atol=0)
+
+
+def _self_crossing_solid():
+    """ONE solid whose two outer shells pass through each other (a CAD defect: the body overlaps itself)."""
+    from OCP.BRep import BRep_Builder
+    from OCP.TopAbs import TopAbs_SHELL
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS, TopoDS_Solid
+
+    b = BRep_Builder()
+    solid = TopoDS_Solid()
+    b.MakeSolid(solid)
+    for box in (fx._box(0, 0, 0, 10, 10, 10), fx._box(5, 5, 5, 10, 10, 10)):
+        ex = TopExp_Explorer(box, TopAbs_SHELL)
+        b.Add(solid, TopoDS.Shell_s(ex.Current()))
+    return solid
+
+
+def _stage_facts(shape, names=None):
+    """What the FEA stage reads for a file: its bodies, the clean check, the assembly measured."""
+    from meshpipeline.cad.fea_measure import FACT_KEY
+    from meshpipeline.cad.validity_brep import check_shape
+
+    rec = A.record(shape, mm_per_unit=1.0, names=names)
+    return {"solids": len(A.solids(shape)), "source_format": "step", "validity": check_shape(shape).as_dict(),
+            FACT_KEY: {A.FACT_KEY: rec}}
+
+
+def test_a_part_that_overlaps_itself_stops_with_its_name_and_a_way_out():
+    from meshpipeline.application import fea_check
+
+    shape = fx._compound(_self_crossing_solid(), fx._box(30, 0, 0, 10, 10, 10))
+    facts = _stage_facts(shape, names=["Housing", "Cover"])
+    hit = next(r for r in facts["validity"]["reasons"] if r["code"] == "self_intersection")
+    assert hit["details"]["bodies"] == [1]
+    blocked, kind, way = fea_check.blocker(facts)
+    assert kind == "self_overlap"
+    assert blocked == "Part Housing (Part_1) overlaps itself – it needs CAD repair before it can be meshed."
+    assert "Fix it in your CAD" in way and "remove that part" in way
+    view = fea_check.fea_view(facts)
+    assert view["can_proceed"] is False and view["single_part_only"] == blocked
+
+
+def test_a_single_part_that_overlaps_itself_stops_too():
+    from meshpipeline.application import fea_check
+
+    facts = _stage_facts(_self_crossing_solid())
+    blocked, kind, way = fea_check.blocker(facts)
+    assert kind == "self_overlap" and blocked.startswith("This part overlaps itself")
+    assert way == fea_check.WAY_OUT_REPAIR
+
+
+def test_parts_that_pass_into_each_other_are_no_stop_and_nothing_is_healed():
+    from meshpipeline.application import fea_check
+    from meshpipeline.cad.fea_measure import FACT_KEY
+
+    shape = fx.overlapping_blocks()
+    facts = _stage_facts(shape)
+    assert any(r["code"] == "bodies_overlap" for r in facts["validity"]["reasons"])
+    assert fea_check.blocker(facts) == ("", "", "")
+    assert fea_check.fea_view(facts)["can_proceed"] is True
+    rec = facts[FACT_KEY][A.FACT_KEY]
+    assert [i["kind"] for i in rec["interfaces"]] == ["overlap"]

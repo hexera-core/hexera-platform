@@ -82,7 +82,6 @@ NOT_SOLID_REASONS = (
     ("open_boundary", "its surface has open edges - holes in the skin"),
     ("zero_volume", "it encloses no volume"),
     ("flat", "it is flat"),
-    ("self_intersection", "the surface passes through itself"),
     ("bodies_overlap", "separate pieces of it pass into each other"),
     ("non_manifold_edges", "some edges join more than two faces"),
     ("non_manifold_vertices", "some surfaces touch only at a point"),
@@ -102,9 +101,13 @@ def not_solid_message(facts: dict | None) -> str:
     v = f.get("validity") or {}
     errors = {str(r.get("code")) for r in v.get("reasons") or []
               if isinstance(r, dict) and str(r.get("severity") or "error") == "error"}
-    said = [words for code, words in NOT_SOLID_REASONS if code in errors]
     n = body_count(f)
     brep = str(f.get("source_format") or "").lower() in _BREP_FORMATS and v.get("kind") != "triangles"
+    if brep and n is not None and n > 1:
+        # CLOSED SOLIDS PASSING INTO EACH OTHER are an assembly's interference: a meshing choice
+        # (bonded: one piece there; contact: a pair), never a reason to stop (design 14)
+        errors.discard("bodies_overlap")
+    said = [words for code, words in NOT_SOLID_REASONS if code in errors]
     if brep and n == 0 and not said:
         said = ["the file holds faces but no solid"]
     if not said:
@@ -115,12 +118,56 @@ def not_solid_message(facts: dict | None) -> str:
     return NOT_SOLID.format(why=why)
 
 
+#: A BODY THAT CROSSES ITSELF is a CAD defect (Areen, 23 Oct): found, named and stopped at the stage,
+#: never healed here - the CAD repair stage owns healing.
+SELF_OVERLAP = "{who} overlaps itself – it needs CAD repair before it can be meshed."
+WAY_OUT_REPAIR = "Fix it in your CAD and upload it again."
+WAY_OUT_REPAIR_PART = "Fix it in your CAD and upload it again, or remove that part and upload the rest."
+
+
+def _part_label(pid: str, name: str) -> str:
+    return f"Part {name} ({pid})" if name else pid
+
+
+def self_overlap_message(facts: dict | None) -> tuple[str, str]:
+    """(the plain message, the way on) for a body whose surface passes through itself - ("", "") when
+    none does. An assembly's part is named (its CAD name and Part_k); a single part is "This part"."""
+    from meshpipeline.cad.fea_assembly import FACT_KEY as ASM_KEY
+    from meshpipeline.cad.fea_measure import FACT_KEY
+
+    f = facts or {}
+    v = f.get("validity") or {}
+    hit = next((r for r in v.get("reasons") or [] if isinstance(r, dict)
+                and str(r.get("code")) == "self_intersection" and str(r.get("severity") or "error") == "error"),
+               None)
+    if hit is None:
+        return "", ""
+    n = body_count(f)
+    if n is None or n <= 1:
+        return SELF_OVERLAP.format(who="This part"), WAY_OUT_REPAIR
+    measured = f.get(FACT_KEY)
+    rec = measured.get(ASM_KEY) if isinstance(measured, dict) else None
+    names = {str(p.get("id")): str(p.get("name") or "") for p in (rec or {}).get("parts") or []
+             if isinstance(p, dict)}
+    bodies = [int(b) for b in ((hit.get("details") or {}).get("bodies") or []) if 1 <= int(b) <= n]
+    if not bodies:
+        return SELF_OVERLAP.format(who="A part"), WAY_OUT_REPAIR_PART
+    said = [SELF_OVERLAP.format(who=_part_label(f"Part_{b}", names.get(f"Part_{b}", ""))) for b in bodies[:3]]
+    if len(bodies) > 3:
+        said.append(f"So do {len(bodies) - 3} more part(s).")
+    return " ".join(said), WAY_OUT_REPAIR_PART
+
+
 def blocker(facts: dict | None) -> tuple[str, str, str]:
-    """(what stops version 1, its kind - "surface" | "", the way on) for the stage and the
-    confirmation alike. Several bodies are no stop: an assembly is meshed (design 14)."""
+    """(what stops version 1, its kind - "surface" | "self_overlap" | "", the way on) for the stage
+    and the confirmation alike. Several bodies are no stop: an assembly is meshed (design 14); a body
+    that crosses itself is (it needs CAD repair; detected only, never healed)."""
     surface = not_solid_message(facts)
     if surface:
         return surface, "surface", WAY_OUT_SOLID
+    crossed, way = self_overlap_message(facts)
+    if crossed:
+        return crossed, "self_overlap", way
     return "", "", ""
 
 
@@ -275,7 +322,7 @@ def in_unit(record: dict | None, scale_to_m: float | None) -> dict | None:
     return out
 
 
-__all__ = ["CONNECTION_OPTIONS", "CONNECTION_QUESTION", "DEFAULT_CONNECTION", "NOT_SOLID", "NOT_SOLID_REASONS",
+__all__ = ["SELF_OVERLAP", "WAY_OUT_REPAIR", "WAY_OUT_REPAIR_PART", "self_overlap_message", "CONNECTION_OPTIONS", "CONNECTION_QUESTION", "DEFAULT_CONNECTION", "NOT_SOLID", "NOT_SOLID_REASONS",
            "QUESTION", "SHOWN_HOT_SPOTS", "STAGE_FEA", "STAGE_FLOW", "STAGE_THERMAL", "WAY_OUT_SOLID", "assembly_view",
            "blocker", "body_count", "clean_words", "confirmed_connection", "connection_answer", "fea_view",
            "hot_spot_words", "in_unit", "measure_view", "not_solid_message", "parts_words", "stage_route"]
