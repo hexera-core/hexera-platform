@@ -27,7 +27,10 @@ A scenario is one directory under the scenario root. It contains a `scenario.jso
 geometry file(s) it names; nothing in it may point outside its own directory. `scenario.json`
 is a single JSON object with exactly these keys:
 
-  name             (required) str   - the scenario's name; by convention the directory name.
+  name             (required) str   - the scenario's name; by convention the directory name. It
+                                      becomes the run's workspace directory, which is deleted
+                                      before the case is copied in, so it must be ONE path
+                                      segment - never absolute, never a traversal.
   source           (required) str   - path of the source CAD/STL file, relative to the scenario
                                       directory; the file must exist inside it.
   settings         (required) dict  - the frozen run settings, passed to the executor verbatim.
@@ -40,6 +43,14 @@ is a single JSON object with exactly these keys:
                                       directory. Without one the default executor cannot run the
                                       native mesher (authoring a case needs the full pipeline) and
                                       records the row as unavailable.
+
+A case that claims MEASURABLE QUALITY must carry the builder's own `port_declaration.json` - the
+approved intake patch declaration, written verbatim by the builder
+(agents/builder/workspace.py) and the one input the engine's finalize cannot be handed a plausible
+default for. Freeze it from a completed builder workspace, so the declaration and the prepared
+case are known to belong together; its hash is covered by the scenario input hashes like every
+other frozen file. An intake that declared nothing is the empty list `[]`; a missing or malformed
+file makes the row `unavailable` rather than quietly finalizing against no patches at all.
 
 Any missing required key, any unknown key, a non-dict `settings`, a non-positive timeout, or a
 `source`/`case` that escapes or is absent from the scenario directory refuses the WHOLE run with a
@@ -180,6 +191,35 @@ def _unavailable(reason: str) -> dict:
     return {"status": f"unavailable: {reason}"}
 
 
+PORT_DECLARATION_FILE = "port_declaration.json"
+
+
+def _port_declaration(workspace: Path) -> list:
+    """The approved intake patch declaration the frozen case carries, read STRICTLY.
+
+    This is the one input finalize cannot be given a plausible default for: an empty patch list is
+    a valid declaration (a programmatic submit has none), so a missing or malformed file read as
+    [] would finalize against nothing and publish whatever quality came out of it. A scenario that
+    wants measurable quality freezes the builder's own file; anything else is `unavailable`.
+    """
+    path = workspace / PORT_DECLARATION_FILE
+    if not path.exists():
+        raise ScenarioError(
+            f"the frozen case carries no {PORT_DECLARATION_FILE}, so the approved patch "
+            f"declaration finalize needs is unknown: freeze the builder's own file beside the "
+            f"case (an intake that declared nothing is the empty list [])")
+    try:
+        body = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ScenarioError(f"{PORT_DECLARATION_FILE} in the frozen case is unreadable: {exc}") \
+            from exc
+    if not isinstance(body, list):
+        raise ScenarioError(
+            f"{PORT_DECLARATION_FILE} in the frozen case must hold a JSON list of patches, "
+            f"not {type(body).__name__}")
+    return body
+
+
 def execute_scenario(run: ScenarioRun, scratch: Path) -> dict:
     """The default, kernel-invoking executor: drive the pipeline's mesh path directly, the way
     repair_corpus.py drives the repair loop - no database, no job, a scratch workspace.
@@ -229,6 +269,18 @@ def execute_scenario(run: ScenarioRun, scratch: Path) -> dict:
     if stale_manifest.exists():
         stale_manifest.unlink()
 
+    # THE APPROVED BOUNDARY CONTRACT, as a SEALED INPUT. finalize needs the intake patch
+    # declaration, and the benchmark must not invent one: the builder already writes the approved
+    # declaration verbatim to port_declaration.json, so a case is frozen WITH that file and it
+    # arrives in the copytree above. Read strictly - workspace_facts.port_declaration() treats
+    # absent or malformed as "undeclared, never fatal", which is right in a pipeline run and wrong
+    # here, where it would silently finalize against an empty patch list and publish the quality
+    # figures that came out of it. An explicit [] is a declaration; a missing or broken file is not.
+    try:
+        declaration = _port_declaration(workspace)
+    except ScenarioError as exc:
+        return {**_unavailable(str(exc)), "selected_engine": engine}
+
     started = time.monotonic()
     try:
         from meshpipeline.engines.dispatch import run_engine_local
@@ -239,6 +291,22 @@ def execute_scenario(run: ScenarioRun, scratch: Path) -> dict:
     except Exception as exc:  # noqa: BLE001 - a crash is a real benchmark outcome
         return {"status": f"failed: {type(exc).__name__}: {exc}", "selected_engine": engine}
     mesh_seconds = round(time.monotonic() - started, 2)
+
+    # FINALIZE WRITES THE MANIFEST, and nothing else does: run_engine_local runs the mesher alone,
+    # so without this there is no quality evidence for the run to score. It is attempted only
+    # after a mesher that did not complain - finalizing a failed case would measure wreckage.
+    finalize_error = ""
+    if isinstance(out, dict) and out.get("rc") == 0:
+        try:
+            from meshpipeline.engines.runtime import get_engine
+            get_engine(engine).finalize(
+                str(workspace), declaration, engine,
+                domain=str(run.settings.get("domain") or ""),
+                internal_flow=bool(run.settings.get("internal_flow")),
+                engine_params=dict(run.settings.get("engine_params") or {}),
+                flow_topology=str(run.settings.get("flow_topology") or ""))
+        except Exception as exc:  # noqa: BLE001 - a finalize that cannot run is a real outcome
+            finalize_error = f"{type(exc).__name__}: {exc}"
 
     result: dict = {"selected_engine": engine, "timings": {"mesh_seconds": mesh_seconds}}
     rc = out.get("rc") if isinstance(out, dict) else None
@@ -267,16 +335,14 @@ def execute_scenario(run: ScenarioRun, scratch: Path) -> dict:
     elif out.get("timed_out"):
         result["status"] = f"failed: timed out after {run.timeout_seconds}s"
     elif rc == 0 and not manifest:
-        # THE ENGINE RAN AND DID NOT COMPLAIN, AND NOBODY WROTE A MANIFEST. mesh_manifest.json is
-        # written by each engine's finalize seam (engines/manifest.write_manifest), which the
-        # pipeline executor calls - `run_engine_local` runs the mesher alone and never does. So
-        # the absence of a manifest here is a gap in what this harness drives, not a failed mesh,
-        # and calling it "failed: mesh_written=False" would publish a loss the run did not take.
-        # Scoring the mesh needs finalize wired in; until then this row says so.
+        # THE MESHER DID NOT COMPLAIN AND THERE IS STILL NO MANIFEST, so finalize - which is the
+        # only thing that writes one - did not get there. That is an absence of evidence rather
+        # than a failed mesh, and publishing it as "failed: mesh_written=False" would record a
+        # loss the run did not take. The reason finalize gave, where it gave one, is the status.
         result.update(_unavailable(
-            "the mesher returned rc=0 but no mesh_manifest.json was written: this harness drives "
-            "`run_engine_local`, which runs the engine without its finalize seam, so there is no "
-            "quality evidence for this run to score"))
+            "the mesher returned rc=0 but finalize wrote no mesh_manifest.json, so there is no "
+            "quality evidence for this run to score"
+            + (f" - finalize raised {finalize_error}" if finalize_error else "")))
     else:
         tail = str(out.get("log_tail", ""))[-200:]
         result["status"] = (f"failed: rc={rc}, mesh_written={delivered}"

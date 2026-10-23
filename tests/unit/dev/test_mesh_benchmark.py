@@ -10,6 +10,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -299,3 +300,86 @@ def test_verify_bundle_checks_the_summary_against_the_rows(tmp_path, capsys):
 
     assert mb.verify_bundle(bundle) == 1
     assert "NOT verified" in capsys.readouterr().err
+
+
+# -- the approved patch declaration finalize needs ----------------------------------------------
+
+def _case_with(tmp_path, declaration, *, name="s1"):
+    """A scenario whose frozen case carries (or does not carry) a port_declaration.json."""
+    directory = _write_scenario(tmp_path, name, case="case")
+    case = directory / "case"
+    case.mkdir()
+    if declaration is not None:
+        (case / "port_declaration.json").write_text(declaration)
+    return mb.load_scenario(directory).run
+
+
+@pytest.mark.parametrize("declaration, match", [
+    (None, "carries no port_declaration.json"),
+    ("{not json", "unreadable"),
+    ('{"inlet": "wall"}', "must hold a JSON list"),
+])
+def test_a_case_without_a_readable_declaration_is_unavailable_not_finalized(
+        tmp_path, declaration, match):
+    """workspace_facts.port_declaration() reads absent-or-broken as [], which is right in a
+    pipeline run and wrong here: finalizing against an empty patch list would publish whatever
+    quality figures came out of it. The row says unavailable instead."""
+    run = _case_with(tmp_path, declaration)
+    result = mb.execute_scenario(run, tmp_path / "scratch")
+    assert mb.status_class(result["status"]) == "unavailable"
+    assert match in result["status"]
+
+
+def test_an_explicitly_empty_declaration_is_a_declaration(tmp_path):
+    """An intake that declared nothing is [] - a fact, not a gap - so it must not be refused."""
+    run = _case_with(tmp_path, "[]")
+    result = mb.execute_scenario(run, tmp_path / "scratch")
+    assert "port_declaration" not in result["status"]
+
+
+def test_finalize_is_handed_the_frozen_declaration_after_a_clean_mesh(tmp_path, monkeypatch):
+    """finalize is the only thing that writes mesh_manifest.json, and it must be given the
+    approved declaration verbatim - not a reconstruction, and not an invented empty list."""
+    declaration = [{"name": "inlet", "type": "patch"}, {"name": "wall", "type": "wall"}]
+    run = _case_with(tmp_path, json.dumps(declaration))
+    seen = {}
+
+    class _Engine:
+        def finalize(self, workspace_dir, intake_patches, engine, **kwargs):
+            seen["patches"] = intake_patches
+            seen["engine"] = engine
+            (Path(workspace_dir) / "mesh_manifest.json").write_text(
+                json.dumps({"mesh_written": True, "cell_count": 12,
+                            "quality": {"max_non_orthogonality": 40.0}}))
+            return {"success": True}
+
+    monkeypatch.setitem(sys.modules, "meshpipeline.engines.dispatch",
+                        types.SimpleNamespace(run_engine_local=lambda ws, **kw: {"rc": 0}))
+    monkeypatch.setitem(sys.modules, "meshpipeline.engines.runtime",
+                        types.SimpleNamespace(get_engine=lambda name: _Engine()))
+
+    result = mb.execute_scenario(run, tmp_path / "scratch")
+
+    assert seen["patches"] == declaration
+    assert result["status"] == "success", result["status"]
+    assert result["mesh_statistics"]["cells"] == 12
+
+
+def test_a_finalize_that_raises_is_unavailable_and_says_why(tmp_path, monkeypatch):
+    """A finalize that cannot run leaves no manifest. That is an absence of evidence, not a mesh
+    the engine failed to build, and the reason it gave belongs in the row."""
+    run = _case_with(tmp_path, "[]")
+
+    class _Engine:
+        def finalize(self, *a, **k):
+            raise RuntimeError("checkMesh is not on this host")
+
+    monkeypatch.setitem(sys.modules, "meshpipeline.engines.dispatch",
+                        types.SimpleNamespace(run_engine_local=lambda ws, **kw: {"rc": 0}))
+    monkeypatch.setitem(sys.modules, "meshpipeline.engines.runtime",
+                        types.SimpleNamespace(get_engine=lambda name: _Engine()))
+
+    result = mb.execute_scenario(run, tmp_path / "scratch")
+
+    assert mb.status_class(result["status"]) == "unavailable"
+    assert "checkMesh is not on this host" in result["status"]
