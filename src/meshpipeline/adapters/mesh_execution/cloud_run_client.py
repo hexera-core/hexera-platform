@@ -37,8 +37,11 @@ class CloudRunMeshExecutor:
     # thing that may call this one.
 
     def run(self, workspace, *, engine: str, timeout: int, operation_key: str) -> dict:
-        return run_mesh_remote(workspace, engine=engine, timeout=timeout,
-                               operation_key=operation_key)
+        from meshpipeline.application.mesh_execution_shadow import run_with_shadow_profile
+        return run_with_shadow_profile(
+            workspace, engine,
+            lambda: run_mesh_remote(workspace, engine=engine, timeout=timeout,
+                                    operation_key=operation_key))
 
     def collect(self, workspace, *, engine: str, timeout: int, operation_key: str) -> dict:
         # A PREVIOUS worker's submission was durably accepted. Its exchange objects live under
