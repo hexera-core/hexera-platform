@@ -442,3 +442,33 @@ def test_overlapping_parts_tied_are_said_to_count_the_shared_piece_twice(tmp_pat
     assert side["mode"] == "tie"
     assert any("counted in both parts" in n for n in side["notes"])
     assert not any("ADJUST" in n for n in side["notes"])
+
+
+def test_the_pruned_size_field_equals_measuring_every_zone_everywhere():
+    """sizes() skips a zone where its box proves it cannot be finer: the answer must be the one measuring
+    every zone at every point gives."""
+    from meshpipeline.engines.fea_size_field import SizeField
+
+    surf = _cube_surface([(0, 0, 0, 40), (40, 0, 0, 10), (0, 40, 0, 20)])
+    zones = [{"id": f"F{k}", "kind": "hole", "faces": [f], "size_m": s, "reach_m": 0.5e-3}
+             for k, (f, s) in enumerate([("Part_1_Face_2", 0.4e-3), ("Part_2_Face_3", 0.8e-3),
+                                         ("Part_3_Face_1", 0.5e-3), ("Part_1_Face_5", 2e-3)])]
+    zones += [{"id": f"P{k}", "kind": "part", "faces": [f"Part_{k}_Face_{j}" for j in range(1, 7)],
+               "size_m": s, "reach_m": 0.0, "part": f"Part_{k}"} for k, s in ((1, 6.9e-3), (2, 1.7e-3), (3, 3.5e-3))]
+    field = SizeField(surf, zones, growth=1.3)
+    rng = np.random.default_rng(0)
+    pts = rng.uniform([-5e-3, -5e-3, -5e-3], [55e-3, 65e-3, 45e-3], size=(4000, 3))
+    got = field.zone_size(pts)
+    want = np.full(len(pts), np.inf)
+    for g in field.groups:
+        if g.inside:
+            continue
+        d = np.abs(g.faces(pts))
+        want = np.minimum(want, g.size + 0.3 * np.maximum(0.0, d - g.reach))
+    inside = [g for g in field.groups if g.inside]
+    for g in inside:
+        box = np.linalg.norm(np.maximum(0.0, np.maximum(g.lo - pts, pts - g.hi)), axis=1)
+        sd = box.copy()
+        sd[box <= 0] = g.faces(pts[box <= 0])
+        want = np.minimum(want, g.size + 0.3 * np.maximum(0.0, sd))
+    assert np.allclose(got, want, rtol=1e-12, atol=0)

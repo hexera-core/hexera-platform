@@ -155,6 +155,10 @@ class _Group:
     balls: _BallDistance | None = None
     #: an assembly part's base (PLAN-fea-17): the size holds everywhere inside the part's own surface
     inside: bool = False
+    #: ...and its box: the part's surface is measured only for points in the box (outside it, the
+    #: distance to the box stands in - never more, so the size there is never coarser than the rule)
+    lo: np.ndarray | None = None
+    hi: np.ndarray | None = None
 
 
 def group_zones(zones: list[dict]) -> list[dict]:
@@ -244,6 +248,12 @@ class SizeField:
         e = np.asarray(shared, dtype=np.int64)
         return self.xyz[e[:, 0]], self.xyz[e[:, 1]]
 
+    def _compact(self, idx: np.ndarray) -> tuple[_Distance, np.ndarray, np.ndarray]:
+        """The distance to the triangles `idx` (their own vertices only) and their box."""
+        used, tris = np.unique(self.tris[idx], return_inverse=True)
+        pts = self.xyz[used]
+        return _Distance(pts, tris.reshape(-1, 3)), pts.min(axis=0), pts.max(axis=0)
+
     def _groups(self, zones: list[dict]) -> list[_Group]:
         out = []
         for g in group_zones(zones):
@@ -251,16 +261,15 @@ class SizeField:
                 idx = self._tris_of(g["faces"])
                 if len(idx):
                     # the part's own vertices only: one group per part must not copy the whole assembly
-                    used, tris = np.unique(self.tris[idx], return_inverse=True)
-                    out.append(_Group(g["size"], g["reach"], _Distance(self.xyz[used], tris.reshape(-1, 3)),
-                                      None, inside=True))
+                    dist, lo, hi = self._compact(idx)
+                    out.append(_Group(g["size"], g["reach"], dist, None, inside=True, lo=lo, hi=hi))
                 continue
             if g.get("balls"):
                 idx = self._tris_of(g["faces"])
                 if not len(idx):
                     continue
-                out.append(_Group(g["size"], g["reach"], _Distance(self.xyz, self.tris[idx]), None,
-                                  _BallDistance(g["balls"])))
+                dist, lo, hi = self._compact(idx)
+                out.append(_Group(g["size"], g["reach"], dist, None, _BallDistance(g["balls"]), lo=lo, hi=hi))
                 continue
             if g["edge"]:
                 ends = [self._edges_of(fs) for fs in g["edges"]]
@@ -268,32 +277,76 @@ class SizeField:
                 bb = np.vstack([b for _a, b in ends])
                 if not len(aa):
                     continue
-                out.append(_Group(g["size"], g["reach"], None,
-                                  _EdgeDistance(aa, bb, EDGE_SAMPLE_SHARE * g["size"])))
+                both = np.vstack([aa, bb])
+                out.append(_Group(g["size"], g["reach"], None, _EdgeDistance(aa, bb, EDGE_SAMPLE_SHARE * g["size"]),
+                                  lo=both.min(axis=0), hi=both.max(axis=0)))
             else:
-                idx = self._tris_of(g["faces"])
-                if not len(idx):
-                    continue
-                out.append(_Group(g["size"], g["reach"], _Distance(self.xyz, self.tris[idx]), None))
-        return out
+                # ONE GROUP PER PART of an assembly (a face group spans every part with a zone of that
+                # size): each has its own box, so a point far from a part never measures its faces
+                by_part: dict[str, list[str]] = {}
+                for f in g["faces"]:
+                    by_part.setdefault(_face_key(f)[0], []).append(f)
+                for faces in by_part.values():
+                    idx = self._tris_of(faces)
+                    if not len(idx):
+                        continue
+                    dist, lo, hi = self._compact(idx)
+                    out.append(_Group(g["size"], g["reach"], dist, None, lo=lo, hi=hi))
+        # finest first, so the size found so far rules out the most measuring (sizes() prunes by it)
+        return sorted(out, key=lambda grp: grp.size)
 
     def zone_size(self, p: np.ndarray) -> np.ndarray:
         """The zones' size at each point (inf where no zone is set)."""
+        return self.sizes(p)[0]
+
+    def sizes(self, p: np.ndarray, r: float = 0.0) -> tuple[np.ndarray, np.ndarray]:
+        """The zones' size at each point, and the size a cube of half-diagonal `r` round it must be
+        resolved to. They differ only for an assembly part's base (PLAN-fea-17): that size is the
+        SAME all through the part, so a cube lying `r` deep inside the part needs no finer look for
+        it - only a cube across the part's boundary does (and every other zone, as always)."""
         p = np.asarray(p, dtype=float).reshape(-1, 3)
         h = np.full(len(p), np.inf)
+        need = np.full(len(p), np.inf)
         g1 = self.growth - 1.0
         for g in self.groups:
+            deep = None
+            if g.lo is not None and g.hi is not None and not g.inside:
+                # PRUNED: the distance to the group's box is a floor on the distance to it, so where even
+                # that floor gives no finer size than found so far, the group is not measured (exact)
+                floor = np.linalg.norm(np.maximum(0.0, np.maximum(g.lo - p, p - g.hi)), axis=1)
+                look = g.size + g1 * np.maximum(0.0, floor - g.reach) < need
+                if not look.any():
+                    continue
+                q = p[look]
+                d = np.abs(g.faces(q)) if g.faces is not None else g.edges(q)  # type: ignore[misc]
+                past = d - g.reach
+                if g.balls is not None:
+                    past = np.maximum(past, g.balls(q))
+                hg = np.full(len(p), np.inf)
+                hg[look] = g.size + g1 * np.maximum(0.0, past)
+                h = np.minimum(h, hg)
+                need = np.minimum(need, hg)
+                continue
             if g.inside:
-                # signed: inside the part (negative) the size is the part's own; outside it grows
-                d = np.maximum(0.0, g.faces(p))  # type: ignore[misc]
+                # signed: inside the part (negative) the size is the part's own; outside it grows. Only
+                # the points in the part's box are measured against its surface (an assembly of many
+                # parts must not measure every point against every part)
+                sd = np.linalg.norm(np.maximum(0.0, np.maximum(g.lo - p, p - g.hi)), axis=1)
+                box = sd <= 0.0
+                if box.any():
+                    sd[box] = g.faces(p[box])  # type: ignore[misc]
+                d = np.maximum(0.0, sd)
+                deep = sd <= -r
             else:
                 d = np.abs(g.faces(p)) if g.faces is not None else g.edges(p)  # type: ignore[misc]
             past = d - g.reach
             if g.balls is not None:
                 # a thin spot: past its wall's reach from the face, or past its balls, whichever is more
                 past = np.maximum(past, g.balls(p))
-            h = np.minimum(h, g.size + g1 * np.maximum(0.0, past))
-        return h
+            hg = g.size + g1 * np.maximum(0.0, past)
+            h = np.minimum(h, hg)
+            need = np.minimum(need, hg if deep is None else np.where(deep, np.inf, hg))
+        return h, need
 
     def signed(self, p: np.ndarray) -> np.ndarray:
         return self.solid(np.asarray(p, dtype=float).reshape(-1, 3))
@@ -323,8 +376,10 @@ class SizeField:
             centres, sd = centres[keep], sd[keep]
             if not len(centres):
                 break
-            hz = self.zone_size(centres)
-            want = np.minimum(hz, coarsest)
+            hz, need = self.sizes(centres, r)
+            want = np.minimum(need, coarsest)
+            # a cube wholly inside one part is resolved for every zone but that part's own size, which
+            # is the same all through it (PLAN-fea-17)
             leaf = (e <= LEAF_SHARE * want) | (e <= e_min)
             if leaf.any():
                 frac = np.clip(0.5 - sd[leaf] / e, 0.0, 1.0)
