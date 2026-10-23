@@ -4,7 +4,7 @@ Every decision a mesh run makes on its own is made by a written rule. Each rule 
 and each decision the run records in its "why" record names the rule behind it
 (`contracts/decision_record.py`). This file is the one home for those rules.
 
-Rulebook version: **10**
+Rulebook version: **11**
 
 How the book is kept honest:
 
@@ -57,7 +57,7 @@ review. The order the run moves in is ENG-5.
 | SW-6 | in force | **Stay: a retry here fits** and still leaves every untried engine an attempt. |
 | SW-7 | in force | **Stay: a review never moves the run.** The mesh passed every measured check. |
 | SW-8 | in force | **Stay: the engine is not ours to change** (the user named it, or a dispute; see ENG-6). |
-| SW-9 | in force | **Stay: another engine cannot change this failure** (the request, the approval or a region split). |
+| SW-9 | in force | **Stay: another engine cannot change this failure** (the request, the approval or a region split), or the mesh is sound and only short of one of our own bars: its own resolution ladder answers it (LAD-cfd-1), never a switch. |
 | SW-10 | in force | **Stay: no untried engine delivers the approved mesh** (same boundaries, units, cell kind and layers). |
 | SW-11 | in force | **Stay: the untried engines would refuse** this many separate passages in one job. |
 | SW-12 | in force | **Stay: no regular attempt is left.** |
@@ -105,7 +105,7 @@ whether they agree, the limits missed) and the `verdict` entry in the why record
 
 | ID | Status | Rule |
 |---|---|---|
-| VER-1 | in force | **Fail: no valid mesh.** The executor's gates refused the last attempt, or the mesh's own numbers fail one of the engine's gating rows (its `criteria.py` rows marked gating: checkMesh fatal defects, wall captured, ports captured, the quality floors, the cell ceiling, regions and interfaces). An invalid mesh is never delivered. |
+| VER-1 | in force | **Fail: no valid mesh.** The executor's gates refused the last attempt, or the mesh's own numbers fail one of the engine's gating rows (its `criteria.py` rows marked gating: checkMesh fatal defects, wall captured, ports captured, the quality floors, regions and interfaces). An invalid mesh is never delivered. The resolution floor, the share of skewed faces and the one-job cell limit are not validity: on a sound mesh they are notes (LAD-cfd-3, LAD-cfd-4). |
 | VER-2 | in force | **Delivered with concerns:** the mesh is valid but misses at least one production limit (table below). Each one is listed as measured vs limit. |
 | VER-3 | in force | **Clean pass:** valid, and every production limit that applies is met (a limit whose number was not measured is listed as unmeasured and decides nothing). |
 | VER-4 | in force | **Wrong problem, by measured checks only.** The run failed at a gate that measures one of the ways a mesh can be a different problem than the one confirmed (table below). The gate's own measured account is what the user reads. |
@@ -116,7 +116,7 @@ whether they agree, the limits missed) and the `verdict` entry in the why record
 |---|---|---|---|---|
 | Worst face non-orthogonality | snappy, cfMesh, multi-region | every flow | at most 70 degrees | checkMesh warns above 70 |
 | Worst face non-orthogonality | gmsh | external and internal flow (not FEA) | at most 85 degrees | gmsh's own gating bar, so a mesh past it never validates |
-| Share of skewed faces | cfMesh | every flow | at most 0.05% | the snappy-family gating bar (advisory for cfMesh, which often does not report it) |
+| Share of skewed faces | snappy, cfMesh | every flow | at most 0.05% | checkMesh's skewness bars as a share of all faces; a production limit on a sound mesh, never a validity bar (cfMesh often does not report it) |
 | Wall covered by prism layers | snappy, cfMesh, multi-region, VMTK | when the approved plan builds layers | at least 80% | lab history: below it wall shear and y+ are unreliable on a material share of the wall |
 | Layers built short of the layers asked | cfMesh | when the approved plan builds layers | none short | the layer census (layers in the meshDict vs the request) |
 | Connected cell regions | snappy, cfMesh, gmsh, VMTK | every flow | at most 1 | checkMesh's region count: a second region is cut off from the flow |
@@ -154,6 +154,33 @@ version in the same PR.
 | A stated requirement is absent | the requirement rows of VER-2 | a concern |
 
 The table is `contracts/decision_record.WRONG_PROBLEM_CHECKS`.
+
+## PLAN-cfd: the flow mesh's sizing, on every flow engine
+
+The sizing rules every flow engine (snappyHexMesh, cfMesh, VMTK, gmsh) follows for a CFD mesh,
+from the part's own measured passages - never from a file or a part name
+(`engines/resolution_policy.py`, `engines/gap_sizing.py`).
+
+| ID | Status | Rule |
+|---|---|---|
+| PLAN-cfd-1 | in force | **Cells from the measured narrowest gap, locally.** Every passage the flow goes through gets at least 13 cells across its own width, refined only where it is narrow: snappyHexMesh and cfMesh refine boxes and distance bands round the narrow spots of the staged wall (`engines/gap_sizing`, the cost checked against the cell limit before meshing); VMTK sizes every edge from the local radius (2 / `edge_length_factor` across); gmsh sizes from the local radius field. The plan is written beside the case (`gap_sizing.json`) and cited in the why record. |
+| PLAN-cfd-2 | in force | **Every opening, at least 8 cells across its own width.** A port narrower than 8 wall cells gets its own finer cells at the port only (snappyHexMesh: the port's refinement level; cfMesh: a local refinement on the port's surface). Under about 4 the octree seals a port over and it comes back with no faces. |
+| PLAN-cfd-3 | in force | **The big-machine hook.** When the cells the sizing rule needs are over one job's cell limit, the plan records `route_big` (and the why record cites it). The big-machine runner is not built yet: until it is, the run is meshed as the limit holds, and says so. |
+
+## LAD-cfd: the resolution ladder, and what a sound mesh becomes
+
+A mesh is SOUND when every blocking gate passed and the trial solve converged: no fatal checkMesh
+defect, no negative volume, every port with faces, the right region, the domain asked for. The
+resolution floor (12 cells across the narrowest 5% of the wall), the share of skewed faces and the
+one-job cell limit are our own bars, not validity: on a sound mesh they are notes, declared as
+non-blocking gates (`GateSpec.blocking=False`). `engines/resolution_policy.py` holds the rules.
+
+| ID | Status | Rule |
+|---|---|---|
+| LAD-cfd-1 | in force | **The ladder's next rung, never an identical re-run.** A sound mesh short of the resolution floor sends the next attempt up one rung on the same engine: the cells-across target at the narrow spots is multiplied by 1.5 (rung 1), then 2 (rung 2), or by what the measured shortfall needs ((floor + 1) / measured) when that is more, never past 3. snappyHexMesh also refines where the mesh measured short (its narrow retry); cfMesh detects and sizes its narrow-spot boxes that much finer; VMTK divides its edge factor by it; gmsh sizes its passage field by it. The rung is written into the attempt's workspace (`resolution_ladder.json`), so the case the mesher gets is never the one it already ran (the rerun guard hashes it). No rung when the mesh already has 90% of the cell limit: there is no room left to refine. |
+| LAD-cfd-2 | in force | **A switch does not spend the ladder.** When the run moved to another engine and that engine's first mesh is sound but short of the floor, it still gets one rung - inside the run's ceiling of 3 attempts, and only when a whole attempt (the builder's per-attempt limit) still fits in the run's time; that last check is a guard clock and is recorded as one. |
+| LAD-cfd-3 | in force | **Ladder spent, mesh sound: delivered with a note.** The note names the narrowest gap, where it is, its cells across and the floor ("the gap at (x, y, z) has 8 cells across; 12 is our floor"). The share of skewed faces is a production limit (VER-2), not a failure. And a later attempt that comes out broken never throws an earlier sound mesh away: the run delivers its newest sound mesh instead of the failure (`node_deliver_sound`). |
+| LAD-cfd-4 | in force | **Over one job's cell limit is a note, never a retry.** A sound mesh bigger than one standard job is delivered at the size its sizing rules asked for, with the note; a retry could only shrink it. The worker's trial solve is not run on it (its matrix outgrows the worker); checkMesh's fatal topology and its one-region count stand in. |
 
 ## PLAN-fea: the FEA meshing plan
 

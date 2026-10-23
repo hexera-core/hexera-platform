@@ -92,6 +92,8 @@ def make_pipeline_state(
         "requirements_strict":   bool(requirements_strict),
         "flow_axis":             flow_axis,
         "requirement_caveats":   [],
+        "resolution_ladder":     {},
+        "sound_attempts":        [],
         # mesh-detail preference: the user's own choice (None = never stated), the
         # deterministic operational tier, and which of the two produced it.
         "requested_mesh_fidelity": requested_mesh_fidelity,

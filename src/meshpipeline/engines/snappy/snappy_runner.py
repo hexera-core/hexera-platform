@@ -1184,10 +1184,12 @@ def plan_near_band(*, wall_cell: float, default_depth: float, budget_cells: floa
                 f"{allowance / 1e6:.2g} M it may spend")
 
 
-#: Minimum castellation cells across a port opening. Below ~4 the octree can seal the
-#: opening entirely (the corpus's biggest failure cluster - 21 episodes died at the
-#: manifest gate with a zero-face port); 6 leaves margin for snapping to eat one each side.
-PORT_MIN_CELLS_ACROSS = 6
+#: Minimum castellation cells across a port opening (PLAN-cfd-2, engines/resolution_policy).
+#: Below ~4 the octree can seal the opening entirely (the corpus's biggest failure cluster - 21
+#: episodes died at the manifest gate with a zero-face port); 6 left margin for snapping to eat
+#: one each side, and still lost vessel outlets of 4 of a branching model's 9 (census bucket 1b,
+#: 2026-10-23). 8 carries a velocity profile through the opening.
+from meshpipeline.engines.resolution_policy import PORT_CELLS_ACROSS as PORT_MIN_CELLS_ACROSS  # noqa: E402
 
 
 def _port_levels(*, base_cell: float, default_level: int, smin: int,

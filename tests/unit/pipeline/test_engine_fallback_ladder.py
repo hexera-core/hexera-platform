@@ -264,9 +264,12 @@ def test_a_requirement_near_miss_is_never_a_reason_to_switch(quiet):
 def test_a_switch_changes_the_engine_and_nothing_the_user_approved(quiet):
     before = _external()
     out = _node(before)
+    # resolution_ladder is the ladder's own field (the new engine starts at its own plan: a switch
+    # spends no rung, LAD-cfd-2) - never one the approval owns
     assert set(out) == {"engine", "engine_params", "builder_mode", "builder_noop_count",
-                        "classifier_result", "engine_ladder"}, (
+                        "classifier_result", "engine_ladder", "resolution_ladder"}, (
         "the switch wrote a field the approval owns")
+    assert out["resolution_ladder"]["rung"] == 0 and out["resolution_ladder"]["switched"]
     # the new engine's planner is told what happened, not the old gate's engine-specific advice
     assert out["classifier_result"]["error_source"] == "engine_fallback"
     assert "FIRST attempt on snappyHexMesh" in out["classifier_result"]["summary"]

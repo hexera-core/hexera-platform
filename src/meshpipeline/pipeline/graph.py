@@ -192,17 +192,33 @@ def route_after_geometry_admission(
     return "node_builder"
 
 
+def _sound_or_end(state: PipelineState) -> Literal["node_deliver_sound", "__end__"]:
+    """THE RUN ENDS ON A FAILED ATTEMPT: when an earlier attempt built a sound mesh, that mesh is
+    delivered instead of the failure (LAD-cfd-3, node_deliver_sound) - a retry that came out broken
+    never throws an earlier sound mesh away. Otherwise the run ends as it always did."""
+    from meshpipeline.engines import resolution_policy as _rp
+    if not state.get("user_dispute") and _rp.deliverable_sound(state) is not None:
+        logger.warning("route_after_executor: the last attempt failed, and an earlier attempt "
+                       "built a sound mesh → node_deliver_sound (LAD-cfd-3) - job_id=%s",
+                       state.get("job_id"))
+        return "node_deliver_sound"
+    return _END
+
+
 def route_after_executor(
     state: PipelineState,
-) -> Literal["node_reviewer", "node_classifier", "__end__"]:
+) -> Literal["node_reviewer", "node_classifier", "node_deliver_sound", "__end__"]:
     success            = state.get("executor_success", False)
     retry_count        = state.get("retry_count", 0)
     solvability_failed = state.get("solvability_failed", False)
 
     if success:
+        from meshpipeline.engines import resolution_policy as _rp
         caveats = state.get("requirement_caveats") or []
-        if caveats and retry_count <= bcfg.MAX_BUILDER_RETRIES:
-            # a QUALITY-passing mesh that near-missed a stated requirement: while attempts
+        changeable = _rp.retry_can_change(caveats, state)
+        if caveats and changeable and retry_count <= bcfg.MAX_BUILDER_RETRIES:
+            # a QUALITY-passing mesh that near-missed a stated requirement, or a sound mesh short
+            # of the resolution floor with a rung of the ladder left (LAD-cfd-1): while attempts
             # remain, the ladder retries for FULL conformance - delivery-with-caveats is the
             # floor at exhaustion, never a first-attempt shortcut (invariant I5). The
             # classifier hands the builder the gate's own measured diagnostic.
@@ -211,6 +227,21 @@ def route_after_executor(
                 "attempt=%d/%d → classifier (retrying for full conformance)",
                 len(caveats), retry_count, bcfg.BUILDER_MAX_TOTAL_ATTEMPTS)
             return "node_classifier"
+        if caveats and changeable:
+            # A SWITCH DOES NOT SPEND THE LADDER (LAD-cfd-2): the engine the run moved to built a
+            # sound mesh short of the floor on its first try - it still gets one rung, inside the
+            # run's ceiling of attempts and only when a whole attempt fits in the run's time
+            ok, why = _rp.rung_after_switch(state,
+                                            attempts_ceiling=bcfg.BUILDER_MAX_TOTAL_ATTEMPTS,
+                                            attempt_seconds=float(bcfg.BUILDER_LOOP_TIMEOUT))
+            if ok:
+                logger.info("route_after_executor: sound mesh short of the floor on the engine "
+                            "the run switched to - its one rung (LAD-cfd-2) → classifier, "
+                            "attempt=%d/%d - job_id=%s", retry_count,
+                            bcfg.BUILDER_MAX_TOTAL_ATTEMPTS, state.get("job_id"))
+                return "node_classifier"
+            logger.info("route_after_executor: no rung after the switch (%s) - job_id=%s", why,
+                        state.get("job_id"))
         if caveats:
             logger.warning(
                 "route_after_executor: quality PASS with %d requirement caveat(s) and the "
@@ -237,7 +268,7 @@ def route_after_executor(
             "route_after_executor: executor FAIL with cause %r, which another attempt cannot "
             "change - not retrying (attempt=%d/%d) → END - job_id=%s",
             _cause, retry_count, bcfg.BUILDER_MAX_TOTAL_ATTEMPTS, state.get("job_id"))
-        return _END
+        return _sound_or_end(state)
 
     if retry_count <= bcfg.MAX_BUILDER_RETRIES:
         logger.info(
@@ -251,14 +282,62 @@ def route_after_executor(
     # deliverable, so the reviewer - which judges the VISUAL quality of an
     # already-valid mesh - must be bypassed. Routing an un-validated mesh to the
     # reviewer is exactly how an unchecked mesh could be PASS'd and shipped; end the
-    # graph, and let the application render the honest failure from durable facts.
+    # graph, and let the application render the honest failure from durable facts -
+    # unless an EARLIER attempt validated a sound mesh, which is delivered (LAD-cfd-3).
     logger.warning(
         "route_after_executor: executor FAIL all %d attempts exhausted "
         "(solvability_failed=%s) → END (TERMINAL - mesh never validated, "
         "reviewer bypassed) - job_id=%s",
         bcfg.BUILDER_MAX_TOTAL_ATTEMPTS, solvability_failed, state.get("job_id"),
     )
-    return _END
+    return _sound_or_end(state)
+
+
+async def node_deliver_sound(state: PipelineState) -> dict:
+    """LAD-cfd-3: THE RUN DELIVERS ITS NEWEST SOUND MESH. The last attempt failed and none is left,
+    but an earlier attempt's mesh passed every blocking gate and the trial solve: the run is moved
+    back onto that attempt (its workspace, manifest, engine, parameters and notes) and goes to the
+    review as that mesh, exactly as a caveated delivery candidate does. Nothing is re-meshed or
+    re-judged here; the attempt that failed stays on the ladder's record."""
+    from meshpipeline.engines import resolution_policy as _rp
+    from meshpipeline.pipeline import engine_fallback as _lad
+    best = _rp.deliverable_sound(state)
+    if best is None:                    # the route asked first; a vanished mesh ends as it was
+        return {}
+    ladder = _lad.with_attempt(state, _lad.classify(state))
+    ladder["delivered_from"] = {
+        "attempt": best.get("attempt"), "engine": best.get("engine"),
+        "rule": _rp.LAD_DELIVER_SOUND,
+        "why": (f"attempt {state.get('retry_count')} did not pass the automatic checks, and "
+                f"attempt {best.get('attempt')} built a sound mesh"),
+        "short_of": [str(c.get("kind")) for c in best.get("requirement_caveats") or []]}
+    try:
+        from meshpipeline.contracts import decision_record as dr
+        dr.cite(str(state.get("job_id") or ""), stage="resolution_ladder", decided="delivered sound",
+                value=best.get("attempt"), rule=_rp.LAD_DELIVER_SOUND,
+                inputs={"failed_attempt": state.get("retry_count"),
+                        "notes": [c.get("kind") for c in best.get("requirement_caveats") or []]},
+                words="the last attempt failed; the newest sound mesh of the run is delivered")
+    except Exception:  # noqa: BLE001 - a record never changes the delivery
+        logger.debug("node_deliver_sound: why record not kept", exc_info=True)
+    logger.warning("node_deliver_sound: delivering attempt %s (%s) - the last attempt (%s) failed "
+                   "at %s - job_id=%s", best.get("attempt"), best.get("engine"),
+                   state.get("retry_count"), state.get("executor_failed_gate") or "finalize",
+                   state.get("job_id"))
+    return {
+        "engine": str(best.get("engine") or state.get("engine") or ""),
+        "engine_params": dict(best.get("engine_params") or {}),
+        "engine_ladder": ladder,
+        "openfoam_workspace": str(best.get("workspace")),
+        "mesh_manifest": dict(best.get("manifest") or {}),
+        "executor_success": True,
+        "executor_failed_gate": "",
+        "executor_failure_cause": "",
+        "executor_failure_facts": {},
+        "solvability_failed": False,
+        "requirement_caveats": [dict(c) for c in best.get("requirement_caveats") or []],
+        "api_failure": "",
+    }
 
 
 def route_after_reviewer(
@@ -399,6 +478,7 @@ def build_graph(checkpointer):
     b.add_node("node_failure_handler", _fenced("node_failure_handler", node_failure_handler))
     b.add_node("node_infra_retry",     _fenced("node_infra_retry", node_infra_retry))
     b.add_node("node_review_retry",    _fenced("node_review_retry", node_review_retry))
+    b.add_node("node_deliver_sound",   _fenced("node_deliver_sound", node_deliver_sound))
 
     b.add_edge(START, "node_intake")
     b.add_conditional_edges(
@@ -433,11 +513,15 @@ def build_graph(checkpointer):
         "node_executor",
         route_after_executor,
         {
-            "node_reviewer":   "node_reviewer",
-            "node_classifier": "node_classifier",
-            END:               END,
+            "node_reviewer":      "node_reviewer",
+            "node_classifier":    "node_classifier",
+            "node_deliver_sound": "node_deliver_sound",
+            END:                  END,
         },
     )
+    # THE NEWEST SOUND MESH, when the last attempt failed (LAD-cfd-3): reviewed and delivered as a
+    # caveated delivery candidate is
+    b.add_edge("node_deliver_sound", "node_reviewer")
     # THE FALLBACK LADDER sits between classifying a failure and the next attempt: it keeps the
     # engine, or moves the run to the next engine that delivers the same approved mesh
     # (pipeline/engine_fallback.py). It never ends a run, so its one edge is the builder.

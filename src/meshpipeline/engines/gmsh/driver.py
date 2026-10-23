@@ -34,6 +34,23 @@ PASSAGE_CELLS_ACROSS = 13
 #: fraction of its diagonal (the floor that keeps a thin plate from asking for millions of tets)
 EXTERNAL_THIN_DIVISIONS = 6
 EXTERNAL_MAX_DIVISIONS = 400
+#: THE RESOLUTION LADDER'S RUNG (engines/resolution_policy.LADDER_FILE, LAD-cfd-1): a retry after a
+#: sound mesh short of the floor sizes the passage field this many times finer. A standalone copy
+#: of the file name and the cap: this driver runs as a script inside the mesh image.
+LADDER_FILE = "resolution_ladder.json"
+LADDER_MAX_FACTOR = 3.0
+
+
+def ladder_factor(ws) -> float:
+    """The factor on PASSAGE_CELLS_ACROSS this attempt's rung asks for (1.0 at rung 0, or with no
+    readable rung)."""
+    try:
+        f = float(json.loads((Path(ws) / LADDER_FILE).read_text()).get("factor") or 1.0)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return 1.0
+    return f if 1.0 <= f <= LADDER_MAX_FACTOR else 1.0
+
+
 #: the finest the passage field may ask for, as a fraction of the clamp size h: a chord that
 #: grazes a sharp corner reads as a tiny radius, and 2r/13 of that would never finish
 PASSAGE_MIN_SIZE_FRACTION = 1.0 / 30.0
@@ -296,6 +313,9 @@ def _passage_field(gmsh, ws, h: float, diag: float, *, discrete: bool = False) -
     (None, None, None, why) and the clamp sizing stands - the gate still measures the result."""
     if _read_flow_topology(ws) != "internal":
         return None, None, None, "not an internal-flow domain"
+    # PLAN-cfd-1: the passage's own local radius sizes it, PASSAGE_CELLS_ACROSS across (times the
+    # ladder's factor on a retry one rung up, LAD-cfd-1)
+    _target = PASSAGE_CELLS_ACROSS * ladder_factor(ws)
     try:
         from meshpipeline.engines.radius_field import local_radius
     except Exception as exc:  # noqa: BLE001 - standalone use without pyvista
@@ -307,14 +327,15 @@ def _passage_field(gmsh, ws, h: float, diag: float, *, discrete: bool = False) -
                 return None, None, None, "no boundary triangles on the surface"
             r = local_radius(pts, faces, _surface_interior_point(pts, faces), diag * 1e-5,
                              diag / 2.0)
-            sizes = passage_sizes(r, h_max=h, h_min=h * PASSAGE_MIN_SIZE_FRACTION)
+            sizes = passage_sizes(r, target=_target, h_max=h,
+                                  h_min=h * PASSAGE_MIN_SIZE_FRACTION)
             return passage_size_callback(pts, sizes), pts, r, "local radius (input surface)"
         gmsh.model.mesh.generate(3)
         pts, faces = _boundary_triangles(gmsh)
         if len(faces) < 4:
             return None, None, None, "no boundary triangles on the coarse mesh"
         r = local_radius(pts, faces, _interior_point(gmsh, pts), diag * 1e-5, diag / 2.0)
-        sizes = passage_sizes(r, h_max=h, h_min=h * PASSAGE_MIN_SIZE_FRACTION)
+        sizes = passage_sizes(r, target=_target, h_max=h, h_min=h * PASSAGE_MIN_SIZE_FRACTION)
         gmsh.model.mesh.clear()
         return passage_size_callback(pts, sizes), pts, r, "local radius"
     except Exception as exc:  # noqa: BLE001 - a sizing aid must never lose the mesh

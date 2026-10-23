@@ -289,12 +289,10 @@ def _coarsen_after_timeout(timed_out: dict | None, strategy: dict, *,
 
 
 def _under_resolved_facts(state) -> dict | None:
-    """The resolution floor's facts when the last attempt's mesh failed it, else None."""
-    from meshpipeline.contracts.failure_cause import FailureCause
-    if str(state.get("executor_failure_cause") or "") != FailureCause.UNDER_RESOLVED.value:
-        return None
-    facts = state.get("executor_failure_facts")
-    return dict(facts) if isinstance(facts, dict) and facts else None
+    """The resolution floor's facts when the last attempt's mesh fell short of it - a failed gate
+    (an older record) or the note on a sound mesh (engines/resolution_policy) - else None."""
+    from meshpipeline.engines.resolution_policy import under_resolved_facts
+    return under_resolved_facts(state)
 
 
 def _refine_after_under_resolved(gated: dict | None, facts: dict | None,
@@ -1876,6 +1874,8 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
     # held below it, and never rebuilds it byte for byte. Seeded from an earlier attempt's record.
     _timeout_ref: dict | None = _sibling_timed_out_plan(workspace)
     _timeout_case: dict[str, bytes] | None = None
+    from meshpipeline.engines.resolution_policy import factor_of as _factor_of
+    _ladder_factor = _factor_of(workspace)
     # the plan whose mesh fell short of the resolution floor, and the gate's figures for it: every
     # pass of this attempt puts the floor across that passage (_refine_after_under_resolved)
     _under = _under_resolved_facts(state)
@@ -1997,6 +1997,9 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
             _budget = min(_budget, int(_hold_gaps))
         _planned_budget = _budget
         _narrow_target = float(strategy.get("narrow_target") or _PASSAGE_TARGET)
+        # THE RESOLUTION LADDER'S RUNG (engines/resolution_policy, LAD-cfd-1): never under the
+        # rung's own target, whatever the re-plan or the narrow retry asked
+        _narrow_target = max(_narrow_target, float(_PASSAGE_TARGET) * _ladder_factor)
         _gap = _gap_plan(_passage_field, wall_cell=_near_cell, target=_narrow_target,
                          budget=_budget, band_m=_band_m, near_cell=_near_cell,
                          surface_cell=_wall_cell, base_cell=base_cell,

@@ -728,7 +728,9 @@ def _render_outcome(fr: FinalResult) -> str:
                          "Delivered with a stated caveat:" if kinds == {REVIEW_INCONCLUSIVE} else
                          "Delivered with the reviewer's concerns:" if kinds == {REVIEW_CONCERNS}
                          else "Delivered with a note on its narrowest gaps:"
-                         if kinds == {NARROW_PASSAGES}
+                         if kinds and kinds <= {NARROW_PASSAGES, _RESOLUTION_SHORT}
+                         else "Delivered with a note on its size:"
+                         if kinds == {_OVER_CELL_LIMIT}
                          else "Delivered with a concern about its size:"
                          if kinds == {PHYSICAL_SCALE}
                          else "Delivered with stated deviations:")
@@ -777,12 +779,16 @@ def _render_outcome(fr: FinalResult) -> str:
                     lines.extend(_narrow_passage_lines(c))
                 elif kind == PHYSICAL_SCALE:
                     lines.extend(_physical_scale_lines(c))
+                elif kind in (_RESOLUTION_SHORT, _OVER_CELL_LIMIT):
+                    # a sound mesh short of one of our own bars: the note says it all
+                    from meshpipeline.engines.resolution_policy import note_lines
+                    lines.extend(note_lines(c))
                 else:
                     lines.append("  - a stated deviation of an unrecognized kind "
                                  "(see the result record)")
             # the narrow-gap note says everything it needs in its own lines; the closing speaks
             # for the rest
-            core = kinds - {NARROW_PASSAGES, PHYSICAL_SCALE}
+            core = kinds - {NARROW_PASSAGES, PHYSICAL_SCALE, _RESOLUTION_SHORT, _OVER_CELL_LIMIT}
             if MEASURED_VERDICT in core:
                 lines.append(MEASURED_CONCERNS_CLOSING)
             elif core == {"domain_extent"}:
@@ -1271,6 +1277,15 @@ def _limits_apply(outcome: RunOutcome) -> bool:
     return not outcome.api_failure or review_inconclusive_caveat(outcome) is not None
 
 
+def _near_misses(caveats) -> int:
+    """The stated requirements a delivered mesh near-missed. A sound mesh's own notes
+    (engines/resolution_policy: fewer cells across the narrowest gap than the floor, more cells
+    than one job is sized for) are not requirement near-misses: the narrowest gap is its own
+    production limit (passage_cells_across), and a mesh's size is not a fault."""
+    from meshpipeline.engines.resolution_policy import NOTE_KINDS
+    return sum(1 for c in caveats or () if (c or {}).get("kind") not in NOTE_KINDS)
+
+
 def measured_verdict(outcome: RunOutcome) -> dict | None:
     """THE VERDICT FROM MEASURED NUMBERS ALONE: {outcome, rule, inputs, missed}. The inputs are
     every limit with its measured number (engines/verdict_limits), and the outcome and rule follow
@@ -1285,7 +1300,7 @@ def measured_verdict(outcome: RunOutcome) -> dict | None:
             engine=outcome.engine, topology=topology, manifest=outcome.manifest or {},
             valid=bool(outcome.executor_success and not outcome.failed_gate),
             failed_gate=outcome.failed_gate, layers_planned=outcome.layers_planned,
-            requirement_near_misses=len(outcome.requirement_caveats),
+            requirement_near_misses=_near_misses(outcome.requirement_caveats),
             size_concerns=1 if physical_scale_caveat(outcome) is not None else 0,
             notes=_review_points(outcome))
         result, rule = dr.verdict(inputs)
@@ -1413,6 +1428,12 @@ def narrow_passage_caveat(outcome: RunOutcome) -> dict | None:
             "main_cells_across": v.cells_across, "main_way_width_m": v.main_way_width_m}
 
 
+#: The notes a SOUND mesh short of one of our own bars is delivered with (engines/resolution_policy:
+#: LAD-cfd-3 the narrowest gap under the floor, LAD-cfd-4 more cells than one job is sized for).
+_RESOLUTION_SHORT = "resolution_short"
+_OVER_CELL_LIMIT = "over_cell_limit"
+
+
 #: The caveat kind a delivery carries when the mesh is not a believable size for what it is: the
 #: DrivAer car meshed 4.7 mm long and the BlendedNet aircraft 1 mm long, both from triangle files
 #: that state no unit, were counted as clean passes. The mesh is sound, so it is delivered - and
@@ -1524,6 +1545,8 @@ def _narrow_passage_lines(c: Mapping) -> list[str]:
 #: the measured rows another caveat already tells in its own, fuller words
 _TOLD_ELSEWHERE = {"requirement_near_misses": "domain_extent", "size_concerns": PHYSICAL_SCALE,
                    "passage_cells_across": NARROW_PASSAGES}
+#: ...and the measured rows a sound mesh's own note tells (engines/resolution_policy)
+_TOLD_BY_NOTE = {"passage_cells_across": "resolution_short"}
 
 #: What a delivery the measured limits judged short of production quality closes with.
 MEASURED_CONCERNS_CLOSING = (
@@ -1539,7 +1562,8 @@ REVIEWER_NOTES_HEADING = ("Reviewer notes (an AI reviewer looked at the mesh; it
 
 def _measured_rows(c: Mapping, kinds: set) -> list[Mapping]:
     return [r for r in (c.get("missed") or []) if isinstance(r, Mapping)
-            and _TOLD_ELSEWHERE.get(str(r.get("key") or "")) not in kinds]
+            and _TOLD_ELSEWHERE.get(str(r.get("key") or "")) not in kinds
+            and _TOLD_BY_NOTE.get(str(r.get("key") or "")) not in kinds]
 
 
 def _concern_lines(c: Mapping) -> list[str]:

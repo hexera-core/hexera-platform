@@ -393,6 +393,10 @@ def inspect_stl(workspace, geometry_file: str = "input.stl", *, context=None) ->
 
 # configure (write the spec)
 
+#: The finest edge factor a ladder rung may ask for (pack.py's documented range starts here).
+EDGE_LENGTH_FACTOR_MIN = 0.05
+
+
 def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
                    geometry_file: str = "input.stl", **_ignored) -> dict:
     ws = Path(workspace)
@@ -430,6 +434,14 @@ def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
                           "geometry: give source_points+target_points (coordinates on the "
                           "inlet and outlet ends) or source_ids+target_ids (open-profile ids "
                           "from geometry_report). Interactive seeding cannot run headless.")}
+    # THE RESOLUTION LADDER'S RUNG (engines/resolution_policy, LAD-cfd-1): a retry after a sound
+    # fill short of the floor puts `factor` times the cells across every passage - the edge factor
+    # is the local radius' share, so the fill stays local to each passage's own width (PLAN-cfd-1)
+    from meshpipeline.engines.resolution_policy import factor_of
+    _f = factor_of(ws)
+    if _f > 1.0:
+        s = {**s, "edge_length_factor": round(max(EDGE_LENGTH_FACTOR_MIN,
+                                                  float(s["edge_length_factor"]) / _f), 4)}
     s = size_to_budget(s)
     plan = s.get("budget_plan") or {}
     if plan.get("within") == "over":
@@ -1268,13 +1280,10 @@ def check_mesh(workspace) -> dict:
     # an under-resolved branch cannot hide behind a well-resolved main run.
     local = _local_cells_across(ws)
     gate = local["p05"] if local else passage_cells_across
-    if gate is not None and gate < PASSAGE_MIN_CELLS_ACROSS:
-        where = (f"{local['p05']:g} cells across at the narrowest wall (5th percentile; "
-                 f"median {local['median']:g})" if local
-                 else f"{passage_cells_across:g} cells across the passage")
-        fatal.append(f"undermeshed: {where} - a CFD mesh needs at least "
-                     f"{PASSAGE_MIN_CELLS_ACROSS} everywhere (industry practice is 20-40); "
-                     "lower edge_length_factor")
+    # an under-resolved fill is SOUND - it is a note for the resolution gate, never one of the
+    # mesh's fatal defects (that read a coarse fill as a broken mesh and moved the run to another
+    # engine at once). Recorded for the gate and the reviewer; gates/_gate_resolution_floor judges.
+    under_resolved = bool(gate is not None and gate < PASSAGE_MIN_CELLS_ACROSS)
     # LAYER COVERAGE is measured here, from the mesh: the share of wall triangles whose three
     # vertices belong to boundary-layer tets. The reviewer REQUIRES this metric for its
     # local_anatomical_fidelity axis (MetricRequirement("layer_coverage")) and nothing had
@@ -1297,6 +1306,7 @@ def check_mesh(workspace) -> dict:
             "layer_coverage_pct": layer_coverage,
             "passage_cells_across": passage_cells_across,
             "passage_cells_across_local": local,
+            "under_resolved": under_resolved,
             "reoriented_tets": n_reoriented,
             "layer_tets": int(layer_mask.sum()) if layer_mask is not None else 0,
             "layer_min_quality": layer_min_quality}

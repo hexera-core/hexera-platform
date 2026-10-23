@@ -33,6 +33,10 @@ _SURFACE_SUFFIXES = frozenset({".stl", ".fms", ".ftr", ".vtp", ".vtk", ".obj", "
                                ".brep", ".iges", ".igs"})
 #: Where a case's staged surfaces live, besides the workspace root.
 _SURFACE_DIRS = ("constant/triSurface",)
+#: Workspace facts the engines size the case from, beside the spec: the resolution ladder's rung
+#: (engines/resolution_policy.LADDER_FILE). A retry one rung up hands the mesher a different case
+#: even when the authored spec is unchanged - the rung IS the change (LAD-cfd-1).
+_FACT_FILES = ("resolution_ladder.json",)
 
 #: generation directory -> case digest -> {"attempt": the workspace's name, "outcome": words}
 _LEDGER: dict[str, dict[str, dict]] = {}
@@ -51,6 +55,9 @@ def case_digest(workspace: Path, required_files) -> str:
     for p in ws.iterdir() if ws.is_dir() else ():
         if p.is_file() and p.suffix.lower() in _SURFACE_SUFFIXES:
             files.setdefault(p.name, p)
+    for name in _FACT_FILES:
+        if (ws / name).is_file():
+            files.setdefault(name, ws / name)
     for d in _SURFACE_DIRS:
         root = ws / d
         if root.is_dir():

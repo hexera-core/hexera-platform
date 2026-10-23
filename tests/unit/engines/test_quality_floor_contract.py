@@ -115,7 +115,9 @@ def _fail_bar(m: dict, c) -> dict:
 #: by a dedicated earlier gate, so they are asserted only to reject - not to reject *here*.
 NEWLY_OWNED = {
     "cfmesh": {"fatal"},
-    "snappy": {"fatal", "skew_fraction", "wall_faces"},
+    # skew_fraction left the gating set on purpose (docs/RULES.md LAD-cfd-3, VER-2): the share of
+    # skewed faces is a production limit on a sound mesh, never a validity bar
+    "snappy": {"fatal", "wall_faces"},
     "snappy_multiregion": {"skew_fraction"},
 }
 
@@ -195,9 +197,9 @@ def test_gmsh_and_vmtk_keep_their_own_floors():
 
 def test_the_gate_derives_its_verdict_from_measurements_not_a_claimed_grade(tmp_path):
     m = _healthy("snappy")
-    m["quality"]["skew_fraction"] = 0.9                      # a real, failing measurement
+    m["quality"]["fatal"] = ["open cells"]                   # a real, failing measurement
     m["quality_criteria"] = {"engine": "snappy", "production_grade": True, "criteria": []}
     ok, failed, feedback, _ = _run_chain(tmp_path, "snappy", m)
     assert not ok and failed == "quality_floor", (
         "the gate trusted a claimed production_grade over the measurements")
-    assert "skew" in feedback.lower()
+    assert "fatal" in feedback.lower() or "topology" in feedback.lower()

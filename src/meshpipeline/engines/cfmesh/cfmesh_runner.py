@@ -480,7 +480,8 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
                        max_halvings: int = 4, snap_wall: bool = False,
                        wall_area: float | None = None, fit_run: bool = False,
                        wall_ceiling: float | None = None,
-                       accept_fewer: bool = False) -> dict:
+                       accept_fewer: bool = False,
+                       port_widths: dict | None = None) -> dict:
     ws = Path(workspace)
     strategy = strategy or {}
     ext = [float(domain_max[i] - domain_min[i]) for i in range(3)]
@@ -542,11 +543,24 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
     if plan is not None:
         wall_cell = plan["wall_cell"]
 
+    # EVERY OPENING, ITS OWN CELLS ACROSS (PLAN-cfd-2): a port narrower than PORT_CELLS_ACROSS wall
+    # cells gets its own finer cell, on the port's surface only - an outlet smaller than a cell came
+    # back with no faces (a hot-end nozzle's 5 outlets at 19 k cells, census bucket 1b)
+    from meshpipeline.engines.resolution_policy import PORT_CELLS_ACROSS
+    _port_cells: dict[str, float] = {}
+    for _pn, _pw in sorted((port_widths or {}).items()):
+        try:
+            _c = float(_pw) / float(PORT_CELLS_ACROSS)
+        except (TypeError, ValueError):
+            continue
+        if 0.0 < _c < wall_cell and _pn != wall_patch:
+            _port_cells[str(_pn)] = max(_c, _floor, max_cell / float(2 ** 12))
+    _local = "".join(f"    {_pn} {{ cellSize {_c:.6g}; }}\n" for _pn, _c in _port_cells.items())
     dict_parts = [
         _MESHDICT_HDR,
         f'surfaceFile "{surface_file}";\n',
         f"maxCellSize {max_cell:.6g};\n",
-        f"localRefinement\n{{\n    {wall_patch} {{ cellSize {wall_cell:.6g};{_thick} }}\n}}\n",
+        f"localRefinement\n{{\n    {wall_patch} {{ cellSize {wall_cell:.6g};{_thick} }}\n{_local}}}\n",
     ]
     # NARROW PASSAGES, LOCALLY. The band above is sized for the passage most of the wall bounds;
     # where a passage is narrower than that cell carries at the floor, a box refines it to 13
@@ -569,7 +583,12 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
         # 1% under the band's own minimum: a band put on an octree level is nudged 0.1% up
         # (internal_band_cells), and its own walls must not read as narrow and be boxed one level
         # finer - the very level the band just saved
-        _detect = NARROW_DETECT_FACTOR * CFMESH_MIN_CELLS_ACROSS
+        # THE RESOLUTION LADDER'S RUNG (engines/resolution_policy, LAD-cfd-1): a retry after a
+        # sound mesh short of the floor detects and sizes the narrow spots `factor` times finer -
+        # locally, in their boxes; the band and the background keep their cells (PLAN-cfd-1)
+        from meshpipeline.engines.resolution_policy import factor_of
+        _rung = factor_of(ws)
+        _detect = NARROW_DETECT_FACTOR * CFMESH_MIN_CELLS_ACROSS * _rung
 
         _n_layers = max(0, int(strategy.get("n_layers", 0)))
 
@@ -598,7 +617,7 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
         # the passage the wall points bound - priced at its fluid, a valve cage adapter's boxes
         # read 2.3 M and cartesianMesh made 20.2 M cells (lab, 2026-10-21)
         _gap = GS.plan_gaps(_regions_at, cell_m=wall_cell, budget=_limit, limit=_limit,
-                            base_cells=_base, target=CFMESH_CELLS_ACROSS,
+                            base_cells=_base, target=CFMESH_CELLS_ACROSS * _rung,
                             accept_fewer=accept_fewer, whole_box=True)
         _gap.write(ws)
         _narrow = list(_gap.regions)
@@ -608,7 +627,7 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
             # budget - and never stopped before meshing; the gate measures the mesh
             _narrow = list(narrow_passage_regions(
                 passage_field[0], passage_field[1], cell_m=wall_cell, areas=_areas,
-                target=CFMESH_CELLS_ACROSS, detect=_detect,
+                target=CFMESH_CELLS_ACROSS * _rung, detect=_detect,
                 budget_cells=(0.5 * cell_budget if cell_budget else None)) or [])
         _narrow_note = (_gap.words(wall_cell) + (". Options: " + " ".join(
             f"({i}) {o}" for i, o in enumerate(_gap.options(), 1))
@@ -689,12 +708,35 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
             "narrow_regions": [{"cell_size": round(b["cell_needed_m"], 6),
                                 "radius": round(b["radius_m"], 6)} for b in _narrow] or None,
             **({"narrow_note": _narrow_note} if _narrow_note else {}),
+            **({"port_cells": {k: round(v, 6) for k, v in _port_cells.items()}}
+               if _port_cells else {}),
             **({"gap_plan": _gap.record()} if _gap is not None and _gap.spots else {})}
 
 
 def _bind_intake_shared(t: dict, declaration: list, *, bore: bool = True):
     from meshpipeline.engines.port_binding import bind_intake
     return bind_intake(t, declaration, bore=bore)
+
+
+def _opening_widths(srcs: dict, wall_key: str, declaration: list, *, names) -> dict:
+    """Each staged opening's narrowest flow width (metres): its lid's hydraulic diameter, or the
+    declared short side / gap where stated - the width PLAN-cfd-2 puts cells across. {} when none
+    reads (the band's own cell then stands at the ports, as before)."""
+    try:
+        from meshpipeline.engines.passage import declared_port_half_width, lid_hydraulic_diameters
+        widths = {str(k): float(v) for k, v in dict(lid_hydraulic_diameters(srcs, wall_key)).items()
+                  if v}
+        for p in declaration or []:
+            hw = declared_port_half_width([p]) if isinstance(p, dict) else None
+            if hw and p.get("name"):
+                n = str(p["name"])
+                widths[n] = min(float(widths.get(n) or float("inf")), 2.0 * hw)
+    except Exception:  # noqa: BLE001 - a sizing aid, never a failure
+        logger.warning("cfMesh internal: opening widths not read", exc_info=True)
+        return {}
+    keep = {str(n) for n in names or ()}
+    return {n: w for n, w in widths.items() if n != wall_key and (not keep or n in keep)
+            and w > 0.0 and w != float("inf")}
 
 
 def _passage_sizing(t: dict, srcs: dict, wall_key: str, declaration: list):
@@ -933,6 +975,8 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
     if _fluid_declared:
         t = {**t, "wall_bounds_fluid": True}
     passage_radius, _field = _passage_sizing(t, _staged["sizing"], _wall_key, _sizing_decl)
+    _port_widths = _opening_widths(_staged["sizing"], _wall_key, _sizing_decl,
+                                   names=prep.get("patch_names") or [])
     for _done in ("all", "p0"):
         # read into geom.stl and the passage field: only the further passages' surfaces travel
         shutil.rmtree(ws / "_passages" / _done, ignore_errors=True)
@@ -950,7 +994,8 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
         patches=_patches, body_bbox=prep["body_bbox"], L=L,
         domain_min=bb_min, domain_max=bb_max, strategy=strategy, cell_budget=cell_budget,
         passage_radius=passage_radius, passage_field=_field,
-        accept_fewer=accepted_fewer(read_engine_params(workspace)))
+        accept_fewer=accepted_fewer(read_engine_params(workspace)),
+        port_widths=_port_widths)
     _sizes = list((t.get("binding") or {}).get("size_notes") or [])
     return {"success": True, "wrote": ["system/meshDict"], "topology": "internal",
             "openings": t.get("openings"), "passage_radius": passage_radius, **summary,
