@@ -61,9 +61,16 @@ def category_of(tool: str) -> str:
 
 def fea_path(st) -> bool:
     """Whether the session is an FEA part: the declared case is the structural purpose (the FEA
-    route of the purpose mapping, confirmed on the FEA stage) on a solid body."""
+    route of the purpose mapping, confirmed on the FEA stage) on a solid body - or, before any
+    stage was confirmed, the user's own words take it to the FEA path (application/purpose_map).
+    The engine is never a question there, whatever the file's format or whether the stage held."""
     case = tuple(getattr(st, "declared_case", None) or ())
-    return bool(case) and case[0] == "structural" and (len(case) < 2 or case[1] in ("solid-body", ""))
+    if case:
+        return case[0] == "structural" and (len(case) < 2 or case[1] in ("solid-body", ""))
+    from meshpipeline.application import purpose_map as pm
+
+    said = [{"role": "user", "content": str(t)} for t in getattr(st, "user_texts", None) or ()]
+    return bool(said) and pm.reading_for(said).route == pm.ROUTE_FEA
 
 
 def _normalize_declared_patches(args: dict):

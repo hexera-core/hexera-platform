@@ -96,13 +96,20 @@ def measure_cad_surface(shape, *, mm_per_unit: float,
         arc = _face_arc(face, kinds[k], surface, idx, float(mm_per_unit))
         if arc is not None:
             arcs.append(arc)
+    # EVERY CURVED FACE'S OWN CURVATURE (PLAN-fea-7): a swept wire, a spring's coil, a blended
+    # free-form face is round however its CAD writes it - read from the surface itself
+    curvature = {k: r for k, face in enumerate(faces)
+                 if kinds[k] not in ("plane",) and (r := face_radius(face, float(mm_per_unit))) is not None}
     record = _record(surface, arcs, bodies=_cad_bodies(shape), basis="cad", kinds=kinds, started=started,
-                     max_ray_triangles=max_ray_triangles)
+                     max_ray_triangles=max_ray_triangles, curvature=curvature)
     record["cusps"] = cad_cusps(shape, float(mm_per_unit))
     record["micro"] = cad_micro(shape, float(mm_per_unit), diag_mm=float(surface.diag))
     return record, surface
 
 
+#: PLAN-fea-7's rounds read from curvature stop at this share of the part's diagonal: a gentler bend
+#: is meshed by the base size already (its elements per quarter-turn need no zone of their own).
+ROUND_CAP_SHARE = 0.25
 #: MICRO DETAILS are recorded when an edge is shorter, or a face narrower, than this fraction of the
 #: part's diagonal; the plan keeps those far below its own element size (PLAN-fea-12).
 MICRO_FRACTION = 1e-3
@@ -343,6 +350,46 @@ def _weld(xyz: np.ndarray, tris: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return exact[used], inverse[back][tris]
 
 
+#: A face's curvature is read on a CURVATURE_SAMPLES x CURVATURE_SAMPLES grid of its parameters;
+#: its radius is the one CURVATURE_QUANTILE of the readings bend tighter than (the face's tight
+#: side, not one stray reading at a seam).
+CURVATURE_SAMPLES = 9
+CURVATURE_QUANTILE = 0.75
+
+
+def face_radius(face, mm: float) -> float | None:
+    """The face's own radius of curvature (mm): from its principal curvatures sampled over its
+    parameters (OpenCASCADE's BRepLProp_SLProps), the tighter of the two at each sample. None for a
+    face that does not bend (a plane, a ruled flat) or whose curvature cannot be read."""
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.BRepLProp import BRepLProp_SLProps
+
+    try:
+        a = BRepAdaptor_Surface(face, True)
+        u0, u1, v0, v1 = a.FirstUParameter(), a.LastUParameter(), a.FirstVParameter(), a.LastVParameter()
+        if not all(math.isfinite(x) for x in (u0, u1, v0, v1)):
+            return None
+        ks = []
+        n = CURVATURE_SAMPLES
+        for i in range(n):
+            for j in range(n):
+                u = u0 + (u1 - u0) * (i + 0.5) / n
+                v = v0 + (v1 - v0) * (j + 0.5) / n
+                props = BRepLProp_SLProps(a, u, v, 2, 1e-9)
+                if props.IsCurvatureDefined():
+                    k = max(abs(props.MaxCurvature()), abs(props.MinCurvature()))
+                    if math.isfinite(k):
+                        ks.append(k)
+    except Exception:  # noqa: BLE001 - a face whose curvature cannot be read keeps the other rules
+        return None
+    if not ks:
+        return None
+    k = float(np.quantile(np.asarray(ks), CURVATURE_QUANTILE))
+    if k <= 1e-12:
+        return None
+    return _r(mm / k)
+
+
 def _kind_word(t) -> str:
     name = str(t).rsplit(".", 1)[-1].replace("GeomAbs_", "").lower()
     return {"bsplinesurface": "bspline", "beziersurface": "bezier", "surfaceofrevolution": "revolution",
@@ -456,7 +503,7 @@ def measure_triangles(tris_mm) -> dict:
 # --------------------------------------------------------------------------------- record ----
 def _record(s: ff.Surface, arcs: list[ff.Arc], *, bodies: int, basis: str, kinds: list[str] | None,
             started: float, pairs: ff.EdgePairs | None = None,
-            max_ray_triangles: int = MAX_RAY_TRIANGLES) -> dict:
+            max_ray_triangles: int = MAX_RAY_TRIANGLES, curvature: dict[int, float] | None = None) -> dict:
     notes: list[str] = []
     pairs = pairs if pairs is not None else ff.edge_pairs(s)
     complete = True
@@ -468,6 +515,10 @@ def _record(s: ff.Surface, arcs: list[ff.Arc], *, bodies: int, basis: str, kinds
         notes.append(f"The walls were not measured: the surface has {len(s.tris)} triangles, over "
                      f"the {max_ray_triangles} measured quickly.")
     per = thick["per_label"]
+    thin = thick.get("thin") or {}
+    # the part keeps at most MAX_THIN_SPOTS_PART thin spots, the thinnest
+    kept = sorted(((sp["thickness"], k, i) for k, t in thin.items() for i, sp in enumerate(t["spots"])))
+    kept_set = {(k, i) for _t, k, i in kept[:ff.MAX_THIN_SPOTS_PART]}
     # a face that is one round (a cylinder, a torus, a fitted fillet): its radius and which way
     # it bends, so a plan can give a convex round enough elements to keep its shape
     round_of = {next(iter(a.labels)): a for a in arcs if len(a.labels) == 1}
@@ -482,13 +533,29 @@ def _record(s: ff.Surface, arcs: list[ff.Arc], *, bodies: int, basis: str, kinds
         if k in round_of:
             row["radius_mm"] = _r(round_of[k].radius)
             row["concave"] = bool(round_of[k].concave)
+        elif curvature and k in curvature and curvature[k] <= ROUND_CAP_SHARE * float(s.diag):
+            # a curved face no cylinder or torus describes (a swept wire, a spring's coil, a
+            # free-form blend): its own tightest bend, read from the CAD (PLAN-fea-7). A gentle
+            # curve over ROUND_CAP_SHARE of the part is left to the base size.
+            row["radius_mm"] = _r(curvature[k])
+            row["radius_basis"] = "curvature"
         if k in per:
             row["thickness_min_mm"] = _r(per[k][0])
             row["thickness_median_mm"] = _r(per[k][1])
+            if k in thin:
+                # PLAN-fea-3: thin only in places - the rest of the face's wall, and each thin spot
+                row["thickness_wall_mm"] = _r(thin[k]["wall"])
+                row["thin_spots"] = [{"at_mm": _pt(sp["at"]), "radius_mm": _r(sp["radius"]),
+                                      "thickness_mm": _r(sp["thickness"])}
+                                     for i, sp in enumerate(thin[k]["spots"]) if (k, i) in kept_set]
         faces[name] = row
 
+    def face_wall(k: int) -> float:
+        # a face thin only in places: the wall of the rest of it (its thin spots are zones of their own)
+        return thin[k]["wall"] if k in thin else per[k][0]
+
     def wall(labels) -> float | None:
-        vals = [per[k][0] for k in labels if k in per]
+        vals = [face_wall(k) for k in labels if k in per]
         return _r(min(vals)) if vals else None
 
     spots: list[dict] = []

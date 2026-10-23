@@ -62,12 +62,68 @@ def multi_body_message(facts: dict | None) -> str:
     return MULTI_BODY.format(n=n) if n is not None and n > 1 else ""
 
 
+#: NOT A CLOSED SOLID (Areen's Camaro STL, 2026-10-23: a car body of 395 open, overlapping surface
+#: pieces was told "395 separate bodies - export each part on its own"). Version 1 meshes a closed
+#: solid; what the clean check found that rules one out, in plain words, worst first. Every mesh
+#: format (STL, OBJ, PLY, 3MF, GLB) and a CAD file with no solid in it are read the same way.
+NOT_SOLID_REASONS = (
+    ("open_shell", "its faces do not close around a volume"),
+    ("open_boundary", "its surface has open edges - holes in the skin"),
+    ("zero_volume", "it encloses no volume"),
+    ("flat", "it is flat"),
+    ("self_intersection", "the surface passes through itself"),
+    ("bodies_overlap", "separate pieces of it pass into each other"),
+    ("non_manifold_edges", "some edges join more than two faces"),
+    ("non_manifold_vertices", "some surfaces touch only at a point"),
+)
+NOT_SOLID = ("This is a surface, not a closed solid: {why}. FEA version 1 meshes closed solids only; "
+             "shell meshes for surfaces like this are coming.")
+#: The way on from a part version 1 cannot mesh.
+WAY_OUT_SOLID = ("To go on, upload the part as one closed solid (a STEP from your CAD, or a watertight "
+                 "STL). If you meant a fluid flowing around or through it (CFD), upload it again and "
+                 "say so.")
+WAY_OUT_BODIES = "To go on, upload a single part."
+_BREP_FORMATS = ("step", "stp", "iges", "igs", "brep")
+
+
+def not_solid_message(facts: dict | None) -> str:
+    """The plain message for a file that is not one closed solid, "" when nothing says so."""
+    f = facts or {}
+    v = f.get("validity") or {}
+    errors = {str(r.get("code")) for r in v.get("reasons") or []
+              if isinstance(r, dict) and str(r.get("severity") or "error") == "error"}
+    said = [words for code, words in NOT_SOLID_REASONS if code in errors]
+    n = body_count(f)
+    brep = str(f.get("source_format") or "").lower() in _BREP_FORMATS and v.get("kind") != "triangles"
+    if brep and n == 0 and not said:
+        said = ["the file holds faces but no solid"]
+    if not said:
+        return ""
+    why = " and ".join(said[:2])
+    if n is not None and n > 1 and v.get("kind") == "triangles":
+        why = f"it is made of {n} separate surface pieces, and {why}"
+    return NOT_SOLID.format(why=why)
+
+
+def blocker(facts: dict | None) -> tuple[str, str, str]:
+    """(what stops version 1, its kind - "surface" | "bodies" | "", the way on) for the stage and
+    the confirmation alike. Not a closed solid is said first: it is the more basic of the two."""
+    surface = not_solid_message(facts)
+    if surface:
+        return surface, "surface", WAY_OUT_SOLID
+    bodies = multi_body_message(facts)
+    if bodies:
+        return bodies, "bodies", WAY_OUT_BODIES
+    return "", "", ""
+
+
 def fea_view(facts: dict | None) -> dict:
     """What the FEA stage shows beside the part (the size and unit come with the proposal)."""
     clean, said = clean_words(facts)
-    blocked = multi_body_message(facts)
+    blocked, kind, way_out = blocker(facts)
     return {"question": QUESTION, "bodies": body_count(facts), "clean": clean, "clean_summary": said,
-            "single_part_only": blocked, "can_proceed": not blocked, "measure": measure_view(facts)}
+            "single_part_only": blocked, "blocked_kind": kind, "way_out": way_out,
+            "can_proceed": not blocked, "measure": measure_view(facts)}
 
 
 #: The stage is sent EVERY hot spot the record holds (all of them, up to cad/fea_features.
@@ -134,4 +190,5 @@ def in_unit(record: dict | None, scale_to_m: float | None) -> dict | None:
 
 __all__ = ["MULTI_BODY", "QUESTION", "SHOWN_HOT_SPOTS", "STAGE_FEA", "STAGE_FLOW", "STAGE_THERMAL",
            "body_count", "clean_words", "fea_view", "hot_spot_words", "in_unit", "measure_view",
-           "multi_body_message", "stage_route"]
+           "multi_body_message", "stage_route", "NOT_SOLID", "NOT_SOLID_REASONS", "WAY_OUT_BODIES",
+           "WAY_OUT_SOLID", "blocker", "not_solid_message"]

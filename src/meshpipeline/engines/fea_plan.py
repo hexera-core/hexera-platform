@@ -6,7 +6,7 @@
     {"version": 2,
      "element": {"family": "tetrahedra", "order": 2, "solid_only": true},
      "base_size_m": .., "growth": 1.3, "per_h3": 4.5,
-     "zones": [{"id": "W3", "kind": "wall" | "hole" | "fillet" | "notch" | "corner" | "round",
+     "zones": [{"id": "W3", "kind": "wall" | "wall_spot" | "hole" | "fillet" | "notch" | "corner" | "round",
                 "faces": ["Face_3"], "size_m", "reach_m", "rule": "PLAN-fea-3", "why": "...",
                 "spot": "H1", "capped": bool, "thickness_m" | "radius_m"}],
      "histogram": [[size_m, volume_m3], ...],
@@ -23,7 +23,7 @@ THE RULES (docs/RULES.md):
               the wall beside it
   PLAN-fea-5  sharp inside corners are capped at a quarter of the wall beside them
   PLAN-fea-6  sizes grow by at most 1.3 away from every zone
-  PLAN-fea-7  every other round keeps its shape: 3 elements per quarter-turn
+  PLAN-fea-7  every curved face keeps its shape: 4 elements per quarter-turn, by its own curvature
   PLAN-fea-8  the estimate is checked against the element limit before meshing and never stops the
               run: over it, the finest zones are coarsened until it fits, never past what keeps
               elements valid, and what that leaves short is named (resolution_short)
@@ -70,7 +70,7 @@ CORNER_DIVISIONS = 4
 #: PLAN-fea-6: the largest ratio between neighbouring element sizes away from a zone.
 GROWTH = 1.3
 #: PLAN-fea-7: elements per quarter-turn of a round that is not a hot spot (its shape only).
-ROUND_PER_QUARTER = 3
+ROUND_PER_QUARTER = 4
 #: Tetrahedra per base size cubed, measured on gmsh's own Delaunay fill (lab ~/fea4_lab: a cube
 #: at 10/6/4 mm gave 4.9/4.6/4.2 per h^3, boundary included).
 PER_H3 = 4.5
@@ -136,12 +136,24 @@ def zones(record: Mapping, *, tighten: Mapping[str, float] | None = None) -> lis
     face_rows = record.get("faces") or {}
     for name in sorted(face_rows, key=_face_order):
         row = face_rows[name] or {}
-        t = _f(row.get("thickness_min_mm"))
+        # PLAN-fea-3, THIN ONLY WHERE IT IS THIN: a face thin only in places keeps the wall the rest
+        # of it agrees on, and each thin spot is a zone of its own round where its readings are
+        t = _f(row.get("thickness_wall_mm")) or _f(row.get("thickness_min_mm"))
         if t is not None:
             out.append({"id": f"W{_face_order(name)}", "kind": "wall", "faces": [name],
                         "size_m": t / WALL_ELEMENTS * _MM, "reach_m": t * _MM, "rule": "PLAN-fea-3",
                         "thickness_m": t * _MM, "capped": False,
                         "why": f"a {_mm(t)} wall under {name}: {WALL_ELEMENTS} elements through it"})
+        for i, sp in enumerate(row.get("thin_spots") or [], start=1):
+            ts, rad = _f(sp.get("thickness_mm")), _f(sp.get("radius_mm"))
+            if not ts or rad is None:
+                continue
+            out.append({"id": f"T{_face_order(name)}_{i}", "kind": "wall_spot", "faces": [name],
+                        "size_m": ts / WALL_ELEMENTS * _MM, "reach_m": ts * _MM, "rule": "PLAN-fea-3",
+                        "thickness_m": ts * _MM, "capped": False, "radius_m": rad * _MM,
+                        "at_m": [float(v) * _MM for v in sp.get("at_mm") or [0.0, 0.0, 0.0]],
+                        "why": (f"a {_mm(ts)} thin spot of the wall under {name}, {_mm(rad)} across: "
+                                f"{WALL_ELEMENTS} elements through it there")})
         r = _f(row.get("radius_mm"))
         if r is not None and name not in spot_faces:
             out.append({"id": f"R{_face_order(name)}", "kind": "round", "faces": [name],
@@ -211,7 +223,7 @@ def shortfalls(zone_list: list[dict], n: int = 12) -> list[str]:
             continue
         size = float(z["size_m"])
         where = ", ".join(z.get("faces") or []) or str(z.get("id"))
-        if z["kind"] == "wall" and z.get("thickness_m"):
+        if z["kind"] in ("wall", "wall_spot") and z.get("thickness_m"):
             got = float(z["thickness_m"]) / size
             rows.append((got / WALL_ELEMENTS, f"{where}: about {got:.2g} elements through the "
                          f"{float(z['thickness_m']) * 1e3:.3g} mm wall instead of {WALL_ELEMENTS}"))
@@ -276,6 +288,12 @@ def words(record: Mapping, plan: Mapping) -> list[str]:
         out.append(f"Walls: at least {WALL_ELEMENTS} elements through every wall. {len(walls)} face(s) sit on "
                    f"walls thin enough to need it; the thinnest, {thin['thickness_m'] * 1e3:.3g} mm under "
                    f"{thin['faces'][0]}, gets {thin['size_m'] * 1e3:.3g} mm elements.")
+    spots_thin = [z for z in zs if z["kind"] == "wall_spot" and z["size_m"] < plan["base_size_m"]]
+    if spots_thin:
+        t = min(spots_thin, key=lambda z: z["thickness_m"])
+        out.append(f"{len(spots_thin)} spot(s) where a wall is thin only in places get their own elements there, "
+                   f"not across the whole face; the thinnest, {t['thickness_m'] * 1e3:.3g} mm on {t['faces'][0]}, gets "
+                   f"{t['size_m'] * 1e3:.3g} mm elements.")
     else:
         out.append(f"Walls: at least {WALL_ELEMENTS} elements through every wall; the base size already gives "
                    "that everywhere.")
@@ -328,6 +346,9 @@ def words(record: Mapping, plan: Mapping) -> list[str]:
         if coarse.get("at_minimums"):
             out.append("Even with every zone at those minimums the part needs more than the limit: meshed so "
                        "anyway, as the least resolution that keeps every element valid.")
+        if coarse.get("over_memory"):
+            out.append("That least valid mesh may be more than the mesh job's memory holds; it is meshed anyway, "
+                       "and if the memory runs out the result says so.")
     out.append(f"Estimated before meshing: about {est:,} elements (the limit is {limit:,}).")
     for lever in plan.get("levers") or []:
         out.append(str(lever.get("words") or ""))
@@ -346,7 +367,7 @@ def decisions(record: Mapping, plan: Mapping) -> list[dict]:
          "inputs": {"min_divisions": MIN_DIVISIONS, "per_h3": PER_H3},
          "words": f"Base size {plan['base_size_m'] * 1e3:.3g} mm: a tenth of the part, the rules refine below it."},
     ]
-    for rule, kinds, what in (("PLAN-fea-3", ("wall",), "walls"), ("PLAN-fea-4", ("hole", "fillet", "notch"), "hot spots"),
+    for rule, kinds, what in (("PLAN-fea-3", ("wall", "wall_spot"), "walls"), ("PLAN-fea-4", ("hole", "fillet", "notch"), "hot spots"),
                               ("PLAN-fea-5", ("corner",), "capped corners"), ("PLAN-fea-7", ("round",), "rounds")):
         sel = [z for z in zs if z["kind"] in kinds]
         if sel:
@@ -376,6 +397,16 @@ def decisions(record: Mapping, plan: Mapping) -> list[dict]:
                            "at_minimums": coarse.get("at_minimums")},
                 "words": (f"About {plan['estimate']['elements']:,} elements against the {limit:,} limit: "
                           + ("the finest zones coarsened to fit, short where named." if coarse else "meshed as planned."))})
+    memory = (plan.get("limit") or {}).get("memory")
+    if memory:
+        out.append({"stage": "fea_plan", "decided": "memory limit", "rule": "PLAN-fea-16",
+                    "value": int(memory.get("memory_elements") or 0),
+                    "inputs": {**memory, "over_memory": bool(coarse.get("over_memory"))},
+                    "words": (f"The mesh job's {memory.get('memory_gib'):g} GiB holds about "
+                              f"{int(memory.get('memory_elements') or 0):,} elements "
+                              f"({memory.get('bytes_per_element'):g} bytes each, {memory.get('margin'):g} times to spare)"
+                              + ("; even the least valid mesh is over it, and it is meshed anyway."
+                                 if coarse.get("over_memory") else "."))})
     return out
 
 

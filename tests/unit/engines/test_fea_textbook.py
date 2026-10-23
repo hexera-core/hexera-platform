@@ -112,6 +112,9 @@ def _shape(case: str):
         # whole bar does not fit Quick's 100,000 elements, a quarter's does
         bar = _cut(_cyl(GROOVE["D"] / 2, GROOVE["L"]), _torus(GROOVE["D"] / 2, GROOVE["r"], GROOVE["L"] / 2))
         return _common(bar, _box(0, 0, -1, GROOVE["D"], GROOVE["D"], GROOVE["L"] + 2))
+    if case == "spring":
+        from tests import fea_fixtures as fx
+        return fx.coil_spring()
     if case in ("modal", "buckling"):
         return _box(0, 0, 0, SLENDER["h"], SLENDER["h"], SLENDER["L"])
     raise KeyError(case)
@@ -425,6 +428,51 @@ def _buckling(ws, q):
     return p_cr, math.pi ** 2 * E * inertia / (4 * L * L), "Euler critical load (N)"
 
 
+def _spring(ws, q):
+    """A HELICAL COIL SPRING under an axial load: the peak shear in the wire against the Wahl-corrected
+    formula tau = K_w 8 P D / (pi d^3), K_w = (4C - 1)/(4C - 4) + 0.615/C, C = D/d - read away from the
+    two loaded ends (a coil's length off each), where the end loads spread into the wire. PLAN-fea-7
+    gives the round wire its 16 elements round (22 Oct: without it the wire meshed as a ribbon)."""
+    from tests.fea_fixtures import SPRING
+
+    deck, nodes, nsets = _deck(ws)
+    D, d, pitch, turns = (SPRING[k] * (1e-3 if k != "turns" else 1.0) for k in ("D", "d", "pitch", "turns"))
+    start = np.array([D / 2, 0.0, 0.0])
+    end = np.array([D / 2, 0.0, pitch * turns])
+    fixed = _face(nodes, nsets, lambda x: np.linalg.norm(x - start) < 0.51 * d)
+    loaded = _face(nodes, nsets, lambda x: np.linalg.norm(x - end) < 0.51 * d)
+    # 100 N ALONG THE COIL'S AXIS, as a spring is loaded: the loaded end is a rigid body led by a
+    # node on the axis (a force at the wire's end, off the axis, also bends the whole coil sideways)
+    force = 100.0
+    ref, rot = 9_000_001, 9_000_002
+    _dat, frd = _solve(ws, "spring", deck, _material("STEEL", 0.3) + f"""*NODE
+{ref}, 0.0, 0.0, {end[2]:.9e}
+{rot}, 0.0, 0.0, {end[2]:.9e}
+*RIGID BODY, NSET={loaded}, REF NODE={ref}, ROT NODE={rot}
+*BOUNDARY
+{fixed}, 1, 3, 0.0
+{ref}, 1, 2, 0.0
+{rot}, 1, 3, 0.0
+*STEP
+*STATIC, SOLVER=ITERATIVE CHOLESKY
+*CLOAD
+{ref}, 3, {force:.6e}
+*NODE FILE
+S
+*END STEP
+""")
+    st = _frd_stress(frd)
+    peak = 0.0
+    for nid, (sxx, syy, szz, sxy, syz, szx) in st.items():
+        if not (pitch < nodes[nid][2] < pitch * (turns - 1)):
+            continue
+        ev = np.linalg.eigvalsh(np.array([[sxx, sxy, szx], [sxy, syy, syz], [szx, syz, szz]]))
+        peak = max(peak, 0.5 * float(ev[-1] - ev[0]))
+    c = D / d
+    k_w = (4 * c - 1) / (4 * c - 4) + 0.615 / c
+    return peak, k_w * 8 * force * D / (math.pi * d ** 3), "peak wire shear (Wahl-corrected)"
+
+
 CASES = {
     "plate_hole": ("static", _plate, 0.03),
     "cantilever": ("static", _cantilever, 0.01),
@@ -432,6 +480,8 @@ CASES = {
     "groove": ("static", _groove, 0.03),
     "modal": ("modal", _modal, 0.01),
     "buckling": ("buckling", _buckling, 0.01),
+    # the Wahl factor is itself a fit (within about 2% of the exact coil solution at this index)
+    "spring": ("static", _spring, 0.05),
 }
 
 

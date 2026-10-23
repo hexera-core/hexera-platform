@@ -235,7 +235,7 @@ def test_the_rules_own_plan_is_meshed_when_it_fits(tmp_path):
     record, surface, diag = FD.measure_staged(ws)
     plan = FD.choose_plan(record, surface, diag)
     assert plan["fits"] and not plan.get("coarsened") and "resolution_short" not in plan
-    assert plan["limit"]["elements"] == P.ELEMENT_LIMIT
+    assert plan["limit"]["elements"] == min(P.ELEMENT_LIMIT, FD.memory_elements())
 
 
 def test_over_the_limit_the_finest_zones_are_coarsened_and_what_is_short_is_named(tmp_path, monkeypatch):
@@ -416,3 +416,86 @@ def test_a_plan_the_memory_limit_killed_is_told_as_memory_and_not_retried(tmp_pa
     assert not ok and len(calls) == 1 and ref.facts["out_of_memory"]
     assert "memory" in ref.builder_text and not retry_can_help(ref.cause, ref.facts)
     assert "memory" in " ".join(describe(ref.cause, ref.facts))
+
+
+def test_a_wall_thin_only_in_places_is_refined_only_there(tmp_path):
+    """PLAN-fea-3, thin only where it is thin (fea0221: a 0.05 mm sliver put the whole 660 mm2 bore at
+    0.025 mm elements, 298M). The bore keeps the wall the rest of it reads; the sliver is a spot zone
+    of its own, held to 2 elements through it on the mesh - and the plan is far smaller than the whole
+    face held to the sliver."""
+    ws = _stage(fx.sliver_block(), tmp_path / "sliver")
+    record, surface, diag = FD.measure_staged(ws)
+    thin = {n: r for n, r in record["faces"].items() if r.get("thin_spots")}
+    assert thin, "the sliver is read as a thin spot"
+    name, row = min(thin.items(), key=lambda kv: kv[1]["thickness_min_mm"])
+    assert row["thickness_min_mm"] < 0.8 and row["thickness_wall_mm"] > 1.0
+    plan = FD.make_plan(record, surface, diag)
+    spots = [z for z in plan["zones"] if z["kind"] == "wall_spot" and z["faces"] == [name]]
+    wall = next(z for z in plan["zones"] if z["kind"] == "wall" and z["faces"] == [name])
+    assert spots and wall["thickness_m"] > 5 * min(z["thickness_m"] for z in spots)
+    # the whole face held to the sliver, as before: many times the elements
+    whole = json.loads(json.dumps(record))
+    for r in whole["faces"].values():
+        r.pop("thin_spots", None)
+        r.pop("thickness_wall_mm", None)
+    old = FD.make_plan(whole, surface, diag)
+    assert plan["estimate"]["elements"] * 2 < old["estimate"]["elements"]
+    FD.write_plan(ws, plan)
+    assert fea_adapter.mesh(ws) == 0
+    q = json.loads((ws / "quality.json").read_text())
+    spot_ids = {z["id"] for z in spots}
+    assert not spot_ids & set(q["fea"]["rules"]["short"]), q["fea"]["rules"]["through_wall"]
+    assert q["cells"] < 1.5 * plan["estimate"]["elements"] and not q["fatal"]
+
+
+# ---------------------------------------------- PLAN-fea-16: the plan fits in the job's memory ----
+def test_the_limit_is_what_fits_in_the_mesh_jobs_memory(monkeypatch):
+    room = FD.MESH_JOB_MEMORY_GIB * 1024 / FD.MEMORY_MARGIN - FD.MEMORY_BASE_MB
+    assert FD.memory_elements() == int(room * 1024 * 1024 / FD.BYTES_PER_ELEMENT)
+    assert FD.memory_elements(16.0) < FD.memory_elements(32.0)
+    monkeypatch.setattr(FD, "MESH_JOB_MEMORY_GIB", 4.0)
+    limit, why = FD.element_limit({"faces": {}}, 13800)
+    assert limit == FD.memory_elements() and "memory" in why
+
+
+def test_the_mesh_job_memory_is_the_deploys_own():
+    """PLAN-fea-16 plans against the memory the mesh job is deployed with (dev and prod alike)."""
+    import re
+
+    root = Path(__file__).resolve().parents[3]
+    for f in ("deploy/gcp/scripts/bootstrap-env.sh", "deploy/gcp/generated.prod.env"):
+        m = re.search(r"^MESH_MEMORY=(?:\$\{MESH_MEMORY:-)?(\d+)Gi", (root / f).read_text(), re.M)
+        assert m and float(m.group(1)) == FD.MESH_JOB_MEMORY_GIB, f
+
+
+def test_a_least_valid_mesh_over_the_memory_is_meshed_anyway_and_said(tmp_path, monkeypatch):
+    ws = _stage(fx.plate_with_hole(), tmp_path / "overmem")
+    record, surface, diag = FD.measure_staged(ws)
+    monkeypatch.setattr(FD, "memory_elements", lambda memory_gib=None: 100)
+    plan = FD.choose_plan(record, surface, diag)
+    assert plan["fits"] and plan["coarsened"]["at_minimums"] and plan["coarsened"]["over_memory"]
+    assert any("memory" in w for w in plan["words"])
+    row = next(d for d in plan["decisions"] if d["rule"] == "PLAN-fea-16")
+    assert row["inputs"]["over_memory"] and row["inputs"]["memory_gib"] == FD.MESH_JOB_MEMORY_GIB
+
+
+def test_a_springs_round_wire_keeps_its_section(tmp_path):
+    """PLAN-fea-7 from the CAD's own curvature (22 Oct: a coil spring's wire, a swept circle no
+    cylinder describes, meshed as a 4- to 6-sided ribbon): the wire face reads its own radius and
+    gets 4 elements per quarter-turn - about 16 round the wire, and over 3 across it."""
+    import math
+
+    ws = _stage(fx.coil_spring(), tmp_path / "spring")
+    record, surface, diag = FD.measure_staged(ws)
+    wire = [r for r in record["faces"].values() if r.get("radius_basis") == "curvature"]
+    assert wire and wire[0]["radius_mm"] == pytest.approx(fx.SPRING["d"] / 2, rel=0.03)
+    plan = FD.make_plan(record, surface, diag)
+    round_ = next(z for z in plan["zones"] if z["kind"] == "round")
+    around = 2 * math.pi * round_["radius_m"] / round_["size_m"]
+    assert around >= 16 * 0.999 and fx.SPRING["d"] * 1e-3 / round_["size_m"] >= 3
+
+
+def test_a_gentle_curve_gets_no_round_zone_of_its_own():
+    from meshpipeline.cad import fea_measure as M
+
+    assert M.ROUND_CAP_SHARE <= 0.25       # a bend over a quarter of the part is the base size's

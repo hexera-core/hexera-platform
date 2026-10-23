@@ -108,6 +108,22 @@ class _Distance:
         return np.asarray(vtk_to_numpy(out), dtype=float).copy()
 
 
+class _BallDistance:
+    """Distance past the nearest of a set of balls (0 inside one)."""
+
+    def __init__(self, balls):
+        b = np.asarray(balls, dtype=float).reshape(-1, 4)
+        self.c, self.r = b[:, :3], b[:, 3]
+
+    def __call__(self, p: np.ndarray) -> np.ndarray:
+        if not len(p):
+            return np.zeros(0)
+        d = np.full(len(p), np.inf)
+        for c, r in zip(self.c, self.r, strict=True):
+            d = np.minimum(d, np.maximum(0.0, np.linalg.norm(p - c, axis=1) - r))
+        return d
+
+
 class _EdgeDistance:
     """Distance to a set of polyline segments, by points sampled along them."""
 
@@ -136,6 +152,7 @@ class _Group:
     reach: float
     faces: _Distance | None
     edges: _EdgeDistance | None
+    balls: _BallDistance | None = None
 
 
 def group_zones(zones: list[dict]) -> list[dict]:
@@ -147,11 +164,16 @@ def group_zones(zones: list[dict]) -> list[dict]:
         [{"size": m, "reach": m, "edge": bool, "faces": [names], "edges": [[face_a, face_b], ...]}]
     """
     buckets: dict[tuple[int, bool], list[dict]] = {}
+    spots: dict[tuple[int, str], list[dict]] = {}
     for z in zones:
         size = float(z["size_m"])
         if size <= 0 or not math.isfinite(size):
             continue
-        key = (int(math.floor(math.log(size) / math.log(GROUP_RATIO))), z.get("kind") == "corner")
+        b = int(math.floor(math.log(size) / math.log(GROUP_RATIO)))
+        if z.get("kind") == "wall_spot":
+            spots.setdefault((b, str((z.get("faces") or [""])[0])), []).append(z)
+            continue
+        key = (b, z.get("kind") == "corner")
         buckets.setdefault(key, []).append(z)
     out = []
     for (_b, edge), zs in sorted(buckets.items()):
@@ -160,6 +182,14 @@ def group_zones(zones: list[dict]) -> list[dict]:
                     "reach": max(float(z.get("reach_m") or 0.0) for z in zs), "edge": edge,
                     "faces": faces,
                     "edges": [list(z.get("faces") or [])[:2] for z in zs] if edge else []})
+    # PLAN-fea-3's thin spots: the wall rule held off the face (out to the wall's own reach) but only
+    # inside balls round where the wall is thin - the size is the larger of the two laws, so it grows
+    # away from the face and away from the balls alike. After the face and edge groups, so a plan
+    # without them groups exactly as before.
+    for (_b, face), zs in sorted(spots.items(), key=lambda kv: (kv[0][0], _face_key(kv[0][1]))):
+        out.append({"size": min(float(z["size_m"]) for z in zs),
+                    "reach": max(float(z.get("reach_m") or 0.0) for z in zs), "edge": False, "faces": [face],
+                    "edges": [], "balls": [[*[float(v) for v in z["at_m"]], float(z["radius_m"])] for z in zs]})
     return out
 
 
@@ -205,6 +235,13 @@ class SizeField:
     def _groups(self, zones: list[dict]) -> list[_Group]:
         out = []
         for g in group_zones(zones):
+            if g.get("balls"):
+                idx = self._tris_of(g["faces"])
+                if not len(idx):
+                    continue
+                out.append(_Group(g["size"], g["reach"], _Distance(self.xyz, self.tris[idx]), None,
+                                  _BallDistance(g["balls"])))
+                continue
             if g["edge"]:
                 ends = [self._edges_of(fs) for fs in g["edges"]]
                 aa = np.vstack([a for a, _b in ends])
@@ -227,7 +264,11 @@ class SizeField:
         g1 = self.growth - 1.0
         for g in self.groups:
             d = np.abs(g.faces(p)) if g.faces is not None else g.edges(p)  # type: ignore[misc]
-            h = np.minimum(h, g.size + g1 * np.maximum(0.0, d - g.reach))
+            past = d - g.reach
+            if g.balls is not None:
+                # a thin spot: past its wall's reach from the face, or past its balls, whichever is more
+                past = np.maximum(past, g.balls(p))
+            h = np.minimum(h, g.size + g1 * np.maximum(0.0, past))
         return h
 
     def signed(self, p: np.ndarray) -> np.ndarray:
