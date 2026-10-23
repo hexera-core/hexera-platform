@@ -209,9 +209,21 @@ def fea_limits(quality: Mapping) -> list[dict]:
     from meshpipeline.engines.fea_quality import limits_for
     order = quality.get("element_order")
     fea_rows = limits_for(int(order) if isinstance(order, (int, float)) and not isinstance(order, bool) else 1)
-    rows = [{"key": k, "label": lab, "op": op, "limit": lim, "measured": _plain(quality.get(k)),
-             "source": src} for k, lab, op, lim, src in (*fea_rows, FEA_RULES_ROW)]
     fea_m: Mapping = fea if isinstance(fea, Mapping) else {}
+    # ONE LIST OF NOTES (22 Oct): the rows the result screen shows are exactly the rows the job's
+    # verdict reads - the quality note floor and the elements through the thinnest wall first, as
+    # the screen lists them (a job said "Review: passed" while its screen said "with notes")
+    from meshpipeline.engines.gmsh.gates import FEA_WALL_FLOOR
+    rows = [{"key": "elements_under_floor", "op": "==", "limit": 0,
+             "label": f"Elements under the quality note floor (SICN {float(quality.get('sicn_floor') or 0.1):g})",
+             "measured": _plain(quality.get("elements_under_floor")),
+             "source": "engines/gmsh/fea_adapter.py (the note floor: SICN 0.1 straight, 0.01 curved)"},
+            {"key": "through_wall_min", "op": ">=", "limit": FEA_WALL_FLOOR,
+             "label": "Elements through the thinnest wall (2 planned; read to within 10%)",
+             "measured": _plain(fea_m.get("through_wall_min")),
+             "source": "docs/RULES.md PLAN-fea-3 (engines/fea_checks.py)"}]
+    rows += [{"key": k, "label": lab, "op": op, "limit": lim, "measured": _plain(quality.get(k)),
+              "source": src} for k, lab, op, lim, src in (*fea_rows, FEA_RULES_ROW)]
     coarse = fea_m.get("coarsened") if isinstance(fea_m.get("coarsened"), Mapping) else None
     if coarse:
         # PLAN-fea-8: the rules needed more than the element limit, so the finest zones were made

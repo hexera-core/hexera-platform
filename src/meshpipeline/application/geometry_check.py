@@ -443,6 +443,11 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
         facts.setdefault("notes", []).extend(n for n in canonical.notes if n not in facts["notes"])
         # whether the upload is CLEAN (cad/validity): the contract a mesh is promised on
         facts["validity"] = clean_verdict(fetched, canonical)
+        # THE PART'S NAME FROM THE FILE (cad/part_name): a STEP's own product name, else the upload's
+        # file name - what every stage shows when no model names the part (an FEA part never asks one)
+        from meshpipeline.cad.part_name import part_name
+
+        facts["part_name"] = part_name(fetched, ref.original_filename)
         if facts["validity"].get("clean") is not True and facts["validity"].get("kind") != "unchecked":
             facts["notes"].append(facts["validity"]["summary"])
         # a thermal model's physics (ECXML: materials, powers, fans, vents...), kept whole beside
@@ -1648,7 +1653,7 @@ def _proposal(facts: dict, vision: dict | None) -> dict:
     if _is_thermal(facts):
         return _thermal_proposal(facts, vision)
     proposal = {
-        "part": (vision or {}).get("part") or "",
+        "part": (vision or {}).get("part") or str(facts.get("part_name") or ""),
         "input_kind": facts["input_kind"], "flow": facts["flow"],
         "openings": [dict(o) for o in facts["openings"]],
         "seed_point_mm": facts.get("seed_point_mm"),
