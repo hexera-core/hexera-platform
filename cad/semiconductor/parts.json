@@ -465,5 +465,52 @@
       "fluid_bodies": 1,
       "checks_passed": 19
     }
+  },
+  {
+    "name": "wavy_250um_16ch",
+    "solid_stl": "wavy_250um_16ch_solid.stl",
+    "fluid_stl": "wavy_250um_16ch_fluid.stl",
+    "narrowest_um": 250.0,
+    "fluid_volume_mm3": 43.675527774,
+    "solid_volume_mm3": 122.574472021,
+    "wetted_area_mm2": 528.940611651,
+    "passages": 16,
+    "passage_extent_mm": [
+      0.750000589,
+      19.999999553,
+      0.500000053
+    ],
+    "extent_mm": [
+      8.75,
+      20.0,
+      0.95
+    ],
+    "fluid_lo": [
+      0.0002500000118743628,
+      0.0,
+      0.00022499999613501132
+    ],
+    "fluid_hi": [
+      0.008500000461935997,
+      0.019999999552965164,
+      0.0007250000489875674
+    ],
+    "solid_lo": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "solid_hi": [
+      0.008750000037252903,
+      0.019999999552965164,
+      0.0009500000160187483
+    ],
+    "note": "Wave amplitude 250 um, wavelength 2500 um, channel 250 x 500 um, 16 channels through a 8.75 x 20 x 0.95 mm plate. The amplitude and wavelength are the best-performing case the wavy-microchannel literature reports; the array around them is parametric. The first part in this package with a smoothly curved channel wall. NOT a replica of any paper's part.",
+    "declared": {
+      "kind": "wavy",
+      "fluid_volume_mm3": 43.675528567,
+      "fluid_bodies": 16,
+      "checks_passed": 22
+    }
   }
 ]

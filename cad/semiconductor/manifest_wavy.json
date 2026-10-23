@@ -1,0 +1,22 @@
+[
+  {
+    "name": "wavy_250um_16ch",
+    "kind": "wavy",
+    "smallest_feature_um": 250.0,
+    "thinnest_solid_um": 225.0,
+    "fluid_volume_mm3": 43.675528567,
+    "solid_volume_mm3": 122.574471,
+    "arc_length_mm": 21.845191,
+    "arc_vs_plate_pct": 9.226,
+    "fluid_bodies": 16,
+    "stl_triangles_solid": 49484,
+    "stl_triangles_fluid": 49344,
+    "build_seconds": 94.9,
+    "checks_passed": 22,
+    "source": {
+      "paper": "Wavy microchannel with oblique grooves (numerical)",
+      "url": "",
+      "note": "Wave amplitude 250 um, wavelength 2500 um, channel 250 x 500 um, 16 channels through a 8.75 x 20 x 0.95 mm plate. The amplitude and wavelength are the best-performing case the wavy-microchannel literature reports; the array around them is parametric. The first part in this package with a smoothly curved channel wall. NOT a replica of any paper's part."
+    }
+  }
+]

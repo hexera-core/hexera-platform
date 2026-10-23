@@ -731,22 +731,33 @@ def _grids_for(runs, key):
         h = _cell_size_m(mesh)
         if value is None or h <= 0:
             continue
+        # A mesh quantity is final the moment the mesh is built: there is no solve to leave
+        # unfinished, so `converged` for those is whether the mesh passed its own checks.
+        settled = (not mesh.get("problems")) if key.startswith("@")             else bool(solve.get("converged"))
         out.append(V.Grid(label=str(across) + " across", cells=mesh.get("fluid_cells") or 0,
-                          h=h, value=float(value), converged=bool(solve.get("converged"))))
+                          h=h, value=float(value), converged=settled))
     return out
 
 
 def _runs_for(part):
-    """Every (cells-across, mesh report, solve report) this part has on disk, coarse to fine."""
+    """Every (cells-across, mesh report, solve report) this part has on disk, coarse to fine.
+
+    A MESH WITHOUT A SOLVE STILL COUNTS, with an empty solve report. The coolant's own volume comes
+    off the mesh, and that is the quantity whose behaviour across resolutions is most worth
+    studying: it is the geometry everything else rests on, a mesh-only sweep is minutes rather than
+    hours, and requiring a solve for it meant the cheapest study was the one that could not be run.
+    `converged` is absent from an empty report, so `analyse` refuses the solve-side quantities on
+    those runs rather than treating them as converged, which is the right answer for both.
+    """
     found = []
     for d in sorted(RUNS.glob(part.name + "-*across")):
         mp, sp = d / "mesh-report.json", d / "solve-report.json"
-        if not (mp.is_file() and sp.is_file()):
+        if not mp.is_file():
             continue
         mesh = json.loads(mp.read_text())
-        solve = json.loads(sp.read_text())
         if mesh.get("part") != part.name or not mesh.get("fluid_cells"):
             continue
+        solve = json.loads(sp.read_text()) if sp.is_file() else {}
         found.append((int(mesh["cells_across_asked"]), mesh, solve))
     return sorted(found, key=lambda t: t[0])
 
@@ -776,8 +787,11 @@ def cmd_converge(a) -> int:
             v = _quantity(solve, k, mesh)
             row += f"{('n/a' if v is None else format(v, '.6g')):>18}"
         tag = str(across) + " across"
+        # "mesh only" and "NO" are different things: the first has no solve to converge and its
+        # mesh quantities are final, the second ran a solve that did not finish.
+        state = ("mesh only" if not solve else ("yes" if solve.get("converged") else "NO"))
         print(f"  {tag:<12}{mesh.get('fluid_cells') or 0:>13,}{h:>9.2f}"
-              f"{('yes' if solve.get('converged') else 'NO'):>11}   {row}")
+              f"{state:>11}   {row}")
 
     print(chr(10) + "grid convergence, Richardson plus GCI on the three finest")
     results = {}

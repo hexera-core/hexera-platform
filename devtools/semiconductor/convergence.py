@@ -198,6 +198,12 @@ def analyse(quantity: str, grids: list[Grid]) -> Convergence:
     ordered = tuple(sorted(grids, key=lambda g: g.h))
     out = Convergence(quantity=quantity, grids=ordered)
 
+    if not ordered:
+        out.behaviour = "not measured"
+        out.problems.append(
+            "no run reported this quantity, so there is nothing to study. A solve-side quantity "
+            "needs runs that were solved, not only meshed.")
+        return out
     if len(ordered) < 3:
         out.behaviour = "too few grids"
         out.problems.append(
