@@ -945,6 +945,13 @@ def _block_fea_path() -> str:
         "role themselves.\n"
         "- Never promise refinement the engine does not do ('I will refine around the holes'): "
         "the mesh is sized from the part.\n"
+        "- Never ask about a detail level, an element count or mesh fidelity: an FEA part gets the mesh "
+        "its rules recommend (there is no detail level), held under the element limit by the plan.\n"
+        "- The ENGINE and the ELEMENT ORDER are settled on the FEA path: call "
+        "propose_engine_selection once (the application selects the solid mesher without a "
+        "question) and use element_order 2 - quadratic 10-node tetrahedra. Never ask which engine "
+        "or mesher, never ask first-order or second-order, and never speak of near-wall or prism "
+        "layers, a far field or flow - a solid mesh has none of them.\n"
         "- request_txt says: the part, its unit and size, the analysis type, a solid mesh of "
         "quadratic tetrahedra with every face named, and any support, load or material ONLY if "
         "the user stated it. review_brief_txt describes mesh quality only: the solid meshed whole, "
@@ -1115,6 +1122,13 @@ async def _measured_recommendation(state, state_messages):
     purpose = declared[0] if declared else str(state.get("purpose") or "")
     kind = declared[1] if declared else str(state.get("input_kind") or "")
     if not purpose:
+        return None
+    if purpose == "structural" and kind in ("solid-body", ""):
+        # AN FEA PART'S ENGINE IS SETTLED ON THE FEA PATH (agents/intake/executor.fea_path), so
+        # there is nothing to rank - and measuring the upload here, inside the API, ran a 5.9 MB,
+        # 1,478-face sheet-metal STEP out of the container's memory on every retry of its confirm
+        # (dev-areen, 2026-10-22: ten OOM kills in ten minutes, each dropping every request in
+        # flight on that instance).
         return None
     import asyncio
 

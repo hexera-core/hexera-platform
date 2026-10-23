@@ -184,12 +184,11 @@ SPEC = EngineSpec(
         _load_recommend=_recommend,
         export_formats=("abaqus_inp", "nastran_bdf", "gmsh_msh", "unv"),
         intake_guidance=(
-            "Gmsh users think in element terms: for a structural deck ask which "
-            "analysis it feeds (static stress, modal), whether they need "
-            "second-order elements (the accuracy default) or first-order, roughly "
-            "how fine (a size factor of the part's diagonal), and which faces carry "
-            "constraints/loads - those become named groups (fixed/load/contact) "
-            "in the .inp."
+            "A structural (FEA) part follows THE FEA PATH: only the analysis type is "
+            "asked; the element order is quadratic (element_order 2) and every face "
+            "is a named group, so never ask the order, a size factor or supports and "
+            "loads. For a fluid domain the user prepared, ask roughly how fine (a size "
+            "factor of the domain's diagonal)."
         ),
         intake_advisories=(
             "Delaunay tetrahedral meshing can leave sliver elements (thin, poorly-shaped "

@@ -126,6 +126,18 @@ def _num(value) -> float | None:
     return float(value)
 
 
+#: Why a wrong-problem claim on a valid FEA mesh stands only as a concern.
+FEA_NEVER_FAILED = ("the measured checks call this FEA mesh valid - a review explains it and adds "
+                    "concerns, it never fails it")
+
+
+def fea_valid(measured: Mapping | None) -> bool:
+    """Whether the measurements say this is an FEA job's VALID mesh (measurements_from)."""
+    m = measured if isinstance(measured, Mapping) else {}
+    from meshpipeline.engines.fea_review import is_fea
+    return is_fea(m.get("purpose")) and m.get("fea_valid") is True
+
+
 def measured_veto(wrong_problem: str, axis_key: str, measured: dict | None) -> str:
     """A measurement the gates already took that CONTRADICTS a wrong-problem claim, in plain words,
     or "". Only checks that are certain: a claim no measurement speaks to stands on its evidence."""
@@ -203,6 +215,15 @@ def judge(finding, *, brief_text: str, levers: tuple[str, ...], ledger,
     lever = str(getattr(finding, "builder_change", "") or "").strip().lower()
     improve = bool(cited and looked and lever in levers
                    and str(getattr(finding, "change_request", "") or "").strip())
+    if fea_valid(measured):
+        # AN FEA MESH THE MEASUREMENTS CALL VALID IS NEVER FAILED BY A REVIEW, and never rebuilt on
+        # one: its plan is the deterministic driver's (engines/fea_driver), and the review explains
+        # it and adds concerns. 14 of 24 valid FEA meshes on 2026-10-22 were failed as "the wrong
+        # problem" over the preview's single surface group.
+        if blocking or claim not in ("", NOT_WRONG_PROBLEM):
+            reason = FEA_NEVER_FAILED
+            severity = "material"
+        blocking, improve = "", False
     if not blocking and not reason:
         reason = ("" if improve else
                   "it cites no requirement from your brief" if not quote else
@@ -235,6 +256,14 @@ def measurements_from(manifest: Mapping | None, state: Mapping | None) -> dict:
     out: dict = {"regions": q.get("regions"), "layer_coverage_pct": q.get("layer_coverage_pct"),
                  "surface_deviation": q.get("surface_deviation"),
                  "reference_length_m": st.get("reference_length_m")}
+    # THE JOB'S SAVED PURPOSE (the intake's mapping) and, for an FEA job, the measured validity -
+    # the hard pass/fail the review may explain but never overturn (engines/fea_review)
+    from meshpipeline.engines import fea_review
+    purpose = str(st.get("purpose") or "")
+    if purpose:
+        out["purpose"] = purpose
+    if fea_review.is_fea(purpose):
+        out["fea_valid"] = fea_review.measured_valid(q)
     box = _mapping(mf.get("geometry")).get("body_box")
     if isinstance(box, dict):
         try:
@@ -264,8 +293,8 @@ def blocking_findings(axis_findings) -> list[dict]:
             and str(f.get("blocking") or "") in WRONG_PROBLEM]
 
 
-__all__ = ["LEVERS", "MIN_QUOTE_CHARS", "NOT_WRONG_PROBLEM", "NO_LEVER", "WRONG_PROBLEM",
-           "Judgement", "asks_for_rebuild", "blocking_findings", "brief_quote_found",
+__all__ = ["FEA_NEVER_FAILED", "LEVERS", "MIN_QUOTE_CHARS", "NOT_WRONG_PROBLEM", "NO_LEVER", "WRONG_PROBLEM",
+           "Judgement", "asks_for_rebuild", "blocking_findings", "brief_quote_found", "fea_valid",
            "concern_retry_spent",
            "builder_levers", "judge", "judge_all", "measured_veto", "measurements_from"]
 

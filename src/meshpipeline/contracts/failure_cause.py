@@ -143,11 +143,6 @@ def retry_can_help(cause: object, facts: Mapping | None = None) -> bool:
         # a deterministic driver that stopped before its mesher stops the same way on the same
         # inputs (job d20ad762 ran the identical refusal twice); a model-led build may not
         return not (isinstance(facts, Mapping) and facts.get("deterministic"))
-    if (c is FailureCause.CELL_BUDGET and isinstance(facts, Mapping) and facts.get("before_meshing")
-            and facts.get("deterministic")):
-        # a computed plan costed over its level before meshing (the FEA plan, PLAN-fea-8): the same
-        # part at the same level costs the same next time - the user's choice is what changes it
-        return False
     return c not in _NOT_RETRYABLE
 
 
@@ -337,18 +332,27 @@ def _contract(f: Mapping) -> tuple[str, str]:
 def _fea_quality(f: Mapping) -> tuple[str, str]:
     """An FEA mesh whose plan's every pass left a few badly shaped elements: where they are, that
     another run builds the same mesh, and what the user can change - never flow advice."""
+    if f.get("out_of_memory"):
+        # LAD-fea-7: the mesher was killed by the mesh job's memory limit
+        est = int(_as_number(f.get("estimate")) or 0)
+        size = f" (about {est:,} elements)" if est else ""
+        return (f"The FEA mesh this part needs{size} is more than the mesh job's memory can hold, so the "
+                "mesher was stopped before it finished. The plan is fixed by the part, so another run would "
+                "stop the same way, and I stopped rather than spend the time.",
+                "This comes from walls or gaps far thinner than the part is long: every one needs elements "
+                "through it. Thicken or remove the thinnest walls in your CAD, or split the part, and upload "
+                "it again - then say \"run it again\".")
     n = int(_as_number(f.get("under_floor")) or 0)
     where = f.get("worst_at_mm")
     at = (f" near ({', '.join(f'{float(v):g}' for v in where)}) mm" if isinstance(where, list) and len(where) == 3
           else "")
     count = f"{n} element{'s' if n != 1 else ''}" if n else "a few elements"
-    what = (f"The FEA mesh was built, but {count}{at} came out too badly shaped for a solver to trust, "
+    what = (f"The FEA mesh was built, but {count}{at} came out degenerate or inverted, which no solver can use, "
             f"in every pass the plan allows ({int(_as_number(f.get('passes')) or 1)}). The plan is fixed "
-            "by the part and the detail level, so another run would build the same mesh, and I stopped "
-            "rather than spend the time.")
+            "by the part, so another run would build the same mesh, and I stopped rather than spend the time.")
     nxt = ("This usually comes from one small CAD detail there: a face that meets its neighbour almost "
-           "tangentially, or a sliver face. You can choose the Fine detail level, or simplify that "
-           "detail in your CAD and upload the part again - then say \"run it again\".")
+           "tangentially, or a sliver face. Simplify that detail in your CAD and upload the part again - "
+           "then say \"run it again\".")
     return what, nxt
 
 
@@ -501,20 +505,6 @@ def describe(cause: object, facts: Mapping | None = None, *,
             return what, ("You can try another mesher, or mesh a smaller part of the geometry "
                           "where the passage is narrowest.")
         return what, f"You can run it again ({_RUN_AGAIN}), or ask for a finer mesh."
-    if c is FailureCause.CELL_BUDGET and f.get("fea") and f.get("before_meshing"):
-        # THE FEA PLAN'S BUDGET CHECK (engines/fea_*.py, PLAN-fea-8): the plan was costed before meshing
-        cells, level = f.get("cells"), str(f.get("level") or "chosen")
-        need = (f"about {_num(int(cells))} elements"
-                if isinstance(cells, (int, float)) and f.get("complete", True)
-                else "more elements than any detail level holds")
-        what = (f"Stopped before meshing: the mesh rules for this part (elements through every wall "
-                f"and round every hole, fillet and notch) need {need}, more than the {level} level "
-                "holds. No time was spent on a mesh.")
-        outs = [str(o) for o in (f.get("options") or []) if o]
-        if outs:
-            return what, "Your options: " + " Or: ".join(outs)
-        return what, ("No detail level holds every rule. Simplify the part where it is finest (the "
-                      "smallest holes, fillets and corners), or mesh a smaller piece of it.")
     if c is FailureCause.CELL_BUDGET:
         cells, limit = f.get("cells"), f.get("limit")
         what = ("The mesh came out too big for one job"

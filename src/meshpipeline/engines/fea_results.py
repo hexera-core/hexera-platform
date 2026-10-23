@@ -75,14 +75,15 @@ def results(workspace) -> dict | None:
     fea = q.get("fea") or {}
     rules = fea.get("rules") or {}
     cells = int(q.get("cells") or 0)
-    level = (plan.get("detail") or {}).get("label") or ""
+    level = "Recommended"
 
     # THE CHECK: the gating rows, then the production limits, each measured vs its limit
     tw = fea.get("through_wall_min")
     gating = [
         {"key": "fea_inverted", "label": "Inverted elements (a Jacobian not above zero)", "op": "==",
          "limit": 0, "measured": q.get("fea_inverted")},
-        {"key": "elements_under_floor", "label": "Elements under the quality floor (SICN 0.1)", "op": "==",
+        {"key": "elements_under_floor", "op": "==",
+         "label": f"Elements under the quality note floor (SICN {float(q.get('sicn_floor') or 0.1):g})",
          "limit": 0, "measured": q.get("elements_under_floor")},
         {"key": "through_wall_min", "label": "Elements through the thinnest wall", "op": ">=",
          "limit": 2, "measured": tw},
@@ -92,14 +93,14 @@ def results(workspace) -> dict | None:
         met = limit_met(r.get("measured"), str(r.get("op")), r.get("limit"))
         if r["key"] == "through_wall_min" and met is False and isinstance(tw, (int, float)) and tw >= 1.8:
             met = True                    # the gate's reading scatter (engines/gmsh/gates.FEA_WALL_FLOOR)
-        # a best-possible plan's walls are short by choice and named (PLAN-fea-8): a concern there
-        held = r in gating and not (r["key"] == "through_wall_min" and fea.get("best_possible"))
+        # A VALID MESH IS THE ONLY BLOCKER: inverted elements fail; the floor and the walls are notes
+        held = r in gating and r["key"] == "fea_inverted"
         rows.append({**{k: r.get(k) for k in ("key", "label", "op", "limit", "measured")}, "ok": met,
                      "gating": held, "words": words(r)})
     if any(r["ok"] is False and r["gating"] for r in rows) or q.get("fatal"):
         outcome, said = "fail", "The mesh fails a check no solver can work around."
     elif any(r["ok"] is False for r in rows):
-        outcome, said = "concerns", "The mesh is valid; some elements sit past a solver's warning limit (listed)."
+        outcome, said = "concerns", "The mesh is valid; some figures are past a limit (listed as notes)."
     elif any(r["ok"] is None for r in rows):
         # NOT MEASURED IS NOT MET: a figure missing (an older runner, a measurement that failed) is
         # never said to pass

@@ -92,7 +92,6 @@ def plate(tmp_path_factory):
     from tests import fea_fixtures as fx
 
     from meshpipeline.engines import fea_driver as FD
-    from meshpipeline.engines import fea_plan as P
     from meshpipeline.engines.gmsh import fea_adapter
 
     ws = tmp_path_factory.mktemp("fea_result")
@@ -108,7 +107,7 @@ def plate(tmp_path_factory):
     finally:
         gmsh.finalize()
     record, surface, diag = FD.measure_staged(ws)
-    FD.write_plan(ws, FD.make_plan(record, surface, diag, fidelity="", level=P.Level("draft", "Quick", 40_000)))
+    FD.write_plan(ws, FD.make_plan(record, surface, diag))
     assert fea_adapter.mesh(ws) == 0
     return ws
 
@@ -176,3 +175,19 @@ def test_the_verdict_reads_full_precision():
     q = {"fea": {"plan": True}, "fea_min_scaled_jacobian": 0.19999}
     row = next(r for r in vl.fea_limits(q) if r["key"] == "fea_min_scaled_jacobian")
     assert dr.limit_met(row["measured"], row["op"], row["limit"]) is False
+
+
+def test_a_curved_elements_shape_score_is_a_note_only_under_one_hundredth():
+    """Fix pack (Areen, 22 Oct): a quadratic mesh's scaled Jacobian reads its curving, so it is a note
+    only under 0.01; a straight mesh keeps Verdict's 0.2. Validity (above 0) stays the only blocker."""
+    assert {k: lim for k, _l, _o, lim, _s in FQ.limits_for(2)}["fea_min_scaled_jacobian"] == 0.01
+    assert FQ.limits_for(1) == FQ.LIMITS
+    curved = {"fea": {"plan": True}, "element_order": 2, "fea_min_scaled_jacobian": 0.05}
+    row = next(r for r in vl.fea_limits(curved) if r["key"] == "fea_min_scaled_jacobian")
+    assert row["limit"] == 0.01 and dr.limit_met(row["measured"], row["op"], row["limit"]) is True
+    curved["fea_min_scaled_jacobian"] = 0.005
+    row = next(r for r in vl.fea_limits(curved) if r["key"] == "fea_min_scaled_jacobian")
+    assert dr.limit_met(row["measured"], row["op"], row["limit"]) is False
+    straight = {"fea": {"plan": True}, "element_order": 1, "fea_min_scaled_jacobian": 0.05}
+    row = next(r for r in vl.fea_limits(straight) if r["key"] == "fea_min_scaled_jacobian")
+    assert row["limit"] == 0.2

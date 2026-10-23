@@ -45,7 +45,8 @@ EDGE_SAMPLE_SHARE = 0.25
 @dataclass
 class Histogram:
     """(size_m, volume_m3) rows, smallest size first; `inf` for volume no zone reaches. `complete`
-    is False when the octree stopped at MAX_CUBES (the zones alone are past any budget)."""
+    is False when the octree stopped at MAX_CUBES (the zones alone are past any budget); the cubes it
+    had not resolved are filed at their zones' size, so the estimate is a floor, never zero."""
     rows: list[tuple[float, float]]
     complete: bool = True
     cubes: int = 0
@@ -270,6 +271,14 @@ class SizeField:
             rest = centres[~leaf]
             if zones_only > stop_elements or cubes + 8 * len(rest) > MAX_CUBES:
                 complete = not len(rest)
+                if len(rest):
+                    # STOPPED SHORT: the cubes not yet resolved are still counted, at the size their
+                    # zones ask for - an unfinished histogram is a floor on the estimate, never zero
+                    # (fea0221: the octree stopped before any leaf, the estimate read 0 elements and
+                    # the time guard fell to its floor)
+                    sd_rest = sd[~leaf]
+                    sizes.append(hz[~leaf])
+                    vols.append(np.clip(0.5 - sd_rest / e, 0.0, 1.0) * e ** 3)
                 break
             e /= 2.0
             centres = (rest[:, None, :] + offsets[None, :, :] * (e / 2.0)).reshape(-1, 3)

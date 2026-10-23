@@ -22,9 +22,22 @@ from pathlib import Path
 
 #: 3D algorithms the plan may name (gmsh's Mesh.Algorithm3D numbers).
 ALGORITHMS_3D = {"delaunay": 1, "hxt": 10}
+#: gmsh's MeshAdapt 2D algorithm (Mesh.Algorithm 1): the other way to mesh a surface, for the
+#: surfaces a pass went wrong on (LAD-fea-6) - the default (Frontal-Delaunay) left them empty or bad
+MESH_ADAPT = 1
+#: at most this many invalid elements are traced back to the surfaces they touch
+TRACE_BAD = 500
+#: the line the driver reads the surfaces a failed pass went wrong on from (LAD-fea-6)
+BAD_SURFACES = "[GMSH-FEA] BAD SURFACES:"
 #: Distance sampling per face, per direction (gmsh's "Sampling"): enough points that the spacing is
 #: about half the group's size, within these bounds.
 SAMPLING_MIN, SAMPLING_MAX = 20, 300
+#: The most points one Distance field samples (faces x Sampling^2). gmsh samples every face of a
+#: field at the one Sampling the field's largest face needs: a perforated plate's 1,467 hole and
+#: plate faces at 300 x 300 came to 132M points and ran the mesh job out of memory before any
+#: surface was meshed (fea0260). Past this, the faces are split into fields sampled at their own
+#: size (the same sizes: the smallest of thresholds over parts is the threshold over the whole).
+MAX_FIELD_POINTS = 2_000_000
 
 
 def _tag(name: str) -> int | None:
@@ -49,6 +62,23 @@ def _sampling(gmsh, tags: list[int], size: float) -> int:
     return int(min(SAMPLING_MAX, max(SAMPLING_MIN, n)))
 
 
+def sampled_parts(gmsh, tags: list[int], size: float) -> list[tuple[list[int], int]]:
+    """(faces, Sampling) for each Distance field a zone group's faces need: one field as before when
+    it stays within MAX_FIELD_POINTS; else each face at its own Sampling, in fields of at most
+    MAX_FIELD_POINTS points."""
+    n = _sampling(gmsh, tags, size)
+    if len(tags) * n * n <= MAX_FIELD_POINTS:
+        return [(tags, n)]
+    by: dict[int, list[int]] = {}
+    for t in tags:
+        by.setdefault(_sampling(gmsh, [t], size), []).append(t)
+    out: list[tuple[list[int], int]] = []
+    for k in sorted(by):
+        per = max(1, MAX_FIELD_POINTS // (k * k))
+        out.extend((by[k][i:i + per], k) for i in range(0, len(by[k]), per))
+    return out
+
+
 def _micro_place(m: dict) -> dict:
     """A micro detail as the delivery names it: where (its middle point, mm), what and how small."""
     pts = m.get("points_m") or [[0.0, 0.0, 0.0]]
@@ -68,31 +98,35 @@ def size_fields(gmsh, plan: dict, surfaces: set[int]) -> int | None:
         size = float(g["size"])
         if size >= base:
             continue
-        dist = gmsh.model.mesh.field.add("Distance")
+        dists = []
         if g["edge"]:
             curves = sorted({c for a, b in (fs for fs in g["edges"] if len(fs) == 2)
                              if (ta := _tag(a)) in surfaces and (tb := _tag(b)) in surfaces
                              for c in _shared_curves(gmsh, ta, tb)})
             if not curves:
-                gmsh.model.mesh.field.remove(dist)
                 continue
+            dist = gmsh.model.mesh.field.add("Distance")
             gmsh.model.mesh.field.setNumbers(dist, "CurvesList", curves)
             gmsh.model.mesh.field.setNumber(dist, "Sampling", SAMPLING_MAX)
+            dists.append(dist)
         else:
             tags = [t for f in g["faces"] if (t := _tag(f)) in surfaces]
             if not tags:
-                gmsh.model.mesh.field.remove(dist)
                 continue
-            gmsh.model.mesh.field.setNumbers(dist, "SurfacesList", tags)
-            gmsh.model.mesh.field.setNumber(dist, "Sampling", _sampling(gmsh, tags, size))
-        th = gmsh.model.mesh.field.add("Threshold")
+            for part, n in sampled_parts(gmsh, tags, size):
+                dist = gmsh.model.mesh.field.add("Distance")
+                gmsh.model.mesh.field.setNumbers(dist, "SurfacesList", part)
+                gmsh.model.mesh.field.setNumber(dist, "Sampling", n)
+                dists.append(dist)
         reach = float(g["reach"])
-        gmsh.model.mesh.field.setNumber(th, "InField", dist)
-        gmsh.model.mesh.field.setNumber(th, "SizeMin", size)
-        gmsh.model.mesh.field.setNumber(th, "SizeMax", base)
-        gmsh.model.mesh.field.setNumber(th, "DistMin", reach)
-        gmsh.model.mesh.field.setNumber(th, "DistMax", reach + (base - size) / max(g1, 1e-6))
-        ids.append(th)
+        for dist in dists:
+            th = gmsh.model.mesh.field.add("Threshold")
+            gmsh.model.mesh.field.setNumber(th, "InField", dist)
+            gmsh.model.mesh.field.setNumber(th, "SizeMin", size)
+            gmsh.model.mesh.field.setNumber(th, "SizeMax", base)
+            gmsh.model.mesh.field.setNumber(th, "DistMin", reach)
+            gmsh.model.mesh.field.setNumber(th, "DistMax", reach + (base - size) / max(g1, 1e-6))
+            ids.append(th)
     if not ids:
         return None
     if len(ids) == 1:
@@ -102,16 +136,72 @@ def size_fields(gmsh, plan: dict, surfaces: set[int]) -> int | None:
     return m
 
 
+def _empty_surfaces(gmsh, surfaces: set[int]) -> list[int]:
+    out: list[int] = []
+    for s in sorted(surfaces):
+        _types, tags, _nodes = gmsh.model.mesh.getElements(2, s)
+        if not any(len(t) for t in tags):
+            out.append(s)
+    return out
+
+
+def surface_mesh(gmsh, surfaces: set[int], remesh: set[int]) -> list[int]:
+    """The surface mesh, LAD-fea-6's surfaces on MeshAdapt; a surface the default algorithm leaves
+    with no mesh is meshed again the other way at once, in the same pass. Returns the surfaces
+    still left with no mesh."""
+    for s in sorted(remesh & surfaces):
+        gmsh.model.mesh.setAlgorithm(2, s, MESH_ADAPT)
+    gmsh.model.mesh.generate(2)
+    empty = _empty_surfaces(gmsh, surfaces)
+    again = [s for s in empty if s not in remesh]
+    if again:
+        print(f"[GMSH-FEA] surface(s) {again} left with no mesh - meshed again with MeshAdapt (LAD-fea-6)",
+              file=sys.stderr)
+        for s in again:
+            gmsh.model.mesh.setAlgorithm(2, s, MESH_ADAPT)
+        gmsh.model.mesh.clear()
+        gmsh.model.mesh.generate(2)
+        empty = _empty_surfaces(gmsh, surfaces)
+    return empty
+
+
+def surfaces_named(text: str) -> list[int]:
+    """The surface tags a gmsh error names ("... on surface 8", "No elements in surface 9")."""
+    import re
+
+    return sorted({int(m) for m in re.findall(r"surface (\d+)", text or "")})
+
+
+def bad_surfaces(gmsh, tags, qualities) -> list[int]:
+    """The CAD surfaces the invalid elements (quality not above 0) touch: their nodes on a surface,
+    or on a curve or corner of one - where LAD-fea-6 meshes the next pass the other way."""
+    out: set[int] = set()
+    bad = [int(t) for t, q in zip(tags, qualities, strict=True) if q <= 0.0][:TRACE_BAD]
+    for t in bad:
+        _etype, nodes, _dim, _tag = gmsh.model.mesh.getElement(t)
+        for n in nodes:
+            _xyz, _par, dim, ent = gmsh.model.mesh.getNode(int(n))
+            if dim == 2:
+                out.add(int(ent))
+            elif dim in (0, 1):
+                up = [int(c) for c in gmsh.model.getAdjacencies(dim, int(ent))[0]]
+                if dim == 0:
+                    up = [int(s) for c in up for s in gmsh.model.getAdjacencies(1, c)[0]]
+                out.update(up)
+    return sorted(out)
+
+
 def mesh(workspace) -> int:
     """Mesh the staged solid by the plan. Exit codes as the driver's: 0 a valid mesh, 2 no
     geometry, 3 no solid, 4 fatal defects."""
     from meshpipeline.engines import fea_checks as checks
-    from meshpipeline.engines.fea_plan import PLAN_FILE
+    from meshpipeline.engines.fea_plan import PLAN_FILE, STAGED_SOLIDS
     from meshpipeline.engines.gmsh import driver as D
 
     ws = Path(workspace)
     plan = json.loads((ws / PLAN_FILE).read_text())
-    geom = ws / "geometry.step"
+    # PLAN-fea-15: the staged solid the plan was measured on (gmsh's own B-rep first)
+    geom = next((ws / n for n in STAGED_SOLIDS if (ws / n).exists()), ws / "geometry.step")
     if not geom.exists():
         print(f"[GMSH-FEA] geometry.step missing in {ws}", file=sys.stderr)
         return 2
@@ -120,6 +210,9 @@ def mesh(workspace) -> int:
     gmsh.initialize(interruptible=False)
     try:
         gmsh.option.setNumber("General.Terminal", 1)
+        # ONE THREAD, KEPT (fix pack, 22 Oct): at 8 threads three of five lab parts meshed twice came out
+        # different (cell counts too) - gmsh's parallel curve and surface meshing is not repeatable,
+        # and the 3D fill and the optimiser are serial anyway
         gmsh.option.setNumber("General.NumThreads", 1)
         gmsh.option.setNumber("Mesh.RandomSeed", 1)
         gmsh.option.setNumber("Geometry.OCCBoundsUseStl", 1)
@@ -144,7 +237,16 @@ def mesh(workspace) -> int:
         bg = size_fields(gmsh, plan, surfaces)
         if bg is not None:
             gmsh.model.mesh.field.setAsBackgroundMesh(bg)
-        gmsh.model.mesh.generate(3)
+        remesh = {int(s) for s in run.get("remesh_surfaces") or []}
+        empty = surface_mesh(gmsh, surfaces, remesh)
+        try:
+            gmsh.model.mesh.generate(3)
+        except Exception as exc:
+            # the surfaces the fill failed on, for the next pass (LAD-fea-6): the driver reads them
+            # from this line
+            named = sorted(set(empty) | {s for s in surfaces_named(str(exc)) if s in surfaces})
+            print(f"{BAD_SURFACES} {','.join(str(s) for s in named)}", file=sys.stderr)
+            raise
         for _ in range(int(run.get("optimise_passes") or 1)):
             gmsh.model.mesh.optimize("Netgen")
         order = int((plan.get("element") or {}).get("order") or 2)
@@ -173,9 +275,15 @@ def mesh(workspace) -> int:
         # (no degenerate element) holds every element without exception
         min_sicn = float(min(held)) if len(held) else (float(min(qualities)) if len(qualities) else 0.0)
         min_all = float(min(qualities)) if len(qualities) else 0.0
-        low = int(sum(1 for q in held if q < D.SICN_FLOOR))
+        # THE NOTE FLOOR: SICN 0.1 for straight elements, QUADRATIC_SCALED_JACOBIAN (0.01) for curved
+        # ones - a note either way; validity (above 0) is the only blocker
+        from meshpipeline.engines.fea_quality import QUADRATIC_SCALED_JACOBIAN
+        note_floor = QUADRATIC_SCALED_JACOBIAN if order > 1 else D.SICN_FLOOR
+        low = int(sum(1 for q in held if q < note_floor))
         aside_q = [q for t, q in zip(all_tags, qualities, strict=True) if int(t) in aside]
         fatal = []
+        # LAD-fea-6: where the invalid elements are, for the next pass
+        traced = bad_surfaces(gmsh, all_tags, qualities) if min_all <= 0.0 else []
         if n_elem == 0:
             fatal.append("no volume elements generated")
         if min_all <= 0.0:
@@ -223,7 +331,7 @@ def mesh(workspace) -> int:
                               "places_mm": [[round(v * 1000.0, 2) for v in p] for p in settled["cusp_places_m"]],
                               "micro": [_micro_place(plan["micro"][i]) for i in settled["micro_used"]]},
             "sicn_low_fraction": round(low / n_elem, 6) if n_elem else 1.0,
-            "fatal": fatal, "size_h": base, "quality_bar": "fea", "sicn_floor": D.SICN_FLOOR,
+            "fatal": fatal, "size_h": base, "quality_bar": "fea", "sicn_floor": note_floor,
             "elements_under_floor": low,
             "bounds": D._final_node_bounds(gmsh),
             "groups": {"free": "free"}, "default_group": "free", "default_group_used": True,
@@ -233,15 +341,15 @@ def mesh(workspace) -> int:
                                           "fea_max_aspect_ratio", "fea_min_dihedral_deg",
                                           "fea_max_dihedral_deg", "fea_inverted") if k in shape},
             "fea_rules_short": len(rules.get("short") or []) if rules else None,
+            "fea_bad_surfaces": traced,
             # THE PLAN'S RULES AS MET (engines/fea_checks.py): the gate reads the through-wall
             # count in place of the flow floor (engines/gmsh/gates.py)
-            "fea": {"plan": True, "detail": (plan.get("detail") or {}).get("key"),
+            "fea": {"plan": True, "limit": (plan.get("limit") or {}).get("elements"),
                     "estimate": (plan.get("estimate") or {}).get("elements"),
-                    # PLAN-fea-8: how the level was chosen, and what a best-possible plan leaves short
-                    **({"auto_level": plan["auto_level"]} if plan.get("auto_level") else {}),
-                    **({"best_possible": plan["best_possible"],
+                    # PLAN-fea-8: what a plan coarsened to fit leaves short
+                    **({"coarsened": plan["coarsened"],
                         "resolution_short": list(plan.get("resolution_short") or [])}
-                       if plan.get("best_possible") else {}),
+                       if plan.get("coarsened") else {}),
                     "through_wall_min": tw, "rules": rules, "quality": shape, "exports": exports},
         }, indent=1))
         print(f"[GMSH-FEA] elements={n_elem} (planned ~{(plan.get('estimate') or {}).get('elements')}) "
@@ -254,4 +362,5 @@ def mesh(workspace) -> int:
         gmsh.finalize()
 
 
-__all__ = ["ALGORITHMS_3D", "mesh", "size_fields"]
+__all__ = ["ALGORITHMS_3D", "BAD_SURFACES", "MESH_ADAPT", "bad_surfaces", "mesh", "size_fields", "surface_mesh",
+           "surfaces_named"]

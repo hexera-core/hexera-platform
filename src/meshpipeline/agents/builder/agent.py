@@ -159,7 +159,8 @@ async def node_builder(state: PipelineState) -> dict:
     # nothing, and a cancelled attempt is not a failed one.
     if _staging is None:
         outcome = await invoke.run_attempt(attempt, state, job_id=job_id, publish=_publish,
-                                           timeout_s=budget.attempt_timeout_s)
+                                           timeout_s=budget.attempt_timeout_s,
+                                           driver_timeout_s=budget.remaining_s)
     else:
         logger.error("Builder: engine staging failed - the attempt ends on it, nothing runs - "
                      "job_id=%s: %s", job_id, _staging.builder_text)

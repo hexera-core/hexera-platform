@@ -179,6 +179,7 @@ class IntakeLoopPolicy:
     engine_nudges: int = 0                     # replies sent back for how they spoke of the engine
     thermal_nudges: int = 0                    # thermal-model replies sent back for generic words
     fea_nudges: int = 0                        # FEA replies sent back for an invented load or material
+    fea_settled_nudges: int = 0                # FEA replies sent back for asking what the FEA path settles
     #: The names a thermal model's file gives (its parts, fans, vents...): its own words, which the
     #: thermal vocabulary check leaves alone (application/thermal_wording.forbidden_words).
     thermal_names: tuple[str, ...] = ()
@@ -270,6 +271,24 @@ class IntakeLoopPolicy:
                 logger.info("Intake: an FEA reply proposed what the user never said (%s) - sent "
                             "back once for a rewrite", ", ".join(made_up))
                 return RoundDecision(message=turn.FEA_INVENTED_NUDGE, complete=False)
+        # AN FEA PART'S REPLY ASKS NOTHING THE FEA PATH SETTLED: the engine, the element order
+        # (quadratic tetrahedra), near-wall layers or a detail level. Sent back ONCE for a rewrite;
+        # a reply that still asks has those questions taken out before the user reads it.
+        if tuple(self.exec_state.declared_case or ())[:1] == ("structural",):
+            from meshpipeline.application.fea_wording import settled_asks, without_settled_asks
+
+            asked = settled_asks(self.plaintext_text, self.exec_state.user_texts)
+            if asked and self.fea_settled_nudges == 0 and (rounds_left is None or rounds_left > 0):
+                self.fea_settled_nudges += 1
+                logger.info("Intake: an FEA reply asked what the FEA path settles (%s) - sent back "
+                            "once for a rewrite", ", ".join(asked))
+                return RoundDecision(message=turn.FEA_SETTLED_NUDGE, complete=False)
+            if asked:
+                cleaned = without_settled_asks(self.plaintext_text, self.exec_state.user_texts)
+                if cleaned:
+                    logger.info("Intake: an FEA reply still asked a settled thing (%s) - those "
+                                "questions were taken out of the reply", ", ".join(asked))
+                    self.plaintext_text = cleaned
         # THE SAME QUESTION IS NEVER ASKED TWICE - enforced here, not left to the prompt. A reply
         # that asks what the user was already asked is sent back ONCE, inside the turn, with the
         # rule: their reply was their answer, take your own proposal and move on. Once, so a model

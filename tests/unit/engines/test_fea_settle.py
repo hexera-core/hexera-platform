@@ -16,10 +16,7 @@ from tests import fea_fixtures as fx  # noqa: E402
 
 from meshpipeline.cad.fea_measure import cad_cusps, measure_cad  # noqa: E402
 from meshpipeline.engines import fea_driver as FD  # noqa: E402
-from meshpipeline.engines import fea_plan as P  # noqa: E402
 from meshpipeline.engines.gmsh import fea_adapter, fea_settle  # noqa: E402
-
-SMALL = P.Level("draft", "Quick", 8_000)
 
 
 def test_a_boss_tangent_to_an_edge_is_a_cusp_and_ordinary_parts_have_none():
@@ -52,7 +49,7 @@ def _stage(shape, ws: Path) -> Path:
 def test_the_plan_carries_the_cusps_in_metres_and_cites_the_rules(tmp_path):
     ws = _stage(fx.tangent_boss(), tmp_path / "bore")
     record, surface, diag = FD.measure_staged(ws)
-    plan = FD.make_plan(record, surface, diag, fidelity="", level=SMALL)
+    plan = FD.make_plan(record, surface, diag)
     assert sorted(tuple(round(v, 6) for v in c["at_m"]) for c in plan["cusps"]) == sorted(
         tuple(round(v / 1000.0, 6) for v in p) for p in fx.TANGENT_BOSS_CUSPS)
     rules = {d["rule"] for d in plan["decisions"]}
@@ -86,7 +83,7 @@ def _curved_mesh(ws: Path, plan: dict):
 def test_settling_straightens_what_curving_spoiled_and_sets_aside_only_cusp_elements(tmp_path):
     ws = _stage(fx.tangent_boss(), tmp_path / "settle")
     record, surface, diag = FD.measure_staged(ws)
-    plan = FD.make_plan(record, surface, diag, fidelity="", level=SMALL)
+    plan = FD.make_plan(record, surface, diag)
     try:
         straight = _curved_mesh(ws, plan)
         # a floor far above any real one, so that the rules have elements to act on
@@ -130,7 +127,7 @@ def test_a_cusp_is_delivered_as_a_concern_that_names_the_place():
 def test_the_adapter_reports_the_floor_without_the_set_aside_elements(tmp_path):
     ws = _stage(fx.tangent_boss(), tmp_path / "adapter")
     record, surface, diag = FD.measure_staged(ws)
-    FD.write_plan(ws, FD.make_plan(record, surface, diag, fidelity="", level=SMALL))
+    FD.write_plan(ws, FD.make_plan(record, surface, diag))
     assert fea_adapter.mesh(ws) == 0
     q = json.loads((ws / "quality.json").read_text())
     aside = q["fea_set_aside"]
@@ -156,7 +153,7 @@ def test_a_micro_step_is_found_and_ordinary_parts_have_none():
 def test_the_plan_keeps_micro_details_far_below_its_elements_and_the_adapter_sets_them_aside(tmp_path):
     ws = _stage(fx.micro_step(), tmp_path / "micro")
     record, surface, diag = FD.measure_staged(ws)
-    plan = FD.make_plan(record, surface, diag, fidelity="", level=SMALL)
+    plan = FD.make_plan(record, surface, diag)
     assert plan["micro"] and all(m["points_m"] for m in plan["micro"])
     assert "PLAN-fea-12" in {d["rule"] for d in plan["decisions"]}
     assert any("contact stress at the tooth tips" in w for w in plan["words"])

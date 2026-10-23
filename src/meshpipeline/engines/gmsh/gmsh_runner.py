@@ -30,6 +30,13 @@ def quality_shortfalls(q: dict) -> list[dict]:
     floor = CFD_SICN_FLOOR if cfd else SICN_FLOOR
     out = []
     sicn = q.get("min_sicn")
+    if (q.get("fea") or {}).get("plan") and sicn is not None:
+        # AN FEA PLAN'S MESH fails only when it is not valid (a degenerate element); under the 0.1
+        # floor is a note on the delivery (Areen, 21 Oct)
+        if float(sicn) <= 0.0:
+            out.append({"key": "min_sicn", "label": "element quality (SICN)", "measured": float(sicn),
+                        "op": ">", "threshold": 0.0})
+        return out
     if sicn is None or float(sicn) < floor:
         out.append({"key": "min_sicn", "label": "element quality (SICN)",
                     "measured": None if sicn is None else float(sicn), "op": ">=",
@@ -72,6 +79,9 @@ def tessellate_to_stl(geom_path, out_stl, *, context=None, prepared=None) -> Pat
         gmsh.model.occ.synchronize()
         # the metre-normalised B-rep IS the staged geometry - the driver reads this, unscaled
         gmsh.write(str(staged_brep))
+        # and gmsh's own B-rep file beside it: lossless, where the STEP round trip loses faces on
+        # some parts (the FEA path reads this first - engines/fea_plan.STAGED_SOLIDS, PLAN-fea-15)
+        gmsh.write(str(ws / "geometry.brep"))
         # gmsh's STEP writer drops the names a CAD file gives single faces: record them from the
         # upload, by where each face is, for the FEA deck to write beside Face_k
         from meshpipeline.cad.face_names import record_for_staging

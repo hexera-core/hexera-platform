@@ -59,6 +59,13 @@ def category_of(tool: str) -> str:
     return INTAKE_CATEGORIES.get(tool, "unknown")
 
 
+def fea_path(st) -> bool:
+    """Whether the session is an FEA part: the declared case is the structural purpose (the FEA
+    route of the purpose mapping, confirmed on the FEA stage) on a solid body."""
+    case = tuple(getattr(st, "declared_case", None) or ())
+    return bool(case) and case[0] == "structural" and (len(case) < 2 or case[1] in ("solid-body", ""))
+
+
 def _normalize_declared_patches(args: dict):
     """The declared patches as every later layer will read them. The PURPOSE decides which roles a
     word may mean and whether a ground plane exists (only an external flow has a far-field box
@@ -436,6 +443,27 @@ class IntakeToolExecutor:
                          "The job sheet the user approves names it - do not ask about it or "
                          "mention it. Call preview_selected_admission and submit_requirements "
                          "now (engine_source suggested_confirmed)."))
+        if fea_path(st) and not chosen_by_user:
+            # AN FEA PART (the purpose the user's words mapped to, confirmed on the FEA stage) is
+            # meshed on the FEA path: version 1 has one solid mesher and quadratic tetrahedra, so
+            # neither the engine nor the element order is a question. The real-path test of
+            # 2026-10-22 asked both, with CFD words ("no reliable near-wall layers", "blade-row
+            # passages"). The job sheet the user approves names the engine; naming another one in
+            # the chat is still their choice, as always.
+            st.selection = {**st.selection, "state": es.CONFIRMED, "via": es.VIA_FEA_PATH,
+                            "confirmed_revision": st.revision,
+                            "expires_at": es.time.time() + es.CONFIRMED_TTL_S}
+            st.selection_prompt = None
+            logger.info("Intake: engine selection CONFIRMED for an FEA part - %s on the FEA path - "
+                        "job_id=%s", eng, self._job_id)
+            return IntakeToolResult(
+                tool="propose_engine_selection", accepted=True, advanced=True,
+                content=(f"{_vocab.to_display(_vocab.ENGINE, eng)} is SELECTED for this FEA part "
+                         "(the FEA path: a solid mesh of quadratic 10-node tetrahedra, element_order "
+                         "2, every face named). Do not ask about the engine, the element order, "
+                         "near-wall layers or a detail level, and do not mention them. Call "
+                         "preview_selected_admission and submit_requirements now (engine_source "
+                         "suggested_confirmed)."))
         if chosen_by_user:
             st.selection = {**st.selection, "state": es.CONFIRMED,
                             "confirmed_revision": st.revision,

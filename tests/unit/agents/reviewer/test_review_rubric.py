@@ -175,8 +175,10 @@ def test_rubric_reaches_the_gmsh_brief():
         manifest=manifest, nav_context={}, workspace=ws, step_basename="x.stl",
         patch_names=[], patch_colour_legend="", mesh_units="m",
         request="r", review_brief="b", job_id="t", engine="gmsh", purpose="structural")
-    assert "group_completeness" in system          # gmsh engine axis
-    assert "restraint_load_surfaces" in system      # structural purpose axis
+    assert "element_quality_distribution" in system  # gmsh engine axis
+    assert "fea_faces_named" in system               # structural purpose axis (the FEA checklist)
+    # the FEA checklist replaces the engine's CFD-era group/deck axes for a structural job
+    assert "group_completeness" not in system and "deck_conformance" not in system
     assert "Engine: gmsh" in system
     assert get_spec("gmsh").review_rationale[:30] in system
 

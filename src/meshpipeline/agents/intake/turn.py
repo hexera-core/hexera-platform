@@ -108,10 +108,19 @@ FEA_INVENTED_NUDGE = (
     "user sets supports, loads and materials in their own solver. Write it again without them: "
     "ask only what is still open (the analysis type, if it is), and record only what the user said."
 )
+#: An FEA part's reply that asked what the FEA path settles (application/fea_wording.settled_asks).
+FEA_SETTLED_NUDGE = (
+    "[SYSTEM] Your reply was not sent: this is an FEA part, and the reply asked something the FEA "
+    "path has already settled - the engine (selected for the user), the element order (quadratic "
+    "10-node tetrahedra), near-wall layers (a solid mesh has none) or a detail level (the plan's "
+    "rules size the mesh). Write it again without asking any of them: ask only what is still open "
+    "(the analysis type, if it is), or go on to the approval."
+)
 #: Every user-role line the application writes into a turn. None of them is the user's words, and
 #: the transcript marks them so a reader can tell.
 SYNTHETIC_NUDGES = (BUDGET_NUDGE, REPEAT_NUDGE, DEFAULT_NUDGE, ENGINE_SETTLED_NUDGE,
-                    ENGINE_UNSETTLED_NUDGE, GARBLED_NUDGE, THERMAL_WORDS_NUDGE, FEA_INVENTED_NUDGE)
+                    ENGINE_UNSETTLED_NUDGE, GARBLED_NUDGE, THERMAL_WORDS_NUDGE, FEA_INVENTED_NUDGE,
+                    FEA_SETTLED_NUDGE)
 
 # How a user hands a question back. Phrase-level, like the recommendation gate, and deliberately
 # short: a false negative leaves the model to read the reply itself, while a false positive tells

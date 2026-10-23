@@ -102,27 +102,8 @@ def _gate_resolution_floor(ctx: GateCtx) -> tuple[bool, str]:
     # cross-section's count across the narrowest box side
     fea = q.get("fea") or {}
     if fea.get("plan"):
-        tw = fea.get("through_wall_min")
-        if tw is None or not (fea.get("rules") or {}).get("walls_checked"):
-            # NOT MEASURED IS NOT MET: a wall the plan could not hold to its rule (its thickness
-            # unmeasured), or rules the adapter could not measure on the mesh, never pass
-            return False, refuse(
-                "[RESOLUTION] the elements through the walls were not measured on this mesh, so the "
-                "FEA wall rule (at least 2 through every wall) cannot be confirmed.",
-                FailureCause.UNDER_RESOLVED, unmeasured=["elements through the walls"],
-                needed=FEA_WALL_FLOOR)
-        if float(tw) < FEA_WALL_FLOOR and fea.get("best_possible"):
-            # PLAN-fea-8: the best possible within the largest level, short where the plan says -
-            # delivered with that named (resolution_short), never refused for it
-            return True, ""
-        if float(tw) < FEA_WALL_FLOOR:
-            short = ((fea.get("rules") or {}).get("through_wall") or {}).get("short") or []
-            where = ", ".join(str(w.get("face")) for w in short[:5] if isinstance(w, dict))
-            return False, refuse(
-                f"[RESOLUTION] {float(tw):g} elements through the thinnest wall"
-                + (f" ({where})" if where else "") + f" - an FEA mesh needs at least {FEA_WALL_FLOOR:g} "
-                "through every wall to carry bending.",
-                FailureCause.UNDER_RESOLVED, cells_across=float(tw), needed=FEA_WALL_FLOOR)
+        # A VALID MESH IS THE ONLY BLOCKER (Areen, 21 Oct): the elements through each wall are a note
+        # on the delivery (engines/fea_results, the VER-2 rows), never a failure
         return True, ""
     # THE MEASURED PASSAGE GATES when the driver could measure it: an under-resolved branch
     # or scroll cannot hide behind a well-resolved main run or a wide bounding box.

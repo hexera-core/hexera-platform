@@ -138,10 +138,19 @@ def face_sets(mesh: SolidMesh) -> list[FaceSet]:
     # a face's nodes are read off the element faces themselves (midside nodes included), so the
     # node set and the surface are the same face by construction
     table = np.asarray(TET10_FACE_NODES if elements.shape[1] == 10 else TET_FACE_CORNERS)
+    tags = sorted(mesh.faces)
+    if not tags:
+        return []
+    # ONE MATCH FOR EVERY FACE: the element faces are sorted once and every CAD face's triangles
+    # looked up together (each triangle's answer is its own, so the sets are the same as matching
+    # face by face) - face by face it sorted the whole mesh once per CAD face, 62 of 170 s on a
+    # 290k-element, 36-face part (fix pack, 22 Oct)
+    tris = [np.asarray(mesh.faces[t], dtype=np.int64)[:, :3] for t in tags]
+    e_all, lab_all = element_faces(elements, np.concatenate(tris))
+    cuts = np.cumsum([len(t) for t in tris])[:-1]
     out = []
-    for k, tag in enumerate(sorted(mesh.faces), start=1):
-        tris = np.asarray(mesh.faces[tag], dtype=np.int64)
-        e, lab = element_faces(elements, tris)
+    for k, (tag, e, lab) in enumerate(zip(tags, np.split(e_all, cuts), np.split(lab_all, cuts), strict=True),
+                                      start=1):
         nodes = np.unique(elements[e[:, None], table[lab - 1]])
         out.append(FaceSet(name=f"Face_{k}", tag=int(tag), elements=e + 1, labels=lab,
                            nodes=nodes))

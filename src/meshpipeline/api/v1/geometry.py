@@ -6,6 +6,7 @@
 # fields; it judges nothing, draws nothing and calls no model.
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -241,7 +242,10 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     from meshpipeline.contracts.object_storage import get_object_store
     from meshpipeline.persistence.session import get_db
 
-    stored = _read_json(check_object_key(str(session_id), "scout.json"))
+    # EVERY STORE READ RUNS OFF THE EVENT LOOP: the stage polls this route every few seconds, and a
+    # read that hangs on the event loop stalled the whole API for 87 s on 2026-10-22 (every other
+    # request - job status, tickets, uploads - waited behind it)
+    stored = await asyncio.to_thread(_read_json, check_object_key(str(session_id), "scout.json"))
     if stored is None:
         return {"status": STATUS_NONE}
     async with get_db() as db:
@@ -250,7 +254,7 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     # the naming starts with the user's first answer: until then the stage must say it is
     # waiting for the chat, not that the model is working
     try:
-        requested = naming_requested(str(session_id))
+        requested = await asyncio.to_thread(naming_requested, str(session_id))
     except Exception as exc:  # noqa: BLE001 - a marker we cannot read is "not asked yet", never a broken check
         logger.warning("geometry check: naming marker unreadable (%s) - session_id=%s", exc, session_id)
         requested = None
@@ -267,7 +271,7 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     payload["route"] = fea_check.stage_route(payload, getattr(session, "messages", None))
     if payload["route"] == fea_check.STAGE_FEA:
         # the part, its unit and size (the proposal), its bodies and the clean check - no flow form
-        payload["fea"] = fea_check.fea_view(payload.get("facts"))
+        payload["fea"] = await asyncio.to_thread(fea_check.fea_view, payload.get("facts"))
     if payload.get("check_mode") != THERMAL_CHECK:
         # the generic form's fields; a thermal model is served as its `thermal` view instead
         payload["fields"] = form_spec()
@@ -308,20 +312,25 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
                 payload["proposal"]["unit_suggestion"] = suggestion
         if payload.get("status") == "ready":
             store = get_object_store()
-            payload["pictures"] = [
-                {"name": s["name"], "facing": s.get("facing", []),
-                 "url": store.create_download_url(object_key=s["object_key"], expires_in=_PICTURE_URL_TTL)}
-                for s in payload.get("snapshots", [])]
+            snapshots = list(payload.get("snapshots", []))
+
+            def _pictures() -> list[dict]:
+                return [{"name": s["name"], "facing": s.get("facing", []),
+                         "url": store.create_download_url(object_key=s["object_key"],
+                                                          expires_in=_PICTURE_URL_TTL)}
+                        for s in snapshots]
+            payload["pictures"] = await asyncio.to_thread(_pictures)
         payload.pop("snapshots", None)
         payload.pop("upright_sheet", None)  # the six-way picture is the model's question, not the card's
         payload.pop("facts", None)         # the proposal is what the user acts on; facts are its source
         payload["skin"] = bool(payload.pop("skin_key", None))   # whether the 3D stage can open
-    confirmed = _read_json(check_object_key(str(session_id), "confirmed.json"))
+    confirmed = await asyncio.to_thread(_read_json, check_object_key(str(session_id), "confirmed.json"))
     if confirmed is not None:
         payload["confirmed"] = confirmed
+    progress = await asyncio.to_thread(read_progress, str(session_id))
     # THE LIVE LINE the chat shows while the part is checked: the step running now, the steps
     # done with their times, a note when one runs long, and the way on when one fails
-    payload["progress"] = progress_view(reported, requested, read_progress(str(session_id)),
+    payload["progress"] = progress_view(reported, requested, progress,
                                         scout_limit_s=SCOUT_SOFT_LIMIT_S, naming_limit_s=NAMING_SOFT_LIMIT_S,
                                         confirmed=confirmed is not None,
                                         fea=payload.get("route") == fea_check.STAGE_FEA)
@@ -466,7 +475,8 @@ async def get_check_skin(session_id: uuid.UUID, owner_id: str = Depends(owner_de
     from meshpipeline.contracts.object_storage import ObjectNotFound, get_object_store
 
     try:
-        raw = get_object_store().get_bytes(object_key=check_object_key(str(session_id), "skin.json"))
+        raw = await asyncio.to_thread(get_object_store().get_bytes,
+                                      object_key=check_object_key(str(session_id), "skin.json"))
     except ObjectNotFound:
         raise HTTPException(404, "No skin has been stored for this session's geometry check") from None
     return Response(content=raw, media_type="application/json")
@@ -527,7 +537,7 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
                                    "unit_fixed_reason": fixing.fixed_unit_reason if fixing else ""})
     # A WHOLE THERMAL MODEL is the stored check's to say, never the form's
     from meshpipeline.contracts.intake_formats import THERMAL_CHECK
-    _stored_check = _read_json(check_object_key(str(session_id), "scout.json")) or {}
+    _stored_check = await asyncio.to_thread(_read_json, check_object_key(str(session_id), "scout.json")) or {}
     # AN FEA PART is the user's words' to say (application/purpose_map), never the form's: the
     # part itself is meshed, so there is no fluid, no opening and no flow to confirm
     from meshpipeline.application import fea_check

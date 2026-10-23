@@ -27,6 +27,10 @@ VIA_STRUCTURED_INPUT = "structured_input"
 # A whole thermal model (an ECXML upload confirmed on its panel) is meshed by the engine that reads
 # its file itself, selected without a question: the job sheet the user approves names it.
 VIA_THE_FILE = "the_file"
+# An FEA part (the structural purpose, confirmed on the FEA stage) is meshed on the FEA path - one
+# solid mesher and quadratic tetrahedra in version 1 - selected without a question; the job sheet
+# the user approves names it.
+VIA_FEA_PATH = "the_fea_path"
 
 # A PLAIN YES to the application's own question. The question names the engine ("Do you want to
 # select snappyHexMesh?"), so "yes", "ok", "sure" or "go with that" is a complete answer that binds

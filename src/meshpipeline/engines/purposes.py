@@ -36,6 +36,11 @@ class Purpose:
     # restraint/load surfaces tagged). The reviewer runtime unions these with the
     # engine's mesh-class axes. Same no-setpoint invariant as the engine rubric.
     review_axes: tuple = ()
+    # ENGINE AXES THIS PURPOSE'S OWN CHECKLIST REPLACES (by name). The structural purpose judges an
+    # FEA mesh by its own checklist (purpose_review_axes._STRUCTURAL_AXES); a mesher's generic
+    # group/deck/element-order axes asked the same things in a CFD-era way ("no surface lumped into
+    # the default group") and failed valid FEA meshes over the preview's single surface group.
+    supersedes_engine_axes: tuple = ()
 
 
 from meshpipeline.engines.purpose_review_axes import (
@@ -56,6 +61,8 @@ PURPOSES: dict[str, Purpose] = {
         requires_mesh_kind=("solid-volume", "surface-mesh"),
         flow_kind="structural",
         review_axes=_STRUCTURAL_AXES,
+        supersedes_engine_axes=("group_completeness", "deck_conformance",
+                                "element_order_appropriateness"),
     ),
     "external_cfd": Purpose(
         key="external_cfd",
