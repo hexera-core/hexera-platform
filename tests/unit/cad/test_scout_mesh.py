@@ -327,7 +327,6 @@ def test_a_bolt_hole_is_shown_but_not_proposed_and_the_seed_is_the_bores_deepest
     (on its axis), and the proposal carries the map's reading of the inside."""
     pytest.importorskip("OCP")
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
-
     from tests.unit.cad.test_open_ends import _cyl, _occ_tris
     body = BRepAlgoAPI_Fuse(_cyl(0.0, 0.0, 0.0, (0, 0, 1), 0.03, 0.1), _cyl(0.0, 0.0, 0.0, (0, 0, 1), 0.1, 0.015)).Shape()
     body = BRepAlgoAPI_Cut(body, _cyl(0.0, 0.0, -0.01, (0, 0, 1), 0.02, 0.12)).Shape()
