@@ -240,8 +240,8 @@ jobs:
           SHARD: ${{ matrix.shard }}
         run: make test-fast-shard SHARD="$SHARD" SHARDS=4
 
-  # THE FEA TEXTBOOK ACCURACY SUITE (FEA build step 7): six classic cases (plate-with-hole Kt,
-  # cantilever, Lame cylinder, grooved bar, cantilever modes, Euler column) meshed by the real FEA
+  # THE FEA TEXTBOOK ACCURACY SUITE (FEA build step 7): seven classic cases (plate-with-hole Kt,
+  # cantilever, Lame cylinder, grooved bar, cantilever modes, Euler column, coil spring vs the Wahl-corrected shear) meshed by the real FEA
   # driver and SOLVED in CalculiX, each against its closed-form answer. Ubuntu's own calculix-ccx
   # (2.21, about 10 MB with its solver libraries) is installed here and nowhere else, so no image
   # grows. Quick on every change (about 10 minutes); Standard - about 500,000 elements a case - on
@@ -270,7 +270,7 @@ jobs:
       - name: The table
         if: ${{ !cancelled() }}
         env:
-          EXPECTED: 6
+          EXPECTED: 7
         run: |
           set -euo pipefail
           python - <<'PY' >> "$GITHUB_STEP_SUMMARY"

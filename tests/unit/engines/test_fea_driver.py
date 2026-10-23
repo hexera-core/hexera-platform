@@ -477,3 +477,25 @@ def test_a_least_valid_mesh_over_the_memory_is_meshed_anyway_and_said(tmp_path, 
     assert any("memory" in w for w in plan["words"])
     row = next(d for d in plan["decisions"] if d["rule"] == "PLAN-fea-16")
     assert row["inputs"]["over_memory"] and row["inputs"]["memory_gib"] == FD.MESH_JOB_MEMORY_GIB
+
+
+def test_a_springs_round_wire_keeps_its_section(tmp_path):
+    """PLAN-fea-7 from the CAD's own curvature (22 Oct: a coil spring's wire, a swept circle no
+    cylinder describes, meshed as a 4- to 6-sided ribbon): the wire face reads its own radius and
+    gets 4 elements per quarter-turn - about 16 round the wire, and over 3 across it."""
+    import math
+
+    ws = _stage(fx.coil_spring(), tmp_path / "spring")
+    record, surface, diag = FD.measure_staged(ws)
+    wire = [r for r in record["faces"].values() if r.get("radius_basis") == "curvature"]
+    assert wire and wire[0]["radius_mm"] == pytest.approx(fx.SPRING["d"] / 2, rel=0.03)
+    plan = FD.make_plan(record, surface, diag)
+    round_ = next(z for z in plan["zones"] if z["kind"] == "round")
+    around = 2 * math.pi * round_["radius_m"] / round_["size_m"]
+    assert around >= 16 * 0.999 and fx.SPRING["d"] * 1e-3 / round_["size_m"] >= 3
+
+
+def test_a_gentle_curve_gets_no_round_zone_of_its_own():
+    from meshpipeline.cad import fea_measure as M
+
+    assert M.ROUND_CAP_SHARE <= 0.25       # a bend over a quarter of the part is the base size's

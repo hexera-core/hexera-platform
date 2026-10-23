@@ -23,7 +23,7 @@ THE RULES (docs/RULES.md):
               the wall beside it
   PLAN-fea-5  sharp inside corners are capped at a quarter of the wall beside them
   PLAN-fea-6  sizes grow by at most 1.3 away from every zone
-  PLAN-fea-7  every other round keeps its shape: 3 elements per quarter-turn
+  PLAN-fea-7  every curved face keeps its shape: 4 elements per quarter-turn, by its own curvature
   PLAN-fea-8  the estimate is checked against the element limit before meshing and never stops the
               run: over it, the finest zones are coarsened until it fits, never past what keeps
               elements valid, and what that leaves short is named (resolution_short)
@@ -70,7 +70,7 @@ CORNER_DIVISIONS = 4
 #: PLAN-fea-6: the largest ratio between neighbouring element sizes away from a zone.
 GROWTH = 1.3
 #: PLAN-fea-7: elements per quarter-turn of a round that is not a hot spot (its shape only).
-ROUND_PER_QUARTER = 3
+ROUND_PER_QUARTER = 4
 #: Tetrahedra per base size cubed, measured on gmsh's own Delaunay fill (lab ~/fea4_lab: a cube
 #: at 10/6/4 mm gave 4.9/4.6/4.2 per h^3, boundary included).
 PER_H3 = 4.5
