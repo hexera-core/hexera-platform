@@ -512,6 +512,31 @@ def confirmed_opening_names(session_id) -> tuple[str, ...]:
 #: The one wall an internal flow's confirmation declares for every surface that is not an opening.
 BUILT_IN_WALL = "wall"
 
+#: THE FLOW KIND BY RULE (INS-3, docs/RULES.md). A flow through the part needs an inside with a way
+#: in and a way out. When the user says the fluid flows through a part whose inside-space map
+#: (cad/inside_space) finds no passage with two mouths, and fewer than two openings are confirmed
+#: on it, the stage asks one plain question - with the one-click way out of flowing around it -
+#: instead of a job that can only fail.
+FLOW_KIND_RULE = "INS-3"
+NO_INSIDE_QUESTION = "This part has no openings or inside for fluid. Did you mean flow around it?"
+ONE_MOUTH_QUESTION = ("The space inside this part has only one opening, so the fluid has no way through it. "
+                      "Did you mean flow around it?")
+
+
+def flow_question(inside: dict | None, openings) -> str:
+    """The stage's question when "the fluid flows through it" cannot be meshed as said, else "".
+    `inside` is the check's map facts (scout `inside`); `openings` the openings as confirmed (dicts
+    or rows with a `role`). A part the map could not read is never questioned: the intake asks."""
+    def role(o) -> str:
+        return str((o.get("role") if isinstance(o, dict) else getattr(o, "role", "")) or "")
+    ports = [o for o in openings or () if role(o) in ("inlet", "outlet")]
+    if len(ports) >= 2 or not isinstance(inside, dict) or inside.get("mapped") is False:
+        return ""
+    if inside.get("has_inside"):
+        return ""                 # there is a way through: the openings are the user's to place
+    mouths = max([int(n) for n in inside.get("mouths_per_passage") or []] or [0])
+    return ONE_MOUTH_QUESTION if mouths == 1 else NO_INSIDE_QUESTION
+
 
 def patches_from(body) -> list[dict]:
     """The session's declared patches, in the shape the intake's submit tool already takes:

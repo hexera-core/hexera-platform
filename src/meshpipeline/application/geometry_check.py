@@ -821,8 +821,9 @@ def _scout_exact(local_path: Path, work: Path, interp_ref, ref) -> tuple[dict, P
         facts["notes"].append(unit_note)
     skin = write_view_stl(local_path, work / "skin.stl", prepared=prepared, shape=shape)
     gp.mark(gp.OPENINGS, triangles=gp.skin_triangles(skin))
-    facts["holes"] = skin_holes(skin)
+    facts["holes"] = skin_holes(skin, facts)
     if not declared:
+        map_openings(facts)
         # AN ASSEMBLY'S FLUID is the space inside its parts, closed off where it meets the outside
         # (cad/fluid_volume_check): its openings are what the user confirms, not every flat face
         if wants_fluid_volume(facts):
@@ -885,19 +886,91 @@ def vet_openings(facts: dict, skin: Path) -> None:
         max(kept, key=lambda o: float(o.get("area_mm2") or 0.0))["role"] = "inlet"
 
 
-def skin_holes(skin: Path) -> list[dict]:
-    """The holes of the skin the stage draws, by the one definition the triangle scout uses
-    (cad/open_ends) - what "Add an opening" snaps to. A STEP file's openings are measured exactly
-    from its faces; these are for the click, on the same triangles the user clicks. Never fails
-    the scout: a skin it cannot read has no holes to snap to, and the click falls back."""
+def vet_by_map(facts: dict, imap) -> None:
+    """A CAD PART'S OPENINGS HELD TO ITS MAP (INS-2): an opening the faces read whose outside - a
+    few cubes out along the way the fluid would leave by it - is the part's own inside, not the
+    open air, is a step inside the passage (a counterbore's floor, a socket's shoulder), not a
+    mouth: proposed as not an opening, with the reason in the notes. One the map's grid is too
+    coarse to see is left as it is."""
     import numpy as np
 
-    from meshpipeline.cad.open_ends import find_holes
+    from meshpipeline.cad.inside_space import MIN_ACROSS
+    if not imap.passages():
+        return
+    for o in facts.get("openings") or []:
+        if o.get("role") not in ("inlet", "outlet"):
+            continue
+        c, n = o.get("centroid_m"), o.get("normal")
+        d = float(o.get("diameter_mm") or 0.0) / 1000.0
+        if not c or not n or d < MIN_ACROSS * imap.h:
+            continue
+        c, n = np.asarray(c, dtype=float), np.asarray(n, dtype=float)
+        ahead = imap.where([c + k * imap.h * n for k in (2.0, 3.0, 4.5)])
+        if "out" not in ahead and "pocket" in ahead:
+            o["role"] = "not_an_opening"
+            facts.setdefault("notes", []).append(
+                f"opening {o.get('id')} ({o.get('name')}) is proposed as not an opening: it is a step inside the "
+                "passage, and the space beyond it is the part's own inside, not the outside")
+    kept = [o for o in facts.get("openings") or [] if o.get("role") in ("inlet", "outlet")]
+    if kept and not any(o.get("role") == "inlet" for o in kept):
+        max(kept, key=lambda o: float(o.get("area_mm2") or 0.0))["role"] = "inlet"
+
+
+def map_openings(facts: dict) -> None:
+    """A CAD PART'S OPENINGS FROM ITS MAP (INS-2), when its faces gave fewer than two: the mouths
+    the inside-space map read on its skin (`facts["holes"]`, marked `passage`), proposed as the
+    openings - the largest the inlet - with a side pocket's mouths as not openings. The faces'
+    exact openings always win when there are two or more of them. Never fails the scout."""
+    ports = [o for o in facts.get("openings") or [] if o.get("role") in ("inlet", "outlet")]
+    mouths = [h for h in facts.get("holes") or [] if h.get("passage", True)]
+    if len(ports) >= 2 or len(mouths) < 2 or not (facts.get("inside") or {}).get("has_inside"):
+        return
+    side = [h for h in facts.get("holes") or [] if not h.get("passage", True)]
+    mouths = sorted(mouths, key=lambda h: -float(h.get("area_mm2") or 0.0))
+    out: list[dict] = []
+    for k, h in enumerate([*mouths, *side], start=1):
+        is_side = k > len(mouths)
+        name = ("inlet" if k == 1 else "outlet" if len(mouths) == 2 else f"outlet_{k - 1}") if not is_side \
+            else f"side_{k - len(mouths)}"
+        o = {"id": k, "face": -1, "name": name, "role": "not_an_opening" if is_side else ("inlet" if k == 1 else "outlet"),
+             "kind": "rim" if h.get("kind") == "rim" else "ring", "shape": h.get("shape") or "other",
+             "confidence": float(h.get("confidence") or 0.6),
+             "centroid_m": list(h.get("centroid_m") or []), "centroid_mm": list(h.get("centroid_mm") or []),
+             "normal": list(h.get("normal") or []),
+             "area_m2": round(float(h.get("area_mm2") or 0.0) * 1e-6, 9), "area_mm2": float(h.get("area_mm2") or 0.0),
+             "diameter_mm": h.get("diameter_mm"), "on_extremity": True, "clear_ahead": True, "from_map": True}
+        for key in ("width_mm", "height_mm", "inner_diameter_mm", "flow_area_mm2"):
+            if h.get(key) is not None:
+                o[key] = h[key]
+        out.append(o)
+    facts["openings"] = out
+    facts.setdefault("notes", []).append(
+        f"the part's faces gave {len(ports)} opening(s); its inside-space map found {len(mouths)} mouth(s) of its "
+        "passages, proposed as the openings (measured on the drawn skin: close, not exact)")
+
+
+def skin_holes(skin: Path, facts: dict | None = None) -> list[dict]:
+    """The holes of the skin the stage draws, by the one definition the triangle scout uses
+    (cad/open_ends: the mouths of the part's inside-space map) - what "Add an opening" snaps to.
+    A STEP file's openings are measured exactly from its faces; these are for the click, on the
+    same triangles the user clicks. The map's reading of the part's inside goes into `facts`
+    (`inside`, INS-1), which the stage's flow question reads (INS-3). Never fails the scout: a
+    skin it cannot read has no holes to snap to, and the click falls back."""
+    import numpy as np
+
+    from meshpipeline.cad.open_ends import find_holes, inside_map, surface
     from meshpipeline.cad.stl_io import read_stl_triangles
 
     try:
         tris = np.asarray(read_stl_triangles(Path(skin)), dtype=float).reshape(-1, 3, 3)
-        return [h.as_dict() for h in find_holes(tris)]
+        mesh = surface(tris)
+        holes = [h.as_dict() for h in find_holes(mesh=mesh)] if mesh is not None else []
+        if facts is not None:
+            imap = inside_map(mesh) if mesh is not None else None
+            facts["inside"] = imap.facts() if imap is not None else {"rule": "INS-1", "mapped": False}
+            if imap is not None:
+                vet_by_map(facts, imap)
+        return holes
     except Exception as exc:  # noqa: BLE001 - a click aid, never a reason to fail the check
         logger.warning("geometry check: the skin's holes could not be read (%s: %s)", type(exc).__name__, exc)
         return []
@@ -1662,6 +1735,12 @@ def _proposal(facts: dict, vision: dict | None) -> dict:
         "named": vision is not None,
         "vision_available": bool(vision) and "error" not in (vision or {}),
     }
+    # THE PART'S INSIDE (INS-1) and the stage's question when "through it" cannot be meshed as
+    # proposed (INS-3): asked only if the user says the fluid flows through it
+    if isinstance(facts.get("inside"), dict):
+        from meshpipeline.application.geometry_confirmation import flow_question
+        proposal["inside"] = dict(facts["inside"])
+        proposal["flow_question"] = flow_question(facts["inside"], proposal["openings"])
     if vision is None:
         return _upright(proposal, facts, None, None)
     if "error" in vision:
