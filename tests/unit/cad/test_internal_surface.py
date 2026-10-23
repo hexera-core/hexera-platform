@@ -232,6 +232,9 @@ def test_a_conflict_that_sealing_cannot_settle_is_refused_not_read_again(monkeyp
     """When the openings leave the fluid open and no undeclared bore is left to seal, a second
     reading changes nothing: the staging refuses in words, once."""
     from meshpipeline.cad import internal_surface as S
+    from meshpipeline.cad import open_ends as OE
+    # the vote alone: with the map out of the way nothing reads the fluid's side another way
+    monkeypatch.setattr(OE, "inside_map", lambda mesh: None)
     real, calls = S._fluid_side, []
 
     def leaking(mesh, lidded, caps):

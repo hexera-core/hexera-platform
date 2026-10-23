@@ -53,7 +53,7 @@ MAX_LOOPS = 400
 #: A pocket smaller than this many cubes is a crevice of the grid, not space inside the part.
 MIN_POCKET_CELLS = 8
 #: Rounds of taking away the caps that split a pocket.
-MAX_ROUNDS = 12
+MAX_ROUNDS = 24
 #: A loop strays from its plane by more than this share of its size: its cap is the lid builder's
 #: own surface (cad/lids), not the flat disc of its plane.
 CURVED_LOOP = 0.03
@@ -527,23 +527,29 @@ def read_inside(mesh=None, *, tris=None, cells: int = GRID_CELLS, h_max: float |
             kind_a = "out" if a in outside else "pocket" if a in pocket_ids else ""
             kind_b = "out" if b in outside else "pocket" if b in pocket_ids else ""
             if {kind_a, kind_b} == {"out", "pocket"}:
-                # A MOUTH: open air on one side of the cap, a pocket on the other - unless the
-                # space behind it is shallow against its width: then the cap is the lid of a dent
-                # in the part's outside (a stamped flange's dished back), and is taken away
+                # A MOUTH: open air on one side of the cap, a pocket on the other
                 pocket, out_plus = (b, True) if kind_a == "out" else (a, False)
-                if _shallow(lp, -1.0 if out_plus else 1.0, pocket, flat_lab, grid):
-                    lp.active = False
-                    split = True
-                    continue
                 sides[k] = (pocket, a if out_plus else b, out_plus)
                 continue
             # anything else closes nothing that is the part's inside meeting the outside: a cap
-            # with a pocket on both sides (a step in a bore, a barb's ridge across a hose tail)
-            # splits one pocket in two and is taken away
+            # with a pocket on both sides (a step in a bore, a barb's ridge across a hose tail, a
+            # thread's groove) splits one pocket in two and is taken away
             lp.active = False
             if kind_a == kind_b == "pocket" and a != b:
                 split = True
-        if not split:
+        if split:
+            continue
+        # THE DENTS, judged only once no cap splits a pocket (so the space behind a mouth is the
+        # whole pocket, never the slice up to a thread groove's cap): a mouth whose space behind it
+        # is shallow against its width is the lid of a dent in the part's outside (a stamped
+        # flange's dished back), and is taken away
+        dent = False
+        for k in sorted(sides):
+            pocket, _out, out_plus = sides[k]
+            if _shallow(loops[k], -1.0 if out_plus else 1.0, pocket, flat_lab, grid):
+                loops[k].active = False
+                dent = True
+        if not dent:
             break
     flat_lab = lab.ravel()
     # the mouths: the tighter of two caps closing one pocket at one place

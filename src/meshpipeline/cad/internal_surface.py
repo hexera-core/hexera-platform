@@ -295,6 +295,17 @@ def stage_triangles(tris, *, intake_patches: list | None = None, input_kind: str
         if seal_bores:
             lidded = port_loops + seal_rims + seal_mouths + seal_bores
             pieces, chosen, conflict = _fluid_side(mesh, lidded, caps)
+    if conflict and imap is not None and not fluid_body:
+        # THE FLUID'S SIDE FROM THE MAP (INS-5): the loop-by-loop vote cannot settle which side is
+        # the fluid's along a mouth that is not flat (a chevron nozzle's toothed exit votes both
+        # ways) - the map can: the fluid's side is the pieces whose faces have the passage on one
+        # side of them, each touching a confirmed opening's loop
+        by_map = _fluid_side_by_map(mesh, pieces, imap, [*port_loops, *caps])
+        if by_map is not None:
+            chosen, conflict = by_map, False
+            decisions.append({"stage": "fluid_region", "decided": "fluid side", "value": "map", "rule": "INS-5",
+                              "inputs": {"pieces": int(pieces.max()) + 1, "kept": int(len(chosen))},
+                              "words": "the fluid's side of the surface was read off the map: the pieces that line the passage."})
     if conflict:
         where = _leak_words(mesh, lidded, imap)
         if where.startswith(":"):
@@ -417,6 +428,35 @@ def _map_mouths(mesh, imap, known: set) -> list[_Opening]:
                             loop=np.asarray(m.vidx), edges=np.asarray(m.eidx), planarity=float(m.planarity),
                             passage=passage, mouth=m.id))
     return out
+
+
+#: A piece lines the passage when the passage lies beside at least this share of its area.
+LINES_PASSAGE = 0.5
+
+
+def _fluid_side_by_map(mesh, pieces: np.ndarray, imap, ports: list[_Opening]) -> np.ndarray | None:
+    """The pieces of the cut surface that line the map's passages - the passage on one side of at
+    least LINES_PASSAGE of the piece's area (probed a cube or two off each face) - kept only when
+    every confirmed opening's loop (or cap) touches one of them; None when the map cannot say."""
+    if not imap.passages() or not len(pieces):
+        return None
+    n_p = int(pieces.max()) + 1
+    beside = np.zeros(len(mesh.faces), dtype=bool)
+    for sgn in (1.0, -1.0):
+        for step in (1.0, 1.5, 2.5):
+            w = imap.where(mesh.centre + sgn * step * imap.h * mesh.normal)
+            beside |= np.asarray([x == "pocket" for x in w])
+    lined = np.bincount(pieces, weights=mesh.area * beside, minlength=n_p)
+    area = np.bincount(pieces, weights=mesh.area, minlength=n_p)
+    chosen = np.flatnonzero(lined >= LINES_PASSAGE * np.maximum(area, 1e-300))
+    if not len(chosen):
+        return None
+    keep = set(chosen.tolist())
+    for o in ports:
+        faces = o.faces if o.faces is not None else _loop_faces(mesh, o)
+        if not (set(np.unique(pieces[faces]).tolist()) & keep):
+            return None
+    return chosen
 
 
 def _same_opening(o: _Opening, ports: list[_Opening]) -> bool:
