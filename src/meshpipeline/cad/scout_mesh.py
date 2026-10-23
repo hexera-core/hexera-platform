@@ -99,7 +99,10 @@ def write_mesh_skin(path: Path, dest: Path, *, scale_to_m: float) -> Path:
 
 
 # ------------------------------------------------------------------------------ the scout ----
-def scout_mesh(path: Path, *, scale_to_m: float) -> ScoutResult:
+def scout_mesh(path: Path, *, scale_to_m: float, mapped: bool = True) -> ScoutResult:
+    """`mapped=False` reads the openings by the hole finder's shape rules alone, with no
+    inside-space map (the reading the check falls back to when the map's openings cannot close
+    the fluid in and the shape rules' can - geometry_check.keep_a_stageable_proposal)."""
     tris = read_triangles(path) * float(scale_to_m)
     from meshpipeline.cad.open_ends import find_caps, find_holes, inside_map, surface
 
@@ -130,8 +133,8 @@ def scout_mesh(path: Path, *, scale_to_m: float) -> ScoutResult:
     # an end face whose hole is the opening) - flat or not, square to the axis or not, wherever
     # the part sits. A mouth of a side pocket (a bolt hole beside the bore) is kept for the stage
     # and proposed as not an opening.
-    holes = find_holes(mesh=mesh)
-    imap = inside_map(mesh)
+    holes = find_holes(mesh=mesh, mapped=mapped)
+    imap = inside_map(mesh) if mapped else None
     for h in holes:
         candidates.append(_opening(-1, "rim" if h.kind == "rim" else "ring", h.centroid, h.normal, h.area, h.wh,
                                    bbox_min, bbox_max, diag))

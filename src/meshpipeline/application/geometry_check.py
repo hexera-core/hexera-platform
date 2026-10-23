@@ -12,6 +12,7 @@ import asyncio
 import base64
 import json
 import logging
+import math
 import tempfile
 import time
 from dataclasses import dataclass
@@ -1013,8 +1014,79 @@ def _scout_triangles(local_path: Path, work: Path, interp_ref, ref,
         if facts.get("openings_from") != "fluid_volume":
             # the extracted openings bound the fluid by construction; the skin's own passages
             # (several parts' skins together) say nothing about them
+            facts = keep_a_stageable_proposal(facts, local_path, skin, scale)
             vet_openings(facts, skin)
     return facts, skin
+
+
+def _ports_of(facts: dict) -> list[dict]:
+    return [o for o in facts.get("openings") or [] if o.get("role") in ("inlet", "outlet")]
+
+
+def _stages(skin: Path, facts: dict) -> bool | None:
+    """Whether the staging closes the fluid in with these openings (True / False), or None when it
+    cannot be told (fewer than two openings, a skin too big to stage in the check's time)."""
+    from meshpipeline.application.geometry_confirmation import body_of, patches_from
+    from meshpipeline.cad.fluid_passages import VET_MAX_OPENINGS, VET_MAX_TRIANGLES
+    from meshpipeline.cad.internal_surface import InternalSurfaceError, stage_triangles
+    from meshpipeline.cad.scout_mesh import read_triangles
+    from meshpipeline.engines.port_binding import BindError
+
+    ports = _ports_of(facts)
+    if len(ports) < 2 or len(ports) > VET_MAX_OPENINGS:
+        return None
+    try:
+        if (Path(skin).stat().st_size - 84) // 50 > VET_MAX_TRIANGLES:
+            return None
+        patches = patches_from(body_of({"flow": "internal", "input_kind": facts.get("input_kind") or "",
+                                        "openings": [dict(o) for o in ports]}))
+        stage_triangles(read_triangles(Path(skin)), intake_patches=patches, surface_path=Path(skin),
+                        input_kind=str(facts.get("input_kind") or ""), leak_check=False)
+        return True
+    except (InternalSurfaceError, BindError):
+        return False
+    except Exception:  # noqa: BLE001 - a staging that errors tells nothing either way
+        return None
+
+
+def keep_a_stageable_proposal(facts: dict, local_path: Path, skin: Path, scale: float) -> dict:
+    """THE MAP'S OPENINGS, HELD TO THE STAGING (INS-2): when the inside-space map proposes other
+    openings than the hole finder's shape rules alone, and the staging cannot close the fluid in
+    with the map's while it can with the shape rules' (the map read wrong where shells overlap, or
+    took a chip's inlet well for the mouth), the shape rules' reading is proposed, with the note.
+    The map's reading of the part's inside (`inside`) is kept either way."""
+    from meshpipeline.cad.scout_mesh import scout_mesh
+
+    size = [float(v) for v in facts.get("size_mm") or [1.0, 1.0, 1.0]]
+    step = max(1e-3 * math.sqrt(sum(v * v for v in size)), 1e-9)       # a thousandth of the part
+
+    def key(f: dict) -> list:
+        return sorted((o.get("role"), tuple(round(float(v) / step) for v in o.get("centroid_mm") or []))
+                      for o in _ports_of(f))
+    try:
+        old = scout_mesh(local_path, scale_to_m=scale, mapped=False)
+        plain = old.as_dict()
+        plain.update(getattr(old, "extra", {}) or {})
+    except Exception:  # noqa: BLE001 - the map's reading stands
+        return facts
+    if key(plain) == key(facts) or len(_ports_of(plain)) < 2:
+        return facts
+    if _stages(skin, facts) is not False:
+        return facts
+    if _stages(skin, plain) is not True:
+        return facts
+    kept = {k: facts[k] for k in ("inside", "read_as", "unit_assumed", "scale_to_m") if k in facts}
+    out = dict(facts)
+    for k in ("openings", "seed_point_m", "seed_point_mm", "body_kind", "input_kind", "flow", "confidence", "faces",
+              "holes"):
+        if k in plain:
+            out[k] = plain[k]
+    out.update(kept)
+    out["notes"] = list(facts.get("notes") or []) + [
+        "the openings the inside map read could not close the fluid in; the hole finder's own openings can, "
+        "so they are proposed"]
+    out["openings_by"] = "shape_rules"
+    return out
 
 
 def _prepared_coordinates(path: Path, interp_ref, ref):

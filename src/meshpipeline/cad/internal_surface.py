@@ -240,7 +240,36 @@ def stage_triangles(tris, *, intake_patches: list | None = None, input_kind: str
                     surface_path: Path | None = None, leak_check: bool = True) -> StagedInternal:
     """The staging itself (see stage_internal_surface). `leak_check=False` skips the flood leak
     test (INS-5) for a caller that only reads the staging's answer - the check's vetting of its
-    proposal, the passage count an engine is ranked by - never for a surface that is meshed."""
+    proposal, the passage count an engine is ranked by - never for a surface that is meshed.
+
+    THE MAP NEVER MAKES A STAGING FAIL THAT WOULD STAND WITHOUT IT (INS-5): when the map's own
+    seals, seed or fluid side leave the boundary unclosable, the same openings are staged once more
+    as the shape rules alone read the surface; that staging is kept only when it closes, and says so.
+    Otherwise the map's refusal - the one that names the place - is the one raised."""
+    ran: dict = {}
+    try:
+        return _stage_triangles(tris, intake_patches=intake_patches, input_kind=input_kind,
+                                surface_path=surface_path, leak_check=leak_check, use_map=True, ran=ran)
+    except InternalSurfaceError as first:
+        from meshpipeline.engines.port_binding import BindError
+        if not ran.get("map"):
+            raise                                  # no map was read: a second staging is the same one
+        try:
+            st = _stage_triangles(tris, intake_patches=intake_patches, input_kind=input_kind,
+                                  surface_path=surface_path, leak_check=leak_check, use_map=False)
+        except (InternalSurfaceError, BindError):
+            raise first from None
+        st.facts["map_refused"] = str(first)[:300]
+        st.facts.setdefault("decisions", []).append(
+            {"stage": "fluid_region", "decided": "map seals", "value": "left out", "rule": "INS-5",
+             "inputs": {"map_refusal": str(first)[:200]},
+             "words": "the map's own seals could not close the boundary; the confirmed openings were staged "
+                      "as the shape rules alone read the surface, and that closes."})
+        return st
+
+
+def _stage_triangles(tris, *, intake_patches: list | None, input_kind: str, surface_path: Path | None,
+                     leak_check: bool, use_map: bool, ran: dict | None = None) -> StagedInternal:
     from meshpipeline.cad.open_ends import _Mesh, skin_faces
 
     tris = np.asarray(tris, dtype=np.float64).reshape(-1, 3, 3)
@@ -261,7 +290,9 @@ def stage_triangles(tris, *, intake_patches: list | None = None, input_kind: str
     # - so a mouth the shape rules missed never joins the passage to the outside (INS-5). A body
     # that IS the fluid has its openings on its faces, not at mouths.
     from meshpipeline.cad.open_ends import inside_map
-    imap = inside_map(mesh)
+    imap = inside_map(mesh) if use_map else None
+    if ran is not None:
+        ran["map"] = imap is not None
     mouths = [] if (imap is None or fluid_body) else _map_mouths(mesh, imap, {o.key() for o in [*rims, *bores]})
     decisions: list[dict] = []
     ports_decl, wall = _declared(intake_patches, surface_path, rims, [*bores, *[m for m in mouths if m.passage]], mesh)
@@ -475,6 +506,15 @@ def _same_opening(o: _Opening, ports: list[_Opening]) -> bool:
         d = float(np.linalg.norm(o.centroid - p.centroid))
         size = max(o.size, p.size)
         if d <= 0.25 * size and abs(float(o.normal @ p.normal)) >= 0.9 and 0.5 <= o.area / max(p.area, 1e-300) <= 2.0:
+            return True
+        # ...or its throat: a loop just behind the port, inside its footprint and no wider (an
+        # inlet well's floor, the bore behind a counterbore) is where the port's own fluid goes on
+        n = p.normal / (float(np.linalg.norm(p.normal)) or 1.0)
+        r = o.centroid - p.centroid
+        depth = -float(r @ n)
+        lateral = float(np.linalg.norm(r + depth * n))
+        if (0.0 <= depth <= 1.5 * p.size and lateral <= 0.5 * p.size and o.size <= 1.05 * p.size
+                and abs(float(o.normal @ n)) >= 0.8):
             return True
     return False
 

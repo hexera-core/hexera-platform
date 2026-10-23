@@ -339,3 +339,25 @@ def test_a_bolt_hole_is_shown_but_not_proposed_and_the_seed_is_the_bores_deepest
     assert all(abs(o.centroid[0] - 0.07) < 0.005 for o in side)          # the bolt hole's two ends
     assert res.seed_point is not None and math.hypot(res.seed_point[0], res.seed_point[1]) < 0.005
     assert res.extra["inside"]["has_inside"] is True and res.extra["inside"]["side_pockets"] == 1
+
+
+def test_the_shape_rules_openings_are_proposed_when_only_they_stage(stl, monkeypatch):
+    """INS-2's guard: when the map's openings differ from the shape rules' and only the shape
+    rules' close the fluid in, the check proposes the shape rules' (with the note) and keeps the
+    map's reading of the inside; when the map's stage, they stand."""
+    from meshpipeline.application import geometry_check as gc
+    path = stl("tube", _tube())
+    facts = scout_mesh(path, scale_to_m=1.0).as_dict()
+    facts["inside"] = {"rule": "INS-1", "has_inside": True}
+    facts["openings"] = [dict(o, centroid_mm=[v + 7.0 for v in o["centroid_mm"]]) for o in facts["openings"]]
+    calls = []
+
+    def stages(skin, f):
+        calls.append(f)
+        return f is not facts                       # the map's do not stage, the shape rules' do
+    monkeypatch.setattr(gc, "_stages", stages)
+    out = gc.keep_a_stageable_proposal(facts, path, path, 1.0)
+    assert out is not facts and out["openings_by"] == "shape_rules" and out["inside"]["has_inside"] is True
+    assert any("hole finder" in n for n in out["notes"])
+    monkeypatch.setattr(gc, "_stages", lambda skin, f: True)
+    assert gc.keep_a_stageable_proposal(facts, path, path, 1.0) is facts

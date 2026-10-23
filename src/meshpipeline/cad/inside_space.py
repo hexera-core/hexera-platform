@@ -266,13 +266,22 @@ def raster(T: np.ndarray, grid: Grid) -> np.ndarray:
     n = np.cross(G[:, 1] - G[:, 0], G[:, 2] - G[:, 0])
     nl = np.linalg.norm(n, axis=1)
     shape = np.asarray(grid.shape)
-    out: list[np.ndarray] = []
+    marked = np.zeros(grid.n, dtype=bool)          # every cube marked once, whatever the order
     # degenerate triangles mark their corners only
     flat_ = nl <= 1e-12
     if flat_.any():
         q = np.floor(G[flat_].reshape(-1, 3)).astype(np.int64)
-        out.append(_flat(q, shape))
+        marked[_flat(q, shape)] = True
     G, unit = G[~flat_], n[~flat_] / nl[~flat_][:, None]
+    # A LARGE TRIANGLE (a CAD face's long fan triangle) is marked column by column over its own
+    # plane: every column of cubes its projection on its dominant axis overlaps, through the span
+    # of its plane over that column - a superset of the cubes it passes through, at a cost that
+    # grows with its area, where splitting a long sliver would make millions of pieces
+    e0 = np.stack([G[:, 1] - G[:, 0], G[:, 2] - G[:, 1], G[:, 0] - G[:, 2]], axis=1)
+    big = np.linalg.norm(e0, axis=2).max(axis=1) > BIG_TRIANGLE
+    for t in np.flatnonzero(big).tolist():
+        _columns(G[t], unit[t], marked, shape)
+    G, unit = G[~big], unit[~big]
     offs = np.array([[a, b, c] for a in (0, 1) for b in (0, 1) for c in (0, 1)], dtype=np.int64)
     # every triangle split at the middle of its longest side until no side is longer than 0.9 of a
     # cube: then each spans at most two cubes a side and its eight candidates cover it. The work
@@ -299,7 +308,7 @@ def raster(T: np.ndarray, grid: Grid) -> np.ndarray:
                 d = np.abs(np.einsum("tc,tc->t", cand + 0.5 - p0, nn))
                 hit = inside & (d <= reach + 1e-9)
                 if hit.any():
-                    out.append(_flat(cand[hit], shape))
+                    marked[_flat(cand[hit], shape)] = True
         if long_.any():
             Gl, Ul = Gs[long_], Us[long_]
             k = np.argmax(L[long_], axis=1)                 # the longest side: corner k to k+1
@@ -311,11 +320,50 @@ def raster(T: np.ndarray, grid: Grid) -> np.ndarray:
             un = np.concatenate([Ul, Ul])
             for s0 in range(0, len(halves), 2_000_000):
                 todo.append((halves[s0:s0 + 2_000_000], un[s0:s0 + 2_000_000]))
-        if sum(len(x[0]) for x in todo) > 0 and len(out) > 64:
-            out = [np.unique(np.concatenate(out))]
-    if not out:
-        return np.zeros(0, dtype=np.int64)
-    return np.unique(np.concatenate(out))
+    return np.flatnonzero(marked)
+
+
+#: A triangle with a side longer than this many cubes is marked by columns, not split (raster).
+BIG_TRIANGLE = 6.0
+
+
+def _columns(P3: np.ndarray, n: np.ndarray, marked: np.ndarray, shape: np.ndarray) -> None:
+    """Mark the cubes of one triangle (corners in cube units) by columns along its dominant axis:
+    the columns whose square its projection overlaps (edge tests with each square's half extent),
+    and in each, the cubes its plane spans over the square, held to the triangle's own extent."""
+    k = int(np.argmax(np.abs(n)))
+    i, j = [a for a in range(3) if a != k]
+    P = P3[:, [i, j]]
+    lo = np.floor(P.min(axis=0)).astype(np.int64)
+    hi = np.floor(P.max(axis=0)).astype(np.int64)
+    ci = np.arange(lo[0], hi[0] + 1)
+    cj = np.arange(lo[1], hi[1] + 1)
+    X, Y = np.meshgrid(ci + 0.5, cj + 0.5, indexing="ij")
+    X, Y = X.ravel(), Y.ravel()
+    area2 = (P[1, 0] - P[0, 0]) * (P[2, 1] - P[0, 1]) - (P[1, 1] - P[0, 1]) * (P[2, 0] - P[0, 0])
+    sgn = 1.0 if area2 >= 0 else -1.0
+    ok = np.ones(len(X), dtype=bool)
+    for a, b in ((0, 1), (1, 2), (2, 0)):
+        ex, ey = P[b, 0] - P[a, 0], P[b, 1] - P[a, 1]
+        nx, ny = -ey * sgn, ex * sgn                         # into the triangle
+        ok &= nx * (X - P[a, 0]) + ny * (Y - P[a, 1]) + 0.5 * (abs(nx) + abs(ny)) >= -1e-9
+    if not ok.any():
+        return
+    X, Y = X[ok], Y[ok]
+    d = float(n @ P3[0])
+    kc = (d - n[i] * X - n[j] * Y) / n[k]
+    half = 0.5 * (abs(n[i]) + abs(n[j])) / abs(n[k])
+    k0 = np.maximum(kc - half, float(P3[:, k].min()))
+    k1 = np.minimum(kc + half, float(P3[:, k].max()))
+    f0, f1 = np.floor(k0).astype(np.int64), np.floor(k1).astype(np.int64)
+    span = int((f1 - f0).max()) if len(f0) else -1
+    ii, jj = np.floor(X).astype(np.int64), np.floor(Y).astype(np.int64)
+    for dk in range(span + 1):
+        kk = f0 + dk
+        sel = kk <= f1
+        q = np.empty((int(sel.sum()), 3), dtype=np.int64)
+        q[:, i], q[:, j], q[:, k] = ii[sel], jj[sel], kk[sel]
+        marked[_flat(q, shape)] = True
 
 
 def _flat(q: np.ndarray, shape: np.ndarray) -> np.ndarray:
