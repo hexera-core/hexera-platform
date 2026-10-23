@@ -49,6 +49,9 @@ SETTLED = (
     ("near-wall layers", r"\bnear[- ]wall\b|\bprism layers?\b|\bboundary layers?\b|\binflation layers?\b|\by\s?\+"),
     ("a detail level", r"\bdetail level\b|\bmesh fidelity\b|\b(?:quick|standard|fine) (?:level|mesh)\b|"
                        r"\bhow (?:fine|coarse)\b|\belement count\b"),
+    # THE UNIT IS THE FEA STAGE'S: its unit box and size-based suggestion settle it (Areen's Camaro
+    # STL, 2026-10-23: "should I treat the STEP coordinates as millimetres?")
+    ("the unit", r"\bunits?\b|\bcoordinates\b|\bmillimet\w*|\bcentimet\w*|\binch(?:es)?\b"),
 )
 _SENTENCE = re.compile(r"[^.?!\n]*[?]|[^.?!\n]*\bor (?:would you|do you|should i)\b[^.?!\n]*[.!]?", re.IGNORECASE)
 

@@ -9,7 +9,7 @@ from typing import Any
 
 from meshpipeline.agents.intake import garbled, turn
 from meshpipeline.agents.intake.diagnostics import IntakeRunExtension
-from meshpipeline.agents.intake.executor import IntakeExecutionState, category_of
+from meshpipeline.agents.intake.executor import IntakeExecutionState, category_of, fea_path
 from meshpipeline.agents.loop.accounting import ToolInvocation
 from meshpipeline.agents.loop.driver import RoundDecision, ToolOutcome
 from meshpipeline.contracts import engineering_text
@@ -261,7 +261,7 @@ class IntakeLoopPolicy:
         # AN FEA PART'S REPLY INVENTS NOTHING. Supports, loads and materials are the user's, set
         # in their own solver on the named faces; a reply that proposes one the user never said
         # ("1 kN downward on the end face", "steel E = 210 GPa") goes back ONCE for a rewrite.
-        if (tuple(self.exec_state.declared_case or ())[:1] == ("structural",) and self.fea_nudges == 0
+        if (fea_path(self.exec_state) and self.fea_nudges == 0
                 and (rounds_left is None or rounds_left > 0)):
             from meshpipeline.application.fea_wording import invented
 
@@ -274,7 +274,7 @@ class IntakeLoopPolicy:
         # AN FEA PART'S REPLY ASKS NOTHING THE FEA PATH SETTLED: the engine, the element order
         # (quadratic tetrahedra), near-wall layers or a detail level. Sent back ONCE for a rewrite;
         # a reply that still asks has those questions taken out before the user reads it.
-        if tuple(self.exec_state.declared_case or ())[:1] == ("structural",):
+        if fea_path(self.exec_state):
             from meshpipeline.application.fea_wording import settled_asks, without_settled_asks
 
             asked = settled_asks(self.plaintext_text, self.exec_state.user_texts)

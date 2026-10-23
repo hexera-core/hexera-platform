@@ -547,10 +547,11 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
         else fea_check.STAGE_FEA if _fea else ""})
     if body.check_mode == fea_check.STAGE_FEA:
         facts = _stored_check.get("facts") or {}
-        blocked = fea_check.multi_body_message(facts)
+        blocked, _kind, way_out = fea_check.blocker(facts)
         if blocked:
-            # VERSION 1 MESHES ONE PART AT A TIME: no guessing at how the parts connect
-            raise HTTPException(409, blocked)
+            # VERSION 1 MESHES ONE CLOSED SOLID AT A TIME: no guessing at how parts connect, and no
+            # solid mesh of a surface - said with the way on, never a silent failure later
+            raise HTTPException(409, f"{blocked} {way_out}".strip())
         proposed = _stored_check.get("proposal") or {}
         body = body.model_copy(update={
             "input_kind": "solid-body", "flow": None, "openings": [], "seed_point_mm": None,
