@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from pathlib import Path
 
-import meshpipeline.settings.policy as polcfg
 from meshpipeline.contracts.failure_cause import FailureCause
 from meshpipeline.engines.gates import GateCtx, GateSpec, refuse
 from meshpipeline.engines.region_check import gate_port_areas
+from meshpipeline.engines.resolution_policy import CELL_LIMIT_PROVES, gate_cell_limit
 from meshpipeline.engines.vmtk.criteria import QUALITY_FLOOR
 
 logger = logging.getLogger(__name__)
@@ -42,13 +43,8 @@ def _gate_vmtk_manifest_valid(ctx: GateCtx) -> tuple[bool, str]:
         return False, ("[MANIFEST_VALIDATION_FAILED] the volume mesh has ZERO cells - the lumen "
                        "surface was not closed, so there was no interior to fill. Set "
                        "cap_openings=true and run_mesh again")
-    n = manifest.get("cell_count", 0) or 0
-    if n and n > polcfg.CELL_HARD_LIMIT:
-        return False, refuse(
-            f"mesh_manifest.json: cell_count={n:,} exceeds the compute budget "
-            f"({polcfg.CELL_HARD_LIMIT:,}) - the mesh is TOO FINE. RAISE edge_length_factor "
-            "(coarser cells relative to the local radius) and run_mesh again.",
-            FailureCause.CELL_BUDGET, cells=int(n), limit=int(polcfg.CELL_HARD_LIMIT))
+    # THE CELL LIMIT is its own gate (resolution_policy.gate_cell_limit): a note on a sound
+    # mesh, never a failure here (LAD-cfd-4)
     return True, ""
 
 
@@ -70,6 +66,38 @@ def _gate_tet_quality_floor(ctx: GateCtx) -> tuple[bool, str]:
                 "key": "min_quality", "label": "tetrahedron quality", "measured": float(mq),
                 "op": ">=", "threshold": QUALITY_FLOOR}])
     return True, ""
+
+
+
+def _gate_resolution_floor(ctx: GateCtx) -> tuple[bool, str]:
+    """Cells across the local passage at the narrowest wall (5th percentile of the wall points,
+    measured on the fill by check_mesh), held to the same floor as every flow engine
+    (engines/passage_flow.judge_resolution). It used to be one of the mesh's FATAL defects
+    ("undermeshed"), so a sound but coarse fill was read as a broken mesh and the run moved
+    engines at once (SW-1); now it is a note on a sound mesh, and the ladder's next rung refines
+    the fill (engines/resolution_policy, LAD-cfd-1)."""
+    from meshpipeline.engines.passage_flow import (
+        ResolutionVerdict,
+        judge_resolution,
+        refuse_under_resolved,
+    )
+    q = ctx.manifest_or_load().get("quality") or {}
+    verdict = judge_resolution(q)
+    if verdict.scope == "unmeasured":
+        # NO LOCAL RADIUS FIELD: check_mesh still measured the fill across the staged median
+        # radius (passage_cells_across). That figure decides then, as it did when it was a fatal
+        # defect, so a coarse fill keeps its note and its rung instead of passing unjudged.
+        raw = q.get("passage_cells_across")
+        fill = (float(raw) if isinstance(raw, (int, float)) and not isinstance(raw, bool)
+                else float("nan"))
+        if math.isfinite(fill):
+            verdict = ResolutionVerdict(fill >= verdict.floor, "narrowest", fill, fill,
+                                        floor=verdict.floor)
+    if verdict.ok:
+        return True, ""
+    return False, refuse_under_resolved(
+        verdict, "Lower edge_length_factor (about 2 / the cells wanted across) and run_mesh "
+        "again.")
 
 
 def _gate_vmtk_patch_contract(ctx: GateCtx) -> tuple[bool, str]:
@@ -131,6 +159,12 @@ VMTK_GATES: tuple[GateSpec, ...] = (
     GateSpec(key="quality_floor",   check=_gate_tet_quality_floor,   section="MESH",
              proves="No inverted or degenerate tetrahedra - the mesh clears the quality floor",
              cause=FailureCause.MESH_QUALITY),
+    GateSpec(key="cell_limit", check=gate_cell_limit, blocking=False, section="MESH",
+             proves=CELL_LIMIT_PROVES, cause=FailureCause.CELL_BUDGET),
+    # A NOTE ON A SOUND MESH, NOT A FAILURE (engines/resolution_policy, LAD-cfd-1/3)
+    GateSpec(key="resolution_floor", check=_gate_resolution_floor, blocking=False, section="MESH",
+             proves="Every passage the flow must go through is spanned by enough cells to carry it (12 at the narrowest wall)",
+             cause=FailureCause.UNDER_RESOLVED),
     GateSpec(key="patch_contract",  check=_gate_vmtk_patch_contract, section="GROUPS",
              proves="The wall and every inlet/outlet cap are present, and match what you declared",
              cause=FailureCause.CONTRACT_MISMATCH),

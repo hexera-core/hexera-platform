@@ -641,6 +641,18 @@ def classify(state: Mapping) -> Failure | None:
     """What stopped the attempt whose result the state now holds, or None when it did not fail."""
     from meshpipeline.contracts.failure_cause import StopClass, stop_class_of
     if state.get("executor_success"):
+        from meshpipeline.engines import resolution_policy as _rp
+        if _rp.resolution_caveat(state) is not None:
+            # A SOUND MESH SHORT OF THE RESOLUTION FLOOR: never a reason to leave the engine that
+            # built it - its own resolution ladder answers it (LAD-cfd-1), and a sound mesh is
+            # delivered with the note when the ladder is spent (LAD-cfd-3)
+            return Failure(NEVER, "resolution_short",
+                           "the mesh is sound but has fewer cells across its narrowest passage "
+                           "than our floor", StopClass.CHECK_FAILED.value)
+        if _rp.note_caveats(state.get("requirement_caveats")):
+            return Failure(NEVER, "over_cell_limit",
+                           "the mesh is sound and bigger than one standard job is sized for",
+                           StopClass.CHECK_FAILED.value)
         if state.get("requirement_caveats"):
             return Failure(NEVER, "requirements_near_miss",
                            "the far-field domain came out short of the size you asked for",
@@ -1354,7 +1366,7 @@ async def node_engine_fallback(state: PipelineState) -> dict:
     if not decision.switch or decision.failure is None:
         logger.info("node_engine_fallback: staying on %s for attempt %d (%s) - job_id=%s",
                     state.get("engine"), attempt, decision.why, job_id)
-        return {"engine_ladder": record}
+        return {"engine_ladder": record, **_ladder_step(state, attempt=attempt)}
 
     frm, to = str(state.get("engine") or ""), decision.switch_to
     record = with_switch(record, attempt=attempt, frm=frm, to=to,
@@ -1385,7 +1397,39 @@ async def node_engine_fallback(state: PipelineState) -> dict:
                               "summary": fresh_start_brief(frm, to, decision.failure),
                               "error_source": "engine_fallback"},
         "engine_ladder": record,
+        # the new engine plans its own first mesh: a switch spends no rung (LAD-cfd-2)
+        **_ladder_step(state, attempt=attempt, switch_to=to),
     }
+
+
+def _ladder_step(state: Mapping, *, attempt: int, switch_to: str = "") -> dict:
+    """The resolution ladder for the attempt about to start (engines/resolution_policy): one rung
+    up after a sound mesh short of the floor on this engine (LAD-cfd-1), back to the plan on a
+    switch, unchanged otherwise - cited in the run's why record when it moves."""
+    from meshpipeline.engines import resolution_policy as _rp
+    before = _rp.current_rung(state)
+    lad = _rp.next_ladder(state, switch_to=switch_to)
+    rung = int(lad.get("rung") or 0)
+    if rung != before or switch_to:
+        try:
+            from meshpipeline.contracts import decision_record as dr
+            rule = (_rp.LAD_AFTER_SWITCH if lad.get("after_switch") else _rp.LAD_RUNG)
+            dr.cite(str(state.get("job_id") or ""), stage="resolution_ladder", decided="rung",
+                    value=rung, rule=rule,
+                    inputs={"attempt": attempt, "engine": lad.get("engine"),
+                            "factor": lad.get("factor"), "measured": lad.get("measured"),
+                            "floor": lad.get("floor"), "switched_to": switch_to or None},
+                    words=(f"attempt {attempt} starts {switch_to} at its own plan: a switch "
+                           "spends no rung" if switch_to else
+                           f"attempt {attempt} sizes the narrow spots x{lad.get('factor')} "
+                           f"(rung {rung}): the last sound mesh read {lad.get('measured')} "
+                           f"cells across, the floor is {lad.get('floor')}"))
+        except Exception:  # noqa: BLE001 - a record never changes the ladder
+            logger.debug("engine ladder: rung not recorded", exc_info=True)
+        logger.info("node_engine_fallback: resolution ladder rung %d -> %d for attempt %d (%s) - "
+                    "job_id=%s", before, rung, attempt, switch_to or "same engine",
+                    state.get("job_id", "unknown"))
+    return {_rp.STATE_KEY: lad}
 
 
 __all__ = ["ENGINE", "FIXABLE", "NEVER", "REQ_PRISM_LAYERS", "REQ_WAKE", "REVIEW",

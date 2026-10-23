@@ -143,6 +143,56 @@ async def test_missing_workspace_is_executor_error(quiet):
     assert "[EXECUTOR_ERROR]" in out["executor_output"]
 
 
+def _with_gates(monkeypatch, gates):
+    """The cfMesh spec with these gates in place of its own."""
+    import meshpipeline.engines.registry as reg
+    real = reg.get_spec("cfmesh")
+
+    class _Spec:
+        def __init__(self, gates):
+            self.gates = gates
+
+        def __getattr__(self, name):
+            return getattr(real, name)
+    spec = _Spec(gates)
+    monkeypatch.setattr(reg, "get_spec", lambda name="": spec)
+
+
+async def test_a_note_gate_on_a_sound_mesh_is_a_caveat_not_a_failure(quiet, monkeypatch, tmp_path):
+    """LAD-cfd-3: the resolution floor is a non-blocking gate - the trial solve still runs, the
+    mesh is valid, and the shortfall travels as the mesh's note, kept on the run's sound list."""
+    from meshpipeline.engines.gates import GateSpec, refuse
+    solved = []
+    _arm(monkeypatch, tmp_path, on_solvability=lambda w, m: solved.append(1) or (True, ""))
+    _with_gates(monkeypatch, (
+        GateSpec(key="resolution_floor", blocking=False, check=lambda ctx: (False, refuse(
+            "[RESOLUTION] undermeshed: 8", "under_resolved", cells_across=8.0, needed=12.0))),))
+    out = await ex.node_executor(_state(tmp_path))
+    assert out["executor_success"] is True and out["executor_failed_gate"] == ""
+    (note,) = out["requirement_caveats"]
+    assert note["kind"] == "resolution_short" and note["cells_across"] == 8.0
+    assert out["sound_attempts"][0]["workspace"] == str(tmp_path)
+    assert solved, "the trial solve still runs on a mesh short of the floor"
+
+
+async def test_over_the_cell_limit_the_trial_solve_is_not_run(quiet, monkeypatch, tmp_path):
+    """LAD-cfd-4: a sound mesh over one job's cell limit is delivered with the note, and the
+    worker's trial solve - whose matrix outgrows the worker - is not run on it."""
+    from meshpipeline.engines.gates import GateSpec
+    from meshpipeline.engines.resolution_policy import gate_cell_limit
+
+    def _never(w, m):
+        raise AssertionError("no trial solve over the cell limit")
+    _arm(monkeypatch, tmp_path, on_solvability=_never)
+    m = json.loads((tmp_path / "mesh_manifest.json").read_text())
+    (tmp_path / "mesh_manifest.json").write_text(json.dumps(
+        {**m, "cell_count": polcfg.CELL_HARD_LIMIT + 1}))
+    _with_gates(monkeypatch, (GateSpec(key="cell_limit", blocking=False, check=gate_cell_limit),))
+    out = await ex.node_executor(_state(tmp_path))
+    assert out["executor_success"] is True
+    assert [c["kind"] for c in out["requirement_caveats"]] == ["over_cell_limit"]
+
+
 # node_executor publishes through the ownership-checked port. These tests exercise the gate
 # sequence, not Redis or PostgreSQL, so the port is stood in for.
 @pytest.fixture(autouse=True)

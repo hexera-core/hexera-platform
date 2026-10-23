@@ -195,6 +195,14 @@ class PipelineState(TypedDict):
     # machine-measured requirement near-misses for the CURRENT attempt (executor-owned;
     # empty means fully conforming). Deterministic code authors these; no agent may.
     requirement_caveats: list
+    # THE RESOLUTION LADDER (engines/resolution_policy, LAD-cfd-1/2): the rung the current
+    # attempt was built at, the engine it belongs to, and the shortfall it answers. Set by the
+    # engine-fallback node between attempts; written into the attempt's workspace by the builder.
+    resolution_ladder: dict
+    # Every SOUND mesh this run built (executor-owned, append-only): attempt, workspace, engine,
+    # parameters and its notes. A later attempt that comes out broken never throws an earlier
+    # sound mesh away (LAD-cfd-3, node_deliver_sound).
+    sound_attempts: list
 
     builder_noop_count:     int
     # The Builder's declared STOP (agents/builder/driver_run.STOP_*), "" otherwise: it built

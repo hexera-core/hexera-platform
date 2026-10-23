@@ -6,11 +6,11 @@ import json
 import logging
 from pathlib import Path
 
-import meshpipeline.settings.policy as polcfg
 from meshpipeline.contracts.failure_cause import FailureCause
 from meshpipeline.engines.gates import GateCtx, GateSpec, refuse
 from meshpipeline.engines.gmsh.gmsh_runner import quality_shortfalls
 from meshpipeline.engines.region_check import gate_port_areas
+from meshpipeline.engines.resolution_policy import CELL_LIMIT_PROVES, gate_cell_limit
 
 logger = logging.getLogger(__name__)
 
@@ -55,13 +55,8 @@ def _gate_gmsh_manifest_valid(ctx: GateCtx) -> tuple[bool, str]:
         return False, refuse(f"[MANIFEST_VALIDATION_FAILED] fatal mesh defects: {q['fatal']} - "
                              "coarsen or repair the geometry approach and run_mesh again",
                              FailureCause.MESH_QUALITY, fatal=list(q["fatal"]))
-    _n = manifest.get("cell_count", 0)
-    if _n and _n > polcfg.CELL_HARD_LIMIT:
-        return False, refuse(
-            f"mesh_manifest.json: cell_count={_n:,} exceeds the compute budget "
-            f"({polcfg.CELL_HARD_LIMIT:,} elements) - the mesh is TOO FINE. COARSEN it: "
-            "raise size.value (element size factor) in gmsh_spec.json and run_mesh again.",
-            FailureCause.CELL_BUDGET, cells=int(_n), limit=int(polcfg.CELL_HARD_LIMIT))
+    # THE CELL LIMIT is its own gate (resolution_policy.gate_cell_limit): a note on a sound
+    # mesh, never a failure here (LAD-cfd-4)
     return True, ""
 
 
@@ -196,7 +191,10 @@ GMSH_GATES: tuple[GateSpec, ...] = (
     # cells are clean but too big to resolve the flow cross-section (the corpus's
     # silent under-spend). After sicn (a degenerate mesh is the worse news) and
     # before naming (an under-resolved mesh is not worth patch-checking).
-    GateSpec(key="resolution_floor", check=_gate_resolution_floor,   section="MESH",
+    GateSpec(key="cell_limit", check=gate_cell_limit, blocking=False, section="MESH",
+             proves=CELL_LIMIT_PROVES, cause=FailureCause.CELL_BUDGET),
+    # A NOTE ON A SOUND MESH, NOT A FAILURE (engines/resolution_policy, LAD-cfd-1/3)
+    GateSpec(key="resolution_floor", check=_gate_resolution_floor, blocking=False, section="MESH",
              proves="The narrowest dimension of the part is resolved in enough cells to carry the flow",
              cause=FailureCause.UNDER_RESOLVED),
     GateSpec(key="patch_contract", check=_gate_gmsh_region_contract, section="GROUPS",

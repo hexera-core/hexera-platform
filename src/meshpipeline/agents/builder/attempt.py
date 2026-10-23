@@ -141,6 +141,11 @@ class BuilderAttempt:
 
 
 def _context_files(workspace: Path, state, source_path: str) -> tuple[str, str]:
+    # THE RESOLUTION LADDER'S RUNG for this attempt (engines/resolution_policy, LAD-cfd-1): a
+    # neutral workspace fact the engines' sizing reads, written (or cleared at rung 0) on every
+    # attempt so a carried-forward file never speaks for another attempt
+    from meshpipeline.engines.resolution_policy import write_fact
+    write_fact(workspace, state)
     return _write_workspace_context_files(
         workspace=workspace,
         source_path=source_path,

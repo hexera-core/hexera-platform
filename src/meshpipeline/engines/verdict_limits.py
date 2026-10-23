@@ -65,9 +65,10 @@ PRODUCTION_LIMITS: tuple[Limit, ...] = (
           ("gmsh",), topologies=_CFD,
           source="engines/gmsh/criteria.py (also gmsh's gating bar, so a mesh past it never "
                  "validates)"),
-    Limit("skew_fraction", "Share of skewed faces", "<=", 5e-4, ("cfmesh",),
-          source="the snappy-family gating bar (engines/snappy/criteria.py); advisory for cfMesh, "
-                 "which often does not report it"),
+    Limit("skew_fraction", "Share of skewed faces", "<=", 5e-4, ("snappy", "cfmesh"),
+          source="checkMesh's skewness bars (maxInternalSkewness 4, maxBoundarySkewness 20) as a "
+                 "share of all faces (engines/snappy/criteria.py): a production limit on a sound "
+                 "mesh, never a validity bar (LAD-cfd-3); cfMesh often does not report it"),
     Limit("layer_coverage_pct", "Wall covered by prism layers (percent)", ">=", 80.0,
           ("snappy", "cfmesh", "snappy_multiregion", "vmtk"), needs_layers=True,
           source="Hexera lab history: under 80% coverage, wall shear and y+ are unreliable on a "

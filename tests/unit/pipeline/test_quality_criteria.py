@@ -48,8 +48,11 @@ def test_production_grade_clean_mesh_passes():
 def test_production_grade_fails_on_first_gating_violation_in_order():
     ok, failing = production_grade("snappy", {**_CLEAN_SNAPPY, "timed_out": True, "rc": 1})
     assert not ok and failing["key"] == "timed_out"   # ordered: timeout precedes rc
+    ok, failing = production_grade("snappy", {**_CLEAN_SNAPPY, "fatal": ["open cells"]})
+    assert not ok and failing["key"] == "fatal"
+    # the share of skewed faces is a production limit (VER-2), not a validity bar (LAD-cfd-3)
     ok, failing = production_grade("snappy", {**_CLEAN_SNAPPY, "skew_fraction": 1e-3})
-    assert not ok and failing["key"] == "skew_fraction"
+    assert ok and failing is None
 
 
 def test_missing_measurement_is_not_evaluated_and_does_not_fail():
@@ -100,6 +103,16 @@ def test_judge_repair_guidance_parity():
         ok, reason = _judge_snappy(result, q, wall_faces)
         assert not ok, (result, q, wall_faces)
         assert expect in reason, f"expected {expect!r} in {reason!r}"
+
+
+def test_widespread_skew_is_repaired_by_the_driver_but_is_not_a_validity_bar():
+    """The driver still tries passes for a mesh under the share (its judge says no), while the
+    criterion is a production limit: a sound mesh over it is never failed (VER-2, LAD-cfd-3)."""
+    ok, _ = _judge_snappy({"rc": 0}, {"fatal": [], "skew_fraction": 1e-3, "skew_faces": 4000},
+                          100)
+    assert not ok
+    ok, _ = production_grade("snappy", {**_CLEAN_SNAPPY, "skew_fraction": 1e-3})
+    assert ok
 
 
 def test_judge_rc_none_means_no_run_recorded_and_passes_rc_gate():

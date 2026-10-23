@@ -45,7 +45,12 @@ CRITERIA_ROWS: tuple[Criterion, ...] = (
         ),
         _FATAL_TOPOLOGY,
         Criterion(
-            key="skew_fraction", label="Skewed faces are localized", op="<=", threshold=5e-4, gating=True,
+            key="skew_fraction", label="Skewed faces are localized", op="<=", threshold=5e-4,
+            # A PRODUCTION LIMIT, NOT A VALIDITY BAR (docs/RULES.md VER-2, LAD-cfd-3): a sound mesh
+            # (no fatal checkMesh defect) with more skewed faces than the share is delivered with
+            # the share said, never failed - a 52 k-cell duct at 0.16% was failed for it (census
+            # bucket 10). checkMesh's fatal defects stay the validity bar (FATAL_TOPOLOGY above).
+            gating=False,
             rationale=(
                 "checkMesh flags faces above the skewness bars (maxInternalSkewness 4, "
                 "maxBoundarySkewness 20 - the standard meshQualityControls values). On "

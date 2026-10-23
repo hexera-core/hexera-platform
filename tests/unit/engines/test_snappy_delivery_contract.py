@@ -211,7 +211,9 @@ def test_snappys_gating_quality_bars_are_unchanged():
     from meshpipeline.engines.snappy.criteria import CRITERIA_ROWS
 
     gating = {c.key for c in CRITERIA_ROWS if c.gating}
-    assert {"fatal", "skew_fraction", "wall_faces"} <= gating, gating
+    assert {"fatal", "wall_faces"} <= gating, gating
+    # the share of skewed faces is a production limit on a sound mesh (VER-2, LAD-cfd-3)
+    assert "skew_fraction" not in gating
 
 
 def test_the_manifest_publishes_the_measured_quality_and_states_metres(tmp_path, monkeypatch):

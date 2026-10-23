@@ -461,6 +461,10 @@ STATE_FIELDS: dict[str, str] = {
                              "measurement (contract)",
     "requirement_caveats":   "machine-measured requirement near-misses for the current attempt "
                              "(executor-owned; the delivery surfaces state them verbatim)",
+    "resolution_ladder":     "the resolution ladder's rung for the current attempt, its engine and the "
+                             "measured shortfall it answers (engines/resolution_policy, LAD-cfd-1/2)",
+    "sound_attempts":        "every sound mesh the run built (attempt, workspace, engine, parameters, "
+                             "notes); a later broken attempt never throws one away (LAD-cfd-3)",
     "executor_output":       "executor stdout/diagnostics for the classifier and reviewer",
     "executor_success":      "ground-truth mesh gate: did the executor validate a mesh",
     "mesh_manifest":         "the engine's manifest of the built mesh (reviewer navigation, quality)",
