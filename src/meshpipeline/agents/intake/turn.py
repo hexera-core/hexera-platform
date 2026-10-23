@@ -112,8 +112,9 @@ FEA_INVENTED_NUDGE = (
 FEA_SETTLED_NUDGE = (
     "[SYSTEM] Your reply was not sent: this is an FEA part, and the reply asked something the FEA "
     "path has already settled - the engine (selected for the user), the element order (quadratic "
-    "10-node tetrahedra), near-wall layers (a solid mesh has none) or a detail level (the plan's "
-    "rules size the mesh). Write it again without asking any of them: ask only what is still open "
+    "10-node tetrahedra), near-wall layers (a solid mesh has none), a detail level (the plan's "
+    "rules size the mesh) or the file's unit (the user settles it on the part's stage, beside its "
+    "size). Write it again without asking any of them: ask only what is still open "
     "(the analysis type, if it is), or go on to the approval."
 )
 #: Every user-role line the application writes into a turn. None of them is the user's words, and

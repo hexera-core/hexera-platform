@@ -356,8 +356,18 @@ async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: 
             return unit
         return MessageOutcome(status=MessageStatus.approval_invalidated, transition=settled)
 
-    unit = await _settle_unit(inbound, db, gate=gate, locked=locked, revision=revision,
-                              session_repo=session_repo, logger=logger)
+    # AN FEA PART'S UNIT IS SETTLED ON THE FEA STAGE, never by a chat question: the stage shows the
+    # part's size in the file's numbers with the unit box ("the file does not say - check the
+    # size") and the size-based suggestion, and its Proceed records the unit. A triangle file (STL,
+    # OBJ, PLY, 3MF, GLB) states no unit, and the chat used to ask it before any stage - and so
+    # never held for the check: the model asked again in its own words ("the STEP coordinates" of
+    # an STL), then the engine and the analysis while the part was still being drawn (Areen's
+    # Camaro STL, 2026-10-23). A unit the user names unasked is still recorded.
+    fea_unit_on_stage = (fea_words(messages) and not uc.already_asked(gate)
+                         and uc.stated_unit(inbound.content) is None)
+    unit = None if fea_unit_on_stage else await _settle_unit(
+        inbound, db, gate=gate, locked=locked, revision=revision, session_repo=session_repo,
+        logger=logger)
     if unit is not None:
         if unit.status is MessageStatus.unit_recorded:
             # the unit answer may be the first answer the geometry check waits for
@@ -367,7 +377,7 @@ async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: 
             if hold is not None:
                 return hold
         return unit
-    if uc.needs_confirmation(locked):
+    if uc.needs_confirmation(locked) and not fea_unit_on_stage:
         # THE NAMING WAITS FOR THE UNIT. The user's words go to the model only once the file's
         # scale is known: the naming re-reads every measurement in that unit, and the stage
         # confirms nothing without it. Until then the intake answers as it always did.
@@ -383,6 +393,13 @@ async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: 
         return hold
     return MessageOutcome(status=MessageStatus.proceed,
                           transition=GateTransition(revision=revision))
+
+
+def fea_words(messages: list) -> bool:
+    """Whether the user's words so far take the job to the FEA path (application/purpose_map)."""
+    from meshpipeline.application import purpose_map as pm
+
+    return pm.reading_for(messages).route == pm.ROUTE_FEA
 
 
 def analysis_question_due(messages: list) -> bool:

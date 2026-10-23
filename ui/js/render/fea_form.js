@@ -150,7 +150,7 @@ export function feaPanelHtml(f, p) {
       <div class="gc-tools"><button class="gc-measure v-btn" type="button" title="measure between two points on the part">Measure</button><span class="gc-tools-hint">click two points to check a length</span></div>
       <p class="fea-q">${esc(f.question || "Is this your part and are the units right?")}</p>
       <div class="gc-actions"><button class="gc-proceed" type="button"${blocked ? " disabled" : ""}>Yes, proceed</button>
-        <span class="gc-hint">${blocked ? "Upload a single part to go on." : "Change the unit first if the size is wrong."}</span></div>
+        <span class="gc-hint">${blocked ? esc(f.way_out || "Upload a single part to go on.") : "Change the unit first if the size is wrong."}</span></div>
     </div>`;
 }
 
