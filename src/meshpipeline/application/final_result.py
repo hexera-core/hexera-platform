@@ -619,7 +619,11 @@ def _admission_account(failure_facts: Mapping | None,
 def _render_fidelity(fr: FinalResult) -> str:
     # The mesh-detail line renders the effective tier with its provenance; a record with no tier
     # renders nothing rather than inventing one.
+    from meshpipeline.engines import fea_review
     from meshpipeline.pipeline.enums import render_fidelity_line
+    if fea_review.is_fea(fr.purpose):
+        # an FEA mesh has no detail level: one rules-based plan (PLAN-fea-14), never a tier
+        return ""
     if fr.effective_mesh_fidelity and fr.mesh_fidelity_source:
         return render_fidelity_line(effective=fr.effective_mesh_fidelity,
                                     source=fr.mesh_fidelity_source)

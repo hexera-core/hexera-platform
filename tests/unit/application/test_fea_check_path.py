@@ -76,3 +76,27 @@ def test_the_naming_step_asks_no_model_for_an_fea_part(monkeypatch):
     assert gc._is_fea("simulation\n" + pm.DOMAIN_CHOICES[1][1])
     assert not gc._is_fea("simulation\n" + pm.DOMAIN_CHOICES[0][1])
     assert gc._is_fea("thermal\n" + pm.THERMAL_CHOICES[1][1])
+
+
+def test_one_solid_of_overlapping_pieces_is_said_the_same_on_both_lines():
+    """A turbine blade and its root drawn as two overlapping lumps of one solid: the stage counted
+    1 body while the clean check said 1 pair of bodies pass into each other (22 Oct)."""
+    facts = {"solids": 1, "validity": {"clean": False, "kind": "brep", "measured": {"bodies": 2},
+                                       "summary": "1 pair of separate bodies pass into each other"}}
+    view = fea_check.fea_view(facts)
+    assert view["bodies"] == 1 and view["pieces"] == 2
+    assert fea_check.piece_count({"solids": 1}) is None
+
+
+def test_a_gentle_curve_is_not_a_fillet_hot_spot():
+    import numpy as np
+
+    from meshpipeline.cad import fea_features as ff
+
+    blade = ff.Arc(kind="cylinder", radius=205.0, span_deg=30.0, concave=True, axis=np.array([0, 0, 1.0]),
+                   centre=np.zeros(3))
+    blend = ff.Arc(kind="cylinder", radius=4.0, span_deg=90.0, concave=True, axis=np.array([0, 0, 1.0]),
+                   centre=np.zeros(3))
+    assert ff.kind_of(blade, diag=320.0) is None                  # the blade's own camber
+    assert ff.kind_of(blend, diag=320.0) == (ff.FILLET, "fillet")  # a real blend
+    assert ff.kind_of(blade) == (ff.FILLET, "fillet")              # no size known: as before

@@ -293,3 +293,12 @@ def test_the_result_screen_and_the_verdict_read_the_same_rows():
     assert keys[:2] == ["elements_under_floor", "through_wall_min"]
     missed = {r["key"] for r in vl.fea_limits(q) if not dr.limit_met(r["measured"], r["op"], r["limit"])}
     assert {"elements_under_floor", "through_wall_min"} <= missed
+
+
+def test_an_fea_result_names_no_detail_level():
+    from types import SimpleNamespace
+
+    cfd = SimpleNamespace(purpose="external_cfd", effective_mesh_fidelity="standard", mesh_fidelity_source="default")
+    fea = SimpleNamespace(purpose="structural", effective_mesh_fidelity="standard", mesh_fidelity_source="default")
+    assert "Standard" in fr._render_fidelity(cfd)
+    assert fr._render_fidelity(fea) == ""

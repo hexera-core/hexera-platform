@@ -288,7 +288,9 @@ SPEC = EngineSpec(
         deliverable=Deliverable(
             marker="mesh.inp",
             bundle="gmsh_case.tar.gz", prefix="gmsh_case",
-            label="Abaqus deck (.inp) + Nastran / UNV",
+            # the whole case: the .inp deck and every solver file written beside it (an FEA mesh's
+            # Nastran .bdf and Ansys .cdb; a .unv only when a flow export asked for one)
+            label="Everything: .inp deck + solver files",
             members=(
                 M("mesh.inp"),
                 M("gmsh_spec.json"),
