@@ -9,14 +9,29 @@
 import { esc } from "../core/format.js";
 import { bindUnit, shown, unitBoxHtml, unitChoiceHint, unitChoiceNeeded, unitOf } from "./geometry_form.js";
 
-/** The size row: the three sides in the file's own numbers, the unit beside them. */
+/* LENGTHS AS PEOPLE READ THEM: a part under about a metre in a file drawn in metres is shown in
+   millimetres ("36.5 mm", not "0.0365 m"); the unit box still says the file's own unit. The served
+   lengths are millimetres of the reading, so millimetres need no conversion. */
+const MM_BELOW_MM = 1000;
+function fmt3(v) { const a = Math.abs(v); return a >= 100 ? String(Math.round(v)) : a === 0 ? "0" : String(Number(v.toPrecision(3))); }
+function inMm(p) {
+  const longest = Math.max(0, ...(p.size_mm || []).map(Number).filter(Number.isFinite));
+  return unitOf(p) === "m" && longest > 0 && longest < MM_BELOW_MM;
+}
+const lenUnit = (p) => (inMm(p) ? "mm" : unitOf(p));
+const len = (v, p) => (v == null || isNaN(v) ? "?" : inMm(p) ? fmt3(Number(v)) : shown(v, p));
+
+/** The size row: the three sides, the unit beside them. */
 function sizeHtml(p) {
-  const s = (p.size_mm || []).map((v) => shown(v, p));
-  return s.length === 3 ? `${esc(s.join(" × "))} <span class="gc-u">${esc(unitOf(p))}</span>` : "not measured";
+  const s = (p.size_mm || []).map((v) => len(v, p));
+  return s.length === 3 ? `${esc(s.join(" × "))} <span class="gc-u">${esc(lenUnit(p))}</span>` : "not measured";
 }
 
 function bodiesHtml(f) {
   const n = f.bodies;
+  // the clean check counts the pieces a solid is made of: one solid of two overlapping pieces is
+  // said as such, so the two lines never disagree
+  if (n === 1 && f.pieces > 1) return `1 solid, made of ${f.pieces} pieces that pass into each other`;
   if (n === 1) return "1 (a single part)";
   if (n > 1) return `${n} separate bodies`;
   return "not counted";
@@ -30,11 +45,11 @@ function cleanHtml(f) {
 
 /** One hot spot in words, its size in the file's numbers: "Hole · radius 7.5 mm". */
 function spotWords(h, p) {
-  const u = `<span class="gc-u">${esc(unitOf(p))}</span>`;
+  const u = `<span class="gc-u">${esc(lenUnit(p))}</span>`;
   const name = { hole: "Hole", fillet: "Fillet", notch: "Notch", groove: "Groove", "inside corner": "Sharp inside corner" }[h.shape] || "Hot spot";
   const size = h.type === "sharp_corner"
     ? `${esc(String(Math.round(h.angle_deg)))}°, refinement capped`
-    : `radius ${esc(shown(h.radius_mm, p))} ${u}`;
+    : `radius ${esc(len(h.radius_mm, p))} ${u}`;
   return `<b>${esc(name)}</b> · ${size}`;
 }
 
@@ -69,9 +84,9 @@ function measureBody(m, p) {
   if (!m.measured) {
     return `<div class="rc-row"><div class="rc-k">Hot spots</div><div class="rc-v fea-unmeasured">Not measured: ${esc(m.reason || "")}</div></div>`;
   }
-  const u = `<span class="gc-u">${esc(unitOf(p))}</span>`;
+  const u = `<span class="gc-u">${esc(lenUnit(p))}</span>`;
   const wall = m.thickness_min_mm == null ? "not measured"
-    : `${esc(shown(m.thickness_min_mm, p))} ${u}${m.thickness_face ? ` <span class="fea-where">(${esc(m.thickness_face)})</span>` : ""}`;
+    : `${esc(len(m.thickness_min_mm, p))} ${u}${m.thickness_face ? ` <span class="fea-where">(${esc(m.thickness_face)})</span>` : ""}`;
   const spots = m.hot_spots || [];
   // EVERY hot spot is listed, in a group per type; a long group shows its first lines and opens
   // whole with "Show all N" (a spot left out looks the same as one never found)

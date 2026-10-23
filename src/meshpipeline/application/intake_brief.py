@@ -2,7 +2,11 @@
 # Boundaries: presentation of a decided intent; it decides nothing.
 from __future__ import annotations
 
+import logging
+import re
 from typing import Any, Final
+
+logger = logging.getLogger(__name__)
 
 # The check vocabulary. Closed on purpose: a check is a statement the
 # application can stand behind, not a free-form label.
@@ -47,15 +51,34 @@ def _patches(session: Any) -> list[dict[str, str]] | None:
     return out or None
 
 
+#: Text that is the system's own bookkeeping, never a sentence for the user: a parameter key, a
+#: field name, an instruction to the intake model. A check's detail carrying any of it is kept off
+#: the card (in the check's "internal" field and the log) - the card says only what a person reads.
+_INTERNAL = re.compile(r"engine_params|intake_params|missing required param|ask the user|param '\w+'")
+
+
+def user_detail(detail: str) -> tuple[str, str]:
+    """(what the card shows, what stays internal) for a check's detail."""
+    text = str(detail or "").strip()
+    if text and _INTERNAL.search(text):
+        return "", text
+    return text, ""
+
+
 def build_checks(brief: dict[str, Any]) -> list[dict[str, Any]]:
     checks: list[dict[str, Any]] = []
 
     def add(cid: str, label: str, status: str, detail: str = "") -> None:
         if status not in STATUSES:
             raise ValueError(f"{status!r} is not a check status")
-        checks.append({"id": cid, "label": label, "status": status,
-                       "detail": detail, "stage": "intake",
-                       "sequence": len(checks) + 1})
+        shown, internal = user_detail(detail)
+        row = {"id": cid, "label": label, "status": status,
+               "detail": shown, "stage": "intake",
+               "sequence": len(checks) + 1}
+        if internal:
+            logger.info("intake brief: check %s detail kept off the card: %s", cid, internal[:300])
+            row["internal"] = internal
+        checks.append(row)
 
     purpose = brief.get("purpose")
     engine = brief.get("engine")
@@ -85,9 +108,11 @@ def build_checks(brief: dict[str, Any]) -> list[dict[str, Any]]:
                     f"{engine_label(str(engine))} meshes this thermal model for a conjugate "
                     "heat-transfer solve", PASS if ok else FAIL, "" if ok else str(r.get("explanation") or ""))
             else:
+                # a supported engine needs no explanation on the card (the admission's message is
+                # about what is still open, which the intake settles - FEA sets its element order)
                 add("engine_compatible",
                     f"Engine {engine} supports {purpose} from {input_kind}",
-                    PASS if ok else FAIL, str(r.get("explanation") or ""))
+                    PASS if ok else FAIL, "" if ok else str(r.get("explanation") or ""))
         except Exception:
             # A gate that cannot run is not a gate that passed.
             add("engine_compatible", "Engine, purpose and input are compatible",
@@ -113,6 +138,10 @@ def build_checks(brief: dict[str, Any]) -> list[dict[str, Any]]:
         except Exception:
             add("boundary_roles_valid", "Boundary roles are valid for the purpose",
                 UNKNOWN, "the boundary vocabulary could not be resolved")
+    elif purpose and _is_fea(purpose):
+        # AN FEA PART declares no boundaries on purpose: supports and loads are the user's to set in
+        # their own solver, on faces the deck names one by one
+        add("boundary_roles_valid", "Supports and loads: set in your own solver (every face is named)", PASS)
     elif purpose and brief.get("check_mode") == "thermal":
         # A WHOLE THERMAL MODEL declares no boundaries on purpose: the air box's sides are the
         # file's, open to the room unless the file puts a fan, a vent or a wall there
@@ -150,6 +179,11 @@ def build_checks(brief: dict[str, Any]) -> list[dict[str, Any]]:
     return checks
 
 
+def _is_fea(purpose: Any) -> bool:
+    from meshpipeline.engines import fea_review
+    return bool(fea_review.is_fea(purpose))
+
+
 def build_brief(session: Any) -> dict[str, Any] | None:
     if session is None or not _clean(getattr(session, "request_txt", None)):
         return None
@@ -181,6 +215,9 @@ def build_brief(session: Any) -> dict[str, Any] | None:
         brief["job_sheet"] = _clean(job_sheet(
             view, level=brief.get("mesh_fidelity") or _declared_detail(session),
             engine=brief.get("engine") or "snapgrid"))
+    if _is_fea(brief.get("purpose")):
+        # an FEA mesh has no detail level (one rules-based plan, PLAN-fea-14): no row for it
+        brief["mesh_fidelity"] = None
     # absent stays absent: a field Intake never settled is not a blank row
     brief = {k: v for k, v in brief.items() if v is not None}
     brief["submitted"] = bool(getattr(session, "intake_submitted", False))

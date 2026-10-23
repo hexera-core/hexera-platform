@@ -90,6 +90,8 @@ export async function openViewer(job,anchorEl,opts){
               ? `<span class="v-pill fail">DID NOT PASS REVIEW</span>`
               : opts.concerns
               ? `<span class="v-pill concerns">DELIVERED WITH CONCERNS</span>`
+              : opts.withNotes
+              ? `<span class="v-pill concerns">PASSED, WITH NOTES</span>`
               : (_m.pass!==undefined?`<span class="v-pill${_m.pass?'':' fail'}">${_m.pass?'PASS':'FAIL'}</span>`:'')}
             ${_m.attempts?`<span class="sep">·</span><span>${_m.attempts} attempt${_m.attempts!==1?'s':''}</span>`:''}
           </span>
@@ -107,6 +109,12 @@ export async function openViewer(job,anchorEl,opts){
           against <i>your</i> standard and delivered.
           <button class="v-btn primary" id="v-accept-${job}">This is acceptable →</button>
         </div></div>`:''}
+      ${opts.withNotes&&opts.withNotes.length?`<div class="v-why v-concerns">
+        <p class="v-why-h">Passed, with notes</p>
+        <p class="v-why-p">The mesh is valid and passed every check that decides a run. These figures are
+        past a limit, listed so you can weigh them:</p>
+        ${reviewList(opts.withNotes)}
+        </div>`:''}
       ${opts.concerns?`<div class="v-why v-concerns">
         <p class="v-why-h">Points to weigh</p>
         <p class="v-why-p">The mesh passed every validity check, so it is sound, will solve and is

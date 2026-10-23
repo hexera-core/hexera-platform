@@ -128,12 +128,13 @@ def test_a_passing_review_cannot_hide_a_missed_limit(limits):
                    mesh_manifest=_manifest(max_non_ortho=74.2))
     assert _status(state).succeeded
     record = _final(state).to_dict()
-    assert fr.review_outcome_of(record) == "delivered_with_concerns"
+    # a valid mesh past a limit: "Passed, with notes" on the job, as on the result screen
+    assert fr.review_outcome_of(record) == "passed_with_notes"
     assert fr.review_concerns_of(record) == [
         "Worst face non-orthogonality: measured 74.2, limit at most 70"]
     msg = fr.render_message(_final(state))
-    assert msg.startswith("Delivered with concerns - these measured quality limits were missed:")
-    assert "Verdict: delivered with concerns (rule VER-2)" in msg
+    assert msg.startswith("Passed, with notes - these measured figures are past a limit:")
+    assert "Verdict: passed, with notes (rule VER-2)" in msg
 
 
 def test_the_reviewers_points_are_shown_as_labelled_notes(limits):
@@ -250,3 +251,54 @@ def test_every_limit_names_a_known_engine_and_a_source():
 def test_every_wrong_problem_class_has_a_row():
     from meshpipeline.agents.reviewer.review_policy import WRONG_PROBLEM
     assert set(dr.WRONG_PROBLEM_CHECKS) == set(WRONG_PROBLEM)
+
+
+# AN FEA JOB TELLS ONE STORY (22 Oct: nine valid FEA meshes read "Review: passed" on the job while
+# their result screens read "with notes"): its measured limits decide even in shadow, over the same
+# rows the result screen shows
+
+def _fea_state(**quality) -> dict:
+    q = {"fea": {"plan": True, "through_wall_min": 2.4, "rules": {"short": []}}, "element_order": 2,
+         "fea_inverted": 0, "elements_under_floor": 0, "sicn_floor": 0.01, "fatal": [],
+         "fea_min_scaled_jacobian": 0.3, "fea_max_jacobian_ratio": 1.5, "fea_max_aspect_ratio": 4.0,
+         "fea_min_dihedral_deg": 12.0, "fea_max_dihedral_deg": 150.0, "fea_rules_short": 0}
+    q.update(quality)
+    return _state(engine="gmsh", purpose="structural", flow_topology="", reviewer_verdict="PASS",
+                  reviewer_axis_findings=[{"axis_key": "right_part", "passed": True}],
+                  mesh_manifest={"quality": q})
+
+
+def test_an_fea_mesh_with_notes_reads_passed_with_notes_on_the_job_too(shadow):
+    state = _fea_state(fea_max_aspect_ratio=31.0)
+    assert _status(state).succeeded
+    record = _final(state).to_dict()
+    assert fr.review_outcome_of(record) == "passed_with_notes"
+    msg = fr.render_message(_final(state))
+    assert "Verdict: passed, with notes" in msg and "Review: passed" not in msg
+    assert any("aspect" in c.lower() for c in fr.review_concerns_of(record))
+
+
+def test_an_fea_mesh_without_notes_is_a_plain_pass_in_shadow_too(shadow):
+    record = _final(_fea_state()).to_dict()
+    assert fr.review_outcome_of(record) == "passed"
+    assert "Verdict: passed every measured limit" in fr.render_message(_final(_fea_state()))
+
+
+def test_the_result_screen_and_the_verdict_read_the_same_rows():
+    from meshpipeline.engines import verdict_limits as vl
+
+    q = _fea_state(elements_under_floor=4)["mesh_manifest"]["quality"]
+    q["fea"]["through_wall_min"] = 1.5
+    keys = [r["key"] for r in vl.fea_limits(q)]
+    assert keys[:2] == ["elements_under_floor", "through_wall_min"]
+    missed = {r["key"] for r in vl.fea_limits(q) if not dr.limit_met(r["measured"], r["op"], r["limit"])}
+    assert {"elements_under_floor", "through_wall_min"} <= missed
+
+
+def test_an_fea_result_names_no_detail_level():
+    from types import SimpleNamespace
+
+    cfd = SimpleNamespace(purpose="external_cfd", effective_mesh_fidelity="standard", mesh_fidelity_source="default")
+    fea = SimpleNamespace(purpose="structural", effective_mesh_fidelity="standard", mesh_fidelity_source="default")
+    assert "Standard" in fr._render_fidelity(cfd)
+    assert fr._render_fidelity(fea) == ""

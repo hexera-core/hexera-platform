@@ -183,3 +183,35 @@ def test_the_status_vocabulary_is_closed_and_nothing_escapes_it():
 def test_the_brief_survives_being_rebuilt_from_the_same_session():
     s = _Session()
     assert build_brief(s) == build_brief(s)
+
+
+# AN FEA REQUEST CARD (22 Oct, a spring): supports and loads are the user's own, the engine row says
+# no parameter bookkeeping, and there is no detail level
+
+def _fea_session(**over) -> _Session:
+    return _Session(purpose="structural", mesh_engine="gmsh", input_kind="solid-body",
+                    intake_patches=[], engine_params={}, **over)
+
+
+def test_an_fea_card_says_supports_and_loads_are_set_in_the_solver():
+    brief = build_brief(_fea_session())
+    row = next(c for c in brief["checks"] if c["id"] == "boundary_roles_valid")
+    assert row["status"] == PASS and "set in your own solver" in row["label"]
+    assert "mesh_fidelity" not in brief
+
+
+def test_no_internal_parameter_text_reaches_the_card():
+    brief = build_brief(_fea_session())
+    for c in brief["checks"]:
+        assert "engine_params" not in c["detail"] and "ask the user" not in c["detail"]
+    checks = build_checks({"purpose": "external_cfd"})
+    from meshpipeline.application.intake_brief import user_detail
+    shown, internal = user_detail("engine_params: missing required param 'element_order' - ask the user: First")
+    assert shown == "" and internal.startswith("engine_params")
+    assert user_detail("roles not admitted by external_cfd: inlet")[0]
+    assert all(c["status"] in STATUSES for c in checks)
+
+
+def test_a_cfd_card_is_unchanged():
+    row = next(c for c in build_checks({"purpose": "external_cfd"}) if c["id"] == "boundary_roles_valid")
+    assert row["status"] == UNKNOWN and row["detail"] == "no boundary assignments were declared"

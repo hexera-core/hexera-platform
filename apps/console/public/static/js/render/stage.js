@@ -664,8 +664,11 @@ export const Stage = {
     const cancelled=!!data.cancelled;
     // a delivered mesh whose review left points open is never stamped PASS
     const concerns=data.pass&&data.reviewOutcome==='delivered_with_concerns';
+    // a valid mesh the measured limits passed with some figures past a limit: "Passed, with notes",
+    // the same words its result screen uses
+    const notes=data.pass&&data.reviewOutcome==='passed_with_notes';
     const failed=!data.pass&&!cancelled;
-    const outcome=concerns?'concerns':data.pass?'pass':cancelled?'cancelled':'fail';
+    const outcome=concerns?'concerns':notes?'notes':data.pass?'pass':cancelled?'cancelled':'fail';
     // THE MARKS FOLLOW HOW THE RUN ENDED (see markOf). A cancelled run's open lane stopped; a
     // failed run shows its failure where it stopped, unless a lane already shows it; a delivered
     // mesh whose review left points open is a warning on that review, not a failure.
@@ -681,7 +684,7 @@ export const Stage = {
     // the open lanes close when the job ended, and the run's clock stops there
     this.at(data.endedAt);
     {const t0=Date.parse(data.createdAt||''),t1=Date.parse(data.endedAt||'');
-     RunLine.model.final({...data,concerns,totalMs:t0>0&&t1>0?t1-t0:(this.t0?this.now()-this.t0:null)},this.now());
+     RunLine.model.final({...data,concerns,notes,totalMs:t0>0&&t1>0?t1-t0:(this.t0?this.now()-this.t0:null)},this.now());
      RunLine.draw();}
     Object.keys(this.nodes).forEach(k=>this.done(k));
     lanes.forEach(n=>this.paint(n));
@@ -693,16 +696,16 @@ export const Stage = {
     const att=attemptsLabel(opened,this._built.size,data.attempts);
     if(this.proc){this.proc.classList.add('done','r-'+outcome);   // the header's mark takes the verdict's colour
       // ONE STATEMENT OF THE ENDING: the title says it; the live line under it gives the time
-      this.proc.querySelector('.proc-title').textContent=concerns?'Mesh ready, with concerns':data.pass?'Mesh ready':cancelled?'Run cancelled':'Run failed';
+      this.proc.querySelector('.proc-title').textContent=concerns?'Mesh ready, with concerns':notes?'Mesh ready, with notes':data.pass?'Mesh ready':cancelled?'Run cancelled':'Run failed';
       this.proc.querySelector('#proc-sub').textContent='';
       const cb=this.proc.querySelector('#proc-cancel');if(cb)cb.hidden=true;}
     // verdict row in the timeline. A cancelled run has no verdict: nobody judged a mesh.
     if(this.proc){const n=this.node('result');const v=document.createElement('div');v.className='tl-verd';
-      const pill=concerns?'DELIVERED WITH CONCERNS':data.pass?'PASS':cancelled?'CANCELLED':'FAIL';
-      v.innerHTML=`<span class="pill${concerns?' concerns':data.pass?'':cancelled?' cancelled':' fail'}">${pill}</span><span class="mt">${esc(att)}</span>`;
+      const pill=concerns?'DELIVERED WITH CONCERNS':notes?'PASSED, WITH NOTES':data.pass?'PASS':cancelled?'CANCELLED':'FAIL';
+      v.innerHTML=`<span class="pill${concerns||notes?' concerns':data.pass?'':cancelled?' cancelled':' fail'}">${pill}</span><span class="mt">${esc(att)}</span>`;
       if(cancelled&&data.cancelReason){const r=document.createElement('span');r.className='mt';r.textContent=`reason: ${data.cancelReason}`;v.appendChild(r);}
       // the result lane's mark is the verdict's: never a tick beside a FAIL
-      n.mark={pass:'done',concerns:'warn',cancelled:'ended',fail:'bad'}[outcome];
+      n.mark={pass:'done',notes:'warn',concerns:'warn',cancelled:'ended',fail:'bad'}[outcome];
       n.body.appendChild(v);this.done('result');}
     if(opened)data={...data,attempts:this._built.size};    // the viewer says the same number
 
@@ -712,7 +715,7 @@ export const Stage = {
     // it, and no second persona announces it.
     // A message of several lines is the backend's structured account (final_result.render_message):
     // drawn as a summary with its detail folded away. A one-line ending stays a plain chat line.
-    if(data.text&&String(data.text).includes('\n'))this.outcome(data.text,{concerns});
+    if(data.text&&String(data.text).includes('\n'))this.outcome(data.text,{concerns,notes});
     else if(data.text)this.chat('assistant',data.text);
 
     const anchor=document.createElement('div');this.col().appendChild(anchor);

@@ -2247,6 +2247,19 @@
   "roots": []
  },
  {
+  "context": "application/intake_brief.py::user_detail::search#1|NotAPublisher|not-a-publisher|",
+  "path": "application/intake_brief.py",
+  "qualname": "user_detail",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_INTERNAL",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "application/maintenance/cleanup.py::_publish_terminal_log::closing#1|EventPublisher|maintenance|application/maintenance/cleanup.py::publisher",
   "path": "application/maintenance/cleanup.py",
   "qualname": "_publish_terminal_log",
