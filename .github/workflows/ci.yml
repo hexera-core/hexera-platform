@@ -419,9 +419,12 @@ jobs:
     # endpoint returned a clean 403 naming the missing scope). Enabling it is an enterprise
     # billing change; when it lands, set the variable and nothing here changes.
     runs-on: ${{ vars.HEXERA_RUNNER_HEAVY || 'ubuntu-24.04' }}
-    # One image, not three: the old 60 covered the sum of them. mesh (OpenFOAM 2412 + vmtk + OCC)
-    # is the slowest of the three by a wide margin and is what this ceiling is set for.
-    timeout-minutes: 40
+    # One image, not three. mesh (OpenFOAM 2412 + vmtk + OCC) is the slowest by a wide margin and
+    # is what this ceiling is set for. A WARM build takes minutes (the layer cache below); the
+    # ceiling is for a COLD one, which on 2026-10-23 spent 36 minutes in one apt-get against a
+    # slow Ubuntu mirror. A cold build that is cancelled writes no cache, so the next run is cold
+    # again: the ceiling must let a cold build finish once.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -493,7 +496,8 @@ jobs:
     # endpoint returned a clean 403 naming the missing scope). Enabling it is an enterprise
     # billing change; when it lands, set the variable and nothing here changes.
     runs-on: ${{ vars.HEXERA_RUNNER_HEAVY || 'ubuntu-24.04' }}
-    timeout-minutes: 45
+    # as the image targets: a cold tier-image build must be able to finish once and seed the cache
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -523,11 +527,11 @@ jobs:
       - name: Integration shard ${{ matrix.shard }} of 4
         env:
           SHARD: ${{ matrix.shard }}
-          # the tier image through the same layer cache (Makefile DOCKER_BUILD); shard 1 writes
-          # it, every shard reads it
+          # the tier image through the same layer cache (Makefile DOCKER_BUILD). Every shard reads
+          # and writes it: whichever finishes first seeds it, so one slow shard cannot leave it cold
           DOCKER_BUILD: >-
             docker buildx build --load --cache-from type=gha,scope=image-validation
-            ${{ matrix.shard == 1 && '--cache-to type=gha,mode=min,scope=image-validation' || '' }}
+            --cache-to type=gha,mode=min,scope=image-validation
           # The runner deletes its own scratch directory on exit, which is right for a developer
           # and wrong here: the union pass runs in another job on another machine and the JUnit
           # report is all it has.
