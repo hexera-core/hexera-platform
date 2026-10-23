@@ -396,13 +396,15 @@ STAGED = "assembly.brep"
 SIDECAR = "assembly.json"
 
 
-def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | None = None) -> dict:
+def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | None = None,
+          tie: bool = False) -> dict:
     """Write STAGED and SIDECAR for `connection` into `out_dir`, and return the sidecar.
 
     BONDED: the general fuse itself - the parts share every face where they touch, so the mesh is
     conformal there (shared nodes); where they pass into each other the shared piece is one piece
     of material, counted with the lower-numbered part. Should the fuse fail, the parts are staged
-    side by side and every touching pair is TIED instead (bonded, not conformal) - never a stop.
+    side by side and every touching pair is TIED instead (bonded, not conformal) - never a stop;
+    `tie` asks for that directly (a fused assembly the mesher could not build as one).
     CONTACT: the parts side by side, each meshed on its own; every pair the fuse found touching
     (or overlapping) is a contact pair.
 
@@ -423,6 +425,11 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
         mode = PAIR_TIE
         notes.append(f"{fused.error}, so the parts are meshed apart and tied where they touch (bonded, "
                      "but their nodes are not shared there).")
+    elif tie and connection == BONDED:
+        # the mesher could not build the fused parts as one (the driver's way on, PLAN-fea-17)
+        mode = PAIR_TIE
+        notes.append("The parts could not be meshed as one where they meet, so each part is meshed on its own and "
+                     "tied there (bonded, but their nodes are not shared).")
     interfaces = (pairwise_interfaces(parts, vols, fuzzy=FUZZY_SHARE * diag) if fused.error
                   else interfaces_of(fused, vols, scale=1.0))
     if mode == PAIR_BONDED:

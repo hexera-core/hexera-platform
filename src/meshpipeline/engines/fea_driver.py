@@ -186,6 +186,24 @@ def prepare_assembly(ws: Path, record: dict, surface, *, connection: str, source
     return record
 
 
+def restage_tied(ws: Path, record: dict) -> dict:
+    """PLAN-fea-17's way on for a bonded assembly no pass could mesh as one: the same parts staged
+    apart and tied where they touch (cad/fea_assembly.stage, tie); the record's assembly says so."""
+    from meshpipeline.cad import fea_assembly as A
+    from meshpipeline.cad.scout import read_cad
+
+    shape = read_cad(staged_solid(ws) or ws / "geometry.step")
+    try:
+        names = [str(p.get("name") or "") for p in json.loads((ws / A.SIDECAR).read_text()).get("parts") or []]
+    except (OSError, ValueError):
+        names = []
+    sidecar = A.stage(shape, A.BONDED, ws, names=names, tie=True)
+    plan = dict(record.get("assembly_plan") or {})
+    plan.update(mode=sidecar["mode"], pairs=len(sidecar["pairs"]), notes=list(sidecar["notes"]))
+    record["assembly_plan"] = plan
+    return record
+
+
 def _histogram(surface, zone_list: list[dict], levers: list[dict], diag_m: float):
     from meshpipeline.engines.fea_size_field import SizeField
 
@@ -582,73 +600,89 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     cap = int(policy.run_timeout()) if policy is not None else 1500
     rate, cls = fill_rate(record)
     chosen: dict = {}
-    for n in range(1, L.MAX_PASSES + 1):
-        if n == 1:
-            # PLAN-fea-8: the rules' own plan, coarsened to fit under the limit when it must - never a
-            # stop before meshing
-            plan = await asyncio.to_thread(choose_plan, record, surface, diag_m, levers=levers,
-                                           ceiling_s=ceiling_for(run))
-            chosen = {"limit": plan["limit"], "zone_floor_m": plan.get("zone_floor_m"),
-                      "coarsened": plan.get("coarsened")}
-        else:
-            floor_m = chosen["zone_floor_m"]
-            if L.coarse_factor(levers) < 1.0:
-                # LAD-fea-4: the built mesh was over the limit - the finest zones coarser, from the
-                # floor already in force (or the finest zone), never past their validity minimums
-                start = floor_m or min([float(z["size_m"]) for z in P.zones(record)] or [diag_m / P.MIN_DIVISIONS])
-                floor_m = start / L.coarse_factor(levers)
-            plan = await asyncio.to_thread(make_plan, record, surface, diag_m, levers=levers,
-                                           limit=int(chosen["limit"]["elements"]), zone_floor_m=floor_m)
-            plan["limit"] = chosen["limit"]
-            if chosen.get("coarsened"):
-                plan["coarsened"] = chosen["coarsened"]
-                plan["fits"] = True
-            plan = _restate(record, plan)
-        if n == 1:
-            _cite(job_id, plan["decisions"])
-        write_plan(ws, plan)
-        run.note_authoring()
-        _clear_outputs(ws)
-        note_native_pass(ws, n)
-        note_native_payload(ws, [p for p in PAYLOAD if (ws / p).exists()])
-        # PLANNED WORK DECIDES, THE CLOCK ONLY GUARDS (D3's interface, mirrored - see planned_work)
-        work = planned_work(plan, cap, rate=rate, cls=cls, ceiling_s=ceiling_for(run))
-        _cite(job_id, [{"stage": "fea_time", "decided": "guard", "value": work["guard_s"], "rule": "PLAN-fea-13",
-                        "inputs": {k: work[k] for k in ("amount", "rate", "class", "planned_s", "floor_s",
-                                                         "ceiling_s", "factor")} | {"pass": n},
-                        "words": (f"Pass {n}: about {int(work['amount'] or 0):,} elements at {work['rate']:g} a second "
-                                  f"(a {cls} part) is about {int(work['planned_s'] or 0)} s; the mesher may take "
-                                  f"{work['guard_s']} s.")}])
-        await run.fence("start native mesh")
-        native_t0 = time.monotonic()
-        result = await asyncio.to_thread(get_engine(ENGINE).run_cartesian_mesh, ws, timeout=work["guard_s"])
-        native_s = round(time.monotonic() - native_t0, 1)
-        await run.fence("accept native mesh output")
-        if result.get("timed_out"):
-            # A GUARD TRIP is our infrastructure, never the part's: it pulls no lever and changes no
-            # plan. The attempt ends here; the run's own retry takes it again (D3: replayed once)
-            run.note_native_run(produced_usable_mesh=False)
-            tripped = {**work, "pass": n}
-            break
-        q = _read_quality(ws) if result.get("rc") in (0, 4) else {}
-        made = bool(q) and (ws / "mesh.inp").exists()
-        run.note_native_run(produced_usable_mesh=made and result.get("rc") == 0)
-        # LAD-fea-7: killed by the job's memory limit (the kernel's SIGKILL on the mesher)
-        killed = str(result.get("signal") or "") == "SIGKILL" or "killed by SIGKILL" in str(result.get("log_tail") or "")
-        passes.append({**L.pass_facts(n, result.get("rc"), q, plan, log=str(result.get("log_tail") or ""),
-                                      killed=killed), "native_s": native_s})
-        if made:
-            _keep_pass(ws, n)
-        lever = L.next_lever(passes[-1], levers, plan)
-        if lever is None:
-            if passes[-1].get("out_of_memory"):
-                _cite(job_id, [{"stage": "fea_ladder", "decided": "no lever", "value": "out of memory",
-                                "rule": "LAD-fea-7", "inputs": {"pass": n, "estimate": passes[-1].get("estimate")},
-                                "words": "The mesher ran out of memory; no lever builds this plan in less, so no retry."}])
-            break
-        _cite(job_id, [{"stage": "fea_ladder", "decided": "lever", "value": lever["lever"], "rule": lever["lever"],
-                        "inputs": lever.get("inputs") or {}, "words": lever["words"]}])
-        levers.append(lever)
+    n0 = 0
+    while True:
+        for n in range(n0 + 1, n0 + L.MAX_PASSES + 1):
+            if n == n0 + 1:
+                # PLAN-fea-8: the rules' own plan, coarsened to fit under the limit when it must - never a
+                # stop before meshing
+                plan = await asyncio.to_thread(choose_plan, record, surface, diag_m, levers=levers,
+                                               ceiling_s=ceiling_for(run))
+                chosen = {"limit": plan["limit"], "zone_floor_m": plan.get("zone_floor_m"),
+                          "coarsened": plan.get("coarsened")}
+            else:
+                floor_m = chosen["zone_floor_m"]
+                if L.coarse_factor(levers) < 1.0:
+                    # LAD-fea-4: the built mesh was over the limit - the finest zones coarser, from the
+                    # floor already in force (or the finest zone), never past their validity minimums
+                    start = floor_m or min([float(z["size_m"]) for z in P.zones(record)] or [diag_m / P.MIN_DIVISIONS])
+                    floor_m = start / L.coarse_factor(levers)
+                plan = await asyncio.to_thread(make_plan, record, surface, diag_m, levers=levers,
+                                               limit=int(chosen["limit"]["elements"]), zone_floor_m=floor_m)
+                plan["limit"] = chosen["limit"]
+                if chosen.get("coarsened"):
+                    plan["coarsened"] = chosen["coarsened"]
+                    plan["fits"] = True
+                plan = _restate(record, plan)
+            if n == n0 + 1:
+                _cite(job_id, plan["decisions"])
+            write_plan(ws, plan)
+            run.note_authoring()
+            _clear_outputs(ws)
+            note_native_pass(ws, n)
+            note_native_payload(ws, [p for p in PAYLOAD if (ws / p).exists()])
+            # PLANNED WORK DECIDES, THE CLOCK ONLY GUARDS (D3's interface, mirrored - see planned_work)
+            work = planned_work(plan, cap, rate=rate, cls=cls, ceiling_s=ceiling_for(run))
+            _cite(job_id, [{"stage": "fea_time", "decided": "guard", "value": work["guard_s"], "rule": "PLAN-fea-13",
+                            "inputs": {k: work[k] for k in ("amount", "rate", "class", "planned_s", "floor_s",
+                                                             "ceiling_s", "factor")} | {"pass": n},
+                            "words": (f"Pass {n}: about {int(work['amount'] or 0):,} elements at {work['rate']:g} a second "
+                                      f"(a {cls} part) is about {int(work['planned_s'] or 0)} s; the mesher may take "
+                                      f"{work['guard_s']} s.")}])
+            await run.fence("start native mesh")
+            native_t0 = time.monotonic()
+            result = await asyncio.to_thread(get_engine(ENGINE).run_cartesian_mesh, ws, timeout=work["guard_s"])
+            native_s = round(time.monotonic() - native_t0, 1)
+            await run.fence("accept native mesh output")
+            if result.get("timed_out"):
+                # A GUARD TRIP is our infrastructure, never the part's: it pulls no lever and changes no
+                # plan. The attempt ends here; the run's own retry takes it again (D3: replayed once)
+                run.note_native_run(produced_usable_mesh=False)
+                tripped = {**work, "pass": n}
+                break
+            q = _read_quality(ws) if result.get("rc") in (0, 4) else {}
+            made = bool(q) and (ws / "mesh.inp").exists()
+            run.note_native_run(produced_usable_mesh=made and result.get("rc") == 0)
+            # LAD-fea-7: killed by the job's memory limit (the kernel's SIGKILL on the mesher)
+            killed = str(result.get("signal") or "") == "SIGKILL" or "killed by SIGKILL" in str(result.get("log_tail") or "")
+            passes.append({**L.pass_facts(n, result.get("rc"), q, plan, log=str(result.get("log_tail") or ""),
+                                          killed=killed), "native_s": native_s})
+            if made:
+                _keep_pass(ws, n)
+            lever = L.next_lever(passes[-1], levers, plan)
+            if lever is None:
+                if passes[-1].get("out_of_memory"):
+                    _cite(job_id, [{"stage": "fea_ladder", "decided": "no lever", "value": "out of memory",
+                                    "rule": "LAD-fea-7", "inputs": {"pass": n, "estimate": passes[-1].get("estimate")},
+                                    "words": "The mesher ran out of memory; no lever builds this plan in less, so no retry."}])
+                break
+            _cite(job_id, [{"stage": "fea_ladder", "decided": "lever", "value": lever["lever"], "rule": lever["lever"],
+                            "inputs": lever.get("inputs") or {}, "words": lever["words"]}])
+            levers.append(lever)
+
+        if (tripped is None and passes and not any(f["valid"] for f in passes)
+                and (record.get("assembly_plan") or {}).get("mode") == "bonded"):
+            # PLAN-fea-17: A BONDED ASSEMBLY THE MESHER COULD NOT BUILD AS ONE (the fused parts left
+            # slivers it cannot fill): the parts are meshed apart and tied where they meet - still
+            # bonded, never a stop
+            record = await asyncio.to_thread(restage_tied, ws, record)
+            _cite(job_id, [{"stage": "fea_ladder", "decided": "tied", "value": "tie", "rule": "PLAN-fea-17",
+                            "inputs": {"passes": len(passes)},
+                            "words": ("No pass built the bonded parts as one mesh, so each part is meshed on its "
+                                      "own and tied where they meet.")}])
+            n0, levers = len(passes), []
+            continue
+        break
 
     if tripped is not None and not any(f["valid"] for f in passes):
         (ws / "fea_passes.json").write_text(json.dumps({"passes": passes, "delivered": None, "levers": levers,
@@ -702,6 +736,6 @@ def driver_for(state):
     return drive if applies(state) else None
 
 
-__all__ = ["connection_of", "prepare_assembly", "BYTES_PER_ELEMENT", "MESH_JOB_MEMORY_GIB", "limit_facts", "memory_elements", "FILL_RATES", "FLOOR_STEPS", "GUARD_FACTOR", "MESH_JOB_LIMIT_S", "ceiling_for", "choose_plan",
+__all__ = ["connection_of", "prepare_assembly", "restage_tied", "BYTES_PER_ELEMENT", "MESH_JOB_MEMORY_GIB", "limit_facts", "memory_elements", "FILL_RATES", "FLOOR_STEPS", "GUARD_FACTOR", "MESH_JOB_LIMIT_S", "ceiling_for", "choose_plan",
            "complexity", "element_limit", "fill_rate", "guard_seconds", "runnable_elements", "BUILD_FAILED", "GUARD_TRIP", "NO_SOURCE", "QUALITY_GATE", "applies", "drive",
            "driver_for", "ladder_facts", "ladder_words", "make_plan", "measure_staged", "planned_work", "write_plan"]

@@ -325,3 +325,25 @@ def test_parts_meshed_apart_never_share_a_face_the_file_already_shared(tmp_path)
     assert len(side["surfaces"]) == 12 and all(len(s["names"]) == 1 for s in side["surfaces"])
     (pair,) = side["pairs"]
     assert pair["faces"]["1"] and pair["faces"]["2"]
+
+
+def test_a_bonded_assembly_no_pass_can_mesh_as_one_is_tied_never_stopped(tmp_path, monkeypatch):
+    from meshpipeline.engines import runtime
+
+    def mesher(w, timeout):
+        plan = json.loads((Path(w) / "fea_plan.json").read_text())
+        if plan["assembly"]["mode"] == "bonded":
+            return {"rc": 1}                       # the fused parts could not be filled
+        return {"rc": fea_adapter.mesh(w)}
+
+    ws = _stage(fx.touching_blocks(), tmp_path / "fallback")
+    monkeypatch.setattr(runtime, "get_engine", lambda _n: SimpleNamespace(run_cartesian_mesh=mesher))
+    ok, marker, _o = asyncio.run(FD.drive(ws, {"purpose": "structural"}, job_id=f"t-{ws.name}", publish=None,
+                                          run=_Run(), source_path=str(ws / "upload.step")))
+    assert ok, marker
+    text = (ws / "mesh.inp").read_text()
+    assert text.count("*TIE, NAME=") == 1
+    asm = json.loads((ws / "quality.json").read_text())["fea"]["assembly"]
+    assert asm["mode"] == "tie" and any("could not be meshed as one" in n for n in asm["notes"])
+    passes = json.loads((ws / "fea_passes.json").read_text())
+    assert passes["delivered"] > 2
