@@ -384,9 +384,10 @@ def stage_triangles(tris, *, intake_patches: list | None = None, input_kind: str
     # the seed stays inside the staged boundary
     from meshpipeline.cad.inside_space import LEAK_CELLS, leak_test
     try:
-        leak, leak_facts = leak_test(V, F, seed, cells=LEAK_CELLS) if leak_check else (None, {"skipped": True})
+        leak, tested = leak_test(V, F, seed, cells=LEAK_CELLS) if leak_check else (None, {"skipped": True})
     except Exception as exc:  # noqa: BLE001 - a test that cannot run is recorded, never a verdict
-        leak, leak_facts = None, {"error": f"{type(exc).__name__}: {exc}"[:200]}
+        leak, tested = None, {"error": f"{type(exc).__name__}: {exc}"[:200]}
+    leak_facts: dict[str, object] = dict(tested)
     if leak is not None:
         leak_facts["leak_mm"] = [round(float(v) * 1000.0, 2) for v in leak.point]
         leak_facts["gap_mm"] = None if not math.isfinite(leak.width) else round(leak.width * 1000.0, 3)
@@ -505,7 +506,9 @@ def _leak_words(mesh, lidded: list[_Opening], imap) -> str:
     for p in imap.passages():
         for mid in p.mouths:
             m = imap.mouth(mid)
-            if frozenset(np.asarray(m.vidx).tolist()) not in lidded_keys:
+            seen_as = _Opening(kind=m.kind, centroid=np.asarray(m.centroid, dtype=float),
+                               normal=np.asarray(m.normal, dtype=float), area=float(m.area))
+            if frozenset(np.asarray(m.vidx).tolist()) not in lidded_keys and not _same_opening(seen_as, lidded):
                 c = m.centroid * 1000.0
                 return f" (an opening near ({c[0]:.1f}, {c[1]:.1f}, {c[2]:.1f}) mm, {m.diameter * 1000:.3g} mm across, is not closed)"
     # NO MOUTH LEFT OPEN: the surface passes through itself - shells that overlap inside the part's

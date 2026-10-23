@@ -419,7 +419,6 @@ def test_the_maps_mouths_are_sealed_and_its_deepest_point_seeds_the_fluid():
     flood from the seed stays in it, and every decision is recorded with its rule."""
     pytest.importorskip("OCP")
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
-
     from tests.unit.cad.test_open_ends import _cyl, _occ_tris
     bar = _cyl(0.0, 0.0, 0.0, (1, 0, 0), 0.03, 0.2)
     bar = BRepAlgoAPI_Cut(bar, _cyl(-0.01, 0.0, 0.0, (1, 0, 0), 0.015, 0.22)).Shape()
