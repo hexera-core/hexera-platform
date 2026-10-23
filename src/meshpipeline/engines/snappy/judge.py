@@ -126,7 +126,8 @@ def _skew_share() -> float:
     """The share of skewed faces the driver repairs towards (the snappy criterion's own limit)."""
     from meshpipeline.engines.snappy.criteria import CRITERIA_ROWS
     row = next((c for c in CRITERIA_ROWS if c.key == "skew_fraction"), None)
-    return float(row.threshold) if row is not None else 5e-4
+    t = row.threshold if row is not None else None
+    return float(t) if isinstance(t, (int, float)) else 5e-4
 
 
 __all__ = ["_judge_measurements", "_judge_snappy", "_repair_message"]
