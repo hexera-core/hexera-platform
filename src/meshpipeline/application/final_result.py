@@ -1200,7 +1200,7 @@ def review_blocking(outcome: RunOutcome) -> list[dict]:
     """The concluded review's WRONG-PROBLEM findings (agents/reviewer/review_policy) - the only
     review findings that fail a run. Empty on anything else, and always empty once the measured
     limits decide: a review can then never fail a job (docs/RULES.md VER-4)."""
-    if limits_decide_for(outcome):
+    if limits_decide():
         return []
     if not _concluded_on_valid_mesh(outcome) or outcome.reviewer_verdict != "FAIL":
         return []
