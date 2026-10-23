@@ -97,6 +97,20 @@ def test_shadow_record_contains_recommendation_and_actuals_without_altering_resu
     assert record["actual"]["elapsed_seconds"] >= 0
 
 
+def test_shadow_record_uses_remote_quality_when_result_was_not_collected(tmp_path, caplog):
+    result = {
+        "rc": -3,
+        "timed_out": False,
+        "remote_quality": {"cells": 7_000_000},
+    }
+
+    with caplog.at_level(logging.INFO):
+        observed = run_with_shadow_profile(tmp_path, "snappy", lambda: result)
+
+    assert observed is result
+    assert _record(caplog)["actual"]["cells"] == 7_000_000
+
+
 def test_provider_exception_is_recorded_and_reraised_unchanged(tmp_path, caplog):
     error = RuntimeError("provider down")
 

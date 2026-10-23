@@ -131,11 +131,13 @@ def _safe_warning(message: str, *args: Any) -> None:
 
 
 def _actual_cells(result: dict[str, Any]) -> int | None:
-    quality = result.get("quality")
-    value = quality.get("cells") if isinstance(quality, dict) else None
-    if value is None:
-        value = result.get("cells")
-    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+    candidates = []
+    for key in ("quality", "remote_quality"):
+        quality = result.get(key)
+        candidates.append(quality.get("cells") if isinstance(quality, dict) else None)
+    candidates.append(result.get("cells"))
+    return next((value for value in candidates
+                 if isinstance(value, int) and not isinstance(value, bool) and value >= 0), None)
 
 
 def run_with_shadow_profile(
