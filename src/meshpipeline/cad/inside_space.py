@@ -69,6 +69,10 @@ LINING_SHARE = 0.25
 _SIX = ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1))
 
 
+class PartialMap(ValueError):
+    """The part has more loops than the map caps: no map is better than a partial one."""
+
+
 @dataclass
 class Mouth:
     """Where a pocket meets the outside: the surface loop its cap is fitted to."""
@@ -470,7 +474,7 @@ def _loops(mesh, grid: Grid) -> tuple[list[_Loop], int]:
             continue
         out.append(lp)
     out.sort(key=lambda q: (-q.area, float(q.c[0]), float(q.c[1]), float(q.c[2])))
-    return out[:MAX_LOOPS], small
+    return out, small
 
 
 # ------------------------------------------------------------------------------ the map ----
@@ -494,6 +498,11 @@ def read_inside(mesh=None, *, tris=None, cells: int = GRID_CELLS, h_max: float |
     open_air = np.isin(lab0, list(out0))
     del lab0
     loops, small = _loops(mesh, grid)
+    if len(loops) > MAX_LOOPS:
+        # MORE LOOPS THAN THE MAP CAPS (a perforated plate, a bed of spheres): a map of some of
+        # them would leave the others open and read the part's inside wrong - the map says it
+        # cannot read the part, and the shape rules stand alone
+        raise PartialMap(f"{len(loops)} loops the grid can see, more than the {MAX_LOOPS} the map caps")
     for lp in loops:
         lp.cap = _cap_cells(lp, grid)
     notes: list[str] = []
@@ -568,12 +577,11 @@ def read_inside(mesh=None, *, tris=None, cells: int = GRID_CELLS, h_max: float |
     pid_of: dict[int, int] = {}
     for r in sorted(groups, key=lambda r: (-gsize[r], r)):
         pid = len(pockets)
-        best = None
         for g in groups[r]:
             pid_of[g] = pid
-            if best is None or sizes[g] > sizes[best]:
-                best = g
-        deepest, clear = _deepest(lab == best, grid)
+        # over every grid region of the passage: a short wide chamber beyond a throat the grid
+        # blocks can hold the point farthest from every wall
+        deepest, clear = _deepest(np.isin(lab, groups[r]), grid)
         pockets.append(Pocket(id=pid, cells=gsize[r], volume=float(gsize[r]) * h3, deepest=deepest,
                               clearance=clear, share=float(gsize[r]) / float(largest)))
     mouths: list[Mouth] = []
@@ -626,6 +634,10 @@ def read_inside_or_none(mesh, *, cells: int = GRID_CELLS, why: list | None = Non
         # surface of a few thousand triangles has no loop a finer grid would see
         cells = int(min(cells, max(MIN_GRID_CELLS, CELLS_PER_TRIANGLE * len(mesh.faces))))
         return read_inside(mesh, cells=cells)
+    except PartialMap as exc:
+        if why is not None:
+            why.append(str(exc))
+        return None
     except Exception as exc:  # noqa: BLE001 - a reading that fails leaves the old ones
         logging.getLogger(__name__).warning("inside-space map failed (%s: %s)", type(exc).__name__, exc)
         if why is not None:
@@ -810,7 +822,11 @@ def _tightest(loops: list[_Loop], rows: list[tuple[int, list[int]]], outn: dict 
             if a == b or a in gone or b in gone or not (set(pa) & set(pb)):
                 continue
             la, lb = loops[a], loops[b]
-            if abs(float(la.n @ lb.n)) < 0.95:
+            # the same way OUT of the pocket: the two ends of a short passage face apart and are
+            # two mouths, never one
+            na = outn.get(a, la.n) if outn else la.n
+            nb = outn.get(b, lb.n) if outn else lb.n
+            if float(na @ nb) < 0.95:
                 continue
             big = max(la.d, lb.d)
             r = la.c - lb.c
@@ -920,5 +936,5 @@ def leak_test(V: np.ndarray, F: np.ndarray, seed, *, cells: int = GRID_CELLS) ->
     return Leak(point=p, width=math.inf), facts
 
 
-__all__ = ["GRID_CELLS", "MAP_MAX_TRIANGLES", "MIN_ACROSS", "PASSAGE_SHARE", "Grid", "InsideMap", "Leak",
+__all__ = ["GRID_CELLS", "MAP_MAX_TRIANGLES", "MIN_ACROSS", "PASSAGE_SHARE", "Grid", "InsideMap", "Leak", "PartialMap",
            "Mouth", "Pocket", "leak_test", "raster", "read_inside", "read_inside_or_none"]

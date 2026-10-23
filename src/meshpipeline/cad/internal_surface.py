@@ -371,7 +371,7 @@ def stage_triangles(tris, *, intake_patches: list | None = None, input_kind: str
         facts["inside_map"] = imap.facts()
     for o in matched.values():
         o.normal = _outward(V, F, L, o)
-    deep = _map_deepest(imap, matched, mouths, fluid_body)
+    deep = _map_deepest(imap, matched, fluid_body)
     seed, seed_facts = _seed(V, F, L, matched, deep=deep)
     facts["seed"] = seed_facts
     decisions.append({"stage": "fluid_region", "decided": "seed", "value": seed_facts.get("from"), "rule": "INS-4",
@@ -392,12 +392,19 @@ def stage_triangles(tris, *, intake_patches: list | None = None, input_kind: str
         leak_facts["leak_mm"] = [round(float(v) * 1000.0, 2) for v in leak.point]
         leak_facts["gap_mm"] = None if not math.isfinite(leak.width) else round(leak.width * 1000.0, 3)
     facts["leak_test"] = leak_facts
-    decisions.append({"stage": "fluid_region", "decided": "sealed", "value": bool(facts.get("watertight")) and leak is None,
-                      "rule": "INS-5", "inputs": {"watertight": facts.get("watertight"), "open_edges": facts.get("open_edges"),
-                                                  "lid_crossings": facts.get("lid_crossings"),
-                                                  "flood_sealed": leak_facts.get("sealed")},
-                      "words": "every edge of the fluid boundary is on two faces and the flood from the seed stays inside."
-                      if leak is None else "the flood from the seed got out of the boundary: the leak is named."})
+    flood = leak_facts.get("sealed")
+    if flood is True:
+        flood_words = "the flood from the seed stays inside"
+    elif flood is False:
+        flood_words = "the flood from the seed got out of the boundary (the leak is named)"
+    else:
+        flood_words = "the flood test did not run (" + ("skipped" if leak_facts.get("skipped") else "it could not be run") + ")"
+    decisions.append({"stage": "fluid_region", "decided": "sealed",
+                      "value": bool(facts.get("watertight")) and flood is True, "rule": "INS-5",
+                      "inputs": {"watertight": facts.get("watertight"), "open_edges": facts.get("open_edges"),
+                                 "lid_crossings": facts.get("lid_crossings"), "flood_sealed": flood},
+                      "words": ("every edge of the fluid boundary is on two faces" if facts.get("watertight")
+                                else "the fluid boundary has edges not on two faces") + "; " + flood_words + "."})
     if leak is not None and (math.isfinite(leak.width) or (facts.get("watertight") and not facts.get("lid_crossings"))):
         # a gap a few cubes wide (a mesher's own cells close it) is named in the record, never a
         # stop; and a closed, uncrossed boundary the flood still got out of is a grid artefact at a
@@ -472,10 +479,11 @@ def _same_opening(o: _Opening, ports: list[_Opening]) -> bool:
     return False
 
 
-def _map_deepest(imap, matched: dict, mouths: list[_Opening], fluid_body: bool):
+def _map_deepest(imap, matched: dict, fluid_body: bool):
     """The map's point inside the flow (INS-4): for a body that is the fluid, the deepest point
     inside it; else the deepest point of the passage the confirmed openings open into (the one most
-    of them open), else of the largest passage. None when the map has none."""
+    of them open - every map mouth counts, whichever loop the port was matched to), else of the
+    largest passage. None when the map has none."""
     if imap is None:
         return None
     if fluid_body:
@@ -483,11 +491,14 @@ def _map_deepest(imap, matched: dict, mouths: list[_Opening], fluid_body: bool):
     passages = imap.passages()
     if not passages:
         return None
+    every = [(frozenset(np.asarray(m.vidx).tolist()),
+              _Opening(kind=m.kind, centroid=np.asarray(m.centroid, dtype=float),
+                       normal=np.asarray(m.normal, dtype=float), area=float(m.area)), m.id) for m in imap.mouths]
     votes: dict[int, int] = {}
     for o in matched.values():
-        for m in mouths:
-            if m.key() == o.key() or _same_opening(m, [o]):
-                p = imap.passage_of(m.mouth)
+        for key, seen_as, mid in every:
+            if key == o.key() or _same_opening(seen_as, [o]):
+                p = imap.passage_of(mid)
                 if p is not None:
                     votes[p.id] = votes.get(p.id, 0) + 1
                 break

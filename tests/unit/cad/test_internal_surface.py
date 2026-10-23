@@ -435,3 +435,9 @@ def test_the_maps_mouths_are_sealed_and_its_deepest_point_seeds_the_fluid():
     assert st.facts["leak_test"].get("sealed") is True
     rules = {d["rule"] for d in st.facts["decisions"]}
     assert {"INS-2", "INS-4", "INS-5", "INS-6"} <= rules
+
+
+def test_a_flood_test_that_did_not_run_is_never_recorded_as_held():
+    st = stage_triangles(_tube(0.05, 0.04), intake_patches=_ports(d_mm=80.0), leak_check=False)
+    [sealed] = [d for d in st.facts["decisions"] if d["rule"] == "INS-5" and d["decided"] == "sealed"]
+    assert sealed["value"] is False and "did not run" in sealed["words"]

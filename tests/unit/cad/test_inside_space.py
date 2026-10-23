@@ -158,3 +158,20 @@ def test_the_map_is_the_same_twice():
     a = _map(_tube(0.05, 0.04, rows=3)).as_dict()
     b = _map(_tube(0.05, 0.04, rows=3)).as_dict()
     assert a == b
+
+
+def test_a_short_wide_passage_keeps_both_its_mouths():
+    """A ring shorter than it is wide (30 mm long, an 80 mm bore): its two ends face apart, so
+    they are two mouths, never one opening seen twice."""
+    m = _map(_tube(0.05, 0.04, length=0.03), cells=600_000)
+    [p] = m.passages()
+    assert len(p.mouths) == 2 and m.has_inside()
+
+
+def test_a_map_past_its_loop_budget_is_no_map(monkeypatch):
+    """More loops than the map caps: a partial map would read the inside wrong, so there is no
+    map and the hole finder's shape rules stand alone."""
+    monkeypatch.setattr(ins, "MAX_LOOPS", 1)
+    tris = _tube(0.05, 0.04)
+    assert ins.read_inside_or_none(surface(tris)) is None
+    assert len(find_holes(tris)) == 2                       # the shape rules' two bore mouths
