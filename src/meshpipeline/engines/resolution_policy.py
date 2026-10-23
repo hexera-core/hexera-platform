@@ -171,15 +171,6 @@ def factor_of(workspace) -> float:
 # the shared note gates
 # #
 
-#: What the run says, as it happens, when a note gate is not met (pipeline/executor).
-NOTE_WORDS: dict[str, str] = {
-    "resolution_floor": ("Fewer cells across the narrowest passage than our floor of 12 - noted, "
-                         "not failed: the mesh is checked for soundness as usual, and the result "
-                         "says where and by how much"),
-    "cell_limit": ("More cells than one standard job is sized for - noted, not failed: a sound "
-                   "mesh is delivered at the size its sizing rules asked for"),
-}
-
 #: What the cell-limit gate proves, in the engineer's words (GateSpec.proves).
 CELL_LIMIT_PROVES = ("The mesh fits one standard job's cell limit (a bigger sound mesh is still "
                      "delivered, with a note)")
@@ -514,7 +505,7 @@ def note_lines(c: Mapping) -> list[str]:
     return lines
 
 
-__all__ = ["CELL_LIMIT_PROVES", "NOTE_WORDS", "ROOM_SHARE", "cite_plan",
+__all__ = ["CELL_LIMIT_PROVES", "ROOM_SHARE", "cite_plan",
            "gate_cell_limit", "LADDER_FILE", "LAD_AFTER_SWITCH", "LAD_CELL_LIMIT", "LAD_DELIVER_SOUND", "LAD_RUNG",
            "NOTE_GATES", "NOTE_KINDS", "OVER_CELL_LIMIT", "PLAN_GAP_LOCAL", "PLAN_PORTS",
            "PLAN_ROUTE_BIG", "PORT_CELLS_ACROSS", "RESOLUTION_SHORT", "RUNG_CAP", "RUNG_FACTORS",

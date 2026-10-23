@@ -352,9 +352,8 @@ async def node_executor(state: PipelineState) -> dict:
             _spec.gates, _ctx, on_result=_report_gate)
         for _key, _ok in _gate_results:
             if not _ok and _rp.is_note_gate(_key):
-                # A NOTE, NOT A FAILED CHECK (LAD-cfd-3/4): said as what it is
-                await _pub.anote(_rp.NOTE_WORDS.get(_key, "Noted, not failed"),
-                                 op_id=f"note:{_key}:{_n}")
+                # A NOTE, NOT A FAILED CHECK (LAD-cfd-3/4): never shown as a failed check - the
+                # run's result says it in full, and the router reads it
                 continue
             # Report what the gate PROVES, in the engineer's language - never the internal key.
             # This is a TRUST surface: the user is being shown the checks their mesh survived,

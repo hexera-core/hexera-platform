@@ -4729,21 +4729,6 @@
   ]
  },
  {
-  "context": "pipeline/executor.py::node_executor::note#5|ExecutionEventPublisher|execution-owned|pipeline/executor.py::execution_publisher",
-  "path": "pipeline/executor.py",
-  "qualname": "node_executor",
-  "semantic": "note",
-  "method": "anote",
-  "ordinal": 5,
-  "receiver": "_pub",
-  "authority": "ExecutionEventPublisher",
-  "lifecycle": "execution-owned",
-  "gated_required": true,
-  "roots": [
-   "pipeline/executor.py::execution_publisher"
-  ]
- },
- {
   "context": "pipeline/executor.py::node_executor::stage#1|ExecutionEventPublisher|execution-owned|pipeline/executor.py::execution_publisher",
   "path": "pipeline/executor.py",
   "qualname": "node_executor",
