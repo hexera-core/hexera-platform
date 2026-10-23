@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from pathlib import Path
 
 from meshpipeline.contracts.failure_cause import FailureCause
@@ -75,9 +76,23 @@ def _gate_resolution_floor(ctx: GateCtx) -> tuple[bool, str]:
     ("undermeshed"), so a sound but coarse fill was read as a broken mesh and the run moved
     engines at once (SW-1); now it is a note on a sound mesh, and the ladder's next rung refines
     the fill (engines/resolution_policy, LAD-cfd-1)."""
-    from meshpipeline.engines.passage_flow import judge_resolution, refuse_under_resolved
+    from meshpipeline.engines.passage_flow import (
+        ResolutionVerdict,
+        judge_resolution,
+        refuse_under_resolved,
+    )
     q = ctx.manifest_or_load().get("quality") or {}
     verdict = judge_resolution(q)
+    if verdict.scope == "unmeasured":
+        # NO LOCAL RADIUS FIELD: check_mesh still measured the fill across the staged median
+        # radius (passage_cells_across). That figure decides then, as it did when it was a fatal
+        # defect, so a coarse fill keeps its note and its rung instead of passing unjudged.
+        raw = q.get("passage_cells_across")
+        fill = (float(raw) if isinstance(raw, (int, float)) and not isinstance(raw, bool)
+                else float("nan"))
+        if math.isfinite(fill):
+            verdict = ResolutionVerdict(fill >= verdict.floor, "narrowest", fill, fill,
+                                        floor=verdict.floor)
     if verdict.ok:
         return True, ""
     return False, refuse_under_resolved(

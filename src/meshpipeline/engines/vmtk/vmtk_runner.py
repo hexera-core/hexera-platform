@@ -439,11 +439,23 @@ def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
     # is the local radius' share, so the fill stays local to each passage's own width (PLAN-cfd-1)
     from meshpipeline.engines.resolution_policy import factor_of
     _f = factor_of(ws)
+    _rung_floor = None
     if _f > 1.0:
         s = {**s, "edge_length_factor": round(max(EDGE_LENGTH_FACTOR_MIN,
                                                   float(s["edge_length_factor"]) / _f), 4)}
-    s = size_to_budget(s)
+        # the budget fit may coarsen the edge back only as far as the RUNG's cells across, never
+        # to the plain floor: that would undo the rung and mesh the case already run
+        _rung_floor = float(_floor_cells()) * _f
+    s = size_to_budget(s, min_cells_across=_rung_floor)
     plan = s.get("budget_plan") or {}
+    if plan.get("within") == "over" and _rung_floor is not None:
+        # THE RUNG DOES NOT FIT one job: not started. The run keeps the sound mesh it already has
+        # and delivers it with its note (LAD-cfd-3)
+        return {"code": "vmtk_rung_over_compute_limit", "predicted_cells": plan.get("predicted"),
+                "error": (f"the finer fill this retry asked for ({_rung_floor:.0f} cells across "
+                          f"the passages) would need about {int(plan.get('predicted') or 0):,} "
+                          f"cells, over the {int(plan.get('hard_limit') or 0):,}-cell limit of one "
+                          "job; the earlier sound mesh stands")}
     if plan.get("within") == "over":
         # NOT STARTED: even at the passage floor, with the interior as coarse as it may go and
         # no layers, the fill is predicted over the compute limit - a run would burn its hour
@@ -472,7 +484,8 @@ def _floor_cells() -> int:
     return int(PASSAGE_MIN_CELLS_ACROSS)
 
 
-def size_to_budget(s: dict, *, wall_triangles: float | None = None) -> dict:
+def size_to_budget(s: dict, *, wall_triangles: float | None = None,
+                   min_cells_across: float | None = None) -> dict:
     """The strategy fitted to its cell budget (budget.fit) when the staged lumen carries a cost
     model: the strategy's max_cells, never above the compute limit. Without a model the strategy
     stands (an unstaged .vtp, or a staging that could not measure it)."""
@@ -498,7 +511,7 @@ def size_to_budget(s: dict, *, wall_triangles: float | None = None) -> dict:
     except (TypeError, ValueError):
         requested = int(polcfg.CELL_HARD_LIMIT)
     fitted, plan = fit(base, model, requested=requested, hard_limit=int(polcfg.CELL_HARD_LIMIT),
-                       min_cells_across=float(PASSAGE_MIN_CELLS_ACROSS),
+                       min_cells_across=float(min_cells_across or PASSAGE_MIN_CELLS_ACROSS),
                        wall_triangles=wall_triangles,
                        allow_edge_change=wall_triangles is None)
     plan["asked"] = asked

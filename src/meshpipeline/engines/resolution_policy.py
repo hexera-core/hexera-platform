@@ -359,7 +359,10 @@ def rung_after_switch(state: Mapping, *, attempts_ceiling: int, attempt_seconds:
         return False, "no rung fits"
     if int(state.get("retry_count", 0) or 0) >= int(attempts_ceiling):
         return False, "the run's ceiling of attempts is reached"
-    deadline = _num(state.get("pipeline_deadline_epoch"))
+    # the EARLIER of the run's two clocks: the builder cuts an attempt short at its own deadline
+    ends = [d for d in (_num(state.get("builder_deadline_epoch")),
+                        _num(state.get("pipeline_deadline_epoch"))) if d is not None and d > 0]
+    deadline = min(ends) if ends else None
     if deadline is not None:
         left = deadline - (now if now is not None else _time.time())
         if left < float(attempt_seconds):

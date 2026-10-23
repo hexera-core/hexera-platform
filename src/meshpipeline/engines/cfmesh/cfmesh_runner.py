@@ -975,8 +975,10 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
     if _fluid_declared:
         t = {**t, "wall_bounds_fluid": True}
     passage_radius, _field = _passage_sizing(t, _staged["sizing"], _wall_key, _sizing_decl)
+    # every staged passage's openings: the further passages are meshed with this same meshDict
+    # (native.mesh_passages copies it), so their ports need their refinement in it too
     _port_widths = _opening_widths(_staged["sizing"], _wall_key, _sizing_decl,
-                                   names=prep.get("patch_names") or [])
+                                   names=list(_staged["sizing"]))
     for _done in ("all", "p0"):
         # read into geom.stl and the passage field: only the further passages' surfaces travel
         shutil.rmtree(ws / "_passages" / _done, ignore_errors=True)

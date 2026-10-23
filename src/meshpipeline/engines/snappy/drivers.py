@@ -44,6 +44,83 @@ if TYPE_CHECKING:
 
 
 
+#: Where a pass's SOUND mesh waits while a later pass tries for a cleaner one (LAD-cfd-3).
+_SOUND_KEEP = ".sound_pass_mesh"
+
+
+#: What a pass's mesh is, on disk: the mesh, its measurement beside it (native.py writes it, and
+#: finalize, the judge and solvability read it), and the volume export the reviewer slices.
+_SOUND_ITEMS = ("constant/polyMesh", "mesh_quality.json", "VTK")
+
+
+def _remove(p: Path) -> None:
+    import shutil
+    if p.is_dir():
+        shutil.rmtree(p, ignore_errors=True)
+    else:
+        p.unlink(missing_ok=True)
+
+
+def _keep_sound_mesh(workspace: Path) -> bool:
+    """Copy the pass's sound mesh aside (_SOUND_ITEMS), replacing an older one. A later pass may
+    try for a cleaner mesh (the skew share), and if it comes out broken the sound one is put back
+    instead of the run failing. Never raises; False when nothing was kept."""
+    import shutil
+    ws = Path(workspace)
+    dst = ws / _SOUND_KEEP
+    try:
+        if not (ws / "constant" / "polyMesh" / "owner").exists():
+            return False
+        _remove(dst)
+        dst.mkdir()
+        for k, rel in enumerate(_SOUND_ITEMS):
+            src = ws / rel
+            if src.is_dir():
+                shutil.copytree(src, dst / str(k))
+            elif src.exists():
+                shutil.copy2(src, dst / str(k))
+        return True
+    except OSError:
+        logger.warning("snappy: the sound pass's mesh could not be kept aside", exc_info=True)
+        _remove(dst)
+        return False
+
+
+def _restore_sound_mesh(workspace: Path) -> bool:
+    """Put the kept sound mesh back as the case's mesh (and drop the later pass's measurement and
+    export with it). False when none was kept."""
+    ws = Path(workspace)
+    kept = ws / _SOUND_KEEP
+    if not (kept / "0" / "owner").exists():
+        return False
+    try:
+        for k, rel in enumerate(_SOUND_ITEMS):
+            _remove(ws / rel)
+            if (kept / str(k)).exists():
+                (kept / str(k)).rename(ws / rel)
+        return True
+    except OSError:
+        logger.warning("snappy: the kept sound mesh could not be put back", exc_info=True)
+        return False
+
+
+def _drop_sound_mesh(workspace: Path) -> None:
+    import shutil
+    shutil.rmtree(Path(workspace) / _SOUND_KEEP, ignore_errors=True)
+
+
+def _end_passes(workspace: Path, last_valid: bool, job_id: str) -> bool:
+    """The passes ran out: the last pass's mesh when it is sound, else the newest sound one an
+    earlier pass kept (LAD-cfd-3), else none. The "passes exhausted - submitting the best mesh"
+    note that follows says it to the user."""
+    if not last_valid and _restore_sound_mesh(workspace):
+        last_valid = True
+        logger.info("the last pass came out broken - the earlier sound mesh is put back "
+                    "(LAD-cfd-3) - job_id=%s", job_id)
+    _drop_sound_mesh(workspace)
+    return last_valid
+
+
 def _prev_attempt_overshoot(workspace: Path) -> tuple[float, float] | None:
     """(budget_requested, cells_produced) from the SIBLING attempt this retry follows, else None.
 
@@ -1144,7 +1221,11 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                                   last=attempt == max_attempts)),
                     op_id=f"snappy:pass-outcome:{attempt}")
         if production:
+            _drop_sound_mesh(workspace)
             return True                    # valid mesh is in the workspace; executor takes over
+        if last_valid and attempt < max_attempts and not _repeat_stop:
+            # sound but not as clean as we aim for: kept aside while the next pass tries
+            _keep_sound_mesh(workspace)
         if _repeat_stop:
             break
         if _esc_note:
@@ -1154,6 +1235,8 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
 
     # Exhausted the attempts. Hand a best-effort VALID mesh to the executor/reviewer (they make the
     # final delivery call); only a genuinely invalid last mesh (no body captured) is a hard fail.
+    # A broken last pass gives way to the newest sound mesh an earlier pass kept (LAD-cfd-3).
+    last_valid = _end_passes(workspace, last_valid, job_id)
     logger.warning("snappy build exhausted %d attempts - job_id=%s (last_valid=%s)",
                    max_attempts, job_id, last_valid)
     if last_valid:
@@ -2210,11 +2293,17 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                                              last=attempt == max_attempts),
                     op_id=f"internal:pass-outcome:{attempt}")
         if production:
+            _drop_sound_mesh(workspace)
             return True
+        if last_valid and attempt < max_attempts and not _repeat_stop:
+            # sound but not as clean as we aim for: kept aside while the next pass tries
+            _keep_sound_mesh(workspace)
         if _repeat_stop:
             break
         feedback, plan = reason, None
 
+    # a broken last pass gives way to the newest sound mesh an earlier pass kept (LAD-cfd-3)
+    last_valid = _end_passes(workspace, last_valid, job_id)
     logger.warning("internal build exhausted %d attempts - job_id=%s (last_valid=%s)",
                    max_attempts, job_id, last_valid)
     if last_valid:

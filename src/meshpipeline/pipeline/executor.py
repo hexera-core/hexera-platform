@@ -475,12 +475,31 @@ async def node_executor(state: PipelineState) -> dict:
 
             # OVER ONE JOB'S CELL LIMIT (LAD-cfd-4) the trial solve is not run here: its matrix
             # for a mesh past the limit outgrows this worker's memory (7.3 M cells took an 8 GiB
-            # worker down before the solver was made lean). checkMesh's fatal topology and its
-            # one-region count, measured where the mesh was built, stand in for it.
+            # worker down before the solver was made lean). checkMesh's fatal topology stands in
+            # for it, and a lean count of the mesh's connected regions (one per passage meshed):
+            # a disconnected pocket is what the solve would catch that the fatal list does not.
             _skip_solve = any(k == "cell_limit" for k, _ in _noted)
             if _skip_solve:
                 logger.info("Executor: trial solve skipped - the mesh is over one job's cell "
                             "limit (LAD-cfd-4) - job_id=%s", job_id)
+                if (executor_success and not contract_failed
+                        and (Path(workspace) / "constant" / "polyMesh" / "owner").exists()):
+                    from meshpipeline.engines.snappy.solvability import check_connected
+                    try:
+                        _conn = await asyncio.to_thread(check_connected, Path(workspace))
+                    except MemoryError:
+                        _conn = (True, "")
+                        logger.warning("Executor: region count ran out of memory - passing on "
+                                       "checkMesh's fatal list - job_id=%s", job_id)
+                    if not _conn[0]:
+                        executor_success = False
+                        failed_gate = "solvability"
+                        failure_cause = SEAM_CAUSES["solvability"].value
+                        failure_facts = {}
+                        solvability_failed = True
+                        executor_output += f"\n{_conn[1]}"
+                        logger.warning("Executor: region count REJECTED an over-limit mesh - "
+                                       "job_id=%s: %s", job_id, _conn[1][:200])
             if (
                 executor_success
                 and not contract_failed
