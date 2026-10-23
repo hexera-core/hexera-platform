@@ -688,6 +688,8 @@ export const Stage = {
     this.clock(data.createdAt,data.endedAt);
     if(!this.finished){this.finished=true;
       const c=this.proc&&this.proc.querySelector('.proc-clock');if(c&&this.t0)c.textContent=fmtDur(Date.now()-this.t0);}
+    // the run is over: its half-second ticker has nothing left to count
+    clearInterval(this._tick);this._tick=null;
     // HOW MANY ATTEMPTS, as the timeline counted them: only one that ran a mesher counts
     const opened=this._att!=null||this._built.size>0;
     const att=attemptsLabel(opened,this._built.size,data.attempts);

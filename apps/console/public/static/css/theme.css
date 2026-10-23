@@ -1093,3 +1093,45 @@ th,td{border-color:var(--border)}
   .proc-head{flex-wrap:wrap}
   #empty{padding-top:10vh}
 }
+
+/* ------------------------------------------------------------ 3D navigation ---- */
+/* the ViewCube top-right of every 3D view (viewer/nav.js), light on the console's dark canvas */
+.nav-host{--nav-faint:#8d939c;--nav-blue:#5b9cf0;--nav-blue-soft:rgba(110,160,232,.55)}
+.nav-ui{position:absolute;z-index:7;font-family:var(--sans);-webkit-user-select:none;user-select:none}
+.nav-ui[hidden]{display:none}
+.nav-ui button{font-family:inherit}
+.nav-ui svg{display:block;width:100%;height:100%;fill:none;stroke:currentColor;stroke-width:1.6;
+  stroke-linecap:round;stroke-linejoin:round}
+.nav-cube{top:8px;right:10px;width:138px;height:118px}
+.nav-home{position:absolute;left:4px;top:2px;width:26px;height:26px;padding:3px;border:0;border-radius:6px;
+  background:transparent;color:var(--nav-faint);cursor:pointer;transition:color .15s}
+.nav-home:hover{color:var(--nav-blue)}
+.nav-cube-view{position:absolute;left:44px;top:26px;width:62px;height:62px}
+.nav-cube-body{position:absolute;left:31px;top:31px;width:0;height:0;transform-style:preserve-3d}
+.nav-face{position:absolute;left:-31px;top:-31px;width:62px;height:62px;box-sizing:border-box;display:grid;
+  grid-template-columns:13px 1fr 13px;grid-template-rows:13px 1fr 13px;background:#f2f3f5;
+  border:1px dashed #a3a8b0;backface-visibility:hidden;-webkit-backface-visibility:hidden}
+/* the cube is hit-tested from its geometry (viewer/nav.js), so its faces take no pointer */
+.nav-face{pointer-events:none}
+.nav-cell{transition:background .12s}
+.nav-cell.hot{background:var(--nav-blue-soft)}
+.nav-label{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;
+  font:700 10.5px/1 var(--sans);letter-spacing:.04em;color:#6f757e}
+/* looking straight at a face: four arrows to the faces around it, two to roll the view */
+.nav-arrows{position:absolute;inset:0;pointer-events:none}
+.nav-arr{position:absolute;width:0;height:0;padding:0;border:7px solid transparent;background:none;cursor:pointer;
+  pointer-events:auto;transition:border-color .12s}
+.nav-arr.up{left:68px;top:9px;border-bottom:8px solid #9aa0a8;border-top-width:0}
+.nav-arr.down{left:68px;top:97px;border-top:8px solid #9aa0a8;border-bottom-width:0}
+.nav-arr.left{left:28px;top:50px;border-right:8px solid #9aa0a8;border-left-width:0}
+.nav-arr.right{left:114px;top:50px;border-left:8px solid #9aa0a8;border-right-width:0}
+.nav-arr.up:hover{border-bottom-color:var(--nav-blue)}.nav-arr.down:hover{border-top-color:var(--nav-blue)}
+.nav-arr.left:hover{border-right-color:var(--nav-blue)}.nav-arr.right:hover{border-left-color:var(--nav-blue)}
+.nav-roll{position:absolute;width:20px;height:20px;padding:0;border:0;background:none;color:#9aa0a8;cursor:pointer;pointer-events:auto}
+.nav-roll.ccw{left:104px;top:4px}
+.nav-roll.cw{left:120px;top:22px}
+.nav-roll:hover{color:var(--nav-blue)}
+.nav-home:focus-visible,.nav-arr:focus-visible,.nav-roll:focus-visible{outline:2px solid var(--nav-blue);outline-offset:1px}
+@media(max-width:560px){
+  .nav-cube{transform:scale(.82);transform-origin:top right}
+}
