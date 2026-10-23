@@ -229,9 +229,11 @@ def _narrowest_region(quality: Mapping) -> dict | None:
 
 
 def caveat(gate_key: str, facts: Mapping | None, manifest: Mapping | None, *,
-           engine: str = "") -> dict:
+           engine: str = "", plan: Mapping | None = None) -> dict:
     """The requirement caveat a note gate's failure becomes on a sound mesh: the gate's own facts,
-    where the narrowest gap is (from the measure beside the mesh), and the rule that delivers it."""
+    where the narrowest gap is (from the measure beside the mesh), the attempt's narrow-gap plan
+    (`plan`: engines/gap_sizing's record, when the engine wrote one) and the rule that delivers
+    it."""
     facts = dict(facts or {})
     q = (manifest or {}).get("quality") if isinstance(manifest, Mapping) else None
     q = q if isinstance(q, Mapping) else {}
@@ -257,6 +259,15 @@ def caveat(gate_key: str, facts: Mapping | None, manifest: Mapping | None, *,
         where = _narrowest_region(q)
         if where:
             out["narrowest"] = where
+        if isinstance(plan, Mapping) and plan.get("status"):
+            # whether the plan had room: a plan the cell limit already held leaves a rung nothing
+            # to add (_no_room), and its route_big says where the full rule's mesh belongs
+            out["plan"] = {"status": str(plan.get("status")),
+                           "route_big": bool(plan.get("route_big")),
+                           "needed": _num(plan.get("needed")),
+                           "affordable": _num(plan.get("affordable")),
+                           "budget": _num(plan.get("budget")),
+                           "limit": _num(plan.get("limit"))}
         # the facts the snappy driver's narrow retry reads back (cells_across, needed, cells)
         out["facts"] = {k: v for k, v in facts.items()
                         if isinstance(v, (int, float, str, bool)) or v is None}
@@ -303,11 +314,27 @@ def under_resolved_facts(state: Mapping) -> dict | None:
 ROOM_SHARE = 0.9
 
 
+#: The gap-plan statuses (engines/gap_sizing) that mean the cell limit, or the user's own choice of
+#: fewer cells, already decided how many cells the narrow spots get: a rung re-plans the same cells.
+HELD_PLANS = ("limited", "over_limit", "accepted_fewer")
+
+
 def _over_limit(c: Mapping) -> bool:
-    """No room left to refine: the mesh already has ROOM_SHARE of the one-job cell limit, so a rung
-    could only come back as the same mesh (each engine's gap plan holds the limit). Then the note
-    is the answer at once. The gate's own whole-part estimate (rebuild_cells) is not used: the
-    ladder refines the narrow spots only, which costs far less than refining every wall cell."""
+    """No room left to refine, so a rung could only come back as the same mesh. Then the note is the
+    answer at once. Two readings say it:
+    - the mesh already has ROOM_SHARE of the one-job cell limit;
+    - the attempt's gap plan was held (HELD_PLANS) with its budget already the whole one-job limit:
+      the next plan has the same cells to share, so it shares them the same way. On the lab
+      (gr-br2, 2026-10-23) every such rung rebuilt the same mesh, to the cell (7 of 7, cfMesh).
+      A held plan under a smaller budget keeps its rung - the next plan may raise the budget to the
+      limit (snappy: 2 gyroid phantoms went from 8 and 8.8 cells across to 12 and 11.8).
+    The gate's own whole-part estimate (rebuild_cells) is not used: the ladder refines the narrow
+    spots only, which costs far less than refining every wall cell."""
+    plan = c.get("plan")
+    if isinstance(plan, Mapping) and str(plan.get("status") or "") in HELD_PLANS:
+        budget, limit = _num(plan.get("budget")), _num(plan.get("limit"))
+        if budget is not None and limit is not None and limit > 0 and budget >= 0.999 * limit:
+            return True
     cells, limit = _num(c.get("cells")), _num(c.get("cell_limit"))
     if cells is None or limit is None or limit <= 0:
         return False
@@ -416,10 +443,23 @@ def with_sound(state: Mapping, entry: dict) -> list[dict]:
     return rows
 
 
+def resolution_of(entry: Mapping) -> float:
+    """How well a sound mesh resolves its narrowest gap, for choosing between a run's sound meshes:
+    infinite when it meets the floor (no resolution note), else its cells across (0 unmeasured)."""
+    c = resolution_caveat(list(entry.get("requirement_caveats") or ()))
+    if c is None:
+        return math.inf
+    return _num(c.get("cells_across")) or 0.0
+
+
 def deliverable_sound(state: Mapping) -> dict | None:
-    """The sound mesh the run delivers when its last attempt left none (LAD-cfd-3): the newest one
-    whose manifest still reads with no fatal defect. None when there is none."""
-    for row in reversed([r for r in (state.get(SOUND_KEY) or ()) if isinstance(r, Mapping)]):
+    """The sound mesh the run delivers (LAD-cfd-3): of the run's sound meshes whose manifest still
+    reads with no fatal defect, the one that resolves its narrowest gap best (resolution_of), the
+    newest on a tie. A rung that came out coarser - snappy's re-plan can spend the budget on the
+    background (lab gr-br2: 4 of 8 rungs) - never makes the delivery worse. None when there is
+    none."""
+    best: dict | None = None
+    for row in [r for r in (state.get(SOUND_KEY) or ()) if isinstance(r, Mapping)]:
         ws = str(row.get("workspace") or "")
         if not ws:
             continue
@@ -430,8 +470,25 @@ def deliverable_sound(state: Mapping) -> dict | None:
         q = manifest.get("quality") if isinstance(manifest, dict) else None
         if isinstance(q, dict) and q.get("fatal"):
             continue
-        return {**dict(row), "manifest": manifest}
-    return None
+        if best is None or resolution_of(row) >= resolution_of(best):
+            best = {**dict(row), "manifest": manifest}
+    return best
+
+
+def better_earlier_sound(state: Mapping) -> dict | None:
+    """When the run's last attempt is sound and its ladder spent: an earlier sound mesh of the run
+    that resolves the narrowest gap strictly better (deliverable_sound), else None."""
+    rows = [r for r in (state.get(SOUND_KEY) or ()) if isinstance(r, Mapping)]
+    if len(rows) < 2:
+        return None
+    best = deliverable_sound(state)
+    if best is None:
+        return None
+    current = str(state.get("openfoam_workspace") or rows[-1].get("workspace") or "")
+    if str(best.get("workspace") or "") == current:
+        return None
+    mine = next((r for r in rows if str(r.get("workspace") or "") == current), rows[-1])
+    return best if resolution_of(best) > resolution_of(mine) else None
 
 
 # #
@@ -503,6 +560,14 @@ def note_lines(c: Mapping) -> list[str]:
         lines.append(f"    That is {max(0.0, floor - x):.1f} cells short ({x / floor * 100:.0f}% "
                      "of the floor) at the narrowest 5% of the wall; the rest of the mesh is "
                      "finer.")
+    raw_plan = c.get("plan")
+    plan: Mapping = raw_plan if isinstance(raw_plan, Mapping) else {}
+    needed, limit = _num(plan.get("needed")), _num(plan.get("limit"))
+    if plan.get("route_big") and needed and limit:
+        # PLAN-cfd-3: the full rule's mesh is past one job; say so in plain numbers
+        lines.append(f"    Our full rule for every gap would need about {needed / 1e6:.0f} M cells, "
+                     f"more than the {limit / 1e6:.0f} M one job can build, so this mesh puts "
+                     "as many cells in the gaps as that limit allows.")
     lines.append("    The mesh is sound - no broken cells - so it is delivered. If the flow in "
                  "that gap matters to you, ask for a finer mesh there.")
     return lines
@@ -512,8 +577,8 @@ __all__ = ["CELL_LIMIT_PROVES", "ROOM_SHARE", "cite_plan",
            "gate_cell_limit", "LADDER_FILE", "LAD_AFTER_SWITCH", "LAD_CELL_LIMIT", "LAD_DELIVER_SOUND", "LAD_RUNG",
            "NOTE_GATES", "NOTE_KINDS", "OVER_CELL_LIMIT", "PLAN_GAP_LOCAL", "PLAN_PORTS",
            "PLAN_ROUTE_BIG", "PORT_CELLS_ACROSS", "RESOLUTION_SHORT", "RUNG_CAP", "RUNG_FACTORS",
-           "SOUND_KEY", "STATE_KEY", "caveat", "current_rung", "deliverable_sound", "fact_for",
+           "HELD_PLANS", "SOUND_KEY", "STATE_KEY", "better_earlier_sound", "caveat", "current_rung", "deliverable_sound", "fact_for",
            "factor_of", "is_note_gate", "ladder_of", "next_ladder", "note_caveats", "note_lines",
-           "read_fact", "resolution_caveat", "retry_can_change", "rung_after_switch",
+           "read_fact", "resolution_caveat", "resolution_of", "retry_can_change", "rung_after_switch",
            "rung_factor", "rung_left", "sound_entry", "switched", "under_resolved_facts",
            "with_sound", "write_fact"]

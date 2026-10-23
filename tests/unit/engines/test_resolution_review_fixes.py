@@ -112,3 +112,75 @@ def test_cfmesh_sizes_every_passages_openings(monkeypatch):
     srcs = {"wall": ["w.stl"], "inlet": ["i.stl"], "outlet_b": ["o.stl"]}
     widths = cr._opening_widths(srcs, "wall", [], names=list(srcs))
     assert set(widths) == {"inlet", "outlet_b"}
+
+
+class TestRungsThatCannotRefine:
+    """Lab gr-br2 (2026-10-23): a held gap plan whose budget was already the whole job limit
+    rebuilt the same mesh on every rung (cfMesh 7 of 7); one under a smaller budget could still
+    gain (snappy gyroid phantoms 8 -> 12 cells across)."""
+
+    def _note(self, **plan):
+        return {**{"kind": rp.RESOLUTION_SHORT, "cells_across": 9.5, "floor": 12.0,
+                   "cells": 5_000_000, "cell_limit": 8_000_000}, "plan": plan}
+
+    def test_a_held_plan_at_the_full_limit_gets_no_rung(self):
+        c = self._note(status="limited", budget=8_000_000, limit=8_000_000)
+        assert not rp.retry_can_change([c], {"resolution_ladder": {"rung": 0}})
+
+    def test_a_held_plan_under_a_smaller_budget_keeps_its_rung(self):
+        c = self._note(status="limited", budget=5_465_986, limit=8_000_000)
+        assert rp.retry_can_change([c], {"resolution_ladder": {"rung": 0}})
+
+    def test_a_plan_that_fit_keeps_its_rung(self):
+        c = self._note(status="fits", budget=8_000_000, limit=8_000_000)
+        assert rp.retry_can_change([c], {"resolution_ladder": {"rung": 0}})
+
+    def test_the_caveat_carries_the_plan_and_says_route_big(self):
+        plan = {"status": "limited", "route_big": True, "needed": 139_669_015,
+                "affordable": 7.5, "budget": 8_000_000, "limit": 8_000_000}
+        c = rp.caveat("resolution_floor", {"cells_across": 9.5, "needed": 12.0}, {}, plan=plan)
+        assert c["plan"]["route_big"] is True and c["plan"]["budget"] == 8_000_000
+        assert any("140 M cells" in line for line in rp.note_lines(c))
+
+
+class TestTheBestSoundMeshIsDelivered:
+    def _ws(self, root: Path, name: str) -> str:
+        ws = root / name
+        ws.mkdir()
+        (ws / "mesh_manifest.json").write_text(json.dumps({"quality": {"fatal": []}}))
+        return str(ws)
+
+    def _row(self, n, ws, across):
+        cav = [] if across is None else [{"kind": rp.RESOLUTION_SHORT, "cells_across": across}]
+        return {"attempt": n, "workspace": ws, "requirement_caveats": cav}
+
+    def test_a_coarser_rung_never_replaces_a_finer_sound_mesh(self, tmp_path):
+        a1, a2 = self._ws(tmp_path, "attempt_1"), self._ws(tmp_path, "attempt_2")
+        state = {"executor_success": True, "openfoam_workspace": a2,
+                 "sound_attempts": [self._row(1, a1, 9.5), self._row(2, a2, 8.1)]}
+        assert rp.deliverable_sound(state)["attempt"] == 1
+        assert rp.better_earlier_sound(state)["attempt"] == 1
+
+    def test_a_finer_or_equal_last_mesh_stands(self, tmp_path):
+        a1, a2 = self._ws(tmp_path, "attempt_1"), self._ws(tmp_path, "attempt_2")
+        finer = {"openfoam_workspace": a2,
+                 "sound_attempts": [self._row(1, a1, 8.0), self._row(2, a2, 11.8)]}
+        assert rp.better_earlier_sound(finer) is None
+        same = {"openfoam_workspace": a2,
+                "sound_attempts": [self._row(1, a1, 9.5), self._row(2, a2, 9.5)]}
+        assert rp.deliverable_sound(same)["attempt"] == 2 and rp.better_earlier_sound(same) is None
+        met = {"openfoam_workspace": a2,
+               "sound_attempts": [self._row(1, a1, 11.0), self._row(2, a2, None)]}
+        assert rp.better_earlier_sound(met) is None
+
+    def test_the_router_delivers_the_better_earlier_mesh(self, tmp_path):
+        import meshpipeline.agents.builder.settings as bcfg
+        from meshpipeline.pipeline.graph import route_after_executor
+        a1, a2 = self._ws(tmp_path, "attempt_1"), self._ws(tmp_path, "attempt_2")
+        note = {"kind": rp.RESOLUTION_SHORT, "cells_across": 8.1, "floor": 12.0,
+                "cells": 2_500_000, "cell_limit": 8_000_000}
+        state = {"executor_success": True, "retry_count": bcfg.MAX_BUILDER_RETRIES + 1,
+                 "job_id": "j", "engine": "snappy", "openfoam_workspace": a2,
+                 "requirement_caveats": [note],
+                 "sound_attempts": [self._row(1, a1, 9.5), self._row(2, a2, 8.1)]}
+        assert route_after_executor(state) == "node_deliver_sound"

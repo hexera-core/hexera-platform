@@ -555,10 +555,13 @@ async def node_executor(state: PipelineState) -> dict:
     if workspace:
         _rp.cite_plan(job_id, workspace, attempt=_n)
     if executor_success and _noted:
+        from meshpipeline.engines.gap_sizing import read_record as _gap_record
         from meshpipeline.engines.gates import facts_of
+        _plan = _gap_record(workspace) if workspace else None
         for _key, _fb in _noted:
             requirement_caveats.append(_rp.caveat(_key, facts_of(_fb), mesh_manifest,
-                                                  engine=str(state.get("engine") or "")))
+                                                  engine=str(state.get("engine") or ""),
+                                                  plan=_plan))
             executor_output += f"\n{_fb}"
         logger.warning("Executor: sound mesh with note(s) %s - job_id=%s",
                        [k for k, _ in _noted], job_id)

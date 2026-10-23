@@ -242,6 +242,13 @@ def route_after_executor(
                 return "node_classifier"
             logger.info("route_after_executor: no rung after the switch (%s) - job_id=%s", why,
                         state.get("job_id"))
+        if caveats and _rp.better_earlier_sound(state) is not None:
+            # THE BEST SOUND MESH IS DELIVERED (LAD-cfd-3): this attempt's rung came out with
+            # fewer cells across the narrowest gap than an earlier sound mesh of the run
+            logger.warning("route_after_executor: ladder spent, and an earlier sound mesh "
+                           "resolves the narrowest gap better → node_deliver_sound (LAD-cfd-3) "
+                           "- job_id=%s", state.get("job_id"))
+            return "node_deliver_sound"
         if caveats:
             logger.warning(
                 "route_after_executor: quality PASS with %d requirement caveat(s) and the "
@@ -294,8 +301,9 @@ def route_after_executor(
 
 
 async def node_deliver_sound(state: PipelineState) -> dict:
-    """LAD-cfd-3: THE RUN DELIVERS ITS NEWEST SOUND MESH. The last attempt failed and none is left,
-    but an earlier attempt's mesh passed every blocking gate and the trial solve: the run is moved
+    """LAD-cfd-3: THE RUN DELIVERS ITS BEST SOUND MESH (resolution_policy.deliverable_sound). The
+    last attempt failed and none is left - or it is sound but resolves the narrowest gap less well -
+    and an earlier attempt's mesh passed every blocking gate and the trial solve: the run is moved
     back onto that attempt (its workspace, manifest, engine, parameters and notes) and goes to the
     review as that mesh, exactly as a caveated delivery candidate does. Nothing is re-meshed or
     re-judged here; the attempt that failed stays on the ladder's record."""
@@ -304,20 +312,27 @@ async def node_deliver_sound(state: PipelineState) -> dict:
     best = _rp.deliverable_sound(state)
     if best is None:                    # the route asked first; a vanished mesh ends as it was
         return {}
-    ladder = _lad.with_attempt(state, _lad.classify(state))
+    _last_sound = bool(state.get("executor_success"))
+    ladder = (dict(state.get("engine_ladder") or {}) if _last_sound
+              else _lad.with_attempt(state, _lad.classify(state)))
     ladder["delivered_from"] = {
         "attempt": best.get("attempt"), "engine": best.get("engine"),
         "rule": _rp.LAD_DELIVER_SOUND,
-        "why": (f"attempt {state.get('retry_count')} did not pass the automatic checks, and "
-                f"attempt {best.get('attempt')} built a sound mesh"),
+        "why": ((f"attempt {state.get('retry_count')} resolved the narrowest gap less well than "
+                 f"attempt {best.get('attempt')}") if _last_sound else
+                (f"attempt {state.get('retry_count')} did not pass the automatic checks, and "
+                 f"attempt {best.get('attempt')} built a sound mesh")),
         "short_of": [str(c.get("kind")) for c in best.get("requirement_caveats") or []]}
     try:
         from meshpipeline.contracts import decision_record as dr
         dr.cite(str(state.get("job_id") or ""), stage="resolution_ladder", decided="delivered sound",
                 value=best.get("attempt"), rule=_rp.LAD_DELIVER_SOUND,
-                inputs={"failed_attempt": state.get("retry_count"),
+                inputs={("last_attempt" if _last_sound else "failed_attempt"):
+                        state.get("retry_count"),
                         "notes": [c.get("kind") for c in best.get("requirement_caveats") or []]},
-                words="the last attempt failed; the newest sound mesh of the run is delivered")
+                words=("the run's sound mesh that resolves the narrowest gap best is delivered"
+                       if _last_sound else
+                       "the last attempt failed; the best sound mesh of the run is delivered"))
     except Exception:  # noqa: BLE001 - a record never changes the delivery
         logger.debug("node_deliver_sound: why record not kept", exc_info=True)
     logger.warning("node_deliver_sound: delivering attempt %s (%s) - the last attempt (%s) failed "
