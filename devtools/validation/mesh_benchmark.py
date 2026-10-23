@@ -64,6 +64,7 @@ from benchmark_bundle import (  # noqa: E402
     BundleWriter,
     current_engine_commit,
     hash_inputs,
+    load_bundle,
     sha256_file,
 )
 
@@ -421,22 +422,55 @@ def run_benchmark(root: Path, out_dir: Path, *, track: str, corpus_name: str,
     return writer.seal(manifest, settings=settings, summary=summarise(rows))
 
 
+def verify_bundle(directory: Path) -> int:
+    """Check a sealed mesh bundle against its own rows, the same way the CAD runner's --verify
+    does: the stored headline is re-derived from rows.jsonl, because row_count alone cannot catch
+    a figure edited in place."""
+    try:
+        manifest, rows, summary, _ = load_bundle(directory, summarise)
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"bundle at {directory} is NOT verified: {exc}", file=sys.stderr)
+        return 1
+    print(f"bundle at {directory} verified: {len(rows)} row(s)\n"
+          f"  benchmark      {manifest['benchmark']} / {manifest['track']}\n"
+          f"  engine commit  {manifest['engine_commit']}\n"
+          f"  success rate   {summary.get('mesh_success_rate')}")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run the mesh-engine benchmark over frozen scenarios and seal a publication "
                     "bundle (see the module docstring for the scenario format).")
-    parser.add_argument("root", help="directory holding the frozen scenario directories")
-    parser.add_argument("--out", required=True, help="bundle directory to write and seal")
-    parser.add_argument("--track", required=True,
+    parser.add_argument("root", nargs="?", default="",
+                        help="directory holding the frozen scenario directories")
+    # Not argparse-`required`, because --verify is a reading mode that needs none of them; a run
+    # still refuses below without them, with the same exit code as before.
+    parser.add_argument("--out", default="", help="bundle directory to write and seal")
+    parser.add_argument("--track", default="",
                         help="e.g. clean-geometry, cad-repair-downstream, engine-selection")
-    parser.add_argument("--corpus-name", required=True)
-    parser.add_argument("--provenance", required=True,
+    parser.add_argument("--corpus-name", default="")
+    parser.add_argument("--provenance", default="",
                         help="where the inputs came from, with fetch instructions")
-    parser.add_argument("--redistribution-status", required=True,
+    parser.add_argument("--redistribution-status", default="",
                         help="redistributable | non-redistributable | review-pending | internal")
-    parser.add_argument("--hardware-class", required=True, help="e.g. dev-host-arm64")
+    parser.add_argument("--hardware-class", default="", help="e.g. dev-host-arm64")
     parser.add_argument("--limit", type=int, default=0, help="stop after N scenarios")
+    parser.add_argument("--verify", default="",
+                        help="check a sealed bundle instead of running: its summary is re-derived "
+                             "from rows.jsonl and nothing is meshed")
     args = parser.parse_args()
+
+    if args.verify:
+        return verify_bundle(Path(args.verify))
+
+    missing = [flag for flag, value in (
+        ("root", args.root), ("--out", args.out), ("--track", args.track),
+        ("--corpus-name", args.corpus_name), ("--provenance", args.provenance),
+        ("--redistribution-status", args.redistribution_status),
+        ("--hardware-class", args.hardware_class)) if not value]
+    if missing:
+        parser.error(f"a benchmark run needs {', '.join(missing)} (or use --verify <bundle>)")
     try:
         bundle = run_benchmark(
             Path(args.root), Path(args.out), track=args.track, corpus_name=args.corpus_name,

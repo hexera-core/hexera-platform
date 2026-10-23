@@ -230,3 +230,39 @@ def test_a_live_run_still_records_this_host_and_commit(tmp_path):
     manifest, _, _, _ = bb.load_bundle(sealed)
     assert manifest["engine_commit"] != "unknown"
     assert manifest["hardware_class"] != "unknown"
+
+
+def test_verify_reads_a_sealed_bundle_and_refuses_an_edited_headline(tmp_path, monkeypatch,
+                                                                     capsys):
+    """--verify is what gives the loader's recompute a caller outside the tests.
+
+    A summary figure edited in place leaves row_count intact, so only re-deriving the aggregate
+    from rows.jsonl catches it.
+    """
+    rows_json = tmp_path / "rows.json"
+    rows_json.write_text(json.dumps(_RECORDED_ROWS))
+    bundle = tmp_path / "bundle"
+    rc.bundle_from_rows(rows_json, bundle)
+
+    monkeypatch.setattr(sys, "argv", ["repair_corpus.py", "--verify", str(bundle)])
+    assert rc.main() == 0
+    assert "verified" in capsys.readouterr().out
+
+    summary_path = bundle / "summary.json"
+    body = json.loads(summary_path.read_text())
+    body["outcomes"] = {**body["outcomes"], "repaired": 99}
+    summary_path.write_text(json.dumps(body, indent=2, sort_keys=True))
+
+    monkeypatch.setattr(sys, "argv", ["repair_corpus.py", "--verify", str(bundle)])
+    assert rc.main() == 1
+    assert "NOT verified" in capsys.readouterr().err
+
+
+def test_verify_recomputes_under_the_planner_posture_the_bundle_recorded(tmp_path):
+    """corpus_summary adds the shadow block only for a shadow/live run, so a verifier assuming
+    "off" would reject an honest shadow bundle."""
+    assert rc.settings_planner_mode(tmp_path) == "off"  # unreadable settings fail safe
+    (tmp_path / "settings.json").write_text(json.dumps({"planner": "shadow"}))
+    assert rc.settings_planner_mode(tmp_path) == "shadow"
+    (tmp_path / "settings.json").write_text(json.dumps({"planner": "nonsense"}))
+    assert rc.settings_planner_mode(tmp_path) == "off"

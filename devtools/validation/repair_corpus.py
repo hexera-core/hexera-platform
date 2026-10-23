@@ -339,6 +339,21 @@ def summarise_catalogue(rows: list[dict]) -> dict:
     return {"tally": tally, "never_exercised": never, "only_declined": only_declined}
 
 
+def settings_planner_mode(bundle_dir: Path) -> str:
+    """The planner posture a sealed bundle ran under, read from its own settings.json.
+
+    corpus_summary adds the shadow-planner block only for a shadow/live run, so a verifier that
+    assumed "off" would recompute a different aggregate for an honest bundle. The settings are
+    digest-checked by the loader before this matters.
+    """
+    try:
+        body = json.loads((Path(bundle_dir) / "settings.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "off"
+    mode = body.get("planner") if isinstance(body, dict) else None
+    return mode if mode in ("shadow", "live") else "off"
+
+
 def corpus_summary(rows: list[dict], planner_mode: str = "off") -> dict:
     """THE one aggregate over a run's rows: the printer and the publication bundle both read this,
     so the table a human saw and the summary.json a reviewer loads can never disagree. Pure over
@@ -697,7 +712,31 @@ def main() -> int:
     parser.add_argument("--rebundle-hardware-class", dest="rebundle_hardware_class", default="",
                         help="with --rebundle: the hardware class the recorded rows were measured "
                              "on (default: unknown)")
+    parser.add_argument("--verify", default="",
+                        help="check a sealed bundle and print what it claims: the settings digest, "
+                             "the row count, and the summary RE-DERIVED from rows.jsonl")
     args = parser.parse_args()
+
+    # VERIFYING IS READING, and it reads the rows rather than the stored headline: a figure edited
+    # in place keeps row_count intact, so recomputing the aggregate is the only thing that catches
+    # it. This is what gives load_bundle's recompute a caller outside the tests.
+    if args.verify:
+        directory = Path(args.verify)
+        try:
+            manifest, rows, summary, settings = benchmark_bundle.load_bundle(
+                directory,
+                lambda loaded: corpus_summary(loaded, settings_planner_mode(directory)))
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"bundle at {directory} is NOT verified: {exc}", file=sys.stderr)
+            return 1
+        print(f"bundle at {directory} verified: {len(rows)} row(s)\n"
+              f"  benchmark      {manifest['benchmark']} / {manifest['track']}\n"
+              f"  corpus         {manifest['corpus_name']} ({manifest['redistribution_status']})\n"
+              f"  engine commit  {manifest['engine_commit']}\n"
+              f"  hardware       {manifest['hardware_class']}\n"
+              f"  settings       {len(settings)} key(s), digest {manifest['settings_digest'][:16]}\n"
+              f"  outcomes       {summary.get('outcomes')}")
+        return 0
 
     # REBUNDLE IS A PACKAGING RUN, NOT A CAD RUN: a recorded rows file already paid for its
     # evidence, so it is wrapped and sealed here and nothing else happens.

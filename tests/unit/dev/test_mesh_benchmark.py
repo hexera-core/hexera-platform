@@ -278,3 +278,24 @@ def test_execute_refuses_a_workspace_outside_the_scratch_tree(tmp_path):
     # named, so this cannot pass by bailing out earlier for some unrelated reason
     assert "resolves outside the scratch directory" in result["status"]
     assert (outsider / "keepme.txt").exists(), "the benchmark deleted a directory it was handed"
+
+
+def test_verify_bundle_checks_the_summary_against_the_rows(tmp_path, capsys):
+    """The mesh side verifies the same way the CAD runner does, so the two cannot drift.
+
+    A summary figure edited in place leaves row_count intact, so re-deriving the aggregate from
+    rows.jsonl is the only thing that catches it.
+    """
+    _write_scenario(tmp_path, "s1")
+    bundle = _run(tmp_path, tmp_path / "bundle", lambda run, scratch: _result())
+
+    assert mb.verify_bundle(bundle) == 0
+    assert "verified" in capsys.readouterr().out
+
+    summary_path = bundle / "summary.json"
+    body = json.loads(summary_path.read_text())
+    body["mesh_success_rate"] = 0.0 if body["mesh_success_rate"] else 1.0
+    summary_path.write_text(json.dumps(body, indent=2, sort_keys=True))
+
+    assert mb.verify_bundle(bundle) == 1
+    assert "NOT verified" in capsys.readouterr().err
