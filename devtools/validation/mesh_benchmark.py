@@ -296,15 +296,19 @@ def execute_scenario(run: ScenarioRun, scratch: Path) -> dict:
     # so without this there is no quality evidence for the run to score. It is attempted only
     # after a mesher that did not complain - finalizing a failed case would measure wreckage.
     finalize_error = ""
+    finalize_result: dict = {}
+    finalize_attempted = False
     if isinstance(out, dict) and out.get("rc") == 0:
+        finalize_attempted = True
         try:
             from meshpipeline.engines.runtime import get_engine
-            get_engine(engine).finalize(
+            returned = get_engine(engine).finalize(
                 str(workspace), declaration, engine,
                 domain=str(run.settings.get("domain") or ""),
                 internal_flow=bool(run.settings.get("internal_flow")),
                 engine_params=dict(run.settings.get("engine_params") or {}),
                 flow_topology=str(run.settings.get("flow_topology") or ""))
+            finalize_result = returned if isinstance(returned, dict) else {}
         except Exception as exc:  # noqa: BLE001 - a finalize that cannot run is a real outcome
             finalize_error = f"{type(exc).__name__}: {exc}"
 
@@ -330,10 +334,22 @@ def execute_scenario(run: ScenarioRun, scratch: Path) -> dict:
             deliverables=sorted(str(p) for p in (manifest.get("mesh_paths") or {}).values()
                                 if p and Path(p).exists()) + [str(manifest_path)])
     delivered = bool(manifest) and bool(manifest.get("mesh_written"))
-    if rc == 0 and delivered:
+    # FINALIZE IS THE JUDGE, and `mesh_written` is not its verdict. A cfMesh run can exit rc=0,
+    # have the manifest written, and still be refused: write_manifest happens BEFORE the fatal
+    # check, and finalize then returns success=False for a mesh with fatal defects (or for a
+    # partial case its delivery gate rejects). Reading only "the file exists" would publish those
+    # as successes and inflate the mesh success rate - the headline figure of this benchmark.
+    finalize_ok = bool(finalize_result.get("success"))
+    if rc == 0 and delivered and finalize_ok:
         result["status"] = "success"
     elif out.get("timed_out"):
         result["status"] = f"failed: timed out after {run.timeout_seconds}s"
+    elif rc == 0 and delivered and finalize_attempted and not finalize_error:
+        # A MESH THE ENGINE'S OWN FINALIZE REFUSED. This is a real failure, not missing evidence:
+        # the quality fields above are kept, because what the refusal was about is the useful part.
+        refusal = str(finalize_result.get("output") or "")[-200:]
+        result["status"] = ("failed: the mesh was written but the engine's finalize refused it"
+                            + (f" - {refusal}" if refusal else ""))
     elif rc == 0 and not manifest:
         # THE MESHER DID NOT COMPLAIN AND THERE IS STILL NO MANIFEST, so finalize - which is the
         # only thing that writes one - did not get there. That is an absence of evidence rather

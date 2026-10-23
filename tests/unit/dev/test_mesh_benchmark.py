@@ -383,3 +383,31 @@ def test_a_finalize_that_raises_is_unavailable_and_says_why(tmp_path, monkeypatc
 
     assert mb.status_class(result["status"]) == "unavailable"
     assert "checkMesh is not on this host" in result["status"]
+
+
+def test_a_mesh_its_own_finalize_refused_is_not_a_success(tmp_path, monkeypatch):
+    """write_manifest runs BEFORE the fatal check in cfMesh's finalize, so a mesh with fatal
+    defects has rc=0, a manifest, mesh_written true - and success False. Reading only "the file
+    exists" would publish it as a success and inflate the benchmark's headline figure."""
+    run = _case_with(tmp_path, "[]", name="fatal")
+
+    class _Engine:
+        def finalize(self, workspace_dir, intake_patches, engine, **kwargs):
+            (Path(workspace_dir) / "mesh_manifest.json").write_text(
+                json.dumps({"mesh_written": True, "cell_count": 9,
+                            "quality": {"max_non_orthogonality": 91.0}}))
+            return {"success": False,
+                    "output": "[CFMESH] polyMesh cells=9 fatal=['max_non_ortho']"}
+
+    monkeypatch.setitem(sys.modules, "meshpipeline.engines.dispatch",
+                        types.SimpleNamespace(run_engine_local=lambda ws, **kw: {"rc": 0}))
+    monkeypatch.setitem(sys.modules, "meshpipeline.engines.runtime",
+                        types.SimpleNamespace(get_engine=lambda name: _Engine()))
+
+    result = mb.execute_scenario(run, tmp_path / "scratch")
+
+    assert mb.status_class(result["status"]) == "failed"
+    assert "finalize refused it" in result["status"]
+    assert "fatal=['max_non_ortho']" in result["status"]
+    # the quality fields are kept: what the refusal was about is the useful part
+    assert result["mesh_statistics"]["cells"] == 9

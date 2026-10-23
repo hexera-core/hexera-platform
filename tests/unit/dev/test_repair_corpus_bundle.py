@@ -266,3 +266,44 @@ def test_verify_recomputes_under_the_planner_posture_the_bundle_recorded(tmp_pat
     assert rc.settings_planner_mode(tmp_path) == "shadow"
     (tmp_path / "settings.json").write_text(json.dumps({"planner": "nonsense"}))
     assert rc.settings_planner_mode(tmp_path) == "off"
+
+
+def test_verification_survives_the_engine_growing_a_new_operation(tmp_path, monkeypatch, capsys):
+    """An untouched bundle must not start failing verification because OPERATIONS grew.
+
+    never_exercised is the one summary field the rows cannot re-derive alone - it needs the list
+    of operations that existed - so the run's catalogue is sealed and recomputation uses it.
+    """
+    rows_json = tmp_path / "rows.json"
+    rows_json.write_text(json.dumps(_RECORDED_ROWS))
+    bundle = tmp_path / "bundle"
+    rc.bundle_from_rows(rows_json, bundle,
+                        settings={"operations_catalogue": ["fix_small_edges", "sew_faces"]})
+    monkeypatch.setattr(sys, "argv", ["repair_corpus.py", "--verify", str(bundle)])
+    assert rc.main() == 0
+
+    # the engine of tomorrow carries an operation this run never had
+    monkeypatch.setattr(rc, "operation_catalogue",
+                        lambda: ["fix_small_edges", "sew_faces", "fix_brand_new_thing"])
+    monkeypatch.setattr(sys, "argv", ["repair_corpus.py", "--verify", str(bundle)])
+    assert rc.main() == 0, "a grown catalogue made untouched evidence look edited"
+    assert "verified" in capsys.readouterr().out
+
+
+def test_a_bundle_sealing_no_catalogue_is_verified_against_its_own_recorded_one(tmp_path):
+    """Bundles sealed before the catalogue was recorded still verify: the run's operation universe
+    is recovered from the summary's own catalogue block."""
+    summary = rc.corpus_summary(_RECORDED_ROWS, "off", ["fix_small_edges", "sew_faces"])
+    recovered = rc.settings_operation_catalogue(tmp_path, summary)
+    assert set(recovered) == {"fix_small_edges", "sew_faces"}
+    # what has to hold is not the declaration order - that is gone - but that recomputing with the
+    # recovered list reproduces the stored catalogue exactly, so verification passes
+    assert rc.corpus_summary(_RECORDED_ROWS, "off", recovered)["catalogue"] == summary["catalogue"]
+    # nothing to go on at all is honestly None, not a guess
+    assert rc.settings_operation_catalogue(tmp_path, {}) is None
+
+
+def test_a_sealed_catalogue_beats_the_reconstruction(tmp_path):
+    (tmp_path / "settings.json").write_text(json.dumps({"operations_catalogue": ["sealed_op"]}))
+    summary = {"catalogue": {"tally": {"other_op": {}}, "never_exercised": []}}
+    assert rc.settings_operation_catalogue(tmp_path, summary) == ["sealed_op"]
