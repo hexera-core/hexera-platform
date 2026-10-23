@@ -468,6 +468,10 @@ def _record(s: ff.Surface, arcs: list[ff.Arc], *, bodies: int, basis: str, kinds
         notes.append(f"The walls were not measured: the surface has {len(s.tris)} triangles, over "
                      f"the {max_ray_triangles} measured quickly.")
     per = thick["per_label"]
+    thin = thick.get("thin") or {}
+    # the part keeps at most MAX_THIN_SPOTS_PART thin spots, the thinnest
+    kept = sorted(((sp["thickness"], k, i) for k, t in thin.items() for i, sp in enumerate(t["spots"])))
+    kept_set = {(k, i) for _t, k, i in kept[:ff.MAX_THIN_SPOTS_PART]}
     # a face that is one round (a cylinder, a torus, a fitted fillet): its radius and which way
     # it bends, so a plan can give a convex round enough elements to keep its shape
     round_of = {next(iter(a.labels)): a for a in arcs if len(a.labels) == 1}
@@ -485,10 +489,20 @@ def _record(s: ff.Surface, arcs: list[ff.Arc], *, bodies: int, basis: str, kinds
         if k in per:
             row["thickness_min_mm"] = _r(per[k][0])
             row["thickness_median_mm"] = _r(per[k][1])
+            if k in thin:
+                # PLAN-fea-3: thin only in places - the rest of the face's wall, and each thin spot
+                row["thickness_wall_mm"] = _r(thin[k]["wall"])
+                row["thin_spots"] = [{"at_mm": _pt(sp["at"]), "radius_mm": _r(sp["radius"]),
+                                      "thickness_mm": _r(sp["thickness"])}
+                                     for i, sp in enumerate(thin[k]["spots"]) if (k, i) in kept_set]
         faces[name] = row
 
+    def face_wall(k: int) -> float:
+        # a face thin only in places: the wall of the rest of it (its thin spots are zones of their own)
+        return thin[k]["wall"] if k in thin else per[k][0]
+
     def wall(labels) -> float | None:
-        vals = [per[k][0] for k in labels if k in per]
+        vals = [face_wall(k) for k in labels if k in per]
         return _r(min(vals)) if vals else None
 
     spots: list[dict] = []
