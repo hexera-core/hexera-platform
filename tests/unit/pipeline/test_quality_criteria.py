@@ -96,6 +96,8 @@ def test_judge_repair_guidance_parity():
         ({"rc": 0}, {}, 0, "CARVE LEAKED"),
         ({"rc": 0}, {"fatal": ["incorrectly oriented faces"]}, 100, "prism LAYERS are inverting"),
         ({"rc": 0}, {"fatal": ["open cells"]}, 100, "topology/carve defect"),
+        ({"rc": 0}, {"fatal": [], "skew_fraction": 1e-3, "skew_faces": 4000}, 100,
+         "WIDESPREAD skewness"),
     ]
     for result, q, wall_faces, expect in cases:
         ok, reason = _judge_snappy(result, q, wall_faces)
@@ -103,11 +105,13 @@ def test_judge_repair_guidance_parity():
         assert expect in reason, f"expected {expect!r} in {reason!r}"
 
 
-def test_judge_widespread_skew_on_a_sound_mesh_is_not_a_failed_pass():
-    """The share of skewed faces is a production limit on a sound mesh (VER-2, LAD-cfd-3): the
-    driver keeps the mesh and the delivery says the share."""
+def test_widespread_skew_is_repaired_by_the_driver_but_is_not_a_validity_bar():
+    """The driver still tries passes for a mesh under the share (its judge says no), while the
+    criterion is a production limit: a sound mesh over it is never failed (VER-2, LAD-cfd-3)."""
     ok, _ = _judge_snappy({"rc": 0}, {"fatal": [], "skew_fraction": 1e-3, "skew_faces": 4000},
                           100)
+    assert not ok
+    ok, _ = production_grade("snappy", {**_CLEAN_SNAPPY, "skew_fraction": 1e-3})
     assert ok
 
 

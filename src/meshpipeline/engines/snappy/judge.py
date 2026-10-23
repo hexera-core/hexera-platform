@@ -109,10 +109,24 @@ def _repair_message(key: str, result: dict, q: dict) -> str:
 
 def _judge_snappy(result: dict, q: dict, wall_faces: int) -> tuple[bool, str]:
     from meshpipeline.engines.quality_criteria import production_grade
-    ok, failing = production_grade("snappy", _judge_measurements(result, q, wall_faces))
-    if ok:
-        return True, "production-grade"
-    return False, _repair_message(failing["key"], result, q)
+    measured = _judge_measurements(result, q, wall_faces)
+    ok, failing = production_grade("snappy", measured)
+    if not ok:
+        return False, _repair_message(failing["key"], result, q)
+    # THE DRIVER STILL REPAIRS WIDESPREAD SKEW, pass by pass: the share of skewed faces left the
+    # mesh's validity bars (it is a production limit on a sound mesh, docs/RULES.md VER-2 and
+    # LAD-cfd-3), so it never fails the run - but within its own passes the driver keeps trying
+    # for a mesh under it, and delivers its last valid one when the passes run out (`last_valid`).
+    if float(measured.get("skew_fraction") or 0.0) > _skew_share():
+        return False, _repair_message("skew_fraction", result, q)
+    return True, "production-grade"
+
+
+def _skew_share() -> float:
+    """The share of skewed faces the driver repairs towards (the snappy criterion's own limit)."""
+    from meshpipeline.engines.snappy.criteria import CRITERIA_ROWS
+    row = next((c for c in CRITERIA_ROWS if c.key == "skew_fraction"), None)
+    return float(row.threshold) if row is not None else 5e-4
 
 
 __all__ = ["_judge_measurements", "_judge_snappy", "_repair_message"]
