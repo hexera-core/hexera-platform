@@ -250,8 +250,10 @@ class SizeField:
             if g.get("part"):
                 idx = self._tris_of(g["faces"])
                 if len(idx):
-                    out.append(_Group(g["size"], g["reach"], _Distance(self.xyz, self.tris[idx]), None,
-                                      inside=True))
+                    # the part's own vertices only: one group per part must not copy the whole assembly
+                    used, tris = np.unique(self.tris[idx], return_inverse=True)
+                    out.append(_Group(g["size"], g["reach"], _Distance(self.xyz[used], tris.reshape(-1, 3)),
+                                      None, inside=True))
                 continue
             if g.get("balls"):
                 idx = self._tris_of(g["faces"])

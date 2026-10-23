@@ -14,11 +14,14 @@ same thing as an assembly exported as one file - and everything after the upload
 * ANYTHING ELSE (IGES, BREP, or STEP files in different units): each file is read by OpenCASCADE
   (which converts a STEP or IGES file's stated unit to millimetres) and the whole is written as one
   STEP in millimetres, each file's shape named after the file.
-* A FILE THAT STATES NO UNIT (a BREP, or a STEP/IGES whose unit cannot be read) is drawn in the unit
-  the other files state, when they agree on one: it is converted by that unit, so every part keeps
-  its size against the others. If NO file states a unit, the numbers are kept as they are and the
-  unit is left for the user to confirm (`unit_known` False), as for any single BREP. If the files
-  that state one disagree, the size of the one that does not is unknown: it is refused in words.
+* A BREP STATES NO UNIT (its numbers are raw): it is drawn in the unit the other files state, when
+  they agree on one, and converted by it, so every part keeps its size against the others. If NO
+  file states a unit, the numbers are kept as they are and the unit is left for the user to confirm
+  (`unit_known` False), as for any single BREP. If the files that state one disagree, the size of
+  the BREP against them is unknown: it is refused in words.
+* A STEP OR IGES FILE whose unit we cannot name (several units, an unusual one) is still converted to
+  millimetres by OpenCASCADE, so it is never scaled again; the joined file's unit is then left for
+  the user to confirm, as that file's would be on its own.
 * THE TEXT is scanned once, left to right: quoted strings and comments are skipped as wholes (an
   unclosed one runs to the end of the file), so a DATA; or ENDSEC; inside a product name is never
   taken for a section boundary, and no input makes the scan slower than linear.
@@ -177,20 +180,26 @@ def _stated_metres(path: Path) -> float | None:
         return None
 
 
+def _raw(m: Member) -> bool:
+    """A file whose numbers OpenCASCADE reads as they are (a BREP): no unit to convert by."""
+    return m.path.suffix.lower() in (".brep", ".brp")
+
+
 def unit_plan(members: list[Member]) -> tuple[dict[int, float], bool]:
-    """How each file that states no unit is converted (member index -> factor to millimetres on its
-    raw numbers), and whether the joined file's unit is known (see the module text)."""
-    stated = [_stated_metres(m.path) for m in members]
-    silent = [k for k, v in enumerate(stated) if v is None]
+    """How each BREP is converted (member index -> factor to millimetres on its raw numbers), and
+    whether the joined file's unit is known (see the module text)."""
+    stated = [None if _raw(m) else _stated_metres(m.path) for m in members]
+    raw = [k for k, m in enumerate(members) if _raw(m)]
+    unnamed = any(v is None for k, v in enumerate(stated) if k not in raw)   # converted, unit not named
     known = {round(v, 12) for v in stated if v is not None}
-    if not silent:
-        return {}, True
+    if not raw:
+        return {}, not unnamed
     if not known:
         return {}, False
     if len(known) > 1:
-        raise AssemblyFilesError(UNIT_UNKNOWN.format(name=members[silent[0]].path.name))
+        raise AssemblyFilesError(UNIT_UNKNOWN.format(name=members[raw[0]].path.name))
     to_mm = next(iter(known)) / 1e-3
-    return dict.fromkeys(silent, to_mm), True
+    return dict.fromkeys(raw, to_mm), not unnamed
 
 
 def _scaled(shape, factor: float):

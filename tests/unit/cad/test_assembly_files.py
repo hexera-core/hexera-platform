@@ -187,6 +187,20 @@ def test_a_brep_takes_the_unit_the_other_files_state(tmp_path):
     assert parts[1][1] == pytest.approx([15.0, 5.0, 5.0], abs=1e-6) and parts[1][2] == pytest.approx([10, 10, 10])
 
 
+def test_a_step_whose_unit_is_not_named_is_never_scaled_again(tmp_path, monkeypatch):
+    """OpenCASCADE converts every STEP to millimetres: one whose unit we cannot name keeps its size and
+    leaves the unit to the user, only a BREP is scaled."""
+    from meshpipeline.cad.ingest import assembly_files as AF
+
+    a = _write(fx._box(0, 0, 0, 10, 10, 10), tmp_path / "a_in_metres.step", unit="M")
+    b = _write(fx._box(10, 0, 0, 10, 10, 10), tmp_path / "b_unnamed.step")
+    real = AF._stated_metres
+    monkeypatch.setattr(AF, "_stated_metres", lambda p: None if p.name == "b_unnamed.step" else real(p))
+    how = combine([Member(a, "a"), Member(b, "b")], tmp_path / "joined.step", guarded=False)
+    assert how["method"] == "occ" and how["unit_known"] is False
+    assert _parts(tmp_path / "joined.step")[1][1] == pytest.approx([15.0, 5.0, 5.0], abs=1e-6)
+
+
 def test_breps_alone_leave_the_unit_to_the_user(tmp_path):
     a = _brep(fx._box(0, 0, 0, 10, 10, 10), tmp_path / "a.brep")
     b = _brep(fx._box(10, 0, 0, 10, 10, 10), tmp_path / "b.brep")
