@@ -435,3 +435,10 @@ def test_the_estimate_holds_a_parts_base_at_its_centre():
     h = field.zone_size(np.array([[105e-3, 5e-3, 5e-3], [130e-3, 5e-3, 5e-3]]))
     assert h[0] == pytest.approx(1.0e-3)                                   # the centre: the part's own size
     assert h[1] == pytest.approx(1.0e-3 + 0.3 * 20e-3)                     # outside: grows from its faces
+
+
+def test_overlapping_parts_tied_are_said_to_count_the_shared_piece_twice(tmp_path):
+    side = A.stage(fx.overlapping_blocks(), A.BONDED, tmp_path / "t", tie=True)
+    assert side["mode"] == "tie"
+    assert any("counted in both parts" in n for n in side["notes"])
+    assert not any("ADJUST" in n for n in side["notes"])

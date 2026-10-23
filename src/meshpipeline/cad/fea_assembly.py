@@ -502,6 +502,10 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
                      "of material, counted with the lower-numbered part (" + "; ".join(
                          f"{i['parts'][0]} and {i['parts'][1]}, {100 * float(i['overlap_share']):.3g}% of the "
                          "smaller part" for i in over) + ").")
+    elif over and mode == PAIR_TIE:
+        notes.append(f"{len(over)} pair(s) of parts pass into each other: tied, each keeps its own elements "
+                     "there, so the shared piece is counted in both parts (its stiffness and mass twice) - fix "
+                     "the CAD if that piece matters.")
     elif over:
         notes.append(f"{len(over)} pair(s) of parts pass into each other: they are meshed apart as drawn, so "
                      "the solver starts with them overlapping there - let it resolve the overlap at the first "
