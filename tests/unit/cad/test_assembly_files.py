@@ -41,7 +41,7 @@ def test_step_files_in_one_unit_are_joined_as_their_own_text(tmp_path):
     a = _write(fx._box(0, 0, 0, 10, 10, 10), tmp_path / "flange.step")
     b = _write(fx._box(10, 0, 0, 10, 10, 10), tmp_path / "bolt.step")
     how = combine([Member(a, "flange"), Member(b, "bolt")], tmp_path / "joined.step")
-    assert how == {"files": 2, "method": "text"}
+    assert how == {"files": 2, "method": "text", "unit_known": True}
     parts = _parts(tmp_path / "joined.step")
     assert [p[0] for p in parts] == ["flange", "bolt"]                  # generic product names: the file's
     assert parts[1][1] == pytest.approx([15.0, 5.0, 5.0])                # placed by its own coordinates
@@ -162,8 +162,92 @@ def test_the_kernel_join_keeps_each_files_own_body_names(tmp_path):
 
 
 def test_a_join_past_its_guard_is_refused_in_plain_words(tmp_path):
-    from meshpipeline.cad.ingest.assembly_files import join_occ_guarded
+    from meshpipeline.cad.ingest.assembly_files import combine_guarded
 
     a = _write(fx._box(0, 0, 0, 10, 10, 10), tmp_path / "a.step")
+    b = _write(fx._box(10, 0, 0, 10, 10, 10), tmp_path / "b.step", unit="M")
     with pytest.raises(AssemblyFilesError, match="export the assembly as one STEP file|Export the assembly"):
-        join_occ_guarded([Member(a, "a")], tmp_path / "joined.step", memory_mb=64)
+        combine_guarded([Member(a, "a"), Member(b, "b")], tmp_path / "joined.step", memory_mb=64)
+
+
+def _brep(shape, path: Path) -> Path:
+    from OCP.BRepTools import BRepTools
+
+    BRepTools.Write_s(shape, str(path))
+    return path
+
+
+def test_a_brep_takes_the_unit_the_other_files_state(tmp_path):
+    # the STEP is in metres; the BREP (no unit of its own) is drawn in the same metres beside it
+    a = _write(fx._box(0, 0, 0, 10, 10, 10), tmp_path / "a_in_metres.step", unit="M")
+    b = _brep(fx._box(0.01, 0, 0, 0.01, 0.01, 0.01), tmp_path / "b.brep")
+    how = combine([Member(a, "a"), Member(b, "b")], tmp_path / "joined.step")
+    assert how["method"] == "occ" and how["unit_known"] is True
+    parts = _parts(tmp_path / "joined.step")
+    assert parts[1][1] == pytest.approx([15.0, 5.0, 5.0], abs=1e-6) and parts[1][2] == pytest.approx([10, 10, 10])
+
+
+def test_breps_alone_leave_the_unit_to_the_user(tmp_path):
+    a = _brep(fx._box(0, 0, 0, 10, 10, 10), tmp_path / "a.brep")
+    b = _brep(fx._box(10, 0, 0, 10, 10, 10), tmp_path / "b.brep")
+    how = combine([Member(a, "a"), Member(b, "b")], tmp_path / "joined.step")
+    assert how["unit_known"] is False
+    assert _parts(tmp_path / "joined.step")[1][1] == pytest.approx([15.0, 5.0, 5.0], abs=1e-6)
+
+
+def test_a_brep_beside_files_in_different_units_is_refused_in_words(tmp_path):
+    a = _write(fx._box(0, 0, 0, 10, 10, 10), tmp_path / "a.step")
+    b = _write(fx._box(10, 0, 0, 10, 10, 10), tmp_path / "b.step", unit="M")
+    c = _brep(fx._box(20, 0, 0, 10, 10, 10), tmp_path / "c.brep")
+    with pytest.raises(AssemblyFilesError, match="does not state its unit"):
+        combine([Member(a, "a"), Member(b, "b"), Member(c, "c")], tmp_path / "joined.step")
+
+
+def test_section_words_inside_a_name_or_comment_do_not_cut_the_text(tmp_path):
+    from meshpipeline.cad.ingest.assembly_files import _sections
+
+    text = (b"ISO-10303-21;\nHEADER;\nFILE_NAME('x');\nENDSEC;\nDATA;\n"
+            b"#1=PRODUCT('ENDSEC;','DATA;','',());\n/* ENDSEC; */\n#2=X(#1);\nENDSEC;\nEND-ISO-10303-21;\n")
+    head, body = _sections(text)
+    assert head.endswith(b"DATA;") and b"#2=X(#1);" in body and body.count(b"ENDSEC;") == 2
+
+
+def test_unclosed_comments_are_scanned_in_linear_time():
+    import time
+
+    from meshpipeline.cad.ingest.assembly_files import _renumbered, _sections
+
+    body = b"#1=X(#2);" + b"/*x" * 200_000
+    t0 = time.monotonic()
+    out, top = _renumbered(body, 10)
+    with pytest.raises(AssemblyFilesError):
+        _sections(b"HEADER;ENDSEC;DATA;" + body)
+    assert time.monotonic() - t0 < 2.0
+    assert out.startswith(b"#11=X(#12);") and top == 2
+
+
+def test_an_extra_file_named_wrongly_never_replaces_the_first(tmp_path):
+    """A STEP file named .iges is moved to the staged STEP name: in its own folder, never onto the first."""
+    import asyncio
+
+    import meshpipeline.api.v1.upload as upload_mod
+    from meshpipeline.contracts.intake_formats import staged_name_for
+
+    session = tmp_path / "s"
+    session.mkdir()
+    first = _write(fx._box(0, 0, 0, 10, 10, 10), session / staged_name_for(".step"))
+    other = _write(fx._box(10, 0, 0, 10, 10, 10), tmp_path / "bolt.step").read_bytes()
+
+    class _Up:
+        filename = "bolt.iges"
+
+        def __init__(self, data):
+            self.data = [data, b""]
+
+        async def read(self, _n):
+            return self.data.pop(0)
+
+    joined, suffix, name, known = asyncio.run(upload_mod._joined_assembly(
+        first, ".step", "flange.step", [_Up(other)], session, first.stat().st_size))
+    assert suffix == ".step" and known is True
+    assert [round(p[1][0]) for p in _parts(joined)] == [5, 15]

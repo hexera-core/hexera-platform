@@ -153,6 +153,8 @@ class _Group:
     faces: _Distance | None
     edges: _EdgeDistance | None
     balls: _BallDistance | None = None
+    #: an assembly part's base (PLAN-fea-17): the size holds everywhere inside the part's own surface
+    inside: bool = False
 
 
 def group_zones(zones: list[dict]) -> list[dict]:
@@ -165,9 +167,13 @@ def group_zones(zones: list[dict]) -> list[dict]:
     """
     buckets: dict[tuple[int, bool], list[dict]] = {}
     spots: dict[tuple[int, str], list[dict]] = {}
+    parts: list[dict] = []
     for z in zones:
         size = float(z["size_m"])
         if size <= 0 or not math.isfinite(size):
+            continue
+        if z.get("kind") == "part":
+            parts.append(z)
             continue
         b = int(math.floor(math.log(size) / math.log(GROUP_RATIO)))
         if z.get("kind") == "wall_spot":
@@ -190,6 +196,12 @@ def group_zones(zones: list[dict]) -> list[dict]:
         out.append({"size": min(float(z["size_m"]) for z in zs),
                     "reach": max(float(z.get("reach_m") or 0.0) for z in zs), "edge": False, "faces": [face],
                     "edges": [], "balls": [[*[float(v) for v in z["at_m"]], float(z["radius_m"])] for z in zs]})
+    # PLAN-fea-17: AN ASSEMBLY PART'S BASE holds THROUGH THE PART (a ceiling inside its volume, not only
+    # on its faces), growing only outside it; one group per part, never merged with another part's
+    for z in parts:
+        out.append({"size": float(z["size_m"]), "reach": float(z.get("reach_m") or 0.0), "edge": False,
+                    "faces": sorted({str(f) for f in z.get("faces") or []}, key=_face_key), "edges": [],
+                    "part": str(z.get("part") or z.get("id") or "")})
     return out
 
 
@@ -235,6 +247,12 @@ class SizeField:
     def _groups(self, zones: list[dict]) -> list[_Group]:
         out = []
         for g in group_zones(zones):
+            if g.get("part"):
+                idx = self._tris_of(g["faces"])
+                if len(idx):
+                    out.append(_Group(g["size"], g["reach"], _Distance(self.xyz, self.tris[idx]), None,
+                                      inside=True))
+                continue
             if g.get("balls"):
                 idx = self._tris_of(g["faces"])
                 if not len(idx):
@@ -263,7 +281,11 @@ class SizeField:
         h = np.full(len(p), np.inf)
         g1 = self.growth - 1.0
         for g in self.groups:
-            d = np.abs(g.faces(p)) if g.faces is not None else g.edges(p)  # type: ignore[misc]
+            if g.inside:
+                # signed: inside the part (negative) the size is the part's own; outside it grows
+                d = np.maximum(0.0, g.faces(p))  # type: ignore[misc]
+            else:
+                d = np.abs(g.faces(p)) if g.faces is not None else g.edges(p)  # type: ignore[misc]
             past = d - g.reach
             if g.balls is not None:
                 # a thin spot: past its wall's reach from the face, or past its balls, whichever is more

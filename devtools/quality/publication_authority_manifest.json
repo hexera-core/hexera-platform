@@ -2910,32 +2910,6 @@
   "roots": []
  },
  {
-  "context": "cad/ingest/assembly_files.py::_sections::search#1|NotAPublisher|not-a-publisher|",
-  "path": "cad/ingest/assembly_files.py",
-  "qualname": "_sections",
-  "semantic": "search",
-  "method": "search",
-  "ordinal": 1,
-  "receiver": "_DATA",
-  "authority": "NotAPublisher",
-  "lifecycle": "not-a-publisher",
-  "gated_required": false,
-  "roots": []
- },
- {
-  "context": "cad/ingest/assembly_files.py::_sections::search#2|NotAPublisher|not-a-publisher|",
-  "path": "cad/ingest/assembly_files.py",
-  "qualname": "_sections",
-  "semantic": "search",
-  "method": "search",
-  "ordinal": 2,
-  "receiver": "_ENDSEC",
-  "authority": "NotAPublisher",
-  "lifecycle": "not-a-publisher",
-  "gated_required": false,
-  "roots": []
- },
- {
   "context": "cad/ingest/sniff.py::sniff_bytes::search#1|NotAPublisher|not-a-publisher|",
   "path": "cad/ingest/sniff.py",
   "qualname": "sniff_bytes",

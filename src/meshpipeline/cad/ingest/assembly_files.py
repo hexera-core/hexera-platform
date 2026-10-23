@@ -1,6 +1,6 @@
 # Responsibility: Turn several CAD files uploaded together into ONE assembly file (STEP), each file's parts placed by their own coordinates and named from the file's own product names, or else from the file's name.
 # Owns: the choice of how to combine (the files' own STEP text, joined, when they agree on schema and unit; else OpenCASCADE's reading of each, written as one STEP in millimetres), and the refusal a user reads for a file that cannot join an assembly.
-# Boundaries: no scaling of a file's own geometry, no healing, no meshing: every part stays where its file puts it, in its file's own unit. The upload calls it once, before the combined file is stored as the session's one source.
+# Boundaries: no healing, no meshing, no moving: every part stays where its file puts it (a file is only converted to the assembly's millimetres, by the unit it states - a BREP, which states none, by the unit the other files agree on). The upload calls it once, in a process of its own under a time and memory limit, before the combined file is stored as the session's one source.
 # Collaborates with: api/v1/upload.py (several files in one upload), cad/step_units.py (each file's declared length unit), cad/fea_assembly.py (the part names it reads back: generic product names are replaced by the file's name here).
 """SEVERAL FILES, ONE ASSEMBLY.
 
@@ -12,9 +12,16 @@ same thing as an assembly exported as one file - and everything after the upload
   shifted so none collide): nothing is re-read or re-written, every product name and unit is the
   file's own. A product named only generically ("SOLID", "Part1", a number) takes the file's name.
 * ANYTHING ELSE (IGES, BREP, or STEP files in different units): each file is read by OpenCASCADE
-  (which converts a STEP or IGES file's unit to millimetres; a BREP states none, so its numbers are
-  taken as millimetres, as a BREP upload's are) and the whole is written as one STEP in millimetres,
-  each file's shape named after the file.
+  (which converts a STEP or IGES file's stated unit to millimetres) and the whole is written as one
+  STEP in millimetres, each file's shape named after the file.
+* A FILE THAT STATES NO UNIT (a BREP, or a STEP/IGES whose unit cannot be read) is drawn in the unit
+  the other files state, when they agree on one: it is converted by that unit, so every part keeps
+  its size against the others. If NO file states a unit, the numbers are kept as they are and the
+  unit is left for the user to confirm (`unit_known` False), as for any single BREP. If the files
+  that state one disagree, the size of the one that does not is unknown: it is refused in words.
+* THE TEXT is scanned once, left to right: quoted strings and comments are skipped as wholes (an
+  unclosed one runs to the end of the file), so a DATA; or ENDSEC; inside a product name is never
+  taken for a section boundary, and no input makes the scan slower than linear.
 """
 from __future__ import annotations
 
@@ -32,11 +39,14 @@ NOT_CAD = ("Several files are joined into one assembly only when each is a CAD s
            "{name} is not. Upload it on its own, or export the whole assembly as one STEP file.")
 TOO_MANY = ("An assembly upload takes at most {n} files. Export the assembly as one STEP file and upload that.")
 
-_DATA = re.compile(rb"\bDATA\s*;", re.IGNORECASE)
-_ENDSEC = re.compile(rb"\bENDSEC\s*;", re.IGNORECASE)
 _SCHEMA = re.compile(rb"FILE_SCHEMA\s*\(\s*\(\s*'([^']*)'", re.IGNORECASE)
-#: A quoted string (with '' inside it), a comment, or an entity reference: only the last is renumbered.
-_TOKEN = re.compile(rb"'(?:[^']|'')*'|/\*.*?\*/|#(\d+)", re.DOTALL)
+#: A quoted string ('' inside it) or a comment, each taken whole - an unclosed one runs to the end, so
+#: the scan never restarts inside it (linear on any input).
+_SKIP = rb"'[^']*(?:''[^']*)*(?:'|\Z)|/\*.*?(?:\*/|\Z)"
+#: ...or an entity reference: only the last is renumbered.
+_TOKEN = re.compile(_SKIP + rb"|#(\d+)", re.DOTALL)
+#: ...or a section keyword outside strings and comments.
+_SECTION = re.compile(_SKIP + rb"|(?<![A-Za-z0-9_])(DATA|ENDSEC)\s*;", re.DOTALL | re.IGNORECASE)
 _PRODUCT = re.compile(rb"(?<![A-Za-z0-9_])PRODUCT\s*\(\s*'((?:[^']|'')*)'\s*,\s*'((?:[^']|'')*)'")
 
 
@@ -75,14 +85,18 @@ def can_join_as_text(members: list[Member]) -> bool:
 
 
 def _sections(text: bytes) -> tuple[bytes, bytes]:
-    """(the header, up to and including DATA;), (the data section's body)."""
-    d = _DATA.search(text)
-    if not d:
+    """(the header, up to and including DATA;), (the data section's body): the keywords found
+    outside quoted strings and comments."""
+    data_end = None
+    for m in _SECTION.finditer(text):
+        word = (m.group(1) or b"").upper()
+        if data_end is None and word == b"DATA":
+            data_end = m.end()
+        elif data_end is not None and word == b"ENDSEC":
+            return text[:data_end], text[data_end:m.start()]
+    if data_end is None:
         raise AssemblyFilesError("A STEP file in the upload has no DATA section.")
-    e = _ENDSEC.search(text, d.end())
-    if not e:
-        raise AssemblyFilesError("A STEP file in the upload has no end to its DATA section.")
-    return text[:d.end()], text[d.end():e.start()]
+    raise AssemblyFilesError("A STEP file in the upload has no end to its DATA section.")
 
 
 def _renumbered(body: bytes, offset: int) -> tuple[bytes, int]:
@@ -144,9 +158,55 @@ def _read(path: Path):
     return read_cad(path)
 
 
-def join_occ(members: list[Member], dest: Path) -> None:
+#: Said when a file states no unit and the files that do disagree.
+UNIT_UNKNOWN = ("{name} does not state its unit, and the other files use different units, so its size against "
+                "them is unknown. Export it as STEP (which records its unit) and upload the files again.")
+
+
+def _stated_metres(path: Path) -> float | None:
+    """The length unit a STEP or IGES file states (metres per unit), or None (a BREP, or none read)."""
+    if path.suffix.lower() not in (*STEP_SUFFIXES, ".iges", ".igs"):
+        return None
+    try:
+        from meshpipeline.cad.unit_evidence import read_declared_unit
+        from meshpipeline.contracts.geometry_units import scale_to_metres
+
+        ev = read_declared_unit(path)
+        return float(scale_to_metres(ev.unit)) if ev.resolved and ev.unit is not None else None
+    except Exception:  # noqa: BLE001 - an unreadable unit is no unit stated
+        return None
+
+
+def unit_plan(members: list[Member]) -> tuple[dict[int, float], bool]:
+    """How each file that states no unit is converted (member index -> factor to millimetres on its
+    raw numbers), and whether the joined file's unit is known (see the module text)."""
+    stated = [_stated_metres(m.path) for m in members]
+    silent = [k for k, v in enumerate(stated) if v is None]
+    known = {round(v, 12) for v in stated if v is not None}
+    if not silent:
+        return {}, True
+    if not known:
+        return {}, False
+    if len(known) > 1:
+        raise AssemblyFilesError(UNIT_UNKNOWN.format(name=members[silent[0]].path.name))
+    to_mm = next(iter(known)) / 1e-3
+    return dict.fromkeys(silent, to_mm), True
+
+
+def _scaled(shape, factor: float):
+    if abs(factor - 1.0) < 1e-12:
+        return shape
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+    from OCP.gp import gp_Pnt, gp_Trsf
+
+    t = gp_Trsf()
+    t.SetScale(gp_Pnt(0.0, 0.0, 0.0), float(factor))     # about the origin: a unit change, never a move
+    return BRepBuilderAPI_Transform(shape, t, True).Shape()
+
+
+def join_occ(members: list[Member], dest: Path, scale: dict[int, float] | None = None) -> None:
     """Each file read by OpenCASCADE, all written as one STEP in millimetres, each file's shape named
-    after the file."""
+    after the file. `scale`: member index -> factor on the raw numbers of a file that states no unit."""
     from OCP.IFSelect import IFSelect_RetDone
     from OCP.Interface import Interface_Static
     from OCP.STEPCAFControl import STEPCAFControl_Writer
@@ -160,10 +220,11 @@ def join_occ(members: list[Member], dest: Path) -> None:
     tool = XCAFDoc_DocumentTool.ShapeTool_s(doc.Main())
     from meshpipeline.cad.fea_assembly import match_body_names, read_body_names, solids
 
-    for m in members:
+    for k_m, m in enumerate(members):
         shape = _read(m.path)
         if shape.IsNull():
             raise AssemblyFilesError(f"{m.path.name} holds no shape to join.")
+        shape = _scaled(shape, (scale or {}).get(k_m, 1.0))
         # EACH BODY UNDER ITS OWN NAME: the file's product names where it gives them, else the file's
         bodies = solids(shape)
         said: list[str] = []
@@ -186,18 +247,28 @@ def join_occ(members: list[Member], dest: Path) -> None:
         raise AssemblyFilesError("The files could not be written as one assembly.")
 
 
-#: THE GUARD on the OpenCASCADE join, which reads whole CAD models: it runs in a process of its own
-#: (the API's never holds them), stopped past these.
+#: THE GUARD on the join, which reads whole CAD models (and scans whole STEP texts): it runs in a
+#: process of its own (the API's never holds them), stopped past these.
 JOIN_TIMEOUT_S = 300
 JOIN_MEMORY_MB = 4096
 TOO_HEAVY = ("The files could not be joined into one assembly here ({why}). Export the assembly as one "
              "STEP file and upload that.")
 
 
-def join_occ_guarded(members: list[Member], dest: Path, *, timeout_s: float = JOIN_TIMEOUT_S,
-                     memory_mb: int = JOIN_MEMORY_MB) -> None:
-    """join_occ in a process of its own, killed past `timeout_s` or `memory_mb`: a hard model costs
-    that process, never the caller's."""
+def _combine(members: list[Member], dest: Path) -> dict:
+    """The join itself, in this process: the files' own text when they can, else OpenCASCADE."""
+    if can_join_as_text(members):
+        join_text(members, dest)
+        return {"files": len(members), "method": "text", "unit_known": True}
+    scale, known = unit_plan(members)
+    join_occ(members, dest, scale)
+    return {"files": len(members), "method": "occ", "unit_known": known}
+
+
+def combine_guarded(members: list[Member], dest: Path, *, timeout_s: float = JOIN_TIMEOUT_S,
+                    memory_mb: int = JOIN_MEMORY_MB) -> dict:
+    """The join in a process of its own, killed past `timeout_s` or `memory_mb`: a hard model (or a
+    hostile text) costs that process, never the caller's."""
     import json
     import subprocess
     import sys
@@ -219,10 +290,15 @@ def join_occ_guarded(members: list[Member], dest: Path, *, timeout_s: float = JO
         why = "it needed more memory than allowed" if "MemoryError" in last or proc.returncode < 0 else \
             "the CAD kernel could not read them"
         raise AssemblyFilesError(TOO_HEAVY.format(why=why))
+    lines = (proc.stdout or "").strip().splitlines()
+    try:
+        return dict(json.loads(lines[-1]))
+    except (IndexError, ValueError):
+        return {"files": len(members), "method": "occ", "unit_known": False}
 
 
 def _main(argv: list[str]) -> int:
-    """The guarded join's own process: the spec is JSON (dest, memory_mb, members)."""
+    """The guarded join's own process: the spec is JSON (dest, memory_mb, members); prints how."""
     import json
     import resource
     import sys
@@ -231,36 +307,29 @@ def _main(argv: list[str]) -> int:
     cap = int(spec.get("memory_mb") or JOIN_MEMORY_MB) * 1024 * 1024
     resource.setrlimit(resource.RLIMIT_AS, (cap, cap))
     try:
-        join_occ([Member(Path(m["path"]), str(m["name"])) for m in spec["members"]], Path(spec["dest"]))
+        how = _combine([Member(Path(m["path"]), str(m["name"])) for m in spec["members"]], Path(spec["dest"]))
     except AssemblyFilesError as exc:
         print(f"AssemblyFilesError: {exc}", file=sys.stderr)
         return 3
+    print(json.dumps(how))
     return 0
 
 
 def combine(members: list[Member], dest: Path | str, *, guarded: bool = True) -> dict:
-    """Join `members` into the STEP file `dest`; returns how ({"files", "method"}). `guarded`: the
-    OpenCASCADE join in its own process under a time and memory limit (the upload's way)."""
+    """Join `members` into the STEP file `dest`; returns how ({"files", "method", "unit_known"}).
+    `guarded`: the join in its own process under a time and memory limit (the upload's way)."""
     dest = Path(dest)
     if len(members) > MAX_FILES:
         raise AssemblyFilesError(TOO_MANY.format(n=MAX_FILES))
     for m in members:
         if m.path.suffix.lower() not in CAD_SUFFIXES:
             raise AssemblyFilesError(NOT_CAD.format(name=m.name))
-    if can_join_as_text(members):
-        join_text(members, dest)
-        method = "text"
-    elif guarded:
-        join_occ_guarded(members, dest)
-        method = "occ"
-    else:
-        join_occ(members, dest)
-        method = "occ"
-    return {"files": len(members), "method": method}
+    return combine_guarded(members, dest) if guarded else _combine(members, dest)
 
 
 __all__ = ["CAD_SUFFIXES", "JOIN_MEMORY_MB", "JOIN_TIMEOUT_S", "MAX_FILES", "NOT_CAD", "TOO_HEAVY", "TOO_MANY",
-           "AssemblyFilesError", "Member", "can_join_as_text", "combine", "join_occ", "join_occ_guarded", "join_text"]
+           "UNIT_UNKNOWN", "AssemblyFilesError", "Member", "can_join_as_text", "combine", "combine_guarded",
+           "join_occ", "join_text", "unit_plan"]
 
 
 if __name__ == "__main__":

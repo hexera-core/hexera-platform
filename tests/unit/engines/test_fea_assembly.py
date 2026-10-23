@@ -347,3 +347,91 @@ def test_a_bonded_assembly_no_pass_can_mesh_as_one_is_tied_never_stopped(tmp_pat
     assert asm["mode"] == "tie" and any("could not be meshed as one" in n for n in asm["notes"])
     passes = json.loads((ws / "fea_passes.json").read_text())
     assert passes["delivered"] > 2
+
+
+def test_a_part_wholly_inside_another_is_said_when_no_pair_can_join_them(tmp_path):
+    # a 4 mm block strictly inside a 10 mm one: they meet only inside the big one's material
+    inner = fx._compound(fx._box(0, 0, 0, 10, 10, 10), fx._box(3, 3, 3, 4, 4, 4))
+    side = A.stage(inner, A.CONTACT, tmp_path / "c")
+    assert side["pairs"] == [] and side["unpaired"] == [{"inner": "Part_2", "outer": "Part_1"}]
+    assert any("Part_2 lies wholly inside Part_1" in n and "not joined by a contact pair" in n
+               for n in side["notes"])
+
+
+def test_a_memory_kill_ends_a_bonded_attempt_with_no_tied_retry(tmp_path, monkeypatch):
+    from meshpipeline.engines import runtime
+
+    modes = []
+
+    def mesher(w, timeout):
+        modes.append(json.loads((Path(w) / "fea_plan.json").read_text())["assembly"]["mode"])
+        return {"rc": -9, "signal": "SIGKILL"}
+
+    ws = _stage(fx.touching_blocks(), tmp_path / "oom")
+    monkeypatch.setattr(runtime, "get_engine", lambda _n: SimpleNamespace(run_cartesian_mesh=mesher))
+    ok, _marker, _o = asyncio.run(FD.drive(ws, {"purpose": "structural"}, job_id=f"t-{ws.name}", publish=None,
+                                           run=_Run(), source_path=str(ws / "upload.step")))
+    assert not ok and modes == ["bonded"]
+
+
+def test_each_parts_base_holds_through_its_whole_volume(tmp_path, monkeypatch):
+    """A 10 mm block beside a 100 mm block: the small block is sized as itself all through, not only on
+    its faces (its centre is 5 mm from every face, where a face-only size would have grown)."""
+    from meshpipeline.engines.fea_plan import MIN_DIVISIONS
+
+    shape = fx._compound(fx._box(0, 0, 0, 100, 100, 100), fx._box(100, 0, 0, 10, 10, 10))
+    ws = _stage(shape, tmp_path / "ceiling")
+    ok, marker, _o = _drive(ws, monkeypatch)
+    assert ok, marker
+    plan = json.loads((ws / "fea_plan.json").read_text())
+    small = next(z for z in plan["zones"] if z["kind"] == "part" and z["part"] == "Part_2")
+    size = small["size_m"]
+    assert size == pytest.approx(10 * 3 ** 0.5 / MIN_DIVISIONS * 1e-3, rel=1e-3)
+    gmsh.initialize()
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.open(str(ws / "mesh.msh"))
+        _t, tags, nodes = gmsh.model.mesh.getElements(3)
+        conn = np.asarray(nodes[0]).reshape(len(tags[0]), -1)[:, :4]
+        ntag, xyz, _p = gmsh.model.mesh.getNodes()
+        at = dict(zip(ntag.tolist(), np.asarray(xyz).reshape(-1, 3), strict=True))
+        pts = np.array([[at[int(n)] for n in row] for row in conn])
+    finally:
+        gmsh.finalize()
+    centre = pts.mean(axis=1)
+    inside = (centre[:, 0] > 0.1005) & (centre[:, 0] < 0.1095) & (centre[:, 1] < 0.0095) & (centre[:, 2] < 0.0095) \
+        & (centre[:, 1] > 0.0005) & (centre[:, 2] > 0.0005)
+    edges = np.max([np.linalg.norm(pts[inside][:, a] - pts[inside][:, b], axis=1)
+                    for a, b in ((0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3))], axis=0)
+    assert inside.sum() > 50 and float(np.median(edges)) < 1.6 * size
+
+
+def _cube_surface(cubes):
+    """A labelled triangle surface (mm) of axis-aligned cubes, outward facing, faces Part_k_Face_j."""
+    from meshpipeline.cad.fea_features import Surface
+
+    quads = [((0, 2, 3, 1), 0), ((4, 5, 7, 6), 0), ((0, 1, 5, 4), 0), ((2, 6, 7, 3), 0), ((0, 4, 6, 2), 0),
+             ((1, 3, 7, 5), 0)]
+    xyz, tris, label, names = [], [], [], []
+    for k, (x, y, z, d) in enumerate(cubes, start=1):
+        base = len(xyz)
+        xyz += [(x + d * i, y + d * j, z + d * m) for i in (0, 1) for j in (0, 1) for m in (0, 1)]
+        for j, ((q0, q1, q2, q3), _u) in enumerate(quads, start=1):
+            names.append(f"Part_{k}_Face_{j}")
+            tris += [(base + q0, base + q2, base + q1), (base + q0, base + q3, base + q2)]
+            label += [len(names) - 1] * 2
+    return Surface(np.asarray(xyz, float), np.asarray(tris), np.asarray(label), names)
+
+
+def test_the_estimate_holds_a_parts_base_at_its_centre():
+    from meshpipeline.engines.fea_size_field import SizeField
+
+    surf = _cube_surface([(0, 0, 0, 100), (100, 0, 0, 10)])
+    signed = SizeField(surf, [], growth=1.3).signed(np.array([[50.0e-3, 50e-3, 50e-3]]))
+    assert signed[0] < 0                                                    # the cubes face outward
+    faces = [f"Part_2_Face_{j}" for j in range(1, 7)]
+    zone = {"id": "P2", "kind": "part", "faces": faces, "size_m": 1.0e-3, "reach_m": 0.0, "part": "Part_2"}
+    field = SizeField(surf, [zone], growth=1.3)
+    h = field.zone_size(np.array([[105e-3, 5e-3, 5e-3], [130e-3, 5e-3, 5e-3]]))
+    assert h[0] == pytest.approx(1.0e-3)                                   # the centre: the part's own size
+    assert h[1] == pytest.approx(1.0e-3 + 0.3 * 20e-3)                     # outside: grows from its faces

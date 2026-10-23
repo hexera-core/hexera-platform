@@ -671,10 +671,11 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             levers.append(lever)
 
         if (tripped is None and passes and not any(f["valid"] for f in passes)
+                and not passes[-1].get("out_of_memory")
                 and (record.get("assembly_plan") or {}).get("mode") == "bonded"):
             # PLAN-fea-17: A BONDED ASSEMBLY THE MESHER COULD NOT BUILD AS ONE (the fused parts left
             # slivers it cannot fill): the parts are meshed apart and tied where they meet - still
-            # bonded, never a stop
+            # bonded, never a stop. Not after a memory kill: that ends the attempt (LAD-fea-7)
             record = await asyncio.to_thread(restage_tied, ws, record)
             _cite(job_id, [{"stage": "fea_ladder", "decided": "tied", "value": "tie", "rule": "PLAN-fea-17",
                             "inputs": {"passes": len(passes)},

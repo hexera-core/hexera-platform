@@ -87,10 +87,12 @@ def _micro_place(m: dict) -> dict:
             "size_mm": m.get("size_mm"), "faces": list(m.get("faces") or [])}
 
 
-def size_fields(gmsh, plan: dict, surfaces: set[int], face_tags: dict[str, list[int]] | None = None) -> int | None:
+def size_fields(gmsh, plan: dict, surfaces: set[int], face_tags: dict[str, list[int]] | None = None,
+                part_volumes: dict[str, list[int]] | None = None) -> int | None:
     """The plan's zones as gmsh fields; returns the background field (None when no zone binds).
     face_tags: an assembly's face names (Part_k_Face_j) -> the surface tags carrying each; a single
-    part's Face_k is surface k."""
+    part's Face_k is surface k. part_volumes: an assembly's Part_k -> the volume tags carrying it
+    (the part's base size holds through those volumes, PLAN-fea-17)."""
     from meshpipeline.engines.fea_size_field import group_zones
 
     def tags_of(name: str) -> list[int]:
@@ -135,6 +137,16 @@ def size_fields(gmsh, plan: dict, surfaces: set[int], face_tags: dict[str, list[
             gmsh.model.mesh.field.setNumbers(both, "FieldsList", [th, near])
             ids.append(both)
             continue
+        if g.get("part"):
+            # PLAN-fea-17: the part's base through its whole volume (the estimate's ceiling inside it)
+            vols = sorted(set((part_volumes or {}).get(str(g["part"])) or []))
+            if vols:
+                const = gmsh.model.mesh.field.add("Constant")
+                gmsh.model.mesh.field.setNumber(const, "VIn", size)
+                gmsh.model.mesh.field.setNumber(const, "VOut", base)
+                gmsh.model.mesh.field.setNumbers(const, "VolumesList", vols)
+                gmsh.model.mesh.field.setNumber(const, "IncludeBoundary", 1)
+                ids.append(const)
         dists = []
         if g["edge"]:
             curves = sorted({c for a, b in (fs for fs in g["edges"] if len(fs) == 2)
@@ -386,7 +398,14 @@ def mesh(workspace) -> int:
                 for nm in row.get("names") or []:
                     if k in surface_tag:
                         face_tags.setdefault(str(nm), []).append(surface_tag[k])
-        bg = size_fields(gmsh, plan, surfaces, face_tags)
+        part_volumes: dict[str, list[int]] | None = None
+        if asm:
+            part_volumes = {}
+            for k, row in enumerate(sidecar.get("volumes") or []):
+                for p in row.get("parts") or []:
+                    if k in volume_tag:
+                        part_volumes.setdefault(f"Part_{int(p)}", []).append(volume_tag[k])
+        bg = size_fields(gmsh, plan, surfaces, face_tags, part_volumes)
         if bg is not None:
             gmsh.model.mesh.field.setAsBackgroundMesh(bg)
         remesh = {int(s) for s in run.get("remesh_surfaces") or []}

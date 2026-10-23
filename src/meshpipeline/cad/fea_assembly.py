@@ -457,6 +457,7 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
         volumes.append({"parts": vol_parts[k] if k < len(vol_parts) else [], "volume_m3": _r(v),
                         "centroid_m": _pt(c)})
     pairs = []
+    unpaired: list[tuple[str, str]] = []
     for itf in interfaces:
         p, q = (int(x.split("_")[1]) for x in itf["parts"])
         if mode == PAIR_BONDED:
@@ -466,9 +467,16 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
                 continue
             pairs.append({"id": itf["id"], "kind": PAIR_BONDED, "parts": [p, q], "surfaces": shared})
         else:
+            fp, fq = itf["faces"].get(part_id(p)) or [], itf["faces"].get(part_id(q)) or []
+            if not fp or not fq:
+                # ONE SIDE HAS NO FACE THERE: a part wholly inside the other meets it only inside its
+                # material, so there is no surface pair to write - said in words, never dropped quietly
+                inner, outer = (part_id(p), part_id(q)) if fp else (part_id(q), part_id(p))
+                unpaired.append((inner, outer))
+                continue
             pairs.append({"id": itf["id"], "kind": PAIR_TIE if mode == PAIR_TIE else PAIR_CONTACT,
                           "parts": [p, q], "overlap": itf["kind"] == "overlap",
-                          "faces": {str(p): itf["faces"][part_id(p)], str(q): itf["faces"][part_id(q)]}})
+                          "faces": {str(p): fp, str(q): fq}})
     joined = {p for i in interfaces for p in i["parts"]}
     free = [part_id(p) for p in range(1, len(parts) + 1) if part_id(p) not in joined]
     if free:
@@ -498,11 +506,17 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
         notes.append(f"{len(over)} pair(s) of parts pass into each other: they are meshed apart as drawn, so "
                      "the solver starts with them overlapping there - let it resolve the overlap at the first "
                      "increment (Abaqus/CalculiX: ADJUST; Ansys: initial penetration), or fix the CAD.")
+    joined_how = "tied" if mode == PAIR_TIE else "a contact pair"
+    for inner, outer in unpaired:
+        notes.append(f"{inner} lies wholly inside {outer}, so they have no surface between them and are not "
+                     f"joined by {joined_how}: in the mesh they overlap, unconnected. Choose Bonded to make them "
+                     "one piece, or remove the extra body from the CAD.")
     sidecar = {"version": VERSION, "connection": connection, "mode": mode,
                "parts": [{"id": part_id(p), "name": readable_body_name((names or [""] * len(parts))[p - 1]
                                                                         if names and p - 1 < len(names) else "")}
                          for p in range(1, len(parts) + 1)],
                "surfaces": surfaces, "volumes": volumes, "pairs": pairs, "interfaces": interfaces,
+               "unpaired": [{"inner": a, "outer": b} for a, b in unpaired],
                "notes": notes, "fuse_seconds": fused.seconds}
     (out / SIDECAR).write_text(json.dumps(sidecar, indent=1))
     return sidecar
