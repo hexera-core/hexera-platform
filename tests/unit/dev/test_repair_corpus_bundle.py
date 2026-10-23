@@ -198,3 +198,35 @@ def test_two_runs_differing_only_in_a_consent_flag_seal_different_digests(tmp_pa
     off = seal("off")
     monkeypatch.setattr(rcfg, "CAD_REPAIR_FIX_SMALL_FACES", True)
     assert seal("on") != off
+
+
+def test_rebundle_does_not_name_todays_engine_for_yesterdays_rows(tmp_path):
+    """No engine runs in a --rebundle, so the current HEAD is not a fact about these rows.
+
+    Packaging a run recorded at commit A while sitting on commit B would publish B as the tested
+    engine - the one thing a bundle must not get wrong. Unknown unless the caller states it.
+    """
+    rows_json = tmp_path / "rows.json"
+    rows_json.write_text(json.dumps(_RECORDED_ROWS))
+
+    sealed = rc.bundle_from_rows(rows_json, tmp_path / "unstated")
+    manifest, _, _, _ = bb.load_bundle(sealed)
+    assert manifest["engine_commit"] == "unknown"
+    assert manifest["hardware_class"] == "unknown"
+
+    # a caller who knows what measured them says so, and that is what is sealed
+    sealed = rc.bundle_from_rows(rows_json, tmp_path / "stated",
+                                 engine_commit="a" * 40, hardware_class="linux-x86_64")
+    manifest, _, _, _ = bb.load_bundle(sealed)
+    assert manifest["engine_commit"] == "a" * 40
+    assert manifest["hardware_class"] == "linux-x86_64"
+
+
+def test_a_live_run_still_records_this_host_and_commit(tmp_path):
+    """The defaults are only wrong for a rebundle: when the engine just ran here, here is true."""
+    writer = rc.benchmark_bundle.BundleWriter(tmp_path / "bundle")
+    sealed = rc.seal_corpus_bundle(writer, [], roots=[], files=[], settings={},
+                                   redistribution="internal")
+    manifest, _, _, _ = bb.load_bundle(sealed)
+    assert manifest["engine_commit"] != "unknown"
+    assert manifest["hardware_class"] != "unknown"

@@ -103,6 +103,12 @@ def test_scenario_name_must_match_nothing_but_itself_is_loaded(tmp_path):
     ({"set": {"source": "missing.stl"}}, "missing.stl"),
     ({"set": {"source": "../escape.stl"}}, "escape"),
     ({"set": {"surprise": True}}, "surprise"),
+    # The name becomes the workspace directory the runner DELETES before copying the case in, so
+    # an absolute name or a traversal would aim rmtree at somebody else's directory.
+    ({"set": {"name": "/tmp/somebody-elses-work"}}, "single path segment"),
+    ({"set": {"name": "../sibling"}}, "single path segment"),
+    ({"set": {"name": "nested/below"}}, "single path segment"),
+    ({"set": {"name": ".."}}, "single path segment"),
 ])
 def test_refuses_malformed_scenario(tmp_path, mutation, match):
     body = {"name": "bad", "source": "part.stl", "settings": {}, "timeout_seconds": 60}
@@ -251,3 +257,24 @@ def test_summary_of_no_rows_divides_nothing():
     assert summary["scenarios"] == 0
     assert summary["mesh_success_rate"] is None
     assert summary["engine_selection"]["accuracy"] is None
+
+
+def test_execute_refuses_a_workspace_outside_the_scratch_tree(tmp_path):
+    """load_scenario refuses such a name, but execute_scenario is reachable with a hand-built run
+    and the line after this check deletes whatever the name resolves to. A directory outside the
+    scratch tree is never ours to remove, so the run refuses instead of reaching rmtree."""
+    outsider = tmp_path / "precious"
+    outsider.mkdir()
+    (outsider / "keepme.txt").write_text("not the benchmark's to delete")
+    case = tmp_path / "case"
+    case.mkdir()
+    source = tmp_path / "part.stl"
+    source.write_bytes(b"solid fake\nendsolid fake\n")
+    run = mb.ScenarioRun(name=str(outsider), directory=tmp_path, source_path=source,
+                         settings={}, timeout_seconds=60.0, case_dir=case)
+
+    result = mb.execute_scenario(run, tmp_path / "scratch")
+
+    # named, so this cannot pass by bailing out earlier for some unrelated reason
+    assert "resolves outside the scratch directory" in result["status"]
+    assert (outsider / "keepme.txt").exists(), "the benchmark deleted a directory it was handed"

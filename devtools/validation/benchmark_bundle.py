@@ -23,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -81,6 +82,16 @@ class BundleWriter:
         self.directory = directory
         self.directory.mkdir(parents=True, exist_ok=True)
         self._rows_path = directory / "rows.jsonl"
+        # A SECOND RUN INTO THE SAME DIRECTORY IS REFUSED, not silently merged. Rows are appended
+        # while the row count starts at zero, so a second run would leave rows.jsonl holding both
+        # runs under a summary counting only the later one - which `load_bundle` then rejects as
+        # inconsistent, after the first run's manifest and summary have already been overwritten.
+        # One bundle is one run's evidence; a re-run names a new directory.
+        existing = [name for name in BUNDLE_FILES if (self.directory / name).exists()]
+        if existing:
+            raise FileExistsError(
+                f"bundle directory {directory} already holds {existing}; a bundle is one run's "
+                f"evidence - seal a re-run into a new directory")
         self._row_count = 0
 
     def write_row(self, row: dict) -> None:
@@ -106,9 +117,17 @@ class BundleWriter:
         return self.directory
 
 
-def load_bundle(directory: Path) -> tuple[dict, list[dict], dict, dict]:
+def load_bundle(directory: Path,
+                recompute: Callable[[list[dict]], dict] | None = None,
+                ) -> tuple[dict, list[dict], dict, dict]:
     """Re-read a sealed bundle. Raises if any required file is missing - a partial bundle is not
-    evidence. Returns (manifest, rows, summary, settings)."""
+    evidence. Returns (manifest, rows, summary, settings).
+
+    `recompute` is the benchmark's own aggregate function. Given one, the stored summary is
+    RECHECKED against the rows rather than trusted: row_count alone cannot catch a figure that was
+    edited in place, and the bundle contract says the rows are the evidence and the summary only a
+    convenience. It is a parameter and not a lookup because the aggregate belongs to the benchmark
+    (repair_corpus.corpus_summary, mesh_benchmark.summarise), not to this envelope."""
     missing = [name for name in BUNDLE_FILES if not (directory / name).exists()]
     if missing:
         raise FileNotFoundError(f"bundle at {directory} is missing {missing}")
@@ -124,4 +143,13 @@ def load_bundle(directory: Path) -> tuple[dict, list[dict], dict, dict]:
     if summary.get("row_count") != len(rows):
         raise ValueError(
             f"summary row_count {summary.get('row_count')} != rows.jsonl rows {len(rows)}")
+    if recompute is not None:
+        expected_summary = {**recompute(rows), "row_count": len(rows)}
+        if summary != expected_summary:
+            differing = sorted(
+                key for key in set(expected_summary) | set(summary)
+                if summary.get(key) != expected_summary.get(key))
+            raise ValueError(
+                f"summary.json in {directory} does not match the aggregate recomputed from "
+                f"rows.jsonl; disagreeing field(s): {differing}")
     return manifest, rows, summary, settings

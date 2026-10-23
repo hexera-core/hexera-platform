@@ -418,13 +418,18 @@ def hash_corpus_inputs(roots: list[Path], files: list[Path]) -> dict[str, str]:
 
 def _corpus_manifest(*, track: str, corpus_name: str, provenance: str, redistribution: str,
                      input_hashes: dict[str, str], timeout_seconds: float | None,
-                     random_seed: int | None):
+                     random_seed: int | None, engine_commit: str | None = None,
+                     hardware_class: str | None = None):
+    """`engine_commit` and `hardware_class` default to THIS host at THIS commit, which is the
+    truth only when the engine just ran here. A caller packaging a recorded run passes what that
+    run was measured on, or "unknown" - see bundle_from_rows."""
     return benchmark_bundle.BundleManifest(
         benchmark="cad-repair", track=track, corpus_name=corpus_name,
         corpus_provenance=provenance, redistribution_status=redistribution,
-        input_hashes=input_hashes, engine_commit=_engine_commit(),
+        input_hashes=input_hashes,
+        engine_commit=_engine_commit() if engine_commit is None else engine_commit,
         settings_digest="",  # the writer computes this at seal time from settings.json
-        hardware_class=_hardware_class(),
+        hardware_class=_hardware_class() if hardware_class is None else hardware_class,
         timeout_seconds=timeout_seconds, random_seed=random_seed)
 
 
@@ -447,12 +452,18 @@ def bundle_from_rows(rows_json: Path, bundle_dir: Path, *, track: str = "unspeci
                      corpus_name: str = "", provenance: str = "",
                      redistribution: str = "internal", input_hashes: dict[str, str] | None = None,
                      settings: dict | None = None, timeout_seconds: float | None = None,
-                     random_seed: int | None = None) -> Path:
+                     random_seed: int | None = None, engine_commit: str = "",
+                     hardware_class: str = "") -> Path:
     """Package a previously recorded run (the --json output) without re-running any CAD.
 
     The summary is recomputed from the rows; any summary stored beside them is ignored, because a
     stored aggregate is a claim and the rows are the evidence. Input hashes default to empty - the
     corpus files may no longer be on disk - and a caller that still has them passes its own map.
+
+    NO ENGINE RUNS HERE, so neither the current HEAD nor this host is a fact about these rows:
+    packaging a run from commit A while sitting on commit B would name B as the tested engine,
+    which is the one thing a published bundle must not get wrong. Both fields are "unknown" unless
+    the caller states what the run was actually measured on.
     """
     data = json.loads(Path(rows_json).read_text())
     rows = data["rows"] if isinstance(data, dict) else data
@@ -463,7 +474,9 @@ def bundle_from_rows(rows_json: Path, bundle_dir: Path, *, track: str = "unspeci
         writer.write_row(row)
     manifest = _corpus_manifest(track=track, corpus_name=corpus_name, provenance=provenance,
                                 redistribution=redistribution, input_hashes=input_hashes or {},
-                                timeout_seconds=timeout_seconds, random_seed=random_seed)
+                                timeout_seconds=timeout_seconds, random_seed=random_seed,
+                                engine_commit=engine_commit or "unknown",
+                                hardware_class=hardware_class or "unknown")
     return writer.seal(manifest, settings=settings or {"rebundled_from": str(rows_json)},
                        summary=corpus_summary(rows))
 
@@ -676,6 +689,14 @@ def main() -> int:
     parser.add_argument("--rebundle", default="",
                         help="rows JSON from a previous --json run: package it into --bundle "
                              "without re-running any CAD (the summary is recomputed from the rows)")
+    # No engine runs in a --rebundle, so the manifest records "unknown" for what measured the rows
+    # unless the person packaging them states it. Stating the wrong commit is worse than unknown.
+    parser.add_argument("--rebundle-engine-commit", dest="rebundle_engine_commit", default="",
+                        help="with --rebundle: the engine commit the recorded rows were measured "
+                             "on (default: unknown, because this host did not measure them)")
+    parser.add_argument("--rebundle-hardware-class", dest="rebundle_hardware_class", default="",
+                        help="with --rebundle: the hardware class the recorded rows were measured "
+                             "on (default: unknown)")
     args = parser.parse_args()
 
     # REBUNDLE IS A PACKAGING RUN, NOT A CAD RUN: a recorded rows file already paid for its
@@ -686,7 +707,9 @@ def main() -> int:
             return 2
         sealed = bundle_from_rows(Path(args.rebundle), Path(args.bundle), track=args.track,
                                   corpus_name=args.corpus_name, provenance=args.provenance,
-                                  redistribution=args.redistribution)
+                                  redistribution=args.redistribution,
+                                  engine_commit=args.rebundle_engine_commit,
+                                  hardware_class=args.rebundle_hardware_class)
         print(f"bundle sealed at {sealed}")
         return 0
     if not args.directories:

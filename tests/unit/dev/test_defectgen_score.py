@@ -204,7 +204,9 @@ def test_routes_bucket_into_repair_review_manual_cleanup_and_no_op(tmp_path):
 
 def test_repair_outcomes_split_repaired_rolled_back_damaged_failed(tmp_path):
     rows = [
-        _row("a", route="conservative_repair", outcome="repaired"),
+        # residual_flash claims small_face, and the re-inspection proves small_face went: credit.
+        _row("a", route="conservative_repair", outcome="repaired",
+             repaired_defects={"small_face": 1}),
         _row("b", route="conservative_repair", outcome="refused"),
         _row("c", route="conservative_repair", outcome="no_change"),
         _row("d", route="conservative_repair", outcome="changed_without_fixing"),
@@ -212,7 +214,37 @@ def test_repair_outcomes_split_repaired_rolled_back_damaged_failed(tmp_path):
     ]
     answers = {s: _answer(s, ["residual_flash"]) for s in "abcde"}
     repair = _run(tmp_path, rows, answers)["aggregate"]["operators"]["residual_flash"]["repair"]
-    assert repair == {"attempted": 5, "repaired": 1, "rolled_back": 2, "damaged": 1, "failed": 1}
+    assert repair == {"attempted": 5, "repaired": 1, "not_repaired": 0, "unknown": 0,
+                      "rolled_back": 2, "damaged": 1, "failed": 1}
+
+
+def test_an_operator_whose_own_damage_survived_the_repair_is_not_credited(tmp_path):
+    """A kept repair is not a repair of everything the case carried.
+
+    The case is reported `repaired` because the written file is emptier, but the only code cleared
+    is `open_shell` - which `residual_flash` does not claim. Crediting it here would say the engine
+    repairs flash when what it actually did was sew a shell.
+    """
+    rows = [_row("a", route="conservative_repair", outcome="repaired",
+                 repaired_defects={"open_shell": 2})]
+    repair = _run(tmp_path, rows, {"a": _answer("a", ["residual_flash"])})[
+        "aggregate"]["operators"]["residual_flash"]["repair"]
+    assert repair["repaired"] == 0
+    assert repair["not_repaired"] == 1
+
+
+def test_an_operator_we_claim_no_codes_for_reports_unknown_rather_than_credit(tmp_path):
+    """`thin_wall` has no inspector code, so no cleared code can prove its damage was repaired.
+
+    Unknown is the honest answer; counting it as repaired would overstate the engine against
+    exactly the damage the taxonomy admits it cannot see.
+    """
+    rows = [_row("a", route="conservative_repair", outcome="repaired",
+                 repaired_defects={"small_face": 3})]
+    repair = _run(tmp_path, rows, {"a": _answer("a", ["thin_wall"])})[
+        "aggregate"]["operators"]["thin_wall"]["repair"]
+    assert repair["unknown"] == 1
+    assert repair["repaired"] == 0
 
 
 def test_a_case_never_routed_to_repair_counts_no_attempt(tmp_path):

@@ -92,3 +92,46 @@ def test_hash_inputs_keys_are_corpus_relative(tmp_path):
     hashes = bb.hash_inputs(tmp_path, [file_a])
     assert list(hashes) == ["sub/a.step"]
     assert len(hashes["sub/a.step"]) == 64
+
+
+def test_a_second_run_into_the_same_directory_is_refused(tmp_path):
+    """Rows append while the row count restarts at zero, so a reused directory would seal one
+    run's summary over both runs' rows - and the loader would then reject the result, after the
+    first run's manifest had already been overwritten. Refuse before anything is lost."""
+    writer = bb.BundleWriter(tmp_path / "bundle")
+    writer.write_row({"file": "a.step"})
+    writer.seal(_manifest(), settings={}, summary={})
+
+    with pytest.raises(FileExistsError, match="already holds"):
+        bb.BundleWriter(tmp_path / "bundle")
+
+
+def test_a_fresh_directory_beside_a_sealed_one_is_fine(tmp_path):
+    bb.BundleWriter(tmp_path / "one").seal(_manifest(), settings={}, summary={})
+    bb.BundleWriter(tmp_path / "two").seal(_manifest(), settings={}, summary={})
+    assert (tmp_path / "two" / "manifest.json").exists()
+
+
+def test_load_bundle_recomputes_the_aggregate_when_given_the_benchmarks_own(tmp_path):
+    """row_count alone cannot catch a figure edited in place, and the bundle contract says the
+    rows are the evidence. Given the benchmark's aggregate, the loader re-derives it."""
+    def aggregate(rows: list[dict]) -> dict:
+        return {"repaired": sum(1 for row in rows if row.get("outcome") == "repaired")}
+
+    writer = bb.BundleWriter(tmp_path / "bundle")
+    writer.write_row({"file": "a.step", "outcome": "repaired"})
+    writer.write_row({"file": "b.step", "outcome": "refused"})
+    sealed = writer.seal(_manifest(), settings={}, summary=aggregate(
+        [{"outcome": "repaired"}, {"outcome": "refused"}]))
+
+    # honest bundle: the recomputed aggregate agrees
+    _, rows, summary, _ = bb.load_bundle(sealed, aggregate)
+    assert summary["repaired"] == 1 and len(rows) == 2
+
+    # a headline edited in place keeps row_count intact, so only recomputation catches it
+    summary_path = sealed / "summary.json"
+    tampered = {**json.loads(summary_path.read_text()), "repaired": 2}
+    summary_path.write_text(json.dumps(tampered))
+    bb.load_bundle(sealed)  # without the aggregate it still loads, as before
+    with pytest.raises(ValueError, match="does not match the aggregate recomputed"):
+        bb.load_bundle(sealed, aggregate)

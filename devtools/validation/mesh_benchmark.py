@@ -127,6 +127,15 @@ def load_scenario(directory: Path) -> Scenario:
     name = body["name"]
     if not isinstance(name, str) or not name:
         raise ScenarioError(f"{spec_path}: name must be a non-empty string")
+    # THE NAME BECOMES A DIRECTORY, and the runner DELETES that directory before copying the case
+    # into it. `scratch / name` with an absolute name is the absolute path, not a child of
+    # scratch - so a scenario naming itself "/home/someone/work" would have the benchmark delete
+    # it. One path segment, and not a traversal: the same containment rule `source` and `case`
+    # already answer to, applied to the one field that reaches rmtree.
+    if name != Path(name).name or name in (".", ".."):
+        raise ScenarioError(
+            f"{spec_path}: name {name!r} must be a single path segment - it names the run's "
+            f"workspace directory")
     if not isinstance(body["settings"], dict):
         raise ScenarioError(f"{spec_path}: settings must be a JSON object")
     timeout = body["timeout_seconds"]
@@ -199,11 +208,25 @@ def execute_scenario(run: ScenarioRun, scratch: Path) -> dict:
             "full pipeline's builder and renderer); freeze one into the scenario or run inside "
             "the mesh image"), "selected_engine": engine}
 
-    workspace = scratch / run.name
+    # load_scenario refuses a name that is not one path segment, but this function is reachable
+    # with a hand-built ScenarioRun, and the next line deletes whatever it resolves to. A
+    # directory outside the scratch tree is never ours to remove.
+    workspace = (scratch / run.name).resolve()
+    if not workspace.is_relative_to(Path(scratch).resolve()):
+        return {"status": f"failed: scenario name {run.name!r} resolves outside the scratch "
+                          f"directory, so its workspace cannot be prepared",
+                "selected_engine": engine}
     if workspace.exists():
         shutil.rmtree(workspace)
     shutil.copytree(run.case_dir, workspace)
     shutil.copy2(run.source_path, workspace / run.source_path.name)
+    # A FROZEN CASE MAY CARRY A MANIFEST from whenever it was authored. It just came along in the
+    # copytree, and everything below reads mesh_manifest.json as THIS run's evidence - quality,
+    # cell count, engine version. Remove it, so what is scored was written by the run being
+    # scored or is honestly absent.
+    stale_manifest = workspace / "mesh_manifest.json"
+    if stale_manifest.exists():
+        stale_manifest.unlink()
 
     started = time.monotonic()
     try:
@@ -242,6 +265,17 @@ def execute_scenario(run: ScenarioRun, scratch: Path) -> dict:
         result["status"] = "success"
     elif out.get("timed_out"):
         result["status"] = f"failed: timed out after {run.timeout_seconds}s"
+    elif rc == 0 and not manifest:
+        # THE ENGINE RAN AND DID NOT COMPLAIN, AND NOBODY WROTE A MANIFEST. mesh_manifest.json is
+        # written by each engine's finalize seam (engines/manifest.write_manifest), which the
+        # pipeline executor calls - `run_engine_local` runs the mesher alone and never does. So
+        # the absence of a manifest here is a gap in what this harness drives, not a failed mesh,
+        # and calling it "failed: mesh_written=False" would publish a loss the run did not take.
+        # Scoring the mesh needs finalize wired in; until then this row says so.
+        result.update(_unavailable(
+            "the mesher returned rc=0 but no mesh_manifest.json was written: this harness drives "
+            "`run_engine_local`, which runs the engine without its finalize seam, so there is no "
+            "quality evidence for this run to score"))
     else:
         tail = str(out.get("log_tail", ""))[-200:]
         result["status"] = (f"failed: rc={rc}, mesh_written={delivered}"

@@ -118,8 +118,38 @@ def _score_case(case_id: str, row: dict, answer: dict) -> dict:
         "route_bucket": _ROUTE_BUCKETS.get(route, "other"),
         "outcome": row.get("outcome", ""),
         "attempted": route == "conservative_repair",
+        # WHICH CODES THE WRITTEN FILE PROVES WERE CLEARED. The runner credits these only by
+        # re-inspecting what it wrote, so this - not the case's overall outcome - is what an
+        # operator's repair claim is settled against.
+        "repaired_codes": sorted(row.get("repaired_defects") or {}),
         "defects": defects,
     }
+
+
+def _repair_result(case: dict, operator: str) -> str:
+    """How one OPERATOR's damage fared in a case, not how the case fared.
+
+    A case is reported `repaired` when the written file is emptier than the one that came in -
+    which says nothing about WHICH damage went. Crediting every operator in the case with the
+    repair overstates what the engine fixes the moment a case carries two of them: fixing an
+    `open_shell` would also claim the `pin_hole` beside it. So the claim is settled per operator,
+    against the codes the re-inspection proves were cleared:
+
+    - an operator we CLAIM codes for is credited only when one of its own codes was cleared, and
+      otherwise recorded as `not_repaired` - its damage survived a repair that kept something else;
+    - an operator we claim NO codes for cannot be tied to any cleared code, so a kept repair is
+      `unknown` rather than credit. Saying unknown is the honest answer to a question the taxonomy
+      cannot answer yet.
+
+    Outcomes other than a kept repair need none of this: nothing was kept, so nothing is claimed.
+    """
+    result = _REPAIR_OUTCOMES.get(case["outcome"], "failed")
+    if result != "repaired":
+        return result
+    codes = expected_codes(operator)
+    if not codes:
+        return "unknown"
+    return "repaired" if codes & set(case["repaired_codes"]) else "not_repaired"
 
 
 def score(rows_by_stem: dict[str, dict], answers: dict[str, dict]) -> dict:
@@ -146,8 +176,8 @@ def score(rows_by_stem: dict[str, dict], answers: dict[str, dict]) -> dict:
                 "defects": 0, "cases": 0, "detected_any": 0, "detected_expected": 0,
                 "missed_detectable": 0,
                 "routes": {"repair": 0, "review": 0, "manual_cleanup": 0, "no_op": 0},
-                "repair": {"attempted": 0, "repaired": 0, "rolled_back": 0,
-                           "damaged": 0, "failed": 0},
+                "repair": {"attempted": 0, "repaired": 0, "not_repaired": 0, "unknown": 0,
+                           "rolled_back": 0, "damaged": 0, "failed": 0},
             })
             entry["defects"] += 1
             if defect["expected_detectable"]:
@@ -167,8 +197,7 @@ def score(rows_by_stem: dict[str, dict], answers: dict[str, dict]) -> dict:
                 entry["routes"][bucket] = 1
             if case["attempted"]:
                 entry["repair"]["attempted"] += 1
-                result = _REPAIR_OUTCOMES.get(case["outcome"], "failed")
-                entry["repair"][result] += 1
+                entry["repair"][_repair_result(case, op)] += 1
 
     aggregate = {
         "cases_scored": len(cases),
@@ -206,7 +235,7 @@ def render_table(result: dict) -> str:
         "",
         f"{'operator':<24}{'claim':<14}{'defects':>8}{'cases':>6}{'det_any':>8}{'det_exp':>8}"
         f"{'missed':>7} | {'repair':>7}{'review':>7}{'manual':>7}{'no_op':>6}"
-        f" | {'att':>4}{'rep':>4}{'rb':>4}{'dmg':>4}",
+        f" | {'att':>4}{'rep':>4}{'n/r':>4}{'unk':>4}{'rb':>4}{'dmg':>4}",
     ]
     for op, e in agg["operators"].items():
         claim = "expected" if e["expected_detectable"] else "not-claimed"
@@ -217,8 +246,8 @@ def render_table(result: dict) -> str:
             f"{op:<24}{claim:<14}{e['defects']:>8}{e['cases']:>6}{e['detected_any']:>8}"
             f"{det_exp:>8}{missed:>7} | {r.get('repair', 0):>7}{r.get('review', 0):>7}"
             f"{r.get('manual_cleanup', 0):>7}{r.get('no_op', 0):>6}"
-            f" | {rep['attempted']:>4}{rep['repaired']:>4}{rep['rolled_back']:>4}"
-            f"{rep['damaged']:>4}")
+            f" | {rep['attempted']:>4}{rep['repaired']:>4}{rep['not_repaired']:>4}"
+            f"{rep['unknown']:>4}{rep['rolled_back']:>4}{rep['damaged']:>4}")
     if agg["unknown_operators"]:
         lines.append(f"\nunknown operators (not in the taxonomy table):"
                      f" {', '.join(agg['unknown_operators'])}")
