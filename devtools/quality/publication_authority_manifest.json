@@ -3568,6 +3568,19 @@
   "roots": []
  },
  {
+  "context": "engines/fea_driver.py::restage_tied::stage#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/fea_driver.py",
+  "qualname": "restage_tied",
+  "semantic": "stage",
+  "method": "stage",
+  "ordinal": 1,
+  "receiver": "A",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "engines/gates.py::run_gates::check#1|NotAPublisher|not-a-publisher|",
   "path": "engines/gates.py",
   "qualname": "run_gates",
