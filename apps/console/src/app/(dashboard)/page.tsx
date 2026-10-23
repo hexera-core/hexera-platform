@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { auth } from "@/auth";
+import { DashboardNotice } from "@/app/_components/dashboard-notice";
 import { formatDuration, runTitle, statusClass, statusLabel } from "@/app/_components/run-status";
 import { ownerIdFromSession } from "@/lib/auth/session";
 import { consoleFetch } from "@/lib/hexera-api/console-fetch";
@@ -73,11 +74,18 @@ export default async function OverviewPage() {
           </Link>
         </div>
         {runs === null ? (
-          <p className="empty panel__body">Could not reach the API just now.</p>
+          <DashboardNotice
+            body="Refresh the page to try again. Your existing runs are not affected."
+            retryLabel="Try again"
+            title="We couldn't load recent runs"
+            tone="error"
+          />
         ) : runs.items.length === 0 ? (
-          <p className="empty panel__body">
-            Nothing has run yet. Press New run and upload a geometry file to start.
-          </p>
+          <DashboardNotice
+            action={{ href: "/runs/new", label: "Start a run" }}
+            body="Upload a geometry file and describe what the mesh is for."
+            title="No runs yet"
+          />
         ) : (
           <table className="table">
             <thead>

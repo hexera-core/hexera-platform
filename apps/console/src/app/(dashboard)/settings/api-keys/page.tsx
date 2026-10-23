@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 
 import { auth } from "@/auth";
 import { ApiKeysPanel } from "@/app/_components/api-keys-panel";
+import { DashboardNotice } from "@/app/_components/dashboard-notice";
 import { ownerIdFromSession } from "@/lib/auth/session";
 import { consoleFetch } from "@/lib/hexera-api/console-fetch";
 
@@ -61,7 +62,12 @@ export default async function ApiKeysPage({
       </div>
 
       {keys === null ? (
-        <p className="empty card">Could not reach the API just now. Reload to try again.</p>
+        <DashboardNotice
+          body="Refresh the page to try again. Existing keys continue to work."
+          retryLabel="Try again"
+          title="We couldn't load API keys"
+          tone="error"
+        />
       ) : (
         <section className="panel">
           <div className="panel__head">

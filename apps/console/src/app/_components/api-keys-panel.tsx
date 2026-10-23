@@ -40,7 +40,7 @@ export function ApiKeysPanel({ keys }: { keys: Key[] }) {
       setMinted(body.presented);
       router.refresh();
     } catch {
-      setError("Could not reach the API. Try again.");
+      setError(mintFailureMessage(0));
     } finally {
       setBusy(false);
     }
@@ -60,7 +60,7 @@ export function ApiKeysPanel({ keys }: { keys: Key[] }) {
       }
       router.refresh();
     } catch {
-      setError("Could not reach the API. Try again.");
+      setError(revokeOutcomeMessage(0, false));
     } finally {
       setBusy(false);
     }
