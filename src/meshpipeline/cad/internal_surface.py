@@ -440,14 +440,24 @@ def _stage_triangles(tris, *, intake_patches: list | None, input_kind: str, surf
         # a gap a few cubes wide (a mesher's own cells close it) is named in the record, never a
         # stop; and a closed, uncrossed boundary the flood still got out of is a grid artefact at a
         # gap finer than its cubes. Only a WIDE way out - one no thickening of the wall closes, so
-        # every mesher would fill the outside too - stops the staging.
+        # every mesher would fill the outside too - stops the staging. Either way the gap is never
+        # patched here: a gap that is not an opening is a CAD defect, left to the CAD repair stage.
+        if math.isfinite(leak.width):
+            decisions.append({"stage": "fluid_region", "decided": "surface gap", "value": "needs CAD repair",
+                              "rule": "INS-5", "inputs": {"leak_mm": leak_facts.get("leak_mm"),
+                                                          "gap_mm": leak_facts.get("gap_mm")},
+                              "words": f"the surface has a gap about {leak.width * 1000:.2g} mm wide near "
+                                       f"({leak.point[0] * 1000:.1f}, {leak.point[1] * 1000:.1f}, "
+                                       f"{leak.point[2] * 1000:.1f}) mm that is not an opening; it is narrow enough "
+                                       "for the mesher's cells to close, and is not patched here: this needs CAD repair."})
         leak = None
     if leak is not None:
         raise InternalSurfaceError(
             "the closed fluid boundary leaks: the space flooded from the point inside the flow gets out at "
             f"about ({leak.point[0] * 1000:.1f}, {leak.point[1] * 1000:.1f}, {leak.point[2] * 1000:.1f}) mm"
             + (f", through a gap about {leak.width * 1000:.2g} mm wide" if math.isfinite(leak.width) else "")
-            + ". An opening there is not closed: add it on the picture (or mark it as not an opening), then run again.")
+            + ". If an opening is there, it is not closed: add it on the picture (or mark it as not an opening), then "
+            "run again. If no opening is there, the surface has a gap: this needs CAD repair.")
     facts["decisions"] = decisions
     return StagedInternal(verts=V, faces=F, labels=L.tolist(), ports=matched, wall=wall, seed=seed,
                           facts=facts)
