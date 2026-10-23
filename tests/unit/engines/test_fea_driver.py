@@ -1,4 +1,4 @@
-# Responsibility: Verify the FEA driver end to end on small parts of known geometry: the plan is measured off the staged solid, gmsh meshes it as planned (within its estimate, every planned rule met on the mesh, every face named), the same plan gives the same mesh twice, a plan over its level stops before meshing with its options, a file of two bodies stops, and only a 3D structural solid takes this driver.
+# Responsibility: Verify the FEA driver end to end on small parts of known geometry: the plan is measured off the staged solid, gmsh meshes it as planned (within its estimate, every planned rule met on the mesh, every face named), the same plan gives the same mesh twice, a plan over its level stops before meshing with its options, a file of two bodies is meshed as an assembly (tests/unit/engines/test_fea_assembly.py), and only a 3D structural solid takes this driver.
 # Boundaries: parts are built in the test (tests/fea_fixtures.py) and meshed in-process at a small made-up level, so the suite stays quick; the real levels are the lab's (~/fea4_lab).
 from __future__ import annotations
 
@@ -130,19 +130,20 @@ def test_the_driver_meshes_and_cites_every_rule(tmp_path, monkeypatch):
     ok, marker, _o = _drive(ws, monkeypatch)
     assert ok, marker
     cited = {e["rule"] for e in dr.cited_for(f"t-{ws.name}")}
-    assert {"PLAN-fea-9", "PLAN-fea-1", "PLAN-fea-14", "PLAN-fea-5", "PLAN-fea-8", "PLAN-fea-13", "LAD-fea-5"} <= cited
+    assert "PLAN-fea-16" not in cited                        # one part: no assembly
+    assert {"PLAN-fea-1", "PLAN-fea-14", "PLAN-fea-5", "PLAN-fea-8", "PLAN-fea-13", "LAD-fea-5"} <= cited
     passes = json.loads((ws / "fea_passes.json").read_text())
     assert passes["delivered"] == 1 and passes["levers"] == []
 
 
-def test_two_bodies_stop_before_meshing(tmp_path, monkeypatch):
+def test_two_bodies_are_meshed_as_an_assembly_never_stopped(tmp_path, monkeypatch):
     from meshpipeline.engines.preflight import read_refusal
 
     ws = _stage(fx.two_blocks(), tmp_path / "two")
     ok, marker, _o = _drive(ws, monkeypatch)
-    assert not ok and marker == FD.NOT_ONE_PART
-    ref = read_refusal(ws)
-    assert ref.gate == "fea_plan" and "2 separate bodies" in ref.facts["reason"]
+    assert ok, marker
+    assert read_refusal(ws) is None
+    assert json.loads((ws / "fea_plan.json").read_text())["assembly"]["parts"][1]["id"] == "Part_2"
 
 
 @pytest.mark.parametrize("state, takes", [

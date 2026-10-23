@@ -215,6 +215,35 @@ def two_blocks():
     return c
 
 
+def _compound(*shapes):
+    from OCP.BRep import BRep_Builder
+    from OCP.TopoDS import TopoDS_Compound
+
+    c = TopoDS_Compound()
+    b = BRep_Builder()
+    b.MakeCompound(c)
+    for sh in shapes:
+        b.Add(c, sh)
+    return c
+
+
+def touching_blocks(size: float = 10.0):
+    """Two cubes of `size` mm side by side along x, sharing the face x = size: an assembly's two
+    parts that TOUCH over one face (size x size mm)."""
+    return _compound(_box(0, 0, 0, size, size, size), _box(size, 0, 0, size, size, size))
+
+
+def doubled_block():
+    """The same 10 mm cube twice in one file (a body drawn twice): the second wholly inside the first."""
+    return _compound(_box(0, 0, 0, 10, 10, 10), _box(0, 0, 0, 10, 10, 10))
+
+
+def overlapping_blocks():
+    """Two 10 mm cubes, the second shifted 8 mm along x: they PASS INTO each other over a 2 x 10 x 10
+    mm slab (interference: 20% of either part)."""
+    return _compound(_box(0, 0, 0, 10, 10, 10), _box(8, 0, 0, 10, 10, 10))
+
+
 def pinned_plate():
     """A 40 x 40 x 6 mm plate with an 8 mm hole through its middle, and a pin filling the hole
     exactly: two touching bodies in one file (an assembly's bolt in its hole). The pin's seam is

@@ -7,7 +7,8 @@ One attempt:
 
 1. measure the staged solid (cad/fea_measure on geometry.step, the metre B-rep every gmsh run
    meshes), so Face_k in the plan is Face_k in the mesh and in the deck;
-2. PLAN-fea-9: one part only;
+2. PLAN-fea-16: an assembly (several bodies) is staged as its parts, fused where they are bonded or
+   side by side where they only touch, every face named Part_k_Face_j;
 3. compute the plan (engines/fea_plan.py) and its element estimate;
 4. PLAN-fea-8: over the detail level, stop BEFORE meshing, with the options (a pre-flight
    refusal: no mesher is started, no time is spent);
@@ -39,7 +40,6 @@ logger = logging.getLogger(__name__)
 ENGINE = "gmsh"
 #: Failure markers this driver ends an attempt with.
 NO_SOURCE = "fea_source_missing"
-NOT_ONE_PART = "fea_not_one_part"
 BUILD_FAILED = "fea_build_failed"
 #: The mesher ran past its guard clock: our infrastructure, not the part (no lever is pulled).
 GUARD_TRIP = "fea_guard_trip"
@@ -49,7 +49,7 @@ GUARD_GATE = "fea_guard"
 #: stops at cad/fea_measure.MAX_RAY_TRIANGLES for speed; the plan cannot hold an unmeasured wall).
 MAX_RAY_TRIANGLES = 5_000_000
 #: What the remote mesher receives besides the plan: the solid and the facts the deck reads.
-PAYLOAD = (*P.STAGED_SOLIDS, "cad_face_names.json", P.PLAN_FILE, "gmsh_spec.json")
+PAYLOAD = (*P.STAGED_SOLIDS, "cad_face_names.json", P.PLAN_FILE, "gmsh_spec.json", "assembly.brep", "assembly.json")
 #: Where each pass's deliverables are kept until the best one is chosen.
 PASS_FOLDER = "_fea_pass_{n}"  # noqa: S105 - a folder name, not a secret
 #: every file a pass writes that the delivery reads: the solver files ride with their mesh, so the
@@ -129,6 +129,61 @@ def measure_staged(ws: Path) -> tuple[dict, Any, float]:
                                               max_ray_triangles=MAX_RAY_TRIANGLES)
         record.setdefault("notes", []).append(f"the CAD was healed before it was measured ({exc})")
     return record, surface, diag_m
+
+
+def connection_of(state) -> str:
+    """How an assembly's parts are joined, as the user answered on the stage (state fea_connection):
+    bonded unless they said contact."""
+    from meshpipeline.cad.fea_assembly import BONDED, CONTACT
+
+    said = str((state or {}).get("fea_connection") or "").strip().lower()
+    return CONTACT if said == CONTACT else BONDED
+
+
+def prepare_assembly(ws: Path, record: dict, surface, *, connection: str, source_path: str = "") -> dict:
+    """PLAN-fea-16: an assembly's record for the plan, and its staged file for the mesher. Every
+    face is renamed Part_k_Face_j (on the record and on the surface the size field reads), each part
+    gets its own base size, and the parts are staged as the connection asks (cad/fea_assembly.stage).
+    Returns the record (the same dict, renamed in place)."""
+    import numpy as np
+
+    from meshpipeline.cad import fea_assembly as A
+    from meshpipeline.cad.scout import read_cad
+
+    staged = staged_solid(ws) or ws / "geometry.step"
+    shape = read_cad(staged)
+    parts = A.solids(shape)
+    names: list[str] = [""] * len(parts)
+    notes: list[str] = []
+    if source_path and Path(source_path).exists():
+        try:
+            names = A.match_body_names(A.read_body_names(source_path), parts)
+        except Exception as exc:  # noqa: BLE001 - a courtesy: every part is still Part_k
+            logger.info("fea driver: the CAD's part names were not read (%s)", exc)
+    global_names = A.global_face_names(shape)
+    renamed = A.rename_record(record, global_names)
+    record.clear()
+    record.update(renamed)
+    if len(surface.names) == len(global_names):
+        surface.names = list(global_names)
+    sidecar = A.stage(shape, connection, ws, names=names)
+    # each part's own size, read off the measured surface (millimetres): its faces' triangles
+    bases = []
+    for p in range(1, len(parts) + 1):
+        faces = [n for n in record.get("faces") or {} if A.part_of_face(n) == p]
+        labels = [k for k, n in enumerate(surface.names) if A.part_of_face(n) == p]
+        tri = surface.tris[np.isin(surface.label, labels)] if labels else np.zeros((0, 3), dtype=np.int64)
+        if not len(tri) or not faces:
+            continue
+        pts = surface.xyz[np.unique(tri)]
+        diag = float(np.linalg.norm(pts.max(axis=0) - pts.min(axis=0)))
+        bases.append({"n": p, "id": A.part_id(p), "name": names[p - 1] if p - 1 < len(names) else "",
+                      "diag_mm": round(diag, 6), "faces": sorted(faces, key=lambda f: int(f.rsplit("_", 1)[-1]))})
+    record["part_bases"] = bases
+    record["assembly_plan"] = {"staged": A.STAGED, "sidecar": A.SIDECAR, "connection": connection,
+                               "mode": sidecar["mode"], "parts": sidecar["parts"], "pairs": len(sidecar["pairs"]),
+                               "interfaces": len(sidecar["interfaces"]), "notes": notes + list(sidecar["notes"])}
+    return record
 
 
 def _histogram(surface, zone_list: list[dict], levers: list[dict], diag_m: float):
@@ -491,15 +546,26 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                     "rule": "PLAN-fea-15", "inputs": {"healed": healed},
                     "words": (f"The part was read from {staged.name if staged else 'the staged file'}"
                               + (", healed before it was measured." if healed else "."))}])
-    alone = P.one_part(record)
-    _cite(job_id, [{"stage": "fea_plan", "decided": "one part", "value": not alone, "rule": "PLAN-fea-9",
-                    "inputs": {"bodies": record.get("bodies")},
-                    "words": alone or "One solid body: meshed as one part."}])
-    if alone:
-        _refuse(ws, cause=FailureCause.NOT_BUILT.value, text=alone, reason=alone, setup=True)
-        await run.fence("deliver builder outcome")
-        outcome = run.outcome(produced_deliverable=False, failure_marker=NOT_ONE_PART)
-        return False, NOT_ONE_PART, outcome
+    if int(record.get("bodies") or 1) > 1:
+        # PLAN-fea-16: AN ASSEMBLY - its parts staged as the user said they are joined (bonded by
+        # default), every face Part_k_Face_j, each part sized by its own rules
+        connection = connection_of(state)
+        try:
+            record = await asyncio.to_thread(prepare_assembly, ws, record, surface, connection=connection,
+                                             source_path=source_path)
+        except Exception as exc:  # noqa: BLE001 - recorded as the attempt's reason
+            logger.exception("fea driver: the assembly could not be staged - job_id=%s", job_id)
+            _refuse(ws, cause=FailureCause.NOT_BUILT.value, text=f"the assembly could not be staged ({exc})",
+                    reason=f"the assembly could not be staged ({type(exc).__name__})")
+            await run.fence("deliver builder outcome")
+            outcome = run.outcome(produced_deliverable=False, failure_marker=BUILD_FAILED)
+            return False, BUILD_FAILED, outcome
+        asm = record.get("assembly_plan") or {}
+        _cite(job_id, [{"stage": "fea_plan", "decided": "assembly", "value": asm.get("mode"),
+                        "rule": "PLAN-fea-16",
+                        "inputs": {"bodies": record.get("bodies"), "connection": connection,
+                                   "pairs": asm.get("pairs"), "interfaces": asm.get("interfaces")},
+                        "words": " ".join(P.assembly_words(asm)[:2])}])
     if not record.get("faces") or not any("thickness_min_mm" in (r or {}) for r in record["faces"].values()):
         # PLAN-fea-3 cannot be planned on walls nobody measured: stop before meshing rather than
         # deliver a mesh whose walls were never held to the rule
@@ -636,6 +702,6 @@ def driver_for(state):
     return drive if applies(state) else None
 
 
-__all__ = ["BYTES_PER_ELEMENT", "MESH_JOB_MEMORY_GIB", "limit_facts", "memory_elements", "FILL_RATES", "FLOOR_STEPS", "GUARD_FACTOR", "MESH_JOB_LIMIT_S", "ceiling_for", "choose_plan",
-           "complexity", "element_limit", "fill_rate", "guard_seconds", "runnable_elements", "BUILD_FAILED", "GUARD_TRIP", "NOT_ONE_PART", "NO_SOURCE", "QUALITY_GATE", "applies", "drive",
+__all__ = ["connection_of", "prepare_assembly", "BYTES_PER_ELEMENT", "MESH_JOB_MEMORY_GIB", "limit_facts", "memory_elements", "FILL_RATES", "FLOOR_STEPS", "GUARD_FACTOR", "MESH_JOB_LIMIT_S", "ceiling_for", "choose_plan",
+           "complexity", "element_limit", "fill_rate", "guard_seconds", "runnable_elements", "BUILD_FAILED", "GUARD_TRIP", "NO_SOURCE", "QUALITY_GATE", "applies", "drive",
            "driver_for", "ladder_facts", "ladder_words", "make_plan", "measure_staged", "planned_work", "write_plan"]

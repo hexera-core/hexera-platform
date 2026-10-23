@@ -29,15 +29,18 @@ from meshpipeline.engines import fea_plan as P
 TOLERANCE = 0.9
 
 
-def face_sizes(mesh, tags_by_name: Mapping[str, int]) -> dict[str, float]:
-    """Median boundary-edge length (metres) on each named face."""
+def face_sizes(mesh, tags_by_name: Mapping[str, int | list[int]]) -> dict[str, float]:
+    """Median boundary-edge length (metres) on each named face (a face of an assembly may be
+    several mesh surfaces: a list of tags)."""
     index = {int(n): i for i, n in enumerate(np.asarray(mesh.node_ids).tolist())}
     xyz = np.asarray(mesh.xyz, dtype=float)
     out: dict[str, float] = {}
     for name, tag in tags_by_name.items():
-        tri = mesh.faces.get(int(tag))
-        if tri is None or not len(tri):
+        tags = [int(t) for t in tag] if isinstance(tag, list | tuple) else [int(tag)]
+        blocks = [np.asarray(mesh.faces[t]) for t in tags if mesh.faces.get(t) is not None and len(mesh.faces[t])]
+        if not blocks:
             continue
+        tri = np.concatenate([b[:, :3] for b in blocks])
         t = np.vectorize(index.get, otypes=[np.int64])(np.asarray(tri)[:, :3])
         e = np.vstack([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]])
         e = np.unique(np.sort(e, axis=1), axis=0)
@@ -69,7 +72,7 @@ def face_tag(name: str) -> int | None:
         return None
 
 
-def measure(mesh, plan: Mapping) -> dict:
+def measure(mesh, plan: Mapping, *, tags_by_name: Mapping[str, list[int]] | None = None) -> dict:
     """The rules as met on `mesh`: {"through_wall": {...}, "hot_spots": {...}, "corners": {...},
     "short": [zone ids that fell short]} - every count rounded to 2 decimals."""
     base = float(plan.get("base_size_m") or math.inf)
@@ -77,7 +80,11 @@ def measure(mesh, plan: Mapping) -> dict:
     # a hot spot or a corner only where its zone binds (finer than the base)
     zones = [z for z in plan.get("zones") or [] if z["kind"] in ("wall", "wall_spot") or float(z["size_m"]) < base]
     names = sorted({f for z in zones for f in z.get("faces") or []})
-    sizes = face_sizes(mesh, {n: t for n in names if (t := face_tag(n)) is not None})
+    if tags_by_name is not None:
+        # an assembly: Part_k_Face_j is the mesh surfaces that carry that name
+        sizes = face_sizes(mesh, {n: list(tags_by_name[n]) for n in names if tags_by_name.get(n)})
+    else:
+        sizes = face_sizes(mesh, {n: t for n in names if (t := face_tag(n)) is not None})
     per_quarter = P.HOT_SPOT_PER_QUARTER
     walls, spots, corners, short = [], [], [], []
     for z in zones:

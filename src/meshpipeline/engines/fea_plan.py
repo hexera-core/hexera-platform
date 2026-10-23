@@ -27,7 +27,9 @@ THE RULES (docs/RULES.md):
   PLAN-fea-8  the estimate is checked against the element limit before meshing and never stops the
               run: over it, the finest zones are coarsened until it fits, never past what keeps
               elements valid, and what that leaves short is named (resolution_short)
-  PLAN-fea-9  one part only (version 1)
+  PLAN-fea-16 an assembly: every part sized by its own rules (its base a tenth of the part), the
+              element limit over the whole assembly; bonded parts share their nodes where they touch,
+              contact parts are meshed apart with named contact pairs
   PLAN-fea-10 a CUSP is set aside from the quality floor with straight sides, and named
   PLAN-fea-11 curving never makes an element worse
   PLAN-fea-12 a MICRO DETAIL is set aside and named the same way
@@ -160,6 +162,18 @@ def zones(record: Mapping, *, tighten: Mapping[str, float] | None = None) -> lis
                         "size_m": QUARTER * r / ROUND_PER_QUARTER * _MM, "reach_m": 0.0,
                         "rule": "PLAN-fea-7", "radius_m": r * _MM, "capped": False,
                         "why": f"a round of radius {_mm(r)} on {name}: {ROUND_PER_QUARTER} elements per quarter-turn"})
+    # PLAN-fea-16: EVERY PART OF AN ASSEMBLY HAS ITS OWN BASE SIZE - a tenth of the part, as
+    # PLAN-fea-14 gives a single part - so a bolt beside a flange is sized as the bolt it is
+    for part in record.get("part_bases") or []:
+        d = _f(part.get("diag_mm"))
+        faces = [str(f) for f in part.get("faces") or []]
+        if d is None or not faces:
+            continue
+        size = d / MIN_DIVISIONS
+        named = f" ({part['name']})" if part.get("name") else ""
+        out.append({"id": f"P{part.get('n')}", "kind": "part", "faces": faces, "size_m": size * _MM,
+                    "reach_m": 0.0, "rule": "PLAN-fea-16", "capped": False, "part": part.get("id"),
+                    "why": f"{part.get('id')}{named} is {_mm(d)} across: its base size is a tenth of it"})
     for z in out:
         k = tighten.get(z["id"])
         if k:
@@ -263,6 +277,9 @@ def finish(record: Mapping, zone_list: list[dict], hist: Histogram, *, diag_m: f
         "cusps": [{"at_m": [_r(float(v) * _MM) for v in c["at_mm"]], "faces": list(c.get("faces") or []),
                    "angle_deg": c.get("angle_deg")} for c in record.get("cusps") or []],
     }
+    # PLAN-fea-16: an assembly's parts, its staged file and how they are joined (the driver's)
+    if record.get("assembly_plan"):
+        plan["assembly"] = dict(record["assembly_plan"])
     # PLAN-fea-12: the micro details far below the finest element this plan asks for
     finest_mm = min([float(z["size_m"]) for z in zone_list] + [float(base)]) / _MM
     plan["micro"] = [{"kind": m.get("kind"), "size_mm": m.get("size_mm"), "faces": list(m.get("faces") or []),
@@ -282,6 +299,7 @@ def words(record: Mapping, plan: Mapping) -> list[str]:
     out = [f"The mesh the rules recommend: the base element size is {plan['base_size_m'] * 1e3:.3g} mm (a tenth "
            "of the part), and every rule below makes it finer where it asks to.",
            "Quadratic tetrahedra (10-node), a solid mesh; every CAD face is a named group."]
+    out.extend(assembly_words(plan.get("assembly") or {}))
     walls = [z for z in zs if z["kind"] == "wall" and z["size_m"] < plan["base_size_m"]]
     if walls:
         thin = min(walls, key=lambda z: z["thickness_m"])
@@ -355,6 +373,32 @@ def words(record: Mapping, plan: Mapping) -> list[str]:
     return [w for w in out if w]
 
 
+def assembly_words(asm: Mapping) -> list[str]:
+    """PLAN-fea-16 in plain words: the parts, how they are joined, and the notes (an empty list for
+    a single part)."""
+    if not asm:
+        return []
+    parts = list(asm.get("parts") or [])
+    named = [f"{p['id']} ({p['name']})" if p.get("name") else str(p["id"]) for p in parts]
+    shown = ", ".join(named[:8]) + (f" and {len(named) - 8} more" if len(named) > 8 else "")
+    out = [f"An assembly of {len(parts)} parts: {shown}. Each part is its own element set (give each its "
+           "material in your solver), each is sized by its own rules, and the element limit covers the whole "
+           "assembly. Its faces are named Part_k_Face_j."]
+    n = int(asm.get("pairs") or 0)
+    mode = asm.get("mode")
+    if mode == "bonded":
+        out.append(f"Bonded (welded or glued): one mesh, and the parts share their nodes where they touch "
+                   f"({n} joint(s)); each joint's faces are named Bond_n_Part_k.")
+    elif mode == "tie":
+        out.append(f"Bonded, tied: each part is meshed on its own and the {n} touching pair(s) are tied in the "
+                   "files (bonded, but their nodes are not shared).")
+    else:
+        out.append(f"Contact (the parts can slide or separate): each part is meshed on its own, and the {n} "
+                   "touching pair(s) are written as named contact pairs, the smaller surface the slave.")
+    out.extend(str(x) for x in asm.get("notes") or [] if x)
+    return out
+
+
 def decisions(record: Mapping, plan: Mapping) -> list[dict]:
     """The why-record entries the plan makes (contracts/decision_record.cite shape), one per rule
     that decided something on this part."""
@@ -374,6 +418,12 @@ def decisions(record: Mapping, plan: Mapping) -> list[dict]:
             out.append({"stage": "fea_plan", "decided": what, "value": len(sel), "rule": rule,
                         "inputs": {"finest_m": min(z["size_m"] for z in sel)},
                         "words": f"{len(sel)} {what} zone(s), the finest {min(z['size_m'] for z in sel) * 1e3:.3g} mm."})
+    asm = plan.get("assembly") or {}
+    if asm:
+        out.append({"stage": "fea_plan", "decided": "assembly", "value": asm.get("mode"), "rule": "PLAN-fea-16",
+                    "inputs": {"parts": len(asm.get("parts") or []), "connection": asm.get("connection"),
+                               "pairs": asm.get("pairs")},
+                    "words": " ".join(assembly_words(asm)[:2])})
     cusps = plan.get("cusps") or []
     if cusps:
         out.append({"stage": "fea_plan", "decided": "cusps set aside", "value": len(cusps), "rule": "PLAN-fea-10",
@@ -410,19 +460,7 @@ def decisions(record: Mapping, plan: Mapping) -> list[dict]:
     return out
 
 
-def one_part(record: Mapping) -> str:
-    """PLAN-fea-9: '' for one body, else what the user is told (design 3.6)."""
-    try:
-        n = int(record.get("bodies"))  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return ""
-    if n > 1:
-        return (f"This file has {n} separate bodies. Version 1 meshes one part at a time: export each part "
-                "on its own and upload it, or wait for assembly support.")
-    return ""
-
-
-__all__ = ["CORNER_DIVISIONS", "ELEMENT_LIMIT", "GROWTH", "HOT_SPOT_PER_QUARTER", "KEEP_PER_QUARTER",
+__all__ = ["CORNER_DIVISIONS", "assembly_words", "ELEMENT_LIMIT", "GROWTH", "HOT_SPOT_PER_QUARTER", "KEEP_PER_QUARTER",
            "KEEP_THROUGH", "LIMIT_AIM", "MICRO_KEEP", "MIN_DIVISIONS", "PER_H3", "PLAN_FILE", "ROUND_PER_QUARTER",
            "STRESS_WALL_ELEMENTS", "VERSION", "WALL_ELEMENTS", "decisions", "finish", "floored", "keep_size",
-           "one_part", "shortfalls", "words", "zones"]
+           "shortfalls", "words", "zones"]

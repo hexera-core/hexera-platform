@@ -83,7 +83,7 @@ def _gate_statement(engine: str, gate_key: str) -> str:
     return {"domain_extent": "The far-field domain is the size you asked for",
             # agents/builder/attempt.STAGING_GATE: the engine's own preparation of the file
             "staging": "The engine prepared its input from your file",
-            # engines/fea_driver.py: the FEA plan's checks before meshing (PLAN-fea-8, PLAN-fea-9)
+            # engines/fea_driver.py: the FEA plan's checks before meshing (PLAN-fea-8)
             "fea_plan": "The FEA mesh plan fits the detail level, for one solid part",
             "fea_guard": "The FEA mesher finished within its guard clock"}.get(
         gate_key, "The mesh setup matches what you approved")

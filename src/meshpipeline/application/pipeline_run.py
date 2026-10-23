@@ -716,6 +716,10 @@ async def _run_async(req: JobRequest) -> dict:
         from meshpipeline.engines.registry import resolve_engine_params
         initial_state["engine_params"] = resolve_engine_params(_pinned_engine, req.engine_params)
         initial_state["flow_topology"] = topology_of(getattr(req, "purpose", "") or "")
+        # AN FEA ASSEMBLY'S JOINTS, as the user confirmed them on the stage (bonded unless they said
+        # contact); read off the stored confirmation, never the event loop's to wait on
+        from meshpipeline.application.fea_check import confirmed_connection
+        initial_state["fea_connection"] = await asyncio.to_thread(confirmed_connection, str(session_id or ""))
 
         initial_state["repair_directives"] = list(req.repair_directives)
 

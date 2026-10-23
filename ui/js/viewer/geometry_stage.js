@@ -23,7 +23,7 @@ import { esc } from "../core/format.js";
 import { applyFlow, bindAxis, bindUnit, changedAnswers, editsLine, extentAlong, followSuggestion, followUnit, formHtml,
   markConfirmed, noteDrawn, readExternal, readForm, rowHtml, servedProposal, shown, tableHead, unitChoiceHint,
   unitChoiceNeeded, unitOf } from "../render/geometry_form.js";
-import { bindFeaPanel, bindMeasure, feaPanelHtml, followMeasure, lightSpotRow } from "../render/fea_form.js";
+import { bindFeaPanel, bindMeasure, feaPanelHtml, followAssembly, followMeasure, interfaceMarks, lightSpotRow } from "../render/fea_form.js";
 import { bindThermalPanel, partDetails, thermalPanelHtml, watts } from "../render/thermal_form.js";
 import { circleThrough, clickIndex, firstHit, snapAt } from "./open_ends.js";
 import { bindMouse, isUpAxis, orient, saveUp, savedUp, shield, upSelectHtml, upVector } from "./view_controls.js";
@@ -50,6 +50,8 @@ const BODY = [0.74, 0.78, 0.84], EDGE = [0.30, 0.34, 0.40];
 const STICKER = [1.0, 0.83, 0.0], SEL = [1.0, 0.31, 0.0];
 // an FEA part's hot spots: a quiet steel blue, apart from the stickers' yellow
 const SPOT = [0.42, 0.62, 0.86];
+// an assembly's interfaces: a muted green where parts touch, a muted red where they pass into each other
+const TOUCH = [0.40, 0.72, 0.52], OVERLAP = [0.86, 0.45, 0.40];
 
 function spherePd(cx, cy, cz, r) {
   const la = 12, lo = 16, pts = [], polys = [];
@@ -483,10 +485,12 @@ function initScene(sessionId, box, surf, p) {
     const mp = vtk.Rendering.Core.vtkMapper.newInstance();
     mp.setInputData(spherePd(c[0], c[1], c[2], 0.008 * diag));
     const ac = vtk.Rendering.Core.vtkActor.newInstance(); ac.setMapper(mp); ac.setPickable(false);
-    const pp = ac.getProperty(); pp.setColor(SPOT[0], SPOT[1], SPOT[2]);
+    const col = h.type === "interface_overlap" ? OVERLAP : h.type === "interface_touching" ? TOUCH : SPOT;
+    const pp = ac.getProperty(); pp.setColor(col[0], col[1], col[2]);
     pp.setAmbient(0.55); pp.setDiffuse(0.6); pp.setSpecular(0.2);
     ren.addActor(ac);
-    const el = document.createElement("div"); el.className = "v-pin fea-spot" + (spotMarks ? " mark" : "");
+    const el = document.createElement("div");
+    el.className = "v-pin fea-spot" + (String(h.type || "").startsWith("interface_") ? " fea-itf" : "") + (spotMarks ? " mark" : "");
     el.textContent = String(h.id); el.dataset.spot = String(h.id);
     el.title = `${h.id}: ${h.shape || h.type}${h.capped ? " (refinement capped)" : ""}`;
     el.onclick = (ev) => { ev.stopPropagation(); lightSpot(h.id); };
@@ -952,7 +956,8 @@ function initScene(sessionId, box, surf, p) {
  * The part in 3D, drawn as the flow stage draws it but with no stickers, no flow arrow and no far
  * field; beside it its size in the file's unit, the unit box, how many bodies the file has and
  * what the clean check found, and the one question: "Is this your part and are the units right?"
- * A file of several bodies is told plainly that version 1 meshes one part at a time. Once the part
+ * A file of several bodies is an assembly: its parts are listed, the places they touch are marked,
+ * and it asks how the parts are connected (bonded or contact). Once the part
  * is measured, its thinnest wall and its hot spots (holes, fillets, notches, sharp inside corners)
  * are listed and tagged on the part - shown only, as version 1 refines them all automatically.
  * ====================================================================================== */
@@ -960,7 +965,8 @@ async function openFeaStage(sessionId, d, confirm, opts) {
   const f = d.fea || {};
   // the scene draws stickers from the proposal's openings: an FEA part has none, but it has the
   // hot spots its measurement found (shown, never edited)
-  const p = { ...(d.proposal || {}), openings: [], hot_spots: (f.measure && f.measure.hot_spots) || [] };
+  const p = { ...(d.proposal || {}), openings: [],
+    hot_spots: [...((f.measure && f.measure.hot_spots) || []), ...interfaceMarks(f.assembly)] };
   const id = "gstage-" + sessionId;
   document.getElementById(id)?.remove();
   const box = document.createElement("div"); box.className = "viewer gc-stage fea-stage"; box.id = id;
@@ -1001,8 +1007,10 @@ async function openFeaStage(sessionId, d, confirm, opts) {
       // THE MEASUREMENT CAN LAND AFTER THE STAGE OPENED (the check was still naming): its lines and
       // tags are drawn then
       const m = d2 && d2.fea && d2.fea.measure;
-      if (m && followMeasure(panel, m, p, null)) {
-        p.hot_spots = m.hot_spots || [];
+      const a = d2 && d2.fea && d2.fea.assembly;
+      const moved = (m && followMeasure(panel, m, p, null)) | (a && followAssembly(panel, a));
+      if (moved) {
+        p.hot_spots = [...(((m || f.measure) || {}).hot_spots || []), ...interfaceMarks(a || f.assembly)];
         if (scene) scene.setSpots(p.hot_spots);
       }
     },

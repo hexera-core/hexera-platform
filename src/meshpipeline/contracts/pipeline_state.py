@@ -133,6 +133,7 @@ class PipelineState(TypedDict):
     executor_failure_facts: dict       # the plain facts the user's sentence is built from
     geometry_unsuitable_reason: str    # node_geometry_admission's reject reason (unmeshable input)
     flow_topology:      str            # "internal"/"external"/"" - DERIVED from purpose (neutral fact, NOT an engine_param)
+    fea_connection:     str            # an FEA assembly: "bonded" | "contact", as confirmed on the stage ("" otherwise)
     mesh_manifest:      dict
     reviewer_result:         str
     reviewer_verdict:        str

@@ -92,8 +92,8 @@ def _viewer_surface():
         if (Path(workspace) / "fea_plan.json").exists():
             # AN FEA MESH (FEA build step 5): every CAD face its own clickable part, Face_k as the
             # deck names it, and the FEA result block - FEA numbers, never a flow mesh's heatmap
-            from meshpipeline.engines.fea_results import results
-            mesh = read_msh(workspace, by_face=True)
+            from meshpipeline.engines.fea_results import results, viewer_face_names
+            mesh = read_msh(workspace, by_face=True, face_names=viewer_face_names(workspace))
             resp = stl_response(surface_patches_of(mesh), roles, units, skip_names)
             if resp:
                 fea = results(workspace)

@@ -312,6 +312,15 @@ FEA_CHECK = "fea"
 _FEA_CASE = "input_kind solid-body: the part itself is meshed, with no fluid around it."
 
 
+#: How an assembly's parts are joined, said in its declaration (the stage's one question).
+FEA_CONNECTION_WORDS = {
+    "bonded": ("Parts connected: bonded (welded or glued) - one mesh, the parts share their nodes where they "
+               "touch."),
+    "contact": ("Parts connected: contact (they can slide or separate) - each part meshed on its own, with "
+                "named contact pairs where they touch."),
+}
+
+
 def fea_confirmation_message(body) -> str:
     """The declaration of a part confirmed on the FEA stage: the part, meshed as a solid for
     structural analysis, how many bodies the file has, what the clean check found, its size and
@@ -321,6 +330,13 @@ def fea_confirmation_message(body) -> str:
     bodies = getattr(body, "bodies", None)
     if isinstance(bodies, int) and bodies > 0:
         parts.append("One body." if bodies == 1 else f"{bodies} bodies.")
+    # AN ASSEMBLY: its parts, meshed together, joined as the user said on the stage
+    said_parts = str(getattr(body, "parts_summary", "") or "").strip().rstrip(".")
+    connection = str(getattr(body, "fea_connection", "") or "").strip()
+    if connection:
+        parts.append(f"An assembly of {said_parts}, meshed together as solids." if said_parts
+                     else "An assembly of several parts, meshed together as solids.")
+        parts.append(FEA_CONNECTION_WORDS.get(connection, FEA_CONNECTION_WORDS["bonded"]))
     clean = str(getattr(body, "clean_summary", "") or "").strip().rstrip(".")
     if clean:
         parts.append(f"Clean check: {clean}.")

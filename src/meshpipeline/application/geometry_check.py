@@ -1208,7 +1208,13 @@ def fea_measurements(stored: dict, facts: dict, interpretation: dict | None) -> 
                 # the scout's own reading: the confirmed unit when there is one, else the file's
                 prepared, _note = _prepared_coordinates(canonical.path, interp_ref, ref)
                 mm_per_unit = 1000.0 * float(occ_scale_transform(prepared).ScaleFactor())
-                record = measure_cad(read_cad(canonical.path), mm_per_unit=mm_per_unit)
+                shape = read_cad(canonical.path)
+                record = measure_cad(shape, mm_per_unit=mm_per_unit)
+                if int(record.get("bodies") or 0) > 1:
+                    # AN ASSEMBLY: its parts, where they touch or pass into each other, and every
+                    # face named Part_k_Face_j - the names the delivered files use
+                    from meshpipeline.cad.fea_assembly import measure_assembly
+                    record = measure_assembly(shape, record, source=canonical.path, mm_per_unit=mm_per_unit)
             else:
                 record = measure_triangles(read_triangles(canonical.path) * scale * 1000.0)
         record.update(measured=True, scale_to_m=scale)

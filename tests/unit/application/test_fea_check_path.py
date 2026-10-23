@@ -30,7 +30,7 @@ def test_the_stage_waits_for_the_purpose_then_opens_on_the_right_path():
 def test_the_view_says_the_bodies_and_the_clean_check_in_plain_words():
     clean = {"solids": 1, "validity": {"clean": True, "kind": "brep", "summary": "The geometry is clean."}}
     view = fea_check.fea_view(clean)
-    assert view["bodies"] == 1 and view["clean"] is True and view["can_proceed"]
+    assert view["bodies"] == 1 and view["clean"] is True and "assembly" not in view
     assert view["question"] == "Is this your part and are the units right?"
     dirty = {"solids": 1, "validity": {"clean": False, "kind": "brep",
                                        "summary": "The geometry is not clean: 2 faces overlap"}}
@@ -38,12 +38,25 @@ def test_the_view_says_the_bodies_and_the_clean_check_in_plain_words():
     assert fea_check.fea_view({"solids": 1})["clean"] is None
 
 
-def test_several_bodies_get_a_clear_message_and_no_proceed():
-    view = fea_check.fea_view({"solids": 3})
-    assert not view["can_proceed"]
-    assert view["single_part_only"].startswith("This file has 3 separate bodies. Version 1 meshes one part")
-    assert fea_check.multi_body_message({"solids": 1}) == ""
-    assert fea_check.multi_body_message({}) == ""
+def test_several_bodies_are_an_assembly_with_one_question():
+    # measured: the parts, where they touch, and the question with bonded the default
+    facts = {"solids": 2, "fea_measure": {"measured": True, "assembly": {
+        "parts": [{"id": "Part_1", "name": "Flange", "faces": 6}, {"id": "Part_2", "name": "", "faces": 6}],
+        "interfaces": [{"id": "Interface_1", "kind": "touching", "parts": ["Part_1", "Part_2"],
+                        "at_mm": [10.0, 5.0, 5.0], "area_mm2": 100.0,
+                        "faces": {"Part_1": ["Part_1_Face_2"], "Part_2": ["Part_2_Face_1"]}}],
+        "free_parts": [], "notes": []}}}
+    asm = fea_check.fea_view(facts)["assembly"]
+    assert asm["question"] == "How are the parts connected?" and asm["default"] == "bonded"
+    assert [o["key"] for o in asm["options"]] == ["bonded", "contact"]
+    assert asm["summary"] == "2 parts, 1 place where parts touch"
+    assert asm["interfaces"][0]["at_mm"] == [10.0, 5.0, 5.0]
+    assert fea_check.parts_words(asm) == "2 parts: Part_1 (Flange) and Part_2"
+    # not measured yet: still an assembly, still the question
+    bare = fea_check.fea_view({"solids": 3})["assembly"]
+    assert bare["parts"] == [] and bare["summary"] == "3 parts" and bare["question"]
+    assert "assembly" not in fea_check.fea_view({"solids": 1})
+    assert fea_check.connection_answer("Contact") == "contact" and fea_check.connection_answer("weld") == ""
 
 
 def test_the_declaration_is_a_structural_solid_with_no_fluid_words():

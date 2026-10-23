@@ -12,7 +12,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from fastapi import HTTPException
 
 import meshpipeline.settings.geometry_check as gcfg
 from meshpipeline.api.v1 import geometry as route
@@ -97,7 +96,7 @@ async def test_the_stage_waits_for_the_purpose_and_an_fea_part_gets_its_own_view
     stage(["stress testing"])
     served = await route.get_check(SID, "alice", "org-1")
     assert served["route"] == "fea"
-    assert served["fea"]["bodies"] == 1 and served["fea"]["clean"] is True and served["fea"]["can_proceed"]
+    assert served["fea"]["bodies"] == 1 and served["fea"]["clean"] is True and "assembly" not in served["fea"]
     assert served["proposal"]["unit"] == "mm"
     stage(["airflow over it"])
     assert (await route.get_check(SID, "alice", "org-1"))["route"] == "flow"
@@ -117,9 +116,21 @@ async def test_an_fea_part_is_confirmed_as_a_structural_solid_with_no_flow(stage
 
 
 @pytest.mark.asyncio
-async def test_a_file_of_several_bodies_is_refused_with_the_single_part_message(stage):
-    stage(["static stress"], solids=3)
-    with pytest.raises(HTTPException) as refused:
-        await route.confirm_check(SID, route.ConfirmIn(unit="mm"), "alice", "org-1")
-    assert refused.value.status_code == 409
-    assert refused.value.detail.startswith("This file has 3 separate bodies. Version 1 meshes one part at a time")
+async def test_a_file_of_several_bodies_is_confirmed_as_an_assembly_joined_as_asked(stage):
+    from meshpipeline.application import fea_check
+
+    session, store = stage(["static stress"], solids=3)
+    out = await route.confirm_check(SID, route.ConfirmIn(unit="mm"), "alice", "org-1")
+    assert "3 bodies." in out["message"] and "An assembly of several parts, meshed together as solids." in out["message"]
+    assert "Parts connected: bonded (welded or glued)" in out["message"]
+    record = json.loads(store.objects[f"sessions/{SID}/geometry_check/confirmed.json"])
+    assert record["fea_connection"] == "bonded"
+    out = await route.confirm_check(SID, route.ConfirmIn(unit="mm", fea_connection="contact"), "alice", "org-1")
+    assert "Parts connected: contact (they can slide or separate)" in out["message"]
+    record = json.loads(store.objects[f"sessions/{SID}/geometry_check/confirmed.json"])
+    assert record["fea_connection"] == "contact"
+    # the run reads the stored answer
+    from meshpipeline.contracts import object_storage
+    assert object_storage.get_object_store() is store
+    assert fea_check.confirmed_connection(SID) == "contact"
+    assert fea_check.confirmed_connection("") == ""
