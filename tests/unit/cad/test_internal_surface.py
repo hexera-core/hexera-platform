@@ -407,3 +407,29 @@ def test_a_ring_lid_fills_exactly_the_gap_between_two_loops():
     cr = np.cross(t[:, 1] - t[:, 0], t[:, 2] - t[:, 0])
     assert len(tris) == len(P) + len(Q) and np.all(cr[:, 0] > 0)
     assert abs(0.5 * np.linalg.norm(cr, axis=1).sum() - (frame(P)[2] - frame(Q)[2])) < 1e-9
+
+
+def test_the_maps_mouths_are_sealed_and_its_deepest_point_seeds_the_fluid():
+    """INS-2/4/5/6: a bar with a bore and a hole drilled into its side, the two bore ends declared.
+    The side hole is a mouth of the bore no port claims: it is sealed into the wall before the
+    fluid's side is read, the seed is the deepest point of the bore, the boundary is closed and the
+    flood from the seed stays in it, and every decision is recorded with its rule."""
+    pytest.importorskip("OCP")
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+
+    from tests.unit.cad.test_open_ends import _cyl, _occ_tris
+    bar = _cyl(0.0, 0.0, 0.0, (1, 0, 0), 0.03, 0.2)
+    bar = BRepAlgoAPI_Cut(bar, _cyl(-0.01, 0.0, 0.0, (1, 0, 0), 0.015, 0.22)).Shape()
+    bar = BRepAlgoAPI_Cut(bar, _cyl(0.1, 0.0, 0.0, (0, 0, 1), 0.005, 0.05)).Shape()
+    ports = [{"name": "feed", "type": "inlet", "near_mm": [0, 0, 0], "diameter_mm": 30.0},
+             {"name": "exit", "type": "outlet", "near_mm": [200, 0, 0], "diameter_mm": 30.0},
+             {"name": "pipe", "type": "wall"}]
+    st = stage_triangles(_occ_tris(bar, deflection=0.0005), intake_patches=ports)
+    _closed_and_named(st, {"feed", "exit"})
+    assert len(st.facts["sealed"]) == 1                               # the side hole, closed into the wall
+    assert st.facts["sealed"][0]["centroid"][2] > 0.02
+    assert st.facts["seed"]["from"] == "map"
+    assert np.linalg.norm(st.seed[1:]) < 0.006                        # on the bore's axis, about
+    assert st.facts["leak_test"].get("sealed") is True
+    rules = {d["rule"] for d in st.facts["decisions"]}
+    assert {"INS-2", "INS-4", "INS-5", "INS-6"} <= rules
