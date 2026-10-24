@@ -96,6 +96,52 @@ def _metre_box(step: Path) -> tuple[list[float], float]:
     return box, diag
 
 
+def solids_from_shells(ws: Path) -> int:
+    """MESH-1: A FILE OF FACES THAT CLOSE is read as the solid it bounds: a STEP or IGES written as closed
+    shells with no solid entity (aircraft and keel surfaces, 24 Oct gate) - the shells are made solids,
+    sewn first only within the clean check's own tight tolerance (cad/validity_brep), nothing else
+    touched. Writes geometry.brep and returns how many solids it made (0: nothing to do, or no shell
+    closes - the part is then meshed, or refused, as it stands)."""
+    from OCP.BRep import BRep_Builder, BRep_Tool
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeSolid
+    from OCP.BRepTools import BRepTools
+    from OCP.TopAbs import TopAbs_SHELL, TopAbs_SOLID
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS, TopoDS_Compound
+
+    from meshpipeline.cad.scout import read_cad
+    from meshpipeline.cad.validity_brep import SEW_TOLERANCE, _bbox, _sew
+
+    step = staged_solid(ws)
+    if step is None:
+        return 0
+    shape = read_cad(step)
+    if TopExp_Explorer(shape, TopAbs_SOLID).More():
+        return 0
+    lo, hi = _bbox(shape)
+    if lo is None:
+        return 0
+    diag = float(math.dist(tuple(lo), tuple(hi)))
+    sewn = _sew(shape, SEW_TOLERANCE * diag) or shape
+    comp = TopoDS_Compound()
+    b = BRep_Builder()
+    b.MakeCompound(comp)
+    made = 0
+    ex = TopExp_Explorer(sewn, TopAbs_SHELL)
+    while ex.More():
+        shell = TopoDS.Shell_s(ex.Current())
+        ex.Next()
+        if not BRep_Tool.IsClosed_s(shell):
+            continue
+        mk = BRepBuilderAPI_MakeSolid(shell)
+        if mk.IsDone():
+            b.Add(comp, mk.Solid())
+            made += 1
+    if made:
+        BRepTools.Write_s(comp, str(ws / "geometry.brep"))
+    return made
+
+
 def measure_staged(ws: Path) -> tuple[dict, Any, float]:
     """(the measurement record in mm, its labelled surface in mm, the part's diagonal in m)."""
     from meshpipeline.cad.fea_measure import measure_cad_surface
@@ -698,6 +744,14 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         outcome = run.outcome(produced_deliverable=False, failure_marker=NO_SOURCE)
         return False, NO_SOURCE, outcome
 
+    try:
+        made = await asyncio.to_thread(solids_from_shells, ws)
+        if made:
+            _cite(job_id, [{"stage": "fea_plan", "decided": "closed shells read as solids", "value": made,
+                            "rule": "MESH-1", "inputs": {"solids": made},
+                            "words": f"The file's {made} closed shell(s) were read as the solid(s) they bound."}])
+    except Exception as exc:  # noqa: BLE001 - the part is meshed, or refused, as it stands
+        logger.warning("fea driver: closed shells not read as solids (%s)", type(exc).__name__)
     try:
         record, surface, diag_m = await asyncio.to_thread(measure_staged, ws)
     except Exception as exc:  # noqa: BLE001 - recorded as the attempt's reason

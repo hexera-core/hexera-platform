@@ -103,12 +103,19 @@ def has_solid(facts: dict | None) -> bool:
     v = f.get("validity") or {}
     n = body_count(f)
     brep = str(f.get("source_format") or "").lower() in _BREP_FORMATS and v.get("kind") != "triangles"
-    if brep:
-        return bool(n and n >= 1)
+    if brep and n and n >= 1:
+        return True
+    if v.get("kind") in ("unchecked", "check_failed") or v.get("clean") is None:
+        # the clean check could not say: never a stop on a file we could not judge
+        return True
     errors = {str(r.get("code")) for r in v.get("reasons") or []
               if isinstance(r, dict) and str(r.get("severity") or "error") == "error"}
     # a triangle surface closes into a solid when it has no open edge and no edge shared by more than
     # two faces (the Camaro STL: 395 overlapping skins with non-manifold edges is a surface)
+    # a CAD file of faces with no solid entity is still a solid when its faces close (the FEA staging
+    # makes the closed shells solids - engines/fea_driver.solids_from_shells)
+    if brep:
+        return not (errors & {"open_shell", "open_boundary", "zero_volume", "flat"})
     return not (errors & {"open_shell", "open_boundary", "zero_volume", "flat", "non_manifold_edges"})
 
 

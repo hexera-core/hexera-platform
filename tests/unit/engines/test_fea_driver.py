@@ -592,3 +592,18 @@ def test_a_mesh_that_fails_elsewhere_is_the_ordinary_outcome(tmp_path, monkeypat
         run_cartesian_mesh=lambda w, timeout: {"rc": 1, "log_tail": f"{BAD_FACES} Face_99\nException: boom"}))
     ok, _m, _o = asyncio.run(FD.drive(ws, {}, job_id="t-mesh2b", publish=None, run=_Run()))
     assert not ok and read_refusal(ws).gate == FD.QUALITY_GATE
+
+
+def test_a_file_of_closed_shells_is_read_as_its_solid(tmp_path):
+    """MESH-1: faces that close, written with no solid entity, are made the solid they bound."""
+    from OCP.TopAbs import TopAbs_SHELL, TopAbs_SOLID
+    from OCP.TopExp import TopExp_Explorer
+
+    from meshpipeline.cad.scout import read_cad
+
+    shell = TopExp_Explorer(fx._box(0, 0, 0, 10, 20, 30), TopAbs_SHELL).Current()
+    ws = _stage(shell, tmp_path / "shells")
+    assert not TopExp_Explorer(read_cad(FD.staged_solid(ws)), TopAbs_SOLID).More()
+    assert FD.solids_from_shells(ws) == 1
+    assert TopExp_Explorer(read_cad(ws / "geometry.brep"), TopAbs_SOLID).More()
+    assert FD.solids_from_shells(ws) == 0                     # a solid already: nothing to do

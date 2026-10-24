@@ -131,8 +131,9 @@ def test_a_car_body_surface_is_told_it_is_not_a_solid_with_the_way_on():
     ({"solids": 1, "source_format": "stl",
       "validity": {"clean": False, "kind": "triangles", "reasons": [{"code": "open_boundary", "severity": "error"}]}},
      "surface"),
-    # a STEP of faces with no solid in it
-    ({"solids": 0, "source_format": "step", "validity": {"clean": True, "kind": "brep", "reasons": []}}, "surface"),
+    # a STEP of faces with no solid entity, whose faces close (the clean check says so): read as the solid
+    # they bound (MESH-1; the FEA staging makes the closed shells solids) - no stop
+    ({"solids": 0, "source_format": "step", "validity": {"clean": True, "kind": "brep", "reasons": []}}, ""),
     # a STEP of open shells
     ({"solids": 0, "source_format": "step",
       "validity": {"clean": False, "kind": "brep", "reasons": [{"code": "open_shell", "severity": "error"}]}},
