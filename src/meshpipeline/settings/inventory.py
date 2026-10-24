@@ -489,7 +489,10 @@ INVENTORY: list[Group] = [
     ]),
 
     Group("Request limits", vars=[
-        EnvVar("RATE_LIMIT_PER_MINUTE", "240", kind="int", help="per identity (X-User-Id, else client IP); 0 disables. Job quotas are separate"),
+        EnvVar("RATE_LIMIT_PER_MINUTE", "240", kind="int", help="per caller: each API key, each signed user, else each client address (from X-Forwarded-For); 0 disables. Job quotas are separate"),
+        EnvVar("RATE_LIMIT_GLOBAL_PER_MINUTE", "12000", kind="int", help="safety ceiling for every caller together; 0 disables"),
+        EnvVar("RATE_LIMIT_ADDRESS_CEILING_PER_MINUTE", "2400", kind="int", help="safety ceiling per client address for callers that have not proven who they are (unverified keys, anonymous); signed users are exempt; 0 disables"),
+        EnvVar("RATE_LIMIT_TRUSTED_PROXY_HOPS", "1", kind="int", help="which X-Forwarded-For entry, counted from the right, is the caller's address: 1 = Cloud Run directly, 2 = a load balancer in front of it"),
         EnvVar("WS_MAX_SESSION_SECONDS", "3000", kind="int", help="close a live socket on our terms before the platform's 60-minute cap; the browser reconnects with its cursor"),
         EnvVar("EVENT_LOG_TTL_SECONDS", "86400", kind="int", help="how long a job's replayable event log outlives its sockets"),
     ]),
