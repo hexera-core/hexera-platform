@@ -322,6 +322,11 @@ case "$1" in
     exit 1 ;;
   tag)  exit 0 ;;
   push) echo "pushed"; exit 0 ;;
+  buildx)
+    # buildx imagetools inspect --raw <ref>: the remote manifest's own bytes
+    [ -n "${FAKE_REMOTE_RAW:-}" ] || exit 1
+    printf '%s' "${FAKE_REMOTE_RAW}"
+    exit 0 ;;
   build)
     echo "A BUILD WAS INVOKED DURING PUBLICATION" >&2
     exit 0 ;;
@@ -883,6 +888,13 @@ if [ "$1" = "manifest" ]; then
   printf '{"config":{"digest":"%s"}}\n' "${cfg}"
   exit 0
 fi
+if [ "$1" = "buildx" ]; then
+  ref="${@: -1}"
+  raw="$(awk -v r="${ref}" '$1 == r {print $2}' "${FAKE_RAWS:-/dev/null}" 2>/dev/null)"
+  [ -n "${raw}" ] || exit 1
+  printf '%s' "${raw}"
+  exit 0
+fi
 exit 0
 """
 
@@ -915,6 +927,7 @@ def _reuse_repo(tmp_path: Path) -> dict:
            "PATH": f"{bindir}:{os.environ.get('PATH','')}",
            "FAKE_GH_LOG": str(tmp_path / "gh.log"), "FAKE_GH_DIR": str(ghdir),
            "FAKE_DOCKER_LOG": str(docker_log), "FAKE_MANIFESTS": str(manifests),
+           "FAKE_RAWS": str(tmp_path / "raws"),
            "GITHUB_REPOSITORY": GH_REPO, "GITHUB_RUN_ID": "900", "GITHUB_OUTPUT": str(out),
            "RELEASE_REGISTRY": REGISTRY, "RELEASE_ENVIRONMENT": "dev",
            "RELEASE_PYTHON": sys.executable}
@@ -1156,3 +1169,62 @@ def test_publication_still_refuses_to_overwrite_a_published_tag():
     # Reuse is the way around the refusal for a commit that is ALREADY published; the refusal
     # itself must stay for everything else.
     assert "Refusing to overwrite a published tag" in PUBLISH.read_text(encoding="utf-8")
+
+
+# THE CONTAINERD IMAGE STORE (Docker 29's default on the hosted runners): a local image's ID is
+# its MANIFEST digest - the digest the registry assigns on push - not its config digest. A record
+# written there names the manifest digest, and a re-run of the same commit (a fleet roll) must
+# still recognise the published images as the validated ones (2026-10-24: run 40068588523).
+def _manifest(raw: str) -> str:
+    import hashlib
+    return "sha256:" + hashlib.sha256(raw.encode()).hexdigest()
+
+
+def test_a_record_written_under_the_containerd_store_is_reused(tmp_path):
+    ctx = _reuse_repo(tmp_path)
+    raws = {name: '{"schemaVersion":2,"for":"' + name + '"}' for name in ("app", "mesh", "console", "admin")}
+    ids = {name: _manifest(raw) for name, raw in raws.items()}
+    rec = _full_record(ctx["sha"], ctx["tree"])
+    for name, c in rec["components"].items():
+        c["local_image_id"] = c["registry_digest"] = ids[name]
+        c["reference"] = f"{REGISTRY}/{name}@{ids[name]}"
+    (ctx["gh"] / "runs.json").unlink()
+    _earlier_run(ctx, 800, rec)
+    config = "sha256:" + "0c" * 32            # the config digest is NOT the recorded ID here
+    table = {}
+    for name in ids:
+        table[f"{REGISTRY}/{name}@{ids[name]}"] = config
+        table[f"{REGISTRY}/{name}:abcdef123456"] = config
+    ctx["manifests"].write_text("".join(f"{ref} {cfg}\n" for ref, cfg in table.items()))
+    (tmp_path / "raws").write_text("".join(f"{REGISTRY}/{n}:abcdef123456 {raw}\n" for n, raw in raws.items()))
+    r, answer = _run_reuse(ctx)
+    assert r.returncode == 0 and answer == "true", r.stdout + r.stderr
+
+
+def test_a_moved_tag_is_still_refused_under_the_containerd_store(tmp_path):
+    ctx = _reuse_repo(tmp_path)
+    raw = '{"schemaVersion":2,"for":"app"}'
+    rec = _full_record(ctx["sha"], ctx["tree"])
+    rec["components"]["app"]["local_image_id"] = rec["components"]["app"]["registry_digest"] = _manifest(raw)
+    rec["components"]["app"]["reference"] = f"{REGISTRY}/app@{_manifest(raw)}"
+    (ctx["gh"] / "runs.json").unlink()
+    _earlier_run(ctx, 800, rec)
+    config = "sha256:" + "0c" * 32
+    _registry(ctx, {f"{REGISTRY}/app@{_manifest(raw)}": config, f"{REGISTRY}/app:abcdef123456": config,
+                    f"{REGISTRY}/mesh@{MESH_DIGEST}": MESH_ID, f"{REGISTRY}/mesh:abcdef123456": MESH_ID})
+    (tmp_path / "raws").write_text(f"{REGISTRY}/app:abcdef123456 " + '{"schemaVersion":2,"other":1}' + "\n")
+    _assert_not_reused(ctx, "now points at")
+
+
+def test_publication_accepts_its_own_image_already_under_the_tag_by_manifest_digest(tmp_path):
+    raw = '{"schemaVersion":2,"for":"app-and-mesh"}'
+    root, log, ctx = _publish_repo(tmp_path, make_record(state="validated"))
+    rec = make_record(state="validated", commit=ctx["sha"], tree=ctx["tree"])
+    for c in rec["components"].values():
+        c["local_image_id"] = _manifest(raw)
+    (root / "deploy" / "output" / "release.json").write_text(json.dumps(rec, indent=2))
+    env = {**ctx["env"], "FAKE_APP_ID": _manifest(raw), "FAKE_MESH_ID": _manifest(raw),
+           "FAKE_REMOTE_CONFIG": "sha256:" + "0c" * 32, "FAKE_REMOTE_RAW": raw}
+    r = _run_publish(root, env)
+    assert "Refusing to overwrite a published tag" not in r.stdout, r.stdout + r.stderr
+    assert "the registry already carries this exact image" in r.stdout, r.stdout + r.stderr

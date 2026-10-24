@@ -93,12 +93,19 @@ def _viewer_surface():
             # AN FEA MESH (FEA build step 5): every CAD face its own clickable part, Face_k as the
             # deck names it, and the FEA result block - FEA numbers, never a flow mesh's heatmap
             from meshpipeline.engines.fea_results import results, viewer_face_names
-            mesh = read_msh(workspace, by_face=True, face_names=viewer_face_names(workspace))
-            resp = stl_response(surface_patches_of(mesh), roles, units, skip_names)
+            try:
+                mesh = read_msh(workspace, by_face=True, face_names=viewer_face_names(workspace))
+                resp = stl_response(surface_patches_of(mesh), roles, units, skip_names)
+            except Exception as exc:  # noqa: BLE001 - a valid FEA mesh is delivered without its view
+                import logging
+
+                from meshpipeline.engines.fea_results import FEA_VIEW_MISSING
+                logging.getLogger(__name__).warning("FEA view not built: %s", exc)
+                resp = {"kind": "stl", "mesh_units": units, "patches": [], "view_note": FEA_VIEW_MISSING}
             if resp:
                 fea = results(workspace)
                 if fea:
-                    resp["fea"] = fea
+                    resp["fea"] = {**fea, "view_note": resp["view_note"]} if resp.get("view_note") else fea
             return resp
         # named boundary groups from mesh.msh → the shared kind=stl payload, coloured by the
         # quality of the cells behind each face - the same measurement an OpenFOAM mesh gets

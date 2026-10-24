@@ -318,6 +318,17 @@ RESULT_BYTES_PER_CELL = 100
 #: with room: these bound a mesh the run has already built and paid for, not a guess.
 RESULT_ARCHIVE_BYTES_PER_MEASURED_CELL = 200
 RESULT_RAW_BYTES_PER_MEASURED_CELL = 800
+#: AN FEA MESH comes home as a quadratic deck AND its Nastran and Ansys files AND gmsh's own mesh
+#: (mesh once, export many): about 1 KB raw an element (SC8UU on dev-areen, 1.5 M elements: .inp
+#: 290 MB, .bdf 405 MB, .cdb about 500 MB). Past the flow-mesh allowance above, a valid mesh of a
+#: few million elements was built and then refused on the way back. When the mesher measured what
+#: it sent (dispatch.returned_bytes) that measurement sizes the limits, with margin; else these.
+FEA_RESULT_ARCHIVE_BYTES_PER_ELEMENT = 700
+FEA_RESULT_RAW_BYTES_PER_ELEMENT = 1600
+FEA_RESULT_FILE_BYTES_PER_ELEMENT = 600
+#: The margin on a measured size, and the ceiling no result document can lift the limits past.
+FEA_RESULT_MARGIN = 1.15
+FEA_RESULT_MAX_BYTES = 48 * 1024 ** 3
 RESULT_FILE_BYTES_PER_MEASURED_CELL = 400
 
 
@@ -341,13 +352,30 @@ def result_extraction_limits(result: dict | None = None):
         cells = 0
     # the count is the remote's word: bounded, so no document can lift the limits without end
     cells = min(cells, 2 * int(polcfg.CELL_HARD_LIMIT))
-    return replace(
-        base,
-        max_archive_bytes=max(base.max_archive_bytes, by_budget,
-                              cells * RESULT_ARCHIVE_BYTES_PER_MEASURED_CELL),
-        max_total_uncompressed_bytes=max(base.max_total_uncompressed_bytes,
-                                         cells * RESULT_RAW_BYTES_PER_MEASURED_CELL),
-        max_file_bytes=max(base.max_file_bytes, cells * RESULT_FILE_BYTES_PER_MEASURED_CELL))
+    archive = max(base.max_archive_bytes, by_budget, cells * RESULT_ARCHIVE_BYTES_PER_MEASURED_CELL)
+    raw = max(base.max_total_uncompressed_bytes, cells * RESULT_RAW_BYTES_PER_MEASURED_CELL)
+    largest = max(base.max_file_bytes, cells * RESULT_FILE_BYTES_PER_MEASURED_CELL)
+    measured = (result or {}).get("returned_bytes") if isinstance(result, dict) else None
+    fea = (isinstance(measured, dict) and bool(measured.get("fea"))) or (
+        isinstance(q, dict) and (str(q.get("quality_bar") or "") == "fea" or isinstance(q.get("fea"), dict)))
+    if fea:
+        # AN FEA MESH IS NEVER LOST TO SIZE (Areen: only a broken mesh fails): its own allowance, and
+        # the mesher's measurement of what it sent when there is one - bounded, so no document can
+        # lift the limits without end
+        archive = max(archive, cells * FEA_RESULT_ARCHIVE_BYTES_PER_ELEMENT)
+        raw = max(raw, cells * FEA_RESULT_RAW_BYTES_PER_ELEMENT)
+        largest = max(largest, cells * FEA_RESULT_FILE_BYTES_PER_ELEMENT)
+        if isinstance(measured, dict):
+            try:
+                m_raw, m_big = int(measured.get("raw") or 0), int(measured.get("largest") or 0)
+            except (TypeError, ValueError):
+                m_raw = m_big = 0
+            raw = max(raw, int(m_raw * FEA_RESULT_MARGIN))
+            archive = max(archive, int(m_raw * FEA_RESULT_MARGIN))      # gzip never grows text much
+            largest = max(largest, int(m_big * FEA_RESULT_MARGIN))
+        archive, raw, largest = (min(v, FEA_RESULT_MAX_BYTES) for v in (archive, raw, largest))
+    return replace(base, max_archive_bytes=archive, max_total_uncompressed_bytes=raw,
+                   max_file_bytes=largest)
 
 
 #: one spelling, owned by the contract the executor's account reads it through
@@ -372,6 +400,61 @@ def _uncollected(engine: str, result: dict, exc: BaseException) -> dict:
             "remote_quality": dict(q),
             "log_tail": (f"{RESULT_UNCOLLECTED_MARKER} {engine}: the mesh ran ({summary}) but "
                          f"its result could not be collected - {detail}")}
+
+
+#: The share of a worker's free disk one result may use (the rest is the job's own and the OS's).
+WORKER_DISK_SHARE = 0.85
+#: How many times a result's archive the collection writes besides its extracted files: the archive
+#: itself while it is extracted, and the delivery bundle built from the extracted files afterwards.
+COLLECTION_ARCHIVE_COPIES = 2
+TOO_BIG_MARKER = "[CLOUD_RUN_RESULT_TOO_BIG_FOR_WORKER]"
+
+
+def _is_fea_result(result: dict | None) -> bool:
+    measured = (result or {}).get("returned_bytes") if isinstance(result, dict) else None
+    q = (result or {}).get("quality") if isinstance(result, dict) else None
+    return (isinstance(measured, dict) and bool(measured.get("fea"))) or (
+        isinstance(q, dict) and (str(q.get("quality_bar") or "") == "fea" or isinstance(q.get("fea"), dict)))
+
+
+def collection_need(archive_bytes: int, result: dict | None) -> int:
+    """The disk a result's collection needs on the worker: its archive twice (downloaded, then the
+    delivery bundle) and its files extracted - as the mesher measured them, else three times the
+    archive (text meshes compress about that much)."""
+    measured = (result or {}).get("returned_bytes") if isinstance(result, dict) else None
+    try:
+        raw = int((measured or {}).get("raw") or 0)
+    except (TypeError, ValueError):
+        raw = 0
+    return int(COLLECTION_ARCHIVE_COPIES * archive_bytes + (raw or 3 * archive_bytes))
+
+
+def worker_room(bucket, out_key: str, result: dict | None, where) -> dict | None:
+    """None when this worker has room to collect the result (or it is not an FEA result); else the
+    refusal - RC_INFRASTRUCTURE, the exchange objects kept for a worker with room - with the numbers
+    the user is told (gigabytes needed and free)."""
+    import shutil
+
+    if not _is_fea_result(result):
+        return None
+    try:
+        blob = bucket.blob(out_key)
+        blob.reload()
+        size = int(blob.size or 0)
+        free = int(shutil.disk_usage(str(where)).free)
+    except Exception:  # noqa: BLE001 - a size we cannot read is collected as before
+        return None
+    need = collection_need(size, result)
+    if need <= WORKER_DISK_SHARE * free:
+        return None
+    facts = {"need_bytes": need, "free_bytes": free, "archive_bytes": size}
+    logger.error("Cloud Run mesh result too big for this worker: needs %.1f GB, %.1f GB free (%s)",
+                 need / 1e9, free / 1e9, out_key)
+    return {"rc": RC_INFRASTRUCTURE, "timed_out": False, "too_big_for_worker": facts,
+            "remote_quality": dict((result or {}).get("quality") or {}),
+            "log_tail": (f"{TOO_BIG_MARKER} the mesh was built, but collecting it needs about "
+                         f"{need / 1e9:.1f} GB of disk and this worker has {free / 1e9:.1f} GB free; the "
+                         "result is kept for a worker with room")}
 
 
 def run_mesh_remote(workspace, *, engine: str, timeout: int, operation_key: str) -> dict:
@@ -466,6 +549,12 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
         import tempfile
 
         from meshpipeline.sandbox.safe_extract import safe_extract_tar
+        # ROOM ON THIS WORKER, measured before a byte is written (an FEA result only: its limits are
+        # sized by what was built, up to FEA_RESULT_MAX_BYTES, and a worker's disk is finite). A result
+        # that cannot fit is refused in words and KEPT in the exchange - never half-written, never lost
+        _room = worker_room(bucket, out_key, result, ws.parent)
+        if _room is not None:
+            return _room
         with tempfile.TemporaryDirectory(prefix="mesh_result_", dir=str(ws.parent)) as _tmp:
             _archive = Path(_tmp) / "result.tar.gz"
             bucket.blob(out_key).download_to_filename(str(_archive))

@@ -255,7 +255,7 @@ def build_terminal_result(assembly: TerminalAssembly, *, delivered_types: list) 
     from meshpipeline.application import final_result as _fr
     from meshpipeline.application.artifact_policy import optional_warnings, required_ready
 
-    ready = required_ready(assembly.engine, delivered_types)
+    ready = required_ready(assembly.engine, delivered_types, assembly.purpose)
     warnings = optional_warnings(delivered_types) if ready else []
     result = _fr.build_final_result(
         job_id=assembly.job_id, owner_id=assembly.owner_id,

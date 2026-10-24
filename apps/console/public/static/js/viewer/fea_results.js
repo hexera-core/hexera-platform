@@ -31,7 +31,7 @@ function solverRow(sv) {
     + `<small class="fe-src">${esc(r.source)}</small></li>`).join("");
   return `<div class="fe-sv" data-solver="${esc(sv.solver)}">
       <div class="fe-sv-h"><b>${esc(sv.label)}</b> <span class="v-pill${cls}">${esc(SOLVER_OUT[sv.outcome] || "")}</span>
-        <span class="fe-sv-file">${esc(sv.file)} · ${esc(sv.element)}${sv.file_ready === false ? " · not written" : ""}</span></div>
+        <span class="fe-sv-file">${esc(sv.file)} · ${esc(sv.element)}${sv.file_ready === false ? " · isn't available" : ""}</span></div>
       <div class="fe-sv-t${sv.tested ? " ok" : ""}">${esc(sv.tested_words || "")}</div>
       <details><summary>${esc(sv.words || "")}</summary><ul class="fe-sv-rows">${rows}</ul></details>
     </div>`;
@@ -67,6 +67,7 @@ export function feaResultsHtml(job, f) {
   return `<div class="v-sec tr fe" id="v-fea-sec-${esc(job)}">
       <div class="v-sec-h">${esc(f.title || "FEA mesh")} <span class="v-pill${ck.outcome === "fail" ? " fail" : (ck.outcome === "concerns" || ck.outcome === "unmeasured") ? " concerns" : ""}">${esc(OUTCOME[ck.outcome] || "")}</span></div>
       <div class="tr-sum">${esc(f.summary || "")}</div>
+      ${f.view_note ? `<div class="tr-sum fe-view-note" role="note">${esc(f.view_note)}</div>` : ""}
       <ul class="tr-q">
         <li>${esc(ck.words || "")}</li>
         <li><b>Through-wall check:</b> ${esc(tw.words || "")}</li>

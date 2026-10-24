@@ -113,6 +113,18 @@ def assembly_block(asm: Mapping) -> dict | None:
             "joints": joints, "absorbed": list(asm.get("absorbed") or []), "notes": list(asm.get("notes") or [])}
 
 
+#: Said on the result screen of an FEA mesh whose 3D view could not be built.
+FEA_VIEW_MISSING = ("The 3D view could not be built for this mesh, so it is not shown. The mesh is valid and "
+                    "its files are complete - download them below.")
+#: Said beside a solver whose file could not be written: the deck and the other files are complete.
+FILE_MISSING = "This solver file isn't available for this mesh; the other files are complete."
+
+
+def _ready(ws: Path, line: dict) -> dict:
+    ready = (ws / line["file"]).exists()
+    return {**line, "file_ready": ready, **({} if ready else {"file_note": FILE_MISSING})}
+
+
 def results(workspace) -> dict | None:
     """The block, or None for a workspace that holds no FEA plan."""
     from meshpipeline.contracts.decision_record import limit_met
@@ -213,7 +225,7 @@ def results(workspace) -> dict | None:
                      "later": SAME_NUMBERS},
         # PASS / WARNINGS / FAIL PER SOLVER, by each solver's own published checks
         # (engines/fea_solvers.py), with its file and whether that solver has really run it
-        "solvers": [{**line, "file_ready": (ws / line["file"]).exists()} for line in judge({**q, **(fea.get("quality") or {})})],
+        "solvers": [_ready(ws, line) for line in judge({**q, **(fea.get("quality") or {})})],
     }
 
 

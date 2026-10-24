@@ -561,6 +561,28 @@ def describe(cause: object, facts: Mapping | None = None, *,
                 "run may take, so no complete mesh came back.",
                 f"Ask for less detail (for example 'standard' instead of 'max') and {_RUN_AGAIN}.")
     if c is FailureCause.RUN_INFRASTRUCTURE:
+        big = f.get("too_big_for_worker")
+        if isinstance(big, Mapping):
+            need = _as_number(big.get("need_bytes")) or 0.0
+            free = _as_number(big.get("free_bytes")) or 0.0
+            return (f"The mesh was built and is valid, but it is too big for the computer that collects it: "
+                    f"bringing it back needs about {need / 1e9:.0f} GB of disk and that worker had "
+                    f"{free / 1e9:.0f} GB free. Nothing about your part was wrong, and the mesh is kept.",
+                    f"You can run it again ({_RUN_AGAIN}) to collect it on a worker with room. If it happens "
+                    "again, tell us: the workers need a bigger disk for meshes this size.")
+        trip = f.get("guard_trip")
+        if isinstance(trip, Mapping):
+            # THE MESHER'S TIME GUARD, said as what it is (dev-areen 24 Oct: a 114-part boiler read
+            # "the service failed to take the job or to return its result" after its mesher simply
+            # ran out of time): the mesher was working, and our time estimate for it was short
+            guard = _as_number(trip.get("guard_s")) or 0.0
+            amount = _as_number(trip.get("amount"))
+            size = f" (about {amount / 1e6:.1f} million elements)" if amount else ""
+            return (f"The mesher was still building the mesh{size} when its time limit of "
+                    f"{guard / 60:.0f} minutes ran out, so no mesh came back. It was not stuck and nothing is "
+                    "wrong with your part: it takes longer to mesh than we planned for. That is ours to fix.",
+                    f"You can run it again ({_RUN_AGAIN}); if it stops the same way, tell us - meshes like this "
+                    "need a longer time limit on our side.")
         if f.get("result_uncollected"):
             # the mesher RAN: the return trip failed. A result too large to bring back fails the
             # same way, so the second remedy is said too
