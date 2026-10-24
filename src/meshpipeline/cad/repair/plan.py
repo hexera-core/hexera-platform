@@ -46,6 +46,15 @@ logger = logging.getLogger(__name__)
 _SEVERITY_RANK = {DefectSeverity.fatal: 0, DefectSeverity.error: 1,
                   DefectSeverity.warning: 2, DefectSeverity.info: 3}
 
+#: Within one severity, the BIGGER entity first: repairing a shell can rewrite its faces and a
+#: face its edges, never the other way round, so aiming big-first lets one kept operation subsume
+#: the smaller findings before they are proposed at all. The old tie-break was alphabetical
+#: (edge < face), and on a part whose sliver FACE was also reported through twenty of its sliver
+#: EDGES the loop spent its whole stall budget on edge fixes that cannot remove a face and the
+#: face sweep was never proposed. An unknown entity type sorts last, not first: nothing is known
+#: about what it subsumes.
+_ENTITY_RANK = {"shell": 0, "face": 1, "wire": 2, "edge": 3, "vertex": 4}
+
 
 @dataclass(frozen=True, slots=True)
 class Candidate:
@@ -79,6 +88,15 @@ class RunHistory:
     """
 
     ineffective: set[tuple[str, str]] = field(default_factory=set)
+    #: AIMS AN OPERATION SAID NO TO: `(op, frozenset of target fingerprints)`. Kept apart from
+    #: `ineffective` because a decline ran nothing - it is the operation's judgement, not a trial
+    #: that failed - and keyed by the AIM rather than the proposing defect because one tangle of
+    #: crossing faces is reported once per member face and every member proposes the IDENTICAL
+    #: heal. Keyed per (defect, op), the sibling findings re-proposed work already refused, and
+    #: two multi_body declines spent the whole stall budget while a sew that would have worked
+    #: sat unproposed (hero.stp). Like `ineffective`, never cleared by a kept operation: a kept
+    #: repair that changes the tangle changes its fingerprints, which makes a new key.
+    declined: set[tuple[str, frozenset[str]]] = field(default_factory=set)
     refusals: list[dict] = field(default_factory=list)
     #: Run-level policy, NOT a trial outcome: why planar filling is off for the rest of this run
     #: (empty when it is not). Kept apart from `ineffective` because that set means "tried and
@@ -95,6 +113,14 @@ class RunHistory:
 
     def was_ineffective(self, defect_fingerprint: str, op_name: str) -> bool:
         return (defect_fingerprint, op_name) in self.ineffective
+
+    def mark_declined(self, op_name: str, target_fingerprints) -> None:
+        self.declined.add((op_name, frozenset(target_fingerprints)))
+
+    def was_declined(self, op_name: str, target_fingerprints) -> bool:
+        """Has this operation already declined EXACTLY this aim? A set, because the heal lists the
+        proposing face first and two sibling findings name the same tangle in different orders."""
+        return (op_name, frozenset(target_fingerprints)) in self.declined
 
     def refuse(self, defect_fingerprint: str, reason: str, detail: str = "") -> None:
         """Record that a defect was not aimed at, ONCE. The loop asks repeatedly, and a list that
@@ -252,7 +278,8 @@ class RulesPlanner:
 
         ordered = sorted(
             defects,
-            key=lambda d: (_SEVERITY_RANK.get(d.severity, 9), d.entity_type, d.entity_index,
+            key=lambda d: (_SEVERITY_RANK.get(d.severity, 9),
+                           _ENTITY_RANK.get(d.entity_type, 9), d.entity_index,
                            d.code.value))
 
         held = held_fingerprints(defects, self._reserved)
@@ -289,6 +316,15 @@ class RulesPlanner:
                     continue
                 targets = op.targets_for(defect)
                 if not targets:
+                    continue
+                if history.was_declined(op.name, (t.fingerprint for t in targets)):
+                    # THE OPERATION ALREADY SAID NO TO EXACTLY THIS AIM, proposed from a sibling
+                    # finding on the same tangle. The shape is unchanged (a decline runs nothing),
+                    # so proposing it again can only get the same answer - and on hero.stp getting
+                    # it twice spent the stall budget before the open shells were ever reached.
+                    # Still a CLAIM: a decline is the operation's judgement on the defect, not
+                    # "nothing claims it".
+                    claimed = True
                     continue
                 claimed = True
                 if any(t.fingerprint in held for t in targets):

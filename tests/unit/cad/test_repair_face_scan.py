@@ -202,11 +202,16 @@ class _AnswerEach:
     def propose(self, defects, history, *, shape):
         for defect in defects:
             for op in self._ops:
-                if defect.code in op.answers and not history.was_ineffective(
+                if defect.code not in op.answers or history.was_ineffective(
                         defect.fingerprint, op.name):
-                    return Candidate(op=op, targets=op.targets_for(defect),
-                                     defect_code=defect.code,
-                                     defect_fingerprint=defect.fingerprint)
+                    continue
+                targets = op.targets_for(defect)
+                if history.was_declined(op.name, (t.fingerprint for t in targets)):
+                    # As the real planner: an aim the operation already said no to is not
+                    # proposed again - declines live in their own ledger, not `ineffective`.
+                    continue
+                return Candidate(op=op, targets=targets, defect_code=defect.code,
+                                 defect_fingerprint=defect.fingerprint)
         return None
 
 

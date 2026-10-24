@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
+import importlib.util
 import json
 import os
 import sys
@@ -38,7 +39,49 @@ os.environ.setdefault("CAD_REPAIR_AUTONOMOUS", "true")
 # before the --json write. It must follow the environment defaults above: settings read them once.
 from meshpipeline.cad.repair.operations import OPERATIONS  # noqa: E402
 
+
+def _load_benchmark_bundle():
+    """benchmark_bundle.py lives beside this file, but devtools/validation is not a package: this
+    tool runs as a script (where a bare import would resolve) AND is loaded by its tests via
+    spec_from_file_location (where it would not). Loading by path works in both worlds. The module
+    is registered in sys.modules before exec because it defines a dataclass, and dataclasses
+    resolves string field annotations through sys.modules."""
+    if "benchmark_bundle" in sys.modules:
+        return sys.modules["benchmark_bundle"]
+    path = Path(__file__).resolve().with_name("benchmark_bundle.py")
+    spec = importlib.util.spec_from_file_location("benchmark_bundle", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+benchmark_bundle = _load_benchmark_bundle()
+
 _SUFFIXES = {".step", ".stp"}
+
+
+def repair_settings_of(rcfg) -> dict:
+    """Every switch and cap the repair actually read, BY REFLECTION over the settings module.
+
+    A published number is only reproducible if the bundle beside it names the permissions the
+    engine ran under. Hand-listing them does not survive the module growing: CAD_REPAIR_FIX_SMALL_FACES
+    took a corpus from 0 to 5 repaired files while the sealed settings - and so the settings
+    digest - stayed byte-identical to the run that had it off. Reflection means a flag cannot
+    change an outcome without appearing in the evidence; the hygiene test holds this to the module.
+
+    The CAD_REPAIR_ prefix is dropped (`enabled`, `autonomous`) and CAD_INSPECT_ keeps its own
+    (`inspect_timeout_s`), which is what the earlier hand-written dict called them.
+    """
+    settings: dict = {}
+    for name, value in vars(rcfg).items():
+        if not name.isupper():
+            continue
+        if name.startswith("CAD_REPAIR_"):
+            settings[name[len("CAD_REPAIR_"):].lower()] = value
+        elif name.startswith("CAD_INSPECT_"):
+            settings[name[len("CAD_"):].lower()] = value
+    return dict(sorted(settings.items()))
 
 
 def _inspect(path: Path) -> dict:
@@ -278,9 +321,21 @@ def heal_corroborated(shape) -> bool | None:
         return None
 
 
-def summarise_catalogue(rows: list[dict]) -> dict:
+def operation_catalogue() -> list[str]:
+    """The operation names this engine build carries, in declaration order."""
+    return [op.name for op in OPERATIONS]
+
+
+def summarise_catalogue(rows: list[dict], catalogue: list[str] | None = None) -> dict:
     """Kept / rolled back / declined / failed per operation, the catalogue operations no row
-    reached, and those only ever declined (proposed, never ran)."""
+    reached, and those only ever declined (proposed, never ran).
+
+    `catalogue` is THE RUN'S operation list, not today's. `never_exercised` is the one field here
+    that is not derivable from the rows alone - it needs to know which operations existed - so
+    recomputing a year-old bundle against a grown OPERATIONS would report different absences and
+    make untouched evidence look edited. A sealed bundle records its own catalogue and verification
+    passes it back; None means "this build's", which is right while the run is happening.
+    """
     tally: dict[str, dict[str, int]] = {}
     for row in rows:
         for op in row.get("operations", []) or []:
@@ -290,10 +345,207 @@ def summarise_catalogue(rows: list[dict]) -> dict:
             if key == "rolled_back" and str(op.get("reason", "")).startswith("declined:"):
                 key = "declined"
             entry[key] = entry.get(key, 0) + 1
-    never = [op.name for op in OPERATIONS if op.name not in tally]
+    never = [name for name in (operation_catalogue() if catalogue is None else catalogue)
+             if name not in tally]
     only_declined = [name for name, c in tally.items()
                      if c["declined"] and not (c["kept"] or c["rolled_back"] or c["failed"])]
     return {"tally": tally, "never_exercised": never, "only_declined": only_declined}
+
+
+def settings_operation_catalogue(bundle_dir: Path, stored_summary: dict | None = None
+                                 ) -> list[str] | None:
+    """The operation catalogue a sealed bundle RAN WITH, so verification recomputes against the
+    engine of the day rather than today's.
+
+    Preference order, and why: the catalogue sealed into settings.json, which the manifest's
+    settings digest protects; failing that - a bundle sealed before the catalogue was recorded -
+    the operation universe reconstructed from the bundle's own stored catalogue block, which is
+    the run's list as far as it can still be recovered. The fallback cannot police
+    `never_exercised` itself, only everything around it; that is the honest limit of an older
+    bundle and better than reporting valid evidence as edited.
+    """
+    try:
+        body = json.loads((Path(bundle_dir) / "settings.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        body = {}
+    sealed = body.get("operations_catalogue") if isinstance(body, dict) else None
+    if isinstance(sealed, list) and all(isinstance(name, str) for name in sealed):
+        return sealed
+    stored = (stored_summary or {}).get("catalogue") or {}
+    tally, never = stored.get("tally") or {}, stored.get("never_exercised") or []
+    if tally or never:
+        # ORDER MATTERS: never_exercised keeps the catalogue's declaration order, so the recovered
+        # list has to put those names back in that order - the ones in the tally are filtered out
+        # when never_exercised is recomputed, so where they sit cannot change the answer.
+        return list(never) + sorted(set(tally) - set(never))
+    return None
+
+
+def settings_planner_mode(bundle_dir: Path) -> str:
+    """The planner posture a sealed bundle ran under, read from its own settings.json.
+
+    corpus_summary adds the shadow-planner block only for a shadow/live run, so a verifier that
+    assumed "off" would recompute a different aggregate for an honest bundle. The settings are
+    digest-checked by the loader before this matters.
+    """
+    try:
+        body = json.loads((Path(bundle_dir) / "settings.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "off"
+    mode = body.get("planner") if isinstance(body, dict) else None
+    return mode if mode in ("shadow", "live") else "off"
+
+
+def corpus_summary(rows: list[dict], planner_mode: str = "off",
+                   catalogue: list[str] | None = None) -> dict:
+    """THE one aggregate over a run's rows: the printer and the publication bundle both read this,
+    so the table a human saw and the summary.json a reviewer loads can never disagree. Pure over
+    the rows - and the rows themselves were credited by re-inspection, never by the repair's own
+    success claim, so that invariant survives into anything built from this.
+
+    `catalogue` is the operation list the RUN knew (see summarise_catalogue); None means this
+    build's, which is what a live run wants."""
+    outcomes: dict[str, int] = {}
+    for row in rows:
+        key = row["outcome"].split(":")[0] if row["outcome"].startswith("not_attempted") \
+            else row["outcome"]
+        outcomes[key] = outcomes.get(key, 0) + 1
+    repaired_by_code: dict[str, int] = {}
+    for row in rows:
+        for code, count in (row.get("repaired_defects") or {}).items():
+            repaired_by_code[code] = repaired_by_code.get(code, 0) + count
+    routes: dict[str, int] = {}
+    for row in rows:
+        if row.get("route"):
+            routes[row["route"]] = routes.get(row["route"], 0) + 1
+    stops: dict[str, int] = {}
+    for row in rows:
+        if row.get("stopped_because"):
+            stops[row["stopped_because"]] = stops.get(row["stopped_because"], 0) + 1
+    refusals_by_reason: dict[str, int] = {}
+    for row in rows:
+        for record in row.get("refusals") or []:
+            key = str(record.get("reason", "?"))
+            refusals_by_reason[key] = refusals_by_reason.get(key, 0) + 1
+    kept_heals = [r for r in rows if "heal_corroborated" in r]
+    heals = {
+        "kept": len(kept_heals),
+        "corroborated": sum(1 for r in kept_heals if r["heal_corroborated"] is True),
+        "unknown": sum(1 for r in kept_heals if r["heal_corroborated"] is None),
+        "uncorroborated_files": [r["file"] for r in kept_heals
+                                 if r["heal_corroborated"] is False],
+        "unknown_files": [r["file"] for r in kept_heals if r["heal_corroborated"] is None],
+    }
+    out = {"outcomes": outcomes, "repaired_by_code": repaired_by_code, "routes": routes,
+           "stopped_because": stops, "catalogue": summarise_catalogue(rows, catalogue),
+           "refusals_by_reason": refusals_by_reason, "heals": heals}
+    if planner_mode != "off":
+        out["planner"] = planner_summary(rows, planner_mode)
+    return out
+
+
+# THE PUBLICATION BUNDLE. docs/research/public-benchmarks.md, "First Implementation Slice" items
+# 1-2: a run that may be published writes an evidence bundle - per-file rows streamed as the run
+# goes, and a sealed manifest carrying provenance, redistribution status, input hashes, engine
+# commit, hardware class and the frozen settings. The envelope itself (layout, digests, loader
+# refusals) is benchmark_bundle's; this section only fills it with what a corpus run knows.
+def _hardware_class() -> str:
+    import platform
+    return f"{platform.system().lower()}-{platform.machine().lower()}"
+
+
+def _engine_commit() -> str:
+    """The engine commit, or an honest "unknown": a bundle built outside a git checkout (a bare
+    image, an exported tree) is still evidence, just evidence that cannot name its commit."""
+    try:
+        return benchmark_bundle.current_engine_commit(Path(__file__).resolve().parents[2])
+    except Exception:  # noqa: BLE001 - no git, not a repo, detached worktree: all mean "unknown"
+        return "unknown"
+
+
+def hash_corpus_inputs(roots: list[Path], files: list[Path]) -> dict[str, str]:
+    """sha256 per processed input, keyed relative to the corpus directory it came from. With more
+    than one corpus directory the keys are prefixed with the directory's name, because two corpora
+    may both hold a `part.step` and a merged map must not let one silently shadow the other."""
+    hashes: dict[str, str] = {}
+    resolved_roots = [Path(root).resolve() for root in roots]
+    for root in resolved_roots:
+        members = [f.resolve() for f in files if f.resolve().is_relative_to(root)]
+        prefix = f"{root.name}/" if len(resolved_roots) > 1 else ""
+        hashes.update({prefix + key: value
+                       for key, value in benchmark_bundle.hash_inputs(root, members).items()})
+    return hashes
+
+
+def _corpus_manifest(*, track: str, corpus_name: str, provenance: str, redistribution: str,
+                     input_hashes: dict[str, str], timeout_seconds: float | None,
+                     random_seed: int | None, engine_commit: str | None = None,
+                     hardware_class: str | None = None):
+    """`engine_commit` and `hardware_class` default to THIS host at THIS commit, which is the
+    truth only when the engine just ran here. A caller packaging a recorded run passes what that
+    run was measured on, or "unknown" - see bundle_from_rows."""
+    return benchmark_bundle.BundleManifest(
+        benchmark="cad-repair", track=track, corpus_name=corpus_name,
+        corpus_provenance=provenance, redistribution_status=redistribution,
+        input_hashes=input_hashes,
+        engine_commit=_engine_commit() if engine_commit is None else engine_commit,
+        settings_digest="",  # the writer computes this at seal time from settings.json
+        hardware_class=_hardware_class() if hardware_class is None else hardware_class,
+        timeout_seconds=timeout_seconds, random_seed=random_seed)
+
+
+def seal_corpus_bundle(writer, rows: list[dict], *, roots: list[Path], files: list[Path],
+                       settings: dict, track: str = "unspecified", corpus_name: str = "",
+                       provenance: str = "", redistribution: str = "internal",
+                       planner_mode: str = "off", timeout_seconds: float | None = None,
+                       random_seed: int | None = None) -> Path:
+    """Seal a bundle whose rows were streamed in during the run. The summary is recomputed HERE,
+    from the rows - never handed in by the caller - so a bundle can only ever carry the aggregate
+    of what its own rows.jsonl says."""
+    manifest = _corpus_manifest(track=track, corpus_name=corpus_name, provenance=provenance,
+                                redistribution=redistribution,
+                                input_hashes=hash_corpus_inputs(roots, files),
+                                timeout_seconds=timeout_seconds, random_seed=random_seed)
+    return writer.seal(manifest, settings=settings, summary=corpus_summary(rows, planner_mode))
+
+
+def bundle_from_rows(rows_json: Path, bundle_dir: Path, *, track: str = "unspecified",
+                     corpus_name: str = "", provenance: str = "",
+                     redistribution: str = "internal", input_hashes: dict[str, str] | None = None,
+                     settings: dict | None = None, timeout_seconds: float | None = None,
+                     random_seed: int | None = None, engine_commit: str = "",
+                     hardware_class: str = "") -> Path:
+    """Package a previously recorded run (the --json output) without re-running any CAD.
+
+    The summary is recomputed from the rows; any summary stored beside them is ignored, because a
+    stored aggregate is a claim and the rows are the evidence. Input hashes default to empty - the
+    corpus files may no longer be on disk - and a caller that still has them passes its own map.
+
+    NO ENGINE RUNS HERE, so neither the current HEAD nor this host is a fact about these rows:
+    packaging a run from commit A while sitting on commit B would name B as the tested engine,
+    which is the one thing a published bundle must not get wrong. Both fields are "unknown" unless
+    the caller states what the run was actually measured on.
+    """
+    data = json.loads(Path(rows_json).read_text())
+    rows = data["rows"] if isinstance(data, dict) else data
+    if not isinstance(rows, list):
+        raise ValueError(f"{rows_json} does not hold a list of rows")
+    writer = benchmark_bundle.BundleWriter(Path(bundle_dir))
+    for row in rows:
+        writer.write_row(row)
+    # The summary must be the aggregate OF THE CATALOGUE THIS BUNDLE RECORDS, or sealing and
+    # verifying would disagree the moment a caller states the original run's operation list.
+    sealed_settings = settings or {"rebundled_from": str(rows_json)}
+    stated_catalogue = sealed_settings.get("operations_catalogue")
+    manifest = _corpus_manifest(track=track, corpus_name=corpus_name, provenance=provenance,
+                                redistribution=redistribution, input_hashes=input_hashes or {},
+                                timeout_seconds=timeout_seconds, random_seed=random_seed,
+                                engine_commit=engine_commit or "unknown",
+                                hardware_class=hardware_class or "unknown")
+    return writer.seal(
+        manifest, settings=sealed_settings,
+        summary=corpus_summary(
+            rows, catalogue=stated_catalogue if isinstance(stated_catalogue, list) else None))
 
 
 def _one(path: Path, scratch: Path, *, mode: str = "off") -> dict:
@@ -412,6 +664,45 @@ def _one(path: Path, scratch: Path, *, mode: str = "off") -> dict:
     return row
 
 
+def run_files(files: list[Path], scratch: Path, *, mode: str = "off", loop: bool = False,
+              bundle=None) -> list[dict]:
+    """Run the repair loop over `files`, printing a line per file; returns the rows. When `bundle`
+    is a BundleWriter every row is streamed into it AS IT IS PRODUCED, so a run that dies half way
+    leaves its evidence-so-far on disk rather than in a list that was never written."""
+    rows: list[dict] = []
+    for path in files:
+        if mode == "live":
+            # rules-only FIRST, into its own directory, so the live pass cannot overwrite it
+            rules_dir = scratch / "rules_only"
+            rules_dir.mkdir(parents=True, exist_ok=True)
+            rules_row = _one(path, rules_dir)
+            row = _one(path, scratch, mode="live")
+            row["rules_only"] = rules_row
+        else:
+            row = _one(path, scratch, mode=mode)
+        rows.append(row)
+        if bundle is not None:
+            bundle.write_row(row)
+        print(f"{row['outcome']:<28} {row['file'][:52]:<54} "
+              f"before={row.get('defects_before', [])} "
+              f"located={row.get('located_before', {})} "
+              f"-> fixed={row.get('repaired_defects', {})}"
+              + (f" [{row['error'][:90]}]" if row.get("error") else ""))
+        if loop:
+            for op in row.get("operations", []) or []:
+                mark = "+" if op.get("status") == "kept" else "-"
+                detail = f" ({op['reason']})" if op.get("reason") else ""
+                print(f"      {mark} {op.get('op', '?'):<20} {op.get('defect_code', ''):<22}"
+                      f"{op.get('status', '')}{detail}")
+            for record in row.get("refusals") or []:
+                print(f"      ! refused {record.get('reason', '?')}: "
+                      f"{record.get('detail', '')}")
+            if row.get("stopped_because"):
+                print(f"      = stopped: {row['stopped_because']} "
+                      f"(resolved={row.get('resolved')})")
+    return rows
+
+
 def _print_planner(summary: dict, cache: CachingRouter | None) -> None:
     print(f"\n== llm planner ({summary['mode']}) ==")
     if cache is None:
@@ -438,7 +729,7 @@ def _print_planner(summary: dict, cache: CachingRouter | None) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("directories", nargs="+", help="directories holding .step/.stp files")
+    parser.add_argument("directories", nargs="*", help="directories holding .step/.stp files")
     parser.add_argument("--limit", type=int, default=0, help="stop after N files")
     parser.add_argument("--loop", action="store_true",
                         help="print each file's operation sequence, not just the summary")
@@ -448,7 +739,78 @@ def main() -> int:
     parser.add_argument("--reply-cache", default="",
                         help="JSON file of recorded planner replies keyed by prompt hash")
     parser.add_argument("--json", dest="json_out", default="", help="write the rows here")
+    # The publication bundle (public-benchmarks.md). The manifest flags are free text on purpose:
+    # provenance is a story only the person running the corpus knows. The one closed set is the
+    # redistribution status, closed by benchmark_bundle so a typo cannot launder a corpus.
+    parser.add_argument("--bundle", default="",
+                        help="also write a publication evidence bundle into this directory")
+    parser.add_argument("--track", default="unspecified",
+                        help="benchmark track for the bundle manifest, e.g. occt-real-defect")
+    parser.add_argument("--corpus-name", dest="corpus_name", default="",
+                        help="human name of the corpus, for the bundle manifest")
+    parser.add_argument("--provenance", default="",
+                        help="where the inputs came from, with fetch instructions")
+    parser.add_argument("--redistribution", default="internal",
+                        choices=benchmark_bundle.REDISTRIBUTION_STATUSES,
+                        help="redistribution status of the corpus (default: internal)")
+    parser.add_argument("--rebundle", default="",
+                        help="rows JSON from a previous --json run: package it into --bundle "
+                             "without re-running any CAD (the summary is recomputed from the rows)")
+    # No engine runs in a --rebundle, so the manifest records "unknown" for what measured the rows
+    # unless the person packaging them states it. Stating the wrong commit is worse than unknown.
+    parser.add_argument("--rebundle-engine-commit", dest="rebundle_engine_commit", default="",
+                        help="with --rebundle: the engine commit the recorded rows were measured "
+                             "on (default: unknown, because this host did not measure them)")
+    parser.add_argument("--rebundle-hardware-class", dest="rebundle_hardware_class", default="",
+                        help="with --rebundle: the hardware class the recorded rows were measured "
+                             "on (default: unknown)")
+    parser.add_argument("--verify", default="",
+                        help="check a sealed bundle and print what it claims: the settings digest, "
+                             "the row count, and the summary RE-DERIVED from rows.jsonl")
     args = parser.parse_args()
+
+    # VERIFYING IS READING, and it reads the rows rather than the stored headline: a figure edited
+    # in place keeps row_count intact, so recomputing the aggregate is the only thing that catches
+    # it. This is what gives load_bundle's recompute a caller outside the tests.
+    if args.verify:
+        directory = Path(args.verify)
+        try:
+            stored = json.loads((directory / "summary.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            stored = {}
+        catalogue = settings_operation_catalogue(directory, stored)
+        try:
+            manifest, rows, summary, settings = benchmark_bundle.load_bundle(
+                directory,
+                lambda loaded: corpus_summary(
+                    loaded, settings_planner_mode(directory), catalogue))
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"bundle at {directory} is NOT verified: {exc}", file=sys.stderr)
+            return 1
+        print(f"bundle at {directory} verified: {len(rows)} row(s)\n"
+              f"  benchmark      {manifest['benchmark']} / {manifest['track']}\n"
+              f"  corpus         {manifest['corpus_name']} ({manifest['redistribution_status']})\n"
+              f"  engine commit  {manifest['engine_commit']}\n"
+              f"  hardware       {manifest['hardware_class']}\n"
+              f"  settings       {len(settings)} key(s), digest {manifest['settings_digest'][:16]}\n"
+              f"  outcomes       {summary.get('outcomes')}")
+        return 0
+
+    # REBUNDLE IS A PACKAGING RUN, NOT A CAD RUN: a recorded rows file already paid for its
+    # evidence, so it is wrapped and sealed here and nothing else happens.
+    if args.rebundle:
+        if not args.bundle:
+            print("--rebundle needs --bundle <dir> to write into", file=sys.stderr)
+            return 2
+        sealed = bundle_from_rows(Path(args.rebundle), Path(args.bundle), track=args.track,
+                                  corpus_name=args.corpus_name, provenance=args.provenance,
+                                  redistribution=args.redistribution,
+                                  engine_commit=args.rebundle_engine_commit,
+                                  hardware_class=args.rebundle_hardware_class)
+        print(f"bundle sealed at {sealed}")
+        return 0
+    if not args.directories:
+        parser.error("directories are required unless --rebundle is given")
 
     files: list[Path] = []
     for directory in args.directories:
@@ -462,14 +824,22 @@ def main() -> int:
         return 2
 
     import meshpipeline.settings.cad_repair as rcfg
-    print(f"CAD_REPAIR_ENABLED={rcfg.CAD_REPAIR_ENABLED}  "
-          f"AUTONOMOUS={rcfg.CAD_REPAIR_AUTONOMOUS}  "
-          f"FILL_PLANAR_HOLES={rcfg.CAD_REPAIR_FILL_PLANAR_HOLES}  "
-          f"FILL_NONPLANAR_HOLES={rcfg.CAD_REPAIR_FILL_NONPLANAR_HOLES}  "
-          f"HEAL_SELF_INTERSECTIONS={rcfg.CAD_REPAIR_HEAL_SELF_INTERSECTIONS}  "
-          f"max_deviation={rcfg.CAD_REPAIR_MAX_DEVIATION_RATIO}  "
-          f"max_tolerance_mm={rcfg.CAD_REPAIR_MAX_TOLERANCE_MM}")
+    repair_settings = repair_settings_of(rcfg)
+    print("  ".join(f"{k}={v}" for k, v in repair_settings.items()))
     print(f"{len(files)} file(s)\n")
+
+    # THE RESOLVED OPTIONS, frozen verbatim into a bundle's settings.json: the CLI knobs and the
+    # repair configuration this run actually saw - everything another engineer needs to re-run it.
+    settings = {
+        "directories": list(args.directories), "limit": args.limit, "planner": args.planner,
+        "reply_cache": args.reply_cache,
+        "cad_repair": repair_settings,
+        # THE CATALOGUE THIS RUN KNEW. summary.catalogue.never_exercised is the one aggregate
+        # field the rows cannot re-derive on their own, so it is recorded here - under the
+        # settings digest - and a later verification recomputes against it instead of against
+        # however many operations the engine has grown by then.
+        "operations_catalogue": operation_catalogue(),
+    }
 
     # A real directory rather than a per-run temp one: the repaired files ARE the evidence, and
     # a reviewer wants to open them after the run rather than watch them be deleted.
@@ -486,49 +856,20 @@ def main() -> int:
             return 2
         print(f"planner={args.planner}  {note}")
 
-    rows = []
-    for path in files:
-        if args.planner == "live":
-            # rules-only FIRST, into its own directory, so the live pass cannot overwrite it
-            rules_dir = scratch / "rules_only"
-            rules_dir.mkdir(parents=True, exist_ok=True)
-            rules_row = _one(path, rules_dir)
-            row = _one(path, scratch, mode="live")
-            row["rules_only"] = rules_row
-        else:
-            row = _one(path, scratch, mode=args.planner)
-        rows.append(row)
-        print(f"{row['outcome']:<28} {row['file'][:52]:<54} "
-              f"before={row.get('defects_before', [])} "
-              f"located={row.get('located_before', {})} "
-              f"-> fixed={row.get('repaired_defects', {})}"
-              + (f" [{row['error'][:90]}]" if row.get("error") else ""))
-        if args.loop:
-            for op in row.get("operations", []) or []:
-                mark = "+" if op.get("status") == "kept" else "-"
-                detail = f" ({op['reason']})" if op.get("reason") else ""
-                print(f"      {mark} {op.get('op', '?'):<20} {op.get('defect_code', ''):<22}"
-                      f"{op.get('status', '')}{detail}")
-            for record in row.get("refusals") or []:
-                print(f"      ! refused {record.get('reason', '?')}: "
-                      f"{record.get('detail', '')}")
-            if row.get("stopped_because"):
-                print(f"      = stopped: {row['stopped_because']} "
-                      f"(resolved={row.get('resolved')})")
+    # ROWS STREAM INTO THE BUNDLE AS THEY ARE PRODUCED; the seal at the end adds the manifest,
+    # settings and the recomputed summary (see public-benchmarks.md, First Implementation Slice).
+    writer = benchmark_bundle.BundleWriter(Path(args.bundle)) if args.bundle else None
+    rows = run_files(files, scratch, mode=args.planner, loop=args.loop, bundle=writer)
+
+    # ONE AGGREGATE. Every section printed below reads this dict, and the bundle seal recomputes
+    # the same function over the same rows, so the console and the evidence cannot disagree.
+    summary = corpus_summary(rows, args.planner)
 
     print("\n== summary ==")
-    outcomes: dict[str, int] = {}
-    for row in rows:
-        key = row["outcome"].split(":")[0] if row["outcome"].startswith("not_attempted") \
-            else row["outcome"]
-        outcomes[key] = outcomes.get(key, 0) + 1
-    for key, count in sorted(outcomes.items(), key=lambda kv: -kv[1]):
+    for key, count in sorted(summary["outcomes"].items(), key=lambda kv: -kv[1]):
         print(f"  {count:>4}  {key}")
 
-    total_fixed: dict[str, int] = {}
-    for row in rows:
-        for code, count in (row.get("repaired_defects") or {}).items():
-            total_fixed[code] = total_fixed.get(code, 0) + count
+    total_fixed = summary["repaired_by_code"]
     if total_fixed:
         print("\n== defects actually repaired, by kind (credited by re-inspection) ==")
         for code, count in sorted(total_fixed.items(), key=lambda kv: -kv[1]):
@@ -536,19 +877,12 @@ def main() -> int:
     else:
         print("\n  no defect was repaired in this corpus")
 
-    routes: dict[str, int] = {}
-    for row in rows:
-        if row.get("route"):
-            routes[row["route"]] = routes.get(row["route"], 0) + 1
     print("\n== what triage advised ==")
-    for route, count in sorted(routes.items(), key=lambda kv: -kv[1]):
+    for route, count in sorted(summary["routes"].items(), key=lambda kv: -kv[1]):
         print(f"  {count:>4}  {route}")
 
     print("\n== why the loop stopped ==")
-    stops: dict[str, int] = {}
-    for row in rows:
-        if row.get("stopped_because"):
-            stops[row["stopped_because"]] = stops.get(row["stopped_because"], 0) + 1
+    stops = summary["stopped_because"]
     for reason, count in sorted(stops.items(), key=lambda kv: -kv[1]):
         print(f"  {count:>4}  {reason}")
     if not stops:
@@ -561,7 +895,7 @@ def main() -> int:
     # A DECLINE IS NOT A FAILURE. An operation that said no, with a reason, is recorded as
     # rolled_back by the session; the `declined:` prefix is what tells the two apart here, so
     # `rolled_back` below counts only operations that ran and did not repair their target.
-    catalogue = summarise_catalogue(rows)
+    catalogue = summary["catalogue"]
     tally = catalogue["tally"]
     for name, counts in sorted(tally.items(), key=lambda kv: -sum(kv[1].values())):
         print(f"  {name:<22} kept={counts['kept']:<4} rolled_back={counts['rolled_back']:<4} "
@@ -570,11 +904,7 @@ def main() -> int:
         print("  nothing was attempted")
 
     print("\n== what the planner refused to attempt ==")
-    refused = [r for row in rows for r in (row.get("refusals") or [])]
-    by_reason: dict[str, int] = {}
-    for record in refused:
-        key = str(record.get("reason", "?"))
-        by_reason[key] = by_reason.get(key, 0) + 1
+    by_reason = summary["refusals_by_reason"]
     for reason, count in sorted(by_reason.items(), key=lambda kv: -kv[1]):
         print(f"  {count:>4}  {reason}")
     if not by_reason:
@@ -596,22 +926,28 @@ def main() -> int:
             print(f"        {name}")
 
     print("\n== heals corroborated by the triangle check ==")
-    kept_heals = [r for r in rows if "heal_corroborated" in r]
-    corroborated = [r for r in kept_heals if r["heal_corroborated"] is True]
-    unknown = [r for r in kept_heals if r["heal_corroborated"] is None]
-    print(f"  corroborated {len(corroborated)} / kept {len(kept_heals)}, unknown {len(unknown)}")
-    for r in kept_heals:
-        if r["heal_corroborated"] is False:
-            print(f"        uncorroborated: {r['file']}")
-        elif r["heal_corroborated"] is None:
-            print(f"        unknown (check could not run): {r['file']}")
+    heals = summary["heals"]
+    print(f"  corroborated {heals['corroborated']} / kept {heals['kept']}, "
+          f"unknown {heals['unknown']}")
+    for name in heals["uncorroborated_files"]:
+        print(f"        uncorroborated: {name}")
+    for name in heals["unknown_files"]:
+        print(f"        unknown (check could not run): {name}")
 
     if args.planner != "off":
-        _print_planner(planner_summary(rows, args.planner), cache)
+        _print_planner(summary["planner"], cache)
 
     if args.json_out:
         Path(args.json_out).write_text(json.dumps(rows, indent=2, default=str))
         print(f"\nrows written to {args.json_out}")
+
+    if writer is not None:
+        sealed = seal_corpus_bundle(
+            writer, rows, roots=[Path(d) for d in args.directories], files=files,
+            settings=settings, track=args.track, corpus_name=args.corpus_name,
+            provenance=args.provenance, redistribution=args.redistribution,
+            planner_mode=args.planner)
+        print(f"bundle sealed at {sealed}")
     return 0
 
 

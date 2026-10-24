@@ -9,7 +9,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 CATALOGUE: tuple[str, ...] = (
-    "fix_small_edges", "fix_face_boundary", "sew_faces", "fill_planar_hole",
+    "fix_small_edges", "fix_small_faces", "fix_face_boundary", "sew_faces", "fill_planar_hole",
     "fill_nonplanar_hole", "heal_self_intersections", "fix_shape_global")
 
 #: The catalogue names that fill a hole, as strings so this layer does not import `cad.repair`.
@@ -17,13 +17,15 @@ CATALOGUE: tuple[str, ...] = (
 FILL_CATALOGUE: tuple[str, ...] = ("fill_planar_hole", "fill_nonplanar_hole")
 
 CATALOGUE_LIMITS = (
-    "the repair catalogue can only merge small edges, fix a face boundary, sew faces, fill a "
-    "planar hole, cap a small curved hole with a constrained patch, re-trim only the faces the "
-    "kernel says cross each other, or run a whole-shape fix; it cannot move, redraw or delete "
-    "geometry, change dimensions, or edit the part by hand")
+    "the repair catalogue can only merge small edges, sweep away a few measured sliver faces, fix "
+    "a face boundary, sew faces, fill a planar hole, cap a small curved hole with a constrained "
+    "patch, re-trim only the faces the kernel says cross each other, or run a whole-shape fix; "
+    "beyond those slivers it cannot move, redraw or delete geometry, change dimensions, or edit "
+    "the part by hand")
 
 CATALOGUE_TEXT = (
     "- fix_small_edges: merge edges too short to keep\n"
+    "- fix_small_faces: sweep away sliver faces too small to keep, if the deployment allows it\n"
     "- fix_face_boundary: repair a face whose boundary is broken or open\n"
     "- sew_faces: stitch faces that should share an edge\n"
     "- fill_planar_hole: cap a flat hole\n"

@@ -224,7 +224,10 @@ class RepairSession:
         after = self._measure(self.shape)
         delta = {"before": before.to_dict(), "after": after.to_dict()}
 
-        refusal = sanity_refusal(before, after)
+        # The face-count twin of the area/volume declarations: only the sliver sweep sets
+        # `faces_removed`, and only a removal of exactly that many is excused (caps.sanity_refusal).
+        refusal = sanity_refusal(before, after, declared_faces_removed=int(
+            outcome.evidence.get("faces_removed", 0) or 0))
         if not refusal:
             projected = self.accounting.plus(outcome.evidence)
             refusal = cumulative_refusal(

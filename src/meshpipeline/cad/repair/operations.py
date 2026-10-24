@@ -371,6 +371,226 @@ class FixFaceBoundary:
                                    "precision_mm": float(tolerance_mm)})
 
 
+#: How many faces one sweep may remove. The sweep exists for WRITING DEBRIS - the strip a Boolean
+#: that just missed leaves behind, the spot a translator invents - and debris comes in ones and
+#: handfuls. A part carrying more slivers than this is sliver-faced by construction (a lattice, an
+#: imported mesh, a modelling style), and removing a region of such a part is a rewrite, which is
+#: an operator's decision. A module constant, not a setting (catalogue-growth ruling 1): it is the
+#: operation's own isolation bound, like MAX_HEAL_FACES, not a cap.
+MAX_SMALL_FACE_REMOVALS = 20
+
+
+def _sliver_owner_faces(shape, edge) -> list:
+    """The faces beside `edge` - the candidates a sliver edge's defect is answered through."""
+    from OCP.TopoDS import TopoDS
+
+    ancestors = _face_edge_owners(shape)
+    if not ancestors.Contains(edge):
+        return []
+    return [TopoDS.Face_s(owner) for owner in ancestors.FindFromKey(edge)]
+
+
+def _swept_away(context, shape, result) -> list:
+    """The faces of `shape` that do not survive into `result`, read from the fixer's history.
+
+    RESOLVED TRANSITIVELY, because one step is not the answer: a strip merged into its neighbour
+    is recorded as replaced by a FACE, and that replacement is itself consumed by the next merge -
+    on a real part four faces went while single-step reading saw two nulls. A face survives only
+    when its replacement chain ends at a face the RESULT actually contains; anything else - a null,
+    a non-face, a face the result does not hold - is gone, and its area is measured from the
+    ORIGINAL, which is the thing that was removed.
+    """
+    from OCP.TopAbs import TopAbs_FACE
+
+    from meshpipeline.cad.repair.localize import _indexed
+
+    survivors = _indexed(result, TopAbs_FACE)
+    originals = _indexed(shape, TopAbs_FACE)
+    gone = []
+    for i in range(1, originals.Extent() + 1):
+        face = originals.FindKey(i)
+        current, dead = face, False
+        for _ in range(originals.Extent() + 1):   # a chain longer than the face count is a cycle
+            try:
+                if not context.IsRecorded(current):
+                    break
+                value = context.Value(current)
+            except Exception as exc:  # noqa: BLE001 - an unreadable record is not a survival
+                logger.debug("fix_small_faces: unreadable history for a face (%s)", exc)
+                dead = True
+                break
+            if value is None or (hasattr(value, "IsNull") and value.IsNull()):
+                dead = True
+                break
+            if value.IsSame(current):
+                break
+            current = value
+        if not dead and (current.ShapeType() != TopAbs_FACE or not survivors.Contains(current)):
+            dead = True
+        if dead:
+            gone.append(face)
+    return gone
+
+
+class FixSmallFaces:
+    """Remove the sliver faces a Boolean or translator left behind, and account for every one.
+
+    THE ONE OPERATION IN THE CATALOGUE THAT REMOVES GEOMETRY, which is why everything about it is
+    double-checked rather than trusted:
+
+      CONSENT   - `CAD_REPAIR_FIX_SMALL_FACES`, its own flag, off by default. `targets_for`
+                  answers () while it is off (so the rules planner never proposes it) and `apply`
+                  declines (so a directive cannot reach past the planner).
+      AIM       - it re-measures what it was aimed at against the SAME criterion the localiser
+                  used to report a sliver (`SMALL_FACE_AREA_FRACTION` of the part's total face
+                  area). A face target must itself be that small; an edge target must have a face
+                  that small beside it. Anything else is declined, not trusted: a model planner
+                  may name any entity it likes.
+      RESULT    - `ShapeFix_FixSmallFace` runs whole-shape (its spot and strip fixes need the
+                  neighbours they merge the sliver into, exactly `fix_small_edges`' constraint),
+                  so what it REMOVED is read back from its history (`_swept_away`) and judged:
+                  every removed face must be sliver-sized by the same criterion, and there may be
+                  at most MAX_SMALL_FACE_REMOVALS of them. Either failure declines with the input
+                  handed back unchanged.
+      ACCOUNT   - the kept outcome declares `faces_removed`, and the session's sanity cap accepts
+                  a face-count drop of exactly that many and refuses anything beyond it - so a
+                  strip fix that quietly took a neighbour with it is rolled back as damage even
+                  though each individual removal looked legitimate.
+
+    WHY IT ALSO ANSWERS `small_edge`. A sliver face's own edges are slivers too, and on a real
+    part the inspection often finds the edges first. `fix_small_edges` cannot merge them - the
+    solid's topology forbids it - so a file whose debris was found edge-first burned the stall
+    budget on edge fixes and this operation was never proposed. Removing the owning sliver face
+    IS the answer to such an edge; an edge whose faces are all real-sized is declined (`not_small`)
+    and stays `fix_small_edges`' question.
+
+    THE DETECTION SCALE. The fixer finds a strip by its width against the precision it is given.
+    A sliver is sliver-sized relative to the PART (the localiser's criterion is an area fraction),
+    so a fixed precision misses every strip on a large part. The sweep therefore detects up to
+    `diagonal x CAD_REPAIR_MAX_DEVIATION_RATIO` - merging a strip moves the boundary by about the
+    strip's width, and that ratio is precisely how far this deployment has said a repair may move
+    the surface. The kernel may still inflate a tolerance past CAD_REPAIR_MAX_TOLERANCE_MM to make
+    a merge close (it does not obey SetMaxTolerance here, measured); the cumulative cap then rolls
+    the attempt back, which is the right verdict on a merge that needed a geometry lie.
+
+    AREA IS DELIBERATELY NOT DECLARED. Removing a strip extends the neighbouring faces to close
+    the gap, so the net surface change is not the sliver's own area and has either sign; each
+    sliver is under 1e-5 of the part by the checks above, so even a full sweep sits far inside
+    the cumulative residual, which is the honest judge of it.
+
+    `FixSplitFace`/`FixPinFace` are NOT called: both rebuild faces that are not slivers, and this
+    operation's licence is debris only.
+    """
+
+    name = "fix_small_faces"
+    answers = frozenset({DefectCode.small_face, DefectCode.small_edge})
+    scope = 3
+
+    def targets_for(self, defect) -> tuple[EntityRef, ...]:
+        import meshpipeline.settings.cad_repair as rcfg
+
+        if not rcfg.CAD_REPAIR_FIX_SMALL_FACES:
+            return ()
+        if getattr(defect, "code", None) not in self.answers:
+            return ()
+        if defect.entity_type not in ("face", "edge") or not getattr(defect, "fingerprint", ""):
+            return ()
+        return (EntityRef(entity_type=str(defect.entity_type), fingerprint=defect.fingerprint,
+                          entity_index=int(defect.entity_index),
+                          ambiguous=bool(getattr(defect, "ambiguous", False))),)
+
+    def apply(self, shape, targets: tuple[EntityRef, ...], *,
+              tolerance_mm: float) -> OpOutcome:
+        from OCP.ShapeFix import ShapeFix_FixSmallFace
+
+        import meshpipeline.settings.cad_repair as rcfg
+        from meshpipeline.cad.repair.localize import (
+            SMALL_FACE_AREA_FRACTION,
+            _diagonal,
+            _face_area,
+        )
+
+        if not rcfg.CAD_REPAIR_FIX_SMALL_FACES:
+            return OpOutcome(shape=shape, evidence={
+                "declined": "sweeping_disabled (CAD_REPAIR_FIX_SMALL_FACES)"})
+
+        resolved = [(ref, sub) for ref in targets
+                    if (sub := sub_shape(shape, ref.entity_type, ref.entity_index)) is not None]
+        if not resolved:
+            # NOTHING RESOLVED is not a failure, as in `fix_small_edges`: a stale index lands
+            # here, and the session rolls this back for making no progress rather than raising.
+            return OpOutcome(shape=shape, evidence={"faces_targeted": len(targets),
+                                                    "faces_removed": 0})
+
+        # THE AIM CHECK, against the localiser's own criterion rather than the fixer's. The fixer
+        # judges by width against the precision; the defect was reported by area fraction, and the
+        # area fraction is what makes "this is debris, not a feature" defensible. An edge target
+        # is answered through the sliver face beside it, so that face is what must be small.
+        threshold = SMALL_FACE_AREA_FRACTION * _total_face_area(shape)
+        for ref, sub in resolved:
+            if ref.entity_type == "face":
+                small = _face_area(sub) < threshold
+            else:
+                owners = _sliver_owner_faces(shape, sub)
+                small = any(_face_area(owner) < threshold for owner in owners)
+            if not small:
+                return OpOutcome(shape=shape, evidence={
+                    "declined": f"not_small (a targeted {ref.entity_type} is not, and is beside "
+                                f"no face under, the {threshold:.6g} mm2 sliver threshold)",
+                    "faces_targeted": len(targets)})
+
+        diagonal = _diagonal(shape)
+        # THE DETECTION SCALE - see the class docstring. Never below the requested tolerance, and
+        # proportional to the part past that, because a sliver is sliver-sized relative to the part.
+        precision = max(float(tolerance_mm), diagonal * rcfg.CAD_REPAIR_MAX_DEVIATION_RATIO)
+        fixer = ShapeFix_FixSmallFace()
+        fixer.Init(shape)
+        fixer.SetPrecision(precision)
+        fixer.SetMaxTolerance(precision)
+        # SPOTS AND STRIPS ONLY - the two fixes that remove a sliver by merging it into its
+        # neighbours. `False` asks FixStripFace to find strips itself rather than trust a prior
+        # pass's flag.
+        fixer.FixSpotFace()
+        fixer.FixStripFace(False)
+        fixed = fixer.Shape()
+        context = fixer.Context()
+
+        # WHAT ACTUALLY WENT, read from the kernel's own history over EVERY face of the input -
+        # not only the targets, because the whole-shape fixer may sweep slivers nobody aimed at,
+        # and each of those must pass the same size judgement or the sweep is declined whole.
+        removed_areas = [_face_area(face) for face in _swept_away(context, shape, fixed)]
+
+        if not removed_areas:
+            # The fixer found nothing it was willing to merge away. UNCHANGED MEANS UNCHANGED
+            # (SewFaces' rule): the original object goes back, and the progress rule reports the
+            # honest "target_remains".
+            return OpOutcome(shape=shape, evidence={"faces_targeted": len(targets),
+                                                    "faces_removed": 0})
+        if len(removed_areas) > MAX_SMALL_FACE_REMOVALS:
+            return OpOutcome(shape=shape, evidence={
+                "declined": f"swept_too_many ({len(removed_areas)} faces removed, over the "
+                            f"{MAX_SMALL_FACE_REMOVALS} one sweep may)",
+                "faces_targeted": len(targets)})
+        overswept = [a for a in removed_areas if a >= threshold]
+        if overswept:
+            return OpOutcome(shape=shape, evidence={
+                "declined": f"swept_a_real_face ({len(overswept)} removed face(s) at or over "
+                            f"the {threshold:.6g} mm2 sliver threshold)",
+                "faces_targeted": len(targets)})
+
+        mapping = mapping_from_context(context, targets, shape_before=shape,
+                                       diagonal_mm=diagonal)
+        return OpOutcome(shape=fixed, mapping=mapping,
+                         # DECLARED, so the session's sanity cap accepts exactly this many faces
+                         # fewer and refuses one more. `area_removed_mm2` is for the reviewer; the
+                         # accounting deliberately does not read it (see the class docstring).
+                         evidence={"faces_removed": len(removed_areas),
+                                   "area_removed_mm2": round(sum(removed_areas), 6),
+                                   "faces_targeted": len(targets),
+                                   "precision_mm": float(precision),
+                                   "tolerance_mm": float(tolerance_mm)})
+
+
 def mapping_from_sewing(sewing, targets: tuple[EntityRef, ...], *,
                         shape_before, diagonal_mm: float) -> EntityMapping:
     """Read `BRepBuilderAPI_Sewing`'s own history into a fingerprint mapping.
@@ -1463,6 +1683,7 @@ class FixShapeGlobal:
 OPERATIONS: tuple[RepairOp, ...] = (
     FixSmallEdges(),
     FixFaceBoundary(),
+    FixSmallFaces(),
     SewFaces(),
     FillPlanarHole(),
     FillNonplanarHole(),

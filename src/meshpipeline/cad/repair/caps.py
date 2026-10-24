@@ -103,11 +103,18 @@ def measure(shape) -> Measure:
         volume_mm3=float(extent.get("volume_mm3") or 0.0))
 
 
-def sanity_refusal(before: Measure, after: Measure) -> str:
+def sanity_refusal(before: Measure, after: Measure, *,
+                   declared_faces_removed: int = 0) -> str:
     """Did THIS operation damage the shape? Counts and validity only. "" accepts.
 
     Deliberately cheap: it runs before the re-inspection so that a destroyed solid costs no
     `localize_scan`.
+
+    `declared_faces_removed` is the face-count twin of the area declaration: the sliver sweep
+    (`operations.FixSmallFaces`) states how many faces it removed, having verified each one is
+    debris, and exactly that many fewer faces is accepted. One face beyond the declaration is
+    still refused - accounted for, never allowed - and silence still means zero, so every other
+    operation keeps the prior rule to the byte.
     """
     if after.faces == 0:
         return "the operation left no faces to mesh"
@@ -116,9 +123,13 @@ def sanity_refusal(before: Measure, after: Measure) -> str:
         # surfaces, which most meshers either refuse or quietly mesh as something else.
         return (f"the operation lost {before.solids - after.solids} solid(s) - a closed body "
                 "became loose surfaces, which is damage rather than repair")
-    if after.faces < before.faces and not rcfg.CAD_REPAIR_ALLOW_FACE_REMOVAL:
-        # DELETING A FACE IS DEFEATURING, a judgement about what the part is for.
-        return (f"the operation removed {before.faces - after.faces} face(s); deleting geometry "
+    removed = before.faces - after.faces
+    if (removed > max(0, int(declared_faces_removed))
+            and not rcfg.CAD_REPAIR_ALLOW_FACE_REMOVAL):
+        # DELETING A FACE IS DEFEATURING, a judgement about what the part is for - unless an
+        # operation licensed to sweep slivers declared exactly this removal.
+        return (f"the operation removed {removed} face(s), "
+                f"{max(0, int(declared_faces_removed))} declared; deleting geometry "
                 "is an operator decision, not a conservative repair")
     if before.valid and not after.valid:
         return "the operation turned a valid shape into an invalid one"

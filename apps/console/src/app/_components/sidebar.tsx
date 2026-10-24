@@ -4,20 +4,24 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
-import { CONSOLE_SECTIONS, currentSection } from "@/app/_components/sections";
+import { CONSOLE_SECTIONS, currentSection, visibleSections } from "@/app/_components/sections";
 
 type SidebarProps = {
   email: string;
   credits: string;
+  /** The server-side CAD_REPAIR_POC switch, read by the layout; a Client Component cannot read
+   *  the env itself. */
+  repairPoc: boolean;
   /** Rendered, never imported: SignOutButton's inline "use server" action cannot be reached
    *  from a Client Component's import graph. The layout builds it and hands it over. */
   signOut: React.ReactNode;
 };
 
-export function Sidebar({ credits, email, signOut }: SidebarProps) {
+export function Sidebar({ credits, email, repairPoc, signOut }: SidebarProps) {
   const current = currentSection(usePathname());
-  const product = CONSOLE_SECTIONS.filter((section) => section.group === "product");
-  const account = CONSOLE_SECTIONS.filter((section) => section.group === "account");
+  const sections = visibleSections(repairPoc);
+  const product = sections.filter((section) => section.group === "product");
+  const account = sections.filter((section) => section.group === "account");
 
   return (
     <aside className="sidebar">

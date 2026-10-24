@@ -863,7 +863,12 @@ def repair_step_file(source: Path, destination: Path, *,
                       **{k: x for k, x in v.to_dict().items() if k != "op"}}
                      for v in result.verdicts)
 
-    refusal = (sanity_refusal(original, final)
+    # The kept sweeps' face removals, like the kept fills' area: the after-check must be handed
+    # the run's declarations or it would refuse at the last step the very removal the session
+    # verified operation by operation.
+    declared_faces = sum(int(v.evidence.get("faces_removed", 0) or 0)
+                         for v in result.verdicts if v.kept)
+    refusal = (sanity_refusal(original, final, declared_faces_removed=declared_faces)
                or cumulative_refusal(original, final, declared_area_mm2=declared_area,
                                      declared_volume_mm3=declared_volume))
     if refusal:
