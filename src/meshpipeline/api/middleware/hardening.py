@@ -2,6 +2,7 @@
 # Boundaries: transport-level protection; it authorises nothing.
 from __future__ import annotations
 
+import hashlib
 import hmac
 import logging
 import time
@@ -67,8 +68,11 @@ def caller_identity(scope) -> tuple[str, bool]:
     from (2026-10-24: keyed on X-User-Id else the client address, every API-key caller and every
     browser behind Cloud Run shared ONE bucket of 240 a minute, so one busy client throttled all):
 
-      a bearer API key      -> its public prefix (mk_live_<id>); proven later, by api/security.py,
-                               which also holds the key's owner to its plan's rate
+      a bearer API key      -> a digest of the WHOLE presented key, never its public prefix alone:
+                               a prefix is shown in the console and in logs, and a stranger sending
+                               that prefix with a wrong secret must not spend the real key's bucket.
+                               Proven later by api/security.py, which also holds the key's owner to
+                               its plan's rate
       a signed X-User-Id    -> that user (the signature is checked here; it is one HMAC)
       X-User-Id, no secret  -> that user (dev and single-tenant: identity is self-asserted there)
       anything else         -> the caller's own address (client_address)
@@ -80,19 +84,20 @@ def caller_identity(scope) -> tuple[str, bool]:
     headers = dict(scope.get("headers", []))
     scheme, _, presented = headers.get(b"authorization", b"").decode("latin-1").strip().partition(" ")
     if scheme.lower() == "bearer":
-        key = api_key.parse(presented.strip())
-        if key is not None:
-            return f"key:{key.key_prefix}", False
+        token = presented.strip()
+        if api_key.parse(token) is not None:
+            return f"key:{hashlib.sha256(token.encode('latin-1')).hexdigest()[:32]}", False
     user = headers.get(b"x-user-id", b"").decode("latin-1").strip()
     if user:
         import meshpipeline.settings.policy as polcfg
 
         if not polcfg.USER_TOKEN_SECRET:
             return f"user:{user}", False
-        sig = headers.get(b"x-user-sig", b"").decode("latin-1").strip()
+        # compared as BYTES: compare_digest refuses a non-ASCII str, and a header can carry any byte
+        sig = headers.get(b"x-user-sig", b"").strip()
         from meshpipeline.api.security import expected_user_sig
 
-        if sig and hmac.compare_digest(sig, expected_user_sig(user)):
+        if sig and hmac.compare_digest(sig, expected_user_sig(user).encode("ascii")):
             return f"user:{user}", True
     return f"addr:{client_address(scope)}", False
 
@@ -110,7 +115,9 @@ class RateLimitMiddleware:
         # here. A caller presenting an API key is additionally held to its own plan's rate, where
         # that plan IS known (api/security.py).
         limit = plans.limits_for(None).rate_limit_per_minute
-        if scope["type"] != "http" or limit <= 0:
+        ceilings = (int(rtcfg.RATE_LIMIT_GLOBAL_PER_MINUTE), int(rtcfg.RATE_LIMIT_ADDRESS_CEILING_PER_MINUTE))
+        # each limit is its own switch: the per-caller rate at 0 leaves the safety ceilings running
+        if scope["type"] != "http" or (limit <= 0 and all(c <= 0 for c in ceilings)):
             return await self.app(scope, receive, send)
         path = scope.get("path", "")
         if _is_exempt(path):
@@ -123,10 +130,16 @@ class RateLimitMiddleware:
         #              keys or user ids from one address cannot spread itself over fresh buckets.
         #              A caller with a valid signature is exempt - the console signs for every user
         #              from one address, and it must never throttle all of them as one.
-        buckets = [(ident, limit)]
-        if not proven and not ident.startswith("addr:"):
-            buckets.insert(0, (f"addr:{client_address(scope)}", int(rtcfg.RATE_LIMIT_ADDRESS_CEILING_PER_MINUTE)))
-        buckets.insert(0, ("global", int(rtcfg.RATE_LIMIT_GLOBAL_PER_MINUTE)))
+        global_ceiling, address_ceiling = ceilings
+        if ident.startswith("addr:"):
+            # an anonymous caller IS its address: one bucket, held to the lower of the two
+            on = [c for c in (limit, address_ceiling) if c > 0]
+            buckets = [(ident, min(on) if on else 0)]
+        else:
+            buckets = [(ident, limit)]
+            if not proven:
+                buckets.insert(0, (f"addr:{client_address(scope)}", address_ceiling))
+        buckets.insert(0, ("global", global_ceiling))
         window = int(time.time() // 60)
         over = False
         for bucket, ceiling in buckets:

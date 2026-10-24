@@ -216,3 +216,38 @@ def test_the_global_ceiling_holds_every_caller_together(monkeypatch):
     codes = [_get(client, Authorization=f"Bearer {_key()}", **{"X-Forwarded-For": f"198.51.100.{i}"})
              for i in range(6)]
     assert codes == [200, 200, 200, 200, 429, 429]
+
+
+def test_a_strangers_wrong_secret_under_a_real_keys_prefix_does_not_spend_its_bucket(monkeypatch):
+    """A key's public prefix is shown in the console and in logs: the bucket is the whole key."""
+    _limits(monkeypatch)
+    client = _client(monkeypatch, limit=2, fake=_FakeRateLimitStore())
+    real = _key()
+    prefix = real.rsplit("_", 1)[0]
+    for i in range(3):
+        _get(client, Authorization=f"Bearer {prefix}_wrongsecret{i}", **{"X-Forwarded-For": "198.51.100.66"})
+    assert _get(client, Authorization=f"Bearer {real}", **{"X-Forwarded-For": "203.0.113.8"}) == 200
+
+
+def test_the_ceilings_still_run_when_the_per_caller_rate_is_off(monkeypatch):
+    _limits(monkeypatch, global_=2)
+    client = _client(monkeypatch, limit=0, fake=_FakeRateLimitStore())
+    codes = [_get(client, **{"X-Forwarded-For": f"198.51.100.{i}"}) for i in range(3)]
+    assert codes == [200, 200, 429]
+
+
+def test_an_anonymous_address_is_held_to_the_lower_of_its_rate_and_the_address_ceiling(monkeypatch):
+    _limits(monkeypatch, address=2)
+    client = _client(monkeypatch, limit=100, fake=_FakeRateLimitStore())
+    codes = [_get(client, **{"X-Forwarded-For": "198.51.100.77"}) for _ in range(3)]
+    assert codes == [200, 200, 429]
+
+
+def test_a_signature_with_bytes_no_hex_digest_has_is_refused_never_an_error(monkeypatch):
+    import meshpipeline.settings.policy as polcfg
+
+    monkeypatch.setattr(polcfg, "USER_TOKEN_SECRET", "s3cret")
+    _limits(monkeypatch)
+    client = _client(monkeypatch, limit=5, fake=_FakeRateLimitStore())
+    r = client.get("/api/v1/thing", headers=[("X-User-Id", "u1"), ("X-User-Sig", "café".encode("latin-1"))])
+    assert r.status_code == 200          # counted at its address, like any unproven caller
