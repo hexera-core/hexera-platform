@@ -94,4 +94,26 @@ def run_engine_local(workspace: Any, *, engine: str, timeout: int) -> dict:
         scope = None
     if scope and isinstance(out, dict):
         out["return_scope"] = scope
+    if isinstance(out, dict):
+        # WHAT IS SENT HOME, MEASURED: the worker sizes the bounded extraction of an FEA mesh by these
+        # bytes (adapters/mesh_execution/cloud_run_client.result_extraction_limits), so a valid FEA
+        # mesh is never lost on the way back for being bigger than a flow mesh's per-cell guess
+        try:
+            out["returned_bytes"] = returned_bytes(workspace)
+        except Exception:  # noqa: BLE001 - a measurement, never a reason to fail a run
+            pass
     return out
+
+
+def returned_bytes(workspace: Any) -> dict:
+    """{raw, largest, fea}: the workspace's total file bytes, its largest file and whether it is an
+    FEA plan's workspace - measured on the mesher just before the workspace is archived."""
+    from pathlib import Path
+    ws = Path(workspace)
+    raw = largest = 0
+    for f in ws.rglob("*"):
+        if f.is_file() and not f.is_symlink():
+            n = f.stat().st_size
+            raw += n
+            largest = max(largest, n)
+    return {"raw": int(raw), "largest": int(largest), "fea": (ws / "fea_plan.json").exists()}

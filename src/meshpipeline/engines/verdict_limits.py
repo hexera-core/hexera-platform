@@ -169,8 +169,9 @@ def gating_rows(engine: str, manifest: Mapping) -> list[dict]:
             for c in crit if c.gating and c.key not in BUILD_TIME_KEYS and c.key not in skip]
 
 
-#: Gating rows an FEA mesh reads as notes instead (they are fea_limits rows).
-FEA_NOTE_ONLY = ("elements_under_floor",)
+#: Gating rows an FEA mesh does not gate on: the note floor (a fea_limits note row) and the CFD face
+#: non-orthogonality, a flow-solver measure that says nothing about an FE mesh.
+FEA_NOTE_ONLY = ("elements_under_floor", "max_non_ortho")
 
 
 def inputs_for(*, engine: str, topology: str, manifest: Mapping | None, valid: bool,

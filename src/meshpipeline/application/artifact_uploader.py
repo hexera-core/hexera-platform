@@ -200,6 +200,38 @@ def verify_archive(path: Path, spec) -> None:
         raise BundleContractError(f"{spec.name}: archive does not carry the declared marker")
 
 
+def is_fea_workspace(workspace: Path) -> bool:
+    """Whether the delivered mesh is an FEA plan's - read as the verdict reads it (the manifest's
+    quality.fea.plan), not by a file a workspace may merely carry."""
+    try:
+        q = (json.loads((Path(workspace) / "mesh_manifest.json").read_text()) or {}).get("quality") or {}
+    except (OSError, ValueError, AttributeError):
+        return False
+    if not isinstance(q, dict):
+        return False
+    fea = q.get("fea")
+    return bool(isinstance(fea, dict) and fea.get("plan")) or str(q.get("quality_bar") or "") == "fea"
+
+
+def fea_viewer_fallback(workspace: Path, why: str) -> dict:
+    """The viewer payload of an FEA mesh whose surface could not be rendered: no surface to draw, the
+    FEA result block (checks, solvers, downloads) and the note - the result screen still opens."""
+    from meshpipeline.engines.fea_results import FEA_VIEW_MISSING
+
+    logger.warning("FEA viewer: the 3D view was not built (%s); the mesh is delivered without it", why[:300])
+    fea = None
+    try:
+        from meshpipeline.engines.fea_results import results
+        fea = results(workspace)
+    except Exception:  # noqa: BLE001 - the note still stands
+        logger.warning("FEA viewer: the result block could not be built either", exc_info=True)
+    surface: dict = {"kind": "stl", "mesh_units": "m", "patches": [], "view_note": FEA_VIEW_MISSING}
+    if fea:
+        surface["fea"] = {**fea, "view_note": FEA_VIEW_MISSING}
+    return {"engine": "gmsh", "mesh_available": True, "surface": surface, "quality": {}, "review": None,
+            "view_note": FEA_VIEW_MISSING}
+
+
 def fea_export_plan(job_id: uuid.UUID, workspace: Path) -> list[_Planned]:
     """AN FEA MESH'S SOLVER FILES, one download each (FEA build step 6: mesh once, export many - the
     user picks the solver at download). Each is an optional `mesh` row under its own logical key;
@@ -275,11 +307,20 @@ def _build_plan(job_id: uuid.UUID, workspace: Path, scratch: list[Path],
         ViewerPayloadError,
         build_viewer_payload,
     )
+    # AN FEA MESH is delivered whether or not its 3D view can be built: the deck and the solver
+    # files are the deliverable, and the result screen says the view is missing (Areen, 24 Oct)
+    _fea = is_fea_workspace(workspace)
     try:
         _payload = build_viewer_payload(workspace)
     except ViewerPayloadError as exc:
-        raise BundleContractError(
-            f"{spec.name}: the delivered mesh produces no viewer payload ({exc})") from exc
+        if not _fea:
+            raise BundleContractError(
+                f"{spec.name}: the delivered mesh produces no viewer payload ({exc})") from exc
+        _payload = fea_viewer_fallback(workspace, str(exc))
+    except Exception as exc:  # noqa: BLE001 - only for FEA: a view that cannot be built is a note
+        if not _fea:
+            raise
+        _payload = fea_viewer_fallback(workspace, f"{type(exc).__name__}: {exc}")
     _vfd, _vname = tempfile.mkstemp(prefix="viewer_", suffix=".json", dir=str(workspace))
     os.close(_vfd)
     _vpath = Path(_vname)
@@ -288,7 +329,8 @@ def _build_plan(job_id: uuid.UUID, workspace: Path, scratch: list[Path],
     plan.append(_Planned(ArtifactType.viewer_data, VIEWER_LOGICAL_KEY,
                          f"jobs/{job_id}/{VIEWER_LOGICAL_KEY}.json",
                          "application/json", _vpath,
-                         required=is_required_class(spec.name, VIEWER_LOGICAL_KEY)))
+                         required=is_required_class(spec.name, VIEWER_LOGICAL_KEY,
+                                                    "structural" if _fea else "")))
     plan.append(_Planned(ArtifactType.mesh_bundle, ArtifactType.mesh_bundle.value,
                          f"jobs/{job_id}/{_recipe.bundle}",
                          "application/gzip", _tmp,

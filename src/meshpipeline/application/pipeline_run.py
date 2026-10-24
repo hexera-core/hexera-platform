@@ -891,6 +891,7 @@ async def _run_async(req: JobRequest) -> dict:
         # the status it is entitled to. Both rules live in final_result: each exists because a
         # specific way of over-claiming success was possible, and they are policy, not sequencing.
         from meshpipeline.application.final_result import (
+            MEASURED_LIMITS_GATE,
             RunOutcome,
             derive_terminal_status,
             review_blocking,
@@ -948,6 +949,7 @@ async def _run_async(req: JobRequest) -> dict:
         # ONCE afterwards, so a client never sees 'succeeded' before the mesh is fetchable.
         _decision = derive_terminal_status(_run_outcome, job_id=job_id, jlog=jlog)
         final_status, _failed_reason = _decision.status, _decision.failed_reason
+        _limits_failed = tuple(getattr(_decision, "limits_failed", ()) or ())
         # THE VERDICT BY MEASURED LIMITS, beside the one that decided (docs/RULES.md VER-1..4):
         # one `verdict shadow:` log line and the verdict's entry in the why record, every run.
         from meshpipeline.application.final_result import record_verdict
@@ -1142,9 +1144,14 @@ async def _run_async(req: JobRequest) -> dict:
                 approved_snapshot_id=str(final_state.get("approved_snapshot_id", "") or ""),
                 executor_success=bool(final_state.get("executor_success", False)),
                 reviewer_verdict=str(final_state.get("reviewer_verdict", "") or ""),
-                failed_gate=str(final_state.get("executor_failed_gate", "") or ""),
-                failure_cause=str(final_state.get("executor_failure_cause", "") or ""),
-                failure_facts=dict(final_state.get("executor_failure_facts") or {}),
+                # A MESH THE MEASURED LIMITS REFUSED is told as the check it failed (row, measured,
+                # limit), never as "could not be stored for download"
+                failed_gate=(MEASURED_LIMITS_GATE if _limits_failed
+                             else str(final_state.get("executor_failed_gate", "") or "")),
+                failure_cause=("mesh_quality" if _limits_failed
+                               else str(final_state.get("executor_failure_cause", "") or "")),
+                failure_facts=({"checks": [dict(c) for c in _limits_failed]} if _limits_failed
+                               else dict(final_state.get("executor_failure_facts") or {})),
                 api_failure=api_failure,
                 review_reruns=int(final_state.get("review_rerun_count", 0) or 0),
                 attempts=int(final_state.get("retry_count", 0) or 0),
