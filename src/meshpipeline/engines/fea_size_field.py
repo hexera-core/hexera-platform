@@ -367,22 +367,20 @@ class SizeField:
         n = plan_workers() if workers is None else max(1, int(workers))
         if n <= 1:
             return self._histogram(coarsest=coarsest, per_h3=per_h3, stop_elements=stop_elements, pool=None)
-        import multiprocessing as mp
-        from concurrent.futures import ProcessPoolExecutor
-
-        # SPAWNED, never forked: the planner runs in a worker thread of an event loop
-        with ProcessPoolExecutor(max_workers=n, mp_context=mp.get_context("spawn"),
-                                 initializer=_worker_init, initargs=(self._spec,)) as pool:
-            return self._histogram(coarsest=coarsest, per_h3=per_h3, stop_elements=stop_elements,
-                                   pool=(pool, n))
+        # PLAIN CHILD PROCESSES, never forked (the planner runs in a worker thread of an event loop) and
+        # never multiprocessing's spawn (it re-imports the caller's main module, which a script without
+        # a main guard runs again): `python -m` this module, fed by pipes
+        pool = _Pool(self._spec, n)
+        try:
+            return self._histogram(coarsest=coarsest, per_h3=per_h3, stop_elements=stop_elements, pool=pool)
+        finally:
+            pool.close()
 
     def _on(self, pool, what: str, p: np.ndarray, r: float):
         """self.signed(p) or self.sizes(p, r) - in slices on the workers when the level is big enough."""
         if pool is None or len(p) < PARALLEL_MIN_POINTS:
             return self.signed(p) if what == "signed" else self.sizes(p, r)
-        ex, n = pool
-        k = 4 * n
-        parts = list(ex.map(_worker_call, [what] * k, np.array_split(p, k), [r] * k))
+        parts = pool.map(what, np.array_split(p, 4 * pool.n), r)
         if what == "signed":
             return np.concatenate(parts)
         return np.concatenate([a for a, _b in parts]), np.concatenate([b for _a, b in parts])
@@ -450,19 +448,92 @@ def plan_workers() -> int:
     return max(1, min(MAX_WORKERS, job_cpus()))
 
 
-_FIELD: SizeField | None = None
+class _Pool:
+    """`n` child processes (`python -m meshpipeline.engines.fea_size_field`), each holding the same
+    field, measuring slices of an octree level. One thread per child sends a slice and reads its
+    answer (pickles over the child's pipes), so no pipe fills while another waits."""
+
+    def __init__(self, spec, n: int):
+        import pickle
+        import subprocess
+        import sys
+
+        self.n = int(n)
+        self.procs = [subprocess.Popen([sys.executable, "-m", "meshpipeline.engines.fea_size_field"],
+                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE) for _ in range(self.n)]
+        for proc in self.procs:
+            pickle.dump(("init", spec), proc.stdin, protocol=pickle.HIGHEST_PROTOCOL)  # type: ignore[arg-type]
+            proc.stdin.flush()  # type: ignore[union-attr]
+
+    def _ask(self, proc, job):
+        import pickle
+        pickle.dump(job, proc.stdin, protocol=pickle.HIGHEST_PROTOCOL)
+        proc.stdin.flush()
+        ok, value = pickle.load(proc.stdout)  # noqa: S301 - our own child, over its own pipe
+        if not ok:
+            raise RuntimeError(f"a size-field worker failed: {value}")
+        return value
+
+    def map(self, what: str, chunks: list, r: float) -> list:
+        from concurrent.futures import ThreadPoolExecutor
+
+        out: list = [None] * len(chunks)
+
+        def run(k: int) -> None:
+            proc = self.procs[k]
+            for i in range(k, len(chunks), self.n):
+                out[i] = self._ask(proc, (what, chunks[i], r))
+
+        with ThreadPoolExecutor(max_workers=self.n) as ex:
+            list(ex.map(run, range(self.n)))
+        return out
+
+    def close(self) -> None:
+        import pickle
+        for proc in self.procs:
+            try:
+                pickle.dump(("stop", None), proc.stdin)  # type: ignore[arg-type]
+                proc.stdin.close()  # type: ignore[union-attr]
+            except Exception:  # noqa: BLE001 - a child already gone is closed
+                proc.kill()
+        for proc in self.procs:
+            try:
+                proc.wait(timeout=30)
+            except Exception:  # noqa: BLE001 - one that will not stop is killed
+                proc.kill()
 
 
-def _worker_init(spec) -> None:
-    global _FIELD
+def _serve() -> None:
+    """A child of _Pool: build the field once, then answer each slice until told to stop. Its answers go
+    on a private copy of stdout; anything else written to stdout goes to stderr."""
+    import os
+    import pickle
+    import sys
     from types import SimpleNamespace
-    surf, zones, growth, scale = spec
-    _FIELD = SizeField(SimpleNamespace(**surf), zones, growth=growth, scale_to_m=scale)
 
-
-def _worker_call(what: str, p: np.ndarray, r: float):
-    assert _FIELD is not None
-    return _FIELD.signed(p) if what == "signed" else _FIELD.sizes(p, r)
+    out = os.fdopen(os.dup(1), "wb")
+    os.dup2(2, 1)
+    field: SizeField | None = None
+    src = sys.stdin.buffer
+    while True:
+        try:
+            what, arg, *rest = pickle.load(src)  # noqa: S301 - our own parent, over its own pipe
+        except EOFError:
+            return
+        if what == "stop":
+            return
+        try:
+            if what == "init":
+                surf, zones, growth, scale = arg
+                field = SizeField(SimpleNamespace(**surf), zones, growth=growth, scale_to_m=scale)
+                continue
+            assert field is not None
+            r = rest[0] if rest else 0.0
+            value = field.signed(arg) if what == "signed" else field.sizes(arg, r)
+            pickle.dump((True, value), out, protocol=pickle.HIGHEST_PROTOCOL)
+        except Exception as exc:  # noqa: BLE001 - told to the parent, which raises it
+            pickle.dump((False, f"{type(exc).__name__}: {exc}"), out)
+        out.flush()
 
 
 def _binned(h: np.ndarray, v: np.ndarray) -> list[tuple[float, float]]:
@@ -490,3 +561,7 @@ def elements(hist: Histogram | list, base: float, per_h3: float) -> float:
 
 
 __all__ = ["Histogram", "SizeField", "elements", "group_zones"]
+
+
+if __name__ == "__main__":
+    _serve()
