@@ -300,3 +300,13 @@ def test_only_a_real_fea_manifest_makes_the_view_optional(tmp_path):
     assert not is_fea_workspace(tmp_path)
     (tmp_path / "mesh_manifest.json").write_text(_json.dumps({"quality": {"fea": {"plan": True}}}))
     assert is_fea_workspace(tmp_path)
+
+
+
+def test_a_guard_trip_is_told_as_the_time_limit_it_was():
+    from meshpipeline.contracts.failure_cause import FailureCause, describe
+
+    what, nxt = describe(FailureCause.RUN_INFRASTRUCTURE,
+                         {"ours": True, "guard_trip": {"guard_s": 5482, "amount": 1_827_000, "pass": 1}})
+    assert "time limit of 91 minutes" in what and "1.8 million elements" in what
+    assert "failed to take the job" not in what and "run it again" in nxt.lower()
