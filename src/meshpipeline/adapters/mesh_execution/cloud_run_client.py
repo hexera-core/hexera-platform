@@ -318,6 +318,17 @@ RESULT_BYTES_PER_CELL = 100
 #: with room: these bound a mesh the run has already built and paid for, not a guess.
 RESULT_ARCHIVE_BYTES_PER_MEASURED_CELL = 200
 RESULT_RAW_BYTES_PER_MEASURED_CELL = 800
+#: AN FEA MESH comes home as a quadratic deck AND its Nastran and Ansys files AND gmsh's own mesh
+#: (mesh once, export many): about 1 KB raw an element (SC8UU on dev-areen, 1.5 M elements: .inp
+#: 290 MB, .bdf 405 MB, .cdb about 500 MB). Past the flow-mesh allowance above, a valid mesh of a
+#: few million elements was built and then refused on the way back. When the mesher measured what
+#: it sent (dispatch.returned_bytes) that measurement sizes the limits, with margin; else these.
+FEA_RESULT_ARCHIVE_BYTES_PER_ELEMENT = 700
+FEA_RESULT_RAW_BYTES_PER_ELEMENT = 1600
+FEA_RESULT_FILE_BYTES_PER_ELEMENT = 600
+#: The margin on a measured size, and the ceiling no result document can lift the limits past.
+FEA_RESULT_MARGIN = 1.15
+FEA_RESULT_MAX_BYTES = 48 * 1024 ** 3
 RESULT_FILE_BYTES_PER_MEASURED_CELL = 400
 
 
@@ -341,13 +352,30 @@ def result_extraction_limits(result: dict | None = None):
         cells = 0
     # the count is the remote's word: bounded, so no document can lift the limits without end
     cells = min(cells, 2 * int(polcfg.CELL_HARD_LIMIT))
-    return replace(
-        base,
-        max_archive_bytes=max(base.max_archive_bytes, by_budget,
-                              cells * RESULT_ARCHIVE_BYTES_PER_MEASURED_CELL),
-        max_total_uncompressed_bytes=max(base.max_total_uncompressed_bytes,
-                                         cells * RESULT_RAW_BYTES_PER_MEASURED_CELL),
-        max_file_bytes=max(base.max_file_bytes, cells * RESULT_FILE_BYTES_PER_MEASURED_CELL))
+    archive = max(base.max_archive_bytes, by_budget, cells * RESULT_ARCHIVE_BYTES_PER_MEASURED_CELL)
+    raw = max(base.max_total_uncompressed_bytes, cells * RESULT_RAW_BYTES_PER_MEASURED_CELL)
+    largest = max(base.max_file_bytes, cells * RESULT_FILE_BYTES_PER_MEASURED_CELL)
+    measured = (result or {}).get("returned_bytes") if isinstance(result, dict) else None
+    fea = (isinstance(measured, dict) and bool(measured.get("fea"))) or (
+        isinstance(q, dict) and (str(q.get("quality_bar") or "") == "fea" or isinstance(q.get("fea"), dict)))
+    if fea:
+        # AN FEA MESH IS NEVER LOST TO SIZE (Areen: only a broken mesh fails): its own allowance, and
+        # the mesher's measurement of what it sent when there is one - bounded, so no document can
+        # lift the limits without end
+        archive = max(archive, cells * FEA_RESULT_ARCHIVE_BYTES_PER_ELEMENT)
+        raw = max(raw, cells * FEA_RESULT_RAW_BYTES_PER_ELEMENT)
+        largest = max(largest, cells * FEA_RESULT_FILE_BYTES_PER_ELEMENT)
+        if isinstance(measured, dict):
+            try:
+                m_raw, m_big = int(measured.get("raw") or 0), int(measured.get("largest") or 0)
+            except (TypeError, ValueError):
+                m_raw = m_big = 0
+            raw = max(raw, int(m_raw * FEA_RESULT_MARGIN))
+            archive = max(archive, int(m_raw * FEA_RESULT_MARGIN))      # gzip never grows text much
+            largest = max(largest, int(m_big * FEA_RESULT_MARGIN))
+        archive, raw, largest = (min(v, FEA_RESULT_MAX_BYTES) for v in (archive, raw, largest))
+    return replace(base, max_archive_bytes=archive, max_total_uncompressed_bytes=raw,
+                   max_file_bytes=largest)
 
 
 #: one spelling, owned by the contract the executor's account reads it through

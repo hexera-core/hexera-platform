@@ -228,11 +228,19 @@ def write_cdb(path: Path | str, prep: Prepared, *, cad_names: dict[str, str] | N
 
 def write_all(workspace, mesh: SolidMesh, *, cad_names: dict[str, str] | None = None, units: str = "m",
               source: str = "") -> dict:
-    """mesh.bdf and mesh.cdb beside the deck (the deck is written by abaqus_deck.write_inp)."""
+    """mesh.bdf and mesh.cdb beside the deck (the deck is written by abaqus_deck.write_inp). EACH ON
+    ITS OWN: a writer that fails leaves its file out and says why ({"error": ...}); the deck and the
+    other file are delivered, and the result screen says that solver's file is not available."""
     ws = Path(workspace)
     prep = prepare(mesh)
-    return {"nastran": write_bdf(ws / "mesh.bdf", prep, cad_names=cad_names, units=units, source=source),
-            "ansys": write_cdb(ws / "mesh.cdb", prep, cad_names=cad_names, units=units, source=source)}
+    out: dict = {}
+    for solver, name, write in (("nastran", "mesh.bdf", write_bdf), ("ansys", "mesh.cdb", write_cdb)):
+        try:
+            out[solver] = write(ws / name, prep, cad_names=cad_names, units=units, source=source)
+        except Exception as exc:  # noqa: BLE001 - a missing solver file is a note, never a lost mesh
+            (ws / name).unlink(missing_ok=True)
+            out[solver] = {"error": f"{type(exc).__name__}: {exc}"[:300]}
+    return out
 
 
 # #

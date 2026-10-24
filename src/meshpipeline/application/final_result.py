@@ -1327,6 +1327,22 @@ def measured_verdict(outcome: RunOutcome) -> dict | None:
         return None
 
 
+#: The gate name a run refused by its measured limits is recorded under (not a storage failure).
+MEASURED_LIMITS_GATE = "measured_limits"
+
+
+def limits_failure_checks(v: Mapping | None) -> list[dict]:
+    """The rows a failing measured verdict failed, as the failure account's `checks` (label, measured,
+    op, threshold) - what the user reads instead of "could not be stored for download"."""
+    if not v:
+        return []
+    from meshpipeline.contracts import decision_record as dr
+    inputs = v.get("inputs") or {}
+    rows = dr.failed_gating(inputs) or dr.missed_limits(inputs)
+    return [{"key": r.get("key"), "label": r.get("label"), "measured": r.get("measured"),
+             "op": r.get("op"), "threshold": r.get("limit")} for r in rows]
+
+
 def measured_verdict_caveat(outcome: RunOutcome) -> dict | None:
     """The measured verdict as a delivery caveat, when the limits decide and judge this mesh."""
     if not limits_decide_for(outcome) or not _limits_apply(outcome):
@@ -1601,6 +1617,9 @@ class StatusDecision:
 
     status: Any                     #: JobStatus - imported lazily to keep this module import-light
     failed_reason: Any | None       #: FailedReason, or None on success
+    #: the gating rows the measured limits failed on a mesh every gate passed (VER-1): told to the
+    #: user as the check that failed, with its measured value and limit - never as a storage failure
+    limits_failed: tuple = ()
 
     @property
     def succeeded(self) -> bool:
@@ -1625,7 +1644,8 @@ def derive_terminal_status(outcome: RunOutcome, *, job_id: str, jlog) -> StatusD
             # never delivered, whoever's reading is wrong
             jlog.error("terminal status: the measured limits fail a mesh the gates passed (%s) - "
                        "not delivered (job_id=%s)", v["rule"], job_id)
-            return StatusDecision(JobStatus.failed, FailedReason.mesh_generation)
+            return StatusDecision(JobStatus.failed, FailedReason.mesh_generation,
+                                  limits_failed=tuple(limits_failure_checks(v)))
 
     if outcome.api_failure and review_inconclusive_caveat(outcome) is not None:
         # DELIVERED, REVIEW INCONCLUSIVE: the mesh passed every hard check and only the review
