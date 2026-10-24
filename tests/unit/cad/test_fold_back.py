@@ -41,3 +41,34 @@ def test_no_mesh_built_is_said_as_that_never_as_bad_elements():
     assert "built a mesh - the fill could not start" in ladder_words(passes, [{"lever": "LAD-fea-2"}])
     what, nxt = _fea_quality({"fea": True, "built_none": True, "passes": 2})
     assert "could not fill this part" in what and "degenerate" not in what and "sliver or fold" in nxt
+
+
+# ------------------------------------------- on top of each other, measured (24 Oct, real assemblies) ----
+_FIX = __import__("pathlib").Path(__file__).resolve().parents[2] / "fixtures" / "geometry" / "fea_fold"
+
+
+def test_a_plane_meeting_a_cylinder_tangentially_is_a_cusp_not_a_fold():
+    """helmholtz_coil: opposite normals at 8 edges, but the gap opens at once - a tangent cusp, which the
+    plan sets aside (PLAN-fea-10); the stage goes on."""
+    from meshpipeline.cad.scout import read_cad
+
+    res = fold_back_edges(read_cad(_FIX / "helmholtz_coil.step"))
+    assert res["folds"] == [] and len(res["cusps"]) == 8
+    assert all(c["gap_mm"] > 0.025 for c in res["cusps"])
+
+
+def test_a_real_fold_still_stops_the_stage():
+    """fw_hinge_r: two faces on top of each other beside an edge (0.00 mm at 1 mm in)."""
+    from meshpipeline.application.fea_check import blocker
+    from meshpipeline.cad.fea_measure import FACT_KEY
+    from meshpipeline.cad.scout import read_cad
+
+    res = fold_back_edges(read_cad(_FIX / "fw_hinge_r.stp"))
+    assert len(res["folds"]) == 1 and res["folds"][0]["gap_mm"] < 0.025
+    rec = {"fold_back": [{**f, "faces": [f"Face_{k}" for k in f["faces"]]} for f in res["folds"]]}
+    assert blocker({FACT_KEY: rec, "solids": 1})[1] == "fold_back"
+
+
+def test_a_knife_wedge_is_a_fold_and_its_gap_is_tiny():
+    f = fold_back_edges(fx.wedge(0.2))["folds"]
+    assert f and f[0]["gap_mm"] is not None and f[0]["gap_mm"] < 0.01

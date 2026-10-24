@@ -1,0 +1,9 @@
+Regression parts for cad/fold_back.py (tests/unit/cad/test_fold_back.py), unchanged from their sources.
+
+helmholtz_coil.step - CERN-OHL-P-2.0
+  https://github.com/scalinq-lab/cryomagsens/blob/main/mechanical_designs/helmholtz_coil/helmholtz_coil_assembly.step
+  Planes meeting cylinders tangentially: tangent cusps, never a fold.
+
+fw_hinge_r.stp - CC-BY-4.0, Framework Computer
+  https://github.com/FrameworkComputer/Framework-Laptop-13/blob/main/Hinges/13_5_hinge_R_assy.stp
+  A real fold: two faces on top of each other beside an edge (0.00 mm at 1 mm in).
