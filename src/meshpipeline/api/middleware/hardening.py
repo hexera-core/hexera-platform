@@ -2,9 +2,12 @@
 # Boundaries: transport-level protection; it authorises nothing.
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
 import time
 
+import meshpipeline.settings.runtime as rtcfg
 from meshpipeline.contracts.rate_limit import incr_window
 from meshpipeline.settings import plans
 
@@ -40,6 +43,65 @@ def _is_exempt(path: str) -> bool:
     return any(path == p or path.startswith(p + "/") for p in _EXEMPT_PATHS)
 
 
+def client_address(scope) -> str:
+    """THE CALLER'S OWN ADDRESS, not the proxy's. Behind Cloud Run every request arrives from the
+    front end (169.254.169.126), so the socket address is the same for every caller in the world.
+    Google's front end APPENDS the address it saw to X-Forwarded-For, so the trustworthy entry is
+    counted from the RIGHT: RATE_LIMIT_TRUSTED_PROXY_HOPS = 1 is the last entry (Cloud Run reached
+    directly), 2 the one before it (a load balancer in front of Cloud Run appends its own). Anything
+    further left was written by the client and is never trusted - a caller cannot buy itself a fresh
+    bucket by sending a made-up X-Forwarded-For. No header (a local run): the socket address."""
+    hops = max(1, int(rtcfg.RATE_LIMIT_TRUSTED_PROXY_HOPS))
+    for k, v in scope.get("headers", []):
+        if k == b"x-forwarded-for":
+            chain = [p.strip() for p in v.decode("latin-1").split(",") if p.strip()]
+            if chain:
+                return chain[-hops] if len(chain) >= hops else chain[0]
+            break
+    client = scope.get("client")
+    return client[0] if client else "unknown"
+
+
+def caller_identity(scope) -> tuple[str, bool]:
+    """(the bucket a request is counted in, whether the caller PROVED it). Decided before any
+    database read, from what the request carries - the credential itself, not the address it came
+    from (2026-10-24: keyed on X-User-Id else the client address, every API-key caller and every
+    browser behind Cloud Run shared ONE bucket of 240 a minute, so one busy client throttled all):
+
+      a bearer API key      -> a digest of the WHOLE presented key, never its public prefix alone:
+                               a prefix is shown in the console and in logs, and a stranger sending
+                               that prefix with a wrong secret must not spend the real key's bucket.
+                               Proven later by api/security.py, which also holds the key's owner to
+                               its plan's rate
+      a signed X-User-Id    -> that user (the signature is checked here; it is one HMAC)
+      X-User-Id, no secret  -> that user (dev and single-tenant: identity is self-asserted there)
+      anything else         -> the caller's own address (client_address)
+
+    Each user and each key has its own bucket: the users of one organisation never share one, so a
+    busy user cannot starve the rest of the account."""
+    from meshpipeline.contracts import api_key
+
+    headers = dict(scope.get("headers", []))
+    scheme, _, presented = headers.get(b"authorization", b"").decode("latin-1").strip().partition(" ")
+    if scheme.lower() == "bearer":
+        token = presented.strip()
+        if api_key.parse(token) is not None:
+            return f"key:{hashlib.sha256(token.encode('latin-1')).hexdigest()[:32]}", False
+    user = headers.get(b"x-user-id", b"").decode("latin-1").strip()
+    if user:
+        import meshpipeline.settings.policy as polcfg
+
+        if not polcfg.USER_TOKEN_SECRET:
+            return f"user:{user}", False
+        # compared as BYTES: compare_digest refuses a non-ASCII str, and a header can carry any byte
+        sig = headers.get(b"x-user-sig", b"").strip()
+        from meshpipeline.api.security import expected_user_sig
+
+        if sig and hmac.compare_digest(sig, expected_user_sig(user).encode("ascii")):
+            return f"user:{user}", True
+    return f"addr:{client_address(scope)}", False
+
+
 class RateLimitMiddleware:
 
     _WINDOW_TTL_SECONDS = 90   # > one 60s window, so a window outlives its own counting
@@ -53,29 +115,46 @@ class RateLimitMiddleware:
         # here. A caller presenting an API key is additionally held to its own plan's rate, where
         # that plan IS known (api/security.py).
         limit = plans.limits_for(None).rate_limit_per_minute
-        if scope["type"] != "http" or limit <= 0:
+        ceilings = (int(rtcfg.RATE_LIMIT_GLOBAL_PER_MINUTE), int(rtcfg.RATE_LIMIT_ADDRESS_CEILING_PER_MINUTE))
+        # each limit is its own switch: the per-caller rate at 0 leaves the safety ceilings running
+        if scope["type"] != "http" or (limit <= 0 and all(c <= 0 for c in ceilings)):
             return await self.app(scope, receive, send)
         path = scope.get("path", "")
         if _is_exempt(path):
             return await self.app(scope, receive, send)
 
-        ident = ""
-        for k, v in scope.get("headers", []):
-            if k == b"x-user-id":
-                ident = v.decode("latin-1")
-                break
-        if not ident:
-            client = scope.get("client")
-            ident = client[0] if client else "unknown"
-
+        ident, proven = caller_identity(scope)
+        # THE SAFETY CEILINGS, each its own bucket, each 0 = off:
+        #   global   - every caller together: what the service as a whole is ever asked to absorb
+        #   address  - one address, for callers that have not proven who they are: a flood of made-up
+        #              keys or user ids from one address cannot spread itself over fresh buckets.
+        #              A caller with a valid signature is exempt - the console signs for every user
+        #              from one address, and it must never throttle all of them as one.
+        global_ceiling, address_ceiling = ceilings
+        if ident.startswith("addr:"):
+            # an anonymous caller IS its address: one bucket, held to the lower of the two
+            on = [c for c in (limit, address_ceiling) if c > 0]
+            buckets = [(ident, min(on) if on else 0)]
+        else:
+            buckets = [(ident, limit)]
+            if not proven:
+                buckets.insert(0, (f"addr:{client_address(scope)}", address_ceiling))
+        buckets.insert(0, ("global", global_ceiling))
         window = int(time.time() // 60)
-        try:
-            n = await incr_window(ident, window, self._WINDOW_TTL_SECONDS)
-        except Exception as exc:
-            logger.warning("rate limiter unavailable - failing open: %s", exc)
-            return await self.app(scope, receive, send)
+        over = False
+        for bucket, ceiling in buckets:
+            if ceiling <= 0:
+                continue
+            try:
+                n = await incr_window(bucket, window, self._WINDOW_TTL_SECONDS)
+            except Exception as exc:
+                logger.warning("rate limiter unavailable - failing open: %s", exc)
+                return await self.app(scope, receive, send)
+            if n > ceiling:
+                over = True
+                break
 
-        if n > limit:
+        if over:
             retry = 60 - int(time.time() % 60)
             await send({"type": "http.response.start", "status": 429,
                         "headers": [(b"content-type", b"application/json"),
