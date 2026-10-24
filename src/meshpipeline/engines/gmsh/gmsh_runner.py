@@ -348,10 +348,23 @@ def stall_window() -> float:
     return float(FEA_STALL_WINDOW_S)
 
 
+def _note_fea_threads(ws: Path) -> None:
+    """The threads the FEA mesher runs with, in the run's reproducibility stamp (engines/determinism)."""
+    try:
+        from meshpipeline.engines import determinism as det
+        from meshpipeline.engines.gmsh.fea_adapter import mesh_threads
+        n = mesh_threads((json.loads((ws / "fea_plan.json").read_text()) or {}).get("mesh") or {})
+        det.note_setting("fea_gmsh_threads", {"general": n, "1D": 1, "2D": 1, "3D": n},
+                         "the job's cores; curve and surface meshing on one thread (repeatable)")
+    except Exception:  # noqa: BLE001 - the stamp is a record, never the run's
+        logger.debug("fea threads not noted")
+
+
 def _run_fea_watched(ws: Path, *, timeout: int) -> dict:
     """AN FEA MESH, WATCHED: stopped only after FEA_STALL_WINDOW_S with no progress, or at `timeout`
     (the hard ceiling). What the watchdog saw is returned (`watchdog`) for the why-record."""
     from meshpipeline.sandbox.safe_exec import run_watched
+    _note_fea_threads(ws)
     # -u: its output reaches the log as it is written (the watchdog reads the log growing)
     w = run_watched([sys.executable, "-u", "-m", "meshpipeline.engines.gmsh.driver", str(ws)],
                     log_path=ws / FEA_LOG, hard_timeout=float(timeout), stall_s=stall_window(),

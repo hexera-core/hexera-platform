@@ -71,8 +71,9 @@ class Ticker:
             self._thread = None
 
 
-#: the mesher's threads when the plan names none (0 = every core the job has)
-DEFAULT_THREADS = 1
+#: the mesher's threads when the plan names none: 0 = every core the job has (the curve and surface
+#: meshing stay on one thread whatever this says - see mesh())
+DEFAULT_THREADS = 0
 #: the 3D algorithm when the plan names none
 DEFAULT_ALGORITHM_3D = "delaunay"
 
@@ -437,16 +438,16 @@ def mesh(workspace) -> int:
     gmsh.initialize(interruptible=False)
     try:
         gmsh.option.setNumber("General.Terminal", 1)
-        # ONE THREAD, KEPT (fix pack, 22 Oct): at 8 threads three of five lab parts meshed twice came out
-        # different (cell counts too) - gmsh's parallel curve and surface meshing is not repeatable,
-        # and the 3D fill and the optimiser are serial anyway
-        # THREADS (Areen, 24 Oct: use the job's cores). One thread is byte-repeatable; several are not, so
-        # the count and the 3D algorithm come from the plan (or the lab's FEA_GMSH_THREADS /
-        # FEA_GMSH_ALGO3D) and are recorded beside the mesh
+        # THE JOB'S CORES, REPEATABLY (Areen, 24 Oct; lab 24 Oct, 12 largest training parts run twice):
+        # gmsh's own parallel work (the optimiser, the curving) on every core, while the curve and
+        # surface meshing stay on ONE thread - their parallel versions are not repeatable (0/17 meshes
+        # the same twice at 8 threads; and 3 of 5 on 22 Oct). So the mesh is byte-identical to the
+        # one-thread mesh (12/12) and to itself run twice (12/12), about 1.5 times sooner.
         threads = mesh_threads(run)
         gmsh.option.setNumber("General.NumThreads", threads)
-        for dim in ("1D", "2D", "3D"):
-            gmsh.option.setNumber(f"Mesh.MaxNumThreads{dim}", threads)
+        gmsh.option.setNumber("Mesh.MaxNumThreads1D", 1)
+        gmsh.option.setNumber("Mesh.MaxNumThreads2D", 1)
+        gmsh.option.setNumber("Mesh.MaxNumThreads3D", threads)
         gmsh.option.setNumber("Mesh.RandomSeed", 1)
         gmsh.option.setNumber("Geometry.OCCBoundsUseStl", 1)
         gmsh.model.add("fea")
