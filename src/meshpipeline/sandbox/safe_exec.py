@@ -9,7 +9,9 @@ import os
 import re
 import signal
 import subprocess
+from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +113,73 @@ def run_guarded(args, *, timeout=None, **kwargs) -> subprocess.CompletedProcess:
         # so callers reading exc.stdout / exc.stderr keep working.
         raise subprocess.TimeoutExpired(proc.args, timeout, output=stdout, stderr=stderr) from None
     return subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
+
+
+@dataclass(frozen=True)
+class Watched:
+    """How a watched process ended: its return code, why it stopped (``ok`` / ``stalled`` /
+    ``ceiling``), how long it ran, the longest stretch with no progress, and its log's tail."""
+    returncode: int
+    stopped: str
+    seconds: float
+    longest_silence_s: float
+    silence_at_stop_s: float
+    tail: str
+
+
+def run_watched(args, *, log_path, hard_timeout: float, stall_s: float, progress_paths=(),
+                poll_s: float = 10.0, **kwargs) -> Watched:
+    """Run `args` with its output streamed to `log_path`, killed ONLY when it has made no progress
+    for `stall_s` seconds, or at `hard_timeout` (the infrastructure's ceiling). Progress is new output
+    in the log, or a change to any of `progress_paths` (a stage file). A slow process that is still
+    moving is never stopped early (Areen, 24 Oct: no guessed time limits)."""
+    import time as _time
+    log_path = Path(log_path)
+    kwargs.setdefault("start_new_session", True)
+    t0 = last = _time.monotonic()
+    longest = 0.0
+
+    def mark() -> tuple:
+        parts = [log_path.stat().st_size if log_path.exists() else -1]
+        for q in progress_paths:
+            qp = Path(q)
+            parts.append(qp.stat().st_mtime_ns if qp.exists() else -1)
+        return tuple(parts)
+
+    with open(log_path, "wb") as out:
+        proc = subprocess.Popen(args, stdout=out, stderr=subprocess.STDOUT, **kwargs)
+        seen = mark()
+        stopped = "ok"
+        while True:
+            try:
+                proc.wait(timeout=poll_s)
+                break
+            except subprocess.TimeoutExpired:
+                pass
+            now = _time.monotonic()
+            cur = mark()
+            if cur != seen:
+                seen, last = cur, now
+            longest = max(longest, now - last)
+            if now - last >= stall_s:
+                stopped = "stalled"
+            elif now - t0 >= hard_timeout:
+                stopped = "ceiling"
+            if stopped != "ok":
+                _kill_process_group(proc)
+                proc.wait()
+                break
+    end = _time.monotonic()
+    try:
+        with open(log_path, "rb") as fh:
+            size = fh.seek(0, 2)
+            fh.seek(max(0, size - _OUTPUT_TAIL_BYTES))
+            tail = fh.read().decode("utf-8", errors="replace")
+    except OSError:
+        tail = ""
+    return Watched(returncode=int(proc.returncode if proc.returncode is not None else -9), stopped=stopped,
+                   seconds=round(end - t0, 1), longest_silence_s=round(longest, 1),
+                   silence_at_stop_s=round(end - last, 1), tail=tail)
 
 
 def _kill_process_group(proc: subprocess.Popen) -> None:

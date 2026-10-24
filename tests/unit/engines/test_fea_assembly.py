@@ -371,7 +371,10 @@ def test_a_memory_kill_ends_a_bonded_attempt_with_no_tied_retry(tmp_path, monkey
     monkeypatch.setattr(runtime, "get_engine", lambda _n: SimpleNamespace(run_cartesian_mesh=mesher))
     ok, _marker, _o = asyncio.run(FD.drive(ws, {"purpose": "structural"}, job_id=f"t-{ws.name}", publish=None,
                                            run=_Run(), source_path=str(ws / "upload.step")))
-    assert not ok and modes == ["bonded"]
+    from meshpipeline.contracts.mesh_machine import MACHINES
+
+    # RUN-3: the same plan on every machine up to the largest - never re-planned, never tied
+    assert not ok and modes == ["bonded"] * (1 + len(MACHINES))
 
 
 def test_each_parts_base_holds_through_its_whole_volume(tmp_path, monkeypatch):
@@ -552,3 +555,41 @@ def test_an_assembly_solver_file_that_fails_is_left_out_not_the_deck(tmp_path, m
     out = AD.write_all(tmp_path, prep=None)
     assert out["deck"] == {"file": "mesh.inp"} and out["nastran"] == {"file": "mesh.bdf"}
     assert "MemoryError" in out["ansys"]["error"] and not (tmp_path / "mesh.cdb").exists()
+
+
+def test_the_histogram_on_every_core_is_the_one_on_one_core(monkeypatch):
+    """Planning measures the octree in worker processes (the caldera took 25 minutes on one core):
+    every cube is its own, so the histogram must be the same to the bit."""
+    from meshpipeline.engines import fea_size_field as SF
+
+    surf = _cube_surface([(0, 0, 0, 40), (40, 0, 0, 10), (0, 40, 0, 20)])
+    zones = [{"id": "F0", "kind": "hole", "faces": ["Part_1_Face_2"], "size_m": 0.6e-3, "reach_m": 0.5e-3}]
+    zones += [{"id": f"P{k}", "kind": "part", "faces": [f"Part_{k}_Face_{j}" for j in range(1, 7)],
+               "size_m": s, "reach_m": 0.0, "part": f"Part_{k}"} for k, s in ((1, 6.9e-3), (2, 1.7e-3), (3, 3.5e-3))]
+    field = SF.SizeField(surf, zones, growth=1.3)
+    monkeypatch.setattr(SF, "PARALLEL_MIN_POINTS", 50)
+    one = field.histogram(coarsest=8e-3, per_h3=6.0, workers=1)
+    many = field.histogram(coarsest=8e-3, per_h3=6.0, workers=3)
+    assert one.cubes == many.cubes and one.cubes > 1000 and one.rows == many.rows
+
+
+def test_the_planning_workers_never_run_the_callers_script_again(tmp_path):
+    """The histogram workers are plain child processes: a calling script with no main guard (a lab
+    harness) is not re-run in them, as multiprocessing spawn would (24 Oct, the watchdog lab run)."""
+    import subprocess
+    import sys
+
+    script = tmp_path / "no_guard.py"
+    script.write_text(
+        "import numpy as np\n"
+        "from tests.unit.engines.test_fea_assembly import _cube_surface\n"
+        "from meshpipeline.engines import fea_size_field as SF\n"
+        "SF.PARALLEL_MIN_POINTS = 50\n"
+        "f = SF.SizeField(_cube_surface([(0, 0, 0, 40)]), [], growth=1.3)\n"
+        "h = f.histogram(coarsest=8e-3, per_h3=6.0, workers=2)\n"
+        "print(\"RAN\", h.cubes)\n")
+    import os
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(Path(__file__).resolve().parents[3]), *sys.path])}
+    out = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, timeout=300, env=env)
+    assert out.returncode == 0, out.stderr[-2000:]
+    assert out.stdout.count("RAN") == 1
