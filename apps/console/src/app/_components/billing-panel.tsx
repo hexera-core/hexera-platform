@@ -60,7 +60,7 @@ export function ManageBillingButton() {
         setBusy(false);
       }
     } catch {
-      setError("Could not reach the API. Try again.");
+      setError(portalFailureMessage(0));
       setBusy(false);
     }
   }
@@ -104,7 +104,7 @@ export function PlanPicker({
         setBusy(null);
       }
     } catch {
-      setError("Could not reach the API. Try again.");
+      setError(planChangeFailureMessage(0));
       setBusy(null);
     }
   }
@@ -119,7 +119,7 @@ export function PlanPicker({
         setBusy(null);
       }
     } catch {
-      setError("Could not reach the API. Try again.");
+      setError(checkoutFailureMessage(0));
       setBusy(null);
     }
   }
@@ -201,7 +201,7 @@ export function ExtraCreditsPicker({ offer }: { offer: ExtraCreditsOffer | null 
         setBusy(false);
       }
     } catch {
-      setError("Could not reach the API. Try again.");
+      setError(creditCheckoutFailureMessage(0));
       setBusy(false);
     }
   }

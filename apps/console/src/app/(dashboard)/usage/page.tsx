@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { auth } from "@/auth";
+import { DashboardNotice } from "@/app/_components/dashboard-notice";
 import { formatSigned } from "@/app/_components/ledger";
 import { ownerIdFromSession } from "@/lib/auth/session";
 import { consoleFetch } from "@/lib/hexera-api/console-fetch";
@@ -66,11 +67,17 @@ export default async function UsagePage({
       </div>
 
       {ledger === null ? (
-        <p className="empty card">Could not reach the API just now. Reload to try again.</p>
+        <DashboardNotice
+          body="Refresh the page to try again. Your credit balance and history are not affected."
+          retryLabel="Try again"
+          title="We couldn't load usage history"
+          tone="error"
+        />
       ) : ledger.items.length === 0 ? (
-        <p className="empty card">
-          No movements yet. Your signup grant appears here the moment it lands.
-        </p>
+        <DashboardNotice
+          body="Credits added to or used by this workspace will appear here."
+          title="No credit activity yet"
+        />
       ) : (
         <section className="panel">
           <div className="panel__head">

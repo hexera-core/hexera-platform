@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { auth } from "@/auth";
+import { DashboardNotice } from "@/app/_components/dashboard-notice";
 import { ownerIdFromSession } from "@/lib/auth/session";
 import { consoleFetch } from "@/lib/hexera-api/console-fetch";
 
@@ -44,9 +45,18 @@ export default async function ConversationsPage({
       </div>
 
       {page === null ? (
-        <p className="empty card">Could not reach the API just now. Reload to try again.</p>
+        <DashboardNotice
+          body="Refresh the page to try again. Your conversation history is not affected."
+          retryLabel="Try again"
+          title="We couldn't load your conversations"
+          tone="error"
+        />
       ) : page.items.length === 0 ? (
-        <p className="empty card">No conversations yet. Every run starts with one.</p>
+        <DashboardNotice
+          action={{ href: "/runs/new", label: "Start a run" }}
+          body="Every mesh run begins with a short conversation about your geometry and solver."
+          title="No conversations yet"
+        />
       ) : (
         <section className="panel">
           <div className="panel__head">
