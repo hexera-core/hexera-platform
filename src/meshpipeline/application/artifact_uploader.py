@@ -200,6 +200,19 @@ def verify_archive(path: Path, spec) -> None:
         raise BundleContractError(f"{spec.name}: archive does not carry the declared marker")
 
 
+def is_fea_workspace(workspace: Path) -> bool:
+    """Whether the delivered mesh is an FEA plan's - read as the verdict reads it (the manifest's
+    quality.fea.plan), not by a file a workspace may merely carry."""
+    try:
+        q = (json.loads((Path(workspace) / "mesh_manifest.json").read_text()) or {}).get("quality") or {}
+    except (OSError, ValueError, AttributeError):
+        return False
+    if not isinstance(q, dict):
+        return False
+    fea = q.get("fea")
+    return bool(isinstance(fea, dict) and fea.get("plan")) or str(q.get("quality_bar") or "") == "fea"
+
+
 def fea_viewer_fallback(workspace: Path, why: str) -> dict:
     """The viewer payload of an FEA mesh whose surface could not be rendered: no surface to draw, the
     FEA result block (checks, solvers, downloads) and the note - the result screen still opens."""
@@ -296,7 +309,7 @@ def _build_plan(job_id: uuid.UUID, workspace: Path, scratch: list[Path],
     )
     # AN FEA MESH is delivered whether or not its 3D view can be built: the deck and the solver
     # files are the deliverable, and the result screen says the view is missing (Areen, 24 Oct)
-    _fea = (workspace / "fea_plan.json").exists()
+    _fea = is_fea_workspace(workspace)
     try:
         _payload = build_viewer_payload(workspace)
     except ViewerPayloadError as exc:

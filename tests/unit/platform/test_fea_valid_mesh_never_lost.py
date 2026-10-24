@@ -288,3 +288,15 @@ def test_the_fea_driver_ends_the_attempt_on_a_result_too_big_for_the_worker(tmp_
     assert not ok and marker == FD.TOO_BIG and calls == [1]
     ref = _json.loads((ws / "preflight_refusal.json").read_text())
     assert ref["cause"] == "run_infrastructure" and ref["facts"]["too_big_for_worker"]["need_bytes"] == 50e9
+
+
+def test_only_a_real_fea_manifest_makes_the_view_optional(tmp_path):
+    import json as _json
+
+    from meshpipeline.application.artifact_uploader import is_fea_workspace
+
+    (tmp_path / "fea_plan.json").write_text("{}")                      # a file alone says nothing
+    (tmp_path / "mesh_manifest.json").write_text(_json.dumps({"quality": {"cells": 5}}))
+    assert not is_fea_workspace(tmp_path)
+    (tmp_path / "mesh_manifest.json").write_text(_json.dumps({"quality": {"fea": {"plan": True}}}))
+    assert is_fea_workspace(tmp_path)
