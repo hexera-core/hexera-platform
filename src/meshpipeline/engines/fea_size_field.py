@@ -40,6 +40,13 @@ BIN_RATIO = 1.02
 MAX_CUBES = 3_000_000
 #: An edge zone (a sharp corner) is sampled along its edge at this share of its size.
 EDGE_SAMPLE_SHARE = 0.25
+#: THE HISTOGRAM ON EVERY CORE (Areen, 24 Oct: planning the 114-part caldera took 25 minutes on one
+#: core - 10 histograms of ~150 s, 60% of it the surface distance, which holds Python's lock). An
+#: octree level with at least this many cubes is measured in worker processes, a slice each; every
+#: cube's numbers are its own, so the result is the same to the bit as on one core.
+PARALLEL_MIN_POINTS = 20_000
+#: the most worker processes (FEA_PLAN_WORKERS overrides; 1 = one core, as before)
+MAX_WORKERS = 8
 
 
 @dataclass
@@ -220,6 +227,10 @@ class SizeField:
     def __init__(self, surface, zones: list[dict], *, growth: float, scale_to_m: float = 1e-3):
         """surface: cad/fea_features.Surface (its own unit; `scale_to_m` turns it into metres).
         zones: the plan's zones (sizes in metres; faces named as the surface names them)."""
+        # what a worker process needs to build the same field (plain arrays and lists: they pickle)
+        self._spec = ({"xyz": np.asarray(surface.xyz), "tris": np.asarray(surface.tris),
+                       "label": np.asarray(surface.label), "names": list(surface.names)},
+                      list(zones), float(growth), float(scale_to_m))
         self.growth = float(growth)
         self.xyz = np.asarray(surface.xyz, dtype=float) * float(scale_to_m)
         self.tris = np.asarray(surface.tris)
@@ -351,7 +362,32 @@ class SizeField:
     def signed(self, p: np.ndarray) -> np.ndarray:
         return self.solid(np.asarray(p, dtype=float).reshape(-1, 3))
 
-    def histogram(self, *, coarsest: float, per_h3: float, stop_elements: float = math.inf) -> Histogram:
+    def histogram(self, *, coarsest: float, per_h3: float, stop_elements: float = math.inf,
+                  workers: int | None = None) -> Histogram:
+        n = plan_workers() if workers is None else max(1, int(workers))
+        if n <= 1:
+            return self._histogram(coarsest=coarsest, per_h3=per_h3, stop_elements=stop_elements, pool=None)
+        import multiprocessing as mp
+        from concurrent.futures import ProcessPoolExecutor
+
+        # SPAWNED, never forked: the planner runs in a worker thread of an event loop
+        with ProcessPoolExecutor(max_workers=n, mp_context=mp.get_context("spawn"),
+                                 initializer=_worker_init, initargs=(self._spec,)) as pool:
+            return self._histogram(coarsest=coarsest, per_h3=per_h3, stop_elements=stop_elements,
+                                   pool=(pool, n))
+
+    def _on(self, pool, what: str, p: np.ndarray, r: float):
+        """self.signed(p) or self.sizes(p, r) - in slices on the workers when the level is big enough."""
+        if pool is None or len(p) < PARALLEL_MIN_POINTS:
+            return self.signed(p) if what == "signed" else self.sizes(p, r)
+        ex, n = pool
+        k = 4 * n
+        parts = list(ex.map(_worker_call, [what] * k, np.array_split(p, k), [r] * k))
+        if what == "signed":
+            return np.concatenate(parts)
+        return np.concatenate([a for a, _b in parts]), np.concatenate([b for _a, b in parts])
+
+    def _histogram(self, *, coarsest: float, per_h3: float, stop_elements: float, pool) -> Histogram:
         """The volume at each zone size, from an octree over the part (see the module text).
         `coarsest` is the largest base size the plan may take: past it nothing is resolved finer.
         Stops (complete=False) once the zones alone pass `stop_elements` or MAX_CUBES."""
@@ -371,12 +407,12 @@ class SizeField:
         while len(centres):
             cubes += len(centres)
             r = e * math.sqrt(3.0) / 2.0
-            sd = self.signed(centres)
+            sd = self._on(pool, "signed", centres, r)
             keep = sd < r
             centres, sd = centres[keep], sd[keep]
             if not len(centres):
                 break
-            hz, need = self.sizes(centres, r)
+            hz, need = self._on(pool, "sizes", centres, r)
             want = np.minimum(need, coarsest)
             # a cube wholly inside one part is resolved for every zone but that part's own size, which
             # is the same all through it (PLAN-fea-17)
@@ -405,6 +441,35 @@ class SizeField:
         h = np.concatenate(sizes) if sizes else np.zeros(0)
         v = np.concatenate(vols) if vols else np.zeros(0)
         return Histogram(rows=_binned(h, v), complete=complete, cubes=int(cubes))
+
+
+def plan_workers() -> int:
+    """How many processes the histogram may use: FEA_PLAN_WORKERS, else the job's CPU quota (never
+    the host's cores - Cloud Run's os.cpu_count() is the host's), at most MAX_WORKERS."""
+    import os
+    raw = os.environ.get("FEA_PLAN_WORKERS")
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            return 1
+    from meshpipeline.engines.snappy.native import _container_cpus
+    return max(1, min(MAX_WORKERS, _container_cpus(0) or os.cpu_count() or 1))
+
+
+_FIELD: SizeField | None = None
+
+
+def _worker_init(spec) -> None:
+    global _FIELD
+    from types import SimpleNamespace
+    surf, zones, growth, scale = spec
+    _FIELD = SizeField(SimpleNamespace(**surf), zones, growth=growth, scale_to_m=scale)
+
+
+def _worker_call(what: str, p: np.ndarray, r: float):
+    assert _FIELD is not None
+    return _FIELD.signed(p) if what == "signed" else _FIELD.sizes(p, r)
 
 
 def _binned(h: np.ndarray, v: np.ndarray) -> list[tuple[float, float]]:

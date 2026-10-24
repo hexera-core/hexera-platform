@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -337,8 +338,47 @@ def run_cartesian_mesh(workspace, *, timeout: int, context=None) -> dict:
     return run_mesh(workspace, engine="gmsh", timeout=timeout)
 
 
+#: How long an FEA mesher may go without a sign of progress (new output, a new stage) before it is
+#: stopped as stuck - never a guess at how long the mesh should take (Areen, 24 Oct).
+FEA_STALL_WINDOW_S = 900
+#: The FEA mesher's own log, streamed as it runs: what the watchdog and the live stage line read.
+FEA_LOG = "gmshfea.log"
+
+
+def stall_window() -> float:
+    import os
+    try:
+        return float(os.environ.get("FEA_STALL_WINDOW_S") or FEA_STALL_WINDOW_S)
+    except ValueError:
+        return float(FEA_STALL_WINDOW_S)
+
+
+def _run_fea_watched(ws: Path, *, timeout: int) -> dict:
+    """AN FEA MESH, WATCHED: stopped only after FEA_STALL_WINDOW_S with no progress, or at `timeout`
+    (the hard ceiling). What the watchdog saw is returned (`watchdog`) for the why-record."""
+    from meshpipeline.sandbox.safe_exec import run_watched
+    w = run_watched([sys.executable, "-m", "meshpipeline.engines.gmsh.driver", str(ws)],
+                    log_path=ws / FEA_LOG, hard_timeout=float(timeout), stall_s=stall_window(),
+                    progress_paths=(ws / "fea_stage.json",),
+                    # its output reaches the log as it is written (the watchdog reads the log growing)
+                    env={**os.environ, "PYTHONUNBUFFERED": "1"})
+    seen = {"stopped": w.stopped, "seconds": w.seconds, "longest_silence_s": w.longest_silence_s,
+            "silence_at_stop_s": w.silence_at_stop_s, "stall_window_s": stall_window(),
+            "ceiling_s": float(timeout)}
+    if w.stopped == "ok":
+        out = describe_native_result(returncode=w.returncode, args=None, stage="gmsh driver", output=w.tail)
+    else:
+        out = describe_native_result(returncode=-1, args=None, stage="gmsh driver", output=w.tail,
+                                     outcome=NativeOutcome.timed_out)
+        out["stalled"] = w.stopped == "stalled"
+    out["watchdog"] = seen
+    return out
+
+
 def _run_gmsh_local(workspace, *, timeout: int, **_ignored) -> dict:
     ws = Path(workspace)
+    if (ws / "fea_plan.json").exists():
+        return _run_fea_watched(ws, timeout=timeout)
     # Invoked by FULL module path, as a module of the installed distribution. A shorter path
     # would only resolve with cwd inside the package, which puts its subpackages on sys.path as
     # top-level modules - the bare-namespace bypass the src layout exists to prevent.

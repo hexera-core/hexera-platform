@@ -271,16 +271,6 @@ def fill_rate(record: dict) -> tuple[float, str]:
     return FILL_RATES[cls], cls
 
 
-def runnable_elements(ceiling_s: float | None, rate: float | None = None) -> int | None:
-    """The most elements one pass can plan so that GUARD_FACTOR times its planned time, at `rate`,
-    still fits under `ceiling_s` (the mesh job's limit, or what the attempt has left); None when
-    either is unknown."""
-    rate = rate if rate is not None else min(FILL_RATES.values())
-    if not rate or not ceiling_s:
-        return None
-    return int(rate * float(ceiling_s) / GUARD_FACTOR)
-
-
 def memory_elements(memory_gib: float | None = None) -> int:
     """PLAN-fea-16: the most elements the mesher's peak memory, with MEMORY_MARGIN to spare, fits in
     `memory_gib` - by the measured model peak = MEMORY_BASE_MB + BYTES_PER_ELEMENT x elements."""
@@ -289,17 +279,13 @@ def memory_elements(memory_gib: float | None = None) -> int:
     return max(0, int(room_mb * 1024.0 * 1024.0 / BYTES_PER_ELEMENT))
 
 
-def element_limit(record: dict, ceiling_s: float | None) -> tuple[int, str]:
-    """PLAN-fea-8's limit for this part: ELEMENT_LIMIT, or less when the mesher could not build that
-    many inside its time guard at the part's slow fill rate (PLAN-fea-13), or hold them in the mesh
-    job's memory (PLAN-fea-16); and why."""
-    rate, cls = fill_rate(record)
-    runnable = runnable_elements(ceiling_s, rate)
+def element_limit(record: dict, ceiling_s: float | None = None) -> tuple[int, str]:
+    """PLAN-fea-8's limit for this part: ELEMENT_LIMIT, or less when the mesh job's memory could not
+    hold them (PLAN-fea-16); and why. NEVER LESS FOR TIME (PLAN-fea-13, Areen 24 Oct): a guess at how
+    fast the mesher fills does not cut a plan down - the watchdog stops only a mesher that is stuck.
+    `ceiling_s` is kept for the callers' signature and decides nothing."""
     memory = memory_elements()
     limit, why = P.ELEMENT_LIMIT, "the element limit"
-    if runnable is not None and runnable < limit:
-        limit, why = runnable, (f"what the mesher builds within its time limit ({rate:g} elements a second for a "
-                                f"{cls} part, {GUARD_FACTOR:g} times over, inside {int(ceiling_s or 0)} s)")
     if memory < limit:
         limit, why = memory, (f"what fits in the mesh job's {MESH_JOB_MEMORY_GIB:g} GiB of memory "
                               f"({BYTES_PER_ELEMENT:g} bytes an element, with {MEMORY_MARGIN:g} times to spare)")
@@ -328,20 +314,42 @@ def choose_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | No
     needed = int(plan["estimate"]["elements"])
     said = f"about {needed:,} elements" if plan.get("histogram_complete", True) else f"more than {needed:,} elements"
     floor = min([float(z["size_m"]) for z in zone_list] or [diag_m / P.MIN_DIVISIONS])
-    best = plan
+    # THE FLOORS TO TRY, each twice the last, while it still changes a zone's size (every zone the
+    # floor reaches already at its validity minimum: a coarser floor changes nothing - fea0221 planned
+    # fourteen identical histograms, 330 s, before its first pass). Working them out costs nothing;
+    # each PLAN costs a histogram.
+    floors: list[float] = []
     last: list[float] | None = None
     for _ in range(FLOOR_STEPS):
         floor *= 2.0
         sizes = [float(z["size_m"]) for z in P.floored(zone_list, floor)]
         if sizes == last:
-            # every zone the floor reaches is already at its validity minimum: a coarser floor
-            # changes nothing, so the search stops here (fea0221 planned fourteen identical
-            # histograms, 330 s, before its first pass)
             break
         last = sizes
-        best = make_plan(record, surface, diag_m, levers=levers, limit=limit, zone_floor_m=floor)
-        if best["fits"]:
-            break
+        floors.append(floor)
+    # THE FIRST FLOOR THAT FITS, found by halving the list (the caldera planned fourteen histograms,
+    # 35 minutes, one floor after another): a coarser floor never makes more elements, so the first
+    # that fits is the one the floor-by-floor search found - the coarsest is tried first, and when even
+    # it does not fit the zones are at their minimums after ONE histogram
+    tried: dict[int, dict] = {}
+
+    def at(k: int) -> dict:
+        if k not in tried:
+            tried[k] = make_plan(record, surface, diag_m, levers=levers, limit=limit, zone_floor_m=floors[k])
+        return tried[k]
+
+    best = plan
+    if floors and at(len(floors) - 1)["fits"]:
+        lo, hi = 0, len(floors) - 1                       # floors[hi] fits; find the first that does
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if at(mid)["fits"]:
+                hi = mid
+            else:
+                lo = mid + 1
+        best, floor = at(hi), floors[hi]
+    elif floors:
+        best = at(len(floors) - 1)
     at_minimums = not best["fits"]
     if at_minimums:
         # EVEN AT THEIR VALIDITY MINIMUMS the zones need more than the limit: meshed so anyway - the
@@ -386,24 +394,14 @@ MESH_JOB_MEMORY_GIB = 32.0
 MEMORY_BASE_MB = 450.0
 BYTES_PER_ELEMENT = 5100.0
 MEMORY_MARGIN = 1.25
-#: the guard is GUARD_FACTOR times the planned time (D3's factor), never over the mesh job's own
-#: limit (deploy/gcp MESH_TIMEOUT_SECONDS, 14,400 s) less JOB_MARGIN_S, nor what the attempt has left
-GUARD_FACTOR = 3.0
+#: PLAN-fea-13: NO GUESSED TIME LIMIT (Areen, 24 Oct). The mesher runs until it is done, and is
+#: stopped only when it has made NO PROGRESS for the stall window (engines/gmsh/gmsh_runner
+#: FEA_STALL_WINDOW_S: no new output, no new step), or at the hard ceiling: the mesh job's own limit
+#: (deploy/gcp MESH_TIMEOUT_SECONDS) less JOB_MARGIN_S, never more than the attempt has left
 MESH_JOB_LIMIT_S = 14_400
 JOB_MARGIN_S = 600
 #: what an attempt keeps back after the last pass (the deck's writers, the hand-back)
 ATTEMPT_RESERVE_S = 300
-
-
-def guard_seconds(planned_s: float | None, *, floor_s: float, ceiling_s: float,
-                  factor: float = GUARD_FACTOR) -> int:
-    """D3's TIME-2 arithmetic (#259 work_limits.guard_seconds, mirrored): factor x the planned time,
-    never under the floor, never over the ceiling."""
-    floor = max(1.0, float(floor_s))
-    ceiling = max(floor, float(ceiling_s))
-    if planned_s is None:
-        return int(floor)
-    return int(min(ceiling, max(floor, factor * float(planned_s))))
 
 
 def ceiling_for(run) -> float:
@@ -418,22 +416,29 @@ def ceiling_for(run) -> float:
     return job
 
 
-def planned_work(plan: dict, cap_s: float, *, rate: float | None = None, cls: str = "",
-                 ceiling_s: float | None = None) -> dict:
-    """The pass's planned work and its guard clock, in D3's terms (#259, contracts/work_limits:
-    PlannedWork / guard_for). PLANNED WORK DECIDES, THE CLOCK ONLY GUARDS (PLAN-fea-13): the guard
-    is GUARD_FACTOR times the planned time at the part's slow fill rate, never under the engine's
-    old fixed cap (the floor) and never over the mesh job's limit or what the attempt has left.
-    REBASE NOTE: once #259 merges this becomes `work_limits.PlannedWork(where="fea.gmsh",
-    unit="elements", ...)` and a trip is recorded with `determinism.note_guard_trip`."""
+def planned_work(plan: dict, *, rate: float | None = None, cls: str = "", ceiling_s: float) -> dict:
+    """The pass's planned work, and how it is watched (PLAN-fea-13): the planned time at the part's
+    slow fill rate is FOR THE RECORD ONLY - the mesher is stopped only after the stall window with no
+    progress, or at `ceiling_s` (the mesh job's limit, or what the attempt has left)."""
+    from meshpipeline.engines.gmsh.gmsh_runner import stall_window
+
     amount = float((plan.get("estimate") or {}).get("elements") or 0)
     rate = rate if rate is not None else min(FILL_RATES.values())
     planned_s = amount / rate if rate and amount > 0 else None
-    ceiling = float(ceiling_s if ceiling_s is not None else cap_s)
-    guard = guard_seconds(planned_s, floor_s=float(cap_s), ceiling_s=ceiling)
     return {"where": "fea.gmsh", "unit": "elements", "amount": amount or None, "rate": rate, "class": cls,
-            "floor_s": float(cap_s), "ceiling_s": ceiling, "planned_s": planned_s, "guard_s": guard,
-            "factor": GUARD_FACTOR}
+            "planned_s": planned_s, "ceiling_s": int(ceiling_s), "stall_window_s": int(stall_window())}
+
+
+def watchdog_words(trip: dict) -> str:
+    """What the watchdog saw, in plain words, for the why record and the refusal."""
+    seen = trip.get("watchdog") or {}
+    ran = int(round(float(seen.get("seconds") or 0) / 60.0))
+    if trip.get("stalled"):
+        quiet = int(round(float(seen.get("silence_at_stop_s") or trip.get("stall_window_s") or 0) / 60.0))
+        return (f"the mesher made no progress for {quiet} minutes (no new output, no new step) after "
+                f"{ran} minutes of work on pass {trip.get('pass')}, so it was stopped as stuck")
+    return (f"the mesher was still working when it reached the hard limit of "
+            f"{int(round(float(trip.get('ceiling_s') or 0) / 60.0))} minutes on pass {trip.get('pass')}")
 
 
 def write_plan(ws: Path, plan: dict) -> None:
@@ -551,7 +556,6 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                 run: BuilderDriverRun, source_path: str = ""):
     from meshpipeline.contracts.failure_cause import FailureCause
     from meshpipeline.contracts.mesh_execution import note_native_pass, note_native_payload
-    from meshpipeline.engines.registry import get_spec
     from meshpipeline.engines.runtime import get_engine
 
     ws = Path(workspace)
@@ -610,8 +614,6 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     passes: list[dict] = []
     tripped: dict | None = None
     too_big: dict | None = None
-    policy = get_spec(ENGINE).run_policy
-    cap = int(policy.run_timeout()) if policy is not None else 1500
     rate, cls = fill_rate(record)
     chosen: dict = {}
     n0 = 0
@@ -645,24 +647,32 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             _clear_outputs(ws)
             note_native_pass(ws, n)
             note_native_payload(ws, [p for p in PAYLOAD if (ws / p).exists()])
-            # PLANNED WORK DECIDES, THE CLOCK ONLY GUARDS (D3's interface, mirrored - see planned_work)
-            work = planned_work(plan, cap, rate=rate, cls=cls, ceiling_s=ceiling_for(run))
-            _cite(job_id, [{"stage": "fea_time", "decided": "guard", "value": work["guard_s"], "rule": "PLAN-fea-13",
-                            "inputs": {k: work[k] for k in ("amount", "rate", "class", "planned_s", "floor_s",
-                                                             "ceiling_s", "factor")} | {"pass": n},
-                            "words": (f"Pass {n}: about {int(work['amount'] or 0):,} elements at {work['rate']:g} a second "
-                                      f"(a {cls} part) is about {int(work['planned_s'] or 0)} s; the mesher may take "
-                                      f"{work['guard_s']} s.")}])
+            # NO GUESSED TIME LIMIT (PLAN-fea-13): watched for progress, stopped only when stuck or at the
+            # hard ceiling
+            work = planned_work(plan, rate=rate, cls=cls, ceiling_s=ceiling_for(run))
+            _cite(job_id, [{"stage": "fea_time", "decided": "watchdog", "value": work["stall_window_s"],
+                            "rule": "PLAN-fea-13",
+                            "inputs": {k: work[k] for k in ("amount", "rate", "class", "planned_s", "ceiling_s",
+                                                             "stall_window_s")} | {"pass": n},
+                            "words": (f"Pass {n}: about {int(work['amount'] or 0):,} elements. The mesher runs until "
+                                      f"it is done; it is stopped only if it makes no progress for "
+                                      f"{work['stall_window_s'] // 60} minutes, or at the hard limit of "
+                                      f"{work['ceiling_s'] // 60} minutes.")}])
             await run.fence("start native mesh")
             native_t0 = time.monotonic()
-            result = await asyncio.to_thread(get_engine(ENGINE).run_cartesian_mesh, ws, timeout=work["guard_s"])
+            result = await asyncio.to_thread(get_engine(ENGINE).run_cartesian_mesh, ws, timeout=work["ceiling_s"])
             native_s = round(time.monotonic() - native_t0, 1)
             await run.fence("accept native mesh output")
             if result.get("timed_out"):
                 # A GUARD TRIP is our infrastructure, never the part's: it pulls no lever and changes no
                 # plan. The attempt ends here; the run's own retry takes it again (D3: replayed once)
                 run.note_native_run(produced_usable_mesh=False)
-                tripped = {**work, "pass": n}
+                tripped = {**work, "pass": n, "stalled": bool(result.get("stalled")),
+                           "watchdog": result.get("watchdog") or {}}
+                _cite(job_id, [{"stage": "fea_time", "decided": "stalled" if tripped["stalled"] else "ceiling",
+                                "value": (tripped["watchdog"] or {}).get("seconds"), "rule": "PLAN-fea-13",
+                                "inputs": {"pass": n, **(tripped["watchdog"] or {})},
+                                "words": watchdog_words(tripped).capitalize() + "."}])
                 break
             if result.get("too_big_for_worker"):
                 # BUILT, BUT TOO BIG FOR THIS WORKER'S DISK (adapters/mesh_execution/cloud_run_client.
@@ -718,12 +728,10 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     if tripped is not None and not any(f["valid"] for f in passes):
         (ws / "fea_passes.json").write_text(json.dumps({"passes": passes, "delivered": None, "levers": levers,
                                                         "guard_trip": tripped}, indent=1))
-        logger.warning("fea driver: the mesher ran past its guard clock (%ss, pass %s) - job_id=%s",
-                       tripped["guard_s"], tripped["pass"], job_id)
+        logger.warning("fea driver: %s - job_id=%s", watchdog_words(tripped), job_id)
         # told as OURS (run_infrastructure: the run may be taken again), never as the part's detail
         # level. REBASE NOTE (#259): becomes determinism.note_guard_trip, which the graph replays once
-        _refuse(ws, cause=FailureCause.RUN_INFRASTRUCTURE.value, gate=GUARD_GATE,
-                text=f"the mesher ran past its guard clock ({tripped['guard_s']} s, pass {tripped['pass']})",
+        _refuse(ws, cause=FailureCause.RUN_INFRASTRUCTURE.value, gate=GUARD_GATE, text=watchdog_words(tripped),
                 deterministic=False, ours=True, guard_trip=tripped)
         await run.fence("deliver builder outcome")
         outcome = run.outcome(produced_deliverable=False, exhausted=False, failure_marker=GUARD_TRIP)
@@ -767,6 +775,6 @@ def driver_for(state):
     return drive if applies(state) else None
 
 
-__all__ = ["connection_of", "prepare_assembly", "restage_tied", "BYTES_PER_ELEMENT", "MESH_JOB_MEMORY_GIB", "limit_facts", "memory_elements", "FILL_RATES", "FLOOR_STEPS", "GUARD_FACTOR", "MESH_JOB_LIMIT_S", "ceiling_for", "choose_plan",
-           "complexity", "element_limit", "fill_rate", "guard_seconds", "runnable_elements", "BUILD_FAILED", "GUARD_TRIP", "NO_SOURCE", "QUALITY_GATE", "applies", "drive",
+__all__ = ["connection_of", "prepare_assembly", "restage_tied", "BYTES_PER_ELEMENT", "MESH_JOB_MEMORY_GIB", "limit_facts", "memory_elements", "FILL_RATES", "FLOOR_STEPS", "MESH_JOB_LIMIT_S", "ceiling_for", "choose_plan",
+           "complexity", "element_limit", "fill_rate", "watchdog_words", "BUILD_FAILED", "GUARD_TRIP", "NO_SOURCE", "QUALITY_GATE", "applies", "drive",
            "driver_for", "ladder_facts", "ladder_words", "make_plan", "measure_staged", "planned_work", "write_plan"]

@@ -552,3 +552,19 @@ def test_an_assembly_solver_file_that_fails_is_left_out_not_the_deck(tmp_path, m
     out = AD.write_all(tmp_path, prep=None)
     assert out["deck"] == {"file": "mesh.inp"} and out["nastran"] == {"file": "mesh.bdf"}
     assert "MemoryError" in out["ansys"]["error"] and not (tmp_path / "mesh.cdb").exists()
+
+
+def test_the_histogram_on_every_core_is_the_one_on_one_core(monkeypatch):
+    """Planning measures the octree in worker processes (the caldera took 25 minutes on one core):
+    every cube is its own, so the histogram must be the same to the bit."""
+    from meshpipeline.engines import fea_size_field as SF
+
+    surf = _cube_surface([(0, 0, 0, 40), (40, 0, 0, 10), (0, 40, 0, 20)])
+    zones = [{"id": "F0", "kind": "hole", "faces": ["Part_1_Face_2"], "size_m": 0.6e-3, "reach_m": 0.5e-3}]
+    zones += [{"id": f"P{k}", "kind": "part", "faces": [f"Part_{k}_Face_{j}" for j in range(1, 7)],
+               "size_m": s, "reach_m": 0.0, "part": f"Part_{k}"} for k, s in ((1, 6.9e-3), (2, 1.7e-3), (3, 3.5e-3))]
+    field = SF.SizeField(surf, zones, growth=1.3)
+    monkeypatch.setattr(SF, "PARALLEL_MIN_POINTS", 50)
+    one = field.histogram(coarsest=8e-3, per_h3=6.0, workers=1)
+    many = field.histogram(coarsest=8e-3, per_h3=6.0, workers=3)
+    assert one.cubes == many.cubes and one.cubes > 1000 and one.rows == many.rows

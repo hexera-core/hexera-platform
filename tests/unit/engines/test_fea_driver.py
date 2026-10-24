@@ -186,6 +186,8 @@ def test_a_guard_trip_pulls_no_lever_and_ends_the_attempt(tmp_path, monkeypatch)
     assert not ok and marker == FD.GUARD_TRIP and len(calls) == 1
     rec = json.loads((ws / "fea_passes.json").read_text())
     assert rec["levers"] == [] and rec["guard_trip"]["unit"] == "elements"
+    # the hard ceiling is what the mesher gets - never a guess at how long it should take
+    assert calls[0] == FD.MESH_JOB_LIMIT_S - FD.JOB_MARGIN_S or calls[0] < FD.MESH_JOB_LIMIT_S
     assert not any(e["rule"].startswith("LAD-fea-") and e["decided"] == "lever" for e in dr.cited_for("t-trip"))
     from meshpipeline.engines.preflight import read_refusal
 
@@ -282,15 +284,21 @@ def test_a_mesh_over_the_limit_after_meshing_is_planned_coarser():
     assert lever["lever"] == "LAD-fea-4" and lever["factor"] < 1 and L.coarse_factor([lever]) == lever["factor"]
 
 
-# ------------------------------------------------ PLAN-fea-13: the guard grows with the planned work ----
-def test_the_guard_is_three_times_the_planned_time_between_the_old_cap_and_the_job_limit():
-    assert FD.guard_seconds(None, floor_s=1500, ceiling_s=13800) == 1500
-    assert FD.guard_seconds(100.0, floor_s=1500, ceiling_s=13800) == 1500        # never under the old cap
-    assert FD.guard_seconds(2000.0, floor_s=1500, ceiling_s=13800) == 6000      # 3 x the planned time
-    assert FD.guard_seconds(9000.0, floor_s=1500, ceiling_s=13800) == 13800     # never over the ceiling
+# ------------------------------------- PLAN-fea-13: no guessed time limit, a progress watchdog ----
+def test_the_planned_time_is_for_the_record_and_the_mesher_gets_the_hard_ceiling():
     plan = {"estimate": {"elements": 1_761_000}}
-    w = FD.planned_work(plan, 1500, rate=587.0, cls="simple", ceiling_s=13800)
-    assert w["planned_s"] == pytest.approx(3000.0, rel=1e-3) and w["guard_s"] == 9000 and w["class"] == "simple"
+    w = FD.planned_work(plan, rate=587.0, cls="simple", ceiling_s=13800)
+    assert w["planned_s"] == pytest.approx(3000.0, rel=1e-3) and w["class"] == "simple"
+    assert w["ceiling_s"] == 13800 and w["stall_window_s"] == 900 and "guard_s" not in w
+
+
+def test_the_watchdog_says_what_it_saw():
+    stuck = {"pass": 2, "stalled": True, "stall_window_s": 900, "ceiling_s": 13800,
+             "watchdog": {"seconds": 3000.0, "silence_at_stop_s": 905.0}}
+    words = FD.watchdog_words(stuck)
+    assert "no progress for 15 minutes" in words and "50 minutes of work on pass 2" in words
+    ceiling = {"pass": 1, "stalled": False, "ceiling_s": 13800, "watchdog": {"seconds": 13800.0}}
+    assert "still working when it reached the hard limit of 230 minutes" in FD.watchdog_words(ceiling)
 
 
 def test_the_fill_rate_follows_the_parts_measured_complexity():
@@ -302,9 +310,11 @@ def test_the_fill_rate_follows_the_parts_measured_complexity():
     assert rates[0][0] > rates[1][0] > rates[2][0]
 
 
-def test_a_level_is_never_planned_bigger_than_three_guards_fit_under_the_ceiling():
-    assert FD.runnable_elements(13800, 587.0) == int(587.0 * 13800 / 3)       # about 2.7M: Fine reachable
-    assert FD.runnable_elements(None, 587.0) is None
+def test_no_plan_is_cut_down_for_time():
+    """Areen, 24 Oct: a guess at the mesher's speed never lowers the element limit - only memory does."""
+    big = {"faces": {f"Face_{k}": {} for k in range(500)}, "hot_spots": [{}] * 300}
+    assert FD.element_limit(big, 600.0) == FD.element_limit(big, None)
+    assert FD.element_limit(big, 600.0)[0] == min(P.ELEMENT_LIMIT, FD.memory_elements())
 
 
 def test_the_ceiling_is_what_the_attempt_has_left_and_never_more_than_the_job():
@@ -500,3 +510,33 @@ def test_a_gentle_curve_gets_no_round_zone_of_its_own():
     from meshpipeline.cad import fea_measure as M
 
     assert M.ROUND_CAP_SHARE <= 0.25       # a bend over a quarter of the part is the base size's
+
+
+
+
+@pytest.mark.parametrize("fits_from", [None, 0, 1, 5, 9, 13])
+def test_the_floor_search_halves_and_finds_the_floor_one_by_one_would(monkeypatch, fits_from):
+    """PLAN-fea-8: the first floor that fits, found by halving the list of floors - the same floor the
+    floor-by-floor search found, in far fewer histograms (the caldera planned fourteen, 35 minutes)."""
+    zones = [{"id": f"Z{k}", "kind": "hole", "faces": [f"Face_{k}"], "size_m": 1e-6 * 1.5 ** k} for k in range(40)]
+    monkeypatch.setattr(P, "zones", lambda record, tighten=None: [dict(z) for z in zones])
+    monkeypatch.setattr(P, "floored", lambda zl, f, through=None: [{**z, "size_m": max(z["size_m"], f)} for z in zl])
+    monkeypatch.setattr(FD, "_restate", lambda record, plan: plan)
+    floors = [1e-6 * 2 ** (k + 1) for k in range(FD.FLOOR_STEPS)]       # what the one-by-one search walks
+    first = floors[fits_from] if fits_from is not None else None
+    calls = []
+
+    def fake(record, surface, diag_m, *, levers=None, limit=0, zone_floor_m=None, **_k):
+        calls.append(zone_floor_m)
+        ok = zone_floor_m is not None and first is not None and zone_floor_m >= first * (1 - 1e-9)
+        return {"fits": ok, "estimate": {"elements": 10 if ok else 10**9}, "limit": {}}
+
+    monkeypatch.setattr(FD, "make_plan", fake)
+    plan = FD.choose_plan({"faces": {}}, None, 1.0)
+    searched = [f for f in calls[1:] if first is None or abs(f - 0.75 * first) > 1e-18]
+    assert len(searched) <= 5                                            # one by one: up to fourteen
+    if first is None:
+        assert plan["coarsened"]["at_minimums"] and len(searched) == 1
+    else:
+        assert not plan["coarsened"]["at_minimums"]
+        assert plan["coarsened"]["zone_floor_m"] in (pytest.approx(first), pytest.approx(0.75 * first))

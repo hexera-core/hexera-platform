@@ -22,6 +22,76 @@ from pathlib import Path
 
 #: 3D algorithms the plan may name (gmsh's Mesh.Algorithm3D numbers).
 ALGORITHMS_3D = {"delaunay": 1, "hxt": 10}
+
+
+#: THE STEP THE FEA MESHER IS ON (engines/mesher_stage.py reads it for the live line; the runner's
+#: watchdog counts a new step as progress). gmsh's own output is the progress inside its steps.
+STAGE_FILE = "fea_stage.json"
+
+
+def note_stage(ws: Path, key: str, label: str) -> None:
+    import time
+    try:
+        (Path(ws) / STAGE_FILE).write_text(json.dumps({"key": key, "label": label, "at": round(time.time(), 1)}))
+    except OSError:
+        pass
+
+
+class Ticker:
+    """While the adapter's OWN Python steps run (the curved-element check, the quality measures, the
+    solver files: plain loops that end, with no gmsh output), the step is re-noted every `every_s`
+    seconds so the watchdog sees them working. Never ticks during a gmsh call: there gmsh's own
+    output is the only sign of progress."""
+
+    def __init__(self, ws: Path, every_s: float = 30.0):
+        import threading
+        self.ws, self.every_s = Path(ws), float(every_s)
+        self._stop = threading.Event()
+        self._thread = None
+        self._step: tuple[str, str] | None = None
+
+    def start(self, key: str, label: str) -> None:
+        import threading
+        self.stop()
+        self._step = (key, label)
+        note_stage(self.ws, key, label)
+        self._stop = threading.Event()
+
+        def beat() -> None:
+            while not self._stop.wait(self.every_s):
+                note_stage(self.ws, *self._step)  # type: ignore[misc]
+
+        self._thread = threading.Thread(target=beat, name="fea-stage", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        if self._thread is not None:
+            self._stop.set()
+            self._thread.join(timeout=5)
+            self._thread = None
+
+
+def mesh_threads(run: dict) -> int:
+    """The mesher's thread count: the plan's `threads`, else FEA_GMSH_THREADS, else 1; 0 = every core."""
+    import os
+    raw = run.get("threads") if isinstance(run, dict) and run.get("threads") is not None else \
+        os.environ.get("FEA_GMSH_THREADS", "1")
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        n = 1
+    if n > 0:
+        return n
+    # every core THE JOB HAS (its CPU quota), never the host's: Cloud Run's os.cpu_count() is the host's
+    from meshpipeline.engines.snappy.native import _container_cpus
+    return max(1, _container_cpus(0) or os.cpu_count() or 1)
+
+
+def algorithm_3d(run: dict) -> str:
+    """The 3D algorithm: the plan's `algorithm3d`, else FEA_GMSH_ALGO3D, else delaunay."""
+    import os
+    name = str((run or {}).get("algorithm3d") or os.environ.get("FEA_GMSH_ALGO3D") or "delaunay").lower()
+    return name if name in ALGORITHMS_3D else "delaunay"
 #: gmsh's MeshAdapt 2D algorithm (Mesh.Algorithm 1): the other way to mesh a surface, for the
 #: surfaces a pass went wrong on (LAD-fea-6) - the default (Frontal-Delaunay) left them empty or bad
 MESH_ADAPT = 1
@@ -367,7 +437,13 @@ def mesh(workspace) -> int:
         # ONE THREAD, KEPT (fix pack, 22 Oct): at 8 threads three of five lab parts meshed twice came out
         # different (cell counts too) - gmsh's parallel curve and surface meshing is not repeatable,
         # and the 3D fill and the optimiser are serial anyway
-        gmsh.option.setNumber("General.NumThreads", 1)
+        # THREADS (Areen, 24 Oct: use the job's cores). One thread is byte-repeatable; several are not, so
+        # the count and the 3D algorithm come from the plan (or the lab's FEA_GMSH_THREADS /
+        # FEA_GMSH_ALGO3D) and are recorded beside the mesh
+        threads = mesh_threads(run)
+        gmsh.option.setNumber("General.NumThreads", threads)
+        for dim in ("1D", "2D", "3D"):
+            gmsh.option.setNumber(f"Mesh.MaxNumThreads{dim}", threads)
         gmsh.option.setNumber("Mesh.RandomSeed", 1)
         gmsh.option.setNumber("Geometry.OCCBoundsUseStl", 1)
         gmsh.model.add("fea")
@@ -387,7 +463,7 @@ def mesh(workspace) -> int:
         gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
         gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
         gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
-        gmsh.option.setNumber("Mesh.Algorithm3D", ALGORITHMS_3D.get(str(run.get("algorithm3d") or "delaunay"), 1))
+        gmsh.option.setNumber("Mesh.Algorithm3D", ALGORITHMS_3D.get(algorithm_3d(run), 1))
         face_tags: dict[str, list[int]] | None = None
         surface_tag: dict[int, int] = {}
         volume_tag: dict[int, int] = {}
@@ -405,12 +481,16 @@ def mesh(workspace) -> int:
                 for p in row.get("parts") or []:
                     if k in volume_tag:
                         part_volumes.setdefault(f"Part_{int(p)}", []).append(volume_tag[k])
+        tick = Ticker(ws)
+        note_stage(ws, "sizing", "setting the element sizes")
         bg = size_fields(gmsh, plan, surfaces, face_tags, part_volumes)
         if bg is not None:
             gmsh.model.mesh.field.setAsBackgroundMesh(bg)
         remesh = {int(s) for s in run.get("remesh_surfaces") or []}
+        note_stage(ws, "surface", "meshing the surfaces")
         empty = surface_mesh(gmsh, surfaces, remesh)
         try:
+            note_stage(ws, "volume", "filling the solid with elements")
             gmsh.model.mesh.generate(3)
         except Exception as exc:
             # the surfaces the fill failed on, for the next pass (LAD-fea-6): the driver reads them
@@ -418,6 +498,7 @@ def mesh(workspace) -> int:
             named = sorted(set(empty) | {s for s in surfaces_named(str(exc)) if s in surfaces})
             print(f"{BAD_SURFACES} {','.join(str(s) for s in named)}", file=sys.stderr)
             raise
+        note_stage(ws, "optimising", "improving the elements")
         for _ in range(int(run.get("optimise_passes") or 1)):
             gmsh.model.mesh.optimize("Netgen")
         order = int((plan.get("element") or {}).get("order") or 2)
@@ -430,11 +511,14 @@ def mesh(workspace) -> int:
             st_tags, st_q = fea_settle.qualities(gmsh)
             straight = dict(zip(st_tags.tolist(), st_q.tolist(), strict=True))
             gmsh.option.setNumber("Mesh.HighOrderOptimize", 2)
+            note_stage(ws, "curving", "curving the elements to the surface")
             gmsh.model.mesh.setOrder(order)
+            tick.start("settling", "checking the curved elements")
             # PLAN-fea-11 (never worse than straight) and PLAN-fea-10 (the cusps set aside)
             settled = fea_settle.settle(gmsh, straight, [c["at_m"] for c in plan.get("cusps") or []],
                                         D.SICN_FLOOR, micro=plan.get("micro") or [])
 
+        tick.start("writing", "measuring the elements and writing the solver files")
         etypes, etags, _ = gmsh.model.mesh.getElements(3)
         all_tags = [t for arr in etags for t in arr]
         qualities = gmsh.model.mesh.getElementQualities(all_tags, "minSICN") if all_tags else []
@@ -551,6 +635,7 @@ def mesh(workspace) -> int:
               f"short={rules.get('short')} worst_sj={shape.get('fea_min_scaled_jacobian')} "
               f"jac_ratio={shape.get('fea_max_jacobian_ratio')} aspect={shape.get('fea_max_aspect_ratio')} "
               f"dihedral={shape.get('fea_min_dihedral_deg')}-{shape.get('fea_max_dihedral_deg')}")
+        tick.stop()
         return 0 if not fatal else 4
     finally:
         gmsh.finalize()
