@@ -342,6 +342,18 @@ def _fea_quality(f: Mapping) -> tuple[str, str]:
                 "This comes from walls or gaps far thinner than the part is long: every one needs elements "
                 "through it. Thicken or remove the thinnest walls in your CAD, or split the part, and upload "
                 "it again - then say \"run it again\".")
+    defect = f.get("cad_defect") if isinstance(f.get("cad_defect"), Mapping) else None
+    if defect:
+        # MESH-2: the mesh failed exactly where the geometry check had flagged the CAD
+        faces = [str(x) for x in defect.get("faces") or []]
+        named = ", ".join(faces[:6]) + (f" and {len(faces) - 6} more" if len(faces) > 6 else "")
+        kinds = {str(s.get("kind")) for s in defect.get("suspects") or [] if isinstance(s, Mapping)}
+        what = ("a paper-thin fold (two faces lying on each other)" if kinds == {"fold"}
+                else "faces crossing each other" if kinds == {"self_overlap"} else "a possible CAD defect")
+        return (f"The part needs CAD repair: the mesh could not be built at {named}, where the geometry check "
+                f"found {what}. The plan is fixed by the part, so another run would fail the same way, and I "
+                "stopped rather than spend the time.",
+                f"Fix {named} in your CAD and upload the part again - then say \"run it again\".")
     if f.get("built_none"):
         # NO PASS BUILT A MESH: the fill refused the surface meshes - most often two faces lying on
         # top of each other (a paper-thin sliver or fold) that no element size can separate

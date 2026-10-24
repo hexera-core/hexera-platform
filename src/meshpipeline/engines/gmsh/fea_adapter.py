@@ -103,6 +103,21 @@ MESH_ADAPT = 1
 TRACE_BAD = 500
 #: the line the driver reads the surfaces a failed pass went wrong on from (LAD-fea-6)
 BAD_SURFACES = "[GMSH-FEA] BAD SURFACES:"
+#: The same surfaces as the CAD's face names (Face_k, or Part_k_Face_j for an assembly): what a
+#: suspected CAD defect is held against (MESH-2).
+BAD_FACES = "[GMSH-FEA] BAD FACES:"
+
+
+def face_names_of(tags, face_tags: dict[str, list[int]] | None) -> list[str]:
+    """The CAD face names of gmsh surface `tags`: an assembly's by its sidecar, a single part's Face_k
+    (gmsh numbers a single solid's faces in OpenCASCADE's order, as the measurement does)."""
+    if face_tags:
+        by_tag: dict[int, list[str]] = {}
+        for name, ts in face_tags.items():
+            for t in ts:
+                by_tag.setdefault(int(t), []).append(str(name))
+        return sorted({n for t in tags for n in by_tag.get(int(t), [])})
+    return [f"Face_{int(t)}" for t in sorted({int(t) for t in tags})]
 #: Distance sampling per face, per direction (gmsh's "Sampling"): enough points that the spacing is
 #: about half the group's size, within these bounds.
 SAMPLING_MIN, SAMPLING_MAX = 20, 300
@@ -501,6 +516,7 @@ def mesh(workspace) -> int:
             # from this line
             named = sorted(set(empty) | {s for s in surfaces_named(str(exc)) if s in surfaces})
             print(f"{BAD_SURFACES} {','.join(str(s) for s in named)}", file=sys.stderr)
+            print(f"{BAD_FACES} {','.join(face_names_of(named, face_tags))}", file=sys.stderr)
             raise
         note_stage(ws, "optimising", "improving the elements")
         for _ in range(int(run.get("optimise_passes") or 1)):
@@ -620,6 +636,7 @@ def mesh(workspace) -> int:
                                           "fea_max_dihedral_deg", "fea_inverted") if k in shape},
             "fea_rules_short": len(rules.get("short") or []) if rules else None,
             "fea_bad_surfaces": traced,
+            "fea_bad_faces": face_names_of(traced, face_tags),
             # PLAN-fea-16: the mesher's peak memory, for the bytes-per-element model
             "peak_rss_mb": _peak_rss_mb(),
             # THE PLAN'S RULES AS MET (engines/fea_checks.py): the gate reads the through-wall
@@ -645,5 +662,5 @@ def mesh(workspace) -> int:
         gmsh.finalize()
 
 
-__all__ = ["ALGORITHMS_3D", "BAD_SURFACES", "MESH_ADAPT", "bad_surfaces", "mesh", "size_fields", "surface_mesh",
+__all__ = ["BAD_FACES", "face_names_of", "ALGORITHMS_3D", "BAD_SURFACES", "MESH_ADAPT", "bad_surfaces", "mesh", "size_fields", "surface_mesh",
            "surfaces_named"]

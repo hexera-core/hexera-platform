@@ -1370,6 +1370,14 @@ def fea_measurements(stored: dict, facts: dict, interpretation: dict | None) -> 
                     # face named Part_k_Face_j - the names the delivered files use
                     from meshpipeline.cad.fea_assembly import measure_assembly
                     record = measure_assembly(shape, record, source=canonical.path, mm_per_unit=mm_per_unit)
+                # MESH-1: WHERE THE CAD MAY BE BROKEN, for the stage to WARN about (never a stop): the
+                # folds the measurement found and the crossings the clean check found, each confirmed
+                # only when a second, independent measure agrees (cad/suspect_defects)
+                try:
+                    from meshpipeline.cad import suspect_defects as SD
+                    record["suspects"] = SD.find(shape, record, validity=facts.get("validity"))
+                except Exception as exc:  # noqa: BLE001 - no suspects measured is no warning
+                    logger.warning("geometry check: suspected defects not measured (%s)", type(exc).__name__)
             else:
                 record = measure_triangles(read_triangles(canonical.path) * scale * 1000.0)
         record.update(measured=True, scale_to_m=scale)

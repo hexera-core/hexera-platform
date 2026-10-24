@@ -4,7 +4,7 @@ Every decision a mesh run makes on its own is made by a written rule. Each rule 
 and each decision the run records in its "why" record names the rule behind it
 (`contracts/decision_record.py`). This file is the one home for those rules.
 
-Rulebook version: **16**
+Rulebook version: **17**
 
 How the book is kept honest:
 
@@ -282,6 +282,18 @@ own plan.
 | AI-fea-8 | in force | **After a failed pass** (no mesh, or an invalid one) the AI may pick one lever from those the ladder allows for that failure (`engines/fea_ladder.lever_options`): the ladder's own first, the other unpulled fill lever, or LAD-fea-6. Any other answer: the ladder's own. |
 
 The AI decisions are `engines/fea_ai.py`.
+
+## MESH: a good file is never blocked by our own broken-CAD checks
+
+Areen, 24 Oct: mesh first. A pre-mesh check that the CAD may be broken warns; only a mesh that then
+fails at the flagged spot tells the user the part needs CAD repair. Detect only, never heal
+(`cad/suspect_defects.py`, `application/fea_check.py`, `engines/fea_driver.py`).
+
+| ID | Status | Rule |
+|---|---|---|
+| MESH-1 | in force | **Warn, then mesh.** Wherever a closed solid can be read (a CAD file with a solid body, or a triangle file whose surface closes), a face crossing another of its body, a paper-thin fold, and an open or invalid patch the clean check finds are WARNINGS on the stage, with the faces named - never a stop. The run meshes; a valid mesh is delivered with a note naming the spot. The only stops before meshing are a file no closed solid can be read from (a surface, or nothing) and an unreadable file. A defect is CONFIRMED only when two independent measures agree (the fold's gap test or the crossing search, and OpenCASCADE's Boolean self-interference check on that solid alone naming the same faces); anything less is a note. |
+| MESH-2 | in force | **Needs CAD repair only where the mesh failed.** When every pass fails and the faces the mesher failed on (gmsh's own error, or the invalid elements) are faces a check flagged, the user is told the part needs CAD repair, with those faces named; the run is not taken again. A failure anywhere else is the ordinary FEA outcome. |
+| MESH-3 | in force | **Zero false stops, gated.** Every broken-CAD check runs over the known-good files (`devtools/quality/broken_cad_gate.py`): CI holds the fixture set to zero stops on every change, and any change to a check runs the whole corpus (the clean CFD corpus's gate tier, the FEA corpus dev and holdout - presence and verdict only - Areen's files and the assembly corpus A set) on a lab VM, which must show zero stops. |
 
 ## Reserved families
 

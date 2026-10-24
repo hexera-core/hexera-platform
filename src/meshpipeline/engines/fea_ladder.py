@@ -83,6 +83,18 @@ def failed_surfaces(q: Mapping, log: str = "") -> list[int]:
     return []
 
 
+def failed_faces(q: Mapping, log: str = "") -> list[str]:
+    """The CAD faces a pass went wrong on, by name (the adapter's BAD FACES, or quality.json's)."""
+    if q.get("fea_bad_faces"):
+        return sorted(str(s) for s in q["fea_bad_faces"])
+    from meshpipeline.engines.gmsh.fea_adapter import BAD_FACES
+
+    for line in reversed((log or "").splitlines()):
+        if line.startswith(BAD_FACES):
+            return sorted(x.strip() for x in line[len(BAD_FACES):].split(",") if x.strip())
+    return []
+
+
 def _remeshed(levers: list[dict]) -> set[int]:
     return {int(s) for lv in levers for s in lv.get("surfaces") or []}
 
@@ -104,6 +116,7 @@ def pass_facts(n: int, rc, q: Mapping, plan: Mapping, log: str = "", killed: boo
             "through_wall_min": (rules.get("through_wall") or {}).get("min"),
             "per_quarter_min": (rules.get("hot_spots") or {}).get("min_per_quarter_turn"),
             "bad_surfaces": [] if valid else failed_surfaces(q if built else {}, log),
+            "bad_faces": [] if valid else failed_faces(q if built else {}, log),
             # LAD-fea-7: the mesher was killed by the job's memory limit
             "out_of_memory": bool(killed and not built)}
 

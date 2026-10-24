@@ -48,6 +48,8 @@ GUARD_TRIP = "fea_guard_trip"
 TOO_BIG = "fea_too_big_for_worker"
 #: The gate a guard trip is reported under (ours, never the part's).
 GUARD_GATE = "fea_guard"
+#: MESH-2: the gate a mesh that failed AT a flagged CAD spot is reported under.
+CAD_DEFECT_GATE = "fea_cad_defect"
 #: The plan measures every wall of a part up to this many surface triangles (the geometry check
 #: stops at cad/fea_measure.MAX_RAY_TRIANGLES for speed; the plan cannot hold an unmeasured wall).
 MAX_RAY_TRIANGLES = 5_000_000
@@ -131,7 +133,47 @@ def measure_staged(ws: Path) -> tuple[dict, Any, float]:
         record, surface = measure_cad_surface(fix.Shape(), mm_per_unit=mm_per_unit,
                                               max_ray_triangles=MAX_RAY_TRIANGLES)
         record.setdefault("notes", []).append(f"the CAD was healed before it was measured ({exc})")
+    # MESH-1: WHERE THE CAD MAY BE BROKEN, measured on this very solid (detect only, never a stop): the
+    # mesh is tried; a valid one is delivered with a note, and only a failure AT that spot is the CAD's
+    try:
+        from meshpipeline.cad import suspect_defects as SD
+        record["suspects"] = SD.find(shape, record)
+    except Exception as exc:  # noqa: BLE001 - no suspects measured is no suspects
+        logger.warning("fea driver: suspected defects not measured (%s)", type(exc).__name__)
     return record, surface, diag_m
+
+
+def _suspect_faces(record: dict) -> set[str]:
+    return {str(f) for s in record.get("suspects") or [] for f in s.get("faces") or []}
+
+
+def defect_at_failure(record: dict, passes: list[dict]) -> dict | None:
+    """MESH-2: the failure is the CAD's when the faces the mesher failed on are the faces a check
+    flagged (gmsh's own error names them, or the invalid elements lie on them); None otherwise."""
+    flagged = _suspect_faces(record)
+    if not flagged:
+        return None
+    hit = sorted({str(f) for p in passes for f in p.get("bad_faces") or []} & flagged)
+    if not hit:
+        return None
+    sus = [s for s in record.get("suspects") or [] if set(s.get("faces") or []) & set(hit)]
+    return {"faces": hit, "suspects": sus, "confirmed": any(s.get("confirmed") for s in sus)}
+
+
+def suspect_note(record: dict) -> str:
+    """The note a delivered mesh carries when a check flagged a spot (MESH-1)."""
+    from meshpipeline.cad import suspect_defects as SD
+    sus = record.get("suspects") or []
+    if not sus:
+        return ""
+    seen, said = set(), []
+    for s in sus:
+        key = (s.get("kind"), tuple(sorted(s.get("faces") or [])))
+        if key not in seen:
+            seen.add(key)
+            said.append(SD.words(s))
+    return (" ".join(said[:3]) + " The mesh was built and is valid; if your solver misbehaves there, check that "
+            "spot in your CAD.")
 
 
 def connection_of(state) -> str:
@@ -425,6 +467,10 @@ def choose_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | No
 def _restate(record: dict, plan: dict) -> dict:
     """The plan's words and decisions again, now that it says what was coarsened."""
     plan["words"] = P.words(record, plan)
+    note = suspect_note(record)
+    if note:
+        # MESH-1: the spot a check flagged, said beside the mesh (meshed anyway)
+        plan["words"] = [*plan["words"], note]
     plan["decisions"] = P.decisions(record, plan)
     return _with_ai(plan)
 
@@ -889,8 +935,19 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         # executor still judges the mesh on disk, and this record tells the retry policy (and the
         # user's sentence) that another attempt on this engine cannot change it (job ab20566f
         # spent a second identical 14-minute attempt)
-        _refuse(ws, cause=FailureCause.MESH_QUALITY.value, gate=QUALITY_GATE,
-                text=ladder_words(passes, levers), **ladder_facts(ws, passes, levers))
+        defect = defect_at_failure(record, passes)
+        if defect is not None:
+            # MESH-2: THE MESH FAILED WHERE A CHECK FLAGGED THE CAD - the one case the user is told the
+            # part needs CAD repair, with the faces named (detect only: nothing was healed)
+            _cite(job_id, [{"stage": "fea_ladder", "decided": "cad defect", "value": defect["faces"],
+                            "rule": "MESH-2", "inputs": defect,
+                            "words": "The mesh failed at the faces a check had flagged: the CAD needs repair there."}])
+            _refuse(ws, cause=FailureCause.MESH_QUALITY.value, gate=CAD_DEFECT_GATE,
+                    text=f"the mesh failed at {', '.join(defect['faces'][:6])}, where the geometry check flagged a "
+                         "possible CAD defect", cad_defect=defect, **ladder_facts(ws, passes, levers))
+        else:
+            _refuse(ws, cause=FailureCause.MESH_QUALITY.value, gate=QUALITY_GATE,
+                    text=ladder_words(passes, levers), **ladder_facts(ws, passes, levers))
     await run.fence("deliver builder outcome")
     outcome = run.outcome(produced_deliverable=ok, exhausted=not ok, failure_marker="" if ok else BUILD_FAILED)
     return outcome.produced_deliverable, (outcome.terminal_value or BUILD_FAILED), outcome

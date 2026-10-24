@@ -498,33 +498,40 @@ def _stage_facts(shape, names=None):
     from meshpipeline.cad.fea_measure import FACT_KEY
     from meshpipeline.cad.validity_brep import check_shape
 
+    from meshpipeline.cad import suspect_defects as SD
+
     rec = A.record(shape, mm_per_unit=1.0, names=names)
-    return {"solids": len(A.solids(shape)), "source_format": "step", "validity": check_shape(shape).as_dict(),
-            FACT_KEY: {A.FACT_KEY: rec}}
+    validity = check_shape(shape).as_dict()
+    many = len(A.solids(shape)) > 1
+    measured = {A.FACT_KEY: rec, **({"face_names": "Part_k_Face_j"} if many else {})}
+    measured["suspects"] = SD.find(shape, measured, validity=validity)
+    return {"solids": len(A.solids(shape)), "source_format": "step", "validity": validity, FACT_KEY: measured}
 
 
-def test_a_part_that_overlaps_itself_stops_with_its_name_and_a_way_out():
+def test_a_part_that_overlaps_itself_is_a_warning_named_and_the_mesh_is_tried():
+    """MESH-1 (Areen, 24 Oct): a readable solid is never stopped by our broken-CAD checks - the stage
+    warns with the part and faces named, and the user goes on."""
     from meshpipeline.application import fea_check
 
     shape = fx._compound(_self_crossing_solid(), fx._box(30, 0, 0, 10, 10, 10))
     facts = _stage_facts(shape, names=["Housing", "Cover"])
     hit = next(r for r in facts["validity"]["reasons"] if r["code"] == "self_intersection")
     assert hit["details"]["bodies"] == [1]
-    blocked, kind, way = fea_check.blocker(facts)
-    assert kind == "self_overlap"
-    assert blocked == "Part Housing (Part_1) overlaps itself – it needs CAD repair before it can be meshed."
-    assert "Fix it in your CAD" in way and "remove that part" in way
+    assert fea_check.blocker(facts) == ("", "", "")
     view = fea_check.fea_view(facts)
-    assert view["can_proceed"] is False and view["single_part_only"] == blocked
+    assert view["can_proceed"] is True and view["single_part_only"] == ""
+    said = " ".join(view["warnings"])
+    assert "Part Housing (Part_1) may have faces crossing each other at Part_1_Face_" in said
+    assert fea_check.TRY_ANYWAY in said and fea_check.TRY_ANYWAY in view["clean_summary"]
 
 
-def test_a_single_part_that_overlaps_itself_stops_too():
+def test_a_single_part_that_overlaps_itself_is_a_warning_too():
     from meshpipeline.application import fea_check
 
     facts = _stage_facts(_self_crossing_solid())
-    blocked, kind, way = fea_check.blocker(facts)
-    assert kind == "self_overlap" and blocked.startswith("This part overlaps itself")
-    assert way == fea_check.WAY_OUT_REPAIR
+    assert fea_check.blocker(facts) == ("", "", "")
+    said = fea_check.warnings(facts)
+    assert said and said[0].startswith("The part may have faces crossing each other at Face_")
 
 
 def test_parts_that_pass_into_each_other_are_no_stop_and_nothing_is_healed():

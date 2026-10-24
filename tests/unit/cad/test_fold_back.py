@@ -20,17 +20,24 @@ def test_an_ordinary_wedge_a_box_and_tangent_blends_are_not():
     assert fold_back_edges(fx.plate_with_hole())["folds"] == []
 
 
-def test_the_stage_stops_on_a_fold_and_names_it():
-    from meshpipeline.application.fea_check import WAY_OUT_REPAIR, blocker
+def _facts(shape):
+    from meshpipeline.cad import suspect_defects as SD
     from meshpipeline.cad.fea_measure import FACT_KEY, measure_cad
 
-    rec = measure_cad(fx.wedge(0.2), mm_per_unit=1.0)
-    assert rec["fold_back"] and rec["fold_back"][0]["faces"][0].startswith("Face_")
-    said, kind, way = blocker({FACT_KEY: rec, "solids": 1})
-    assert kind == "fold_back" and way == WAY_OUT_REPAIR
-    assert "paper-thin fold" in said and "CAD repair" in said and "20 mm" in said
-    clean = measure_cad(fx.wedge(20.0), mm_per_unit=1.0)
-    assert blocker({FACT_KEY: clean, "solids": 1})[1] == ""
+    rec = measure_cad(shape, mm_per_unit=1.0)
+    rec["suspects"] = SD.find(shape, rec, check_overlaps=False)
+    return {FACT_KEY: rec, "solids": 1, "source_format": "step"}
+
+
+def test_a_fold_is_a_warning_on_the_stage_and_names_its_faces():
+    """MESH-1: a readable solid is meshed; the stage warns, it never stops."""
+    from meshpipeline.application.fea_check import TRY_ANYWAY, blocker, warnings
+
+    facts = _facts(fx.wedge(0.2))
+    assert blocker(facts) == ("", "", "")
+    said = " ".join(warnings(facts))
+    assert "paper-thin fold" in said and "Face_" in said and TRY_ANYWAY in said
+    assert warnings(_facts(fx.wedge(20.0))) == []
 
 
 def test_no_mesh_built_is_said_as_that_never_as_bad_elements():
@@ -57,16 +64,18 @@ def test_a_plane_meeting_a_cylinder_tangentially_is_a_cusp_not_a_fold():
     assert all(c["gap_mm"] > 0.025 for c in res["cusps"])
 
 
-def test_a_real_fold_still_stops_the_stage():
-    """fw_hinge_r: two faces on top of each other beside an edge (0.00 mm at 1 mm in)."""
-    from meshpipeline.application.fea_check import blocker
-    from meshpipeline.cad.fea_measure import FACT_KEY
+def test_a_real_fold_is_found_and_confirmed_by_two_measures():
+    """fw_hinge_r: two faces on top of each other beside an edge (0.00 mm at 1 mm in) - and OpenCASCADE's
+    Boolean self-interference check on that solid names them too: confirmed (MESH-1)."""
+    from meshpipeline.cad import suspect_defects as SD
     from meshpipeline.cad.scout import read_cad
 
-    res = fold_back_edges(read_cad(_FIX / "fw_hinge_r.stp"))
+    shape = read_cad(_FIX / "fw_hinge_r.stp")
+    res = fold_back_edges(shape)
     assert len(res["folds"]) == 1 and res["folds"][0]["gap_mm"] < 0.025
     rec = {"fold_back": [{**f, "faces": [f"Face_{k}" for k in f["faces"]]} for f in res["folds"]]}
-    assert blocker({FACT_KEY: rec, "solids": 1})[1] == "fold_back"
+    sus = SD.find(shape, rec, check_overlaps=False)
+    assert len(sus) == 1 and sus[0]["kind"] == "fold" and sus[0]["confirmed"] is True
 
 
 def test_a_knife_wedge_is_a_fold_and_its_gap_is_tiny():
