@@ -481,12 +481,19 @@ def _elem_cmblock(name: str, ids: np.ndarray) -> list[str]:
 
 
 def write_all(workspace, prep: Prepared, *, units: str = "m", source: str = "", connection: str = "bonded") -> dict:
-    """mesh.inp, mesh.bdf and mesh.cdb for the assembly. Returns (the deck's record, exports)."""
+    """mesh.inp, mesh.bdf and mesh.cdb for the assembly. Returns (the deck's record, exports). The deck
+    is the deliverable; EACH solver file is written on its own, and one that fails is left out with
+    its reason ({"error": ...}) - a note, never a lost mesh (Areen, 24 Oct: only a broken mesh fails)."""
     ws = Path(workspace)
     deck = write_inp(ws / "mesh.inp", prep, units=units, source=source, connection=connection)
-    return {"deck": deck,
-            "nastran": write_bdf(ws / "mesh.bdf", prep, units=units, source=source),
-            "ansys": write_cdb(ws / "mesh.cdb", prep, units=units, source=source)}
+    out: dict = {"deck": deck}
+    for solver, name, write in (("nastran", "mesh.bdf", write_bdf), ("ansys", "mesh.cdb", write_cdb)):
+        try:
+            out[solver] = write(ws / name, prep, units=units, source=source)
+        except Exception as exc:  # noqa: BLE001 - a missing solver file is a note
+            (ws / name).unlink(missing_ok=True)
+            out[solver] = {"error": f"{type(exc).__name__}: {exc}"[:300]}
+    return out
 
 
 __all__ = ["INTERACTION", "JOINT_ID_BASE", "Joint", "NOT_TESTED", "Prepared", "prepare", "write_all", "write_bdf",

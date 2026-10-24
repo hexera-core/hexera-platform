@@ -535,3 +535,20 @@ def test_parts_that_pass_into_each_other_are_no_stop_and_nothing_is_healed():
     assert fea_check.fea_view(facts)["can_proceed"] is True
     rec = facts[FACT_KEY][A.FACT_KEY]
     assert [i["kind"] for i in rec["interfaces"]] == ["overlap"]
+
+
+
+def test_an_assembly_solver_file_that_fails_is_left_out_not_the_deck(tmp_path, monkeypatch):
+    from meshpipeline.engines import fea_assembly_deck as AD
+
+    monkeypatch.setattr(AD, "write_inp", lambda path, prep, **k: (Path(path).write_text("INP"), {"file": "mesh.inp"})[1])
+    monkeypatch.setattr(AD, "write_bdf", lambda path, prep, **k: (Path(path).write_text("BDF"), {"file": "mesh.bdf"})[1])
+
+    def broken(path, prep, **k):
+        Path(path).write_text("half")
+        raise MemoryError("cdb")
+
+    monkeypatch.setattr(AD, "write_cdb", broken)
+    out = AD.write_all(tmp_path, prep=None)
+    assert out["deck"] == {"file": "mesh.inp"} and out["nastran"] == {"file": "mesh.bdf"}
+    assert "MemoryError" in out["ansys"]["error"] and not (tmp_path / "mesh.cdb").exists()
