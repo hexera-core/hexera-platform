@@ -140,9 +140,37 @@ def _int(v: Any) -> int | None:
         return None
 
 
+#: The internal-flow staging's own record (cad/internal_surface.write_staged), in the workspace.
+STAGING_RECORD = ("_internal_stls", "internal_surface.json")
+
+
+def fluid_region_entries(state: Mapping) -> list[dr.Entry]:
+    """The fluid region's decisions (INS rules): which mouths became openings, the seed, the
+    sealed check, the port patches - as the staging recorded them beside the surface it wrote."""
+    import json
+    from pathlib import Path
+    ws = str(state.get("openfoam_workspace") or "")
+    if not ws:
+        return []
+    path = Path(ws).joinpath(*STAGING_RECORD)
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    rows = ((record.get("facts") or {}).get("decisions") or []) if isinstance(record, dict) else []
+    out: list[dr.Entry] = []
+    for row in rows:
+        if not isinstance(row, Mapping) or not str(row.get("rule") or "").startswith("INS-"):
+            continue
+        out.append(dr.Entry(stage=str(row.get("stage") or "fluid_region"), decided=str(row.get("decided") or ""),
+                            value=row.get("value"), rule=str(row["rule"]), inputs=dict(row.get("inputs") or {}),
+                            words=str(row.get("words") or "")))
+    return out
+
+
 def entries(state: Mapping) -> list[dr.Entry]:
     out: list[dr.Entry] = []
-    for part in (engine_pick_entry, switch_entries, delivered_entry):
+    for part in (fluid_region_entries, engine_pick_entry, switch_entries, delivered_entry):
         try:
             got = part(state)
         except Exception:  # noqa: BLE001 - a record never touches a verdict
@@ -161,4 +189,4 @@ def build(job_id: str, state: Mapping) -> dict:
     return dr.record(rows)
 
 
-__all__ = ["build", "delivered_entry", "engine_pick_entry", "entries", "switch_entries"]
+__all__ = ["build", "delivered_entry", "engine_pick_entry", "entries", "fluid_region_entries", "switch_entries"]

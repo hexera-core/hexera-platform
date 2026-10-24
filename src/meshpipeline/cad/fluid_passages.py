@@ -328,7 +328,7 @@ def stranded_openings(surface_path: Path, patches: list[dict]) -> dict[str, str]
         p = Path(surface_path)
         if (p.stat().st_size - 84) // 50 > VET_MAX_TRIANGLES:
             return {}
-        staged = stage_triangles(read_triangles(p), intake_patches=patches, surface_path=p)
+        staged = stage_triangles(read_triangles(p), intake_patches=patches, surface_path=p, leak_check=False)
         with tempfile.TemporaryDirectory(prefix="vet_") as tmp:
             rec = write_staged(staged, Path(tmp))
             plan = plan_passages(read_passages(rec["stls"], rec.get("wall_name") or "wall"))
@@ -362,7 +362,7 @@ def passage_count(tris, patches: list[dict], *, input_kind: str = "") -> int | N
         if len(tris) > VET_MAX_TRIANGLES:
             return None
         staged = stage_triangles(tris, intake_patches=[dict(p) for p in patches if isinstance(p, dict)],
-                                 input_kind=input_kind)
+                                 input_kind=input_kind, leak_check=False)
         with tempfile.TemporaryDirectory(prefix="passages_") as tmp:
             rec = write_staged(staged, Path(tmp))
             plan = plan_passages(read_passages(rec["stls"], rec.get("wall_name") or "wall"))

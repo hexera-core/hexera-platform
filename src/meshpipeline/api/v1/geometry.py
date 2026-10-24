@@ -588,6 +588,15 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
     elif body.input_kind is None or body.flow is None:
         raise HTTPException(422, "Say what the file is (input_kind) and whether the fluid flows "
                                  "through it or around it (flow).")
+    if not body.check_mode and body.flow == "internal":
+        # THE FLOW KIND BY RULE (INS-3): "through it" on a part with no inside to flow through, and
+        # fewer than two openings on it, is asked about here - one plain question, with flowing
+        # around it the one-click way out - never a job that can only fail
+        from meshpipeline.application.geometry_confirmation import flow_question
+        _facts = _stored_check.get("facts") or {}
+        question = flow_question(_facts.get("inside"), body.openings, _facts.get("surface"))
+        if question:
+            raise HTTPException(409, question)
     if body.input_kind == "solid-assembly" and not body.regions:
         # an assembly's regions are the file's, as the check read them: named in the declaration
         facts = (_read_json(check_object_key(str(session_id), "scout.json")) or {}).get("facts") or {}

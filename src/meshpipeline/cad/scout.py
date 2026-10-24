@@ -70,6 +70,23 @@ class UnreadableCad(RuntimeError):
     """The file could not be read as a CAD part; the message says why in the user's words."""
 
 
+
+#: THE DIGITS A LENGTH KEEPS: millimetres to 2 decimals, metres to 6 - unless the whole part is under
+#: 1 mm as read. Then it is almost surely a file in metres read as millimetres before the user says
+#: its unit, and its lengths are scaled by 1000 once they do (geometry_check.rescaled_lengths):
+#: rounded to 0.01 "mm" first, a 6.5 mm bore came back as 10 mm and every port 10 mm off. Such a
+#: reading keeps 3 more decimals, so the rescaled lengths keep the same 0.01 mm.
+SMALL_PART_MM = 1.0
+
+
+def length_decimals(size_m) -> int:
+    """Decimals for a millimetre value of a part this size (metres: 4 more)."""
+    try:
+        biggest = max(abs(float(v)) for v in size_m) * 1000.0
+    except (TypeError, ValueError):
+        return 2
+    return 2 if biggest >= SMALL_PART_MM else 5
+
 @dataclass
 class Opening:
     """One proposed port, in metres. `kind` says which face it came from: a `disc` (a solid-model
@@ -123,29 +140,29 @@ class Opening:
     def equivalent_diameter(self) -> float:
         return 2.0 * math.sqrt(max(self.area, 0.0) / math.pi)
 
-    def as_dict(self) -> dict:
-        mm = 1000.0
+    def as_dict(self, decimals: int = 2) -> dict:
+        mm, d, dm = 1000.0, decimals, decimals + 4
         out = {
             "id": self.sticker, "face": self.face_index, "name": self.name, "role": self.role, "kind": self.kind,
             "shape": self.shape, "confidence": round(self.confidence, 2),
-            "centroid_m": [round(v, 6) for v in self.centroid],
-            "centroid_mm": [round(v * mm, 2) for v in self.centroid],
+            "centroid_m": [round(v, dm) for v in self.centroid],
+            "centroid_mm": [round(v * mm, d) for v in self.centroid],
             "normal": [round(v, 5) for v in self.normal],
-            "area_m2": round(self.area, 9),
-            "area_mm2": round(self.area * mm * mm, 2),
+            "area_m2": round(self.area, 9 + 2 * (d - 2)),
+            "area_mm2": round(self.area * mm * mm, d + (d - 2)),
             "on_extremity": self.on_extremity, "clear_ahead": self.clear_ahead,
         }
         if self.shape == "circle":
-            out["diameter_mm"] = round(self.equivalent_diameter * mm, 2)
+            out["diameter_mm"] = round(self.equivalent_diameter * mm, d)
         else:
-            out["width_mm"] = round(self.wh[0] * mm, 2)
-            out["height_mm"] = round(self.wh[1] * mm, 2)
-            out["diameter_mm"] = round(self.equivalent_diameter * mm, 2)   # equivalent, for sizing
+            out["width_mm"] = round(self.wh[0] * mm, d)
+            out["height_mm"] = round(self.wh[1] * mm, d)
+            out["diameter_mm"] = round(self.equivalent_diameter * mm, d)   # equivalent, for sizing
         if self.annular:
             # the bore stays `diameter_mm` (what the user knows the pipe by); the centre body is
             # `inner_diameter_mm` (its equal-area diameter) and the flow crosses the ring between
             # them: pi/4 (D^2 - d^2) is exactly `flow_area_mm2`, the area measured
-            out["inner_diameter_mm"] = round(2.0 * math.sqrt(self.filled / math.pi) * mm, 2)
+            out["inner_diameter_mm"] = round(2.0 * math.sqrt(self.filled / math.pi) * mm, d)
         # the area the flow crosses, as measured, for a ring and for any mouth that is no circle:
         # the declaration carries it, so nobody re-derives it from a box (open_ends)
         from meshpipeline.cad.open_ends import measured_flow_area
@@ -176,16 +193,17 @@ class ScoutResult:
                 self.bbox_max[2] - self.bbox_min[2])
 
     def as_dict(self) -> dict:
-        mm = 1000.0
+        mm, d = 1000.0, length_decimals(self.size)
+        dm = d + 4
         return {
             "body_kind": self.body_kind, "input_kind": self.input_kind, "flow": self.flow,
             "solids": self.solids, "planar_faces": self.planar_faces,
-            "bbox_min_m": [round(v, 6) for v in self.bbox_min],
-            "bbox_max_m": [round(v, 6) for v in self.bbox_max],
-            "size_mm": [round(v * mm, 2) for v in self.size],
-            "openings": [o.as_dict() for o in self.openings],
-            "seed_point_m": None if self.seed_point is None else [round(v, 6) for v in self.seed_point],
-            "seed_point_mm": None if self.seed_point is None else [round(v * mm, 2) for v in self.seed_point],
+            "bbox_min_m": [round(v, dm) for v in self.bbox_min],
+            "bbox_max_m": [round(v, dm) for v in self.bbox_max],
+            "size_mm": [round(v * mm, d) for v in self.size],
+            "openings": [o.as_dict(d) for o in self.openings],
+            "seed_point_m": None if self.seed_point is None else [round(v, dm) for v in self.seed_point],
+            "seed_point_mm": None if self.seed_point is None else [round(v * mm, d) for v in self.seed_point],
             "confidence": {k: round(float(v), 2) for k, v in self.confidence.items()},
             "notes": list(self.notes),
             "faces": list(self.faces),
@@ -527,7 +545,7 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3, shape=None,
     decision: dict = {}
     candidates = drop_flange_twins(candidates, tuple((bbox_min[k] + bbox_max[k]) / 2.0 for k in range(3)))
     candidates = drop_stacked_rings(candidates)
-    measured = measured_faces(every_flat)
+    measured = measured_faces(every_flat, length_decimals([b - a for a, b in zip(bbox_min, bbox_max)]))
     # A RING is a port when its hole opens to the outside (clear ahead), nothing rings the face in
     # its own plane (an orifice plate and a bore shoulder are set into wall) and it faces away from
     # the part (a flange's back face looks at the body it is bolted to).
@@ -739,25 +757,25 @@ def _bladed(discs: list[Opening]) -> bool:
     return False
 
 
-def measured_faces(candidates: list[Opening]) -> list[dict]:
+def measured_faces(candidates: list[Opening], decimals: int = 2) -> list[dict]:
     """The flat faces as the console's "add an opening" reads them: position, normal, size and
     kind, the largest first, capped so a part with a thousand facets ships a useful few."""
     mm = 1000.0
     out = []
     for c in sorted(candidates, key=lambda o: o.area, reverse=True)[:MAX_FACES]:
         d = {"face": c.face_index, "kind": c.kind, "shape": c.shape,
-             "centroid_m": [round(v, 6) for v in c.centroid],
-             "centroid_mm": [round(v * mm, 2) for v in c.centroid],
-             "normal": [round(v, 5) for v in c.normal], "area_mm2": round(c.area * mm * mm, 2),
-             "diameter_mm": round(c.equivalent_diameter * mm, 2),
+             "centroid_m": [round(v, decimals + 4) for v in c.centroid],
+             "centroid_mm": [round(v * mm, decimals) for v in c.centroid],
+             "normal": [round(v, 5) for v in c.normal], "area_mm2": round(c.area * mm * mm, 2 * decimals - 2),
+             "diameter_mm": round(c.equivalent_diameter * mm, decimals),
              # plain bools: the mesh scout computes these with numpy, and a numpy bool is not JSON
              "clear_ahead": bool(c.clear_ahead), "on_extremity": bool(c.on_extremity), "rim_free": bool(c.rim_free),
              "inward": bool(c.inward), "depth_ratio": round(float(c.depth_ratio), 2)}
         if c.shape != "circle":
-            d["width_mm"], d["height_mm"] = round(c.wh[0] * mm, 2), round(c.wh[1] * mm, 2)
+            d["width_mm"], d["height_mm"] = round(c.wh[0] * mm, decimals), round(c.wh[1] * mm, decimals)
         if c.annular:
             # an annular mouth added by a click is the ring, as a proposed one is (Opening.as_dict)
-            d["inner_diameter_mm"] = round(2.0 * math.sqrt(c.filled / math.pi) * mm, 2)
+            d["inner_diameter_mm"] = round(2.0 * math.sqrt(c.filled / math.pi) * mm, decimals)
         from meshpipeline.cad.open_ends import measured_flow_area
         d.update(measured_flow_area(c.area, c.filled, c.shape, mm))
         out.append(d)

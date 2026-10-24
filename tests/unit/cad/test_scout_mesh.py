@@ -319,3 +319,60 @@ def test_the_mesh_scouts_openings_carry_plain_bool_flags(tmp_path):
         assert type(d["on_extremity"]) is bool and type(d["clear_ahead"]) is bool, d
     json.dumps(r.as_dict())                     # raises TypeError on a numpy scalar
 
+
+def test_a_bolt_hole_is_shown_but_not_proposed_and_the_seed_is_the_bores_deepest_point(stl):
+    """INS-2/4: a pipe stub on a flange with one bolt hole through the flange. The map's mouths of
+    the bore are the inlet and the outlet; the bolt hole leads into a side pocket of its own, so it
+    is kept for the stage as not an opening; the point inside the flow is the bore's deepest point
+    (on its axis), and the proposal carries the map's reading of the inside."""
+    pytest.importorskip("OCP")
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
+    from tests.unit.cad.test_open_ends import _cyl, _occ_tris
+    body = BRepAlgoAPI_Fuse(_cyl(0.0, 0.0, 0.0, (0, 0, 1), 0.03, 0.1), _cyl(0.0, 0.0, 0.0, (0, 0, 1), 0.1, 0.015)).Shape()
+    body = BRepAlgoAPI_Cut(body, _cyl(0.0, 0.0, -0.01, (0, 0, 1), 0.02, 0.12)).Shape()
+    body = BRepAlgoAPI_Cut(body, _cyl(0.07, 0.0, -0.01, (0, 0, 1), 0.005, 0.04)).Shape()
+    res = scout_mesh(stl("flanged", _occ_tris(body, deflection=0.0005).tolist()), scale_to_m=1.0)
+    ports = [o for o in res.openings if o.role in ("inlet", "outlet")]
+    side = [o for o in res.openings if o.role == "not_an_opening"]
+    assert res.flow == "internal" and len(ports) == 2 and len(side) == 2
+    assert all(abs(o.centroid[0]) < 0.005 for o in ports)                 # the bore's two ends
+    assert all(abs(o.centroid[0] - 0.07) < 0.005 for o in side)          # the bolt hole's two ends
+    assert res.seed_point is not None and math.hypot(res.seed_point[0], res.seed_point[1]) < 0.005
+    assert res.extra["inside"]["has_inside"] is True and res.extra["inside"]["side_pockets"] == 1
+
+
+def test_the_shape_rules_openings_are_proposed_when_only_they_stage(stl, monkeypatch):
+    """INS-2's guard: when the map's openings differ from the shape rules' and only the shape
+    rules' close the fluid in, the check proposes the shape rules' (with the note) and keeps the
+    map's reading of the inside; when the map's stage, they stand."""
+    from meshpipeline.application import geometry_check as gc
+    path = stl("tube", _tube())
+    facts = scout_mesh(path, scale_to_m=1.0).as_dict()
+    facts["inside"] = {"rule": "INS-1", "has_inside": True}
+    facts["openings"] = [dict(o, centroid_mm=[v + 7.0 for v in o["centroid_mm"]]) for o in facts["openings"]]
+    calls = []
+
+    def stages(skin, f):
+        calls.append(f)
+        return f is not facts                       # the map's do not stage, the shape rules' do
+    monkeypatch.setattr(gc, "_stages", stages)
+    out = gc.keep_a_stageable_proposal(facts, path, path, 1.0)
+    assert out is not facts and out["openings_by"] == "shape_rules" and out["inside"]["has_inside"] is True
+    assert any("hole finder" in n for n in out["notes"])
+    monkeypatch.setattr(gc, "_stages", lambda skin, f: True)
+    assert gc.keep_a_stageable_proposal(facts, path, path, 1.0) is facts
+
+
+def test_a_part_in_metres_read_as_millimetres_keeps_its_digits_for_the_rescale(stl):
+    """A 50 mm part in metres reads 0.05 "mm" until the user says its unit; its lengths must survive
+    the x1000 rescale (geometry_check.rescaled_lengths), not come back rounded to 10 mm."""
+    from meshpipeline.application.geometry_check import rescaled_lengths
+    from meshpipeline.cad.scout import length_decimals
+
+    p = stl("m_tube", _tube(r=0.00325, length=0.05))
+    facts = scout_mesh(p, scale_to_m=0.001).as_dict()
+    back = rescaled_lengths(facts, 1000.0)
+    d = [o["diameter_mm"] for o in back["openings"]]
+    assert d and all(abs(x - 6.5) < 0.3 for x in d), d
+    assert abs(back["size_mm"][2] - 50.0) < 0.01
+    assert length_decimals((0.05, 0.05, 0.03)) == 2 and length_decimals((5e-5, 5e-5, 3e-5)) == 5
