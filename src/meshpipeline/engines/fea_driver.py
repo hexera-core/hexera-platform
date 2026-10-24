@@ -279,23 +279,41 @@ def memory_elements(memory_gib: float | None = None) -> int:
     return max(0, int(room_mb * 1024.0 * 1024.0 / BYTES_PER_ELEMENT))
 
 
+def _ceiling_gib() -> float:
+    from meshpipeline.contracts import mesh_machine as MM
+    return MM.ceiling_gib()
+
+
 def element_limit(record: dict, ceiling_s: float | None = None) -> tuple[int, str]:
-    """PLAN-fea-8's limit for this part: ELEMENT_LIMIT, or less when the mesh job's memory could not
-    hold them (PLAN-fea-16); and why. NEVER LESS FOR TIME (PLAN-fea-13, Areen 24 Oct): a guess at how
-    fast the mesher fills does not cut a plan down - the watchdog stops only a mesher that is stuck.
-    `ceiling_s` is kept for the callers' signature and decides nothing."""
-    memory = memory_elements()
-    limit, why = P.ELEMENT_LIMIT, "the element limit"
-    if memory < limit:
-        limit, why = memory, (f"what fits in the mesh job's {MESH_JOB_MEMORY_GIB:g} GiB of memory "
-                              f"({BYTES_PER_ELEMENT:g} bytes an element, with {MEMORY_MARGIN:g} times to spare)")
-    return limit, why
+    """PLAN-fea-8's limit for this part, and why: what the LARGEST machine allowed holds (RUN-1, Areen
+    24 Oct: a bigger machine replaces shrinking a mesh to fit - the plan is sized by the accuracy rules,
+    and only a plan past the largest machine is coarsened, the last resort). NEVER LESS FOR TIME
+    (PLAN-fea-13): `ceiling_s` is kept for the callers' signature and decides nothing."""
+    from meshpipeline.contracts import mesh_machine as MM
+    limit = memory_elements(MM.ceiling_gib())
+    return limit, (f"what the largest machine allowed holds ({MM.CEILING.name}, {MM.CEILING.memory_gib:g} GiB; "
+                   f"{BYTES_PER_ELEMENT:g} bytes an element, with {MEMORY_MARGIN:g} times to spare)")
+
+
+#: WHAT THE MESH JOB WRITES BESIDE THE MESHER, per element: the solver files (about 1,600 bytes) and
+#: their archive (about 700), measured on the lab VMs (adapters/mesh_execution/cloud_run_client's FEA
+#: result sizes). Cloud Run keeps them in memory; a VM keeps them on disk.
+WORKSPACE_BYTES_PER_ELEMENT = 2300.0
+
+
+def memory_need(elements: float) -> tuple[float, float]:
+    """(the mesher's peak in GiB, with MEMORY_MARGIN; the workspace's files in GiB) for a plan of
+    `elements` (PLAN-fea-16's measured model)."""
+    n = max(0.0, float(elements))
+    process = MEMORY_MARGIN * (MEMORY_BASE_MB * 1024.0 * 1024.0 + BYTES_PER_ELEMENT * n) / 1024.0 ** 3
+    return process, WORKSPACE_BYTES_PER_ELEMENT * n / 1024.0 ** 3
 
 
 def limit_facts() -> dict:
     """PLAN-fea-16's numbers, for the why record."""
     return {"memory_gib": MESH_JOB_MEMORY_GIB, "bytes_per_element": BYTES_PER_ELEMENT,
-            "base_mb": MEMORY_BASE_MB, "margin": MEMORY_MARGIN, "memory_elements": memory_elements()}
+            "base_mb": MEMORY_BASE_MB, "margin": MEMORY_MARGIN, "memory_elements": memory_elements(),
+            "ceiling_elements": memory_elements(_ceiling_gib())}
 
 
 def choose_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | None = None,
@@ -363,7 +381,9 @@ def choose_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | No
     best["limit"].update(why=why, memory=limit_facts())
     best["coarsened"] = {"needed": needed, "needed_words": said, "zone_floor_m": floor, "at_minimums": at_minimums,
                          # PLAN-fea-16: even the least valid mesh may not fit in the job's memory - meshed anyway
-                         "over_memory": bool(at_minimums and int(best["estimate"]["elements"]) > memory_elements())}
+                         # past even the largest machine allowed: meshed anyway, said (RUN-2)
+                         "over_memory": bool(at_minimums and int(best["estimate"]["elements"])
+                                             > memory_elements(_ceiling_gib()))}
     return _restate(record, best)
 
 
@@ -501,6 +521,28 @@ def ladder_facts(ws: Path, passes: list[dict], levers: list[dict]) -> dict:
     if (q.get("bad_spread_mm")) is not None:
         facts["spread_mm"] = q["bad_spread_mm"]
     return facts
+
+
+def _killed(result: dict) -> bool:
+    """The mesher was killed by the kernel (SIGKILL: its machine's memory limit) - said as the signal, or
+    as exit 137 / -9 when the container reports it so."""
+    return (str(result.get("signal") or "") == "SIGKILL" or "killed by SIGKILL" in str(result.get("log_tail") or "")
+            or result.get("rc") in (137, -9))
+
+
+def _out_of_memory(result: dict) -> bool:
+    """Killed for memory, with nothing built."""
+    return bool(_killed(result) and result.get("rc") not in (0, 4))
+
+
+def _peak_gib(result: dict) -> float | None:
+    """The mesher's peak memory when the run measured one (quality.json's peak_rss_mb), in GiB."""
+    q = result.get("remote_quality") or result.get("quality") or {}
+    try:
+        mb = float((q or {}).get("peak_rss_mb") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    return mb / 1024.0 if mb > 0 else None
 
 
 def ladder_words(passes: list[dict], levers: list[dict]) -> str:
@@ -650,6 +692,16 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             # NO GUESSED TIME LIMIT (PLAN-fea-13): watched for progress, stopped only when stuck or at the
             # hard ceiling
             work = planned_work(plan, rate=rate, cls=cls, ceiling_s=ceiling_for(run))
+            # WHERE IT RUNS (RUN-1..3): the Cloud Run mesh job when the plan fits it, else a VM sized to
+            # fit - decided now, from the memory model, so a big plan never wastes a first run
+            from meshpipeline.contracts import mesh_machine as MM
+            process_gib, files_gib = memory_need(float((plan.get("estimate") or {}).get("elements") or 0))
+            machine = MM.choose(process_gib=process_gib, workspace_gib=files_gib, why="memory model")
+            MM.write(ws, machine)
+            _cite(job_id, [{"stage": "fea_machine", "decided": machine["where"], "value": machine["machine"],
+                            "rule": "RUN-2" if machine.get("over_ceiling") else "RUN-1", "inputs": {k: machine[k] for k in ("need_gib", "process_gib",
+                                                                                 "workspace_gib", "memory_gib")}
+                            | {"pass": n}, "words": machine["words"]}])
             _cite(job_id, [{"stage": "fea_time", "decided": "watchdog", "value": work["stall_window_s"],
                             "rule": "PLAN-fea-13",
                             "inputs": {k: work[k] for k in ("amount", "rate", "class", "planned_s", "ceiling_s",
@@ -660,7 +712,23 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                                       f"{work['ceiling_s'] // 60} minutes.")}])
             await run.fence("start native mesh")
             native_t0 = time.monotonic()
-            result = await asyncio.to_thread(get_engine(ENGINE).run_cartesian_mesh, ws, timeout=work["ceiling_s"])
+            while True:
+                result = await asyncio.to_thread(get_engine(ENGINE).run_cartesian_mesh, ws,
+                                                 timeout=work["ceiling_s"])
+                # RUN-3: OUT OF MEMORY -> THE SAME PLAN ONE MACHINE UP (no lever, no coarsening, no
+                # re-plan), sized from the peak seen when there is one, up to the largest machine
+                if not _out_of_memory(result):
+                    break
+                bigger = MM.step_up(machine, measured_gib=_peak_gib(result))
+                if bigger is None:
+                    break
+                machine = bigger
+                MM.write(ws, machine)
+                _cite(job_id, [{"stage": "fea_machine", "decided": "step up", "value": machine["machine"],
+                                "rule": "RUN-3", "inputs": {"pass": n, "from": machine.get("stepped_from"),
+                                                            "need_gib": machine["need_gib"]},
+                                "words": machine["words"]}])
+                _clear_outputs(ws)
             native_s = round(time.monotonic() - native_t0, 1)
             await run.fence("accept native mesh output")
             if result.get("timed_out"):
@@ -684,17 +752,21 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             made = bool(q) and (ws / "mesh.inp").exists()
             run.note_native_run(produced_usable_mesh=made and result.get("rc") == 0)
             # LAD-fea-7: killed by the job's memory limit (the kernel's SIGKILL on the mesher)
-            killed = str(result.get("signal") or "") == "SIGKILL" or "killed by SIGKILL" in str(result.get("log_tail") or "")
+            killed = _killed(result)
             passes.append({**L.pass_facts(n, result.get("rc"), q, plan, log=str(result.get("log_tail") or ""),
-                                          killed=killed), "native_s": native_s})
+                                          killed=killed), "native_s": native_s,
+                           # RUN-4: where it ran, and why
+                           "ran_on": {k: machine.get(k) for k in ("where", "machine", "memory_gib", "why")}})
             if made:
                 _keep_pass(ws, n)
             lever = L.next_lever(passes[-1], levers, plan)
             if lever is None:
                 if passes[-1].get("out_of_memory"):
                     _cite(job_id, [{"stage": "fea_ladder", "decided": "no lever", "value": "out of memory",
-                                    "rule": "LAD-fea-7", "inputs": {"pass": n, "estimate": passes[-1].get("estimate")},
-                                    "words": "The mesher ran out of memory; no lever builds this plan in less, so no retry."}])
+                                    "rule": "LAD-fea-7", "inputs": {"pass": n, "estimate": passes[-1].get("estimate"),
+                                                                    "machine": machine.get("machine")},
+                                    "words": ("The mesher ran out of memory on the largest machine allowed; no lever "
+                                              "builds this plan in less, so no retry.")}])
                 break
             _cite(job_id, [{"stage": "fea_ladder", "decided": "lever", "value": lever["lever"], "rule": lever["lever"],
                             "inputs": lever.get("inputs") or {}, "words": lever["words"]}])
@@ -775,6 +847,6 @@ def driver_for(state):
     return drive if applies(state) else None
 
 
-__all__ = ["connection_of", "prepare_assembly", "restage_tied", "BYTES_PER_ELEMENT", "MESH_JOB_MEMORY_GIB", "limit_facts", "memory_elements", "FILL_RATES", "FLOOR_STEPS", "MESH_JOB_LIMIT_S", "ceiling_for", "choose_plan",
+__all__ = ["connection_of", "prepare_assembly", "restage_tied", "BYTES_PER_ELEMENT", "MESH_JOB_MEMORY_GIB", "limit_facts", "memory_elements", "FILL_RATES", "FLOOR_STEPS", "WORKSPACE_BYTES_PER_ELEMENT", "memory_need", "MESH_JOB_LIMIT_S", "ceiling_for", "choose_plan",
            "complexity", "element_limit", "fill_rate", "watchdog_words", "BUILD_FAILED", "GUARD_TRIP", "NO_SOURCE", "QUALITY_GATE", "applies", "drive",
            "driver_for", "ladder_facts", "ladder_words", "make_plan", "measure_staged", "planned_work", "write_plan"]

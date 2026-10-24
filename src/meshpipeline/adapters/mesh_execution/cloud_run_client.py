@@ -12,6 +12,7 @@ import tarfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import meshpipeline.settings.providers as provcfg
 from meshpipeline.adapters.mesh_execution.exchange_coordinates import (
@@ -286,8 +287,7 @@ def _fail(engine: str, detail: str) -> dict:
 RESULT_TIMEOUT_MARKER = "[CLOUD_RUN_TIMEOUT]"
 
 
-def _timed_out(engine: str, deadline_s: float,
-               operation: CloudRunOperationReference | None) -> dict:
+def _timed_out(engine: str, deadline_s: float, operation) -> dict:
     """The run was DISPATCHED - this worker's submission was accepted, or a previous worker's was
     and this one is collecting it - and no result came back by the deadline. That is a run that
     ran out of time, not one that never started: job 470c3eb9's snappyHexMesh ran the full 50
@@ -457,6 +457,19 @@ def worker_room(bucket, out_key: str, result: dict | None, where) -> dict | None
                          "result is kept for a worker with room")}
 
 
+#: A VM boots and pulls the mesh image before it meshes: the wait for its result is this much longer.
+VM_START_S = 1800
+
+
+def _stop(operation, *, engine: str, why: str) -> None:
+    """Stop a run nobody will collect: cancel the Cloud Run execution, or delete the VM."""
+    from meshpipeline.adapters.mesh_execution.gce_vm import VmReference, delete_vm
+    if isinstance(operation, VmReference):
+        delete_vm(operation, why=why)
+    elif operation is not None:
+        cancel_execution(operation, engine=engine, why=why)
+
+
 def run_mesh_remote(workspace, *, engine: str, timeout: int, operation_key: str) -> dict:
     return _exchange(workspace, engine=engine, timeout=timeout, operation_key=operation_key,
                      submit=True)
@@ -479,7 +492,7 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
     res_key = coords.result_object_key
     bucket_name = provcfg.GCP_MESH_BUCKET
     bucket = None
-    operation = None
+    operation: Any = None           # a Cloud Run operation, or a VM (gce_vm.VmReference)
     # THE CLEANUP INVARIANT. The exchange objects are this run's ONLY recovery path: a replacement
     # worker re-derives these exact coordinates and collects the result a previous worker already
     # paid for, instead of submitting a second mesh. So they may be released only once every local
@@ -498,6 +511,12 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
     # same way a successful one does. rc is the mesh's verdict, not evidence about the exchange.
     collection_complete = False
     result = None                     # set once the remote's result document has been read
+    # WHERE IT RUNS (contracts/mesh_machine): the Cloud Run mesh job, or a VM sized to fit the plan -
+    # decided by the driver before meshing and written in the workspace; none means Cloud Run
+    from meshpipeline.contracts import mesh_machine
+    machine = mesh_machine.read(workspace)
+    on_vm = bool(machine and machine.get("where") == "gce")
+    wait_s = timeout + 600 + (VM_START_S if on_vm else 0)
     try:
         from meshpipeline.adapters.mesh_execution.gcs_exchange import storage_client
         ws = Path(workspace)
@@ -510,13 +529,19 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
             reason = abandonment_reason()
             if reason:
                 raise _Abandoned(reason)
-            operation = _trigger_job(
-                input_uri=f"gs://{bucket_name}/{in_key}",
-                output_uri=f"gs://{bucket_name}/{out_key}",
-                engine=engine, timeout=timeout)
+            if on_vm:
+                from meshpipeline.adapters.mesh_execution.gce_vm import trigger_vm
+                operation = trigger_vm(
+                    input_uri=f"gs://{bucket_name}/{in_key}", output_uri=f"gs://{bucket_name}/{out_key}",
+                    engine=engine, timeout=timeout, operation_key=operation_key, decision=machine or {})
+            else:
+                operation = _trigger_job(
+                    input_uri=f"gs://{bucket_name}/{in_key}",
+                    output_uri=f"gs://{bucket_name}/{out_key}",
+                    engine=engine, timeout=timeout)
 
         from meshpipeline.artifact_keys import progress_key_beside
-        result = _poll_gcs_json(bucket, res_key, deadline_s=timeout + 600,
+        result = _poll_gcs_json(bucket, res_key, deadline_s=wait_s,
                                 progress_key=progress_key_beside(out_key))
         if result is None:
             # Reached only once the run is dispatched (a refused or ambiguous submission raised
@@ -529,10 +554,8 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
             # travels back (the claim records the run as accepted, exactly as before); the one
             # price is that a same-identity replay collecting it waits out its own deadline for a
             # late result that will not come, and then reads the same timeout.
-            if operation is not None:
-                cancel_execution(operation, engine=engine,
-                                 why=f"no result within the {timeout + 600}s deadline")
-            return _timed_out(engine, timeout + 600, operation)
+            _stop(operation, engine=engine, why=f"no result within the {wait_s}s deadline")
+            return _timed_out(engine, wait_s, operation)
         # A recognised mesh result, checked rather than assumed. Anything else - a JSON scalar, a
         # list, a document without the verdict - is an exchange we do not understand, and the one
         # safe reading of that is "not collected", so the objects stay for someone who can.
@@ -563,9 +586,13 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
         # objects must still exist while it happens.
         # The reference travels back so the submission authority can record what was accepted.
         collected = {**result,
-                     "provider_reference": operation.operation_name if operation else ""}
-        logger.info("%s ran on Cloud Run Job - rc=%s timed_out=%s",
-                    engine, result.get("rc"), result.get("timed_out"))
+                     "provider_reference": operation.operation_name if operation else "",
+                     # WHERE IT RAN, and why (the why record reads it)
+                     "ran_on": machine or {"where": "cloud_run", "machine": None,
+                                           "memory_gib": mesh_machine.CLOUD_RUN_GIB}}
+        logger.info("%s ran on %s - rc=%s timed_out=%s", engine,
+                    f"a {machine.get('machine')} VM" if on_vm and machine else "Cloud Run Job",
+                    result.get("rc"), result.get("timed_out"))
         collection_complete = True
         return collected
     except (ConfigurationError, SubmissionIndeterminate):
@@ -578,8 +605,7 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
         # stopped, because nobody will collect it. The exchange objects stay, like any run that
         # was not collected; a submission given up before its trigger has no execution to stop.
         logger.warning("Cloud Run mesh for %s given up before it finished: %s", engine, stop)
-        if operation is not None:
-            cancel_execution(operation, engine=engine, why=str(stop))
+        _stop(operation, engine=engine, why=str(stop))
         return {"rc": RC_INFRASTRUCTURE, "timed_out": False,
                 "log_tail": f"{ABANDONED_MARKER} {engine}: {stop}"}
     except Exception as exc:  # noqa: BLE001 - any failure is a LOUD mesh failure, not a local run
@@ -587,6 +613,10 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
             return _uncollected(engine, result, exc)
         return _fail(engine, f"{type(exc).__name__}: {exc}")
     finally:
+        if on_vm and collection_complete:
+            # THE VM IS DONE once its result is collected: deleted now, not left to its own self-delete
+            # or its lifetime limit (an idle big VM is billed by the hour)
+            _stop(operation, engine=engine, why="its result was collected")
         if bucket is not None and collection_complete:
             # EXACTLY the three keys this operation owns, each deleted by name. Never a prefix
             # delete: the coordinates are derived per operation key, and a prefix sweep here could

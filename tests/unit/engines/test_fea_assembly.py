@@ -371,7 +371,10 @@ def test_a_memory_kill_ends_a_bonded_attempt_with_no_tied_retry(tmp_path, monkey
     monkeypatch.setattr(runtime, "get_engine", lambda _n: SimpleNamespace(run_cartesian_mesh=mesher))
     ok, _marker, _o = asyncio.run(FD.drive(ws, {"purpose": "structural"}, job_id=f"t-{ws.name}", publish=None,
                                            run=_Run(), source_path=str(ws / "upload.step")))
-    assert not ok and modes == ["bonded"]
+    from meshpipeline.contracts.mesh_machine import MACHINES
+
+    # RUN-3: the same plan on every machine up to the largest - never re-planned, never tied
+    assert not ok and modes == ["bonded"] * (1 + len(MACHINES))
 
 
 def test_each_parts_base_holds_through_its_whole_volume(tmp_path, monkeypatch):

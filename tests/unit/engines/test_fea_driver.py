@@ -238,13 +238,13 @@ def test_the_rules_own_plan_is_meshed_when_it_fits(tmp_path):
     record, surface, diag = FD.measure_staged(ws)
     plan = FD.choose_plan(record, surface, diag)
     assert plan["fits"] and not plan.get("coarsened") and "resolution_short" not in plan
-    assert plan["limit"]["elements"] == min(P.ELEMENT_LIMIT, FD.memory_elements())
+    assert plan["limit"]["elements"] == FD.memory_elements(FD._ceiling_gib())
 
 
 def test_over_the_limit_the_finest_zones_are_coarsened_and_what_is_short_is_named(tmp_path, monkeypatch):
     ws = _stage(fx.plate_with_hole(), tmp_path / "coarse")
     record, surface, diag = FD.measure_staged(ws)
-    monkeypatch.setattr(P, "ELEMENT_LIMIT", 3_000)
+    monkeypatch.setattr(FD, "memory_elements", lambda memory_gib=None: 3_000)
     plan = FD.choose_plan(record, surface, diag)
     assert plan["fits"] and plan["coarsened"]["zone_floor_m"] > 0 and plan["zone_floor_m"] > 0
     assert plan["resolution_short"] and all(isinstance(w, str) for w in plan["resolution_short"])
@@ -262,7 +262,7 @@ def test_the_driver_never_stops_before_meshing_and_names_what_is_short(tmp_path,
     from meshpipeline.engines.verdict_limits import fea_limits
 
     ws = _stage(fx.plate_with_hole(), tmp_path / "never")
-    monkeypatch.setattr(P, "ELEMENT_LIMIT", 3_000)
+    monkeypatch.setattr(FD, "memory_elements", lambda memory_gib=None: 3_000)
     monkeypatch.setattr(runtime, "get_engine", lambda _n: SimpleNamespace(
         run_cartesian_mesh=lambda w, timeout: {"rc": fea_adapter.mesh(w)}))
     ok, marker, _o = asyncio.run(FD.drive(ws, {}, job_id="t-never", publish=None, run=_Run()))
@@ -314,7 +314,7 @@ def test_no_plan_is_cut_down_for_time():
     """Areen, 24 Oct: a guess at the mesher's speed never lowers the element limit - only memory does."""
     big = {"faces": {f"Face_{k}": {} for k in range(500)}, "hot_spots": [{}] * 300}
     assert FD.element_limit(big, 600.0) == FD.element_limit(big, None)
-    assert FD.element_limit(big, 600.0)[0] == min(P.ELEMENT_LIMIT, FD.memory_elements())
+    assert FD.element_limit(big, 600.0)[0] == FD.memory_elements(FD._ceiling_gib())
 
 
 def test_the_ceiling_is_what_the_attempt_has_left_and_never_more_than_the_job():
@@ -354,7 +354,7 @@ def test_an_unfinished_histogram_still_counts_what_it_has_not_resolved(tmp_path,
 def test_the_coarsening_search_stops_once_every_zone_is_at_its_minimum(tmp_path, monkeypatch):
     ws = _stage(fx.plate_with_hole(), tmp_path / "minimums")
     record, surface, diag = FD.measure_staged(ws)
-    monkeypatch.setattr(P, "ELEMENT_LIMIT", 10)
+    monkeypatch.setattr(FD, "memory_elements", lambda memory_gib=None: 10)
     calls = []
     real = FD.make_plan
     monkeypatch.setattr(FD, "make_plan", lambda *a, **k: calls.append(k.get("zone_floor_m")) or real(*a, **k))
@@ -408,8 +408,11 @@ def test_a_shape_the_measure_cannot_read_is_healed_and_measured_again(tmp_path, 
     assert any("healed" in n for n in record["notes"])
 
 
-def test_a_plan_the_memory_limit_killed_is_told_as_memory_and_not_retried(tmp_path, monkeypatch):
-    """LAD-fea-7: fea0054 and fea0221 spent an hour each on a second pass killed the same way."""
+def test_a_plan_the_memory_limit_killed_steps_up_machines_then_is_told_as_memory(tmp_path, monkeypatch):
+    """RUN-3: a memory kill runs the SAME plan one machine up, up to the largest; LAD-fea-7: killed on the
+    largest too, it is told as memory and not retried (fea0054 and fea0221 spent an hour each on a
+    second pass killed the same way)."""
+    from meshpipeline.contracts import mesh_machine as MM
     from meshpipeline.contracts.failure_cause import describe, retry_can_help
     from meshpipeline.engines import runtime
     from meshpipeline.engines.preflight import read_refusal
@@ -418,13 +421,16 @@ def test_a_plan_the_memory_limit_killed_is_told_as_memory_and_not_retried(tmp_pa
     calls = []
 
     def killed(w, timeout):
-        calls.append(w)
+        calls.append((MM.read(w) or {}).get("machine"))
+        assert (Path(w) / "fea_plan.json").exists()
         return {"rc": -9, "signal": "SIGKILL", "log_tail": "[NATIVE SIGNAL] python was killed by SIGKILL"}
 
     monkeypatch.setattr(runtime, "get_engine", lambda _n: SimpleNamespace(run_cartesian_mesh=killed))
-    ok, _marker, _o = asyncio.run(FD.drive(ws, {}, job_id="t-oom", publish=None, run=_Run()))
+    ok, _marker, _o = asyncio.run(FD.drive(ws, {}, job_id="t-oom-steps", publish=None, run=_Run()))
     ref = read_refusal(ws)
-    assert not ok and len(calls) == 1 and ref.facts["out_of_memory"]
+    assert not ok and calls == [None] + [m.name for m in MM.MACHINES] and ref.facts["out_of_memory"]
+    steps = [e for e in dr.cited_for("t-oom-steps") if e["stage"] == "fea_machine" and e["decided"] == "step up"]
+    assert [e["value"] for e in steps] == [m.name for m in MM.MACHINES]
     assert "memory" in ref.builder_text and not retry_can_help(ref.cause, ref.facts)
     assert "memory" in " ".join(describe(ref.cause, ref.facts))
 
@@ -460,13 +466,16 @@ def test_a_wall_thin_only_in_places_is_refined_only_there(tmp_path):
 
 
 # ---------------------------------------------- PLAN-fea-16: the plan fits in the job's memory ----
-def test_the_limit_is_what_fits_in_the_mesh_jobs_memory(monkeypatch):
+def test_the_limit_is_what_the_largest_machine_holds_never_the_mesh_jobs_memory():
+    """RUN-1/2 (Areen, 24 Oct): a bigger machine replaces shrinking a mesh to fit - the plan is cut down
+    only past the largest machine allowed, never for the Cloud Run job's memory or the old 8M cap."""
+    from meshpipeline.contracts import mesh_machine as MM
+
     room = FD.MESH_JOB_MEMORY_GIB * 1024 / FD.MEMORY_MARGIN - FD.MEMORY_BASE_MB
     assert FD.memory_elements() == int(room * 1024 * 1024 / FD.BYTES_PER_ELEMENT)
     assert FD.memory_elements(16.0) < FD.memory_elements(32.0)
-    monkeypatch.setattr(FD, "MESH_JOB_MEMORY_GIB", 4.0)
     limit, why = FD.element_limit({"faces": {}}, 13800)
-    assert limit == FD.memory_elements() and "memory" in why
+    assert limit == FD.memory_elements(MM.ceiling_gib()) and limit > 100_000_000 and MM.CEILING.name in why
 
 
 def test_the_mesh_job_memory_is_the_deploys_own():
