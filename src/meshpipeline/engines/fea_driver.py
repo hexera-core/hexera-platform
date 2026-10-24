@@ -482,7 +482,13 @@ def ladder_facts(ws: Path, passes: list[dict], levers: list[dict]) -> dict:
                    "estimate": int((passes[-1].get("estimate") or 0) if passes else 0),
                    "levers": [lv["lever"] for lv in levers],
                    "under_floor": int(q.get("elements_under_floor") or 0),
-                   "elements": int(q.get("cells") or 0)}
+                   "elements": int(q.get("cells") or 0),
+                   # NO PASS BUILT A MESH (the fill refused the surface meshes): said as that, with the
+                   # surfaces it named - never as badly shaped elements (car_vs_pole, 24 Oct)
+                   "built_none": bool(passes) and not any(p.get("built") for p in passes)}
+    named = sorted({int(t) for p in passes for t in p.get("bad_surfaces") or []})
+    if named:
+        facts["bad_surfaces"] = named
     if isinstance(where, list) and len(where) == 3:
         facts["worst_at_mm"] = [round(float(v) * 1000.0, 1) for v in where]
     if (q.get("bad_spread_mm")) is not None:
@@ -498,6 +504,11 @@ def ladder_words(passes: list[dict], levers: list[dict]) -> str:
         return (f"the mesher ran out of memory building about {int(passes[-1].get('estimate') or 0):,} elements "
                 f"({len(passes)} pass(es); levers {tried}) - this plan needs more memory than the mesh job has; "
                 "another attempt on the same machine runs out the same way.")
+    if passes and not any(p.get("built") for p in passes):
+        named = sorted({int(t) for p in passes for t in p.get("bad_surfaces") or []})
+        return (f"no pass of the FEA plan built a mesh - the fill could not start ({len(passes)} pass(es); levers "
+                f"{tried}; surfaces it named {named or 'none'}). The plan is deterministic: another attempt "
+                "fails the same way.")
     readings = [float(p["min_sicn"]) for p in passes if p.get("min_sicn") is not None]
     worst = min(readings) if readings else None
     return (f"no pass of the FEA plan built a valid mesh - a degenerate or inverted element ({len(passes)} "

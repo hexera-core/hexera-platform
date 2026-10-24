@@ -158,6 +158,44 @@ def self_overlap_message(facts: dict | None) -> tuple[str, str]:
     return " ".join(said), WAY_OUT_REPAIR_PART
 
 
+#: A SURFACE THAT FOLDS BACK ON ITSELF (cad/fold_back.py; car_vs_pole, 24 Oct): two faces lying on each
+#: other along an edge - a knife edge of almost no angle or a crack of almost no width - which no mesher
+#: can fill. A CAD defect like a self-overlap: found, named and stopped at the stage, never healed here.
+FOLD_BACK = ("{who} has a paper-thin fold: {faces} lie on top of each other along an edge {length} long. "
+             "It needs CAD repair before it can be meshed.")
+
+
+def _length_words(mm: float) -> str:
+    return f"{mm / 1000.0:.2g} m" if mm >= 1000.0 else f"{mm:.3g} mm"
+
+
+def fold_back_message(facts: dict | None) -> tuple[str, str]:
+    """(the plain message, the way on) for a part whose surface folds back on itself - ("", "") when
+    none does. The longest fold is named, with its part (an assembly's) and its two faces."""
+    from meshpipeline.cad.fea_assembly import FACT_KEY as ASM_KEY
+    from meshpipeline.cad.fea_measure import FACT_KEY
+
+    measured = (facts or {}).get(FACT_KEY)
+    folds = [f for f in (measured or {}).get("fold_back") or [] if isinstance(f, dict)] \
+        if isinstance(measured, dict) else []
+    if not folds:
+        return "", ""
+    worst = max(folds, key=lambda f: float(f.get("length_mm") or 0.0))
+    faces = " and ".join(str(x) for x in worst.get("faces") or []) or "two faces"
+    length = _length_words(float(worst.get("length_mm") or 0.0))
+    n = body_count(facts)
+    if n is None or n <= 1:
+        return FOLD_BACK.format(who="This part", faces=faces, length=length), WAY_OUT_REPAIR
+    rec = measured.get(ASM_KEY) if isinstance(measured, dict) else None
+    names = {str(p.get("id")): str(p.get("name") or "") for p in (rec or {}).get("parts") or []
+             if isinstance(p, dict)}
+    pid = f"Part_{int(worst.get('body') or 0)}"
+    who = _part_label(pid, names.get(pid, "")) if worst.get("body") else "A part"
+    parts = sorted({int(f.get("body") or 0) for f in folds})
+    more = f" Folds are found in {len(parts)} parts." if len(parts) > 1 else ""
+    return FOLD_BACK.format(who=who, faces=faces, length=length) + more, WAY_OUT_REPAIR_PART
+
+
 def blocker(facts: dict | None) -> tuple[str, str, str]:
     """(what stops version 1, its kind - "surface" | "self_overlap" | "", the way on) for the stage
     and the confirmation alike. Several bodies are no stop: an assembly is meshed (design 14); a body
@@ -168,6 +206,9 @@ def blocker(facts: dict | None) -> tuple[str, str, str]:
     crossed, way = self_overlap_message(facts)
     if crossed:
         return crossed, "self_overlap", way
+    folded, way = fold_back_message(facts)
+    if folded:
+        return folded, "fold_back", way
     return "", "", ""
 
 
@@ -322,7 +363,7 @@ def in_unit(record: dict | None, scale_to_m: float | None) -> dict | None:
     return out
 
 
-__all__ = ["SELF_OVERLAP", "WAY_OUT_REPAIR", "WAY_OUT_REPAIR_PART", "self_overlap_message", "CONNECTION_OPTIONS", "CONNECTION_QUESTION", "DEFAULT_CONNECTION", "NOT_SOLID", "NOT_SOLID_REASONS",
+__all__ = ["FOLD_BACK", "fold_back_message", "SELF_OVERLAP", "WAY_OUT_REPAIR", "WAY_OUT_REPAIR_PART", "self_overlap_message", "CONNECTION_OPTIONS", "CONNECTION_QUESTION", "DEFAULT_CONNECTION", "NOT_SOLID", "NOT_SOLID_REASONS",
            "QUESTION", "SHOWN_HOT_SPOTS", "STAGE_FEA", "STAGE_FLOW", "STAGE_THERMAL", "WAY_OUT_SOLID", "assembly_view",
            "blocker", "body_count", "clean_words", "confirmed_connection", "connection_answer", "fea_view",
            "hot_spot_words", "in_unit", "measure_view", "not_solid_message", "parts_words", "stage_route"]

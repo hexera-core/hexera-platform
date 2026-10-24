@@ -392,3 +392,18 @@ def coil_spring(D: float = SPRING["D"], d: float = SPRING["d"], pitch: float = S
     pipe.Build()
     pipe.MakeSolid()
     return pipe.Shape()
+
+
+def wedge(angle_deg: float, length: float = 100.0, depth: float = 20.0):
+    """A prism whose cross-section is a triangle with a tip of `angle_deg` at the origin: a knife edge
+    of that opening, `length` long, extruded `depth` (cad/fold_back.py finds one under 1 degree)."""
+    import math
+
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+    from OCP.gp import gp_Pnt, gp_Vec
+
+    h = length * math.tan(math.radians(angle_deg))
+    poly = BRepBuilderAPI_MakePolygon(gp_Pnt(0, 0, 0), gp_Pnt(length, 0, 0), gp_Pnt(length, h, 0), True)
+    face = BRepBuilderAPI_MakeFace(poly.Wire()).Face()
+    return BRepPrimAPI_MakePrism(face, gp_Vec(0, 0, depth)).Shape()
