@@ -1115,7 +1115,7 @@ jobs:
       # Gate C refuses a dirty tree, identifies the artifact by commit, and adds a git worktree at
       # that exact commit to stage the native fixtures. Full history so the worktree and the
       # record's commit/tree assertions have everything they name.
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
           # The release authenticates to Google by federation, never to GitHub by token; leaving
@@ -1427,7 +1427,7 @@ jobs:
       # release.json - all of which a depth-1 clone answers. It refuses to deploy a record built
       # from a different commit, which is the assertion that makes handing the record across a job
       # boundary safe.
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
