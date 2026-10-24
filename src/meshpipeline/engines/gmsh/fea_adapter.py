@@ -103,6 +103,19 @@ MESH_ADAPT = 1
 TRACE_BAD = 500
 #: the line the driver reads the surfaces a failed pass went wrong on from (LAD-fea-6)
 BAD_SURFACES = "[GMSH-FEA] BAD SURFACES:"
+#: The line that says the 3D fill left whole volumes with no elements (gmsh only warns "No elements in
+#: volume N" and goes on): the driver reads it, and an assembly's part is never delivered missing.
+EMPTY_VOLUMES = "[GMSH-FEA] EMPTY VOLUMES:"
+
+
+def empty_volumes(gmsh, vols) -> list[int]:
+    """The volumes the 3D fill left with no element (gmsh warns and carries on)."""
+    out = []
+    for v in vols:
+        _types, tags, _nodes = gmsh.model.mesh.getElements(3, int(v))
+        if not sum(len(t) for t in tags):
+            out.append(int(v))
+    return out
 #: Distance sampling per face, per direction (gmsh's "Sampling"): enough points that the spacing is
 #: about half the group's size, within these bounds.
 SAMPLING_MIN, SAMPLING_MAX = 20, 300
@@ -502,6 +515,16 @@ def mesh(workspace) -> int:
             named = sorted(set(empty) | {s for s in surfaces_named(str(exc)) if s in surfaces})
             print(f"{BAD_SURFACES} {','.join(str(s) for s in named)}", file=sys.stderr)
             raise
+        # A VOLUME LEFT EMPTY is a failed fill, not a mesh (fc_computer_desk, 24 Oct: "No elements in
+        # volume 5", then the deck writer crashed on the faces of a part with no elements): said with
+        # its surfaces, as a fill failure is, and never delivered
+        hollow = empty_volumes(gmsh, vols)
+        if hollow:
+            named = sorted({abs(int(t)) for v in hollow for _d, t in gmsh.model.getBoundary([(3, v)], oriented=False)
+                            if int(t) in surfaces} | set(empty))
+            print(f"{EMPTY_VOLUMES} {','.join(str(v) for v in hollow)}", file=sys.stderr)
+            print(f"{BAD_SURFACES} {','.join(str(s) for s in named)}", file=sys.stderr)
+            raise RuntimeError(f"{EMPTY_VOLUMES} the 3D fill left volume(s) {hollow} with no elements")
         note_stage(ws, "optimising", "improving the elements")
         for _ in range(int(run.get("optimise_passes") or 1)):
             gmsh.model.mesh.optimize("Netgen")
