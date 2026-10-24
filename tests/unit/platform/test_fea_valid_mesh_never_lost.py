@@ -200,3 +200,91 @@ def test_a_real_storage_failure_still_says_so():
         failed_gate="", api_failure="", attempts=0, attempts_max=3, required_ready=False,
         delivered_types=[], optional_warnings=[])
     assert res.failure_category == fr.FailureCategory.delivery_failed
+
+
+# #
+# room on the worker: a result too big for its disk is refused in words and kept
+# #
+
+class _Blob:
+    def __init__(self, size):
+        self.size = size
+
+    def reload(self):
+        pass
+
+
+class _Bucket:
+    def __init__(self, size):
+        self._size = size
+
+    def blob(self, key):
+        return _Blob(self._size)
+
+
+def _usage(free):
+    import collections
+    return collections.namedtuple("u", "total used free")(free * 2, free, free)
+
+
+def test_an_fea_result_that_fits_is_collected(tmp_path, monkeypatch):
+    import shutil
+    monkeypatch.setattr(shutil, "disk_usage", lambda p: _usage(80 * 10 ** 9))
+    doc = {"quality": {"quality_bar": "fea", "cells": 8_000_000},
+           "returned_bytes": {"raw": 9 * 10 ** 9, "largest": 3 * 10 ** 9, "fea": True}}
+    assert crc.worker_room(_Bucket(3 * 10 ** 9), "out", doc, tmp_path) is None     # 15 GB of 80
+
+
+def test_an_fea_result_too_big_for_the_worker_is_refused_and_kept(tmp_path, monkeypatch):
+    import shutil
+    monkeypatch.setattr(shutil, "disk_usage", lambda p: _usage(20 * 10 ** 9))
+    doc = {"quality": {"quality_bar": "fea"}, "returned_bytes": {"raw": 30 * 10 ** 9, "largest": 9 * 10 ** 9, "fea": True}}
+    got = crc.worker_room(_Bucket(10 * 10 ** 9), "out", doc, tmp_path)
+    assert got["rc"] == crc.RC_INFRASTRUCTURE and got["too_big_for_worker"]["need_bytes"] == 50 * 10 ** 9
+    assert crc.TOO_BIG_MARKER in got["log_tail"] and "kept" in got["log_tail"]
+
+
+def test_a_flow_result_is_not_measured_for_room(tmp_path, monkeypatch):
+    import shutil
+    monkeypatch.setattr(shutil, "disk_usage", lambda p: _usage(1))
+    assert crc.worker_room(_Bucket(10 ** 12), "out", {"quality": {"cells": 5}}, tmp_path) is None
+
+
+def test_the_user_reads_how_much_disk_it_needed():
+    from meshpipeline.contracts.failure_cause import FailureCause, describe
+
+    what, nxt = describe(FailureCause.RUN_INFRASTRUCTURE,
+                         {"result_uncollected": True,
+                          "too_big_for_worker": {"need_bytes": 50e9, "free_bytes": 20e9}})
+    assert "too big for the computer that collects it" in what and "50 GB" in what and "20 GB" in what
+    assert "kept" in what and "run it again" in nxt.lower()
+
+
+def test_the_fea_driver_ends_the_attempt_on_a_result_too_big_for_the_worker(tmp_path, monkeypatch):
+    import asyncio
+    import json as _json
+    from types import SimpleNamespace
+
+    pytest.importorskip("gmsh")
+    from tests import fea_fixtures as fx
+    from tests.unit.engines import test_fea_driver as TD
+
+    from meshpipeline.engines import fea_driver as FD
+    from meshpipeline.engines import runtime
+
+    ws = TD._stage(fx.plate_with_hole(), tmp_path / "big") if hasattr(TD, "_stage") else None
+    if ws is None:
+        pytest.skip("no staging helper")
+    calls = []
+
+    def mesher(w, timeout):
+        calls.append(1)
+        return {"rc": crc.RC_INFRASTRUCTURE, "timed_out": False,
+                "too_big_for_worker": {"need_bytes": 50e9, "free_bytes": 20e9}, "log_tail": crc.TOO_BIG_MARKER}
+
+    monkeypatch.setattr(runtime, "get_engine", lambda _n: SimpleNamespace(run_cartesian_mesh=mesher))
+    ok, marker, _o = asyncio.run(FD.drive(ws, {"purpose": "structural"}, job_id="t-big", publish=None,
+                                          run=TD._Run(), source_path=str(ws / "upload.step")))
+    assert not ok and marker == FD.TOO_BIG and calls == [1]
+    ref = _json.loads((ws / "preflight_refusal.json").read_text())
+    assert ref["cause"] == "run_infrastructure" and ref["facts"]["too_big_for_worker"]["need_bytes"] == 50e9

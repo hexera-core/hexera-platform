@@ -43,6 +43,8 @@ NOT_ONE_PART = "fea_not_one_part"
 BUILD_FAILED = "fea_build_failed"
 #: The mesher ran past its guard clock: our infrastructure, not the part (no lever is pulled).
 GUARD_TRIP = "fea_guard_trip"
+#: The marker of a mesh built but too big for the worker to collect (kept in the exchange).
+TOO_BIG = "fea_too_big_for_worker"
 #: The gate a guard trip is reported under (ours, never the part's).
 GUARD_GATE = "fea_guard"
 #: The plan measures every wall of a part up to this many surface triangles (the geometry check
@@ -512,6 +514,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     levers: list[dict] = []
     passes: list[dict] = []
     tripped: dict | None = None
+    too_big: dict | None = None
     policy = get_spec(ENGINE).run_policy
     cap = int(policy.run_timeout()) if policy is not None else 1500
     rate, cls = fill_rate(record)
@@ -564,6 +567,12 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             run.note_native_run(produced_usable_mesh=False)
             tripped = {**work, "pass": n}
             break
+        if result.get("too_big_for_worker"):
+            # BUILT, BUT TOO BIG FOR THIS WORKER'S DISK (adapters/mesh_execution/cloud_run_client.
+            # worker_room): ours, never the part's - no lever, no smaller plan; the result is kept
+            run.note_native_run(produced_usable_mesh=False)
+            too_big = {**result["too_big_for_worker"], "pass": n}
+            break
         q = _read_quality(ws) if result.get("rc") in (0, 4) else {}
         made = bool(q) and (ws / "mesh.inp").exists()
         run.note_native_run(produced_usable_mesh=made and result.get("rc") == 0)
@@ -584,6 +593,16 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                         "inputs": lever.get("inputs") or {}, "words": lever["words"]}])
         levers.append(lever)
 
+    if too_big is not None and not any(f["valid"] for f in passes):
+        (ws / "fea_passes.json").write_text(json.dumps({"passes": passes, "delivered": None, "levers": levers,
+                                                        "too_big_for_worker": too_big}, indent=1))
+        _refuse(ws, cause=FailureCause.RUN_INFRASTRUCTURE.value, gate=GUARD_GATE,
+                text=(f"the mesh was built, but collecting it needs about {too_big['need_bytes'] / 1e9:.1f} GB "
+                      f"and this worker has {too_big['free_bytes'] / 1e9:.1f} GB free"),
+                deterministic=False, ours=True, result_uncollected=True, too_big_for_worker=too_big)
+        await run.fence("deliver builder outcome")
+        outcome = run.outcome(produced_deliverable=False, exhausted=False, failure_marker=TOO_BIG)
+        return False, TOO_BIG, outcome
     if tripped is not None and not any(f["valid"] for f in passes):
         (ws / "fea_passes.json").write_text(json.dumps({"passes": passes, "delivered": None, "levers": levers,
                                                         "guard_trip": tripped}, indent=1))

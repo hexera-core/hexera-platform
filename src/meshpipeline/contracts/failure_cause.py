@@ -552,6 +552,15 @@ def describe(cause: object, facts: Mapping | None = None, *,
                 "run may take, so no complete mesh came back.",
                 f"Ask for less detail (for example 'standard' instead of 'max') and {_RUN_AGAIN}.")
     if c is FailureCause.RUN_INFRASTRUCTURE:
+        big = f.get("too_big_for_worker")
+        if isinstance(big, Mapping):
+            need = _as_number(big.get("need_bytes")) or 0.0
+            free = _as_number(big.get("free_bytes")) or 0.0
+            return (f"The mesh was built and is valid, but it is too big for the computer that collects it: "
+                    f"bringing it back needs about {need / 1e9:.0f} GB of disk and that worker had "
+                    f"{free / 1e9:.0f} GB free. Nothing about your part was wrong, and the mesh is kept.",
+                    f"You can run it again ({_RUN_AGAIN}) to collect it on a worker with room. If it happens "
+                    "again, tell us: the workers need a bigger disk for meshes this size.")
         if f.get("result_uncollected"):
             # the mesher RAN: the return trip failed. A result too large to bring back fails the
             # same way, so the second remedy is said too
