@@ -1,5 +1,5 @@
-# Responsibility: Build an FEA mesh for one builder attempt with no model in the loop: measure the staged solid, compute the plan, check its element count before meshing, run the engine adapter, and pull the fixed lever ladder when a measured check fails.
-# Boundaries: deterministic. It authors nothing a model could get wrong and publishes nothing itself (what the user reads comes through finalize and the manifest). AI levers are off (Areen's decision 4, 20 Oct): nothing here asks a model.
+# Responsibility: Build an FEA mesh for one builder attempt: measure the staged solid, ask the AI once for its judgement calls (engines/fea_ai: checked, made exact by the rules), compute the plan, check its element count before meshing, run the engine adapter, and pull the lever ladder when a measured check fails.
+# Boundaries: repeatable. It authors nothing a model could get wrong - the model only picks from declared choices, through the AI decision cache, and no answer means the rules' own plan - and it publishes nothing itself (what the user reads comes through finalize and the manifest).
 # Collaborates with: agents/builder/invoke.py (calls drive through EngineSpec.build_driver_for), engines/fea_plan.py, engines/fea_size_field.py, engines/fea_ladder.py, engines/gmsh/fea_adapter.py (run in the mesh runner), contracts/decision_record.py (every decision cited), engines/preflight.py (the stop before meshing).
 """THE FEA DRIVER (FEA build step 4).
 
@@ -28,6 +28,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from meshpipeline.engines import fea_ai as FA
 from meshpipeline.engines import fea_ladder as L
 from meshpipeline.engines import fea_plan as P
 
@@ -184,7 +185,11 @@ def prepare_assembly(ws: Path, record: dict, surface, *, connection: str, source
     record["part_bases"] = bases
     record["assembly_plan"] = {"staged": A.STAGED, "sidecar": A.SIDECAR, "connection": connection,
                                "mode": sidecar["mode"], "parts": sidecar["parts"], "pairs": len(sidecar["pairs"]),
-                               "interfaces": len(sidecar["interfaces"]), "notes": notes + list(sidecar["notes"])}
+                               "interfaces": len(sidecar["interfaces"]), "notes": notes + list(sidecar["notes"]),
+                               # WHERE THE PARTS MEET, for the AI's joint suggestion (engines/fea_ai AI-fea-7)
+                               "pair_list": [{"pair": i.get("id"), "kind": i.get("kind"), "parts": i.get("parts"),
+                                              "area_mm2": i.get("area_mm2"), "at_mm": i.get("at_mm")}
+                                             for i in sidecar["interfaces"]]}
     return record
 
 
@@ -215,13 +220,15 @@ def _histogram(surface, zone_list: list[dict], levers: list[dict], diag_m: float
 
 def make_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | None = None,
               limit: int = P.ELEMENT_LIMIT, zone_floor_m: float | None = None, hist=None,
-              through: float | None = None) -> dict:
+              through: float | None = None, ai: dict | None = None) -> dict:
     """The plan for this part, with the ladder's levers applied: the zones the rules ask for, the
     coarsest base the part allows, the estimate against `limit`. `zone_floor_m`: PLAN-fea-8's
     coarsening (the finest zones floored, never past their validity minimums); `hist`: the zones'
-    histogram when the caller already has it."""
+    histogram when the caller already has it; `ai`: the AI's checked decision (engines/fea_ai), made
+    exact by the rules before any coarsening."""
     levers = list(levers or [])
-    zone_list = P.zones(record, tighten=L.tightened(levers))
+    zone_list, applied = FA.apply_zones(P.zones(record, tighten=L.tightened(levers)), _used(ai), record,
+                                        diag_m=diag_m)
     if zone_floor_m:
         zone_list = P.floored(zone_list, float(zone_floor_m), through or P.KEEP_THROUGH)
     if hist is None:
@@ -231,6 +238,9 @@ def make_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | None
         plan["zone_floor_m"] = float(zone_floor_m)
         plan["resolution_short"] = P.shortfalls(zone_list)
     plan["mesh"] = L.mesh_settings(levers)
+    if ai:
+        plan["ai"] = {**ai, "applied": applied}
+        _with_ai(plan)
     # WHAT THE RESULT SCREEN SHOWS (engines/fea_results.py): every face, and every hot spot where it is
     plan["faces"] = [{"name": n, "kind": (r or {}).get("kind"), "area_mm2": (r or {}).get("area_mm2"),
                        "thickness_min_mm": (r or {}).get("thickness_min_mm")}
@@ -316,16 +326,41 @@ def limit_facts() -> dict:
             "ceiling_elements": memory_elements(_ceiling_gib())}
 
 
+def _used(ai: dict | None) -> dict | None:
+    """The AI's decision when it is in use (engines/fea_ai: status "used"), else None."""
+    return (ai or {}).get("decision") if (ai or {}).get("status") == "used" else None
+
+
+def _with_ai(plan: dict) -> dict:
+    """The AI's words and why-record entries after the rules' own (AI-fea-n)."""
+    ai = plan.get("ai")
+    if ai:
+        plan["words"] = [*(plan.get("words") or []), *FA.words(ai, plan)]
+        plan["decisions"] = [*(plan.get("decisions") or []), *FA.decisions(ai)]
+    return plan
+
+
 def choose_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | None = None,
-                ceiling_s: float | None = None) -> dict:
+                ceiling_s: float | None = None, ai: dict | None = None) -> dict:
     """PLAN-fea-8, NEVER A STOP BEFORE MESHING (Areen, 21 Oct): the rules' own plan when it fits under
     the limit; else the finest zones coarsened until it fits, never past what keeps elements valid,
     what that leaves short named (resolution_short); else - every zone at its validity minimum and
     still over - meshed so anyway. The returned plan always meshes."""
     levers = list(levers or [])
     limit, why = element_limit(record, ceiling_s)
-    zone_list = P.zones(record, tighten=L.tightened(levers))
-    plan = make_plan(record, surface, diag_m, levers=levers, limit=limit)
+    # AI-fea-4: the user's own budget lowers the limit, never raises it
+    mine, said = FA.budget_limit(limit, _used(ai))
+    if said:
+        limit, why = mine, said
+    plan = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai)
+    if not plan["fits"] and FA.refines(_used(ai)):
+        # AI-fea-5: THE AI'S REFINEMENTS NEVER COST THE RULES' OWN ZONES. Over the limit, they are
+        # left out first (its other choices stand) - the limit's coarsening is only ever for what
+        # the rules themselves need (lab, 24 Oct: three parts the rules meshed whole came back with
+        # walls short of 2 elements because a refinement had pushed the plan over the limit)
+        ai = FA.without_refines(ai or {})
+        plan = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai)
+    zone_list, _ = FA.apply_zones(P.zones(record, tighten=L.tightened(levers)), _used(ai), record, diag_m=diag_m)
     plan["limit"].update(why=why, memory=limit_facts())
     if plan["fits"]:
         return _restate(record, plan)
@@ -353,7 +388,7 @@ def choose_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | No
 
     def at(k: int) -> dict:
         if k not in tried:
-            tried[k] = make_plan(record, surface, diag_m, levers=levers, limit=limit, zone_floor_m=floors[k])
+            tried[k] = make_plan(record, surface, diag_m, levers=levers, limit=limit, zone_floor_m=floors[k], ai=ai)
         return tried[k]
 
     best = plan
@@ -375,7 +410,7 @@ def choose_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | No
         best["fits"] = True
     else:
         # one step back: a floor a quarter lower still fits? then it gives back resolution
-        finer = make_plan(record, surface, diag_m, levers=levers, limit=limit, zone_floor_m=0.75 * floor)
+        finer = make_plan(record, surface, diag_m, levers=levers, limit=limit, zone_floor_m=0.75 * floor, ai=ai)
         if finer["fits"]:
             best, floor = finer, 0.75 * floor
     best["limit"].update(why=why, memory=limit_facts())
@@ -391,7 +426,7 @@ def _restate(record: dict, plan: dict) -> dict:
     """The plan's words and decisions again, now that it says what was coarsened."""
     plan["words"] = P.words(record, plan)
     plan["decisions"] = P.decisions(record, plan)
-    return plan
+    return _with_ai(plan)
 
 
 #: PLAN-fea-13: THE FILL RATE BY COMPLEXITY - elements per second of one native gmsh pass, at the
@@ -434,6 +469,16 @@ def ceiling_for(run) -> float:
         left = float(deadline) - (time.monotonic() - float(started)) - ATTEMPT_RESERVE_S
         return max(60.0, min(job, left))
     return job
+
+
+#: what an AI question keeps back of the attempt's time for the meshing still to come
+AI_RESERVE_S = 900.0
+
+
+def ai_wait_s(run) -> float:
+    """The most an AI question may wait (engines/fea_ai): what the attempt has left after the
+    meshing it still has to do - never past the attempt, whatever the model does."""
+    return max(0.0, ceiling_for(run) - AI_RESERVE_S)
 
 
 def planned_work(plan: dict, *, rate: float | None = None, cls: str = "", ceiling_s: float) -> dict:
@@ -652,6 +697,12 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         outcome = run.outcome(produced_deliverable=False, failure_marker=BUILD_FAILED)
         return False, BUILD_FAILED, outcome
 
+    # AI GOVERNS, RULES GUARANTEE (engines/fea_ai): the judgement calls for this part and the user's
+    # words, asked once and checked; the rules make them exact. No answer: the rules' own plan. (The
+    # limit it is shown is the fixed one, never the clock's, so the same part asks the same question
+    # and the decision cache answers it the same way.)
+    ai = await FA.decide(record, state or {}, P.zones(record), diag_m=diag_m,
+                         limit=element_limit(record)[0], job_id=job_id, run=run, wait_s=ai_wait_s(run))
     levers: list[dict] = []
     passes: list[dict] = []
     tripped: dict | None = None
@@ -665,9 +716,13 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                 # PLAN-fea-8: the rules' own plan, coarsened to fit under the limit when it must - never a
                 # stop before meshing
                 plan = await asyncio.to_thread(choose_plan, record, surface, diag_m, levers=levers,
-                                               ceiling_s=ceiling_for(run))
+                                               ceiling_s=ceiling_for(run), ai=ai)
                 chosen = {"limit": plan["limit"], "zone_floor_m": plan.get("zone_floor_m"),
                           "coarsened": plan.get("coarsened")}
+                # every later pass plans with the decision the first one kept (refinements left out
+                # when they would not fit stay out)
+                if plan.get("ai"):
+                    ai = {k: v for k, v in plan["ai"].items() if k != "applied"}
             else:
                 floor_m = chosen["zone_floor_m"]
                 if L.coarse_factor(levers) < 1.0:
@@ -676,7 +731,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                     start = floor_m or min([float(z["size_m"]) for z in P.zones(record)] or [diag_m / P.MIN_DIVISIONS])
                     floor_m = start / L.coarse_factor(levers)
                 plan = await asyncio.to_thread(make_plan, record, surface, diag_m, levers=levers,
-                                               limit=int(chosen["limit"]["elements"]), zone_floor_m=floor_m)
+                                               limit=int(chosen["limit"]["elements"]), zone_floor_m=floor_m, ai=ai)
                 plan["limit"] = chosen["limit"]
                 if chosen.get("coarsened"):
                     plan["coarsened"] = chosen["coarsened"]
@@ -759,7 +814,19 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                            "ran_on": {k: machine.get(k) for k in ("where", "machine", "memory_gib", "why")}})
             if made:
                 _keep_pass(ws, n)
-            lever = L.next_lever(passes[-1], levers, plan)
+            # AI-fea-8: the AI may pick among the levers this failure allows; the ladder's own first else
+            lever, picked = await FA.choose_lever(L.lever_options(passes[-1], levers, plan), passes[-1], ai=ai,
+                                                  state=state or {}, job_id=job_id, run=run,
+                                                  wait_s=ai_wait_s(run))
+            if picked:
+                from meshpipeline.contracts.decision_record import SOURCE_AI_LEVER
+
+                _cite(job_id, [{"stage": "fea_ai", "decided": "lever choice", "value": picked.get("picked"),
+                                "rule": "AI-fea-8", "inputs": picked,
+                                "source": SOURCE_AI_LEVER if picked.get("status") == "used" else "rule",
+                                "words": (f"The AI picked {picked.get('picked')}: {picked.get('reason')}"
+                                          if picked.get("status") == "used" else
+                                          f"The AI's lever was not used ({picked.get('note')}); the ladder's own.")}])
             if lever is None:
                 if passes[-1].get("out_of_memory"):
                     _cite(job_id, [{"stage": "fea_ladder", "decided": "no lever", "value": "out of memory",

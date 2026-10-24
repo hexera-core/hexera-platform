@@ -1,5 +1,5 @@
 # Responsibility: The FEA path's fixed lever ladder: which approved change follows which measured failure, by how much, at most once each - and which pass of an attempt is delivered.
-# Boundaries: pure over the measured facts of each pass. Nothing here is chosen by a model: AI levers are off (Areen's decision 4, 20 Oct); when they come (FEA build step 9) a proposal can only name a lever from this list, inside its limits.
+# Boundaries: pure over the measured facts of each pass. Nothing here is chosen by a model: the AI (engines/fea_ai.py, AI-fea-8) may only pick one of lever_options, the levers this list allows for the failure, inside their limits.
 # Collaborates with: engines/fea_driver.py (applies the levers between passes), engines/fea_plan.py (tightened zones, the base factor, the growth), engines/gmsh/fea_adapter.py (the mesh settings), docs/RULES.md (LAD-fea-n).
 """THE LADDER (docs/RULES.md LAD-fea-n). One attempt runs at most MAX_PASSES passes. After a pass,
 the FIRST trigger that holds pulls its lever, if that lever was not pulled already:
@@ -31,8 +31,8 @@ from collections.abc import Mapping
 from meshpipeline.engines import fea_plan as P
 
 MAX_PASSES = 3
-#: AI levers (design 6 guard rails) are off until FEA build step 9 / D9 shows they help.
-AI_LEVERS = False
+#: AI levers (design 15): the AI may pick among lever_options (engines/fea_ai.py, AI-fea-8).
+AI_LEVERS = True
 #: The FEA quality floor (engines/gmsh/driver.SICN_FLOOR): a note on the delivery, never a failure.
 SICN_FLOOR = 0.1
 GENTLE_GROWTH = 1.2
@@ -110,45 +110,63 @@ def pass_facts(n: int, rc, q: Mapping, plan: Mapping, log: str = "", killed: boo
 
 def next_lever(facts: Mapping, levers: list[dict], plan: Mapping) -> dict | None:
     """The lever this pass's failure pulls, or None (nothing failed, or its lever was pulled)."""
+    options = lever_options(facts, levers, plan)
+    return options[0] if options else None
+
+
+def lever_options(facts: Mapping, levers: list[dict], plan: Mapping) -> list[dict]:
+    """Every lever this pass's failure ALLOWS, the fixed ladder's own first (next_lever). After a
+    fill that failed or an invalid mesh the other unpulled fill levers are allowed too - the AI may
+    pick one of them (AI-fea-8, engines/fea_ai.py); after a mesh over the limit or short of a rule
+    there is one lever only."""
     pulled = {lv["lever"] for lv in levers}
     if len(levers) + 1 >= MAX_PASSES:
-        return None
+        return []
     if facts.get("out_of_memory"):
         # LAD-fea-7: no lever builds this plan in less memory
-        return None
+        return []
     # LAD-fea-6: the surfaces this pass went wrong on that no lever has re-meshed yet
     fresh = sorted(set(facts.get("bad_surfaces") or []) - _remeshed(levers))
     other = (f" The surface(s) it went wrong on ({_listed(fresh)}) are meshed with gmsh's MeshAdapt "
              "(LAD-fea-6).") if fresh else ""
-    if not facts["built"]:
-        if "LAD-fea-2" in pulled:
-            return _other_way(fresh, facts)
-        return {"lever": "LAD-fea-2", "inputs": {"rc": facts["rc"], "surfaces": fresh}, "surfaces": fresh,
-                "words": "No mesh came back from the fill, so the next pass uses gmsh's other 3D algorithm (HXT)." + other}
-    if not facts["valid"]:
-        if "LAD-fea-1" in pulled:
-            return _other_way(fresh, facts)
-        return {"lever": "LAD-fea-1", "inputs": {"min_sicn": facts["min_sicn"], "surfaces": fresh}, "surfaces": fresh,
-                "words": (f"A degenerate or inverted element (worst {facts['min_sicn']}), so the next pass grows "
-                          f"sizes more gently ({GENTLE_GROWTH}) and optimises {OPTIMISE_PASSES} times." + other)}
+    hxt = {"lever": "LAD-fea-2", "inputs": {"rc": facts["rc"], "surfaces": fresh}, "surfaces": fresh,
+           "words": "No mesh came back from the fill, so the next pass uses gmsh's other 3D algorithm (HXT)." + other}
+    gentle = {"lever": "LAD-fea-1", "inputs": {"min_sicn": facts["min_sicn"], "surfaces": fresh}, "surfaces": fresh,
+              "words": (f"A degenerate or inverted element (worst {facts['min_sicn']}), so the next pass grows "
+                        f"sizes more gently ({GENTLE_GROWTH}) and optimises {OPTIMISE_PASSES} times." + other)}
+    if not facts["built"] or not facts["valid"]:
+        if not facts["built"]:
+            gentle = {**gentle, "words": (f"No mesh came back from the fill, so the next pass grows sizes more gently "
+                                          f"({GENTLE_GROWTH}) and optimises {OPTIMISE_PASSES} times." + other)}
+            order = [hxt, gentle]
+        else:
+            hxt = {**hxt, "words": (f"A degenerate or inverted element (worst {facts['min_sicn']}), so the next pass "
+                                    "uses gmsh's other 3D algorithm (HXT)." + other)}
+            order = [gentle, hxt]
+        rest = [o for o in order if o["lever"] not in pulled]
+        way = _other_way(fresh, facts)
+        if order[0]["lever"] in pulled:
+            # the fixed ladder's own choice was pulled already: the other way leads (LAD-fea-6), and
+            # with no surface left to mesh the other way the ladder stops here, as it always has
+            return [way, *rest] if way else []
+        return rest + ([way] if way else [])
     if facts["over"]:
         if "LAD-fea-4" in pulled:
-            return None
+            return []
         factor = round((P.LIMIT_AIM * facts["limit"] / max(facts["cells"], 1)) ** (1.0 / 3.0), 4)
-        return {"lever": "LAD-fea-4", "factor": factor, "inputs": {"cells": facts["cells"], "limit": facts["limit"]},
-                "words": (f"{facts['cells']:,} elements, over the {facts['limit']:,} limit, so the next pass makes the "
-                          f"finest zones {1 / factor:.3g} times coarser - never past what keeps elements valid.")}
+        return [{"lever": "LAD-fea-4", "factor": factor, "inputs": {"cells": facts["cells"], "limit": facts["limit"]},
+                 "words": (f"{facts['cells']:,} elements, over the {facts['limit']:,} limit, so the next pass makes the "
+                           f"finest zones {1 / factor:.3g} times coarser - never past what keeps elements valid.")}]
     if facts["short"]:
         if "LAD-fea-3" in pulled or plan.get("coarsened"):
             # a plan coarsened to fit is short where it says, by choice: tightening those zones only
             # puts it over the limit again (PLAN-fea-8)
-            return None
+            return []
         zones = sorted(facts["short"])
-        return {"lever": "LAD-fea-3", "zones": zones, "inputs": {"short": zones},
-                "words": (f"{len(zones)} zone(s) fell short of their rule on the mesh ({', '.join(zones[:6])}), "
-                          f"so the next pass makes them {int(round((1 - TIGHTEN) * 100))}% finer.")}
-    return None
-
+        return [{"lever": "LAD-fea-3", "zones": zones, "inputs": {"short": zones},
+                 "words": (f"{len(zones)} zone(s) fell short of their rule on the mesh ({', '.join(zones[:6])}), "
+                           f"so the next pass makes them {int(round((1 - TIGHTEN) * 100))}% finer.")}]
+    return []
 
 def _listed(tags: list[int]) -> str:
     return ", ".join(str(s) for s in tags[:8]) + (", ..." if len(tags) > 8 else "")
@@ -187,4 +205,4 @@ def best_pass(passes: list[dict]) -> tuple[int | None, str]:
 
 
 __all__ = ["AI_LEVERS", "MAX_PASSES", "best_pass", "coarse_factor", "failed_surfaces", "growth", "mesh_settings",
-           "next_lever", "pass_facts", "tightened"]
+           "lever_options", "next_lever", "pass_facts", "tightened"]

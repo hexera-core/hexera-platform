@@ -161,8 +161,8 @@ def test_the_best_pass_is_delivered_by_the_fixed_order():
     assert L.best_pass([L.pass_facts(1, 3, {}, PLAN)]) == (None, "no valid mesh")
 
 
-def test_ai_levers_are_off():
-    assert L.AI_LEVERS is False
+def test_ai_levers_pick_only_from_the_ladder():
+    assert L.AI_LEVERS is True
 
 
 def test_a_mesh_that_came_out_too_big_is_still_worded_and_retried():
