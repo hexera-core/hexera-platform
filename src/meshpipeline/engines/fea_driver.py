@@ -590,6 +590,11 @@ def _peak_gib(result: dict) -> float | None:
     return mb / 1024.0 if mb > 0 else None
 
 
+def _empty_volumes_named(log: str) -> bool:
+    from meshpipeline.engines.gmsh.fea_adapter import EMPTY_VOLUMES
+    return EMPTY_VOLUMES in log
+
+
 def ladder_words(passes: list[dict], levers: list[dict]) -> str:
     """The builder-facing line for an exhausted ladder (the user's sentence is failure_cause's)."""
     tried = ", ".join(lv["lever"] for lv in levers) or "no lever"
@@ -814,6 +819,16 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                            "ran_on": {k: machine.get(k) for k in ("where", "machine", "memory_gib", "why")}})
             if made:
                 _keep_pass(ws, n)
+            if (not made and (record.get("assembly_plan") or {}).get("mode") == "bonded"
+                    and _empty_volumes_named(str(result.get("log_tail") or ""))):
+                # PLAN-fea-17 AT ONCE: the fused bonded parts left a volume the fill cannot fill (the
+                # slivers where they meet) - no other 3D algorithm fixes the geometry, so the parts go
+                # straight to being meshed apart and tied (fc_computer_desk, 24 Oct: an HXT pass first
+                # failed on "BRep contains more volumes than there really are")
+                _cite(job_id, [{"stage": "fea_ladder", "decided": "tie now", "value": "empty volume",
+                                "rule": "PLAN-fea-17", "inputs": {"pass": n},
+                                "words": "The fill left part of the fused assembly empty, so the parts are tied now."}])
+                break
             # AI-fea-8: the AI may pick among the levers this failure allows; the ladder's own first else
             lever, picked = await FA.choose_lever(L.lever_options(passes[-1], levers, plan), passes[-1], ai=ai,
                                                   state=state or {}, job_id=job_id, run=run,
