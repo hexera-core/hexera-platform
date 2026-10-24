@@ -107,7 +107,9 @@ def has_solid(facts: dict | None) -> bool:
         return bool(n and n >= 1)
     errors = {str(r.get("code")) for r in v.get("reasons") or []
               if isinstance(r, dict) and str(r.get("severity") or "error") == "error"}
-    return not (errors & {"open_shell", "open_boundary", "zero_volume", "flat"})
+    # a triangle surface closes into a solid when it has no open edge and no edge shared by more than
+    # two faces (the Camaro STL: 395 overlapping skins with non-manifold edges is a surface)
+    return not (errors & {"open_shell", "open_boundary", "zero_volume", "flat", "non_manifold_edges"})
 
 
 def not_solid_message(facts: dict | None) -> str:
