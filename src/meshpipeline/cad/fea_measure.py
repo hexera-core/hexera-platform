@@ -560,7 +560,7 @@ def _record(s: ff.Surface, arcs: list[ff.Arc], *, bodies: int, basis: str, kinds
 
     spots: list[dict] = []
     for arc in ff.merge_coaxial(arcs):
-        kind = ff.kind_of(arc)
+        kind = ff.kind_of(arc, s.diag)
         if kind is None:
             continue
         t, shape = kind

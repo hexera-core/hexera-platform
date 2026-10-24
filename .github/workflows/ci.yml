@@ -419,9 +419,12 @@ jobs:
     # endpoint returned a clean 403 naming the missing scope). Enabling it is an enterprise
     # billing change; when it lands, set the variable and nothing here changes.
     runs-on: ${{ vars.HEXERA_RUNNER_HEAVY || 'ubuntu-24.04' }}
-    # One image, not three: the old 60 covered the sum of them. mesh (OpenFOAM 2412 + vmtk + OCC)
-    # is the slowest of the three by a wide margin and is what this ceiling is set for.
-    timeout-minutes: 40
+    # One image, not three. mesh (OpenFOAM 2412 + vmtk + OCC) is the slowest by a wide margin and
+    # is what this ceiling is set for. A WARM build takes minutes (the layer cache below); the
+    # ceiling is for a COLD one, which on 2026-10-23 spent 36 minutes in one apt-get against a
+    # slow Ubuntu mirror. A cold build that is cancelled writes no cache, so the next run is cold
+    # again: the ceiling must let a cold build finish once.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -429,6 +432,17 @@ jobs:
           persist-credentials: false
       - name: Resolve the authoritative product version
         run: echo "APP_VERSION=$(sed -n 's/^__version__[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' src/meshpipeline/__init__.py | head -1)" >> "$GITHUB_ENV"
+      # THE LAYER CACHE (GitHub's Actions cache, BuildKit's `type=gha`). Every job starts on a fresh
+      # runner with an empty build cache, so each run rebuilt the Ubuntu, OpenFOAM and Python layers
+      # from the archive mirrors - and on 2026-10-22/23 the azure.archive.ubuntu.com and
+      # dl.openfoam.com mirrors were slow enough that those downloads alone ran builds past the job
+      # limit. With the layers cached, a run downloads only what its own commit changed. The cache
+      # holds layers BUILT FROM THIS DOCKERFILE (every base digest-pinned, every download
+      # sha256-verified there), so it changes how fast an image is built, never what goes into it.
+      # buildx's docker-container builder exports the cache; the runtime step hands it the cache
+      # service's token (the cache API is only reachable from an action, not a `run:` step).
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
+      - uses: crazy-max/ghaction-github-runtime@04d248b84655b509d8c44dc1d6f990c879747487  # v4.0.0
       # ONE LINE, and the tag spelled out. The reproducibility scan pairs each build with the run
       # that uses its tag, to decide which images are this commit's own rather than third-party
       # inputs needing a digest; a line continuation between the build and its tag flag hides the
@@ -436,7 +450,7 @@ jobs:
       - name: Build the ${{ matrix.target }} target
         env:
           TARGET: ${{ matrix.target }}
-        run: docker build --target "$TARGET" --build-arg APP_VERSION="$APP_VERSION" -t ${{ matrix.image }} .
+        run: docker buildx build --load --cache-from "type=gha,scope=image-$TARGET" --cache-to "type=gha,mode=min,scope=image-$TARGET" --target "$TARGET" --build-arg APP_VERSION="$APP_VERSION" -t ${{ matrix.image }} .
       # Through the environment rather than interpolated straight into the shell body. The value is
       # a workflow literal and not attacker-reachable, but a `${{ }}` expansion inside `run:` is the
       # shape zizmor flags, and the workflow-audit lane is not worth arguing with over a habit that
@@ -482,7 +496,8 @@ jobs:
     # endpoint returned a clean 403 naming the missing scope). Enabling it is an enterprise
     # billing change; when it lands, set the variable and nothing here changes.
     runs-on: ${{ vars.HEXERA_RUNNER_HEAVY || 'ubuntu-24.04' }}
-    timeout-minutes: 45
+    # as the image targets: a cold tier-image build must be able to finish once and seed the cache
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -498,9 +513,25 @@ jobs:
       # that marker, unsets any ambient DATABASE_URL, health-checks Postgres, Redis and MinIO, and
       # tears the stack down from a trap. Developers run it through `make test-container-integration`;
       # CI running the same command is what keeps the two from diverging again.
+      # THE LAYER CACHE (GitHub's Actions cache, BuildKit's `type=gha`). Every job starts on a fresh
+      # runner with an empty build cache, so each run rebuilt the Ubuntu, OpenFOAM and Python layers
+      # from the archive mirrors - and on 2026-10-22/23 the azure.archive.ubuntu.com and
+      # dl.openfoam.com mirrors were slow enough that those downloads alone ran builds past the job
+      # limit. With the layers cached, a run downloads only what its own commit changed. The cache
+      # holds layers BUILT FROM THIS DOCKERFILE (every base digest-pinned, every download
+      # sha256-verified there), so it changes how fast an image is built, never what goes into it.
+      # buildx's docker-container builder exports the cache; the runtime step hands it the cache
+      # service's token (the cache API is only reachable from an action, not a `run:` step).
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
+      - uses: crazy-max/ghaction-github-runtime@04d248b84655b509d8c44dc1d6f990c879747487  # v4.0.0
       - name: Integration shard ${{ matrix.shard }} of 4
         env:
           SHARD: ${{ matrix.shard }}
+          # the tier image through the same layer cache (Makefile DOCKER_BUILD). Every shard reads
+          # and writes it: whichever finishes first seeds it, so one slow shard cannot leave it cold
+          DOCKER_BUILD: >-
+            docker buildx build --load --cache-from type=gha,scope=image-validation
+            --cache-to type=gha,mode=min,scope=image-validation
           # The runner deletes its own scratch directory on exit, which is right for a developer
           # and wrong here: the union pass runs in another job on another machine and the JUnit
           # report is all it has.

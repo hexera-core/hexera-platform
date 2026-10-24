@@ -97,7 +97,7 @@ export function createRunProgress(now = () => Date.now()) {
       steps.forEach((s) => {
         if (s.state === "active") { if (failed) { s.state = "failed"; s.seconds = (at - s.t0) / 1000; } else finish(s, at); }
       });
-      ended = { pass: !!data.pass, cancelled: !!data.cancelled, concerns: !!data.concerns,
+      ended = { pass: !!data.pass, cancelled: !!data.cancelled, concerns: !!data.concerns, notes: !!data.notes,
                 total: data.totalMs != null ? data.totalMs / 1000 : null };
     },
     /** The line as check_progress draws it. */
@@ -109,7 +109,7 @@ export function createRunProgress(now = () => Date.now()) {
       if (ended) {
         const total = ended.total;
         if (ended.pass) return { state: "done", live: false, steps: shown,
-          current: (ended.concerns ? "Mesh delivered with concerns" : "Mesh ready")
+          current: (ended.concerns ? "Mesh delivered with concerns" : ended.notes ? "Mesh ready, with notes" : "Mesh ready")
             + (total != null ? ` in ${durationWords(total)}` : "") };
         if (ended.cancelled) return { state: "failed", live: false, steps: shown, current: "Run cancelled.",
           advice: "", can_retry: false };

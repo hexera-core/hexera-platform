@@ -445,7 +445,7 @@ test-container-integration: ##! DEPENDENCY-BACKED: provision Postgres+Redis+MinI
 	@# --target validation, not pipeline: it derives FROM pipeline, so the wheel, the runtime
 	@# dependencies and the image stamp are the same bytes - it only adds requirements/dev.txt.
 	@# Without pytest-randomly the runner's randomised pass silently runs in declaration order.
-	docker build --target validation --build-arg MESH_SOURCE_TREE="$(SOURCE_DIGEST)" --build-arg APP_VERSION="$(PRODUCT_VERSION)" -t $(CONTAINER_TIER_IMAGE) .
+	$(DOCKER_BUILD) --target validation --build-arg MESH_SOURCE_TREE="$(SOURCE_DIGEST)" --build-arg APP_VERSION="$(PRODUCT_VERSION)" -t $(CONTAINER_TIER_IMAGE) .
 	@bash tests/integration/run_in_container.sh
 
 test-container-integration-shard: ##! One SHARD of SHARDS of the dependency-backed tier, as CI runs it (make test-container-integration-shard SHARD=1 SHARDS=4)
@@ -454,13 +454,16 @@ test-container-integration-shard: ##! One SHARD of SHARDS of the dependency-back
 	@# NOT conclude is that the TIER is non-vacuous: the floor and the three named real-PostgreSQL
 	@# guarantees are asserted once, over the union of every shard's JUnit report, by the lane the
 	@# gate waits on. See INTEGRATION_SHARD in tests/integration/run_in_container.sh.
-	docker build --target validation --build-arg MESH_SOURCE_TREE="$(SOURCE_DIGEST)" --build-arg APP_VERSION="$(PRODUCT_VERSION)" -t $(CONTAINER_TIER_IMAGE) .
+	$(DOCKER_BUILD) --target validation --build-arg MESH_SOURCE_TREE="$(SOURCE_DIGEST)" --build-arg APP_VERSION="$(PRODUCT_VERSION)" -t $(CONTAINER_TIER_IMAGE) .
 	@INTEGRATION_SHARD=$(SHARD) INTEGRATION_SHARDS=$(SHARDS) bash tests/integration/run_in_container.sh
 
 test-container: test-container-integration ##! Alias of test-container-integration (the full dependency-backed tier). For the hermetic image check use `make test-container-smoke`.
 
 # native mesh-toolchain tiers (run INSIDE the `mesh` image; see docs/development/overview.md)
 MESH_IMAGE ?= meshpipeline-mesh:native
+#: How the container tier's image is built: plain `docker build` locally; CI passes a buildx build
+#: through the Actions layer cache (.github/workflows/ci.yml, the integration shards).
+DOCKER_BUILD ?= docker build
 #: The image the dependency-backed container tier runs. Built by its Make target, never by the runner.
 CONTAINER_TIER_IMAGE ?= meshpipeline-pipeline:test
 

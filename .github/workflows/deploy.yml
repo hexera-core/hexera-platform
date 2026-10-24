@@ -930,7 +930,7 @@ jobs:
   await-ci:
     name: Wait for CI on this commit
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 75
     permissions:
       contents: read
       checks: read
@@ -979,7 +979,9 @@ jobs:
           # to main both workflows start together and this job can reach the API first. "Not there"
           # and "not finished" are therefore the same state - keep waiting - and only a concluded
           # check is a verdict.
-          deadline=$(( SECONDS + 40 * 60 ))
+          # as long as CI itself may take: its longest jobs are allowed 45 minutes, and a run waits
+          # for runners before they start (40 minutes gave up on CI runs still going)
+          deadline=$(( SECONDS + 70 * 60 ))
           while :; do
             # EVERY ci-gate run for this commit must have concluded, and all of them must have
             # passed. Reading only the latest was wrong: a manual workflow_dispatch of the same
@@ -1020,7 +1022,7 @@ jobs:
               exit 0
             fi
             if [ "${SECONDS}" -ge "${deadline}" ]; then
-              echo "::error::hexera/ci-gate did not conclude for ${SHA} within 40 minutes (${done_ok} passed, ${pending} still running, of ${total})."
+              echo "::error::hexera/ci-gate did not conclude for ${SHA} within 70 minutes (${done_ok} passed, ${pending} still running, of ${total})."
               echo "If this is a release tag, it names a commit CI never validated - tag a commit from main instead."
               exit 1
             fi

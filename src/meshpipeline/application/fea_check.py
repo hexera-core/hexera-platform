@@ -44,6 +44,17 @@ def body_count(facts: dict | None) -> int | None:
         return None
 
 
+def piece_count(facts: dict | None) -> int | None:
+    """How many separate pieces the clean check found (cad/validity: its connected bodies) - more
+    than the solids when one solid is made of pieces that pass into each other, as a turbine blade
+    and its root drawn as two overlapping lumps of one solid. None when it did not count them."""
+    try:
+        n = (((facts or {}).get("validity") or {}).get("measured") or {}).get("bodies")
+        return int(n) if n is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 def clean_words(facts: dict | None) -> tuple[bool | None, str]:
     """The clean check (cad/validity, #224) in plain words: (clean yes/no/unknown, one sentence)."""
     v = (facts or {}).get("validity") or {}
@@ -121,7 +132,8 @@ def fea_view(facts: dict | None) -> dict:
     """What the FEA stage shows beside the part (the size and unit come with the proposal)."""
     clean, said = clean_words(facts)
     blocked, kind, way_out = blocker(facts)
-    return {"question": QUESTION, "bodies": body_count(facts), "clean": clean, "clean_summary": said,
+    return {"question": QUESTION, "bodies": body_count(facts), "pieces": piece_count(facts),
+            "clean": clean, "clean_summary": said,
             "single_part_only": blocked, "blocked_kind": kind, "way_out": way_out,
             "can_proceed": not blocked, "measure": measure_view(facts)}
 

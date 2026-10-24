@@ -79,9 +79,17 @@ def _locked_job(job_id: uuid.UUID):
 
     It also overwrites any UNFLUSHED edit to this row in the same session. Lock first, then write -
     the only order in which the lock protects the write at all.
+
+    FOR NO KEY UPDATE, not FOR UPDATE: it still shuts out every other writer of the row (a second
+    claim, a heartbeat, a cancel), but no longer a row that only REFERENCES the job (a foreign key
+    takes FOR KEY SHARE). Under FOR UPDATE a heartbeat waiting on its commit blocked the worker's own
+    capture insert (capture_operations.job_id), and that insert, made synchronously on the event loop,
+    kept the heartbeat from ever committing: dev-areen 2026-10-23, two FEA jobs hung an hour after a
+    clean mesh, the heartbeat "idle in transaction" and the insert waiting on its transaction id.
+    No lease operation changes the job's key, so nothing here needs the stronger lock.
     """
     return (select(SimulationJob).where(SimulationJob.id == job_id)
-            .with_for_update().execution_options(populate_existing=True))
+            .with_for_update(key_share=True).execution_options(populate_existing=True))
 
 
 class LeaseRepository:

@@ -717,16 +717,26 @@ else
     return ${rc}
   }
 
-  _PYTEST=(-m pytest -q -rs -p no:cacheprovider -c /srv/pyproject.toml
+  # -rfEs: the short summary names every FAILED and ERROR test (and why a test was skipped)
+  _PYTEST=(-m pytest -q -rfEs -p no:cacheprovider -c /srv/pyproject.toml
            -o testpaths=/srv/tests/native -o cache_dir=/tmp/pytest_cache)
+
+  # THE FAILING TESTS, IN THE JOB LOG. A tier's full output stays in the scratch directory, which
+  # dies with the runner; a red tier that names no test sent someone reproducing the whole gate to
+  # learn one test id (2026-10-23). Every FAILED / ERROR line of the summary is printed here.
+  _tier_failures() {  # _tier_failures <name>
+    local log="${WORK}/native-$1.log"
+    [ -f "${log}" ] || return 0
+    grep -aE '^(FAILED|ERROR) ' "${log}" | head -50 | sed 's/^/     /' >&2 || true
+  }
 
   if _tier smoke --network none -- "${_PYTEST[@]}" -m native_smoke /srv/tests/native; then
     record "native smoke" passed 1 "${TIER_SUMMARY}  [${TIER_SECONDS}s, Mounts=[] Binds=null]"
-  else record "native smoke" failed 1 "${TIER_SUMMARY}"; KEEP_WORK=1; fi
+  else record "native smoke" failed 1 "${TIER_SUMMARY}"; _tier_failures smoke; KEEP_WORK=1; fi
 
   if _tier all --network none -- "${_PYTEST[@]}" -m "not native_terminal" /srv/tests/native; then
     record "native all" passed 1 "${TIER_SUMMARY}  [${TIER_SECONDS}s, Mounts=[] Binds=null]"
-  else record "native all" failed 1 "${TIER_SUMMARY}"; KEEP_WORK=1; fi
+  else record "native all" failed 1 "${TIER_SUMMARY}"; _tier_failures all; KEEP_WORK=1; fi
 
   stage "native terminal: isolated release-validation services, then the five-engine matrix"
   PG="amp-rel-${STAMP}-pg"; RD="amp-rel-${STAMP}-redis"; MN="amp-rel-${STAMP}-minio"
@@ -815,7 +825,7 @@ MINIO_IMAGE=docker.io/bitnamilegacy/minio:2025.4.22-debian-12-r1@sha256:d7cd0e17
       record "native terminal" passed 1 \
         "${TIER_SUMMARY}  [${TIER_SECONDS}s, image ${TIER_IMAGE:0:19}, Mounts=[] Binds=null]"
     else
-      record "native terminal" failed 1 "${TIER_SUMMARY}"
+      record "native terminal" failed 1 "${TIER_SUMMARY}"; _tier_failures terminal
       KEEP_WORK=1
     fi
 

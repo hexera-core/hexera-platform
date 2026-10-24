@@ -145,6 +145,8 @@ setResultHandler((data, anchor) => {
       { metrics: { attempts: data.attempts, pass: true }, files: data.files || [],
         concerns: data.reviewOutcome === "delivered_with_concerns" ? (data.concerns || []) : null,
         reasoning: data.reviewOutcome === "delivered_with_concerns" ? (data.reasoning || "") : "",
+        // passed by the measured limits, with figures past a limit: listed as notes, as on the result screen
+        withNotes: data.reviewOutcome === "passed_with_notes" ? (data.concerns || []) : null,
         notes: data.notes || [] });
   } else if (surface === "unreviewed") {
     openViewer(job, anchor,
