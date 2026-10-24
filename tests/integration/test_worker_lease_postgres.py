@@ -150,3 +150,23 @@ async def test_terminal_job_cannot_be_claimed(SessionLocal):
         await s.commit()
     r, o = await _claim(SessionLocal, job, token=uuid.uuid4())
     assert r == ClaimResult.already_terminal and o is None
+
+
+
+# the heartbeat's row lock must not block a row that only references the job (dev-areen 2026-10-23)
+async def test_a_held_lease_lock_never_blocks_a_capture_insert_for_the_job(SessionLocal):
+    from meshpipeline.persistence.lease import _locked_job
+    from meshpipeline.persistence.repositories import capture_repository as cap
+
+    job = await _pending_job(SessionLocal)
+    async with SessionLocal() as s:
+        row = (await s.execute(_locked_job(job))).scalar_one()      # the heartbeat's lock, held
+        row.lease_heartbeat_at = datetime.now(UTC)
+        await s.flush()                                               # its UPDATE, not committed
+        try:
+            res = await asyncio.wait_for(asyncio.to_thread(
+                cap.record_operation, owner_id="o", job_id=str(job), execution_generation=1,
+                op_key="agent:builder:1", name="t", payload={"x": 1}), timeout=5.0)
+        finally:
+            await s.rollback()
+    assert res.outcome == "inserted"
