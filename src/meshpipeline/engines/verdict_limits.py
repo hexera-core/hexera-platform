@@ -157,9 +157,20 @@ def gating_rows(engine: str, manifest: Mapping) -> list[dict]:
         measured = measurements_from_manifest(dict(manifest))
     except Exception:  # noqa: BLE001 - an engine that cannot be read leaves validity to the gates
         return []
+    # AN FEA MESH is held to validity only (PLAN-fea-8): its quality floor is the NOTE floor, a row
+    # of fea_limits, never a gate - the gmsh floor row gating it refused a valid assembly whose 7
+    # curved slivers sat under SICN 0.01 (dev-areen, 24 Oct). "No degenerate elements" still gates.
+    raw = manifest.get("quality")
+    q: Mapping = raw if isinstance(raw, Mapping) else {}
+    fea = isinstance(q.get("fea"), Mapping) and bool(q["fea"].get("plan"))
+    skip = FEA_NOTE_ONLY if fea else ()
     return [{"key": c.key, "label": c.label, "op": c.op, "limit": c.threshold,
              "measured": measured.get(c.key)}
-            for c in crit if c.gating and c.key not in BUILD_TIME_KEYS]
+            for c in crit if c.gating and c.key not in BUILD_TIME_KEYS and c.key not in skip]
+
+
+#: Gating rows an FEA mesh reads as notes instead (they are fea_limits rows).
+FEA_NOTE_ONLY = ("elements_under_floor",)
 
 
 def inputs_for(*, engine: str, topology: str, manifest: Mapping | None, valid: bool,

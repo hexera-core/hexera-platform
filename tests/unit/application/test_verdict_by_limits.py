@@ -302,3 +302,22 @@ def test_an_fea_result_names_no_detail_level():
     fea = SimpleNamespace(purpose="structural", effective_mesh_fidelity="standard", mesh_fidelity_source="default")
     assert "Standard" in fr._render_fidelity(cfd)
     assert fr._render_fidelity(fea) == ""
+
+
+def test_an_fea_mesh_with_elements_under_the_note_floor_is_delivered_with_notes(shadow):
+    # dev-areen 24 Oct: a valid chair assembly, 7 curved slivers under SICN 0.01, was refused by the
+    # gmsh gating row - for FEA that row is a note (validity is the only blocker)
+    state = _fea_state(elements_under_floor=7, fea_min_scaled_jacobian=7.5e-05)
+    assert _status(state).succeeded
+    assert not [r for r in vl.gating_rows("gmsh", state["mesh_manifest"]) if r["key"] == "elements_under_floor"]
+    assert fr.review_outcome_of(_final(state).to_dict()) == "passed_with_notes"
+
+
+def test_a_degenerate_fea_element_still_fails(shadow):
+    state = _fea_state(fatal=["degenerate elements (SICN <= 0)"])
+    assert any(r["key"] == "fatal" for r in vl.gating_rows("gmsh", state["mesh_manifest"]))
+
+
+def test_a_flow_mesh_keeps_its_quality_floor_gate():
+    rows = vl.gating_rows("gmsh", _manifest(elements_under_floor=3))
+    assert any(r["key"] == "elements_under_floor" for r in rows)
