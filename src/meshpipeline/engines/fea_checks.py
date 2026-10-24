@@ -99,9 +99,10 @@ def measure(mesh, plan: Mapping, *, tags_by_name: Mapping[str, list[int]] | None
             if h_spot is None:
                 continue
             n = float(z["thickness_m"]) / h_spot
-            ok = n >= P.WALL_ELEMENTS * TOLERANCE
+            need = _wall_need(z)
+            ok = n >= need * TOLERANCE
             walls.append({"zone": z["id"], "face": z["faces"][0], "thickness_mm": round(z["thickness_m"] * 1e3, 4),
-                          "elements": round(n, 2), "needed": P.WALL_ELEMENTS, "ok": ok, "spot": True})
+                          "elements": round(n, 2), "needed": need, "ok": ok, "spot": True})
             if not ok:
                 short.append(z["id"])
             continue
@@ -111,18 +112,21 @@ def measure(mesh, plan: Mapping, *, tags_by_name: Mapping[str, list[int]] | None
         h = float(np.median(got))
         if z["kind"] == "wall":
             n = float(z["thickness_m"]) / h
-            ok = n >= P.WALL_ELEMENTS * TOLERANCE
+            need = _wall_need(z)
+            ok = n >= need * TOLERANCE
             walls.append({"zone": z["id"], "face": z["faces"][0], "thickness_mm": round(z["thickness_m"] * 1e3, 4),
-                          "elements": round(n, 2), "needed": P.WALL_ELEMENTS, "ok": ok})
+                          "elements": round(n, 2), "needed": need, "ok": ok})
         elif z["kind"] in ("hole", "fillet", "notch"):
             n = P.QUARTER * float(z["radius_m"]) / h
-            ok = n >= per_quarter * TOLERANCE
+            # a zone the AI refined is held to its own finer target (engines/fea_ai AI-fea-1)
+            need_q = float(z.get("per_quarter") or per_quarter)
+            ok = n >= need_q * TOLERANCE
             row = {"zone": z["id"], "spot": z.get("spot"), "kind": z["kind"],
                    "radius_mm": round(z["radius_m"] * 1e3, 4), "per_quarter_turn": round(n, 2),
-                   "needed": per_quarter}
+                   "needed": need_q}
             if z.get("thickness_m"):
                 # the stress wall beside it (PLAN-fea-4: 3 through it; 2 when the user took fewer)
-                need_wall = int(z.get("wall_elements") or P.STRESS_WALL_ELEMENTS)
+                need_wall = float(z.get("wall_elements") or P.STRESS_WALL_ELEMENTS)
                 through = float(z["thickness_m"]) / h
                 ok = ok and through >= need_wall * TOLERANCE
                 row.update(wall_mm=round(z["thickness_m"] * 1e3, 4), through_wall=round(through, 2),
@@ -150,6 +154,11 @@ def measure(mesh, plan: Mapping, *, tags_by_name: Mapping[str, list[int]] | None
         "corners": corners[:20],
         "short": short,
     }
+
+
+def _wall_need(z: Mapping) -> float:
+    """Elements through a wall zone: the rule's 2, or the finer target the AI's refine gave it."""
+    return float(z.get("wall_elements") or P.WALL_ELEMENTS)
 
 
 __all__ = ["TOLERANCE", "face_sizes", "face_tag", "measure", "spot_size"]

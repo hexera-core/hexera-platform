@@ -580,6 +580,7 @@ INVENTORY: list[Group] = [
 
     Group("Mesh toolchain", vars=[
         EnvVar("VMTK_BIN", "vmtk", help="vmtk runs as an isolated subprocess: its conda VTK cannot coexist with the app's"),
+        EnvVar("FEA_AI", "on", exposure="internal", help="on | off: the FEA builder asks the builder model for its judgement calls (zone priority, small features, the user's budget), which the rules make exact (engines/fea_ai.py); off = the rules' own plan"),
     ]),
 
     Group("Repeatability", note="INTERNAL. Same clean file in, same result out (engines/determinism.py, contracts/decision_cache.py). Every native run is stamped with what it ran under (reproducibility.json beside the mesh); every AI decision is keyed by what the model was shown.", vars=[

@@ -4,7 +4,7 @@ Every decision a mesh run makes on its own is made by a written rule. Each rule 
 and each decision the run records in its "why" record names the rule behind it
 (`contracts/decision_record.py`). This file is the one home for those rules.
 
-Rulebook version: **15**
+Rulebook version: **16**
 
 How the book is kept honest:
 
@@ -23,7 +23,7 @@ Each decision in the record also says where it came from:
 |---|---|
 | `rule` | The code decided by the rule, from measured or declared facts. |
 | `user` | The user decided (named an engine, or confirmed one). The rule says why that stands. |
-| `ai-lever` | The AI proposed one approved lever, inside its limits (not used yet: AI levers are off). |
+| `ai-lever` | The AI made a judgement call from a declared list (the FEA builder's AI-fea-n), and the rules made it exact inside their limits. |
 | `guard-clock` | A clock decided. These are being removed (D3); each one is listed so a run that differs here is explained. |
 
 ---
@@ -261,6 +261,27 @@ replaces shrinking a mesh to fit). Engine-neutral: any driver writes the decisio
 | RUN-2 | in force | **The largest machine is the ceiling** (m1-ultramem-40, about 1 TB). A plan past it runs there, coarsened to fit it - the last resort, said in the plan's words. |
 | RUN-3 | in force | **Out of memory: the same plan, one machine up.** A run killed for memory (SIGKILL, exit 137) runs again unchanged on the next machine that also holds the peak seen, until the largest; killed there too, LAD-fea-7. |
 | RUN-4 | in force | **The VM is the job.** It runs the Cloud Run mesh job's own image as the job's own service account, through the same runner and exchange (INPUT_URI, OUTPUT_URI, ENGINE, TIMEOUT); its workspace is on disk; the progress watchdog (PLAN-fea-13) runs inside it as on Cloud Run. The worker waits 30 minutes longer for it (boot and image pull), deletes it once the result is collected, and it deletes itself when done; Compute Engine deletes it at its timeout plus an hour whatever happens. Where each pass ran, and why, is in the why record (`fea_machine`). |
+
+## The FEA builder's AI decisions (AI-fea-n): AI governs, rules guarantee
+
+The builder model (the builder route) is shown the part as measured and the user's own words, and
+answers ONE `fea_decision` tool call against a strict schema: no mesher command, no size. The rules
+below turn each choice into exact sizes. The round goes through the AI decision cache, so the same
+part with the same words gets the same decision and the same mesh. `FEA_AI=off` gives the rules'
+own plan.
+
+| ID | Status | Rule |
+|---|---|---|
+| AI-fea-1 | in force | **Refine** (the stress there matters to this user or this analysis): a hole, fillet or notch gets 20 elements per quarter-turn and 4 through the wall beside it; a wall 3 through it; a round 10 per quarter-turn. Never finer than half the size the zone's own rule asks for; a sharp corner is never refined past its cap (its stress never settles). |
+| AI-fea-2 | in force | **Coarser** (it does not matter for this analysis): a hole, fillet or notch keeps only its shape - 4 elements per quarter-turn and 2 through the wall, as any round (PLAN-fea-7); a sharp inside corner is capped at half its wall instead of a quarter. Walls and rounds are at their minimum already and stay. |
+| AI-fea-3 | in force | **Small features.** Set aside: a hole, fillet or notch of radius at most 2% of the part's diagonal is meshed as coarser (AI-fea-2); a wall or anything larger is never set aside. Keep: a micro detail (PLAN-fea-12) at least a fiftieth of the base size gets a zone of its own size, so the mesh follows it; a smaller one stays set aside. |
+| AI-fea-4 | in force | **The user's element budget** - only one they stated - lowers the element limit; it never raises it past the element, memory or time limits. Over it, the plan coarsens as any limit does (PLAN-fea-8). |
+| AI-fea-5 | in force | **The minimums hold** after every choice: no choice leaves fewer than 2 elements through a wall, 4 per quarter-turn of a round or hot spot, or a corner coarser than half its wall. Then the plan is held to valid elements, the element, memory and time limits and every gate exactly as any plan is - over the limit, PLAN-fea-8 coarsens it to its validity minimums and names what is short. A zone the AI refined is checked on the mesh against its own finer target, so a refinement the mesh missed is named and pulls LAD-fea-3. The AI's refinements never cost the rules' own zones: when they would take the plan over its limit they are left out first (its other choices stand), and only then does PLAN-fea-8 coarsen. |
+| AI-fea-6 | in force | **The AI never fails a run.** Off, unreachable, slow (240 s, or what the attempt has left after 15 minutes kept for meshing, if less), no tool call, an answer the schema refuses: the rules' own plan, said in one line. Choices on ids the model was not shown are dropped and recorded. |
+| AI-fea-7 | in force | **Joints** (an assembly): bonded or contact per touching pair is shown as a suggestion for the user to confirm; it is never applied by itself. |
+| AI-fea-8 | in force | **After a failed pass** (no mesh, or an invalid one) the AI may pick one lever from those the ladder allows for that failure (`engines/fea_ladder.lever_options`): the ladder's own first, the other unpulled fill lever, or LAD-fea-6. Any other answer: the ladder's own. |
+
+The AI decisions are `engines/fea_ai.py`.
 
 ## Reserved families
 

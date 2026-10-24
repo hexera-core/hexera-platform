@@ -15,7 +15,7 @@ BOOK = ROOT / "docs" / "RULES.md"
 #: A table row of the book: | ID | status | rule |
 _ROW = re.compile(r"^\|\s*([A-Z]+-[A-Za-z0-9-]+)\s*\|\s*([^|]+?)\s*\|")
 #: A string in the code that is exactly a rule ID of a family the book defines.
-_FAMILIES = ("ENG", "SW", "DEL", "VER", "PLAN", "LAD", "TIME", "INS", "RUN")
+_FAMILIES = ("ENG", "SW", "DEL", "VER", "PLAN", "LAD", "TIME", "INS", "RUN", "AI")
 _ID = re.compile(r"^(?:" + "|".join(_FAMILIES) + r")-[A-Za-z0-9]+(?:-[0-9]+)?$")
 
 
