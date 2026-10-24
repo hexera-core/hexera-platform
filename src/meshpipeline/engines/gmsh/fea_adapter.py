@@ -47,8 +47,8 @@ class Ticker:
         import threading
         self.ws, self.every_s = Path(ws), float(every_s)
         self._stop = threading.Event()
-        self._thread = None
-        self._step: tuple[str, str] | None = None
+        self._thread: threading.Thread | None = None
+        self._step: tuple[str, str] = ("", "")
 
     def start(self, key: str, label: str) -> None:
         import threading
@@ -59,7 +59,7 @@ class Ticker:
 
         def beat() -> None:
             while not self._stop.wait(self.every_s):
-                note_stage(self.ws, *self._step)  # type: ignore[misc]
+                note_stage(self.ws, *self._step)
 
         self._thread = threading.Thread(target=beat, name="fea-stage", daemon=True)
         self._thread.start()
@@ -71,26 +71,29 @@ class Ticker:
             self._thread = None
 
 
+#: the mesher's threads when the plan names none (0 = every core the job has)
+DEFAULT_THREADS = 1
+#: the 3D algorithm when the plan names none
+DEFAULT_ALGORITHM_3D = "delaunay"
+
+
 def mesh_threads(run: dict) -> int:
-    """The mesher's thread count: the plan's `threads`, else FEA_GMSH_THREADS, else 1; 0 = every core."""
-    import os
-    raw = run.get("threads") if isinstance(run, dict) and run.get("threads") is not None else \
-        os.environ.get("FEA_GMSH_THREADS", "1")
+    """The mesher's thread count: the plan's `threads`, else DEFAULT_THREADS; 0 = every core the job has."""
+    raw = (run or {}).get("threads")
     try:
-        n = int(raw)
+        n = int(DEFAULT_THREADS if raw is None else raw)
     except (TypeError, ValueError):
         n = 1
     if n > 0:
         return n
     # every core THE JOB HAS (its CPU quota), never the host's: Cloud Run's os.cpu_count() is the host's
-    from meshpipeline.engines.snappy.native import _container_cpus
-    return max(1, _container_cpus(0) or os.cpu_count() or 1)
+    from meshpipeline.engines.determinism import job_cpus
+    return job_cpus()
 
 
 def algorithm_3d(run: dict) -> str:
-    """The 3D algorithm: the plan's `algorithm3d`, else FEA_GMSH_ALGO3D, else delaunay."""
-    import os
-    name = str((run or {}).get("algorithm3d") or os.environ.get("FEA_GMSH_ALGO3D") or "delaunay").lower()
+    """The 3D algorithm: the plan's `algorithm3d`, else DEFAULT_ALGORITHM_3D."""
+    name = str((run or {}).get("algorithm3d") or DEFAULT_ALGORITHM_3D).lower()
     return name if name in ALGORITHMS_3D else "delaunay"
 #: gmsh's MeshAdapt 2D algorithm (Mesh.Algorithm 1): the other way to mesh a surface, for the
 #: surfaces a pass went wrong on (LAD-fea-6) - the default (Frontal-Delaunay) left them empty or bad

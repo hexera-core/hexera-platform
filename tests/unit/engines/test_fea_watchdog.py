@@ -50,7 +50,7 @@ def test_the_runner_says_what_the_watchdog_saw(tmp_path, monkeypatch):
 
     (tmp_path / "fea_plan.json").write_text("{}")
     monkeypatch.setattr(sys, "executable", sys.executable)
-    monkeypatch.setenv("FEA_STALL_WINDOW_S", "1")
+    monkeypatch.setattr(GR, "FEA_STALL_WINDOW_S", 1)
     calls = {}
 
     def fake(args, **kw):

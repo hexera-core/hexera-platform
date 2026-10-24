@@ -45,7 +45,7 @@ EDGE_SAMPLE_SHARE = 0.25
 #: octree level with at least this many cubes is measured in worker processes, a slice each; every
 #: cube's numbers are its own, so the result is the same to the bit as on one core.
 PARALLEL_MIN_POINTS = 20_000
-#: the most worker processes (FEA_PLAN_WORKERS overrides; 1 = one core, as before)
+#: the most worker processes (1 = one core, as before)
 MAX_WORKERS = 8
 
 
@@ -444,17 +444,10 @@ class SizeField:
 
 
 def plan_workers() -> int:
-    """How many processes the histogram may use: FEA_PLAN_WORKERS, else the job's CPU quota (never
-    the host's cores - Cloud Run's os.cpu_count() is the host's), at most MAX_WORKERS."""
-    import os
-    raw = os.environ.get("FEA_PLAN_WORKERS")
-    if raw:
-        try:
-            return max(1, int(raw))
-        except ValueError:
-            return 1
-    from meshpipeline.engines.snappy.native import _container_cpus
-    return max(1, min(MAX_WORKERS, _container_cpus(0) or os.cpu_count() or 1))
+    """How many processes the histogram may use: the job's CPU quota (never the host's cores), at
+    most MAX_WORKERS."""
+    from meshpipeline.engines.determinism import job_cpus
+    return max(1, min(MAX_WORKERS, job_cpus()))
 
 
 _FIELD: SizeField | None = None
