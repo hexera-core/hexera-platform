@@ -7,7 +7,8 @@ One attempt:
 
 1. measure the staged solid (cad/fea_measure on geometry.step, the metre B-rep every gmsh run
    meshes), so Face_k in the plan is Face_k in the mesh and in the deck;
-2. PLAN-fea-9: one part only;
+2. PLAN-fea-17: an assembly (several bodies) is staged as its parts, fused where they are bonded or
+   side by side where they only touch, every face named Part_k_Face_j;
 3. compute the plan (engines/fea_plan.py) and its element estimate;
 4. PLAN-fea-8: over the detail level, stop BEFORE meshing, with the options (a pre-flight
    refusal: no mesher is started, no time is spent);
@@ -39,7 +40,6 @@ logger = logging.getLogger(__name__)
 ENGINE = "gmsh"
 #: Failure markers this driver ends an attempt with.
 NO_SOURCE = "fea_source_missing"
-NOT_ONE_PART = "fea_not_one_part"
 BUILD_FAILED = "fea_build_failed"
 #: The mesher ran past its guard clock: our infrastructure, not the part (no lever is pulled).
 GUARD_TRIP = "fea_guard_trip"
@@ -51,7 +51,7 @@ GUARD_GATE = "fea_guard"
 #: stops at cad/fea_measure.MAX_RAY_TRIANGLES for speed; the plan cannot hold an unmeasured wall).
 MAX_RAY_TRIANGLES = 5_000_000
 #: What the remote mesher receives besides the plan: the solid and the facts the deck reads.
-PAYLOAD = (*P.STAGED_SOLIDS, "cad_face_names.json", P.PLAN_FILE, "gmsh_spec.json")
+PAYLOAD = (*P.STAGED_SOLIDS, "cad_face_names.json", P.PLAN_FILE, "gmsh_spec.json", "assembly.brep", "assembly.json")
 #: Where each pass's deliverables are kept until the best one is chosen.
 PASS_FOLDER = "_fea_pass_{n}"  # noqa: S105 - a folder name, not a secret
 #: every file a pass writes that the delivery reads: the solver files ride with their mesh, so the
@@ -131,6 +131,79 @@ def measure_staged(ws: Path) -> tuple[dict, Any, float]:
                                               max_ray_triangles=MAX_RAY_TRIANGLES)
         record.setdefault("notes", []).append(f"the CAD was healed before it was measured ({exc})")
     return record, surface, diag_m
+
+
+def connection_of(state) -> str:
+    """How an assembly's parts are joined, as the user answered on the stage (state fea_connection):
+    bonded unless they said contact."""
+    from meshpipeline.cad.fea_assembly import BONDED, CONTACT
+
+    said = str((state or {}).get("fea_connection") or "").strip().lower()
+    return CONTACT if said == CONTACT else BONDED
+
+
+def prepare_assembly(ws: Path, record: dict, surface, *, connection: str, source_path: str = "") -> dict:
+    """PLAN-fea-17: an assembly's record for the plan, and its staged file for the mesher. Every
+    face is renamed Part_k_Face_j (on the record and on the surface the size field reads), each part
+    gets its own base size, and the parts are staged as the connection asks (cad/fea_assembly.stage).
+    Returns the record (the same dict, renamed in place)."""
+    import numpy as np
+
+    from meshpipeline.cad import fea_assembly as A
+    from meshpipeline.cad.scout import read_cad
+
+    staged = staged_solid(ws) or ws / "geometry.step"
+    shape = read_cad(staged)
+    parts = A.solids(shape)
+    names: list[str] = [""] * len(parts)
+    notes: list[str] = []
+    if source_path and Path(source_path).exists():
+        try:
+            names = A.match_body_names(A.read_body_names(source_path), parts)
+        except Exception as exc:  # noqa: BLE001 - a courtesy: every part is still Part_k
+            logger.info("fea driver: the CAD's part names were not read (%s)", exc)
+    global_names = A.global_face_names(shape)
+    renamed = A.rename_record(record, global_names)
+    record.clear()
+    record.update(renamed)
+    if len(surface.names) == len(global_names):
+        surface.names = list(global_names)
+    sidecar = A.stage(shape, connection, ws, names=names)
+    # each part's own size, read off the measured surface (millimetres): its faces' triangles
+    bases = []
+    for p in range(1, len(parts) + 1):
+        faces = [n for n in record.get("faces") or {} if A.part_of_face(n) == p]
+        labels = [k for k, n in enumerate(surface.names) if A.part_of_face(n) == p]
+        tri = surface.tris[np.isin(surface.label, labels)] if labels else np.zeros((0, 3), dtype=np.int64)
+        if not len(tri) or not faces:
+            continue
+        pts = surface.xyz[np.unique(tri)]
+        diag = float(np.linalg.norm(pts.max(axis=0) - pts.min(axis=0)))
+        bases.append({"n": p, "id": A.part_id(p), "name": names[p - 1] if p - 1 < len(names) else "",
+                      "diag_mm": round(diag, 6), "faces": sorted(faces, key=lambda f: int(f.rsplit("_", 1)[-1]))})
+    record["part_bases"] = bases
+    record["assembly_plan"] = {"staged": A.STAGED, "sidecar": A.SIDECAR, "connection": connection,
+                               "mode": sidecar["mode"], "parts": sidecar["parts"], "pairs": len(sidecar["pairs"]),
+                               "interfaces": len(sidecar["interfaces"]), "notes": notes + list(sidecar["notes"])}
+    return record
+
+
+def restage_tied(ws: Path, record: dict) -> dict:
+    """PLAN-fea-17's way on for a bonded assembly no pass could mesh as one: the same parts staged
+    apart and tied where they touch (cad/fea_assembly.stage, tie); the record's assembly says so."""
+    from meshpipeline.cad import fea_assembly as A
+    from meshpipeline.cad.scout import read_cad
+
+    shape = read_cad(staged_solid(ws) or ws / "geometry.step")
+    try:
+        names = [str(p.get("name") or "") for p in json.loads((ws / A.SIDECAR).read_text()).get("parts") or []]
+    except (OSError, ValueError):
+        names = []
+    sidecar = A.stage(shape, A.BONDED, ws, names=names, tie=True)
+    plan = dict(record.get("assembly_plan") or {})
+    plan.update(mode=sidecar["mode"], pairs=len(sidecar["pairs"]), notes=list(sidecar["notes"]))
+    record["assembly_plan"] = plan
+    return record
 
 
 def _histogram(surface, zone_list: list[dict], levers: list[dict], diag_m: float):
@@ -411,7 +484,13 @@ def ladder_facts(ws: Path, passes: list[dict], levers: list[dict]) -> dict:
                    "estimate": int((passes[-1].get("estimate") or 0) if passes else 0),
                    "levers": [lv["lever"] for lv in levers],
                    "under_floor": int(q.get("elements_under_floor") or 0),
-                   "elements": int(q.get("cells") or 0)}
+                   "elements": int(q.get("cells") or 0),
+                   # NO PASS BUILT A MESH (the fill refused the surface meshes): said as that, with the
+                   # surfaces it named - never as badly shaped elements (car_vs_pole, 24 Oct)
+                   "built_none": bool(passes) and not any(p.get("built") for p in passes)}
+    named = sorted({int(t) for p in passes for t in p.get("bad_surfaces") or []})
+    if named:
+        facts["bad_surfaces"] = named
     if isinstance(where, list) and len(where) == 3:
         facts["worst_at_mm"] = [round(float(v) * 1000.0, 1) for v in where]
     if (q.get("bad_spread_mm")) is not None:
@@ -427,6 +506,11 @@ def ladder_words(passes: list[dict], levers: list[dict]) -> str:
         return (f"the mesher ran out of memory building about {int(passes[-1].get('estimate') or 0):,} elements "
                 f"({len(passes)} pass(es); levers {tried}) - this plan needs more memory than the mesh job has; "
                 "another attempt on the same machine runs out the same way.")
+    if passes and not any(p.get("built") for p in passes):
+        named = sorted({int(t) for p in passes for t in p.get("bad_surfaces") or []})
+        return (f"no pass of the FEA plan built a mesh - the fill could not start ({len(passes)} pass(es); levers "
+                f"{tried}; surfaces it named {named or 'none'}). The plan is deterministic: another attempt "
+                "fails the same way.")
     readings = [float(p["min_sicn"]) for p in passes if p.get("min_sicn") is not None]
     worst = min(readings) if readings else None
     return (f"no pass of the FEA plan built a valid mesh - a degenerate or inverted element ({len(passes)} "
@@ -493,15 +577,26 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                     "rule": "PLAN-fea-15", "inputs": {"healed": healed},
                     "words": (f"The part was read from {staged.name if staged else 'the staged file'}"
                               + (", healed before it was measured." if healed else "."))}])
-    alone = P.one_part(record)
-    _cite(job_id, [{"stage": "fea_plan", "decided": "one part", "value": not alone, "rule": "PLAN-fea-9",
-                    "inputs": {"bodies": record.get("bodies")},
-                    "words": alone or "One solid body: meshed as one part."}])
-    if alone:
-        _refuse(ws, cause=FailureCause.NOT_BUILT.value, text=alone, reason=alone, setup=True)
-        await run.fence("deliver builder outcome")
-        outcome = run.outcome(produced_deliverable=False, failure_marker=NOT_ONE_PART)
-        return False, NOT_ONE_PART, outcome
+    if int(record.get("bodies") or 1) > 1:
+        # PLAN-fea-17: AN ASSEMBLY - its parts staged as the user said they are joined (bonded by
+        # default), every face Part_k_Face_j, each part sized by its own rules
+        connection = connection_of(state)
+        try:
+            record = await asyncio.to_thread(prepare_assembly, ws, record, surface, connection=connection,
+                                             source_path=source_path)
+        except Exception as exc:  # noqa: BLE001 - recorded as the attempt's reason
+            logger.exception("fea driver: the assembly could not be staged - job_id=%s", job_id)
+            _refuse(ws, cause=FailureCause.NOT_BUILT.value, text=f"the assembly could not be staged ({exc})",
+                    reason=f"the assembly could not be staged ({type(exc).__name__})")
+            await run.fence("deliver builder outcome")
+            outcome = run.outcome(produced_deliverable=False, failure_marker=BUILD_FAILED)
+            return False, BUILD_FAILED, outcome
+        asm = record.get("assembly_plan") or {}
+        _cite(job_id, [{"stage": "fea_plan", "decided": "assembly", "value": asm.get("mode"),
+                        "rule": "PLAN-fea-17",
+                        "inputs": {"bodies": record.get("bodies"), "connection": connection,
+                                   "pairs": asm.get("pairs"), "interfaces": asm.get("interfaces")},
+                        "words": " ".join(P.assembly_words(asm)[:2])}])
     if not record.get("faces") or not any("thickness_min_mm" in (r or {}) for r in record["faces"].values()):
         # PLAN-fea-3 cannot be planned on walls nobody measured: stop before meshing rather than
         # deliver a mesh whose walls were never held to the rule
@@ -519,79 +614,96 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     cap = int(policy.run_timeout()) if policy is not None else 1500
     rate, cls = fill_rate(record)
     chosen: dict = {}
-    for n in range(1, L.MAX_PASSES + 1):
-        if n == 1:
-            # PLAN-fea-8: the rules' own plan, coarsened to fit under the limit when it must - never a
-            # stop before meshing
-            plan = await asyncio.to_thread(choose_plan, record, surface, diag_m, levers=levers,
-                                           ceiling_s=ceiling_for(run))
-            chosen = {"limit": plan["limit"], "zone_floor_m": plan.get("zone_floor_m"),
-                      "coarsened": plan.get("coarsened")}
-        else:
-            floor_m = chosen["zone_floor_m"]
-            if L.coarse_factor(levers) < 1.0:
-                # LAD-fea-4: the built mesh was over the limit - the finest zones coarser, from the
-                # floor already in force (or the finest zone), never past their validity minimums
-                start = floor_m or min([float(z["size_m"]) for z in P.zones(record)] or [diag_m / P.MIN_DIVISIONS])
-                floor_m = start / L.coarse_factor(levers)
-            plan = await asyncio.to_thread(make_plan, record, surface, diag_m, levers=levers,
-                                           limit=int(chosen["limit"]["elements"]), zone_floor_m=floor_m)
-            plan["limit"] = chosen["limit"]
-            if chosen.get("coarsened"):
-                plan["coarsened"] = chosen["coarsened"]
-                plan["fits"] = True
-            plan = _restate(record, plan)
-        if n == 1:
-            _cite(job_id, plan["decisions"])
-        write_plan(ws, plan)
-        run.note_authoring()
-        _clear_outputs(ws)
-        note_native_pass(ws, n)
-        note_native_payload(ws, [p for p in PAYLOAD if (ws / p).exists()])
-        # PLANNED WORK DECIDES, THE CLOCK ONLY GUARDS (D3's interface, mirrored - see planned_work)
-        work = planned_work(plan, cap, rate=rate, cls=cls, ceiling_s=ceiling_for(run))
-        _cite(job_id, [{"stage": "fea_time", "decided": "guard", "value": work["guard_s"], "rule": "PLAN-fea-13",
-                        "inputs": {k: work[k] for k in ("amount", "rate", "class", "planned_s", "floor_s",
-                                                         "ceiling_s", "factor")} | {"pass": n},
-                        "words": (f"Pass {n}: about {int(work['amount'] or 0):,} elements at {work['rate']:g} a second "
-                                  f"(a {cls} part) is about {int(work['planned_s'] or 0)} s; the mesher may take "
-                                  f"{work['guard_s']} s.")}])
-        await run.fence("start native mesh")
-        native_t0 = time.monotonic()
-        result = await asyncio.to_thread(get_engine(ENGINE).run_cartesian_mesh, ws, timeout=work["guard_s"])
-        native_s = round(time.monotonic() - native_t0, 1)
-        await run.fence("accept native mesh output")
-        if result.get("timed_out"):
-            # A GUARD TRIP is our infrastructure, never the part's: it pulls no lever and changes no
-            # plan. The attempt ends here; the run's own retry takes it again (D3: replayed once)
-            run.note_native_run(produced_usable_mesh=False)
-            tripped = {**work, "pass": n}
-            break
-        if result.get("too_big_for_worker"):
-            # BUILT, BUT TOO BIG FOR THIS WORKER'S DISK (adapters/mesh_execution/cloud_run_client.
-            # worker_room): ours, never the part's - no lever, no smaller plan; the result is kept
-            run.note_native_run(produced_usable_mesh=False)
-            too_big = {**result["too_big_for_worker"], "pass": n}
-            break
-        q = _read_quality(ws) if result.get("rc") in (0, 4) else {}
-        made = bool(q) and (ws / "mesh.inp").exists()
-        run.note_native_run(produced_usable_mesh=made and result.get("rc") == 0)
-        # LAD-fea-7: killed by the job's memory limit (the kernel's SIGKILL on the mesher)
-        killed = str(result.get("signal") or "") == "SIGKILL" or "killed by SIGKILL" in str(result.get("log_tail") or "")
-        passes.append({**L.pass_facts(n, result.get("rc"), q, plan, log=str(result.get("log_tail") or ""),
-                                      killed=killed), "native_s": native_s})
-        if made:
-            _keep_pass(ws, n)
-        lever = L.next_lever(passes[-1], levers, plan)
-        if lever is None:
-            if passes[-1].get("out_of_memory"):
-                _cite(job_id, [{"stage": "fea_ladder", "decided": "no lever", "value": "out of memory",
-                                "rule": "LAD-fea-7", "inputs": {"pass": n, "estimate": passes[-1].get("estimate")},
-                                "words": "The mesher ran out of memory; no lever builds this plan in less, so no retry."}])
-            break
-        _cite(job_id, [{"stage": "fea_ladder", "decided": "lever", "value": lever["lever"], "rule": lever["lever"],
-                        "inputs": lever.get("inputs") or {}, "words": lever["words"]}])
-        levers.append(lever)
+    n0 = 0
+    while True:
+        for n in range(n0 + 1, n0 + L.MAX_PASSES + 1):
+            if n == n0 + 1:
+                # PLAN-fea-8: the rules' own plan, coarsened to fit under the limit when it must - never a
+                # stop before meshing
+                plan = await asyncio.to_thread(choose_plan, record, surface, diag_m, levers=levers,
+                                               ceiling_s=ceiling_for(run))
+                chosen = {"limit": plan["limit"], "zone_floor_m": plan.get("zone_floor_m"),
+                          "coarsened": plan.get("coarsened")}
+            else:
+                floor_m = chosen["zone_floor_m"]
+                if L.coarse_factor(levers) < 1.0:
+                    # LAD-fea-4: the built mesh was over the limit - the finest zones coarser, from the
+                    # floor already in force (or the finest zone), never past their validity minimums
+                    start = floor_m or min([float(z["size_m"]) for z in P.zones(record)] or [diag_m / P.MIN_DIVISIONS])
+                    floor_m = start / L.coarse_factor(levers)
+                plan = await asyncio.to_thread(make_plan, record, surface, diag_m, levers=levers,
+                                               limit=int(chosen["limit"]["elements"]), zone_floor_m=floor_m)
+                plan["limit"] = chosen["limit"]
+                if chosen.get("coarsened"):
+                    plan["coarsened"] = chosen["coarsened"]
+                    plan["fits"] = True
+                plan = _restate(record, plan)
+            if n == n0 + 1:
+                _cite(job_id, plan["decisions"])
+            write_plan(ws, plan)
+            run.note_authoring()
+            _clear_outputs(ws)
+            note_native_pass(ws, n)
+            note_native_payload(ws, [p for p in PAYLOAD if (ws / p).exists()])
+            # PLANNED WORK DECIDES, THE CLOCK ONLY GUARDS (D3's interface, mirrored - see planned_work)
+            work = planned_work(plan, cap, rate=rate, cls=cls, ceiling_s=ceiling_for(run))
+            _cite(job_id, [{"stage": "fea_time", "decided": "guard", "value": work["guard_s"], "rule": "PLAN-fea-13",
+                            "inputs": {k: work[k] for k in ("amount", "rate", "class", "planned_s", "floor_s",
+                                                             "ceiling_s", "factor")} | {"pass": n},
+                            "words": (f"Pass {n}: about {int(work['amount'] or 0):,} elements at {work['rate']:g} a second "
+                                      f"(a {cls} part) is about {int(work['planned_s'] or 0)} s; the mesher may take "
+                                      f"{work['guard_s']} s.")}])
+            await run.fence("start native mesh")
+            native_t0 = time.monotonic()
+            result = await asyncio.to_thread(get_engine(ENGINE).run_cartesian_mesh, ws, timeout=work["guard_s"])
+            native_s = round(time.monotonic() - native_t0, 1)
+            await run.fence("accept native mesh output")
+            if result.get("timed_out"):
+                # A GUARD TRIP is our infrastructure, never the part's: it pulls no lever and changes no
+                # plan. The attempt ends here; the run's own retry takes it again (D3: replayed once)
+                run.note_native_run(produced_usable_mesh=False)
+                tripped = {**work, "pass": n}
+                break
+            if result.get("too_big_for_worker"):
+                # BUILT, BUT TOO BIG FOR THIS WORKER'S DISK (adapters/mesh_execution/cloud_run_client.
+                # worker_room): ours, never the part's - no lever, no smaller plan; the result is kept
+                run.note_native_run(produced_usable_mesh=False)
+                too_big = {**result["too_big_for_worker"], "pass": n}
+                break
+            q = _read_quality(ws) if result.get("rc") in (0, 4) else {}
+            made = bool(q) and (ws / "mesh.inp").exists()
+            run.note_native_run(produced_usable_mesh=made and result.get("rc") == 0)
+            # LAD-fea-7: killed by the job's memory limit (the kernel's SIGKILL on the mesher)
+            killed = str(result.get("signal") or "") == "SIGKILL" or "killed by SIGKILL" in str(result.get("log_tail") or "")
+            passes.append({**L.pass_facts(n, result.get("rc"), q, plan, log=str(result.get("log_tail") or ""),
+                                          killed=killed), "native_s": native_s})
+            if made:
+                _keep_pass(ws, n)
+            lever = L.next_lever(passes[-1], levers, plan)
+            if lever is None:
+                if passes[-1].get("out_of_memory"):
+                    _cite(job_id, [{"stage": "fea_ladder", "decided": "no lever", "value": "out of memory",
+                                    "rule": "LAD-fea-7", "inputs": {"pass": n, "estimate": passes[-1].get("estimate")},
+                                    "words": "The mesher ran out of memory; no lever builds this plan in less, so no retry."}])
+                break
+            _cite(job_id, [{"stage": "fea_ladder", "decided": "lever", "value": lever["lever"], "rule": lever["lever"],
+                            "inputs": lever.get("inputs") or {}, "words": lever["words"]}])
+            levers.append(lever)
+
+        if (tripped is None and too_big is None and passes and not any(f["valid"] for f in passes)
+                and not passes[-1].get("out_of_memory")
+                and (record.get("assembly_plan") or {}).get("mode") == "bonded"):
+            # PLAN-fea-17: A BONDED ASSEMBLY THE MESHER COULD NOT BUILD AS ONE (the fused parts left
+            # slivers it cannot fill): the parts are meshed apart and tied where they meet - still
+            # bonded, never a stop. Not after a memory kill: that ends the attempt (LAD-fea-7)
+            record = await asyncio.to_thread(restage_tied, ws, record)
+            _cite(job_id, [{"stage": "fea_ladder", "decided": "tied", "value": "tie", "rule": "PLAN-fea-17",
+                            "inputs": {"passes": len(passes)},
+                            "words": ("No pass built the bonded parts as one mesh, so each part is meshed on its "
+                                      "own and tied where they meet.")}])
+            n0, levers = len(passes), []
+            continue
+        break
 
     if too_big is not None and not any(f["valid"] for f in passes):
         (ws / "fea_passes.json").write_text(json.dumps({"passes": passes, "delivered": None, "levers": levers,
@@ -655,6 +767,6 @@ def driver_for(state):
     return drive if applies(state) else None
 
 
-__all__ = ["BYTES_PER_ELEMENT", "MESH_JOB_MEMORY_GIB", "limit_facts", "memory_elements", "FILL_RATES", "FLOOR_STEPS", "GUARD_FACTOR", "MESH_JOB_LIMIT_S", "ceiling_for", "choose_plan",
-           "complexity", "element_limit", "fill_rate", "guard_seconds", "runnable_elements", "BUILD_FAILED", "GUARD_TRIP", "NOT_ONE_PART", "NO_SOURCE", "QUALITY_GATE", "applies", "drive",
+__all__ = ["connection_of", "prepare_assembly", "restage_tied", "BYTES_PER_ELEMENT", "MESH_JOB_MEMORY_GIB", "limit_facts", "memory_elements", "FILL_RATES", "FLOOR_STEPS", "GUARD_FACTOR", "MESH_JOB_LIMIT_S", "ceiling_for", "choose_plan",
+           "complexity", "element_limit", "fill_rate", "guard_seconds", "runnable_elements", "BUILD_FAILED", "GUARD_TRIP", "NO_SOURCE", "QUALITY_GATE", "applies", "drive",
            "driver_for", "ladder_facts", "ladder_words", "make_plan", "measure_staged", "planned_work", "write_plan"]

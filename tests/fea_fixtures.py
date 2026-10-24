@@ -215,6 +215,35 @@ def two_blocks():
     return c
 
 
+def _compound(*shapes):
+    from OCP.BRep import BRep_Builder
+    from OCP.TopoDS import TopoDS_Compound
+
+    c = TopoDS_Compound()
+    b = BRep_Builder()
+    b.MakeCompound(c)
+    for sh in shapes:
+        b.Add(c, sh)
+    return c
+
+
+def touching_blocks(size: float = 10.0):
+    """Two cubes of `size` mm side by side along x, sharing the face x = size: an assembly's two
+    parts that TOUCH over one face (size x size mm)."""
+    return _compound(_box(0, 0, 0, size, size, size), _box(size, 0, 0, size, size, size))
+
+
+def doubled_block():
+    """The same 10 mm cube twice in one file (a body drawn twice): the second wholly inside the first."""
+    return _compound(_box(0, 0, 0, 10, 10, 10), _box(0, 0, 0, 10, 10, 10))
+
+
+def overlapping_blocks():
+    """Two 10 mm cubes, the second shifted 8 mm along x: they PASS INTO each other over a 2 x 10 x 10
+    mm slab (interference: 20% of either part)."""
+    return _compound(_box(0, 0, 0, 10, 10, 10), _box(8, 0, 0, 10, 10, 10))
+
+
 def pinned_plate():
     """A 40 x 40 x 6 mm plate with an 8 mm hole through its middle, and a pin filling the hole
     exactly: two touching bodies in one file (an assembly's bolt in its hole). The pin's seam is
@@ -363,3 +392,18 @@ def coil_spring(D: float = SPRING["D"], d: float = SPRING["d"], pitch: float = S
     pipe.Build()
     pipe.MakeSolid()
     return pipe.Shape()
+
+
+def wedge(angle_deg: float, length: float = 100.0, depth: float = 20.0):
+    """A prism whose cross-section is a triangle with a tip of `angle_deg` at the origin: a knife edge
+    of that opening, `length` long, extruded `depth` (cad/fold_back.py finds one under 1 degree)."""
+    import math
+
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+    from OCP.gp import gp_Pnt, gp_Vec
+
+    h = length * math.tan(math.radians(angle_deg))
+    poly = BRepBuilderAPI_MakePolygon(gp_Pnt(0, 0, 0), gp_Pnt(length, 0, 0), gp_Pnt(length, h, 0), True)
+    face = BRepBuilderAPI_MakeFace(poly.Wire()).Face()
+    return BRepPrimAPI_MakePrism(face, gp_Vec(0, 0, depth)).Shape()

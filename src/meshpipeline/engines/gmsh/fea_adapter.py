@@ -87,9 +87,19 @@ def _micro_place(m: dict) -> dict:
             "size_mm": m.get("size_mm"), "faces": list(m.get("faces") or [])}
 
 
-def size_fields(gmsh, plan: dict, surfaces: set[int]) -> int | None:
-    """The plan's zones as gmsh fields; returns the background field (None when no zone binds)."""
+def size_fields(gmsh, plan: dict, surfaces: set[int], face_tags: dict[str, list[int]] | None = None,
+                part_volumes: dict[str, list[int]] | None = None) -> int | None:
+    """The plan's zones as gmsh fields; returns the background field (None when no zone binds).
+    face_tags: an assembly's face names (Part_k_Face_j) -> the surface tags carrying each; a single
+    part's Face_k is surface k. part_volumes: an assembly's Part_k -> the volume tags carrying it
+    (the part's base size holds through those volumes, PLAN-fea-17)."""
     from meshpipeline.engines.fea_size_field import group_zones
+
+    def tags_of(name: str) -> list[int]:
+        if face_tags is not None:
+            return [t for t in face_tags.get(str(name)) or [] if t in surfaces]
+        t = _tag(name)
+        return [t] if t in surfaces else []
 
     base = float(plan["base_size_m"])
     g1 = float(plan.get("growth") or 1.3) - 1.0
@@ -101,7 +111,7 @@ def size_fields(gmsh, plan: dict, surfaces: set[int]) -> int | None:
         if g.get("balls"):
             # PLAN-fea-3's thin spots: the wall's Threshold off its face, held only inside the spots'
             # balls (each its size inside, growing at the plan's rate outside) - the larger of the two
-            tags = [t for f in g["faces"] if (t := _tag(f)) in surfaces]
+            tags = list(dict.fromkeys(t for f in g["faces"] for t in tags_of(f)))
             if not tags:
                 continue
             dist = gmsh.model.mesh.field.add("Distance")
@@ -127,10 +137,20 @@ def size_fields(gmsh, plan: dict, surfaces: set[int]) -> int | None:
             gmsh.model.mesh.field.setNumbers(both, "FieldsList", [th, near])
             ids.append(both)
             continue
+        if g.get("part"):
+            # PLAN-fea-17: the part's base through its whole volume (the estimate's ceiling inside it)
+            vols = sorted(set((part_volumes or {}).get(str(g["part"])) or []))
+            if vols:
+                const = gmsh.model.mesh.field.add("Constant")
+                gmsh.model.mesh.field.setNumber(const, "VIn", size)
+                gmsh.model.mesh.field.setNumber(const, "VOut", base)
+                gmsh.model.mesh.field.setNumbers(const, "VolumesList", vols)
+                gmsh.model.mesh.field.setNumber(const, "IncludeBoundary", 1)
+                ids.append(const)
         dists = []
         if g["edge"]:
             curves = sorted({c for a, b in (fs for fs in g["edges"] if len(fs) == 2)
-                             if (ta := _tag(a)) in surfaces and (tb := _tag(b)) in surfaces
+                             for ta in tags_of(a) for tb in tags_of(b)
                              for c in _shared_curves(gmsh, ta, tb)})
             if not curves:
                 continue
@@ -139,7 +159,9 @@ def size_fields(gmsh, plan: dict, surfaces: set[int]) -> int | None:
             gmsh.model.mesh.field.setNumber(dist, "Sampling", SAMPLING_MAX)
             dists.append(dist)
         else:
-            tags = [t for f in g["faces"] if (t := _tag(f)) in surfaces]
+            tags = [t for f in g["faces"] for t in tags_of(f)]
+            if face_tags is not None:
+                tags = list(dict.fromkeys(tags))      # a face two parts share is one surface
             if not tags:
                 continue
             for part, n in sampled_parts(gmsh, tags, size):
@@ -234,6 +256,84 @@ def _peak_rss_mb() -> float | None:
     return None
 
 
+#: A staged face or solid is the sidecar's when its area (volume) agrees to this share and its centre
+#: to this share of the model's size.
+_SAME_SIZE, _SAME_PLACE = 1e-6, 1e-6
+
+
+def staged_tags(gmsh, sidecar: dict) -> tuple[dict[int, int], dict[int, int]]:
+    """gmsh's tag of each sidecar surface and volume (index, 0-based). gmsh numbers the faces and
+    solids of a B-rep it reads in OpenCASCADE's MapShapes order - the sidecar's - and every one is
+    checked by its area (volume) and centre; should the order not hold, each is tied to the nearest
+    by both, and said."""
+    import numpy as np
+
+    x0, y0, z0, x1, y1, z1 = gmsh.model.getBoundingBox(-1, -1)
+    diag = math.dist((x0, y0, z0), (x1, y1, z1)) or 1.0
+
+    def tie(dim: int, rows: list[dict], key: str, among=None) -> dict[int, int]:
+        tags = sorted(t for _d, t in gmsh.model.getEntities(dim))
+        got = {t: (float(gmsh.model.occ.getMass(dim, t)), np.asarray(gmsh.model.occ.getCenterOfMass(dim, t)))
+               for t in tags}
+
+        def gap(t: int, row: dict) -> float:
+            m, c = got[t]
+            want = float(row.get(key) or 0.0)
+            return (abs(m - want) / max(abs(want), 1e-300)
+                    + float(np.linalg.norm(c - np.asarray(row.get("centroid_m") or [0, 0, 0], dtype=float))) / diag)
+
+        if len(tags) == len(rows) and all(gap(tags[k], r) <= _SAME_SIZE + _SAME_PLACE for k, r in enumerate(rows)):
+            return {k: tags[k] for k in range(len(rows))}
+        print(f"[GMSH-FEA] the staged assembly's {'faces' if dim == 2 else 'solids'} are not in the sidecar's "
+              "order - tied by size and place", file=sys.stderr)
+        # ONE TO ONE, closest first, each among the entities of its own parts (two parts' faces where
+        # they touch have the same size and place: only the part tells them apart)
+        cands = sorted((gap(t, r), k, t) for k, r in enumerate(rows)
+                       for t in (among(r) if among else tags) if t in got)
+        out: dict[int, int] = {}
+        used: set[int] = set()
+        for _g, k, t in cands:
+            if k not in out and t not in used:
+                out[k] = t
+                used.add(t)
+        return out
+
+    vols = sidecar.get("volumes") or []
+    volume_tag = tie(3, vols, "volume_m3")
+    owned: dict[int, set[int]] = {}
+    for k, row in enumerate(vols):
+        if k in volume_tag:
+            bound = {abs(int(t)) for _d, t in gmsh.model.getBoundary([(3, volume_tag[k])], oriented=False)}
+            for p in row.get("parts") or []:
+                owned.setdefault(int(p), set()).update(bound)
+
+    def own_faces(row: dict) -> set[int]:
+        parts = set()
+        for nm in row.get("names") or []:
+            try:
+                parts.add(int(str(nm).split("_")[1]))
+            except (IndexError, ValueError):
+                pass
+        return set().union(*(owned.get(p, set()) for p in parts)) if parts else set()
+
+    return tie(2, sidecar.get("surfaces") or [], "area_m2", among=own_faces), volume_tag
+
+
+def assembly_summary(asm: dict, sidecar: dict, prep) -> dict:
+    """What the delivery says of an assembly: how the parts are joined, each part with its element
+    count, every joint as written, and the notes."""
+    return {"connection": asm.get("connection"), "mode": sidecar.get("mode"),
+            "parts": [{"id": p["id"], "name": p["name"], "elements": p["last"] - p["first"] + 1} for p in prep.parts],
+            "joints": [{"name": j.name, "kind": j.kind, "parts": [f"Part_{j.parts[0]}", f"Part_{j.parts[1]}"],
+                        "slave": j.sides[0].name, "master": j.sides[1].name, "overlap": j.overlap}
+                       for j in prep.joints],
+            # a part with no elements of its own: wholly inside another, so fused with it (bonded)
+            "absorbed": [p["id"] for p in sidecar.get("parts") or []
+                         if p["id"] not in {q["id"] for q in prep.parts}],
+            "interfaces": len(sidecar.get("interfaces") or []),
+            "faces": len(prep.faces), "notes": list(sidecar.get("notes") or [])}
+
+
 def mesh(workspace) -> int:
     """Mesh the staged solid by the plan. Exit codes as the driver's: 0 a valid mesh, 2 no
     geometry, 3 no solid, 4 fatal defects."""
@@ -245,6 +345,17 @@ def mesh(workspace) -> int:
     plan = json.loads((ws / PLAN_FILE).read_text())
     # PLAN-fea-15: the staged solid the plan was measured on (gmsh's own B-rep first)
     geom = next((ws / n for n in STAGED_SOLIDS if (ws / n).exists()), ws / "geometry.step")
+    # AN ASSEMBLY (PLAN-fea-17): the parts as the driver staged them - fused where they are bonded,
+    # side by side where they touch or are tied - and what each face and solid of that file is
+    asm = plan.get("assembly") or None
+    sidecar: dict = {}
+    if asm:
+        geom = ws / str(asm.get("staged") or "assembly.brep")
+        try:
+            sidecar = json.loads((ws / str(asm.get("sidecar") or "assembly.json")).read_text())
+        except (OSError, ValueError):
+            print("[GMSH-FEA] the assembly's sidecar is missing - an assembly needs it", file=sys.stderr)
+            return 2
     if not geom.exists():
         print(f"[GMSH-FEA] geometry.step missing in {ws}", file=sys.stderr)
         return 2
@@ -277,7 +388,24 @@ def mesh(workspace) -> int:
         gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
         gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
         gmsh.option.setNumber("Mesh.Algorithm3D", ALGORITHMS_3D.get(str(run.get("algorithm3d") or "delaunay"), 1))
-        bg = size_fields(gmsh, plan, surfaces)
+        face_tags: dict[str, list[int]] | None = None
+        surface_tag: dict[int, int] = {}
+        volume_tag: dict[int, int] = {}
+        if asm:
+            surface_tag, volume_tag = staged_tags(gmsh, sidecar)
+            face_tags = {}
+            for k, row in enumerate(sidecar.get("surfaces") or []):
+                for nm in row.get("names") or []:
+                    if k in surface_tag:
+                        face_tags.setdefault(str(nm), []).append(surface_tag[k])
+        part_volumes: dict[str, list[int]] | None = None
+        if asm:
+            part_volumes = {}
+            for k, row in enumerate(sidecar.get("volumes") or []):
+                for p in row.get("parts") or []:
+                    if k in volume_tag:
+                        part_volumes.setdefault(f"Part_{int(p)}", []).append(volume_tag[k])
+        bg = size_fields(gmsh, plan, surfaces, face_tags, part_volumes)
         if bg is not None:
             gmsh.model.mesh.field.setAsBackgroundMesh(bg)
         remesh = {int(s) for s in run.get("remesh_surfaces") or []}
@@ -331,7 +459,26 @@ def mesh(workspace) -> int:
             fatal.append("no volume elements generated")
         if min_all <= 0.0:
             fatal.append("degenerate elements (SICN <= 0)")
-        deck = D._write_deck(gmsh, ws, discrete=False)
+        assembly_out: dict = {}
+        exports: dict = {}
+        if asm:
+            # AN ASSEMBLY'S FILES (engines/fea_assembly_deck.py): every part its own set, every face
+            # Part_k_Face_j on its own part's side, and the joints - shared, contact or tied
+            from meshpipeline.contracts.mesh_units import COMPLETED_MESH_UNIT
+            from meshpipeline.engines import fea_assembly_deck as AD
+            from meshpipeline.engines.gmsh.abaqus_deck import from_gmsh
+
+            prep = AD.prepare(from_gmsh(gmsh, sorted(vols)), sidecar, surface_tag=surface_tag,
+                              volume_tag=volume_tag)
+            written = AD.write_all(ws, prep, units=COMPLETED_MESH_UNIT.value, source="Hexera gmsh engine",
+                                   connection=str(asm.get("connection") or "bonded"))
+            deck = written["deck"]
+            exports = {"nastran": written["nastran"], "ansys": written["ansys"]}
+            assembly_out = assembly_summary(asm, sidecar, prep)
+            # the viewer's clickable faces: each name and the mesh surfaces that carry it
+            assembly_out["face_tags"] = {k: sorted(set(v)) for k, v in (face_tags or {}).items()}
+        else:
+            deck = D._write_deck(gmsh, ws, discrete=False)
         gmsh.write(str(ws / "mesh.msh"))
         rules: dict = {}
         shape: dict = {}
@@ -340,7 +487,7 @@ def mesh(workspace) -> int:
             from meshpipeline.engines import fea_quality
             from meshpipeline.engines.gmsh.abaqus_deck import from_gmsh
             solid = from_gmsh(gmsh, sorted(vols))
-            rules = checks.measure(solid, plan)
+            rules = checks.measure(solid, plan, tags_by_name=face_tags)
             # THE ELEMENTS AS THE SOLVERS JUDGE THEM (engines/fea_quality.py): the gate refuses an
             # inverted element (VER-1); the verdict holds the rest to the production limits (VER-2),
             # the elements set aside at a cusp apart (PLAN-fea-10: reported on their own)
@@ -349,16 +496,16 @@ def mesh(workspace) -> int:
             print(f"[GMSH-FEA] plan rules or element quality not measured: {exc}", file=sys.stderr)
         # MESH ONCE, EXPORT MANY (design 8): the Nastran and Ansys files from the same mesh, with the
         # deck's numbers and face names; the user picks one at download
-        exports: dict = {}
-        try:
-            from meshpipeline.contracts.mesh_units import COMPLETED_MESH_UNIT
-            from meshpipeline.engines import fea_writers
-            if solid is None:
-                raise ValueError("no internal mesh was read")
-            exports = fea_writers.write_all(ws, solid, cad_names=deck.get("cad_face_names") or {},
-                                            units=COMPLETED_MESH_UNIT.value, source="Hexera gmsh engine")
-        except Exception as exc:  # noqa: BLE001 - the deck stands; a missing file is offered as missing
-            print(f"[GMSH-FEA] Nastran / Ansys files not written: {exc}", file=sys.stderr)
+        if not asm:                                    # an assembly's were written with its deck, above
+            try:
+                from meshpipeline.contracts.mesh_units import COMPLETED_MESH_UNIT
+                from meshpipeline.engines import fea_writers
+                if solid is None:
+                    raise ValueError("no internal mesh was read")
+                exports = fea_writers.write_all(ws, solid, cad_names=deck.get("cad_face_names") or {},
+                                                units=COMPLETED_MESH_UNIT.value, source="Hexera gmsh engine")
+            except Exception as exc:  # noqa: BLE001 - the deck stands; a missing file is offered as missing
+                print(f"[GMSH-FEA] Nastran / Ansys files not written: {exc}", file=sys.stderr)
         if shape.get("fea_inverted"):
             fatal.append(f"{shape['fea_inverted']} inverted element(s) (Jacobian not above zero)")
         tw = (rules.get("through_wall") or {}).get("min")
@@ -395,7 +542,9 @@ def mesh(workspace) -> int:
                     **({"coarsened": plan["coarsened"],
                         "resolution_short": list(plan.get("resolution_short") or [])}
                        if plan.get("coarsened") else {}),
-                    "through_wall_min": tw, "rules": rules, "quality": shape, "exports": exports},
+                    "through_wall_min": tw, "rules": rules, "quality": shape, "exports": exports,
+                    # PLAN-fea-17: the parts, how they are joined, and every joint as written
+                    **({"assembly": assembly_out} if asm else {})},
         }, indent=1))
         print(f"[GMSH-FEA] elements={n_elem} (planned ~{(plan.get('estimate') or {}).get('elements')}) "
               f"nodes={n_nodes} order={order} min_sicn={min_sicn:.3f} through_wall_min={tw} "

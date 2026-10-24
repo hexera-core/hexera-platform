@@ -2,7 +2,9 @@
 // many bodies the file has and what the clean check found, and the one question "Is this your part
 // and are the units right?" - and read the answer back out of it. Below them, what the measurement
 // found (FEA build step 3): the thinnest wall and the hot spots the mesh will be refined at, shown
-// only (version 1 refines them all automatically; nothing here edits them).
+// only (version 1 refines them all automatically; nothing here edits them). For an ASSEMBLY (a file
+// of several bodies): its parts, where they touch or pass into each other (marked on the part), and
+// its one question, "How are the parts connected?" - bonded (the default) or contact.
 // Boundaries: markup and a reading of it. No fluid, no openings, no flow axis and no stickers: an
 // FEA part is meshed as itself. It fetches nothing and starts no run; the stage and the card both
 // use it, and confirming is the callback they were handed.
@@ -33,8 +35,71 @@ function bodiesHtml(f) {
   // said as such, so the two lines never disagree
   if (n === 1 && f.pieces > 1) return `1 solid, made of ${f.pieces} pieces that pass into each other`;
   if (n === 1) return "1 (a single part)";
-  if (n > 1) return `${n} separate bodies`;
+  if (n > 1) return `${n} (an assembly: the parts are meshed together)`;
   return "not counted";
+}
+
+/** An assembly's interfaces as marks on the part, in the hot spots' shape: one per place two parts
+ *  touch (or pass into each other), tagged I1, I2, ... */
+export function interfaceMarks(a) {
+  return ((a && a.interfaces) || []).filter((i) => i.at_mm && i.at_mm.length === 3).map((i) => ({
+    id: String(i.id || "").replace("Interface_", "I"), type: "interface_" + (i.kind || "touching"),
+    shape: i.kind === "overlap" ? "parts overlap" : "parts touch", at_mm: i.at_mm }));
+}
+
+function partLabel(p) {
+  return `<b>${esc(p.id)}</b>${p.name ? ` · ${esc(p.name)}` : ""}`;
+}
+
+/** What an assembly view shows, in one string: a later view that says more is drawn again. */
+const assemblySig = (a) => `${(a.parts || []).length}/${(a.interfaces || []).length}/${(a.notes || []).length}`;
+
+/** AN ASSEMBLY MEASURED AFTER THE PANEL WAS DRAWN (the stage opened while the check was still
+ *  measuring): its parts and interfaces are drawn in place, the answer already picked kept. True
+ *  when they changed. */
+export function followAssembly(root, a) {
+  if (!a) return false;
+  const box = root.querySelector(".fea-assembly");
+  if (box && box.dataset.sig === assemblySig(a)) return false;
+  const picked = root.querySelector('input[name="fea-connection"]:checked');
+  const html = assemblyHtml(a);
+  if (box) box.outerHTML = html;
+  else {
+    const after = root.querySelector(".fea-measure");
+    if (!after) return false;
+    after.insertAdjacentHTML("afterend", html);
+  }
+  if (picked) {
+    const again = root.querySelector(`input[name="fea-connection"][value="${picked.value}"]`);
+    if (again) again.checked = true;
+  }
+  return true;
+}
+
+/** An assembly's parts, its interfaces and its one question (bonded the default). `a` is the
+ *  server's `fea.assembly`; nothing for a single part. */
+export function assemblyHtml(a) {
+  if (!a) return "";
+  const parts = (a.parts || []).map((p) => `<li class="fea-part-row" data-part="${esc(p.id)}">${partLabel(p)}</li>`).join("");
+  const rows = (a.interfaces || []).map((i) => {
+    const tag = String(i.id || "").replace("Interface_", "I");
+    const what = i.kind === "overlap"
+      ? `pass into each other (${esc(String(Math.round(100 * (i.overlap_share || 0))))}% of the smaller part)`
+      : "touch";
+    return `<li class="fea-spot-row fea-itf-row ${esc(i.kind || "touching")}" data-spot="${esc(tag)}"><span class="fea-spot-id">${esc(tag)}</span><span>${esc((i.parts || []).join(" and "))} ${what}</span></li>`;
+  }).join("");
+  const free = (a.free_parts || []).length
+    ? `<div class="gc-note">${esc(a.free_parts.join(", "))}: touches no other part.</div>` : "";
+  const opts = (a.options || []).map((o) => `<label class="fea-conn-opt"><input type="radio" name="fea-connection" value="${esc(o.key)}"${o.key === (a.default || "bonded") ? " checked" : ""}> <b>${esc(o.label)}</b> <span class="fea-conn-words">${esc(o.words)}</span></label>`).join("");
+  return `<div class="fea-assembly" data-sig="${esc(assemblySig(a))}">
+      <div class="rc-row"><div class="rc-k">Parts</div><div class="rc-v fea-parts-sum">${esc(a.summary || "")}</div></div>
+      <ul class="fea-parts" aria-label="The parts of the assembly">${parts}</ul>
+      ${rows ? `<ul class="fea-spots fea-itfs" aria-label="Where the parts touch">${rows}</ul>` : `<div class="gc-note">No place where two parts touch was found.</div>`}
+      ${free}${a.overlap_note ? `<div class="gc-note">${esc(a.overlap_note)}</div>` : ""}
+      <p class="fea-q fea-conn-q">${esc(a.question || "How are the parts connected?")}</p>
+      <div class="fea-conn" role="radiogroup" aria-label="${esc(a.question || "How are the parts connected?")}">${opts}</div>
+      <div class="gc-note">One answer for every joint for now; each face is still named, so you can change any joint in your solver.</div>
+    </div>`;
 }
 
 function cleanHtml(f) {
@@ -153,7 +218,7 @@ export function feaPanelHtml(f, p) {
     ? `<div class="gc-note">The part can still go ahead: the mesh is made from the file as it is.</div>` : "";
   return `<div class="v-row v-titlerow"><b class="v-title">Your part</b><span class="v-meta">for structural analysis (FEA)</span></div>
     <div class="gc-lead">${p.part ? `<div class="gc-part"><b>${esc(p.part)}</b></div>` : ""}
-      <p>The part is meshed as itself, as a solid. Every face is kept as a named group, so you set the supports and loads in your own solver.</p></div>
+      <p>${f.assembly ? "The parts are meshed as solids, together. Every face of every part is kept as a named group (Part_k_Face_j), so you set the supports, loads and materials in your own solver." : "The part is meshed as itself, as a solid. Every face is kept as a named group, so you set the supports and loads in your own solver."}</p></div>
     <div class="gc-form fea-form">
       <div class="rc-row"><div class="rc-k">Size</div><div class="rc-v fea-size">${sizeHtml(p)}</div></div>
       <div class="rc-row"><div class="rc-k">The file's unit</div><div class="rc-v">${unitBoxHtml(p)}</div></div>
@@ -161,6 +226,7 @@ export function feaPanelHtml(f, p) {
       <div class="rc-row"><div class="rc-k">Clean check</div><div class="rc-v">${cleanHtml(f)}</div></div>
       ${why}
       ${measureHtml(f.measure, p)}
+      ${assemblyHtml(f.assembly)}
       ${blocked ? `<div class="fea-blocked" role="alert">${esc(blocked)}</div>` : ""}
       <div class="gc-tools"><button class="gc-measure v-btn" type="button" title="measure between two points on the part">Measure</button><span class="gc-tools-hint">click two points to check a length</span></div>
       <p class="fea-q">${esc(f.question || "Is this your part and are the units right?")}</p>
@@ -174,6 +240,8 @@ export function feaPanelHtml(f, p) {
 export function readFeaForm(root, p) {
   const body = { part: p.part || "", size_mm: p.size_mm || null, unit: unitOf(p),
                  scale_to_m: p.scale_to_m == null ? null : Number(p.scale_to_m) };
+  const conn = root.querySelector ? root.querySelector('input[name="fea-connection"]:checked') : null;
+  if (conn) body.fea_connection = conn.value;
   const upSel = root.closest ? root.closest(".gc-stage")?.querySelector(".v-up select") : null;
   const up = (upSel && upSel.value) || p.up_axis;
   if (up) body.up_axis = up;

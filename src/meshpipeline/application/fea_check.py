@@ -1,20 +1,26 @@
 # Responsibility: Say what the FEA stage shows for a part - its size, its unit, how many bodies the
-# file has and what the clean check found - and whether version 1 can take it (one part only).
-# Also say which stage a session's check opens on, from what the user said the mesh is for.
+# file has and what the clean check found - and, for an assembly, its parts, where they touch or
+# pass into each other, and the one question how they are connected. Also say which stage a
+# session's check opens on, from what the user said the mesh is for.
 # Boundaries: pure over the stored check's facts and the conversation; it stores nothing and
 # meshes nothing. The unit box and its suggestion stay the generic check's (api/v1/geometry).
 # It also serves what the measurement found (cad/fea_measure, FEA build step 3) - the thinnest wall
 # and the stress hot spots - for the stage to show, and re-reads that record in a confirmed unit.
 # Collaborates with: application/purpose_map.py (the route), api/v1/geometry.py (serves the view,
-# refuses a multi-body confirmation), ui/js/render/fea_form.js (draws it), cad/fea_measure.py (the
-# record), application/geometry_check.py (measures and stores it).
+# takes the connection answer), ui/js/render/fea_form.js (draws it), cad/fea_measure.py and
+# cad/fea_assembly.py (the record), application/geometry_check.py (measures and stores it),
+# application/pipeline_run.py (reads the stored answer into the run).
 from __future__ import annotations
 
-#: What a file of several bodies is told, in plain words (design 3.6). {n} is the body count.
-MULTI_BODY = ("This file has {n} separate bodies. Version 1 meshes one part at a time: export each "
-              "part on its own and upload it, or wait for assembly support.")
 #: The question the stage asks (design 3.1, Areen's words).
 QUESTION = "Is this your part and are the units right?"
+#: An assembly's one question (design 14), and its answers: bonded is the default.
+CONNECTION_QUESTION = "How are the parts connected?"
+CONNECTION_OPTIONS = (
+    {"key": "bonded", "label": "Bonded", "words": "welded or glued: the parts move as one where they touch"},
+    {"key": "contact", "label": "Contact", "words": "they can slide or separate where they touch"},
+)
+DEFAULT_CONNECTION = "bonded"
 #: The check modes a stage opens in. "thermal" is the ECXML model's own (contracts/intake_formats).
 STAGE_FLOW, STAGE_FEA, STAGE_THERMAL = "flow", "fea", "thermal"
 
@@ -67,12 +73,6 @@ def clean_words(facts: dict | None) -> tuple[bool | None, str]:
     return False, summary or "The geometry is not clean."
 
 
-def multi_body_message(facts: dict | None) -> str:
-    """The plain message for a file of several bodies, "" for one (or an unknown count)."""
-    n = body_count(facts)
-    return MULTI_BODY.format(n=n) if n is not None and n > 1 else ""
-
-
 #: NOT A CLOSED SOLID (Areen's Camaro STL, 2026-10-23: a car body of 395 open, overlapping surface
 #: pieces was told "395 separate bodies - export each part on its own"). Version 1 meshes a closed
 #: solid; what the clean check found that rules one out, in plain words, worst first. Every mesh
@@ -82,7 +82,6 @@ NOT_SOLID_REASONS = (
     ("open_boundary", "its surface has open edges - holes in the skin"),
     ("zero_volume", "it encloses no volume"),
     ("flat", "it is flat"),
-    ("self_intersection", "the surface passes through itself"),
     ("bodies_overlap", "separate pieces of it pass into each other"),
     ("non_manifold_edges", "some edges join more than two faces"),
     ("non_manifold_vertices", "some surfaces touch only at a point"),
@@ -93,7 +92,6 @@ NOT_SOLID = ("This is a surface, not a closed solid: {why}. FEA version 1 meshes
 WAY_OUT_SOLID = ("To go on, upload the part as one closed solid (a STEP from your CAD, or a watertight "
                  "STL). If you meant a fluid flowing around or through it (CFD), upload it again and "
                  "say so.")
-WAY_OUT_BODIES = "To go on, upload a single part."
 _BREP_FORMATS = ("step", "stp", "iges", "igs", "brep")
 
 
@@ -103,9 +101,13 @@ def not_solid_message(facts: dict | None) -> str:
     v = f.get("validity") or {}
     errors = {str(r.get("code")) for r in v.get("reasons") or []
               if isinstance(r, dict) and str(r.get("severity") or "error") == "error"}
-    said = [words for code, words in NOT_SOLID_REASONS if code in errors]
     n = body_count(f)
     brep = str(f.get("source_format") or "").lower() in _BREP_FORMATS and v.get("kind") != "triangles"
+    if brep and n is not None and n > 1:
+        # CLOSED SOLIDS PASSING INTO EACH OTHER are an assembly's interference: a meshing choice
+        # (bonded: one piece there; contact: a pair), never a reason to stop (design 14)
+        errors.discard("bodies_overlap")
+    said = [words for code, words in NOT_SOLID_REASONS if code in errors]
     if brep and n == 0 and not said:
         said = ["the file holds faces but no solid"]
     if not said:
@@ -116,26 +118,187 @@ def not_solid_message(facts: dict | None) -> str:
     return NOT_SOLID.format(why=why)
 
 
+#: A BODY THAT CROSSES ITSELF is a CAD defect (Areen, 23 Oct): found, named and stopped at the stage,
+#: never healed here - the CAD repair stage owns healing.
+SELF_OVERLAP = "{who} overlaps itself – it needs CAD repair before it can be meshed."
+WAY_OUT_REPAIR = "Fix it in your CAD and upload it again."
+WAY_OUT_REPAIR_PART = "Fix it in your CAD and upload it again, or remove that part and upload the rest."
+
+
+def _part_label(pid: str, name: str) -> str:
+    return f"Part {name} ({pid})" if name else pid
+
+
+def self_overlap_message(facts: dict | None) -> tuple[str, str]:
+    """(the plain message, the way on) for a body whose surface passes through itself - ("", "") when
+    none does. An assembly's part is named (its CAD name and Part_k); a single part is "This part"."""
+    from meshpipeline.cad.fea_assembly import FACT_KEY as ASM_KEY
+    from meshpipeline.cad.fea_measure import FACT_KEY
+
+    f = facts or {}
+    v = f.get("validity") or {}
+    hit = next((r for r in v.get("reasons") or [] if isinstance(r, dict)
+                and str(r.get("code")) == "self_intersection" and str(r.get("severity") or "error") == "error"),
+               None)
+    if hit is None:
+        return "", ""
+    n = body_count(f)
+    if n is None or n <= 1:
+        return SELF_OVERLAP.format(who="This part"), WAY_OUT_REPAIR
+    measured = f.get(FACT_KEY)
+    rec = measured.get(ASM_KEY) if isinstance(measured, dict) else None
+    names = {str(p.get("id")): str(p.get("name") or "") for p in (rec or {}).get("parts") or []
+             if isinstance(p, dict)}
+    bodies = [int(b) for b in ((hit.get("details") or {}).get("bodies") or []) if 1 <= int(b) <= n]
+    if not bodies:
+        return SELF_OVERLAP.format(who="A part"), WAY_OUT_REPAIR_PART
+    said = [SELF_OVERLAP.format(who=_part_label(f"Part_{b}", names.get(f"Part_{b}", ""))) for b in bodies[:3]]
+    if len(bodies) > 3:
+        said.append(f"So do {len(bodies) - 3} more part(s).")
+    return " ".join(said), WAY_OUT_REPAIR_PART
+
+
+#: A SURFACE THAT FOLDS BACK ON ITSELF (cad/fold_back.py; car_vs_pole, 24 Oct): two faces lying on each
+#: other along an edge - a knife edge of almost no angle or a crack of almost no width - which no mesher
+#: can fill. A CAD defect like a self-overlap: found, named and stopped at the stage, never healed here.
+FOLD_BACK = ("{who} has a paper-thin fold: {faces} lie on top of each other along an edge {length} long. "
+             "It needs CAD repair before it can be meshed.")
+
+
+def _length_words(mm: float) -> str:
+    return f"{mm / 1000.0:.2g} m" if mm >= 1000.0 else f"{mm:.3g} mm"
+
+
+def fold_back_message(facts: dict | None) -> tuple[str, str]:
+    """(the plain message, the way on) for a part whose surface folds back on itself - ("", "") when
+    none does. The longest fold is named, with its part (an assembly's) and its two faces."""
+    from meshpipeline.cad.fea_assembly import FACT_KEY as ASM_KEY
+    from meshpipeline.cad.fea_measure import FACT_KEY
+
+    measured = (facts or {}).get(FACT_KEY)
+    folds = [f for f in (measured or {}).get("fold_back") or [] if isinstance(f, dict)] \
+        if isinstance(measured, dict) else []
+    if not folds:
+        return "", ""
+    worst = max(folds, key=lambda f: float(f.get("length_mm") or 0.0))
+    faces = " and ".join(str(x) for x in worst.get("faces") or []) or "two faces"
+    length = _length_words(float(worst.get("length_mm") or 0.0))
+    n = body_count(facts)
+    if n is None or n <= 1:
+        return FOLD_BACK.format(who="This part", faces=faces, length=length), WAY_OUT_REPAIR
+    rec = measured.get(ASM_KEY) if isinstance(measured, dict) else None
+    names = {str(p.get("id")): str(p.get("name") or "") for p in (rec or {}).get("parts") or []
+             if isinstance(p, dict)}
+    pid = f"Part_{int(worst.get('body') or 0)}"
+    who = _part_label(pid, names.get(pid, "")) if worst.get("body") else "A part"
+    parts = sorted({int(f.get("body") or 0) for f in folds})
+    more = f" Folds are found in {len(parts)} parts." if len(parts) > 1 else ""
+    return FOLD_BACK.format(who=who, faces=faces, length=length) + more, WAY_OUT_REPAIR_PART
+
+
 def blocker(facts: dict | None) -> tuple[str, str, str]:
-    """(what stops version 1, its kind - "surface" | "bodies" | "", the way on) for the stage and
-    the confirmation alike. Not a closed solid is said first: it is the more basic of the two."""
+    """(what stops version 1, its kind - "surface" | "self_overlap" | "", the way on) for the stage
+    and the confirmation alike. Several bodies are no stop: an assembly is meshed (design 14); a body
+    that crosses itself is (it needs CAD repair; detected only, never healed)."""
     surface = not_solid_message(facts)
     if surface:
         return surface, "surface", WAY_OUT_SOLID
-    bodies = multi_body_message(facts)
-    if bodies:
-        return bodies, "bodies", WAY_OUT_BODIES
+    crossed, way = self_overlap_message(facts)
+    if crossed:
+        return crossed, "self_overlap", way
+    folded, way = fold_back_message(facts)
+    if folded:
+        return folded, "fold_back", way
     return "", "", ""
 
 
 def fea_view(facts: dict | None) -> dict:
-    """What the FEA stage shows beside the part (the size and unit come with the proposal)."""
+    """What the FEA stage shows beside the part (the size and unit come with the proposal); for an
+    assembly also its parts, their interfaces and the connection question."""
     clean, said = clean_words(facts)
     blocked, kind, way_out = blocker(facts)
-    return {"question": QUESTION, "bodies": body_count(facts), "pieces": piece_count(facts),
-            "clean": clean, "clean_summary": said,
-            "single_part_only": blocked, "blocked_kind": kind, "way_out": way_out,
-            "can_proceed": not blocked, "measure": measure_view(facts)}
+    out = {"question": QUESTION, "bodies": body_count(facts), "pieces": piece_count(facts),
+           "clean": clean, "clean_summary": said, "single_part_only": blocked, "blocked_kind": kind, "way_out": way_out,
+           "can_proceed": not blocked, "measure": measure_view(facts)}
+    # several closed solids: an assembly, with its one question (a surface that is no solid stops first)
+    asm = None if blocked else assembly_view(facts)
+    if asm is not None:
+        out["assembly"] = asm
+    return out
+
+
+def assembly_view(facts: dict | None) -> dict | None:
+    """An assembly as the stage shows it: its parts (Part_k and the CAD's name), the interfaces the
+    measurement found - where parts touch (contact candidates) and where they pass into each other
+    (interference) - each with a place to mark, and the one question, bonded the default. None for
+    a single part. A file of several bodies not measured yet still gets the question, with no
+    interfaces to show."""
+    from meshpipeline.cad.fea_assembly import FACT_KEY as ASM_KEY
+    from meshpipeline.cad.fea_measure import FACT_KEY
+
+    n = body_count(facts)
+    measured = (facts or {}).get(FACT_KEY)
+    rec = measured.get(ASM_KEY) if isinstance(measured, dict) else None
+    if not isinstance(rec, dict) and not (n is not None and n > 1):
+        return None
+    rec = rec if isinstance(rec, dict) else {}
+    parts = [{"id": p.get("id"), "name": p.get("name") or "", "faces": p.get("faces"),
+              "centroid_mm": p.get("centroid_mm"), "box_mm": p.get("box_mm")} for p in rec.get("parts") or []]
+    interfaces = [{"id": i.get("id"), "kind": i.get("kind"), "parts": list(i.get("parts") or []),
+                   "at_mm": i.get("at_mm"), "area_mm2": i.get("area_mm2"), "overlap_share": i.get("overlap_share"),
+                   "faces": i.get("faces") or {}} for i in rec.get("interfaces") or []]
+    touching = sum(1 for i in interfaces if i["kind"] == "touching")
+    over = sum(1 for i in interfaces if i["kind"] == "overlap")
+    words = [f"{len(parts) or n} parts"]
+    if touching:
+        words.append(f"{touching} place{'s' if touching != 1 else ''} where parts touch")
+    if over:
+        words.append(f"{over} where parts pass into each other")
+    return {"parts": parts, "interfaces": interfaces, "free_parts": list(rec.get("free_parts") or []),
+            "notes": list(rec.get("notes") or []), "summary": ", ".join(words),
+            "question": CONNECTION_QUESTION, "options": [dict(o) for o in CONNECTION_OPTIONS],
+            "default": DEFAULT_CONNECTION,
+            "overlap_note": ("Where parts pass into each other, a bonded mesh makes them one piece of material "
+                             "there; with contact, the solver starts with them overlapping." if over else "")}
+
+
+def parts_words(asm: dict | None) -> str:
+    """An assembly's parts in one plain line for the declaration: "3 parts: Part_1 (Valve body),
+    Part_2 and Part_3"."""
+    parts = list((asm or {}).get("parts") or [])
+    if not parts:
+        return ""
+    named = [f"{p['id']} ({p['name']})" if p.get("name") else str(p.get("id")) for p in parts[:12]]
+    more = f" and {len(parts) - 12} more" if len(parts) > 12 else ""
+    if more or len(named) == 1:
+        shown = ", ".join(named)
+    else:
+        shown = ", ".join(named[:-1]) + " and " + named[-1]
+    return f"{len(parts)} parts: {shown}{more}"
+
+
+def connection_answer(value: str | None) -> str:
+    """The connection the stage sent, checked: bonded or contact ("" for anything else)."""
+    v = str(value or "").strip().lower()
+    return v if v in {o["key"] for o in CONNECTION_OPTIONS} else ""
+
+
+def confirmed_connection(session_id: str) -> str:
+    """How the parts of the session's FEA assembly are joined, as confirmed on the stage (the stored
+    confirmation's fea_connection): "bonded" or "contact"; "" when nothing says (a single part, no
+    confirmation, a store that cannot be read - the driver then bonds them, the default)."""
+    import json
+
+    if not session_id:
+        return ""
+    from meshpipeline.application.geometry_check import check_object_key
+    from meshpipeline.contracts.object_storage import get_object_store
+
+    try:
+        record = json.loads(get_object_store().get_bytes(object_key=check_object_key(session_id, "confirmed.json")))
+    except Exception:  # noqa: BLE001 - unknown, never a refusal
+        return ""
+    return connection_answer(record.get("fea_connection")) if isinstance(record, dict) else ""
 
 
 #: The stage is sent EVERY hot spot the record holds (all of them, up to cad/fea_features.
@@ -200,7 +363,7 @@ def in_unit(record: dict | None, scale_to_m: float | None) -> dict | None:
     return out
 
 
-__all__ = ["MULTI_BODY", "QUESTION", "SHOWN_HOT_SPOTS", "STAGE_FEA", "STAGE_FLOW", "STAGE_THERMAL",
-           "body_count", "clean_words", "fea_view", "hot_spot_words", "in_unit", "measure_view",
-           "multi_body_message", "stage_route", "NOT_SOLID", "NOT_SOLID_REASONS", "WAY_OUT_BODIES",
-           "WAY_OUT_SOLID", "blocker", "not_solid_message"]
+__all__ = ["FOLD_BACK", "fold_back_message", "SELF_OVERLAP", "WAY_OUT_REPAIR", "WAY_OUT_REPAIR_PART", "self_overlap_message", "CONNECTION_OPTIONS", "CONNECTION_QUESTION", "DEFAULT_CONNECTION", "NOT_SOLID", "NOT_SOLID_REASONS",
+           "QUESTION", "SHOWN_HOT_SPOTS", "STAGE_FEA", "STAGE_FLOW", "STAGE_THERMAL", "WAY_OUT_SOLID", "assembly_view",
+           "blocker", "body_count", "clean_words", "confirmed_connection", "connection_answer", "fea_view",
+           "hot_spot_words", "in_unit", "measure_view", "not_solid_message", "parts_words", "stage_route"]

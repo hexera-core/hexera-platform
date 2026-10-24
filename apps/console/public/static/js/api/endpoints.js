@@ -38,6 +38,20 @@ export async function uploadGeometry(file, { onProgress } = {}) {
   return r.json();
 }
 
+/* SEVERAL FILES OF ONE ASSEMBLY (each a CAD solid in the assembly's coordinates): one request, the
+   first as `file` and the rest as `parts`; the server joins them into one file of several bodies.
+   They travel in the request body, so together they stay under the direct upload's threshold. */
+export const ASSEMBLY_UPLOAD_MAX_BYTES = DIRECT_UPLOAD_FROM_BYTES;
+
+export async function uploadAssembly(files) {
+  const fd = new FormData();
+  files.forEach((f, i) => fd.append(i === 0 ? "file" : "parts", f));
+  const r = await apiFetch("/api/v1/upload/step-file",
+    { method: "POST", headers: formHeaders(), body: fd });
+  if (!r.ok) throw await readError(r);
+  return r.json();
+}
+
 export async function uploadGeometryDirect(file, { onProgress, makeRequest } = {}) {
   const r = await apiFetch("/api/v1/upload/direct", {
     method: "POST", headers: headers(),

@@ -2910,6 +2910,19 @@
   "roots": []
  },
  {
+  "context": "cad/ingest/assembly_files.py::_schema_family::search#1|NotAPublisher|not-a-publisher|",
+  "path": "cad/ingest/assembly_files.py",
+  "qualname": "_schema_family",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_SCHEMA",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "cad/ingest/sniff.py::sniff_bytes::search#1|NotAPublisher|not-a-publisher|",
   "path": "cad/ingest/sniff.py",
   "qualname": "sniff_bytes",
@@ -3523,6 +3536,32 @@
   "method": "search",
   "ordinal": 2,
   "receiver": "_PHRASE_RE[key]",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/fea_driver.py::prepare_assembly::stage#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/fea_driver.py",
+  "qualname": "prepare_assembly",
+  "semantic": "stage",
+  "method": "stage",
+  "ordinal": 1,
+  "receiver": "A",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/fea_driver.py::restage_tied::stage#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/fea_driver.py",
+  "qualname": "restage_tied",
+  "semantic": "stage",
+  "method": "stage",
+  "ordinal": 1,
+  "receiver": "A",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,

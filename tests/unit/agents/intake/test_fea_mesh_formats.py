@@ -137,8 +137,16 @@ def test_a_car_body_surface_is_told_it_is_not_a_solid_with_the_way_on():
     ({"solids": 0, "source_format": "step",
       "validity": {"clean": False, "kind": "brep", "reasons": [{"code": "open_shell", "severity": "error"}]}},
      "surface"),
-    # three clean solids: the multi-part message, as before
-    ({"solids": 3, "source_format": "step", "validity": {"clean": True, "kind": "brep", "reasons": []}}, "bodies"),
+    # three clean solids: an assembly, meshed - no stop (design 14)
+    ({"solids": 3, "source_format": "step", "validity": {"clean": True, "kind": "brep", "reasons": []}}, ""),
+    # three solids that pass into each other: interference between parts is a meshing choice - no stop
+    ({"solids": 3, "source_format": "step",
+      "validity": {"clean": False, "kind": "brep", "reasons": [{"code": "bodies_overlap", "severity": "error"}]}},
+     ""),
+    # a closed part whose surface passes through itself, from any format: it needs CAD repair
+    ({"solids": 1, "source_format": "stl",
+      "validity": {"clean": False, "kind": "triangles",
+                   "reasons": [{"code": "self_intersection", "severity": "error"}]}}, "self_overlap"),
     # one clean closed solid, from any format: nothing stops it
     ({"solids": 1, "source_format": "step", "validity": {"clean": True, "kind": "brep", "reasons": []}}, ""),
     ({"solids": 1, "source_format": "obj", "validity": {"clean": True, "kind": "triangles", "reasons": []}}, ""),

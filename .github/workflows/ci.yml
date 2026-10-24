@@ -270,7 +270,7 @@ jobs:
       - name: The table
         if: ${{ !cancelled() }}
         env:
-          EXPECTED: 7
+          EXPECTED: 9
         run: |
           set -euo pipefail
           python - <<'PY' >> "$GITHUB_STEP_SUMMARY"

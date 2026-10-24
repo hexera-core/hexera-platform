@@ -10,7 +10,9 @@
      "plan_words": [...], "hot_spots": [{id, shape, words, faces, at_m, capped, per_quarter_turn}],
      "faces": [{name, cad_name, kind, area_mm2, label}],
      "download": {"words", "contains": [...], "later": "..."},
-     "solvers": [{solver, label, file, element, tested, tested_words, outcome, words, rows, file_ready}]}
+     "solvers": [{solver, label, file, element, tested, tested_words, outcome, words, rows, file_ready}],
+     "assembly": {"connection", "words", "parts": [{id, name, elements}], "joints": [{name, kind, words}],
+                  "notes"}  (an assembly only)}
 """
 from __future__ import annotations
 
@@ -59,6 +61,56 @@ def _shape_words(h: Mapping) -> str:
     if h.get("angle_deg") is not None:
         return f"sharp {shape}, {float(h['angle_deg']):.0f} degrees" + (" (capped)" if h.get("capped") else "")
     return shape
+
+
+def _face_key(name: str) -> tuple:
+    """Face_2 before Face_10, Part_1_Face_9 before Part_2_Face_1."""
+    import re
+
+    return tuple(int(x) if x.isdigit() else x for x in re.split(r"(\d+)", str(name)))
+
+
+#: How an assembly's joints are said, by kind.
+JOINT_WORDS = {
+    "bonded": "bonded: one mesh, the parts share their nodes on {slave} / {master}",
+    "contact": "contact pair: {slave} (slave) on {master} (master)",
+    "tie": "tied: {slave} (slave) to {master} (master)",
+}
+
+
+def viewer_face_names(workspace) -> dict[int, str] | None:
+    """An assembly's mesh surfaces by name for the viewer (quality.json's fea.assembly.face_tags):
+    surface tag -> Part_k_Face_j, a face two parts share named by the lower-numbered part's (the
+    other side is inside the mesh); None for a single part."""
+    q = _read(Path(workspace) / "quality.json")
+    tags = ((q.get("fea") or {}).get("assembly") or {}).get("face_tags") or {}
+    if not tags:
+        return None
+    out: dict[int, str] = {}
+    for name in sorted(tags, key=_face_key):
+        for t in tags[name]:
+            out.setdefault(int(t), str(name))
+    return out
+
+
+def assembly_block(asm: Mapping) -> dict | None:
+    """An assembly's lines on the result screen: its parts with their element counts, how they are
+    joined and every joint as written (PLAN-fea-17); None for a single part."""
+    if not asm:
+        return None
+    mode = str(asm.get("mode") or "")
+    joints = [{"name": j.get("name"), "kind": j.get("kind"), "parts": j.get("parts"),
+               "words": JOINT_WORDS.get(str(j.get("kind")), "{slave} / {master}").format(
+                   slave=j.get("slave"), master=j.get("master"))
+               + (" - they start overlapping" if j.get("overlap") else "")} for j in asm.get("joints") or []]
+    words = {"bonded": "Bonded (welded or glued): one conformal mesh - the parts share their nodes where they touch.",
+             "contact": "Contact: each part meshed on its own, with a named contact pair wherever two parts touch.",
+             "tie": "Bonded, tied: each part meshed on its own and tied where they touch (the parts could not be "
+                    "fused into one mesh)."}.get(mode, "")
+    return {"connection": asm.get("connection"), "mode": mode, "words": words,
+            "parts": [{"id": p.get("id"), "name": p.get("name") or "", "elements": p.get("elements")}
+                      for p in asm.get("parts") or []],
+            "joints": joints, "absorbed": list(asm.get("absorbed") or []), "notes": list(asm.get("notes") or [])}
 
 
 #: Said on the result screen of an FEA mesh whose 3D view could not be built.
@@ -140,7 +192,7 @@ def results(workspace) -> dict | None:
     measured = {str(f.get("name")): f for f in plan.get("faces") or []}
     listed = list((deck.get("face_sets") or {}).keys()) or list(measured)
     faces = []
-    for n in sorted(listed, key=lambda s: (len(s), s)):
+    for n in sorted(listed, key=_face_key):
         f = measured.get(n) or {}
         cad = names.get(n) or names.get(n.rsplit("_", 1)[-1]) or ""
         faces.append({"name": n, "cad_name": cad, "kind": f.get("kind"), "area_mm2": f.get("area_mm2"),
@@ -149,9 +201,12 @@ def results(workspace) -> dict | None:
     # one authority for a delivered mesh's unit (contracts/mesh_units): every deck is written in it
     from meshpipeline.contracts.mesh_units import COMPLETED_MESH_UNIT
     mesh_units = COMPLETED_MESH_UNIT.value
-    return {
+    asm = assembly_block(fea.get("assembly") or {})
+    extra = {"assembly": asm} if asm else {}
+    return {**extra,
         "title": "FEA mesh",
         "summary": (f"{cells:,} quadratic tetrahedra (10-node), a solid mesh"
+                    + (f" of {len(asm['parts'])} parts" if asm else "")
                     + (f", {level} level" if level else "") + f"; {len(faces)} named faces."),
         "level": level,
         "units": {"mesh": mesh_units,
@@ -174,4 +229,4 @@ def results(workspace) -> dict | None:
     }
 
 
-__all__ = ["CONTAINS", "SAME_NUMBERS", "results"]
+__all__ = ["CONTAINS", "JOINT_WORDS", "SAME_NUMBERS", "assembly_block", "results", "viewer_face_names"]

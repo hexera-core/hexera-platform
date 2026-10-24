@@ -43,6 +43,22 @@ function spotRow(h) {
     + `<b>${esc(h.id)}</b> ${esc(h.words)}${short}<small>${esc((h.faces || []).join(", "))}</small></li>`;
 }
 
+/** An assembly's parts (with their element counts), how they are joined, and every joint. */
+function assemblyHtml(a) {
+  if (!a) return "";
+  const parts = (a.parts || []).map((p) => `<tr><td><b>${esc(p.id)}</b>${p.name ? ` · ${esc(p.name)}` : ""}</td>`
+    + `<td class="n">${esc((p.elements || 0).toLocaleString())}</td></tr>`).join("");
+  return `<div class="v-sec fe-asm">
+      <div class="v-sec-h">Parts <span class="tr-n">${(a.parts || []).length}</span></div>
+      <div class="tr-sum">${esc(a.words || "")}</div>
+      <div class="tr-wrap"><table class="tr-tab"><thead><tr><th>Part</th><th class="n">Elements</th></tr></thead>
+        <tbody>${parts}</tbody></table></div>
+      ${(a.joints || []).length ? `<ul class="tr-q">${a.joints.map((j) => `<li><b>${esc(j.name)}</b> ${esc(j.words)}</li>`).join("")}</ul>` : ""}
+      ${(a.notes || []).map((n) => `<div class="tr-hint">${esc(n)}</div>`).join("")}
+      <div class="tr-hint">Each part is its own element set: give each its material in your solver.</div>
+    </div>`;
+}
+
 /** The panel section for one delivered FEA mesh (`f` = the payload's `fea` block). */
 export function feaResultsHtml(job, f) {
   if (!f) return "";
@@ -58,6 +74,7 @@ export function feaResultsHtml(job, f) {
         <li><b>Units:</b> ${esc((f.units || {}).words || "")}</li>
       </ul>
     </div>
+    ${assemblyHtml(f.assembly)}
     <div class="v-sec fe-check">
       <div class="v-sec-h">Quality, against each limit</div>
       <div class="tr-wrap"><table class="tr-tab"><tbody>${(ck.rows || []).map(checkRow).join("")}</tbody></table></div>
@@ -105,6 +122,8 @@ export function feaDownloads(bar, job, f) {
         + (r.warn != null ? `; warns ${r.op === "<=" ? "over" : "under"} ${fmt(r.warn)}` : "")
         + (r.error != null ? `; fails ${r.op === "<=" ? "over" : "under"} ${fmt(r.error)}` : "")
         + ` (${r.source})`))))
+    .concat(f.assembly ? ["", "Parts:"].concat((f.assembly.parts || []).map((p) => `  ${p.id}${p.name ? ` (${p.name})` : ""}: ${p.elements} elements`),
+      [`  ${f.assembly.words || ""}`], (f.assembly.joints || []).map((j) => `  ${j.name}: ${j.words}`)) : [])
     .concat(["", "The plan:"], (f.plan_words || []).map((w) => `  - ${w}`))
     .concat(["", "Hot spots:"], (f.hot_spots || []).map((h) => `  ${h.id} ${h.words} (${(h.faces || []).join(", ")})`))
     .concat(["", "Named faces:"], (f.faces || []).map((x) => `  ${x.label}`));

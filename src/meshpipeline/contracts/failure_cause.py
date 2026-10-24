@@ -342,6 +342,15 @@ def _fea_quality(f: Mapping) -> tuple[str, str]:
                 "This comes from walls or gaps far thinner than the part is long: every one needs elements "
                 "through it. Thicken or remove the thinnest walls in your CAD, or split the part, and upload "
                 "it again - then say \"run it again\".")
+    if f.get("built_none"):
+        # NO PASS BUILT A MESH: the fill refused the surface meshes - most often two faces lying on
+        # top of each other (a paper-thin sliver or fold) that no element size can separate
+        return (f"The FEA mesher could not fill this part: in every pass the plan allows "
+                f"({int(_as_number(f.get('passes')) or 1)}) it stopped before making any element, because the "
+                "surface meshes of two faces lie on top of each other. The plan is fixed by the part, so another "
+                "run would stop the same way, and I stopped rather than spend the time.",
+                "This comes from a paper-thin sliver or fold in the CAD: two faces almost touching along an edge. "
+                "Remove or thicken that detail in your CAD and upload the part again - then say \"run it again\".")
     n = int(_as_number(f.get("under_floor")) or 0)
     where = f.get("worst_at_mm")
     at = (f" near ({', '.join(f'{float(v):g}' for v in where)}) mm" if isinstance(where, list) and len(where) == 3

@@ -452,6 +452,8 @@ STATE_FIELDS: dict[str, str] = {
     "geometry_unsuitable_reason": "node_geometry_admission's reject reason: the input surface is "
                                   "unmeshable for the engine (e.g. self-intersecting) - routes to "
                                   "the executor short-circuit and the outcome turn",
+    "fea_connection":        "how an FEA assembly's parts are joined - bonded or contact - as the user "
+                             "confirmed it on the stage (stored confirmation); '' for anything else",
     "flow_topology":         "internal/external flow regime DERIVED from the purpose - a neutral "
                              "fact read by the executor/runners, NOT an engine-native param",
     "requested_extents":     "typed per-direction far-field multiples the user stated (contract)",

@@ -10,7 +10,7 @@
  * Every listener is registered by `mountComposer`, called once by the entrypoint. Before, they
  * were registered at import time, so importing this file attached handlers.
  */
-import { confirmGeometryCheck, getGeometryCheck, retryGeometryCheck, sendMessage, uploadGeometry }
+import { ASSEMBLY_UPLOAD_MAX_BYTES, confirmGeometryCheck, getGeometryCheck, retryGeometryCheck, sendMessage, uploadAssembly, uploadGeometry }
   from "../api/endpoints.js";
 import { acceptAttribute, isOfferable, loadIntakeFormats, refusalCopy, supportedCopy }
   from "./intake_formats.js";
@@ -72,7 +72,16 @@ function autoResize(el) {
   el.style.height = Math.min(el.scrollHeight, MAX_INPUT_HEIGHT) + "px";
 }
 
-async function upload(file) {
+/** SEVERAL FILES AT ONCE are one assembly: each part in its own file, placed by its own coordinates.
+ *  One file goes the usual way. */
+function uploadFiles(list) {
+  const files = Array.from(list || []);
+  if (files.length > 1) return upload(files[0], files);
+  if (files.length === 1) return upload(files[0]);
+  return null;
+}
+
+async function upload(file, many) {
   // One geometry per session, whatever the route in. The button is gone after a successful
   // upload, but a drag-and-drop reaches here directly and would otherwise replace the file
   // the intake conversation was built on.
@@ -85,6 +94,13 @@ async function upload(file) {
   // the file is offered anyway and refused server-side if unsupported, so a degraded fetch
   // never becomes the security boundary.
   const intake = await loadIntakeFormats();
+  const bad = (many || [file]).find((f) => !isOfferable(f.name, intake));
+  if (bad) file = bad;
+  if (many && !bad && many.reduce((n, f) => n + f.size, 0) > ASSEMBLY_UPLOAD_MAX_BYTES) {
+    deps.notice.show("Several files go up together up to " + Math.round(ASSEMBLY_UPLOAD_MAX_BYTES / 1048576)
+      + " MB in all. For a bigger assembly, export it as one STEP file and upload that.", "error", { sticky: true });
+    return;
+  }
   if (!isOfferable(file.name, intake)) {
     // A native CAD file (a SolidWorks part, a Creo assembly...) is told which export to upload
     // instead, in the server's own words. It stays until dismissed or the next upload: the user
@@ -95,7 +111,8 @@ async function upload(file) {
   // The size limit is the server's to state: a file over it is refused before a byte is sent, in
   // words that say the limit and what to do instead.
   const btn = $("upload-btn"), lbl = $("file-label");
-  btn.disabled = true; btn.textContent = "Uploading…"; lbl.textContent = file.name;
+  btn.disabled = true; btn.textContent = "Uploading…";
+  lbl.textContent = many ? `${many.length} files (one assembly)` : file.name;
   // A large file travels straight to storage and can take minutes, so the button counts it up,
   // then says what happens while the server reads it back.
   const progress = (p) => {
@@ -106,7 +123,7 @@ async function upload(file) {
     }
   };
   try {
-    const d = await uploadGeometry(file, { onProgress: progress });
+    const d = many ? await uploadAssembly(many) : await uploadGeometry(file, { onProgress: progress });
     setState.sessionId(d.session_id);
     lbl.textContent = d.step_filename; lbl.className = "ready";
     // The geometry a session was opened on is FINAL: the intake conversation, the admission
@@ -364,9 +381,10 @@ export function mountComposer() {
     // the sentence a user reads can never name different formats.
     if (intake) deps.supportedCopy(supportedCopy(intake));
   });
+  // several files picked together are one assembly (each part its own file)
+  $("step-file-input").multiple = true;
   $("step-file-input").addEventListener("change", function () {
-    const f = this.files[0];
-    if (f) upload(f);
+    uploadFiles(this.files);
   });
   $("upload-btn").addEventListener("click", () => $("step-file-input").click());
 
@@ -378,8 +396,7 @@ export function mountComposer() {
   });
   document.body.addEventListener("drop", (e) => {
     e.preventDefault(); document.body.classList.remove("dragover");
-    const f = e.dataTransfer.files[0];
-    if (f) upload(f);
+    uploadFiles(e.dataTransfer.files);
   });
 
   $("send-btn").addEventListener("click", send);

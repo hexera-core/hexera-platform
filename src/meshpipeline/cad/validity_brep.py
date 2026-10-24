@@ -369,7 +369,10 @@ def _crossings(shape, diag: float, findings: list[Finding], measured: dict) -> b
                                 f"the surface passes through itself: {len(real)} pair(s) of faces cross"
                                 + ("+" if len(within) > MAX_FACE_PAIRS else ""),
                                 len(real), _places(np.asarray(at), diag),
-                                {"faces": [[int(a) + 1, int(b) + 1] for a, b in real[:20]]}))
+                                {"faces": [[int(a) + 1, int(b) + 1] for a, b in real[:20]],
+                                 # the body (1-based, OpenCASCADE's solid order: an assembly's Part_k)
+                                 "bodies": sorted({int(body_of_face[a]) + 1 for a, _b in real
+                                                   if body_of_face[a] >= 0})}))
     # between bodies: they must share volume, not just touch
     bodies = _bodies(work)
     overlap: list[tuple[int, int, float | None]] = []

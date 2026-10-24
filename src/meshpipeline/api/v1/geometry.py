@@ -129,6 +129,13 @@ class ConfirmIn(BaseModel):
     #: how many bodies the file has, and what the clean check found - said in the declaration.
     bodies: int | None = None
     clean_summary: str = ""
+    #: AN FEA ASSEMBLY'S ONE QUESTION, "How are the parts connected?" (design 14): bonded (welded or
+    #: glued, the default) or contact (the parts can slide or separate). Sent by the stage; checked
+    #: and defaulted by the server, said in the declaration, and read into the run from the stored
+    #: confirmation (application/fea_check.confirmed_connection).
+    fea_connection: str = ""
+    #: SET BY THE SERVER for an FEA assembly, from the stored check: its parts, in plain words.
+    parts_summary: str = ""
 
     @field_validator("extents")
     @classmethod
@@ -552,6 +559,14 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
             # VERSION 1 MESHES ONE CLOSED SOLID AT A TIME: no guessing at how parts connect, and no
             # solid mesh of a surface - said with the way on, never a silent failure later
             raise HTTPException(409, f"{blocked} {way_out}".strip())
+        # AN ASSEMBLY (several bodies): its parts are meshed together, joined as the user said -
+        # bonded unless they picked contact; a single part has nothing to join
+        asm = fea_check.assembly_view(facts)
+        connection = ""
+        if asm is not None:
+            connection = fea_check.connection_answer(body.fea_connection) or fea_check.DEFAULT_CONNECTION
+        body = body.model_copy(update={"fea_connection": connection,
+                                       "parts_summary": fea_check.parts_words(asm) if asm else ""})
         proposed = _stored_check.get("proposal") or {}
         body = body.model_copy(update={
             "input_kind": "solid-body", "flow": None, "openings": [], "seed_point_mm": None,
