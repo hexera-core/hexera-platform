@@ -20,9 +20,15 @@ async def checkpoint_pool(dsn: str):
     """An open AsyncConnectionPool for AsyncPostgresSaver: the same connection settings LangGraph's
     from_conn_string uses (autocommit, no server-side prepares, dict rows), plus a CHECK on every
     borrow - a connection a restart killed is replaced, not handed to the next checkpoint write."""
+    from psycopg import AsyncConnection
     from psycopg.rows import dict_row
     from psycopg_pool import AsyncConnectionPool
 
+    # ONE PLAIN CONNECT FIRST, as from_conn_string made: a database that is not there fails here at
+    # once (the run then decides: refuse, or fall back to in-process checkpoints where allowed),
+    # instead of the pool retrying in the background for OPEN_TIMEOUT_S
+    probe = await AsyncConnection.connect(dsn, autocommit=True)
+    await probe.close()
     pool = AsyncConnectionPool(
         conninfo=dsn, min_size=POOL_MIN, max_size=POOL_MAX, open=False,
         kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row,
