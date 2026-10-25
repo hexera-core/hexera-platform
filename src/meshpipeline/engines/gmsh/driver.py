@@ -860,6 +860,40 @@ def _bound_groups(gmsh, surfaces, ports, *, cad: bool = False) -> list[dict]:
     return groups
 
 
+def _mesh_cad_at_mm(gmsh, geom: Path, h: float, cb) -> float:
+    """MESH-4 for a CAD solid the CFD path could not mesh in metres: the same file read again at the
+    CAD's own millimetre scale (the same entities, so the same tags and physical groups), sized the
+    same (the clamp size and the passage field, both times the scale) and meshed. Returns the scale;
+    the caller brings the mesh back to metres after curving it."""
+    from meshpipeline.engines.gmsh.fea_adapter import MM_PER_M, micro_curves_one_segment
+
+    k = MM_PER_M
+    groups = [(dim, [int(t) for t in gmsh.model.getEntitiesForPhysicalGroup(dim, tag)],
+               gmsh.model.getPhysicalName(dim, tag)) for dim, tag in gmsh.model.getPhysicalGroups()]
+    if cb is not None:
+        gmsh.model.mesh.removeSizeCallback()
+    gmsh.model.remove()
+    gmsh.model.add("fea")
+    gmsh.option.setNumber("Geometry.OCCScaling", k)
+    try:
+        gmsh.model.occ.importShapes(str(geom))
+    finally:
+        gmsh.option.setNumber("Geometry.OCCScaling", 1.0)
+    gmsh.model.occ.synchronize()
+    for dim, tags, name in groups:
+        gmsh.model.addPhysicalGroup(dim, tags, name=name)
+    gmsh.option.setNumber("Mesh.MeshSizeMax", h * k)
+    gmsh.option.setNumber("Mesh.MeshSizeMin", h / 20.0 * k)
+    micro = micro_curves_one_segment(gmsh)
+    if micro:
+        print(f"[GMSH] micro curve(s) {micro[:20]} meshed as one segment each (MESH-4)", file=sys.stderr)
+    if cb is not None:
+        gmsh.model.mesh.setSizeCallback(
+            lambda dim, tag, x, y, z, lc: float(cb(dim, tag, x / k, y / k, z / k, lc / k)) * k)
+    gmsh.model.mesh.generate(3)
+    return k
+
+
 def main(workspace: str) -> int:
     ws = Path(workspace)
     # AN FEA PLAN (engines/fea_*.py, FEA build step 4): the solid is meshed exactly as the plan says,
@@ -1090,39 +1124,55 @@ def main(workspace: str) -> int:
             gmsh.model.mesh.setSizeCallback(_cb)
         else:
             print(f"[GMSH] passage sizing not applied: {_why}", file=sys.stderr)
+        # MESH-4: the scale the CAD was meshed at (1: the staged metres)
+        _scale = 1.0
+        _cad = not (staged or classified or external)
         try:
             gmsh.model.mesh.generate(3)
             if staged and not any(len(t) for t in gmsh.model.mesh.getElements(3)[1]):
                 # gmsh can fail to recover the boundary, say so in its log and carry on with
                 # an empty volume: that is a failed fill too
                 raise RuntimeError("no volume elements were generated")
+            if _cad:
+                from meshpipeline.engines.gmsh.fea_adapter import EMPTY_VOLUMES, empty_volumes
+                _hollow = empty_volumes(gmsh, vols)
+                if _hollow:
+                    raise RuntimeError(f"{EMPTY_VOLUMES} the 3D fill left volume(s) {_hollow} with no elements")
         except Exception as exc:  # noqa: BLE001 - a staged surface gets one other remesh, below
-            if not staged:
+            if _cad:
+                # MESH-4 (as the FEA path): a CAD solid gmsh could not mesh in metres - OpenCASCADE's
+                # fixed tolerances swallow nanometre edges where one feature grazes another - is
+                # meshed again at the CAD's own millimetre scale, then brought back to metres
+                print(f"[GMSH] the solid could not be meshed at the metre scale ({str(exc)[:200]}); "
+                      "meshing it again at the CAD's own millimetre scale (MESH-4)", file=sys.stderr)
+                _scale = _mesh_cad_at_mm(gmsh, geom, h, _cb)
+            elif not staged:
                 raise
-            # THE PATCHES, REMESHED EACH ON ITS OWN, DID NOT CLOSE INTO A FILLABLE BOUNDARY (a long
-            # bent wall can come back with facets crossing). Once more the way gmsh remeshes an
-            # STL itself - split by angle into patches it can map - with every group carried over
-            # by the patch name its surfaces came from.
-            print(f"[GMSH] the staged boundary did not fill ({exc}); remeshing it split by "
-                  "angle instead", file=sys.stderr)
-            if _cb is not None:
-                gmsh.model.mesh.removeSizeCallback()
-            # a failed fill leaves gmsh's meshing state behind it: start it afresh, same options
-            gmsh.finalize()
-            gmsh.initialize(interruptible=False)
-            gmsh.option.setNumber("General.Terminal", 1)
-            gmsh.option.setNumber("General.NumThreads", 1)
-            gmsh.option.setNumber("Mesh.RandomSeed", 1)
-            gmsh.option.setNumber("Mesh.MeshSizeMax", h)
-            gmsh.option.setNumber("Mesh.MeshSizeMin", h / 20.0)
-            gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", int(spec.get("curvature_nodes", 24)))
-            leftover = _refill_classified(gmsh, boundary, spec)
-            _cb, _spts, _srad, _why = _passage_field(gmsh, ws, h, diag, discrete=True)
-            _passage = {"passage_sizing": _why, "passage_cells_across_target": PASSAGE_CELLS_ACROSS,
-                        "surface_route": "classified by angle"}
-            if _cb is not None:
-                gmsh.model.mesh.setSizeCallback(_cb)
-            gmsh.model.mesh.generate(3)
+            else:
+                # THE PATCHES, REMESHED EACH ON ITS OWN, DID NOT CLOSE INTO A FILLABLE BOUNDARY (a long
+                # bent wall can come back with facets crossing). Once more the way gmsh remeshes an
+                # STL itself - split by angle into patches it can map - with every group carried over
+                # by the patch name its surfaces came from.
+                print(f"[GMSH] the staged boundary did not fill ({exc}); remeshing it split by "
+                      "angle instead", file=sys.stderr)
+                if _cb is not None:
+                    gmsh.model.mesh.removeSizeCallback()
+                # a failed fill leaves gmsh's meshing state behind it: start it afresh, same options
+                gmsh.finalize()
+                gmsh.initialize(interruptible=False)
+                gmsh.option.setNumber("General.Terminal", 1)
+                gmsh.option.setNumber("General.NumThreads", 1)
+                gmsh.option.setNumber("Mesh.RandomSeed", 1)
+                gmsh.option.setNumber("Mesh.MeshSizeMax", h)
+                gmsh.option.setNumber("Mesh.MeshSizeMin", h / 20.0)
+                gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", int(spec.get("curvature_nodes", 24)))
+                leftover = _refill_classified(gmsh, boundary, spec)
+                _cb, _spts, _srad, _why = _passage_field(gmsh, ws, h, diag, discrete=True)
+                _passage = {"passage_sizing": _why, "passage_cells_across_target": PASSAGE_CELLS_ACROSS,
+                            "surface_route": "classified by angle"}
+                if _cb is not None:
+                    gmsh.model.mesh.setSizeCallback(_cb)
+                gmsh.model.mesh.generate(3)
         if _cb is not None:
             gmsh.model.mesh.removeSizeCallback()
         if spec.get("optimize", True):
@@ -1134,6 +1184,7 @@ def main(workspace: str) -> int:
                 import numpy as np
                 from scipy.spatial import cKDTree
                 _fpts, _ffaces = _boundary_triangles(gmsh)
+                _fpts = np.asarray(_fpts) / _scale       # MESH-4: in metres, as the radius field is
                 _, _near = cKDTree(np.asarray(_spts)).query(_fpts)
                 _passage["passage_cells_across_local"] = measure_passage(
                     _fpts, _ffaces, np.asarray(_srad)[_near])
@@ -1147,6 +1198,10 @@ def main(workspace: str) -> int:
             # after it (as it was) it optimised nothing and curved elements shipped as snapped
             gmsh.option.setNumber("Mesh.HighOrderOptimize", 2)  # elastic+optim
             gmsh.model.mesh.setOrder(order)
+        if _scale != 1.0:
+            # MESH-4: curved on the CAD at the scale it was meshed at, then back to metres
+            from meshpipeline.engines.gmsh.fea_adapter import to_m
+            to_m(gmsh, _scale)
 
         # Quality: SICN over the volume elements (signed inverse condition
         # number - Gmsh's standard quality measure; 0 = degenerate, 1 = ideal).

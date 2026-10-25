@@ -442,21 +442,42 @@ def surfaces_named(text: str) -> list[int]:
 
 def bad_surfaces(gmsh, tags, qualities) -> list[int]:
     """The CAD surfaces the invalid elements (quality not above 0) touch: their nodes on a surface,
-    or on a curve or corner of one - where LAD-fea-6 meshes the next pass the other way."""
+    or on a curve or corner of one - where LAD-fea-6 meshes the next pass the other way.
+
+    A SLIVER LOCKED BETWEEN TWO FACES (LAD-fea-6b) - an element whose four corners all lie on two
+    surfaces, none inside - names only the second of the two: two faces facing each other across a
+    wall one element thick (fc_glass_frames' 10 mm pane at 7.5 mm, faces 5 and 6) get the same surface
+    mesh, node across from node, and every four of them make a flat tet no optimiser can move. Meshing
+    BOTH the other way mirrors them again; meshing one breaks the mirror (worst SICN 1.5e-5 -> 0.22)."""
     out: set[int] = set()
+    locked: set[tuple[int, int]] = set()
+    loose: set[int] = set()
     bad = [int(t) for t, q in zip(tags, qualities, strict=True) if q <= 0.0][:TRACE_BAD]
     for t in bad:
         _etype, nodes, _dim, _tag = gmsh.model.mesh.getElement(t)
-        for n in nodes:
+        mine: set[int] = set()
+        corners = []
+        for k, n in enumerate(nodes):
             _xyz, _par, dim, ent = gmsh.model.mesh.getNode(int(n))
+            if k < 4:
+                corners.append((int(dim), int(ent)))
             if dim == 2:
-                out.add(int(ent))
+                mine.add(int(ent))
             elif dim in (0, 1):
                 up = [int(c) for c in gmsh.model.getAdjacencies(dim, int(ent))[0]]
                 if dim == 0:
                     up = [int(s) for c in up for s in gmsh.model.getAdjacencies(1, c)[0]]
-                out.update(up)
-    return sorted(out)
+                mine.update(up)
+        faces = {e for d, e in corners}
+        if all(d == 2 for d, _e in corners) and len(faces) == 2:
+            a, b = sorted(faces)
+            locked.add((a, b))
+        else:
+            loose.update(mine)
+        out.update(mine)
+    # the first face of each locked pair keeps its mesh, unless another invalid element touches it too
+    keep = {a for a, _b in locked} - loose - {b for _a, b in locked}
+    return sorted(out - keep)
 
 
 def _peak_rss_mb() -> float | None:
@@ -551,6 +572,169 @@ def assembly_summary(asm: dict, sidecar: dict, prep) -> dict:
             "faces": len(prep.faces), "notes": list(sidecar.get("notes") or [])}
 
 
+#: MESH-4: millimetres per metre - the scale the staged solid is meshed again at when it could not be
+#: meshed in metres
+MM_PER_M = 1000.0
+#: MESH-4: the line that says the mesh was built at the CAD's millimetre scale (quality.json says it too)
+MM_SCALE = "[GMSH-FEA] MESHED AT MILLIMETRE SCALE"
+
+
+class NoSolid(Exception):
+    """The staged file holds no solid volume."""
+
+
+class FillFailed(Exception):
+    """The surface mesh or the fill failed: the gmsh error, the surfaces it went wrong on, and the
+    staged tags (an assembly's sidecar ties, read once at the metre scale)."""
+
+    def __init__(self, exc: BaseException, named: list[int], face_tags: dict | None, tags: dict,
+                 hollow: list[int] | None = None):
+        super().__init__(str(exc))
+        self.exc, self.named, self.face_tags, self.tags, self.hollow = exc, named, face_tags, tags, hollow or []
+
+    def report(self, ws) -> None:
+        """The lines (and the file) the driver reads the failure's surfaces from (LAD-fea-6, MESH-2)."""
+        if self.hollow:
+            print(f"{EMPTY_VOLUMES} {','.join(str(v) for v in self.hollow)}", file=sys.stderr)
+        print(f"{BAD_SURFACES} {','.join(str(s) for s in self.named)}", file=sys.stderr)
+        print(f"{BAD_FACES} {','.join(face_names_of(self.named, self.face_tags))}", file=sys.stderr)
+        note_failure(ws, self.named, face_names_of(self.named, self.face_tags), None if self.hollow else self.exc)
+
+
+def scaled_plan(plan: dict, k: float) -> dict:
+    """The plan with every length (base size, zone sizes and reaches, thin-spot balls) times `k`: the
+    plan as the size fields read it in a model `k` times the metre one (MESH-4)."""
+    if k == 1.0:
+        return plan
+    out = dict(plan)
+    out["base_size_m"] = float(plan["base_size_m"]) * k
+    zones = []
+    for z in plan.get("zones") or []:
+        z = dict(z)
+        for key in ("size_m", "reach_m", "radius_m"):
+            if z.get(key) is not None:
+                z[key] = float(z[key]) * k
+        if z.get("at_m") is not None:
+            z["at_m"] = [float(v) * k for v in z["at_m"]]
+        zones.append(z)
+    out["zones"] = zones
+    return out
+
+
+def to_m(gmsh, scale: float) -> None:
+    """Every mesh node of a model meshed `scale` times the metre one, back in metres (MESH-4)."""
+    s = 1.0 / float(scale)
+    gmsh.model.mesh.affineTransform([s, 0.0, 0.0, 0.0, 0.0, s, 0.0, 0.0, 0.0, 0.0, s, 0.0])
+    print(f"{MM_SCALE} (nodes scaled by {s:g} back to metres)", file=sys.stderr)
+
+
+def micro_curves_one_segment(gmsh) -> list[int]:
+    """MESH-4: every CAD curve shorter than PLAN-fea-12's micro length (cad/fea_measure.MICRO_FRACTION of
+    the model's diagonal) meshed as ONE segment. gmsh gives a curved edge at least two, and on a curve a
+    few nanometres long the node between them lies on the chord: the face beside it gets a flat triangle
+    folded onto its neighbour's ("overlapping facets", dihedral 1.8e-5 degrees - libredrive_pulley_housing's
+    24 nm edges where a half-hole grazes the bore). Returns the curves."""
+    from meshpipeline.cad.fea_measure import MICRO_FRACTION
+
+    x0, y0, z0, x1, y1, z1 = gmsh.model.getBoundingBox(-1, -1)
+    limit = MICRO_FRACTION * math.dist((x0, y0, z0), (x1, y1, z1))
+    short = [int(c) for _d, c in gmsh.model.getEntities(1) if float(gmsh.model.occ.getMass(1, c)) < limit]
+    for c in short:
+        gmsh.model.mesh.setTransfiniteCurve(c, 2)
+    return short
+
+
+def build_volume(gmsh, ws: Path, plan: dict, geom: Path, asm: dict | None, sidecar: dict, *,
+                 scale: float = 1.0, tags: dict | None = None) -> dict:
+    """Read the staged solid (`scale` times its metres: OpenCASCADE's own similarity as it reads), size it
+    by the plan at that scale, and mesh its surfaces and its volume. Returns what the rest of the mesh
+    run reads; raises NoSolid, or FillFailed with the surfaces it went wrong on. `tags`: an assembly's
+    sidecar ties from an earlier read (the same file read at another scale has the same entities). Read
+    at any scale but metres (MESH-4, after a failure) its micro curves are one segment each."""
+    run = plan.get("mesh") or {}
+    gmsh.model.add("fea")
+    gmsh.option.setNumber("Geometry.OCCScaling", float(scale))
+    try:
+        gmsh.model.occ.importShapes(str(geom))
+    finally:
+        gmsh.option.setNumber("Geometry.OCCScaling", 1.0)
+    gmsh.model.occ.synchronize()
+    vols = [t for _, t in gmsh.model.getEntities(3)]
+    if not vols:
+        raise NoSolid()
+    surfaces = {t for _, t in gmsh.model.getEntities(2)}
+    gmsh.model.addPhysicalGroup(3, vols, name="solid")
+    gmsh.model.addPhysicalGroup(2, sorted(surfaces), name="free")
+    sized = scaled_plan(plan, scale)
+    gmsh.option.setNumber("Mesh.MeshSizeMax", float(sized["base_size_m"]))
+    face_tags: dict[str, list[int]] | None = None
+    surface_tag: dict[int, int] = {}
+    volume_tag: dict[int, int] = {}
+    if asm:
+        # tied by area and centre against the sidecar's metres: read once, at the metre scale
+        if tags is None:
+            surface_tag, volume_tag = staged_tags(gmsh, sidecar)
+        else:
+            surface_tag, volume_tag = tags["surface_tag"], tags["volume_tag"]
+        face_tags = {}
+        for k, row in enumerate(sidecar.get("surfaces") or []):
+            for nm in row.get("names") or []:
+                if k in surface_tag:
+                    face_tags.setdefault(str(nm), []).append(surface_tag[k])
+    part_volumes: dict[str, list[int]] | None = None
+    if asm:
+        part_volumes = {}
+        for k, row in enumerate(sidecar.get("volumes") or []):
+            for p in row.get("parts") or []:
+                if k in volume_tag:
+                    part_volumes.setdefault(f"Part_{int(p)}", []).append(volume_tag[k])
+    tied = {"surface_tag": surface_tag, "volume_tag": volume_tag}
+    micro: list[int] = []
+    if scale != 1.0:
+        micro = micro_curves_one_segment(gmsh)
+        if micro:
+            print(f"[GMSH-FEA] micro curve(s) {micro[:20]} meshed as one segment each (MESH-4)", file=sys.stderr)
+    note_stage(ws, "sizing", "setting the element sizes")
+    bg = size_fields(gmsh, sized, surfaces, face_tags, part_volumes)
+    if bg is not None:
+        gmsh.model.mesh.field.setAsBackgroundMesh(bg)
+    remesh = {int(s) for s in run.get("remesh_surfaces") or []}
+    note_stage(ws, "surface", "meshing the surfaces")
+    try:
+        empty = surface_mesh(gmsh, surfaces, remesh)
+    except Exception as exc:
+        # A SURFACE NO 2D ALGORITHM COULD MESH ("Impossible to mesh periodic surface 26"): gmsh stops
+        # there - the surface it names and every one it left empty are where it went wrong
+        named = sorted({s for s in surfaces_named(str(exc)) if s in surfaces}
+                       | set(_empty_surfaces(gmsh, surfaces) if not surfaces_named(str(exc)) else []))
+        raise FillFailed(exc, named, face_tags, tied) from exc
+    try:
+        note_stage(ws, "volume", "filling the solid with elements")
+        if asm and str((sidecar or {}).get("mode") or "") in ("tie", "contact"):
+            fill_each_volume(gmsh, vols)
+        else:
+            gmsh.model.mesh.generate(3)
+    except Exception as exc:
+        # the surfaces the fill failed on, for the next pass (LAD-fea-6)
+        named = sorted(set(empty) | {s for s in surfaces_named(str(exc)) if s in surfaces})
+        if not named:
+            # the error names a point, not a surface: the surfaces there - else the surfaces whose
+            # surface meshes pass through each other (the "facets intersect" a fill reports)
+            named = surfaces_at_point(gmsh, str(exc), surfaces) or crossing_surfaces(gmsh, surfaces)
+        raise FillFailed(exc, named, face_tags, tied) from exc
+    # A VOLUME LEFT EMPTY is a failed fill, not a mesh (fc_computer_desk, 24 Oct: "No elements in
+    # volume 5", then the deck writer crashed on the faces of a part with no elements): said with
+    # its surfaces, as a fill failure is, and never delivered
+    hollow = empty_volumes(gmsh, vols)
+    if hollow:
+        named = sorted({abs(int(t)) for v in hollow for _d, t in gmsh.model.getBoundary([(3, v)], oriented=False)
+                        if int(t) in surfaces} | set(empty))
+        raise FillFailed(RuntimeError(f"{EMPTY_VOLUMES} the 3D fill left volume(s) {hollow} with no elements"),
+                         named, face_tags, tied, hollow=hollow)
+    return {"vols": vols, "surfaces": surfaces, "face_tags": face_tags, "surface_tag": surface_tag,
+            "volume_tag": volume_tag, "part_volumes": part_volumes, "micro_curves": micro}
+
+
 def mesh(workspace) -> int:
     """Mesh the staged solid by the plan. Exit codes as the driver's: 0 a valid mesh, 2 no
     geometry, 3 no solid, 4 fatal defects."""
@@ -598,85 +782,49 @@ def mesh(workspace) -> int:
         # nodes after 2D) in 26 s
         gmsh.option.setNumber("Mesh.LcIntegrationPrecision", LC_INTEGRATION_PRECISION)
         gmsh.option.setNumber("Geometry.OCCBoundsUseStl", 1)
-        gmsh.model.add("fea")
-        gmsh.model.occ.importShapes(str(geom))
-        gmsh.model.occ.synchronize()
-        vols = [t for _, t in gmsh.model.getEntities(3)]
-        if not vols:
-            print("[GMSH-FEA] no solid volume in geometry.step - an FEA mesh needs a closed solid",
-                  file=sys.stderr)
-            return 3
-        surfaces = {t for _, t in gmsh.model.getEntities(2)}
-        gmsh.model.addPhysicalGroup(3, vols, name="solid")
-        gmsh.model.addPhysicalGroup(2, sorted(surfaces), name="free")
-        base = float(plan["base_size_m"])
-        gmsh.option.setNumber("Mesh.MeshSizeMax", base)
         gmsh.option.setNumber("Mesh.MeshSizeMin", 0.0)
         gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
         gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
         gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
         gmsh.option.setNumber("Mesh.Algorithm3D", ALGORITHMS_3D.get(algorithm_3d(run), 1))
-        face_tags: dict[str, list[int]] | None = None
-        surface_tag: dict[int, int] = {}
-        volume_tag: dict[int, int] = {}
-        if asm:
-            surface_tag, volume_tag = staged_tags(gmsh, sidecar)
-            face_tags = {}
-            for k, row in enumerate(sidecar.get("surfaces") or []):
-                for nm in row.get("names") or []:
-                    if k in surface_tag:
-                        face_tags.setdefault(str(nm), []).append(surface_tag[k])
-        part_volumes: dict[str, list[int]] | None = None
-        if asm:
-            part_volumes = {}
-            for k, row in enumerate(sidecar.get("volumes") or []):
-                for p in row.get("parts") or []:
-                    if k in volume_tag:
-                        part_volumes.setdefault(f"Part_{int(p)}", []).append(volume_tag[k])
+        base = float(plan["base_size_m"])
         tick = Ticker(ws)
-        note_stage(ws, "sizing", "setting the element sizes")
-        bg = size_fields(gmsh, plan, surfaces, face_tags, part_volumes)
-        if bg is not None:
-            gmsh.model.mesh.field.setAsBackgroundMesh(bg)
-        remesh = {int(s) for s in run.get("remesh_surfaces") or []}
-        note_stage(ws, "surface", "meshing the surfaces")
-        empty = surface_mesh(gmsh, surfaces, remesh)
+        tags: dict | None = None
+        scale = 1.0
         try:
-            note_stage(ws, "volume", "filling the solid with elements")
-            if asm and str((sidecar or {}).get("mode") or "") in ("tie", "contact"):
-                fill_each_volume(gmsh, vols)
-            else:
-                gmsh.model.mesh.generate(3)
-        except Exception as exc:
-            # the surfaces the fill failed on, for the next pass (LAD-fea-6): the driver reads them
-            # from this line
-            named = sorted(set(empty) | {s for s in surfaces_named(str(exc)) if s in surfaces})
-            if not named:
-                # the error names a point, not a surface: the surfaces there - else the surfaces whose
-                # surface meshes pass through each other (the "facets intersect" a fill reports)
-                named = surfaces_at_point(gmsh, str(exc), surfaces) or crossing_surfaces(gmsh, surfaces)
-            print(f"{BAD_SURFACES} {','.join(str(s) for s in named)}", file=sys.stderr)
-            print(f"{BAD_FACES} {','.join(face_names_of(named, face_tags))}", file=sys.stderr)
-            note_failure(ws, named, face_names_of(named, face_tags), exc)
-            raise
-        # A VOLUME LEFT EMPTY is a failed fill, not a mesh (fc_computer_desk, 24 Oct: "No elements in
-        # volume 5", then the deck writer crashed on the faces of a part with no elements): said with
-        # its surfaces, as a fill failure is, and never delivered
-        hollow = empty_volumes(gmsh, vols)
-        if hollow:
-            named = sorted({abs(int(t)) for v in hollow for _d, t in gmsh.model.getBoundary([(3, v)], oriented=False)
-                            if int(t) in surfaces} | set(empty))
-            print(f"{EMPTY_VOLUMES} {','.join(str(v) for v in hollow)}", file=sys.stderr)
-            print(f"{BAD_SURFACES} {','.join(str(s) for s in named)}", file=sys.stderr)
-            print(f"{BAD_FACES} {','.join(face_names_of(named, face_tags))}", file=sys.stderr)
-            note_failure(ws, named, face_names_of(named, face_tags))
-            raise RuntimeError(f"{EMPTY_VOLUMES} the 3D fill left volume(s) {hollow} with no elements")
+            built = build_volume(gmsh, ws, plan, geom, asm, sidecar, scale=scale)
+        except NoSolid:
+            print("[GMSH-FEA] no solid volume in geometry.step - an FEA mesh needs a closed solid",
+                  file=sys.stderr)
+            return 3
+        except FillFailed as first:
+            # MESH-4: THE CAD'S OWN SCALE. The staged solid is in metres; OpenCASCADE's fixed
+            # tolerances (1e-7 of a model unit) are then a tenth of a micron, and a CAD edge of a few
+            # nanometres where a feature grazes another (libredrive_pulley_housing: a 1.8 mm half-hole
+            # touching a 28 mm bore, three edges of 24 nm, 56 um and 24 nm) falls inside them - a
+            # periodic face no 2D algorithm can mesh, folded facets no fill can take. The same solid
+            # read in millimetres, as the CAD was drawn, holds those edges a thousand times above the
+            # kernel's tolerance. Only after the metre build failed: every part that meshes in metres
+            # meshes exactly as before.
+            print(f"[GMSH-FEA] the solid could not be meshed at the metre scale ({str(first.exc)[:200]}) - "
+                  "meshing it again at the CAD's own millimetre scale (MESH-4)", file=sys.stderr)
+            tags = first.tags
+            gmsh.clear()
+            scale = MM_PER_M
+            try:
+                built = build_volume(gmsh, ws, plan, geom, asm, sidecar, scale=scale, tags=tags)
+            except FillFailed as again:
+                again.report(ws)
+                raise again.exc from None
+        vols, face_tags = built["vols"], built["face_tags"]
+        surface_tag, volume_tag = built["surface_tag"], built["volume_tag"]
         note_stage(ws, "optimising", "improving the elements")
         for _ in range(int(run.get("optimise_passes") or 1)):
             gmsh.model.mesh.optimize("Netgen")
         order = int((plan.get("element") or {}).get("order") or 2)
         settled: dict = {"straightened": 0, "set_aside": [], "cusp_places_m": [], "cusp_elements": 0,
                          "micro_used": [], "micro_elements": 0}
+        straight: dict = {}
         if order > 1:
             from meshpipeline.engines.gmsh import fea_settle
 
@@ -685,7 +833,13 @@ def mesh(workspace) -> int:
             straight = dict(zip(st_tags.tolist(), st_q.tolist(), strict=True))
             gmsh.option.setNumber("Mesh.HighOrderOptimize", 2)
             note_stage(ws, "curving", "curving the elements to the surface")
+            # curved on the CAD at the scale it was meshed at (its midside nodes go onto the surface)
             gmsh.model.mesh.setOrder(order)
+        if scale != 1.0:
+            # MESH-4: the mesh back to metres, the unit every file and figure below is in (a similarity:
+            # every element keeps its shape and quality)
+            to_m(gmsh, scale)
+        if order > 1:
             tick.start("settling", "checking the curved elements")
             # PLAN-fea-11 (never worse than straight) and PLAN-fea-10 (the cusps set aside)
             settled = fea_settle.settle(gmsh, straight, [c["at_m"] for c in plan.get("cusps") or []],
@@ -788,6 +942,9 @@ def mesh(workspace) -> int:
                                           "fea_max_aspect_ratio", "fea_min_dihedral_deg",
                                           "fea_max_dihedral_deg", "fea_inverted") if k in shape},
             "fea_rules_short": len(rules.get("short") or []) if rules else None,
+            # MESH-4: meshed at the CAD's millimetre scale after the metre build failed
+            **({"fea_mesh_scale": "mm", "fea_micro_curves_one_segment": len(built.get("micro_curves") or [])}
+               if scale != 1.0 else {}),
             "fea_bad_surfaces": traced,
             "fea_bad_faces": face_names_of(traced, face_tags),
             # PLAN-fea-17: the invalid elements' surfaces that are FUSED INTERFACES (a bonded assembly)
