@@ -825,6 +825,9 @@ def _scout_exact(local_path: Path, work: Path, interp_ref, ref) -> tuple[dict, P
     facts["scale_to_m"] = float(interp.scale_to_metres) if interp is not None else 0.001
     if unit_note:
         facts["notes"].append(unit_note)
+        # the unit most of a mixed file's parts state: the unit proposal's first reading
+        if interp_ref is None and (mostly := _stated_mostly(local_path)) is not None:
+            facts["unit_stated_mostly"] = mostly.unit.value
     skin = write_view_stl(local_path, work / "skin.stl", prepared=prepared, shape=shape)
     gp.mark(gp.OPENINGS, triangles=gp.skin_triangles(skin))
     facts["holes"] = skin_holes(skin, facts)
@@ -1133,13 +1136,37 @@ def _prepared_coordinates(path: Path, interp_ref, ref):
         except Exception as exc:  # noqa: BLE001 - a unit we cannot read is a note, not a failure
             logger.info("geometry check: declared unit unreadable (%s)", exc)
         if unit is None:
-            unit = LengthUnit.millimetre
-            note = "the file does not say its unit; sizes assume millimetres until the intake confirms"
+            # A FILE THAT MIXES UNITS reads first in the one most of its parts state (an Inventor
+            # assembly: six parts in inches, one in millimetres), so the sizes shown are its real
+            # ones; it is still asked, like a file that states none
+            mostly = _stated_mostly(path)
+            if mostly is not None:
+                unit = mostly.unit
+                note = f"{mostly.detail}; sizes are read as the file states them until the intake confirms"
+            else:
+                unit = LengthUnit.millimetre
+                note = "the file does not say its unit; sizes assume millimetres until the intake confirms"
         interp = GeometryInterpretation(
             interpretation_id="unconfirmed", owner_id=ref.owner_id, geometry_source_id=ref.source_id,
             unit=unit, scale_to_metres=scale_to_metres(unit), basis=ResolutionBasis.file_declared,
             evidence="geometry check")
     return from_occ_transfer(interp, parser_applied_unit(path)), note
+
+
+#: The words every assumed-unit note ends with: what a confirmed unit removes from the notes.
+UNIT_ASSUMED_NOTE_END = "until the intake confirms"
+
+
+def _stated_mostly(path: Path):
+    """The unit most of a mixed STEP file's parts state (cad/unit_evidence.stated_mostly), or
+    None; a file it cannot read is simply a file that states none."""
+    from meshpipeline.cad.unit_evidence import stated_mostly
+
+    try:
+        return stated_mostly(path)
+    except Exception as exc:  # noqa: BLE001 - evidence only; the check goes on without it
+        logger.info("geometry check: mixed units unreadable (%s)", exc)
+        return None
 
 
 def read_up_evidence(skin: Path) -> dict:
@@ -1253,7 +1280,7 @@ def _name(*, session_id: str, owner_id: str, purpose_text: str, interpretation: 
             facts = _rescaled(facts, k)
             facts["unit_assumed"] = False
             facts["scale_to_m"] = float(interp_ref.scale_to_metres)
-            facts["notes"] = [n for n in facts.get("notes", []) if "assume millimetres" not in n]
+            facts["notes"] = [n for n in facts.get("notes", []) if UNIT_ASSUMED_NOTE_END not in n]
             # THE SKIN FOLLOWS THE FACTS: the stage places the pins at the corrected centroids on
             # the stored skin, so the skin is re-read in the same unit. The pictures show shape
             # only and stay as they are.
@@ -1975,6 +2002,7 @@ def unit_inference(proposal: dict, facts: dict | None = None, words: str = "") -
     from the naming model's estimate of a real one's length, then the words for it (its name, the
     user's own words), then the measured shape and the flow. The file's numbers are read back
     through the scale the proposal was measured under."""
+    from meshpipeline.contracts.geometry_units import LengthUnit
     from meshpipeline.contracts.unit_plausibility import (
         FORMAT_UNIT,
         expected_from_estimate,
@@ -1993,10 +2021,17 @@ def unit_inference(proposal: dict, facts: dict | None = None, words: str = "") -
     part = str(proposal.get("part") or "")
     expected = (expected_from_estimate(part, proposal.get("real_length_m"))
                 or expected_from_words(f"{part}\n{words or ''}"))
-    shape = shape_kind(str(proposal.get("flow") or ""), size, grounded=bool(proposal.get("grounded")),
-                       up_axis=proposal.get("up_axis"))
+    # an FEA part (its measurement is in the facts) has no flow: it reads as a part, never as "a
+    # body in an external flow"
+    flow = "" if (facts or {}).get("fea_measure") else str(proposal.get("flow") or "")
+    shape = shape_kind(flow, size, grounded=bool(proposal.get("grounded")), up_axis=proposal.get("up_axis"))
     fmt = str((facts or {}).get("source_format") or "").lower().lstrip(".")
-    inferred = infer_unit(longest_file, expected=expected, shape=shape, format_unit=FORMAT_UNIT.get(fmt))
+    try:
+        stated = LengthUnit((facts or {}).get("unit_stated_mostly") or "")
+    except ValueError:
+        stated = None
+    inferred = infer_unit(longest_file, expected=expected, shape=shape, format_unit=FORMAT_UNIT.get(fmt),
+                          stated=stated)
     return inferred.as_dict() if inferred is not None else None
 
 

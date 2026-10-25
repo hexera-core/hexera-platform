@@ -7,6 +7,18 @@ import math
 
 Box = tuple[float, float, float, float, float, float]
 
+#: OpenCascade's mesher refuses a linear deflection under Precision::Confusion (1e-7 of the shape's
+#: own unit) with "BRepMesh_IncrementalMesh::initParameters : invalid parameter value", and an
+#: angular one under Precision::Angular. A part read at the wrong scale - an assembly whose unit is
+#: missing or mixed, read as micrometres - asked for 3e-8 and crashed the geometry check. The floor
+#: sits a decade above OCC's limit: a part that small is meshed a little coarser, never refused.
+MIN_LINEAR_DEFLECTION = 1e-6
+MIN_ANGULAR_DEFLECTION = 1e-3
+#: The angular deflection used when a caller passes one that is no angle (NaN, zero, negative).
+DEFAULT_ANGULAR_DEFLECTION = 0.5
+#: The share of the measured diagonal a deflection takes when the caller's own is no length.
+DEFAULT_DEFLECTION_FRACTION = 1.0 / 1000.0
+
 #: A loose envelope this much wider (on the diagonal) than the surface itself means the deflection
 #: it set was off by more than the meshing's own slack: the part is meshed again at its real size.
 REMESH_LOOSENESS = 1.5
@@ -69,6 +81,46 @@ def diagonal(box: Box) -> float:
     return math.sqrt((box[3] - box[0]) ** 2 + (box[4] - box[1]) ** 2 + (box[5] - box[2]) ** 2)
 
 
+def deflection_for(size: float, fraction: float) -> float:
+    """A linear deflection of `fraction` of a measured `size` (a diagonal), never below the floor
+    OpenCascade accepts. A size that is no size (zero, negative, NaN, infinite) gets the floor:
+    the deflection never depends on the unit being known."""
+    try:
+        lin = float(size) * float(fraction)
+    except (TypeError, ValueError):
+        return MIN_LINEAR_DEFLECTION
+    if not math.isfinite(lin) or lin < MIN_LINEAR_DEFLECTION:
+        return MIN_LINEAR_DEFLECTION
+    return lin
+
+
+def _usable(value) -> float | None:
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    return v if math.isfinite(v) and v > 0.0 else None
+
+
+def incremental_mesh(shape, linear_deflection, angular_deflection, *, relative: bool = False,
+                     parallel: bool = True) -> float:
+    """BRepMesh_IncrementalMesh with parameters OpenCascade will accept, whatever the unit state:
+    every mesh call on the intake, check and stage paths goes through here. A linear deflection
+    that is no length (zero, negative, NaN, infinite) is taken from the shape's MEASURED size
+    instead; a tiny one is raised to MIN_LINEAR_DEFLECTION; an angle that is no angle becomes
+    DEFAULT_ANGULAR_DEFLECTION. Returns the linear deflection the shape was meshed at."""
+    from OCP.BRepMesh import BRepMesh_IncrementalMesh
+
+    lin = _usable(linear_deflection)
+    if lin is None:
+        lin = deflection_for(diagonal(loose_box(shape)), DEFAULT_DEFLECTION_FRACTION)
+    lin = max(lin, MIN_LINEAR_DEFLECTION)
+    ang = _usable(angular_deflection)
+    ang = DEFAULT_ANGULAR_DEFLECTION if ang is None else max(ang, MIN_ANGULAR_DEFLECTION)
+    BRepMesh_IncrementalMesh(shape, lin, bool(relative), ang, bool(parallel))
+    return lin
+
+
 def mesh_to_size(shape, fraction: float, angular_deflection: float, *,
                  linear_deflection: float | None = None) -> tuple[Box, float]:
     """Mesh the shape at `fraction` of its real diagonal (or at an explicit linear deflection) and
@@ -79,21 +131,22 @@ def mesh_to_size(shape, fraction: float, angular_deflection: float, *,
     honest meshes exactly as before), measure the surface, and only when the envelope was
     REMESH_LOOSENESS or more too big mesh again at the real size, then measure once more. The
     returned box is never the envelope unless nothing could be meshed at all."""
-    from OCP.BRepMesh import BRepMesh_IncrementalMesh
-
     envelope = loose_box(shape)
     d_env = diagonal(envelope)
-    lin = linear_deflection if linear_deflection is not None else max(d_env * fraction, 1e-12)
-    BRepMesh_IncrementalMesh(shape, lin, False, angular_deflection, True)
+    # an explicit deflection that is no length is no request: the part's size decides
+    explicit = _usable(linear_deflection) if linear_deflection is not None else None
+    lin = explicit if explicit is not None else deflection_for(d_env, fraction)
+    lin = incremental_mesh(shape, lin, angular_deflection)
     box = surface_box(shape)
     if box is None:
         return envelope, lin
     d_real = diagonal(box)
-    if linear_deflection is None and d_real > 0.0 and d_env > REMESH_LOOSENESS * d_real:
-        lin = max(d_real * fraction, 1e-12)
-        BRepMesh_IncrementalMesh(shape, lin, False, angular_deflection, True)
+    if explicit is None and d_real > 0.0 and d_env > REMESH_LOOSENESS * d_real:
+        lin = incremental_mesh(shape, deflection_for(d_real, fraction), angular_deflection)
         box = surface_box(shape) or box
     return box, lin
 
 
-__all__ = ["REMESH_LOOSENESS", "diagonal", "loose_box", "mesh_to_size", "surface_box"]
+__all__ = ["DEFAULT_ANGULAR_DEFLECTION", "DEFAULT_DEFLECTION_FRACTION", "MIN_ANGULAR_DEFLECTION",
+           "MIN_LINEAR_DEFLECTION", "REMESH_LOOSENESS", "deflection_for", "diagonal",
+           "incremental_mesh", "loose_box", "mesh_to_size", "surface_box"]
