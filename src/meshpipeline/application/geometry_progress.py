@@ -137,7 +137,9 @@ class Tracker:
             if part is None or part.get("ended_at") is not None:
                 return
             part["beat_at"] = time.time()
-            self._write()
+            # the beat is how a live worker is told from a dead one: it is tried whatever earlier
+            # writes did, and a store that answers again brings the live line back with it
+            self._write(force=True)
 
     def work(self, **fields) -> None:
         """How big the job is, as soon as it is known: the file's size, the skin's triangles."""
@@ -177,8 +179,8 @@ class Tracker:
                 part["steps"][was].setdefault("end", now)
             self._write()
 
-    def _write(self) -> None:
-        if self._failures >= self._MAX_FAILURES:
+    def _write(self, force: bool = False) -> None:
+        if self._failures >= self._MAX_FAILURES and not force:
             return
         try:
             from meshpipeline.contracts.object_storage import get_object_store
@@ -196,6 +198,7 @@ class Tracker:
                 get_object_store().upload_file(local_path=tmp, object_key=progress_key(self.session_id))
             finally:
                 tmp.unlink(missing_ok=True)
+            self._failures = 0                      # the store answers again: so does the line
         except Exception as exc:  # noqa: BLE001 - the live line is a courtesy; the check goes on
             self._failures += 1
             logger.info("geometry progress: could not record the step (%s) - session=%s",

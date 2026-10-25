@@ -213,7 +213,7 @@ async function watchGeometryCheck(sessionId) {
   const retryFn = async (step) => { const d = await retryGeometryCheck(sessionId, step); told = ""; return d; };
   // THE LIVE LINE'S OWN "Try again": the step the check last reported, run again, and the line
   // follows the fresh check at once rather than at the next poll
-  let retryAs = null, misses = 0;
+  let retryAs = null, misses = 0, readySeen = false;
   const rowRetry = async () => {
     deps.notice.clear?.();
     let d;
@@ -308,10 +308,17 @@ async function watchGeometryCheck(sessionId) {
       if (stage) stage.update(d);            // the banner: waiting on the chat, the unit, or the naming
       else if (stageFailed) deps.geometryCard(d);   // the card's Proceed follows the unit, in place
     } else if (status === "ready" && d.named !== false) {
-      _checkState = "ready";
-      if (isHeld()) holdInput(stageWait(), STAGE_WAIT_MS);
-      if (stage) stage.update(d); else await deps.geometryCheck(sessionId, d, confirmFn, retryFn);
-      return;
+      // NAMED ON THE PREVIEW (a big file whose full reading is still running): the watch goes on
+      // until that reading lands, and the stage is handed the check once more when it does - not
+      // on every poll, which would re-draw the form under the user
+      const waitingFull = !!d.named_on_preview;
+      if (!readySeen || !waitingFull) {
+        _checkState = "ready";
+        if (isHeld()) holdInput(stageWait(), STAGE_WAIT_MS);
+        if (stage) stage.update(d); else if (!readySeen) await deps.geometryCheck(sessionId, d, confirmFn, retryFn);
+      }
+      readySeen = true;
+      if (!waitingFull) return;
     }
     await new Promise((r) => setTimeout(r, CHECK_POLL_MS));
   }

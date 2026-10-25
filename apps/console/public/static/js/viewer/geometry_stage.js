@@ -244,7 +244,8 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
     if (d2.proposal) served = servedProposal(served, d2.proposal);
     followUnit(panel, p, q.unit, q.unit_basis);      // a unit settled in the chat reaches an untouched box
     followSuggestion(panel, p, q.unit_suggestion);   // the other reading, as the server now sees it
-    if ((d2.status === "scouted" || d2.status === "ready") && previewShown && d2.preview !== "running") {
+    if ((d2.status === "scouted" || d2.status === "ready") && previewShown && d2.preview !== "running"
+        && !d2.named_on_preview) {
       // THE FULL READING LANDED on a stage opened on the quick preview of a big file: its openings,
       // flat faces and holes come in - unless the user already set openings of their own, which
       // stand; what they changed on the form stays either way

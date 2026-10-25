@@ -439,3 +439,17 @@ def test_the_naming_beats_while_it_works(store, monkeypatch):
     monkeypatch.setattr(gc, "_name", lambda **k: {"status": "ready"})
     gc.run_geometry_naming(session_id="m-3", owner_id="o1", purpose_text="FEA")
     assert started == ["naming"]
+
+
+def test_the_heartbeat_comes_back_after_the_store_refused_it(store, monkeypatch):
+    t = gp.Tracker("m-4", "scout")
+    t.begin()
+    real = store.upload_file
+    monkeypatch.setattr(store, "upload_file", lambda **kw: (_ for _ in ()).throw(OSError("store down")))
+    for _ in range(gp.Tracker._MAX_FAILURES + 2):
+        t.beat()                                  # the store refuses every write meanwhile
+    monkeypatch.setattr(store, "upload_file", real)
+    t.beat()
+    assert gp.read_progress("m-4")["scout"]["beat_at"] is not None
+    t.step(gp.MEASURING)                         # and the steps are written again too
+    assert gp.read_progress("m-4")["scout"]["current"] == gp.MEASURING
