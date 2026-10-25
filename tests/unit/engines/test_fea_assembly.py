@@ -495,10 +495,9 @@ def _self_crossing_solid():
 
 def _stage_facts(shape, names=None):
     """What the FEA stage reads for a file: its bodies, the clean check, the assembly measured."""
+    from meshpipeline.cad import suspect_defects as SD
     from meshpipeline.cad.fea_measure import FACT_KEY
     from meshpipeline.cad.validity_brep import check_shape
-
-    from meshpipeline.cad import suspect_defects as SD
 
     rec = A.record(shape, mm_per_unit=1.0, names=names)
     validity = check_shape(shape).as_dict()
@@ -600,3 +599,38 @@ def test_the_planning_workers_never_run_the_callers_script_again(tmp_path):
     out = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, timeout=300, env=env)
     assert out.returncode == 0, out.stderr[-2000:]
     assert out.stdout.count("RAN") == 1
+
+
+def test_a_volume_the_fill_left_empty_is_found():
+    """fc_computer_desk (24 Oct): gmsh warned "No elements in volume 5" and carried on; the part's faces
+    then crashed the deck writer. An empty volume is now a failed fill, named."""
+    from meshpipeline.engines.gmsh.fea_adapter import empty_volumes
+
+    class _Mesh:
+        @staticmethod
+        def getElements(dim, tag):
+            return ([4], [[1, 2, 3]] if tag != 5 else [[]], [[]])
+
+    gm = SimpleNamespace(model=SimpleNamespace(mesh=_Mesh()))
+    assert empty_volumes(gm, [1, 5, 7]) == [5]
+
+
+def test_a_bonded_assembly_with_an_empty_volume_is_tied_at_once(tmp_path, monkeypatch):
+    """PLAN-fea-17 at once: no other 3D algorithm fills the fused slivers, so the next pass is the tie."""
+    from meshpipeline.engines import runtime
+    from meshpipeline.engines.gmsh.fea_adapter import EMPTY_VOLUMES
+
+    modes = []
+
+    def mesher(w, timeout):
+        mode = json.loads((Path(w) / "fea_plan.json").read_text())["assembly"]["mode"]
+        modes.append(mode)
+        if mode == "bonded":
+            return {"rc": 1, "log_tail": f"{EMPTY_VOLUMES} 5\nRuntimeError: {EMPTY_VOLUMES} volume(s) [5] empty"}
+        return {"rc": 1, "log_tail": "some other failure"}
+
+    ws = _stage(fx.touching_blocks(), tmp_path / "hollow")
+    monkeypatch.setattr(runtime, "get_engine", lambda _n: SimpleNamespace(run_cartesian_mesh=mesher))
+    asyncio.run(FD.drive(ws, {"purpose": "structural"}, job_id=f"t-{ws.name}", publish=None,
+                         run=_Run(), source_path=str(ws / "upload.step")))
+    assert modes[0] == "bonded" and modes[1] == "tie"
