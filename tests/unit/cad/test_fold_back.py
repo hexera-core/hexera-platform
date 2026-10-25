@@ -81,3 +81,19 @@ def test_a_real_fold_is_found_and_confirmed_by_two_measures():
 def test_a_knife_wedge_is_a_fold_and_its_gap_is_tiny():
     f = fold_back_edges(fx.wedge(0.2))["folds"]
     assert f and f[0]["gap_mm"] is not None and f[0]["gap_mm"] < 0.01
+
+
+def test_the_folding_chairs_frames_are_flagged_by_the_boolean_check():
+    """fc_folding_chair (24 Oct, 67 min then failed): its frames cross themselves where the tessellated
+    crossing search sees nothing; in the run the Boolean check flags them (a note), so the failed fill
+    there is told as the CAD's, faces named (MESH-2)."""
+    from meshpipeline.cad import suspect_defects as SD
+    from meshpipeline.cad.fea_measure import measure_cad
+    from meshpipeline.cad.scout import read_cad
+
+    shape = read_cad(_FIX / "fc_folding_chair.step")
+    rec = measure_cad(shape, mm_per_unit=1.0)
+    rec["face_names"] = "Part_k_Face_j"
+    flagged = {s["body"]: s for s in SD.find(shape, rec, check_overlaps=True) if s["kind"] == "self_overlap"}
+    assert {1, 3} <= set(flagged)
+    assert "Part_1_Face_2" in flagged[1]["faces"] and flagged[1]["confirmed"] is False
