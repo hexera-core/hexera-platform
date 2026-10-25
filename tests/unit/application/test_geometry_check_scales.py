@@ -382,3 +382,60 @@ def test_the_assembly_join_is_given_time_for_its_size(tmp_path):
     with huge.open("wb") as fh:
         fh.truncate(900_000_000)
     assert join_timeout_s([Member(huge, "c.step")]) == JOIN_TIMEOUT_CEILING_S
+
+
+# --------------------------------------------------- a naming made on the preview (review) ----
+def _preview_record():
+    return {"status": "scouted", "preview": gc.PREVIEW_RUNNING, "named": False, "skin_key": "k",
+            "facts": {"size_mm": [100.0, 50.0, 20.0], "scale_to_m": 0.001, "notes": [], "openings": [],
+                      "input_kind": "solid-body", "flow": "external", "faces": [], "holes": []}}
+
+
+def _full_facts():
+    return {"size_mm": [100.0, 50.0, 20.0], "scale_to_m": 0.001, "notes": [], "input_kind": "solid-body",
+            "flow": "external", "faces": [{"id": 1}], "holes": [], "solids": 3,
+            "validity": {"clean": True, "kind": "brep", "summary": "clean"},
+            "openings": [{"id": 1, "name": "inlet", "role": "inlet", "centroid_mm": [0, 0, 0], "normal": [1, 0, 0]}]}
+
+
+def test_a_naming_on_the_preview_is_merged_onto_a_full_reading_that_landed_meanwhile(store):
+    preview = _preview_record()
+    named = {k: v for k, v in preview.items() if k != "status"}
+    named.update(named=True, vision={}, facts={**preview["facts"], "fea_measure": {"measured": True}},
+                 purpose_text="FEA", naming_seconds=1.0)
+    gc.write_status("m-1", "scouted", facts=_full_facts(), snapshots=[], skin_key="k")   # the full reading
+    landed = gc._land_named("m-1", named, preview)
+    stored = gc.read_check("m-1")
+    assert landed["status"] == "ready" and stored["status"] == "ready"
+    assert stored["facts"]["validity"]["clean"] is True and stored["facts"]["solids"] == 3   # the full reading's
+    assert stored["facts"]["fea_measure"] == {"measured": True}                          # what the naming added
+    assert stored["proposal"]["openings"][0]["name"] == "inlet" and "preview" not in stored
+
+
+def test_a_full_reading_landing_after_the_naming_is_merged_under_its_answer(store, monkeypatch, tmp_path):
+    _triangle_check(monkeypatch, tmp_path)
+    real_publish = gc._Preview.publish
+
+    def publish_then_name(self, **kw):
+        real_publish(self, **kw)
+        # the naming names the preview before the full reading lands
+        current = gc.read_check(self.session_id)
+        named = {k: v for k, v in current.items() if k not in ("status", "written_at", "session_id")}
+        named.update(named=True, vision={}, facts={**current["facts"], "fea_measure": {"measured": True}})
+        gc._land_named(self.session_id, named, current)
+    monkeypatch.setattr(gc._Preview, "publish", publish_then_name)
+    gc.write_status("m-2", "pending")
+    gc.run_geometry_check(session_id="m-2", owner_id="o1", source=_triangle_source())
+    stored = gc.read_check("m-2")
+    assert stored["status"] == "ready" and not stored.get("named_on_preview")
+    assert stored["facts"]["fea_measure"] == {"measured": True}
+    assert stored["facts"]["validity"]["kind"] != "unchecked"          # the full reading's clean check
+
+
+def test_the_naming_beats_while_it_works(store, monkeypatch):
+    started = []
+    real = gp.Tracker.start_heartbeat
+    monkeypatch.setattr(gp.Tracker, "start_heartbeat", lambda self, *a, **k: started.append(self.phase) or real(self, *a, **k))
+    monkeypatch.setattr(gc, "_name", lambda **k: {"status": "ready"})
+    gc.run_geometry_naming(session_id="m-3", owner_id="o1", purpose_text="FEA")
+    assert started == ["naming"]

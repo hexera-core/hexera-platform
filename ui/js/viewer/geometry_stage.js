@@ -244,16 +244,23 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
     if (d2.proposal) served = servedProposal(served, d2.proposal);
     followUnit(panel, p, q.unit, q.unit_basis);      // a unit settled in the chat reaches an untouched box
     followSuggestion(panel, p, q.unit_suggestion);   // the other reading, as the server now sees it
-    if (d2.status === "scouted" && previewShown && d2.preview !== "running") {
+    if ((d2.status === "scouted" || d2.status === "ready") && previewShown && d2.preview !== "running") {
       // THE FULL READING LANDED on a stage opened on the quick preview of a big file: its openings,
       // flat faces and holes come in - unless the user already set openings of their own, which
       // stand; what they changed on the form stays either way
       previewShown = false;
       const p2 = d2.proposal || {};
       if (!(p.openings || []).length) {
+        // the poll may meet the full reading already named (ready): it comes in the same way, and
+        // the ready re-draw below then takes the model's words onto these openings
         const chosen = p.unit_touched ? { unit: p.unit, unit_basis: p.unit_basis, unit_touched: true } : {};
+        // the flow axis the user turned and the reference length they typed outlive it, as on the
+        // ready re-draw
+        const answered = {};
+        if (p.flow_axis_touched) Object.assign(answered, { flow_axis: p.flow_axis, flow_axis_guessed: false, flow_axis_touched: true });
+        if (p.reference_length_typed) Object.assign(answered, { reference_length_mm: p.reference_length_mm, reference_length_typed: true });
         p.user_set = { ...(p.user_set || {}), ...changedAnswers(form) };
-        Object.assign(p, p2, chosen, p.user_set);
+        Object.assign(p, p2, chosen, answered, p.user_set);
         panel.querySelector(".gc-lead").innerHTML = leadHtml(p);
         form.innerHTML = formHtml(p);
         applyFlow(form); bindUnit(panel, p); bindAxis(form, p); noteDrawn(form); bindProceed(); scene.rebind();
@@ -1029,8 +1036,10 @@ async function openFeaStage(sessionId, d, confirm, opts) {
       // tags are drawn then
       const m = d2 && d2.fea && d2.fea.measure;
       const a = d2 && d2.fea && d2.fea.assembly;
-      // the bodies and the clean check, when the full reading lands after a preview opened the stage
-      if (d2 && d2.fea) followClean(panel, d2.fea);
+      // the bodies, the clean check and whether it can go on, when the full reading lands after a
+      // preview opened the stage: Proceed reads the same view (`f`), so a stop found late is shown
+      // with its way on rather than met as a refusal
+      if (d2 && d2.fea) { Object.assign(f, d2.fea); followClean(panel, f); }
       const moved = (m && followMeasure(panel, m, p, null)) | (a && followAssembly(panel, a));
       if (moved) {
         p.hot_spots = [...(((m || f.measure) || {}).hot_spots || []), ...interfaceMarks(a || f.assembly)];

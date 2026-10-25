@@ -223,6 +223,19 @@ export function followClean(root, f) {
     const html = cleanHtml(f);
     if (clean.outerHTML !== html) { clean.outerHTML = html; moved = true; }
   }
+  // A STOP THE FULL READING FOUND (a surface, not a closed solid): said, Proceed off, the way on
+  const btn = root.querySelector(".gc-proceed"), hint = root.querySelector(".gc-hint");
+  const blocked = f.single_part_only || "";
+  let box = root.querySelector(".fea-blocked");
+  if (blocked && !box) {
+    const acts = root.querySelector(".gc-tools") || root.querySelector(".gc-actions");
+    if (acts) acts.insertAdjacentHTML("beforebegin", `<div class="fea-blocked" role="alert">${esc(blocked)}</div>`);
+    box = root.querySelector(".fea-blocked");
+    moved = true;
+  } else if (box && !blocked) { box.remove(); moved = true; }
+  else if (box && box.textContent !== blocked) { box.textContent = blocked; moved = true; }
+  if (btn && btn.textContent !== "Confirming…") btn.disabled = !!blocked;
+  if (hint && blocked) hint.textContent = f.way_out || "Upload a single part to go on.";
   return moved;
 }
 

@@ -466,9 +466,20 @@ def _run_scout(session_id: str, owner_id: str, source: dict, interpretation: dic
     result["seconds"] = round(time.time() - started, 1)
     if preview.record is not None and result.get("status") == STATUS_SCOUTED:
         moved_on = preview.moved_on()
+        if moved_on is not None and moved_on.get("status") == STATUS_READY and moved_on.get("named_on_preview"):
+            # the naming named the preview before this full reading landed: the full reading is
+            # merged under the naming's answer, never dropped
+            full = {**result, "status": STATUS_SCOUTED}
+            merged = merged_onto_full({k: v for k, v in moved_on.items() if k not in _STAMPED_KEYS},
+                                      {"facts": (preview.record or {}).get("facts") or {}}, full)
+            stored = store_status(session_id, STATUS_READY, RETRY_NAMING, **merged)
+            tracker.finish(ok=True)
+            logger.info("geometry scout: the full reading merged under the naming - session=%s in %.1fs",
+                        session_id, result["seconds"])
+            return stored
         if moved_on is not None:
-            # the naming already named the preview (it waited for the full reading as long as it
-            # could): the user is acting on that record, so it is not replaced under them
+            # something else moved the check on (a failed naming the user is acting on): it is not
+            # replaced under them
             tracker.finish(ok=True)
             logger.info("geometry scout: the full reading landed after the naming - kept the %s record, "
                         "session=%s in %.1fs", moved_on.get("status"), session_id, result["seconds"])
@@ -1535,6 +1546,9 @@ def run_geometry_naming(*, session_id: str, owner_id: str, purpose_text: str,
 
     tracker = gp.Tracker(session_id, "naming")
     tracker.begin()
+    # the naming's heartbeat: an FEA measurement of a big assembly runs for minutes with nothing
+    # new to say, and must not be taken for a dead worker (time_boxed)
+    tracker.start_heartbeat()
     token = gp.track(tracker)
     try:
         landed = _name(session_id=session_id, owner_id=owner_id, purpose_text=purpose_text,
@@ -1561,6 +1575,7 @@ def run_geometry_naming(*, session_id: str, owner_id: str, purpose_text: str,
         return {"status": STATUS_FAILED, "named": False, "reason": reason, "step": RETRY_NAMING,
                 "retry": RETRY_NAMING}
     finally:
+        tracker.stop_heartbeat()
         gp.untrack(token)
 
 
@@ -1604,7 +1619,7 @@ def _name(*, session_id: str, owner_id: str, purpose_text: str, interpretation: 
         result = {k: v for k, v in stored.items() if k not in _STAMPED_KEYS + _FAILURE_KEYS}
         result.update(named=True, facts=facts, vision={}, proposal=proposal,
                       purpose_text=purpose_text[:2000], naming_seconds=round(time.time() - started, 1))
-        landed = store_status(session_id, STATUS_READY, RETRY_NAMING, **result)
+        landed = _land_named(session_id, result, stored)
         logger.info("geometry naming %s - session=%s (a thermal model names itself)", landed["status"], session_id)
         return landed
     if _is_fea(purpose_text):
@@ -1619,7 +1634,7 @@ def _name(*, session_id: str, owner_id: str, purpose_text: str, interpretation: 
         result = {k: v for k, v in stored.items() if k not in _STAMPED_KEYS + _FAILURE_KEYS}
         result.update(named=True, facts=facts, vision={}, proposal=proposal,
                       purpose_text=purpose_text[:2000], naming_seconds=round(time.time() - started, 1))
-        landed = store_status(session_id, STATUS_READY, RETRY_NAMING, **result)
+        landed = _land_named(session_id, result, stored)
         logger.info("geometry naming %s - session=%s (an FEA part: nothing to name)", landed["status"], session_id)
         return landed
 
@@ -1654,10 +1669,57 @@ def _name(*, session_id: str, owner_id: str, purpose_text: str, interpretation: 
                   purpose_text=purpose_text[:2000], naming_seconds=round(time.time() - started, 1))
     # the write is part of the step: a result the store refuses is stored as a failure over the
     # scout's record, so the stage stops waiting and keeps the part
-    landed = store_status(session_id, STATUS_READY, RETRY_NAMING, **result)
+    landed = _land_named(session_id, result, stored)
     logger.info("geometry naming %s - session=%s in %.1fs (model %s)", landed["status"], session_id,
                 result["naming_seconds"], "answered" if "error" not in vision else "unavailable")
     return landed
+
+
+def _land_named(session_id: str, result: dict, named_from: dict) -> dict:
+    """Store the naming's `ready` record. A naming made on a PREVIEW (it waited for the full reading
+    as long as its limit allowed) is merged onto the full reading when that has landed meanwhile -
+    its facts (read in the naming's unit), its openings and pictures, with what the naming added -
+    so the measured part is never lost under a ready record built from the quick drawing. When the
+    full reading has not landed, the record says it was named on the preview, and the scout merges
+    its full reading in when it lands (run_geometry_check)."""
+    result = dict(result)
+    on_preview = result.pop("preview", None) == PREVIEW_RUNNING or bool(result.get("named_on_preview"))
+    if on_preview:
+        try:
+            full = read_check(session_id)
+        except Exception:  # noqa: BLE001 - unreadable: the naming's record stands as it is
+            full = None
+        if full is not None and full.get("status") == STATUS_SCOUTED and not is_preview(full) and full.get("facts"):
+            result = merged_onto_full(result, named_from, full)
+        else:
+            result["named_on_preview"] = True
+    return store_status(session_id, STATUS_READY, RETRY_NAMING, **result)
+
+
+def merged_onto_full(named: dict, named_from: dict, full: dict) -> dict:
+    """A ready record the naming built on the preview `named_from`, re-made on the scout's `full`
+    reading: the full facts in the unit the naming settled (`scale_to_m`), plus every fact the naming
+    added (an FEA part's measurement), the proposal drawn again from them with the model's answer,
+    and the full reading's pictures and openings. Pure."""
+    named_facts = dict(named.get("facts") or {})
+    base_facts = (named_from or {}).get("facts") or {}
+    facts = dict(full.get("facts") or {})
+    try:
+        k = float(named_facts.get("scale_to_m") or 0.0) / float(facts.get("scale_to_m") or 0.0)
+    except (TypeError, ValueError, ZeroDivisionError):
+        k = 1.0
+    if k > 0 and abs(k - 1.0) > 1e-9:
+        facts = _rescaled(facts, k)
+        facts["scale_to_m"] = named_facts.get("scale_to_m")
+        facts["unit_assumed"] = named_facts.get("unit_assumed", False)
+        facts["notes"] = [n for n in facts.get("notes", []) if "assume millimetres" not in n]
+    facts.update({key: v for key, v in named_facts.items() if key not in base_facts})
+    vision = named.get("vision")
+    out = {key: v for key, v in full.items() if key not in _STAMPED_KEYS + _FAILURE_KEYS + ("preview",)}
+    out.update({key: named[key] for key in ("named", "vision", "purpose_text", "naming_seconds") if key in named})
+    out.update(facts=facts, proposal=_proposal(facts, vision))
+    out.pop("named_on_preview", None)
+    return out
 
 
 #: An upload larger than this is not measured for FEA in the naming step (the record says so; the
