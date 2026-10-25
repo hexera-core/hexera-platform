@@ -745,8 +745,15 @@ def _restore_pass(ws: Path, n: int) -> None:
             (ws / name).unlink(missing_ok=True)      # the delivered pass did not write it
 
 
+def _read_failure(ws: Path) -> dict:
+    try:
+        return json.loads((ws / "fea_failure.json").read_text())
+    except (OSError, ValueError):
+        return {}
+
+
 def _clear_outputs(ws: Path) -> None:
-    for name in ("mesh.inp", "mesh.bdf", "mesh.cdb", "mesh.msh", "quality.json"):
+    for name in ("mesh.inp", "mesh.bdf", "mesh.cdb", "mesh.msh", "quality.json", "fea_failure.json"):
         (ws / name).unlink(missing_ok=True)
 
 
@@ -933,6 +940,12 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                            "ran_on": {k: machine.get(k) for k in ("where", "machine", "memory_gib", "why")}})
             if made:
                 _keep_pass(ws, n)
+            else:
+                # WHERE IT FAILED, as the adapter wrote it beside the mesh (never lost under a traceback)
+                said = _read_failure(ws)
+                if said:
+                    passes[-1]["bad_faces"] = passes[-1].get("bad_faces") or said.get("bad_faces") or []
+                    passes[-1]["bad_surfaces"] = passes[-1].get("bad_surfaces") or said.get("bad_surfaces") or []
             if (not made and (record.get("assembly_plan") or {}).get("mode") == "bonded"
                     and _fused_fill_failed(result, passes[-1])):
                 # PLAN-fea-17 AT ONCE: the fill could not build the FUSED bonded parts (a volume left

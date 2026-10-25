@@ -110,6 +110,20 @@ BAD_SURFACES = "[GMSH-FEA] BAD SURFACES:"
 BAD_FACES = "[GMSH-FEA] BAD FACES:"
 
 
+#: Where a failed fill went wrong, as a file beside the mesh (the log's tail can lose the line under a
+#: long traceback - fc_folding_chair, 24 Oct): the driver reads it after a pass that built nothing.
+FAILURE_FILE = "fea_failure.json"
+
+
+def note_failure(ws, surfaces, faces, exc=None) -> None:
+    try:
+        (Path(ws) / FAILURE_FILE).write_text(json.dumps({
+            "bad_surfaces": sorted(int(s) for s in surfaces), "bad_faces": sorted(str(f) for f in faces),
+            "error": str(exc or "")[:500]}))
+    except OSError:
+        pass
+
+
 def face_names_of(tags, face_tags: dict[str, list[int]] | None) -> list[str]:
     """The CAD face names of gmsh surface `tags`: an assembly's by its sidecar, a single part's Face_k
     (gmsh numbers a single solid's faces in OpenCASCADE's order, as the measurement does)."""
@@ -627,6 +641,7 @@ def mesh(workspace) -> int:
                 named = surfaces_at_point(gmsh, str(exc), surfaces) or crossing_surfaces(gmsh, surfaces)
             print(f"{BAD_SURFACES} {','.join(str(s) for s in named)}", file=sys.stderr)
             print(f"{BAD_FACES} {','.join(face_names_of(named, face_tags))}", file=sys.stderr)
+            note_failure(ws, named, face_names_of(named, face_tags), exc)
             raise
         # A VOLUME LEFT EMPTY is a failed fill, not a mesh (fc_computer_desk, 24 Oct: "No elements in
         # volume 5", then the deck writer crashed on the faces of a part with no elements): said with
@@ -638,6 +653,7 @@ def mesh(workspace) -> int:
             print(f"{EMPTY_VOLUMES} {','.join(str(v) for v in hollow)}", file=sys.stderr)
             print(f"{BAD_SURFACES} {','.join(str(s) for s in named)}", file=sys.stderr)
             print(f"{BAD_FACES} {','.join(face_names_of(named, face_tags))}", file=sys.stderr)
+            note_failure(ws, named, face_names_of(named, face_tags))
             raise RuntimeError(f"{EMPTY_VOLUMES} the 3D fill left volume(s) {hollow} with no elements")
         note_stage(ws, "optimising", "improving the elements")
         for _ in range(int(run.get("optimise_passes") or 1)):
