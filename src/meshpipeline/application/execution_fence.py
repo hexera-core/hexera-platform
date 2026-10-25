@@ -265,13 +265,16 @@ async def guard_redelivery(session_factory, job_repo, job_id: str, *, jlog, max_
 #: the claim commits, so trying again is safe; the job stays queued while it waits.
 CLAIM_WAIT_FIRST_S = 5.0
 CLAIM_WAIT_MAX_STEP_S = 60.0
-CLAIM_WAIT_TOTAL_S = 900.0
+#: The whole wait: settings/runtime CLAIM_WAIT_SECONDS (read per call, so a test or a deployment can set it).
+CLAIM_WAIT_TOTAL_S: float | None = None
 
 
 def _is_transient_dependency(exc: BaseException) -> bool:
-    from meshpipeline.errors import FailureClass, classify_exception
-    return classify_exception(exc, "postgres").failure_class in (
-        FailureClass.DEPENDENCY_DOWN, FailureClass.PROVIDER_TRANSIENT)
+    """The database ANSWERED and said "not now": full, starting up or shutting down - what a roll
+    looks like. A database that cannot be reached at all (refused, wrong address) is not waited
+    for: that is an outage or a misconfiguration, and the run says so at once, as before."""
+    from meshpipeline.errors import is_database_busy
+    return is_database_busy(exc)
 
 
 async def claim_delivery_patiently(session_factory, job_repo, job_id: str, *, jlog, backend: str,
@@ -284,7 +287,13 @@ async def claim_delivery_patiently(session_factory, job_repo, job_id: str, *, jl
     one delivery waiting, not a new one."""
     import time as _time
     now = clock or _time.monotonic
-    budget = CLAIM_WAIT_TOTAL_S if total_s is None else float(total_s)
+    if total_s is not None:
+        budget = float(total_s)
+    elif CLAIM_WAIT_TOTAL_S is not None:
+        budget = float(CLAIM_WAIT_TOTAL_S)
+    else:
+        import meshpipeline.settings.runtime as _rt
+        budget = float(_rt.CLAIM_WAIT_SECONDS)
     start, step, tries = now(), CLAIM_WAIT_FIRST_S, 0
     while True:
         try:

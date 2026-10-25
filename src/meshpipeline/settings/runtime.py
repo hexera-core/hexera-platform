@@ -103,6 +103,9 @@ if WORKER_HEARTBEAT_SECONDS >= WORKER_LEASE_SECONDS:
 # Crashed jobs are redelivered (acks_late) and re-run (idempotent); one that DETERMINISTICALLY
 # crashes the worker is dead-lettered after this many deliveries (the retry-storm guard).
 CELERY_MAX_REDELIVERIES: int = int(optional_env("CELERY_MAX_REDELIVERIES", "3"))
+# How long a job waits, still queued, for a database that will not take its claim yet (full during
+# a redeploy, starting up) before it fails as dependency_down (application/execution_fence).
+CLAIM_WAIT_SECONDS: int = int(optional_env("CLAIM_WAIT_SECONDS", "900"))
 # Request-level rate limit (per identity, per minute) - 0 disables. Job quotas are separate.
 RATE_LIMIT_PER_MINUTE: int = int(optional_env("RATE_LIMIT_PER_MINUTE", "240"))
 # The safety ceilings beside it (api/middleware/hardening.py): every caller together, and one address

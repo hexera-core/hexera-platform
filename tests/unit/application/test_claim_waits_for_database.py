@@ -104,6 +104,14 @@ def test_a_real_bug_is_not_retried(monkeypatch):
     assert calls == [1] and slept == []
 
 
+def test_an_unreachable_database_is_not_waited_for(monkeypatch):
+    # refused = an outage or a wrong address, not a roll: said at once, as before
+    coro, calls, slept = _patient(monkeypatch, [ConnectionRefusedError("[Errno 111] Connect call failed")])
+    with pytest.raises(ConnectionRefusedError):
+        _run(coro)
+    assert calls == [1] and slept == []
+
+
 def test_the_run_claims_through_the_patient_path():
     import inspect
 

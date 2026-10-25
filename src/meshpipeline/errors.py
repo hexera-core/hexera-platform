@@ -101,7 +101,15 @@ _CONN_NAMES    = ("ConnectionError", "ConnectError", "APIConnectionError",
 _CONN_MESSAGES = ("remaining connection slots are reserved", "too many clients already",
                   "sorry, too many clients", "the database system is starting up",
                   "the database system is shutting down")
-_RATE_NAMES   = ("RateLimitError", "TooManyRequests")
+_BUSY_NAMES    = ("TooManyConnections", "CannotConnectNow")
+_RATE_NAMES    = ("RateLimitError", "TooManyRequests")
+
+
+def is_database_busy(exc: BaseException) -> bool:
+    """The database answered "not now" - full, starting up or shutting down, what a deploy roll
+    looks like - as opposed to not answering at all. Worth waiting out; an unreachable one is not."""
+    name = type(exc).__name__
+    return any(t in name for t in _BUSY_NAMES) or any(m in str(exc).lower() for m in _CONN_MESSAGES)
 _SERVER_NAMES  = ("InternalServerError", "ServiceUnavailable", "BadGateway",
                   "ServerError", "S3Error", "MinioException")
 
