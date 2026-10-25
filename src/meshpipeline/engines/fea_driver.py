@@ -725,6 +725,30 @@ def _fused_fill_failed(result: dict, facts: dict) -> bool:
     return _empty_volumes_named(log) or any(w in log for w in FUSED_FILL_ERRORS)
 
 
+#: The share of an invalid fused pass's bad surfaces that must be fused interfaces for the tie to come
+#: at once: the bad elements are where the parts were joined, not in the parts.
+FUSED_BAD_SHARE = 0.5
+
+
+def _fused_joints_invalid(q: dict) -> bool:
+    """A FUSED BONDED PASS THAT CAME BACK INVALID AT THE JOINTS (kart_roll_cage, 24 Oct: welded tubes
+    overlapping at every joint - 1,495 s and then an AI-lever retry of 3,700 s, both with inverted
+    elements on the fused interfaces, before the tie passed in 2.4 min): most of its bad surfaces are
+    fused interfaces, so no other setting of the same fused mesh will do, and the tie comes now."""
+    bad = list(q.get("fea_bad_surfaces") or [])
+    on = list(q.get("fea_bad_interface") or [])
+    return bool(bad and on and len(on) >= FUSED_BAD_SHARE * len(bad))
+
+
+def _keep_pass_log(ws: Path, n: int) -> None:
+    """Every pass keeps its own gmsh log (and its failure note) in its pass folder - not only the last."""
+    d = ws / PASS_FOLDER.format(n=n)
+    d.mkdir(exist_ok=True)
+    for name in ("gmshfea.log", "fea_failure.json"):
+        if (ws / name).exists():
+            shutil.copy2(ws / name, d / name)
+
+
 def _empty_volumes_named(log: str) -> bool:
     from meshpipeline.engines.gmsh.fea_adapter import EMPTY_VOLUMES
     return EMPTY_VOLUMES in log
@@ -982,6 +1006,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                                           killed=killed), "native_s": native_s,
                            # RUN-4: where it ran, and why
                            "ran_on": {k: machine.get(k) for k in ("where", "machine", "memory_gib", "why")}})
+            _keep_pass_log(ws, n)
             if made:
                 _keep_pass(ws, n)
             else:
@@ -990,8 +1015,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                 if said:
                     passes[-1]["bad_faces"] = passes[-1].get("bad_faces") or said.get("bad_faces") or []
                     passes[-1]["bad_surfaces"] = passes[-1].get("bad_surfaces") or said.get("bad_surfaces") or []
-            if (not made and (record.get("assembly_plan") or {}).get("mode") == "bonded"
-                    and _fused_fill_failed(result, passes[-1])):
+            if ((record.get("assembly_plan") or {}).get("mode") == "bonded" and not passes[-1].get("valid")
+                    and (_fused_fill_failed(result, passes[-1]) if not made else _fused_joints_invalid(q))):
                 # PLAN-fea-17 AT ONCE: the fill could not build the FUSED bonded parts (a volume left
                 # empty, or the fused boundary crossing itself where parts pass into each other) - no
                 # other 3D algorithm fixes the geometry, so the parts go straight to being meshed apart

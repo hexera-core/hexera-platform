@@ -661,3 +661,53 @@ def test_suspected_defects_are_renamed_with_the_assembly():
     rec = {"suspects": [{"kind": "fold", "faces": ["Face_2", "Face_3"]}]}
     out = A.rename_record(rec, ["Part_1_Face_1", "Part_1_Face_2", "Part_2_Face_1"])
     assert out["suspects"][0]["faces"] == ["Part_1_Face_2", "Part_2_Face_1"]
+
+
+def _invalid_mesher(modes, interface):
+    def mesher(w, timeout):
+        w = Path(w)
+        mode = json.loads((w / "fea_plan.json").read_text())["assembly"]["mode"]
+        modes.append(mode)
+        (w / "mesh.inp").write_text("*NODE\n")
+        (w / "quality.json").write_text(json.dumps({
+            "cells": 100, "min_sicn": -0.22, "fatal": ["degenerate elements (SICN <= 0)"],
+            "fea_bad_surfaces": [3, 4, 5, 6], "fea_bad_interface": interface, "fea": {"rules": {}}}))
+        return {"rc": 4, "log_tail": ""}
+    return mesher
+
+
+def test_an_invalid_fused_pass_with_bad_elements_on_the_joints_is_tied_at_once(tmp_path, monkeypatch):
+    """kart_roll_cage (24 Oct): two fused passes (1,495 s, then an AI-lever retry of 3,700 s), both with
+    inverted elements on the fused interfaces, before the tie passed in 2.4 min. Tied after the first."""
+    from meshpipeline.engines import runtime
+
+    modes: list = []
+    ws = _stage(fx.touching_blocks(), tmp_path / "joints")
+    monkeypatch.setattr(runtime, "get_engine", lambda _n: SimpleNamespace(
+        run_cartesian_mesh=_invalid_mesher(modes, [3, 4, 5])))
+    asyncio.run(FD.drive(ws, {"purpose": "structural"}, job_id=f"t-{ws.name}", publish=None,
+                         run=_Run(), source_path=str(ws / "upload.step")))
+    assert modes[:2] == ["bonded", "tie"]
+    assert (ws / FD.PASS_FOLDER.format(n=1)).is_dir()
+
+
+def test_an_invalid_fused_pass_elsewhere_keeps_the_ladder(tmp_path, monkeypatch):
+    """Bad elements inside a part (not on the joints): the ladder's own next pass, still fused."""
+    from meshpipeline.engines import runtime
+
+    modes: list = []
+    ws = _stage(fx.touching_blocks(), tmp_path / "inside")
+    monkeypatch.setattr(runtime, "get_engine", lambda _n: SimpleNamespace(
+        run_cartesian_mesh=_invalid_mesher(modes, [3])))
+    asyncio.run(FD.drive(ws, {"purpose": "structural"}, job_id=f"t-{ws.name}", publish=None,
+                         run=_Run(), source_path=str(ws / "upload.step")))
+    assert modes[:2] == ["bonded", "bonded"]
+
+
+def test_every_pass_keeps_its_own_gmsh_log(tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    for n in (1, 2):
+        (ws / "gmshfea.log").write_text(f"pass {n}")
+        FD._keep_pass_log(ws, n)
+    assert [(ws / FD.PASS_FOLDER.format(n=n) / "gmshfea.log").read_text() for n in (1, 2)] == ["pass 1", "pass 2"]

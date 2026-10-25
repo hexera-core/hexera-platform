@@ -124,6 +124,22 @@ def note_failure(ws, surfaces, faces, exc=None) -> None:
         pass
 
 
+def interface_surfaces(gmsh, sidecar: dict, volume_tag: dict[int, int]) -> set[int]:
+    """THE FUSED INTERFACES of a bonded assembly: every surface that bounds a piece two parts share (an
+    overlap), or that lies between volumes of different parts - where the fuse joined parts."""
+    owners: dict[int, set[int]] = {}
+    for k, row in enumerate(sidecar.get("volumes") or []):
+        if k in volume_tag:
+            owners[int(volume_tag[k])] = {int(p) for p in row.get("parts") or []}
+    out: set[int] = set()
+    for _d, s in gmsh.model.getEntities(2):
+        up = [int(v) for v in gmsh.model.getAdjacencies(2, s)[0]]
+        parts = set().union(*(owners.get(v, set()) for v in up)) if up else set()
+        if len(parts) > 1 or any(len(owners.get(v, set())) > 1 for v in up):
+            out.add(int(s))
+    return out
+
+
 def face_names_of(tags, face_tags: dict[str, list[int]] | None) -> list[str]:
     """The CAD face names of gmsh surface `tags`: an assembly's by its sidecar, a single part's Face_k
     (gmsh numbers a single solid's faces in OpenCASCADE's order, as the measurement does)."""
@@ -774,6 +790,9 @@ def mesh(workspace) -> int:
             "fea_rules_short": len(rules.get("short") or []) if rules else None,
             "fea_bad_surfaces": traced,
             "fea_bad_faces": face_names_of(traced, face_tags),
+            # PLAN-fea-17: the invalid elements' surfaces that are FUSED INTERFACES (a bonded assembly)
+            "fea_bad_interface": (sorted(set(traced) & interface_surfaces(gmsh, sidecar, volume_tag))
+                                  if asm and traced and str(sidecar.get("mode") or "") == "bonded" else []),
             # PLAN-fea-16: the mesher's peak memory, for the bytes-per-element model
             "peak_rss_mb": _peak_rss_mb(),
             # THE PLAN'S RULES AS MET (engines/fea_checks.py): the gate reads the through-wall
