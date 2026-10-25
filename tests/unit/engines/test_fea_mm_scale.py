@@ -36,6 +36,31 @@ def _stage(shape, ws: Path) -> Path:
     return ws
 
 
+#: a small block (40 x 20 x 6 mm): quick to plan and mesh, six named faces
+def _part():
+    return fx._box(0, 0, 0, 40, 20, 6)
+
+
+@pytest.fixture(scope="module")
+def staged(tmp_path_factory) -> Path:
+    return _stage(_part(), tmp_path_factory.mktemp("fea_mm_staged"))
+
+
+@pytest.fixture(scope="module")
+def metre_mesh(staged, tmp_path_factory) -> Path:
+    """The block meshed the ordinary way, in metres - the reference the millimetre mesh is held to."""
+    ws = _ws(staged, tmp_path_factory.mktemp("fea_mm_ref") / "ref")
+    assert A.mesh(ws) == 0
+    return ws
+
+
+def _ws(staged: Path, dst: Path) -> Path:
+    import shutil
+
+    shutil.copytree(staged, dst)
+    return dst
+
+
 def _fail_in_metres(monkeypatch, *, always: bool = False) -> list[float]:
     """build_volume as it is, but failing the way the housing failed whenever the scale is metres
     (or at every scale). Returns the scales it was asked for."""
@@ -68,8 +93,8 @@ def test_every_length_of_the_plan_is_scaled_and_nothing_else():
     assert A.scaled_plan(plan, 1.0) is plan
 
 
-def test_a_solid_that_meshes_in_metres_never_takes_the_millimetre_way(tmp_path, monkeypatch):
-    ws = _stage(fx.plate_with_hole(), tmp_path / "m")
+def test_a_solid_that_meshes_in_metres_never_takes_the_millimetre_way(staged, tmp_path, monkeypatch):
+    ws = _ws(staged, tmp_path / "m")
     real = A.build_volume
     asked: list[float] = []
     monkeypatch.setattr(A, "build_volume", lambda *a, **k: asked.append(k.get("scale", 1.0)) or real(*a, **k))
@@ -78,27 +103,27 @@ def test_a_solid_that_meshes_in_metres_never_takes_the_millimetre_way(tmp_path, 
     assert "fea_mesh_scale" not in json.loads((ws / "quality.json").read_text())
 
 
-def test_a_solid_that_fails_in_metres_is_meshed_in_millimetres_and_delivered_in_metres(tmp_path, monkeypatch):
-    ref = _stage(fx.plate_with_hole(), tmp_path / "ref")
-    assert A.mesh(ref) == 0
-    ws = _stage(fx.plate_with_hole(), tmp_path / "mm")
+def test_a_solid_that_fails_in_metres_is_meshed_in_millimetres_and_delivered_in_metres(staged, metre_mesh, tmp_path,
+                                                                                      monkeypatch):
+    ref = metre_mesh
+    ws = _ws(staged, tmp_path / "mm")
     asked = _fail_in_metres(monkeypatch)
     assert A.mesh(ws) == 0
     assert asked == [1.0, A.MM_PER_M]
     q, q_ref = (json.loads((w / "quality.json").read_text()) for w in (ws, ref))
     assert q["fea_mesh_scale"] == "mm" and not q["fatal"] and q["min_sicn"] > 0.0
-    # the same part, in metres, sized as planned: the bounds of the 120 x 60 x 4 mm plate, about as many
+    # the same part, in metres, sized as planned: the bounds of the 40 x 20 x 6 mm block, about as many
     # elements as the metre mesh, the walls held to their rule
     assert q["bounds"] == pytest.approx(q_ref["bounds"], abs=1e-6)
     assert 0.9 * q_ref["cells"] <= q["cells"] <= 1.1 * q_ref["cells"]
     assert q["fea"]["rules"]["short"] == []
     deck = (ws / "mesh.inp").read_text()
-    for k in range(1, 8):
+    for k in range(1, 7):
         assert f"*SURFACE, NAME=Face_{k}," in deck
 
 
-def test_a_failure_at_both_scales_names_its_surfaces_for_the_ladder(tmp_path, monkeypatch, capsys):
-    ws = _stage(fx.plate_with_hole(), tmp_path / "both")
+def test_a_failure_at_both_scales_names_its_surfaces_for_the_ladder(staged, tmp_path, monkeypatch, capsys):
+    ws = _ws(staged, tmp_path / "both")
     _fail_in_metres(monkeypatch, always=True)
     with pytest.raises(RuntimeError, match="periodic surface 3"):
         A.mesh(ws)
@@ -108,10 +133,10 @@ def test_a_failure_at_both_scales_names_its_surfaces_for_the_ladder(tmp_path, mo
     assert said["bad_surfaces"] == [3] and said["bad_faces"] == ["Face_3"]
 
 
-def test_a_surface_gmsh_cannot_mesh_is_a_named_failure_not_a_bare_traceback(tmp_path, monkeypatch):
+def test_a_surface_gmsh_cannot_mesh_is_a_named_failure_not_a_bare_traceback(staged, tmp_path, monkeypatch):
     """The 2D stage's own error ("Impossible to mesh periodic surface 26") names the surface: the ladder
     reads it (the housing's tied passes failed naming nothing before)."""
-    ws = _stage(fx.plate_with_hole(), tmp_path / "2d")
+    ws = _ws(staged, tmp_path / "2d")
 
     def surface_mesh(gmsh_, surfaces, remesh):
         raise Exception("Impossible to mesh periodic surface 2")
@@ -123,23 +148,23 @@ def test_a_surface_gmsh_cannot_mesh_is_a_named_failure_not_a_bare_traceback(tmp_
     assert said["bad_surfaces"] == [2] and said["bad_faces"] == ["Face_2"]
 
 
-def _cfd_ws(ws: Path) -> Path:
+def _cfd_ws(staged: Path, ws: Path) -> Path:
     """A CAD solid staged for the CFD gmsh path (geometry.step in metres, a plain spec)."""
-    _stage(fx.plate_with_hole(), ws)
+    _ws(staged, ws)
     (ws / "fea_plan.json").unlink()                 # the CFD driver, not the FEA plan
-    (ws / "gmsh_spec.json").write_text(json.dumps({"size": {"mode": "factor", "value": 0.05},
+    (ws / "gmsh_spec.json").write_text(json.dumps({"size": {"mode": "factor", "value": 0.08},
                                                    "dimensionality": "3D", "element_order": 2}))
     return ws
 
 
-def test_the_cfd_path_meshes_a_cad_solid_it_cannot_mesh_in_metres_in_millimetres(tmp_path, monkeypatch, capsys):
+def test_the_cfd_path_meshes_a_cad_solid_it_cannot_mesh_in_metres_in_millimetres(staged, tmp_path, monkeypatch, capsys):
     """MESH-4 covers the CFD gmsh path too: the same metre-scale fill failure on a CAD solid is meshed
     again at millimetre scale and delivered in metres, its groups intact."""
     from meshpipeline.engines.gmsh import driver as D
 
-    ref = _cfd_ws(tmp_path / "ref")
+    ref = _cfd_ws(staged, tmp_path / "ref")
     assert D.main(str(ref)) == 0
-    ws = _cfd_ws(tmp_path / "mm")
+    ws = _cfd_ws(staged, tmp_path / "mm")
     real = gmsh.model.mesh.generate
     calls: list[int] = []
 
@@ -158,10 +183,10 @@ def test_the_cfd_path_meshes_a_cad_solid_it_cannot_mesh_in_metres_in_millimetres
     assert 0.9 * q_ref["cells"] <= q["cells"] <= 1.1 * q_ref["cells"]
 
 
-def test_the_cfd_path_never_takes_the_millimetre_way_for_a_solid_that_meshes(tmp_path, capsys):
+def test_the_cfd_path_never_takes_the_millimetre_way_for_a_solid_that_meshes(staged, tmp_path, capsys):
     from meshpipeline.engines.gmsh import driver as D
 
-    ws = _cfd_ws(tmp_path / "m")
+    ws = _cfd_ws(staged, tmp_path / "m")
     assert D.main(str(ws)) == 0
     err = capsys.readouterr().err
     assert "MESH-4" not in err and "MILLIMETRE" not in err
@@ -267,7 +292,7 @@ def test_a_stall_in_the_surface_stage_names_the_surface_and_one_after_it_does_no
     assert "surface_switch" not in L.mesh_settings([])
 
 
-def test_a_surface_stage_that_stalls_is_meshed_again_without_gmshs_switch(tmp_path, monkeypatch):
+def test_a_surface_stage_that_stalls_is_meshed_again_without_gmshs_switch(staged, tmp_path, monkeypatch):
     """LAD-fea-8: the watchdog stopped the mesher in 2D (gmsh's MeshAdapt on one face ran past the watchdog): the part's,
     not ours - the next pass keeps gmsh's first mesh of every face and delivers."""
     import asyncio
@@ -276,7 +301,7 @@ def test_a_surface_stage_that_stalls_is_meshed_again_without_gmshs_switch(tmp_pa
     from meshpipeline.contracts import decision_record as dr
     from meshpipeline.engines import runtime
 
-    ws = _stage(fx.plate_with_hole(), tmp_path / "stall")
+    ws = _ws(staged, tmp_path / "stall")
     seen: list[object] = []
 
     def _run(w, timeout):
