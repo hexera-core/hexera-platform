@@ -286,6 +286,8 @@ def prepare_assembly(ws: Path, record: dict, surface, *, connection: str, source
     record["assembly_plan"] = {"staged": A.STAGED, "sidecar": A.SIDECAR, "connection": connection,
                                "mode": sidecar["mode"], "parts": sidecar["parts"], "pairs": len(sidecar["pairs"]),
                                "interfaces": len(sidecar["interfaces"]), "notes": notes + list(sidecar["notes"]),
+                               # TIED FROM THE START: too many parts pass into each other to fuse (TIE_FIRST_OVERLAPS)
+                               "tie_first": sidecar.get("tie_first"),
                                # WHERE THE PARTS MEET, for the AI's joint suggestion (engines/fea_ai AI-fea-7)
                                "pair_list": [{"pair": i.get("id"), "kind": i.get("kind"), "parts": i.get("parts"),
                                               "area_mm2": i.get("area_mm2"), "at_mm": i.get("at_mm")}
@@ -877,7 +879,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         _cite(job_id, [{"stage": "fea_plan", "decided": "assembly", "value": asm.get("mode"),
                         "rule": "PLAN-fea-17",
                         "inputs": {"bodies": record.get("bodies"), "connection": connection,
-                                   "pairs": asm.get("pairs"), "interfaces": asm.get("interfaces")},
+                                   "pairs": asm.get("pairs"), "interfaces": asm.get("interfaces"),
+                                   "tie_first": asm.get("tie_first")},
                         "words": " ".join(P.assembly_words(asm)[:2])}])
     if not record.get("faces") or not any("thickness_min_mm" in (r or {}) for r in record["faces"].values()):
         # PLAN-fea-3 cannot be planned on walls nobody measured: stop before meshing rather than

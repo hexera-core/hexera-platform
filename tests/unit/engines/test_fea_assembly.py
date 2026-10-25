@@ -743,3 +743,17 @@ def test_an_assembly_failing_where_parts_pass_into_each_other_is_never_a_cad_rep
     assert got["faces"] == ["Face_9"] and got["suspects"] == [broken]
     # a single part keeps #299's rule (one measure at the failing faces)
     assert FD.defect_at_failure({"suspects": [one_check]}, passes)["faces"] == ["Face_9"]
+
+
+def test_a_bonded_assembly_with_many_parts_passing_into_each_other_is_tied_from_the_start(tmp_path):
+    """lp_lptl_support (25 Oct): 26 pairs of welded tubes passing into each other; its fused mesh ran
+    past the 230-minute wall. That many pairs is staged apart and tied before any pass."""
+    many = A.stage(fx.overlapping_chain(A.TIE_FIRST_OVERLAPS + 1), A.BONDED, tmp_path / "many")
+    assert many["mode"] == A.PAIR_TIE
+    assert many["tie_first"] == {"overlap_pairs": A.TIE_FIRST_OVERLAPS, "at": A.TIE_FIRST_OVERLAPS}
+    assert any("too many to mesh as one piece" in n for n in many["notes"])
+    few = A.stage(fx.overlapping_chain(A.TIE_FIRST_OVERLAPS), A.BONDED, tmp_path / "few")
+    assert few["mode"] == A.PAIR_BONDED and few["tie_first"] is None
+    # contact is staged apart anyway: nothing to decide
+    assert A.stage(fx.overlapping_chain(A.TIE_FIRST_OVERLAPS + 1), A.CONTACT,
+                   tmp_path / "contact")["tie_first"] is None

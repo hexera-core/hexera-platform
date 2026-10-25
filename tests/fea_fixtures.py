@@ -238,6 +238,12 @@ def doubled_block():
     return _compound(_box(0, 0, 0, 10, 10, 10), _box(0, 0, 0, 10, 10, 10))
 
 
+def overlapping_chain(n: int):
+    """`n` 10 mm cubes in a row, each shifted 8 mm along x from the one before: n - 1 pairs of parts
+    passing into each other (a welded frame drawn with its members running into one another)."""
+    return _compound(*[_box(8 * k, 0, 0, 10, 10, 10) for k in range(n)])
+
+
 def overlapping_blocks():
     """Two 10 mm cubes, the second shifted 8 mm along x: they PASS INTO each other over a 2 x 10 x 10
     mm slab (interference: 20% of either part)."""
