@@ -120,6 +120,41 @@ def find(shape, record: dict, *, validity: dict | None = None, check_overlaps: b
         s["confirmed"] = bool(hit and (hit & want))
         if s["confirmed"]:
             s["evidence"].append("OpenCASCADE's Boolean self-interference check names the same faces")
+    # THE BOOLEAN CHECK'S OWN FINDINGS, solid by solid, where no other measure found anything: a note
+    # (one measure), so a mesh that fails there can still be told as the CAD's (fc_folding_chair, 24 Oct:
+    # its frame crosses itself where the tessellated crossing search saw nothing). In the run only (no
+    # stored check given): the stage stays as quick as it was
+    if check_overlaps and validity is None:
+        out.extend(_boolean_only(shape, names, {int(s["body"] or 0) for s in out}))
+    return out
+
+
+#: How long the solid-by-solid Boolean check may take in all (seconds); past it, the rest is not checked.
+BOOLEAN_BUDGET_S = 60.0
+
+
+def _boolean_only(shape, names: list[str], covered: set[int]) -> list[dict]:
+    import time
+
+    from OCP.TopAbs import TopAbs_SOLID
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    solids = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(shape, TopAbs_SOLID, solids)
+    t0 = time.monotonic()
+    out = []
+    for k in range(1, solids.Extent() + 1):
+        if k in covered or time.monotonic() - t0 > BOOLEAN_BUDGET_S:
+            continue
+        hit = _boolean_faces(shape, k)
+        if not hit:
+            continue
+        faces = [names[i - 1] for i in sorted(hit) if 0 < i <= len(names)][:12]
+        if faces:
+            out.append({"kind": "self_overlap", "body": k, "faces": faces, "confirmed": False,
+                        "evidence": ["OpenCASCADE's Boolean self-interference check names these faces; the "
+                                     "crossing search saw nothing there"]})
     return out
 
 

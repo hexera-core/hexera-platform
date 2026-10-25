@@ -320,6 +320,89 @@ def surface_mesh(gmsh, surfaces: set[int], remesh: set[int]) -> list[int]:
     return empty
 
 
+def fill_each_volume(gmsh, vols) -> None:
+    """PARTS MESHED APART ARE FILLED APART (tie, contact): each volume on its own, from its own surface
+    mesh - parts that pass into each other in space (an interference) then never make one boundary that
+    crosses itself (fc_folding_chair, 24 Oct: "PLC Error: Two facets intersect" on the four overlapping
+    slat pairs when all were filled at once). The same algorithm, the same surface meshes."""
+    everything = gmsh.model.getEntities()
+    gmsh.option.setNumber("Mesh.MeshOnlyVisible", 1)
+    try:
+        for v in vols:
+            gmsh.model.setVisibility(everything, 0)
+            gmsh.model.setVisibility([(3, int(v))], 1, recursive=True)
+            try:
+                gmsh.model.mesh.generate(3)
+            except Exception as exc:
+                # THE PART THAT FAILED, and where: its own surfaces whose meshes cross each other
+                own = {abs(int(t)) for _d, t in gmsh.model.getBoundary([(3, int(v))], oriented=False)}
+                where = crossing_surfaces(gmsh, own) or sorted(own)[:12]
+                raise RuntimeError(f"{exc} (volume {int(v)}; on surface {', surface '.join(str(t) for t in where)})") from exc
+    finally:
+        gmsh.model.setVisibility(everything, 1)
+        gmsh.option.setNumber("Mesh.MeshOnlyVisible", 0)
+
+
+def crossing_surfaces(gmsh, surfaces: set[int], *, limit: int = 12) -> list[int]:
+    """The surfaces whose surface meshes pass through each other (cad/crossings on the 2D mesh) - where a
+    fill that failed on "facets intersect" went wrong when gmsh's message names no surface."""
+    import numpy as np
+
+    from meshpipeline.cad.crossings import find_crossings
+
+    try:
+        node_tags, xyz, _ = gmsh.model.mesh.getNodes()
+        index = {int(t): k for k, t in enumerate(node_tags)}
+        pts = np.asarray(xyz, dtype=float).reshape(-1, 3)
+        tris, owner = [], []
+        for s in sorted(surfaces):
+            types, _tags, nodes = gmsh.model.mesh.getElements(2, s)
+            for et, nd in zip(types, nodes, strict=True):
+                if int(et) not in (2, 9):            # 3- or 6-node triangles: their corners
+                    continue
+                per = 3 if int(et) == 2 else 6
+                arr = np.asarray(nd, dtype=np.int64).reshape(-1, per)[:, :3]
+                tris.append(np.vectorize(index.get)(arr))
+                owner.append(np.full(len(arr), s))
+        if not tris:
+            return []
+        T = np.concatenate(tris)
+        own = np.concatenate(owner)
+        found = find_crossings(pts, T)
+        hit: dict[int, int] = {}
+        for a, b in found.pairs.tolist():
+            for t in (own[a], own[b]):
+                hit[int(t)] = hit.get(int(t), 0) + 1
+        return [s for s, _n in sorted(hit.items(), key=lambda kv: -kv[1])[:limit]]
+    except Exception:  # noqa: BLE001 - a search we cannot run names nothing
+        return []
+
+
+def surfaces_at_point(gmsh, text: str, surfaces: set[int], *, share: float = 1e-4) -> list[int]:
+    """The surfaces at the point a gmsh error names ("... intersect at point (x,y,z)") - within `share`
+    of the model's size, the nearest ones else - so a failed fill that names no surface still says where
+    (fc_folding_chair, 24 Oct: "PLC Error: Two facets intersect at point (0.104,0.39,-0.146)")."""
+    import math
+    import re
+
+    m = re.search(r"at point \(\s*([-+0-9.eE]+)\s*,\s*([-+0-9.eE]+)\s*,\s*([-+0-9.eE]+)\s*\)", text or "")
+    if not m or not surfaces:
+        return []
+    p = [float(m.group(k)) for k in (1, 2, 3)]
+    try:
+        x0, y0, z0, x1, y1, z1 = gmsh.model.getBoundingBox(-1, -1)
+        size = math.dist((x0, y0, z0), (x1, y1, z1)) or 1.0
+        near = []
+        for s in sorted(surfaces):
+            q = gmsh.model.getClosestPoint(2, s, p)[0]
+            near.append((math.dist(p, q[:3]), s))
+        near.sort()
+        within = [s for d, s in near if d <= share * size]
+        return within or [s for _d, s in near[:2]]
+    except Exception:  # noqa: BLE001 - a point we cannot place names nothing
+        return []
+
+
 def surfaces_named(text: str) -> list[int]:
     """The surface tags a gmsh error names ("... on surface 8", "No elements in surface 9")."""
     import re
@@ -530,11 +613,18 @@ def mesh(workspace) -> int:
         empty = surface_mesh(gmsh, surfaces, remesh)
         try:
             note_stage(ws, "volume", "filling the solid with elements")
-            gmsh.model.mesh.generate(3)
+            if asm and str((sidecar or {}).get("mode") or "") in ("tie", "contact"):
+                fill_each_volume(gmsh, vols)
+            else:
+                gmsh.model.mesh.generate(3)
         except Exception as exc:
             # the surfaces the fill failed on, for the next pass (LAD-fea-6): the driver reads them
             # from this line
             named = sorted(set(empty) | {s for s in surfaces_named(str(exc)) if s in surfaces})
+            if not named:
+                # the error names a point, not a surface: the surfaces there - else the surfaces whose
+                # surface meshes pass through each other (the "facets intersect" a fill reports)
+                named = surfaces_at_point(gmsh, str(exc), surfaces) or crossing_surfaces(gmsh, surfaces)
             print(f"{BAD_SURFACES} {','.join(str(s) for s in named)}", file=sys.stderr)
             print(f"{BAD_FACES} {','.join(face_names_of(named, face_tags))}", file=sys.stderr)
             raise
