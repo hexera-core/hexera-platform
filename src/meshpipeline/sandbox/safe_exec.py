@@ -146,9 +146,13 @@ def run_watched(args, *, log_path, hard_timeout: float, stall_s: float, progress
             parts.append(qp.stat().st_mtime_ns if qp.exists() else -1)
         return tuple(parts)
 
+    # what the watchdog sees as progress is the job's progress too (contracts/progress_clock): the
+    # run's own deadline then ends it only when this has stopped moving, never while it moves
+    from meshpipeline.contracts import progress_clock
     with open(log_path, "wb") as out:
         proc = subprocess.Popen(args, stdout=out, stderr=subprocess.STDOUT, **kwargs)
         seen = mark()
+        progress_clock.touch()
         stopped = "ok"
         while True:
             try:
@@ -160,6 +164,7 @@ def run_watched(args, *, log_path, hard_timeout: float, stall_s: float, progress
             cur = mark()
             if cur != seen:
                 seen, last = cur, now
+                progress_clock.touch()
             longest = max(longest, now - last)
             if now - last >= stall_s:
                 stopped = "stalled"

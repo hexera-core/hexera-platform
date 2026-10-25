@@ -861,8 +861,13 @@ class Decision:
 
 
 def remaining_seconds(state: Mapping, *, now: float) -> float:
+    from meshpipeline.application.pipeline_budget import effective_deadline
     ends = [float(v) for v in (state.get("builder_deadline_epoch"), state.get("pipeline_deadline_epoch"))
             if isinstance(v, (int, float)) and not isinstance(v, bool) and float(v) > 0]
+    # the pipeline's deadline as progress has moved it (application/pipeline_budget); the builder's
+    # own budget is the model loop's and is never moved
+    pipe = state.get("pipeline_deadline_epoch")
+    ends = [effective_deadline(e) if e == pipe else e for e in ends]
     return (min(ends) - now) if ends else float("inf")
 
 

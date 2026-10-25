@@ -113,36 +113,65 @@ class _Abandoned(Exception):
     """The run stopped waiting before the remote finished; the message says why."""
 
 
-def _relay_progress(bucket, progress_key: str, seen: dict) -> None:
+def _relay_progress(bucket, progress_key: str, seen: dict) -> bool:
     """The stage the remote mesher last said it was at (runtime/mesh_runner's beacon), handed
-    to whoever started this mesh (contracts/mesh_progress) when it has moved on. Never raises."""
+    to whoever started this mesh (contracts/mesh_progress) when it has moved on. True when the beacon
+    was written again since the last look: the remote is still there. When the mesher's output MOVED
+    since the last beacon (its `progress_at`; a beacon without one is a stage change, which is
+    progress), that is noted as the job's progress (contracts/progress_clock). `seen["pulses"]` says
+    the remote pulses (a runner that writes the beacon every minute while it lives). Never raises."""
+    alive = False
     try:
         blob = bucket.get_blob(progress_key)
         if blob is None or blob.generation == seen.get("generation"):
-            return
+            return False
         seen["generation"] = blob.generation
+        alive = True
+        doc = json.loads(blob.download_as_bytes())
+        doc = doc if isinstance(doc, dict) else {}
+        moved = doc.get("progress_at")
+        if moved is None or moved != seen.get("progress_at"):
+            from meshpipeline.contracts import progress_clock
+            progress_clock.touch()
+        if moved is not None:
+            seen["pulses"], seen["progress_at"] = True, moved
         from meshpipeline.contracts.mesh_progress import report
-        report(json.loads(blob.download_as_bytes()))
+        report(doc)
     except Exception as exc:  # noqa: BLE001 - the live line is a courtesy, never the run's
         logger.debug("mesh progress: unreadable (%s)", type(exc).__name__)
+    return alive
 
 
-def _poll_gcs_json(bucket, key: str, deadline_s: float, progress_key: str | None = None) -> dict | None:
+#: THE WAIT ENDS WHEN THE REMOTE IS GONE, NOT ON A CLOCK. A remote that pulses its beacon
+#: (runtime/mesh_runner.BEACON_PULSE_S, every minute while it lives - meshing or sending the result
+#: back) and then says nothing for this long is gone (a VM deleted under it): the wait ends, whatever
+#: the deadline. Past the deadline the worker keeps waiting for a remote still heard from - it is
+#: still working, and its own limits (the stall watch, its TIMEOUT) end it with a result. A remote
+#: never heard from (booting, or a runner that writes no beacon) is waited for to the deadline, as before.
+WAIT_STALL_S = 900 + 300
+
+
+def _poll_gcs_json(bucket, key: str, deadline_s: float, progress_key: str | None = None,
+                   stall_s: float = WAIT_STALL_S) -> dict | None:
     blob = bucket.blob(key)
     start = time.time()
     seen: dict = {}
-    while time.time() - start < deadline_s:
+    heard_at: float | None = None
+    while True:
         if blob.exists():
             return json.loads(blob.download_as_bytes())
-        if progress_key:
-            _relay_progress(bucket, progress_key, seen)
+        if progress_key and _relay_progress(bucket, progress_key, seen):
+            heard_at = time.time()
         # Asked between polls, AFTER the result check: a result that has already landed is
         # collected, never thrown away over a cancel that came a moment too late.
         reason = abandonment_reason()
         if reason:
             raise _Abandoned(reason)
+        now = time.time()
+        silent = heard_at is None or now - heard_at >= stall_s
+        if silent and (now - start >= deadline_s or (heard_at is not None and seen.get("pulses"))):
+            return None
         time.sleep(10)
-    return None
 
 
 def _access_token() -> str:
@@ -539,6 +568,10 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
                     input_uri=f"gs://{bucket_name}/{in_key}",
                     output_uri=f"gs://{bucket_name}/{out_key}",
                     engine=engine, timeout=timeout)
+            # a run handed to its machine is the job moving on (contracts/progress_clock); from here
+            # the remote's beacon says whether it still is
+            from meshpipeline.contracts import progress_clock
+            progress_clock.touch()
 
         from meshpipeline.artifact_keys import progress_key_beside
         result = _poll_gcs_json(bucket, res_key, deadline_s=wait_s,
