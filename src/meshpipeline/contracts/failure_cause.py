@@ -577,7 +577,8 @@ def describe(cause: object, facts: Mapping | None = None, *,
             # ran out of time): the mesher was working, and our time estimate for it was short
             amount = _as_number(trip.get("amount"))
             size = f" (about {amount / 1e6:.1f} million elements)" if amount else ""
-            seen = trip.get("watchdog") if isinstance(trip.get("watchdog"), Mapping) else {}
+            raw_seen = trip.get("watchdog")
+            seen: Mapping = raw_seen if isinstance(raw_seen, Mapping) else {}
             if trip.get("stalled"):
                 # THE STALL WATCH stopped it (PLAN-fea-13): said as that, with the quiet it saw - never as
                 # a time limit the mesher was not given
