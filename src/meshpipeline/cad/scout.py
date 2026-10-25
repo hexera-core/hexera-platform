@@ -211,21 +211,44 @@ class ScoutResult:
 
 
 # ------------------------------------------------------------------- reading the part ----
-def write_view_stl(path, dest, *, prepared, angular_deflection: float = 0.3, shape=None) -> Path:
+#: THE VIEW SKIN'S BUDGET: as many triangles as the stage turns smoothly and the check's own readings
+#: of the skin (holes, pictures, which way is up) take in seconds. A model meshed past it is meshed
+#: again coarser, up to VIEW_REMESHES times.
+VIEW_MAX_TRIANGLES = 400_000
+VIEW_REMESHES = 3
+
+
+def write_view_stl(path, dest, *, prepared, angular_deflection: float = 0.3, shape=None,
+                   max_triangles: int = VIEW_MAX_TRIANGLES) -> Path:
     """The part's skin as a binary STL in metres, for the pictures the user and the vision model
     look at. Coarser than a meshing surface on purpose: it only has to look right. `shape` is the
-    part as read_cad read it, when the caller has it already: a big STEP takes 10-25 s to read."""
+    part as read_cad read it, when the caller has it already: a big STEP takes 10-25 s to read.
+
+    SIZED TO THE MODEL (occ_box.mesh_for_model): a part of up to a few thousand faces is drawn
+    exactly as it always was; a bigger model at deflections that grow with its face count, and one
+    that still comes out past `max_triangles` is meshed again coarser - a view that has to look
+    right, drawn in seconds, never a skin too heavy for the stage to open."""
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
     from OCP.StlAPI import StlAPI_Writer
 
     from meshpipeline.cad.normalise import occ_scale_transform
-    from meshpipeline.cad.occ_box import mesh_to_size
+    from meshpipeline.cad.occ_box import MAX_ANGULAR, mesh_for_model, remesh, triangle_count
 
     shape = _read_shape(Path(path)) if shape is None else shape
     # a scaled COPY: the shape as read is left untouched (unmeshed) for anyone else reading it
     shape = BRepBuilderAPI_Transform(shape, occ_scale_transform(prepared), True).Shape()
     # meshed at its REAL size: the loose OpenCascade envelope can be several times the part
-    mesh_to_size(shape, 1.0 / 1500.0, angular_deflection)
+    _box, lin = mesh_for_model(shape, 1.0 / 1500.0, angular_deflection)
+    angular = angular_deflection
+    for _ in range(VIEW_REMESHES):
+        n = triangle_count(shape)
+        if n <= max_triangles:
+            break
+        # triangles go roughly as the inverse of the deflection on a part this detailed
+        k = min(4.0, 1.15 * n / max_triangles)
+        lin *= k
+        angular = min(max(MAX_ANGULAR, angular_deflection), angular * math.sqrt(k))
+        remesh(shape, lin, angular)
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
     writer = StlAPI_Writer()
@@ -233,6 +256,19 @@ def write_view_stl(path, dest, *, prepared, angular_deflection: float = 0.3, sha
     if not writer.Write(shape, str(dest)):
         raise UnreadableCad("the part's skin could not be written for viewing")
     return dest
+
+
+def count_solids(shape) -> int:
+    """How many solids the shape holds (every placed instance counted)."""
+    from OCP.TopAbs import TopAbs_SOLID
+    from OCP.TopExp import TopExp_Explorer
+
+    n = 0
+    exp = TopExp_Explorer(shape, TopAbs_SOLID)
+    while exp.More():
+        n += 1
+        exp.Next()
+    return n
 
 
 def read_cad(path):

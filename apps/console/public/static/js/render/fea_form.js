@@ -211,6 +211,21 @@ export function followMeasure(root, m, p, light) {
   return true;
 }
 
+/** THE FULL READING LANDED AFTER THE PANEL WAS DRAWN (the stage opened on the quick preview of a
+ *  big file): its bodies and its clean check are said in place. True when they changed. */
+export function followClean(root, f) {
+  if (!f) return false;
+  let moved = false;
+  const bodies = root.querySelector(".fea-bodies");
+  if (bodies && bodies.textContent !== bodiesHtml(f)) { bodies.textContent = bodiesHtml(f); moved = true; }
+  const clean = root.querySelector(".fea-clean");
+  if (clean) {
+    const html = cleanHtml(f);
+    if (clean.outerHTML !== html) { clean.outerHTML = html; moved = true; }
+  }
+  return moved;
+}
+
 /** The panel's body for one check: `f` is the server's `fea` view, `p` the proposal (size, unit). */
 export function feaPanelHtml(f, p) {
   const blocked = f.single_part_only || "";

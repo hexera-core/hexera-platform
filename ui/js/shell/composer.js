@@ -150,7 +150,11 @@ async function upload(file, many) {
    simply never appears - the intake asks as it always did. A check that gave up is said so, with
    the way on: try again, or carry on in the chat. The wait is long on purpose: the naming waits
    for the user, and a user may take their time over the first answer. */
-const CHECK_POLL_MS = 3000, CHECK_POLL_MAX = 900;   // forty-five minutes, then stop quietly
+/* PROGRESS, NOT A CLOCK: the watch counts only the polls on which nothing is at work (no worker
+   step running, nothing new) - a big file drawn and measured for half an hour is watched for as long
+   as its worker beats (the server's time box ends a dead one), and an idle check stops after
+   forty-five minutes */
+const CHECK_POLL_MS = 3000, CHECK_POLL_MAX = 900;
 /* polls in a row with no answer before the live line says it cannot reach the server - and stops
    counting up: a line whose server is quiet must not look as if work were still going on */
 const CHECK_OFFLINE_AFTER = 5;
@@ -172,9 +176,17 @@ function stageWait() {
   if (_checkMode === "fea") return "Check your part and its unit beside this chat and press Proceed…";
   return "Check the openings beside this chat and press Proceed…";
 }
+let _holdMs = 0;
 function holdInput(placeholder, ms) {
   _held = true; disableInput(); setPlaceholder(placeholder);
+  _holdMs = ms;
   clearTimeout(_holdTimer); _holdTimer = setTimeout(releaseHold, ms);
+}
+/* a hold whose check is still at work (its worker beating) is not let go on the clock: each live
+   poll starts its wait again, so a big file is not released into the chat mid-drawing */
+function keepHolding() {
+  if (!_held || !_holdMs) return;
+  clearTimeout(_holdTimer); _holdTimer = setTimeout(releaseHold, _holdMs);
 }
 export function holdForDrawing() {
   if (_checkState === "done" || _checkState === "over") return enableInput();
@@ -238,6 +250,7 @@ async function watchGeometryCheck(sessionId) {
     try { d = await getGeometryCheck(sessionId); } catch { /* transient; try again */ }
     const status = d && d.status;
     if (d) _checkMode = d.check_mode || (d.route === "fea" ? "fea" : "");
+    if (d && d.progress && d.progress.live) { n = 0; keepHolding(); }   // at work: not idle
     if (d) {
       misses = 0; retryAs = d.retry || null;
       deps.checkProgress(d.progress || null, { retry: rowRetry });
@@ -288,6 +301,9 @@ async function watchGeometryCheck(sessionId) {
       if (d.skin && !stage && !stageFailed && (d.thermal || d.route)) {
         stage = await deps.geometryCheck(sessionId, d, confirmFn, retryFn);   // null when the stage cannot draw
         if (stage === null) stageFailed = true;                               // the card stands in
+        // the part is on the stage (a preview while a big file is still measured): the box says
+        // where to go on, not that the part is still being drawn
+        else if (isHeld()) holdInput(stageWait(), STAGE_WAIT_MS);
       }
       if (stage) stage.update(d);            // the banner: waiting on the chat, the unit, or the naming
       else if (stageFailed) deps.geometryCard(d);   // the card's Proceed follows the unit, in place

@@ -40,14 +40,16 @@ THERMAL_WAIT_REPLY = (
 )
 #: What the confirm sends as the user's turn so the intake picks up where the hold left it.
 CONTINUE_TEXT = "I confirmed the geometry check. Go on."
-#: How long after the naming was requested a message is still answered with the wait line. A
-#: naming that never comes (a broken store, a dead worker) must not trap the conversation: past
-#: this the intake answers as it always did.
+#: How long after the naming was requested a message is still answered with the wait line when
+#: nothing says a worker is at it. A naming that never comes (a broken store, a dead worker) must
+#: not trap the conversation: past this the intake answers as it always did. While the worker's
+#: heartbeat is fresh (a big file still being drawn or measured) the wait goes on: PROGRESS, NOT A
+#: CLOCK - and the stage, open on the preview, is where the user goes on meanwhile.
 WAIT_GRACE_S = 180.0
 
 
 def hold_decision(stored: dict | None, requested: dict | None, confirmed: dict | None,
-                  now: float | None = None) -> str | None:
+                  now: float | None = None, *, working: bool = False) -> str | None:
     """What this chat turn does about the geometry check: "queue" - the first answer, hand the
     words to the naming and hold; "wait" - the naming is already running, hold again; None -
     let the intake answer (no check, a finished or failed one, a confirmed one, or a naming that
@@ -65,7 +67,7 @@ def hold_decision(stored: dict | None, requested: dict | None, confirmed: dict |
         # never held again for a scout that is still not there
         return "queue" if stored.get("status") == "scouted" else None
     asked_at = float(requested.get("requested_at") or 0.0)
-    if (now if now is not None else _time.time()) - asked_at <= WAIT_GRACE_S:
+    if working or (now if now is not None else _time.time()) - asked_at <= WAIT_GRACE_S:
         return "wait"
     return None
 
@@ -163,8 +165,16 @@ def hold_applies(session_id: str) -> str | None:
         confirmed = None
     # read through the same time box the API reads through: a scout whose worker died, or a
     # naming that never answered, is a failed check, and a failed check never holds the chat
+    import time as _time
+
+    from meshpipeline.application import geometry_progress as gp
+
     requested = naming_requested(session_id)
-    return hold_decision(time_boxed(read_check(session_id), requested), requested, confirmed)
+    progress = gp.read_progress(session_id) or {}
+    now = _time.time()
+    working = any(gp.beating(progress.get(phase), now) is True for phase in ("scout", "naming"))
+    return hold_decision(time_boxed(read_check(session_id), requested, progress=progress), requested, confirmed,
+                         working=working)
 
 
 def measured_size_mm(session_id: str) -> list[float] | None:
