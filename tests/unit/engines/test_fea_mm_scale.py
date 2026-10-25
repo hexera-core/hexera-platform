@@ -1,4 +1,4 @@
-# Responsibility: Verify MESH-4, MESH-5 (a face whose surface mesh repeats a triangle keeps one copy) and LAD-fea-6's locked slivers: a staged solid the FEA mesher cannot mesh in metres (a surface no 2D algorithm meshes, a fill that fails, a volume left empty) is meshed again at the CAD's own millimetre scale and delivered in metres, every face still named; a solid that meshes in metres never takes that way, and a failure at both scales still names its surfaces; and an invalid sliver locked between two faces names only one of them, so the next pass breaks their mirrored meshes.
+# Responsibility: Verify MESH-4, MESH-5 (a face whose surface mesh repeats a triangle keeps one copy), LAD-fea-8 (a surface stage that stalls is meshed again without gmsh's switch to MeshAdapt) and LAD-fea-6's locked slivers: a staged solid the FEA mesher cannot mesh in metres (a surface no 2D algorithm meshes, a fill that fails, a volume left empty) is meshed again at the CAD's own millimetre scale and delivered in metres, every face still named; a solid that meshes in metres never takes that way, and a failure at both scales still names its surfaces; and an invalid sliver locked between two faces names only one of them, so the next pass breaks their mirrored meshes.
 # Boundaries: the metre failure is forced on a small built part (the real one, libredrive_pulley_housing's 24 nm grazing edges, is the lab's: ~/graze_lab); gmsh runs in-process.
 from __future__ import annotations
 
@@ -249,3 +249,58 @@ def test_a_face_whose_surface_mesh_repeats_a_triangle_keeps_one_copy_and_fills()
     finally:
         if gmsh.isInitialized():
             gmsh.finalize()
+
+
+_STALLED_2D = ("Info    : Meshing 2D...\nInfo    : [ 40%] Meshing surface 4 (BSpline surface, Frontal-Delaunay)\n"
+               "Info    : [ 40%] 2 triangles are equivalent\nInfo    : [ 40%] Meshing surface 4 (BSpline surface, MeshAdapt)\n")
+
+
+def test_a_stall_in_the_surface_stage_names_the_surface_and_one_after_it_does_not():
+    from meshpipeline.engines import fea_ladder as L
+
+    assert L.stalled_surface(_STALLED_2D) == 4
+    assert L.stalled_surface(_STALLED_2D + "Info    : Done meshing 2D (Wall 2s)\nInfo    : Meshing 3D...\n") is None
+    assert L.stalled_surface("") is None
+    lever = L.surface_stall_lever(4, [], n=1)
+    assert lever["lever"] == L.SURFACE_STALL and L.surface_stall_lever(4, [lever], n=2) is None
+    assert L.mesh_settings([lever])["surface_switch"] is False
+    assert "surface_switch" not in L.mesh_settings([])
+
+
+def test_a_surface_stage_that_stalls_is_meshed_again_without_gmshs_switch(tmp_path, monkeypatch):
+    """LAD-fea-8: the watchdog stopped the mesher in 2D (gmsh's MeshAdapt on one face never ended): the part's,
+    not ours - the next pass keeps gmsh's first mesh of every face and delivers."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from meshpipeline.contracts import decision_record as dr
+    from meshpipeline.engines import runtime
+
+    ws = _stage(fx.plate_with_hole(), tmp_path / "stall")
+    seen: list[object] = []
+
+    def _run(w, timeout):
+        plan = json.loads((Path(w) / "fea_plan.json").read_text())
+        seen.append((plan.get("mesh") or {}).get("surface_switch"))
+        if len(seen) == 1:
+            return {"rc": -1, "timed_out": True, "stalled": True, "log_tail": _STALLED_2D, "watchdog": {}}
+        return {"rc": A.mesh(w)}
+
+    class _Run:
+        async def fence(self, _why):
+            return None
+
+        def note_authoring(self):
+            pass
+
+        def note_native_run(self, produced_usable_mesh):
+            pass
+
+        def outcome(self, produced_deliverable, failure_marker="", exhausted=False):
+            return SimpleNamespace(produced_deliverable=produced_deliverable, terminal_value=failure_marker)
+
+    monkeypatch.setattr(runtime, "get_engine", lambda _n: SimpleNamespace(run_cartesian_mesh=_run))
+    ok, marker, _o = asyncio.run(FD.drive(ws, {}, job_id="t-stall", publish=None, run=_Run()))
+    assert ok, marker
+    assert seen == [None, False]
+    assert any(e["rule"] == "LAD-fea-8" and e["decided"] == "lever" for e in dr.cited_for("t-stall"))

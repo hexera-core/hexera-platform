@@ -734,6 +734,9 @@ def build_volume(gmsh, ws: Path, plan: dict, geom: Path, asm: dict | None, sidec
     if bg is not None:
         gmsh.model.mesh.field.setAsBackgroundMesh(bg)
     remesh = {int(s) for s in run.get("remesh_surfaces") or []}
+    # LAD-fea-8: after a surface stage that stalled, gmsh's first mesh of every face is kept (its repeats
+    # dropped below, MESH-5) rather than thrown away for a MeshAdapt run that never ends
+    gmsh.option.setNumber("Mesh.AlgorithmSwitchOnFailure", 0 if run.get("surface_switch") is False else 1)
     note_stage(ws, "surface", "meshing the surfaces")
     try:
         empty = surface_mesh(gmsh, surfaces, remesh)
