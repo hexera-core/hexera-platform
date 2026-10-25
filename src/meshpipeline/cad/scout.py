@@ -21,6 +21,28 @@ MAX_OPENINGS = 16
 #: A ring face (an annular end of a pipe wall) rims an opening when the hole is a real bore, not
 #: a bolt hole: the inner area against the ring's own outer area.
 MIN_RING_BORE_FRACTION = 0.1
+def _has_the_other_end(c, rings: list) -> bool:
+    """Whether a perforated face has the far end of its own channels somewhere on the part.
+
+    A CHANNEL ARRAY HAS ONE HOLE PER CHANNEL AT EACH END, so the hole count is the channel count
+    and it is the same at both ends. Measured on the corpus: the wavy array is 16 and 16, the
+    hotspot array 24 and 24, the two-level manifold 5/5 and 16/16, the pin-fin plate 11 and 11.
+
+    A pattern of holes with no twin is a feature on a body - a grille, a vent, a bolt circle, a
+    speaker baffle - and reading one as a passage mouth cost a car its whole reading. An Ahmed-
+    proportioned body with a 24-hole front grille and a 12-hole rear vent went from
+    "solid_body / external" to "pipe_wall / internal" at confidence 0.9, because two perforated
+    faces are all the pipe-wall branch asks for; the stage would then have let the pictures call a
+    car a cooled solid. The counts are what tell them apart: 24 against 12.
+
+    WHAT THIS DOES NOT RECOGNISE: a manifold that fans one wide feed into many small drains, where
+    the two ends have different counts by design. The measuring step does not recognise one today
+    either - the branching test part reads as a body in external flow - so nothing is lost here,
+    but it is the obvious next case and it will need the fluid itself, not a hole count.
+    """
+    return any(o is not c and o.perforated and o.holes == c.holes for o in rings)
+
+
 #: When the holes in one face are the face's OPEN AREA rather than a bore with incidental holes
 #: beside it: no single hole takes more than this share of all the hole area on that face.
 #:
@@ -115,6 +137,12 @@ class Opening:
     #: (cad_tessellate.stands_in_opening, the staging's own reading) - so the flow crosses
     #: `area - filled`, not the whole hole. 0.0 for a plain bore.
     filled: float = 0.0
+    #: A PERFORATED FACE: how many holes the face has, and whether its `area` is their SUM rather
+    #: than one bore (MAX_DOMINANT_HOLE_SHARE). A cold plate's end face has one hole per channel
+    #: and its open area is all of them; a flange's face has a bore and some bolt holes and the
+    #: bore is the opening on its own. 1 and False for every face that is not perforated.
+    holes: int = 1
+    perforated: bool = False
 
     @property
     def annular(self) -> bool:
@@ -517,7 +545,9 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3, shape=None,
         inward = (not on_extremity) and _dot(normal, _sub(o_centroid, centre)) < 0.0
         candidates.append(Opening(face_index=i, kind=kind, centroid=o_centroid, normal=normal,
                                   area=o_area, wh=o_wh, clear_ahead=False, on_extremity=on_extremity,
-                                  outer_wh=outer_wh, inward=inward))
+                                  outer_wh=outer_wh, inward=inward,
+                                  holes=int((inner or {}).get("holes") or 1) if kind == "ring" else 1,
+                                  perforated=bool((inner or {}).get("perforated")) if kind == "ring" else False))
         flats.append((i, float(area), centroid, outer_wh))
 
     # THE PROBES (clear ahead, rim, depth) cost a ray or a dozen classifier calls each; a boat hull
@@ -562,6 +592,7 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3, shape=None,
     # its own plane (an orifice plate and a bore shoulder are set into wall) and it faces away from
     # the part (a flange's back face looks at the body it is bolted to).
     rings = [c for c in candidates if c.kind == "ring" and c.clear_ahead and c.rim_free and not c.inward]
+    rings = [c for c in rings if not c.perforated or _has_the_other_end(c, rings)]
     discs = [c for c in candidates if c.kind == "disc" and c.clear_ahead]
     hollow = any(n > 1 for n in shells_per_solid)
     # the part's thinnest side: the yardstick every mouth is held to, ring or flat end
