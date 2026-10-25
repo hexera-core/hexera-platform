@@ -39,7 +39,9 @@ MIN_PASSAGE_SHARE = 0.02
 MIN_PORT_SHARE = 0.02
 #: How many B-rep faces the split is tried on, at most: beyond it the check keeps its face-by-face
 #: reading (a full car body, a city block).
-MAX_FACES = 12000
+#: Raised from 12000 once the corpus was measured: the 16-channel wavy plate has 12358 faces and
+#: extracts in 12.2 s, well inside CHECK_BUDGET_S, so the old limit refused a part it could do.
+MAX_FACES = 20000
 #: A cap the fluid meets over a ring thinner than this share of the hole's width is a GAP, not an
 #: opening: a lid that does not quite reach the rim of the body it closes (a cyclone's roof 0.3 mm
 #: short of its 150 mm barrel). Sealed into the wall, never proposed.
@@ -139,7 +141,11 @@ class Extraction:
             "pockets_left_out": len(self.pockets),
             "leaks_mm": [[round(v * mm, 1) for v in c] for c in self.leaks[:6]],
             "passages": [{
-                "volume_l": round(p.volume * 1000.0, 4),
+                # NINE PLACES, not four. A cold plate's coolant is 2.6 mm3 = 0.0000026 L, and
+                # four places rounded every chip-scale passage to 0.0 - the check then told the
+                # user their part held no fluid while holding a correct extraction of it.
+                "volume_l": round(p.volume * 1000.0, 9),
+                "volume_mm3": round(p.volume * 1e9, 4),
                 "openings": [{"centroid_mm": [round(v * mm, 2) for v in o.centroid],
                               "normal": [round(v, 5) for v in o.normal],
                               "area_mm2": round(o.area * mm * mm, 2),

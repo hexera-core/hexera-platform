@@ -243,4 +243,11 @@ def test_the_geometry_check_reads_a_step_once_and_measures_and_draws_it_as_readi
         separate_skin = write_view_stl(path, twice / "skin.stl", prepared=prepared)
         assert skin.read_bytes() == separate_skin.read_bytes(), name
         for key, value in separate.items():
+            if key == "notes":
+                # The notes are the one key the check ADDS to rather than reproduces: the later
+                # steps say what they found, and the scout's own notes stay at the front. A
+                # hollow single solid now has its inside split (cad/fluid_volume_check), which
+                # notes the volume it found - what it measures is still exactly the scout's.
+                assert facts[key][:len(value)] == value, (name, key)
+                continue
             assert facts[key] == value, (name, key)

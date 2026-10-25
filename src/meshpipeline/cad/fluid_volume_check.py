@@ -12,15 +12,41 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-#: The fluid is read off the parts only for a file of several parts (an assembly: a valve's body,
-#: disc, stem and seats) or of surfaces; one solid keeps the scout's own face-by-face reading.
+#: The fluid is read off the parts for a file of several parts (an assembly: a valve's body, disc,
+#: stem and seats) or of surfaces.
 MIN_PARTS = 2
+#: ...and for ONE solid when the measuring step found a way in and a way out through its faces. A
+#: cold plate is a single block with coolant channels bored through it: the space inside it IS the
+#: coolant, and `extract` finds the caps itself - it needs nothing declared. Before this, one
+#: solid kept the scout's face-by-face reading and the coolant was never found at all, because
+#: the split only ever ran on a file of several parts.
+#:
+#: Two mouths, not one: one hole is a bore or a bolt hole, and a passage needs both ends.
+#:
+#: THE MOUTHS ARE THE WHOLE TEST, and the flow the measuring step guessed is not consulted.
+#: Measured on the corpus: a branching plate fed through one side read as EXTERNAL flow with three
+#: mouths, and an embedded-silicon array with 200 channels read as external with two, yet both
+#: extract their coolant cleanly - so requiring "internal" here threw away parts that work. What
+#: it costs is one bounded split (CHECK_BUDGET_S) on a single solid that turns out to have no
+#: cavity; a car body does not have two passage mouths through it, and if it did, the split finds
+#: nothing and the reading it already had stands.
+MIN_PASSAGE_MOUTHS = 2
+
+
+def has_passage_mouths(facts: dict) -> bool:
+    """Whether a single solid reads as one with passages through it, by the measuring step's own
+    count of the mouths on its faces."""
+    mouths = [o for o in facts.get("openings") or [] if o.get("role") != "not_an_opening"]
+    return len(mouths) >= MIN_PASSAGE_MOUTHS
 
 
 def wants_fluid_volume(facts: dict) -> bool:
-    """Whether the check splits the space of a CAD file: several solids, or a file of surfaces."""
+    """Whether the check splits the space of a CAD file: several solids, a file of surfaces, or one
+    solid with passage mouths in it."""
     n = int(facts.get("solids") or 0)
-    return n >= MIN_PARTS or (n == 0 and facts.get("body_kind") == "surface")
+    if n >= MIN_PARTS or (n == 0 and facts.get("body_kind") == "surface"):
+        return True
+    return n == 1 and has_passage_mouths(facts)
 
 
 def triangle_parts(source: Path) -> int:
@@ -72,6 +98,22 @@ def fold(facts: dict, answer: dict) -> None:
     if len(proposed) < 2:
         return                         # one opening is no flow through: the reading it had stands
     openings, space_of = _openings(proposed)
+    if int(facts.get("solids") or 0) == 1:
+        # ONE SOLID: THE SPLIT ADDS WHAT IT LEARNED AND OVERRULES NOTHING. It replaces the
+        # openings for an ASSEMBLY because the scout has no good reading there to start from - it
+        # sees dozens of flat faces spread over several parts and cannot tell which bound the
+        # fluid. For one solid it has measured that solid's own faces directly, and a pipe tee
+        # showed what the override costs: it had a correct pipe_wall reading with its three ports
+        # and the split replaced it with "the space inside the parts".
+        #
+        # What the split is still worth here is the volume, the caps and a point inside the
+        # coolant - the things a conjugate case needs and the part's faces cannot give - and all
+        # three travel in facts["fluid_volume"] rather than over the top of the reading. The
+        # top-level seed_point stays the scout's for the same reason the openings do. Measured:
+        # six of the eleven cold plates yield their coolant this way, four exact to the CAD.
+        notes.append(f"the space inside the part is {_litres(_volume_l(passages))}, open at "
+                     f"{len(openings)} place{'s' if len(openings) != 1 else ''}")
+        return
     facts["openings"] = openings
     facts["openings_from"] = "fluid_volume"
     seed = passages[0].get("seed_mm")
@@ -83,7 +125,7 @@ def fold(facts: dict, answer: dict) -> None:
         facts["flow"], facts["input_kind"] = "internal", "body-surface"
         facts["body_kind"] = "assembly_cavity"
         facts.setdefault("confidence", {})["input_kind"] = 0.85
-    litres = sum(float(p.get("volume_l") or 0.0) for p in passages)
+    litres = _volume_l(passages)
     parts = int(answer.get("parts") or 0)
     notes.append(f"the fluid is the space inside the {parts} part{'s' if parts != 1 else ''}, closed off "
                  f"at {len(openings)} opening{'s' if len(openings) != 1 else ''} ({_litres(litres)})")
@@ -144,16 +186,29 @@ def _xyz(v) -> tuple[float, float, float]:
 def _summary(answer: dict) -> dict:
     keep = ("found", "reason", "error", "parts", "caps", "regions", "seconds", "pockets_left_out")
     out = {k: answer[k] for k in keep if k in answer}
-    out["passages"] = [{"volume_l": p.get("volume_l"), "openings": len(p.get("openings") or []),
+    # seed_mm travels here because a single solid's split does not write over the top-level
+    # seed_point, and a conjugate case still needs a point inside the coolant.
+    out["passages"] = [{"volume_l": p.get("volume_l"), "volume_mm3": p.get("volume_mm3"),
+                        "seed_mm": p.get("seed_mm"),
+                        "openings": len(p.get("openings") or []),
                         "proposed": sum(1 for o in p.get("openings") or [] if o.get("proposed"))}
                        for p in answer.get("passages") or []]
     return out
 
 
+def _volume_l(passages: list) -> float:
+    return sum(float(p.get("volume_l") or 0.0) for p in passages)
+
+
 def _litres(v: float) -> str:
+    """The volume in the unit a person would use for it. A cold plate's coolant is 2.6 mm3, which
+    read as "0 ml" while litres were the smallest unit on offer."""
     if v >= 1.0:
         return f"{v:.1f} litres"
-    return f"{v * 1000.0:.0f} ml"
+    if v >= 0.001:                       # a millilitre or more
+        return f"{v * 1000.0:.0f} ml"
+    return f"{v * 1e6:.3g} mm3"          # 1 ml is 1000 mm3; a chip's channels live here
 
 
-__all__ = ["MIN_PARTS", "fold", "read_fluid_volume", "triangle_parts", "wants_fluid_volume"]
+__all__ = ["MIN_PARTS", "MIN_PASSAGE_MOUTHS", "fold", "has_passage_mouths", "read_fluid_volume",
+           "triangle_parts", "wants_fluid_volume"]
