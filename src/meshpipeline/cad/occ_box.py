@@ -23,6 +23,90 @@ DEFAULT_DEFLECTION_FRACTION = 1.0 / 1000.0
 #: it set was off by more than the meshing's own slack: the part is meshed again at its real size.
 REMESH_LOOSENESS = 1.5
 
+#: THE TESSELLATION FOLLOWS THE MODEL. A part of up to this many faces is meshed exactly as it always
+#: was; past it the deflections grow with the square root of the face count (`coarsening`) and no
+#: element is made smaller than the deflection (OpenCascade's MinSize) - a 3D-printer frame of
+#: 40,536 faces and 809 solids made 3.1 million triangles in 4.4 minutes at the small-part settings,
+#: and a few hundred thousand in seconds this way, which is all a view or a size needs.
+FULL_DETAIL_FACES = 3000
+#: The coarsest the angular deflection gets (radians), whatever the face count.
+MAX_ANGULAR = 0.6
+
+
+def face_count(shape) -> int:
+    """How many faces the shape has (every placed instance counted)."""
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+
+    n = 0
+    exp = TopExp_Explorer(shape, TopAbs_FACE)
+    while exp.More():
+        n += 1
+        exp.Next()
+    return n
+
+
+def coarsening(n_faces: int) -> float:
+    """How much coarser than the small-part settings a model of `n_faces` faces is meshed: 1 up to
+    FULL_DETAIL_FACES, then the square root of how many times past it."""
+    return 1.0 if n_faces <= FULL_DETAIL_FACES else math.sqrt(n_faces / FULL_DETAIL_FACES)
+
+
+def triangle_count(shape) -> int:
+    """The triangles the shape's faces carry now (every placed instance counted)."""
+    from OCP.BRep import BRep_Tool
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopLoc import TopLoc_Location
+    from OCP.TopoDS import TopoDS
+
+    n = 0
+    exp = TopExp_Explorer(shape, TopAbs_FACE)
+    while exp.More():
+        tri = BRep_Tool.Triangulation_s(TopoDS.Face_s(exp.Current()), TopLoc_Location())
+        exp.Next()
+        if tri is not None:
+            n += tri.NbTriangles()
+    return n
+
+
+def _mesh(shape, lin, angular, min_size: bool = False) -> float:
+    """Mesh at `lin` and `angular` - through incremental_mesh, which takes only numbers OpenCascade
+    accepts - or, with `min_size`, with no element smaller than the deflection (a big model's view).
+    Returns the linear deflection used."""
+    if not min_size:
+        return incremental_mesh(shape, lin, angular)
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepMesh import BRepMesh_IncrementalMesh
+    from OCP.IMeshTools import IMeshTools_Parameters
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopLoc import TopLoc_Location
+    from OCP.TopoDS import TopoDS
+
+    lin_ok = _usable(lin)
+    lin = max(lin_ok if lin_ok is not None else deflection_for(diagonal(loose_box(shape)),
+                                                               DEFAULT_DEFLECTION_FRACTION), MIN_LINEAR_DEFLECTION)
+    ang = _usable(angular)
+    ang = DEFAULT_ANGULAR_DEFLECTION if ang is None else max(ang, MIN_ANGULAR_DEFLECTION)
+    params = IMeshTools_Parameters()
+    params.Deflection = lin
+    params.Angle = ang
+    params.Relative = False
+    params.InParallel = True
+    params.MinSize = lin
+    BRepMesh_IncrementalMesh(shape, params)
+    # A FACE SMALLER THAN THE MINIMUM SIZE is left bare by the mesher (1,449 of jubilee_frame's
+    # 40,536 faces: screw heads and chamfers a millimetre across) - a hole in the view. Each is meshed
+    # on its own at the plain settings: a few triangles apiece.
+    exp = TopExp_Explorer(shape, TopAbs_FACE)
+    while exp.More():
+        face = TopoDS.Face_s(exp.Current())
+        exp.Next()
+        if BRep_Tool.Triangulation_s(face, TopLoc_Location()) is None:
+            incremental_mesh(face, lin, ang, parallel=False)
+    return lin
+
 
 def loose_box(shape) -> Box:
     """OpenCascade's fast envelope (BRepBndLib.Add): it encloses every B-spline control point and
@@ -122,7 +206,7 @@ def incremental_mesh(shape, linear_deflection, angular_deflection, *, relative: 
 
 
 def mesh_to_size(shape, fraction: float, angular_deflection: float, *,
-                 linear_deflection: float | None = None) -> tuple[Box, float]:
+                 linear_deflection: float | None = None, min_size: bool = False) -> tuple[Box, float]:
     """Mesh the shape at `fraction` of its real diagonal (or at an explicit linear deflection) and
     return (its real box - the box of the meshed surface, the linear deflection it was meshed at).
 
@@ -130,23 +214,45 @@ def mesh_to_size(shape, fraction: float, angular_deflection: float, *,
     envelope. So: mesh at the envelope's size (what was always done - a file whose envelope is
     honest meshes exactly as before), measure the surface, and only when the envelope was
     REMESH_LOOSENESS or more too big mesh again at the real size, then measure once more. The
-    returned box is never the envelope unless nothing could be meshed at all."""
+    returned box is never the envelope unless nothing could be meshed at all. `min_size`: no
+    element smaller than the linear deflection (a big model's view, never a small part's)."""
     envelope = loose_box(shape)
     d_env = diagonal(envelope)
     # an explicit deflection that is no length is no request: the part's size decides
     explicit = _usable(linear_deflection) if linear_deflection is not None else None
     lin = explicit if explicit is not None else deflection_for(d_env, fraction)
-    lin = incremental_mesh(shape, lin, angular_deflection)
+    lin = _mesh(shape, lin, angular_deflection, min_size)
     box = surface_box(shape)
     if box is None:
         return envelope, lin
     d_real = diagonal(box)
     if explicit is None and d_real > 0.0 and d_env > REMESH_LOOSENESS * d_real:
-        lin = incremental_mesh(shape, deflection_for(d_real, fraction), angular_deflection)
+        lin = _mesh(shape, deflection_for(d_real, fraction), angular_deflection, min_size)
         box = surface_box(shape) or box
     return box, lin
 
 
-__all__ = ["DEFAULT_ANGULAR_DEFLECTION", "DEFAULT_DEFLECTION_FRACTION", "MIN_ANGULAR_DEFLECTION",
-           "MIN_LINEAR_DEFLECTION", "REMESH_LOOSENESS", "deflection_for", "diagonal",
-           "incremental_mesh", "loose_box", "mesh_to_size", "surface_box"]
+def mesh_for_model(shape, fraction: float, angular_deflection: float) -> tuple[Box, float]:
+    """mesh_to_size at the settings the model's size calls for: exactly `fraction` and
+    `angular_deflection` for a part of up to FULL_DETAIL_FACES faces, coarser by `coarsening` past
+    it, with no element under the deflection (FULL_DETAIL_FACES)."""
+    k = coarsening(face_count(shape))
+    if k <= 1.0:
+        return mesh_to_size(shape, fraction, angular_deflection)
+    return mesh_to_size(shape, fraction * k, min(angular_deflection * k, max(MAX_ANGULAR, angular_deflection)),
+                        min_size=True)
+
+
+def remesh(shape, lin: float, angular_deflection: float) -> None:
+    """Throw the shape's triangles away and mesh it again (OpenCascade keeps a finer mesh it already
+    has), with no element under the deflection."""
+    from OCP.BRepTools import BRepTools
+
+    BRepTools.Clean_s(shape)
+    _mesh(shape, lin, angular_deflection, True)
+
+
+__all__ = ["DEFAULT_ANGULAR_DEFLECTION", "DEFAULT_DEFLECTION_FRACTION", "FULL_DETAIL_FACES", "MAX_ANGULAR",
+           "MIN_ANGULAR_DEFLECTION", "MIN_LINEAR_DEFLECTION", "REMESH_LOOSENESS", "coarsening", "deflection_for",
+           "diagonal", "face_count", "incremental_mesh", "loose_box", "mesh_for_model", "mesh_to_size", "remesh",
+           "surface_box", "triangle_count"]

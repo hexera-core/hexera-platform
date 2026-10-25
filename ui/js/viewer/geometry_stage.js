@@ -23,7 +23,7 @@ import { esc } from "../core/format.js";
 import { applyFlow, bindAxis, bindUnit, changedAnswers, editsLine, extentAlong, followSuggestion, followUnit, formHtml,
   markConfirmed, noteDrawn, readExternal, readForm, rowHtml, servedProposal, shown, tableHead, unitChoiceHint,
   unitChoiceNeeded, unitOf } from "../render/geometry_form.js";
-import { bindFeaPanel, bindMeasure, feaPanelHtml, followAssembly, followMeasure, interfaceMarks, lightSpotRow } from "../render/fea_form.js";
+import { bindFeaPanel, bindMeasure, feaPanelHtml, followAssembly, followClean, followMeasure, interfaceMarks, lightSpotRow } from "../render/fea_form.js";
 import { bindThermalPanel, partDetails, thermalPanelHtml, watts } from "../render/thermal_form.js";
 import { circleThrough, clickIndex, firstHit, snapAt } from "./open_ends.js";
 import { bindMouse, isUpAxis, orient, saveUp, savedUp, shield, upSelectHtml, upVector } from "./view_controls.js";
@@ -140,6 +140,8 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
      whether the model was asked to name the openings, whether it answered, or gave up - and
      what to do about it. */
   let naming = false, stalled = false, unitNeeded = !!d.unit_needed, shown = "";
+  // the stage opened on the quick preview of a big file: the full reading is still to land
+  let previewShown = d.preview === "running";
   const STALL_MS = opts.stallMs || 3 * 60 * 1000;
   let askedAt = null, stallTimer = null;
   function showBanner(text, cls, retryStep) {
@@ -242,6 +244,41 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
     if (d2.proposal) served = servedProposal(served, d2.proposal);
     followUnit(panel, p, q.unit, q.unit_basis);      // a unit settled in the chat reaches an untouched box
     followSuggestion(panel, p, q.unit_suggestion);   // the other reading, as the server now sees it
+    if ((d2.status === "scouted" || d2.status === "ready") && previewShown && d2.preview !== "running"
+        && !d2.named_on_preview) {
+      // THE FULL READING LANDED on a stage opened on the quick preview of a big file: its openings,
+      // flat faces and holes come in - unless the user already set openings of their own, which
+      // stand; what they changed on the form stays either way
+      previewShown = false;
+      const p2 = d2.proposal || {};
+      if (!(p.openings || []).length) {
+        // the poll may meet the full reading already named (ready): it comes in the same way, and
+        // the ready re-draw below then takes the model's words onto these openings
+        const chosen = p.unit_touched ? { unit: p.unit, unit_basis: p.unit_basis, unit_touched: true } : {};
+        // the flow axis the user turned and the reference length they typed outlive it, as on the
+        // ready re-draw
+        const answered = {};
+        if (p.flow_axis_touched) Object.assign(answered, { flow_axis: p.flow_axis, flow_axis_guessed: false, flow_axis_touched: true });
+        if (p.reference_length_typed) Object.assign(answered, { reference_length_mm: p.reference_length_mm, reference_length_typed: true });
+        p.user_set = { ...(p.user_set || {}), ...changedAnswers(form) };
+        // THE SKIN WAS DRAWN AT THE PREVIEW'S SCALE: a naming that re-read the part in another unit
+        // serves lengths at the new one, so they are read back at the drawing's (the server re-reads
+        // the form from `scale_to_m` on confirm, as for every length on this stage)
+        const mine = p.scale_to_m || 0.001, theirs = p2.scale_to_m || mine;
+        const back = Math.abs(theirs - mine) > 1e-12 ? mine / theirs : 1;
+        const incoming = back === 1 ? p2 : Object.fromEntries(Object.entries(p2)
+          .filter(([k]) => !/^(scale_to_m|unit|unit_basis|unit_assumed)$/.test(k))
+          .map(([k, v]) => [k, atScale(k, v, back)]));
+        Object.assign(p, incoming, chosen, answered, p.user_set);
+        panel.querySelector(".gc-lead").innerHTML = leadHtml(p);
+        form.innerHTML = formHtml(p);
+        applyFlow(form); bindUnit(panel, p); bindAxis(form, p); noteDrawn(form); bindProceed(); scene.rebind();
+        shown = "";
+      } else {
+        if (p2.faces) p.faces = p2.faces;
+        if (p2.holes) p.holes = p2.holes;
+      }
+    }
     if (d2.status === "scouted") {
       if (d2.naming_requested && !stalled) naming = true;
       noteAsked(d2);
@@ -1008,6 +1045,10 @@ async function openFeaStage(sessionId, d, confirm, opts) {
       // tags are drawn then
       const m = d2 && d2.fea && d2.fea.measure;
       const a = d2 && d2.fea && d2.fea.assembly;
+      // the bodies, the clean check and whether it can go on, when the full reading lands after a
+      // preview opened the stage: Proceed reads the same view (`f`), so a stop found late is shown
+      // with its way on rather than met as a refusal
+      if (d2 && d2.fea) { Object.assign(f, d2.fea); followClean(panel, f); }
       const moved = (m && followMeasure(panel, m, p, null)) | (a && followAssembly(panel, a));
       if (moved) {
         p.hot_spots = [...(((m || f.measure) || {}).hot_spots || []), ...interfaceMarks(a || f.assembly)];
@@ -1369,4 +1410,17 @@ function initThermalScene(sessionId, box, surf, t, panel) {
     select, hover, frame, probe,
     stop: () => { alive = false; ro.disconnect(); delete window._vdbg["gstage:" + sessionId]; },
   };
+}
+
+
+/** A proposal's value with every length re-read by `f`, by the server's own rule
+ *  (application/geometry_check.rescaled_lengths): keys ending _mm or _m by f, areas (_mm2, _m2) by
+ *  f squared, at any depth; keys with no unit are left alone. */
+function atScale(key, v, f) {
+  const by = /_mm2$|_m2$/.test(key) ? f * f : /_mm$|_m$/.test(key) ? f : 0;
+  const scale = (x) => (Array.isArray(x) ? x.map(scale) : typeof x === "number" ? x * by : x);
+  if (by) return scale(v);
+  if (Array.isArray(v)) return v.map((x) => atScale("", x, f));
+  if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, atScale(k, x, f)]));
+  return v;
 }

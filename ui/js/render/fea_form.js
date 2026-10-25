@@ -211,6 +211,34 @@ export function followMeasure(root, m, p, light) {
   return true;
 }
 
+/** THE FULL READING LANDED AFTER THE PANEL WAS DRAWN (the stage opened on the quick preview of a
+ *  big file): its bodies and its clean check are said in place. True when they changed. */
+export function followClean(root, f) {
+  if (!f) return false;
+  let moved = false;
+  const bodies = root.querySelector(".fea-bodies");
+  if (bodies && bodies.textContent !== bodiesHtml(f)) { bodies.textContent = bodiesHtml(f); moved = true; }
+  const clean = root.querySelector(".fea-clean");
+  if (clean) {
+    const html = cleanHtml(f);
+    if (clean.outerHTML !== html) { clean.outerHTML = html; moved = true; }
+  }
+  // A STOP THE FULL READING FOUND (a surface, not a closed solid): said, Proceed off, the way on
+  const btn = root.querySelector(".gc-proceed"), hint = root.querySelector(".gc-hint");
+  const blocked = f.single_part_only || "";
+  let box = root.querySelector(".fea-blocked");
+  if (blocked && !box) {
+    const acts = root.querySelector(".gc-tools") || root.querySelector(".gc-actions");
+    if (acts) acts.insertAdjacentHTML("beforebegin", `<div class="fea-blocked" role="alert">${esc(blocked)}</div>`);
+    box = root.querySelector(".fea-blocked");
+    moved = true;
+  } else if (box && !blocked) { box.remove(); moved = true; }
+  else if (box && box.textContent !== blocked) { box.textContent = blocked; moved = true; }
+  if (btn && btn.textContent !== "Confirming…") btn.disabled = !!blocked;
+  if (hint && blocked) hint.textContent = f.way_out || "Upload a single part to go on.";
+  return moved;
+}
+
 /** The panel's body for one check: `f` is the server's `fea` view, `p` the proposal (size, unit). */
 export function feaPanelHtml(f, p) {
   const blocked = f.single_part_only || "";

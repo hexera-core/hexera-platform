@@ -260,6 +260,23 @@ def join_occ(members: list[Member], dest: Path, scale: dict[int, float] | None =
 #: process of its own (the API's never holds them), stopped past these.
 JOIN_TIMEOUT_S = 300
 JOIN_MEMORY_MB = 4096
+#: ...SIZED TO THE FILES: every megabyte joined adds this much time, up to the ceiling - under the
+#: API request's own 900 s, so the user is told why instead of the request being cut off. A few small
+#: files keep JOIN_TIMEOUT_S; a big assembly is not refused on the small one's clock.
+JOIN_S_PER_MB = 4.0
+JOIN_TIMEOUT_CEILING_S = 840
+
+
+def join_timeout_s(members: list) -> float:
+    """How long the join of these files may take: JOIN_TIMEOUT_S, plus JOIN_S_PER_MB for each
+    megabyte, under JOIN_TIMEOUT_CEILING_S."""
+    total = 0
+    for m in members:
+        try:
+            total += Path(m.path).stat().st_size
+        except OSError:
+            continue
+    return min(float(JOIN_TIMEOUT_CEILING_S), JOIN_TIMEOUT_S + JOIN_S_PER_MB * total / 1e6)
 TOO_HEAVY = ("The files could not be joined into one assembly here ({why}). Export the assembly as one "
              "STEP file and upload that.")
 
@@ -333,11 +350,13 @@ def combine(members: list[Member], dest: Path | str, *, guarded: bool = True) ->
     for m in members:
         if m.path.suffix.lower() not in CAD_SUFFIXES:
             raise AssemblyFilesError(NOT_CAD.format(name=m.name))
-    return combine_guarded(members, dest) if guarded else _combine(members, dest)
+    if not guarded:
+        return _combine(members, dest)
+    return combine_guarded(members, dest, timeout_s=join_timeout_s(members))
 
 
-__all__ = ["CAD_SUFFIXES", "JOIN_MEMORY_MB", "JOIN_TIMEOUT_S", "MAX_FILES", "NOT_CAD", "TOO_HEAVY", "TOO_MANY",
-           "UNIT_UNKNOWN", "AssemblyFilesError", "Member", "can_join_as_text", "combine", "combine_guarded",
+__all__ = ["CAD_SUFFIXES", "JOIN_MEMORY_MB", "JOIN_S_PER_MB", "JOIN_TIMEOUT_CEILING_S", "JOIN_TIMEOUT_S", "MAX_FILES", "NOT_CAD", "TOO_HEAVY", "TOO_MANY",
+           "UNIT_UNKNOWN", "AssemblyFilesError", "Member", "can_join_as_text", "combine", "combine_guarded", "join_timeout_s",
            "join_occ", "join_text", "unit_plan"]
 
 

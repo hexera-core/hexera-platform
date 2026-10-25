@@ -50,12 +50,20 @@ def _enqueue_training_export(job_id: str, state: dict, *, created_at=None, ended
 
 def _enqueue_geometry_scout(**kwargs) -> None:
     from meshpipeline.adapters.pipeline_execution.celery import scout_geometry
-    scout_geometry.apply_async(kwargs=kwargs, task_id=f"geometry-check-{kwargs.get('session_id', '')}")
+    from meshpipeline.application.geometry_check import RETRY_SCOUT, step_limits
+    # THE LIMITS SIZED TO THE FILE (application/geometry_check.step_limits): the same numbers the
+    # pending marker carries, so the worker and the API's time box hold the check to one limit
+    soft, hard = step_limits(RETRY_SCOUT, (kwargs.get("source") or {}).get("size_bytes"))
+    scout_geometry.apply_async(kwargs=kwargs, task_id=f"geometry-check-{kwargs.get('session_id', '')}",
+                               soft_time_limit=soft, time_limit=hard)
 
 
 def _enqueue_geometry_naming(**kwargs) -> None:
     from meshpipeline.adapters.pipeline_execution.celery import name_geometry
-    name_geometry.apply_async(kwargs=kwargs, task_id=f"geometry-naming-{kwargs.get('session_id', '')}")
+    from meshpipeline.application.geometry_check import naming_limits_for
+    soft, hard = naming_limits_for(str(kwargs.get("session_id") or ""))
+    name_geometry.apply_async(kwargs=kwargs, task_id=f"geometry-naming-{kwargs.get('session_id', '')}",
+                              soft_time_limit=soft, time_limit=hard)
 
 
 def _route_model(step: str) -> str:
