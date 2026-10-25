@@ -1303,9 +1303,13 @@ NAME_TOOL = {
                 "part": {"type": "string", "description": "What the part is, in a few words (a pipe elbow, a manifold, a car body, a city block)."},
                 "flow": {"type": "string", "enum": ["internal", "external"],
                          "description": "internal: fluid flows THROUGH the part. external: fluid flows AROUND it."},
-                "input_kind": {"type": "string", "enum": ["body-surface", "fluid-domain", "solid-body"],
+                "input_kind": {"type": "string",
+                               "enum": ["body-surface", "fluid-domain", "solid-body", "solid-assembly"],
                                "description": "body-surface: the part's wall, with a hollow inside for the fluid. "
-                                              "fluid-domain: the fluid volume itself. solid-body: a body the fluid flows around."},
+                                              "fluid-domain: the fluid volume itself. solid-body: a body the fluid flows around. "
+                                              "solid-assembly: a solid block with coolant passages bored through it (a cold "
+                                              "plate, a chip package, a heat-exchanger core) - the metal AND the coolant are "
+                                              "both meshed, as coupled regions."},
                 "openings": {
                     "type": "array",
                     "items": {"type": "object", "properties": {
@@ -1356,7 +1360,12 @@ _SYSTEM = (
     "pipe, or a wing, a car body, a rotor with flat hub faces. The user's own description decides "
     "what the part is and which way the fluid goes; when they say the fluid flows AROUND the part, "
     "or the part is plainly a body, answer external / solid-body and mark every sticker "
-    "not_an_opening. Every picture carries an axis marker in its corner: red is +X, green +Y, "
+    "not_an_opening. A solid block with coolant passages bored THROUGH it - a cold plate, a chip "
+    "package, a heat-exchanger core - is solid-assembly rather than solid-body: the coolant runs "
+    "through the passages and both the metal and the coolant get meshed, so name the passage "
+    "mouths inlet and outlet. Say solid-assembly only when you can see passage mouths on the "
+    "part; a car body, a wing or a hull is solid-body however many bolt holes it has. "
+    "Every picture carries an axis marker in its corner: red is +X, green +Y, "
     "blue +Z, and each picture says which way its camera looks. For a body the fluid flows "
     "AROUND, first find its NOSE - the end that meets the oncoming fluid: a car's rounded front, a "
     "wing's rounded leading edge, a nacelle's intake, an aircraft's nose. Say which picture shows "
@@ -1694,13 +1703,31 @@ def _proposal(facts: dict, vision: dict | None) -> dict:
         pass
     model_conf = float(vision.get("confidence", 0.0) or 0.0)
     if not declared_kind and model_conf >= float(facts.get("confidence", {}).get("input_kind", 0.0)):
-        if vision.get("input_kind") in ("body-surface", "fluid-domain", "solid-body"):
+        if vision.get("input_kind") in _kinds_on_offer(facts, proposal):
             proposal["input_kind"] = vision["input_kind"]
         if vision.get("flow") in ("internal", "external"):
             proposal["flow"] = vision["flow"]
     if vision.get("notes") and not declared_kind:
         proposal["notes"].append(str(vision["notes"])[:300])
     return _upright(proposal, facts, vision, vision.get("flow_axis"))
+
+
+#: How many passage mouths the measuring step has to have found before a part may be read as a
+#: cooled solid. One is a bore or a bolt hole; coolant needs a way in and a way out.
+MIN_ASSEMBLY_OPENINGS = 2
+#: The kinds the pictures may name on their own. solid-assembly is NOT among them by default: a
+#: cold plate and a car body are both closed solids in a picture, and a car read as a cold plate
+#: would be sent to a mesher that waits for a coolant inlet it will never have. The measuring
+#: step having found two or more openings is the evidence that there are passages at all.
+_PICTURED_KINDS = ("body-surface", "fluid-domain", "solid-body")
+
+
+def _kinds_on_offer(facts: dict, proposal: dict) -> tuple[str, ...]:
+    """Which input kinds the picture-naming step is allowed to settle for this part."""
+    openings = len(proposal.get("openings") or [])
+    if openings >= MIN_ASSEMBLY_OPENINGS and str(facts.get("flow") or "") != "external":
+        return (*_PICTURED_KINDS, "solid-assembly")
+    return _PICTURED_KINDS
 
 
 def _upright(proposal: dict, facts: dict, vision: dict | None, flow_axis) -> dict:

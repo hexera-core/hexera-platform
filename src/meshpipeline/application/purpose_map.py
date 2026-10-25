@@ -78,6 +78,11 @@ _FEA = _rx(
     r"\belastic", r"\bcontact (analysis|pressure)", r"\btopology optimi[sz]", r"\b\d+(\.\d+)?\s?k?n\b",
     r"\bsag\b", r"how much (load|weight|force)", r"\bhold \d", r"\bthick enough\b", r"\bsol ?1\d\d\b",
     r"\bcrashworth",
+    # Reliability analysis is structural work. Without this, "solder joint reliability of a BGA"
+    # read as cooling - the only wrong ROUTE the semiconductor holdout found, and the reason it is
+    # fixed here rather than left: an "ask" costs the user one click, a wrong route costs them the
+    # whole job. The other eight misses are left exactly as the holdout scored them.
+    r"\breliability\b",
 )
 #: WORDS FOR A FLUID: what CFD answers.
 _FLOW = _rx(
@@ -100,13 +105,44 @@ _EXTERNAL = _rx(r"\baround\b", r"\bover\b", r"\bexternal", r"\baero", r"\bdrag\b
 #: WORDS THAT PUT HEAT IN THE QUESTION. Any one of them and the thermal split decides.
 _HEAT = _rx(r"\bthermal", r"\bheat", r"\bhot\b", r"\bwarm", r"\btemperature", r"\bcool", r"\boverheat",
             r"\bconduct", r"\bconvect", r"junction temp", r"\bdissipat", r"\bconjugate\b", r"\bcht\b",
-            r"\bthermo", r"\bflotherm", r"\bicepak", r"\becxml\b")
+            r"\bthermo", r"\bflotherm", r"\bicepak", r"\becxml\b",
+            # CTE is the coefficient of thermal expansion. "stress from CTE mismatch in the die
+            # attach" named no heat at all without it and went to plain structural work.
+            r"\bcte\b")
 #: ...cooling something: electronics cooling (the approved split's words).
 _COOLING = _rx(r"\bcool", r"\bheat ?sinks?\b", r"\bfans?\b", r"\bchips?\b", r"\bpcbs?\b", r"circuit board",
                r"\bboards?\b", r"\belectronic", r"\benclosure", r"\bcpus?\b", r"\bgpus?\b", r"\bprocessor",
                r"\bserver", r"\brack\b", r"power (module|electronics)", r"\binverter", r"\bleds?\b",
                r"junction temp", r"thermal management", r"\becxml\b", r"\bflotherm", r"\bicepak",
                r"6sigma", r"\bconjugate\b", r"\bcht\b", r"\bconvect", r"\b\d+(\.\d+)?\s?w\b", r"\bairflow")
+#: HARDWARE THAT IS THERMAL BY ITS NATURE. Nobody meshes a cold plate, a heat sink or a die for
+#: any reason but heat, so these nouns put heat in the question on their own - the words need not
+#: say "thermal", "heat" or "cool" at all. Measured: without this, "mesh this cold plate" and
+#: "150 W processor with a fan" settled nothing and the domain question was asked, because the
+#: heat gate wanted a heat word and a cold plate has none ("cold" is not one). "die stack thermal"
+#: reached the gate and then matched neither cooling nor heat-in-a-solid, so the thermal question
+#: was asked about a die stack.
+#:
+#: THE GATE ONLY OPENS ON THESE WHERE THE WORDS NAME NO MECHANICS. "stress in this PCB" is a
+#: board-level drop test and goes to FEA as it always did; it is the hardware noun that is weak
+#: evidence here, not the heat.
+_THERMAL_HARDWARE = _rx(
+    # the cooling hardware itself
+    r"\bcold ?plates?\b", r"\bheat ?sinks?\b", r"\bheat ?spreaders?\b", r"\bheat ?pipes?\b",
+    r"\bvapou?r chamber", r"\bmicro ?channel", r"\bmini ?channel", r"\bpin ?fins?\b",
+    r"\bcoolants?\b", r"\bcoolers?\b", r"\bradiators?\b", r"\btims?\b",
+    r"thermal interface material", r"\bimmersion cool", r"\bdirect[- ]to[- ]chip\b", r"\bd2c\b",
+    # the thing being cooled
+    r"\bchips?\b", r"\bdies?\b(?![- ]?cast)", r"\bdie ?(stack|attach|shadow)", r"\bwafers?\b",
+    r"\bcpus?\b", r"\bgpus?\b", r"\bprocessors?\b", r"\basics?\b", r"\bsocs?\b",
+    r"\bigbts?\b", r"\bmosfets?\b", r"\bsemiconductor", r"\binterposer",
+    r"\b(ic|chip|semiconductor|electronic)[- ]packages?\b", r"\bbgas?\b", r"\bflip[- ]?chip",
+    r"\bqfns?\b", r"\blgas?\b", r"\bpcbs?\b", r"circuit board", r"\belectronics?\b",
+    r"power (module|electronics)", r"\binverters?\b",
+    # how the trade states the problem
+    r"\btdp\b", r"\bhot ?spots?\b", r"junction[- ]to[- ]ambient", r"junction temp",
+    r"thermal resistance", r"\btheta[- ]?ja\b",
+)
 #: ...heat in a solid part: conduction, the temperature inside the part, thermal stress.
 _SOLID_HEAT = _rx(
     r"\bconduct", r"thermal[- ]?(stress|strain|expansion|fatigue|structural|mechanical|deformation)",
@@ -115,6 +151,8 @@ _SOLID_HEAT = _rx(
     r"(part|solid|block|body|wall|bracket|disc|disk|plate|component|beam|shaft)",
     r"heat (moving |flowing |going |travel\w* )?(through|in|inside|into) (the |this |a )?"
     r"(solid|part|wall|block|body)", r"\bin (the|this) solid\b", r"\bsolid part\b", r"\bexpansion",
+    # A CTE mismatch IS differential thermal expansion, and it is how the packaging trade says it.
+    r"\bcte\b",
 )
 #: A FLUID AS THE CAUSE, the part's mechanics as the question: "stress from the pressure of the
 #: water". The flow is the load; the answer is FEA.
@@ -166,6 +204,17 @@ def _hits(rx: re.Pattern, text: str) -> list[str]:
     return [m.group(0).strip().lower() for m in rx.finditer(text)]
 
 
+def _dedupe(words: list[str]) -> list[str]:
+    """The cue words in the order they were found, each once - two cue sets overlap (a chip is
+    cooling hardware and a cooling word) and `why` should not say it twice."""
+    seen, out = set(), []
+    for w in words:
+        if w not in seen:
+            seen.add(w)
+            out.append(w)
+    return out
+
+
 def analysis_of(text: str) -> str:
     """The FEA analysis type the words name, or "" (then the FEA path asks "What will you analyze?")."""
     said = str(text or "")
@@ -183,7 +232,9 @@ def _topology(text: str) -> str:
 def read_purpose(text: str) -> PurposeReading:
     """Where these words send the job. The rules, in order:
     1. Words that name both physics as one coupled problem (FSI, flutter) ask the domain question.
-    2. Heat in the words: the thermal split. Cooling words go to electronics cooling; words for
+    2. Heat in the words - a heat word, or hardware that is thermal by its nature (a cold plate,
+       a die, a heat sink) where the words name no mechanics: the thermal split. Cooling words go
+       to electronics cooling; words for
        heat in a solid part (conduction, the temperature inside it, thermal stress) to the FEA
        path; both, or neither, ask the thermal question - except words plainly about a flow and
        nothing else (a hot gas flow is a flow).
@@ -194,8 +245,14 @@ def read_purpose(text: str) -> PurposeReading:
     fea, flow = _hits(_FEA, said), _hits(_FLOW, said)
     if _COUPLED.search(said):
         return PurposeReading(ask=ASK_DOMAIN, why="coupled: " + ", ".join(_hits(_COUPLED, said)))
-    if _HEAT.search(said):
-        cooling, solid = _hits(_COOLING, said), _hits(_SOLID_HEAT, said)
+    hardware = _hits(_THERMAL_HARDWARE, said)
+    if _HEAT.search(said) or (hardware and not fea):
+        solid = _hits(_SOLID_HEAT, said)
+        # The hardware noun is weak evidence, and heat-in-a-solid words outrank it the same way
+        # mechanics words do at the gate: a die attach whose CTE mismatch is the question is heat
+        # moving through a solid, not cooling, so the nouns do not vote for cooling here. The
+        # cooling words proper still do, which is why "thermal stress in this PCB" still asks.
+        cooling = _dedupe(_hits(_COOLING, said) + ([] if solid else hardware))
         if cooling and fea and not solid:
             # cooling AND the part's strength ("strength and cooling"): two jobs - which one?
             return PurposeReading(ask=ASK_DOMAIN, why="cooling and mechanics: " + ", ".join(cooling + fea))

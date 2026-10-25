@@ -181,6 +181,89 @@ HOLDOUT = [
     ("performance", "ask"),
 ]
 
+#   semi_dev - 34 semiconductor and electronics-cooling phrases the thermal-hardware cues were
+#              written against (2026-10-24), so they are tuned on. Half of them are the risk
+#              cases: a cold plate, a die or a PCB in a sentence whose question is MECHANICS, and
+#              those must still take the FEA path.
+#   semi_holdout - 30 more, written before the first score and scored once. Never tuned on.
+SEMI_DEV = [
+    # what a semiconductor thermal engineer types. None of these settled before: a cold plate has
+    # no heat word in it, and the heat gate wanted one.
+    ("mesh this cold plate", "electronics"),
+    ("cool this cold plate with water", "electronics"),
+    ("microchannel cold plate, water at 2 L/min", "electronics"),
+    ("conjugate heat transfer on this cold plate", "electronics"),
+    ("direct-to-chip liquid cooling", "electronics"),
+    ("heat through this chip", "electronics"),
+    ("cool this chip", "electronics"),
+    ("die stack thermal", "electronics"),
+    ("junction temperature of this package", "electronics"),
+    ("what is the junction to ambient resistance", "electronics"),
+    ("heat spreader on a 150 W TDP part", "electronics"),
+    ("150 W processor with a fan", "electronics"),
+    ("cool this heat sink", "electronics"),
+    ("thermal management of this enclosure", "electronics"),
+    ("airflow over the radiator core", "electronics"),
+    ("pin fin array in this cold plate", "electronics"),
+    ("vapour chamber under the GPU", "electronics"),
+    ("IGBT module cooling", "electronics"),
+    # ...and the same nouns where the question is the part's own mechanics. A PCB in a drop test
+    # is still FEA; the hardware noun is weak evidence and the mechanics words outrank it.
+    ("stress in this PCB", "fea"),
+    ("drop test of this PCB", "fea"),
+    ("modal analysis of this cold plate", "fea"),
+    ("fatigue of the chip solder joints", "fea"),
+    ("stress in this die cast housing", "fea"),
+    ("how much load can this wafer carrier hold", "fea"),
+    ("can this cold plate hold 3 bar without bursting", "fea"),
+    ("stress in this bracket", "fea"),
+    ("thermal stress in this disc", "fea_heat"),
+    # ...and the sentences that must stay a plain flow: watts and a manifold are not a chip.
+    ("500 W pump, what is the flow rate", "flow"),
+    ("pressure drop through this manifold", "flow"),
+    ("mesh the water inside this pipe", "flow"),
+    ("blood flow through this artery", "flow"),
+    ("drag on this car body", "flow"),
+    ("external aero on a car at 30 m/s", "flow"),
+    # ...and one that names both jobs, where the one question is the right answer
+    ("will this heat sink fin break off under vibration", "ask"),
+]
+
+SEMI_HOLDOUT = [
+    ("liquid cooling loop for a 700 W GPU", "electronics"),
+    ("manifold microchannel heat sink, 50 kW/cm2", "electronics"),
+    ("two-phase cooling of a power module", "electronics"),
+    ("what is the pressure drop across this cold plate", "electronics"),
+    ("embedded cooling in the silicon", "electronics"),
+    ("jet impingement on a bare die", "electronics"),
+    ("TIM2 bondline thickness effect", "electronics"),
+    ("hotspot at 500 W/cm2", "electronics"),
+    ("lid and heat spreader of this CPU package", "electronics"),
+    ("thermal model of an SiC inverter", "electronics"),
+    ("temperature of the GaN HEMT channel", "electronics"),
+    ("3D stacked memory thermal", "electronics"),
+    ("immersion tank for these servers", "electronics"),
+    ("rear door heat exchanger for a rack", "electronics"),
+    ("how hot does the interposer get", "electronics"),
+    ("coolant distribution in the manifold", "electronics"),
+    ("natural convection from this enclosure", "electronics"),
+    ("fan curve for this chassis", "electronics"),
+    ("mesh the air gap between the die and the lid", "electronics"),
+    ("wafer chuck temperature uniformity", "electronics"),
+    ("junction temperature under a 20 ms power pulse", "electronics"),
+    ("direct liquid cooling of a 1 kW accelerator", "electronics"),
+    ("thermal runaway of the battery module", "electronics"),
+    ("warpage of the package after reflow", "fea"),
+    ("solder joint reliability of a BGA", "fea"),
+    ("stress from CTE mismatch in the die attach", "fea_heat"),
+    ("CMP pad stress", "fea"),
+    ("etch chamber gas flow", "flow"),
+    ("showerhead flow uniformity in the deposition chamber", "flow"),
+    ("cool the wafer stage", "electronics"),
+]
+
 #: (phrase, label, origin) for the whole set.
 PHRASES = ([(p, lab, "audit60") for p, lab in AUDIT60] + [(p, lab, "dev") for p, lab in DEV]
-           + [(p, lab, "holdout") for p, lab in HOLDOUT])
+           + [(p, lab, "holdout") for p, lab in HOLDOUT]
+           + [(p, lab, "semi_dev") for p, lab in SEMI_DEV]
+           + [(p, lab, "semi_holdout") for p, lab in SEMI_HOLDOUT])
