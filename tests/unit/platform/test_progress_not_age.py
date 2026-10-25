@@ -170,7 +170,8 @@ def test_only_an_engine_with_a_driver_for_this_run_is_held_to_the_pipelines_time
             raise KeyError(name)
         return _Spec()
 
-    monkeypatch.setattr(invoke, "get_spec", _get_spec)
+    # raising=False: the stand-in is set whatever an earlier test in the shard left of the module
+    monkeypatch.setattr(invoke, "get_spec", _get_spec, raising=False)
     assert invoke.takes_driver(SimpleNamespace(engine="gmsh"), {"purpose": "structural"}) is True
     assert invoke.takes_driver(SimpleNamespace(engine="gmsh"), {"purpose": "external_cfd"}) is False
     assert invoke.takes_driver(SimpleNamespace(engine="no-such-engine"), {}) is False
