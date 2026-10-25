@@ -635,31 +635,52 @@ REPEATED_TRIANGLES_RULE = "MESH-5"
 
 
 def drop_repeated_triangles(gmsh, surfaces) -> dict[int, int]:
-    """MESH-5: A FACE WHOSE SURFACE MESH REPEATS A TRIANGLE keeps one copy. gmsh's periodic mesher can lay
-    the same three nodes down twice where a seam runs into a pole (nakuja_rocket's nose cone, Part_2_Face_5:
-    an interior node placed just across the seam, at u = -0.017, makes the triangle beside the apex on both
-    sides of it), and the fill then refuses the boundary ("Found two duplicated facets", "overlapping
-    facets on surface 5 surface 5") whatever the 2D algorithm or the scale. A copy adds no surface: the
-    face is the same without it. A surface mesh with no repeat - every one the fill accepts - is left
-    untouched. Returns {surface: copies dropped}."""
+    """MESH-5: A FACE WHOSE SURFACE MESH REPEATS A TRIANGLE. gmsh's periodic mesher can lay the same three
+    nodes down twice where a seam runs into a pole (nakuja_rocket's nose cone, Part_2_Face_5: an interior
+    node placed just across the seam, at u = -0.017, beside the apex), and the fill then refuses the
+    boundary ("Found two duplicated facets", "overlapping facets on surface 5 surface 5") whatever the 2D
+    algorithm or the scale. A copy adds no surface, so one is dropped; and when the one left is a FLAP - an
+    edge of it bounds no other triangle of the part's surface, so the pair was a fold out and back over
+    nothing (the nose cone: edges used 1, 3 and 1 times) - it is dropped too: the surface closes without
+    it, and a triangle no element has as a face would stop the solver files. A surface mesh with no repeat
+    - every one the fill accepts - is left untouched. Returns {surface: triangles dropped}."""
     import numpy as np
 
-    dropped: dict[int, int] = {}
+    faces: dict[int, tuple] = {}
     for s in sorted(int(t) for t in surfaces):
         types, tags, nodes = gmsh.model.mesh.getElements(2, s)
         if len(types) != 1 or int(types[0]) != 2:          # only a face of plain 3-node triangles
             continue
         tri = np.asarray(nodes[0], dtype=np.int64).reshape(-1, 3)
-        _u, first = np.unique(np.sort(tri, axis=1), axis=0, return_index=True)
-        if len(first) == len(tri):
-            continue
-        keep = np.sort(first)
+        _u, first, count = np.unique(np.sort(tri, axis=1), axis=0, return_index=True, return_counts=True)
+        if len(first) < len(tri):
+            faces[s] = (tri, np.asarray(tags[0]), first, count)
+    if not faces:
+        return {}
+    # how many triangles of the part's surface use each edge, every triangle counted once
+    edge_use: dict[tuple[int, int], int] = {}
+    for s in sorted(int(t) for t in surfaces):
+        types, _tags, nodes = gmsh.model.mesh.getElements(2, s)
+        for et, nd in zip(types, nodes, strict=True):
+            if int(et) != 2:
+                continue
+            for a, b, c in np.unique(np.sort(np.asarray(nd, dtype=np.int64).reshape(-1, 3), axis=1), axis=0).tolist():
+                for e in ((a, b), (b, c), (a, c)):
+                    edge_use[e] = edge_use.get(e, 0) + 1
+    dropped: dict[int, int] = {}
+    for s, (tri, tags, first, count) in faces.items():
+        keep = []
+        for k, n in zip(first.tolist(), count.tolist(), strict=True):
+            if n > 1:
+                a, b, c = sorted(int(v) for v in tri[k])
+                if any(edge_use.get(e, 0) < 2 for e in ((a, b), (b, c), (a, c))):
+                    continue                               # a flap: no copy is kept
+            keep.append(k)
+        keep.sort()
         gmsh.model.mesh.removeElements(2, s)
-        gmsh.model.mesh.addElementsByType(s, 2, [int(t) for t in np.asarray(tags[0])[keep]],
-                                          [int(n) for n in tri[keep].ravel()])
+        gmsh.model.mesh.addElementsByType(s, 2, [int(t) for t in tags[keep]], [int(v) for v in tri[keep].ravel()])
         dropped[s] = int(len(tri) - len(keep))
-    if dropped:
-        print(f"[GMSH-FEA] repeated surface triangles dropped {dropped} ({REPEATED_TRIANGLES_RULE})", file=sys.stderr)
+    print(f"[GMSH-FEA] repeated surface triangles dropped {dropped} ({REPEATED_TRIANGLES_RULE})", file=sys.stderr)
     return dropped
 
 

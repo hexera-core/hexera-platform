@@ -304,3 +304,25 @@ def test_a_surface_stage_that_stalls_is_meshed_again_without_gmshs_switch(tmp_pa
     assert ok, marker
     assert seen == [None, False]
     assert any(e["rule"] == "LAD-fea-8" and e["decided"] == "lever" for e in dr.cited_for("t-stall"))
+
+
+def test_a_repeated_triangle_that_is_a_flap_is_dropped_whole():
+    """MESH-5: the nose cone's pair was a fold out and back over nothing (two of its edges bound no other
+    triangle): keeping one copy left a triangle no element has as a face, and the solver files stopped. A
+    flap goes whole; the surface closes without it."""
+    try:
+        surfaces = _box_with_a_repeat(False)
+        s = surfaces[2]
+        _t, _tags, nodes = gmsh.model.mesh.getElements(2, s)
+        a, b = (int(n) for n in nodes[0][:2])                  # an edge of the face
+        xa = gmsh.model.mesh.getNode(a)[0]
+        tip = int(gmsh.model.mesh.getMaxNodeTag()) + 1
+        gmsh.model.mesh.addNodes(2, s, [tip], [xa[0] + 0.01, xa[1] + 0.01, xa[2] + 0.01])
+        nxt = int(gmsh.model.mesh.getMaxElementTag()) + 1
+        gmsh.model.mesh.addElementsByType(s, 2, [nxt, nxt + 1], [a, b, tip, b, a, tip])
+        assert A.drop_repeated_triangles(gmsh, surfaces) == {s: 2}
+        gmsh.model.mesh.generate(3)
+        assert sum(len(t) for t in gmsh.model.mesh.getElements(3)[1]) > 0
+    finally:
+        if gmsh.isInitialized():
+            gmsh.finalize()
