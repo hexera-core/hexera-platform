@@ -444,7 +444,7 @@ def bad_surfaces(gmsh, tags, qualities) -> list[int]:
     """The CAD surfaces the invalid elements (quality not above 0) touch: their nodes on a surface,
     or on a curve or corner of one - where LAD-fea-6 meshes the next pass the other way.
 
-    A SLIVER LOCKED BETWEEN TWO FACES (LAD-fea-6b) - an element whose four corners all lie on two
+    A SLIVER LOCKED BETWEEN TWO FACES (LAD-fea-6) - an element whose four corners all lie on two
     surfaces, none inside - names only the second of the two: two faces facing each other across a
     wall one element thick (fc_glass_frames' 10 mm pane at 7.5 mm, faces 5 and 6) get the same surface
     mesh, node across from node, and every four of them make a flat tet no optimiser can move. Meshing
@@ -577,6 +577,8 @@ def assembly_summary(asm: dict, sidecar: dict, prep) -> dict:
 MM_PER_M = 1000.0
 #: MESH-4: the line that says the mesh was built at the CAD's millimetre scale (quality.json says it too)
 MM_SCALE = "[GMSH-FEA] MESHED AT MILLIMETRE SCALE"
+#: the rule that meshes a CAD solid at its own scale after the metre build failed
+MM_SCALE_RULE = "MESH-4"
 
 
 class NoSolid(Exception):
@@ -807,7 +809,7 @@ def mesh(workspace) -> int:
             # kernel's tolerance. Only after the metre build failed: every part that meshes in metres
             # meshes exactly as before.
             print(f"[GMSH-FEA] the solid could not be meshed at the metre scale ({str(first.exc)[:200]}) - "
-                  "meshing it again at the CAD's own millimetre scale (MESH-4)", file=sys.stderr)
+                  f"meshing it again at the CAD's own millimetre scale ({MM_SCALE_RULE})", file=sys.stderr)
             tags = first.tags
             gmsh.clear()
             scale = MM_PER_M
@@ -943,7 +945,8 @@ def mesh(workspace) -> int:
                                           "fea_max_dihedral_deg", "fea_inverted") if k in shape},
             "fea_rules_short": len(rules.get("short") or []) if rules else None,
             # MESH-4: meshed at the CAD's millimetre scale after the metre build failed
-            **({"fea_mesh_scale": "mm", "fea_micro_curves_one_segment": len(built.get("micro_curves") or [])}
+            **({"fea_mesh_scale": "mm", "fea_mesh_scale_rule": MM_SCALE_RULE,
+                "fea_micro_curves_one_segment": len(built.get("micro_curves") or [])}
                if scale != 1.0 else {}),
             "fea_bad_surfaces": traced,
             "fea_bad_faces": face_names_of(traced, face_tags),

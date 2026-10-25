@@ -1,4 +1,4 @@
-# Responsibility: Verify MESH-4: a staged solid the FEA mesher cannot mesh in metres (a surface no 2D algorithm meshes, a fill that fails, a volume left empty) is meshed again at the CAD's own millimetre scale and delivered in metres, every face still named; a solid that meshes in metres never takes that way, and a failure at both scales still names its surfaces.
+# Responsibility: Verify MESH-4 and LAD-fea-6's locked slivers: a staged solid the FEA mesher cannot mesh in metres (a surface no 2D algorithm meshes, a fill that fails, a volume left empty) is meshed again at the CAD's own millimetre scale and delivered in metres, every face still named; a solid that meshes in metres never takes that way, and a failure at both scales still names its surfaces; and an invalid sliver locked between two faces names only one of them, so the next pass breaks their mirrored meshes.
 # Boundaries: the metre failure is forced on a small built part (the real one, libredrive_pulley_housing's 24 nm grazing edges, is the lab's: ~/graze_lab); gmsh runs in-process.
 from __future__ import annotations
 
@@ -190,7 +190,7 @@ def _stub(elements, nodes, curves=None):
 
 
 def test_a_sliver_locked_between_two_faces_names_only_the_second_face():
-    """LAD-fea-6b: two faces facing each other across a wall one element thick, meshed alike - remeshing
+    """LAD-fea-6: two faces facing each other across a wall one element thick, meshed alike - remeshing
     BOTH the other way mirrors them again, so only the second is named (fc_glass_frames' pane)."""
     nodes = {1: (2, 5), 2: (2, 5), 3: (2, 6), 4: (2, 6), 5: (2, 5), 6: (2, 6)}
     g = _stub({10: [1, 2, 3, 4], 11: [2, 5, 4, 6]}, nodes)
