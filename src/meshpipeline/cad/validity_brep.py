@@ -299,14 +299,14 @@ def _crossings(shape, diag: float, findings: list[Finding], measured: dict) -> b
     a fine tessellation of a copy, each candidate confirmed on the exact geometry: a face pair by
     its true distance, a body pair by the volume the two share. Returns whether it finished."""
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Copy
-    from OCP.BRepMesh import BRepMesh_IncrementalMesh
 
     from meshpipeline.cad.crossings import find_crossings, nested_bodies
+    from meshpipeline.cad.occ_box import incremental_mesh
     from meshpipeline.cad.validity import MAX_VERIFIED_TRIANGLES
 
     try:
         work = BRepBuilderAPI_Copy(shape, True, False).Shape()
-        BRepMesh_IncrementalMesh(work, CROSS_DEFLECTION * diag, False, CROSS_ANGLE, True)
+        incremental_mesh(work, CROSS_DEFLECTION * diag, CROSS_ANGLE)
         faces, face_of, body_of_face, pts, tris = _tessellation(work)
     except Exception as exc:  # noqa: BLE001 - a shape that will not tessellate is not verified
         findings.append(Finding("not_verified", ERROR,

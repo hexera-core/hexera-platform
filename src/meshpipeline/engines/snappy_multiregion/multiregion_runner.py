@@ -433,12 +433,13 @@ def read_assembly_solids(geom_path, out_dir, *, prepared=None) -> list[dict]:
                                    scale=prepared.to_metres if prepared is not None else 1.0)
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
     from OCP.BRepGProp import BRepGProp
-    from OCP.BRepMesh import BRepMesh_IncrementalMesh
     from OCP.gp import gp_Trsf
     from OCP.GProp import GProp_GProps
     from OCP.StlAPI import StlAPI_Writer
     from OCP.TopAbs import TopAbs_SOLID
     from OCP.TopExp import TopExp_Explorer
+
+    from meshpipeline.cad.occ_box import incremental_mesh
     shape = _read_cad_shape(geom_path)
     if prepared is None:
         raise ValueError(
@@ -456,7 +457,7 @@ def read_assembly_solids(geom_path, out_dir, *, prepared=None) -> list[dict]:
         vol = props.Mass()
         c = props.CentreOfMass()
         stl = out_dir / f"solid_{idx}.stl"
-        BRepMesh_IncrementalMesh(solid, 5.0e-4, False, 0.2, True)
+        incremental_mesh(solid, 5.0e-4, 0.2)
         StlAPI_Writer().Write(solid, str(stl))
         tris = read_stl_triangles(stl)
         if tris:
