@@ -43,6 +43,9 @@ psycopg2-binary==2.9.10
 # Without it the worker silently falls back to MemorySaver and every requeue/resume
 # restarts the pipeline from scratch instead of resuming from checkpoint.
 psycopg[binary]==3.2.3
+# the checkpointer borrows from a checked pool (application/checkpoint_pool), so a long job
+# survives a database restart
+psycopg-pool==3.3.1
 
 # Celery + Redis
 celery==5.4.0

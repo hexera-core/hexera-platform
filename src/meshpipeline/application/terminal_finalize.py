@@ -346,16 +346,24 @@ async def assemble_and_finalize(session_factory, assembly: TerminalAssembly, *,
             dataclasses.replace(assembly, status=JobStatus.failed, review_plan=None),
             delivered_types=delivered_types)
 
-    async with session_factory() as db:
-        outcome = await finalize_terminal_atomic(
-            db, ownership=ownership, intended_status=assembly.status,
-            failed_reason=assembly.failed_reason,
-            final_result_dict=rendered.result.to_dict(),
-            closing_message=rendered.closing_message,
-            lease_repo=lease_repo, job_repo=job_repo, review_plan=assembly.review_plan,
-            plain_failure=((plain.result.to_dict(), plain.closing_message)
-                           if plain is not None else None))
-        await db.commit()
+    async def _commit():
+        async with session_factory() as db:
+            done = await finalize_terminal_atomic(
+                db, ownership=ownership, intended_status=assembly.status,
+                failed_reason=assembly.failed_reason,
+                final_result_dict=rendered.result.to_dict(),
+                closing_message=rendered.closing_message,
+                lease_repo=lease_repo, job_repo=job_repo, review_plan=assembly.review_plan,
+                plain_failure=((plain.result.to_dict(), plain.closing_message)
+                               if plain is not None else None))
+            await db.commit()
+            return done
+
+    # THE ONE TERMINAL COMMIT, retried through a database blip (application/db_retry): a run that
+    # got this far has its outcome in hand - a dropped connection here must cost a retry, never the
+    # outcome. The transaction is all-or-nothing, so a failed try left nothing behind to repeat.
+    from meshpipeline.application.db_retry import retry_transient
+    outcome = await retry_transient(_commit, what=f"terminal commit job {assembly.job_id}", jlog=jlog)
     if outcome.fenced:
         jlog.warning("Worker FENCED at the atomic terminal transaction (generation/token "
                      "superseded) - no terminal side effects; the current owner finalizes. "

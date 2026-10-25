@@ -44,21 +44,59 @@ class FencedCheckpointer(BaseCheckpointSaver):
         # concrete savers add their own surface, and it must keep working.
         return getattr(self._inner, item)
 
- # FENCED writes
+ # FENCED writes - and a database blip never ends the run (application/db_retry). Each write is
+ # an upsert keyed by thread, namespace and checkpoint id, so writing it again is the same write.
+ # The inner saver draws a fresh, checked connection from its pool on every call, so the retry is
+ # on a live connection, not the one that died (kart_chassis, dev-areen 25 Oct: the saver's single
+ # long-lived connection died at a Cloud SQL restart mid-job, and the first write after a reviewer
+ # PASS failed the job). If the database is still unavailable after every retry, the checkpoint
+ # is SKIPPED, loudly: the run goes on in memory and finishes; only a crash-resume between here
+ # and the next good write would replay from the previous checkpoint. A fence refusal is never
+ # retried or skipped - it is raised before the write is tried.
     async def aput(self, config, checkpoint, metadata, new_versions):
         await _fence.assert_current_owner("checkpoint write (aput)")
-        return await self._inner.aput(config, checkpoint, self._stamp(metadata), new_versions)
+        stamped = self._stamp(metadata)
+        try:
+            return await self._retry(lambda: self._inner.aput(config, checkpoint, stamped, new_versions),
+                                     "checkpoint write (aput)")
+        except Exception as exc:  # noqa: BLE001 - narrowed at once
+            if not self._skippable(exc, "checkpoint write (aput)"):
+                raise
+            conf = dict((config or {}).get("configurable") or {})
+            return {"configurable": {"thread_id": conf.get("thread_id"),
+                                     "checkpoint_ns": conf.get("checkpoint_ns", ""),
+                                     "checkpoint_id": (checkpoint or {}).get("id")}}
 
     async def aput_writes(self, config, writes, task_id, task_path: str = ""):
         await _fence.assert_current_owner("checkpoint write (aput_writes)")
-        return await self._inner.aput_writes(config, writes, task_id, task_path)
+        try:
+            return await self._retry(lambda: self._inner.aput_writes(config, writes, task_id, task_path),
+                                     "checkpoint write (aput_writes)")
+        except Exception as exc:  # noqa: BLE001 - narrowed at once
+            if not self._skippable(exc, "checkpoint write (aput_writes)"):
+                raise
+            return None
 
- # UNFENCED reads (resume must keep working)
+    async def _retry(self, step, what: str):
+        from meshpipeline.application.db_retry import retry_transient
+        return await retry_transient(step, what=f"{what} job {self._identity['job_id']}", jlog=logger)
+
+    def _skippable(self, exc: BaseException, what: str) -> bool:
+        from meshpipeline.application.db_retry import is_transient_db_error
+        if not is_transient_db_error(exc):
+            return False
+        logger.error("%s for job %s SKIPPED: the database stayed unavailable through every retry "
+                     "(%s: %s) - the run goes on in memory; a crash before the next good checkpoint "
+                     "would resume from the previous one", what, self._identity["job_id"],
+                     type(exc).__name__, exc)
+        return True
+
+ # UNFENCED reads (resume must keep working) - retried on a database blip like the writes
     async def aget(self, config):
-        return await self._inner.aget(config)
+        return await self._retry(lambda: self._inner.aget(config), "checkpoint read (aget)")
 
     async def aget_tuple(self, config):
-        return await self._inner.aget_tuple(config)
+        return await self._retry(lambda: self._inner.aget_tuple(config), "checkpoint read (aget_tuple)")
 
     def alist(self, config, *, filter=None, before=None, limit=None):  # noqa: A002 - LangGraph's name
         return self._inner.alist(config, filter=filter, before=before, limit=limit)

@@ -815,7 +815,9 @@ async def _run_async(req: JobRequest) -> dict:
 
         async def _invoke_with_heartbeat(graph):
             if ownership is None:
-                return await graph.ainvoke(await _graph_input(graph), config=graph_config)
+                # a mesh past the executor's gates is never lost to a later step (post_gate_rescue)
+                from meshpipeline.application.post_gate_rescue import run_to_end
+                return await run_to_end(graph, await _graph_input(graph), graph_config, jlog=jlog)
             _stop = asyncio.Event()
 
             async def _beat():
@@ -863,10 +865,16 @@ async def _run_async(req: JobRequest) -> dict:
                 # fleet roll, an operator) stops the graph and raises WorkerDraining, which the
                 # handler at the bottom of this function turns into a hand-back - not a failure.
                 from meshpipeline.application.execution_fence import execution_ownership
+
+                # ONCE THE EXECUTOR HAS PASSED THE MESH, nothing after it fails the job: a crash in
+                # the reviewer, a checkpoint write, anything - the run is finished from the last
+                # state it reached and delivered, saying the review did not conclude
+                # (application/post_gate_rescue; lp_base and kart_chassis, dev-areen 25 Oct)
+                from meshpipeline.application.post_gate_rescue import run_to_end as _run_to_end
                 from meshpipeline.application.worker_handoff import run_unless_draining
                 with execution_ownership(ownership, session_factory=AsyncSessionLocal):
                     return await run_unless_draining(
-                        graph.ainvoke(await _graph_input(graph), config=graph_config))
+                        _run_to_end(graph, await _graph_input(graph), graph_config, jlog=jlog))
             finally:
                 _stop.set()
                 try:
@@ -877,7 +885,15 @@ async def _run_async(req: JobRequest) -> dict:
         try:
             from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
             _pg_dsn = provcfg.POSTGRES_DSN.replace("+asyncpg", "").replace("+psycopg", "")
-            async with AsyncPostgresSaver.from_conn_string(_pg_dsn) as checkpointer:
+            # A POOL, CHECKED ON EVERY BORROW - never one connection held for the whole run. A
+            # job runs for hours; a connection opened at its start does not survive a database
+            # restart in the middle (kart_chassis, dev-areen 25 Oct: the 03:50 Cloud SQL restart
+            # killed it, and the first checkpoint write after the reviewer's PASS failed the job).
+            # The pool hands each checkpoint call a connection it has just checked, replacing a
+            # dead one; FencedCheckpointer retries a call that still meets a blip.
+            from meshpipeline.application.checkpoint_pool import checkpoint_pool
+            async with checkpoint_pool(_pg_dsn) as _cp_pool:
+                checkpointer = AsyncPostgresSaver(_cp_pool)
                 await checkpointer.setup()
                 _checkpointer_ok = True
                 # every authoritative checkpoint WRITE is fenced on execution ownership, and each
