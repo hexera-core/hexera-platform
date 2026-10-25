@@ -286,7 +286,7 @@ def prepare_assembly(ws: Path, record: dict, surface, *, connection: str, source
     record["assembly_plan"] = {"staged": A.STAGED, "sidecar": A.SIDECAR, "connection": connection,
                                "mode": sidecar["mode"], "parts": sidecar["parts"], "pairs": len(sidecar["pairs"]),
                                "interfaces": len(sidecar["interfaces"]), "notes": notes + list(sidecar["notes"]),
-                               # TIED FROM THE START: too many parts pass into each other to fuse (TIE_FIRST_OVERLAPS)
+                               # TIED FROM THE START: too many parts pass into each other to fuse (TIE_FIRST_PIECES)
                                "tie_first": sidecar.get("tie_first"),
                                # WHERE THE PARTS MEET, for the AI's joint suggestion (engines/fea_ai AI-fea-7)
                                "pair_list": [{"pair": i.get("id"), "kind": i.get("kind"), "parts": i.get("parts"),
@@ -736,7 +736,20 @@ def _fused_fill_failed(result: dict, facts: dict) -> bool:
     log = str(result.get("log_tail") or "")
     if facts.get("built"):
         return False
+    if _one_part_faces(facts.get("bad_faces") or []):
+        # THE FILL NAMED FACES OF ONE PART ONLY (libredrive_pulley_housing, 25 Oct: two tangent faces of the
+        # housing, "overlapping facets", no joint near): the part's own surface mesh, which the tie would
+        # mesh the same way - the ladder's levers (MeshAdapt there, LAD-fea-6) come first
+        return False
     return _empty_volumes_named(log) or any(w in log for w in FUSED_FILL_ERRORS)
+
+
+def _one_part_faces(names: list) -> bool:
+    """Every face named is one part's own (Part_k_Face_j, the same k)."""
+    from meshpipeline.cad.fea_assembly import part_of_face
+
+    parts = {part_of_face(str(n)) for n in names}
+    return len(parts) == 1 and None not in parts
 
 
 #: The share of an invalid fused pass's bad surfaces that must be fused interfaces for the tie to come
@@ -755,10 +768,11 @@ def _fused_joints_invalid(q: dict) -> bool:
 
 
 def _keep_pass_log(ws: Path, n: int) -> None:
-    """Every pass keeps its own gmsh log (and its failure note) in its pass folder - not only the last."""
+    """Every pass keeps its own gmsh log, its quality record and its failure note in its pass folder - not
+    only the last (where a pass went wrong is read afterwards, pass by pass)."""
     d = ws / PASS_FOLDER.format(n=n)
     d.mkdir(exist_ok=True)
-    for name in ("gmshfea.log", "fea_failure.json"):
+    for name in ("gmshfea.log", "quality.json", "fea_failure.json"):
         if (ws / name).exists():
             shutil.copy2(ws / name, d / name)
 

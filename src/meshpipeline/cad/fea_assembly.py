@@ -50,17 +50,17 @@ CONNECTIONS = (BONDED, CONTACT)
 #: The pairs a mesh writes: bonded and conformal (shared nodes), bonded but not conformal (a tie:
 #: the fuse could not be made), or contact (separate meshes, a contact pair).
 PAIR_BONDED, PAIR_TIE, PAIR_CONTACT = "bonded", "tie", "contact"
-#: TIE FIRST: a bonded assembly with this many pairs of parts passing into each other is staged apart
-#: and tied from the start, not fused. Each such pair leaves the fuse its own intersection curves and
-#: shared pieces, and the fused mesh then runs for hours or comes back invalid there. Measured on 25
-#: bonded assemblies (25 Oct, cad/fea_assembly.interfaces_of, the same fuse the mesh is built on):
-#: every assembly whose fused mesh was valid had at most 6 such pairs (chrono 3, lp_channel_leg 3,
-#: fc_folding_table 4, ts_twist_block 6); kart_chassis (7: the fused fill failed), kart_roll_cage (8:
-#: invalid on the joints) and lp_lptl_support (26: past the 230-minute wall still meshing) did not.
-#: How much the parts overlap did not separate them (chrono overlaps by a third and fuses in
-#: minutes); the count of pairs did. Fewer pairs that still fail are tied after the first pass
-#: (engines/fea_driver, PLAN-fea-17).
-TIE_FIRST_OVERLAPS = 7
+#: TIE FIRST: a bonded assembly whose parts pass into each other in this many separate pieces is staged
+#: apart and tied from the start, not fused. Each piece is a shared solid the fuse cuts out, with its own
+#: intersection curves, and the fused mesh then runs for hours or comes back invalid there. Measured on
+#: 27 bonded assemblies (25 Oct, the same fuse the mesh is built on): every assembly whose fused mesh was
+#: valid had at most 7 pieces (chrono 3, lp_channel_leg 3, fc_folding_table 4, ts_twist_block 7);
+#: kart_chassis (9: the fused fill failed), kart_roll_cage (10: invalid on the joints), lp_lptl_support
+#: (26: past the 230-minute wall) and ender3_idler (36 pieces from ONE pair of parts: 239 minutes, then
+#: gmsh crashed) did not. Neither the number of overlapping pairs (ender3_idler has one) nor how much
+#: the parts overlap (chrono by a third, and it fuses in minutes) separated them; the pieces did.
+#: Fewer pieces that still fail are tied after the first pass (engines/fea_driver, PLAN-fea-17).
+TIE_FIRST_PIECES = 8
 #: A part is WHOLLY INSIDE another when this share of it overlaps the other.
 WHOLLY_INSIDE = 0.999
 #: The general fuse treats surfaces this close (a share of the assembly's size) as touching: CAD
@@ -444,12 +444,13 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
     interfaces = (pairwise_interfaces(parts, vols, fuzzy=FUZZY_SHARE * diag) if fused.error
                   else interfaces_of(fused, vols, scale=1.0))
     n_over = sum(1 for i in interfaces if i["kind"] == "overlap")
-    tie_first = mode == PAIR_BONDED and n_over >= TIE_FIRST_OVERLAPS
+    n_pieces = 0 if fused.error else sum(1 for o in fused.solid_parts if len(o) > 1)
+    tie_first = mode == PAIR_BONDED and n_pieces >= TIE_FIRST_PIECES
     if tie_first:
         mode = PAIR_TIE
-        notes.append(f"{n_over} pairs of parts pass into each other, too many to mesh as one piece reliably, so "
-                     "each part is meshed on its own and tied where they meet (bonded, but their nodes are not "
-                     "shared).")
+        notes.append(f"The parts pass into each other in {n_pieces} places ({n_over} pair(s) of parts), too many to "
+                     "mesh as one piece reliably, so each part is meshed on its own and tied where they meet "
+                     "(bonded, but their nodes are not shared).")
     if mode == PAIR_BONDED:
         staged = fused.shape
         face_names = [[face_name(p, j) for p, j in o] for o in fused.face_origins]
@@ -540,7 +541,8 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
                "surfaces": surfaces, "volumes": volumes, "pairs": pairs, "interfaces": interfaces,
                "unpaired": [{"inner": a, "outer": b} for a, b in unpaired],
                "notes": notes, "fuse_seconds": fused.seconds,
-               "tie_first": {"overlap_pairs": n_over, "at": TIE_FIRST_OVERLAPS} if tie_first else None}
+               "tie_first": ({"overlap_pieces": n_pieces, "overlap_pairs": n_over, "at": TIE_FIRST_PIECES}
+                             if tie_first else None)}
     (out / SIDECAR).write_text(json.dumps(sidecar, indent=1))
     return sidecar
 

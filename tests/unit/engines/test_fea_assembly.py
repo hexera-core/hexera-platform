@@ -746,14 +746,37 @@ def test_an_assembly_failing_where_parts_pass_into_each_other_is_never_a_cad_rep
 
 
 def test_a_bonded_assembly_with_many_parts_passing_into_each_other_is_tied_from_the_start(tmp_path):
-    """lp_lptl_support (25 Oct): 26 pairs of welded tubes passing into each other; its fused mesh ran
-    past the 230-minute wall. That many pairs is staged apart and tied before any pass."""
-    many = A.stage(fx.overlapping_chain(A.TIE_FIRST_OVERLAPS + 1), A.BONDED, tmp_path / "many")
+    """lp_lptl_support (25 Oct): welded tubes passing into each other in 26 pieces; its fused mesh ran
+    past the 230-minute wall. That many pieces is staged apart and tied before any pass."""
+    n = A.TIE_FIRST_PIECES
+    many = A.stage(fx.overlapping_chain(n + 1), A.BONDED, tmp_path / "many")      # n pieces
     assert many["mode"] == A.PAIR_TIE
-    assert many["tie_first"] == {"overlap_pairs": A.TIE_FIRST_OVERLAPS, "at": A.TIE_FIRST_OVERLAPS}
-    assert any("too many to mesh as one piece" in n for n in many["notes"])
-    few = A.stage(fx.overlapping_chain(A.TIE_FIRST_OVERLAPS), A.BONDED, tmp_path / "few")
+    assert many["tie_first"] == {"overlap_pieces": n, "overlap_pairs": n, "at": n}
+    assert any("too many to mesh as one piece" in t for t in many["notes"])
+    few = A.stage(fx.overlapping_chain(n), A.BONDED, tmp_path / "few")
     assert few["mode"] == A.PAIR_BONDED and few["tie_first"] is None
     # contact is staged apart anyway: nothing to decide
-    assert A.stage(fx.overlapping_chain(A.TIE_FIRST_OVERLAPS + 1), A.CONTACT,
+    assert A.stage(fx.overlapping_chain(n + 1), A.CONTACT,
                    tmp_path / "contact")["tie_first"] is None
+
+
+def test_a_fused_fill_that_fails_on_one_parts_own_faces_keeps_the_ladder(tmp_path, monkeypatch):
+    """libredrive_pulley_housing (25 Oct): the fill named two tangent faces of the housing only - its own
+    surface mesh, not the joint - so the ladder's next pass comes first, still fused."""
+    from meshpipeline.engines import runtime
+
+    modes = []
+
+    def mesher(w, timeout):
+        w = Path(w)
+        modes.append(json.loads((w / "fea_plan.json").read_text())["assembly"]["mode"])
+        (w / "fea_failure.json").write_text(json.dumps({
+            "bad_surfaces": [24, 29], "bad_faces": ["Part_1_Face_21", "Part_1_Face_26"],
+            "error": "Invalid boundary mesh (overlapping facets) on surface 24 surface 29"}))
+        return {"rc": 1, "log_tail": "Error   : Invalid boundary mesh (overlapping facets) on surface 24 surface 29\n"}
+
+    ws = _stage(fx.touching_blocks(), tmp_path / "own")
+    monkeypatch.setattr(runtime, "get_engine", lambda _n: SimpleNamespace(run_cartesian_mesh=mesher))
+    asyncio.run(FD.drive(ws, {"purpose": "structural"}, job_id=f"t-{ws.name}", publish=None,
+                         run=_Run(), source_path=str(ws / "upload.step")))
+    assert modes[:2] == ["bonded", "bonded"] and "tie" in modes
