@@ -3581,6 +3581,19 @@
   "roots": []
  },
  {
+  "context": "engines/gmsh/fea_adapter.py::surfaces_at_point::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/gmsh/fea_adapter.py",
+  "qualname": "surfaces_at_point",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "engines/layer_census.py::_body::search#1|NotAPublisher|not-a-publisher|",
   "path": "engines/layer_census.py",
   "qualname": "_body",
