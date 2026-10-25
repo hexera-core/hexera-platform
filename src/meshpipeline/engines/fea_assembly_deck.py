@@ -33,9 +33,9 @@ from meshpipeline.engines.gmsh.abaqus_deck import (
     TET_FACE_CORNERS,
     FaceSet,
     SolidMesh,
+    TetFaceIndex,
     _coord,
     _write_ids,
-    element_faces,
 )
 
 NOT_TESTED = "not yet tested in the real solver"
@@ -75,12 +75,14 @@ class Prepared:
     joints: list[Joint] = field(default_factory=list)
 
 
-def _face_set(name: str, elements: np.ndarray, tris: np.ndarray, allowed: np.ndarray) -> FaceSet | None:
-    """The element faces under `tris` among the `allowed` elements (a part's own side)."""
+def _face_set(name: str, elements: np.ndarray, tris: np.ndarray, allowed: np.ndarray,
+              index: TetFaceIndex | None = None) -> FaceSet | None:
+    """The element faces under `tris` among the `allowed` elements (a part's own side). `index` is
+    those elements' faces sorted once (TetFaceIndex), for many face sets on one side."""
     if not len(tris):
         return None
     pick = np.flatnonzero(allowed)
-    e, lab = element_faces(elements[pick], tris)
+    e, lab = (index or TetFaceIndex(elements[pick])).lookup(tris)
     e = pick[e]
     table = np.asarray(TET10_FACE_NODES if elements.shape[1] == 10 else TET_FACE_CORNERS)
     nodes = np.unique(elements[e[:, None], table[lab - 1]])
@@ -139,6 +141,13 @@ def prepare(mesh: SolidMesh, sidecar: dict, *, surface_tag: dict[int, int], volu
                       "first": int(sel[0]), "last": int(sel[-1])})
     # a part's side: the elements of every solid it has a share in (an overlap piece counts for both)
     side = {p["n"]: np.isin(vol, [v for v, ps in vol_parts.items() if p["n"] in ps]) for p in parts}
+    indexes: dict[int, TetFaceIndex] = {}
+
+    def index_of(n: int) -> TetFaceIndex:
+        # each part's element faces sorted ONCE, for every face set on its side
+        if n not in indexes:
+            indexes[n] = TetFaceIndex(elements[np.flatnonzero(side[n])])
+        return indexes[n]
 
     # every named face: the sidecar surfaces that carry its name
     by_name: dict[str, list[int]] = {}
@@ -164,7 +173,7 @@ def prepare(mesh: SolidMesh, sidecar: dict, *, surface_tag: dict[int, int], volu
         p = part_of(name)
         if p not in side:
             continue
-        fs = _face_set(name, elements, tris_of(by_name[name]), side[p])
+        fs = _face_set(name, elements, tris_of(by_name[name]), side[p], index_of(p))
         if fs is not None:
             faces.append(fs)
             named[name] = fs
@@ -178,8 +187,8 @@ def prepare(mesh: SolidMesh, sidecar: dict, *, surface_tag: dict[int, int], volu
         jid = str(pair.get("id") or f"Interface_{len(joints) + 1}").replace("Interface", "")
         if kind == "bonded":
             tags = [int(surface_tag[k]) for k in pair.get("surfaces") or [] if k in surface_tag]
-            a = _face_set(f"Bond{jid}_Part_{p}", elements, tris_of(tags), side[p])
-            b = _face_set(f"Bond{jid}_Part_{q}", elements, tris_of(tags), side[q])
+            a = _face_set(f"Bond{jid}_Part_{p}", elements, tris_of(tags), side[p], index_of(p))
+            b = _face_set(f"Bond{jid}_Part_{q}", elements, tris_of(tags), side[q], index_of(q))
             if a is not None and b is not None:
                 joints.append(Joint(name=f"Bond{jid}", kind=kind, parts=(p, q), sides=(a, b)))
             continue

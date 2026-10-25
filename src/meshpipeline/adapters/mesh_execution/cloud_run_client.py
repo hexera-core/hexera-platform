@@ -93,7 +93,10 @@ def _tar_dir(path: Path) -> bytes:
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tf:
         if payload is None:
+            from meshpipeline.contracts.mesh_execution import NATIVE_LOGS_DIR
             for child in sorted(root.iterdir()):
+                if child.name == NATIVE_LOGS_DIR:
+                    continue                # earlier runs' kept logs: never part of a submission
                 tf.add(str(child), arcname=child.name)
         else:
             for f in payload:

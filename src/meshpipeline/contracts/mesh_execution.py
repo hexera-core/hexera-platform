@@ -279,6 +279,40 @@ def abandonment_reason() -> str | None:
     return str(reason) if reason else None
 
 
+#: EVERY NATIVE RUN'S LOGS, KEPT (every engine: snappy, cfMesh, gmsh, VMTK, the FEA driver): a retry
+#: overwrites the mesher's logs in the workspace, so each run's are copied here as it comes back -
+#: <workspace>/_native_logs/run_<n>/ - and the first run's failure can still be read after the last
+#: (kart_roll_cage, 24 Oct: only the last pass's log survived). Never part of a submission: the
+#: archive and the payload digest leave this folder out.
+NATIVE_LOGS_DIR = "_native_logs"
+#: The logs a run leaves, as the live stage line reads them (engines/mesher_stage) and OpenFOAM writes them.
+_LOG_GLOBS = ("*.log", "log.*", "*/*.log", "*/log.*")
+#: The most of any one log kept (its end, where a failure is).
+_LOG_KEEP_BYTES = 8 * 1024 * 1024
+
+
+def keep_native_logs(workspace: Any, run_no: int | None) -> None:
+    """Copy the logs the native run just left into NATIVE_LOGS_DIR/run_<n>. Never raises."""
+    from pathlib import Path
+    try:
+        root = Path(workspace)
+        dest = root / NATIVE_LOGS_DIR / f"run_{int(run_no or 0)}"
+        seen: set = set()
+        for pattern in _LOG_GLOBS:
+            for f in root.glob(pattern):
+                if not f.is_file() or NATIVE_LOGS_DIR in f.parts or f in seen:
+                    continue
+                seen.add(f)
+                out = dest / f.relative_to(root)
+                out.parent.mkdir(parents=True, exist_ok=True)
+                size = f.stat().st_size
+                with f.open("rb") as src:
+                    src.seek(max(0, size - _LOG_KEEP_BYTES))
+                    out.write_bytes(src.read())
+    except Exception:  # noqa: BLE001 - a log not kept is never the run's failure
+        return
+
+
 def run_mesh(workspace: Any, *, engine: str, timeout: int) -> dict:
     if _executor is None:
         raise MeshExecutionError(
@@ -299,6 +333,7 @@ def run_mesh(workspace: Any, *, engine: str, timeout: int) -> dict:
         _note_native_run(workspace, {"rc": RC_INFRASTRUCTURE, "timed_out": False}, raised=True)
         raise
     _note_native_run(workspace, result)
+    keep_native_logs(workspace, read_native_run(workspace))
     return result
 
 

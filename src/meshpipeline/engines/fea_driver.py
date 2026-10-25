@@ -206,6 +206,15 @@ def defect_at_failure(record: dict, passes: list[dict]) -> dict | None:
     if not hit:
         return None
     sus = [s for s in record.get("suspects") or [] if set(s.get("faces") or []) & set(hit)]
+    if record.get("assembly_plan"):
+        # AN ASSEMBLY: parts passing into each other are what the tie is for (PLAN-fea-17), never a CAD
+        # repair. Only ONE PART that is itself broken - two measures agree, on that one solid - is the
+        # CAD's (fc_glass_frames, 25 Oct: one pair of frame members passing into each other ended as a
+        # stop after 4 fused passes and 170 min)
+        sus = [s for s in sus if s.get("confirmed") and int(s.get("body") or 0) > 0]
+        if not sus:
+            return None
+        hit = [f for f in hit if any(f in (s.get("faces") or []) for s in sus)]
     return {"faces": hit, "suspects": sus, "confirmed": any(s.get("confirmed") for s in sus)}
 
 
@@ -277,6 +286,8 @@ def prepare_assembly(ws: Path, record: dict, surface, *, connection: str, source
     record["assembly_plan"] = {"staged": A.STAGED, "sidecar": A.SIDECAR, "connection": connection,
                                "mode": sidecar["mode"], "parts": sidecar["parts"], "pairs": len(sidecar["pairs"]),
                                "interfaces": len(sidecar["interfaces"]), "notes": notes + list(sidecar["notes"]),
+                               # TIED FROM THE START: too many parts pass into each other to fuse (TIE_FIRST_PIECES)
+                               "tie_first": sidecar.get("tie_first"),
                                # WHERE THE PARTS MEET, for the AI's joint suggestion (engines/fea_ai AI-fea-7)
                                "pair_list": [{"pair": i.get("id"), "kind": i.get("kind"), "parts": i.get("parts"),
                                               "area_mm2": i.get("area_mm2"), "at_mm": i.get("at_mm")}
@@ -713,7 +724,10 @@ def _peak_gib(result: dict) -> float | None:
 
 #: What a failed fill of FUSED parts says (gmsh's own words): the fused boundary is not one clean solid.
 FUSED_FILL_ERRORS = ("PLC Error", "intersect", "overlapping facets", "BRep contains more volumes",
-                     "Invalid boundary mesh")
+                     "Invalid boundary mesh",
+                     # the fused faces' own edges do not close (kart_chassis, 25 Oct: two passes of 450 s
+                     # each, "The 1D mesh seems not to be forming a closed loop", before the tie passed)
+                     "not to be forming a closed loop")
 
 
 def _fused_fill_failed(result: dict, facts: dict) -> bool:
@@ -722,7 +736,45 @@ def _fused_fill_failed(result: dict, facts: dict) -> bool:
     log = str(result.get("log_tail") or "")
     if facts.get("built"):
         return False
+    if _one_part_faces(facts.get("bad_faces") or []):
+        # THE FILL NAMED FACES OF ONE PART ONLY (libredrive_pulley_housing, 25 Oct: two tangent faces of the
+        # housing, "overlapping facets", no joint near): the part's own surface mesh, which the tie would
+        # mesh the same way - the ladder's levers (MeshAdapt there, LAD-fea-6) come first
+        return False
     return _empty_volumes_named(log) or any(w in log for w in FUSED_FILL_ERRORS)
+
+
+def _one_part_faces(names: list) -> bool:
+    """Every face named is one part's own (Part_k_Face_j, the same k)."""
+    from meshpipeline.cad.fea_assembly import part_of_face
+
+    parts = {part_of_face(str(n)) for n in names}
+    return len(parts) == 1 and None not in parts
+
+
+#: The share of an invalid fused pass's bad surfaces that must be fused interfaces for the tie to come
+#: at once: the bad elements are where the parts were joined, not in the parts.
+FUSED_BAD_SHARE = 0.5
+
+
+def _fused_joints_invalid(q: dict) -> bool:
+    """A FUSED BONDED PASS THAT CAME BACK INVALID AT THE JOINTS (kart_roll_cage, 24 Oct: welded tubes
+    overlapping at every joint - 1,495 s and then an AI-lever retry of 3,700 s, both with inverted
+    elements on the fused interfaces, before the tie passed in 2.4 min): most of its bad surfaces are
+    fused interfaces, so no other setting of the same fused mesh will do, and the tie comes now."""
+    bad = list(q.get("fea_bad_surfaces") or [])
+    on = list(q.get("fea_bad_interface") or [])
+    return bool(bad and on and len(on) >= FUSED_BAD_SHARE * len(bad))
+
+
+def _keep_pass_log(ws: Path, n: int) -> None:
+    """Every pass keeps its own gmsh log, its quality record and its failure note in its pass folder - not
+    only the last (where a pass went wrong is read afterwards, pass by pass)."""
+    d = ws / PASS_FOLDER.format(n=n)
+    d.mkdir(exist_ok=True)
+    for name in ("gmshfea.log", "quality.json", "fea_failure.json"):
+        if (ws / name).exists():
+            shutil.copy2(ws / name, d / name)
 
 
 def _empty_volumes_named(log: str) -> bool:
@@ -841,7 +893,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         _cite(job_id, [{"stage": "fea_plan", "decided": "assembly", "value": asm.get("mode"),
                         "rule": "PLAN-fea-17",
                         "inputs": {"bodies": record.get("bodies"), "connection": connection,
-                                   "pairs": asm.get("pairs"), "interfaces": asm.get("interfaces")},
+                                   "pairs": asm.get("pairs"), "interfaces": asm.get("interfaces"),
+                                   "tie_first": asm.get("tie_first")},
                         "words": " ".join(P.assembly_words(asm)[:2])}])
     if not record.get("faces") or not any("thickness_min_mm" in (r or {}) for r in record["faces"].values()):
         # PLAN-fea-3 cannot be planned on walls nobody measured: stop before meshing rather than
@@ -982,6 +1035,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                                           killed=killed), "native_s": native_s,
                            # RUN-4: where it ran, and why
                            "ran_on": {k: machine.get(k) for k in ("where", "machine", "memory_gib", "why")}})
+            _keep_pass_log(ws, n)
             if made:
                 _keep_pass(ws, n)
             else:
@@ -990,8 +1044,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                 if said:
                     passes[-1]["bad_faces"] = passes[-1].get("bad_faces") or said.get("bad_faces") or []
                     passes[-1]["bad_surfaces"] = passes[-1].get("bad_surfaces") or said.get("bad_surfaces") or []
-            if (not made and (record.get("assembly_plan") or {}).get("mode") == "bonded"
-                    and _fused_fill_failed(result, passes[-1])):
+            if ((record.get("assembly_plan") or {}).get("mode") == "bonded" and not passes[-1].get("valid")
+                    and (_fused_fill_failed(result, passes[-1]) if not made else _fused_joints_invalid(q))):
                 # PLAN-fea-17 AT ONCE: the fill could not build the FUSED bonded parts (a volume left
                 # empty, or the fused boundary crossing itself where parts pass into each other) - no
                 # other 3D algorithm fixes the geometry, so the parts go straight to being meshed apart
