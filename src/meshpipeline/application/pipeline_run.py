@@ -447,6 +447,12 @@ def run_pipeline(
     # documented contract for them: nothing can tell a re-delivery apart from a node legitimately
     # emitting the same event twice, and collapsing those would lose real work.
 
+    # The run's own arguments, kept for the one case that needs them again: a run that dies before
+    # it claims the job on a database that is unavailable is put back on the queue with exactly
+    # these (application/unclaimed_requeue), never left pending with no task.
+    from meshpipeline.application.unclaimed_requeue import RUN_KWARGS
+    RUN_KWARGS.set({k: v for k, v in locals().items() if k != "RUN_KWARGS"})
+
     return asyncio.run(_run_async(JobRequest(
         intake_events=intake_events or [],
         job_id=job_id,
@@ -501,6 +507,8 @@ async def _run_async(req: JobRequest) -> dict:
     # dies before the checkpointer section (e.g. a dispute whose parent was purged) must
     # crash-finalize with the intent fallback, not UnboundLocalError inside the handler.
     _checkpointer_ok = False
+    # set once this delivery has claimed the job (application/unclaimed_requeue reads it on a crash)
+    _job_claimed = False
     # THIS run's progress clock (contracts/progress_clock): what an earlier job in this process did
     # never keeps this one going past its deadline.
     from meshpipeline.contracts import progress_clock as _progress
@@ -579,6 +587,7 @@ async def _run_async(req: JobRequest) -> dict:
             backend=_backend_name, backend_execution_id=_backend_exec_id)
         if isinstance(_claimed, _fence.DeliveryRefused):
             return _claimed.detail
+        _job_claimed = True
         ownership, worker_token = _claimed.ownership, _claimed.worker_token
         # The intake transcript is written HERE, after the claim, because claiming is what binds
         # the tenant these records file under - taken from the job ROW, never from the dispatch
@@ -1262,6 +1271,16 @@ async def _run_async(req: JobRequest) -> dict:
 
         def _direct_closing(_fc):
             _pub(job_id).closing(_umf(_fc), _terminal_event_id(job_id))
+
+        # NEVER ORPHANED: a run that died before it claimed the job, on a dependency that was only
+        # unavailable (the database full or restarting), has done nothing - it goes back on the
+        # queue instead of being failed by a finalize that cannot write either (dev-areen 25 Oct:
+        # eleven jobs left `pending` with no task, until the 4-hour reaper).
+        from meshpipeline.application.unclaimed_requeue import requeue_if_unclaimed
+        _requeued = await requeue_if_unclaimed(job_id, exc, claimed=_job_claimed,
+                                               jlog=jlog)
+        if _requeued is not None:
+            return _requeued
 
         await _finalize_crash(
             AsyncSessionLocal, exc,

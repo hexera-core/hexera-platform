@@ -2783,6 +2783,36 @@
   "roots": []
  },
  {
+  "context": "application/unclaimed_requeue.py::requeue_if_unclaimed::error#1|NotAPublisher|not-a-publisher|application/pipeline_run.py::meshpipeline.application.pipeline_run._JobAdapter",
+  "path": "application/unclaimed_requeue.py",
+  "qualname": "requeue_if_unclaimed",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "jlog",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "application/pipeline_run.py::meshpipeline.application.pipeline_run._JobAdapter"
+  ]
+ },
+ {
+  "context": "application/unclaimed_requeue.py::requeue_if_unclaimed::error#2|NotAPublisher|not-a-publisher|application/pipeline_run.py::meshpipeline.application.pipeline_run._JobAdapter",
+  "path": "application/unclaimed_requeue.py",
+  "qualname": "requeue_if_unclaimed",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 2,
+  "receiver": "jlog",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "application/pipeline_run.py::meshpipeline.application.pipeline_run._JobAdapter"
+  ]
+ },
+ {
   "context": "application/worker_handoff.py::hand_back::error#1|NotAPublisher|not-a-publisher|application/pipeline_run.py::meshpipeline.application.pipeline_run._JobAdapter",
   "path": "application/worker_handoff.py",
   "qualname": "hand_back",
