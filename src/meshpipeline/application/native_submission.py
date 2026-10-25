@@ -47,7 +47,10 @@ def workspace_digest(workspace: Any) -> str:
     from meshpipeline.contracts.mesh_execution import submission_payload_files
     root = Path(workspace)
     payload = submission_payload_files(root)
-    files = payload if payload is not None else sorted(p for p in root.rglob("*") if p.is_file())
+    from meshpipeline.contracts.mesh_execution import NATIVE_LOGS_DIR
+    # the kept logs of earlier runs are never part of what is submitted (contracts/mesh_execution)
+    files = payload if payload is not None else sorted(
+        p for p in root.rglob("*") if p.is_file() and NATIVE_LOGS_DIR not in p.relative_to(root).parts)
     parts = [
         f"{path.relative_to(root)}:{hashlib.sha256(path.read_bytes()).hexdigest()}"
         for path in files
