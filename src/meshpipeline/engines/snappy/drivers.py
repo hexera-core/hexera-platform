@@ -1001,7 +1001,12 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             strategy = {**strategy, "wake": _carried}
         # after a timeout the next mesh is SMALLER (here the lever is the cell budget, which sets
         # the refinement levels), whatever the re-plan proposed
+        # THE PLAN'S BUDGET, as the planner first asked for it: the size brake measures every pass
+        # against it (engines/size_brake), however far a re-plan has cut the castellation budget
+        _plan_cells = int((_timeout_ref or {}).get("_plan_cells") or strategy.get("max_cells") or 0)
         strategy, _coarsened = _coarsen_after_timeout(_timeout_ref, strategy, internal=False)
+        if _plan_cells:
+            strategy = {**strategy, "_plan_cells": _plan_cells}
         previous_plan = strategy                       # remember for the next repair
         _policy = None                                 # this pass's local layer policy, if any
         _repairable = False                            # may a repair split this pass's wall?

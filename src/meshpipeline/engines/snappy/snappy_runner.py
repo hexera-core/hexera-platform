@@ -934,7 +934,11 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
     # the PLAN's budget, beside the case: what the size brake measures the run against
     from meshpipeline.engines.size_brake import PLAN_CELLS_FILE
     (ws / PLAN_CELLS_FILE).parent.mkdir(parents=True, exist_ok=True)
-    (ws / PLAN_CELLS_FILE).write_text(json.dumps({"plan_cells": int(max_cells)}))
+    # the PLAN's own budget - the planner's, kept through every re-plan of the pass (the driver
+    # carries it as _plan_cells): the brake measures every pass against what was asked for, never
+    # against a budget a previous trip already cut
+    (ws / PLAN_CELLS_FILE).write_text(json.dumps(
+        {"plan_cells": int(strategy.get("_plan_cells") or max_cells)}))
     if cast_cells != max_cells and _final:
         logger.info("render_snappy_case: the finished mesh is estimated at %.3g cells with its layers, "
                     "%.1f times the %d budget - castellation budget %d", _final, _final / max_cells,

@@ -117,14 +117,23 @@ class SizeBrake:
         return None
 
 
+#: The deepest one re-plan cuts the castellation budget: half. snappyHexMesh's castellated count is
+#: not proportional to its budget - the surface must reach the level that seals the body whatever
+#: the budget says - so scaling the budget by the overshoot (3x, 6x) cut it far below what sealing
+#: needs and the next pass lost the body (lab, 25 Oct: A2 2M -> 0.57M -> 0.2M, no body faces). One
+#: halving per pass is the step the old clock-driven re-plan took, and it landed both plates inside
+#: their plans' margin (1.8M and 2.8M on a 2M plan).
+SIZE_BRAKE_STEP = 0.5
+
+
 def scaled_budget_factor(tripped: dict) -> float:
-    """The factor the next pass's cell budget is cut by: what the budget is over what the run was
-    headed for, aimed SIZE_BRAKE_TARGET under it."""
+    """The factor the next pass's castellation budget is cut by: SIZE_BRAKE_STEP (half), or less of
+    a cut when the run was only a little over - never deeper than half in one pass."""
     cells, budget = float(tripped.get("cells") or 0), float(tripped.get("budget") or 0)
     if cells <= 0 or budget <= 0:
-        return 0.5
-    return max(0.05, min(0.9, SIZE_BRAKE_TARGET * budget / cells))
+        return SIZE_BRAKE_STEP
+    return max(SIZE_BRAKE_STEP, min(0.9, SIZE_BRAKE_TARGET * budget / cells))
 
 
-__all__ = ["PLAN_CELLS_FILE", "CFMESH_COUNTS", "SIZE_BRAKE_MARGIN", "SIZE_BRAKE_TARGET", "SNAPPY_COUNTS", "SizeBrake",
+__all__ = ["SIZE_BRAKE_STEP", "PLAN_CELLS_FILE", "CFMESH_COUNTS", "SIZE_BRAKE_MARGIN", "SIZE_BRAKE_TARGET", "SNAPPY_COUNTS", "SizeBrake",
            "case_budget", "scaled_budget_factor"]

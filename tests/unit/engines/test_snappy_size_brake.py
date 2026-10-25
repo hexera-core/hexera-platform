@@ -75,7 +75,7 @@ def test_the_brake_stops_a_real_process_through_the_watch_hook(tmp_path):
 def test_the_next_pass_is_cut_by_how_far_over_it_was_headed():
     tripped = {"stage": "with layers", "cells": 13_076_800, "budget": 2_000_000}
     factor = SB.scaled_budget_factor(tripped)
-    assert factor == pytest.approx(0.9 * 2 / 13.0768, rel=1e-3)
+    assert factor == SB.SIZE_BRAKE_STEP == 0.5          # never deeper than half in one pass
     plan = {"max_cells": 2_000_000}
     out, changes = coarsen_after_timeout({**plan, "_why": "oversize", "_budget_factor": factor},
                                          dict(plan), ceiling=8_000_000, internal=False)
