@@ -25,6 +25,25 @@ FUZZY = 1e-7
 #: A hole is a cap candidate when it is at least this share of the part's diagonal across: smaller
 #: ones (a thread's root, a tapped hole's chamfer) cannot carry a flow worth meshing.
 MIN_CAP = 2e-3
+#: ...but never more than this across in absolute terms, however large the part (metres).
+#:
+#: A SHARE OF THE DIAGONAL ALONE DOES NOT SCALE TO A COLD PLATE. On the eleven test parts the
+#: diagonal is 5 to 38 mm, so the bar is 10 to 76 um and every channel clears it. On a realistic
+#: 100 x 100 x 5 mm server cold plate the diagonal is 141 mm and the bar is 283 um, which discards
+#: a 100 x 500 um channel mouth (252 um across) - and because every mouth goes the same way, the
+#: whole extraction fails rather than one channel. The part gets larger and the channels do not:
+#: that is what a cold plate is.
+#:
+#: 10 um because the finest passage in the corpus is 10 um (embedded_silicon_D9_10um), so the bar
+#: has to sit below that to support it at any part size. What the relative rule rejects is
+#: tessellation slivers and chamfers rather than anything a flow could pass through, and a passage
+#: too small to matter is dropped later anyway by its share of the largest passage's volume.
+MAX_CAP_FLOOR_M = 10e-6
+
+
+def cap_floor_m(diag: float) -> float:
+    """The smallest hole that may be a cap, across, for a part of this diagonal (metres)."""
+    return min(MIN_CAP * diag, MAX_CAP_FLOOR_M)
 #: Two candidate caps are one when their centres lie this share of the diagonal apart and their
 #: areas agree within CAP_SAME_AREA (two flanges bolted face to face rim the same bore).
 CAP_SAME = 1e-5
@@ -393,7 +412,7 @@ def candidate_caps(solids: list, loose: list, diag: float) -> list[_Cap]:
 
     caps: list[_Cap] = []
     tol = CAP_SAME * diag
-    min_area = math.pi * (0.5 * MIN_CAP * diag) ** 2
+    min_area = math.pi * (0.5 * cap_floor_m(diag)) ** 2
 
     def add(face, host: int) -> None:
         area, c = _surface(face)
@@ -1575,7 +1594,7 @@ def main(argv: list[str]) -> int:
     return 0
 
 
-__all__ = ["CHECK_BUDGET_S", "MAX_FACES", "MAX_TRIANGLES", "STAGE_BUDGET_S", "Extraction", "ExtractionError",
+__all__ = ["CHECK_BUDGET_S", "MAX_CAP_FLOOR_M", "MAX_FACES", "MAX_TRIANGLES", "STAGE_BUDGET_S", "Extraction", "ExtractionError",
            "Passage", "Port", "candidate_caps", "closed_pieces", "part_pieces", "extract", "from_triangles", "match_declared", "parts_of", "surface_bounded", "surface_volume", "write_surface",
            "run_bounded", "stage", "stage_bounded", "touching_parts"]
 
