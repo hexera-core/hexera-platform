@@ -19,6 +19,10 @@ from meshpipeline.adapters.mesh_execution.exchange_coordinates import (
     coordinates_for,
 )
 from meshpipeline.contracts.mesh_execution import (
+    MESH_CONTRACT_ENV,
+    MESH_EXCHANGE_VERSION,
+    PLATFORM_UPDATING_KEY,
+    PLATFORM_UPDATING_TAG,
     RC_INFRASTRUCTURE,
     RC_TIMED_OUT,
     RUN_NOT_STARTED_TAG,
@@ -257,6 +261,9 @@ def _trigger_job(*, input_uri: str, output_uri: str, engine: str,
         {"name": "OUTPUT_URI", "value": output_uri},
         {"name": "ENGINE", "value": engine},
         {"name": "TIMEOUT", "value": str(timeout)},
+        # the exchange contract this worker speaks: a mesh job on another answers "platform
+        # updating" instead of misreading the workspace (contracts/mesh_execution)
+        {"name": MESH_CONTRACT_ENV, "value": str(MESH_EXCHANGE_VERSION)},
     ]}]}}
     try:
         resp = _rq.post(f"https://run.googleapis.com/v2/{name}:run",
@@ -489,6 +496,26 @@ def worker_room(bucket, out_key: str, result: dict | None, where) -> dict | None
 #: A VM boots and pulls the mesh image before it meshes: the wait for its result is this much longer.
 VM_START_S = 1800
 
+#: THE PLATFORM IS MID-UPDATE (the mesh job speaks another exchange contract than this worker, 25 Oct):
+#: the run is submitted again after this wait, for up to UPDATING_TOTAL_S - then it is given up as
+#: the infrastructure it is, in words that say so.
+UPDATING_RETRY_S = 60
+UPDATING_TOTAL_S = 3600
+
+
+def _platform_updating(result) -> bool:
+    return isinstance(result, dict) and bool(result.get(PLATFORM_UPDATING_KEY))
+
+
+def _still_updating(engine: str, result: dict) -> dict:
+    seen = result.get(PLATFORM_UPDATING_KEY) or {}
+    logger.error("mesh job for %s still on another exchange contract after %ss (%s) - giving up",
+                 engine, UPDATING_TOTAL_S, seen)
+    return {"rc": RC_INFRASTRUCTURE, "timed_out": False, PLATFORM_UPDATING_KEY: dict(seen),
+            "log_tail": (f"{PLATFORM_UPDATING_TAG} {engine}: the platform is updating - the mesh job "
+                         f"and this worker were on different versions for over {UPDATING_TOTAL_S // 60} "
+                         "minutes, so the mesh was not run. Nothing is wrong with the part.")}
+
 
 def _stop(operation, *, engine: str, why: str) -> None:
     """Stop a run nobody will collect: cancel the Cloud Run execution, or delete the VM."""
@@ -497,6 +524,18 @@ def _stop(operation, *, engine: str, why: str) -> None:
         delete_vm(operation, why=why)
     elif operation is not None:
         cancel_execution(operation, engine=engine, why=why)
+
+
+def _start(on_vm: bool, bucket_name: str, in_key: str, out_key: str, *, engine: str, timeout: int,
+           operation_key: str, machine: dict | None):
+    """Start the run: a VM sized to fit (RUN-4), or the Cloud Run mesh job."""
+    if on_vm:
+        from meshpipeline.adapters.mesh_execution.gce_vm import trigger_vm
+        return trigger_vm(
+            input_uri=f"gs://{bucket_name}/{in_key}", output_uri=f"gs://{bucket_name}/{out_key}",
+            engine=engine, timeout=timeout, operation_key=operation_key, decision=machine or {})
+    return _trigger_job(input_uri=f"gs://{bucket_name}/{in_key}",
+                        output_uri=f"gs://{bucket_name}/{out_key}", engine=engine, timeout=timeout)
 
 
 def run_mesh_remote(workspace, *, engine: str, timeout: int, operation_key: str) -> dict:
@@ -558,16 +597,8 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
             reason = abandonment_reason()
             if reason:
                 raise _Abandoned(reason)
-            if on_vm:
-                from meshpipeline.adapters.mesh_execution.gce_vm import trigger_vm
-                operation = trigger_vm(
-                    input_uri=f"gs://{bucket_name}/{in_key}", output_uri=f"gs://{bucket_name}/{out_key}",
-                    engine=engine, timeout=timeout, operation_key=operation_key, decision=machine or {})
-            else:
-                operation = _trigger_job(
-                    input_uri=f"gs://{bucket_name}/{in_key}",
-                    output_uri=f"gs://{bucket_name}/{out_key}",
-                    engine=engine, timeout=timeout)
+            operation = _start(on_vm, bucket_name, in_key, out_key, engine=engine, timeout=timeout,
+                               operation_key=operation_key, machine=machine)
             # a run handed to its machine is the job moving on (contracts/progress_clock); from here
             # the remote's beacon says whether it still is
             from meshpipeline.contracts import progress_clock
@@ -576,6 +607,34 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
         from meshpipeline.artifact_keys import progress_key_beside
         result = _poll_gcs_json(bucket, res_key, deadline_s=wait_s,
                                 progress_key=progress_key_beside(out_key))
+        # THE MESH JOB IS ON ANOTHER EXCHANGE CONTRACT (the platform is mid-update): nothing was
+        # meshed. Its answer is cleared and the same input submitted again until the two agree.
+        waited = 0
+        while submit and _platform_updating(result):
+            if waited >= UPDATING_TOTAL_S:
+                return _still_updating(engine, result or {})
+            logger.warning("mesh job for %s speaks another exchange contract (%s) - the platform is "
+                           "updating; submitting again in %ss", engine,
+                           (result or {}).get(PLATFORM_UPDATING_KEY), UPDATING_RETRY_S)
+            for _k in (res_key, out_key):
+                try:
+                    bucket.blob(_k).delete()
+                except Exception:  # noqa: BLE001 - a missing object is the state wanted here
+                    pass
+            if on_vm:
+                _stop(operation, engine=engine, why="the platform is updating")
+            time.sleep(UPDATING_RETRY_S)
+            waited += UPDATING_RETRY_S
+            reason = abandonment_reason()
+            if reason:
+                raise _Abandoned(reason)
+            operation = _start(on_vm, bucket_name, in_key, out_key, engine=engine, timeout=timeout,
+                               operation_key=operation_key, machine=machine)
+            result = _poll_gcs_json(bucket, res_key, deadline_s=wait_s,
+                                    progress_key=progress_key_beside(out_key))
+        if _platform_updating(result):
+            # collecting a previous worker's run that the mesh job refused: nothing to collect
+            return _still_updating(engine, result or {})
         if result is None:
             # Reached only once the run is dispatched (a refused or ambiguous submission raised
             # above), so this is a run out of time, never one that did not start.

@@ -45,6 +45,18 @@ RUN_NOT_STARTED_TAG = "[CLOUD_RUN_FAILED]"
 #: not be brought back. The mesher ran; what failed is the return trip - ours, not the case's.
 RUN_UNCOLLECTED_TAG = "[CLOUD_RUN_RESULT_UNCOLLECTED]"
 
+#: THE WORKER <-> MESH JOB CONTRACT: what the worker puts in the submitted workspace and the mesh
+#: job's runner reads (the plan files, INPUT_URI/OUTPUT_URI/ENGINE/TIMEOUT, the result document
+#: and the returned archive). BUMP IT BY HAND when either side changes that shape. The worker sends
+#: its number with every run (MESH_CONTRACT_ENV); a mesh job that speaks another does not mesh: it
+#: answers with a PLATFORM_UPDATING result, and the worker waits and submits again
+#: (application/platform_contract has the API <-> worker half, 25 Oct).
+MESH_EXCHANGE_VERSION = 1
+MESH_CONTRACT_ENV = "HEXERA_MESH_CONTRACT"
+#: The result-document key, and the log tag, of a run the mesh job refused for that reason.
+PLATFORM_UPDATING_KEY = "platform_updating"
+PLATFORM_UPDATING_TAG = "[PLATFORM_UPDATING]"
+
 
 #: The workspace fact naming WHICH planned meshing pass of the current attempt the next native
 #: submission belongs to. An engine driver runs several plan->mesh->judge passes inside one

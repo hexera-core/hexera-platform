@@ -8,6 +8,7 @@ import pytest
 import requests
 
 from meshpipeline.adapters.mesh_execution import cloud_run_client as crc
+from meshpipeline.contracts.mesh_execution import MESH_EXCHANGE_VERSION
 
 VALID = "projects/mesh-prod/locations/europe-west4/operations/abc-123_x~y.z"
 
@@ -63,7 +64,9 @@ def test_one_post_reaches_the_run_endpoint_with_the_existing_overrides(posted):
     env = calls[0]["json"]["overrides"]["containerOverrides"][0]["env"]
     assert {e["name"]: e["value"] for e in env} == {
         "INPUT_URI": "gs://b/in", "OUTPUT_URI": "gs://b/out",
-        "ENGINE": "cfmesh", "TIMEOUT": "420"}
+        "ENGINE": "cfmesh", "TIMEOUT": "420",
+        # the exchange contract the worker speaks (contracts/mesh_execution)
+        "HEXERA_MESH_CONTRACT": str(MESH_EXCHANGE_VERSION)}
     assert calls[0]["timeout"] == 60
 
 
