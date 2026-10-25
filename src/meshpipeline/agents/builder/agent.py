@@ -87,8 +87,10 @@ async def node_builder(state: PipelineState) -> dict:
     _publish = execution_publisher(job_id, agent="builder")
 
     attempt = attempt_mod.prepare(state, job_id=job_id, mode=mode)
+    from meshpipeline.contracts.progress_clock import native_seconds
     budget = budget_mod.settle(carried_epoch=state.get("builder_deadline_epoch", 0.0),
-                               pipeline_deadline_epoch=state.get("pipeline_deadline_epoch"))
+                               pipeline_deadline_epoch=state.get("pipeline_deadline_epoch"),
+                               native_s=native_seconds())
 
     def _patch(*, retry_count: int, noop_count: int = 0, api_failure: str = "",
                stop: str = "", workspace: str = "") -> dict:

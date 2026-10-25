@@ -299,9 +299,12 @@ class TimedOutCaseRepeats(Exception):
 def _write_timed_out_plan(workspace: Path, strategy: dict) -> None:
     import json as _json
 
-    from meshpipeline.engines.determinism import note_time_limit
-    note_time_limit("snappy.plan", "a pass ran out of time: every later pass of this run is "
-                    "planned no finer than it")
+    if (strategy or {}).get("_why") != "oversize":
+        # a clock decided (a stall or a machine's wall); the size brake is no clock - its count is
+        # the case's own, the same on every run - so it is not recorded as one
+        from meshpipeline.engines.determinism import note_time_limit
+        note_time_limit("snappy.plan", "a pass ran out of time: every later pass of this run is "
+                        "planned no finer than it")
     try:
         (Path(workspace) / _TIMED_OUT_PLAN).write_text(_json.dumps(strategy, default=str))
     except Exception:  # noqa: BLE001 - durable memory is best-effort; the in-run one still holds
@@ -404,7 +407,11 @@ def _shortfall(shape: str, reason: str, *, timed_out: bool, minutes: float,
                 "out broken, and nothing is left to make coarser; stopping the meshing passes "
                 "here")
     if timed_out:
-        return (f"ran out of time - snappyHexMesh did not finish within {minutes:.0f} min; "
+        # a run is stopped only when it is STUCK (no new output for the stall window) or at the
+        # wall of the biggest machine (contracts/native_time) - never because it was slow
+        from meshpipeline.contracts.native_time import STALL_WINDOW_S
+        return (f"stopped - snappyHexMesh made no progress for {STALL_WINDOW_S // 60} min (or reached "
+                f"the machine's limit) after {minutes:.0f} min of work; "
                 + ("no meshing passes left" if last else "re-planning a coarser mesh"))
     return f"fell short - {shape}; re-planning ({reason[:60]})"
 
@@ -540,6 +547,41 @@ async def _run_snappy_timed(R, workspace, cap, publish: ExecutionEventPublisher,
         except Exception:  # noqa: BLE001
             pass
     return result
+
+
+async def _run_snappy_on_its_machine(R, workspace, publish: ExecutionEventPublisher, engine, purpose,
+                                     *, run, native_attempt: int = 1):
+    """ONE PASS, ON THE MACHINE IT NEEDS, WITH NO GUESSED TIME LIMIT (contracts/native_time).
+
+    The run's cap is the WALL of the machine it is on - the Cloud Run job's, or a VM's - and the run
+    is watched for progress inside (engines/snappy/native: stopped only after the stall window with
+    no new output). It was a fixed 2,400 s, and a snappy still refining, snapping or adding layers
+    was cut and its pass re-planned smaller.
+
+    RUN-5 FOR snappy: a pass stopped at the Cloud Run wall STILL WORKING (not stalled) runs again,
+    the same case, on a VM, which has no such wall - nothing coarsened. What reaches the caller as
+    timed out is then only a STUCK run (stalled) or one that met even a VM's wall, and only those
+    pull the re-plan-smaller lever."""
+    from meshpipeline.contracts import mesh_machine as MM
+    from meshpipeline.contracts.native_time import wall_for
+    while True:
+        result = await _run_snappy_timed(R, workspace, wall_for(workspace), publish, engine, purpose,
+                                         run=run, native_attempt=native_attempt)
+        if not result.get("timed_out") or result.get("stalled"):
+            return result
+        moved = MM.off_the_wall(MM.read(workspace))
+        if moved is None:
+            return result
+        MM.write(workspace, moved)
+        logger.warning("snappy pass %d: still working at the Cloud Run wall - the same case runs "
+                       "again on a %s VM (RUN-5)", native_attempt, moved.get("machine"))
+        try:
+            from meshpipeline.contracts import decision_record as _dr
+            _dr.cite(str(getattr(run, "job_id", "") or ""), stage="snappy_machine", decided="off the wall",
+                     value=moved.get("machine"), rule="RUN-5", inputs={"pass": native_attempt},
+                     words=str(moved.get("words") or ""))
+        except Exception:  # noqa: BLE001 - the why record never stops a mesh
+            logger.debug("RUN-5 not cited", exc_info=True)
 
 
 #: the approved request's typed directions -> snappy's domain_margin keys
@@ -926,7 +968,6 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
         # rather than re-deriving from nothing (re-derivation is how plan fields get lost)
         previous_plan = _sibling_plan_memory(workspace)
     max_attempts = int(scfg.MAX_SNAPPY_ATTEMPTS)
-    _cap = 2400  # per-mesh cap; stays under the Cloud Run Job task-timeout
     _reviewed_ws = _reviewed_workspace(state)   # the mesh a review just rejected, on its retry
     last_valid = False   # last attempt produced a VALID (body-fitted, no fatal) mesh, if not clean
     _meshed_any = False                                # did any pass reach the mesher at all
@@ -967,8 +1008,11 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
         await run.fence("write plan memory")
         _mem = await _op_begin(publish, "author_configuration", run, attempt)
         _write_plan_memory(workspace, strategy)
-        _why_coarser = ("came out broken where its layers were not the cause"
-                        if (_timeout_ref or {}).get("_why") == "broken" else "ran out of time")
+        _why_coarser = {"broken": "came out broken where its layers were not the cause",
+                        "oversize": ("was headed for "
+                                     f"{float(((_timeout_ref or {}).get('_oversize') or {}).get('ratio') or 0):.1f} "
+                                     "times its cell budget")}.get(str((_timeout_ref or {}).get("_why") or ""),
+                                                                  "made no progress")
         await publish.anote(f"Meshing pass {attempt} of {max_attempts} - "
                         f"{str(strategy.get('approach', 'default strategy'))[:80]}"
                         + (f" - made coarser because the last pass {_why_coarser}: "
@@ -1106,8 +1150,8 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                                 op_id=f"snappy:plan:{attempt}")
             # RUN (deterministic; Cloud Run Job / local) + user-facing instrumentation
             _t_mesh = _time.monotonic()
-            result = await _run_snappy_timed(
-                R, workspace, _cap, publish, state.get("engine", "snappy"),
+            result = await _run_snappy_on_its_machine(
+                R, workspace, publish, state.get("engine", "snappy"),
                 read_purpose(workspace), run=run, native_attempt=attempt)
             _mesh_minutes = (_time.monotonic() - _t_mesh) / 60.0
             if result.get("case_contract_mismatch"):
@@ -1122,6 +1166,21 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                 # ran out of time: no later pass (or attempt) meshes this, or anything as big
                 _timed_out_now = True
                 _timeout_ref = dict(strategy)          # carries the budget actually used
+                _timeout_case = _case_snapshot(workspace)
+                _write_timed_out_plan(workspace, _timeout_ref)
+            elif result.get("oversize"):
+                # THE SIZE BRAKE stopped it (engines/size_brake): snappyHexMesh's own count -
+                # castellated, or with its layers before they were added - read far past the budget.
+                # The next pass is planned with the budget cut by how far over it was headed, and
+                # this case is never run again - a deterministic re-plan, no clock involved.
+                from meshpipeline.engines.size_brake import scaled_budget_factor
+                _over = dict(result["oversize"])
+                logger.warning("snappy pass %d: stopped by the size brake - %s cells %s, %.1fx the "
+                               "budget of %s - re-planning smaller (job_id=%s)", attempt,
+                               _over.get("stage"), _over.get("cells"), float(_over.get("ratio") or 0),
+                               _over.get("budget"), job_id)
+                _timeout_ref = {**strategy, "_why": "oversize", "_oversize": _over,
+                                "_budget_factor": scaled_budget_factor(_over)}
                 _timeout_case = _case_snapshot(workspace)
                 _write_timed_out_plan(workspace, _timeout_ref)
             # --- JUDGE (deterministic bar) --- past the post-native fence, so this generation
@@ -1950,7 +2009,6 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
         # rather than re-deriving from nothing (re-derivation is how plan fields get lost)
         previous_plan = _sibling_plan_memory(workspace)
     max_attempts = int(scfg.MAX_SNAPPY_ATTEMPTS)
-    _cap = 2400
     _reviewed_ws = _reviewed_workspace(state)   # the mesh a review just rejected, on its retry
     last_valid = False
     # the plan (and authored case) of the last pass that RAN OUT OF TIME: every later pass is
@@ -2202,8 +2260,8 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                                 op_id=f"internal:plan:{attempt}")
             run.note_authoring()
             _t_mesh = _time.monotonic()
-            result = await _run_snappy_timed(
-                R, workspace, _cap, publish, state.get("engine", "snappy"),
+            result = await _run_snappy_on_its_machine(
+                R, workspace, publish, state.get("engine", "snappy"),
                 read_purpose(workspace), run=run, native_attempt=attempt)
             _mesh_minutes = (_time.monotonic() - _t_mesh) / 60.0
             if result.get("case_contract_mismatch"):

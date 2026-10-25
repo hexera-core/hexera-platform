@@ -638,6 +638,45 @@ def castellated_estimate(*, area: float | None, divisions, base_cell: float, sur
     return background + surface + CAST_BAND_GRADING * bands
 
 
+#: THE LAYER CELLS a budget must leave room for. maxGlobalCells bounds the CASTELLATED mesh only;
+#: the layer stage then adds about one cell per wall face per layer. On a bulky body that is a third
+#: on top (final/castellated 1.32 at the median of 70 lab runs); on a large thin plate, whose
+#: castellated mesh is mostly wall cells, it is many times over (propeller rig A2: 2.0M castellated,
+#: 2.2M wall faces, 5 layers -> 13.0M). So the final count is estimated as the castellated count
+#: times (1 + layers x the share of it that touches the wall), the share read from the plan's own
+#: numbers: wall faces about area / wall cell^2, against castellated_estimate.
+def final_estimate(*, castellated: float | None, budget: int, area: float | None, wall_cell: float,
+                   n_layers: int) -> float | None:
+    """The cells the finished mesh comes to: the castellated mesh (castellated_estimate, held to
+    the budget snappyHexMesh stops refining at) and its layers. None when it cannot be estimated."""
+    try:
+        a = float(area)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if castellated is None or castellated <= 0 or not (a > 0.0) or wall_cell <= 0.0:
+        return None
+    built = min(float(castellated), float(budget))
+    wall_share = min(1.0, (a / wall_cell ** 2) / float(castellated))
+    return built * (1.0 + max(0, int(n_layers)) * wall_share)
+
+
+#: The castellation budget is never cut under this share of the plan's: snappyHexMesh stops refining
+#: at maxGlobalCells, and a budget cut far enough stops it before the surface reaches the level that
+#: seals the body (lab, 25 Oct: A1/A2 cut to ~0.1M castellated cells came back with no body faces).
+CASTELLATION_FLOOR_SHARE = 0.25
+
+
+def castellation_budget(budget: int, final: float | None, *, margin: float,
+                        floor: int = 200_000) -> int:
+    """maxGlobalCells for a plan whose finished mesh is estimated at `final`: the plan's budget, or
+    - when the estimate passes `margin` times it - the budget cut so the castellated mesh AND its
+    layers land inside it, never under CASTELLATION_FLOOR_SHARE of the plan (nor `floor`)."""
+    if final is None or final <= margin * float(budget):
+        return int(budget)
+    least = max(int(floor), int(CASTELLATION_FLOOR_SHARE * float(budget)))
+    return max(least, int(float(budget) * float(budget) / float(final)))
+
+
 def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analysis: dict,
                        recommendation: dict, domain_min, domain_max,
                        strategy: dict | None = None, dimensionality: str = "3D",
@@ -881,11 +920,31 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
                           f"max {vf(b['max'])}; }}")
             _gap_refine += f" {_GAP_BOX}{k} {{ mode inside; levels ((1e15 {_lvl})); }}"
 
+    # THE LAYERS COUNT TOO (final_estimate): a plan whose finished mesh, layers and all, would pass
+    # the size brake's margin gets a castellation budget that leaves room for them - decided here,
+    # before the mesher runs, instead of stopped by the brake after hours of it
+    from meshpipeline.engines.size_brake import SIZE_BRAKE_MARGIN
+    _final = final_estimate(
+        castellated=castellated_estimate(
+            area=analysis.get("surface_area"), divisions=div, base_cell=base_actual,
+            surface_level=smax, near=(b0d, near_band_level), far=(b1d, max(1, smin - 1))),
+        budget=max_cells, area=analysis.get("surface_area"), wall_cell=base_actual / (2 ** smax),
+        n_layers=max([n_layers, *layer_counts.values()]) if _any_layers else 0)
+    cast_cells = castellation_budget(max_cells, _final, margin=SIZE_BRAKE_MARGIN)
+    # the PLAN's budget, beside the case: what the size brake measures the run against
+    from meshpipeline.engines.size_brake import PLAN_CELLS_FILE
+    (ws / PLAN_CELLS_FILE).parent.mkdir(parents=True, exist_ok=True)
+    (ws / PLAN_CELLS_FILE).write_text(json.dumps({"plan_cells": int(max_cells)}))
+    if cast_cells != max_cells and _final:
+        logger.info("render_snappy_case: the finished mesh is estimated at %.3g cells with its layers, "
+                    "%.1f times the %d budget - castellation budget %d", _final, _final / max_cells,
+                    max_cells, cast_cells)
+
     (ws / "system" / "snappyHexMeshDict").write_text(
         _HDR.format(cls="dictionary", obj="snappyHexMeshDict") + f"""
 castellatedMesh true; snap true; addLayers {'true' if _any_layers else 'false'};
 geometry {{ {surface_name}.stl {{ type triSurfaceMesh; name {surface_name};{_geo_regions} }}{_wake_geom}{_gap_geom} }}
-castellatedMeshControls {{ maxLocalCells {max_cells}; maxGlobalCells {max_cells}; minRefinementCells 10;
+castellatedMeshControls {{ maxLocalCells {cast_cells}; maxGlobalCells {cast_cells}; minRefinementCells 10;
   maxLoadUnbalance 0.10; nCellsBetweenLevels 3; features ( {{ file "{feature_file}"; level {flevel}; }}{_contact_feature} );
   refinementSurfaces {{ {surface_name} {{ level ({smin} {smax});{_ref_regions} }} }} resolveFeatureAngle {ang:.0f};
   refinementRegions {{ {surface_name} {{ mode distance; levels (({b0d:.6g} {near_band_level}) ({b1d:.6g} {max(1, smin - 1)})); }}{_wake_refine}{_gap_refine} }}
@@ -931,6 +990,11 @@ mergeTolerance 1e-6; debug 0;
            "location_in_mesh": [round(x, 4) for x in loc], "max_cells": max_cells,
            "n_layers": n_layers, "domain_min": [round(x, 3) for x in domain_min],
            "domain_max": [round(x, 3) for x in domain_max]}
+    if cast_cells != max_cells:
+        # recorded only when the layers changed the castellation budget: a plan within its budget
+        # keeps exactly the summary it always had
+        out["estimated_final_cells"] = int(_final) if _final else None
+        out["castellation_budget"] = cast_cells
     if layer_counts:
         out["layer_counts"] = dict(layer_counts)
     if _synthetic:

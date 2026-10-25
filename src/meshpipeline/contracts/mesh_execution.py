@@ -326,7 +326,10 @@ def run_mesh(workspace: Any, *, engine: str, timeout: int) -> dict:
     # numbered before the executor composes the run's identity from the workspace
     note_native_run(workspace)
     try:
-        result = _executor.run(workspace, engine=engine, timeout=timeout)
+        # NATIVE TIME, not model time: the builder loops' budgets stand still while this runs
+        from meshpipeline.contracts import progress_clock
+        with progress_clock.native_run():
+            result = _executor.run(workspace, engine=engine, timeout=timeout)
     except BaseException:
         # the run did not come back with a verdict: told as the infrastructure it is, never a
         # mesher that crashed

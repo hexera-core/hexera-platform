@@ -156,10 +156,19 @@ def attempt_scoped_operation(workspace: Any) -> str:
                  else f"{NATIVE_MESH_SUBMISSION}:attempt_{int(m.group(1))}")
     pass_index = read_native_pass(workspace)
     if pass_index is not None:
-        return f"{operation}:pass_{pass_index}"
-    run_index = read_native_run(workspace)
-    if run_index is not None and run_index > 1:
-        return f"{operation}:run_{run_index}"
+        operation = f"{operation}:pass_{pass_index}"
+    else:
+        run_index = read_native_run(workspace)
+        if run_index is not None and run_index > 1:
+            operation = f"{operation}:run_{run_index}"
+    # THE MACHINE joins the identity when the run is sent to a VM (contracts/mesh_machine): the SAME
+    # pass run again one machine up (RUN-3, out of memory) or off the Cloud Run wall (RUN-5) is a
+    # run of its own, never a replay of the run that ran out of memory or time - a replay would
+    # collect that run's result again instead of meshing. A Cloud Run run keeps its old identity.
+    from meshpipeline.contracts import mesh_machine
+    machine = mesh_machine.read(workspace) or {}
+    if machine.get("where") == "gce" and machine.get("machine"):
+        operation = f"{operation}:on_{machine['machine']}"
     return operation
 
 

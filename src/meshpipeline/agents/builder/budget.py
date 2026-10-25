@@ -35,8 +35,8 @@ class AttemptBudget:
         return self.driver_remaining_s <= 0
 
 
-def settle(*, carried_epoch: float, pipeline_deadline_epoch, now: float | None = None
-           ) -> AttemptBudget:
+def settle(*, carried_epoch: float, pipeline_deadline_epoch, now: float | None = None,
+           native_s: float = 0.0) -> AttemptBudget:
     from meshpipeline.application.pipeline_budget import cap_child_deadline_epoch, remaining_seconds
 
     clock = time.time() if now is None else now
@@ -44,7 +44,11 @@ def settle(*, carried_epoch: float, pipeline_deadline_epoch, now: float | None =
     if epoch <= 0.0:
         epoch = clock + bcfg.BUILDER_TOTAL_TIMEOUT_SECONDS
     epoch = cap_child_deadline_epoch(epoch, pipeline_deadline_epoch)
-    remaining = int(epoch - clock)
+    # THE AGGREGATE BUDGET IS MODEL TIME: the seconds this run spent inside native mesh runs
+    # (`native_s`, contracts/progress_clock.native_seconds) are given back - a long, progressing
+    # mesh never spends the builder's budget for model rounds. The epoch itself is kept as it was
+    # set, so a later attempt adds the native time once, not twice.
+    remaining = int(epoch + max(0.0, float(native_s)) - clock)
     # the pipeline's time as progress has moved it (pipeline_budget.effective_deadline)
     pipeline_left = int(remaining_seconds(pipeline_deadline_epoch, now=clock)) if pipeline_deadline_epoch else 0
     return AttemptBudget(deadline_epoch=epoch, remaining_s=remaining,

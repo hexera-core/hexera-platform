@@ -340,6 +340,15 @@ def prepare_mesh_run(ctx: BuilderToolContext) -> PreparedMeshRun:
     # run budget could never fit a 3600s loop after preamble rounds.)
     _cap = _policy.run_timeout()
     _plan_cap = getattr(_policy, "planned_timeout", None)
+    if getattr(_policy, "watched", False):
+        # NO GUESSED TIME LIMIT (contracts/native_time): a watched engine's run is stopped only
+        # after the stall window with no progress, or at the wall of the machine it runs on - and
+        # its time is not the builder loop's (agents/loop/budget excludes native time), so the
+        # loop budget never cuts it either
+        from meshpipeline.contracts.native_time import wall_for
+        _cap = wall_for(workspace)
+        _plan_cap = None
+        loop_deadline = None
     if _plan_cap is not None:
         # the engine TIMED this case when it wrote it (the cells it will make): it gets the time
         # its plan needs, not the fixed cap - and still only what the loop budget leaves
@@ -352,7 +361,8 @@ def prepare_mesh_run(ctx: BuilderToolContext) -> PreparedMeshRun:
             logger.info("run_mesh: the planned case gets %ds (declared cap %ds)", _planned, _cap)
             _cap = int(_planned)
     if loop_deadline is not None:
-        _remaining = int(loop_deadline - _time.monotonic())
+        from meshpipeline.contracts.progress_clock import model_time
+        _remaining = int(loop_deadline - model_time())
         _usable = _remaining - _RUN_MESH_FEEDBACK_RESERVE
         if _usable < _RUN_MESH_MIN_ATTEMPT:
             return PreparedMeshRun(refusal={
@@ -493,6 +503,18 @@ def _run_and_judge(ctx: BuilderToolContext, prepared: PreparedMeshRun) -> dict:
                              "Nothing was meshed: the case rendered from the patch contract does "
                              "not build the approved patches (an internal error, not your "
                              "strategy). Do NOT reconfigure - STOP and end your turn.")}
+    if res.get("oversize"):
+        # THE SIZE BRAKE stopped the mesher (engines/size_brake): its own count read far past
+        # the case's plan. Deterministic: the same case comes out the same size every time, so it
+        # must be made coarser by about that much - never re-run as it is.
+        _o = res["oversize"]
+        return {"success": False, "oversize": dict(_o),
+                "guidance": (f"Stopped before finishing: the mesh {_o.get('stage')} already had "
+                             f"{int(_o.get('cells') or 0):,} cells, {float(_o.get('ratio') or 0):.1f} times "
+                             f"the {int(_o.get('budget') or 0):,} it was planned for. Make the wall cells "
+                             f"coarser by about {max(1.0, float(_o.get('ratio') or 1.0) / 0.9) ** 0.5:.2f}x "
+                             "(or drop refinements), then configure and run_mesh again."),
+                "log_tail": res.get("log_tail", "")}
     if res["timed_out"]:
         _stalled = _broken_at_time_out(_policy, res.get("log_tail"))
         if _stalled:

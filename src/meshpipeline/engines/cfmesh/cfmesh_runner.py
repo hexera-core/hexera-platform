@@ -305,11 +305,13 @@ RUN_PLAN_FILE = "system/run_plan.json"
 
 
 def run_ceiling_s() -> int:
-    """The longest one cfMesh run may be given: twice the OpenFOAM command budget, at most 50
-    minutes - inside one builder attempt (startup holds BUILDER_LOOP_TIMEOUT >= 2 x
-    OPENFOAM_COMMAND_TIMEOUT, and run_mesh keeps its feedback reserve on top of the cap)."""
-    import meshpipeline.settings.runtime as rtcfg
-    return int(min(3000, 2 * rtcfg.OPENFOAM_COMMAND_TIMEOUT))
+    """The longest one cfMesh run may take: the hard wall of the biggest machine it can be sent to
+    (a VM, contracts/native_time.VM_WALL_S). NO GUESSED LIMIT (Areen, 25 Oct): it was 50 minutes,
+    and a plan over it was made coarser before meshing. Now a plan past the Cloud Run job's wall
+    runs on a VM instead (RUN-5, `machine_for_plan`), and only a plan past even a VM's wall is
+    coarsened. The run itself is watched for progress (engines/cfmesh/native)."""
+    from meshpipeline.contracts.native_time import VM_WALL_S
+    return int(VM_WALL_S)
 
 
 def base_run_cap_s() -> int:
@@ -343,6 +345,22 @@ def run_cap_for(estimated_seconds: float | None) -> int:
 
 def fits_one_run(estimated_seconds: float) -> bool:
     return RUN_CAP_HEADROOM * float(estimated_seconds) <= run_ceiling_s()
+
+
+def machine_for_plan(workspace, plan: dict | None) -> dict:
+    """RUN-5 FOR cfMesh: where the case written in `workspace` runs, from its run plan - the Cloud
+    Run job, or (its estimated time with the margin past the job's wall) the smallest VM, which has
+    no such wall. Written into the workspace (contracts/mesh_machine) and returned."""
+    from meshpipeline.contracts import mesh_machine as MM
+    from meshpipeline.contracts.native_time import CLOUD_RUN_WALL_S
+    decision = MM.choose(process_gib=0.0, workspace_gib=0.0, why="cfMesh run plan")
+    seconds = (plan or {}).get("estimated_seconds")
+    decision = MM.for_time(decision, planned_s=float(seconds) if seconds else None,
+                           wall_s=float(CLOUD_RUN_WALL_S))
+    MM.write(workspace, decision)
+    if decision.get("where") == "gce":
+        logger.warning("cfMesh run plan: %s", decision.get("words"))
+    return decision
 
 
 def planned_run_cap(workspace) -> int | None:
@@ -693,6 +711,9 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
     (ws / "system").mkdir(parents=True, exist_ok=True)
     (ws / "system" / "meshDict").write_text("".join(dict_parts))
     _plan_path = ws / RUN_PLAN_FILE
+    # WHERE IT RUNS (RUN-5): a plan whose time passes the Cloud Run job's wall goes to a VM before
+    # anything is made coarser
+    machine_for_plan(ws, plan)
     if plan is not None:
         _plan_path.write_text(json.dumps({k: v for k, v in plan.items() if k != "wall_cell"}))
     else:

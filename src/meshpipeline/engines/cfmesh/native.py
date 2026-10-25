@@ -135,9 +135,11 @@ def mesh_passages(ws: Path, *, bashrc: str = _DEFAULT_BASHRC, timeout: float = 1
             return max(1.0, deadline - time.monotonic())
 
         def _run(cmd: str, cwd: Path, log_name: str) -> int:
+            from meshpipeline.contracts.native_time import STALL_WINDOW_S
             with (cwd / log_name).open("w") as fh:
                 return run_guarded(["bash", "-lc", f"source {bashrc} >/dev/null 2>&1 && {cmd}"], cwd=str(cwd),
-                                   env=_foam_env(), stdout=fh, stderr=subprocess.STDOUT, timeout=_left()).returncode
+                                   env=_foam_env(), stdout=fh, stderr=subprocess.STDOUT, timeout=_left(),
+                                   stall_s=STALL_WINDOW_S).returncode
 
         try:
             surface = "geom.fms" if _run(f"surfaceFeatureEdges -angle {angle:g} geom.stl geom.fms", sub,
@@ -158,6 +160,18 @@ def mesh_passages(ws: Path, *, bashrc: str = _DEFAULT_BASHRC, timeout: float = 1
     return 0, False, ""
 
 
+def _cfmesh_brake(ws: Path, log: Path):
+    """The size brake for this case: its run plan's estimated cells as the budget (cfmesh_runner
+    RUN_PLAN_FILE); None when the case carries no plan (nothing to measure against)."""
+    from meshpipeline.engines.cfmesh.cfmesh_runner import RUN_PLAN_FILE
+    from meshpipeline.engines.size_brake import CFMESH_COUNTS, SizeBrake
+    try:
+        est = int((json.loads((ws / RUN_PLAN_FILE).read_text()) or {}).get("estimated_cells") or 0)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+    return SizeBrake(log, est, counts=CFMESH_COUNTS) if est > 0 else None
+
+
 def _run_cartesian_mesh_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
                               timeout: int = 1800) -> dict:
     ws = Path(workspace)
@@ -171,10 +185,20 @@ def _run_cartesian_mesh_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
     # execution is invisible (Cloud Run execution f5r99, 2026-09-12).
     timing: dict[str, float] = {}
     t0 = time.monotonic()
+    # NO GUESSED TIME LIMIT (contracts/native_time): `timeout` is the machine's WALL, and the mesher
+    # is WATCHED - stopped only when its log has not grown for the stall window
+    from meshpipeline.contracts.native_time import STALL_WINDOW_S
+    from meshpipeline.sandbox.safe_exec import StalledExpired, StoppedByWatch
+    stalled = False
+    # THE SIZE BRAKE (engines/size_brake): cartesianMesh prints the cells it built from its
+    # octree before it maps the surface, adds layers and optimises; a count far past the case's own
+    # run plan stops it there - deterministic, no clock - and the builder is told by how much
+    brake = _cfmesh_brake(ws, log)
     try:
         with log.open("w") as fh:
             proc = run_guarded(["bash", "-lc", cmd], cwd=str(ws), env=_foam_env(),
-                               stdout=fh, stderr=subprocess.STDOUT, timeout=timeout)
+                               stdout=fh, stderr=subprocess.STDOUT, timeout=timeout,
+                               stall_s=STALL_WINDOW_S, watch=brake)
         rc, timed_out = proc.returncode, False
         if rc == 0 and is_2d and (ws / "system" / "createPatchDict").exists():
             with (ws / "createPatch.log").open("w") as fh:
@@ -184,6 +208,10 @@ def _run_cartesian_mesh_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
                                     stdout=fh, stderr=subprocess.STDOUT,
                                     timeout=CREATE_PATCH_TIMEOUT_S)
             rc = proc2.returncode
+    except StoppedByWatch:
+        rc, timed_out = -1, False
+    except StalledExpired:
+        rc, timed_out, stalled = -1, True, True
     except subprocess.TimeoutExpired:
         rc, timed_out = -1, True
     timing[f"{binary}_s"] = round(time.monotonic() - t0, 1)
@@ -202,6 +230,10 @@ def _run_cartesian_mesh_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
     out = describe_native_result(
         returncode=rc, args=["bash", "-lc", cmd], stage=binary, output=tail,
         outcome=NativeOutcome.timed_out if timed_out else None)
+    if stalled:
+        out["stalled"] = True
+    if brake is not None and brake.tripped:
+        out["oversize"] = dict(brake.tripped)
     # QUALITY IS MEASURED HERE, beside the mesh, and travels home with it. finalize and the
     # solvability gate call check_mesh on the worker, which carries no OpenFOAM: on the Cloud
     # Run path every figure came back empty and the reviewer refused a finished, paid-for mesh
