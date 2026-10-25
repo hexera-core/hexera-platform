@@ -222,9 +222,10 @@ async def test_celery_launch_strips_the_envelope_so_the_worker_task_binds(Sessio
 
     captured: dict = {}
 
-    def _fake_apply_async(*, kwargs, task_id):
+    def _fake_apply_async(*, kwargs, task_id, headers):
         captured["kwargs"] = kwargs
         captured["task_id"] = task_id
+        captured["headers"] = headers
     monkeypatch.setattr(celery_adapter.run_simulation, "apply_async", _fake_apply_async)
 
     async with SessionLocal() as db:
@@ -232,6 +233,9 @@ async def test_celery_launch_strips_the_envelope_so_the_worker_task_binds(Sessio
 
     assert "schema_version" not in captured["kwargs"], "launch leaked the envelope into task kwargs"
     assert captured["task_id"] == str(job_id)
+    # stamped with the platform contract, so a worker on another one holds it instead of failing it
+    from meshpipeline.application import platform_contract
+    assert captured["headers"] == {platform_contract.HEADER: platform_contract.run_contract()}
     # the exact defect signature: the task kwargs must BIND to the run entry
     inspect.signature(pr.run_pipeline).bind(**captured["kwargs"])
     # and they carry the approved run-determining fields

@@ -47,7 +47,29 @@ RUNS_WORK = True
 def run_simulation(**kwargs) -> dict:
     # Thin Celery boundary - the worker entrypoint (runtime/celery_worker) has already
     # composed every adapter for this fork; the run itself is the neutral application use case.
+    #
+    # THE PLATFORM CONTRACT FIRST (application/platform_contract): a job the API stamped with a
+    # contract this worker does not speak - the API rolled, the fleet did not yet - is held and put
+    # back on the queue, never run into a TypeError or a schema it cannot read. Checked before
+    # run_pipeline, so the job is not claimed and its delivery count is not touched.
+    held = held_for_update(getattr(run_simulation, "request", None), kwargs)
+    if held is not None:
+        return held
     return run_pipeline(**kwargs)
+
+
+def held_for_update(request, kwargs: dict) -> dict | None:
+    """None when this worker may run the job; else the job was held and put back on the queue
+    because it was stamped with a platform contract this worker does not speak."""
+    from meshpipeline.application import platform_contract
+    seen = platform_contract.message_contract(request)
+    if not platform_contract.mismatch(seen):
+        return None
+    job_id = str(kwargs.get("job_id") or getattr(request, "id", "") or "")
+    return platform_contract.hold_for_update(
+        job_id, seen=seen,
+        requeue=lambda: run_simulation.apply_async(kwargs=kwargs, task_id=job_id,
+                                                   headers={platform_contract.HEADER: seen}))
 
 
 @celery_app.task(
@@ -88,9 +110,12 @@ async def launch(db, job_id: str, payload: dict) -> None:
     # raw payload (which carries schema_version) would make run_simulation(**payload) raise
     # TypeError inside the worker - after the API already told the user meshing started. Both
     # backends must reconstruct run kwargs through the ONE contract, never splat the raw payload.
+    from meshpipeline.application import platform_contract
     from meshpipeline.application.dispatch_contract import to_run_kwargs
+    # stamped with the run contract this API speaks: a worker that speaks another holds the job
+    # until one that matches takes it (application/platform_contract)
     run_simulation.apply_async(kwargs=to_run_kwargs(payload, where=f"celery launch job {job_id}"),
-                               task_id=job_id)
+                               task_id=job_id, headers=platform_contract.headers())
     logger.info("pipeline dispatched via celery - job_id=%s", job_id)
 
 

@@ -76,10 +76,38 @@ def _beacon(ws: str, output_uri: str, stop, *, every_s: float | None = None,
             sent_at = now
 
 
-def run(input_uri: str, output_uri: str, engine: str, timeout: int) -> dict:
+def contract_refusal(contract: str) -> dict | None:
+    """The result for a run sent by a worker speaking another exchange contract; None when it may
+    run (the same contract, or a worker from before the contract was sent)."""
+    from meshpipeline.contracts.mesh_execution import (
+        MESH_EXCHANGE_VERSION,
+        PLATFORM_UPDATING_KEY,
+        PLATFORM_UPDATING_TAG,
+        RC_INFRASTRUCTURE,
+    )
+    asked = str(contract or "").strip()
+    if not asked or asked == str(MESH_EXCHANGE_VERSION):
+        return None
+    return {"rc": RC_INFRASTRUCTURE, "timed_out": False,
+            PLATFORM_UPDATING_KEY: {"worker": asked, "mesh_job": str(MESH_EXCHANGE_VERSION)},
+            "log_tail": (f"{PLATFORM_UPDATING_TAG} the worker speaks mesh exchange contract {asked} and "
+                         f"this mesh job speaks {MESH_EXCHANGE_VERSION}: the platform is mid-update, "
+                         "so nothing was meshed")}
+
+
+def run(input_uri: str, output_uri: str, engine: str, timeout: int, contract: str = "") -> dict:
     from meshpipeline.adapters.mesh_execution.gcs_exchange import download_workspace, upload_result
     from meshpipeline.engines.dispatch import run_engine_local
 
+    refused = contract_refusal(contract)
+    if refused is not None:
+        # NOT MESHED: the worker that sent this speaks another exchange contract (the platform is
+        # mid-update). Said in a result document like any run, so the worker waits and submits
+        # again instead of reading a workspace this runner might misread.
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix="mesh_refused_") as empty:
+            upload_result(output_uri, empty, refused)
+        return refused
     ws = download_workspace(input_uri)
     stop, returning = threading.Event(), threading.Event()
     beacon = threading.Thread(target=_beacon, args=(ws, output_uri, stop), kwargs={"returning": returning},
@@ -102,5 +130,5 @@ def run(input_uri: str, output_uri: str, engine: str, timeout: int) -> dict:
 if __name__ == "__main__":
     from meshpipeline.runtime.mesh_invocation import from_environment
     _inv = from_environment()
-    _r = run(_inv.input_uri, _inv.output_uri, _inv.engine, _inv.timeout_seconds)
+    _r = run(_inv.input_uri, _inv.output_uri, _inv.engine, _inv.timeout_seconds, _inv.contract)
     print("mesh complete:", json.dumps({k: v for k, v in _r.items() if k != "log_tail"}))

@@ -1471,6 +1471,22 @@ jobs:
       - name: The deploy's gcloud arguments still exist (devtools/quality/check_gcloud_flags.py)
         run: python3 devtools/quality/check_gcloud_flags.py
 
+      # A PARTIAL ROLL, SAID OUT LOUD. `images` without `workers` (every merge to main, and a manual
+      # app run without fleet) moves the API and the mesh job to this build and leaves the worker
+      # fleet where it is. Jobs never fail from that (application/platform_contract holds a job a
+      # worker cannot read until one that can takes it), but if this build changed the platform
+      # contract, new jobs wait until the fleet rolls - so the deployer is told, not refused: the
+      # merge deploy depends on this path.
+      - name: Warn when the fleet is left on an older build
+        env:
+          DEPLOY_COMPONENTS: ${{ needs.target.outputs.components }}
+        run: |
+          case ",${DEPLOY_COMPONENTS}," in
+            *,all,*|*,workers,*) exit 0 ;;
+            *,images,*)
+              echo "::warning title=Worker fleet not rolled::This deploy moves the API and the mesh job to this build; the worker fleet stays on its current one. If this build changed the platform contract (run entry arguments, dispatch/state/result schema, or MESH_EXCHANGE_VERSION), new jobs wait with 'the platform is updating' until a fleet deploy (fleet=true). Nothing fails - but run the fleet deploy to let them start." ;;
+          esac
+
       # THE ONLY CLOUD MUTATION IN THIS WORKFLOW. deploy.sh is interactive by default - it prints a
       # plan and makes the operator type the project id - and DEPLOY_NONINTERACTIVE=1 is its
       # documented automation path, which then requires every ambiguous target pinned explicitly

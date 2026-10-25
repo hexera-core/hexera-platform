@@ -43,6 +43,7 @@ docker run --rm --name mesh \
   -e OUTPUT_URI="$(get instance/attributes/output-uri)" \
   -e ENGINE="$(get instance/attributes/engine)" \
   -e TIMEOUT="$(get instance/attributes/timeout)" \
+  -e HEXERA_MESH_CONTRACT="$(get instance/attributes/mesh-contract)" \
   -e TMPDIR=/work -v /mnt/stateful_partition/work:/work \
   "$IMG" python -m meshpipeline.runtime.mesh_runner
 TOKEN=$(get instance/service-accounts/default/token | sed -E 's/.*"access_token":"([^"]+)".*/\1/')
@@ -90,8 +91,10 @@ def _job_container() -> tuple[str, str]:
 def instance_body(*, name: str, zone: str, machine: str, image: str, account: str, input_uri: str,
                   output_uri: str, engine: str, timeout: int, disk_gb: int) -> dict:
     """The instances.insert body (pure: tests read it)."""
+    from meshpipeline.contracts.mesh_execution import MESH_EXCHANGE_VERSION
     meta = {"mesh-image": image, "input-uri": input_uri, "output-uri": output_uri, "engine": engine,
-            "timeout": str(int(timeout)), "startup-script": STARTUP_SCRIPT}
+            "timeout": str(int(timeout)), "mesh-contract": str(MESH_EXCHANGE_VERSION),
+            "startup-script": STARTUP_SCRIPT}
     body: dict = {
         "name": name,
         "machineType": f"zones/{zone}/machineTypes/{machine}",
