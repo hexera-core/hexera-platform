@@ -630,6 +630,39 @@ def to_m(gmsh, scale: float) -> None:
     print(f"{MM_SCALE} (nodes scaled by {s:g} back to metres)", file=sys.stderr)
 
 
+#: MESH-5: the rule that drops a face's repeated triangles before the fill
+REPEATED_TRIANGLES_RULE = "MESH-5"
+
+
+def drop_repeated_triangles(gmsh, surfaces) -> dict[int, int]:
+    """MESH-5: A FACE WHOSE SURFACE MESH REPEATS A TRIANGLE keeps one copy. gmsh's periodic mesher can lay
+    the same three nodes down twice where a seam runs into a pole (nakuja_rocket's nose cone, Part_2_Face_5:
+    an interior node placed just across the seam, at u = -0.017, makes the triangle beside the apex on both
+    sides of it), and the fill then refuses the boundary ("Found two duplicated facets", "overlapping
+    facets on surface 5 surface 5") whatever the 2D algorithm or the scale. A copy adds no surface: the
+    face is the same without it. A surface mesh with no repeat - every one the fill accepts - is left
+    untouched. Returns {surface: copies dropped}."""
+    import numpy as np
+
+    dropped: dict[int, int] = {}
+    for s in sorted(int(t) for t in surfaces):
+        types, tags, nodes = gmsh.model.mesh.getElements(2, s)
+        if len(types) != 1 or int(types[0]) != 2:          # only a face of plain 3-node triangles
+            continue
+        tri = np.asarray(nodes[0], dtype=np.int64).reshape(-1, 3)
+        _u, first = np.unique(np.sort(tri, axis=1), axis=0, return_index=True)
+        if len(first) == len(tri):
+            continue
+        keep = np.sort(first)
+        gmsh.model.mesh.removeElements(2, s)
+        gmsh.model.mesh.addElementsByType(s, 2, [int(t) for t in np.asarray(tags[0])[keep]],
+                                          [int(n) for n in tri[keep].ravel()])
+        dropped[s] = int(len(tri) - len(keep))
+    if dropped:
+        print(f"[GMSH-FEA] repeated surface triangles dropped {dropped} ({REPEATED_TRIANGLES_RULE})", file=sys.stderr)
+    return dropped
+
+
 def micro_curves_one_segment(gmsh) -> list[int]:
     """MESH-4: every CAD curve shorter than PLAN-fea-12's micro length (cad/fea_measure.MICRO_FRACTION of
     the model's diagonal) meshed as ONE segment. gmsh gives a curved edge at least two, and on a curve a
@@ -710,6 +743,7 @@ def build_volume(gmsh, ws: Path, plan: dict, geom: Path, asm: dict | None, sidec
         named = sorted({s for s in surfaces_named(str(exc)) if s in surfaces}
                        | set(_empty_surfaces(gmsh, surfaces) if not surfaces_named(str(exc)) else []))
         raise FillFailed(exc, named, face_tags, tied) from exc
+    repeated = drop_repeated_triangles(gmsh, surfaces)
     try:
         note_stage(ws, "volume", "filling the solid with elements")
         if asm and str((sidecar or {}).get("mode") or "") in ("tie", "contact"):
@@ -734,7 +768,8 @@ def build_volume(gmsh, ws: Path, plan: dict, geom: Path, asm: dict | None, sidec
         raise FillFailed(RuntimeError(f"{EMPTY_VOLUMES} the 3D fill left volume(s) {hollow} with no elements"),
                          named, face_tags, tied, hollow=hollow)
     return {"vols": vols, "surfaces": surfaces, "face_tags": face_tags, "surface_tag": surface_tag,
-            "volume_tag": volume_tag, "part_volumes": part_volumes, "micro_curves": micro}
+            "volume_tag": volume_tag, "part_volumes": part_volumes, "micro_curves": micro,
+            "repeated_triangles": repeated}
 
 
 def mesh(workspace) -> int:
@@ -944,6 +979,9 @@ def mesh(workspace) -> int:
                                           "fea_max_aspect_ratio", "fea_min_dihedral_deg",
                                           "fea_max_dihedral_deg", "fea_inverted") if k in shape},
             "fea_rules_short": len(rules.get("short") or []) if rules else None,
+            # MESH-5: a face's repeated surface triangles dropped before the fill
+            **({"fea_repeated_triangles": {str(k): v for k, v in built["repeated_triangles"].items()}}
+               if built.get("repeated_triangles") else {}),
             # MESH-4: meshed at the CAD's millimetre scale after the metre build failed
             **({"fea_mesh_scale": "mm", "fea_mesh_scale_rule": MM_SCALE_RULE,
                 "fea_micro_curves_one_segment": len(built.get("micro_curves") or [])}

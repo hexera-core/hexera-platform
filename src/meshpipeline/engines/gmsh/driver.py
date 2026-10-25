@@ -865,7 +865,7 @@ def _mesh_cad_at_mm(gmsh, geom: Path, h: float, cb) -> float:
     CAD's own millimetre scale (the same entities, so the same tags and physical groups), sized the
     same (the clamp size and the passage field, both times the scale) and meshed. Returns the scale;
     the caller brings the mesh back to metres after curving it."""
-    from meshpipeline.engines.gmsh.fea_adapter import MM_PER_M, micro_curves_one_segment
+    from meshpipeline.engines.gmsh.fea_adapter import MM_PER_M, drop_repeated_triangles, micro_curves_one_segment
 
     k = MM_PER_M
     groups = [(dim, [int(t) for t in gmsh.model.getEntitiesForPhysicalGroup(dim, tag)],
@@ -890,6 +890,9 @@ def _mesh_cad_at_mm(gmsh, geom: Path, h: float, cb) -> float:
     if cb is not None:
         gmsh.model.mesh.setSizeCallback(
             lambda dim, tag, x, y, z, lc: float(cb(dim, tag, x / k, y / k, z / k, lc / k)) * k)
+    gmsh.model.mesh.generate(2)
+    # MESH-5: a face whose surface mesh repeats a triangle keeps one copy
+    drop_repeated_triangles(gmsh, [t for _d, t in gmsh.model.getEntities(2)])
     gmsh.model.mesh.generate(3)
     return k
 
