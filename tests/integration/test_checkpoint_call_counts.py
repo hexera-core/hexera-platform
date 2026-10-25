@@ -74,9 +74,10 @@ class _CountingStore:
         self._guard("object_checksum", object_key); T["object_checksum"] += 1; _flush()
         return self._inner.object_checksum(object_key=object_key)
 
-    def create_download_url(self, *, object_key, expires_in):
+    def create_download_url(self, *, object_key, expires_in, download_name=None):
         self._guard("create_download_url", object_key); T["create_download_url"] += 1; _flush()
-        return self._inner.create_download_url(object_key=object_key, expires_in=expires_in)
+        return self._inner.create_download_url(object_key=object_key, expires_in=expires_in,
+                                               download_name=download_name)
 
     def __getattr__(self, n): return getattr(self._inner, n)
 

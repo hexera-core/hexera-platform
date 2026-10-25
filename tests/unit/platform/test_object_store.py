@@ -322,3 +322,45 @@ def test_the_current_provider_sdks_are_installed_for_contract_coverage():
                 f"{sdk!r} is not installed, so {why} has no contract coverage in this "
                 f"environment. It is pinned in requirements/runtime.txt - install it rather than "
                 f"skipping the tests ({exc})") from exc
+
+
+# A DOWNLOAD NAMED IS SERVED AS AN ATTACHMENT. The disposition rides in the signed query, so the
+# browser saves the file instead of rendering it - which is also how the console tells a refused
+# link (an error page loads) from a download (nothing loads).
+def test_a_named_download_is_signed_as_an_attachment(monkeypatch):
+    monkeypatch.setattr(provcfg, "MINIO_BUCKET", "mesh-artifacts")
+    from meshpipeline.adapters.object_storage.minio import MinioStore
+    calls = {}
+    fake = SimpleNamespace(presigned_get_object=lambda b, k, expires=None, response_headers=None:
+                           calls.update(args=(b, k, expires), headers=response_headers) or "u")
+    store = MinioStore()
+    monkeypatch.setattr(store, "_client", lambda **_: fake)
+    store.create_download_url(object_key="jobs/j/deck.inp", expires_in=timedelta(hours=2),
+                              download_name="deck.inp")
+    assert calls["args"] == ("mesh-artifacts", "jobs/j/deck.inp", timedelta(hours=2))
+    disposition = calls["headers"]["response-content-disposition"]
+    assert disposition.startswith("attachment;") and 'filename="deck.inp"' in disposition
+
+
+def test_an_awkward_download_name_cannot_break_the_header():
+    from meshpipeline.adapters.object_storage.minio import attachment_disposition
+    d = attachment_disposition('m"esh\\ü.msh')
+    ascii_part = d.split("filename=", 1)[1].split(";", 1)[0]
+    assert ascii_part == '"m_esh__.msh"'
+    assert "filename*=UTF-8''m%22esh%5C%C3%BC.msh" in d
+
+
+def test_a_real_signed_download_carries_the_disposition_in_its_query():
+    # the real minio-py signer, offline: the region is explicit so no request is made
+    from urllib.parse import parse_qs, urlparse
+
+    from minio import Minio
+    client = Minio("storage.example:443", access_key="k", secret_key="s", secure=True,
+                   region="us-east-1")
+    from meshpipeline.adapters.object_storage.minio import attachment_disposition
+    url = client.presigned_get_object(
+        "mesh-artifacts", "jobs/j/deck.inp", expires=timedelta(hours=2),
+        response_headers={"response-content-disposition": attachment_disposition("deck.inp")})
+    q = parse_qs(urlparse(url).query)
+    assert q["X-Amz-Expires"] == ["7200"]
+    assert q["response-content-disposition"][0].startswith("attachment;")

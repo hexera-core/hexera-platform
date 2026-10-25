@@ -172,6 +172,8 @@ def test_the_served_routes_are_exactly_the_supported_set():
         ("GET", "/api/v1/organization"),         # the caller's own organisation and its members
         ("GET", "/api/v1/simulation"),           # the tenant's run list, keyset paged
         ("GET", "/api/v1/simulation/{job_id}"),
+        # a NEW download link for one deliverable, minted at click time; its life scales with size
+        ("GET", "/api/v1/simulation/{job_id}/artifacts/{artifact_id}/download"),
         ("POST", "/api/v1/simulation/{job_id}/dispute"),
         ("POST", "/api/v1/simulation/{job_id}/cancel"),  # the owner stops a run; 409 once finished
         ("GET", "/api/v1/simulation/{job_id}/review"),               # a parked run's unsure defects, grouped

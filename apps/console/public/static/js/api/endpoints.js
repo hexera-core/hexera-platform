@@ -114,6 +114,20 @@ export async function getJob(jobId, { throwOnError = true } = {}) {
   return r.json();
 }
 
+/** A NEW download link for one deliverable, minted now: {download_url, expires_in_seconds,
+ *  size_bytes}. Asked at click time, so the link's whole life - which scales with the file's
+ *  size - lies ahead of the download. Throws with `status` set when the API refuses. */
+export async function downloadLink(jobId, artifactId) {
+  const r = await apiFetch(`/api/v1/simulation/${jobId}/artifacts/${artifactId}/download`,
+    { headers: headers() });
+  if (!r.ok) {
+    const err = await readError(r);
+    err.status = r.status;
+    throw err;
+  }
+  return r.json();
+}
+
 /** A short-lived, single-use WebSocket ticket, minted over authenticated HTTPS.
  *  Credentials go in HEADERS - never in a URL that a proxy or Cloud Run would log. */
 export async function wsTicket(jobId) {

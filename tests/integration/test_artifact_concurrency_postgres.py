@@ -238,7 +238,7 @@ async def test_api_lists_one_download_per_logical_artifact_and_hides_reconciliat
             from meshpipeline.application.job_service import JobService
             return await JobService().get_job(db, jid, owner,
                                               organization_id=organization_id)
-        async def signed_url(self, storage_key):
+        async def signed_url(self, storage_key, size_bytes=None):
             signed.append(storage_key)
             return f"https://signed/{storage_key}"
 

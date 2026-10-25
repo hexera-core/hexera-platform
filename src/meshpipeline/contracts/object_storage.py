@@ -64,7 +64,12 @@ class ObjectStore(Protocol):
     #: or a signed URL so nothing unbounded is buffered in a request.
     def get_bytes(self, *, object_key: str) -> bytes: ...
 
-    def create_download_url(self, *, object_key: str, expires_in: timedelta) -> str: ...
+    #: A URL a browser can GET one object from until `expires_in` runs out (a resumed download is
+    #: checked again, so the life must cover the whole transfer). With `download_name` the store
+    #: is told to serve it as an attachment under that name, so the browser saves it rather than
+    #: rendering it.
+    def create_download_url(self, *, object_key: str, expires_in: timedelta,
+                            download_name: str | None = None) -> str: ...
 
     #: A URL a CLIENT can PUT one object's bytes to, straight into the store. It is how a large
     #: upload avoids passing through a request body at all - a hosted front end caps those (Cloud

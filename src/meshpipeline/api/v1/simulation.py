@@ -18,6 +18,7 @@ from meshpipeline.api.schemas.job import (
     CancelOut,
     DisputeIn,
     DisputeOut,
+    DownloadLinkOut,
     JobStatus_,
 )
 from meshpipeline.api.security import org_dep, owner_dep, plan_dep
@@ -275,6 +276,34 @@ def _review_concerns(final_result) -> list[str]:
         return []
 
 
+@router.get("/{job_id}/artifacts/{artifact_id}/download", response_model=DownloadLinkOut)
+async def download_link(job_id: uuid.UUID, artifact_id: uuid.UUID,
+                        owner_id: str = Depends(owner_dep),
+                        organization_id: str = Depends(org_dep)):
+    """A NEW download link for one deliverable, minted when the user clicks Download.
+
+    The links in the job read are minted when the page loads; a user who reads the result for
+    longer than a link lives, or whose large download drops and resumes later, met a 403. The
+    console asks here at click time instead, and again once if that download is refused, so the
+    link it uses always has its whole life ahead of it - a life that scales with the file's size.
+    Served for exactly the rows the job read lists: the caller's own job, never a cancelled one,
+    never the viewer's internal payload.
+    """
+    async with get_db() as db:
+        job = await svc.get_job(db, job_id, owner_id, organization_id=organization_id)
+        if not job:
+            raise HTTPException(404, "Job not found")
+        artifact = next((a for a in ([] if _is_cancelled(job) else (job.artifacts or []))
+                         if str(a.id) == str(artifact_id)
+                         and a.artifact_type != ArtifactType.viewer_data), None)
+        if artifact is None:
+            raise HTTPException(404, "Download not found")
+        storage_key, size_bytes = artifact.storage_key, artifact.size_bytes
+    url, ttl_s = await svc.fresh_download_link(storage_key, size_bytes)
+    return DownloadLinkOut(artifact_id=artifact_id, download_url=url,
+                           expires_in_seconds=ttl_s, size_bytes=int(size_bytes or 0))
+
+
 @router.get("/{job_id}", response_model=JobStatus_)
 async def get_job(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
                   organization_id: str = Depends(org_dep)):
@@ -301,7 +330,7 @@ async def get_job(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
                 ArtifactOut(
                     id=a.id,
                     artifact_type=a.artifact_type,
-                    download_url=await svc.signed_url(a.storage_key),
+                    download_url=await svc.signed_url(a.storage_key, a.size_bytes),
                     size_bytes=a.size_bytes,
                     created_at=a.created_at,
                     label=_artifact_label(a.artifact_type, _engine,
