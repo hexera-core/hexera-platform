@@ -569,7 +569,8 @@ async def _run_async(req: JobRequest) -> dict:
             return _refusal.detail
 
         _backend_name, _backend_exec_id = _backend_execution_id(job_id)
-        _claimed = await _fence.claim_delivery(
+        # a full or restarting database is waited out here (the job stays queued), never failed
+        _claimed = await _fence.claim_delivery_patiently(
             AsyncSessionLocal, job_repo, job_id, jlog=jlog,
             backend=_backend_name, backend_execution_id=_backend_exec_id)
         if isinstance(_claimed, _fence.DeliveryRefused):
