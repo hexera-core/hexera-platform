@@ -94,6 +94,11 @@ _FLOW = _rx(
     r"\bwake\b", r"\bswirl", r"\bhydrodynamic", r"\bcavitat", r"\bimpeller", r"\bventilat", r"\bhvac\b",
     r"\bslosh", r"\bwind tunnel", r"\bair (move|moves|around|over|through)", r"goes in .* out",
     r"\bblood\b", r"\bk-?(omega|epsilon)\b", r"\bpolyhedral\b",
+    # HOW AN AERODYNAMICIST ACTUALLY WRITES IT. "cd of this ahmed body" settled nothing and asked
+    # the domain question, which is a poor showing for the half of the platform that has
+    # customers: Cd is the drag coefficient, and the Ahmed body and the DrivAer are the two
+    # reference cars every automotive CFD group runs. Found by writing the test, not by a report.
+    r"\bc_?d\b", r"\bahmed\b", r"\bdrivaer\b",
 )
 #: Words that put a flow INSIDE the part, and AROUND it.
 _INTERNAL = _rx(r"\bthrough\b", r"\binside\b", r"\binternal", r"\bpipe", r"\bduct", r"\bmanifold",
