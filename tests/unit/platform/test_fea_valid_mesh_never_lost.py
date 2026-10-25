@@ -303,6 +303,36 @@ def test_only_a_real_fea_manifest_makes_the_view_optional(tmp_path):
 
 
 
+def test_a_guard_trip_reads_the_limit_the_driver_records():
+    """fw_case on dev-areen, 24 Oct: the driver's trip record (planned_work, #295) carries ceiling_s, and
+    the refusal read guard_s - "a time limit of 0 minutes" after a 125-minute run."""
+    from meshpipeline.contracts.failure_cause import FailureCause, describe
+    from meshpipeline.engines.fea_driver import planned_work
+
+    work = planned_work({"estimate": {"elements": 1_100_000}}, rate=500.0, ceiling_s=7200)
+    trip = {**work, "pass": 1, "stalled": False, "watchdog": {"seconds": 7200.0}}
+    what, _ = describe(FailureCause.RUN_INFRASTRUCTURE, {"ours": True, "guard_trip": trip})
+    assert "time limit of 120 minutes" in what and "1.1 million elements" in what
+    assert "of 0 minutes" not in what
+
+
+def test_a_stalled_guard_trip_says_it_stalled_not_a_time_limit():
+    from meshpipeline.contracts.failure_cause import FailureCause, describe
+
+    trip = {"amount": 1_100_000, "ceiling_s": 7200, "stall_window_s": 900, "pass": 2, "stalled": True,
+            "watchdog": {"seconds": 3000.0, "silence_at_stop_s": 905.0}}
+    what, _ = describe(FailureCause.RUN_INFRASTRUCTURE, {"ours": True, "guard_trip": trip})
+    assert "no new output for 15 minutes after 50 minutes of work" in what
+    assert "time limit" not in what and "It was not stuck" not in what
+
+
+def test_a_guard_trip_without_a_limit_never_says_zero_minutes():
+    from meshpipeline.contracts.failure_cause import FailureCause, describe
+
+    what, _ = describe(FailureCause.RUN_INFRASTRUCTURE, {"ours": True, "guard_trip": {"amount": 500_000, "pass": 1}})
+    assert "of 0 minutes" not in what and "its time limit ran out" in what
+
+
 def test_a_guard_trip_is_told_as_the_time_limit_it_was():
     from meshpipeline.contracts.failure_cause import FailureCause, describe
 

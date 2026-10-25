@@ -575,12 +575,26 @@ def describe(cause: object, facts: Mapping | None = None, *,
             # THE MESHER'S TIME GUARD, said as what it is (dev-areen 24 Oct: a 114-part boiler read
             # "the service failed to take the job or to return its result" after its mesher simply
             # ran out of time): the mesher was working, and our time estimate for it was short
-            guard = _as_number(trip.get("guard_s")) or 0.0
             amount = _as_number(trip.get("amount"))
             size = f" (about {amount / 1e6:.1f} million elements)" if amount else ""
-            return (f"The mesher was still building the mesh{size} when its time limit of "
-                    f"{guard / 60:.0f} minutes ran out, so no mesh came back. It was not stuck and nothing is "
-                    "wrong with your part: it takes longer to mesh than we planned for. That is ours to fix.",
+            seen = trip.get("watchdog") if isinstance(trip.get("watchdog"), Mapping) else {}
+            if trip.get("stalled"):
+                # THE STALL WATCH stopped it (PLAN-fea-13): said as that, with the quiet it saw - never as
+                # a time limit the mesher was not given
+                quiet = (_as_number(seen.get("silence_at_stop_s")) or _as_number(trip.get("stall_window_s"))
+                         or 0.0)
+                ran = _as_number(seen.get("seconds")) or 0.0
+                return (f"The mesher stopped making progress while building the mesh{size}: no new output for "
+                        f"{quiet / 60:.0f} minutes after {ran / 60:.0f} minutes of work, so it was stopped and "
+                        "no mesh came back. Nothing about your part was found wrong. That is ours to look into.",
+                        f"You can run it again ({_RUN_AGAIN}); if it stops the same way, tell us.")
+            # THE HARD LIMIT: the trip record carries it as ceiling_s (engines/fea_driver.planned_work, #295);
+            # guard_s is the name records written before #295 used. Read both - a missing one is not 0
+            guard = _as_number(trip.get("ceiling_s")) or _as_number(trip.get("guard_s"))
+            limit = f"its time limit of {guard / 60:.0f} minutes" if guard else "its time limit"
+            return (f"The mesher was still building the mesh{size} when {limit} ran out, so no mesh came "
+                    "back. It was not stuck and nothing is wrong with your part: it takes longer to mesh than "
+                    "we planned for. That is ours to fix.",
                     f"You can run it again ({_RUN_AGAIN}); if it stops the same way, tell us - meshes like this "
                     "need a longer time limit on our side.")
         if f.get("result_uncollected"):
