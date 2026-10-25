@@ -711,3 +711,20 @@ def test_every_pass_keeps_its_own_gmsh_log(tmp_path):
         (ws / "gmshfea.log").write_text(f"pass {n}")
         FD._keep_pass_log(ws, n)
     assert [(ws / FD.PASS_FOLDER.format(n=n) / "gmshfea.log").read_text() for n in (1, 2)] == ["pass 1", "pass 2"]
+
+
+def test_fused_faces_whose_edges_do_not_close_are_tied_at_once(tmp_path, monkeypatch):
+    """kart_chassis (25 Oct): the fused tubes left face loops gmsh could not close, twice, before the tie."""
+    from meshpipeline.engines import runtime
+
+    modes = []
+
+    def mesher(w, timeout):
+        modes.append(json.loads((Path(w) / "fea_plan.json").read_text())["assembly"]["mode"])
+        return {"rc": 1, "log_tail": "Exception: The 1D mesh seems not to be forming a closed loop\n"}
+
+    ws = _stage(fx.touching_blocks(), tmp_path / "loops")
+    monkeypatch.setattr(runtime, "get_engine", lambda _n: SimpleNamespace(run_cartesian_mesh=mesher))
+    asyncio.run(FD.drive(ws, {"purpose": "structural"}, job_id=f"t-{ws.name}", publish=None,
+                         run=_Run(), source_path=str(ws / "upload.step")))
+    assert modes[:2] == ["bonded", "tie"]

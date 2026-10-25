@@ -713,7 +713,10 @@ def _peak_gib(result: dict) -> float | None:
 
 #: What a failed fill of FUSED parts says (gmsh's own words): the fused boundary is not one clean solid.
 FUSED_FILL_ERRORS = ("PLC Error", "intersect", "overlapping facets", "BRep contains more volumes",
-                     "Invalid boundary mesh")
+                     "Invalid boundary mesh",
+                     # the fused faces' own edges do not close (kart_chassis, 25 Oct: two passes of 450 s
+                     # each, "The 1D mesh seems not to be forming a closed loop", before the tie passed)
+                     "not to be forming a closed loop")
 
 
 def _fused_fill_failed(result: dict, facts: dict) -> bool:
