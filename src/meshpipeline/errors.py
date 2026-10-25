@@ -90,8 +90,26 @@ _TIMEOUT_NAMES = ("Timeout", "TimeoutError", "TimeoutExpired", "ReadTimeout",
                   "ConnectTimeout", "APITimeoutError")
 _CONN_NAMES    = ("ConnectionError", "ConnectError", "APIConnectionError",
                   "RemoteProtocolError", "ConnectionRefusedError", "OperationalError",
-                  "InterfaceError", "RedisConnectionError")
+                  "InterfaceError", "RedisConnectionError",
+                  # asyncpg: the server is there but will not take this connection now - full
+                  # (dev-areen 25 Oct: a redeploy filled every slot and two jobs failed in 0.1 s
+                  # as "internal"), starting up, or the connection dropped under us
+                  "TooManyConnections", "CannotConnectNow", "ConnectionDoesNotExist",
+                  "ConnectionFailure")
+#: The same "server full / not taking connections", said only in the message (psycopg raises it
+#: as a plain error on some paths).
+_CONN_MESSAGES = ("remaining connection slots are reserved", "too many clients already",
+                  "sorry, too many clients", "the database system is starting up",
+                  "the database system is shutting down")
+_BUSY_NAMES    = ("TooManyConnections", "CannotConnectNow")
 _RATE_NAMES    = ("RateLimitError", "TooManyRequests")
+
+
+def is_database_busy(exc: BaseException) -> bool:
+    """The database answered "not now" - full, starting up or shutting down, what a deploy roll
+    looks like - as opposed to not answering at all. Worth waiting out; an unreachable one is not."""
+    name = type(exc).__name__
+    return any(t in name for t in _BUSY_NAMES) or any(m in str(exc).lower() for m in _CONN_MESSAGES)
 _SERVER_NAMES  = ("InternalServerError", "ServiceUnavailable", "BadGateway",
                   "ServerError", "S3Error", "MinioException")
 
@@ -107,7 +125,7 @@ def classify_exception(exc: BaseException, dependency: str) -> SystemFailure:
         # subprocess timeout = resource exhaustion; network timeout = transient
         cls = FailureClass.RESOURCE if "Expired" in name else FailureClass.PROVIDER_TRANSIENT
         return SystemFailure(dependency, cls, detail, cause=exc)
-    if any(t in name for t in _CONN_NAMES):
+    if any(t in name for t in _CONN_NAMES) or any(m in str(exc).lower() for m in _CONN_MESSAGES):
         return SystemFailure(dependency, FailureClass.DEPENDENCY_DOWN, detail, cause=exc)
     if any(t in name for t in _SERVER_NAMES):
         return SystemFailure(dependency, FailureClass.PROVIDER_TRANSIENT, detail, cause=exc)

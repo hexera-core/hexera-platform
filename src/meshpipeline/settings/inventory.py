@@ -288,6 +288,7 @@ INVENTORY: list[Group] = [
         EnvVar("CIRCUIT_RECOVERY_SECONDS", "30"),
         EnvVar("CIRCUIT_HALF_OPEN_MAX", "1"),
         EnvVar("CELERY_MAX_REDELIVERIES", "3", help="a job that keeps crashing the worker is dead-lettered after this many deliveries"),
+        EnvVar("CLAIM_WAIT_SECONDS", "900", kind="int", help="a job whose database will not take its claim yet (full during a redeploy, starting up) waits this long, still queued, before it fails as dependency_down; 0 = fail at once"),
     ]),
     Group("Remote mesh execution", note="The local stack is the control plane; every mesh runs off-box on the Cloud Run mesh job. dev-up and dev-doctor require the values below and refuse to start without them.", vars=[
         EnvVar("GCP_PROJECT_ID", "", required=True, help="the project hosting the Cloud Run mesh job"),

@@ -407,7 +407,8 @@ async def test_an_unavailable_checkpoint_store_touches_no_source_and_runs_no_gra
     job_id, geom = await _seed("unavailable", tmp_path)
     t, _ = _run(job_id, geom, tmp_path / "ws", tmp_path / "t.json",
                 execution_id=f"e-{uuid.uuid4()}", forbid_source=True,
-                extra_env={"REQUIRE_DURABLE_CHECKPOINTER": "true",
+                # the database is unreachable for good here: the claim does not wait it out
+                extra_env={"REQUIRE_DURABLE_CHECKPOINTER": "true", "CLAIM_WAIT_SECONDS": "0",
                            "DATABASE_URL":
                                "postgresql+asyncpg://cm:cm@127.0.0.1:1/cm?sslmode=disable"})
     _no_source_access(t)
