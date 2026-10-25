@@ -1,4 +1,4 @@
-# Responsibility: Verify MESH-4 and LAD-fea-6's locked slivers: a staged solid the FEA mesher cannot mesh in metres (a surface no 2D algorithm meshes, a fill that fails, a volume left empty) is meshed again at the CAD's own millimetre scale and delivered in metres, every face still named; a solid that meshes in metres never takes that way, and a failure at both scales still names its surfaces; and an invalid sliver locked between two faces names only one of them, so the next pass breaks their mirrored meshes.
+# Responsibility: Verify MESH-4, MESH-5 (a face whose surface mesh repeats a triangle keeps one copy) and LAD-fea-6's locked slivers: a staged solid the FEA mesher cannot mesh in metres (a surface no 2D algorithm meshes, a fill that fails, a volume left empty) is meshed again at the CAD's own millimetre scale and delivered in metres, every face still named; a solid that meshes in metres never takes that way, and a failure at both scales still names its surfaces; and an invalid sliver locked between two faces names only one of them, so the next pass breaks their mirrored meshes.
 # Boundaries: the metre failure is forced on a small built part (the real one, libredrive_pulley_housing's 24 nm grazing edges, is the lab's: ~/graze_lab); gmsh runs in-process.
 from __future__ import annotations
 
@@ -207,3 +207,45 @@ def test_a_face_another_invalid_element_touches_is_never_kept_back():
     nodes = {1: (2, 5), 2: (2, 5), 3: (2, 6), 4: (2, 6), 7: (2, 5), 8: (2, 7), 9: (3, 1)}
     g = _stub({10: [1, 2, 3, 4], 11: [7, 8, 9, 1]}, nodes)
     assert A.bad_surfaces(g, [10, 11], [-0.1, -0.1]) == [5, 6, 7]
+
+
+def _box_with_a_repeat(repeat: bool):
+    gmsh.initialize()
+    gmsh.option.setNumber("General.Terminal", 0)
+    gmsh.model.add("rep")
+    gmsh.model.occ.addBox(0, 0, 0, 1, 1, 1)
+    gmsh.model.occ.synchronize()
+    gmsh.option.setNumber("Mesh.MeshSizeMax", 0.3)
+    gmsh.model.mesh.generate(2)
+    surfaces = [t for _d, t in gmsh.model.getEntities(2)]
+    if repeat:
+        _t, _tags, nodes = gmsh.model.mesh.getElements(2, surfaces[2])
+        first = [int(n) for n in nodes[0][:3]]
+        gmsh.model.mesh.addElementsByType(surfaces[2], 2, [int(gmsh.model.mesh.getMaxElementTag()) + 1], first[::-1])
+    return surfaces
+
+
+def test_a_face_whose_surface_mesh_repeats_a_triangle_keeps_one_copy_and_fills():
+    """MESH-5: the same three nodes laid down twice on one face (nakuja_rocket's nose cone, where the seam
+    meets the apex) stop the fill ("Found two duplicated facets"); one copy dropped, it fills - and a
+    face with no repeat is left exactly as it was."""
+    import numpy as np
+
+    try:
+        surfaces = _box_with_a_repeat(False)
+        before = {s: gmsh.model.mesh.getElements(2, s)[1][0] for s in surfaces}
+        assert A.drop_repeated_triangles(gmsh, surfaces) == {}
+        for s in surfaces:                                  # nothing touched
+            assert np.array_equal(gmsh.model.mesh.getElements(2, s)[1][0], before[s])
+        gmsh.finalize()
+        _box_with_a_repeat(True)
+        with pytest.raises(Exception):                     # the repeat stops the fill
+            gmsh.model.mesh.generate(3)
+        gmsh.finalize()
+        surfaces = _box_with_a_repeat(True)
+        assert A.drop_repeated_triangles(gmsh, surfaces) == {surfaces[2]: 1}
+        gmsh.model.mesh.generate(3)
+        assert sum(len(t) for t in gmsh.model.mesh.getElements(3)[1]) > 0
+    finally:
+        if gmsh.isInitialized():
+            gmsh.finalize()
