@@ -126,16 +126,26 @@ def test_the_viewer_lists_each_deliverable_with_its_id():
 
 
 def test_a_refusal_page_in_the_frame_is_noticed_and_a_blank_frame_is_not(live):
+    # The stand-in for the store's error page is a page made IN the browser (a blob: URL), never a
+    # route of the app under test. The first version loaded /readyz: in the release gate that is
+    # the app IMAGE with no database behind it, where the readiness probe waits on unreachable
+    # dependencies for longer than this test waited, and the app's own X-Frame-Options: DENY makes
+    # what a frame shows browser-specific. It passed in PR CI and failed every gate run after #313.
     out = live.evaluate("""(async () => {
       const { startDownload } = await import('/static/js/render/download.js');
-      let refused = 0;
-      // a page loading in the frame is what a refused link looks like (the store's error page);
-      // a same-origin page stands in for it here
-      const frame = startDownload('/readyz', { onRefused: () => { refused += 1; } });
-      await new Promise((r) => { frame.addEventListener('load', r); setTimeout(r, 5000); });
-      await new Promise((r) => setTimeout(r, 50));
+      const settle = (frame) => new Promise((r) => {
+        frame.addEventListener('load', () => setTimeout(r, 50)); setTimeout(r, 10000); });
+      let refused = 0, blankRefused = 0;
+      // a page loading in the frame is what a refused link looks like (the store's error page)
+      const page = URL.createObjectURL(new Blob(
+        ['<?xml version="1.0"?><Error><Code>AccessDenied</Code></Error>'], { type: 'text/xml' }));
+      const frame = startDownload(page, { onRefused: () => { refused += 1; } });
+      await settle(frame);
+      // a frame that never left about:blank (what a download that started looks like) is not one
+      const blank = startDownload('about:blank', { onRefused: () => { blankRefused += 1; } });
+      await settle(blank);
       const hidden = frame.hidden;
-      frame.remove();
-      return { refused, hidden };
+      frame.remove(); blank.remove(); URL.revokeObjectURL(page);
+      return { refused, blankRefused, hidden };
     })()""")
-    assert out == {"refused": 1, "hidden": True}
+    assert out == {"refused": 1, "blankRefused": 0, "hidden": True}
