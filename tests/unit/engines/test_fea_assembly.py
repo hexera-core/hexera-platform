@@ -634,3 +634,22 @@ def test_a_bonded_assembly_with_an_empty_volume_is_tied_at_once(tmp_path, monkey
     asyncio.run(FD.drive(ws, {"purpose": "structural"}, job_id=f"t-{ws.name}", publish=None,
                          run=_Run(), source_path=str(ws / "upload.step")))
     assert modes[0] == "bonded" and modes[1] == "tie"
+
+
+def test_a_bonded_assembly_whose_fused_boundary_crosses_itself_is_tied_at_once(tmp_path, monkeypatch):
+    """fc_folding_chair (24 Oct): the fused slats left a boundary gmsh could not recover ("PLC Error: A
+    segment and a facet intersect") - 67 minutes of passes that could only fail the same way. Tied now."""
+    from meshpipeline.engines import runtime
+
+    modes = []
+
+    def mesher(w, timeout):
+        mode = json.loads((Path(w) / "fea_plan.json").read_text())["assembly"]["mode"]
+        modes.append(mode)
+        return {"rc": 1, "log_tail": "Error   : PLC Error:  A segment and a facet intersect at point\n"}
+
+    ws = _stage(fx.touching_blocks(), tmp_path / "plc")
+    monkeypatch.setattr(runtime, "get_engine", lambda _n: SimpleNamespace(run_cartesian_mesh=mesher))
+    asyncio.run(FD.drive(ws, {"purpose": "structural"}, job_id=f"t-{ws.name}", publish=None,
+                         run=_Run(), source_path=str(ws / "upload.step")))
+    assert modes[:2] == ["bonded", "tie"]

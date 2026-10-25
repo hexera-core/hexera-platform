@@ -682,6 +682,20 @@ def _peak_gib(result: dict) -> float | None:
     return mb / 1024.0 if mb > 0 else None
 
 
+#: What a failed fill of FUSED parts says (gmsh's own words): the fused boundary is not one clean solid.
+FUSED_FILL_ERRORS = ("PLC Error", "intersect", "overlapping facets", "BRep contains more volumes",
+                     "Invalid boundary mesh")
+
+
+def _fused_fill_failed(result: dict, facts: dict) -> bool:
+    """The fill failed on the fused parts' own boundary (nothing built): a volume left empty, or a
+    boundary that crosses itself - not a matter of sizes or algorithm."""
+    log = str(result.get("log_tail") or "")
+    if facts.get("built"):
+        return False
+    return _empty_volumes_named(log) or any(w in log for w in FUSED_FILL_ERRORS)
+
+
 def _empty_volumes_named(log: str) -> bool:
     from meshpipeline.engines.gmsh.fea_adapter import EMPTY_VOLUMES
     return EMPTY_VOLUMES in log
@@ -920,14 +934,16 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             if made:
                 _keep_pass(ws, n)
             if (not made and (record.get("assembly_plan") or {}).get("mode") == "bonded"
-                    and _empty_volumes_named(str(result.get("log_tail") or ""))):
-                # PLAN-fea-17 AT ONCE: the fused bonded parts left a volume the fill cannot fill (the
-                # slivers where they meet) - no other 3D algorithm fixes the geometry, so the parts go
-                # straight to being meshed apart and tied (fc_computer_desk, 24 Oct: an HXT pass first
-                # failed on "BRep contains more volumes than there really are")
-                _cite(job_id, [{"stage": "fea_ladder", "decided": "tie now", "value": "empty volume",
+                    and _fused_fill_failed(result, passes[-1])):
+                # PLAN-fea-17 AT ONCE: the fill could not build the FUSED bonded parts (a volume left
+                # empty, or the fused boundary crossing itself where parts pass into each other) - no
+                # other 3D algorithm fixes the geometry, so the parts go straight to being meshed apart
+                # and tied (fc_computer_desk: "BRep contains more volumes than there really are";
+                # fc_folding_chair, 24 Oct: "PLC Error: A segment and a facet intersect", then 67 min
+                # of passes that could only fail the same way)
+                _cite(job_id, [{"stage": "fea_ladder", "decided": "tie now", "value": "fused fill failed",
                                 "rule": "PLAN-fea-17", "inputs": {"pass": n},
-                                "words": "The fill left part of the fused assembly empty, so the parts are tied now."}])
+                                "words": "The fused parts could not be filled as one, so the parts are tied now."}])
                 break
             # AI-fea-8: the AI may pick among the levers this failure allows; the ladder's own first else
             lever, picked = await FA.choose_lever(L.lever_options(passes[-1], levers, plan), passes[-1], ai=ai,

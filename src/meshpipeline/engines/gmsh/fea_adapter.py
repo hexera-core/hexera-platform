@@ -102,6 +102,8 @@ MESH_ADAPT = 1
 #: at most this many invalid elements are traced back to the surfaces they touch
 TRACE_BAD = 500
 #: the line the driver reads the surfaces a failed pass went wrong on from (LAD-fea-6)
+#: How exactly gmsh integrates 1/size along a curve to place its nodes (its default is 1e-9).
+LC_INTEGRATION_PRECISION = 1e-3
 BAD_SURFACES = "[GMSH-FEA] BAD SURFACES:"
 #: The same surfaces as the CAD's face names (Face_k, or Part_k_Face_j for an assembly): what a
 #: suspected CAD defect is held against (MESH-2).
@@ -477,6 +479,11 @@ def mesh(workspace) -> int:
         gmsh.option.setNumber("Mesh.MaxNumThreads2D", 1)
         gmsh.option.setNumber("Mesh.MaxNumThreads3D", threads)
         gmsh.option.setNumber("Mesh.RandomSeed", 1)
+        # THE CURVES MESHED IN SECONDS, NOT MINUTES (fc_folding_chair, 24 Oct: 979 s of a 1,064 s pass in
+        # 1D): gmsh integrates 1/size along every curve to its default precision of 1e-9, evaluating the
+        # whole size field each step; 1e-3 places the same nodes to a tenth of a percent (97,319 vs 97,484
+        # nodes after 2D) in 26 s
+        gmsh.option.setNumber("Mesh.LcIntegrationPrecision", LC_INTEGRATION_PRECISION)
         gmsh.option.setNumber("Geometry.OCCBoundsUseStl", 1)
         gmsh.model.add("fea")
         gmsh.model.occ.importShapes(str(geom))
