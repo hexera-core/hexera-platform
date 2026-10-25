@@ -220,6 +220,12 @@ FLAT_LIFTING = ExpectedSize("a thin flat body like a wing or aircraft", 0.03, 10
 #: 0.2 of it (so a slender rod is not "flat").
 CAR_LENGTH_TO_WIDTH = (1.5, 6.0)
 CAR_HEIGHT_TO_WIDTH_MAX = 1.6
+#: ...and no FLATTER than this, which nothing bounded before. A ground vehicle is a body with
+#: room inside it: an Ahmed body is 0.74 as tall as it is wide, a saloon about 0.75, a Le Mans
+#: prototype 0.55, a flatbed trailer around 0.25. A microchannel cold plate 32.5 x 19.9 x 0.8 is
+#: 0.04, and was read as a car because only the upper bound existed - then sized against a car's
+#: believable range, which rejected millimetres for making it 3.25 cm and proposed inches.
+CAR_HEIGHT_TO_WIDTH_MIN = 0.15
 FLAT_THICKNESS_MAX = 0.35
 FLAT_MIDDLE_MIN = 0.2
 
@@ -251,7 +257,8 @@ def shape_kind(flow: str, size, *, grounded: bool = False, up_axis: str | None =
     length, width = flat[0], flat[1]
     if grounded and width > 0 and length >= height:
         ratio = length / width
-        if CAR_LENGTH_TO_WIDTH[0] <= ratio <= CAR_LENGTH_TO_WIDTH[1] and height <= CAR_HEIGHT_TO_WIDTH_MAX * width:
+        if (CAR_LENGTH_TO_WIDTH[0] <= ratio <= CAR_LENGTH_TO_WIDTH[1]
+                and CAR_HEIGHT_TO_WIDTH_MIN * width <= height <= CAR_HEIGHT_TO_WIDTH_MAX * width):
             return GROUND_VEHICLE
     a, b, c = sorted(sides, reverse=True)
     if not grounded and c <= FLAT_THICKNESS_MAX * a and b >= FLAT_MIDDLE_MIN * a:

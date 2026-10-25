@@ -21,6 +21,18 @@ MAX_OPENINGS = 16
 #: A ring face (an annular end of a pipe wall) rims an opening when the hole is a real bore, not
 #: a bolt hole: the inner area against the ring's own outer area.
 MIN_RING_BORE_FRACTION = 0.1
+#: When the holes in one face are the face's OPEN AREA rather than a bore with incidental holes
+#: beside it: no single hole takes more than this share of all the hole area on that face.
+#:
+#: The two cases this separates are a flange and a cold plate. A flange's face has one bore and
+#: eight bolt holes, and the bore is 93% of the hole area: the bore is the opening and the bolt
+#: holes are not, which is what MIN_RING_BORE_FRACTION's comment has always said. A cold plate's
+#: end face has one hole per channel, all the same size, and the largest is 1% of the hole area:
+#: there is no bore, the face is perforated, and its open area is the sum. Reading only the largest
+#: hole weighed one 0.08 mm2 channel against a 21.89 mm2 face, got 0.4% against the 10% bar, and
+#: called the face solid - so the Corintis baseline (100 channels) and the wavy array (16) were
+#: both read as a solid body in external flow with no openings at all.
+MAX_DOMINANT_HOLE_SHARE = 0.5
 #: A closed solid's flat face is a MOUTH (the end of a swept fluid body) only when it is a round or
 #: rectangular section at least this fraction of the part's thinnest box side. A nacelle's 8 mm
 #: tail flat on a 200 mm body, a blade tip, a wing's airfoil-shaped tip are not mouths.
@@ -313,8 +325,22 @@ def _rim_polyline(face, wire) -> list:
 
 
 def _measure_wires(face) -> tuple[dict | None, dict | None]:
-    """(outer, inner): what the face's outer wire encloses and what its largest inner wire
-    encloses, each as {"area_m2", "centroid", "wh_m"} or None. A single-wire face has no inner."""
+    """(outer, inner): what the face's outer wire encloses, and what its HOLES enclose.
+
+    Each is {"area_m2", "centroid", "wh_m"} or None, and a single-wire face has no inner. `inner`
+    also carries "holes" (how many there are), "largest_area_m2" (the biggest single one) and
+    "perforated".
+
+    WHICH HOLES COUNT AS THE OPENING depends on whether one of them is a bore. A flange's face has
+    a bore and some bolt holes and the bore is the opening; a cold plate's end face has one hole
+    per channel, no bore at all, and its open area is all of them together. MAX_DOMINANT_HOLE_SHARE
+    is the line between the two, and reading only the largest hole put every multi-channel plate on
+    the wrong side of it.
+
+    The perforated reading takes the FACE's own outline and centroid, not the holes' bounding
+    extent: a plate's inlet is the face, which is how the user will name it and how a conjugate
+    mesher patches it, and the area is the sum because that is what the coolant flows through.
+    """
     from OCP.BRepTools import BRepTools
     from OCP.TopAbs import TopAbs_WIRE
     from OCP.TopExp import TopExp_Explorer
@@ -324,15 +350,29 @@ def _measure_wires(face) -> tuple[dict | None, dict | None]:
 
     outer_w = BRepTools.OuterWire_s(face)
     outer = _rim_measure(_rim_polyline(face, outer_w))
-    inner = None
+    holes: list[dict] = []
     we = TopExp_Explorer(face, TopAbs_WIRE)
     while we.More():
         wire = TopoDS.Wire_s(we.Current())
         if not wire.IsSame(outer_w):
             m = _rim_measure(_rim_polyline(face, wire))
-            if m is not None and (inner is None or m["area_m2"] > inner["area_m2"]):
-                inner = m
+            if m is not None:
+                holes.append(m)
         we.Next()
+    if not holes:
+        return outer, None
+    holes.sort(key=lambda m: float(m["area_m2"]), reverse=True)
+    largest = holes[0]
+    total = sum(float(m["area_m2"]) for m in holes)
+    perforated = (len(holes) > 1 and total > 0.0
+                  and float(largest["area_m2"]) / total <= MAX_DOMINANT_HOLE_SHARE)
+    if perforated and outer is not None:
+        inner = {"area_m2": total, "centroid": outer["centroid"], "wh_m": outer["wh_m"]}
+    else:
+        inner = {k: largest[k] for k in ("area_m2", "centroid", "wh_m")}
+    inner["holes"] = len(holes)
+    inner["largest_area_m2"] = float(largest["area_m2"])
+    inner["perforated"] = bool(perforated and outer is not None)
     return outer, inner
 
 
