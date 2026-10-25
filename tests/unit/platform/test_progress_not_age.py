@@ -154,12 +154,26 @@ def test_a_drivers_attempt_is_judged_by_the_pipelines_time_not_the_model_loops()
     assert b.driver_exhausted
 
 
-def test_only_an_engine_with_a_driver_for_this_run_is_held_to_the_pipelines_time():
-    from meshpipeline.agents.builder.invoke import takes_driver
+def test_only_an_engine_with_a_driver_for_this_run_is_held_to_the_pipelines_time(monkeypatch):
+    # the engine's own choice of driver is stood in (the real gmsh one needs the CAD toolchain,
+    # tests/unit/engines/test_fea_driver.py covers it): this pins how takes_driver reads it
+    from meshpipeline.agents.builder import invoke
 
-    assert takes_driver(SimpleNamespace(engine="gmsh"), {"purpose": "structural"}) is True
-    assert takes_driver(SimpleNamespace(engine="gmsh"), {"purpose": "external_cfd"}) is False
-    assert takes_driver(SimpleNamespace(engine="no-such-engine"), {}) is False
+    class _Spec:
+        build_driver = None
+
+        def build_driver_for(self, state):
+            return (lambda *a, **k: None) if state.get("purpose") == "structural" else None
+
+    def _get_spec(name):
+        if name != "gmsh":
+            raise KeyError(name)
+        return _Spec()
+
+    monkeypatch.setattr(invoke, "get_spec", _get_spec)
+    assert invoke.takes_driver(SimpleNamespace(engine="gmsh"), {"purpose": "structural"}) is True
+    assert invoke.takes_driver(SimpleNamespace(engine="gmsh"), {"purpose": "external_cfd"}) is False
+    assert invoke.takes_driver(SimpleNamespace(engine="no-such-engine"), {}) is False
 
 
 # RUN-5: THE CLOUD RUN WALL
