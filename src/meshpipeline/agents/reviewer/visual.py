@@ -68,6 +68,29 @@ def _source_basename(state) -> str:
     return os.path.basename(ref.original_filename) if ref and ref.original_filename else "unknown"
 
 
+def _g(v) -> str | None:
+    """A number in %g form; None for anything that is not one (never a format crash)."""
+    return f"{v:g}" if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+
+def _caveat_row(c: dict) -> str:
+    """One adjudicated deviation in words. Two shapes reach here: a per-direction requirement
+    (direction, requested, measured) and a note gate's caveat (engines/resolution_policy.caveat:
+    kind, gate, cells_across, floor, cells, cell_limit). A missing figure is left out, never formatted."""
+    req, got = _g(c.get("requested")), _g(c.get("measured"))
+    if c.get("direction") is not None and (req or got):
+        return (f"{c.get('direction')}: requested {req or 'n/a'}, measured {got or 'n/a'} reference-lengths")
+    what = str(c.get("gate") or c.get("kind") or "requirement")
+    parts = []
+    across, floor = _g(c.get("cells_across")), _g(c.get("floor"))
+    if across or floor:
+        parts.append(f"{across or 'n/a'} cells across where {floor or 'n/a'} were asked")
+    cells, limit = _g(c.get("cells")), _g(c.get("cell_limit"))
+    if cells and limit:
+        parts.append(f"{cells} cells against a limit of {limit}")
+    return what + (": " + ", ".join(parts) if parts else "")
+
+
 def _with_adjudicated_deviations(brief: str, caveats: list) -> str:
     """A caveated delivery candidate reaches review with its requirement near-misses ALREADY
     adjudicated by deterministic code - they will be stated on delivery. Without saying so,
@@ -76,10 +99,7 @@ def _with_adjudicated_deviations(brief: str, caveats: list) -> str:
     it can neither waive nor add to this list."""
     if not caveats:
         return brief
-    rows = "; ".join(
-        f"{c.get('direction')}: requested {c.get('requested'):g}, "
-        f"measured {c.get('measured'):g} reference-lengths"
-        for c in caveats)
+    rows = "; ".join(_caveat_row(c) for c in caveats if isinstance(c, dict))
     return (brief
             + "\n\nADJUDICATED REQUIREMENT DEVIATIONS (application-owned): " + rows
             + ". These measured near-misses are accepted for delivery and will be stated to "
