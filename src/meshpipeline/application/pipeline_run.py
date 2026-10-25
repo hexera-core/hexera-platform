@@ -868,7 +868,15 @@ async def _run_async(req: JobRequest) -> dict:
         try:
             from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
             _pg_dsn = provcfg.POSTGRES_DSN.replace("+asyncpg", "").replace("+psycopg", "")
-            async with AsyncPostgresSaver.from_conn_string(_pg_dsn) as checkpointer:
+            # A POOL, CHECKED ON EVERY BORROW - never one connection held for the whole run. A
+            # job runs for hours; a connection opened at its start does not survive a database
+            # restart in the middle (kart_chassis, dev-areen 25 Oct: the 03:50 Cloud SQL restart
+            # killed it, and the first checkpoint write after the reviewer's PASS failed the job).
+            # The pool hands each checkpoint call a connection it has just checked, replacing a
+            # dead one; FencedCheckpointer retries a call that still meets a blip.
+            from meshpipeline.application.checkpoint_pool import checkpoint_pool
+            async with checkpoint_pool(_pg_dsn) as _cp_pool:
+                checkpointer = AsyncPostgresSaver(_cp_pool)
                 await checkpointer.setup()
                 _checkpointer_ok = True
                 # every authoritative checkpoint WRITE is fenced on execution ownership, and each

@@ -2139,6 +2139,19 @@
   "roots": []
  },
  {
+  "context": "application/fenced_checkpointer.py::FencedCheckpointer._skippable::error#1|NotAPublisher|not-a-publisher|",
+  "path": "application/fenced_checkpointer.py",
+  "qualname": "FencedCheckpointer._skippable",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "application/final_result.py::derive_terminal_status::error#1|NotAPublisher|not-a-publisher|application/final_result.py::callers of derive_terminal_status()",
   "path": "application/final_result.py",
   "qualname": "derive_terminal_status",
