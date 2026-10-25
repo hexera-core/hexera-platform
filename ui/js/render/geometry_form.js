@@ -37,10 +37,19 @@ export function sentence(text) {
   return t ? t.charAt(0).toUpperCase() + t.slice(1) + "." : "";
 }
 
+/* THE ORDER IS THE ORDER THEY ARE READ IN, so the one that fits has to be findable. The last one
+   used to read "an assembly of solid parts, each its own region", which someone holding one
+   channelled cold plate reads as a denial - while the FIRST describes a cold plate exactly and
+   means the metal is thrown away and only the water meshed. What tells those two apart is what
+   gets meshed, so that is what they now say.
+   This list cannot branch: the user picks from it before anything is settled, so the one label
+   has to cover both a cold plate and a multi-part assembly. The CONFIRMATION does branch, and
+   names whichever it turns out to be (application/geometry_confirmation.kind_words). */
 export const KIND = [["body-surface", "the part's wall, hollow inside for the fluid"],
                      ["fluid-domain", "the fluid volume itself"],
                      ["solid-body", "a solid body the fluid flows around"],
-                     ["solid-assembly", "an assembly of solid parts, each its own region"]];
+                     ["solid-assembly", "a solid part with coolant passages through it, or an "
+                                        + "assembly of solid parts - the solid and the fluid both meshed"]];
 export const ROLES = [["inlet", "inlet"], ["outlet", "outlet"], ["not_an_opening", "not an opening"]];
 export const AXES = [["+x", "+x"], ["-x", "-x"], ["+y", "+y"], ["-y", "-y"], ["+z", "+z"], ["-z", "-z"],
                      ["unknown", "not sure"]];
@@ -392,8 +401,10 @@ export function servedProposal(before, next) {
    records it, but the chat only showed the whole declaration afterwards, so an edit read like the
    check's own proposal and nothing said "got it". This is the one line that does: each change
    against what the check proposed, in plain words. "" when nothing was changed. */
+/* The SHORT form, for the one-line summary. "an assembly of solid parts" is wrong for the common
+   case now - a cold plate is one solid - so it says what the kind means instead of counting parts. */
 const KIND_WORDS = { "body-surface": "a hollow wall", "fluid-domain": "the fluid volume", "solid-body": "a solid body",
-                     "solid-assembly": "an assembly of solid parts" };
+                     "solid-assembly": "a solid with coolant inside it" };
 const FLOW_WORDS = { internal: "through the part", external: "around the part" };
 const ROLE_WORDS = { inlet: "an inlet", outlet: "an outlet", not_an_opening: "not an opening" };
 const MAX_EDITS = 6;

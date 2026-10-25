@@ -225,6 +225,21 @@ _KIND_WORDS = {"body-surface": "the part's wall, hollow inside for the fluid",
                "fluid-domain": "the fluid volume itself",
                "solid-body": "a solid body",
                "solid-assembly": "an assembly of solid parts, each its own region"}
+#: ...and the same kind said for ONE channelled solid. The kind covers two shapes of file and the
+#: confirmation knows which it has, so each customer is told about their own part: a cold plate's
+#: owner reads "an assembly of solid parts" as a denial, and a thermal model's owner would read
+#: "coolant passages" as the wrong part. The STAGE's dropdown cannot branch - the user picks from
+#: a fixed list before anything is settled - so there the one label covers both.
+_COOLED_SOLID_WORDS = "a solid part with coolant passages through it"
+
+
+def kind_words(body) -> str:
+    """How the confirmation names what the file is, in the user's own terms."""
+    if str(getattr(body, "input_kind", "")) == "solid-assembly" \
+            and not [n for n in (getattr(body, "regions", None) or []) if str(n).strip()] \
+            and int(getattr(body, "solids", 0) or 0) == 1:
+        return _COOLED_SOLID_WORDS
+    return _KIND_WORDS[body.input_kind]
 #: What the declaration says of a whole thermal model's air box (check_mode "thermal"): its sides
 #: are the file's, so no boundary is declared and none is asked about. The chat shows it.
 THERMAL_SIDES = ("The sides of the air box are the file's own: open to the room unless the file "
@@ -250,9 +265,20 @@ _REGIONS_NAMED = 24
 
 
 def assembly_sentence(body) -> str:
-    """What an assembly of solid parts is, for the intake: each part its own solid region, the
-    fluid one more, meshed as they stand - the multi-region (conjugate heat transfer) input."""
+    """What a multi-region input is, for the intake: the solid and the fluid each their own
+    region, meshed as they stand - the conjugate heat-transfer input.
+
+    IT IS SAID TWO WAYS, because the kind covers two shapes of file. A file of several parts has
+    the fluid AROUND them, which is what a thermal model's air box is. One channelled solid - a
+    cold plate, a chip package, a heat-exchanger core - has the coolant INSIDE it, and telling
+    that customer about "the fluid around them" describes the opposite of their part.
+    """
     names = [str(n) for n in (getattr(body, "regions", None) or []) if str(n).strip()]
+    if not names and int(getattr(body, "solids", 0) or 0) == 1:
+        return ("The part is one solid with coolant passages through it, so it is two regions at "
+                "once: the solid carries the heat and the coolant inside it takes the heat away. "
+                "Both are meshed, sharing every face between them, as a conjugate heat-transfer "
+                "case - nothing is built around the part.")
     said = ("Each solid part is its own solid region and the fluid around them is one more region; "
             "together they fill the domain, so the file is meshed as it stands, as a multi-region "
             "(conjugate heat transfer) case, with no fluid domain built around it.")
@@ -359,7 +385,7 @@ def confirmation_message(body) -> str:
         return thermal_confirmation_message(body)
     if getattr(body, "check_mode", "") == FEA_CHECK:
         return fea_confirmation_message(body)
-    kind = _KIND_WORDS[body.input_kind]
+    kind = kind_words(body)
     through = "through it" if body.flow == "internal" else "around it"
     # The kind is stated verbatim, in the intake's own enum, and it is the same word the session
     # stores. A solid body the fluid flows around stays "solid-body": the engine gate reads that as
@@ -645,7 +671,7 @@ def sizeless_record(record: dict, *, scale_to_metres: float, unit: str) -> dict:
             **plain, "message": message, "patches": patches_from(body), "reread": {"sizes_dropped": True}}
 
 
-__all__ = ["BUILT_IN_WALL", "CONFIRMED_MARK", "assembly_sentence", "body_of", "confirmation_message", "declared_case", "distinct_opening_names",
+__all__ = ["BUILT_IN_WALL", "CONFIRMED_MARK", "assembly_sentence", "body_of", "confirmation_message", "declared_case", "kind_words", "distinct_opening_names",
            "renamed_openings_sentence",
            "patches_from", "replace_declaration",
            "reread_record", "sizeless_record", "thermal_confirmation_message", "thermal_declared",

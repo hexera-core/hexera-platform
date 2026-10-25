@@ -90,7 +90,11 @@ PURPOSES: dict[str, Purpose] = {
 # The OUTPUT mesh kinds an engine capability may produce, and the INPUT geometry
 # kinds it may accept (MeshCapability). "multiregion-volume" = a coupled set of
 # per-region volume meshes (fluid + solid) for conjugate heat transfer;
-# "solid-assembly" = a multi-solid CAD assembly (one closed solid per region).
+# "solid-assembly" = a file whose solid and fluid are BOTH meshed, as coupled regions: either a
+# multi-solid CAD assembly (one closed solid per region, the fluid among them) or ONE solid with
+# coolant passages through it (a cold plate, a chip package, a heat-exchanger core), where the
+# solid is the part uploaded and the fluid is the space found inside it. It said only the first
+# until a cold plate needed the kind, and one solid then contradicted its own definition.
 MESH_KINDS = ("solid-volume", "fluid-volume", "multiregion-volume", "surface-mesh")
 INPUT_KINDS = ("solid-body", "fluid-domain", "body-surface", "solid-assembly",
                "planar-domain")

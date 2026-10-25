@@ -342,9 +342,16 @@ FEA_HOLD = ("thanks - I'm checking your part now. It will appear beside this cha
 HEAT_IN_SOLID_NOTE = ("Heat moving through a solid part is coming soon. For now I'll mesh it as for "
                       "static stress: the same solid mesh, with every face named.")
 #: Said with the hold for electronics cooling from a file that is not an ECXML thermal model.
-ELECTRONICS_NOTE = ("For the full electronics-cooling setup (parts, powers and fans read from the "
-                    "file), upload the ECXML model exported from your thermal tool. For this file "
-                    "I'll set up the cooling air.")
+#: IT DOES NOT SEND THEM AWAY ANY MORE. This used to read "upload the ECXML model exported from
+#: your thermal tool. For this file I'll set up the cooling air", which answers "mesh this cold
+#: plate" by naming a file the customer does not have and a coolant that is not theirs: a cold
+#: plate's coolant is water inside metal, not air around a board. The ECXML route is still the
+#: fuller one where a thermal tool is in play, so it stays - as an offer rather than an errand.
+ELECTRONICS_NOTE = ("I'll set the cooling up from this file. If the part has coolant passages "
+                    "through it, they'll be shown on the stage and the metal and the coolant get "
+                    "meshed together. For a whole electronics-cooling model instead - every part, "
+                    "its power and the fans read from the file - an ECXML export from a thermal "
+                    "tool carries all of that.")
 
 
 def coming_soon_note(analysis: str) -> str:
