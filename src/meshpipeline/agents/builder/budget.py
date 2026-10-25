@@ -16,6 +16,12 @@ class AttemptBudget:
     #: int, not float: `_run_tool_loop` takes an integer budget, and `min()` over two ints is the
     #: same value the node computed before this module existed.
     attempt_timeout_s: int
+    #: what a DETERMINISTIC ENGINE DRIVER may use (the FEA driver, PLAN-fea-13: no guessed time limit):
+    #: the pipeline's remaining time - its one absolute ceiling - not the model loop's aggregate budget,
+    #: which is sized for model rounds (BUILDER_TOTAL_TIMEOUT_SECONDS) and stopped a 1.1M-element mesher
+    #: that was still making progress (fw_case, dev-areen 24 Oct). Without a pipeline deadline it is
+    #: remaining_s, as before.
+    driver_remaining_s: int = 0
 
     @property
     def exhausted(self) -> bool:
@@ -32,8 +38,10 @@ def settle(*, carried_epoch: float, pipeline_deadline_epoch, now: float | None =
         epoch = clock + bcfg.BUILDER_TOTAL_TIMEOUT_SECONDS
     epoch = cap_child_deadline_epoch(epoch, pipeline_deadline_epoch)
     remaining = int(epoch - clock)
+    pipeline_left = int(float(pipeline_deadline_epoch) - clock) if pipeline_deadline_epoch else 0
     return AttemptBudget(deadline_epoch=epoch, remaining_s=remaining,
-                         attempt_timeout_s=min(bcfg.BUILDER_LOOP_TIMEOUT, remaining))
+                         attempt_timeout_s=min(bcfg.BUILDER_LOOP_TIMEOUT, remaining),
+                         driver_remaining_s=max(remaining, pipeline_left))
 
 
 __all__ = ["AttemptBudget", "settle"]
