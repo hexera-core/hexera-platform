@@ -1412,10 +1412,14 @@ function initThermalScene(sessionId, box, surf, t, panel) {
 }
 
 
-/** A proposal's value with every length (keys ending _mm or _m, at any depth) multiplied by `f`. */
+/** A proposal's value with every length re-read by `f`, by the server's own rule
+ *  (application/geometry_check.rescaled_lengths): keys ending _mm or _m by f, areas (_mm2, _m2) by
+ *  f squared, at any depth; keys with no unit are left alone. */
 function atScale(key, v, f) {
-  const isLen = /_mm$|_m$/.test(key);
-  if (Array.isArray(v)) return v.map((x) => (typeof x === "number" ? (isLen ? x * f : x) : atScale(isLen ? key : "", x, f)));
+  const by = /_mm2$|_m2$/.test(key) ? f * f : /_mm$|_m$/.test(key) ? f : 0;
+  const scale = (x) => (Array.isArray(x) ? x.map(scale) : typeof x === "number" ? x * by : x);
+  if (by) return scale(v);
+  if (Array.isArray(v)) return v.map((x) => atScale("", x, f));
   if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, atScale(k, x, f)]));
-  return typeof v === "number" && isLen ? v * f : v;
+  return v;
 }
