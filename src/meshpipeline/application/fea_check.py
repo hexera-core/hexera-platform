@@ -95,8 +95,35 @@ WAY_OUT_SOLID = ("To go on, upload the part as one closed solid (a STEP from you
 _BREP_FORMATS = ("step", "stp", "iges", "igs", "brep")
 
 
+def has_solid(facts: dict | None) -> bool:
+    """A CLOSED SOLID CAN BE READ from the file: a CAD file with at least one solid body, or a triangle
+    file whose surface closes. Then nothing the clean check says stops the stage (MESH-1: mesh first,
+    warn - a good file is never blocked by our own broken-CAD checks)."""
+    f = facts or {}
+    v = f.get("validity") or {}
+    n = body_count(f)
+    brep = str(f.get("source_format") or "").lower() in _BREP_FORMATS and v.get("kind") != "triangles"
+    if brep and n and n >= 1:
+        return True
+    if v.get("kind") in ("unchecked", "check_failed") or v.get("clean") is None:
+        # the clean check could not say: never a stop on a file we could not judge
+        return True
+    errors = {str(r.get("code")) for r in v.get("reasons") or []
+              if isinstance(r, dict) and str(r.get("severity") or "error") == "error"}
+    # a triangle surface closes into a solid when it has no open edge and no edge shared by more than
+    # two faces (the Camaro STL: 395 overlapping skins with non-manifold edges is a surface)
+    # a CAD file of faces with no solid entity is still a solid when its faces close (the FEA staging
+    # makes the closed shells solids - engines/fea_driver.solids_from_shells)
+    if brep:
+        return not (errors & {"open_shell", "open_boundary", "zero_volume", "flat"})
+    return not (errors & {"open_shell", "open_boundary", "zero_volume", "flat", "non_manifold_edges"})
+
+
 def not_solid_message(facts: dict | None) -> str:
-    """The plain message for a file that is not one closed solid, "" when nothing says so."""
+    """The plain message for a file that is not one closed solid, "" when nothing says so - or when a
+    closed solid can still be read from it (then what the clean check found is a warning: warnings())."""
+    if has_solid(facts):
+        return ""
     f = facts or {}
     v = f.get("validity") or {}
     errors = {str(r.get("code")) for r in v.get("reasons") or []
@@ -196,19 +223,64 @@ def fold_back_message(facts: dict | None) -> tuple[str, str]:
     return FOLD_BACK.format(who=who, faces=faces, length=length) + more, WAY_OUT_REPAIR_PART
 
 
+#: MESH-1: what the stage says beside a possible defect (Areen, 24 Oct: mesh first).
+MESH_RULE = "MESH-1"
+TRY_ANYWAY = ("The mesh will be tried anyway: if it fails at that spot, the part needs CAD repair there; "
+              "if it succeeds, the result notes the spot.")
+
+
+def warnings(facts: dict | None) -> list[str]:
+    """MESH-1: what the broken-CAD checks found on a part a closed solid can be read from - each a
+    WARNING the user can go on past, never a stop: a face crossing another of its body, a paper-thin
+    fold, and what the clean check calls not closed or not valid. Confirmed only when two independent
+    measures agree (cad/suspect_defects)."""
+    from meshpipeline.cad import suspect_defects as SD
+    from meshpipeline.cad.fea_assembly import FACT_KEY as ASM_KEY
+    from meshpipeline.cad.fea_measure import FACT_KEY
+
+    f = facts or {}
+    if not has_solid(f):
+        return []
+    raw = f.get(FACT_KEY)
+    measured: dict = raw if isinstance(raw, dict) else {}
+    rec = measured.get(ASM_KEY) if isinstance(measured, dict) else None
+    names = {str(p.get("id")): str(p.get("name") or "") for p in (rec or {}).get("parts") or [] if isinstance(p, dict)}
+    many = (body_count(f) or 0) > 1
+    out: list[str] = []
+    seen: set = set()
+    for sus in (measured or {}).get("suspects") or []:
+        if not isinstance(sus, dict):
+            continue
+        key = (sus.get("kind"), int(sus.get("body") or 0), tuple(sorted(sus.get("faces") or [])))
+        if key in seen:
+            continue
+        seen.add(key)
+        who = (_part_label(f"Part_{int(sus.get('body') or 0)}", names.get(f"Part_{int(sus.get('body') or 0)}", ""))
+               if many and sus.get("body") else "The part")
+        out.append(SD.words(sus, who))
+    v = f.get("validity") or {}
+    found = {str(r.get("code")) for r in v.get("reasons") or []
+             if isinstance(r, dict) and str(r.get("severity") or "error") == "error"}
+    said = [words for code, words in NOT_SOLID_REASONS if code in found
+            and not (code == "bodies_overlap" and many)]
+    if said:
+        out.append(f"The clean check says {' and '.join(said[:2])}, though a solid can be read from the file.")
+    if out:
+        out.append(TRY_ANYWAY)
+    return out
+
+
 def blocker(facts: dict | None) -> tuple[str, str, str]:
     """(what stops version 1, its kind - "surface" | "self_overlap" | "", the way on) for the stage
     and the confirmation alike. Several bodies are no stop: an assembly is meshed (design 14); a body
     that crosses itself is (it needs CAD repair; detected only, never healed)."""
+    # MESH-1 (Areen, 24 Oct): only a file no closed solid can be read from stops here - a surface, or
+    # nothing at all. A face crossing another, a fold, an open or invalid patch on a readable solid are
+    # warnings (warnings()): the mesh is tried, and only a mesh that fails at that spot says
+    # "needs CAD repair" (engines/fea_driver)
     surface = not_solid_message(facts)
     if surface:
         return surface, "surface", WAY_OUT_SOLID
-    crossed, way = self_overlap_message(facts)
-    if crossed:
-        return crossed, "self_overlap", way
-    folded, way = fold_back_message(facts)
-    if folded:
-        return folded, "fold_back", way
     return "", "", ""
 
 
@@ -217,9 +289,12 @@ def fea_view(facts: dict | None) -> dict:
     assembly also its parts, their interfaces and the connection question."""
     clean, said = clean_words(facts)
     blocked, kind, way_out = blocker(facts)
+    found = [] if blocked else warnings(facts)
+    if found:
+        said = f"{said} {' '.join(found)}".strip()
     out = {"question": QUESTION, "bodies": body_count(facts), "pieces": piece_count(facts),
            "clean": clean, "clean_summary": said, "single_part_only": blocked, "blocked_kind": kind, "way_out": way_out,
-           "can_proceed": not blocked, "measure": measure_view(facts)}
+           "can_proceed": not blocked, "warnings": found, "measure": measure_view(facts)}
     # several closed solids: an assembly, with its one question (a surface that is no solid stops first)
     asm = None if blocked else assembly_view(facts)
     if asm is not None:
@@ -363,7 +438,7 @@ def in_unit(record: dict | None, scale_to_m: float | None) -> dict | None:
     return out
 
 
-__all__ = ["FOLD_BACK", "fold_back_message", "SELF_OVERLAP", "WAY_OUT_REPAIR", "WAY_OUT_REPAIR_PART", "self_overlap_message", "CONNECTION_OPTIONS", "CONNECTION_QUESTION", "DEFAULT_CONNECTION", "NOT_SOLID", "NOT_SOLID_REASONS",
+__all__ = ["TRY_ANYWAY", "has_solid", "warnings", "FOLD_BACK", "fold_back_message", "SELF_OVERLAP", "WAY_OUT_REPAIR", "WAY_OUT_REPAIR_PART", "self_overlap_message", "CONNECTION_OPTIONS", "CONNECTION_QUESTION", "DEFAULT_CONNECTION", "NOT_SOLID", "NOT_SOLID_REASONS",
            "QUESTION", "SHOWN_HOT_SPOTS", "STAGE_FEA", "STAGE_FLOW", "STAGE_THERMAL", "WAY_OUT_SOLID", "assembly_view",
            "blocker", "body_count", "clean_words", "confirmed_connection", "connection_answer", "fea_view",
            "hot_spot_words", "in_unit", "measure_view", "not_solid_message", "parts_words", "stage_route"]

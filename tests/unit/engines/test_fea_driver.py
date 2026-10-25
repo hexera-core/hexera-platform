@@ -549,3 +549,61 @@ def test_the_floor_search_halves_and_finds_the_floor_one_by_one_would(monkeypatc
     else:
         assert not plan["coarsened"]["at_minimums"]
         assert plan["coarsened"]["zone_floor_m"] in (pytest.approx(first), pytest.approx(0.75 * first))
+
+
+# --------------------------------------------- MESH-1/2: mesh first; CAD repair only where it failed ----
+def test_a_flagged_part_is_meshed_and_its_note_names_the_spot(tmp_path):
+    ws = _stage(fx.wedge(0.2), tmp_path / "flagged")
+    record, surface, diag = FD.measure_staged(ws)
+    assert record["suspects"] and record["suspects"][0]["kind"] == "fold"
+    plan = FD.choose_plan(record, surface, diag)
+    assert any("paper-thin fold" in w and "mesh was built" in w for w in plan["words"])
+
+
+def test_a_mesh_that_fails_at_the_flagged_faces_needs_cad_repair_named(tmp_path, monkeypatch):
+    from meshpipeline.contracts.failure_cause import describe, retry_can_help
+    from meshpipeline.engines import runtime
+    from meshpipeline.engines.gmsh.fea_adapter import BAD_FACES
+    from meshpipeline.engines.preflight import read_refusal
+
+    ws = _stage(fx.wedge(0.2), tmp_path / "fails_there")
+    record, _s, _d = FD.measure_staged(ws)
+    faces = record["suspects"][0]["faces"]
+
+    def fill_fails(w, timeout):
+        return {"rc": 1, "log_tail": f"{BAD_FACES} {','.join(faces)}\nException: Invalid boundary mesh"}
+
+    monkeypatch.setattr(runtime, "get_engine", lambda _n: SimpleNamespace(run_cartesian_mesh=fill_fails))
+    ok, _m, _o = asyncio.run(FD.drive(ws, {}, job_id="t-mesh2", publish=None, run=_Run()))
+    ref = read_refusal(ws)
+    assert not ok and ref.gate == FD.CAD_DEFECT_GATE and set(ref.facts["cad_defect"]["faces"]) == set(faces)
+    what, nxt = describe(ref.cause, ref.facts)
+    assert "needs CAD repair" in what and faces[0] in what and faces[0] in nxt
+    assert not retry_can_help(ref.cause, ref.facts)
+
+
+def test_a_mesh_that_fails_elsewhere_is_the_ordinary_outcome(tmp_path, monkeypatch):
+    from meshpipeline.engines import runtime
+    from meshpipeline.engines.gmsh.fea_adapter import BAD_FACES
+    from meshpipeline.engines.preflight import read_refusal
+
+    ws = _stage(fx.wedge(0.2), tmp_path / "fails_elsewhere")
+    monkeypatch.setattr(runtime, "get_engine", lambda _n: SimpleNamespace(
+        run_cartesian_mesh=lambda w, timeout: {"rc": 1, "log_tail": f"{BAD_FACES} Face_99\nException: boom"}))
+    ok, _m, _o = asyncio.run(FD.drive(ws, {}, job_id="t-mesh2b", publish=None, run=_Run()))
+    assert not ok and read_refusal(ws).gate == FD.QUALITY_GATE
+
+
+def test_a_file_of_closed_shells_is_read_as_its_solid(tmp_path):
+    """MESH-1: faces that close, written with no solid entity, are made the solid they bound."""
+    from OCP.TopAbs import TopAbs_SHELL, TopAbs_SOLID
+    from OCP.TopExp import TopExp_Explorer
+
+    from meshpipeline.cad.scout import read_cad
+
+    shell = TopExp_Explorer(fx._box(0, 0, 0, 10, 20, 30), TopAbs_SHELL).Current()
+    ws = _stage(shell, tmp_path / "shells")
+    assert not TopExp_Explorer(read_cad(FD.staged_solid(ws)), TopAbs_SOLID).More()
+    assert FD.solids_from_shells(ws) == 1
+    assert TopExp_Explorer(read_cad(ws / "geometry.brep"), TopAbs_SOLID).More()
+    assert FD.solids_from_shells(ws) == 0                     # a solid already: nothing to do

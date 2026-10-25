@@ -102,7 +102,38 @@ MESH_ADAPT = 1
 #: at most this many invalid elements are traced back to the surfaces they touch
 TRACE_BAD = 500
 #: the line the driver reads the surfaces a failed pass went wrong on from (LAD-fea-6)
+#: How exactly gmsh integrates 1/size along a curve to place its nodes (its default is 1e-9).
+LC_INTEGRATION_PRECISION = 1e-3
 BAD_SURFACES = "[GMSH-FEA] BAD SURFACES:"
+#: The same surfaces as the CAD's face names (Face_k, or Part_k_Face_j for an assembly): what a
+#: suspected CAD defect is held against (MESH-2).
+BAD_FACES = "[GMSH-FEA] BAD FACES:"
+
+
+#: Where a failed fill went wrong, as a file beside the mesh (the log's tail can lose the line under a
+#: long traceback - fc_folding_chair, 24 Oct): the driver reads it after a pass that built nothing.
+FAILURE_FILE = "fea_failure.json"
+
+
+def note_failure(ws, surfaces, faces, exc=None) -> None:
+    try:
+        (Path(ws) / FAILURE_FILE).write_text(json.dumps({
+            "bad_surfaces": sorted(int(s) for s in surfaces), "bad_faces": sorted(str(f) for f in faces),
+            "error": str(exc or "")[:500]}))
+    except OSError:
+        pass
+
+
+def face_names_of(tags, face_tags: dict[str, list[int]] | None) -> list[str]:
+    """The CAD face names of gmsh surface `tags`: an assembly's by its sidecar, a single part's Face_k
+    (gmsh numbers a single solid's faces in OpenCASCADE's order, as the measurement does)."""
+    if face_tags:
+        by_tag: dict[int, list[str]] = {}
+        for name, ts in face_tags.items():
+            for t in ts:
+                by_tag.setdefault(int(t), []).append(str(name))
+        return sorted({n for t in tags for n in by_tag.get(int(t), [])})
+    return [f"Face_{int(t)}" for t in sorted({int(t) for t in tags})]
 #: The line that says the 3D fill left whole volumes with no elements (gmsh only warns "No elements in
 #: volume N" and goes on): the driver reads it, and an assembly's part is never delivered missing.
 EMPTY_VOLUMES = "[GMSH-FEA] EMPTY VOLUMES:"
@@ -303,6 +334,89 @@ def surface_mesh(gmsh, surfaces: set[int], remesh: set[int]) -> list[int]:
     return empty
 
 
+def fill_each_volume(gmsh, vols) -> None:
+    """PARTS MESHED APART ARE FILLED APART (tie, contact): each volume on its own, from its own surface
+    mesh - parts that pass into each other in space (an interference) then never make one boundary that
+    crosses itself (fc_folding_chair, 24 Oct: "PLC Error: Two facets intersect" on the four overlapping
+    slat pairs when all were filled at once). The same algorithm, the same surface meshes."""
+    everything = gmsh.model.getEntities()
+    gmsh.option.setNumber("Mesh.MeshOnlyVisible", 1)
+    try:
+        for v in vols:
+            gmsh.model.setVisibility(everything, 0)
+            gmsh.model.setVisibility([(3, int(v))], 1, recursive=True)
+            try:
+                gmsh.model.mesh.generate(3)
+            except Exception as exc:
+                # THE PART THAT FAILED, and where: its own surfaces whose meshes cross each other
+                own = {abs(int(t)) for _d, t in gmsh.model.getBoundary([(3, int(v))], oriented=False)}
+                where = crossing_surfaces(gmsh, own) or sorted(own)[:12]
+                raise RuntimeError(f"{exc} (volume {int(v)}; on surface {', surface '.join(str(t) for t in where)})") from exc
+    finally:
+        gmsh.model.setVisibility(everything, 1)
+        gmsh.option.setNumber("Mesh.MeshOnlyVisible", 0)
+
+
+def crossing_surfaces(gmsh, surfaces: set[int], *, limit: int = 12) -> list[int]:
+    """The surfaces whose surface meshes pass through each other (cad/crossings on the 2D mesh) - where a
+    fill that failed on "facets intersect" went wrong when gmsh's message names no surface."""
+    import numpy as np
+
+    from meshpipeline.cad.crossings import find_crossings
+
+    try:
+        node_tags, xyz, _ = gmsh.model.mesh.getNodes()
+        index = {int(t): k for k, t in enumerate(node_tags)}
+        pts = np.asarray(xyz, dtype=float).reshape(-1, 3)
+        tris, owner = [], []
+        for s in sorted(surfaces):
+            types, _tags, nodes = gmsh.model.mesh.getElements(2, s)
+            for et, nd in zip(types, nodes, strict=True):
+                if int(et) not in (2, 9):            # 3- or 6-node triangles: their corners
+                    continue
+                per = 3 if int(et) == 2 else 6
+                arr = np.asarray(nd, dtype=np.int64).reshape(-1, per)[:, :3]
+                tris.append(np.vectorize(index.get)(arr))
+                owner.append(np.full(len(arr), s))
+        if not tris:
+            return []
+        T = np.concatenate(tris)
+        own = np.concatenate(owner)
+        found = find_crossings(pts, T)
+        hit: dict[int, int] = {}
+        for a, b in found.pairs.tolist():
+            for t in (own[a], own[b]):
+                hit[int(t)] = hit.get(int(t), 0) + 1
+        return [s for s, _n in sorted(hit.items(), key=lambda kv: -kv[1])[:limit]]
+    except Exception:  # noqa: BLE001 - a search we cannot run names nothing
+        return []
+
+
+def surfaces_at_point(gmsh, text: str, surfaces: set[int], *, share: float = 1e-4) -> list[int]:
+    """The surfaces at the point a gmsh error names ("... intersect at point (x,y,z)") - within `share`
+    of the model's size, the nearest ones else - so a failed fill that names no surface still says where
+    (fc_folding_chair, 24 Oct: "PLC Error: Two facets intersect at point (0.104,0.39,-0.146)")."""
+    import math
+    import re
+
+    m = re.search(r"at point \(\s*([-+0-9.eE]+)\s*,\s*([-+0-9.eE]+)\s*,\s*([-+0-9.eE]+)\s*\)", text or "")
+    if not m or not surfaces:
+        return []
+    p = [float(m.group(k)) for k in (1, 2, 3)]
+    try:
+        x0, y0, z0, x1, y1, z1 = gmsh.model.getBoundingBox(-1, -1)
+        size = math.dist((x0, y0, z0), (x1, y1, z1)) or 1.0
+        near = []
+        for s in sorted(surfaces):
+            q = gmsh.model.getClosestPoint(2, s, p)[0]
+            near.append((math.dist(p, q[:3]), s))
+        near.sort()
+        within = [s for d, s in near if d <= share * size]
+        return within or [s for _d, s in near[:2]]
+    except Exception:  # noqa: BLE001 - a point we cannot place names nothing
+        return []
+
+
 def surfaces_named(text: str) -> list[int]:
     """The surface tags a gmsh error names ("... on surface 8", "No elements in surface 9")."""
     import re
@@ -462,6 +576,11 @@ def mesh(workspace) -> int:
         gmsh.option.setNumber("Mesh.MaxNumThreads2D", 1)
         gmsh.option.setNumber("Mesh.MaxNumThreads3D", threads)
         gmsh.option.setNumber("Mesh.RandomSeed", 1)
+        # THE CURVES MESHED IN SECONDS, NOT MINUTES (fc_folding_chair, 24 Oct: 979 s of a 1,064 s pass in
+        # 1D): gmsh integrates 1/size along every curve to its default precision of 1e-9, evaluating the
+        # whole size field each step; 1e-3 places the same nodes to a tenth of a percent (97,319 vs 97,484
+        # nodes after 2D) in 26 s
+        gmsh.option.setNumber("Mesh.LcIntegrationPrecision", LC_INTEGRATION_PRECISION)
         gmsh.option.setNumber("Geometry.OCCBoundsUseStl", 1)
         gmsh.model.add("fea")
         gmsh.model.occ.importShapes(str(geom))
@@ -508,12 +627,21 @@ def mesh(workspace) -> int:
         empty = surface_mesh(gmsh, surfaces, remesh)
         try:
             note_stage(ws, "volume", "filling the solid with elements")
-            gmsh.model.mesh.generate(3)
+            if asm and str((sidecar or {}).get("mode") or "") in ("tie", "contact"):
+                fill_each_volume(gmsh, vols)
+            else:
+                gmsh.model.mesh.generate(3)
         except Exception as exc:
             # the surfaces the fill failed on, for the next pass (LAD-fea-6): the driver reads them
             # from this line
             named = sorted(set(empty) | {s for s in surfaces_named(str(exc)) if s in surfaces})
+            if not named:
+                # the error names a point, not a surface: the surfaces there - else the surfaces whose
+                # surface meshes pass through each other (the "facets intersect" a fill reports)
+                named = surfaces_at_point(gmsh, str(exc), surfaces) or crossing_surfaces(gmsh, surfaces)
             print(f"{BAD_SURFACES} {','.join(str(s) for s in named)}", file=sys.stderr)
+            print(f"{BAD_FACES} {','.join(face_names_of(named, face_tags))}", file=sys.stderr)
+            note_failure(ws, named, face_names_of(named, face_tags), exc)
             raise
         # A VOLUME LEFT EMPTY is a failed fill, not a mesh (fc_computer_desk, 24 Oct: "No elements in
         # volume 5", then the deck writer crashed on the faces of a part with no elements): said with
@@ -524,6 +652,8 @@ def mesh(workspace) -> int:
                             if int(t) in surfaces} | set(empty))
             print(f"{EMPTY_VOLUMES} {','.join(str(v) for v in hollow)}", file=sys.stderr)
             print(f"{BAD_SURFACES} {','.join(str(s) for s in named)}", file=sys.stderr)
+            print(f"{BAD_FACES} {','.join(face_names_of(named, face_tags))}", file=sys.stderr)
+            note_failure(ws, named, face_names_of(named, face_tags))
             raise RuntimeError(f"{EMPTY_VOLUMES} the 3D fill left volume(s) {hollow} with no elements")
         note_stage(ws, "optimising", "improving the elements")
         for _ in range(int(run.get("optimise_passes") or 1)):
@@ -643,6 +773,7 @@ def mesh(workspace) -> int:
                                           "fea_max_dihedral_deg", "fea_inverted") if k in shape},
             "fea_rules_short": len(rules.get("short") or []) if rules else None,
             "fea_bad_surfaces": traced,
+            "fea_bad_faces": face_names_of(traced, face_tags),
             # PLAN-fea-16: the mesher's peak memory, for the bytes-per-element model
             "peak_rss_mb": _peak_rss_mb(),
             # THE PLAN'S RULES AS MET (engines/fea_checks.py): the gate reads the through-wall
@@ -668,5 +799,5 @@ def mesh(workspace) -> int:
         gmsh.finalize()
 
 
-__all__ = ["ALGORITHMS_3D", "BAD_SURFACES", "MESH_ADAPT", "bad_surfaces", "mesh", "size_fields", "surface_mesh",
+__all__ = ["BAD_FACES", "face_names_of", "ALGORITHMS_3D", "BAD_SURFACES", "MESH_ADAPT", "bad_surfaces", "mesh", "size_fields", "surface_mesh",
            "surfaces_named"]

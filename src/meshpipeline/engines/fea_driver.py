@@ -48,6 +48,8 @@ GUARD_TRIP = "fea_guard_trip"
 TOO_BIG = "fea_too_big_for_worker"
 #: The gate a guard trip is reported under (ours, never the part's).
 GUARD_GATE = "fea_guard"
+#: MESH-2: the gate a mesh that failed AT a flagged CAD spot is reported under.
+CAD_DEFECT_GATE = "fea_cad_defect"
 #: The plan measures every wall of a part up to this many surface triangles (the geometry check
 #: stops at cad/fea_measure.MAX_RAY_TRIANGLES for speed; the plan cannot hold an unmeasured wall).
 MAX_RAY_TRIANGLES = 5_000_000
@@ -94,6 +96,52 @@ def _metre_box(step: Path) -> tuple[list[float], float]:
     return box, diag
 
 
+def solids_from_shells(ws: Path) -> int:
+    """MESH-1: A FILE OF FACES THAT CLOSE is read as the solid it bounds: a STEP or IGES written as closed
+    shells with no solid entity (aircraft and keel surfaces, 24 Oct gate) - the shells are made solids,
+    sewn first only within the clean check's own tight tolerance (cad/validity_brep), nothing else
+    touched. Writes geometry.brep and returns how many solids it made (0: nothing to do, or no shell
+    closes - the part is then meshed, or refused, as it stands)."""
+    from OCP.BRep import BRep_Builder, BRep_Tool
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeSolid
+    from OCP.BRepTools import BRepTools
+    from OCP.TopAbs import TopAbs_SHELL, TopAbs_SOLID
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS, TopoDS_Compound
+
+    from meshpipeline.cad.scout import read_cad
+    from meshpipeline.cad.validity_brep import SEW_TOLERANCE, _bbox, _sew
+
+    step = staged_solid(ws)
+    if step is None:
+        return 0
+    shape = read_cad(step)
+    if TopExp_Explorer(shape, TopAbs_SOLID).More():
+        return 0
+    lo, hi = _bbox(shape)
+    if lo is None:
+        return 0
+    diag = float(math.dist(tuple(lo), tuple(hi)))
+    sewn = _sew(shape, SEW_TOLERANCE * diag) or shape
+    comp = TopoDS_Compound()
+    b = BRep_Builder()
+    b.MakeCompound(comp)
+    made = 0
+    ex = TopExp_Explorer(sewn, TopAbs_SHELL)
+    while ex.More():
+        shell = TopoDS.Shell_s(ex.Current())
+        ex.Next()
+        if not BRep_Tool.IsClosed_s(shell):
+            continue
+        mk = BRepBuilderAPI_MakeSolid(shell)
+        if mk.IsDone():
+            b.Add(comp, mk.Solid())
+            made += 1
+    if made:
+        BRepTools.Write_s(comp, str(ws / "geometry.brep"))
+    return made
+
+
 def measure_staged(ws: Path) -> tuple[dict, Any, float]:
     """(the measurement record in mm, its labelled surface in mm, the part's diagonal in m)."""
     from meshpipeline.cad.fea_measure import measure_cad_surface
@@ -131,7 +179,50 @@ def measure_staged(ws: Path) -> tuple[dict, Any, float]:
         record, surface = measure_cad_surface(fix.Shape(), mm_per_unit=mm_per_unit,
                                               max_ray_triangles=MAX_RAY_TRIANGLES)
         record.setdefault("notes", []).append(f"the CAD was healed before it was measured ({exc})")
+    # MESH-1: WHERE THE CAD MAY BE BROKEN, measured on this very solid (detect only, never a stop): the
+    # mesh is tried; a valid one is delivered with a note, and only a failure AT that spot is the CAD's
+    try:
+        from meshpipeline.cad import suspect_defects as SD
+        record["suspects"] = SD.find(shape, record)
+    except Exception as exc:  # noqa: BLE001 - no suspects measured is no suspects
+        logger.warning("fea driver: suspected defects not measured (%s)", type(exc).__name__)
     return record, surface, diag_m
+
+
+def _suspect_faces(record: dict) -> set[str]:
+    return {str(f) for s in record.get("suspects") or [] for f in s.get("faces") or []}
+
+
+def defect_at_failure(record: dict, passes: list[dict]) -> dict | None:
+    """MESH-2: the failure is the CAD's when the faces the mesher failed on are the faces a check
+    flagged (gmsh's own error names them, or the invalid elements lie on them); None otherwise."""
+    flagged = _suspect_faces(record)
+    if not flagged:
+        return None
+    import re
+
+    hit = sorted({str(f) for p in passes for f in p.get("bad_faces") or []} & flagged,
+                 key=lambda n: [int(x) if x.isdigit() else x for x in re.split(r"(\d+)", n)])
+    if not hit:
+        return None
+    sus = [s for s in record.get("suspects") or [] if set(s.get("faces") or []) & set(hit)]
+    return {"faces": hit, "suspects": sus, "confirmed": any(s.get("confirmed") for s in sus)}
+
+
+def suspect_note(record: dict) -> str:
+    """The note a delivered mesh carries when a check flagged a spot (MESH-1)."""
+    from meshpipeline.cad import suspect_defects as SD
+    sus = record.get("suspects") or []
+    if not sus:
+        return ""
+    seen, said = set(), []
+    for s in sus:
+        key = (s.get("kind"), tuple(sorted(s.get("faces") or [])))
+        if key not in seen:
+            seen.add(key)
+            said.append(SD.words(s))
+    return (" ".join(said[:3]) + " The mesh was built and is valid; if your solver misbehaves there, check that "
+            "spot in your CAD.")
 
 
 def connection_of(state) -> str:
@@ -425,6 +516,10 @@ def choose_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | No
 def _restate(record: dict, plan: dict) -> dict:
     """The plan's words and decisions again, now that it says what was coarsened."""
     plan["words"] = P.words(record, plan)
+    note = suspect_note(record)
+    if note:
+        # MESH-1: the spot a check flagged, said beside the mesh (meshed anyway)
+        plan["words"] = [*plan["words"], note]
     plan["decisions"] = P.decisions(record, plan)
     return _with_ai(plan)
 
@@ -590,6 +685,20 @@ def _peak_gib(result: dict) -> float | None:
     return mb / 1024.0 if mb > 0 else None
 
 
+#: What a failed fill of FUSED parts says (gmsh's own words): the fused boundary is not one clean solid.
+FUSED_FILL_ERRORS = ("PLC Error", "intersect", "overlapping facets", "BRep contains more volumes",
+                     "Invalid boundary mesh")
+
+
+def _fused_fill_failed(result: dict, facts: dict) -> bool:
+    """The fill failed on the fused parts' own boundary (nothing built): a volume left empty, or a
+    boundary that crosses itself - not a matter of sizes or algorithm."""
+    log = str(result.get("log_tail") or "")
+    if facts.get("built"):
+        return False
+    return _empty_volumes_named(log) or any(w in log for w in FUSED_FILL_ERRORS)
+
+
 def _empty_volumes_named(log: str) -> bool:
     from meshpipeline.engines.gmsh.fea_adapter import EMPTY_VOLUMES
     return EMPTY_VOLUMES in log
@@ -639,8 +748,15 @@ def _restore_pass(ws: Path, n: int) -> None:
             (ws / name).unlink(missing_ok=True)      # the delivered pass did not write it
 
 
+def _read_failure(ws: Path) -> dict:
+    try:
+        return json.loads((ws / "fea_failure.json").read_text())
+    except (OSError, ValueError):
+        return {}
+
+
 def _clear_outputs(ws: Path) -> None:
-    for name in ("mesh.inp", "mesh.bdf", "mesh.cdb", "mesh.msh", "quality.json"):
+    for name in ("mesh.inp", "mesh.bdf", "mesh.cdb", "mesh.msh", "quality.json", "fea_failure.json"):
         (ws / name).unlink(missing_ok=True)
 
 
@@ -657,6 +773,14 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         outcome = run.outcome(produced_deliverable=False, failure_marker=NO_SOURCE)
         return False, NO_SOURCE, outcome
 
+    try:
+        made = await asyncio.to_thread(solids_from_shells, ws)
+        if made:
+            _cite(job_id, [{"stage": "fea_plan", "decided": "closed shells read as solids", "value": made,
+                            "rule": "MESH-1", "inputs": {"solids": made},
+                            "words": f"The file's {made} closed shell(s) were read as the solid(s) they bound."}])
+    except Exception as exc:  # noqa: BLE001 - the part is meshed, or refused, as it stands
+        logger.warning("fea driver: closed shells not read as solids (%s)", type(exc).__name__)
     try:
         record, surface, diag_m = await asyncio.to_thread(measure_staged, ws)
     except Exception as exc:  # noqa: BLE001 - recorded as the attempt's reason
@@ -819,15 +943,23 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                            "ran_on": {k: machine.get(k) for k in ("where", "machine", "memory_gib", "why")}})
             if made:
                 _keep_pass(ws, n)
+            else:
+                # WHERE IT FAILED, as the adapter wrote it beside the mesh (never lost under a traceback)
+                said = _read_failure(ws)
+                if said:
+                    passes[-1]["bad_faces"] = passes[-1].get("bad_faces") or said.get("bad_faces") or []
+                    passes[-1]["bad_surfaces"] = passes[-1].get("bad_surfaces") or said.get("bad_surfaces") or []
             if (not made and (record.get("assembly_plan") or {}).get("mode") == "bonded"
-                    and _empty_volumes_named(str(result.get("log_tail") or ""))):
-                # PLAN-fea-17 AT ONCE: the fused bonded parts left a volume the fill cannot fill (the
-                # slivers where they meet) - no other 3D algorithm fixes the geometry, so the parts go
-                # straight to being meshed apart and tied (fc_computer_desk, 24 Oct: an HXT pass first
-                # failed on "BRep contains more volumes than there really are")
-                _cite(job_id, [{"stage": "fea_ladder", "decided": "tie now", "value": "empty volume",
+                    and _fused_fill_failed(result, passes[-1])):
+                # PLAN-fea-17 AT ONCE: the fill could not build the FUSED bonded parts (a volume left
+                # empty, or the fused boundary crossing itself where parts pass into each other) - no
+                # other 3D algorithm fixes the geometry, so the parts go straight to being meshed apart
+                # and tied (fc_computer_desk: "BRep contains more volumes than there really are";
+                # fc_folding_chair, 24 Oct: "PLC Error: A segment and a facet intersect", then 67 min
+                # of passes that could only fail the same way)
+                _cite(job_id, [{"stage": "fea_ladder", "decided": "tie now", "value": "fused fill failed",
                                 "rule": "PLAN-fea-17", "inputs": {"pass": n},
-                                "words": "The fill left part of the fused assembly empty, so the parts are tied now."}])
+                                "words": "The fused parts could not be filled as one, so the parts are tied now."}])
                 break
             # AI-fea-8: the AI may pick among the levers this failure allows; the ladder's own first else
             lever, picked = await FA.choose_lever(L.lever_options(passes[-1], levers, plan), passes[-1], ai=ai,
@@ -904,8 +1036,19 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         # executor still judges the mesh on disk, and this record tells the retry policy (and the
         # user's sentence) that another attempt on this engine cannot change it (job ab20566f
         # spent a second identical 14-minute attempt)
-        _refuse(ws, cause=FailureCause.MESH_QUALITY.value, gate=QUALITY_GATE,
-                text=ladder_words(passes, levers), **ladder_facts(ws, passes, levers))
+        defect = defect_at_failure(record, passes)
+        if defect is not None:
+            # MESH-2: THE MESH FAILED WHERE A CHECK FLAGGED THE CAD - the one case the user is told the
+            # part needs CAD repair, with the faces named (detect only: nothing was healed)
+            _cite(job_id, [{"stage": "fea_ladder", "decided": "cad defect", "value": defect["faces"],
+                            "rule": "MESH-2", "inputs": defect,
+                            "words": "The mesh failed at the faces a check had flagged: the CAD needs repair there."}])
+            _refuse(ws, cause=FailureCause.MESH_QUALITY.value, gate=CAD_DEFECT_GATE,
+                    text=f"the mesh failed at {', '.join(defect['faces'][:6])}, where the geometry check flagged a "
+                         "possible CAD defect", cad_defect=defect, **ladder_facts(ws, passes, levers))
+        else:
+            _refuse(ws, cause=FailureCause.MESH_QUALITY.value, gate=QUALITY_GATE,
+                    text=ladder_words(passes, levers), **ladder_facts(ws, passes, levers))
     await run.fence("deliver builder outcome")
     outcome = run.outcome(produced_deliverable=ok, exhausted=not ok, failure_marker="" if ok else BUILD_FAILED)
     return outcome.produced_deliverable, (outcome.terminal_value or BUILD_FAILED), outcome

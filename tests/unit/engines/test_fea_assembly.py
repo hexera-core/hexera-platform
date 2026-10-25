@@ -495,36 +495,42 @@ def _self_crossing_solid():
 
 def _stage_facts(shape, names=None):
     """What the FEA stage reads for a file: its bodies, the clean check, the assembly measured."""
+    from meshpipeline.cad import suspect_defects as SD
     from meshpipeline.cad.fea_measure import FACT_KEY
     from meshpipeline.cad.validity_brep import check_shape
 
     rec = A.record(shape, mm_per_unit=1.0, names=names)
-    return {"solids": len(A.solids(shape)), "source_format": "step", "validity": check_shape(shape).as_dict(),
-            FACT_KEY: {A.FACT_KEY: rec}}
+    validity = check_shape(shape).as_dict()
+    many = len(A.solids(shape)) > 1
+    measured = {A.FACT_KEY: rec, **({"face_names": "Part_k_Face_j"} if many else {})}
+    measured["suspects"] = SD.find(shape, measured, validity=validity)
+    return {"solids": len(A.solids(shape)), "source_format": "step", "validity": validity, FACT_KEY: measured}
 
 
-def test_a_part_that_overlaps_itself_stops_with_its_name_and_a_way_out():
+def test_a_part_that_overlaps_itself_is_a_warning_named_and_the_mesh_is_tried():
+    """MESH-1 (Areen, 24 Oct): a readable solid is never stopped by our broken-CAD checks - the stage
+    warns with the part and faces named, and the user goes on."""
     from meshpipeline.application import fea_check
 
     shape = fx._compound(_self_crossing_solid(), fx._box(30, 0, 0, 10, 10, 10))
     facts = _stage_facts(shape, names=["Housing", "Cover"])
     hit = next(r for r in facts["validity"]["reasons"] if r["code"] == "self_intersection")
     assert hit["details"]["bodies"] == [1]
-    blocked, kind, way = fea_check.blocker(facts)
-    assert kind == "self_overlap"
-    assert blocked == "Part Housing (Part_1) overlaps itself – it needs CAD repair before it can be meshed."
-    assert "Fix it in your CAD" in way and "remove that part" in way
+    assert fea_check.blocker(facts) == ("", "", "")
     view = fea_check.fea_view(facts)
-    assert view["can_proceed"] is False and view["single_part_only"] == blocked
+    assert view["can_proceed"] is True and view["single_part_only"] == ""
+    said = " ".join(view["warnings"])
+    assert "Part Housing (Part_1) may have faces crossing each other at Part_1_Face_" in said
+    assert fea_check.TRY_ANYWAY in said and fea_check.TRY_ANYWAY in view["clean_summary"]
 
 
-def test_a_single_part_that_overlaps_itself_stops_too():
+def test_a_single_part_that_overlaps_itself_is_a_warning_too():
     from meshpipeline.application import fea_check
 
     facts = _stage_facts(_self_crossing_solid())
-    blocked, kind, way = fea_check.blocker(facts)
-    assert kind == "self_overlap" and blocked.startswith("This part overlaps itself")
-    assert way == fea_check.WAY_OUT_REPAIR
+    assert fea_check.blocker(facts) == ("", "", "")
+    said = fea_check.warnings(facts)
+    assert said and said[0].startswith("The part may have faces crossing each other at Face_")
 
 
 def test_parts_that_pass_into_each_other_are_no_stop_and_nothing_is_healed():
@@ -628,3 +634,30 @@ def test_a_bonded_assembly_with_an_empty_volume_is_tied_at_once(tmp_path, monkey
     asyncio.run(FD.drive(ws, {"purpose": "structural"}, job_id=f"t-{ws.name}", publish=None,
                          run=_Run(), source_path=str(ws / "upload.step")))
     assert modes[0] == "bonded" and modes[1] == "tie"
+
+
+def test_a_bonded_assembly_whose_fused_boundary_crosses_itself_is_tied_at_once(tmp_path, monkeypatch):
+    """fc_folding_chair (24 Oct): the fused slats left a boundary gmsh could not recover ("PLC Error: A
+    segment and a facet intersect") - 67 minutes of passes that could only fail the same way. Tied now."""
+    from meshpipeline.engines import runtime
+
+    modes = []
+
+    def mesher(w, timeout):
+        mode = json.loads((Path(w) / "fea_plan.json").read_text())["assembly"]["mode"]
+        modes.append(mode)
+        return {"rc": 1, "log_tail": "Error   : PLC Error:  A segment and a facet intersect at point\n"}
+
+    ws = _stage(fx.touching_blocks(), tmp_path / "plc")
+    monkeypatch.setattr(runtime, "get_engine", lambda _n: SimpleNamespace(run_cartesian_mesh=mesher))
+    asyncio.run(FD.drive(ws, {"purpose": "structural"}, job_id=f"t-{ws.name}", publish=None,
+                         run=_Run(), source_path=str(ws / "upload.step")))
+    assert modes[:2] == ["bonded", "tie"]
+
+
+def test_suspected_defects_are_renamed_with_the_assembly():
+    """MESH-2 holds the faces the mesher failed on (Part_k_Face_j) against the flagged ones: they must be
+    named alike (fw_hinge_r, 24 Oct: Face_77 against Part_1_Face_77 never matched)."""
+    rec = {"suspects": [{"kind": "fold", "faces": ["Face_2", "Face_3"]}]}
+    out = A.rename_record(rec, ["Part_1_Face_1", "Part_1_Face_2", "Part_2_Face_1"])
+    assert out["suspects"][0]["faces"] == ["Part_1_Face_2", "Part_2_Face_1"]

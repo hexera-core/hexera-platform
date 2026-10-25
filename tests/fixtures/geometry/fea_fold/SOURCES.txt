@@ -7,3 +7,8 @@ helmholtz_coil.step - CERN-OHL-P-2.0
 fw_hinge_r.stp - CC-BY-4.0, Framework Computer
   https://github.com/FrameworkComputer/Framework-Laptop-13/blob/main/Hinges/13_5_hinge_R_assy.stp
   A real fold: two faces on top of each other beside an edge (0.00 mm at 1 mm in).
+
+fc_folding_chair.step - CC-BY-3.0, FreeCAD library
+  https://github.com/FreeCAD/FreeCAD-library/blob/master/Industrial%20Design/Chairs/wooden%20folding%20chair.step
+  20 parts; its two frames (Part_1, Part_3) cross themselves where only the Boolean check sees it -
+  the mesh must fail fast at those faces and say the CAD needs repair there (MESH-2).
