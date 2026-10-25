@@ -199,7 +199,10 @@ def defect_at_failure(record: dict, passes: list[dict]) -> dict | None:
     flagged = _suspect_faces(record)
     if not flagged:
         return None
-    hit = sorted({str(f) for p in passes for f in p.get("bad_faces") or []} & flagged)
+    import re
+
+    hit = sorted({str(f) for p in passes for f in p.get("bad_faces") or []} & flagged,
+                 key=lambda n: [int(x) if x.isdigit() else x for x in re.split(r"(\d+)", n)])
     if not hit:
         return None
     sus = [s for s in record.get("suspects") or [] if set(s.get("faces") or []) & set(hit)]
