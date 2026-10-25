@@ -171,3 +171,102 @@ async def test_signed_url_expired_entry_refreshes():
     mock_store.create_download_url.assert_called_once()
 
     _signed_url_cache.clear()
+
+
+# THE LINK'S LIFE SCALES WITH THE FILE. A flat 15 minutes was shorter than a slow download of a
+# 900 MB FEA deck, and a browser's resume of a dropped download is checked against the same link.
+
+def test_a_small_file_keeps_the_configured_life():
+    from meshpipeline.application.job_service import download_link_ttl
+    with patch.object(provcfg, "MINIO_SIGNED_URL_TTL", 900):
+        assert download_link_ttl(5_000_000) == 900
+        assert download_link_ttl(0) == 900
+        assert download_link_ttl(None) == 900
+
+
+def test_a_multi_hundred_megabyte_file_gets_one_to_two_hours():
+    from meshpipeline.application.job_service import download_link_ttl
+    with patch.object(provcfg, "MINIO_SIGNED_URL_TTL", 900):
+        assert download_link_ttl(500_000_000) == 4000            # about 67 minutes
+        assert download_link_ttl(900_000_000) == 7200            # two hours
+        assert 3600 <= download_link_ttl(450_000_000) <= 7200
+
+
+def test_no_link_outlives_the_ceiling():
+    from meshpipeline.application.job_service import DOWNLOAD_LINK_MAX_TTL_S, download_link_ttl
+    with patch.object(provcfg, "MINIO_SIGNED_URL_TTL", 900):
+        assert download_link_ttl(50_000_000_000) == DOWNLOAD_LINK_MAX_TTL_S == 12 * 3600
+
+
+def test_the_life_grows_with_the_file():
+    from meshpipeline.application.job_service import download_link_ttl
+    with patch.object(provcfg, "MINIO_SIGNED_URL_TTL", 900):
+        sizes = [0, 10**6, 10**8, 3 * 10**8, 10**9, 10**10, 10**11]
+        lives = [download_link_ttl(s) for s in sizes]
+        assert lives == sorted(lives)
+
+
+async def test_the_listed_link_is_signed_for_the_files_size_as_an_attachment():
+    svc = _make_svc()
+    _signed_url_cache.clear()
+    mock_store = MagicMock()
+    mock_store.create_download_url.return_value = "https://deck-url"
+    with (
+        patch("meshpipeline.contracts.object_storage.get_object_store", return_value=mock_store),
+        patch.object(provcfg, "MINIO_SIGNED_URL_TTL", 900),
+    ):
+        await svc.signed_url("jobs/j/deck.inp", 900_000_000)
+    kw = mock_store.create_download_url.call_args.kwargs
+    assert kw["expires_in"].total_seconds() == 7200
+    assert kw["download_name"] == "deck.inp"
+    _signed_url_cache.clear()
+
+
+async def test_a_cached_link_is_reused_only_while_half_its_life_remains():
+    # The old cache handed out a link with one minute left; a page that loaded it then had one
+    # minute before every Download button on it returned 403.
+    svc = _make_svc()
+    _signed_url_cache.clear()
+    mock_store = MagicMock()
+    mock_store.create_download_url.side_effect = ["https://first", "https://second"]
+    with (
+        patch("meshpipeline.contracts.object_storage.get_object_store", return_value=mock_store),
+        patch.object(provcfg, "MINIO_SIGNED_URL_TTL", 900),
+    ):
+        t0 = time.monotonic()
+        with patch("meshpipeline.application.job_service.time.monotonic", return_value=t0):
+            assert await svc.signed_url("k/a.zip", 1_000) == "https://first"
+        with patch("meshpipeline.application.job_service.time.monotonic", return_value=t0 + 400):
+            assert await svc.signed_url("k/a.zip", 1_000) == "https://first"
+        with patch("meshpipeline.application.job_service.time.monotonic", return_value=t0 + 451):
+            assert await svc.signed_url("k/a.zip", 1_000) == "https://second"
+    _signed_url_cache.clear()
+
+
+async def test_a_fresh_link_is_never_served_from_the_cache():
+    svc = _make_svc()
+    _signed_url_cache.clear()
+    _signed_url_cache["k/deck.inp"] = ("https://cached", time.monotonic() + 3600)
+    mock_store = MagicMock()
+    mock_store.create_download_url.return_value = "https://minted-now"
+    with (
+        patch("meshpipeline.contracts.object_storage.get_object_store", return_value=mock_store),
+        patch.object(provcfg, "MINIO_SIGNED_URL_TTL", 900),
+    ):
+        url, ttl = await svc.fresh_download_link("k/deck.inp", 600_000_000)
+    assert url == "https://minted-now" and ttl == 4800
+    mock_store.stat_object.assert_not_called()
+    _signed_url_cache.clear()
+
+
+async def test_a_fresh_link_for_an_unmeasurable_file_still_gets_the_floor():
+    svc = _make_svc()
+    mock_store = MagicMock()
+    mock_store.stat_object.side_effect = RuntimeError("store down")
+    mock_store.create_download_url.return_value = "https://minted-now"
+    with (
+        patch("meshpipeline.contracts.object_storage.get_object_store", return_value=mock_store),
+        patch.object(provcfg, "MINIO_SIGNED_URL_TTL", 900),
+    ):
+        url, ttl = await svc.fresh_download_link("k/deck.inp", None)
+    assert url == "https://minted-now" and ttl == 900

@@ -24,6 +24,16 @@ class ArtifactOut(BaseModel):
     label: str = ""
 
 
+class DownloadLinkOut(BaseModel):
+    """A freshly signed link for one deliverable, minted when the user clicks Download."""
+
+    artifact_id: uuid.UUID
+    download_url: str
+    #: how long the link stays valid from now; it scales with the file's size
+    expires_in_seconds: int
+    size_bytes: int = 0
+
+
 class JobStatus_(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

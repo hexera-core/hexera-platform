@@ -191,7 +191,7 @@ The pool is per process, so the fleet's peak demand is a fan-out sum, not a sing
 | `MINIO_REGION` | `us-east-1` | signed into every URL as part of the SigV4 credential scope, and passed explicitly so the client never makes a GetBucketLocation call to discover it |
 | `MINIO_SECRET_KEY` | `minioadmin` | **Secret.** MinIO's own local default |
 | `MINIO_BUCKET` | `mesh-artifacts` | must be lowercase; an uppercase value is rejected and the stack never becomes ready |
-| `MINIO_SIGNED_URL_TTL` | `900` | seconds a download link stays valid |
+| `MINIO_SIGNED_URL_TTL` | `900` | the SHORTEST life of a download link, in seconds. A large file's link lives as long as the file takes to fetch at 1 Mbit/s (a 900 MB deck: 2 h), up to 12 h, so a slow or resumed download is never refused half-way. The console asks for a new link on every Download click |
 
 ## Web search
 

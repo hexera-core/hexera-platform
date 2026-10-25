@@ -13,6 +13,15 @@ from meshpipeline.contracts.object_storage import ObjectNotFound, StorageError, 
 logger = logging.getLogger(__name__)
 
 
+def attachment_disposition(name: str) -> str:
+    """A Content-Disposition that saves the file under `name`: an ASCII fallback for old clients
+    plus the RFC 5987 UTF-8 form, so a non-ASCII or quote-bearing name cannot break the header."""
+    from urllib.parse import quote
+    raw = str(name or "download")
+    ascii_name = "".join(c if 32 <= ord(c) < 127 and c not in '"\\' else "_" for c in raw)
+    return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(raw, safe='')}"
+
+
 class MinioStore:
     def __init__(self) -> None:
         self._bucket = provcfg.MINIO_BUCKET
@@ -91,7 +100,8 @@ class MinioStore:
         except Exception as exc:  # noqa: BLE001
             raise StorageError(f"minio download failed for {key}: {exc}") from exc
 
-    def create_download_url(self, *, object_key: str, expires_in: timedelta) -> str:
+    def create_download_url(self, *, object_key: str, expires_in: timedelta,
+                            download_name: str | None = None) -> str:
         key = normalize_key(object_key)
         try:
             # Signed against the PUBLIC address, not the one this process dials. The recipient is a
@@ -99,6 +109,13 @@ class MinioStore:
             # part of the signature - so signing with the internal address yields a URL that
             # cannot be resolved and cannot be repaired by rewriting it. See MINIO_PUBLIC_ENDPOINT.
             client = self._client(endpoint=provcfg.MINIO_PUBLIC_ENDPOINT)
+            if download_name:
+                # response-content-disposition is part of the signed query; MinIO and Google Cloud
+                # Storage's S3-interoperability API both honour it on a signed GET.
+                return client.presigned_get_object(
+                    self._bucket, key, expires=expires_in,
+                    response_headers={"response-content-disposition":
+                                      attachment_disposition(download_name)})
             return client.presigned_get_object(self._bucket, key, expires=expires_in)
         except Exception as exc:  # noqa: BLE001
             raise StorageError(f"minio signed url failed for {key}: {exc}") from exc

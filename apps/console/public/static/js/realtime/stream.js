@@ -226,8 +226,10 @@ export function terminalResult(job, outcomeText) {
     createdAt: job.created_at || "",
     endedAt: job.ended_at || "",
     text: outcomeText,
+    // `id` lets a Download click ask for a fresh link (render/download.js); `url` is the link
+    // signed when this job was read, kept for a middle-click and as the fallback
     files: (job.artifacts || []).map((a) => ({
-      type: a.artifact_type, label: a.label, size: a.size_bytes, url: a.download_url,
+      id: a.id, type: a.artifact_type, label: a.label, size: a.size_bytes, url: a.download_url,
     })),
     meshAvailable: !!job.mesh_available,
     verdict: job.reviewer_verdict || "",
