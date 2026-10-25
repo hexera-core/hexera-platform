@@ -98,7 +98,9 @@ async def node_builder(state: PipelineState) -> dict:
             retry_count=retry_count, noop_count=noop_count, api_failure=api_failure,
             flag_responses=attempt_mod.flag_responses(attempt.workspace), stop=stop).state()
 
-    if budget.exhausted:
+    # A DETERMINISTIC DRIVER (the FEA driver) is judged by the pipeline's time, which progress moves
+    # on - never by the model loop's aggregate budget, which an earlier attempt's long mesh spends
+    if budget.driver_exhausted if invoke.takes_driver(attempt, state) else budget.exhausted:
         # Aggregate budget exhausted: fail TRUTHFULLY without another expensive attempt. Nothing
         # is authored, and no execution success is written - the executor still owns that verdict.
         logger.error("Builder aggregate budget exhausted (%ds total) - job_id=%s: failing "

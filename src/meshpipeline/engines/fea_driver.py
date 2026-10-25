@@ -451,24 +451,40 @@ BYTES_PER_ELEMENT = 5100.0
 MEMORY_MARGIN = 1.25
 #: PLAN-fea-13: NO GUESSED TIME LIMIT (Areen, 24 Oct). The mesher runs until it is done, and is
 #: stopped only when it has made NO PROGRESS for the stall window (engines/gmsh/gmsh_runner
-#: FEA_STALL_WINDOW_S: no new output, no new step), or at the hard ceiling: the mesh job's own limit
-#: (deploy/gcp MESH_TIMEOUT_SECONDS) less JOB_MARGIN_S, never more than the attempt has left
+#: FEA_STALL_WINDOW_S: no new output, no new step), or at the hard ceiling of the machine it runs on.
+#: THE CLOUD RUN JOB'S WALL: Cloud Run stops every run of the mesh job at its task timeout (deploy/gcp
+#: MESH_TIMEOUT_SECONDS), a platform limit no setting here removes; less JOB_MARGIN_S for the hand-back.
+#: A plan planned to pass it runs on a VM from the start, and a pass that meets it still working runs
+#: again on a VM (RUN-5, contracts/mesh_machine.for_time / off_the_wall).
 MESH_JOB_LIMIT_S = 14_400
 JOB_MARGIN_S = 600
+#: A VM HAS NO WALL. Its ceiling is only the backstop for a mesher that keeps printing but never
+#: finishes; the stall watch is what stops a stuck one. Under the worker task's own 24-hour limit
+#: (the run_simulation task's soft_time_limit, 86,400 s), with room to collect the result.
+VM_CEILING_S = 20 * 3600
 #: what an attempt keeps back after the last pass (the deck's writers, the hand-back)
 ATTEMPT_RESERVE_S = 300
 
 
-def ceiling_for(run) -> float:
-    """PLAN-fea-13's ceiling for one pass: the mesh job's own limit less its margin, and never more
-    than the attempt has left (its deadline, less ATTEMPT_RESERVE_S)."""
-    job = float(MESH_JOB_LIMIT_S - JOB_MARGIN_S)
+def ceiling_for(run=None, machine: dict | None = None) -> float:
+    """PLAN-fea-13's hard ceiling for one pass: the wall of the machine it runs on - the Cloud Run
+    job's limit less its margin, or VM_CEILING_S on a VM (RUN-5). NEVER what the attempt or the
+    pipeline has left: a pass still making progress is not stopped by a clock (dev-areen 25 Oct: a
+    pass cut at "the hard limit of 110 minutes", its retry given 1 minute). The pipeline's deadline
+    moves on while the mesher makes progress (application/pipeline_budget.progress_extension), and
+    the stall watch stops a stuck one. `run` is kept for the callers' signature and decides nothing."""
+    if (machine or {}).get("where") == "gce":
+        return float(VM_CEILING_S)
+    return float(MESH_JOB_LIMIT_S - JOB_MARGIN_S)
+
+
+def attempt_left_s(run) -> float | None:
+    """What the attempt's own budget has left (its deadline, less ATTEMPT_RESERVE_S); None without one."""
     deadline = getattr(run, "deadline_s", None)
     started = getattr(run, "_started", None)
     if deadline and started is not None:
-        left = float(deadline) - (time.monotonic() - float(started)) - ATTEMPT_RESERVE_S
-        return max(60.0, min(job, left))
-    return job
+        return float(deadline) - (time.monotonic() - float(started)) - ATTEMPT_RESERVE_S
+    return None
 
 
 #: what an AI question keeps back of the attempt's time for the meshing still to come
@@ -477,14 +493,24 @@ AI_RESERVE_S = 900.0
 
 def ai_wait_s(run) -> float:
     """The most an AI question may wait (engines/fea_ai): what the attempt has left after the
-    meshing it still has to do - never past the attempt, whatever the model does."""
-    return max(0.0, ceiling_for(run) - AI_RESERVE_S)
+    meshing it still has to do - never past the attempt or the Cloud Run wall, whatever the model
+    does. (A model answer is waited for; a mesher making progress is not cut - see ceiling_for.)"""
+    left = attempt_left_s(run)
+    base = ceiling_for(run) if left is None else max(60.0, min(ceiling_for(run), left))
+    return max(0.0, base - AI_RESERVE_S)
+
+
+def planned_seconds(plan: dict, rate: float | None = None) -> float | None:
+    """The pass's planned time: its elements at the part's slow fill rate (PLAN-fea-13)."""
+    amount = float((plan.get("estimate") or {}).get("elements") or 0)
+    rate = rate if rate is not None else min(FILL_RATES.values())
+    return amount / rate if rate and amount > 0 else None
 
 
 def planned_work(plan: dict, *, rate: float | None = None, cls: str = "", ceiling_s: float) -> dict:
     """The pass's planned work, and how it is watched (PLAN-fea-13): the planned time at the part's
     slow fill rate is FOR THE RECORD ONLY - the mesher is stopped only after the stall window with no
-    progress, or at `ceiling_s` (the mesh job's limit, or what the attempt has left)."""
+    progress, or at `ceiling_s` (the wall of the machine it runs on: ceiling_for)."""
     from meshpipeline.engines.gmsh.gmsh_runner import stall_window
 
     amount = float((plan.get("estimate") or {}).get("elements") or 0)
@@ -749,19 +775,28 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             _clear_outputs(ws)
             note_native_pass(ws, n)
             note_native_payload(ws, [p for p in PAYLOAD if (ws / p).exists()])
-            # NO GUESSED TIME LIMIT (PLAN-fea-13): watched for progress, stopped only when stuck or at the
-            # hard ceiling
-            work = planned_work(plan, rate=rate, cls=cls, ceiling_s=ceiling_for(run))
             # WHERE IT RUNS (RUN-1..3): the Cloud Run mesh job when the plan fits it, else a VM sized to
             # fit - decided now, from the memory model, so a big plan never wastes a first run
             from meshpipeline.contracts import mesh_machine as MM
             process_gib, files_gib = memory_need(float((plan.get("estimate") or {}).get("elements") or 0))
             machine = MM.choose(process_gib=process_gib, workspace_gib=files_gib, why="memory model")
-            MM.write(ws, machine)
             _cite(job_id, [{"stage": "fea_machine", "decided": machine["where"], "value": machine["machine"],
                             "rule": "RUN-2" if machine.get("over_ceiling") else "RUN-1", "inputs": {k: machine[k] for k in ("need_gib", "process_gib",
                                                                                  "workspace_gib", "memory_gib")}
                             | {"pass": n}, "words": machine["words"]}])
+            # RUN-5: AND BY TIME - a plan planned to pass the Cloud Run job's wall runs on a VM from the
+            # start, so it is never stopped by a limit it would only meet because of where it ran
+            timed = MM.for_time(machine, planned_s=planned_seconds(plan, rate), wall_s=ceiling_for(run))
+            if timed is not machine:
+                machine = timed
+                _cite(job_id, [{"stage": "fea_machine", "decided": "gce", "value": machine["machine"],
+                                "rule": "RUN-5", "inputs": {"pass": n, "planned_s": planned_seconds(plan, rate),
+                                                            "wall_s": ceiling_for(run)},
+                                "words": machine["words"]}])
+            MM.write(ws, machine)
+            # NO GUESSED TIME LIMIT (PLAN-fea-13): watched for progress, stopped only when stuck or at the
+            # hard ceiling of the machine it runs on
+            work = planned_work(plan, rate=rate, cls=cls, ceiling_s=ceiling_for(run, machine))
             _cite(job_id, [{"stage": "fea_time", "decided": "watchdog", "value": work["stall_window_s"],
                             "rule": "PLAN-fea-13",
                             "inputs": {k: work[k] for k in ("amount", "rate", "class", "planned_s", "ceiling_s",
@@ -775,18 +810,24 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             while True:
                 result = await asyncio.to_thread(get_engine(ENGINE).run_cartesian_mesh, ws,
                                                  timeout=work["ceiling_s"])
-                # RUN-3: OUT OF MEMORY -> THE SAME PLAN ONE MACHINE UP (no lever, no coarsening, no
-                # re-plan), sized from the peak seen when there is one, up to the largest machine
-                if not _out_of_memory(result):
+                if _out_of_memory(result):
+                    # RUN-3: OUT OF MEMORY -> THE SAME PLAN ONE MACHINE UP (no lever, no coarsening, no
+                    # re-plan), sized from the peak seen when there is one, up to the largest machine
+                    moved, rule, decided = MM.step_up(machine, measured_gib=_peak_gib(result)), "RUN-3", "step up"
+                elif result.get("timed_out") and not result.get("stalled"):
+                    # RUN-5: STILL WORKING AT THE CLOUD RUN WALL -> THE SAME PLAN ON A VM, which has no
+                    # wall (nothing coarsened, no lever); on a VM already there is nowhere to move
+                    moved, rule, decided = MM.off_the_wall(machine), "RUN-5", "off the wall"
+                else:
                     break
-                bigger = MM.step_up(machine, measured_gib=_peak_gib(result))
-                if bigger is None:
+                if moved is None:
                     break
-                machine = bigger
+                machine = moved
                 MM.write(ws, machine)
-                _cite(job_id, [{"stage": "fea_machine", "decided": "step up", "value": machine["machine"],
-                                "rule": "RUN-3", "inputs": {"pass": n, "from": machine.get("stepped_from"),
-                                                            "need_gib": machine["need_gib"]},
+                work = {**work, "ceiling_s": int(ceiling_for(run, machine))}
+                _cite(job_id, [{"stage": "fea_machine", "decided": decided, "value": machine["machine"],
+                                "rule": rule, "inputs": {"pass": n, "from": machine.get("stepped_from"),
+                                                         "need_gib": machine["need_gib"]},
                                 "words": machine["words"]}])
                 _clear_outputs(ws)
             native_s = round(time.monotonic() - native_t0, 1)
@@ -929,6 +970,6 @@ def driver_for(state):
     return drive if applies(state) else None
 
 
-__all__ = ["connection_of", "prepare_assembly", "restage_tied", "BYTES_PER_ELEMENT", "MESH_JOB_MEMORY_GIB", "limit_facts", "memory_elements", "FILL_RATES", "FLOOR_STEPS", "WORKSPACE_BYTES_PER_ELEMENT", "memory_need", "MESH_JOB_LIMIT_S", "ceiling_for", "choose_plan",
+__all__ = ["connection_of", "prepare_assembly", "restage_tied", "BYTES_PER_ELEMENT", "MESH_JOB_MEMORY_GIB", "limit_facts", "memory_elements", "FILL_RATES", "FLOOR_STEPS", "WORKSPACE_BYTES_PER_ELEMENT", "memory_need", "MESH_JOB_LIMIT_S", "VM_CEILING_S", "attempt_left_s", "ceiling_for", "planned_seconds", "choose_plan",
            "complexity", "element_limit", "fill_rate", "watchdog_words", "BUILD_FAILED", "GUARD_TRIP", "NO_SOURCE", "QUALITY_GATE", "applies", "drive",
            "driver_for", "ladder_facts", "ladder_words", "make_plan", "measure_staged", "planned_work", "write_plan"]

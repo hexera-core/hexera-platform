@@ -136,6 +136,16 @@ def _driver_for(spec, state):
     return spec.build_driver_for(state)
 
 
+def takes_driver(attempt: BuilderAttempt, state) -> bool:
+    """Whether this attempt runs the engine's deterministic driver (and so is held to the pipeline's
+    time, not the model loop's budget). An engine that cannot be resolved answers False - the model
+    loop's rules, as before."""
+    try:
+        return _driver_for(get_spec(attempt.engine), state) is not None
+    except Exception:  # noqa: BLE001 - a question about the budget never stops an attempt
+        return False
+
+
 async def run_attempt(attempt: BuilderAttempt, state, *, job_id: str,
                       publish: ExecutionEventPublisher,
                       timeout_s: int, driver_timeout_s: int | None = None) -> TurnOutcome:

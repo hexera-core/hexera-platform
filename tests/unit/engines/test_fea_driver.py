@@ -180,19 +180,68 @@ def test_a_guard_trip_pulls_no_lever_and_ends_the_attempt(tmp_path, monkeypatch)
     ws = _stage(fx.plate_with_hole(), tmp_path / "trip")
     calls = []
     monkeypatch.setattr(runtime, "get_engine", lambda _n: SimpleNamespace(
-        run_cartesian_mesh=lambda w, timeout: calls.append(timeout) or {"rc": -1, "timed_out": True}))
+        run_cartesian_mesh=lambda w, timeout: calls.append(timeout) or {"rc": -1, "timed_out": True,
+                                                                         "stalled": True}))
     ok, marker, _o = asyncio.run(FD.drive(ws, {}, job_id="t-trip",
                                           publish=None, run=_Run()))
     assert not ok and marker == FD.GUARD_TRIP and len(calls) == 1
     rec = json.loads((ws / "fea_passes.json").read_text())
     assert rec["levers"] == [] and rec["guard_trip"]["unit"] == "elements"
     # the hard ceiling is what the mesher gets - never a guess at how long it should take
-    assert calls[0] == FD.MESH_JOB_LIMIT_S - FD.JOB_MARGIN_S or calls[0] < FD.MESH_JOB_LIMIT_S
+    assert calls[0] == FD.MESH_JOB_LIMIT_S - FD.JOB_MARGIN_S
     assert not any(e["rule"].startswith("LAD-fea-") and e["decided"] == "lever" for e in dr.cited_for("t-trip"))
     from meshpipeline.engines.preflight import read_refusal
 
     ref = read_refusal(ws)
     assert ref.gate == FD.GUARD_GATE and ref.cause == "run_infrastructure" and ref.facts["ours"]
+
+
+def test_a_pass_still_working_at_the_cloud_run_wall_runs_again_on_a_vm(tmp_path, monkeypatch):
+    """RUN-5: a pass that met the Cloud Run job's wall STILL WORKING (not stalled) is never ended
+    for it: the same plan runs again on a VM, which has no wall - its ceiling is the VM's backstop,
+    not the job's limit, and nothing is coarsened or levered."""
+    from meshpipeline.contracts import mesh_machine as MM
+    from meshpipeline.engines import runtime
+
+    ws = _stage(fx.plate_with_hole(), tmp_path / "wall")
+    calls: list[tuple[int, str]] = []
+
+    def _run(w, timeout):
+        where = (MM.read(w) or {}).get("where")
+        calls.append((timeout, where))
+        if where == "cloud_run":
+            return {"rc": -1, "timed_out": True}                  # the wall, still working
+        return {"rc": fea_adapter.mesh(w)}                        # on the VM it finishes
+
+    monkeypatch.setattr(runtime, "get_engine", lambda _n: SimpleNamespace(run_cartesian_mesh=_run))
+    ok, marker, _o = asyncio.run(FD.drive(ws, {}, job_id="t-wall", publish=None, run=_Run()))
+    assert ok, marker
+    assert calls == [(FD.MESH_JOB_LIMIT_S - FD.JOB_MARGIN_S, "cloud_run"), (FD.VM_CEILING_S, "gce")]
+    moved = [e for e in dr.cited_for("t-wall") if e["rule"] == "RUN-5"]
+    assert moved and moved[0]["value"] == MM.MACHINES[0].name
+    assert not any(e["rule"].startswith("LAD-fea-") and e["decided"] == "lever" for e in dr.cited_for("t-wall"))
+
+
+def test_a_plan_planned_past_the_cloud_run_wall_starts_on_a_vm(tmp_path, monkeypatch):
+    """RUN-5 before meshing: a plan whose planned time passes the Cloud Run job's wall never wastes a
+    first run there - it starts on a VM with the VM's ceiling."""
+    from meshpipeline.contracts import mesh_machine as MM
+    from meshpipeline.engines import runtime
+
+    ws = _stage(fx.plate_with_hole(), tmp_path / "slow")
+    seen: list[tuple[int, str]] = []
+
+    def _run(w, timeout):
+        seen.append((timeout, (MM.read(w) or {}).get("where")))
+        return {"rc": fea_adapter.mesh(w)}
+
+    monkeypatch.setattr(runtime, "get_engine", lambda _n: SimpleNamespace(run_cartesian_mesh=_run))
+    # the part meshes at one element an hour: hours past the wall
+    monkeypatch.setattr(FD, "fill_rate", lambda _r: (1.0 / 3600.0, "complex"))
+    ok, marker, _o = asyncio.run(FD.drive(ws, {}, job_id="t-slow", publish=None, run=_Run()))
+    assert ok, marker
+    assert seen[0] == (FD.VM_CEILING_S, "gce")
+    assert any(e["rule"] == "RUN-5" for e in dr.cited_for("t-slow"))
 
 
 def test_a_ladder_that_runs_out_says_so_for_the_retry_policy(tmp_path, monkeypatch):
@@ -317,12 +366,23 @@ def test_no_plan_is_cut_down_for_time():
     assert FD.element_limit(big, 600.0)[0] == FD.memory_elements(FD._ceiling_gib())
 
 
-def test_the_ceiling_is_what_the_attempt_has_left_and_never_more_than_the_job():
+def test_the_ceiling_is_the_machines_wall_never_what_the_attempt_has_left():
+    """dev-areen 25 Oct: a pass still meshing was cut at "the hard limit of 110 minutes" and its retry
+    got 1 minute - the attempt's clock, not the mesh. The ceiling is now only the wall of the machine
+    the pass runs on; the pipeline's deadline moves on while the mesher makes progress."""
     import time as _t
 
-    run = SimpleNamespace(deadline_s=2000.0, _started=_t.monotonic())
-    assert FD.ceiling_for(run) == pytest.approx(2000.0 - FD.ATTEMPT_RESERVE_S, abs=5)
+    almost_out = SimpleNamespace(deadline_s=400.0, _started=_t.monotonic())
+    assert FD.ceiling_for(almost_out) == FD.MESH_JOB_LIMIT_S - FD.JOB_MARGIN_S
     assert FD.ceiling_for(SimpleNamespace()) == FD.MESH_JOB_LIMIT_S - FD.JOB_MARGIN_S
+    assert FD.ceiling_for(almost_out, {"where": "cloud_run"}) == FD.MESH_JOB_LIMIT_S - FD.JOB_MARGIN_S
+    assert FD.ceiling_for(almost_out, {"where": "gce", "machine": "n2-highmem-8"}) == FD.VM_CEILING_S
+    # a VM's backstop stays under the worker task's own 24-hour limit
+    src = (Path(__file__).resolve().parents[3] / "src/meshpipeline/adapters/pipeline_execution/celery.py").read_text()
+    assert "soft_time_limit=86400" in src and FD.VM_CEILING_S < 86400
+    # a MODEL answer is still waited for no longer than the attempt has left
+    assert FD.ai_wait_s(almost_out) == 0.0
+    assert FD.ai_wait_s(SimpleNamespace()) == FD.MESH_JOB_LIMIT_S - FD.JOB_MARGIN_S - FD.AI_RESERVE_S
 
 
 def test_coarsening_never_goes_past_what_keeps_elements_valid_zone_by_zone():

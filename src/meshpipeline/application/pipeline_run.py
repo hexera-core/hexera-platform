@@ -501,6 +501,10 @@ async def _run_async(req: JobRequest) -> dict:
     # dies before the checkpointer section (e.g. a dispute whose parent was purged) must
     # crash-finalize with the intent fallback, not UnboundLocalError inside the handler.
     _checkpointer_ok = False
+    # THIS run's progress clock (contracts/progress_clock): what an earlier job in this process did
+    # never keeps this one going past its deadline.
+    from meshpipeline.contracts import progress_clock as _progress
+    _progress.reset()
     # Unpack once; the body keeps working with the original local names.
     job_id           = req.job_id
     owner_id         = req.owner_id
@@ -805,6 +809,7 @@ async def _run_async(req: JobRequest) -> dict:
             _stop = asyncio.Event()
 
             async def _beat():
+                from datetime import UTC, datetime
                 _interval = max(1, int(rtcfg.WORKER_HEARTBEAT_SECONDS))
                 while not _stop.is_set():
                     try:
@@ -813,9 +818,18 @@ async def _run_async(req: JobRequest) -> dict:
                     except TimeoutError:
                         pass
                     try:
+                        # PROGRESS, NOT AGE (pipeline_budget.progress_extension): a job that showed
+                        # progress within the stall window is not out of time, so its deadline moves
+                        # on with this beat. No recent progress: no extension, the deadline stands.
+                        _to = _pb.progress_extension()
+                        _extend = (datetime.fromtimestamp(_to, tz=UTC)
+                                   if _to is not None and _to > _pb.effective_deadline(_pipeline_deadline)
+                                   else None)
                         async with AsyncSessionLocal() as _hb:
-                            _ok = await lease_repo.heartbeat(_hb, ownership)
+                            _ok = await lease_repo.heartbeat(_hb, ownership, extend_deadline_to=_extend)
                             await _hb.commit()
+                        if _ok and _extend is not None:
+                            _pb.extend(_pipeline_deadline, _extend.timestamp())
                         if not _ok:
                             jlog.error("Lease LOST - job_id=%s generation=%d token=%s: a newer "
                                        "generation/token owns this job, or its owner cancelled it; "

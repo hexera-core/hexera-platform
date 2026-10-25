@@ -13,7 +13,9 @@ The plan is sized by the accuracy rules alone. Its memory need is then routed:
     resort, never the first.
 
 If a run still runs out of memory, the SAME plan is run again one machine up (step_up), up to the
-largest. The decision travels in the workspace (MACHINE_FILE) with its numbers and its words.
+largest. And TIME (RUN-5): the Cloud Run job stops every run at its wall, so a plan planned to pass it
+runs on a VM from the start (for_time), and a run that met the wall still working runs again there
+(off_the_wall) - a VM has no wall; the progress watchdog stops a stuck mesher on it. The decision travels in the workspace (MACHINE_FILE) with its numbers and its words.
 """
 from __future__ import annotations
 
@@ -105,6 +107,53 @@ def _decision(machine: Machine | None, process: float, files: float, *, need: fl
             **({"stepped_from": stepped_from} if stepped_from else {})}
 
 
+#: RUN-5: how much longer than the planned time (elements at the part's SLOW fill rate) a run must be
+#: able to go before the Cloud Run job's wall would stop it. The slow rate is already the slow end of
+#: what the lab measured; this covers a part slower still.
+TIME_MARGIN = 1.5
+
+
+def _on_a_vm(previous: dict, machine: Machine, *, words: str, why: str) -> dict:
+    return _decision(machine, float(previous.get("process_gib") or 0.0),
+                     float(previous.get("workspace_gib") or 0.0),
+                     need=float(previous.get("process_gib") or 0.0), words=words, why=why,
+                     stepped_from=str(previous.get("machine") or "cloud_run"))
+
+
+def _smallest_holding(previous: dict) -> Machine:
+    process = float(previous.get("process_gib") or 0.0)
+    return next((m for m in MACHINES if process <= usable_gib(m)), CEILING)
+
+
+def for_time(decision: dict, *, planned_s: float | None, wall_s: float) -> dict:
+    """RUN-5, BEFORE MESHING: a plan the Cloud Run mesh job would hold in memory but whose planned
+    time (with TIME_MARGIN) passes the job's wall (`wall_s`: Cloud Run stops every run there, a limit
+    no setting removes) runs on the smallest VM that holds it instead - a VM has no such wall, and the
+    progress watchdog (PLAN-fea-13) is what stops a stuck mesher there. Any other decision is returned
+    unchanged."""
+    if decision.get("where") != "cloud_run" or not planned_s or float(planned_s) * TIME_MARGIN <= float(wall_s):
+        return decision
+    machine = _smallest_holding(decision)
+    words = (f"At this part's slowest measured speed it takes about {float(planned_s) / 60:.0f} minutes, and "
+             f"the Cloud Run mesh job stops every run at {float(wall_s) / 60:.0f} minutes, so it runs on a "
+             f"{machine.name} VM ({machine.memory_gib:.0f} GiB), which has no such limit.")
+    return _on_a_vm(decision, machine, words=words, why="time")
+
+
+def off_the_wall(decision: dict | None) -> dict | None:
+    """RUN-5, AFTER A RUN: a pass that reached the Cloud Run job's wall STILL WORKING (not stalled)
+    runs again, the same plan, on the smallest VM that holds it - never ended for a limit it only met
+    because of where it ran. None when it did not run on Cloud Run (a VM has no wall to move off)."""
+    prev = decision or {"where": "cloud_run"}
+    if prev.get("where") != "cloud_run":
+        return None
+    machine = _smallest_holding(prev)
+    words = (f"The mesher was still working when the Cloud Run mesh job's time limit stopped it, so the "
+             f"same plan runs again on a {machine.name} VM ({machine.memory_gib:.0f} GiB), which has no "
+             "such limit - nothing coarsened.")
+    return _on_a_vm(prev, machine, words=words, why="cloud_run_wall")
+
+
 def write(workspace, decision: dict) -> None:
     (Path(workspace) / MACHINE_FILE).write_text(json.dumps(decision, indent=1, sort_keys=True))
 
@@ -123,5 +172,5 @@ def ceiling_gib() -> float:
     return usable_gib(CEILING)
 
 
-__all__ = ["CEILING", "CLOUD_RUN_GIB", "MACHINES", "MACHINE_FILE", "Machine", "ceiling_gib", "choose", "read",
-           "step_up", "usable_gib", "write"]
+__all__ = ["CEILING", "CLOUD_RUN_GIB", "MACHINES", "MACHINE_FILE", "TIME_MARGIN", "Machine", "ceiling_gib", "choose",
+           "for_time", "off_the_wall", "read", "step_up", "usable_gib", "write"]

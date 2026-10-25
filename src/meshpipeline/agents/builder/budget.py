@@ -27,10 +27,17 @@ class AttemptBudget:
     def exhausted(self) -> bool:
         return self.remaining_s <= 0
 
+    @property
+    def driver_exhausted(self) -> bool:
+        """A DETERMINISTIC DRIVER's attempt is out of time only when the pipeline is - never because
+        the model loop's aggregate budget was spent by an earlier attempt's long, progressing mesh
+        (an FEA retry after a 2.5-hour first pass was refused as "exceeded its overall time budget")."""
+        return self.driver_remaining_s <= 0
+
 
 def settle(*, carried_epoch: float, pipeline_deadline_epoch, now: float | None = None
            ) -> AttemptBudget:
-    from meshpipeline.application.pipeline_budget import cap_child_deadline_epoch
+    from meshpipeline.application.pipeline_budget import cap_child_deadline_epoch, remaining_seconds
 
     clock = time.time() if now is None else now
     epoch = float(carried_epoch or 0.0)
@@ -38,7 +45,8 @@ def settle(*, carried_epoch: float, pipeline_deadline_epoch, now: float | None =
         epoch = clock + bcfg.BUILDER_TOTAL_TIMEOUT_SECONDS
     epoch = cap_child_deadline_epoch(epoch, pipeline_deadline_epoch)
     remaining = int(epoch - clock)
-    pipeline_left = int(float(pipeline_deadline_epoch) - clock) if pipeline_deadline_epoch else 0
+    # the pipeline's time as progress has moved it (pipeline_budget.effective_deadline)
+    pipeline_left = int(remaining_seconds(pipeline_deadline_epoch, now=clock)) if pipeline_deadline_epoch else 0
     return AttemptBudget(deadline_epoch=epoch, remaining_s=remaining,
                          attempt_timeout_s=min(bcfg.BUILDER_LOOP_TIMEOUT, remaining),
                          driver_remaining_s=max(remaining, pipeline_left))
