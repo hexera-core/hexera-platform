@@ -728,3 +728,18 @@ def test_fused_faces_whose_edges_do_not_close_are_tied_at_once(tmp_path, monkeyp
     asyncio.run(FD.drive(ws, {"purpose": "structural"}, job_id=f"t-{ws.name}", publish=None,
                          run=_Run(), source_path=str(ws / "upload.step")))
     assert modes[:2] == ["bonded", "tie"]
+
+
+def test_an_assembly_failing_where_parts_pass_into_each_other_is_never_a_cad_repair():
+    """fc_glass_frames (25 Oct): two frame members passing into each other is the tie's job; only one
+    part confirmed broken by two measures is told as the CAD's."""
+    passes = [{"bad_faces": ["Face_3", "Face_9"]}]
+    asm = {"assembly_plan": {"mode": "tie"}}
+    overlap = {"kind": "self_overlap", "body": 0, "faces": ["Face_3"], "confirmed": False}
+    one_check = {"kind": "self_overlap", "body": 2, "faces": ["Face_9"], "confirmed": False}
+    assert FD.defect_at_failure({**asm, "suspects": [overlap, one_check]}, passes) is None
+    broken = {"kind": "self_overlap", "body": 2, "faces": ["Face_9"], "confirmed": True}
+    got = FD.defect_at_failure({**asm, "suspects": [overlap, broken]}, passes)
+    assert got["faces"] == ["Face_9"] and got["suspects"] == [broken]
+    # a single part keeps #299's rule (one measure at the failing faces)
+    assert FD.defect_at_failure({"suspects": [one_check]}, passes)["faces"] == ["Face_9"]

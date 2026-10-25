@@ -206,6 +206,15 @@ def defect_at_failure(record: dict, passes: list[dict]) -> dict | None:
     if not hit:
         return None
     sus = [s for s in record.get("suspects") or [] if set(s.get("faces") or []) & set(hit)]
+    if record.get("assembly_plan"):
+        # AN ASSEMBLY: parts passing into each other are what the tie is for (PLAN-fea-17), never a CAD
+        # repair. Only ONE PART that is itself broken - two measures agree, on that one solid - is the
+        # CAD's (fc_glass_frames, 25 Oct: one pair of frame members passing into each other ended as a
+        # stop after 4 fused passes and 170 min)
+        sus = [s for s in sus if s.get("confirmed") and int(s.get("body") or 0) > 0]
+        if not sus:
+            return None
+        hit = [f for f in hit if any(f in (s.get("faces") or []) for s in sus)]
     return {"faces": hit, "suspects": sus, "confirmed": any(s.get("confirmed") for s in sus)}
 
 
