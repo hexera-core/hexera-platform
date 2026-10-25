@@ -440,7 +440,14 @@ def surfaces_named(text: str) -> list[int]:
     return sorted({int(m) for m in re.findall(r"surface (\d+)", text or "")})
 
 
-def bad_surfaces(gmsh, tags, qualities) -> list[int]:
+#: The worst element the quality record (four decimals) still reads as above 0: an element under it reads
+#: SICN 0.0, and the ladder calls the pass invalid (engines/fea_ladder.pass_facts) - so it is traced as
+#: invalid too (fc_glass_frames' pane: flat tets of SICN 1.5e-5, no inverted one, and no surface named
+#: for LAD-fea-6 in any of four passes).
+DEGENERATE_SICN = 5e-5
+
+
+def bad_surfaces(gmsh, tags, qualities, *, floor: float = 0.0, skip=()) -> list[int]:
     """The CAD surfaces the invalid elements (quality not above 0) touch: their nodes on a surface,
     or on a curve or corner of one - where LAD-fea-6 meshes the next pass the other way.
 
@@ -452,7 +459,8 @@ def bad_surfaces(gmsh, tags, qualities) -> list[int]:
     out: set[int] = set()
     locked: set[tuple[int, int]] = set()
     loose: set[int] = set()
-    bad = [int(t) for t, q in zip(tags, qualities, strict=True) if q <= 0.0][:TRACE_BAD]
+    skipped = {int(t) for t in skip}
+    bad = [int(t) for t, q in zip(tags, qualities, strict=True) if q <= floor and int(t) not in skipped][:TRACE_BAD]
     for t in bad:
         _etype, nodes, _dim, _tag = gmsh.model.mesh.getElement(t)
         mine: set[int] = set()
@@ -926,7 +934,14 @@ def mesh(workspace) -> int:
         aside_q = [q for t, q in zip(all_tags, qualities, strict=True) if int(t) in aside]
         fatal = []
         # LAD-fea-6: where the invalid elements are, for the next pass
-        traced = bad_surfaces(gmsh, all_tags, qualities) if min_all <= 0.0 else []
+        if min_all <= 0.0:
+            traced = bad_surfaces(gmsh, all_tags, qualities)
+        elif round(min_sicn, 4) <= 0.0:
+            # INVALID BY THE RECORD (SICN under DEGENERATE_SICN, none inverted): where those elements are,
+            # the cusp and micro elements set aside apart - LAD-fea-6 meshes the next pass the other way there
+            traced = bad_surfaces(gmsh, all_tags, qualities, floor=DEGENERATE_SICN, skip=aside)
+        else:
+            traced = []
         if n_elem == 0:
             fatal.append("no volume elements generated")
         if min_all <= 0.0:

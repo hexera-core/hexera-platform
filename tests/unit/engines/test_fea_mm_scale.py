@@ -351,3 +351,15 @@ def test_a_repeated_triangle_that_is_a_flap_is_dropped_whole():
     finally:
         if gmsh.isInitialized():
             gmsh.finalize()
+
+
+def test_a_sliver_the_record_reads_as_zero_is_traced_like_an_inverted_one():
+    """fc_glass_frames' pane: flat tets of SICN 1.5e-5, none inverted - the record (four decimals) reads 0.0
+    and the ladder calls the pass invalid, so they are traced too (else LAD-fea-6 had no surface to change
+    in any of four passes); elements set aside at a cusp stay out of it."""
+    nodes = {1: (2, 5), 2: (2, 5), 3: (2, 6), 4: (2, 6), 5: (2, 7), 6: (2, 7), 7: (2, 8), 8: (2, 8)}
+    g = _stub({10: [1, 2, 3, 4], 11: [5, 6, 7, 8]}, nodes)
+    assert A.bad_surfaces(g, [10, 11], [1.5e-5, 1.5e-5]) == []                       # nothing at or under 0
+    assert A.bad_surfaces(g, [10, 11], [1.5e-5, 1.5e-5], floor=A.DEGENERATE_SICN) == [6, 8]
+    assert A.bad_surfaces(g, [10, 11], [1.5e-5, 1.5e-5], floor=A.DEGENERATE_SICN, skip={11}) == [6]
+    assert round(A.DEGENERATE_SICN - 1e-9, 4) == 0.0 < round(A.DEGENERATE_SICN + 1e-9, 4)
