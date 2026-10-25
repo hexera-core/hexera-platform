@@ -653,3 +653,11 @@ def test_a_bonded_assembly_whose_fused_boundary_crosses_itself_is_tied_at_once(t
     asyncio.run(FD.drive(ws, {"purpose": "structural"}, job_id=f"t-{ws.name}", publish=None,
                          run=_Run(), source_path=str(ws / "upload.step")))
     assert modes[:2] == ["bonded", "tie"]
+
+
+def test_suspected_defects_are_renamed_with_the_assembly():
+    """MESH-2 holds the faces the mesher failed on (Part_k_Face_j) against the flagged ones: they must be
+    named alike (fw_hinge_r, 24 Oct: Face_77 against Part_1_Face_77 never matched)."""
+    rec = {"suspects": [{"kind": "fold", "faces": ["Face_2", "Face_3"]}]}
+    out = A.rename_record(rec, ["Part_1_Face_1", "Part_1_Face_2", "Part_2_Face_1"])
+    assert out["suspects"][0]["faces"] == ["Part_1_Face_2", "Part_2_Face_1"]
