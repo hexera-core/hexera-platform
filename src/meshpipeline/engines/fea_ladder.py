@@ -95,14 +95,15 @@ def surface_stall_lever(surface: int, levers: list[dict], *, n: int) -> dict | N
     """LAD-fea-8: A SURFACE STAGE THAT STALLS (the watchdog stopped the mesher in 2D, on `surface`) is not
     run again the same way. gmsh, when its Frontal-Delaunay mesh of a face comes out with two triangles
     the same, throws it away and meshes the face with MeshAdapt, which on a face with a pole at fine size
-    never ends (nakuja_rocket's nose cone, Part_2 alone: 15 minutes on one face). The next pass keeps
+    can run longer than the watchdog's window with no output (nakuja_rocket's nose cone, Part_2 alone: 15
+    minutes silent on one face on a laptop-class worker; about 10 on a 16-core VM). The next pass keeps
     gmsh's first mesh of every face - its repeats dropped by MESH-5 - instead. None when pulled already or
     no pass is left."""
     if any(lv["lever"] == SURFACE_STALL for lv in levers) or len(levers) + 1 >= MAX_PASSES:
         return None
     return {"lever": SURFACE_STALL, "inputs": {"pass": n, "surface": int(surface)}, "surfaces": [],
             "words": (f"The surface stage stopped making progress on surface {int(surface)} (gmsh's switch to "
-                      "MeshAdapt there never ended), so the next pass keeps gmsh's first mesh of every face "
+                      "MeshAdapt there ran past the watchdog), so the next pass keeps gmsh's first mesh of every face "
                       "and drops its repeated triangles (MESH-5).")}
 
 

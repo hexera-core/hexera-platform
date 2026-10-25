@@ -268,7 +268,7 @@ def test_a_stall_in_the_surface_stage_names_the_surface_and_one_after_it_does_no
 
 
 def test_a_surface_stage_that_stalls_is_meshed_again_without_gmshs_switch(tmp_path, monkeypatch):
-    """LAD-fea-8: the watchdog stopped the mesher in 2D (gmsh's MeshAdapt on one face never ended): the part's,
+    """LAD-fea-8: the watchdog stopped the mesher in 2D (gmsh's MeshAdapt on one face ran past the watchdog): the part's,
     not ours - the next pass keeps gmsh's first mesh of every face and delivers."""
     import asyncio
     from types import SimpleNamespace
