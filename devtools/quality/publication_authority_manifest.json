@@ -2639,6 +2639,21 @@
   "roots": []
  },
  {
+  "context": "application/post_gate_rescue.py::run_to_end::error#1|NotAPublisher|not-a-publisher|application/pipeline_run.py::meshpipeline.application.pipeline_run._JobAdapter",
+  "path": "application/post_gate_rescue.py",
+  "qualname": "run_to_end",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "jlog",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "application/pipeline_run.py::meshpipeline.application.pipeline_run._JobAdapter"
+  ]
+ },
+ {
   "context": "application/post_terminal.py::enqueue_conversation_export::error#1|NotAPublisher|not-a-publisher|application/post_terminal.py::callers of enqueue_conversation_export()",
   "path": "application/post_terminal.py",
   "qualname": "enqueue_conversation_export",

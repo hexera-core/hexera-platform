@@ -445,6 +445,8 @@ def _domain(f: Mapping) -> tuple[str, str]:
 _REVIEW_STOPPED = {
     "reviewer_stalled": "the reviewer stopped making progress before it reached a verdict",
     "reviewer_exhausted": "the reviewer used up its time before it reached a verdict",
+    "reviewer_crashed": ("the review step failed with an error on our side before it reached a "
+                         "verdict - nothing about the mesh was found wrong"),
     "reviewer_render_unavailable": ("the tool that draws the mesh for the reviewer was not "
                                     "available"),
     # also every pre-loop refusal: a malformed plan, a missing measurement or view or target
