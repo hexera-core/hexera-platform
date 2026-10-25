@@ -56,3 +56,24 @@ async def test_a_crash_before_the_gates_passed_is_raised_as_before():
     config = {"configurable": {"thread_id": str(uuid.uuid4())}}
     with pytest.raises(TypeError):
         await run_to_end(_graph(False), {"purpose": "structural"}, config)
+
+
+
+@pytest.mark.parametrize("engine,purpose", [("snappy", "external_cfd"), ("cfmesh", "internal_cfd"),
+                                            ("gmsh", "structural")])
+async def test_a_cfd_or_fea_job_whose_reviewer_raises_after_a_passing_mesh_is_delivered(engine, purpose):
+    """The rule is the pipeline's, not one engine's: a snappy or cfMesh flow mesh that passed its
+    gates is delivered through a reviewer crash exactly like an FEA mesh, and the terminal rules
+    grant it."""
+    import logging
+
+    from meshpipeline.application.final_result import RunOutcome, derive_terminal_status
+    from meshpipeline.application.post_gate_rescue import REVIEWER_CRASHED, run_to_end
+    from meshpipeline.persistence.models import JobStatus
+
+    config = {"configurable": {"thread_id": str(uuid.uuid4())}}
+    out = await run_to_end(_graph(True), {"purpose": purpose}, config)
+    assert out["api_failure"] == REVIEWER_CRASHED and out["purpose"] == purpose
+    decision = derive_terminal_status(RunOutcome.from_graph_state({**out, "engine": engine}),
+                                      job_id=f"t-{engine}", jlog=logging.getLogger("t"))
+    assert decision.status == JobStatus.succeeded
