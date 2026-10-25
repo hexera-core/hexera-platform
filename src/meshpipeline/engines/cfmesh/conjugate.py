@@ -456,6 +456,16 @@ def render_toposetdict(*, fluid_file: str) -> str:
 #: snapgrid both run `splitMeshRegions` and neither handles this file, so a multi-region mesh over
 #: roughly 1.2 M cells walks into the same wall on those paths.
 CELL_TO_REGION = "cellToRegion"
+#: WHICH REGIONS THE CASE HAS AND WHAT EACH ONE IS, which is the file that makes a pile of
+#: per-region polyMeshes into a multi-region OpenFOAM case. splitMeshRegions does not write it.
+#:
+#: It is mesh-side metadata, not physics - it names the regions and says which carries a fluid -
+#: so it belongs here rather than with the solver. Without it `chtMultiRegionFoam` cannot open the
+#: case at all, and on the platform's side it is the marker the whole deliverable is recognised by
+#: and the file four separate gates read to learn what the regions are. The external harness has
+#: written its own copy all along (devtools/semiconductor/cht.py), which is why no measured run
+#: ever missed it and nothing in the platform could ever have used one.
+REGION_PROPERTIES = "regionProperties"
 
 #: `-cellZonesOnly`, never `-cellZones`. The second means "ADDITIONALLY split cellZones off into
 #: separate regions": it walks face connectivity FIRST, so every lump of mesh that touches no other
@@ -464,6 +474,14 @@ CELL_TO_REGION = "cellToRegion"
 #: was still counting an hour later. Disconnected is the NORMAL case for a cooled part: any array of
 #: parallel passages is disconnected until a plenum joins it.
 SPLIT_ARGS = ("splitMeshRegions", "-cellZonesOnly", "-overwrite")
+
+
+def region_properties() -> str:
+    """`constant/regionProperties`: the two regions, and which of them is the coolant."""
+    return ("FoamFile { version 2.0; format ascii; class dictionary; object regionProperties; "
+            "location \"constant\"; }\n\n"
+            f"regions\n(\n    fluid       ({FLUID_REGION})\n"
+            f"    solid       ({SOLID_REGION})\n);\n")
 
 
 # #
@@ -794,6 +812,7 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
         # hour in. More than two regions means the split walked connectivity rather than the zones.
         raise ConjugateError(
             f"expected exactly the regions {FLUID_REGION} and {SOLID_REGION}, got {regions}")
+    (ws / "constant" / REGION_PROPERTIES).write_text(region_properties())
 
     reports = {}
     for name in (FLUID_REGION, SOLID_REGION):
@@ -820,7 +839,7 @@ __all__ = ["ConjugateError", "ConjugateReport", "RegionReport", "PortPlan",
            "FLUID_REGION", "SOLID_REGION", "FLUID_TO_SOLID", "SOLID_TO_FLUID",
            "SPLIT_ARGS", "DEFAULT_REFINEMENT_LEVELS", "DEFAULT_VOLUME_TOL",
            "BLOCK_FACES", "OPEN_FACE_RTOL",
-           "CELL_TO_REGION",
+           "CELL_TO_REGION", "REGION_PROPERTIES", "region_properties",
            "block_bounds", "block_surface_stl", "open_faces", "plan_ports",
            "background_complaint", "MIN_BACKGROUND_CELLS_ACROSS_BLOCK",
            "children_peak_rss_bytes",

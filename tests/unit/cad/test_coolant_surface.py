@@ -32,8 +32,28 @@ shipped OCC-written STL that carries real normals, came out identical in every f
     interface 152,844 faces both sides, conformal
     ports     ymin 236, ymax 236
 
-So the winding is what is read and the zeroed normal is harmless. write_surface checks the sign of
-its own enclosed volume to keep it that way.
+That pair alone does NOT settle which of the two the mesher reads, because the shipped STLs'
+normals were derived from their own winding, so the two readings agree on every facet by
+construction. A third run settles it: the same part meshed from a DELIBERATELY INVERTED surface,
+zeroed normals and every triangle's winding reversed.
+
+    run                        normals   winding    fluid cells   fluid mm3   ports
+    shipped STL                real      correct        383,736     2.94474   236 / 236
+    this writer                ZEROED    correct        383,736     2.94474   236 / 236
+    this writer, inverted      zeroed    REVERSED        16,220     0.12578       4 / 4
+
+So the normal does not matter and the winding does: 95.16% off the declared coolant volume, the
+fluid in two disconnected pieces, and the solid swallowing 8.32 mm3 of a 5.85 mm3 block. The port
+check still said "the coolant can flow", on four faces.
+
+THAT IS WHY THE GUARD IS NOT DECORATION. An inverted surface produces a mesh that passes
+checkMesh - "Mesh OK", non-ortho 1.33, skew 0.039 - and is wrong by a factor of twenty.
+write_surface refuses three things rather than trusting anything: an open edge, which lets
+surfaceToCell flood the block; a non-manifold edge, which leaves "inside" undefined along it; and
+an edge its two faces cross the same way, which is a flipped face. The third matters because the
+signed-volume check is one global number and a few flipped facets on a large surface hide inside
+it. The part indexer would not catch an inversion either: it reported the flipped surface's volume
+as 2.60000 mm3, the same as the correct one.
 """
 from __future__ import annotations
 
@@ -130,7 +150,8 @@ def test_the_written_surface_is_closed(written):
     # An open edge would let surfaceToCell flood the block instead of the channels, so the writer
     # refuses rather than writing one.
     assert written["open_edges"] == 0
-    assert written["inconsistent"] == 0
+    assert written["nonmanifold_edges"] == 0
+    assert written["inconsistent_edges"] == 0
 
 
 def test_every_passage_is_written_not_just_the_largest(written):
@@ -171,3 +192,43 @@ def test_the_staging_writer_still_refuses_without_a_declaration(channelled_plate
     assert stage_bounded(channelled_plate, tmp_path / "staged", declared=[], scale=0.001) is None
     assert stage_bounded(channelled_plate, tmp_path / "staged",
                          declared=[{"name": "inlet", "area_m2": 5e-8}], scale=0.001) is None
+
+
+def test_an_inverted_surface_is_refused_rather_than_written(channelled_plate, tmp_path):
+    """The guard, end to end, on a real extraction turned inside out.
+
+    Measured consequence of not having it: the same part meshed from an inverted surface gave
+    16,220 fluid cells instead of 383,736 and 0.12578 mm3 instead of 2.94474, with checkMesh
+    calling the result "Mesh OK". Nothing downstream would have noticed.
+    """
+    from meshpipeline.cad.fluid_volume import extract, surface_volume, write_surface
+    from meshpipeline.cad.scout import read_cad
+
+    pytest.importorskip("OCP", reason="OpenCASCADE is not available")
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+    from OCP.gp import gp_Trsf
+    from OCP.TopoDS import TopoDS
+
+    shape = read_cad(channelled_plate)
+    t = gp_Trsf()
+    t.SetScaleFactor(0.001)                       # the plate is authored in millimetres
+    x = extract(BRepBuilderAPI_Transform(shape, t, True).Shape())
+    assert x.found, "the plate's coolant should extract"
+
+    # the right way round, as a control
+    good = write_surface(x, tmp_path / "good.stl")
+    assert good is not None and good["surface_volume_m3"] > 0.0
+
+    # every boundary face reversed, which is what flips the winding _face_triangles emits
+    for p in x.passages:
+        p.boundary = [TopoDS.Face_s(f.Reversed()) for f in p.boundary]
+    assert write_surface(x, tmp_path / "inverted.stl") is None
+    assert not (tmp_path / "inverted.stl").exists(), "an inverted surface must not be written"
+
+
+def test_the_sign_alone_would_not_catch_a_few_flipped_faces():
+    """Why the winding count is gated as well as the sign. Flip one facet of a cube and the total
+    signed volume is still positive, so the sign says nothing is wrong."""
+    tris = _cube(1.0)
+    tris[0] = (tris[0][0], tris[0][2], tris[0][1])
+    assert surface_volume(tris) > 0.0, "the global sign survives one flipped facet"

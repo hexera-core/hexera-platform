@@ -1137,10 +1137,19 @@ def write_surface(x: Extraction, out_path, *, angular_deflection: float = 0.2,
         T = np.concatenate([V[F], np.asarray(membranes, dtype=np.float64).reshape(-1, 3, 3)])
         V, F, L = _weld_labelled(T, [*L.tolist(), *(["wall"] * len(membranes))])
     checks = isf._verify(V, F, L, [], "wall", is_lid=np.zeros(len(F), dtype=bool))
-    if checks["open_edges"]:
-        logger.warning("fluid volume: the coolant surface has %d open edge(s) - not written",
-                       checks["open_edges"])
-        return None
+    # THREE WAYS A SURFACE CAN BE UNUSABLE HERE, and each is refused rather than written. An open
+    # edge lets surfaceToCell flood the whole block instead of the channels. A non-manifold edge
+    # (three or more faces meeting) leaves "inside" undefined along it. And an edge crossed the
+    # same way by both its faces is a FLIPPED face: the signed-volume check below is a single
+    # global number, so a handful of flipped facets on a large surface can hide inside it, which
+    # is exactly what the winding count catches.
+    for key, what in (("open_edges", "open edge(s)"),
+                      ("nonmanifold_edges", "non-manifold edge(s)"),
+                      ("inconsistent_edges", "inconsistently wound edge(s)")):
+        if checks[key]:
+            logger.warning("fluid volume: the coolant surface has %d %s - not written",
+                           checks[key], what)
+            return None
     signed = surface_volume(V[F])
     found = sum(p.volume for p in x.passages)
     if signed <= 0.0:
@@ -1154,7 +1163,10 @@ def write_surface(x: Extraction, out_path, *, angular_deflection: float = 0.2,
         "path": str(out_path), "triangles": int(len(F)), "faces": faces,
         "passages": len(x.passages),
         "open_edges": int(checks["open_edges"]),
-        "inconsistent": int(checks.get("inconsistent") or 0),
+        "nonmanifold_edges": int(checks["nonmanifold_edges"]),
+        # read by its real name. This said checks.get("inconsistent"), which _verify does not
+        # return, so it was always 0 and the winding was never actually gated.
+        "inconsistent_edges": int(checks["inconsistent_edges"]),
         # the two volumes a caller compares: what the B-rep says the coolant is, and what the
         # surface actually written encloses. They agree to the tessellation's error, and the
         # SIGN is the orientation proof.
