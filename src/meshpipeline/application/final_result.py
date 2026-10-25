@@ -926,6 +926,15 @@ def worker_lost_result(*, job_id: str, owner_id: str, attempts: int = 0,
                           attempts=attempts, attempts_max=attempts_max)
 
 
+def refused_result(category: FailureCategory, *, job_id: str, owner_id: str,
+                   attempts: int = 0) -> FinalResult:
+    """A job failed and dead-lettered before its run began (application/terminal_finalize.
+    refuse_before_execution): nothing ran, so - as for a reaped job - nothing is derived, and the
+    record exists for its sentence."""
+    return _reaped_result(category, job_id=job_id, owner_id=owner_id, attempts=attempts,
+                          attempts_max=0)
+
+
 def never_started_result(*, job_id: str, owner_id: str, attempts: int = 0,
                          attempts_max: int = 0) -> FinalResult:
     """A job that was still PENDING or QUEUED when the reaper failed it: no worker ever picked it

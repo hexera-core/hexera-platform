@@ -574,8 +574,9 @@ async def _run_async(req: JobRequest) -> dict:
             # The closing is said only when the guard FAILED the job; a stale copy it dropped
             # belongs to a run that is going on - or has ended - under its own authority.
             if _refusal.status == "failed":
+                # the same sentence the job's final record renders (execution_fence: worker_lost)
                 from meshpipeline.errors import FailureClass, user_message_for
-                _pub(job_id).closing(user_message_for(FailureClass.RESOURCE),
+                _pub(job_id).closing(user_message_for(FailureClass.WORKER_LOST),
                                      _terminal_event_id(job_id))
             await _worker_engine.dispose()
             return _refusal.detail
@@ -780,7 +781,7 @@ async def _run_async(req: JobRequest) -> dict:
                 dependency="pipeline",
                 detail="pipeline total budget exhausted before start",
                 user_message=_pb.EXHAUSTED_MESSAGE, reason=_start.reason,
-                job_repo=job_repo, jlog=jlog,
+                job_repo=job_repo, jlog=jlog, category="timed_out",
                 publish=lambda msg: _pub(job_id).closing(msg, _terminal_event_id(job_id)))
             await _worker_engine.dispose()
             return _refusal
@@ -819,16 +820,24 @@ async def _run_async(req: JobRequest) -> dict:
                 from meshpipeline.application.post_gate_rescue import run_to_end
                 return await run_to_end(graph, await _graph_input(graph), graph_config, jlog=jlog)
             _stop = asyncio.Event()
+            _interval = max(1, int(rtcfg.WORKER_HEARTBEAT_SECONDS))
+            # THE LEASE KEEPER (application/lease_keeper): a process beside this run that renews
+            # the lease while this beat cannot run - the event loop held by one long CPU-bound
+            # step (dev-areen 25 Oct: four assemblies lost in the builder's surface preparation) -
+            # for as long as this worker is still working, and never for a worker that is stuck.
+            from meshpipeline.application import lease_keeper as _lk
+            _keeper = _lk.start(ownership, interval_s=_interval)
 
             async def _beat():
                 from datetime import UTC, datetime
-                _interval = max(1, int(rtcfg.WORKER_HEARTBEAT_SECONDS))
                 while not _stop.is_set():
                     try:
                         await asyncio.wait_for(_stop.wait(), timeout=_interval)
                         return                       # stop requested (run finished)
                     except TimeoutError:
                         pass
+                    if _keeper is not None:
+                        _keeper.mark_alive()         # this beat runs: the keeper only watches
                     try:
                         # PROGRESS, NOT AGE (pipeline_budget.progress_extension): a job that showed
                         # progress within the stall window is not out of time, so its deadline moves
@@ -881,6 +890,13 @@ async def _run_async(req: JobRequest) -> dict:
                     await _hb_task
                 except Exception:  # noqa: BLE001 - heartbeat teardown never affects the run result
                     pass
+                if _keeper is not None:
+                    # synchronous on purpose (it returns as soon as the keeper reads its stdin
+                    # close), so a cancelled run still stops its keeper
+                    try:
+                        _keeper.stop()
+                    except Exception:  # noqa: BLE001 - keeper teardown never affects the run result
+                        pass
 
         try:
             from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver

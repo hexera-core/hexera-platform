@@ -118,40 +118,39 @@ def run_guarded(args, *, timeout=None, **kwargs) -> subprocess.CompletedProcess:
 @dataclass(frozen=True)
 class Watched:
     """How a watched process ended: its return code, why it stopped (``ok`` / ``stalled`` /
-    ``ceiling``), how long it ran, the longest stretch with no progress, and its log's tail."""
+    ``ceiling``), how long it ran, the longest stretch with no sign of life, and its log's tail.
+    `cpu_s` is the CPU time its process tree was seen to use (0.0 where that cannot be read)."""
     returncode: int
     stopped: str
     seconds: float
     longest_silence_s: float
     silence_at_stop_s: float
     tail: str
+    cpu_s: float = 0.0
 
 
 def run_watched(args, *, log_path, hard_timeout: float, stall_s: float, progress_paths=(),
                 poll_s: float = 10.0, **kwargs) -> Watched:
-    """Run `args` with its output streamed to `log_path`, killed ONLY when it has made no progress
-    for `stall_s` seconds, or at `hard_timeout` (the infrastructure's ceiling). Progress is new output
-    in the log, or a change to any of `progress_paths` (a stage file). A slow process that is still
-    moving is never stopped early (Areen, 24 Oct: no guessed time limits)."""
+    """Run `args` with its output streamed to `log_path`, killed ONLY when it has shown no sign of
+    life for `stall_s` seconds, or at `hard_timeout` (the infrastructure's ceiling). A sign of life is
+    new output in the log, a change to any of `progress_paths` (a stage file), or its process tree
+    burning CPU or changing its memory (sandbox/liveness) - gmsh meshes a big assembly's curves for
+    long stretches without printing a line. A slow process that is still working is never stopped
+    early (Areen, 24 Oct: no guessed time limits)."""
     import time as _time
+
+    from meshpipeline.sandbox.liveness import LivenessWatch
     log_path = Path(log_path)
     kwargs.setdefault("start_new_session", True)
     t0 = last = _time.monotonic()
     longest = 0.0
-
-    def mark() -> tuple:
-        parts = [log_path.stat().st_size if log_path.exists() else -1]
-        for q in progress_paths:
-            qp = Path(q)
-            parts.append(qp.stat().st_mtime_ns if qp.exists() else -1)
-        return tuple(parts)
 
     # what the watchdog sees as progress is the job's progress too (contracts/progress_clock): the
     # run's own deadline then ends it only when this has stopped moving, never while it moves
     from meshpipeline.contracts import progress_clock
     with open(log_path, "wb") as out:
         proc = subprocess.Popen(args, stdout=out, stderr=subprocess.STDOUT, **kwargs)
-        seen = mark()
+        watch = LivenessWatch(proc.pid, (log_path, *progress_paths))
         progress_clock.touch()
         stopped = "ok"
         while True:
@@ -161,9 +160,8 @@ def run_watched(args, *, log_path, hard_timeout: float, stall_s: float, progress
             except subprocess.TimeoutExpired:
                 pass
             now = _time.monotonic()
-            cur = mark()
-            if cur != seen:
-                seen, last = cur, now
+            if watch.poll() is not None:
+                last = now
                 progress_clock.touch()
             longest = max(longest, now - last)
             if now - last >= stall_s:
@@ -184,7 +182,7 @@ def run_watched(args, *, log_path, hard_timeout: float, stall_s: float, progress
         tail = ""
     return Watched(returncode=int(proc.returncode if proc.returncode is not None else -9), stopped=stopped,
                    seconds=round(end - t0, 1), longest_silence_s=round(longest, 1),
-                   silence_at_stop_s=round(end - last, 1), tail=tail)
+                   silence_at_stop_s=round(end - last, 1), tail=tail, cpu_s=round(watch.cpu_s, 1))
 
 
 def _kill_process_group(proc: subprocess.Popen) -> None:

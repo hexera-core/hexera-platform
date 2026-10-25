@@ -477,10 +477,28 @@ def _review(f: Mapping) -> tuple[str, str]:
                   "change.")
 
 
+#: Said after a verdict the builder carried from its last attempt when it stopped without building
+#: again (agents/builder/attempt.carry_last_verdict): why there was no further attempt.
+_STOPPED_WORDS = {
+    "time_spent": "The run's time was used up after that, so it was not tried again.",
+    "no_progress": "It failed the same way twice in a row, so it was not tried again.",
+}
+
+
 def describe(cause: object, facts: Mapping | None = None, *,
              engine: str = "") -> tuple[str, str]:
     """(what failed, what the user can do next) - each one or two plain sentences. An unknown
     cause returns two empty strings, and the caller keeps its generic headline."""
+    what, nxt = _describe(cause, facts, engine=engine)
+    f: Mapping = facts if isinstance(facts, Mapping) else {}
+    said = _STOPPED_WORDS.get(str(f.get("builder_stopped") or ""))
+    if what and said and f.get("carried_from_attempt") is not None:
+        what = f"{what} {said}"
+    return what, nxt
+
+
+def _describe(cause: object, facts: Mapping | None = None, *,
+              engine: str = "") -> tuple[str, str]:
     c = as_cause(cause)
     f: Mapping = facts if isinstance(facts, Mapping) else {}
     if c is None:
@@ -599,8 +617,9 @@ def describe(cause: object, facts: Mapping | None = None, *,
                 quiet = (_as_number(seen.get("silence_at_stop_s")) or _as_number(trip.get("stall_window_s"))
                          or 0.0)
                 ran = _as_number(seen.get("seconds")) or 0.0
-                return (f"The mesher stopped making progress while building the mesh{size}: no new output for "
-                        f"{quiet / 60:.0f} minutes after {ran / 60:.0f} minutes of work, so it was stopped and "
+                # quiet means ALL of it: no output, no new step and no CPU in use (sandbox/liveness)
+                return (f"The mesher stopped making progress while building the mesh{size}: no new output "
+                        f"and no CPU work for {quiet / 60:.0f} minutes after {ran / 60:.0f} minutes of work, so it was stopped and "
                         "no mesh came back. Nothing about your part was found wrong. That is ours to look into.",
                         f"You can run it again ({_RUN_AGAIN}); if it stops the same way, tell us.")
             # THE HARD LIMIT: the trip record carries it as ceiling_s (engines/fea_driver.planned_work, #295);
@@ -620,6 +639,21 @@ def describe(cause: object, facts: Mapping | None = None, *,
                     "geometry's.",
                     f"You can run it again ({_RUN_AGAIN}). If it happens again, ask for less "
                     "detail - a very large mesh can be too big to bring back.")
+        if f.get("run_record_unknown"):
+            # pipeline/executor._no_mesh_cause: no record of a mesher run in this attempt (it was
+            # resumed on another worker) - so no crash is claimed
+            return ("No complete mesh came back from this attempt, and the worker that checked it "
+                    "has no record of its mesher run (the run moved to another worker part way), so "
+                    "nothing is known to have gone wrong with the mesher or your geometry. That is "
+                    "on our side.",
+                    f"You can run it again with nothing changed: {_RUN_AGAIN}.")
+        if f.get("time_spent_before_meshing"):
+            # agents/builder/attempt.carry_last_verdict with nothing to carry: the run's time ran out
+            # before this attempt started a mesher - never a mesher that crashed
+            return ("No mesh was built: the run used up its time before a mesher could start, so "
+                    "there was nothing to check. Nothing about your part was found wrong - that is "
+                    "ours to look into.",
+                    f"You can run it again with nothing changed: {_RUN_AGAIN}.")
         if f.get("stage") == "staging":
             # agents/builder/attempt._record_staging_failure(ours=True): no mesher was started
             who = str(f.get("engine") or engine or "The engine")

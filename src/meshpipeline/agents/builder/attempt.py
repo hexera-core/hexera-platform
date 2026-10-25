@@ -299,6 +299,64 @@ def _record_staging_failure(workspace: Path, engine: str, exc: BaseException, *,
                "deterministic": not ours, "ours": ours, "before_meshing": True}).write(workspace)
 
 
+#: Why the builder stopped WITHOUT building, as the carried verdict's facts say it (`builder_stopped`).
+STOPPED_TIME_SPENT = "time_spent"
+STOPPED_NO_PROGRESS = "no_progress"
+
+
+def stop_without_building(workspace: Path, state, *, stopped: str) -> dict:
+    """The fields the builder's patch carries when it stops WITHOUT building (`stopped`). The run
+    ends on what the last attempt ended on - never on this attempt's empty workspace, which the
+    executor would report as "the mesher stopped before it finished writing the mesh" when no
+    mesher ran at all.
+
+    * the last attempt's mesh passed its checks: the run ends on that mesh and its review (its
+      attempt count and workspace), exactly as a review-repeat stop does;
+    * otherwise its verdict becomes this attempt's refusal (carry_last_verdict), and the attempt
+      counter is spent, so the run goes to the executor once more and ends there."""
+    if state.get("executor_success"):
+        return {"retry_count": int(state.get("retry_count", 0) or 0),
+                "workspace": str(state.get("openfoam_workspace") or ""),
+                "stop": f"builder_{stopped}"}
+    carry_last_verdict(workspace, state, stopped=stopped)
+    return {"retry_count": bcfg.MAX_BUILDER_RETRIES + 1}
+
+
+def carry_last_verdict(workspace: Path, state, *, stopped: str) -> bool:
+    """THE BUILDER STOPS WITHOUT BUILDING - the run's time is spent, or the last two attempts failed
+    the same way - and the run ends on what the LAST attempt actually ended on. That verdict is
+    written into this attempt's workspace as its refusal, so the executor reports it instead of an
+    empty workspace's "the mesher stopped before it finished writing the mesh" (dev-areen 25 Oct:
+    ox_cryo_ll's FEA guard stopped the mesher, the run's time ran out, and the user read
+    engine_crashed - no mesher had crashed). `stopped` is said beside it.
+
+    With no failed verdict to carry (the first attempt, or the last one built a mesh), the stop
+    itself is recorded: the run's time was spent before a mesher started - ours, not the file's.
+    Returns whether a previous attempt's verdict was carried."""
+    from meshpipeline.contracts.failure_cause import SEAM_CAUSES, FailureCause
+    from meshpipeline.engines.preflight import PreflightRefusal
+    gate = str(state.get("executor_failed_gate") or "")
+    cause = str(state.get("executor_failure_cause") or "")
+    if gate and not cause and gate in SEAM_CAUSES:
+        cause = SEAM_CAUSES[gate].value
+    if gate and cause and not state.get("executor_success"):
+        facts = {**dict(state.get("executor_failure_facts") or {}), "builder_stopped": stopped,
+                 "carried_from_attempt": int(state.get("retry_count", 0) or 0)}
+        PreflightRefusal(gate=gate, cause=cause,
+                         builder_text=str(state.get("executor_output") or f"[{gate}] {cause}"),
+                         facts=facts).write(workspace)
+        return True
+    from meshpipeline.engines.registry import engine_label
+    engine = str(state.get("engine") or "")
+    PreflightRefusal(
+        gate="builder_budget", cause=FailureCause.RUN_INFRASTRUCTURE.value,
+        builder_text="[BUILDER_STOPPED] the run's time was spent before a mesher started",
+        facts={"engine": engine_label(engine) if engine else "", "builder_stopped": stopped,
+               "time_spent_before_meshing": True, "ours": True,
+               "before_meshing": True}).write(workspace)
+    return False
+
+
 def staging_failure(workspace: Path):
     """The staging refusal this attempt recorded, or None."""
     from meshpipeline.engines.preflight import read_refusal
@@ -401,5 +459,6 @@ def prepare(state, *, job_id: str, mode: str) -> BuilderAttempt:
         system_snapshot=messages[0]["content"] if messages else "")
 
 
-__all__ = ["CARRY_FILES", "BuilderAttempt", "advisory_block", "flag_responses",
-           "human_rebuild_requirements", "prepare"]
+__all__ = ["CARRY_FILES", "STOPPED_NO_PROGRESS", "STOPPED_TIME_SPENT", "BuilderAttempt",
+           "advisory_block", "carry_last_verdict", "flag_responses", "human_rebuild_requirements",
+           "prepare", "stop_without_building"]

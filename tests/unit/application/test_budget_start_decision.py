@@ -141,6 +141,32 @@ async def test_an_exhausted_run_is_durably_failed_and_told(monkeypatch):
     assert published == [pb.EXHAUSTED_MESSAGE]
 
 
+async def test_a_dead_lettered_refusal_always_leaves_a_final_message(monkeypatch):
+    """A job failed before it ran is dead-lettered - and still reads as something: its final record
+    is written beside the failure, and the final message is rendered from it (the API's job read)."""
+    import meshpipeline.errors as errs
+    from meshpipeline.application.final_result import FinalResult, render_message
+    from meshpipeline.application.terminal_finalize import refuse_before_execution
+    from meshpipeline.errors import FailureClass
+    monkeypatch.setattr(errs, "record_dead_letter", lambda *a, **k: None)
+    repo = _Repo()
+    await refuse_before_execution(
+        lambda: _S(), job_id=JOB, failure_class=FailureClass.INTERNAL, dependency="pipeline",
+        detail="pipeline total budget exhausted before start", user_message=pb.EXHAUSTED_MESSAGE,
+        reason="pipeline_timed_out", job_repo=repo, jlog=_Log(), publish=lambda m: None,
+        category="timed_out")
+    record = FinalResult.from_dict(repo.row.final_result)
+    assert record.failure_category == "timed_out" and record.job_id == JOB
+    msg = render_message(record)
+    assert "ran out of time" in msg and "run it again" in msg
+    # without a category it is still said, as our own failure
+    repo = _Repo()
+    await refuse_before_execution(
+        lambda: _S(), job_id=JOB, failure_class=FailureClass.INTERNAL, dependency="pipeline",
+        detail="d", user_message="m", reason="r", job_repo=repo, jlog=_Log(), publish=lambda m: None)
+    assert "on our side" in render_message(FinalResult.from_dict(repo.row.final_result))
+
+
 async def test_a_refusal_survives_a_database_that_will_not_transition(monkeypatch):
     import meshpipeline.errors as errs
     from meshpipeline.application.terminal_finalize import refuse_before_execution

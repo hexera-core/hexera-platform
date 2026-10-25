@@ -337,8 +337,9 @@ def run_cartesian_mesh(workspace, *, timeout: int, context=None) -> dict:
     return run_mesh(workspace, engine="gmsh", timeout=timeout)
 
 
-#: How long an FEA mesher may go without a sign of progress (new output, a new stage) before it is
-#: stopped as stuck - never a guess at how long the mesh should take (Areen, 24 Oct).
+#: How long an FEA mesher may go without a sign of life (new output, a new stage, CPU being burned
+#: or memory changing - sandbox/liveness) before it is stopped as stuck - never a guess at how long
+#: the mesh should take (Areen, 24 Oct).
 FEA_STALL_WINDOW_S = 900
 #: The FEA mesher's own log, streamed as it runs: what the watchdog and the live stage line read.
 FEA_LOG = "gmshfea.log"
@@ -371,7 +372,7 @@ def _run_fea_watched(ws: Path, *, timeout: int) -> dict:
                     progress_paths=(ws / "fea_stage.json",))
     seen = {"stopped": w.stopped, "seconds": w.seconds, "longest_silence_s": w.longest_silence_s,
             "silence_at_stop_s": w.silence_at_stop_s, "stall_window_s": stall_window(),
-            "ceiling_s": float(timeout)}
+            "ceiling_s": float(timeout), "cpu_s": w.cpu_s}
     if w.stopped == "ok":
         out = describe_native_result(returncode=w.returncode, args=None, stage="gmsh driver", output=w.tail)
     else:
