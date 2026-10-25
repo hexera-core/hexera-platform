@@ -6,6 +6,7 @@
 # closed" on the checkpoint write after the reviewer's PASS).
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import TypedDict
 
@@ -21,16 +22,23 @@ class _S(TypedDict, total=False):
     verdict: str
 
 
-def _kill_checkpointer_connections(dsn: str) -> int:
-    """Terminate every server connection the checkpointer pool holds, from a connection of our own."""
+def _kill_checkpointer_connections(dsn: str, *, wait_s: float = 10.0) -> int:
+    """Terminate every server connection the checkpointer pool holds, from a connection of our own.
+    The pool refills in the background after a kill, so this first waits (briefly) until it holds one."""
+    import time
+
     import psycopg
 
     from meshpipeline.application.checkpoint_pool import APPLICATION_NAME
+    deadline = time.monotonic() + wait_s
     with psycopg.connect(dsn, autocommit=True) as c:
-        rows = c.execute("select pg_terminate_backend(pid) from pg_stat_activity "
-                         "where application_name = %s and pid <> pg_backend_pid()",
-                         (APPLICATION_NAME,)).fetchall()
-    return len(rows)
+        while True:
+            rows = c.execute("select pg_terminate_backend(pid) from pg_stat_activity "
+                             "where application_name = %s and pid <> pg_backend_pid()",
+                             (APPLICATION_NAME,)).fetchall()
+            if rows or time.monotonic() > deadline:
+                return len(rows)
+            time.sleep(0.1)
 
 
 async def run_with_killed_checkpointer(dsn: str) -> dict:
@@ -44,13 +52,14 @@ async def run_with_killed_checkpointer(dsn: str) -> dict:
 
     killed: list[int] = []
 
+    # off the event loop: the pool reconnects on the loop, and a blocking wait here would starve it
     async def first(state):
-        killed.append(_kill_checkpointer_connections(dsn))
+        killed.append(await asyncio.to_thread(_kill_checkpointer_connections, dsn))
         return {"n": int(state.get("n", 0)) + 1}
 
     async def review(state):
         # the mesh is built and reviewed: the write that follows is the one kart_chassis lost
-        killed.append(_kill_checkpointer_connections(dsn))
+        killed.append(await asyncio.to_thread(_kill_checkpointer_connections, dsn))
         return {"n": int(state.get("n", 0)) + 1, "verdict": "PASS"}
 
     thread = f"{uuid.uuid4()}:s1:g1"
