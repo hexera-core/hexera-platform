@@ -14,8 +14,8 @@ tool call against a strict schema:
 
 The rules turn it into sizes (AI-fea-n, docs/RULES.md):
 
-  AI-fea-1  refine: a hot spot 20 elements per quarter-turn and 4 through the wall beside it; a wall 3
-            through; a round 10 per quarter-turn. Never finer than half the rule's own size.
+  AI-fea-1  refine: a hot spot 10 elements per quarter-turn and 4 through the wall beside it; a wall 3
+            through; a round 6 per quarter-turn (as a hot spot). Never finer than half the rule's own size.
   AI-fea-2  coarser: a hot spot keeps only its shape (4 per quarter-turn, 2 through the wall); a sharp
             corner is capped at half its wall. Walls and rounds are at their minimum already.
   AI-fea-3  set aside: a hot spot no larger than 2% of the part is meshed as coarser; a wall never.
@@ -59,10 +59,10 @@ ACTIONS = ("keep", "set_aside")
 JOINTS = ("bonded", "contact")
 
 #: AI-fea-1
-REFINE_PER_QUARTER = 20
+REFINE_PER_QUARTER = 10
 REFINE_STRESS_WALL = 4
 REFINE_WALL = 3
-REFINE_ROUND_PER_QUARTER = 10
+REFINE_ROUND_PER_QUARTER = 6
 REFINE_FLOOR = 0.5
 #: AI-fea-2
 COARSER_CORNER_DIVISIONS = 2
@@ -96,7 +96,7 @@ def _mm(v_m: float) -> float:
 # #
 
 SYSTEM = """You are the FEA meshing engineer for ONE solid part. The mesh is quadratic tetrahedra for the user's own solver.
-Fixed rules already size every zone: at least 2 elements through every wall; at each hole, fillet or notch 10 elements per
+Fixed rules already size every zone: at least 2 elements through every wall; at each hole, fillet or notch 6 elements per
 quarter-turn and 3 through the wall beside it; sharp inside corners capped at a quarter of their wall (their stress never
 settles); every other round keeps its shape with 4 per quarter-turn; sizes grow by at most 1.3; an element limit.
 
@@ -107,7 +107,7 @@ sizes and keep every minimum, whatever you choose.
 - zones: only zones whose priority should differ from standard, by the id shown.
   refine = the stress or the behaviour there matters to this user (a feature they named, a load path they mentioned, the
   stress raisers that decide a static strength check). coarser = it does not matter for this analysis. In a modal or
-  buckling run stiffness and mass decide, not local stress peaks: the 10-per-quarter-turn refinement at holes, fillets
+  buckling run stiffness and mass decide, not local stress peaks: the 6-per-quarter-turn refinement at holes, fillets
   and notches buys nothing there, so mark those coarser unless the user named them or they sit in a thin wall that sets
   the stiffness. Be selective: refining everything costs elements and time for nothing. Leave a zone out to keep it
   standard. Walls (W, T) and rounds (R, kind round) are already at the minimum the rules allow: coarser or set_aside

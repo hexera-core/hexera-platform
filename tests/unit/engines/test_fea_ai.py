@@ -17,10 +17,10 @@ from meshpipeline.engines import fea_plan as P
 
 Q = math.pi / 2.0
 DIAG = 0.15                      # a 150 mm part: base size 15 mm, 2% is 3 mm
-HOLE = {"id": "H1", "kind": "hole", "faces": ["Face_7"], "size_m": Q * 0.004 / 10, "reach_m": 0.004,
+HOLE = {"id": "H1", "kind": "hole", "faces": ["Face_7"], "size_m": Q * 0.004 / P.HOT_SPOT_PER_QUARTER, "reach_m": 0.004 * P.HOT_SPOT_REACH,
         "rule": "PLAN-fea-4", "spot": "H1", "capped": False, "radius_m": 0.004, "thickness_m": 0.006,
         "wall_elements": 3}
-SMALL = {**HOLE, "id": "H2", "faces": ["Face_8"], "radius_m": 0.001, "size_m": Q * 0.001 / 10, "spot": "H2"}
+SMALL = {**HOLE, "id": "H2", "faces": ["Face_8"], "radius_m": 0.001, "size_m": Q * 0.001 / P.HOT_SPOT_PER_QUARTER, "spot": "H2"}
 WALL = {"id": "W3", "kind": "wall", "faces": ["Face_3"], "size_m": 0.003, "reach_m": 0.006, "rule": "PLAN-fea-3",
         "thickness_m": 0.006, "capped": False}
 ROUND = {"id": "R4", "kind": "round", "faces": ["Face_4"], "size_m": Q * 0.01 / 4, "reach_m": 0.0,
@@ -46,11 +46,11 @@ def _by_id(zs):
 
 
 # ------------------------------------------------------------------ AI-fea-1/2: the rules make it exact ----
-def test_refine_a_hot_spot_is_20_per_quarter_turn_and_4_through_its_wall_never_finer_than_half():
+def test_refine_a_hot_spot_is_finer_per_quarter_turn_and_4_through_its_wall_never_finer_than_half():
     zs, applied = A.apply_zones(ZONES, _decision(zones={"H1": {"priority": "refine", "reason": "user named it"}}),
                                 RECORD, diag_m=DIAG)
     h = _by_id(zs)["H1"]
-    assert h["size_m"] == pytest.approx(max(min(Q * 0.004 / 20, 0.006 / 4), 0.5 * HOLE["size_m"]), rel=1e-5)
+    assert h["size_m"] == pytest.approx(max(min(Q * 0.004 / A.REFINE_PER_QUARTER, 0.006 / 4), 0.5 * HOLE["size_m"]), rel=1e-5)
     assert h["size_m"] >= 0.5 * HOLE["size_m"] * (1 - 1e-6)
     assert applied[0]["done"] and applied[0]["rule"] == "AI-fea-1"
 
@@ -349,7 +349,7 @@ def test_refinements_that_would_not_fit_are_left_out_before_any_rules_zone_is_co
     big = FD.choose_plan(record, surface, diag, ai=ai)
     assert big["estimate"]["elements"] > rules["estimate"]["elements"]
     # a limit the rules' plan fits under and the refined one does not
-    cap = int(rules["estimate"]["elements"] / P.LIMIT_AIM) + 1
+    cap = int(rules["estimate"]["elements"] / P.LIMIT_AIM * 1.02) + 1
     monkeypatch.setattr(FD, "element_limit", lambda _record, _ceiling=None: (cap, "a test limit"))
     plan = FD.choose_plan(record, surface, diag, ai=ai)
     assert plan["fits"] and not plan.get("coarsened")

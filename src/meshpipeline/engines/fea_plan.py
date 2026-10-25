@@ -19,7 +19,7 @@ Lengths are metres (the unit gmsh and the deck work in); the measurement record 
 THE RULES (docs/RULES.md):
   PLAN-fea-1  quadratic tetrahedra, solid only (version 1)
   PLAN-fea-3  at least 2 elements through every wall
-  PLAN-fea-4  hot spots: 10 elements per quarter-turn of a hole, fillet or notch, and 3 through
+  PLAN-fea-4  hot spots: 6 elements per quarter-turn of a hole, fillet or notch, and 3 through
               the wall beside it
   PLAN-fea-5  sharp inside corners are capped at a quarter of the wall beside them
   PLAN-fea-6  sizes grow by at most 1.3 away from every zone
@@ -62,8 +62,17 @@ MIN_DIVISIONS = 10
 #: PLAN-fea-3: elements through every wall (version 1 is solid only).
 WALL_ELEMENTS = 2
 #: PLAN-fea-4: elements per quarter-turn of a hole, fillet or notch, and through the wall beside it.
-HOT_SPOT_PER_QUARTER = 10
+#: 6 for QUADRATIC tetrahedra (Areen, 24 Oct, option b): a 10-node element's curved sides follow
+#: the arc, and the textbook Kt cases hold their tolerance at 6 (lab, 24 Oct - see RULES.md
+#: PLAN-fea-4); 10 made a 25 mm shaft coupler 2.8M elements and 63 minutes.
+HOT_SPOT_PER_QUARTER = 6
 STRESS_WALL_ELEMENTS = 3
+#: PLAN-fea-4: how far off the feature's faces the hot-spot size is held before it grows (a share
+#: of the radius). The stress peak sits at the root and falls off within about a radius; holding the
+#: full density a whole radius deep along the whole feature was most of a small assembly's elements
+#: (chrono_assembly: 56% of 1.86M from two R2 fillets), and growth 1.3 beyond it still reaches the
+#: base size gradually.
+HOT_SPOT_REACH = 0.5
 #: PLAN-fea-12: a CAD detail (edge length, face width) under this fraction of the finest element the
 #: plan asks for is a MICRO DETAIL: the mesh cannot follow it, so the elements on it are set aside.
 MICRO_KEEP = 0.05
@@ -131,7 +140,7 @@ def zones(record: Mapping, *, tighten: Mapping[str, float] | None = None) -> lis
             why = (f"{h.get('shape') or h.get('type')} of radius {_mm(r)} in a {_mm(t)} wall: "
                    f"{STRESS_WALL_ELEMENTS} elements through the wall beside it")
         out.append({"id": f"H{h.get('id', '')[1:]}", "kind": str(h.get("type")), "faces": faces,
-                    "size_m": size * _MM, "reach_m": r * _MM, "rule": "PLAN-fea-4",
+                    "size_m": size * _MM, "reach_m": HOT_SPOT_REACH * r * _MM, "rule": "PLAN-fea-4",
                     "spot": h.get("id"), "capped": False, "radius_m": r * _MM, "why": why,
                     **({"thickness_m": t * _MM, "wall_elements": STRESS_WALL_ELEMENTS} if t else {})})
 
@@ -460,7 +469,7 @@ def decisions(record: Mapping, plan: Mapping) -> list[dict]:
     return out
 
 
-__all__ = ["CORNER_DIVISIONS", "assembly_words", "ELEMENT_LIMIT", "GROWTH", "HOT_SPOT_PER_QUARTER", "KEEP_PER_QUARTER",
+__all__ = ["CORNER_DIVISIONS", "assembly_words", "ELEMENT_LIMIT", "GROWTH", "HOT_SPOT_PER_QUARTER", "HOT_SPOT_REACH", "KEEP_PER_QUARTER",
            "KEEP_THROUGH", "LIMIT_AIM", "MICRO_KEEP", "MIN_DIVISIONS", "PER_H3", "PLAN_FILE", "ROUND_PER_QUARTER",
            "STRESS_WALL_ELEMENTS", "VERSION", "WALL_ELEMENTS", "decisions", "finish", "floored", "keep_size",
            "shortfalls", "words", "zones"]
