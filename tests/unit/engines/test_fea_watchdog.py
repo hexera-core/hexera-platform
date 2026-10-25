@@ -6,6 +6,8 @@ import json
 import sys
 import time
 
+import pytest
+
 from meshpipeline.engines import mesher_stage
 from meshpipeline.engines.gmsh import fea_adapter
 from meshpipeline.sandbox.safe_exec import run_watched
@@ -36,6 +38,38 @@ def test_a_new_step_counts_as_progress(tmp_path):
             "for i in range(8):\n    p.write_text(str(i)); time.sleep(0.3)")
     w = run_watched(_py(code), log_path=tmp_path / "c.log", hard_timeout=60, stall_s=1.0, poll_s=0.1,
                     progress_paths=(stage,))
+    assert w.stopped == "ok" and w.returncode == 0
+
+
+_BUSY = "import time\nt = time.monotonic()\nwhile time.monotonic() - t < {s}:\n    sum(range(10000))\n"
+_linux_only = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="CPU is read from /proc")
+
+
+@_linux_only
+def test_a_quiet_mesher_still_burning_cpu_is_never_stopped(tmp_path):
+    """gmsh's 1D curve meshing prints nothing per curve (ox_cryo_ll, ox_mc_lid, hemy_mount_base, dev-areen
+    25 Oct: stopped as stalled while still computing). No output for 3 s against a 1 s window, but
+    the CPU is busy the whole time: it is working, so it finishes."""
+    w = run_watched(_py("print('meshing curves', flush=True)\n" + _BUSY.format(s=3.0)),
+                    log_path=tmp_path / "e.log", hard_timeout=60, stall_s=1.0, poll_s=0.1)
+    assert w.stopped == "ok" and w.returncode == 0
+    assert w.longest_silence_s < 1.0 and w.cpu_s >= 1.0
+
+
+@_linux_only
+def test_a_mesher_whose_cpu_goes_flat_too_is_stopped(tmp_path):
+    # busy and quiet for 1 s, then quiet AND idle: every sign is flat, so it is stuck
+    w = run_watched(_py(_BUSY.format(s=1.0) + "time.sleep(60)"),
+                    log_path=tmp_path / "f.log", hard_timeout=60, stall_s=1.0, poll_s=0.1)
+    assert w.stopped == "stalled" and w.seconds < 20 and w.silence_at_stop_s >= 1.0
+
+
+@_linux_only
+def test_the_cpu_of_a_process_the_mesher_started_counts(tmp_path):
+    # the watched process only waits; the work is done by the child it started (a native tool)
+    code = ("import subprocess, sys\n"
+            f"subprocess.run([sys.executable, '-c', {_BUSY.format(s=2.5)!r}])")
+    w = run_watched(_py(code), log_path=tmp_path / "g.log", hard_timeout=60, stall_s=1.0, poll_s=0.1)
     assert w.stopped == "ok" and w.returncode == 0
 
 

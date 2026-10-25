@@ -2299,6 +2299,32 @@
   "roots": []
  },
  {
+  "context": "application/lease_keeper.py::run::error#1|NotAPublisher|not-a-publisher|",
+  "path": "application/lease_keeper.py",
+  "qualname": "run",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "application/lease_keeper.py::run::error#2|NotAPublisher|not-a-publisher|",
+  "path": "application/lease_keeper.py",
+  "qualname": "run",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 2,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "application/maintenance/cleanup.py::_publish_terminal_log::closing#1|EventPublisher|maintenance|application/maintenance/cleanup.py::publisher",
   "path": "application/maintenance/cleanup.py",
   "qualname": "_publish_terminal_log",

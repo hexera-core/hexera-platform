@@ -556,8 +556,9 @@ MEMORY_BASE_MB = 450.0
 BYTES_PER_ELEMENT = 5100.0
 MEMORY_MARGIN = 1.25
 #: PLAN-fea-13: NO GUESSED TIME LIMIT (Areen, 24 Oct). The mesher runs until it is done, and is
-#: stopped only when it has made NO PROGRESS for the stall window (engines/gmsh/gmsh_runner
-#: FEA_STALL_WINDOW_S: no new output, no new step), or at the hard ceiling of the machine it runs on.
+#: stopped only when it has shown NO SIGN OF LIFE for the stall window (engines/gmsh/gmsh_runner
+#: FEA_STALL_WINDOW_S: no new output, no new step, no CPU burned - sandbox/liveness), or at the hard
+#: ceiling of the machine it runs on.
 #: THE CLOUD RUN JOB'S WALL: Cloud Run stops every run of the mesh job at its task timeout (deploy/gcp
 #: MESH_TIMEOUT_SECONDS), a platform limit no setting here removes; less JOB_MARGIN_S for the hand-back.
 #: A plan planned to pass it runs on a VM from the start, and a pass that meets it still working runs
@@ -632,7 +633,8 @@ def watchdog_words(trip: dict) -> str:
     ran = int(round(float(seen.get("seconds") or 0) / 60.0))
     if trip.get("stalled"):
         quiet = int(round(float(seen.get("silence_at_stop_s") or trip.get("stall_window_s") or 0) / 60.0))
-        return (f"the mesher made no progress for {quiet} minutes (no new output, no new step) after "
+        return (f"the mesher made no progress for {quiet} minutes (no new output, no new step, no CPU "
+                f"in use) after "
                 f"{ran} minutes of work on pass {trip.get('pass')}, so it was stopped as stuck")
     return (f"the mesher was still working when it reached the hard limit of "
             f"{int(round(float(trip.get('ceiling_s') or 0) / 60.0))} minutes on pass {trip.get('pass')}")

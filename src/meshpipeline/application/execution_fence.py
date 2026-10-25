@@ -246,13 +246,21 @@ async def guard_redelivery(session_factory, job_repo, job_id: str, *, jlog, max_
                 row = await job_repo.get_internal(db, uuid.UUID(job_id))
                 if row:
                     try:
-                        row.failed_reason = FailedReason(failed_reason_for(FailureClass.RESOURCE))
+                        row.failed_reason = FailedReason(failed_reason_for(FailureClass.WORKER_LOST))
                     except ValueError:
                         row.failed_reason = FailedReason.unhandled
+                    # THE USER'S ACCOUNT, always: the job's final message is rendered from this
+                    # record. Without it a dead-lettered job read as nothing at all (ender3_full,
+                    # dev-areen 25 Oct: DEAD_LETTER after five deliveries, no final message). Every
+                    # delivery's worker was lost before the run ended - which is what it says.
+                    from meshpipeline.application.final_result import worker_lost_result
+                    row.final_result = worker_lost_result(
+                        job_id=job_id, owner_id=str(getattr(row, "owner_id", "") or ""),
+                        attempts=int(getattr(row, "current_attempt", 0) or 0)).to_dict()
             await db.commit()
     except Exception as exc:                       # noqa: BLE001 - the dead-letter must still record
         jlog.warning("redelivery-cap: could not mark job failed: %s", exc)
-    record_dead_letter(job_id, FailureClass.RESOURCE, "worker",
+    record_dead_letter(job_id, FailureClass.WORKER_LOST, "worker",
                        f"redelivered {deliveries}x (cap {max_redeliveries}) - poison job")
     return DeliveryRefused("failed", {"job_id": job_id, "status": "failed",
                                       "reason": "redelivery_cap"})

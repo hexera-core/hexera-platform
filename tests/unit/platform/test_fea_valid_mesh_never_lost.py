@@ -322,7 +322,7 @@ def test_a_stalled_guard_trip_says_it_stalled_not_a_time_limit():
     trip = {"amount": 1_100_000, "ceiling_s": 7200, "stall_window_s": 900, "pass": 2, "stalled": True,
             "watchdog": {"seconds": 3000.0, "silence_at_stop_s": 905.0}}
     what, _ = describe(FailureCause.RUN_INFRASTRUCTURE, {"ours": True, "guard_trip": trip})
-    assert "no new output for 15 minutes after 50 minutes of work" in what
+    assert "no new output and no CPU work for 15 minutes after 50 minutes of work" in what
     assert "time limit" not in what and "It was not stuck" not in what
 
 

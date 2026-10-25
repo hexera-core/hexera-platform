@@ -107,8 +107,11 @@ async def node_builder(state: PipelineState) -> dict:
                      "truthfully", bcfg.BUILDER_TOTAL_TIMEOUT_SECONDS, job_id)
         await _publish.anote("Mesh design exceeded its overall time budget",
                              op_id=f"budget-exhausted:{attempt.retry_count}")
-        return _patch(retry_count=bcfg.MAX_BUILDER_RETRIES + 1,      # → failure sink
-                      noop_count=state.get("builder_noop_count", 0))
+        # the run ends on what the LAST attempt ended on, never on this attempt's empty workspace
+        # (attempt.stop_without_building: an FEA guard trip used to read as a mesher crash)
+        return _patch(noop_count=state.get("builder_noop_count", 0),
+                      **attempt_mod.stop_without_building(attempt.workspace, state,
+                                                          stopped=attempt_mod.STOPPED_TIME_SPENT))
 
     if attempt.is_retry:
         # No-progress stop: the same gate rejecting for the same reason twice means the last
@@ -125,8 +128,9 @@ async def node_builder(state: PipelineState) -> dict:
                 "Stopping: the last attempt failed the same check, the same way. Retrying "
                 "cannot fix this - the failure needs a different input or a code change.",
                 op_id=f"no-progress:{attempt.retry_count}")
-            return _patch(retry_count=bcfg.MAX_BUILDER_RETRIES + 1,      # → failure sink
-                          noop_count=state.get("builder_noop_count", 0))
+            return _patch(noop_count=state.get("builder_noop_count", 0),
+                          **attempt_mod.stop_without_building(
+                              attempt.workspace, state, stopped=attempt_mod.STOPPED_NO_PROGRESS))
 
     # THE ENGINE COULD NOT PREPARE ITS INPUT (attempt._record_staging_failure): nothing is run, and
     # the attempt's closing note says why. Running the builder on without the staged input only

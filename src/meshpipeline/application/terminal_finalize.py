@@ -561,7 +561,10 @@ async def finalize_crash(session_factory, exc: BaseException, *, job_id: str, ow
 
 async def refuse_before_execution(session_factory, *, job_id: str, failure_class,
                                   dependency: str, detail: str, user_message: str, reason: str,
-                                  job_repo, jlog, publish) -> dict:
+                                  job_repo, jlog, publish, category: str = "") -> dict:
+    """Fail a job that never ran, and dead-letter it. `category` (a FailureCategory value) is what
+    its final record says; without one it is our own failure (internal_pipeline_failure)."""
+    from meshpipeline.application.final_result import FailureCategory, refused_result
     from meshpipeline.errors import failed_reason_for, record_dead_letter
     from meshpipeline.persistence.job_state import TransitionResult
 
@@ -574,6 +577,11 @@ async def refuse_before_execution(session_factory, *, job_id: str, failure_class
                         row.failed_reason = FailedReason(failed_reason_for(failure_class))
                     except (ValueError, AttributeError):
                         row.failed_reason = FailedReason.unhandled
+                    # THE USER'S ACCOUNT, always: the job's final message is rendered from this
+                    # record, and a dead-lettered job without one read as nothing at all
+                    row.final_result = refused_result(
+                        FailureCategory(category or FailureCategory.internal_pipeline_failure.value),
+                        job_id=job_id, owner_id=str(getattr(row, "owner_id", "") or "")).to_dict()
             await db.commit()
     except Exception as exc:                       # noqa: BLE001 - the refusal must still stand
         jlog.warning("pre-execution refusal: could not mark job failed: %s", exc)

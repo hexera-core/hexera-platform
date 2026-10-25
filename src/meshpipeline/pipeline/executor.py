@@ -85,7 +85,9 @@ def _gate_statement(engine: str, gate_key: str) -> str:
             "staging": "The engine prepared its input from your file",
             # engines/fea_driver.py: the FEA plan's checks before meshing (PLAN-fea-8)
             "fea_plan": "The FEA mesh plan fits the detail level, for one solid part",
-            "fea_guard": "The FEA mesher finished within its guard clock"}.get(
+            "fea_guard": "The FEA mesher finished within its guard clock",
+            # agents/builder/attempt.carry_last_verdict: the run's time ran out before a mesher
+            "builder_budget": "The run had time left to build the mesh"}.get(
         gate_key, "The mesh setup matches what you approved")
 
 
@@ -152,12 +154,18 @@ def _no_mesh_cause(state, workspace, cause: str, facts: dict) -> tuple[str, dict
       RC_INFRASTRUCTURE result with neither tag is snappy's own stage verdict: it ran, and left
       no valid mesh.
 
-    A workspace whose record this process never opened says nothing, and the seam's cause stands
-    exactly as before."""
+    A workspace whose record this process never opened says nothing about a mesher - so it is
+    never told as one that crashed. ENGINE_CRASHED is kept for a mesher that RAN and stopped
+    without its mesh; with no record of any run (an attempt resumed on another worker), the
+    missing mesh is said as ours: RUN_INFRASTRUCTURE, `run_record_unknown`."""
     from meshpipeline.contracts.failure_cause import FailureCause
     from meshpipeline.contracts.mesh_execution import meshers_started, native_runs
     runs = native_runs(workspace)
     if runs is None:
+        # ...unless a mesh is on disk: then a mesher DID run and left it incomplete
+        if (cause == FailureCause.ENGINE_CRASHED.value
+                and not _mesh_on_disk(state.get("engine", ""), workspace)):
+            return FailureCause.RUN_INFRASTRUCTURE.value, {**facts, "run_record_unknown": True}
         return cause, facts
     started = meshers_started(runs) or 0
     facts = {**facts, "meshers_started": started}

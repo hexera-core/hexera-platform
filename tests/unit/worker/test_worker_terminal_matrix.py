@@ -222,6 +222,39 @@ async def test_redelivery_over_cap_dead_letters_without_running_graph(monkeypatc
     assert result["status"] == "failed" and result.get("reason") == "redelivery_cap"
     assert rec.repo.status_calls[-1] == JobStatus.failed
     assert rec.dead_letters and rec.dead_letters[0][1] == "worker"
+    # THE DEAD LETTER ALWAYS LEAVES THE USER A FINAL MESSAGE (ender3_full, dev-areen 25 Oct: five
+    # deliveries, DEAD_LETTER, and no final message at all): the record the job read renders from
+    from meshpipeline.application.final_result import FinalResult, render_message
+    record = FinalResult.from_dict(rec.repo.row.final_result)
+    assert record.failure_category == "worker_lost" and record.job_id == JOB_ID
+    msg = render_message(record)
+    assert "worker running this job was lost" in msg and "run it again" in msg
+    # and the closing said on the stream is the same account
+    closing = [e["text"] for e in rec.published if e["type"] == "closing"]
+    assert closing and "worker running this job was lost" in closing[-1]
+
+
+async def test_a_leased_run_has_a_lease_keeper_beside_it_and_stops_it(monkeypatch):
+    """application/lease_keeper: every leased run starts the keeper, marks it on each beat, and stops
+    it when the run ends - so a run held in one long step never loses its lease."""
+    from meshpipeline.application import lease_keeper as lk
+
+    rec = _wire(monkeypatch, _state(reviewer_verdict="PASS", executor_success=True))
+    calls: list = []
+
+    class _K:
+        def mark_alive(self): calls.append("mark")
+        def stop(self, **kw): calls.append("stop")
+
+    def _start(ownership, **kw):
+        calls.append(("start", str(ownership.job_id), kw.get("interval_s")))
+        return _K()
+
+    monkeypatch.setattr(lk, "start", _start)
+    result = await wt._run_async(wt.JobRequest(job_id=JOB_ID))
+    assert result["status"] == "succeeded" and rec.uploads
+    assert calls[0][0] == "start" and calls[0][2] == max(1, int(rtcfg.WORKER_HEARTBEAT_SECONDS))
+    assert calls[-1] == "stop"
 
 
 @pytest.fixture(autouse=True)
