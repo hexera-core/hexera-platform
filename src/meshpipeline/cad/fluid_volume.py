@@ -1063,6 +1063,138 @@ def _face_triangles(face) -> list:
     return out
 
 
+def surface_volume(T) -> float:
+    """The signed volume a closed triangle surface encloses (m3), positive when its triangles are
+    wound so their normals point OUT.
+
+    This is the writer's own orientation check and it is not decoration. `write_stl_binary` zeroes
+    every stored facet normal, so the winding is the only record of which way a face points, and
+    the mesher reads this surface with `surfaceToCell ... useSurfaceOrientation true` - a surface
+    written inside out would tag the metal as coolant and the coolant as metal, with nothing
+    failing. Comparing this against the extraction's own volume catches that.
+    """
+    import numpy as np
+    A = np.asarray(T, dtype=np.float64).reshape(-1, 3, 3)
+    return float(np.einsum("ij,ij->i", A[:, 0], np.cross(A[:, 1], A[:, 2])).sum() / 6.0)
+
+
+def write_surface(x: Extraction, out_path, *, angular_deflection: float = 0.2,
+                  linear_deflection: float | None = None) -> dict | None:
+    """The coolant's whole boundary as ONE closed binary STL, in metres, with no patch names.
+
+    WHAT A CONJUGATE CASE NEEDS OF THE COOLANT, and no more. It takes its inlet and outlet from the
+    BLOCK's six named faces (engines/cfmesh/conjugate.block_surface_stl) and uses this surface only
+    to refine towards the coolant and then to tag the coolant cells (surfaceMeshRefinement, then
+    surfaceToCell with useSurfaceOrientation). So nothing here is declared, matched or labelled -
+    which is the whole reason a single uploaded solid can be read at all, since `stage` refuses
+    without declared openings and a cold plate arrives with none.
+
+    EVERY passage is written, not the largest. An embedded-silicon array extracts as 198 separate
+    channels and all 198 are coolant; there is nothing in the geometry that would make one of them
+    something else.
+
+    None, with the reason logged, when the surface does not come out closed or comes out inside
+    out. An open edge would let surfaceToCell flood the whole block instead of the channels.
+    """
+    from pathlib import Path
+
+    import numpy as np
+    from OCP.BRep import BRep_Builder
+    from OCP.TopoDS import TopoDS_Compound
+
+    from meshpipeline.cad import internal_surface as isf
+    from meshpipeline.cad.cad_tessellate import seal_open_rims
+    from meshpipeline.cad.occ_box import mesh_to_size
+    from meshpipeline.cad.stl_io import write_stl_binary
+
+    if not x.passages:
+        return None
+    comp = TopoDS_Compound()
+    bld = BRep_Builder()
+    bld.MakeCompound(comp)
+    faces = 0
+    for p in x.passages:
+        for f in p.boundary:
+            bld.Add(comp, f)
+            faces += 1
+    if not faces:
+        return None
+    mesh_to_size(comp, 1.0 / 2500.0, angular_deflection, linear_deflection=linear_deflection)
+    tris: list = []
+    for p in x.passages:
+        for f in p.boundary:
+            tris.extend(_face_triangles(f))
+    if not tris:
+        logger.warning("fluid volume: the coolant's %d face(s) tessellated to nothing", faces)
+        return None
+    # the coordinates as the mesher reads them (binary STL is float32), points a hair apart joined
+    T = np.asarray(tris, dtype=np.float64).reshape(-1, 3, 3).astype(np.float32).astype(np.float64)
+    names = ["wall"] * len(T)
+    V, F, L = _weld_labelled(T, names)
+    # the rim audit every staged surface makes: a face the tessellator left bare leaves a gap
+    membranes, open_rims = seal_open_rims([tuple(map(tuple, t)) for t in V[F]])
+    if membranes:
+        T = np.concatenate([V[F], np.asarray(membranes, dtype=np.float64).reshape(-1, 3, 3)])
+        V, F, L = _weld_labelled(T, [*L.tolist(), *(["wall"] * len(membranes))])
+    checks = isf._verify(V, F, L, [], "wall", is_lid=np.zeros(len(F), dtype=bool))
+    if checks["open_edges"]:
+        logger.warning("fluid volume: the coolant surface has %d open edge(s) - not written",
+                       checks["open_edges"])
+        return None
+    signed = surface_volume(V[F])
+    found = sum(p.volume for p in x.passages)
+    if signed <= 0.0:
+        logger.warning("fluid volume: the coolant surface came out inside out "
+                       "(signed volume %.6g m3) - not written", signed)
+        return None
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    write_stl_binary(out_path, V[F])
+    return {
+        "path": str(out_path), "triangles": int(len(F)), "faces": faces,
+        "passages": len(x.passages),
+        "open_edges": int(checks["open_edges"]),
+        "inconsistent": int(checks.get("inconsistent") or 0),
+        # the two volumes a caller compares: what the B-rep says the coolant is, and what the
+        # surface actually written encloses. They agree to the tessellation's error, and the
+        # SIGN is the orientation proof.
+        "volume_m3": round(found, 15), "surface_volume_m3": round(signed, 15),
+        "volume_mm3": round(found * 1e9, 6), "surface_volume_mm3": round(signed * 1e9, 6),
+        "seed_m": None if x.passages[0].seed is None else [round(v, 9) for v in x.passages[0].seed],
+        "open_rims": open_rims,
+    }
+
+
+def surface_bounded(source, out_path, *, scale: float = 1.0, kind: str = "cad",
+                    angular_deflection: float = 0.2, linear_deflection: float | None = None,
+                    budget_s: float | None = None) -> dict | None:
+    """The coolant of the parts of `source`, written to `out_path` as one closed STL, in a
+    time-boxed child process. None - with the reason logged - when there is no coolant to find or
+    the surface does not come out closed.
+
+    Unlike `stage_bounded` this needs NOTHING declared: the caller has a file and wants the fluid
+    inside it, which is the case a cold plate arrives as.
+    """
+    from pathlib import Path
+
+    out_path = Path(out_path)
+    answer = run_bounded({"task": "surface", "source": str(source), "scale": float(scale),
+                          "kind": kind, "out_path": str(out_path),
+                          "angular_deflection": angular_deflection,
+                          "linear_deflection": linear_deflection},
+                         out_path.parent / f"{out_path.stem}_fluid_volume",
+                         budget_s or STAGE_BUDGET_S)
+    rec = answer.get("surface")
+    if not rec:
+        why = answer.get("error") or (answer.get("extraction") or {}).get("reason") \
+            or "the parts hold no fluid that reaches the outside"
+        logger.info("fluid volume: no coolant surface written (%s)", why)
+        return None
+    logger.info("fluid volume: wrote the coolant surface - %d triangles, %s mm3 over %d passage(s)",
+                rec["triangles"], rec["volume_mm3"], rec["passages"])
+    return rec
+
+
 def stage(x: Extraction, declared: list, out_dir, *, angular_deflection: float = 0.2,
           linear_deflection: float | None = None) -> dict | None:
     """The extracted fluid as the internal-flow staging every engine reads (the record the surface
@@ -1406,6 +1538,14 @@ def _child(task: dict) -> dict:
                     angular_deflection=float(task.get("angular_deflection") or 0.2),
                     linear_deflection=task.get("linear_deflection"))
         return {"staged": rec, "extraction": x.as_dict()}
+    if task.get("task") == "surface":
+        # THE GEOMETRY CROSSES THE PROCESS BOUNDARY AS A FILE, not in the answer: as_dict carries
+        # centroids and areas and no faces, so a caller that wants the coolant itself had no way
+        # to get it. The child writes the STL and the answer says where it is.
+        rec = write_surface(x, task["out_path"],
+                            angular_deflection=float(task.get("angular_deflection") or 0.2),
+                            linear_deflection=task.get("linear_deflection"))
+        return {"surface": rec, "extraction": x.as_dict()}
     return x.as_dict()
 
 
@@ -1424,7 +1564,7 @@ def main(argv: list[str]) -> int:
 
 
 __all__ = ["CHECK_BUDGET_S", "MAX_FACES", "MAX_TRIANGLES", "STAGE_BUDGET_S", "Extraction", "ExtractionError",
-           "Passage", "Port", "candidate_caps", "closed_pieces", "part_pieces", "extract", "from_triangles", "match_declared", "parts_of",
+           "Passage", "Port", "candidate_caps", "closed_pieces", "part_pieces", "extract", "from_triangles", "match_declared", "parts_of", "surface_bounded", "surface_volume", "write_surface",
            "run_bounded", "stage", "stage_bounded", "touching_parts"]
 
 
