@@ -23,3 +23,16 @@ def test_missing_figures_are_said_as_missing_not_formatted():
     out = _with_adjudicated_deviations("BRIEF", [{"direction": "y", "requested": None, "measured": 0.2},
                                                   {"gate": "cell_limit"}, "not a dict"])
     assert "y: requested n/a, measured 0.2" in out and "cell_limit" in out
+
+
+def test_a_cfd_note_gate_caveat_and_a_domain_extent_caveat_together():
+    """The reviewer node is shared: a CFD run (snappy) reaches it with the same resolution_policy caveats
+    beside the domain-extent ones (direction / requested / measured), and must state both."""
+    from meshpipeline.engines.resolution_policy import caveat
+
+    note = caveat("narrow_gap_resolution", {"cells_across": 4.0, "needed": 12.0, "cells": 3_000_000},
+                  {"cell_count": 3_000_000}, engine="snappyHexMesh")
+    extent = {"direction": "+x", "requested": 10.0, "measured": 8.5, "units": "reference_lengths"}
+    out = _with_adjudicated_deviations("BRIEF", [note, extent])
+    assert "+x: requested 10, measured 8.5 reference-lengths" in out
+    assert "4 cells across where 12 were asked" in out
