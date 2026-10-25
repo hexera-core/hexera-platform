@@ -260,7 +260,15 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
         if (p.flow_axis_touched) Object.assign(answered, { flow_axis: p.flow_axis, flow_axis_guessed: false, flow_axis_touched: true });
         if (p.reference_length_typed) Object.assign(answered, { reference_length_mm: p.reference_length_mm, reference_length_typed: true });
         p.user_set = { ...(p.user_set || {}), ...changedAnswers(form) };
-        Object.assign(p, p2, chosen, answered, p.user_set);
+        // THE SKIN WAS DRAWN AT THE PREVIEW'S SCALE: a naming that re-read the part in another unit
+        // serves lengths at the new one, so they are read back at the drawing's (the server re-reads
+        // the form from `scale_to_m` on confirm, as for every length on this stage)
+        const mine = p.scale_to_m || 0.001, theirs = p2.scale_to_m || mine;
+        const back = Math.abs(theirs - mine) > 1e-12 ? mine / theirs : 1;
+        const incoming = back === 1 ? p2 : Object.fromEntries(Object.entries(p2)
+          .filter(([k]) => !/^(scale_to_m|unit|unit_basis|unit_assumed)$/.test(k))
+          .map(([k, v]) => [k, atScale(k, v, back)]));
+        Object.assign(p, incoming, chosen, answered, p.user_set);
         panel.querySelector(".gc-lead").innerHTML = leadHtml(p);
         form.innerHTML = formHtml(p);
         applyFlow(form); bindUnit(panel, p); bindAxis(form, p); noteDrawn(form); bindProceed(); scene.rebind();
@@ -1401,4 +1409,13 @@ function initThermalScene(sessionId, box, surf, t, panel) {
     select, hover, frame, probe,
     stop: () => { alive = false; ro.disconnect(); delete window._vdbg["gstage:" + sessionId]; },
   };
+}
+
+
+/** A proposal's value with every length (keys ending _mm or _m, at any depth) multiplied by `f`. */
+function atScale(key, v, f) {
+  const isLen = /_mm$|_m$/.test(key);
+  if (Array.isArray(v)) return v.map((x) => (typeof x === "number" ? (isLen ? x * f : x) : atScale(isLen ? key : "", x, f)));
+  if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, atScale(k, x, f)]));
+  return typeof v === "number" && isLen ? v * f : v;
 }
