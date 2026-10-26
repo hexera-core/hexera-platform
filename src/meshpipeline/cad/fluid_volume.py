@@ -39,6 +39,11 @@ MIN_CAP = 2e-3
 #: tessellation slivers and chamfers rather than anything a flow could pass through, and a passage
 #: too small to matter is dropped later anyway by its share of the largest passage's volume.
 MAX_CAP_FLOOR_M = 10e-6
+#: How far off a cap to step when asking what is on each side of it, as a fraction of the CAP'S OWN
+#: radius. Tied to the cap and never to the part: 3% of the pin-fin plate's 15.87 mm diagonal is
+#: 0.48 mm, which is wider than the 0.3 mm of metal above its ceiling, so no part-relative
+#: tolerance can see this at all.
+CAP_SIDE_STEP = 0.25
 #: How far the surface actually written may enclose from what the B-rep said the coolant is, as a
 #: fraction, before it is refused. This is the orientation check that works for MORE THAN ONE
 #: passage, where the sign of the total does not: a reversed shell is internally consistent and
@@ -424,6 +429,55 @@ class _Cap:
     hosts: set = field(default_factory=set)
 
 
+def metal_on_both_sides(solids: list, cap: _Cap) -> bool:
+    """Whether the cap has the part's own metal on BOTH sides of it, so it caps nothing.
+
+    A PIN'S TOP, exactly. The chamber's ceiling has an inner wire where each pin meets it, so a disc
+    gets laid across it: above that disc is the lid's metal and below it is the pin's. Nothing can
+    flow through it, and laying it there cuts the one chamber into pieces that then reach the
+    outside past it.
+
+    Both sides, and not either side, because either side would be wrong twice over. A real port has
+    air on one side and fluid on the other. Two flanges bolted face to face rim the same bore and
+    have fluid on both sides, and that cap has to stay (the split keeps the fluid on both sides of
+    it as one passage). Only a cap with metal on both sides is a cap across solid material.
+
+    MEASURED on the ten parts of the corpus that build as CAD, stepping CAP_SIDE_STEP of each cap's
+    own radius along +normal and -normal and asking the solid classifier:
+
+        part                               caps   on the box   metal both   free both
+        pin_fin_300um_staggered             526           22          504          22
+        embedded_silicon_D9_10um            396          396            0         396
+        hotspot_array                        48           48            0          48
+        manifold_two_level                   42           42            0          42
+        murray_ported_4gen                   17           17            0          17
+        unit_cell_100um                       2            2            0           2
+
+    504 of 526 on the one part that fails, 0 of 505 on the five that do not, and the 504 are exactly
+    the pin tops: the 22 that survive are the real ports, the ones on the bounding box.
+    """
+    import math
+
+    from OCP.BRepClass3d import BRepClass3d_SolidClassifier
+    from OCP.gp import gp_Pnt
+    from OCP.TopAbs import TopAbs_IN, TopAbs_ON
+
+    radius = math.sqrt(max(float(cap.area), 0.0) / math.pi)
+    step = CAP_SIDE_STEP * radius
+    if step <= 0.0:
+        return False
+    classifiers = [BRepClass3d_SolidClassifier(s) for s in solids]
+    for sign in (1.0, -1.0):
+        point = gp_Pnt(*(cap.centroid[k] + sign * cap.normal[k] * step for k in range(3)))
+        for cl in classifiers:
+            cl.Perform(point, 1e-9)
+            if cl.State() in (TopAbs_IN, TopAbs_ON):
+                break
+        else:
+            return False                      # this side is free, so the cap caps something
+    return True
+
+
 def candidate_caps(solids: list, loose: list, diag: float) -> list[_Cap]:
     """Every place the space inside the parts may meet the outside, as a flat face across it: each
     hole a flat face of a part rims (its inner wire: a flange's bore, a pipe's open end, a bolt hole),
@@ -455,6 +509,10 @@ def candidate_caps(solids: list, loose: list, diag: float) -> list[_Cap]:
     along its own normal goes straight into the ceiling's metal. Measuring that per cap is the
     work, and a tolerance relative to the part's diagonal will not do it - 3% of this plate's
     15.87 mm diagonal is 0.48 mm, which is wider than the 0.3 mm of metal above its ceiling.
+
+    SO IT IS MEASURED PER CAP, by `metal_on_both_sides`, whose own docstring carries the numbers:
+    504 of the pin-fin plate's 526 caps go, 0 of the other five parts' 505 go, and what survives on
+    the pin-fin plate is its 22 real ports.
     """
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
     from OCP.BRepTools import BRepTools
@@ -510,7 +568,15 @@ def candidate_caps(solids: list, loose: list, diag: float) -> list[_Cap]:
             mk = BRepBuilderAPI_MakeFace(w, True)
             if mk.IsDone():
                 add(mk.Face(), -1)
-    return caps
+    # LAST, and on the caps rather than on the wires, because a cap is only known to be across
+    # solid metal once it has a plane, a centroid and a size: the step taken to ask is a quarter of
+    # the cap's own radius.
+    kept = [c for c in caps if not (solids and metal_on_both_sides(solids, c))]
+    if len(kept) != len(caps):
+        logger.info("fluid volume: %d of %d candidate caps have metal on both sides and cap "
+                    "nothing (pin tops, ribs); %d kept", len(caps) - len(kept), len(caps),
+                    len(kept))
+    return kept
 
 
 # --------------------------------------------------------------------------- the split ----
