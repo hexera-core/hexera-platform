@@ -36,14 +36,25 @@ def test_a_real_car_still_is_one():
 
 
 def test_the_lower_bound_sits_below_every_real_vehicle():
-    # A flatbed trailer is about the flattest thing with wheels, near 0.25.
-    assert CAR_HEIGHT_TO_WIDTH_MIN < 0.25
-    # ...and well above a plate.
-    assert CAR_HEIGHT_TO_WIDTH_MIN > 0.8 / 19.9
+    """MEASURED ON THE FLAT END OF THE RANGE, which is what set this number.
+
+    "A flatbed trailer is about 0.25" was a guess and it was wrong by three times. Measured: a
+    flatbed deck is 0.115, a railway flatcar 0.133 and a lowboy deck 0.135, and at the first
+    attempt's 0.15 all three fell past the vehicle reading into "a body in an external flow" -
+    whose believable range is 0.005 to 5000 m, where nothing is ever implausible. A file with no
+    declared unit then gets millimetres proposed, and a 12 m trailer is meshed as 12 mm.
+    """
+    for flattest in (0.115, 0.133, 0.135):
+        assert CAR_HEIGHT_TO_WIDTH_MIN < flattest, "a real vehicle must stay a vehicle"
+    # ...and still clear of the plate that started this, by nearly a factor of two
+    plate = 0.8 / 19.9                       # 0.040
+    assert plate < CAR_HEIGHT_TO_WIDTH_MIN
+    assert CAR_HEIGHT_TO_WIDTH_MIN / plate > 1.9
 
 
-@pytest.mark.parametrize("ratio,expect_car", [(0.04, False), (0.10, False),
-                                              (0.30, True), (0.75, True), (1.50, True)])
+@pytest.mark.parametrize("ratio,expect_car", [(0.04, False), (0.06, False),
+                                              (0.115, True), (0.30, True), (0.75, True),
+                                              (1.50, True)])
 def test_the_boundary_behaves(ratio, expect_car):
     width = 19.9
     size = (width, width * 1.63, width * ratio)

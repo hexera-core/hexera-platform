@@ -82,7 +82,10 @@ _FEA = _rx(
     # read as cooling - the only wrong ROUTE the semiconductor holdout found, and the reason it is
     # fixed here rather than left: an "ask" costs the user one click, a wrong route costs them the
     # whole job. The other eight misses are left exactly as the holdout scored them.
-    r"\breliability\b",
+    # Reliability of a JOINT or a PART, not the word on its own: bare "reliability" turned "flow
+    # reliability in the manifold" into a question about which physics was meant.
+    r"\breliability (analysis|test\w*|of (the |this |a )?(solder|joint|weld|bond|package|die|bga))",
+    r"(solder|joint|weld|bond|package|bga|die)[- ]?\w* reliability\b",
 )
 #: WORDS FOR A FLUID: what CFD answers.
 _FLOW = _rx(
@@ -135,10 +138,18 @@ _THERMAL_HARDWARE = _rx(
     # the cooling hardware itself
     r"\bcold ?plates?\b", r"\bheat ?sinks?\b", r"\bheat ?spreaders?\b", r"\bheat ?pipes?\b",
     r"\bvapou?r chamber", r"\bmicro ?channel", r"\bmini ?channel", r"\bpin ?fins?\b",
-    r"\bcoolants?\b", r"\bcoolers?\b", r"\bradiators?\b", r"\btims?\b",
+    # NOT a bare "tim": TIM is the thermal interface material, and "mesh this part for Tim" went
+    # to electronics cooling on a colleague's name. Not "radiator" or "cooler" either - both are
+    # ordinary automotive and HVAC parts, and "race car radiator duct" and "airflow through a
+    # radiator core" are CFD questions, not semiconductor ones.
+    r"\bcoolants?\b", r"\btim ?[0-9]\b", r"thermal interface",
     r"thermal interface material", r"\bimmersion cool", r"\bdirect[- ]to[- ]chip\b", r"\bd2c\b",
     # the thing being cooled
-    r"\bchips?\b", r"\bdies?\b(?![- ]?cast)", r"\bdie ?(stack|attach|shadow)", r"\bwafers?\b",
+    # A DIE IS ONLY A SILICON DIE WHEN THE WORDS SAY SO. A bare "die" sent an extrusion die, a
+    # stamping die and a spinneret die to electronics cooling; excluding "die cast" was not
+    # nearly enough, because every other kind of die is a tool too.
+    r"\bchips?\b", r"\bdie ?(stack|attach|shadow)",
+    r"\b(silicon|bare|packaged?|flip[- ]?chip|logic|memory) dies?\b", r"\bwafers?\b",
     r"\bcpus?\b", r"\bgpus?\b", r"\bprocessors?\b", r"\basics?\b", r"\bsocs?\b",
     r"\bigbts?\b", r"\bmosfets?\b", r"\bsemiconductor", r"\binterposer",
     r"\b(ic|chip|semiconductor|electronic)[- ]packages?\b", r"\bbgas?\b", r"\bflip[- ]?chip",
@@ -251,7 +262,14 @@ def read_purpose(text: str) -> PurposeReading:
     if _COUPLED.search(said):
         return PurposeReading(ask=ASK_DOMAIN, why="coupled: " + ", ".join(_hits(_COUPLED, said)))
     hardware = _hits(_THERMAL_HARDWARE, said)
-    if _HEAT.search(said) or (hardware and not fea):
+    # A HARDWARE NOUN ALSO LOSES TO EXTERNAL-FLOW WORDS, for the same reason it loses to mechanics:
+    # it is the weak evidence. "external drag on an electronics enclosure" went to electronics
+    # cooling on "electronic" and "enclosure" while plainly saying what it wanted, and so did
+    # "chip conveyor airflow". Flow AROUND a thing is incompatible with the coolant inside it, so
+    # the one rules the other out. INTERNAL flow words are deliberately not in this veto: a cold
+    # plate's coolant is an internal flow, and "microchannel cold plate, water at 2 L/min" has to
+    # keep reaching the cooling path.
+    if _HEAT.search(said) or (hardware and not fea and not _EXTERNAL.search(said)):
         solid = _hits(_SOLID_HEAT, said)
         # The hardware noun is weak evidence, and heat-in-a-solid words outrank it the same way
         # mechanics words do at the gate: a die attach whose CTE mismatch is the question is heat

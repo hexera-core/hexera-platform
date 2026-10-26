@@ -203,7 +203,12 @@ SEMI_DEV = [
     ("150 W processor with a fan", "electronics"),
     ("cool this heat sink", "electronics"),
     ("thermal management of this enclosure", "electronics"),
-    ("airflow over the radiator core", "electronics"),
+    # RELABELLED, because the label was wrong and not the reading. This was "electronics" on the
+    # grounds that a radiator is cooling hardware, but air over a radiator core is a heat-
+    # exchanger CFD question and the CFD path is where it belongs; electronics cooling means a
+    # board, a chip or an enclosure. A radiator and a cooler are ordinary automotive and HVAC
+    # parts, so neither is a semiconductor cue any more.
+    ("airflow over the radiator core", "flow"),
     ("pin fin array in this cold plate", "electronics"),
     ("vapour chamber under the GPU", "electronics"),
     ("IGBT module cooling", "electronics"),

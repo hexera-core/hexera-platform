@@ -116,6 +116,10 @@ class ConfirmIn(BaseModel):
     #: filled by the server from the check when the form does not send them, and named in the
     #: declaration so the intake knows each part is its own region.
     regions: list[str] | None = None
+    #: How many solids the file holds, as the CHECK measured it - never the form's to send. It is
+    #: what tells one channelled cold plate from a file of several parts, and the two are told
+    #: different things about where their fluid is.
+    solids: int | None = None
     #: SET BY THE SERVER, never taken from the form: why the openings have the roles they have,
     #: when the uploaded file declares them (geometry_check.declared_openings_reason) and the user
     #: kept those roles - said in the declaration and carried into the brief.
@@ -562,12 +566,23 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
     elif body.input_kind is None or body.flow is None:
         raise HTTPException(422, "Say what the file is (input_kind) and whether the fluid flows "
                                  "through it or around it (flow).")
-    if body.input_kind == "solid-assembly" and not body.regions:
-        # an assembly's regions are the file's, as the check read them: named in the declaration
+    if body.input_kind == "solid-assembly":
+        # An assembly's regions are the file's, as the check read them: named in the declaration.
+        # HOW MANY SOLIDS IT HAS COMES FROM THE SAME PLACE, and must, because the kind covers two
+        # shapes of file and the wording differs: one channelled solid has its coolant INSIDE it,
+        # a file of several parts has the fluid AROUND them. The form does not send a solids count
+        # - it has no such field - so without this the confirmation fell back to 0, both branches
+        # failed their test, and a cold plate's owner was told about "the fluid around them".
         facts = (_read_json(check_object_key(str(session_id), "scout.json")) or {}).get("facts") or {}
-        names = [str(n) for n in facts.get("source_regions") or [] if str(n).strip()]
-        if names:
-            body = body.model_copy(update={"regions": names})
+        update: dict = {}
+        if not body.regions:
+            names = [str(n) for n in facts.get("source_regions") or [] if str(n).strip()]
+            if names:
+                update["regions"] = names
+        if body.solids is None and facts.get("solids") is not None:
+            update["solids"] = int(facts["solids"] or 0)
+        if update:
+            body = body.model_copy(update=update)
     # WHY THE OPENINGS ARE WHAT THEY ARE, when the file declares them - said only while the user
     # kept the file's roles, so the declaration never claims the file said what the user changed
     from meshpipeline.application.geometry_confirmation import declared_reason_kept

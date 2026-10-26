@@ -222,10 +222,19 @@ CAR_LENGTH_TO_WIDTH = (1.5, 6.0)
 CAR_HEIGHT_TO_WIDTH_MAX = 1.6
 #: ...and no FLATTER than this, which nothing bounded before. A ground vehicle is a body with
 #: room inside it: an Ahmed body is 0.74 as tall as it is wide, a saloon about 0.75, a Le Mans
-#: prototype 0.55, a flatbed trailer around 0.25. A microchannel cold plate 32.5 x 19.9 x 0.8 is
-#: 0.04, and was read as a car because only the upper bound existed - then sized against a car's
-#: believable range, which rejected millimetres for making it 3.25 cm and proposed inches.
-CAR_HEIGHT_TO_WIDTH_MIN = 0.15
+#: prototype 0.55. A microchannel cold plate 32.5 x 19.9 x 0.8 is 0.04, and was read as a car
+#: because only the upper bound existed - then sized against a car's believable range, which
+#: rejected millimetres for making it 3.25 cm and proposed inches.
+#:
+#: 0.08, NOT 0.15, and the difference matters to a vehicle. Measured: a flatbed deck is 0.115, a
+#: railway flatcar 0.133 and a lowboy deck 0.135, and at 0.15 all three fell past this reading
+#: into "a body in an external flow", whose believable range is 0.005 to 5000 m - where nothing is
+#: ever implausible, so a file with no unit gets millimetres proposed and a 12 m trailer is meshed
+#: as 12 mm. 0.08 keeps all three as vehicles and still leaves the 0.04 plate out by half.
+#:
+#: Do not instead drop the floor and lean on absolute size: that was measured too, and a 32.5 mm
+#: plate read as a car proposes INCHES, which is the bug this bound exists for.
+CAR_HEIGHT_TO_WIDTH_MIN = 0.08
 FLAT_THICKNESS_MAX = 0.35
 FLAT_MIDDLE_MIN = 0.2
 

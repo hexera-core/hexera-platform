@@ -610,7 +610,7 @@ _BODY_DEFAULTS: dict[str, object] = {"openings": [], "seed_point_mm": None, "siz
                                      "flow_axis": None, "reference_length_mm": None, "extents": None,
                                      "grounded": False, "up_axis": None, "scale_to_m": None, "unit": None,
                                      "unit_fixed": False, "unit_fixed_reason": "", "regions": None, "openings_reason": "",
-                                     "check_mode": "", "detail": None}
+                                     "check_mode": "", "detail": None, "solids": None}
 
 
 def body_of(record: dict) -> SimpleNamespace:

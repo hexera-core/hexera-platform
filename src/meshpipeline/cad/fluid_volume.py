@@ -39,6 +39,13 @@ MIN_CAP = 2e-3
 #: tessellation slivers and chamfers rather than anything a flow could pass through, and a passage
 #: too small to matter is dropped later anyway by its share of the largest passage's volume.
 MAX_CAP_FLOOR_M = 10e-6
+#: How far the surface actually written may enclose from what the B-rep said the coolant is, as a
+#: fraction, before it is refused. This is the orientation check that works for MORE THAN ONE
+#: passage, where the sign of the total does not: a reversed shell is internally consistent and
+#: just subtracts. Tessellation on a curved channel costs a fraction of a percent, measured at
+#: 0.0007% on the wavy array and exact on the straight ones, so 2% is loose by two orders of
+#: magnitude against that and tight by a whole passage against an inversion.
+VOLUME_AGREES = 0.02
 
 
 def cap_floor_m(diag: float) -> float:
@@ -1174,6 +1181,17 @@ def write_surface(x: Extraction, out_path, *, angular_deflection: float = 0.2,
     if signed <= 0.0:
         logger.warning("fluid volume: the coolant surface came out inside out "
                        "(signed volume %.6g m3) - not written", signed)
+        return None
+    # ...AND IT HAS TO ENCLOSE WHAT THE B-REP SAID, which the sign alone does not establish once
+    # there is more than one passage. Each shell is internally consistent on its own, so a
+    # reversed one raises no open, non-manifold or inconsistent edge, and it merely SUBTRACTS from
+    # the total: measured on a four-channel plate with one channel reversed, the surface was
+    # written with every edge count zero while the extraction said 2.0 mm3 and the surface
+    # enclosed 1.0. The two numbers sat side by side in this function's own return value and
+    # nothing compared them. Step 7's part has 5 and 16 channels, so this is its case exactly.
+    if found > 0.0 and abs(signed - found) > VOLUME_AGREES * found:
+        logger.warning("fluid volume: the coolant surface encloses %.6g m3 but the extraction "
+                       "found %.6g m3 - a passage is inside out - not written", signed, found)
         return None
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
