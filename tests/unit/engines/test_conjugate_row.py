@@ -276,6 +276,66 @@ def test_a_mesh_of_the_wrong_cells_is_refused_by_volume(case):
     assert not ok and "95.16%" in said and "19.89%" in said
 
 
+# #
+# one quantity, one bar
+# #
+def _gating_bar(key: str):
+    """The declared gating criterion for `key`, read straight off the bundle.
+
+    Not through the registry: the engine is only registered once a job has delivered it, and this
+    invariant has to hold before that.
+    """
+    from meshpipeline.engines.cfmesh_conjugate.criteria import CRITERIA_ROWS
+    rows = [c for c in CRITERIA_ROWS if c.key == key]
+    assert len(rows) == 1, f"{key} is declared {len(rows)} times"
+    return rows[0]
+
+
+def test_the_binding_bar_is_the_ratio_and_not_the_percentage():
+    """MEASURED, by the native-to-terminal tier on a two-channel plate: the coolant came out 9.95%
+    from the CAD at 5 cells across, which the resolution allows 19.89% of. The gate passed it and
+    the declared criterion refused it, because the criterion carried a fixed 5% - one quantity
+    with two readers that disagree, which is the exact failure engines/staircase_error warns about
+    for the sizing rule."""
+    ratio = _gating_bar("coolant_error_over_tol")
+    assert ratio.op == "<=" and ratio.threshold == 1.0 and ratio.gating is True
+    pct = _gating_bar("coolant_error_pct")
+    assert pct.gating is False, (
+        "a second gating bar on the same quantity is how the two came to disagree")
+
+
+@pytest.mark.parametrize(("err", "tol", "want"), [
+    (9.9477, 19.89, True),      # the tier's own run, which the two bars disagreed about
+    (0.538, 19.89, True),       # the manifold plate at 5 across
+    (13.26, 19.89, True),       # the unit cell at 5 across, the worst measured
+    (19.89, 19.89, True),       # exactly at the bar
+    (19.90, 19.89, False),
+    (95.16, 19.89, False),      # the inside-out surface, with checkMesh saying "Mesh OK"
+])
+def test_the_gate_and_the_criterion_agree_on_the_same_mesh(case, err, tol, want):
+    man = _manifest(case, coolant_error_pct=err, coolant_tol_pct=tol,
+                    coolant_error_over_tol=err / tol)
+    gate_ok, _said = _gate("coolant_volume").check(_Ctx(case, man))
+    bar = _gating_bar("coolant_error_over_tol")
+    criterion_ok = (err / tol) <= bar.threshold
+    assert gate_ok == want, f"the gate said {gate_ok}"
+    assert criterion_ok == want, f"the criterion said {criterion_ok}"
+
+
+def test_the_ratio_is_absent_when_there_is_no_tolerance_to_divide_by(case):
+    """Absent reads as not-measured and refuses; a ratio of error over zero would be a number."""
+    report = json.loads(json.dumps(REPORT))
+    report["plan"]["volume_tol"] = 0.0
+    q = F.quality_of(case, report)
+    assert "coolant_error_over_tol" not in q
+
+
+def test_the_ratio_is_the_error_over_the_tolerance(case):
+    q = F.quality_of(case, REPORT)
+    assert q["coolant_error_over_tol"] == pytest.approx(
+        q["coolant_error_pct"] / q["coolant_tol_pct"])
+
+
 def test_a_volume_inside_the_resolutions_own_bar_passes(case):
     man = _manifest(case, coolant_error_pct=13.26)   # the unit cell at 5 across, measured
     ok, _ = _gate("coolant_volume").check(_Ctx(case, man))

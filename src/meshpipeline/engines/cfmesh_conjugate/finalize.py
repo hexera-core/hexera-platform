@@ -163,6 +163,16 @@ def quality_of(ws: Path, report: dict) -> dict:
     if expected > 0.0:
         q["coolant_error_pct"] = abs(meshed - expected) / expected * 100.0
         q["coolant_tol_pct"] = float(plan.get("volume_tol") or 0.0) * 100.0
+        # THE ERROR AS A FRACTION OF WHAT THIS RESOLUTION ALLOWS, and the reason it is computed
+        # here rather than compared somewhere: the bar is not a constant. It is the measured
+        # staircase error for the cells-across used, with a margin, and it rides in the plan
+        # (cfmesh_conjugate/plan._tolerance). A declared Criterion can only hold a static
+        # threshold, so stating the bar twice - 5% in the criterion and 19.89% in the gate - gave
+        # one quantity two readers that disagreed: this fixture came out 9.95% wrong at 5 cells
+        # across, which the gate allows and the criterion refused. Expressed as a ratio, both read
+        # the SAME number and the static bar is 1.0.
+        if q["coolant_tol_pct"] > 0.0:
+            q["coolant_error_over_tol"] = q["coolant_error_pct"] / q["coolant_tol_pct"]
     q["coolant_pieces_short"] = _pieces_short(q)
     q["resolution_short"] = _resolution_short(plan)
     # WHETHER THE INTERIOR CAN BE CUT AT ALL. The engine declares a REGION inspection target, so
