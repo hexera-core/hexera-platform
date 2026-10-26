@@ -48,14 +48,16 @@ async def _run_tool_loop(
     execution_generation: int = 0,
     user_dispute: dict | None = None,   # the engineer's flags, when answering a dispute
     broken_mesh_moves_to: str = "",     # the engine a broken mesh moves this run to ('' = stays)
+    user_notes: list | None = None,     # the user's own notes, verbatim (contracts/user_notes)
 ) -> tuple[str, list]:
-    import time as _time
 
     # The clock starts when this coroutine starts; run_mesh derives its dispatch budget from what
     # REMAINS so its result (even a timeout verdict) always returns to the model before the outer
     # loop expires.
     effective_timeout = bcfg.BUILDER_LOOP_TIMEOUT if loop_timeout is None else int(loop_timeout)
-    loop_deadline = _time.monotonic() + effective_timeout
+    # on MODEL time (contracts/progress_clock.model_time): a native run does not spend it
+    from meshpipeline.contracts.progress_clock import model_time
+    loop_deadline = model_time() + effective_timeout
 
     # THE typed context every tool in this loop receives. Built once, here, from what the caller
     # already resolved - never rediscovered from the workspace by the tools themselves.
@@ -63,7 +65,8 @@ async def _run_tool_loop(
         workspace=workspace, geometry=geometry, job_id=job_id,
         execution_id=execution_id, execution_generation=execution_generation,
         engine=engine, mesh_fidelity=mesh_fidelity, loop_deadline=loop_deadline,
-        user_dispute=user_dispute, broken_mesh_moves_to=broken_mesh_moves_to)
+        user_dispute=user_dispute, broken_mesh_moves_to=broken_mesh_moves_to,
+        user_notes=tuple(user_notes or ()))
     executor = BuilderToolExecutor(
         context=tool_context, publish=publish, tool_calls_out=tool_calls_out)
     context = BuilderContextPreparer(workspace=workspace, job_id=job_id, engine=engine)
@@ -106,7 +109,9 @@ async def _run_tool_loop(
     # reason and tally. A parallel string would be vocabulary with no consumer.
     result = await run_agent_loop(
         driver=policy, provider_call=_provider_call(engine, job_id, user_id),
-        messages=conversation, tools=_active_tools(engine), job_id=job_id, user_id=user_id,
+        messages=conversation,
+        tools=(_active_tools(engine, user_notes=user_notes) if user_notes else _active_tools(engine)),
+        job_id=job_id, user_id=user_id,
         pipeline_attempt=attempt, agent_attempt=attempt, deadline_s=float(effective_timeout),
         append_tool_result=_append_tool_result, on_round_awaited=_on_round,
         # PUBLIC TRACE: role and identity only. What a reader may see is decided by

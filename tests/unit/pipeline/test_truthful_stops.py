@@ -238,10 +238,18 @@ def test_a_mesh_that_came_out_broken_is_told_as_broken_cells_not_a_mesher_that_s
     assert again["executor_failure_cause"] == "engine_crashed"
 
 
-def test_an_unknown_record_keeps_the_old_account(quiet_executor, tmp_path):
+def test_an_unknown_record_is_never_told_as_a_crash(quiet_executor, tmp_path):
+    """engine_crashed is kept for a mesher that RAN and stopped: with no record of any run in the
+    attempt (resumed on another worker, or a builder that stopped before opening one) nothing is
+    known about a mesher, and the missing mesh is said as ours (dev-areen 25 Oct: an FEA guard trip
+    followed by a spent budget read "The mesher (Gmsh) stopped before it finished writing")."""
     out = _no_mesh(quiet_executor, tmp_path, "gmsh", None)
-    assert out["executor_failure_cause"] == "engine_crashed"
+    assert out["executor_failure_cause"] == "run_infrastructure"
+    assert out["executor_failure_facts"]["run_record_unknown"] is True
     assert "meshers_started" not in out["executor_failure_facts"]
+    what, nxt = describe(out["executor_failure_cause"], out["executor_failure_facts"])
+    assert "stopped before it finished writing" not in what and "on our side" in what
+    assert "run it again" in nxt
 
 
 def test_the_closing_message_of_an_attempt_that_never_meshed(quiet_executor, tmp_path):

@@ -117,7 +117,7 @@ def test_intake_prompt_blocks_are_registered_and_composed():
     names = [b[0] for b in intake.INTAKE_PROMPT_BLOCKS]
     assert names == ["quality_criteria", "engine_first", "geometry_check", "thermal_model", "purpose_map", "fea_path",
                      "propose_first",
-                     "ask_plainly", "plain_text"]
+                     "ask_plainly", "user_notes", "plain_text"]
     for name, purpose, build in intake.INTAKE_PROMPT_BLOCKS:
         assert purpose and callable(build)
     # composition uses exactly the registry (no stray system += in run_intake)

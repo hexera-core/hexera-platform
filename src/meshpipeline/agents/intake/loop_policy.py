@@ -25,11 +25,12 @@ from meshpipeline.contracts.agent_loop import (
 logger = logging.getLogger(__name__)
 
 # The application-rendered terminals, in the priority the batch is resolved with. A new engine
-# selection outranks a submission (the user is choosing again); a submission summary wins only if
-# nothing above it did. An impossible admission is NOT a terminal any more: it goes back to the
+# selection outranks a submission (the user is choosing again); the notes question (asked once, in
+# place of the first summary - contracts/user_notes) outranks the summary it holds back; a
+# submission summary wins only if nothing above it did. An impossible admission is NOT a terminal any more: it goes back to the
 # model as a tool result to repair or put to the user (executor.py) - though it still voids the
 # submission beneath it there, so nothing refused is ever delivered.
-TERMINAL_PRIORITY = ("selection_prompt", "submit_summary")
+TERMINAL_PRIORITY = ("selection_prompt", "notes_prompt", "submit_summary")
 
 # Words that carry no content when two questions are compared: grammar, the assent vocabulary
 # and the scaffolding every proposal shares ("I would go with ... - ok, or tell me what differs").

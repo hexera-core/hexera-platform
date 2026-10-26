@@ -148,23 +148,60 @@ def _rank_count(*, hard_max: int = 12, gib_per_rank: float = 3.0) -> int:
 
 def _run_snappy_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
                       timeout: int = 1800) -> dict:
+    from meshpipeline.contracts.native_time import STALL_WINDOW_S
     from meshpipeline.engines.snappy import parallel_stages as ps
+    from meshpipeline.sandbox.safe_exec import MemoryExpired, StalledExpired, StoppedByWatch
 
     ws = Path(workspace)
     nproc = _rank_count()
     attempt_started = _time.time()
     stages: list[ps.StageResult] = []
+    # NO GUESSED TIME LIMIT (contracts/native_time): `timeout` is the WALL of the machine this runs
+    # on, for the whole run - every stage shares it - and each stage is WATCHED: stopped only when
+    # its log has not grown for the stall window. A slow snappy that is still refining, snapping or
+    # adding layers is never cut (it was, at 2,400 s, and then re-planned smaller).
+    wall_at = _time.monotonic() + float(timeout)
+    stalled: list[str] = []
+    oom: list[float] = []      # stopped before the machine ran out of memory (GiB in use then)
+
+    # THE SIZE BRAKE (engines/size_brake): an external body's snappyHexMesh is stopped as
+    # soon as its own log says the mesh is headed far past its cell budget - after castellation, or
+    # after snapping and before the layer stage - and the driver re-plans the pass smaller
+    oversize: list[dict] = []
+
+    def _brake_for(logname: str):
+        if not logname.startswith("snappyHexMesh"):
+            return None
+        from meshpipeline.engines.size_brake import SizeBrake, case_budget
+        from meshpipeline.engines.workspace_facts import read_flow_topology
+        budget = case_budget(ws)
+        if not budget or read_flow_topology(ws) == "internal":
+            return None
+        return SizeBrake(ws / logname, budget)
 
     def _sh(cmd: str, logname: str, *, name: str = "", authoritative: bool = True,
             expected: tuple[str, ...] = ()) -> ps.StageResult:
         full = f"source {bashrc} >/dev/null 2>&1 && {cmd}"
         t0 = _time.time()
         rc, timed_out = 0, False
+        brake = _brake_for(logname)
         try:
             with (ws / logname).open("w") as fh:
                 proc = run_guarded(["bash", "-lc", full], cwd=str(ws), env=_foam_env(),
-                                   stdout=fh, stderr=subprocess.STDOUT, timeout=timeout)
+                                   stdout=fh, stderr=subprocess.STDOUT,
+                                   timeout=max(1.0, wall_at - _time.monotonic()),
+                                   stall_s=STALL_WINDOW_S, watch=brake)
             rc = proc.returncode
+        except StoppedByWatch:
+            rc = -1
+            if brake is not None and brake.tripped:
+                oversize.append(dict(brake.tripped))
+        except MemoryExpired as exc:
+            rc, timed_out = -1, False
+            oom.append(float(exc.used_gib))
+        except StalledExpired:
+            rc, timed_out = -1, True
+            stalled.append(name or cmd.split()[0])
         except subprocess.TimeoutExpired:
             rc, timed_out = -1, True
         present = {p: (ws / p).exists() and (ws / p).stat().st_size > 0 for p in expected}
@@ -183,6 +220,18 @@ def _run_snappy_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
         out = _snappy_result(ws, verdict["rc"], verdict["timed_out"], snap_log,
                              stages=stages, stage_note=verdict["note"],
                              benign=verdict["benign"])
+        # STUCK, not slow: the stage that made no progress for the stall window (the driver's
+        # re-plan-smaller lever answers only this; a run stopped at the machine's wall still
+        # working moves to a bigger machine instead - contracts/mesh_machine.off_the_wall)
+        if stalled:
+            out["stalled"] = True
+            out["stalled_stage"] = stalled[-1]
+        if oom:
+            # OUT OF MEMORY, stopped cleanly (sandbox/safe_exec.MemoryExpired): one machine up
+            out.update(out_of_memory=True, timed_out=False, used_gib=oom[-1])
+        if oversize:
+            # STOPPED BY THE SIZE BRAKE: headed far past the budget (its count, stage and ratio)
+            out["oversize"] = oversize[-1]
         # QUALITY IS MEASURED HERE, beside the mesh, and travels home in the result.
         #
         # The caller runs check_mesh() itself, which shells out to `checkMesh` - an OpenFOAM

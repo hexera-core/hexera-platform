@@ -121,6 +121,30 @@ def facts(workspace) -> dict:
         "set_aside": {"elements": aside.get("elements"), "cusp": aside.get("cusp_elements"),
                       "micro": aside.get("micro_elements")},
         "straightened": q.get("fea_straightened"),
+        **({"assembly": assembly_checklist(fea.get("assembly"), plan, inp_faces)} if fea.get("assembly") else {}),
+    }
+
+
+def assembly_checklist(asm: Mapping | None, plan: Mapping, named_faces: int | None) -> dict:
+    """THE REVIEWER'S CHECKLIST FOR AN ASSEMBLY (PLAN-fea-17), measured from the records: every part
+    present (each has elements), every interface shared (bonded: one joint per touching pair) or
+    paired (contact / tied: one pair per touching or overlapping pair), every face named."""
+    a = _m(asm)
+    plan_asm = _m(plan.get("assembly"))
+    parts = list(a.get("parts") or [])
+    want_parts = len(plan_asm.get("parts") or []) or len(parts)
+    # a part wholly inside another is in the mesh as that part's material (bonded): present
+    present = sum(1 for p in parts if int(_m(p).get("elements") or 0) > 0) + len(a.get("absorbed") or [])
+    joints = list(a.get("joints") or [])
+    wanted_joints = plan_asm.get("pairs")
+    want_faces = len(plan.get("faces") or [])
+    return {
+        "mode": a.get("mode"),
+        "parts": {"present": present, "expected": want_parts, "ok": present == want_parts and want_parts > 0},
+        "joints": {"written": len(joints), "expected": wanted_joints,
+                   "ok": wanted_joints is None or len(joints) == int(wanted_joints)},
+        "faces": {"named": named_faces, "expected": want_faces or None,
+                  "ok": bool(named_faces) and (not want_faces or int(named_faces or 0) >= want_faces)},
     }
 
 
@@ -155,8 +179,19 @@ def facts_text(workspace) -> str:
     if sa.get("elements"):
         lines.append(f"- Set aside from the quality floor: {_n(sa.get('elements'))} elements "
                      f"({_n(sa.get('cusp'))} at a cusp in the CAD, {_n(sa.get('micro'))} at a micro detail).")
+    asm = f.get("assembly")
+    if asm:
+        joined = {"bonded": "shared nodes (one conformal mesh)", "contact": "named contact pairs",
+                  "tie": "tied surface pairs"}.get(str(asm.get("mode")), str(asm.get("mode")))
+        lines.append(f"- ASSEMBLY ({joined}). Every part present: "
+                     + ("yes" if asm["parts"]["ok"] else "NO")
+                     + f" ({_n(asm['parts']['present'])} of {_n(asm['parts']['expected'])} parts have elements). "
+                     + "Every interface shared or paired: " + ("yes" if asm["joints"]["ok"] else "NO")
+                     + f" ({_n(asm['joints']['written'])} written of {_n(asm['joints']['expected'])}). "
+                     + "Every face named (Part_k_Face_j): " + ("yes" if asm["faces"]["ok"] else "NO")
+                     + f" ({_n(asm['faces']['named'])} of {_n(asm['faces']['expected'])}).")
     lines.append("- " + ONE_PREVIEW_GROUP)
     return "\n".join(lines)
 
 
-__all__ = ["FEA_PURPOSE", "ONE_PREVIEW_GROUP", "SOLVER_FILES", "facts", "facts_text", "is_fea", "measured_valid"]
+__all__ = ["FEA_PURPOSE", "assembly_checklist", "ONE_PREVIEW_GROUP", "SOLVER_FILES", "facts", "facts_text", "is_fea", "measured_valid"]

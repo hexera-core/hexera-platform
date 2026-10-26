@@ -131,14 +131,24 @@ def test_a_car_body_surface_is_told_it_is_not_a_solid_with_the_way_on():
     ({"solids": 1, "source_format": "stl",
       "validity": {"clean": False, "kind": "triangles", "reasons": [{"code": "open_boundary", "severity": "error"}]}},
      "surface"),
-    # a STEP of faces with no solid in it
-    ({"solids": 0, "source_format": "step", "validity": {"clean": True, "kind": "brep", "reasons": []}}, "surface"),
+    # a STEP of faces with no solid entity, whose faces close (the clean check says so): read as the solid
+    # they bound (MESH-1; the FEA staging makes the closed shells solids) - no stop
+    ({"solids": 0, "source_format": "step", "validity": {"clean": True, "kind": "brep", "reasons": []}}, ""),
     # a STEP of open shells
     ({"solids": 0, "source_format": "step",
       "validity": {"clean": False, "kind": "brep", "reasons": [{"code": "open_shell", "severity": "error"}]}},
      "surface"),
-    # three clean solids: the multi-part message, as before
-    ({"solids": 3, "source_format": "step", "validity": {"clean": True, "kind": "brep", "reasons": []}}, "bodies"),
+    # three clean solids: an assembly, meshed - no stop (design 14)
+    ({"solids": 3, "source_format": "step", "validity": {"clean": True, "kind": "brep", "reasons": []}}, ""),
+    # three solids that pass into each other: interference between parts is a meshing choice - no stop
+    ({"solids": 3, "source_format": "step",
+      "validity": {"clean": False, "kind": "brep", "reasons": [{"code": "bodies_overlap", "severity": "error"}]}},
+     ""),
+    # a closed part whose surface passes through itself, from any format: a WARNING, never a stop -
+    # the mesh is tried, and only a mesh that fails there says it needs CAD repair (MESH-1/2)
+    ({"solids": 1, "source_format": "stl",
+      "validity": {"clean": False, "kind": "triangles",
+                   "reasons": [{"code": "self_intersection", "severity": "error"}]}}, ""),
     # one clean closed solid, from any format: nothing stops it
     ({"solids": 1, "source_format": "step", "validity": {"clean": True, "kind": "brep", "reasons": []}}, ""),
     ({"solids": 1, "source_format": "obj", "validity": {"clean": True, "kind": "triangles", "reasons": []}}, ""),

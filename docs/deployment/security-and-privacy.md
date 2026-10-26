@@ -31,8 +31,10 @@ Set it wherever the deployment is exposed.
 
 ## Object access
 
-Downloads are issued as time-limited signed URLs, bounded by `MINIO_SIGNED_URL_TTL`. A bundle is
-not served from a path a client can construct.
+Downloads are issued as time-limited signed URLs, minted for the caller's own job when they click
+Download. A link lives `MINIO_SIGNED_URL_TTL` seconds, or for a large file as long as it takes to
+fetch at 1 Mbit/s, never more than 12 hours. A bundle is not served from a path a client can
+construct.
 
 Uploaded geometry is addressed by the SHA-256 of its contents, so the same bytes uploaded twice
 resolve to one object and no filename from a user reaches storage as a path.

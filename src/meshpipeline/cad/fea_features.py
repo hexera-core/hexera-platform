@@ -40,6 +40,9 @@ FLAT_TURN_DEG = 0.5
 #: larger curvature over the smaller): a shaft's 2 mm shoulder fillet and the 12 mm shaft it runs
 #: into are tangent, but bend six times apart.
 CURVATURE_RATIO = 1.6
+#: A FILLET is a blend, small beside the part: a concave round of a radius over this share of the
+#: part's diagonal is the part's own gentle curve (a blade's camber), not a hot spot.
+FILLET_MAX_SHARE = 0.1
 #: A concave arc that goes this far round is a whole HOLE.
 HOLE_SPAN_DEG = 355.0
 #: A concave arc of at least this much (and less than a hole) is a NOTCH or GROOVE; less is a FILLET.
@@ -669,8 +672,11 @@ def merge_coaxial(arcs: list[Arc]) -> list[Arc]:
     return out
 
 
-def kind_of(arc: Arc) -> tuple[str, str] | None:
-    """(hot-spot type, shape word) for a concave round, None for a convex one."""
+def kind_of(arc: Arc, diag: float | None = None) -> tuple[str, str] | None:
+    """(hot-spot type, shape word) for a concave round, None for a convex one - and None for a
+    gently curved face that is no blend: a "fillet" whose radius is more than FILLET_MAX_SHARE of
+    the part's diagonal (diag, in the surface's unit) is the part's own shape, not a stress raiser
+    (a turbine blade's concave side read "Fillet, radius 205 mm", 22 Oct)."""
     if not arc.concave:
         return None
     if arc.kind == "cylinder" and arc.span_deg >= HOLE_SPAN_DEG:
@@ -678,6 +684,8 @@ def kind_of(arc: Arc) -> tuple[str, str] | None:
     if arc.span_deg >= NOTCH_SPAN_DEG:
         groove = arc.kind == "torus" and arc.around_deg >= HOLE_SPAN_DEG
         return NOTCH, "groove" if groove else "notch"
+    if diag and arc.radius > FILLET_MAX_SHARE * float(diag):
+        return None
     return FILLET, "fillet"
 
 

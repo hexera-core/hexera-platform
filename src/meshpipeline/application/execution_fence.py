@@ -246,16 +246,75 @@ async def guard_redelivery(session_factory, job_repo, job_id: str, *, jlog, max_
                 row = await job_repo.get_internal(db, uuid.UUID(job_id))
                 if row:
                     try:
-                        row.failed_reason = FailedReason(failed_reason_for(FailureClass.RESOURCE))
+                        row.failed_reason = FailedReason(failed_reason_for(FailureClass.WORKER_LOST))
                     except ValueError:
                         row.failed_reason = FailedReason.unhandled
+                    # THE USER'S ACCOUNT, always: the job's final message is rendered from this
+                    # record. Without it a dead-lettered job read as nothing at all (ender3_full,
+                    # dev-areen 25 Oct: DEAD_LETTER after five deliveries, no final message). Every
+                    # delivery's worker was lost before the run ended - which is what it says.
+                    from meshpipeline.application.final_result import worker_lost_result
+                    row.final_result = worker_lost_result(
+                        job_id=job_id, owner_id=str(getattr(row, "owner_id", "") or ""),
+                        attempts=int(getattr(row, "current_attempt", 0) or 0)).to_dict()
             await db.commit()
     except Exception as exc:                       # noqa: BLE001 - the dead-letter must still record
         jlog.warning("redelivery-cap: could not mark job failed: %s", exc)
-    record_dead_letter(job_id, FailureClass.RESOURCE, "worker",
+    record_dead_letter(job_id, FailureClass.WORKER_LOST, "worker",
                        f"redelivered {deliveries}x (cap {max_redeliveries}) - poison job")
     return DeliveryRefused("failed", {"job_id": job_id, "status": "failed",
                                       "reason": "redelivery_cap"})
+
+
+#: A DATABASE THAT WILL NOT TAKE THE CLAIM YET is waited out, not turned into a failed job. A
+#: redeploy starts new API revisions beside the old ones, and on a small instance that fills every
+#: connection slot for a minute or two: dev-areen 25 Oct 00:06 UTC, two jobs failed in 0.1 s as
+#: "internal" on TooManyConnectionsError before they had done anything. Nothing is written before
+#: the claim commits, so trying again is safe; the job stays queued while it waits.
+CLAIM_WAIT_FIRST_S = 5.0
+CLAIM_WAIT_MAX_STEP_S = 60.0
+#: The whole wait: settings/runtime CLAIM_WAIT_SECONDS (read per call, so a test or a deployment can set it).
+CLAIM_WAIT_TOTAL_S: float | None = None
+
+
+def _is_transient_dependency(exc: BaseException) -> bool:
+    """The database ANSWERED and said "not now": full, starting up or shutting down - what a roll
+    looks like. A database that cannot be reached at all (refused, wrong address) is not waited
+    for: that is an outage or a misconfiguration, and the run says so at once, as before."""
+    from meshpipeline.errors import is_database_busy
+    return is_database_busy(exc)
+
+
+async def claim_delivery_patiently(session_factory, job_repo, job_id: str, *, jlog, backend: str,
+                                   backend_execution_id: str, sleep=asyncio.sleep,
+                                   clock=None, total_s: float | None = None):
+    """claim_delivery, retried with a growing wait (CLAIM_WAIT_FIRST_S doubling to
+    CLAIM_WAIT_MAX_STEP_S) while the database is full, starting or unreachable - for up to
+    CLAIM_WAIT_TOTAL_S. Past that the last error is raised and the run fails as dependency_down,
+    as before. Any other error is raised at once. The delivery counter is not touched: this is
+    one delivery waiting, not a new one."""
+    import time as _time
+    now = clock or _time.monotonic
+    if total_s is not None:
+        budget = float(total_s)
+    elif CLAIM_WAIT_TOTAL_S is not None:
+        budget = float(CLAIM_WAIT_TOTAL_S)
+    else:
+        import meshpipeline.settings.runtime as _rt
+        budget = float(_rt.CLAIM_WAIT_SECONDS)
+    start, step, tries = now(), CLAIM_WAIT_FIRST_S, 0
+    while True:
+        try:
+            return await claim_delivery(session_factory, job_repo, job_id, jlog=jlog, backend=backend,
+                                        backend_execution_id=backend_execution_id)
+        except Exception as exc:  # noqa: BLE001 - narrowed at once
+            tries += 1
+            if not _is_transient_dependency(exc) or (now() - start) + step > budget:
+                raise
+            jlog.warning("The database would not take the claim for job %s (%s, try %d) - the job "
+                         "stays queued; trying again in %.0f s", job_id, type(exc).__name__, tries, step)
+            await sleep(step)
+            step = min(step * 2.0, CLAIM_WAIT_MAX_STEP_S)
 
 
 async def claim_delivery(session_factory, job_repo, job_id: str, *, jlog, backend: str,

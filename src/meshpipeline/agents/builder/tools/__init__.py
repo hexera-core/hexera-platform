@@ -106,7 +106,7 @@ def dispatch_prepared_mesh(ctx: BuilderToolContext, prepared) -> str:
     return _serialized("run_mesh", job_id, result)
 
 
-def _active_tools(engine: str = "", user_dispute=None) -> list[dict]:
+def _active_tools(engine: str = "", user_dispute=None, user_notes=None) -> list[dict]:
     import copy
 
     from meshpipeline.contracts.human_flags import flags_of
@@ -132,6 +132,22 @@ def _active_tools(engine: str = "", user_dispute=None) -> list[dict]:
             sub["function"]["description"] += (
                 " This build answers an engineer's dispute: declare, per flagged region, what you "
                 "set out to correct and what you actually changed.")
+            out.append(sub)
+        tools = out
+    # THE USER'S OWN NOTES (contracts/user_notes): submit_mesh may carry one plain line on what the
+    # build did with them, for the result. Optional and never checked - a build with no notes sees
+    # the historical roster.
+    from meshpipeline.contracts.user_notes import REMARK_DESCRIPTION
+    from meshpipeline.contracts.user_notes import clean as _clean_notes
+    if _clean_notes(user_notes):
+        out = []
+        for tool in tools:
+            if tool.get("function", {}).get("name") != "submit_mesh":
+                out.append(tool)
+                continue
+            sub = copy.deepcopy(tool)
+            sub["function"]["parameters"]["properties"]["notes_remark"] = {
+                "type": "string", "description": REMARK_DESCRIPTION}
             out.append(sub)
         tools = out
     return tools

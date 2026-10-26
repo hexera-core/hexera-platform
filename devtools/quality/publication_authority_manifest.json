@@ -299,9 +299,35 @@
   "roots": []
  },
  {
+  "context": "adapters/mesh_execution/cloud_run_client.py::_still_updating::error#1|NotAPublisher|not-a-publisher|",
+  "path": "adapters/mesh_execution/cloud_run_client.py",
+  "qualname": "_still_updating",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "adapters/mesh_execution/cloud_run_client.py::_uncollected::error#1|NotAPublisher|not-a-publisher|",
   "path": "adapters/mesh_execution/cloud_run_client.py",
   "qualname": "_uncollected",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "adapters/mesh_execution/cloud_run_client.py::worker_room::error#1|NotAPublisher|not-a-publisher|",
+  "path": "adapters/mesh_execution/cloud_run_client.py",
+  "qualname": "worker_room",
   "semantic": "error",
   "method": "error",
   "ordinal": 1,
@@ -2113,6 +2139,19 @@
   "roots": []
  },
  {
+  "context": "application/fenced_checkpointer.py::FencedCheckpointer._skippable::error#1|NotAPublisher|not-a-publisher|",
+  "path": "application/fenced_checkpointer.py",
+  "qualname": "FencedCheckpointer._skippable",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "application/final_result.py::derive_terminal_status::error#1|NotAPublisher|not-a-publisher|application/final_result.py::callers of derive_terminal_status()",
   "path": "application/final_result.py",
   "qualname": "derive_terminal_status",
@@ -2241,6 +2280,45 @@
   "method": "search",
   "ordinal": 1,
   "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "application/intake_brief.py::user_detail::search#1|NotAPublisher|not-a-publisher|",
+  "path": "application/intake_brief.py",
+  "qualname": "user_detail",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_INTERNAL",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "application/lease_keeper.py::run::error#1|NotAPublisher|not-a-publisher|",
+  "path": "application/lease_keeper.py",
+  "qualname": "run",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "application/lease_keeper.py::run::error#2|NotAPublisher|not-a-publisher|",
+  "path": "application/lease_keeper.py",
+  "qualname": "run",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 2,
+  "receiver": "logger",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,
@@ -2587,6 +2665,21 @@
   "roots": []
  },
  {
+  "context": "application/post_gate_rescue.py::run_to_end::error#1|NotAPublisher|not-a-publisher|application/pipeline_run.py::meshpipeline.application.pipeline_run._JobAdapter",
+  "path": "application/post_gate_rescue.py",
+  "qualname": "run_to_end",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "jlog",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "application/pipeline_run.py::meshpipeline.application.pipeline_run._JobAdapter"
+  ]
+ },
+ {
   "context": "application/post_terminal.py::enqueue_conversation_export::error#1|NotAPublisher|not-a-publisher|application/post_terminal.py::callers of enqueue_conversation_export()",
   "path": "application/post_terminal.py",
   "qualname": "enqueue_conversation_export",
@@ -2744,6 +2837,36 @@
   "roots": []
  },
  {
+  "context": "application/unclaimed_requeue.py::requeue_if_unclaimed::error#1|NotAPublisher|not-a-publisher|application/pipeline_run.py::meshpipeline.application.pipeline_run._JobAdapter",
+  "path": "application/unclaimed_requeue.py",
+  "qualname": "requeue_if_unclaimed",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "jlog",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "application/pipeline_run.py::meshpipeline.application.pipeline_run._JobAdapter"
+  ]
+ },
+ {
+  "context": "application/unclaimed_requeue.py::requeue_if_unclaimed::error#2|NotAPublisher|not-a-publisher|application/pipeline_run.py::meshpipeline.application.pipeline_run._JobAdapter",
+  "path": "application/unclaimed_requeue.py",
+  "qualname": "requeue_if_unclaimed",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 2,
+  "receiver": "jlog",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "application/pipeline_run.py::meshpipeline.application.pipeline_run._JobAdapter"
+  ]
+ },
+ {
   "context": "application/worker_handoff.py::hand_back::error#1|NotAPublisher|not-a-publisher|application/pipeline_run.py::meshpipeline.application.pipeline_run._JobAdapter",
   "path": "application/worker_handoff.py",
   "qualname": "hand_back",
@@ -2878,6 +3001,19 @@
   "method": "search",
   "ordinal": 1,
   "receiver": "_NAMED_FACE",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "cad/ingest/assembly_files.py::_schema_family::search#1|NotAPublisher|not-a-publisher|",
+  "path": "cad/ingest/assembly_files.py",
+  "qualname": "_schema_family",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_SCHEMA",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,
@@ -3503,6 +3639,32 @@
   "roots": []
  },
  {
+  "context": "engines/fea_driver.py::prepare_assembly::stage#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/fea_driver.py",
+  "qualname": "prepare_assembly",
+  "semantic": "stage",
+  "method": "stage",
+  "ordinal": 1,
+  "receiver": "A",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/fea_driver.py::restage_tied::stage#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/fea_driver.py",
+  "qualname": "restage_tied",
+  "semantic": "stage",
+  "method": "stage",
+  "ordinal": 1,
+  "receiver": "A",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "engines/gates.py::run_gates::check#1|NotAPublisher|not-a-publisher|",
   "path": "engines/gates.py",
   "qualname": "run_gates",
@@ -3510,6 +3672,19 @@
   "method": "check",
   "ordinal": 1,
   "receiver": "g",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/gmsh/fea_adapter.py::surfaces_at_point::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/gmsh/fea_adapter.py",
+  "qualname": "surfaces_at_point",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,
@@ -3562,6 +3737,19 @@
   "method": "search",
   "ordinal": 1,
   "receiver": "_LAYER_CONTEXT",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/size_brake.py::case_budget::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/size_brake.py",
+  "qualname": "case_budget",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_MAX_GLOBAL",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,

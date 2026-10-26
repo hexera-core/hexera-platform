@@ -57,6 +57,18 @@ def test_dispatch_tool_converts_any_tool_crash_into_an_error_result(tmp_path, mo
 # run_mesh budget must FIT the remaining loop budget (forensic: 4 attempts killed
 # at exactly BUILDER_LOOP_TIMEOUT with zero remote returns)
 
+def _on_a_plain_clock(monkeypatch, engine):
+    """An engine whose run is NOT watched (contracts/native_time) - none of the CFD engines is any
+    more; a watched run is capped only by its machine (test_cfd_progress_every_engine)."""
+    import dataclasses
+
+    import meshpipeline.engines.registry as reg
+    real = reg.get_spec
+    spec = real(engine)
+    plain = dataclasses.replace(spec, run_policy=dataclasses.replace(spec.run_policy, watched=False))
+    monkeypatch.setattr(reg, "get_spec", lambda name, *a, **k: plain if name == engine else real(name, *a, **k))
+
+
 def test_run_mesh_refuses_dispatch_when_loop_budget_too_small(tmp_path, monkeypatch):
     import time
 
@@ -64,6 +76,7 @@ def test_run_mesh_refuses_dispatch_when_loop_budget_too_small(tmp_path, monkeypa
     from meshpipeline.engines.registry import get_spec
     for f in get_spec("snappy_multiregion").run_policy.required_files:
         p = tmp_path / f; p.parent.mkdir(parents=True, exist_ok=True); p.write_text("{}")
+    _on_a_plain_clock(monkeypatch, "snappy_multiregion")
     def _never(*a, **k):
         raise AssertionError("must not dispatch with insufficient budget")
     monkeypatch.setattr("meshpipeline.engines.runtime.get_engine",
@@ -83,6 +96,7 @@ def test_run_mesh_caps_dispatch_timeout_to_remaining_budget(tmp_path, monkeypatc
     from meshpipeline.engines.registry import get_spec
     for f in get_spec("snappy_multiregion").run_policy.required_files:
         p = tmp_path / f; p.parent.mkdir(parents=True, exist_ok=True); p.write_text("{}")
+    _on_a_plain_clock(monkeypatch, "snappy_multiregion")
     seen = {}
     class _E:
         name = "snappy_multiregion"

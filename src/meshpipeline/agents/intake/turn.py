@@ -117,11 +117,24 @@ FEA_SETTLED_NUDGE = (
     "size). Write it again without asking any of them: ask only what is still open "
     "(the analysis type, if it is), or go on to the approval."
 )
+#: Put in front of the model when the user's latest message answers the application's one notes
+#: question (contracts/user_notes): the application keeps their words as typed; the model only
+#: carries what fits a declared field and goes on to the summary.
+NOTES_NUDGE = (
+    "[SYSTEM] The user's latest message answers the application's one optional question about "
+    "anything specific for this simulation. The application keeps their words exactly as typed "
+    "and hands them to every step that builds or checks the mesh - do not restate or summarise "
+    "them back. If they named something that fits a field the submission declares (the mesh "
+    "detail, an engine parameter, a named boundary, far-field margins), set it there; record "
+    "solver settings (loads, supports, materials, outputs) in request_txt as they said them. If "
+    "a note asks for something the mesher does not do, say so in one plain line. Then re-run "
+    "preview_selected_admission and call submit_requirements now. Do not ask the question again, "
+    "and ask nothing else unless their answer changed something required.")
 #: Every user-role line the application writes into a turn. None of them is the user's words, and
 #: the transcript marks them so a reader can tell.
 SYNTHETIC_NUDGES = (BUDGET_NUDGE, REPEAT_NUDGE, DEFAULT_NUDGE, ENGINE_SETTLED_NUDGE,
                     ENGINE_UNSETTLED_NUDGE, GARBLED_NUDGE, THERMAL_WORDS_NUDGE, FEA_INVENTED_NUDGE,
-                    FEA_SETTLED_NUDGE)
+                    FEA_SETTLED_NUDGE, NOTES_NUDGE)
 
 # How a user hands a question back. Phrase-level, like the recommendation gate, and deliberately
 # short: a false negative leaves the model to read the reply itself, while a false positive tells
@@ -194,6 +207,15 @@ def apply_budget_nudge(llm_messages: list, state_messages: list) -> tuple[list, 
 
 def apply_default_nudge(llm_messages: list, state_messages: list) -> tuple[list, list]:
     return _nudged(llm_messages, state_messages, DEFAULT_NUDGE)
+
+
+def answers_notes_question(state_messages) -> bool:
+    from meshpipeline.contracts import user_notes as un
+    return un.answers_now(state_messages)
+
+
+def apply_notes_nudge(llm_messages: list, state_messages: list) -> tuple[list, list]:
+    return _nudged(llm_messages, state_messages, NOTES_NUDGE)
 
 
 def prior_assistant_texts(state_messages) -> tuple[str, ...]:
@@ -378,7 +400,8 @@ def continuing_patch(context: TurnContext, record: TurnRecord) -> dict:
     }
 
 
-def completed_patch(context: TurnContext, record: TurnRecord, requirements) -> dict:
+def completed_patch(context: TurnContext, record: TurnRecord, requirements,
+                    user_notes: list | None = None) -> dict:
     llm_metadata = [{"turn": record.budget.turn_number, "finish_reason": record.finish_reason,
                      "usage": record.usage, "completed": True}]
     return {
@@ -396,6 +419,9 @@ def completed_patch(context: TurnContext, record: TurnRecord, requirements) -> d
         "mesh_engine": requirements.mesh_engine,
         "engine_source": requirements.engine_source,
         "engine_params": requirements.engine_params,
+        # THE USER'S OWN WORDS captured with this submission (contracts/user_notes) - merged into
+        # the session's notes on write, never replacing a note typed in the console's box
+        "user_notes": list(user_notes or []),
         "_intake_training_event": {
             "type": "intake_complete",
             "payload": {
@@ -417,6 +443,7 @@ def completed_patch(context: TurnContext, record: TurnRecord, requirements) -> d
                 # cannot say what the mesh was FOR is a sample you cannot learn from.
                 "purpose": requirements.purpose,
                 "input_kind": requirements.input_kind,
+                "user_notes": list(user_notes or []),
             },
         },
     }

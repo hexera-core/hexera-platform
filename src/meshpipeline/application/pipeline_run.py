@@ -222,7 +222,7 @@ class JobRequest:
                  "approved_snapshot_id", "approved_patch_contract",
                  "approved_intent_fingerprint", "intake_events",
                  "requested_extents", "reference_length_m", "requirements_strict",
-                 "flow_axis", "repair_directives", "review_continuation")
+                 "flow_axis", "repair_directives", "review_continuation", "user_notes")
 
     def __init__(self, job_id, owner_id="dev-user", geometry_source=None,
                  geometry_interpretation=None, session_id="",
@@ -235,7 +235,7 @@ class JobRequest:
                  approved_intent_fingerprint="", intake_events=None,
                  requested_extents=None, reference_length_m=None,
                  requirements_strict=True, flow_axis=None,
-                 repair_directives=None, review_continuation=False):
+                 repair_directives=None, review_continuation=False, user_notes=None):
         self.job_id           = job_id
         self.owner_id         = owner_id
         # Replayed only once the claim has bound the tenant these records file under. They are
@@ -305,6 +305,10 @@ class JobRequest:
         # purchase as the parked run (it was not admitted again and is charged once, at its end).
         self.repair_directives = [dict(d) for d in (repair_directives or [])]
         self.review_continuation = bool(review_continuation)
+        # THE USER'S OWN NOTES, word for word (contracts/user_notes): read by every route's AI
+        # steps and answered per requirement on the result. Empty for a run with none.
+        from meshpipeline.contracts.user_notes import clean as _clean_notes
+        self.user_notes = _clean_notes(user_notes)
         # user's explicit engine choice from intake ('cfmesh'/'snappy'; '' = auto).
         # Pins state['engine'] so resolution keeps it - the user has the final word.
         self.mesh_engine      = (mesh_engine or "").strip().lower()
@@ -435,6 +439,7 @@ def run_pipeline(
     flow_axis:               str | None = None,
     repair_directives:       list | None = None,
     review_continuation:     bool       = False,
+    user_notes:              list | None = None,
 ) -> dict:
 
 
@@ -446,6 +451,12 @@ def run_pipeline(
     # Records with no operation identity stay at-least-once across a re-delivery, which is the
     # documented contract for them: nothing can tell a re-delivery apart from a node legitimately
     # emitting the same event twice, and collapsing those would lose real work.
+
+    # The run's own arguments, kept for the one case that needs them again: a run that dies before
+    # it claims the job on a database that is unavailable is put back on the queue with exactly
+    # these (application/unclaimed_requeue), never left pending with no task.
+    from meshpipeline.application.unclaimed_requeue import RUN_KWARGS
+    RUN_KWARGS.set({k: v for k, v in locals().items() if k != "RUN_KWARGS"})
 
     return asyncio.run(_run_async(JobRequest(
         intake_events=intake_events or [],
@@ -474,6 +485,7 @@ def run_pipeline(
         user_dispute=user_dispute or {},
         repair_directives=repair_directives or [],
         review_continuation=review_continuation,
+        user_notes=user_notes or [],
         approved_snapshot_id=approved_snapshot_id or "",
         approved_patch_contract=approved_patch_contract,
         approved_intent_fingerprint=approved_intent_fingerprint or "",
@@ -486,6 +498,18 @@ def run_pipeline(
 # must not silently redefine what a dispatch payload may contain. Registering here (rather than the
 # contract importing this module) is what keeps dispatch_contract from importing the orchestrator.
 from meshpipeline.application.dispatch_types import register_run_entry  # noqa: E402
+
+
+def _notes_remarks(final_state) -> list:
+    """The 'From your notes' lines the delivered attempt's steps left (contracts/user_notes);
+    [] for a run with no notes. Never raises: a remark is never worth a run."""
+    if not final_state.get("user_notes"):
+        return []
+    try:
+        from meshpipeline.contracts.user_notes import read_remarks
+        return read_remarks(final_state.get("openfoam_workspace") or "")
+    except Exception:  # noqa: BLE001 - best effort (NOTE-3)
+        return []
 
 
 def _planner_model() -> str:
@@ -501,6 +525,12 @@ async def _run_async(req: JobRequest) -> dict:
     # dies before the checkpointer section (e.g. a dispute whose parent was purged) must
     # crash-finalize with the intent fallback, not UnboundLocalError inside the handler.
     _checkpointer_ok = False
+    # set once this delivery has claimed the job (application/unclaimed_requeue reads it on a crash)
+    _job_claimed = False
+    # THIS run's progress clock (contracts/progress_clock): what an earlier job in this process did
+    # never keeps this one going past its deadline.
+    from meshpipeline.contracts import progress_clock as _progress
+    _progress.reset()
     # Unpack once; the body keeps working with the original local names.
     job_id           = req.job_id
     owner_id         = req.owner_id
@@ -562,18 +592,21 @@ async def _run_async(req: JobRequest) -> dict:
             # The closing is said only when the guard FAILED the job; a stale copy it dropped
             # belongs to a run that is going on - or has ended - under its own authority.
             if _refusal.status == "failed":
+                # the same sentence the job's final record renders (execution_fence: worker_lost)
                 from meshpipeline.errors import FailureClass, user_message_for
-                _pub(job_id).closing(user_message_for(FailureClass.RESOURCE),
+                _pub(job_id).closing(user_message_for(FailureClass.WORKER_LOST),
                                      _terminal_event_id(job_id))
             await _worker_engine.dispose()
             return _refusal.detail
 
         _backend_name, _backend_exec_id = _backend_execution_id(job_id)
-        _claimed = await _fence.claim_delivery(
+        # a full or restarting database is waited out here (the job stays queued), never failed
+        _claimed = await _fence.claim_delivery_patiently(
             AsyncSessionLocal, job_repo, job_id, jlog=jlog,
             backend=_backend_name, backend_execution_id=_backend_exec_id)
         if isinstance(_claimed, _fence.DeliveryRefused):
             return _claimed.detail
+        _job_claimed = True
         ownership, worker_token = _claimed.ownership, _claimed.worker_token
         # The intake transcript is written HERE, after the claim, because claiming is what binds
         # the tenant these records file under - taken from the job ROW, never from the dispatch
@@ -667,6 +700,7 @@ async def _run_async(req: JobRequest) -> dict:
             reference_length_m=req.reference_length_m,
             requirements_strict=req.requirements_strict,
             flow_axis=req.flow_axis,
+            user_notes=req.user_notes,
             agent_model_configs={
                 "builder":    {"model": bcfg.BUILDER_MODEL,  "temperature": bcfg.BUILDER_TEMPERATURE,    "max_tokens": bcfg.BUILDER_MAX_TOKENS},
                 "reviewer":   {"model": rcfg.REVIEWER_MODEL, "temperature": rcfg.REVIEWER_TEMPERATURE,   "max_tokens": rcfg.REVIEWER_MAX_TOKENS},
@@ -716,6 +750,10 @@ async def _run_async(req: JobRequest) -> dict:
         from meshpipeline.engines.registry import resolve_engine_params
         initial_state["engine_params"] = resolve_engine_params(_pinned_engine, req.engine_params)
         initial_state["flow_topology"] = topology_of(getattr(req, "purpose", "") or "")
+        # AN FEA ASSEMBLY'S JOINTS, as the user confirmed them on the stage (bonded unless they said
+        # contact); read off the stored confirmation, never the event loop's to wait on
+        from meshpipeline.application.fea_check import confirmed_connection
+        initial_state["fea_connection"] = await asyncio.to_thread(confirmed_connection, str(session_id or ""))
 
         initial_state["repair_directives"] = list(req.repair_directives)
 
@@ -762,7 +800,7 @@ async def _run_async(req: JobRequest) -> dict:
                 dependency="pipeline",
                 detail="pipeline total budget exhausted before start",
                 user_message=_pb.EXHAUSTED_MESSAGE, reason=_start.reason,
-                job_repo=job_repo, jlog=jlog,
+                job_repo=job_repo, jlog=jlog, category="timed_out",
                 publish=lambda msg: _pub(job_id).closing(msg, _terminal_event_id(job_id)))
             await _worker_engine.dispose()
             return _refusal
@@ -797,21 +835,41 @@ async def _run_async(req: JobRequest) -> dict:
 
         async def _invoke_with_heartbeat(graph):
             if ownership is None:
-                return await graph.ainvoke(await _graph_input(graph), config=graph_config)
+                # a mesh past the executor's gates is never lost to a later step (post_gate_rescue)
+                from meshpipeline.application.post_gate_rescue import run_to_end
+                return await run_to_end(graph, await _graph_input(graph), graph_config, jlog=jlog)
             _stop = asyncio.Event()
+            _interval = max(1, int(rtcfg.WORKER_HEARTBEAT_SECONDS))
+            # THE LEASE KEEPER (application/lease_keeper): a process beside this run that renews
+            # the lease while this beat cannot run - the event loop held by one long CPU-bound
+            # step (dev-areen 25 Oct: four assemblies lost in the builder's surface preparation) -
+            # for as long as this worker is still working, and never for a worker that is stuck.
+            from meshpipeline.application import lease_keeper as _lk
+            _keeper = _lk.start(ownership, interval_s=_interval)
 
             async def _beat():
-                _interval = max(1, int(rtcfg.WORKER_HEARTBEAT_SECONDS))
+                from datetime import UTC, datetime
                 while not _stop.is_set():
                     try:
                         await asyncio.wait_for(_stop.wait(), timeout=_interval)
                         return                       # stop requested (run finished)
                     except TimeoutError:
                         pass
+                    if _keeper is not None:
+                        _keeper.mark_alive()         # this beat runs: the keeper only watches
                     try:
+                        # PROGRESS, NOT AGE (pipeline_budget.progress_extension): a job that showed
+                        # progress within the stall window is not out of time, so its deadline moves
+                        # on with this beat. No recent progress: no extension, the deadline stands.
+                        _to = _pb.progress_extension()
+                        _extend = (datetime.fromtimestamp(_to, tz=UTC)
+                                   if _to is not None and _to > _pb.effective_deadline(_pipeline_deadline)
+                                   else None)
                         async with AsyncSessionLocal() as _hb:
-                            _ok = await lease_repo.heartbeat(_hb, ownership)
+                            _ok = await lease_repo.heartbeat(_hb, ownership, extend_deadline_to=_extend)
                             await _hb.commit()
+                        if _ok and _extend is not None:
+                            _pb.extend(_pipeline_deadline, _extend.timestamp())
                         if not _ok:
                             jlog.error("Lease LOST - job_id=%s generation=%d token=%s: a newer "
                                        "generation/token owns this job, or its owner cancelled it; "
@@ -835,21 +893,42 @@ async def _run_async(req: JobRequest) -> dict:
                 # fleet roll, an operator) stops the graph and raises WorkerDraining, which the
                 # handler at the bottom of this function turns into a hand-back - not a failure.
                 from meshpipeline.application.execution_fence import execution_ownership
+
+                # ONCE THE EXECUTOR HAS PASSED THE MESH, nothing after it fails the job: a crash in
+                # the reviewer, a checkpoint write, anything - the run is finished from the last
+                # state it reached and delivered, saying the review did not conclude
+                # (application/post_gate_rescue; lp_base and kart_chassis, dev-areen 25 Oct)
+                from meshpipeline.application.post_gate_rescue import run_to_end as _run_to_end
                 from meshpipeline.application.worker_handoff import run_unless_draining
                 with execution_ownership(ownership, session_factory=AsyncSessionLocal):
                     return await run_unless_draining(
-                        graph.ainvoke(await _graph_input(graph), config=graph_config))
+                        _run_to_end(graph, await _graph_input(graph), graph_config, jlog=jlog))
             finally:
                 _stop.set()
                 try:
                     await _hb_task
                 except Exception:  # noqa: BLE001 - heartbeat teardown never affects the run result
                     pass
+                if _keeper is not None:
+                    # synchronous on purpose (it returns as soon as the keeper reads its stdin
+                    # close), so a cancelled run still stops its keeper
+                    try:
+                        _keeper.stop()
+                    except Exception:  # noqa: BLE001 - keeper teardown never affects the run result
+                        pass
 
         try:
             from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
             _pg_dsn = provcfg.POSTGRES_DSN.replace("+asyncpg", "").replace("+psycopg", "")
-            async with AsyncPostgresSaver.from_conn_string(_pg_dsn) as checkpointer:
+            # A POOL, CHECKED ON EVERY BORROW - never one connection held for the whole run. A
+            # job runs for hours; a connection opened at its start does not survive a database
+            # restart in the middle (kart_chassis, dev-areen 25 Oct: the 03:50 Cloud SQL restart
+            # killed it, and the first checkpoint write after the reviewer's PASS failed the job).
+            # The pool hands each checkpoint call a connection it has just checked, replacing a
+            # dead one; FencedCheckpointer retries a call that still meets a blip.
+            from meshpipeline.application.checkpoint_pool import checkpoint_pool
+            async with checkpoint_pool(_pg_dsn) as _cp_pool:
+                checkpointer = AsyncPostgresSaver(_cp_pool)
                 await checkpointer.setup()
                 _checkpointer_ok = True
                 # every authoritative checkpoint WRITE is fenced on execution ownership, and each
@@ -891,6 +970,7 @@ async def _run_async(req: JobRequest) -> dict:
         # the status it is entitled to. Both rules live in final_result: each exists because a
         # specific way of over-claiming success was possible, and they are policy, not sequencing.
         from meshpipeline.application.final_result import (
+            MEASURED_LIMITS_GATE,
             RunOutcome,
             derive_terminal_status,
             review_blocking,
@@ -948,6 +1028,7 @@ async def _run_async(req: JobRequest) -> dict:
         # ONCE afterwards, so a client never sees 'succeeded' before the mesh is fetchable.
         _decision = derive_terminal_status(_run_outcome, job_id=job_id, jlog=jlog)
         final_status, _failed_reason = _decision.status, _decision.failed_reason
+        _limits_failed = tuple(getattr(_decision, "limits_failed", ()) or ())
         # THE VERDICT BY MEASURED LIMITS, beside the one that decided (docs/RULES.md VER-1..4):
         # one `verdict shadow:` log line and the verdict's entry in the why record, every run.
         from meshpipeline.application.final_result import record_verdict
@@ -1142,9 +1223,14 @@ async def _run_async(req: JobRequest) -> dict:
                 approved_snapshot_id=str(final_state.get("approved_snapshot_id", "") or ""),
                 executor_success=bool(final_state.get("executor_success", False)),
                 reviewer_verdict=str(final_state.get("reviewer_verdict", "") or ""),
-                failed_gate=str(final_state.get("executor_failed_gate", "") or ""),
-                failure_cause=str(final_state.get("executor_failure_cause", "") or ""),
-                failure_facts=dict(final_state.get("executor_failure_facts") or {}),
+                # A MESH THE MEASURED LIMITS REFUSED is told as the check it failed (row, measured,
+                # limit), never as "could not be stored for download"
+                failed_gate=(MEASURED_LIMITS_GATE if _limits_failed
+                             else str(final_state.get("executor_failed_gate", "") or "")),
+                failure_cause=("mesh_quality" if _limits_failed
+                               else str(final_state.get("executor_failure_cause", "") or "")),
+                failure_facts=({"checks": [dict(c) for c in _limits_failed]} if _limits_failed
+                               else dict(final_state.get("executor_failure_facts") or {})),
                 api_failure=api_failure,
                 review_reruns=int(final_state.get("review_rerun_count", 0) or 0),
                 attempts=int(final_state.get("retry_count", 0) or 0),
@@ -1167,6 +1253,8 @@ async def _run_async(req: JobRequest) -> dict:
                 review_blocking=list(_review_blocking),
                 review_plan=_review_plan,
                 review_left=_review_left,
+                # what the steps that read the user's notes said they did with them
+                notes_remarks=_notes_remarks(final_state),
                 pre_composed_message=str(final_state.get("outcome_message") or "").strip()),
             ownership=ownership, lease_repo=lease_repo, job_repo=job_repo, jlog=jlog)
         if _publication.fenced:
@@ -1236,6 +1324,16 @@ async def _run_async(req: JobRequest) -> dict:
 
         def _direct_closing(_fc):
             _pub(job_id).closing(_umf(_fc), _terminal_event_id(job_id))
+
+        # NEVER ORPHANED: a run that died before it claimed the job, on a dependency that was only
+        # unavailable (the database full or restarting), has done nothing - it goes back on the
+        # queue instead of being failed by a finalize that cannot write either (dev-areen 25 Oct:
+        # eleven jobs left `pending` with no task, until the 4-hour reaper).
+        from meshpipeline.application.unclaimed_requeue import requeue_if_unclaimed
+        _requeued = await requeue_if_unclaimed(job_id, exc, claimed=_job_claimed,
+                                               jlog=jlog)
+        if _requeued is not None:
+            return _requeued
 
         await _finalize_crash(
             AsyncSessionLocal, exc,

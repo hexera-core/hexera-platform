@@ -109,6 +109,10 @@ def run_cartesian_mesh(workspace, *, context=None, bashrc: str = _DEFAULT_BASHRC
     return run_mesh(workspace, engine="cfmesh", timeout=timeout)
 
 
+#: how mesh_passages says a passage was STUCK (no sign of life for the stall window), not slow
+PASSAGE_STALLED = "made no progress for the stall window"
+
+
 def mesh_passages(ws: Path, *, bashrc: str = _DEFAULT_BASHRC, timeout: float = 1800.0) -> tuple[int, bool, str]:
     """THE OTHER PASSAGES of a case whose confirmed openings lie on several that do not connect
     (PASSAGES_FILE). cartesianMesh keeps the largest closed region it finds, so each passage is
@@ -135,9 +139,11 @@ def mesh_passages(ws: Path, *, bashrc: str = _DEFAULT_BASHRC, timeout: float = 1
             return max(1.0, deadline - time.monotonic())
 
         def _run(cmd: str, cwd: Path, log_name: str) -> int:
+            from meshpipeline.contracts.native_time import STALL_WINDOW_S
             with (cwd / log_name).open("w") as fh:
                 return run_guarded(["bash", "-lc", f"source {bashrc} >/dev/null 2>&1 && {cmd}"], cwd=str(cwd),
-                                   env=_foam_env(), stdout=fh, stderr=subprocess.STDOUT, timeout=_left()).returncode
+                                   env=_foam_env(), stdout=fh, stderr=subprocess.STDOUT, timeout=_left(),
+                                   stall_s=STALL_WINDOW_S).returncode
 
         try:
             surface = "geom.fms" if _run(f"surfaceFeatureEdges -angle {angle:g} geom.stl geom.fms", sub,
@@ -150,12 +156,26 @@ def mesh_passages(ws: Path, *, bashrc: str = _DEFAULT_BASHRC, timeout: float = 1
             if _run(f"mergeMeshes -overwrite . {shlex.quote(str(rel))}", ws, f"mergeMeshes_p{k}.log") != 0:
                 tail = "\n".join((ws / f"mergeMeshes_p{k}.log").read_text(errors="replace").splitlines()[-LOG_TAIL_LINES:])
                 return 1, False, f"[CFMESH] passage {k} could not be merged into the mesh:\n{tail}"
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as exc:
+            if getattr(exc, "stalled", False):
+                return -1, True, f"[CFMESH] passage {k} {PASSAGE_STALLED}"
             return -1, True, f"[CFMESH] passage {k} ran out of time"
         # the merged mesh is the case's; the passage's own copy only fills the returned archive
         shutil.rmtree(sub / "constant" / "polyMesh", ignore_errors=True)
     logger.info("cfMesh: %d further passage(s) meshed and merged", len(spec.get("runs") or []))
     return 0, False, ""
+
+
+def _cfmesh_brake(ws: Path, log: Path):
+    """The size brake for this case: its run plan's estimated cells as the budget (cfmesh_runner
+    RUN_PLAN_FILE); None when the case carries no plan (nothing to measure against)."""
+    from meshpipeline.engines.cfmesh.cfmesh_runner import RUN_PLAN_FILE
+    from meshpipeline.engines.size_brake import CFMESH_COUNTS, SizeBrake
+    try:
+        est = int((json.loads((ws / RUN_PLAN_FILE).read_text()) or {}).get("estimated_cells") or 0)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+    return SizeBrake(log, est, counts=CFMESH_COUNTS) if est > 0 else None
 
 
 def _run_cartesian_mesh_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
@@ -171,10 +191,21 @@ def _run_cartesian_mesh_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
     # execution is invisible (Cloud Run execution f5r99, 2026-09-12).
     timing: dict[str, float] = {}
     t0 = time.monotonic()
+    # NO GUESSED TIME LIMIT (contracts/native_time): `timeout` is the machine's WALL, and the mesher
+    # is WATCHED - stopped only when its log has not grown for the stall window
+    from meshpipeline.contracts.native_time import STALL_WINDOW_S
+    from meshpipeline.sandbox.safe_exec import MemoryExpired, StalledExpired, StoppedByWatch
+    stalled = False
+    oom_gib: float | None = None
+    # THE SIZE BRAKE (engines/size_brake): cartesianMesh prints the cells it built from its
+    # octree before it maps the surface, adds layers and optimises; a count far past the case's own
+    # run plan stops it there - deterministic, no clock - and the builder is told by how much
+    brake = _cfmesh_brake(ws, log)
     try:
         with log.open("w") as fh:
             proc = run_guarded(["bash", "-lc", cmd], cwd=str(ws), env=_foam_env(),
-                               stdout=fh, stderr=subprocess.STDOUT, timeout=timeout)
+                               stdout=fh, stderr=subprocess.STDOUT, timeout=timeout,
+                               stall_s=STALL_WINDOW_S, watch=brake)
         rc, timed_out = proc.returncode, False
         if rc == 0 and is_2d and (ws / "system" / "createPatchDict").exists():
             with (ws / "createPatch.log").open("w") as fh:
@@ -184,6 +215,12 @@ def _run_cartesian_mesh_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
                                     stdout=fh, stderr=subprocess.STDOUT,
                                     timeout=CREATE_PATCH_TIMEOUT_S)
             rc = proc2.returncode
+    except StoppedByWatch:
+        rc, timed_out = -1, False
+    except MemoryExpired as exc:
+        rc, timed_out, oom_gib = -1, False, float(exc.used_gib)
+    except StalledExpired:
+        rc, timed_out, stalled = -1, True, True
     except subprocess.TimeoutExpired:
         rc, timed_out = -1, True
     timing[f"{binary}_s"] = round(time.monotonic() - t0, 1)
@@ -195,6 +232,7 @@ def _run_cartesian_mesh_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
         rc, timed_out, why = mesh_passages(ws, bashrc=bashrc,
                                            timeout=max(60.0, timeout - (time.monotonic() - t0)))
         timing["passages_s"] = round(time.monotonic() - t_p, 1)
+        stalled = stalled or (timed_out and PASSAGE_STALLED in why)
         if why:
             tail = (tail + "\n" + why).strip()
     # The SHARED reading of a native result - signal vs ordinary failure vs timeout - so this
@@ -202,6 +240,13 @@ def _run_cartesian_mesh_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
     out = describe_native_result(
         returncode=rc, args=["bash", "-lc", cmd], stage=binary, output=tail,
         outcome=NativeOutcome.timed_out if timed_out else None)
+    if stalled:
+        out["stalled"] = True
+    if oom_gib is not None:
+        # OUT OF MEMORY, stopped cleanly (sandbox/safe_exec.MemoryExpired): one machine up
+        out.update(out_of_memory=True, timed_out=False, used_gib=oom_gib)
+    if brake is not None and brake.tripped:
+        out["oversize"] = dict(brake.tripped)
     # QUALITY IS MEASURED HERE, beside the mesh, and travels home with it. finalize and the
     # solvability gate call check_mesh on the worker, which carries no OpenFOAM: on the Cloud
     # Run path every figure came back empty and the reviewer refused a finished, paid-for mesh

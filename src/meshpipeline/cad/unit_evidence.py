@@ -69,6 +69,53 @@ def _step_evidence(path: Path) -> UnitEvidence:
     return UnitEvidence(True, unit, f"declared in the file as {declared.name.lower()}")
 
 
+@dataclass(frozen=True)
+class StatedMostly:
+    """The length unit most of a mixed STEP file's geometric contexts assign, and in words how
+    the file divides - the first reading for a file that states more than one unit."""
+
+    unit: LengthUnit
+    detail: str
+
+
+def stated_mostly(path: str | Path) -> StatedMostly | None:
+    """The unit most of a STEP file's geometric contexts assign, when it states more than one and
+    every one of them is well-formed and one we carry; None otherwise (one unit, none, a malformed
+    one, or a tie). Evidence for a first reading only: a mixed file is still asked about, because
+    which unit the user means for the part as a whole is theirs to say."""
+    from meshpipeline.cad.step_units import declared_length_uses
+
+    p = Path(path)
+    if p.suffix.lower() not in (".step", ".stp"):
+        return None
+    try:
+        uses = declared_length_uses(p)
+    except OSError:
+        return None
+    if len(uses) < 2 or any(d.metres is None for d, _n in uses):
+        return None
+    counted: dict[LengthUnit, int] = {}
+    for declared, n in uses:
+        unit = unit_of_scale(float(declared.metres or 0.0))
+        if unit is None:
+            return None
+        counted[unit] = counted.get(unit, 0) + n
+    ranked = sorted(counted.items(), key=lambda kv: -kv[1])
+    if len(ranked) < 2:
+        return None
+    (top, n_top), (_second, n_second) = ranked[0], ranked[1]
+    if n_top == n_second:
+        return None
+    rest = " and ".join(_UNIT_WORDS[u] for u, _n in ranked[1:])
+    return StatedMostly(top, f"the file states more than one length unit ({_UNIT_WORDS[top]} for "
+                             f"most of its parts, {rest} for the rest)")
+
+
+#: How a unit is said in a sentence.
+_UNIT_WORDS = {LengthUnit.metre: "metres", LengthUnit.millimetre: "millimetres",
+               LengthUnit.centimetre: "centimetres", LengthUnit.inch: "inches"}
+
+
 def _iges_evidence(path: Path) -> UnitEvidence:
     from OCP.IFSelect import IFSelect_RetDone
     from OCP.IGESControl import IGESControl_Reader
@@ -170,12 +217,29 @@ def parser_applied_unit(path: str | Path) -> LengthUnit:
                  for i in range(1, lengths.Length() + 1)}
     except Exception:  # noqa: BLE001 - an unreadable unit section means OCC used its default
         return LengthUnit.metre
-    if len(names) > 1:
-        # OCC transfers each representation in its own context's unit, so a file that lists more
-        # than one comes out in consistent millimetres; what it applied to the geometry is what
-        # the geometry's contexts declare, when the text says that plainly.
+    if len(names) == 1 and (named := _NAME_TO_UNIT.get(next(iter(names)))) is not None:
+        return named
+    if names:
+        # OCC transfers each representation in its own context's unit, by the conversion the
+        # context states - whatever the unit is CALLED. So a file that lists more than one, or
+        # one OCC reports only by an exporter's own name for it (Inventor's '__CONSTANT UNIT
+        # inch'), comes out in consistent millimetres; what was applied is what the text
+        # declares - for a file that mixes well-formed units, the unit most of its parts state.
+        # Reporting OCC's metre fallback here read an Inventor hub 50 mm across as 1.3 mm (and,
+        # with no unit confirmed, as 50 um, where the check's mesher refused the deflection).
         evidence = _step_evidence(p)
-        return evidence.unit if evidence.resolved and evidence.unit else LengthUnit.metre
-    if len(names) != 1:
-        return LengthUnit.metre
-    return _NAME_TO_UNIT.get(next(iter(names)), LengthUnit.metre)
+        if evidence.resolved and evidence.unit:
+            return evidence.unit
+        mostly = stated_mostly(p)
+        return mostly.unit if mostly is not None else LengthUnit.metre
+    # NO LENGTH UNIT AT ALL: OpenCASCADE applies no conversion, so the file's numbers come out as
+    # its system unit unchanged - millimetres. (A malformed unit is different: OCC names it, as
+    # its metre fallback, and scales by it.) Reporting metres here read a 10-unit part as 10 um.
+    try:
+        from meshpipeline.cad.step_units import declared_lengths
+
+        if not declared_lengths(p):
+            return LengthUnit.millimetre
+    except OSError:
+        pass
+    return LengthUnit.metre

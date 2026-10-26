@@ -104,6 +104,11 @@ def measure_cad_surface(shape, *, mm_per_unit: float,
                      max_ray_triangles=max_ray_triangles, curvature=curvature)
     record["cusps"] = cad_cusps(shape, float(mm_per_unit))
     record["micro"] = cad_micro(shape, float(mm_per_unit), diag_mm=float(surface.diag))
+    # FOLD-BACK EDGES (cad/fold_back.py): two faces lying on each other along an edge - detected only
+    from meshpipeline.cad.fold_back import fold_back_edges
+    folds = fold_back_edges(shape, mm_per_unit=float(mm_per_unit))
+    record["fold_back"] = [{**f, "faces": [f"Face_{k}" for k in f["faces"]]} for f in folds["folds"]]
+    record["fold_back_complete"] = bool(folds["complete"])
     return record, surface
 
 
@@ -560,7 +565,7 @@ def _record(s: ff.Surface, arcs: list[ff.Arc], *, bodies: int, basis: str, kinds
 
     spots: list[dict] = []
     for arc in ff.merge_coaxial(arcs):
-        kind = ff.kind_of(arc)
+        kind = ff.kind_of(arc, s.diag)
         if kind is None:
             continue
         t, shape = kind

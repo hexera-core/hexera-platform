@@ -24,7 +24,18 @@ OPTIONAL_CLASSES: tuple[str, ...] = ("mesh",)
 EVIDENCE_REPAIR_REPORT_CLASS = "repair_report"
 
 
-def required_output_classes(engine) -> list[str]:
+def _is_fea(purpose) -> bool:
+    try:
+        from meshpipeline.engines.fea_review import is_fea
+        return bool(is_fea(str(purpose or "")))
+    except Exception:  # noqa: BLE001 - no purpose reading, the engine's own policy
+        return False
+
+
+def required_output_classes(engine, purpose="") -> list[str]:
+    """What a run must deliver. AN FEA MESH must deliver its bundle (the deck and solver files); its
+    3D view is delivered when it can be built and stored, and said when not - a valid mesh is never
+    held back for a picture (Areen, 24 Oct: only a broken mesh fails)."""
     name = str(engine or "").strip().lower()
     if not name:
         return []
@@ -35,15 +46,17 @@ def required_output_classes(engine) -> list[str]:
         return []
     if not getattr(spec, "deliverable", None):
         return []
+    if _is_fea(purpose):
+        return [REQUIRED_BUNDLE_CLASS]
     return [REQUIRED_BUNDLE_CLASS, REQUIRED_VIEWER_CLASS]
 
 
-def is_required_class(engine, artifact_class) -> bool:
-    return str(artifact_class) in required_output_classes(engine)
+def is_required_class(engine, artifact_class, purpose="") -> bool:
+    return str(artifact_class) in required_output_classes(engine, purpose)
 
 
-def required_ready(engine, delivered_classes) -> bool:
-    required = required_output_classes(engine)
+def required_ready(engine, delivered_classes, purpose="") -> bool:
+    required = required_output_classes(engine, purpose)
     if not required:
         return False
     have = {str(c) for c in (delivered_classes or [])}

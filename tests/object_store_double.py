@@ -42,13 +42,15 @@ class InMemoryObjectStore:
             raise ObjectNotFound(f"no such object: {key}")
         return self._objects[key]
 
-    def create_download_url(self, *, object_key: str, expires_in: timedelta) -> str:
+    def create_download_url(self, *, object_key: str, expires_in: timedelta,
+                            download_name: str | None = None) -> str:
         key = normalize_key(object_key)
         if key not in self._objects:
             raise ObjectNotFound(f"no such object: {key}")
         # Shaped like a signed URL and deliberately unroutable: a test that accidentally fetches
         # it fails loudly instead of reaching something real.
-        return f"memory://object-store/{key}?expires_in={int(expires_in.total_seconds())}"
+        url = f"memory://object-store/{key}?expires_in={int(expires_in.total_seconds())}"
+        return url + (f"&attachment={download_name}" if download_name else "")
 
     def create_upload_url(self, *, object_key: str, expires_in: timedelta) -> str:
         # The same unroutable shape. A test plays the client by calling put_bytes with the key -

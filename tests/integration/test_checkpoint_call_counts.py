@@ -74,9 +74,10 @@ class _CountingStore:
         self._guard("object_checksum", object_key); T["object_checksum"] += 1; _flush()
         return self._inner.object_checksum(object_key=object_key)
 
-    def create_download_url(self, *, object_key, expires_in):
+    def create_download_url(self, *, object_key, expires_in, download_name=None):
         self._guard("create_download_url", object_key); T["create_download_url"] += 1; _flush()
-        return self._inner.create_download_url(object_key=object_key, expires_in=expires_in)
+        return self._inner.create_download_url(object_key=object_key, expires_in=expires_in,
+                                               download_name=download_name)
 
     def __getattr__(self, n): return getattr(self._inner, n)
 
@@ -407,7 +408,8 @@ async def test_an_unavailable_checkpoint_store_touches_no_source_and_runs_no_gra
     job_id, geom = await _seed("unavailable", tmp_path)
     t, _ = _run(job_id, geom, tmp_path / "ws", tmp_path / "t.json",
                 execution_id=f"e-{uuid.uuid4()}", forbid_source=True,
-                extra_env={"REQUIRE_DURABLE_CHECKPOINTER": "true",
+                # the database is unreachable for good here: the claim does not wait it out
+                extra_env={"REQUIRE_DURABLE_CHECKPOINTER": "true", "CLAIM_WAIT_SECONDS": "0",
                            "DATABASE_URL":
                                "postgresql+asyncpg://cm:cm@127.0.0.1:1/cm?sslmode=disable"})
     _no_source_access(t)

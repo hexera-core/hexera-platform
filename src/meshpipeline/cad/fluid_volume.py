@@ -308,8 +308,9 @@ def touching_parts(solids: list, diag: float) -> bool:
     Read on the parts' own triangles (a point of one within a ten-thousandth of the part of a
     triangle of the other): exact distances between B-reps with threads take minutes."""
     import numpy as np
-    from OCP.BRepMesh import BRepMesh_IncrementalMesh
     from scipy.spatial import cKDTree
+
+    from meshpipeline.cad.occ_box import incremental_mesh
 
     if len(solids) < 2:
         return False
@@ -317,7 +318,7 @@ def touching_parts(solids: list, diag: float) -> bool:
     tol = 1e-4 * diag + lin
     meshes = []
     for s in solids:
-        BRepMesh_IncrementalMesh(s, lin, False, 0.5, True)
+        incremental_mesh(s, lin, 0.5)
         t = np.asarray([x for f in _faces(s) for x in _face_triangles(f)], dtype=float).reshape(-1, 3, 3)
         meshes.append(t)
     boxes = [(t.reshape(-1, 3).min(axis=0) - tol, t.reshape(-1, 3).max(axis=0) + tol) if len(t) else None

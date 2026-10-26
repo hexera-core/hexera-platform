@@ -29,15 +29,18 @@ from meshpipeline.engines import fea_plan as P
 TOLERANCE = 0.9
 
 
-def face_sizes(mesh, tags_by_name: Mapping[str, int]) -> dict[str, float]:
-    """Median boundary-edge length (metres) on each named face."""
+def face_sizes(mesh, tags_by_name: Mapping[str, int | list[int]]) -> dict[str, float]:
+    """Median boundary-edge length (metres) on each named face (a face of an assembly may be
+    several mesh surfaces: a list of tags)."""
     index = {int(n): i for i, n in enumerate(np.asarray(mesh.node_ids).tolist())}
     xyz = np.asarray(mesh.xyz, dtype=float)
     out: dict[str, float] = {}
     for name, tag in tags_by_name.items():
-        tri = mesh.faces.get(int(tag))
-        if tri is None or not len(tri):
+        tags = [int(t) for t in tag] if isinstance(tag, list | tuple) else [int(tag)]
+        blocks = [np.asarray(mesh.faces[t]) for t in tags if mesh.faces.get(t) is not None and len(mesh.faces[t])]
+        if not blocks:
             continue
+        tri = np.concatenate([b[:, :3] for b in blocks])
         t = np.vectorize(index.get, otypes=[np.int64])(np.asarray(tri)[:, :3])
         e = np.vstack([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]])
         e = np.unique(np.sort(e, axis=1), axis=0)
@@ -45,10 +48,13 @@ def face_sizes(mesh, tags_by_name: Mapping[str, int]) -> dict[str, float]:
     return out
 
 
-def spot_size(mesh, tag: int | None, at_m, radius_m: float) -> float | None:
+def spot_size(mesh, tag: int | list[int] | None, at_m, radius_m: float) -> float | None:
     """Median length of the edges of the face's triangles that lie within `radius_m` of `at_m`
-    (a thin spot's element size); None when no triangle of the face is there."""
-    tri = mesh.faces.get(int(tag)) if tag is not None else None
+    (a thin spot's element size); None when no triangle of the face is there. An assembly's face
+    may be several mesh surfaces (a list of tags)."""
+    tags = [] if tag is None else [int(t) for t in tag] if isinstance(tag, list) else [int(tag)]
+    blocks = [np.asarray(mesh.faces[t])[:, :3] for t in tags if mesh.faces.get(t) is not None and len(mesh.faces[t])]
+    tri = np.concatenate(blocks) if blocks else None
     if tri is None or not len(tri):
         return None
     index = {int(n): i for i, n in enumerate(np.asarray(mesh.node_ids).tolist())}
@@ -69,7 +75,7 @@ def face_tag(name: str) -> int | None:
         return None
 
 
-def measure(mesh, plan: Mapping) -> dict:
+def measure(mesh, plan: Mapping, *, tags_by_name: Mapping[str, list[int]] | None = None) -> dict:
     """The rules as met on `mesh`: {"through_wall": {...}, "hot_spots": {...}, "corners": {...},
     "short": [zone ids that fell short]} - every count rounded to 2 decimals."""
     base = float(plan.get("base_size_m") or math.inf)
@@ -77,19 +83,26 @@ def measure(mesh, plan: Mapping) -> dict:
     # a hot spot or a corner only where its zone binds (finer than the base)
     zones = [z for z in plan.get("zones") or [] if z["kind"] in ("wall", "wall_spot") or float(z["size_m"]) < base]
     names = sorted({f for z in zones for f in z.get("faces") or []})
-    sizes = face_sizes(mesh, {n: t for n in names if (t := face_tag(n)) is not None})
+    if tags_by_name is not None:
+        # an assembly: Part_k_Face_j is the mesh surfaces that carry that name
+        sizes = face_sizes(mesh, {n: list(tags_by_name[n]) for n in names if tags_by_name.get(n)})
+    else:
+        sizes = face_sizes(mesh, {n: t for n in names if (t := face_tag(n)) is not None})
     per_quarter = P.HOT_SPOT_PER_QUARTER
     walls, spots, corners, short = [], [], [], []
     for z in zones:
         if z["kind"] == "wall_spot":
             # a thin spot: the element size on its face within its ball
-            h_spot = spot_size(mesh, face_tag(z["faces"][0]), z["at_m"], float(z["radius_m"]))
+            face = z["faces"][0]
+            where = list(tags_by_name.get(face) or []) if tags_by_name is not None else face_tag(face)
+            h_spot = spot_size(mesh, where, z["at_m"], float(z["radius_m"]))
             if h_spot is None:
                 continue
             n = float(z["thickness_m"]) / h_spot
-            ok = n >= P.WALL_ELEMENTS * TOLERANCE
+            need = _wall_need(z)
+            ok = n >= need * TOLERANCE
             walls.append({"zone": z["id"], "face": z["faces"][0], "thickness_mm": round(z["thickness_m"] * 1e3, 4),
-                          "elements": round(n, 2), "needed": P.WALL_ELEMENTS, "ok": ok, "spot": True})
+                          "elements": round(n, 2), "needed": need, "ok": ok, "spot": True})
             if not ok:
                 short.append(z["id"])
             continue
@@ -99,18 +112,21 @@ def measure(mesh, plan: Mapping) -> dict:
         h = float(np.median(got))
         if z["kind"] == "wall":
             n = float(z["thickness_m"]) / h
-            ok = n >= P.WALL_ELEMENTS * TOLERANCE
+            need = _wall_need(z)
+            ok = n >= need * TOLERANCE
             walls.append({"zone": z["id"], "face": z["faces"][0], "thickness_mm": round(z["thickness_m"] * 1e3, 4),
-                          "elements": round(n, 2), "needed": P.WALL_ELEMENTS, "ok": ok})
+                          "elements": round(n, 2), "needed": need, "ok": ok})
         elif z["kind"] in ("hole", "fillet", "notch"):
             n = P.QUARTER * float(z["radius_m"]) / h
-            ok = n >= per_quarter * TOLERANCE
+            # a zone the AI refined is held to its own finer target (engines/fea_ai AI-fea-1)
+            need_q = float(z.get("per_quarter") or per_quarter)
+            ok = n >= need_q * TOLERANCE
             row = {"zone": z["id"], "spot": z.get("spot"), "kind": z["kind"],
                    "radius_mm": round(z["radius_m"] * 1e3, 4), "per_quarter_turn": round(n, 2),
-                   "needed": per_quarter}
+                   "needed": need_q}
             if z.get("thickness_m"):
                 # the stress wall beside it (PLAN-fea-4: 3 through it; 2 when the user took fewer)
-                need_wall = int(z.get("wall_elements") or P.STRESS_WALL_ELEMENTS)
+                need_wall = float(z.get("wall_elements") or P.STRESS_WALL_ELEMENTS)
                 through = float(z["thickness_m"]) / h
                 ok = ok and through >= need_wall * TOLERANCE
                 row.update(wall_mm=round(z["thickness_m"] * 1e3, 4), through_wall=round(through, 2),
@@ -138,6 +154,11 @@ def measure(mesh, plan: Mapping) -> dict:
         "corners": corners[:20],
         "short": short,
     }
+
+
+def _wall_need(z: Mapping) -> float:
+    """Elements through a wall zone: the rule's 2, or the finer target the AI's refine gave it."""
+    return float(z.get("wall_elements") or P.WALL_ELEMENTS)
 
 
 __all__ = ["TOLERANCE", "face_sizes", "face_tag", "measure", "spot_size"]

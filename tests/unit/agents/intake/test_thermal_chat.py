@@ -30,6 +30,7 @@ from meshpipeline.application.geometry_confirmation import (
     thermal_declared,
 )
 from meshpipeline.application.thermal_wording import file_names, forbidden_words, job_sheet
+from meshpipeline.contracts import user_notes as un
 
 SID = uuid.UUID("abab1111-2222-4222-b222-abababababab")
 
@@ -271,12 +272,15 @@ class _Model:
         return next(self.rounds)
 
 
-def _turn(view, model):
+def _turn(view, model, *, notes_asked=True):
     import meshpipeline.adapters.model_inference.router as llm_router
     from meshpipeline.application import geometry_check as gc
 
     m = confirmation_message(_confirmed_body(view))
-    messages = [{"role": "user", "content": "mesh this for a thermal sim"},
+    # the notes question asked and answered before (contracts/user_notes), unless the test says not
+    asked = ([{"role": "assistant", "content": un.QUESTION}, {"role": "user", "content": "no"}]
+             if notes_asked else [])
+    messages = [*asked, {"role": "user", "content": "mesh this for a thermal sim"},
                 {"role": "assistant", "content": gh.hold_reply(True, view["headline"])},
                 {"role": "assistant", "content": m},
                 {"role": "user", "content": gh.CONTINUE_TEXT}]
@@ -319,6 +323,29 @@ def test_after_mesh_this_model_the_chat_goes_straight_to_the_approval(view):
     assert reply.startswith("Please confirm the requirements above"), reply
     assert "I'd mesh this with" not in reply and forbidden_words(reply) == []
     assert out["intake_gate"]["approval"]["status"] == "awaiting_confirmation"
+
+
+def test_a_thermal_model_is_asked_the_notes_question_once_before_its_job_sheet(view):
+    # every route asks it - an ECXML model too; the next answer goes straight on to the job sheet
+    model = _Model([
+        _resp([_tc("propose_engine_selection", {"engine": "snapgrid", "reason": "it reads the file"})]),
+        _resp([_tc("preview_selected_admission", _PAYLOAD)]),
+        None,
+    ])
+    rounds = list(model.rounds)
+
+    async def _call(**kw):
+        n = _call.n; _call.n += 1
+        messages = kw.get("messages") or []
+        model.tools = [m for m in messages if isinstance(m, dict) and m.get("role") == "tool"]
+        if n < 2:
+            return rounds[n]
+        token = json.loads(model.tools[-1]["content"])["preview_token"]
+        return _resp([_tc("submit_requirements", {**_SUBMIT, "preview_token": token})])
+    _call.n = 0
+    out = _turn(view, _call, notes_asked=False)
+    assert out["messages"][-1]["content"] == un.QUESTION
+    assert not (out["intake_gate"] or {}).get("approval")
 
 
 def test_a_reply_with_generic_words_is_sent_back_once(view):

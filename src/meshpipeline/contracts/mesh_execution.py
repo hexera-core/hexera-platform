@@ -45,6 +45,18 @@ RUN_NOT_STARTED_TAG = "[CLOUD_RUN_FAILED]"
 #: not be brought back. The mesher ran; what failed is the return trip - ours, not the case's.
 RUN_UNCOLLECTED_TAG = "[CLOUD_RUN_RESULT_UNCOLLECTED]"
 
+#: THE WORKER <-> MESH JOB CONTRACT: what the worker puts in the submitted workspace and the mesh
+#: job's runner reads (the plan files, INPUT_URI/OUTPUT_URI/ENGINE/TIMEOUT, the result document
+#: and the returned archive). BUMP IT BY HAND when either side changes that shape. The worker sends
+#: its number with every run (MESH_CONTRACT_ENV); a mesh job that speaks another does not mesh: it
+#: answers with a PLATFORM_UPDATING result, and the worker waits and submits again
+#: (application/platform_contract has the API <-> worker half, 25 Oct).
+MESH_EXCHANGE_VERSION = 1
+MESH_CONTRACT_ENV = "HEXERA_MESH_CONTRACT"
+#: The result-document key, and the log tag, of a run the mesh job refused for that reason.
+PLATFORM_UPDATING_KEY = "platform_updating"
+PLATFORM_UPDATING_TAG = "[PLATFORM_UPDATING]"
+
 
 #: The workspace fact naming WHICH planned meshing pass of the current attempt the next native
 #: submission belongs to. An engine driver runs several plan->mesh->judge passes inside one
@@ -267,6 +279,40 @@ def abandonment_reason() -> str | None:
     return str(reason) if reason else None
 
 
+#: EVERY NATIVE RUN'S LOGS, KEPT (every engine: snappy, cfMesh, gmsh, VMTK, the FEA driver): a retry
+#: overwrites the mesher's logs in the workspace, so each run's are copied here as it comes back -
+#: <workspace>/_native_logs/run_<n>/ - and the first run's failure can still be read after the last
+#: (kart_roll_cage, 24 Oct: only the last pass's log survived). Never part of a submission: the
+#: archive and the payload digest leave this folder out.
+NATIVE_LOGS_DIR = "_native_logs"
+#: The logs a run leaves, as the live stage line reads them (engines/mesher_stage) and OpenFOAM writes them.
+_LOG_GLOBS = ("*.log", "log.*", "*/*.log", "*/log.*")
+#: The most of any one log kept (its end, where a failure is).
+_LOG_KEEP_BYTES = 8 * 1024 * 1024
+
+
+def keep_native_logs(workspace: Any, run_no: int | None) -> None:
+    """Copy the logs the native run just left into NATIVE_LOGS_DIR/run_<n>. Never raises."""
+    from pathlib import Path
+    try:
+        root = Path(workspace)
+        dest = root / NATIVE_LOGS_DIR / f"run_{int(run_no or 0)}"
+        seen: set = set()
+        for pattern in _LOG_GLOBS:
+            for f in root.glob(pattern):
+                if not f.is_file() or NATIVE_LOGS_DIR in f.parts or f in seen:
+                    continue
+                seen.add(f)
+                out = dest / f.relative_to(root)
+                out.parent.mkdir(parents=True, exist_ok=True)
+                size = f.stat().st_size
+                with f.open("rb") as src:
+                    src.seek(max(0, size - _LOG_KEEP_BYTES))
+                    out.write_bytes(src.read())
+    except Exception:  # noqa: BLE001 - a log not kept is never the run's failure
+        return
+
+
 def run_mesh(workspace: Any, *, engine: str, timeout: int) -> dict:
     if _executor is None:
         raise MeshExecutionError(
@@ -280,13 +326,17 @@ def run_mesh(workspace: Any, *, engine: str, timeout: int) -> dict:
     # numbered before the executor composes the run's identity from the workspace
     note_native_run(workspace)
     try:
-        result = _executor.run(workspace, engine=engine, timeout=timeout)
+        # NATIVE TIME, not model time: the builder loops' budgets stand still while this runs
+        from meshpipeline.contracts import progress_clock
+        with progress_clock.native_run():
+            result = _executor.run(workspace, engine=engine, timeout=timeout)
     except BaseException:
         # the run did not come back with a verdict: told as the infrastructure it is, never a
         # mesher that crashed
         _note_native_run(workspace, {"rc": RC_INFRASTRUCTURE, "timed_out": False}, raised=True)
         raise
     _note_native_run(workspace, result)
+    keep_native_logs(workspace, read_native_run(workspace))
     return result
 
 

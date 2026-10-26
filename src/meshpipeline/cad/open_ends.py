@@ -107,6 +107,11 @@ class Hole:
     #: lying in the mouth's plane inside its loop (see WHAT STANDS IN A HOLE) - so the flow
     #: crosses `area - filled`. 0.0 for a plain bore.
     filled: float = 0.0
+    #: whether it opens a passage of the part (cad/inside_space): a mouth of a side pocket - a
+    #: bolt hole beside the bore - is a hole the stage can click, never proposed as a port
+    passage: bool = True
+    #: the inside-space map's pocket it opens (-1: read by the shape rules alone)
+    pocket: int = -1
 
     @property
     def equivalent_diameter(self) -> float:
@@ -120,24 +125,26 @@ class Hole:
     def annular(self) -> bool:
         return 0.0 < self.filled < self.area
 
-    def as_dict(self, mm_per_unit: float = 1000.0) -> dict:
+    def as_dict(self, mm_per_unit: float = 1000.0, decimals: int = 2) -> dict:
         """The hole as the stage reads it: metres and the reading's millimetres side by side, the
         loops thinned to LOOP_POINTS points (metres)."""
-        r6 = lambda v: [round(float(x), 6) for x in v]  # noqa: E731
+        r6 = lambda v: [round(float(x), decimals + 4) for x in v]  # noqa: E731
         out = {"kind": self.kind, "shape": self.shape,
-               "centroid_m": r6(self.centroid), "centroid_mm": [round(float(x) * mm_per_unit, 2) for x in self.centroid],
+               "centroid_m": r6(self.centroid), "centroid_mm": [round(float(x) * mm_per_unit, decimals) for x in self.centroid],
                "normal": [round(float(x), 5) for x in self.normal],
-               "area_mm2": round(self.area * mm_per_unit * mm_per_unit, 2),
-               "diameter_mm": round(self.equivalent_diameter * mm_per_unit, 2),
+               "area_mm2": round(self.area * mm_per_unit * mm_per_unit, 2 * decimals - 2),
+               "diameter_mm": round(self.equivalent_diameter * mm_per_unit, decimals),
                "loop_m": [r6(p) for p in _thin(self.loop)],
                "planarity": round(self.planarity, 4), "confidence": round(self.confidence, 2)}
         if self.shape != "circle":
-            out["width_mm"], out["height_mm"] = round(self.wh[0] * mm_per_unit, 2), round(self.wh[1] * mm_per_unit, 2)
+            out["width_mm"], out["height_mm"] = round(self.wh[0] * mm_per_unit, decimals), round(self.wh[1] * mm_per_unit, decimals)
         if self.outer is not None:
             out["outer_m"] = [r6(p) for p in _thin(self.outer)]
         if self.annular:
-            out["inner_diameter_mm"] = round(2.0 * math.sqrt(self.filled / math.pi) * mm_per_unit, 2)
+            out["inner_diameter_mm"] = round(2.0 * math.sqrt(self.filled / math.pi) * mm_per_unit, decimals)
         out.update(measured_flow_area(self.area, self.filled, self.shape, mm_per_unit))
+        if not self.passage:
+            out["passage"] = False
         return out
 
 
@@ -212,17 +219,95 @@ def surface(tris) -> _Mesh | None:
     return _Mesh(skin=skin)
 
 
-def find_holes(tris=None, *, mesh: _Mesh | None = None) -> list[Hole]:
+def find_holes(tris=None, *, mesh: _Mesh | None = None, mapped: bool = True) -> list[Hole]:
     """Every hole of a triangle surface, the largest first. `tris` is (n, 3, 3); or pass the
-    surface() already read."""
+    surface() already read.
+
+    THE ONE DEFINITION (INS-2): a hole is a MOUTH of the part's inside-space map (cad/inside_space):
+    a loop where a pocket of space inside the part meets the open air, of any shape or size. The
+    loops the map's grid is too coarse to see are read by the shape rules below (a rim, or a bore's
+    mouth with its wall behind it and open air ahead), so no small opening is ever dropped. A
+    surface the map cannot read keeps the shape rules' reading whole. `mapped=False` asks for the
+    shape rules alone."""
     mesh = mesh if mesh is not None else surface(tris)
     if mesh is None:
         return []
+    found = shape_holes(mesh)
+    if not mapped:
+        return found
+    imap = inside_map(mesh)
+    if imap is None:
+        return found
+    return map_holes(mesh, imap, found)
+
+
+def shape_holes(mesh: _Mesh) -> list[Hole]:
+    """The holes the shape rules read, loop by loop (see WHAT A HOLE IS)."""
     # the cheap look at every loop first (what runs along it), then the rays for the largest few
     shaped = [s for s in (mesh.shape(loop) for loop in mesh.feature_loops()) if s is not None]
     shaped.sort(key=lambda s: s["area"], reverse=True)
     holes = [h for h in (mesh.probe(s) for s in shaped[:MAX_PROBED]) if h is not None]
     return _distinct(holes)
+
+
+def inside_map(mesh: _Mesh):
+    """The surface's inside-space map, read once per surface and kept on it (None when it cannot
+    be read - the shape rules then stand alone)."""
+    if not hasattr(mesh, "_inside"):
+        from meshpipeline.cad.inside_space import read_inside_or_none
+        setattr(mesh, "_inside", read_inside_or_none(mesh))  # noqa: B010 - read once, kept on the surface
+    return getattr(mesh, "_inside")  # noqa: B009
+
+
+def map_holes(mesh: _Mesh, imap, shaped: list[Hole]) -> list[Hole]:
+    """The map's mouths as holes, then every hole the shape rules read that the map's grid could
+    not see (smaller than MIN_ACROSS of its cubes) and that is no mouth already: the largest first.
+    A mouth of a side pocket (a bolt hole beside a flange's bore) is a hole of its own, marked
+    `passage=False`: the stage can click it, the proposal does not make it a port."""
+    from dataclasses import replace
+
+    from meshpipeline.cad.inside_space import MIN_ACROSS
+    by_loop = {frozenset(map(tuple, np.round(h.loop, 12).tolist())): h for h in shaped}
+    out: list[Hole] = []
+    for m in imap.mouths:
+        P = mesh.verts[m.vidx]
+        d = m.diameter
+        passage = any(imap.pockets[p].passage for p in m.pockets)
+        pocket = min(m.pockets) if m.pockets else -1
+        conf = None if passage else 0.4
+        same = by_loop.get(frozenset(map(tuple, np.round(P, 12).tolist())))
+        if same is not None:
+            # the shape rules read this very loop: their reading (its end face, its air) stands
+            out.append(replace(same, passage=passage, pocket=pocket,
+                               confidence=same.confidence if conf is None else conf))
+            continue
+        kind = "rim" if m.kind == "rim" else "bore"
+        dev = m.planarity * d
+        c, n = np.asarray(m.centroid, dtype=float), np.asarray(m.normal, dtype=float)
+        outer = None
+        if kind == "bore":
+            # the end face round the mouth, grown from the faces on its loop: what a click means
+            f_ = np.r_[mesh.f0[m.eidx], mesh.f1[m.eidx]]
+            outer, _band = mesh._end_face(c, n, d, dev, f_[f_ >= 0])
+        out.append(Hole(kind=kind, centroid=c, normal=n, area=float(m.area), wh=m.wh, loop=P, outer=outer,
+                        planarity=float(m.planarity), clear=CONE_RAYS + 1,
+                        confidence=(0.85 if kind == "rim" else 0.8) if conf is None else conf,
+                        filled=mesh._standing_in(P, c, n, d, dev, m.area), passage=passage, pocket=pocket))
+    small = MIN_ACROSS * imap.h
+    for h in shaped:
+        if h.equivalent_diameter >= small:
+            continue                        # the map saw this loop, and it is no mouth
+        if any(float(np.linalg.norm(h.centroid - o.centroid)) <= 0.5 * max(h.equivalent_diameter, o.equivalent_diameter)
+               for o in out):
+            continue
+        # a small hole whose outside the map reads as the part's own inside (a port drilled from a
+        # tube into the chamber round it) joins two spaces of the fluid: no way in or out
+        ahead = imap.where([h.centroid + k * imap.h * h.normal for k in (1.5, 2.5, 4.0)])
+        if "out" not in ahead and "pocket" in ahead:
+            continue
+        out.append(h)
+    out.sort(key=lambda h: (-h.area, float(h.centroid[0]), float(h.centroid[1]), float(h.centroid[2])))
+    return out
 
 
 def find_caps(tris=None, *, mesh: _Mesh | None = None, min_area: float = math.inf) -> list[Cap]:
@@ -1026,4 +1111,4 @@ def _distinct(found: list[tuple[Hole, set]]) -> list[Hole]:
     return [h for i, (h, _) in enumerate(found) if i not in gone]
 
 
-__all__ = ["Cap", "Hole", "find_caps", "find_holes", "surface", "CONE_DEG", "MIN_LOOP", "RIM_SHARE", "SHARP_DEG"]
+__all__ = ["Cap", "Hole", "find_caps", "find_holes", "inside_map", "map_holes", "shape_holes", "surface", "CONE_DEG", "MIN_LOOP", "RIM_SHARE", "SHARP_DEG"]

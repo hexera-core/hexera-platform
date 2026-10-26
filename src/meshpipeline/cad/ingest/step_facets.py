@@ -199,18 +199,18 @@ def read_faceted_occ(path) -> tuple[np.ndarray, np.ndarray]:
     (an assembly with placements). Slow on big files; OCC's millimetres are turned back into the
     file's own numbers so the canonical surface carries them like any mesh file."""
     from OCP.BRep import BRep_Tool
-    from OCP.BRepMesh import BRepMesh_IncrementalMesh
     from OCP.TopAbs import TopAbs_FACE, TopAbs_REVERSED
     from OCP.TopExp import TopExp_Explorer
     from OCP.TopLoc import TopLoc_Location
     from OCP.TopoDS import TopoDS
 
     from meshpipeline.cad.ingest.cad import read_step
+    from meshpipeline.cad.occ_box import incremental_mesh
     from meshpipeline.cad.unit_evidence import parser_applied_unit
     from meshpipeline.contracts.geometry_units import scale_to_metres
 
     shape = read_step(Path(path))
-    BRepMesh_IncrementalMesh(shape, 1e-3, False, 0.5, True)
+    incremental_mesh(shape, 1e-3, 0.5)
     to_file = 1e-3 / scale_to_metres(parser_applied_unit(path))   # OCC mm -> file units
     pts_all: list[np.ndarray] = []
     tris_all: list[np.ndarray] = []

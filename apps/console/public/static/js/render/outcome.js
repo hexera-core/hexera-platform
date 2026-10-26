@@ -119,6 +119,7 @@ export function outcomeHtml(text, opts = {}) {
   const later = [];          // the full text of every paragraph the summary cut short
   let html = "";
   const head = o.kind === "done" && opts.concerns ? "Your mesh is ready, with points to weigh."
+    : o.kind === "done" && opts.notes ? "Your mesh is ready, with notes."
     : HEADLINE[o.kind] || "";
   if (head) html += `<p class="oc-head">${esc(head)}</p>`;
   // A FAILED RUN'S PARAGRAPHS ARE ITS POINT - what went wrong and the way forward - so they are

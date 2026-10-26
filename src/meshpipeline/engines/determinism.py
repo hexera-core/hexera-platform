@@ -280,6 +280,37 @@ def _meshpipeline_version() -> str | None:
         return None
 
 
+def job_cpus() -> int:
+    """The CPUs THE JOB may use - its cgroup quota (v2 cpu.max, else v1 cfs quota), never the host's
+    core count (Cloud Run hands the process a wide mask and os.cpu_count() reports the host); the
+    affinity mask, then os.cpu_count(), only when no quota is set."""
+    from pathlib import Path as _P
+
+    def read(path: str) -> str:
+        try:
+            return _P(path).read_text().strip()
+        except OSError:
+            return ""
+
+    parts = read("/sys/fs/cgroup/cpu.max").split()
+    if len(parts) == 2 and parts[0] != "max":
+        try:
+            return max(1, int(float(parts[0]) / float(parts[1])))
+        except (ValueError, ZeroDivisionError):
+            pass
+    try:
+        q, per = int(read("/sys/fs/cgroup/cpu/cpu.cfs_quota_us")), int(read("/sys/fs/cgroup/cpu/cpu.cfs_period_us"))
+        if q > 0 and per > 0:
+            return max(1, q // per)
+    except ValueError:
+        pass
+    import os
+    try:
+        return max(1, len(os.sched_getaffinity(0)))
+    except (AttributeError, OSError):
+        return max(1, os.cpu_count() or 1)
+
+
 def _cpu_model() -> str | None:
     """The CPU model: numpy and the native tools pick vector code paths by it, so two machines
     can round the same sums differently."""

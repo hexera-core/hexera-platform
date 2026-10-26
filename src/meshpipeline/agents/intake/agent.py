@@ -522,6 +522,19 @@ INTAKE_TOOLS: list[dict] = [
                             "for target cells, maximum cells, element counts or refinement levels."
                         ),
                     },
+                    "user_note_quotes": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "OPTIONAL. For every message in which the user themselves stated a "
+                            "specific requirement for this simulation or its mesh (a region to "
+                            "refine, a layer count, an element type, a solver, a pasted spec, a "
+                            "support or load, the outputs they want), a short quote copied EXACTLY "
+                            "from that message. The application keeps each whole message word for "
+                            "word as the user's notes and refuses quotes they did not write - never "
+                            "paraphrase. Their answer to the application's notes question is kept "
+                            "without a quote. Omit when they stated nothing specific."),
+                    },
                     "preview_token": {
                         "type": "string",
                         "description": (
@@ -873,8 +886,9 @@ def _block_thermal_model() -> str:
         "propose_engine_selection with it and the application selects it without a question. "
         "Never ask about, offer or compare engines unless the user brings it up.\n"
         "- In this same turn, call preview_selected_admission and then submit_requirements "
-        "(engine_source suggested_confirmed). The application then shows the user the job sheet "
-        "and asks for approval: that is the only question.\n"
+        "(engine_source suggested_confirmed). The application then asks its one optional notes "
+        "question (THE USER'S OWN NOTES below) once, shows the user the job sheet and asks for "
+        "approval: those are the only questions.\n"
         "- Never ask about the unit, which way the air flows, openings, vents or fans, the fluid "
         "(it is air, from the file), the purpose, the up direction, a reference length or the "
         "size of the air box, or the engine.\n"
@@ -929,7 +943,10 @@ def _block_fea_path() -> str:
         "'a solid part for structural analysis (FEA)', the user confirmed their part, its unit "
         "and its size on the FEA stage. The case is settled: purpose Structural / FEA, input kind "
         "Solid body, dimensionality 3D. Never ask about any of it, about a fluid, openings, a flow "
-        "direction or a far field.\n"
+        "direction or a far field. When it says the part is an assembly of several parts and how "
+        "they are connected (bonded or contact), that is settled on the stage too: it is still one "
+        "structural solid case - never a thermal or multi-region fluid model - and never ask again "
+        "how the parts are joined.\n"
         f"- The ONLY required question is '{pm.ANALYSIS_QUESTION}' - static stress, vibration "
         "(modal) or buckling. The application asks it with buttons; never ask it yourself when the "
         "user already said it ('modal analysis', 'will it buckle'). "
@@ -1029,6 +1046,37 @@ def _block_ask_plainly() -> str:
     )
 
 
+def _block_user_notes() -> str:
+    # A customer's own needs (a pasted spec sheet, a layer count, the solver they use) reached the
+    # run only through request_txt - a summary that can squash a number or drop a condition, and
+    # nobody ever asked for them. The application now asks once and keeps the words as typed
+    # (contracts/user_notes, NOTE-1/NOTE-2).
+    from meshpipeline.contracts import user_notes as un
+    return (
+        "\n\nTHE USER'S OWN NOTES - ASKED ONCE BY THE APPLICATION, KEPT WORD FOR WORD:\n"
+        f"Before the first summary the application asks one optional question: '{un.QUESTION}' "
+        "You never ask it yourself, in any wording, and never ask it again. When your "
+        "submit_requirements comes back 'Not submitted yet' for it, end the turn - the application "
+        "asks. Their answer (or their 'no') is your cue to re-run preview_selected_admission and "
+        "call submit_requirements in the same turn; it never holds the submission.\n"
+        "- The application keeps the user's words as typed. When the user said something specific "
+        "about the simulation in any message (before or after the question), pass a short exact quote from "
+        "it in user_note_quotes; their answer to the question is kept without one.\n"
+        "- Where a note fits a value the submission already declares - the mesh detail "
+        "(mesh_fidelity), an engine parameter the engine declares (engine_params), a named "
+        "boundary (patches), far-field margins - set it there too, through the same validated "
+        "fields. Never invent a value, and never refuse or hold a submission over a note: what no "
+        "field can carry is read by the builder and the reviewer from the notes themselves.\n"
+        "- request_txt stays your summary; it must not contradict a note. Supports, loads, load "
+        "histories, materials and wanted outputs are solver settings: record them in request_txt "
+        "as the user said them, never as mesh settings.\n"
+        "- When a note asks for something the mesher does not do (for example removing holes or "
+        "other features from the CAD), say so in one plain line before the summary - the mesh "
+        "still goes ahead without it. Notes are guidance for the mesh, never a requirement it is "
+        "judged on."
+    )
+
+
 def _block_plain_text() -> str:
     # The chat has no math renderer, and must not pull one in. A reply the model wrote in LaTeX
     # reached a demo as \(y^+=30\text{-}300\). The application also makes any markup that still
@@ -1064,6 +1112,8 @@ INTAKE_PROMPT_BLOCKS: tuple = (
      _block_propose_first),
     ("ask_plainly", "one clear thing per reply in plain words, a short numbered list when values are confirmed together; nothing settled is restated; no 'assumption' bookkeeping in chat",
      _block_ask_plainly),
+    ("user_notes", "the application asks once for anything specific and keeps the user's words verbatim; the model quotes requirement messages, maps a note onto declared fields only, never asks it itself",
+     _block_user_notes),
     ("plain_text", "replies are plain text: no LaTeX or math markup; Unicode for superscripts, symbols and units; backticks only for patch and file names",
      _block_plain_text),
 )
@@ -1215,6 +1265,12 @@ async def node_intake(state: PipelineState) -> dict:
         logger.info("Intake: the user left the open question to the model - take the default "
                     "- job_id=%s", job_id)
         llm_messages, state_messages = turn.apply_default_nudge(llm_messages, state_messages)
+    elif turn.answers_notes_question(state_messages):
+        # The answer to the application's notes question - details or a plain no - closes it:
+        # said here, in code, so the turn goes on to the summary rather than chatting about it.
+        logger.info("Intake: the user answered the notes question - on to the summary - "
+                    "job_id=%s", job_id)
+        llm_messages, state_messages = turn.apply_notes_nudge(llm_messages, state_messages)
 
     _ctx = turn.hydrate(state, state_messages)
     # A plain yes to the application's own engine question ("I'd mesh this with X ... OK?") is
@@ -1251,6 +1307,7 @@ async def node_intake(state: PipelineState) -> dict:
         session_id=_ctx.session_id, owner_id=_ctx.owner_id, revision=_ctx.revision,
         user_msg_count=_ctx.user_msg_count, latest_user_msg=_ctx.latest_user_msg,
         user_texts=turn.user_texts(state_messages),
+        conversation=tuple(state_messages),
         declared_case=_declared_case(state_messages),
         thermal=_thermal_declared(state_messages),
         source_ref=_ctx.source_ref, rec_authorized=_ctx.rec_authorized,
@@ -1353,7 +1410,7 @@ async def node_intake(state: PipelineState) -> dict:
             _requirements.domain, _requirements.mesh_engine, _requirements.engine_params,
             _requirements.dimensionality, len(_requirements.intake_patches),
             len(_requirements.request_txt), len(_requirements.review_brief_txt), job_id)
-        return turn.completed_patch(_ctx, _record, _requirements)
+        return turn.completed_patch(_ctx, _record, _requirements, _exec_state.user_notes)
 
     logger.info("Intake: asking question turn=%d - job_id=%s: %s",
                 _budget.turn_number, job_id, assistant_text[:120])

@@ -43,7 +43,13 @@ if has("instance-groups managed update") and has("--update-policy-type proactive
     open(forced, "w").write("1"); sys.exit(0)
 if has("instance-groups managed list-instances"):
     spec = os.environ.get("FAKE_INSTANCES", "[]")
-    if os.path.exists(forced):
+    if "FAKE_INSTANCES_SEQ" in os.environ:                     # the group, one entry per look
+        seq = json.loads(os.environ["FAKE_INSTANCES_SEQ"])
+        looks = os.path.join(state, "looks")
+        n = int(open(looks).read()) if os.path.exists(looks) else 0
+        open(looks, "w").write(str(n + 1))
+        spec = json.dumps(seq[min(n, len(seq) - 1)])
+    elif os.path.exists(forced):
         spec = os.environ.get("FAKE_INSTANCES_AFTER", spec)     # unset: the replacement changed nothing
     tpl = open(os.path.join(state, "template")).read() if os.path.exists(os.path.join(state, "template")) else "?"
     rows = [{"name": i["name"], "instanceStatus": i.get("status", "RUNNING"),
@@ -97,7 +103,7 @@ def run(tmp_path):
         (bin_dir / name).chmod(0o755)
     counter = {"n": 0}
 
-    def _run(instances, ga=None, *, after=None, ga_after=None, extra=None):
+    def _run(instances, ga=None, *, after=None, ga_after=None, extra=None, seq=None):
         counter["n"] += 1
         state = tmp_path / f"state{counter['n']}"
         env_file = tmp_path / f"generated{counter['n']}.env"
@@ -109,6 +115,8 @@ def run(tmp_path):
             fake["FAKE_INSTANCES_AFTER"] = json.dumps(after)
         if ga_after is not None:
             fake["FAKE_GA_AFTER"] = json.dumps(ga_after)
+        if seq is not None:
+            fake["FAKE_INSTANCES_SEQ"] = json.dumps(seq)
         done = subprocess.run(
             ["bash", str(FLEET)], capture_output=True, text=True, timeout=120,
             env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "FAKE_GCP_STATE": str(state),
@@ -201,3 +209,32 @@ def test_verification_runs_even_when_the_template_is_reused():
     block = body[verify:body.index("FLOOR_STATE=", verify)]
     assert "MIG_DISPOSITION" not in block.split("while :", 1)[0], (
         "the verification is gated on the roll's disposition")
+
+
+def _rolling(n: int, looks_per_vm: int) -> list[list[dict]]:
+    """A fleet of `n` VMs moving onto the new template one at a time, each taking `looks_per_vm` looks."""
+    seq = []
+    for done in range(n + 1):
+        group = [{"name": f"t-workers-v{k}", "tpl": "NEW" if k < done else "t-workers-tpl-old"} for k in range(n)]
+        seq.extend([group] * looks_per_vm)
+    return seq
+
+
+def test_a_big_roll_that_keeps_moving_is_never_failed_on_a_total(run):
+    """dev-areen run 40152656665: 20 workers took about 45 minutes and reached the target a minute after
+    a fixed 2400 s total failed the deploy. The wait is a STALL window: here every VM moves within a look
+    of the last, the whole roll takes longer than the 5 s window, and the stage is green."""
+    done, _calls = run([], _HEALTHY, seq=_rolling(6, 1),
+                       extra={"WORKER_ROLL_FORCE_AFTER_SECONDS": "4", "WORKER_ROLL_TIMEOUT_SECONDS": "5",
+                              "WORKER_ROLL_POLL_SECONDS": "1"})
+    assert done.returncode == 0, done.stderr
+    assert "every VM is on" in done.stdout
+
+
+def test_a_roll_that_stops_moving_fails_on_the_stall_and_says_so(run):
+    seq = _rolling(3, 1)[:2]                             # one VM moves, then nothing does
+    done, _calls = run([], _HEALTHY, seq=seq,
+                       extra={"WORKER_ROLL_FORCE_AFTER_SECONDS": "4", "WORKER_ROLL_TIMEOUT_SECONDS": "5",
+                              "WORKER_ROLL_POLL_SECONDS": "1"})
+    assert done.returncode != 0
+    assert "no VM moved any closer for" in done.stderr and "The deploy is NOT done" in done.stderr

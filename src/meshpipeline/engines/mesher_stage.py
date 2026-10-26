@@ -78,6 +78,11 @@ def read_stage(workspace) -> dict | None:
         elif tool == "cartesianMesh":
             found = _last_of(_tail(newest), _CFMESH)
             key, label = found or ("cfmesh", "starting cartesianMesh")
+        elif tool == "gmshfea":
+            # the FEA mesher notes its step itself (engines/gmsh/fea_adapter.STAGE_FILE)
+            import json
+            step = json.loads((ws / "fea_stage.json").read_text()) if (ws / "fea_stage.json").exists() else {}
+            key, label = str(step.get("key") or "fea"), str(step.get("label") or "starting the FEA mesher")
         elif tool in _TOOLS:
             key, label = _TOOLS[tool]
         else:

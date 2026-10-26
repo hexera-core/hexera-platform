@@ -103,8 +103,18 @@ if WORKER_HEARTBEAT_SECONDS >= WORKER_LEASE_SECONDS:
 # Crashed jobs are redelivered (acks_late) and re-run (idempotent); one that DETERMINISTICALLY
 # crashes the worker is dead-lettered after this many deliveries (the retry-storm guard).
 CELERY_MAX_REDELIVERIES: int = int(optional_env("CELERY_MAX_REDELIVERIES", "3"))
+# How long a job waits, still queued, for a database that will not take its claim yet (full during
+# a redeploy, starting up) before it fails as dependency_down (application/execution_fence).
+CLAIM_WAIT_SECONDS: int = int(optional_env("CLAIM_WAIT_SECONDS", "900"))
 # Request-level rate limit (per identity, per minute) - 0 disables. Job quotas are separate.
 RATE_LIMIT_PER_MINUTE: int = int(optional_env("RATE_LIMIT_PER_MINUTE", "240"))
+# The safety ceilings beside it (api/middleware/hardening.py): every caller together, and one address
+# for callers that have not proven who they are - 0 disables either.
+RATE_LIMIT_GLOBAL_PER_MINUTE: int = int(optional_env("RATE_LIMIT_GLOBAL_PER_MINUTE", "12000"))
+RATE_LIMIT_ADDRESS_CEILING_PER_MINUTE: int = int(optional_env("RATE_LIMIT_ADDRESS_CEILING_PER_MINUTE", "2400"))
+# Which X-Forwarded-For entry, counted from the right, is the caller's address: 1 = Cloud Run reached
+# directly (its front end appends the address it saw), 2 = a load balancer in front of Cloud Run.
+RATE_LIMIT_TRUSTED_PROXY_HOPS: int = int(optional_env("RATE_LIMIT_TRUSTED_PROXY_HOPS", "1"))
 # The per-job event log outlives any single socket; a reconnecting browser replays from its
 # last-seen seq. Must exceed the longest run plus tab-shut time.
 EVENT_LOG_TTL_SECONDS: int = int(optional_env("EVENT_LOG_TTL_SECONDS", "86400"))

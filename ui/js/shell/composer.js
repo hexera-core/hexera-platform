@@ -10,7 +10,7 @@
  * Every listener is registered by `mountComposer`, called once by the entrypoint. Before, they
  * were registered at import time, so importing this file attached handlers.
  */
-import { confirmGeometryCheck, getGeometryCheck, retryGeometryCheck, sendMessage, uploadGeometry }
+import { ASSEMBLY_UPLOAD_MAX_BYTES, confirmGeometryCheck, getGeometryCheck, retryGeometryCheck, sendMessage, uploadAssembly, uploadGeometry }
   from "../api/endpoints.js";
 import { acceptAttribute, isOfferable, loadIntakeFormats, refusalCopy, supportedCopy }
   from "./intake_formats.js";
@@ -72,7 +72,16 @@ function autoResize(el) {
   el.style.height = Math.min(el.scrollHeight, MAX_INPUT_HEIGHT) + "px";
 }
 
-async function upload(file) {
+/** SEVERAL FILES AT ONCE are one assembly: each part in its own file, placed by its own coordinates.
+ *  One file goes the usual way. */
+function uploadFiles(list) {
+  const files = Array.from(list || []);
+  if (files.length > 1) return upload(files[0], files);
+  if (files.length === 1) return upload(files[0]);
+  return null;
+}
+
+async function upload(file, many) {
   // One geometry per session, whatever the route in. The button is gone after a successful
   // upload, but a drag-and-drop reaches here directly and would otherwise replace the file
   // the intake conversation was built on.
@@ -85,6 +94,13 @@ async function upload(file) {
   // the file is offered anyway and refused server-side if unsupported, so a degraded fetch
   // never becomes the security boundary.
   const intake = await loadIntakeFormats();
+  const bad = (many || [file]).find((f) => !isOfferable(f.name, intake));
+  if (bad) file = bad;
+  if (many && !bad && many.reduce((n, f) => n + f.size, 0) > ASSEMBLY_UPLOAD_MAX_BYTES) {
+    deps.notice.show("Several files go up together up to " + Math.round(ASSEMBLY_UPLOAD_MAX_BYTES / 1048576)
+      + " MB in all. For a bigger assembly, export it as one STEP file and upload that.", "error", { sticky: true });
+    return;
+  }
   if (!isOfferable(file.name, intake)) {
     // A native CAD file (a SolidWorks part, a Creo assembly...) is told which export to upload
     // instead, in the server's own words. It stays until dismissed or the next upload: the user
@@ -95,7 +111,8 @@ async function upload(file) {
   // The size limit is the server's to state: a file over it is refused before a byte is sent, in
   // words that say the limit and what to do instead.
   const btn = $("upload-btn"), lbl = $("file-label");
-  btn.disabled = true; btn.textContent = "Uploading…"; lbl.textContent = file.name;
+  btn.disabled = true; btn.textContent = "Uploading…";
+  lbl.textContent = many ? `${many.length} files (one assembly)` : file.name;
   // A large file travels straight to storage and can take minutes, so the button counts it up,
   // then says what happens while the server reads it back.
   const progress = (p) => {
@@ -106,7 +123,7 @@ async function upload(file) {
     }
   };
   try {
-    const d = await uploadGeometry(file, { onProgress: progress });
+    const d = many ? await uploadAssembly(many) : await uploadGeometry(file, { onProgress: progress });
     setState.sessionId(d.session_id);
     lbl.textContent = d.step_filename; lbl.className = "ready";
     // The geometry a session was opened on is FINAL: the intake conversation, the admission
@@ -133,7 +150,11 @@ async function upload(file) {
    simply never appears - the intake asks as it always did. A check that gave up is said so, with
    the way on: try again, or carry on in the chat. The wait is long on purpose: the naming waits
    for the user, and a user may take their time over the first answer. */
-const CHECK_POLL_MS = 3000, CHECK_POLL_MAX = 900;   // forty-five minutes, then stop quietly
+/* PROGRESS, NOT A CLOCK: the watch counts only the polls on which nothing is at work (no worker
+   step running, nothing new) - a big file drawn and measured for half an hour is watched for as long
+   as its worker beats (the server's time box ends a dead one), and an idle check stops after
+   forty-five minutes */
+const CHECK_POLL_MS = 3000, CHECK_POLL_MAX = 900;
 /* polls in a row with no answer before the live line says it cannot reach the server - and stops
    counting up: a line whose server is quiet must not look as if work were still going on */
 const CHECK_OFFLINE_AFTER = 5;
@@ -155,9 +176,17 @@ function stageWait() {
   if (_checkMode === "fea") return "Check your part and its unit beside this chat and press Proceed…";
   return "Check the openings beside this chat and press Proceed…";
 }
+let _holdMs = 0;
 function holdInput(placeholder, ms) {
   _held = true; disableInput(); setPlaceholder(placeholder);
+  _holdMs = ms;
   clearTimeout(_holdTimer); _holdTimer = setTimeout(releaseHold, ms);
+}
+/* a hold whose check is still at work (its worker beating) is not let go on the clock: each live
+   poll starts its wait again, so a big file is not released into the chat mid-drawing */
+function keepHolding() {
+  if (!_held || !_holdMs) return;
+  clearTimeout(_holdTimer); _holdTimer = setTimeout(releaseHold, _holdMs);
 }
 export function holdForDrawing() {
   if (_checkState === "done" || _checkState === "over") return enableInput();
@@ -184,7 +213,7 @@ async function watchGeometryCheck(sessionId) {
   const retryFn = async (step) => { const d = await retryGeometryCheck(sessionId, step); told = ""; return d; };
   // THE LIVE LINE'S OWN "Try again": the step the check last reported, run again, and the line
   // follows the fresh check at once rather than at the next poll
-  let retryAs = null, misses = 0;
+  let retryAs = null, misses = 0, readySeen = false;
   const rowRetry = async () => {
     deps.notice.clear?.();
     let d;
@@ -221,6 +250,7 @@ async function watchGeometryCheck(sessionId) {
     try { d = await getGeometryCheck(sessionId); } catch { /* transient; try again */ }
     const status = d && d.status;
     if (d) _checkMode = d.check_mode || (d.route === "fea" ? "fea" : "");
+    if (d && d.progress && d.progress.live) { n = 0; keepHolding(); }   // at work: not idle
     if (d) {
       misses = 0; retryAs = d.retry || null;
       deps.checkProgress(d.progress || null, { retry: rowRetry });
@@ -271,14 +301,24 @@ async function watchGeometryCheck(sessionId) {
       if (d.skin && !stage && !stageFailed && (d.thermal || d.route)) {
         stage = await deps.geometryCheck(sessionId, d, confirmFn, retryFn);   // null when the stage cannot draw
         if (stage === null) stageFailed = true;                               // the card stands in
+        // the part is on the stage (a preview while a big file is still measured): the box says
+        // where to go on, not that the part is still being drawn
+        else if (isHeld()) holdInput(stageWait(), STAGE_WAIT_MS);
       }
       if (stage) stage.update(d);            // the banner: waiting on the chat, the unit, or the naming
       else if (stageFailed) deps.geometryCard(d);   // the card's Proceed follows the unit, in place
     } else if (status === "ready" && d.named !== false) {
-      _checkState = "ready";
-      if (isHeld()) holdInput(stageWait(), STAGE_WAIT_MS);
-      if (stage) stage.update(d); else await deps.geometryCheck(sessionId, d, confirmFn, retryFn);
-      return;
+      // NAMED ON THE PREVIEW (a big file whose full reading is still running): the watch goes on
+      // until that reading lands, and the stage is handed the check once more when it does - not
+      // on every poll, which would re-draw the form under the user
+      const waitingFull = !!d.named_on_preview;
+      if (!readySeen || !waitingFull) {
+        _checkState = "ready";
+        if (isHeld()) holdInput(stageWait(), STAGE_WAIT_MS);
+        if (stage) stage.update(d); else if (!readySeen) await deps.geometryCheck(sessionId, d, confirmFn, retryFn);
+      }
+      readySeen = true;
+      if (!waitingFull) return;
     }
     await new Promise((r) => setTimeout(r, CHECK_POLL_MS));
   }
@@ -364,9 +404,10 @@ export function mountComposer() {
     // the sentence a user reads can never name different formats.
     if (intake) deps.supportedCopy(supportedCopy(intake));
   });
+  // several files picked together are one assembly (each part its own file)
+  $("step-file-input").multiple = true;
   $("step-file-input").addEventListener("change", function () {
-    const f = this.files[0];
-    if (f) upload(f);
+    uploadFiles(this.files);
   });
   $("upload-btn").addEventListener("click", () => $("step-file-input").click());
 
@@ -378,8 +419,7 @@ export function mountComposer() {
   });
   document.body.addEventListener("drop", (e) => {
     e.preventDefault(); document.body.classList.remove("dragover");
-    const f = e.dataTransfer.files[0];
-    if (f) upload(f);
+    uploadFiles(e.dataTransfer.files);
   });
 
   $("send-btn").addEventListener("click", send);

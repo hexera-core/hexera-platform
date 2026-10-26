@@ -364,10 +364,15 @@ def _build_dispatch_payload(*, job_id, owner_id: str, session_id, session, snaps
                             source_ref, interp_ref) -> dict:
     from meshpipeline.application.approved_patch_contract import ApprovedPatchContract
     from meshpipeline.application.dispatch_contract import build as build_dispatch
+    from meshpipeline.contracts.user_notes import merge as _merge_notes
 
     approved = builder_payload(snapshot)
     intent = snapshot.get("intent_canonical", {}) or {}
-    return build_dispatch(**{
+    # THE USER'S OWN NOTES, verbatim: the ones captured with the approved submission and every one
+    # on the session since (the console's notes box under the summary). Carried only when there
+    # are some, so a run without notes dispatches exactly the payload it always did.
+    notes = _merge_notes(approved.get("user_notes"), getattr(session, "user_notes", None))
+    return build_dispatch(**({"user_notes": notes} if notes else {}), **{
         "job_id": str(job_id),
         "geometry_source": source_ref.to_payload(),
         "geometry_interpretation": interp_ref.to_payload(),

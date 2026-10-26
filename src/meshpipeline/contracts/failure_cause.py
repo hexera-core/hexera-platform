@@ -342,6 +342,27 @@ def _fea_quality(f: Mapping) -> tuple[str, str]:
                 "This comes from walls or gaps far thinner than the part is long: every one needs elements "
                 "through it. Thicken or remove the thinnest walls in your CAD, or split the part, and upload "
                 "it again - then say \"run it again\".")
+    defect = f.get("cad_defect") if isinstance(f.get("cad_defect"), Mapping) else None
+    if defect:
+        # MESH-2: the mesh failed exactly where the geometry check had flagged the CAD
+        faces = [str(x) for x in defect.get("faces") or []]
+        named = ", ".join(faces[:6]) + (f" and {len(faces) - 6} more" if len(faces) > 6 else "")
+        kinds = {str(s.get("kind")) for s in defect.get("suspects") or [] if isinstance(s, Mapping)}
+        what = ("a paper-thin fold (two faces lying on each other)" if kinds == {"fold"}
+                else "faces crossing each other" if kinds == {"self_overlap"} else "a possible CAD defect")
+        return (f"The part needs CAD repair: the mesh could not be built at {named}, where the geometry check "
+                f"found {what}. The plan is fixed by the part, so another run would fail the same way, and I "
+                "stopped rather than spend the time.",
+                f"Fix {named} in your CAD and upload the part again - then say \"run it again\".")
+    if f.get("built_none"):
+        # NO PASS BUILT A MESH: the fill refused the surface meshes - most often two faces lying on
+        # top of each other (a paper-thin sliver or fold) that no element size can separate
+        return (f"The FEA mesher could not fill this part: in every pass the plan allows "
+                f"({int(_as_number(f.get('passes')) or 1)}) it stopped before making any element, because the "
+                "surface meshes of two faces lie on top of each other. The plan is fixed by the part, so another "
+                "run would stop the same way, and I stopped rather than spend the time.",
+                "This comes from a paper-thin sliver or fold in the CAD: two faces almost touching along an edge. "
+                "Remove or thicken that detail in your CAD and upload the part again - then say \"run it again\".")
     n = int(_as_number(f.get("under_floor")) or 0)
     where = f.get("worst_at_mm")
     at = (f" near ({', '.join(f'{float(v):g}' for v in where)}) mm" if isinstance(where, list) and len(where) == 3
@@ -424,6 +445,8 @@ def _domain(f: Mapping) -> tuple[str, str]:
 _REVIEW_STOPPED = {
     "reviewer_stalled": "the reviewer stopped making progress before it reached a verdict",
     "reviewer_exhausted": "the reviewer used up its time before it reached a verdict",
+    "reviewer_crashed": ("the review step failed with an error on our side before it reached a "
+                         "verdict - nothing about the mesh was found wrong"),
     "reviewer_render_unavailable": ("the tool that draws the mesh for the reviewer was not "
                                     "available"),
     # also every pre-loop refusal: a malformed plan, a missing measurement or view or target
@@ -454,10 +477,28 @@ def _review(f: Mapping) -> tuple[str, str]:
                   "change.")
 
 
+#: Said after a verdict the builder carried from its last attempt when it stopped without building
+#: again (agents/builder/attempt.carry_last_verdict): why there was no further attempt.
+_STOPPED_WORDS = {
+    "time_spent": "The run's time was used up after that, so it was not tried again.",
+    "no_progress": "It failed the same way twice in a row, so it was not tried again.",
+}
+
+
 def describe(cause: object, facts: Mapping | None = None, *,
              engine: str = "") -> tuple[str, str]:
     """(what failed, what the user can do next) - each one or two plain sentences. An unknown
     cause returns two empty strings, and the caller keeps its generic headline."""
+    what, nxt = _describe(cause, facts, engine=engine)
+    f: Mapping = facts if isinstance(facts, Mapping) else {}
+    said = _STOPPED_WORDS.get(str(f.get("builder_stopped") or ""))
+    if what and said and f.get("carried_from_attempt") is not None:
+        what = f"{what} {said}"
+    return what, nxt
+
+
+def _describe(cause: object, facts: Mapping | None = None, *,
+              engine: str = "") -> tuple[str, str]:
     c = as_cause(cause)
     f: Mapping = facts if isinstance(facts, Mapping) else {}
     if c is None:
@@ -552,6 +593,44 @@ def describe(cause: object, facts: Mapping | None = None, *,
                 "run may take, so no complete mesh came back.",
                 f"Ask for less detail (for example 'standard' instead of 'max') and {_RUN_AGAIN}.")
     if c is FailureCause.RUN_INFRASTRUCTURE:
+        big = f.get("too_big_for_worker")
+        if isinstance(big, Mapping):
+            need = _as_number(big.get("need_bytes")) or 0.0
+            free = _as_number(big.get("free_bytes")) or 0.0
+            return (f"The mesh was built and is valid, but it is too big for the computer that collects it: "
+                    f"bringing it back needs about {need / 1e9:.0f} GB of disk and that worker had "
+                    f"{free / 1e9:.0f} GB free. Nothing about your part was wrong, and the mesh is kept.",
+                    f"You can run it again ({_RUN_AGAIN}) to collect it on a worker with room. If it happens "
+                    "again, tell us: the workers need a bigger disk for meshes this size.")
+        trip = f.get("guard_trip")
+        if isinstance(trip, Mapping):
+            # THE MESHER'S TIME GUARD, said as what it is (dev-areen 24 Oct: a 114-part boiler read
+            # "the service failed to take the job or to return its result" after its mesher simply
+            # ran out of time): the mesher was working, and our time estimate for it was short
+            amount = _as_number(trip.get("amount"))
+            size = f" (about {amount / 1e6:.1f} million elements)" if amount else ""
+            raw_seen = trip.get("watchdog")
+            seen: Mapping = raw_seen if isinstance(raw_seen, Mapping) else {}
+            if trip.get("stalled"):
+                # THE STALL WATCH stopped it (PLAN-fea-13): said as that, with the quiet it saw - never as
+                # a time limit the mesher was not given
+                quiet = (_as_number(seen.get("silence_at_stop_s")) or _as_number(trip.get("stall_window_s"))
+                         or 0.0)
+                ran = _as_number(seen.get("seconds")) or 0.0
+                # quiet means ALL of it: no output, no new step and no CPU in use (sandbox/liveness)
+                return (f"The mesher stopped making progress while building the mesh{size}: no new output "
+                        f"and no CPU work for {quiet / 60:.0f} minutes after {ran / 60:.0f} minutes of work, so it was stopped and "
+                        "no mesh came back. Nothing about your part was found wrong. That is ours to look into.",
+                        f"You can run it again ({_RUN_AGAIN}); if it stops the same way, tell us.")
+            # THE HARD LIMIT: the trip record carries it as ceiling_s (engines/fea_driver.planned_work, #295);
+            # guard_s is the name records written before #295 used. Read both - a missing one is not 0
+            guard = _as_number(trip.get("ceiling_s")) or _as_number(trip.get("guard_s"))
+            limit = f"its time limit of {guard / 60:.0f} minutes" if guard else "its time limit"
+            return (f"The mesher was still building the mesh{size} when {limit} ran out, so no mesh came "
+                    "back. It was not stuck and nothing is wrong with your part: it takes longer to mesh than "
+                    "we planned for. That is ours to fix.",
+                    f"You can run it again ({_RUN_AGAIN}); if it stops the same way, tell us - meshes like this "
+                    "need a longer time limit on our side.")
         if f.get("result_uncollected"):
             # the mesher RAN: the return trip failed. A result too large to bring back fails the
             # same way, so the second remedy is said too
@@ -560,6 +639,21 @@ def describe(cause: object, facts: Mapping | None = None, *,
                     "geometry's.",
                     f"You can run it again ({_RUN_AGAIN}). If it happens again, ask for less "
                     "detail - a very large mesh can be too big to bring back.")
+        if f.get("run_record_unknown"):
+            # pipeline/executor._no_mesh_cause: no record of a mesher run in this attempt (it was
+            # resumed on another worker) - so no crash is claimed
+            return ("No complete mesh came back from this attempt, and the worker that checked it "
+                    "has no record of its mesher run (the run moved to another worker part way), so "
+                    "nothing is known to have gone wrong with the mesher or your geometry. That is "
+                    "on our side.",
+                    f"You can run it again with nothing changed: {_RUN_AGAIN}.")
+        if f.get("time_spent_before_meshing"):
+            # agents/builder/attempt.carry_last_verdict with nothing to carry: the run's time ran out
+            # before this attempt started a mesher - never a mesher that crashed
+            return ("No mesh was built: the run used up its time before a mesher could start, so "
+                    "there was nothing to check. Nothing about your part was found wrong - that is "
+                    "ours to look into.",
+                    f"You can run it again with nothing changed: {_RUN_AGAIN}.")
         if f.get("stage") == "staging":
             # agents/builder/attempt._record_staging_failure(ours=True): no mesher was started
             who = str(f.get("engine") or engine or "The engine")

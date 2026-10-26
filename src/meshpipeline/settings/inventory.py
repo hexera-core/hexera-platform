@@ -288,6 +288,7 @@ INVENTORY: list[Group] = [
         EnvVar("CIRCUIT_RECOVERY_SECONDS", "30"),
         EnvVar("CIRCUIT_HALF_OPEN_MAX", "1"),
         EnvVar("CELERY_MAX_REDELIVERIES", "3", help="a job that keeps crashing the worker is dead-lettered after this many deliveries"),
+        EnvVar("CLAIM_WAIT_SECONDS", "900", kind="int", help="a job whose database will not take its claim yet (full during a redeploy, starting up) waits this long, still queued, before it fails as dependency_down; 0 = fail at once"),
     ]),
     Group("Remote mesh execution", note="The local stack is the control plane; every mesh runs off-box on the Cloud Run mesh job. dev-up and dev-doctor require the values below and refuse to start without them.", vars=[
         EnvVar("GCP_PROJECT_ID", "", required=True, help="the project hosting the Cloud Run mesh job"),
@@ -489,7 +490,10 @@ INVENTORY: list[Group] = [
     ]),
 
     Group("Request limits", vars=[
-        EnvVar("RATE_LIMIT_PER_MINUTE", "240", kind="int", help="per identity (X-User-Id, else client IP); 0 disables. Job quotas are separate"),
+        EnvVar("RATE_LIMIT_PER_MINUTE", "240", kind="int", help="per caller: each API key, each signed user, else each client address (from X-Forwarded-For); 0 disables. Job quotas are separate"),
+        EnvVar("RATE_LIMIT_GLOBAL_PER_MINUTE", "12000", kind="int", help="safety ceiling for every caller together; 0 disables"),
+        EnvVar("RATE_LIMIT_ADDRESS_CEILING_PER_MINUTE", "2400", kind="int", help="safety ceiling per client address for callers that have not proven who they are (unverified keys, anonymous); signed users are exempt; 0 disables"),
+        EnvVar("RATE_LIMIT_TRUSTED_PROXY_HOPS", "1", kind="int", help="which X-Forwarded-For entry, counted from the right, is the caller's address: 1 = Cloud Run directly, 2 = a load balancer in front of it"),
         EnvVar("WS_MAX_SESSION_SECONDS", "3000", kind="int", help="close a live socket on our terms before the platform's 60-minute cap; the browser reconnects with its cursor"),
         EnvVar("EVENT_LOG_TTL_SECONDS", "86400", kind="int", help="how long a job's replayable event log outlives its sockets"),
     ]),
@@ -580,6 +584,7 @@ INVENTORY: list[Group] = [
 
     Group("Mesh toolchain", vars=[
         EnvVar("VMTK_BIN", "vmtk", help="vmtk runs as an isolated subprocess: its conda VTK cannot coexist with the app's"),
+        EnvVar("FEA_AI", "on", exposure="internal", help="on | off: the FEA builder asks the builder model for its judgement calls (zone priority, small features, the user's budget), which the rules make exact (engines/fea_ai.py); off = the rules' own plan"),
     ]),
 
     Group("Repeatability", note="INTERNAL. Same clean file in, same result out (engines/determinism.py, contracts/decision_cache.py). Every native run is stamped with what it ran under (reproducibility.json beside the mesh); every AI decision is keyed by what the model was shown.", vars=[

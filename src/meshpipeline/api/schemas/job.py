@@ -24,6 +24,16 @@ class ArtifactOut(BaseModel):
     label: str = ""
 
 
+class DownloadLinkOut(BaseModel):
+    """A freshly signed link for one deliverable, minted when the user clicks Download."""
+
+    artifact_id: uuid.UUID
+    download_url: str
+    #: how long the link stays valid from now; it scales with the file's size
+    expires_in_seconds: int
+    size_bytes: int = 0
+
+
 class JobStatus_(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -54,7 +64,8 @@ class JobStatus_(BaseModel):
     delivery_manifest: dict | None = None
     final_result: dict | None = None
     # WHAT THE REVIEW CAME TO, in one word (application/final_result.REVIEW_OUTCOMES): "passed",
-    # "delivered_with_concerns" (a succeeded run whose review left points open - never a pass),
+    # "passed_with_notes" (the measured limits passed a valid mesh with some figures past a limit,
+    # which review_concerns lists), "delivered_with_concerns" (a succeeded run whose review left points open - never a pass),
     # "review_inconclusive", or "wrong_problem" (the only way a review fails a run). None before
     # the run ends, or when no review outcome applies. `review_concerns` lists the open points.
     review_outcome: str | None = None
