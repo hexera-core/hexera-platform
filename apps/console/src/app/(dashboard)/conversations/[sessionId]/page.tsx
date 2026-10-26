@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { auth } from "@/auth";
+import { DashboardNotice } from "@/app/_components/dashboard-notice";
 import { ownerIdFromSession } from "@/lib/auth/session";
 import { consoleFetch } from "@/lib/hexera-api/console-fetch";
 
@@ -54,9 +55,19 @@ export default async function ConversationPage({
         // A 404 for somebody else's session and an unreachable API both land here. The route
         // already refuses another tenant's id indistinguishably from a missing one, so this page
         // must not describe which of the two happened either.
-        <p className="empty card">Could not load this conversation. Reload to try again.</p>
+        <DashboardNotice
+          action={{ href: "/conversations", label: "Back to conversations" }}
+          body="Refresh the page to try again, or return to your conversation history."
+          retryLabel="Try again"
+          title="We couldn't load this conversation"
+          tone="error"
+        />
       ) : history.messages.length === 0 ? (
-        <p className="empty card">This conversation has no messages.</p>
+        <DashboardNotice
+          action={{ href: "/conversations", label: "Back to conversations" }}
+          body="There is no conversation history to show for this run."
+          title="No messages recorded"
+        />
       ) : (
         <section className="panel">
           <div className="panel__head">
