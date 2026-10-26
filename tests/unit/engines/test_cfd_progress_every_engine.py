@@ -321,3 +321,60 @@ def test_a_stopped_run_takes_a_tool_it_started_in_its_own_session_with_it(tmp_pa
     else:
         os.kill(child, 9)
         pytest.fail("the tool the run started outlived it")
+
+
+# VMTK: A LAYER THAT IS NOT UNTANGLING IS STOPPED BY ITS OWN COUNT, NEVER BY A CLOCK
+
+def test_the_untangle_brake_stops_a_layer_whose_final_warp_keeps_tangling_it():
+    """vmtk's layer generator prints "try last : " before each final warp; a layer that converges
+    prints it once. Here it keeps printing it (the Fluent aorta, 4 in 2.5 h at 100% CPU)."""
+    from meshpipeline.engines.vmtk.vmtk_runner import UntangleBrake
+    from meshpipeline.sandbox.safe_exec import StoppedByWatch
+
+    code = ("import sys,time\nprint('Generating boundary layer')\nprint('untangle procedure.. ')\n"
+            "for i in range(50):\n sys.stdout.write('try last : '); sys.stdout.flush(); time.sleep(0.2)")
+    brake = UntangleBrake()
+    with pytest.raises(StoppedByWatch) as err:
+        run_guarded(_py(code), capture_output=True, text=True, timeout=30, stall_s=5.0, poll_s=0.1,
+                    watch=brake)
+    assert "not untangling" in err.value.reason and "try last" in err.value.output
+    assert brake.tripped["retangled"] > 1
+
+
+def test_a_layer_that_untangles_once_is_left_alone():
+    from meshpipeline.engines.vmtk.vmtk_runner import UntangleBrake
+    code = "import time\nprint('untangle procedure.. ')\nprint('try last : ')\ntime.sleep(0.5)\nprint('done')"
+    proc = run_guarded(_py(code), capture_output=True, text=True, timeout=30, stall_s=5.0, poll_s=0.1,
+                       watch=UntangleBrake())
+    assert proc.returncode == 0 and "done" in proc.stdout
+
+
+def test_a_layered_fill_the_brake_stopped_goes_on_to_the_layer_free_fill(tmp_path, monkeypatch):
+    import json
+
+    from meshpipeline.engines.vmtk import vmtk_runner as V
+    from meshpipeline.sandbox.safe_exec import StoppedByWatch
+
+    calls = []
+
+    def fake_run(argv, timeout=None, **kw):
+        calls.append(list(argv))
+        joined = " ".join(argv)
+        if "vmtksurfaceremeshing" in joined:
+            (tmp_path / "lumen.vtp").write_text("remeshed")
+            return subprocess.CompletedProcess(argv, 0, stdout="Done.", stderr="")
+        if "-boundarylayer 1" in joined:
+            exc = StoppedByWatch(argv, "the boundary layer is not untangling: its final warp tangled it again 2 times")
+            exc.output = "Generating boundary layer\nuntangle procedure.. \ntry last : try last : try last : "
+            raise exc
+        (tmp_path / "mesh.vtu").write_text("filled")
+        return subprocess.CompletedProcess(argv, 0, stdout="Done executing vmtkmeshgenerator.", stderr="")
+
+    monkeypatch.setattr(V, "run_guarded", fake_run)
+    (tmp_path / "vmtk_spec.json").write_text(json.dumps(V.resolve_strategy(
+        {"sizing_array": "LocalRadius", "boundary_layers": 4})))
+    (tmp_path / "lumen_open.vtp").write_text("staged")
+    res = V._run_vmtk_local(tmp_path, timeout=NT.CLOUD_RUN_WALL_S)
+    gens = [c for c in calls if len(c) > 1 and c[1] == "vmtkmeshgenerator"]
+    assert len(gens) == 2 and "-boundarylayer 0" in " ".join(gens[1])
+    assert "not untangling" in res["repair_note"] and not res.get("timed_out")

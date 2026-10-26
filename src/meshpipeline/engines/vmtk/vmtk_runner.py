@@ -18,6 +18,7 @@ from meshpipeline.engines.base import RunPolicy
 from meshpipeline.engines.determinism import note_time_limit
 from meshpipeline.sandbox.safe_exec import (
     NativeOutcome,
+    StoppedByWatch,
     describe_native_result,
     run_guarded,
 )
@@ -933,6 +934,12 @@ def _run_vmtk_local(workspace, *, timeout: int, **_ignored) -> dict:
             notes.append(f"[vmtk] attempt {i + 1} ({_step_label(strat)}): still working at the "
                          f"machine's limit ({int(timeout)} s)")
             break
+        if layered and bare_after is not None and result.get("untangle_stopped"):
+            notes.append(f"[vmtk] attempt {i + 1} ({_step_label(strat)}): "
+                         f"{result['untangle_stopped'].get('reason')} - next: "
+                         f"{_step_label(ladder[bare_after])}")
+            i = bare_after
+            continue
         if layered and bare_after is not None and result.get("timed_out"):
             # STUCK: a thinner stack is no faster to grow - straight on to the layer-free fill
             notes.append(f"[vmtk] attempt {i + 1} ({_step_label(strat)}): the layered fill made no "
@@ -1101,12 +1108,57 @@ def _write_gmsh_volume(grid, names: dict[int, str], path: Path) -> dict:
             "patches": {int(k): v for k, v in names.items()}}
 
 
+#: THE UNTANGLE BRAKE. vmtk's boundary layer generator (vtkvmtkBoundaryLayerGenerator, VMTK 1.5)
+#: untangles a tangled layer in rounds; when a round leaves it untangled it runs its final warp
+#: ("try last : ") and checks again - and if that warp tangles the layer AGAIN, the rounds go on, up
+#: to NumberOfSubsteps / 10 = 200 of them, each final warp the full 1,780 substeps. A layer that
+#: tangles again after its final warp is not converging: on the Fluent aorta (322k wall triangles,
+#: 4 sublayers) every final warp tangled it again - 4 in 2.5 hours, burning a core the whole time,
+#: so no stall watch could ever end it, and the run would reach even a VM's 20-hour wall. VMTK's own
+#: later versions stop such rounds when they stop improving (MaximumUntangleRoundsWithoutImprovement).
+#: So the layered fill is stopped when its own output shows the final warp tangled the layer again
+#: this many times, and the ladder moves on to the layer-free fill - deterministic, the mesher's own
+#: count, no clock. A layer that converges prints one "try last".
+UNTANGLE_RETANGLES = 1
+_UNTANGLE_FINAL_WARP = "try last"
+
+
+class UntangleBrake:
+    """The run's watch (sandbox/safe_exec.run_guarded `watch`): a reason to stop once the layer
+    generator's output shows its final warp tangled the layer again more than UNTANGLE_RETANGLES
+    times; None while it has not."""
+
+    def __init__(self, limit: int = UNTANGLE_RETANGLES) -> None:
+        self.limit = int(limit)
+        self.path: Path | None = None
+        self.tripped: dict | None = None
+
+    def follow(self, path) -> None:
+        self.path = Path(path)
+
+    def __call__(self) -> str | None:
+        if self.path is None:
+            return None
+        try:
+            final_warps = self.path.read_bytes().count(_UNTANGLE_FINAL_WARP.encode())
+        except OSError:
+            return None
+        retangled = final_warps - 1
+        if retangled <= self.limit:
+            return None
+        self.tripped = {"final_warps": final_warps, "retangled": retangled}
+        return (f"the boundary layer is not untangling: its final warp tangled it again "
+                f"{retangled} times")
+
+
 def _run_pype(ws: Path, argv: list[str], *, timeout: int) -> dict:
     """One pype, WATCHED (contracts/native_time): stopped only after STALL_WINDOW_S with no sign of
-    life - no output, no CPU, no memory change - (`stalled`), or at `timeout`, the machine's wall."""
+    life - no output, no CPU, no memory change - (`stalled`), at `timeout`, the machine's wall, or by
+    the untangle brake (`untangle_stopped`: a layer that is not untangling, UntangleBrake)."""
+    brake = UntangleBrake()
     try:
         proc = run_guarded(argv, cwd=str(ws), capture_output=True, text=True, timeout=timeout,
-                           stall_s=STALL_WINDOW_S)
+                           stall_s=STALL_WINDOW_S, watch=brake)
         tail = ((proc.stdout or "") + "\n" + (proc.stderr or ""))[-2000:]
         # Signal interpretation is the SHARED seam's, not this bundle's. It lived here first,
         # which meant vmtk explained a SIGSEGV while the other four engines returned a bare
@@ -1117,6 +1169,14 @@ def _run_pype(ws: Path, argv: list[str], *, timeout: int) -> dict:
         return {"rc": 127, "timed_out": False,
                 "log_tail": (f"vmtk binary {rtcfg.VMTK_BIN!r} not found - the container's vmtk "
                              "conda env is not installed or not on PATH")}
+    except StoppedByWatch as exc:
+        # THE UNTANGLE BRAKE: not converging - the ladder's layer-free fill answers it
+        out_text = getattr(exc, "output", None) or ""
+        err_text = getattr(exc, "stderr", None) or ""
+        tail = (str(out_text) + "\n" + str(err_text))[-2000:] + f"\n[vmtk] stopped: {exc.reason}"
+        out = describe_native_result(returncode=-1, args=argv, stage="vmtk pype", output=tail)
+        out["untangle_stopped"] = dict(brake.tripped or {}, reason=exc.reason)
+        return out
     except subprocess.TimeoutExpired as exc:
         def _d(x):
             return x.decode(errors="replace") if isinstance(x, bytes) else (x or "")

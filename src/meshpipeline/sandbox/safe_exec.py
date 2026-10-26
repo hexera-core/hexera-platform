@@ -138,6 +138,9 @@ class StoppedByWatch(subprocess.SubprocessError):
     def __init__(self, cmd, reason: str) -> None:
         super().__init__(f"{cmd!r} stopped: {reason}")
         self.cmd, self.reason = cmd, reason
+        # what the run printed until it was stopped, when it was captured (_captured_watched)
+        self.output: str | bytes | None = None
+        self.stderr: str | bytes | None = None
 
 
 class StalledExpired(subprocess.TimeoutExpired):
@@ -215,6 +218,9 @@ def _captured_watched(args, *, timeout, stall_s: float, progress_paths, poll_s: 
         kwargs.pop(k, None)
     scratch = Path(tempfile.mkdtemp(prefix="watched_"))
     out_p, err_p = scratch / "stdout", scratch / "stderr"
+    if watch is not None and callable(getattr(watch, "follow", None)):
+        # a watch that reads the run's own output (a brake on what the mesher prints) reads it here
+        watch.follow(out_p)
 
     def _read(p: Path):
         try:
@@ -230,7 +236,7 @@ def _captured_watched(args, *, timeout, stall_s: float, progress_paths, poll_s: 
                 proc = run_guarded(args, timeout=timeout, stall_s=stall_s,
                                    progress_paths=(str(out_p), str(err_p), *progress_paths),
                                    poll_s=poll_s, watch=watch, stdout=out, stderr=err, **kwargs)
-            except subprocess.TimeoutExpired as exc:     # a stall (StalledExpired) or the wall
+            except (subprocess.TimeoutExpired, StoppedByWatch) as exc:   # a stall, the wall, a brake
                 out.flush()
                 err.flush()
                 exc.output, exc.stderr = _read(out_p), _read(err_p)
