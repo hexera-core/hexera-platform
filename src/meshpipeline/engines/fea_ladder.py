@@ -23,6 +23,13 @@ the FIRST trigger that holds pulls its lever, if that lever was not pulled alrea
              next pass - with LAD-fea-1 or LAD-fea-2, or on its own once those are pulled. A surface
              the default 2D algorithm leaves empty is meshed again with MeshAdapt in the same pass.
 
+  LAD-fea-9  THE LAST RUNG: every gmsh option above is spent (for an assembly, the tie too) and no
+             pass is valid -> fTetWild meshes the part(s) still without a valid mesh (an assembly's
+             parts the failed passes named, tied to the others' gmsh mesh; then, if that fails too,
+             every part), its settings from the plan and the measured part (engines/fea_tetwild.py).
+             Never before gmsh's options, never instead of them, never for our infrastructure (a guard
+             trip, a worker too small) or a plan out of memory on the largest machine (LAD-fea-7).
+
 A VALID MESH is the only thing that fails an FEA run (Areen, 21 Oct): no degenerate or inverted
 element. Every other figure - the quality note floor included (SICN 0.1 straight, 0.01 curved) - is a note.
 """
@@ -234,6 +241,18 @@ def _other_way(fresh: list[int], facts: Mapping) -> dict | None:
                       "with gmsh's MeshAdapt instead of the default.")}
 
 
+def rung_words(parts: list[int] | None, rung: int) -> str:
+    """LAD-fea-9's line in the plan's words: which parts fTetWild meshes, and why."""
+    who = ("the part" if parts is None else
+           ("part " if len(parts) == 1 else "parts ") + ", ".join(f"Part_{p}" for p in parts[:8])
+           + (", ..." if len(parts) > 8 else ""))
+    if parts is None and rung > 1:
+        who = "every part"
+    return (f"No gmsh option built a valid mesh (Delaunay, HXT, MeshAdapt on the surfaces that failed"
+            f"{', the tie' if parts is not None or rung > 1 else ''}), so fTetWild meshes {who} - the last "
+            "rung (LAD-fea-9). Its surface follows the CAD within its envelope; the faces keep their names.")
+
+
 def _rank(f: Mapping) -> tuple:
     return (not f["valid"], bool(f["short"]), f["over"], -float(f["min_sicn"] or 0.0), f["pass"])
 
@@ -255,4 +274,4 @@ def best_pass(passes: list[dict]) -> tuple[int | None, str]:
 
 
 __all__ = ["AI_LEVERS", "MAX_PASSES", "SURFACE_STALL", "stalled_surface", "surface_stall_lever", "best_pass", "coarse_factor", "failed_surfaces", "growth", "mesh_settings",
-           "lever_options", "next_lever", "pass_facts", "tightened"]
+           "lever_options", "next_lever", "pass_facts", "rung_words", "tightened"]
