@@ -123,18 +123,47 @@ def parse_check_mesh(out: str) -> dict:
     return q
 
 
-def export_volume_vtk(workspace, *, bashrc: str = _DEFAULT_BASHRC, timeout: int = 300) -> str | None:
+def export_volume_vtk(workspace, *, all_regions: bool = False, region: str = "",
+                      bashrc: str = _DEFAULT_BASHRC, timeout: int = 300) -> str | None:
+    """The cells as VTK, for the reviewer to slice. None on any failure - never a failed mesh.
+
+    `all_regions` exports every region of a split case, and `region` says which one's file to
+    return. Without them this exported the case as ONE body and returned
+    sorted(glob("VTK/**/internal.vtu"))[0], which on a conjugate case is the merged
+    VTK/case_0/internal.vtu - the whole block as a single mesh. That is precisely the thing a
+    conjugate review exists to tell a real split apart from, so handing the reviewer the merged
+    file would have shown a correct mesh and a wrong one as the same picture. With both exports on
+    disk the glob picks the region's only by alphabetical luck, so the region is named rather than
+    guessed, in the shape check_mesh in this same file already uses for -region.
+    """
     ws = Path(workspace)
     reason = scan_case_dicts(ws)
     if reason:
         logger.warning("export_volume_vtk: %s", reason)
         return None
-    cmd = f"source {bashrc} >/dev/null 2>&1 && foamToVTK -constant -noFaceZones"
+    _all = " -allRegions" if all_regions else ""
+    cmd = f"source {bashrc} >/dev/null 2>&1 && foamToVTK -constant -noFaceZones{_all}"
     try:
         run_guarded(["bash", "-lc", cmd], cwd=str(ws), env=_foam_env(),
                     capture_output=True, text=True, timeout=timeout)
     except Exception:
         logger.exception("export_volume_vtk: foamToVTK failed")
         return None
-    hits = sorted(ws.glob("VTK/**/internal.vtu"))
-    return str(hits[0].relative_to(ws)) if hits else None
+    # THE NEWEST TIME DIRECTORY, not the first alphabetically. foamToVTK names them
+    # "<case>_<n>" and a split case has more than one: measured on a real run, this returned
+    # review_0 while the review's own lookup returned review_1, so the two disagreed about which
+    # file described the delivered mesh. The index is read numerically so _10 sorts after _9.
+    def newest(paths: list) -> str | None:
+        if not paths:
+            return None
+        def key(p):
+            _, _, tail = p.parent.name.rpartition("_")
+            try:
+                return (int(tail), p.parent.name)
+            except ValueError:
+                return (-1, p.parent.name)
+        return str(max(paths, key=key).relative_to(ws))
+
+    if region:
+        return newest(sorted((ws / "VTK" / region).glob("*/internal.vtu")))
+    return newest(sorted(ws.glob("VTK/**/internal.vtu")))

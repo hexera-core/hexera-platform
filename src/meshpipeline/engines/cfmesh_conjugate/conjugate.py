@@ -353,15 +353,31 @@ def plan_ports(open_: tuple[str, ...], extent, *,
 # #
 # the dictionaries
 # #
+#: The OpenFOAM patch type each declared role becomes, for renameBoundary. A port is a `patch`;
+#: everything else on the block is wall. The interface patches are not here: splitMeshRegions
+#: creates them itself as a coupled pair and names them (FLUID_TO_SOLID, SOLID_TO_FLUID).
+ROLE_TO_OF_TYPE = {"inlet": "patch", "outlet": "patch", "wall": "wall",
+                   "external": "wall", "symmetry": "symmetryPlane", "empty": "empty"}
+
+
 def render_meshdict(*, block_file: str, fluid_file: str, background_cell_m: float,
                     levels: int = DEFAULT_REFINEMENT_LEVELS,
-                    thickness_m: float | None = None) -> str:
+                    thickness_m: float | None = None,
+                    patch_names: dict[str, tuple[str, str]] | None = None) -> str:
     """The meshDict for the single-domain pass over the whole block.
 
     `surfaceMeshRefinement` is what makes this work. It refines around a surface that is NOT the
     meshed boundary, which is exactly what is needed here: the coolant surface never becomes a wall,
     it only tells the octree where to put small cells. Without it the interface would be staircased
     at the background size, which on a microchannel part is wider than the channels themselves.
+
+    `patch_names` MAPS A BLOCK FACE TO WHAT THE USER CALLED IT: {"ymin": ("coolant_in", "inlet")}.
+    Without it the delivered mesh carries the six block-face names and nothing else, so a customer
+    who declared an opening called coolant_in gets a mesh with no patch of that name and the
+    patch-contract gate refuses a mesh that is geometrically perfect. cfMesh renames before the
+    split, so a renamed face is inherited by BOTH regions - which is correct for a port, since the
+    coolant's end and the metal's outer face at that end are two different faces of the same
+    plane and both should carry the name the user gave that end of the part.
 
     `refinementThickness` is how far from that surface the extra levels reach, and the default is
     one background cell, which is 2**levels interface cells deep. That is enough for the octree to
@@ -376,7 +392,7 @@ def render_meshdict(*, block_file: str, fluid_file: str, background_cell_m: floa
     thickness = background_cell_m if thickness_m is None else float(thickness_m)
     if thickness <= 0:
         raise ConjugateError(f"refinement thickness must be positive, got {thickness}")
-    return (
+    out = (
         "FoamFile { version 2.0; format ascii; class dictionary; object meshDict; }\n\n"
         f'surfaceFile "{block_file}";\n'
         f"maxCellSize {background_cell_m:.6g};\n\n"
@@ -385,6 +401,23 @@ def render_meshdict(*, block_file: str, fluid_file: str, background_cell_m: floa
         f"        additionalRefinementLevels {levels};\n"
         f"        refinementThickness {thickness:.6g};\n"
         "    }\n}\n")
+    if patch_names:
+        # NO defaultName and NO defaultType. Every block face is already a named solid of the
+        # block STL, so there is nothing for a default to catch - and on the 2D cfMesh path a
+        # default absorbed 34k faces that identity entries had failed to match
+        # (cfmesh_runner.py:663-668). A face not listed here keeps its own name, which is what
+        # should happen to the five faces that are not the port the user named.
+        rows = []
+        for face in BLOCK_FACES:
+            if face not in patch_names:
+                continue
+            name, role = patch_names[face]
+            of_type = ROLE_TO_OF_TYPE.get(str(role).strip().lower(), "patch")
+            rows.append(f"        {face} {{ newName {name}; type {of_type}; }}")
+        if rows:
+            out += ("\nrenameBoundary\n{\n    newPatchNames\n    {\n"
+                    + "\n".join(rows) + "\n    }\n}\n")
+    return out
 
 
 def interface_cell_m(background_cell_m: float, levels: int = DEFAULT_REFINEMENT_LEVELS) -> float:
@@ -536,6 +569,11 @@ class ConjugateReport:
     interface_faces_fluid: int = 0
     interface_faces_solid: int = 0
     ports: PortPlan | None = None
+    #: {block face -> the name the user gave it}, as renameBoundary was told. The port gate reads
+    #: it because a declared port's patch is called what the user called it, not what the face it
+    #: was cut from is called, and looking for the face name reported a missing port on a mesh
+    #: that had it under the right name.
+    patch_names: dict[str, str] = field(default_factory=dict)
     problems: list[str] = field(default_factory=list)
     #: Things worth knowing that do not make the mesh unusable. Kept apart from `problems` on
     #: purpose: a run that prints eight warnings and a pass reads exactly like a run that failed.
@@ -708,17 +746,25 @@ def verify(report: ConjugateReport, *, expect_fluid_volume_m3: float | None = No
                 f"CAD declares, past the {volume_tol * 100:.0f}% staircase allowance. The tagged "
                 "cells are not the coolant.")
     if (plan := report.ports) is not None:
+        # THE NAME THE MESH CARRIES, not the block face it was cut from. A declared port is
+        # renamed before the split (render_meshdict's patch_names), so the fluid region's patch is
+        # called whatever the user called it - coolant_in, not ymin - and looking for the face name
+        # reported a missing port on a mesh that had it. Measured: renaming ymin to coolant_in gave
+        # the fluid region coolant_in with 128 faces, exactly what ymin had.
+        renamed = report.patch_names or {}
         for role, face in (("inlet", plan.inlet), ("outlet", plan.outlet)):
-            n = report.fluid.patches.get(face)
+            want = renamed.get(face, face)
+            n = report.fluid.patches.get(want)
+            as_cut = "" if want == face else f" (the {face} face, renamed)"
             if n is None:
                 p.append(
-                    f"the {role} was to be {face}, and the fluid region has no patch of that name. "
-                    f"The patches it does have are {sorted(report.fluid.patches)}.")
+                    f"the {role} was to be {want}{as_cut}, and the fluid region has no patch of "
+                    f"that name. The patches it does have are {sorted(report.fluid.patches)}.")
             elif n == 0:
                 p.append(
-                    f"the {role} patch {face} exists on the fluid region with ZERO faces, so no "
-                    "coolant reaches it. The coolant is sealed on that side, nothing fixes its "
-                    "pressure, and the solve dies in the preconditioner.")
+                    f"the {role} patch {want}{as_cut} exists on the fluid region with ZERO faces, "
+                    "so no coolant reaches it. The coolant is sealed on that side, nothing fixes "
+                    "its pressure, and the solve dies in the preconditioner.")
         if report.flowable:
             lo, hi = sorted((report.inlet_faces, report.outlet_faces))
             if hi > 10 * lo:
@@ -788,6 +834,7 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
           expect_fluid_volume_m3: float | None = None,
           expect_fluid_pieces: int | None = None, volume_tol: float = DEFAULT_VOLUME_TOL,
           ports: PortPlan | None = None, narrowest_m: float | None = None,
+          patch_names: dict | None = None,
           bashrc: str = _DEFAULT_BASHRC, timeout: int = 3600) -> ConjugateReport:
     """Mesh the block, split it in two, and report what was actually produced."""
     ws = Path(workspace)
@@ -796,7 +843,8 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
     (ws / "system").mkdir(parents=True, exist_ok=True)
     (ws / "system" / "meshDict").write_text(render_meshdict(
         block_file=block_stl, fluid_file=fluid_stl,
-        background_cell_m=background_cell_m, levels=levels, thickness_m=thickness_m))
+        background_cell_m=background_cell_m, levels=levels, thickness_m=thickness_m,
+        patch_names=patch_names))
     (ws / "system" / "topoSetDict").write_text(render_toposetdict(fluid_file=fluid_stl))
 
     # THE CASE IS SCANNED BEFORE ANYTHING RUNS, which is where every other OpenFOAM bundle scans
@@ -846,6 +894,7 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
     rss_after = children_peak_rss_bytes()
     rep = ConjugateReport(fluid=reports[FLUID_REGION], solid=reports[SOLID_REGION],
                           ports=ports, seconds=seconds,
+                          patch_names={f: n for f, (n, _r) in (patch_names or {}).items()},
                           peak_rss_bytes=rss_after if rss_after > rss_before else 0)
     rep.interface_faces_fluid = interface_faces(rep.fluid.patches, FLUID_TO_SOLID)
     rep.interface_faces_solid = interface_faces(rep.solid.patches, SOLID_TO_FLUID)
