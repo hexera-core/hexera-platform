@@ -43,7 +43,12 @@ try:
 except ImportError:                                      # pragma: no cover - absent on Windows
     resource = None  # type: ignore[assignment]
 
-from meshpipeline.engines.cfmesh_conjugate.foam_exec import _DEFAULT_BASHRC, _foam_env, check_mesh
+from meshpipeline.engines.cfmesh_conjugate.foam_exec import (
+    _DEFAULT_BASHRC,
+    _foam_env,
+    check_mesh,
+    scan_case_dicts,
+)
 from meshpipeline.engines.cfmesh_conjugate.polymesh_surface import read_boundary_patches
 from meshpipeline.sandbox.safe_exec import run_guarded
 
@@ -598,8 +603,11 @@ def read_region(quality: dict, name: str) -> RegionReport:
 
     THE CHECKMESH OUTPUT IS NOT PARSED HERE. `foam_exec.check_mesh` has parsed it for every cfMesh
     path since long before this one existed, so a second reader of the same text is a second thing
-    that can disagree with the first about what `checkMesh` said. It also runs `scan_case_dicts`
-    first, which the conjugate path was quietly skipping while every other cfMesh path had it.
+    that can disagree with the first about what `checkMesh` said.
+
+    It also runs `scan_case_dicts`, but only when IT runs - which is after the mesher, the tagging
+    and the split have all executed. That is not a guard on those three, and this docstring used
+    to claim it was. `build` scans the case itself before the first stage now.
 
     PER REGION, never `-allRegions`. `checkMesh -allRegions` reports the PRE-SPLIT mesh, which
     looks like a successful verification and is a measurement of the wrong thing.
@@ -790,6 +798,17 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
         block_file=block_stl, fluid_file=fluid_stl,
         background_cell_m=background_cell_m, levels=levels, thickness_m=thickness_m))
     (ws / "system" / "topoSetDict").write_text(render_toposetdict(fluid_file=fluid_stl))
+
+    # THE CASE IS SCANNED BEFORE ANYTHING RUNS, which is where every other OpenFOAM bundle scans
+    # (cfmesh/native.py, cfmesh/cfmesh_runner.py, snappy/native.py, snappy_multiregion/native.py
+    # all do it at the top of their runner). This path only scanned when `check_mesh` ran, which
+    # is AFTER cartesianMesh, topoSet and splitMeshRegions have all executed - so the guard was
+    # reporting on dictionaries that had already been handed to OpenFOAM three times. An engine
+    # row is exactly the change that makes a customer's workspace the argument here, so the order
+    # matters from now on rather than in principle.
+    reason = scan_case_dicts(ws)
+    if reason:
+        raise ConjugateError(f"the case dictionaries were rejected before any stage ran: {reason}")
 
     seconds: dict[str, float] = {}
     for stage, script in (("cartesianMesh", "cartesianMesh"),
