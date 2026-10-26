@@ -46,6 +46,28 @@ def test_declared_geometry_and_nested_plan_become_workload_evidence(tmp_path):
     assert workload.boundary_layers == 8
 
 
+def test_real_snappy_payload_declares_plan_sizing_facts(tmp_path):
+    from meshpipeline.engines.snappy.drivers import _native_payload_members
+
+    (tmp_path / "system").mkdir()
+    (tmp_path / "system" / "snappyHexMeshDict").write_text("d")
+    surfaces = tmp_path / "constant" / "triSurface"
+    surfaces.mkdir(parents=True)
+    _binary_stl(surfaces / "body.stl")
+    (tmp_path / ".last_plan.json").write_text(json.dumps({
+        "max_cells": 120_000_000,
+        "n_layers": 9,
+    }))
+
+    members = _native_payload_members(tmp_path)
+    note_native_payload(tmp_path, members)
+    workload = workload_from_workspace(tmp_path, "snappy")
+
+    assert ".last_plan.json" in members
+    assert workload.requested_cells == 120_000_000
+    assert workload.boundary_layers == 9
+
+
 def test_undeclared_workspace_is_not_scanned(tmp_path):
     _binary_stl(tmp_path / "part.stl", triangles=500)
 
