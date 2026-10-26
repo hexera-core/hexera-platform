@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -83,7 +84,7 @@ class _Run:
         return SimpleNamespace(produced_deliverable=produced_deliverable, terminal_value=failure_marker)
 
 
-def _planned(shape, ws: Path, monkeypatch) -> Path:
+def _planned(shape, ws: Path, monkeypatch, state: dict | None = None) -> Path:
     """The workspace as the driver leaves it for the mesher's first pass (an assembly staged, its plan)."""
     import shutil
 
@@ -101,7 +102,7 @@ def _planned(shape, ws: Path, monkeypatch) -> Path:
 
     monkeypatch.setattr(runtime, "get_engine", lambda _n: SimpleNamespace(run_cartesian_mesh=grab))
     with pytest.raises(Stop):
-        asyncio.run(FD.drive(ws / "drive", {"purpose": "structural"}, job_id=f"t-{ws.name}", publish=None,
+        asyncio.run(FD.drive(ws / "drive", state or {"purpose": "structural"}, job_id=f"t-{ws.name}", publish=None,
                              run=_Run(), source_path=str(ws / "drive" / "upload.step")))
     return kept
 
@@ -305,3 +306,94 @@ def _fingerprint_all() -> str:
                 h.update(np.asarray(a).tobytes())
                 h.update(np.asarray(b).tobytes())
     return h.hexdigest()
+
+
+def _fail_volume(monkeypatch, volume: int) -> None:
+    """gmsh's fill raises whenever `volume` is the one being filled (as Part_239's did on ox_mc_lid)."""
+    real = gmsh.model.mesh.generate
+
+    def generate(dim=3):
+        if dim == 3 and gmsh.option.getNumber("Mesh.MeshOnlyVisible") and gmsh.model.getVisibility(3, volume):
+            raise Exception(f"Invalid boundary mesh (overlapping facets) on surface {volume * 100} surface {volume * 100 + 1}")
+        return real(dim)
+
+    monkeypatch.setattr(gmsh.model.mesh, "generate", staticmethod(generate))
+
+
+def test_a_part_the_fill_fails_on_is_meshed_again_alone_and_the_others_are_kept(tmp_path, monkeypatch, capsys):
+    """LAD-fea-11: parts meshed apart (contact) - the fill fails on one; every other part is filled all the same
+    and kept, and the next pass meshes only the part that failed - a valid mesh of every part."""
+    import shutil
+
+    shape = fx._compound(fx._box(0, 0, 0, 10, 10, 10), fx._box(20, 0, 0, 8, 8, 8), fx._box(40, 0, 0, 6, 6, 6))
+    planned = _planned(shape, tmp_path, monkeypatch, {"purpose": "structural", "fea_connection": "contact"})
+    whole = tmp_path / "whole"
+    shutil.copytree(planned, whole)
+    assert A.mesh(whole) == 0
+    first = tmp_path / "first"
+    shutil.copytree(planned, first)
+    with monkeypatch.context() as m:
+        _fail_volume(m, 2)
+        with pytest.raises(Exception, match="overlapping facets"):
+            A.mesh(first)
+    kept = json.loads((first / A.KEEP_JSON).read_text())
+    assert kept["failed_volumes"] == [2] and kept["kept_volumes"] == [1, 3] and kept["rule"] == A.KEEP_RULE
+    assert kept["failed_parts"] == ["Part_2"] and (first / A.KEEP_MSH).exists()
+    capsys.readouterr()
+    plan = json.loads((first / "fea_plan.json").read_text())
+    plan["mesh"] = {**(plan.get("mesh") or {}), "keep": {"rule": A.KEEP_RULE, "from_pass": 1}}
+    (first / "fea_plan.json").write_text(json.dumps(plan))
+    assert A.mesh(first) == 0
+    said = capsys.readouterr().err
+    assert "2 part volume(s) kept from the pass before; meshing the other 1" in said
+    q, q_whole = (json.loads((w / "quality.json").read_text()) for w in (first, whole))
+    # the failed pass went on to the CAD's own scale (MESH-4), where it kept its parts: so does this one
+    assert q["fea_mesh_scale"] == "mm" and not q["fatal"] and q["min_sicn"] > 0.0
+    assert 0.9 * q_whole["cells"] <= q["cells"] <= 1.1 * q_whole["cells"]
+    deck = (first / "mesh.inp").read_text()
+    for p in (1, 2, 3):
+        assert f"Part_{p}_Face_1" in deck
+
+
+def test_a_pass_with_nothing_kept_reads_no_kept_file(tmp_path):
+    """LAD-fea-11 needs the plan to say so and the files to be there; anything else is an ordinary pass."""
+    assert A.kept_for(tmp_path, {}) is None
+    assert A.kept_for(tmp_path, {"keep": {"from_pass": 1}}) is None
+    (tmp_path / A.KEEP_JSON).write_text(json.dumps({"kept_volumes": [1], "scale": 1000.0,
+                                                    "tags": {"surface_tag": {"0": 3}, "volume_tag": {"0": 1}}}))
+    assert A.kept_for(tmp_path, {"keep": {"from_pass": 1}}) is None          # no mesh file beside it
+    (tmp_path / A.KEEP_MSH).write_text("")
+    got = A.kept_for(tmp_path, {"keep": {"from_pass": 1}})
+    assert got["scale"] == 1000.0 and got["tags"] == {"surface_tag": {0: 3}, "volume_tag": {0: 1}}
+
+
+def test_the_driver_meshes_only_the_failed_part_on_its_next_pass(tmp_path, monkeypatch, capsys):
+    """LAD-fea-11 through the real driver: pass 1 fills every part but one; pass 2's plan keeps the rest and
+    the mesher meshes only that one - and that pass is the one delivered."""
+    from meshpipeline.engines import runtime
+
+    shape = fx._compound(fx._box(0, 0, 0, 10, 10, 10), fx._box(20, 0, 0, 8, 8, 8), fx._box(40, 0, 0, 6, 6, 6))
+    ws = _stage(shape, tmp_path / "drive")
+    calls: list[int] = []
+
+    def run_mesher(w, timeout=0):
+        calls.append(1)
+        with monkeypatch.context() as m:
+            if len(calls) == 1:
+                _fail_volume(m, 2)
+            try:
+                return {"rc": A.mesh(w)}
+            except Exception:  # noqa: BLE001 - as the runner sees a pass that raised
+                return {"rc": 1}
+
+    monkeypatch.setattr(runtime, "get_engine", lambda _n: SimpleNamespace(run_cartesian_mesh=run_mesher))
+    ok, marker, _o = asyncio.run(FD.drive(ws, {"purpose": "structural", "fea_connection": "contact"},
+                                          job_id="t-keep", publish=None, run=_Run(),
+                                          source_path=str(ws / "upload.step")))
+    assert ok, marker
+    said = capsys.readouterr().err
+    assert "2 part volume(s) kept from the pass before; meshing the other 1" in said
+    passes = json.loads((ws / "fea_passes.json").read_text())
+    assert [p["valid"] for p in passes["passes"]] == [False, True] and passes["delivered"] == 2
+    plan = json.loads((ws / "fea_plan.json").read_text())
+    assert plan["mesh"]["keep"] == {"rule": A.KEEP_RULE, "from_pass": 1}

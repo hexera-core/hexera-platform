@@ -751,7 +751,8 @@ def run_parts(jobs: list[dict], workers: int) -> list[dict]:
 
 
 def mesh_into(gmsh, ws: Path, plan: Mapping, staged: Path, volumes: list[int], *, volume_index: Mapping[int, int],
-              surface_tag_of: Mapping[int, int], names: list[str], order: int = 2, workers: int = 1) -> dict:
+              surface_tag_of: Mapping[int, int], names: list[str], order: int = 2, workers: int = 1,
+              model_scale: float = 1.0) -> dict:
     """fTetWild's mesh of each of `volumes` (gmsh volume tags of the staged model), written INTO that
     model: its nodes on the volume, its 10-node tetrahedra in the volume, each boundary triangle (6-node)
     on the CAD surface it is nearest to. `volume_index`: gmsh volume tag -> 0-based solid index (MapShapes
@@ -763,7 +764,9 @@ def mesh_into(gmsh, ws: Path, plan: Mapping, staged: Path, volumes: list[int], *
     settings = (plan.get("mesh") or {}).get("ftetwild") or {}
     per = settings.get("per_part") or {}
     shape, fmap, _smap, own = cad_faces(staged)
-    scale = frame_scale(gmsh, shape)
+    # the reader's unit to the mesh's: a model built `model_scale` times its metres whose mesh is back in metres
+    # (MESH-4, LAD-fea-11) takes fTetWild's parts in metres too
+    scale = frame_scale(gmsh, shape) / float(model_scale or 1.0)
     jobs, meta = [], []
     from meshpipeline.cad.fea_assembly import part_of_face
 

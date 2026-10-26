@@ -526,3 +526,36 @@ def test_nothing_here_reads_an_environment_variable():
     # the binary is found on PATH or at its install path, never through a setting (settings/inventory)
     src = Path(TW.__file__).read_text()
     assert "os.environ" not in src and "optional_env" not in src
+
+
+def test_the_rung_takes_only_the_part_gmsh_failed_on_and_keeps_the_others_as_gmsh_filled_them(tmp_path, monkeypatch,
+                                                                                            fake_ftetwild, capsys):
+    """LAD-fea-11 with the last rung: parts meshed apart; gmsh's fill fails on Part_2 on every pass. Pass 1 keeps
+    the other parts, pass 2 meshes only Part_2, and the rung's pass gives Part_2 to fTetWild with the others
+    read back as pass 1 filled them - never meshed by gmsh again."""
+    pytest.importorskip("OCP.BRepPrimAPI")
+    import gmsh
+    from tests import fea_fixtures as fx
+
+
+    shape = fx._compound(fx._box(0, 0, 0, 10, 10, 10), fx._box(20, 0, 0, 8, 8, 8), fx._box(40, 0, 0, 6, 6, 6))
+    ws = _stage(shape, tmp_path / "keep_rung")
+    real = gmsh.model.mesh.generate
+
+    def generate(dim=3):
+        if dim == 3 and gmsh.option.getNumber("Mesh.MeshOnlyVisible") and gmsh.model.getVisibility(3, 2):
+            raise Exception("Invalid boundary mesh (overlapping facets) on surface 7 surface 8")
+        return real(dim)
+
+    monkeypatch.setattr(gmsh.model.mesh, "generate", staticmethod(generate))
+    ok, marker, _o = _drive(ws, monkeypatch, {"purpose": "structural", "fea_connection": "contact"})
+    assert ok, marker
+    said = capsys.readouterr().err
+    # pass 2 (gmsh on Part_2 alone: HXT, its faces with MeshAdapt - then no gmsh option is left) and the rung's
+    # pass (fTetWild on Part_2 alone)
+    assert said.count("2 part volume(s) kept from the pass before; meshing the other 1") == 2
+    q = json.loads((ws / "quality.json").read_text())
+    ftw = q["fea"]["ftetwild"]
+    assert ftw["parts"] == ["Part_2"] and ftw["gmsh_parts"] == 2 and not q["fatal"]
+    passes = json.loads((ws / "fea_passes.json").read_text())["passes"]
+    assert [p.get("engine", "gmsh") for p in passes] == ["gmsh", "gmsh", "ftetwild"] and passes[-1]["valid"]
