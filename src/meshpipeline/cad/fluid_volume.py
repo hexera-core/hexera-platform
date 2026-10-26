@@ -411,7 +411,33 @@ def candidate_caps(solids: list, loose: list, diag: float) -> list[_Cap]:
     hole a flat face of a part rims (its inner wire: a flange's bore, a pipe's open end, a bolt hole),
     and each closed free loop of an open sheet that lies flat. A cap that turns out to lie inside the
     fluid (two flanges bolted face to face rim the same bore) or between two pieces of metal is
-    harmless: the split keeps the fluid on both sides of it as one passage."""
+    harmless: the split keeps the fluid on both sides of it as one passage.
+
+    EXCEPT WHEN THERE ARE HUNDREDS OF THEM, which is why the pin-fin plate finds no coolant.
+    Measured on the eleven-part corpus: it is the ONLY part with a cap that is not on the part's
+    bounding box, and it has 504 of them.
+
+        part                     caps   on the box   inside   coolant
+        unit_cell_100um             2            2        0   found
+        wavy_250um_16ch            32           32        0   found
+        hotspot_array              48           48        0   found
+        manifold_two_level         42           42        0   found
+        murray_ported_4gen         17           17        0   found
+        embedded_silicon_D9_10um  396          396        0   found
+        pin_fin_300um_staggered   526           22      504   NOT FOUND
+
+    Its coolant is one chamber with pins standing in it, and every pin's top is an inner wire of
+    the chamber's ceiling face - so 504 discs 300.7 um across, facing z, get laid across the
+    chamber, which cuts it into pieces that then reach the outside past them. The 22 real ports
+    are the ones on the box, 586.3 um across and facing x.
+
+    THE FIX IS NOT "DROP INTERIOR CAPS", quite: a recessed port is legitimately not on the box,
+    and the flange-bolted-face-to-face case above needs interior caps to stay. The distinguishing
+    fact is that the space just OUTSIDE a real opening is free, while stepping out of a pin's top
+    along its own normal goes straight into the ceiling's metal. Measuring that per cap is the
+    work, and a tolerance relative to the part's diagonal will not do it - 3% of this plate's
+    15.87 mm diagonal is 0.48 mm, which is wider than the 0.3 mm of metal above its ceiling.
+    """
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
     from OCP.BRepTools import BRepTools
     from OCP.TopAbs import TopAbs_WIRE
