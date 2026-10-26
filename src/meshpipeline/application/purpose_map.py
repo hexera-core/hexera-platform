@@ -109,6 +109,21 @@ _INTERNAL = _rx(r"\bthrough\b", r"\binside\b", r"\binternal", r"\bpipe", r"\bduc
                 r"\bartery", r"\bimpeller", r"\bmixing\b", r"\bin the (room|tank|combustor)")
 _EXTERNAL = _rx(r"\baround\b", r"\bover\b", r"\bexternal", r"\baero", r"\bdrag\b", r"\blift\b",
                 r"\bdownforce", r"\bwind\b", r"\bhull\b", r"\bwake\b")
+#: ...and the subset that can ONLY mean flow past a body, which is what may overrule a piece of
+#: thermal hardware. "around" and "over" are in _EXTERNAL above because they are how a user says
+#: which way the fluid goes, and they are right for that - but they are hopeless as a veto, and
+#: using the whole of _EXTERNAL for one sent these to plain car-style CFD:
+#:
+#:     airflow over the PCB                 electronics -> flow external
+#:     airflow around the GPU               electronics -> flow external
+#:     air over the IGBT module             electronics -> flow external
+#:     pressure drop over the cold plate    electronics -> flow
+#:
+#: with "pressure drop ACROSS the cold plate" still reaching cooling, so one preposition decided
+#: the mesher. "airflow over the heat sink" survived only because "heat" is itself a heat word and
+#: short-circuited the veto before it ran.
+_PAST_A_BODY = _rx(r"\bexternal", r"\baero", r"\bdrag\b", r"\blift\b", r"\bdownforce",
+                   r"\bwind\b", r"\bhull\b", r"\bwake\b")
 
 #: WORDS THAT PUT HEAT IN THE QUESTION. Any one of them and the thermal split decides.
 _HEAT = _rx(r"\bthermal", r"\bheat", r"\bhot\b", r"\bwarm", r"\btemperature", r"\bcool", r"\boverheat",
@@ -262,14 +277,24 @@ def read_purpose(text: str) -> PurposeReading:
     if _COUPLED.search(said):
         return PurposeReading(ask=ASK_DOMAIN, why="coupled: " + ", ".join(_hits(_COUPLED, said)))
     hardware = _hits(_THERMAL_HARDWARE, said)
-    # A HARDWARE NOUN ALSO LOSES TO EXTERNAL-FLOW WORDS, for the same reason it loses to mechanics:
-    # it is the weak evidence. "external drag on an electronics enclosure" went to electronics
-    # cooling on "electronic" and "enclosure" while plainly saying what it wanted, and so did
-    # "chip conveyor airflow". Flow AROUND a thing is incompatible with the coolant inside it, so
-    # the one rules the other out. INTERNAL flow words are deliberately not in this veto: a cold
-    # plate's coolant is an internal flow, and "microchannel cold plate, water at 2 L/min" has to
-    # keep reaching the cooling path.
-    if _HEAT.search(said) or (hardware and not fea and not _EXTERNAL.search(said)):
+    # A HARDWARE NOUN ALSO LOSES TO FLOW-PAST-A-BODY WORDS, for the same reason it loses to
+    # mechanics: it is the weak evidence. "external drag on an electronics enclosure" went to
+    # electronics cooling on "electronic" and "enclosure" while plainly saying what it wanted.
+    #
+    # _PAST_A_BODY AND NOT _EXTERNAL, which is the whole lesson of this veto. The first version
+    # used _EXTERNAL, whose "around" and "over" are how a user says which way the fluid goes - and
+    # that sent "airflow over the PCB" to plain CFD while "pressure drop ACROSS the cold plate"
+    # still reached cooling, so a preposition picked the mesher.
+    #
+    # Internal-flow words are deliberately not in the veto at all: a cold plate's coolant IS an
+    # internal flow, and "microchannel cold plate, water at 2 L/min" has to keep reaching cooling.
+    # AERODYNAMICS VOCABULARY BEATS A HEAT WORD TOO, not just a hardware noun. Drag, lift,
+    # downforce, aero, wake, hull and wind are not words anyone reaches for about coolant inside
+    # metal, and the heat word is often in the PART'S NAME rather than the question: "downforce on
+    # this cooling vent" went to electronics cooling on the "cool" in "cooling", which is the
+    # vent's name and not what was asked about it.
+    past_a_body = _PAST_A_BODY.search(said)
+    if not past_a_body and (_HEAT.search(said) or (hardware and not fea)):
         solid = _hits(_SOLID_HEAT, said)
         # The hardware noun is weak evidence, and heat-in-a-solid words outrank it the same way
         # mechanics words do at the gate: a die attach whose CTE mismatch is the question is heat

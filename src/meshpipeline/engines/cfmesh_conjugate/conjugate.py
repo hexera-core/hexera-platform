@@ -161,7 +161,7 @@ def block_bounds(lo: tuple[float, float, float], hi: tuple[float, float, float],
             out_hi[axis] += dist
     if any(h <= l for l, h in zip(out_lo, out_hi)):
         raise ConjugateError(f"degenerate block bounds: {tuple(out_lo)} -> {tuple(out_hi)}")
-    return tuple(out_lo), tuple(out_hi)  # type: ignore[return-value]
+    return (out_lo[0], out_lo[1], out_lo[2]), (out_hi[0], out_hi[1], out_hi[2])
 
 
 #: How many background cells have to fit across the block's thinnest direction before the

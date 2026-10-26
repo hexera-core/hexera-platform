@@ -267,8 +267,37 @@ SEMI_HOLDOUT = [
     ("cool the wafer stage", "electronics"),
 ]
 
+#   semi_veto - 16 phrases about air moved PAST a piece of thermal hardware, added 2026-10-25
+#              because the set could not see them and a score of 206/214 therefore said nothing
+#              about the case that was broken. A hardware noun loses to words that can only mean
+#              flow past a body, and the first attempt at that veto used every external-flow word
+#              including "around" and "over" - which are how a user says which way the fluid goes.
+#              So "airflow over the PCB" went to plain car-style CFD while "pressure drop ACROSS
+#              the cold plate" still reached cooling, and a preposition picked the mesher.
+SEMI_VETO = [
+    # air moved over or around electronics is still electronics cooling
+    ("airflow over the PCB", "electronics"),
+    ("airflow around the GPU", "electronics"),
+    ("air over the IGBT module", "electronics"),
+    ("airflow over the heat sink", "electronics"),
+    ("air around the chip package", "electronics"),
+    ("fan blowing over the processor", "electronics"),
+    ("pressure drop over the cold plate", "electronics"),
+    ("pressure drop across the cold plate", "electronics"),
+    ("coolant around the die", "electronics"),
+    ("air moving over the server boards", "electronics"),
+    # ...and the words that really do mean flow past a body still win
+    ("external drag on an electronics enclosure", "flow"),
+    ("aero of a radiator duct", "flow"),
+    ("wake behind the chip conveyor", "flow"),
+    ("wind tunnel test of this enclosure", "flow"),
+    ("downforce on this cooling vent", "flow"),
+    ("drag on this car body", "flow"),
+]
+
 #: (phrase, label, origin) for the whole set.
 PHRASES = ([(p, lab, "audit60") for p, lab in AUDIT60] + [(p, lab, "dev") for p, lab in DEV]
            + [(p, lab, "holdout") for p, lab in HOLDOUT]
            + [(p, lab, "semi_dev") for p, lab in SEMI_DEV]
-           + [(p, lab, "semi_holdout") for p, lab in SEMI_HOLDOUT])
+           + [(p, lab, "semi_holdout") for p, lab in SEMI_HOLDOUT]
+           + [(p, lab, "semi_veto") for p, lab in SEMI_VETO])

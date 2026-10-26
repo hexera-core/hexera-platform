@@ -626,7 +626,8 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3, shape=None,
     # its own plane (an orifice plate and a bore shoulder are set into wall) and it faces away from
     # the part (a flange's back face looks at the body it is bolted to).
     rings = [c for c in candidates if c.kind == "ring" and c.clear_ahead and c.rim_free and not c.inward]
-    _sides = tuple(bbox_max[k] - bbox_min[k] for k in range(3))
+    # a 3-tuple, said as one: it is the part's own box, so there are exactly three of them
+    _sides = (bbox_max[0] - bbox_min[0], bbox_max[1] - bbox_min[1], bbox_max[2] - bbox_min[2])
     rings = [c for c in rings if not c.perforated
              or (_has_the_other_end(c, rings) and _runs_along_the_part(c, _sides))]
     discs = [c for c in candidates if c.kind == "disc" and c.clear_ahead]
