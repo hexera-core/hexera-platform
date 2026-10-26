@@ -3743,6 +3743,19 @@
   "roots": []
  },
  {
+  "context": "engines/size_brake.py::case_budget::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/size_brake.py",
+  "qualname": "case_budget",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_MAX_GLOBAL",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "engines/snapgrid/cli.py::main::check#1|NotAPublisher|not-a-publisher|",
   "path": "engines/snapgrid/cli.py",
   "qualname": "main",

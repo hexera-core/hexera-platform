@@ -49,13 +49,14 @@ async def _run_tool_loop(
     user_dispute: dict | None = None,   # the engineer's flags, when answering a dispute
     broken_mesh_moves_to: str = "",     # the engine a broken mesh moves this run to ('' = stays)
 ) -> tuple[str, list]:
-    import time as _time
 
     # The clock starts when this coroutine starts; run_mesh derives its dispatch budget from what
     # REMAINS so its result (even a timeout verdict) always returns to the model before the outer
     # loop expires.
     effective_timeout = bcfg.BUILDER_LOOP_TIMEOUT if loop_timeout is None else int(loop_timeout)
-    loop_deadline = _time.monotonic() + effective_timeout
+    # on MODEL time (contracts/progress_clock.model_time): a native run does not spend it
+    from meshpipeline.contracts.progress_clock import model_time
+    loop_deadline = model_time() + effective_timeout
 
     # THE typed context every tool in this loop receives. Built once, here, from what the caller
     # already resolved - never rediscovered from the workspace by the tools themselves.

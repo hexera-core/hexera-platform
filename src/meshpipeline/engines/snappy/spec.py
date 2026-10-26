@@ -322,7 +322,11 @@ SPEC = EngineSpec(
             required_files=("system/blockMeshDict", "system/snappyHexMeshDict"),
             # a production snappy mesh legitimately takes 20-35 min off-box
             # (Cloud Run, 8 vCPU); stays under the service timeout (3600s).
+            # an ESTIMATE of a typical run now (the fallback ladder's "does another engine fit");
+            # the run itself is watched for progress and capped only by the machine's wall
+            # (watched=True, contracts/native_time)
             run_timeout=lambda: 2400,
+            watched=True,
             timeout_hint="Lower max_cells (and/or the surface level), then run_mesh again.",
             ok_guidance="Valid mesh (no fatal defects) - call submit_mesh.",
             fail_label="snappyHexMesh failed",

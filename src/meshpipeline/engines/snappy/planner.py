@@ -154,7 +154,10 @@ def coarsen_after_timeout(timed_out: dict, proposed: dict, *, ceiling: int,
             return 24
 
     t_ca, p_ca = _ca(timed_out or {}), _ca(out)
-    coarser = p_budget <= COARSER_ENOUGH_BUDGET * t_budget
+    # THE BUDGET'S CUT: half, after a run that stalled or met its wall - or, after the SIZE BRAKE
+    # stopped a run headed past its budget (engines/size_brake), by how far over it was headed
+    factor = float((timed_out or {}).get("_budget_factor") or TIMEOUT_BUDGET_FACTOR)
+    coarser = p_budget <= min(COARSER_ENOUGH_BUDGET, factor) * t_budget
     if internal:
         coarser = coarser or p_ca <= int(COARSER_ENOUGH_CELLS_ACROSS * t_ca)
     if coarser:
@@ -165,7 +168,7 @@ def coarsen_after_timeout(timed_out: dict, proposed: dict, *, ceiling: int,
         if ca < t_ca:
             out["cells_across_diameter"] = ca
             changes.append(f"cells across the bore cut from {t_ca} to {ca}")
-    budget = max(_MIN_TIMEOUT_BUDGET, min(p_budget, int(TIMEOUT_BUDGET_FACTOR * t_budget)))
+    budget = max(_MIN_TIMEOUT_BUDGET, min(p_budget, int(factor * t_budget)))
     if budget < t_budget:
         out["max_cells"] = budget
         changes.append(f"cell budget cut from {t_budget / 1e6:.2g} M to {budget / 1e6:.2g} M")

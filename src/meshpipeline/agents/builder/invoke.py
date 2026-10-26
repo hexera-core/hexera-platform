@@ -99,7 +99,7 @@ async def _run_shared_loop(attempt: BuilderAttempt, state, *, job_id: str,
                            timeout_s: int) -> tuple[str, list]:
     from meshpipeline.agents.builder.loop import _run_tool_loop
 
-    return await asyncio.wait_for(
+    return await _wait_on_model_time(
         _run_tool_loop(
             attempt.messages, attempt.workspace,
             job_id=job_id,
@@ -127,6 +127,32 @@ async def _run_shared_loop(attempt: BuilderAttempt, state, *, job_id: str,
         ),
         timeout=timeout_s,
     )
+
+
+async def _wait_on_model_time(work, *, timeout: float, poll_s: float = 5.0):
+    """asyncio.wait_for, with the clock standing still while a native mesher runs
+    (contracts/progress_clock.model_time): the loop is stopped at `timeout` seconds of MODEL time,
+    never in the middle of a mesh that is still making progress (that run has its own stall watch
+    and machine wall, contracts/native_time). Raises TimeoutError as wait_for does."""
+    from meshpipeline.contracts.progress_clock import model_time, native_running
+    task = asyncio.ensure_future(work)
+    deadline = model_time() + float(timeout)
+    try:
+        while True:
+            left = deadline - model_time()
+            if left <= 0 and not native_running():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                raise TimeoutError()
+            done, _ = await asyncio.wait({task}, timeout=max(0.05, min(poll_s, left) if left > 0 else poll_s))
+            if done:
+                return task.result()
+    except asyncio.CancelledError:
+        task.cancel()
+        raise
 
 
 def _driver_for(spec, state):

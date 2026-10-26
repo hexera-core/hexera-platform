@@ -168,9 +168,12 @@ class _Publish:
     async def areasoning(self, *_a, **_k): pass
 
 
-_TIMEOUT = {"rc": RC_TIMED_OUT, "timed_out": True, "provider_reference": OP,
-            "log_tail": "[CLOUD_RUN_TIMEOUT] snappy: the mesh run ran out of time - no result "
-                        "after 50 min."}
+# A STUCK run: since no time limit is guessed any more (contracts/native_time), a snappy run comes
+# back timed out only when it made no progress for the stall window (`stalled`) or met even a VM's
+# wall - and those alone pull the re-plan-smaller lever these tests pin. A run stopped at the Cloud
+# Run wall still working moves to a VM instead (test_snappy_progress_not_clock.py).
+_TIMEOUT = {"rc": RC_TIMED_OUT, "timed_out": True, "stalled": True, "provider_reference": OP,
+            "log_tail": "snappy: snappyHexMesh made no progress for 15 minutes."}
 _CLEAN = {"cells": 1_500_000, "fatal": [], "skew_fraction": 0.0, "skew_faces": 0}
 
 
@@ -276,9 +279,9 @@ def test_the_pass_after_a_timeout_meshes_a_smaller_case(external):
     assert ok is True and external.runs == [1, 2]
     outcome = [n for n in pub.notes if n.startswith("Pass 1 ")]
     assert outcome and outcome[0].startswith(
-        "Pass 1 ran out of time - snappyHexMesh did not finish within"), outcome
+        "Pass 1 stopped - snappyHexMesh made no progress for"), outcome
     opened = [n for n in pub.notes if n.startswith("Meshing pass 2 of")]
-    assert opened and "made coarser because the last pass ran out of time" in opened[0]
+    assert opened and "made coarser because the last pass made no progress" in opened[0]
     assert "cell budget cut from 6 M to 3 M" in opened[0]
     assert json.loads((ws / ".last_plan.json").read_text())["max_cells"] == 3_000_000
     assert json.loads((ws / ".timed_out_plan.json").read_text())["max_cells"] == 6_000_000
@@ -394,7 +397,7 @@ def test_the_exchanger_re_plan_after_a_timeout_differs_and_meshes(internal):
     assert "about 40 cells across the bore" in filling[0]
     assert "about 28 cells across the bore" in filling[1]
     outcome = [n for n in pub.notes if n.startswith("Pass 1 ")]
-    assert outcome[0].startswith("Pass 1 ran out of time - snappyHexMesh did not finish within")
+    assert outcome[0].startswith("Pass 1 stopped - snappyHexMesh made no progress for")
     assert not any("never started" in n or "no cells, 0 faces" in n for n in pub.notes)
     opened = [n for n in pub.notes if n.startswith("Meshing pass 2 of")]
     assert "cells across the bore cut from 40 to 28" in opened[0]

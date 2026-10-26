@@ -293,6 +293,12 @@ class RunPolicy:
     #: THE BROKEN CELLS A TIMED-OUT RUN WAS STILL FAILING TO REPAIR, read from its log tail ([]
     #: when the run was merely slow): such a run is a broken mesh, not one that needed more time.
     timed_out_defects: Callable[[str], list[str]] | None = None
+    #: THE ENGINE'S NATIVE RUN IS WATCHED FOR PROGRESS (contracts/native_time): it is stopped only
+    #: after the stall window with no progress, or at the machine's wall. Such an engine's run gets
+    #: the machine's wall as its cap - not run_timeout, which then only estimates how long a run
+    #: usually takes (the fallback ladder's "does another engine still fit") - and its run time
+    #: does not count against the builder loop's model budget.
+    watched: bool = False
 
 
 def _label(name: str) -> str:

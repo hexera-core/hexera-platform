@@ -98,12 +98,23 @@ def describe_native_result(*, returncode: int, args=None, stage: str = "",
     return result
 
 
-def run_guarded(args, *, timeout=None, **kwargs) -> subprocess.CompletedProcess:
+def run_guarded(args, *, timeout=None, stall_s: float | None = None, progress_paths=(),
+                poll_s: float = 10.0, watch=None, **kwargs) -> subprocess.CompletedProcess:
+    """Run `args` to completion under a hard wall (`timeout`). With `stall_s`, the run is WATCHED
+    instead: stopped only when its output (its stdout log file, or `progress_paths`) has not moved
+    for `stall_s` seconds - StalledExpired - or at the wall. Output captured to a pipe cannot be
+    watched, so a captured run keeps the plain wall. `watch`, on a watched run, is asked at every
+    look; a reason it returns stops the run there (StoppedByWatch) - a deterministic stop the caller
+    decides from the run's own output, e.g. a mesh headed far past its cell budget."""
     if kwargs.pop("capture_output", False):
         kwargs["stdout"] = subprocess.PIPE
         kwargs["stderr"] = subprocess.PIPE
     kwargs.setdefault("start_new_session", True)   # setsid: child leads its own group
     proc = subprocess.Popen(args, **kwargs)
+    if stall_s and kwargs.get("stdout") is not subprocess.PIPE:
+        return _wait_watched(proc, timeout=timeout, stall_s=float(stall_s),
+                             progress_paths=tuple(progress_paths) or _log_of(kwargs.get("stdout")),
+                             poll_s=poll_s, watch=watch)
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -113,6 +124,72 @@ def run_guarded(args, *, timeout=None, **kwargs) -> subprocess.CompletedProcess:
         # so callers reading exc.stdout / exc.stderr keep working.
         raise subprocess.TimeoutExpired(proc.args, timeout, output=stdout, stderr=stderr) from None
     return subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
+
+
+class StoppedByWatch(subprocess.SubprocessError):
+    """A watched process stopped because its caller's `watch` said so (its reason in `reason`) - not a
+    timeout and not a stall: the run was going somewhere its caller will not let it go."""
+
+    def __init__(self, cmd, reason: str) -> None:
+        super().__init__(f"{cmd!r} stopped: {reason}")
+        self.cmd, self.reason = cmd, reason
+
+
+class StalledExpired(subprocess.TimeoutExpired):
+    """A WATCHED process stopped because it made no progress for its stall window - a stuck run,
+    not a slow one. A TimeoutExpired, so every caller that handles a timeout still does; `stalled`
+    tells the two apart (a run stopped at its hard wall raises a plain TimeoutExpired)."""
+    stalled = True
+
+    def __init__(self, cmd, timeout, *, silence_s: float, ran_s: float) -> None:
+        super().__init__(cmd, timeout)
+        self.silence_s, self.ran_s = silence_s, ran_s
+
+
+def _log_of(stdout) -> tuple:
+    name = getattr(stdout, "name", None)
+    return (name,) if isinstance(name, str) else ()
+
+
+def _wait_watched(proc, *, timeout, stall_s: float, progress_paths, poll_s: float, watch=None):
+    """Wait for `proc`, stopping it ONLY when its progress paths (its log, by default) have not
+    moved for `stall_s` seconds (StalledExpired), or at `timeout` - the hard wall (TimeoutExpired).
+    A slow process that is still moving is never stopped early. Each move is the job's progress
+    too (contracts/progress_clock), so the run's own deadline moves with it."""
+    import time as _time
+
+    from meshpipeline.contracts import progress_clock
+    t0 = last = _time.monotonic()
+    # SIGNS OF LIFE (sandbox/liveness - the FEA watch's rule, the same for CFD): its output moving, its
+    # process tree burning CPU, or its memory changing. A mesher computing quietly is not stalled.
+    from meshpipeline.sandbox.liveness import LivenessWatch
+    alive = LivenessWatch(proc.pid, progress_paths)
+    progress_clock.touch()
+    while True:
+        try:
+            proc.wait(timeout=poll_s)
+            return subprocess.CompletedProcess(proc.args, proc.returncode, None, None)
+        except subprocess.TimeoutExpired:
+            pass
+        now = _time.monotonic()
+        if alive.poll() is not None:
+            last = now
+            progress_clock.touch()
+        if watch is not None:
+            reason = watch()
+            if reason:
+                _kill_process_group(proc)
+                proc.wait()
+                raise StoppedByWatch(proc.args, str(reason))
+        if now - last >= stall_s:
+            _kill_process_group(proc)
+            proc.wait()
+            raise StalledExpired(proc.args, timeout, silence_s=round(now - last, 1),
+                                 ran_s=round(now - t0, 1))
+        if timeout is not None and now - t0 >= float(timeout):
+            _kill_process_group(proc)
+            proc.wait()
+            raise subprocess.TimeoutExpired(proc.args, timeout)
 
 
 @dataclass(frozen=True)
