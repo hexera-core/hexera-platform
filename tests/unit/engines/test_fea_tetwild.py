@@ -290,21 +290,23 @@ def _safe(fn, w):
 
 
 def _gmsh_fails_on(monkeypatch, volumes: set[int] | None, faces: list[str]):
-    """Every gmsh fill that includes one of `volumes` (None: any) fails, naming `faces`."""
+    """Every gmsh pass fails (its build raises, naming `faces`, as a fill that failed does); the last
+    rung's build (rung="named" / "all") is the real one, meshing the parts fTetWild does not take.
+    `volumes`: kept for the reader - every gmsh pass holds them all."""
     from meshpipeline.engines.gmsh import fea_adapter
 
-    real = fea_adapter.gmsh_fill
-    calls: list[list[int]] = []
+    real = fea_adapter.build_volume
+    calls: list[str | None] = []
 
-    def fill(gmsh, ws, plan, run, surfaces, vols, *a, **k):
-        calls.append(sorted(vols))
-        if volumes is None or set(vols) & volumes:
+    def build(gmsh, ws, plan, geom, asm, sidecar, *, scale=1.0, tags=None, rung=None):
+        calls.append(rung)
+        if rung is None:
             print(f"{fea_adapter.BAD_FACES} {','.join(faces)}", file=sys.stderr)
             fea_adapter.note_failure(ws, [], faces, "the fill failed")
             raise RuntimeError("PLC Error: A segment and a facet intersect")
-        return real(gmsh, ws, plan, run, surfaces, vols, *a, **k)
+        return real(gmsh, ws, plan, geom, asm, sidecar, scale=scale, tags=tags, rung=rung)
 
-    monkeypatch.setattr(fea_adapter, "gmsh_fill", fill)
+    monkeypatch.setattr(fea_adapter, "build_volume", build)
     return calls
 
 
@@ -325,7 +327,7 @@ def test_a_part_gmsh_cannot_mesh_is_delivered_by_the_last_rung(tmp_path, monkeyp
     rung = [p for p in passes["passes"] if p.get("engine") == "ftetwild"]
     gm = [p for p in passes["passes"] if p.get("engine") != "ftetwild"]
     # every gmsh option first (the fixed ladder's passes), the rung after them, delivered
-    assert len(gm) == len(calls) >= 2 and not any(p["valid"] for p in gm)
+    assert len(gm) == calls.count(None) >= 2 and not any(p["valid"] for p in gm)
     assert len(rung) == 1 and rung[0]["valid"] and passes["delivered"] == rung[0]["pass"]
     cited = [e for e in dr.cited_for(f"t-{ws.name}") if e["rule"] == "LAD-fea-9"]
     assert cited and cited[0]["inputs"]["per_part"]["whole"]["epsilon_m"] > 0
@@ -372,7 +374,7 @@ def test_only_the_failing_part_of_an_assembly_goes_to_ftetwild_the_rest_keeps_gm
     q = json.loads((ws / "quality.json").read_text())
     ftw = q["fea"]["ftetwild"]
     assert ftw["parts"] == ["Part_2"] and ftw["tied"] and ftw["gmsh_parts"] == 1
-    assert calls[-1] == [1]                                       # gmsh meshed Part_1 alone in the rung pass
+    assert calls[-1] == "named"                                   # gmsh meshed Part_1 alone in the rung pass
     asm = q["fea"]["assembly"]
     assert [p["id"] for p in asm["parts"]] == ["Part_1", "Part_2"] and all(p["elements"] for p in asm["parts"])
     assert asm["joints"], "the parts are still paired where they touch"
