@@ -71,6 +71,13 @@ def read_fluid_volume(facts: dict, source: Path, *, work: Path, scale: float = 1
     from meshpipeline.cad.fluid_volume import CHECK_BUDGET_S, run_bounded
 
     if not (triangle_parts(source) >= MIN_PARTS if kind == "triangles" else wants_fluid_volume(facts)):
+        # NOT LOOKING IS ALSO AN ANSWER, for the one shape where it is worth saying so: a thin
+        # plate with fewer than two mouths in its faces is the open-top groove case, and it is the
+        # most likely cold plate a customer sends (Tuckerman-Pease, Lee-Garimella and the Corintis
+        # baseline are all of them).
+        said = plate_with_too_few_mouths(facts)
+        if said:
+            facts.setdefault("notes", []).append(said)
         return
     try:
         answer = run_bounded({"task": "propose", "source": str(source), "scale": float(scale), "kind": kind},
@@ -87,6 +94,10 @@ def fold(facts: dict, answer: dict) -> None:
     if answer.get("error") or not answer.get("found"):
         why = answer.get("error") or answer.get("reason") or "no space inside the parts"
         if "do not touch" in why:
+            return
+        said = why_no_coolant(answer, facts)
+        if said:
+            notes.append(said)
             return
         ops = [o for o in facts.get("openings") or [] if o.get("role") != "not_an_opening"]
         if len(ops) < 2 and facts.get("flow") == "internal":
@@ -183,8 +194,99 @@ def _xyz(v) -> tuple[float, float, float]:
     return (float(v[0]), float(v[1]), float(v[2]))
 
 
+#: A part is PLATE-LIKE when its thinnest side is under this share of its longest: the shape a cold
+#: plate is, and a shape a car, a housing or a rotor is not. Measured: the corpus plates run 0.006
+#: to 0.034, the Ahmed reference body 0.276, a sphere 1.0.
+PLATE_ASPECT = 0.1
+#: ...and a passage needs a way in and a way out, so fewer mouths than this on a plate is worth
+#: saying something about.
+BOTH_ENDS = 2
+
+#: WHAT TO SAY FOR EACH WAY THE COOLANT CAN FAIL TO BE FOUND. Measured on the eleven-part corpus,
+#: where five parts refuse for four different reasons, and every one of them used to arrive at the
+#: stage with no coolant and no reason at all - which leaves the first option on the stage (the
+#: part's wall, hollow inside for the fluid) as the plausible pick, and the metal thrown away.
+NO_HOLE = ("no coolant was found: there is no hole in any face for it to enter by. If the passages "
+           "are grooves machined into the surface they are open at the top, and a groove has no "
+           "hole to close off - send the part with its lid on, or the lid as a second solid")
+SEALED = ("the space inside the part is sealed, so there is nothing to flow through it. If it "
+          "should have an inlet and an outlet, they are not in this file")
+LEAKING = ("the space inside the part reaches the outside somewhere other than a hole in a face, "
+           "so it could not be closed off - often a gap where two surfaces should meet. The clean "
+           "check above says whether the file has one")
+MANY_HOLES = ("the space inside the part could not be closed off, though {n} possible openings "
+              "were found in its faces. A coolant space that is open across a whole face rather "
+              "than running as channels with two ends - a pin-fin or pin-array plate - is not "
+              "handled yet")
+FEW_MOUTHS = ("{found} in this plate's faces, and coolant needs a way in and a way out. If the "
+              "channels are grooves open at the top, send the part with its lid on, or the lid as "
+              "a second solid")
+#: ...said so it reads as a sentence either way round, which "only 0 holes was found" did not.
+_MOUTHS_FOUND = {0: "no hole was found", 1: "only one hole was found"}
+
+
+def plate_like(facts: dict) -> bool:
+    """Whether this is one solid shaped like something that ought to have passages through it.
+
+    NOTHING IS SAID ABOUT A PART THAT IS NOT. The first version of these sentences told the Ahmed
+    reference body that "no coolant was found: there is no hole in any face for it to enter by -
+    send the part with its lid on", which is nonsense for a car and would be nonsense for a
+    housing, a hull or a pressure vessel. Having no cavity is the normal state of a solid body;
+    only on a plate is it worth remarking on.
+
+    Measured thinnest-over-longest: the corpus plates run 0.006 to 0.034, the Ahmed body 0.276, a
+    sphere 1.0. The size is read in millimetres, which is the key the measuring step writes
+    (scout.as_dict) - reading a key it does not write is why this said nothing at all at first.
+    """
+    size = [abs(float(v)) for v in (facts.get("size_mm") or facts.get("size") or []) if v]
+    return (len(size) == 3 and int(facts.get("solids") or 0) == 1
+            and min(size) <= PLATE_ASPECT * max(size))
+
+
+def why_no_coolant(answer: dict, facts: dict) -> str:
+    """Which of the reasons the split failed for, in words the user can act on ("" for none).
+
+    Read off what the split MEASURED rather than its wording: no cap candidate at all is an
+    open-top groove, a leak is a gap where two surfaces should meet, and a pocket with no passage
+    is a sealed cavity. Three different things to do about it, which is why they are told apart.
+    """
+    if answer.get("error"):
+        return ""                            # a crash or a timeout is not the geometry's fault
+    if not plate_like(facts):
+        return ""
+    # MOST SPECIFIC FIRST. A sealed pocket was measured and is a definite finding; "no cap
+    # candidate" is the absence of one and must not get in front of it. Measured: the branching
+    # plate has caps 0 AND pockets 1, and with the checks the other way round it was told its
+    # grooves were open at the top when what it actually has is a closed network inside it.
+    if int(answer.get("pockets_left_out") or 0) > 0:
+        return SEALED
+    if answer.get("leaks_mm"):
+        return LEAKING
+    caps = int(answer.get("caps") or 0)
+    if caps == 0:
+        return NO_HOLE
+    # Holes WERE found and the space still was not closed off by them. Measured: the pin-fin plate
+    # has 526 of them, because every pin's end is a candidate; its coolant is one wide chamber
+    # rather than channels with two ends.
+    return MANY_HOLES.format(n=caps)
+
+
+def plate_with_too_few_mouths(facts: dict) -> str:
+    """What to say about a plate-like solid whose faces carry fewer than two mouths ("" for
+    anything else), which is why the split was never run on it at all."""
+    if not plate_like(facts):
+        return ""
+    mouths = [o for o in facts.get("openings") or [] if o.get("role") != "not_an_opening"]
+    if len(mouths) >= BOTH_ENDS:
+        return ""
+    return FEW_MOUTHS.format(found=_MOUTHS_FOUND[len(mouths)])
+
+
 def _summary(answer: dict) -> dict:
-    keep = ("found", "reason", "error", "parts", "caps", "regions", "seconds", "pockets_left_out")
+    # leaks_mm and caps travel because the reason the coolant was not found is read off them
+    # (why_no_coolant), and a reason the user can act on is the whole point of carrying them.
+    keep = ("found", "reason", "error", "parts", "caps", "regions", "seconds", "pockets_left_out",
+            "leaks_mm")
     out = {k: answer[k] for k in keep if k in answer}
     # seed_mm travels here because a single solid's split does not write over the top-level
     # seed_point, and a conjugate case still needs a point inside the coolant.
@@ -210,5 +312,6 @@ def _litres(v: float) -> str:
     return f"{v * 1e6:.3g} mm3"          # 1 ml is 1000 mm3; a chip's channels live here
 
 
-__all__ = ["MIN_PARTS", "MIN_PASSAGE_MOUTHS", "fold", "has_passage_mouths", "read_fluid_volume",
-           "triangle_parts", "wants_fluid_volume"]
+__all__ = ["BOTH_ENDS", "FEW_MOUTHS", "LEAKING", "MANY_HOLES", "MIN_PARTS", "MIN_PASSAGE_MOUTHS", "NO_HOLE",
+           "PLATE_ASPECT", "SEALED", "fold", "has_passage_mouths", "plate_like", "plate_with_too_few_mouths",
+           "read_fluid_volume", "triangle_parts", "wants_fluid_volume", "why_no_coolant"]
