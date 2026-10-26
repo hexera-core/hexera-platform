@@ -214,7 +214,7 @@ jobs:
   # matrix's shard count - so raising the count below without the partition still being total is
   # itself a test failure.
   unit:
-    name: Unit suite (${{ matrix.shard }}/4)
+    name: Unit suite (${{ matrix.shard }}/6)
     needs: [preflight]
     if: needs.preflight.outputs.run_python == 'true'
     strategy:
@@ -222,9 +222,11 @@ jobs:
       # four ways the whole point is to see ALL of the failures in one run rather than the first.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6]
     runs-on: ubuntu-24.04
-    # A quarter of the work, and the old 40 was already generous for the whole of it.
+    # A sixth of the work, and the old 40 was already generous for the whole of it. Six, not four: the
+    # partition is by file size, so any change to a test file reshuffles it, and at four the heaviest
+    # shard ran 17.9 min on main - one reshuffle from the 20-minute limit (#320 crossed it twice).
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -235,10 +237,10 @@ jobs:
       # SHARDS is spelled out rather than derived, because the shard count has to agree in three
       # places - this matrix, this argument, and the totality test - and a literal is what the test
       # reads to check that it does.
-      - name: Unit shard ${{ matrix.shard }} of 4
+      - name: Unit shard ${{ matrix.shard }} of 6
         env:
           SHARD: ${{ matrix.shard }}
-        run: make test-fast-shard SHARD="$SHARD" SHARDS=4
+        run: make test-fast-shard SHARD="$SHARD" SHARDS=6
 
   # THE FEA TEXTBOOK ACCURACY SUITE (FEA build step 7): seven classic cases (plate-with-hole Kt,
   # cantilever, Lame cylinder, grooved bar, cantilever modes, Euler column, coil spring vs the Wahl-corrected shear) meshed by the real FEA

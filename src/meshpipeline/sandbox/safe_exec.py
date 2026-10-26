@@ -102,11 +102,16 @@ def run_guarded(args, *, timeout=None, stall_s: float | None = None, progress_pa
                 poll_s: float = 10.0, watch=None, **kwargs) -> subprocess.CompletedProcess:
     """Run `args` to completion under a hard wall (`timeout`). With `stall_s`, the run is WATCHED
     instead: stopped only when its output (its stdout log file, or `progress_paths`) has not moved
-    for `stall_s` seconds - StalledExpired - or at the wall. Output captured to a pipe cannot be
-    watched, so a captured run keeps the plain wall. `watch`, on a watched run, is asked at every
-    look; a reason it returns stops the run there (StoppedByWatch) - a deterministic stop the caller
-    decides from the run's own output, e.g. a mesh headed far past its cell budget."""
+    for `stall_s` seconds - StalledExpired - or at the wall. A CAPTURED run (capture_output=True) is
+    watched too: its output goes to scratch files the watch reads growing and comes back as a
+    captured run's would (_captured_watched). `watch`, on a watched run, is asked at every look; a
+    reason it returns stops the run there (StoppedByWatch) - a deterministic stop the caller decides
+    from the run's own output, e.g. a mesh headed far past its cell budget."""
     if kwargs.pop("capture_output", False):
+        if stall_s:
+            return _captured_watched(args, timeout=timeout, stall_s=float(stall_s),
+                                     progress_paths=tuple(progress_paths), poll_s=poll_s, watch=watch,
+                                     **kwargs)
         kwargs["stdout"] = subprocess.PIPE
         kwargs["stderr"] = subprocess.PIPE
     kwargs.setdefault("start_new_session", True)   # setsid: child leads its own group
@@ -133,6 +138,9 @@ class StoppedByWatch(subprocess.SubprocessError):
     def __init__(self, cmd, reason: str) -> None:
         super().__init__(f"{cmd!r} stopped: {reason}")
         self.cmd, self.reason = cmd, reason
+        # what the run printed until it was stopped, when it was captured (_captured_watched)
+        self.output: str | bytes | None = None
+        self.stderr: str | bytes | None = None
 
 
 class StalledExpired(subprocess.TimeoutExpired):
@@ -144,6 +152,49 @@ class StalledExpired(subprocess.TimeoutExpired):
     def __init__(self, cmd, timeout, *, silence_s: float, ran_s: float) -> None:
         super().__init__(cmd, timeout)
         self.silence_s, self.ran_s = silence_s, ran_s
+
+
+class MemoryExpired(subprocess.TimeoutExpired):
+    """A WATCHED process stopped, cleanly, because its machine was about to run out of memory
+    (sandbox/liveness.memory_in_use past MEMORY_GUARD_SHARE of what it allows) - never left to the
+    kernel's OOM killer. A TimeoutExpired, so every caller that handles a stopped run still does;
+    `out_of_memory` tells it apart (RUN-3: the same case one machine up). `used_gib` is what was in
+    use when it was stopped."""
+    stalled = False
+    out_of_memory = True
+
+    def __init__(self, cmd, timeout, *, used_gib: float, limit_gib: float) -> None:
+        super().__init__(cmd, timeout)
+        self.used_gib, self.limit_gib = used_gib, limit_gib
+
+
+def _over_memory() -> tuple[float, float] | None:
+    """(GiB in use, GiB allowed) when the machine is past the memory guard; None otherwise."""
+    from meshpipeline.sandbox.liveness import MEMORY_GUARD_SHARE, memory_in_use
+    try:
+        m = memory_in_use()
+    except Exception:  # noqa: BLE001 - a look that fails is no reason to stop a run
+        return None
+    if m is None or m[1] <= 0 or m[0] <= MEMORY_GUARD_SHARE * m[1]:
+        return None
+    return round(m[0] / 2 ** 30, 2), round(m[1] / 2 ** 30, 2)
+
+
+def why_it_stopped(exc, result: dict) -> dict:
+    """The result of a watched run that ended in a TimeoutExpired, said truthfully: STUCK
+    (`stalled`, StalledExpired), OUT OF MEMORY (`out_of_memory`, MemoryExpired: not a time-out at
+    all, so `timed_out` is cleared and the peak kept in `used_gib`), or stopped at the machine's wall
+    (neither). Returns `result`."""
+    if getattr(exc, "stalled", False):
+        result["stalled"] = True
+    if getattr(exc, "out_of_memory", False):
+        result["out_of_memory"] = True
+        result["timed_out"] = False
+        result["used_gib"] = getattr(exc, "used_gib", None)
+        result["log_tail"] = (str(result.get("log_tail") or "") + "\n[MEMORY] stopped before the machine "
+                              f"ran out of memory: {getattr(exc, 'used_gib', '?')} GiB of "
+                              f"{getattr(exc, 'limit_gib', '?')} GiB in use").strip()
+    return result
 
 
 def _log_of(stdout) -> tuple:
@@ -181,6 +232,12 @@ def _wait_watched(proc, *, timeout, stall_s: float, progress_paths, poll_s: floa
                 _kill_process_group(proc)
                 proc.wait()
                 raise StoppedByWatch(proc.args, str(reason))
+        over = _over_memory()
+        if over is not None:
+            # THE MEMORY GUARD: stopped as out of memory, before the kernel's OOM killer would end it
+            _kill_process_group(proc)
+            proc.wait()
+            raise MemoryExpired(proc.args, timeout, used_gib=over[0], limit_gib=over[1])
         if now - last >= stall_s:
             _kill_process_group(proc)
             proc.wait()
@@ -190,6 +247,52 @@ def _wait_watched(proc, *, timeout, stall_s: float, progress_paths, poll_s: floa
             _kill_process_group(proc)
             proc.wait()
             raise subprocess.TimeoutExpired(proc.args, timeout)
+
+
+def _captured_watched(args, *, timeout, stall_s: float, progress_paths, poll_s: float, watch, **kwargs
+                      ) -> subprocess.CompletedProcess:
+    """A CAPTURED run, WATCHED (run_guarded with capture_output and stall_s): a pipe cannot be
+    watched, so its stdout and stderr go to two scratch files the watch reads growing, and come back
+    exactly as a captured run's would (`.stdout`, `.stderr`; text when asked for, newlines as text
+    mode gives them). Stopped only after `stall_s` with no sign of life (StalledExpired) or at
+    `timeout`, the machine's wall (TimeoutExpired); either carries the output so far, as
+    subprocess.run's does. The scratch files are removed: what the caller keeps is its own."""
+    import shutil
+    import tempfile
+    as_text = bool(kwargs.pop("text", False) or kwargs.pop("universal_newlines", False)
+                   or kwargs.get("encoding"))
+    encoding = kwargs.pop("encoding", None) or "utf-8"
+    errors = kwargs.pop("errors", None) or "replace"
+    for k in ("stdout", "stderr"):
+        kwargs.pop(k, None)
+    scratch = Path(tempfile.mkdtemp(prefix="watched_"))
+    out_p, err_p = scratch / "stdout", scratch / "stderr"
+    if watch is not None and callable(getattr(watch, "follow", None)):
+        # a watch that reads the run's own output (a brake on what the mesher prints) reads it here
+        watch.follow(out_p)
+
+    def _read(p: Path):
+        try:
+            raw = p.read_bytes()
+        except OSError:
+            raw = b""
+        if not as_text:
+            return raw
+        return raw.decode(encoding, errors=errors).replace("\r\n", "\n").replace("\r", "\n")
+    try:
+        with out_p.open("wb") as out, err_p.open("wb") as err:
+            try:
+                proc = run_guarded(args, timeout=timeout, stall_s=stall_s,
+                                   progress_paths=(str(out_p), str(err_p), *progress_paths),
+                                   poll_s=poll_s, watch=watch, stdout=out, stderr=err, **kwargs)
+            except (subprocess.TimeoutExpired, StoppedByWatch) as exc:   # a stall, the wall, a brake
+                out.flush()
+                err.flush()
+                exc.output, exc.stderr = _read(out_p), _read(err_p)
+                raise
+        return subprocess.CompletedProcess(proc.args, proc.returncode, _read(out_p), _read(err_p))
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
 
 
 @dataclass(frozen=True)
@@ -241,7 +344,10 @@ def run_watched(args, *, log_path, hard_timeout: float, stall_s: float, progress
                 last = now
                 progress_clock.touch()
             longest = max(longest, now - last)
-            if now - last >= stall_s:
+            if _over_memory() is not None:
+                # THE MEMORY GUARD (as run_guarded's): stopped before the kernel's OOM killer
+                stopped = "memory"
+            elif now - last >= stall_s:
                 stopped = "stalled"
             elif now - t0 >= hard_timeout:
                 stopped = "ceiling"
@@ -263,6 +369,14 @@ def run_watched(args, *, log_path, hard_timeout: float, stall_s: float, progress
 
 
 def _kill_process_group(proc: subprocess.Popen) -> None:
+    # EVERY PROCESS IT STARTED, read before the kill: a tool the run started in a session of its
+    # own (run_guarded's setsid - snap-grid's checkMesh, a nested watched run) is not in its group
+    # and would outlive it, with nothing left to stop it
+    try:
+        from meshpipeline.sandbox.liveness import descendants
+        below = descendants(proc.pid)
+    except Exception:  # noqa: BLE001 - the group kill below still runs
+        below = []
     try:
         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
     except (ProcessLookupError, PermissionError, OSError):
@@ -270,6 +384,14 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
             proc.kill()
         except OSError:
             pass
+    for pid in below:
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
 
 # Drop any env var whose NAME looks like a secret, so model code cannot read keys
 # out of os.environ. Legit runtime vars (PATH, LD_LIBRARY_PATH, OMP_*, VTK/gmsh

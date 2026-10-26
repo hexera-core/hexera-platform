@@ -13,12 +13,15 @@ from pathlib import Path
 import meshpipeline.settings.runtime as rtcfg
 from meshpipeline.contracts.intake_formats import is_cad
 from meshpipeline.contracts.mesh_units import COMPLETED_MESH_UNIT
+from meshpipeline.contracts.native_time import STALL_WINDOW_S
 from meshpipeline.engines.base import RunPolicy
 from meshpipeline.engines.determinism import note_time_limit
 from meshpipeline.sandbox.safe_exec import (
     NativeOutcome,
+    StoppedByWatch,
     describe_native_result,
     run_guarded,
+    why_it_stopped,
 )
 
 logger = logging.getLogger(__name__)
@@ -587,10 +590,37 @@ def run_cartesian_mesh(workspace, *, timeout: int, context=None) -> dict:
     # tool handed a path that does not exist (the dispatch-contract test does) still dispatches
     # through the contract, which then reports the missing case itself.
     if ws.is_dir():
+        _note_way_on(ws, str(getattr(context, "broken_mesh_moves_to", "") or ""))
         members = _native_payload_members(ws)
         note_native_pass(ws, _pass_for_payload(ws, members, read_native_pass))
         note_native_payload(ws, members)
     return run_mesh(ws, engine="vmtk", timeout=timeout)
+
+
+#: THE SPEC KEY saying a layered fill whose layers will not untangle gives way to the NEXT ENGINE
+#: (the run moves on, pipeline/engine_fallback) rather than to this engine's layer-free fill: the
+#: plan asks for wall layers, and a later engine is left to build them. Absent: the layer-free fill.
+LAYERS_MOVE_ON = "layers_move_on_to"
+
+
+def _note_way_on(ws: Path, next_engine: str) -> None:
+    """Write into the spec the run ships which way a non-untangling layer goes: to `next_engine`
+    (the engine this run moves to, builder context broken_mesh_moves_to) when the plan asks for
+    wall layers and there is one; else nothing - the ladder's layer-free fill, as before. The spec is
+    rewritten only when that changes, so a run that never meets the brake ships what it always did."""
+    p = ws / "vmtk_spec.json"
+    try:
+        spec = json.loads(p.read_text())
+    except (OSError, ValueError):
+        return
+    want = next_engine if (next_engine and int(spec.get("boundary_layers") or 0) > 0) else ""
+    if str(spec.get(LAYERS_MOVE_ON) or "") == want:
+        return
+    if want:
+        spec[LAYERS_MOVE_ON] = want
+    else:
+        spec.pop(LAYERS_MOVE_ON, None)
+    p.write_text(json.dumps(spec, indent=2))
 
 
 _RUN_IDENTITY_LEDGER = "vmtk_run_identity.json"   # {digest of the payload, its pass number}
@@ -725,8 +755,6 @@ def _refit_to_wall(ws: Path, strategy: dict, notes: list[str]) -> dict | None:
     return refit
 
 
-#: the share of the remaining clock a LAYERED ladder step may take while a layer-free step waits
-LAYERED_SHARE = 0.6
 _LADDER_MIN_SECONDS = 60   # a ladder step is not started with less of the budget left ...
 _LADDER_MIN_FRACTION = 0.1  # ... or less than this share of it, whichever is smaller
 _now = time.monotonic       # the run clock; tests substitute it
@@ -871,6 +899,8 @@ def _run_vmtk_local(workspace, *, timeout: int, **_ignored) -> dict:
                             "not started"}
     strategy = json.loads(spec_path.read_text())
     ladder = repair_ladder(strategy)
+    # read before the budget's refit, which keeps only the generator's own keys
+    move_on = str(strategy.get(LAYERS_MOVE_ON) or "")
     notes: list[str] = []
     result: dict = {}
     staged = bool(resolve_strategy(strategy).get("sizing_array"))
@@ -920,22 +950,50 @@ def _run_vmtk_local(workspace, *, timeout: int, **_ignored) -> dict:
         layered = staged and int(strat.get("boundary_layers") or 0) > 0
         bare_after = next((j for j in range(i + 1, len(ladder))
                            if int(ladder[j].get("boundary_layers") or 0) <= 0), None)
-        # A LAYERED STEP NEVER TAKES THE WHOLE CLOCK while a layer-free step waits behind it:
-        # vmtk's layer generator scales with the wall's triangles, and on the Fluent aorta (328k
-        # wall triangles, 4 sublayers) the first layered attempt ran out the full 3000 s - no
-        # fill at all, where a layer-free fill was minutes away
-        step_budget = left()
-        if layered and bare_after is not None:
-            step_budget = max(int(floor), int(left() * LAYERED_SHARE))
-        result = _run_pype(ws, argv, timeout=step_budget)
+        # NO SHARE OF THE CLOCK (contracts/native_time): a layered step runs for as long as it is
+        # working. It used to get 60% of a 3,000 s budget while a layer-free step waited, and on the
+        # Fluent aorta (322k wall triangles, 4 sublayers) both were cut and the run moved to snappy.
+        # Now only a step that is STUCK (no sign of life for the stall window) gives way, or the
+        # machine's wall, which sends the whole run to a VM (RUN-5).
+        result = _run_pype(ws, argv, timeout=left(), at_untangle=bool(move_on and layered))
         nxt: int | None = i + 1 if i + 1 < len(ladder) else None
-        if layered and bare_after is not None and result.get("timed_out"):
-            # a thinner stack is no faster to grow: straight on to the layer-free fill
-            notes.append(f"[vmtk] attempt {i + 1} ({_step_label(strat)}): the layered fill ran out "
-                         f"its {step_budget} s share of the budget - next: "
+        if result.get("out_of_memory"):
+            notes.append(f"[vmtk] attempt {i + 1} ({_step_label(strat)}): stopped before the machine "
+                         "ran out of memory")
+            break
+        if result.get("timed_out") and not result.get("stalled"):
+            # STILL WORKING AT THE MACHINE'S WALL: no other step is started here - the same case
+            # runs again on a machine with no such wall (run_off_the_wall), or, already on one, the
+            # run ends there
+            notes.append(f"[vmtk] attempt {i + 1} ({_step_label(strat)}): still working at the "
+                         f"machine's limit ({int(timeout)} s)")
+            break
+        if layered and result.get("untangle_stopped") and move_on:
+            # THE PLAN ASKS FOR WALL LAYERS and another engine is left to build them: a layer-free
+            # fill here would deliver a mesh without them, hours later (the Fluent aorta: 2.4 h,
+            # no layers, where snappy then built 99% layers in 1.2 h) - the run moves on instead
+            tripped = dict(result["untangle_stopped"] or {})
+            n = int(tripped.get("retangled") or 0)
+            words = (f"VMTK layer needed untangling - {UNTANGLE_RECORD} - next engine ({move_on})"
+                     if tripped.get("untangling") else
+                     f"VMTK layers kept re-tangling ({n} rounds) - next engine ({move_on})")
+            notes.append(f"[vmtk] attempt {i + 1} ({_step_label(strat)}): {words}")
+            logger.warning("vmtk: %s", words)
+            result["layers_not_converging"] = {"retangled": n, "next_engine": move_on, "words": words}
+            break
+        if layered and bare_after is not None and result.get("untangle_stopped"):
+            notes.append(f"[vmtk] attempt {i + 1} ({_step_label(strat)}): "
+                         f"{result['untangle_stopped'].get('reason')} - next: "
                          f"{_step_label(ladder[bare_after])}")
-            note_time_limit("vmtk.ladder", "a layered fill ran out its share of the budget; "
-                            "the layer-free fill was run instead", budget_s=float(step_budget))
+            i = bare_after
+            continue
+        if layered and bare_after is not None and result.get("timed_out"):
+            # STUCK: a thinner stack is no faster to grow - straight on to the layer-free fill
+            notes.append(f"[vmtk] attempt {i + 1} ({_step_label(strat)}): the layered fill made no "
+                         f"progress for {STALL_WINDOW_S // 60} min - next: "
+                         f"{_step_label(ladder[bare_after])}")
+            note_time_limit("vmtk.ladder", "a layered fill made no progress for the stall window; "
+                            "the layer-free fill was run instead", stall_s=float(STALL_WINDOW_S))
             i = bare_after
             continue
         if _fill_completed(ws, result):
@@ -1097,9 +1155,70 @@ def _write_gmsh_volume(grid, names: dict[int, str], path: Path) -> dict:
             "patches": {int(k): v for k, v in names.items()}}
 
 
-def _run_pype(ws: Path, argv: list[str], *, timeout: int) -> dict:
+#: THE UNTANGLE BRAKE. vmtk's boundary layer generator (vtkvmtkBoundaryLayerGenerator, VMTK 1.5)
+#: untangles a tangled layer in rounds; when a round leaves it untangled it runs its final warp
+#: ("try last : ") and checks again - and if that warp tangles the layer AGAIN, the rounds go on, up
+#: to NumberOfSubsteps / 10 = 200 of them, each final warp the full 1,780 substeps. A layer that
+#: tangles again after its final warp is not converging: on the Fluent aorta (322k wall triangles,
+#: 4 sublayers) every final warp tangled it again - 4 in 2.5 hours, burning a core the whole time,
+#: so no stall watch could ever end it, and the run would reach even a VM's 20-hour wall. VMTK's own
+#: later versions stop such rounds when they stop improving (MaximumUntangleRoundsWithoutImprovement).
+#: So the layered fill is stopped when its own output shows the final warp tangled the layer again
+#: this many times, and the ladder moves on to the layer-free fill - deterministic, the mesher's own
+#: count, no clock. A layer that converges prints one "try last".
+UNTANGLE_RETANGLES = 1
+#: ...and when the run MOVES ON (the plan asks for layers and another engine is left, LAYERS_MOVE_ON)
+#: the layered fill is stopped as soon as the layer needs untangling at all ("untangle procedure.."):
+#: nothing waits for VMTK to recover, and by the record nothing would come of it - of 706 VMTK passes
+#: whose log shows the layer stage, none ever entered the untangle rounds, and every run that did
+#: failed (lab and e2e results, 26 Oct). The rounds start about 3,250 s into the aorta's fill and run
+#: about 18 minutes each, so the run moves on at about the time main's old 3,000 s clock did.
+UNTANGLE_RECORD = "no passing layered VMTK run ever did (0 of 706)"
+_UNTANGLE_STARTS = "untangle procedure"
+_UNTANGLE_FINAL_WARP = "try last"
+
+
+class UntangleBrake:
+    """The run's watch (sandbox/safe_exec.run_guarded `watch`): a reason to stop once the layer
+    generator's output shows its final warp tangled the layer again more than `limit` times - or,
+    `at_untangle` (the run moves on), as soon as the layer needs untangling at all; None until then."""
+
+    def __init__(self, limit: int = UNTANGLE_RETANGLES, *, at_untangle: bool = False) -> None:
+        self.limit, self.at_untangle = int(limit), bool(at_untangle)
+        self.path: Path | None = None
+        self.tripped: dict | None = None
+
+    def follow(self, path) -> None:
+        self.path = Path(path)
+
+    def __call__(self) -> str | None:
+        if self.path is None:
+            return None
+        try:
+            raw = self.path.read_bytes()
+        except OSError:
+            return None
+        final_warps = raw.count(_UNTANGLE_FINAL_WARP.encode())
+        if self.at_untangle and _UNTANGLE_STARTS.encode() in raw:
+            self.tripped = {"untangling": True, "final_warps": final_warps, "retangled": max(0, final_warps - 1)}
+            return f"the boundary layer needed untangling - {UNTANGLE_RECORD}"
+        retangled = final_warps - 1
+        if retangled <= self.limit:
+            return None
+        self.tripped = {"final_warps": final_warps, "retangled": retangled}
+        return (f"the boundary layer is not untangling: its final warp tangled it again "
+                f"{retangled} times")
+
+
+def _run_pype(ws: Path, argv: list[str], *, timeout: int, retangles: int = UNTANGLE_RETANGLES,
+              at_untangle: bool = False) -> dict:
+    """One pype, WATCHED (contracts/native_time): stopped only after STALL_WINDOW_S with no sign of
+    life - no output, no CPU, no memory change - (`stalled`), at `timeout`, the machine's wall, or by
+    the untangle brake (`untangle_stopped`: a layer that is not untangling, UntangleBrake)."""
+    brake = UntangleBrake(retangles, at_untangle=at_untangle)
     try:
-        proc = run_guarded(argv, cwd=str(ws), capture_output=True, text=True, timeout=timeout)
+        proc = run_guarded(argv, cwd=str(ws), capture_output=True, text=True, timeout=timeout,
+                           stall_s=STALL_WINDOW_S, watch=brake)
         tail = ((proc.stdout or "") + "\n" + (proc.stderr or ""))[-2000:]
         # Signal interpretation is the SHARED seam's, not this bundle's. It lived here first,
         # which meant vmtk explained a SIGSEGV while the other four engines returned a bare
@@ -1110,12 +1229,22 @@ def _run_pype(ws: Path, argv: list[str], *, timeout: int) -> dict:
         return {"rc": 127, "timed_out": False,
                 "log_tail": (f"vmtk binary {rtcfg.VMTK_BIN!r} not found - the container's vmtk "
                              "conda env is not installed or not on PATH")}
+    except StoppedByWatch as exc:
+        # THE UNTANGLE BRAKE: not converging - the ladder's layer-free fill answers it
+        out_text = getattr(exc, "output", None) or ""
+        err_text = getattr(exc, "stderr", None) or ""
+        tail = (str(out_text) + "\n" + str(err_text))[-2000:] + f"\n[vmtk] stopped: {exc.reason}"
+        out = describe_native_result(returncode=-1, args=argv, stage="vmtk pype", output=tail)
+        out["untangle_stopped"] = dict(brake.tripped or {}, reason=exc.reason)
+        return out
     except subprocess.TimeoutExpired as exc:
         def _d(x):
             return x.decode(errors="replace") if isinstance(x, bytes) else (x or "")
         tail = (_d(exc.stdout) + "\n" + _d(exc.stderr))[-2000:]
-        return describe_native_result(returncode=-1, args=argv, stage="vmtk pype",
-                                      output=tail, outcome=NativeOutcome.timed_out)
+        out = describe_native_result(returncode=-1, args=argv, stage="vmtk pype",
+                                     output=tail, outcome=NativeOutcome.timed_out)
+        # STUCK, not slow (the ladder's next step answers it), or OUT OF MEMORY (one machine up)
+        return why_it_stopped(exc, out)
 
 
 # quality read-back

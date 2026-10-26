@@ -61,7 +61,7 @@ def test_a_run_still_moving_at_the_wall_is_a_plain_timeout_not_a_stall(tmp_path)
     assert not getattr(err.value, "stalled", False)
 
 
-def test_a_captured_run_keeps_the_plain_wall():
+def test_a_captured_run_reads_as_before():
     proc = run_guarded(_py("print('ok')"), capture_output=True, text=True, timeout=10, stall_s=0.1)
     assert proc.returncode == 0 and "ok" in proc.stdout
 

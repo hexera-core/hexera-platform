@@ -568,21 +568,29 @@ async def _run_snappy_on_its_machine(R, workspace, publish: ExecutionEventPublis
     while True:
         result = await _run_snappy_timed(R, workspace, wall_for(workspace), publish, engine, purpose,
                                          run=run, native_attempt=native_attempt)
-        if not result.get("timed_out") or result.get("stalled"):
+        if result.get("out_of_memory"):
+            # RUN-3: stopped before the machine ran out of memory (sandbox/safe_exec.MemoryExpired) -
+            # the same case one machine up that also holds what it used
+            peak = result.get("used_gib")
+            moved = MM.step_up(MM.read(workspace), measured_gib=float(peak) / 0.9 if peak else None)
+            rule, decided, why = "RUN-3", "step up", "out of memory"
+        elif not result.get("timed_out") or result.get("stalled"):
             return result
-        moved = MM.off_the_wall(MM.read(workspace))
+        else:
+            moved = MM.off_the_wall(MM.read(workspace))
+            rule, decided, why = "RUN-5", "off the wall", "still working at the Cloud Run wall"
         if moved is None:
             return result
         MM.write(workspace, moved)
-        logger.warning("snappy pass %d: still working at the Cloud Run wall - the same case runs "
-                       "again on a %s VM (RUN-5)", native_attempt, moved.get("machine"))
+        logger.warning("snappy pass %d: %s - the same case runs again on a %s VM (%s)",
+                       native_attempt, why, moved.get("machine"), rule)
         try:
             from meshpipeline.contracts import decision_record as _dr
-            _dr.cite(str(getattr(run, "job_id", "") or ""), stage="snappy_machine", decided="off the wall",
-                     value=moved.get("machine"), rule="RUN-5", inputs={"pass": native_attempt},
+            _dr.cite(str(getattr(run, "job_id", "") or ""), stage="snappy_machine", decided=decided,
+                     value=moved.get("machine"), rule=rule, inputs={"pass": native_attempt},
                      words=str(moved.get("words") or ""))
         except Exception:  # noqa: BLE001 - the why record never stops a mesh
-            logger.debug("RUN-5 not cited", exc_info=True)
+            logger.debug("%s not cited", rule, exc_info=True)
 
 
 #: the approved request's typed directions -> snappy's domain_margin keys

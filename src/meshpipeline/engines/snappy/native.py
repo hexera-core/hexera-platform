@@ -150,7 +150,7 @@ def _run_snappy_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
                       timeout: int = 1800) -> dict:
     from meshpipeline.contracts.native_time import STALL_WINDOW_S
     from meshpipeline.engines.snappy import parallel_stages as ps
-    from meshpipeline.sandbox.safe_exec import StalledExpired, StoppedByWatch
+    from meshpipeline.sandbox.safe_exec import MemoryExpired, StalledExpired, StoppedByWatch
 
     ws = Path(workspace)
     nproc = _rank_count()
@@ -162,6 +162,7 @@ def _run_snappy_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
     # adding layers is never cut (it was, at 2,400 s, and then re-planned smaller).
     wall_at = _time.monotonic() + float(timeout)
     stalled: list[str] = []
+    oom: list[float] = []      # stopped before the machine ran out of memory (GiB in use then)
 
     # THE SIZE BRAKE (engines/size_brake): an external body's snappyHexMesh is stopped as
     # soon as its own log says the mesh is headed far past its cell budget - after castellation, or
@@ -195,6 +196,9 @@ def _run_snappy_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
             rc = -1
             if brake is not None and brake.tripped:
                 oversize.append(dict(brake.tripped))
+        except MemoryExpired as exc:
+            rc, timed_out = -1, False
+            oom.append(float(exc.used_gib))
         except StalledExpired:
             rc, timed_out = -1, True
             stalled.append(name or cmd.split()[0])
@@ -222,6 +226,9 @@ def _run_snappy_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
         if stalled:
             out["stalled"] = True
             out["stalled_stage"] = stalled[-1]
+        if oom:
+            # OUT OF MEMORY, stopped cleanly (sandbox/safe_exec.MemoryExpired): one machine up
+            out.update(out_of_memory=True, timed_out=False, used_gib=oom[-1])
         if oversize:
             # STOPPED BY THE SIZE BRAKE: headed far past the budget (its count, stage and ratio)
             out["oversize"] = oversize[-1]
