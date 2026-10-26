@@ -139,6 +139,9 @@ class TestAPIDoesNotWriteTrainingLogger:
         with patch("meshpipeline.settings.runtime.JOBS_DIR", tmp_path, create=True), patch("meshpipeline.settings.runtime.CORPUS_DIR", str(tmp_path)), \
              patch("meshpipeline.adapters.model_inference.router.call_intake_model", side_effect=_fake_call):
             state = self._make_intake_state()
+            # the notes question was already asked (contracts/user_notes), so this turn submits
+            from meshpipeline.contracts.user_notes import QUESTION
+            state["messages"] = [{"role": "assistant", "content": QUESTION}]
             # authorize the submission with a matching single-engine supported preview token
             import meshpipeline.agents.intake.admission_token as _at
             import meshpipeline.agents.intake.engine_selection as _es

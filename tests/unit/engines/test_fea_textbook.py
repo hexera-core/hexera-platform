@@ -1,5 +1,5 @@
-# Responsibility: Prove the FEA path gives the textbook answers (FEA build step 7): six classic cases, each built as CAD, meshed by the REAL FEA driver at the chosen detail levels, solved in CalculiX on the deck's own named faces, and compared with the closed-form answer within the design's stated tolerance.
-# Boundaries: needs CalculiX. The unit shards have none and skip; CI's "FEA accuracy (CalculiX)" lane installs Ubuntu's calculix-ccx and runs this module at Quick on every change, and at Standard on the weekly and manual runs (FEA_ACCURACY_LEVELS). Locally: HEXERA_CCX=~/fea_audit/ccx/ccx.
+# Responsibility: Prove the FEA path gives the textbook answers (FEA build step 7): nine classic cases (two of them assemblies), each built as CAD, meshed by the REAL FEA driver as its rules recommend, solved in CalculiX on the deck's own named faces, and compared with the closed-form answer within the design's stated tolerance.
+# Boundaries: needs CalculiX. The unit shards have none and skip; CI's "FEA accuracy (CalculiX)" lane installs Ubuntu's calculix-ccx and runs this module on every change. Locally: HEXERA_CCX=~/fea_audit/ccx/ccx.
 """THE TEXTBOOK ACCURACY SUITE.
 
 | Case | Analysis | Closed form | Tolerance |
@@ -10,6 +10,8 @@
 | round bar with a U-groove, D = 50, d = 40, r = 5 (a quarter, symmetry) | static | Kt = 2.193 (converged axisymmetric reference; the published fits' 2.05-2.06 are about 6% low) | 3% |
 | cantilever, L/h = 50 | modal | Euler-Bernoulli f1 and f2 (lambda L = 1.87510, 4.69409), each pair | 1% |
 | column, fixed-free, L/h = 50 | buckling | Euler P_cr = pi^2 EI / 4L^2 (a dead end load: a pressure follows the face and is not Euler's problem) | 1% |
+| ASSEMBLY: two 100 mm blocks, bonded, under tension | static | one 200 mm bar: end displacement p L / E, and sigma_xx = p on both sides of the joint | 1% |
+| ASSEMBLY: two 100 mm blocks in contact, under compression | static | sigma_xx = -p in both parts (the load crosses the contact pair) | 1% |
 
 Poisson's ratio is 0 in the plate, the cantilever and the column cases, so a clamped or loaded face
 adds no lateral constraint the closed form leaves out; the other cases use steel's 0.3.
@@ -39,18 +41,11 @@ CCX = os.environ.get("HEXERA_CCX") or shutil.which("ccx") or ""
 REQUIRE_CCX = os.environ.get("FEA_ACCURACY_REQUIRE_CCX", "") == "1"
 pytestmark = pytest.mark.skipif(not REQUIRE_CCX and not (CCX and Path(CCX).exists()),
                                 reason="CalculiX (ccx) not installed - set HEXERA_CCX to run")
-#: the detail levels to run (pipeline/enums.MeshFidelity values): Quick by default
-LEVELS = [x.strip() for x in os.environ.get("FEA_ACCURACY_LEVELS", "draft").split(",") if x.strip()]
 REPORT = os.environ.get("FEA_ACCURACY_REPORT", "")
 #: THE MEMORY A SOLVE NEEDS. The static cases are LOADED (tractions, end forces - an iterative
 #: solve of prescribed displacements gave reactions 5-50x off) and use CalculiX's iterative Cholesky
-#: solver: about 0.5 GB
-#: and 20 s at Quick, where its direct solver (SPOOLES) took 5-6 GB and 100 s. A modal or buckling
-#: solve needs the direct solver (Lanczos); at Quick it peaks near 4 GB, at Standard (about five
-#: times the unknowns) it would need well over the 16 GB of a standard CI runner (one was shut down
-#: mid-solve). So at Standard those two cases run only where FEA_ACCURACY_EIGEN_STANDARD=1 says the
-#: machine has the memory (a larger runner); elsewhere they are skipped with this reason.
-EIGEN_AT_STANDARD = os.environ.get("FEA_ACCURACY_EIGEN_STANDARD", "") == "1"
+#: solver (its direct solver, SPOOLES, took 5-6 GB on a 100k mesh). A modal or buckling solve needs
+#: the direct solver (Lanczos).
 THREADS = os.environ.get("FEA_ACCURACY_THREADS", "2")
 E = 210e9
 
@@ -103,6 +98,10 @@ LAME = {"a": 50.0, "b": 100.0, "h": 20.0, "p": 10e6}
 #: independent of the product path (2D, its own mesh). That converged value is the reference here.
 GROOVE = {"D": 50.0, "r": 5.0, "L": 200.0, "kt": 2.193}
 SLENDER = {"L": 500.0, "h": 10.0}
+#: THE ASSEMBLY CASES (PLAN-fea-17): two cubes of this side (mm) along x, and the end pressure (Pa)
+BLOCKS = {"a": 100.0, "p": 1.0e6}
+#: how each assembly case's parts are joined (the stage's one answer)
+CONNECTION = {"bonded_tension": "bonded", "contact_compression": "contact"}
 
 
 def _shape(case: str):
@@ -119,8 +118,14 @@ def _shape(case: str):
         # whole bar does not fit Quick's 100,000 elements, a quarter's does
         bar = _cut(_cyl(GROOVE["D"] / 2, GROOVE["L"]), _torus(GROOVE["D"] / 2, GROOVE["r"], GROOVE["L"] / 2))
         return _common(bar, _box(0, 0, -1, GROOVE["D"], GROOVE["D"], GROOVE["L"] + 2))
+    if case == "spring":
+        from tests import fea_fixtures as fx
+        return fx.coil_spring()
     if case in ("modal", "buckling"):
         return _box(0, 0, 0, SLENDER["h"], SLENDER["h"], SLENDER["L"])
+    if case in CONNECTION:
+        from tests import fea_fixtures as fx
+        return fx.touching_blocks(BLOCKS["a"])
     raise KeyError(case)
 
 
@@ -142,7 +147,7 @@ class _Run:
         return SimpleNamespace(produced_deliverable=produced_deliverable, terminal_value=failure_marker)
 
 
-def _mesh(case: str, level: str, ws: Path, monkeypatch) -> dict:
+def _mesh(case: str, ws: Path, monkeypatch) -> dict:
     import gmsh
     from tests import fea_fixtures as fx
 
@@ -164,9 +169,9 @@ def _mesh(case: str, level: str, ws: Path, monkeypatch) -> dict:
         gmsh.finalize()
     monkeypatch.setattr(runtime, "get_engine", lambda _n: SimpleNamespace(
         run_cartesian_mesh=lambda w, timeout: {"rc": fea_adapter.mesh(w)}))
-    ok, marker, _o = asyncio.run(FD.drive(ws, {"effective_mesh_fidelity": level, "purpose": "structural"},
-                                          job_id=f"acc-{case}-{level}", publish=None, run=_Run()))
-    assert ok, f"the driver did not mesh {case} at {level}: {marker}"
+    state = {"purpose": "structural", **({"fea_connection": CONNECTION[case]} if case in CONNECTION else {})}
+    ok, marker, _o = asyncio.run(FD.drive(ws, state, job_id=f"acc-{case}", publish=None, run=_Run()))
+    assert ok, f"the driver did not mesh {case}: {marker}"
     return json.loads((ws / "quality.json").read_text())
 
 
@@ -181,7 +186,7 @@ def _deck(ws: Path):
         p = ln.split(",")
         nodes[int(p[0])] = np.array([float(v) for v in p[1:4]])
     nsets = {m.group(1): [int(v) for v in re.findall(r"\d+", m.group(2))]
-             for m in re.finditer(r"\*NSET, NSET=(Face_\d+)\n((?:[^*][^\n]*\n)*)", text)}
+             for m in re.finditer(r"\*NSET, NSET=((?:Part_\d+_)?Face_\d+)\n((?:[^*][^\n]*\n)*)", text)}
     return text, nodes, nsets
 
 
@@ -432,6 +437,98 @@ def _buckling(ws, q):
     return p_cr, math.pi ** 2 * E * inertia / (4 * L * L), "Euler critical load (N)"
 
 
+def _spring(ws, q):
+    """A HELICAL COIL SPRING under an axial load: the peak shear in the wire against the Wahl-corrected
+    formula tau = K_w 8 P D / (pi d^3), K_w = (4C - 1)/(4C - 4) + 0.615/C, C = D/d - read away from the
+    two loaded ends (a coil's length off each), where the end loads spread into the wire. PLAN-fea-7
+    gives the round wire its 16 elements round (22 Oct: without it the wire meshed as a ribbon)."""
+    from tests.fea_fixtures import SPRING
+
+    deck, nodes, nsets = _deck(ws)
+    D, d, pitch, turns = (SPRING[k] * (1e-3 if k != "turns" else 1.0) for k in ("D", "d", "pitch", "turns"))
+    start = np.array([D / 2, 0.0, 0.0])
+    end = np.array([D / 2, 0.0, pitch * turns])
+    fixed = _face(nodes, nsets, lambda x: np.linalg.norm(x - start) < 0.51 * d)
+    loaded = _face(nodes, nsets, lambda x: np.linalg.norm(x - end) < 0.51 * d)
+    # 100 N ALONG THE COIL'S AXIS, as a spring is loaded: the loaded end is a rigid body led by a
+    # node on the axis (a force at the wire's end, off the axis, also bends the whole coil sideways)
+    force = 100.0
+    ref, rot = 9_000_001, 9_000_002
+    _dat, frd = _solve(ws, "spring", deck, _material("STEEL", 0.3) + f"""*NODE
+{ref}, 0.0, 0.0, {end[2]:.9e}
+{rot}, 0.0, 0.0, {end[2]:.9e}
+*RIGID BODY, NSET={loaded}, REF NODE={ref}, ROT NODE={rot}
+*BOUNDARY
+{fixed}, 1, 3, 0.0
+{ref}, 1, 2, 0.0
+{rot}, 1, 3, 0.0
+*STEP
+*STATIC, SOLVER=ITERATIVE CHOLESKY
+*CLOAD
+{ref}, 3, {force:.6e}
+*NODE FILE
+S
+*END STEP
+""")
+    st = _frd_stress(frd)
+    peak = 0.0
+    for nid, (sxx, syy, szz, sxy, syz, szx) in st.items():
+        if not (pitch < nodes[nid][2] < pitch * (turns - 1)):
+            continue
+        ev = np.linalg.eigvalsh(np.array([[sxx, sxy, szx], [sxy, syy, syz], [szx, syz, szz]]))
+        peak = max(peak, 0.5 * float(ev[-1] - ev[0]))
+    c = D / d
+    k_w = (4 * c - 1) / (4 * c - 4) + 0.615 / c
+    return peak, k_w * 8 * force * D / (math.pi * d ** 3), "peak wire shear (Wahl-corrected)"
+
+
+def _faces(nodes, nsets, test) -> list[str]:
+    """Every face all of whose nodes pass `test(xyz)` (an assembly has one per part on a plane)."""
+    return [n for n, ids in nsets.items() if all(test(nodes[i]) for i in ids)]
+
+
+def _blocks(ws, sign: float, contact: bool):
+    """The two blocks held on x = 0 (rollers on y = 0 and z = 0, so Poisson's ratio adds no
+    constraint) and loaded by BLOCKS["p"] on x = 2a: sign -1 pulls (tension), +1 pushes."""
+    deck, nodes, nsets = _deck(ws)
+    a = BLOCKS["a"] * 1e-3
+    fixed = _face(nodes, nsets, lambda q: abs(q[0]) < 1e-9)
+    load = _face(nodes, nsets, lambda q: abs(q[0] - 2 * a) < 1e-9)
+    y0 = _faces(nodes, nsets, lambda q: abs(q[1]) < 1e-9)
+    z0 = _faces(nodes, nsets, lambda q: abs(q[2]) < 1e-9)
+    assert len(y0) == 2 and len(z0) == 2, (y0, z0)
+    solver = "" if contact else ", SOLVER=ITERATIVE CHOLESKY"
+    bc = "\n".join([f"{fixed}, 1, 1, 0.0"] + [f"{f}, 2, 2, 0.0" for f in y0] + [f"{f}, 3, 3, 0.0" for f in z0])
+    _dat, frd = _solve(ws, "blk", deck, _material("STEEL", 0.3) + f"""*BOUNDARY
+{bc}
+*STEP
+*STATIC{solver}
+*DSLOAD
+{load}, P, {sign * BLOCKS["p"]:.6e}
+*NODE FILE
+U, S
+*END STEP
+""")
+    return nodes, nsets, load, _frd_disp(frd), _frd_stress(frd)
+
+
+def _bonded_tension(ws, q):
+    nodes, nsets, load, u, st = _blocks(ws, -1.0, contact=False)
+    # THE JOINT IS INVISIBLE: sigma_xx is p everywhere, on both sides of the shared face
+    sxx = np.array([v[0] for v in st.values()])
+    assert np.max(np.abs(sxx / BLOCKS["p"] - 1.0)) < 0.01, f"sigma_xx {sxx.min():.4g}..{sxx.max():.4g}"
+    end = float(np.mean([u[i][0] for i in nsets[load]]))
+    return end, BLOCKS["p"] * 2 * BLOCKS["a"] * 1e-3 / E, "end displacement (m), as one bar"
+
+
+def _contact_compression(ws, q):
+    _nodes, _nsets, _load, _u, st = _blocks(ws, 1.0, contact=True)
+    sxx = np.array([v[0] for v in st.values()])
+    # every node in compression at p: the load crosses the contact pair whole
+    worst = float(sxx[np.argmax(np.abs(sxx + BLOCKS["p"]))])
+    return worst, -BLOCKS["p"], "sigma_xx across the contact (Pa), worst node"
+
+
 CASES = {
     "plate_hole": ("static", _plate, 0.03),
     "cantilever": ("static", _cantilever, 0.01),
@@ -439,23 +536,23 @@ CASES = {
     "groove": ("static", _groove, 0.03),
     "modal": ("modal", _modal, 0.01),
     "buckling": ("buckling", _buckling, 0.01),
+    # the Wahl factor is itself a fit (within about 2% of the exact coil solution at this index)
+    "spring": ("static", _spring, 0.05),
+    "bonded_tension": ("static", _bonded_tension, 0.01),
+    "contact_compression": ("static", _contact_compression, 0.01),
 }
 
 
-@pytest.mark.parametrize("level", LEVELS)
 @pytest.mark.parametrize("case", list(CASES))
-def test_the_fea_path_gives_the_textbook_answer(case, level, tmp_path, monkeypatch):
+def test_the_fea_path_gives_the_textbook_answer(case, tmp_path, monkeypatch):
     assert CCX and Path(CCX).exists(), f"CalculiX is required here and was not found ({CCX or 'no ccx'})"
     analysis, run, tol = CASES[case]
-    if analysis in ("modal", "buckling") and level not in ("draft",) and not EIGEN_AT_STANDARD:
-        pytest.skip(f"{analysis} at {level}: the direct eigensolver needs more memory than this runner has "
-                    "(set FEA_ACCURACY_EIGEN_STANDARD=1 on a larger machine)")
-    q = _mesh(case, level, tmp_path / case, monkeypatch)
+    q = _mesh(case, tmp_path / case, monkeypatch)
     got, want, what = run(tmp_path / case, q)
     err = got / want - 1.0
-    row = {"case": case, "analysis": analysis, "level": level, "elements": q["cells"], "what": what,
+    row = {"case": case, "analysis": analysis, "elements": q["cells"], "what": what,
            "got": float(got), "want": float(want), "error_pct": round(100 * err, 2), "tolerance_pct": round(100 * tol, 1),
            "pass": bool(abs(err) <= tol)}
     _record(row)
     print(json.dumps(row))
-    assert abs(err) <= tol, f"{case} at {level}: {what} {got:.5g} vs {want:.5g} ({100 * err:+.2f}%, tolerance {100 * tol:.0f}%)"
+    assert abs(err) <= tol, f"{case}: {what} {got:.5g} vs {want:.5g} ({100 * err:+.2f}%, tolerance {100 * tol:.0f}%)"

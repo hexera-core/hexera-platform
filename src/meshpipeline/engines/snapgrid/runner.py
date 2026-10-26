@@ -152,16 +152,25 @@ def run_native_build(workspace, *, bashrc: str, timeout: int) -> dict:
     cmd = [sys.executable, "-m", "meshpipeline.engines.snapgrid.cli", SOURCE_NAME, ".",
            *cli_args(plan), "--bashrc", bashrc]
     env = scrubbed_subprocess_env({"PYTHONPATH": _pythonpath()})
+    # NO GUESSED TIME LIMIT (contracts/native_time): `timeout` is the WALL of the machine this runs
+    # on, and the mesher is WATCHED - stopped only after the stall window with no sign of life (no
+    # output, no CPU, no memory change). It was a fixed 3,600 s.
+    from meshpipeline.contracts.native_time import STALL_WINDOW_S
     try:
         p = run_guarded(cmd, cwd=str(ws), env=env, capture_output=True, text=True,
-                        timeout=timeout)
+                        timeout=timeout, stall_s=STALL_WINDOW_S)
     except subprocess.TimeoutExpired as exc:
         def _text(v) -> str:
             return v.decode(errors="replace") if isinstance(v, bytes) else (v or "")
-        out = f"{_text(exc.stdout)}\n{_text(exc.stderr)}\nTIMEOUT after {timeout} s"
+        stalled = bool(getattr(exc, "stalled", False))
+        why = (f"STALLED: no progress for {STALL_WINDOW_S // 60} min" if stalled
+               else f"TIMEOUT: still working at the machine's limit ({timeout} s)")
+        out = f"{_text(exc.stdout)}\n{_text(exc.stderr)}\n{why}"
         (ws / LOG_NAME).write_text(out)
-        return describe_native_result(returncode=-1, args=cmd, stage="snapgrid", output=out,
-                                      outcome=NativeOutcome.timed_out)
+        res = describe_native_result(returncode=-1, args=cmd, stage="snapgrid", output=out,
+                                     outcome=NativeOutcome.timed_out)
+        from meshpipeline.sandbox.safe_exec import why_it_stopped
+        return why_it_stopped(exc, res)
     out = (p.stdout or "") + "\n" + (p.stderr or "")
     (ws / LOG_NAME).write_text(out)
     result = describe_native_result(returncode=p.returncode, args=cmd, stage="snapgrid",

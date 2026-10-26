@@ -6,6 +6,7 @@
 # fields; it judges nothing, draws nothing and calls no model.
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -128,6 +129,13 @@ class ConfirmIn(BaseModel):
     #: how many bodies the file has, and what the clean check found - said in the declaration.
     bodies: int | None = None
     clean_summary: str = ""
+    #: AN FEA ASSEMBLY'S ONE QUESTION, "How are the parts connected?" (design 14): bonded (welded or
+    #: glued, the default) or contact (the parts can slide or separate). Sent by the stage; checked
+    #: and defaulted by the server, said in the declaration, and read into the run from the stored
+    #: confirmation (application/fea_check.confirmed_connection).
+    fea_connection: str = ""
+    #: SET BY THE SERVER for an FEA assembly, from the stored check: its parts, in plain words.
+    parts_summary: str = ""
 
     @field_validator("extents")
     @classmethod
@@ -229,9 +237,9 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     session = await _owned_session(session_id, owner_id, organization_id)
     from meshpipeline.application import geometry_hold as gh
     from meshpipeline.application.geometry_check import (
-        NAMING_SOFT_LIMIT_S,
-        SCOUT_SOFT_LIMIT_S,
+        RETRY_NAMING,
         check_object_key,
+        limits_of,
         naming_pending,
         naming_requested,
         retry_step,
@@ -241,7 +249,10 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     from meshpipeline.contracts.object_storage import get_object_store
     from meshpipeline.persistence.session import get_db
 
-    stored = _read_json(check_object_key(str(session_id), "scout.json"))
+    # EVERY STORE READ RUNS OFF THE EVENT LOOP: the stage polls this route every few seconds, and a
+    # read that hangs on the event loop stalled the whole API for 87 s on 2026-10-22 (every other
+    # request - job status, tickets, uploads - waited behind it)
+    stored = await asyncio.to_thread(_read_json, check_object_key(str(session_id), "scout.json"))
     if stored is None:
         return {"status": STATUS_NONE}
     async with get_db() as db:
@@ -250,15 +261,18 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     # the naming starts with the user's first answer: until then the stage must say it is
     # waiting for the chat, not that the model is working
     try:
-        requested = naming_requested(str(session_id))
+        requested = await asyncio.to_thread(naming_requested, str(session_id))
     except Exception as exc:  # noqa: BLE001 - a marker we cannot read is "not asked yet", never a broken check
         logger.warning("geometry check: naming marker unreadable (%s) - session_id=%s", exc, session_id)
         requested = None
-    # THE TIME BOX. A scout still pending past the worker's hard limit, or a naming asked for that
-    # long ago and never answered, is served as failed with a plain reason and the step to run
-    # again - the read path is the one place that cannot be forgotten, and it stores nothing, so
-    # a worker that was merely slow still lands its result.
-    payload = time_boxed(stored, requested) or stored
+    # THE WORKER'S RECORD: the steps for the live line, and its heartbeat for the time box
+    progress = await asyncio.to_thread(read_progress, str(session_id))
+    # THE TIME BOX. A scout whose worker stopped beating, or one still queued past its own limit
+    # (sized to the file), is served as failed with a plain reason and the step to run again; a
+    # preview whose scout stopped is served as the check's result. The read path is the one place
+    # that cannot be forgotten, and it stores nothing, so a worker that was merely slow still lands
+    # its result - and one that is still beating is never called stuck, however big the file.
+    payload = time_boxed(stored, requested, progress=progress) or stored
     from meshpipeline.application import fea_check
     from meshpipeline.contracts.geometry_fields import form_spec
     from meshpipeline.contracts.intake_formats import THERMAL_CHECK
@@ -267,7 +281,7 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     payload["route"] = fea_check.stage_route(payload, getattr(session, "messages", None))
     if payload["route"] == fea_check.STAGE_FEA:
         # the part, its unit and size (the proposal), its bodies and the clean check - no flow form
-        payload["fea"] = fea_check.fea_view(payload.get("facts"))
+        payload["fea"] = await asyncio.to_thread(fea_check.fea_view, payload.get("facts"))
     if payload.get("check_mode") != THERMAL_CHECK:
         # the generic form's fields; a thermal model is served as its `thermal` view instead
         payload["fields"] = form_spec()
@@ -280,7 +294,7 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
         payload.setdefault("retry", retry_step(payload))
     # the check as reported, for the live line, before the stage's fields are added to it
     reported = {k: payload.get(k) for k in ("status", "written_at", "seconds", "naming_seconds", "check_mode",
-                                            "source", "step", "retry", "reason", "timed_out")}
+                                            "source", "step", "retry", "reason", "timed_out", "preview")}
     if payload.get("status") in ("ready", "scouted") or payload.get("facts"):
         # the stage opens on a scouted check too, with the code's labels, and keeps them on a
         # naming that failed; the pictures are for the card, which only shows once the check
@@ -308,21 +322,27 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
                 payload["proposal"]["unit_suggestion"] = suggestion
         if payload.get("status") == "ready":
             store = get_object_store()
-            payload["pictures"] = [
-                {"name": s["name"], "facing": s.get("facing", []),
-                 "url": store.create_download_url(object_key=s["object_key"], expires_in=_PICTURE_URL_TTL)}
-                for s in payload.get("snapshots", [])]
+            snapshots = list(payload.get("snapshots", []))
+
+            def _pictures() -> list[dict]:
+                return [{"name": s["name"], "facing": s.get("facing", []),
+                         "url": store.create_download_url(object_key=s["object_key"],
+                                                          expires_in=_PICTURE_URL_TTL)}
+                        for s in snapshots]
+            payload["pictures"] = await asyncio.to_thread(_pictures)
         payload.pop("snapshots", None)
         payload.pop("upright_sheet", None)  # the six-way picture is the model's question, not the card's
         payload.pop("facts", None)         # the proposal is what the user acts on; facts are its source
         payload["skin"] = bool(payload.pop("skin_key", None))   # whether the 3D stage can open
-    confirmed = _read_json(check_object_key(str(session_id), "confirmed.json"))
+    confirmed = await asyncio.to_thread(_read_json, check_object_key(str(session_id), "confirmed.json"))
     if confirmed is not None:
         payload["confirmed"] = confirmed
     # THE LIVE LINE the chat shows while the part is checked: the step running now, the steps
-    # done with their times, a note when one runs long, and the way on when one fails
-    payload["progress"] = progress_view(reported, requested, read_progress(str(session_id)),
-                                        scout_limit_s=SCOUT_SOFT_LIMIT_S, naming_limit_s=NAMING_SOFT_LIMIT_S,
+    # done with their times, a note when one runs long, and the way on when one fails - held to
+    # this check's own limits (sized to its file)
+    payload["progress"] = progress_view(reported, requested, progress,
+                                        scout_limit_s=limits_of(stored)[0],
+                                        naming_limit_s=limits_of(requested, RETRY_NAMING)[0],
                                         confirmed=confirmed is not None,
                                         fea=payload.get("route") == fea_check.STAGE_FEA)
     return payload
@@ -411,7 +431,9 @@ async def retry_check(session_id: uuid.UUID, body: RetryIn | None = None,
     # within its time is a worker still at work, and a second one would race it for the record;
     # a ready check has nothing to run again. The time box is what turns a lost worker into a
     # failed check, so a retry is never refused for good.
-    reported = gc.time_boxed(stored, requested) or stored
+    from meshpipeline.application.geometry_progress import read_progress
+    progress = await asyncio.to_thread(read_progress, str(session_id))
+    reported = gc.time_boxed(stored, requested, progress=progress) or stored
     step = gc.retry_step(reported) if reported.get("status") == gc.STATUS_FAILED else None
     if step is None:
         raise HTTPException(409, STILL_RUNNING if reported.get("status") in (gc.STATUS_PENDING, gc.STATUS_SCOUTED)
@@ -466,7 +488,8 @@ async def get_check_skin(session_id: uuid.UUID, owner_id: str = Depends(owner_de
     from meshpipeline.contracts.object_storage import ObjectNotFound, get_object_store
 
     try:
-        raw = get_object_store().get_bytes(object_key=check_object_key(str(session_id), "skin.json"))
+        raw = await asyncio.to_thread(get_object_store().get_bytes,
+                                      object_key=check_object_key(str(session_id), "skin.json"))
     except ObjectNotFound:
         raise HTTPException(404, "No skin has been stored for this session's geometry check") from None
     return Response(content=raw, media_type="application/json")
@@ -527,7 +550,7 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
                                    "unit_fixed_reason": fixing.fixed_unit_reason if fixing else ""})
     # A WHOLE THERMAL MODEL is the stored check's to say, never the form's
     from meshpipeline.contracts.intake_formats import THERMAL_CHECK
-    _stored_check = _read_json(check_object_key(str(session_id), "scout.json")) or {}
+    _stored_check = await asyncio.to_thread(_read_json, check_object_key(str(session_id), "scout.json")) or {}
     # AN FEA PART is the user's words' to say (application/purpose_map), never the form's: the
     # part itself is meshed, so there is no fluid, no opening and no flow to confirm
     from meshpipeline.application import fea_check
@@ -537,10 +560,19 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
         else fea_check.STAGE_FEA if _fea else ""})
     if body.check_mode == fea_check.STAGE_FEA:
         facts = _stored_check.get("facts") or {}
-        blocked = fea_check.multi_body_message(facts)
+        blocked, _kind, way_out = fea_check.blocker(facts)
         if blocked:
-            # VERSION 1 MESHES ONE PART AT A TIME: no guessing at how the parts connect
-            raise HTTPException(409, blocked)
+            # VERSION 1 MESHES ONE CLOSED SOLID AT A TIME: no guessing at how parts connect, and no
+            # solid mesh of a surface - said with the way on, never a silent failure later
+            raise HTTPException(409, f"{blocked} {way_out}".strip())
+        # AN ASSEMBLY (several bodies): its parts are meshed together, joined as the user said -
+        # bonded unless they picked contact; a single part has nothing to join
+        asm = fea_check.assembly_view(facts)
+        connection = ""
+        if asm is not None:
+            connection = fea_check.connection_answer(body.fea_connection) or fea_check.DEFAULT_CONNECTION
+        body = body.model_copy(update={"fea_connection": connection,
+                                       "parts_summary": fea_check.parts_words(asm) if asm else ""})
         proposed = _stored_check.get("proposal") or {}
         body = body.model_copy(update={
             "input_kind": "solid-body", "flow": None, "openings": [], "seed_point_mm": None,
@@ -562,6 +594,15 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
     elif body.input_kind is None or body.flow is None:
         raise HTTPException(422, "Say what the file is (input_kind) and whether the fluid flows "
                                  "through it or around it (flow).")
+    if not body.check_mode and body.flow == "internal":
+        # THE FLOW KIND BY RULE (INS-3): "through it" on a part with no inside to flow through, and
+        # fewer than two openings on it, is asked about here - one plain question, with flowing
+        # around it the one-click way out - never a job that can only fail
+        from meshpipeline.application.geometry_confirmation import flow_question
+        _facts = _stored_check.get("facts") or {}
+        question = flow_question(_facts.get("inside"), body.openings, _facts.get("surface"))
+        if question:
+            raise HTTPException(409, question)
     if body.input_kind == "solid-assembly" and not body.regions:
         # an assembly's regions are the file's, as the check read them: named in the declaration
         facts = (_read_json(check_object_key(str(session_id), "scout.json")) or {}).get("facts") or {}

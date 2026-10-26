@@ -20,11 +20,26 @@ QUALITY_GATE = {"cfmesh": "quality_floor", "snappy": "quality_floor",
 #: engine -> a quality edit that violates one of ITS declared gating bars.
 QUALITY_BREAK = {
     "cfmesh": {"fatal": ["negative-volume cells"]},
-    "snappy": {"skew_fraction": 0.5},
+    # the skew share is a production limit since #282 (a note on a sound mesh, VER-2); snappy's
+    # gating bars are the clean exit and the body captured on the wall (see MANIFEST_BREAK)
+    "snappy": {},
     "snappy_multiregion": {"skew_fraction": 0.5},
     "gmsh": {"min_sicn": 0.001},
     "vmtk": {"min_quality": 0.0},
 }
+
+#: engine -> a manifest edit (beside its quality) that violates a gating bar the quality edit cannot
+#: reach: snappy's "body captured on the wall" is counted from the wall patches' faces.
+def _no_wall_faces(manifest: dict) -> None:
+    roles = manifest.get("patch_types") or {}
+    counts = dict(manifest.get("patch_face_counts") or {})
+    for name, role in roles.items():
+        if role == "wall":
+            counts[name] = 0
+    manifest["patch_face_counts"] = counts
+
+
+MANIFEST_BREAK = {"snappy": _no_wall_faces}
 
 #: engine -> a required deliverable whose absence must refuse the case.
 DELIVERABLE = {
@@ -81,6 +96,8 @@ def test_a_failing_quality_bar_is_refused_at_the_engines_quality_gate(
     quality = dict(manifest.get("quality") or {})
     quality.update(QUALITY_BREAK[engine])
     manifest["quality"] = quality
+    if engine in MANIFEST_BREAK:
+        MANIFEST_BREAK[engine](manifest)
     (ws / "mesh_manifest.json").write_text(json.dumps(manifest))
 
     ok, failed, _ = _gates(native)

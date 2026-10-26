@@ -373,6 +373,10 @@ def install_durable_execution_fakes(monkeypatch, run_module, *, published=None,
             return True
 
     monkeypatch.setattr(_lease_mod, "LeaseRepository", _FakeLease)
+    # the lease keeper renews through the REAL repository in a process of its own: a faked lease
+    # has no keeper (its own tests start it: tests/unit/application/test_lease_keeper.py)
+    from meshpipeline.application import lease_keeper as _keeper_mod
+    monkeypatch.setattr(_keeper_mod, "ENABLED", False)
     monkeypatch.setattr(_outbox_mod, "TerminalOutboxRepository", _FakeOutbox)
     # terminal_finalize binds these at import, so patch its namespace too - otherwise the atomic
     # finalizer would still construct the REAL outbox repository against the faked session.

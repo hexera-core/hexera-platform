@@ -59,10 +59,20 @@ class TestTheFlowManifestGate:
         return importlib.import_module(f"meshpipeline.engines.{engine}.flow_gates")
 
     def test_over_budget_is_named_with_both_counts(self, engine, tmp_path):
+        # THE CELL LIMIT IS ITS OWN NOTE GATE (LAD-cfd-4): the manifest check passes a mesh over
+        # the limit, and the non-blocking cell_limit gate names both counts for the note
+        from meshpipeline.engines.registry import get_spec
         fg = self._gate(engine)
         _manifest(tmp_path, cell_count=polcfg.CELL_HARD_LIMIT + 1)
-        ok, fb = fg._gate_manifest_valid(GateCtx(workspace=tmp_path))
-        assert ok is False and fb.startswith("[MANIFEST_VALIDATION_FAILED]")
+        (tmp_path / "constant" / "polyMesh").mkdir(parents=True)
+        for f in ("owner", "neighbour", "points", "faces", "boundary"):
+            (tmp_path / "constant" / "polyMesh" / f).write_text("x")
+        ok, _ = fg._gate_manifest_valid(GateCtx(workspace=tmp_path))
+        assert ok is True
+        gate = next(g for g in get_spec(engine).gates if g.key == "cell_limit")
+        assert gate.blocking is False
+        ok, fb = gate.check(GateCtx(workspace=tmp_path))
+        assert ok is False and fb.startswith("[CELL_LIMIT]")
         assert cause_of(fb) == FailureCause.CELL_BUDGET
         assert facts_of(fb) == {"cells": polcfg.CELL_HARD_LIMIT + 1,
                                 "limit": polcfg.CELL_HARD_LIMIT}
@@ -115,13 +125,25 @@ def test_the_contract_check_carries_its_diff():
 
 def test_the_quality_floor_hands_over_the_number_and_the_bar():
     from meshpipeline.engines.quality_criteria import gate_declared_criteria
-    manifest = {"quality": {"fatal": [], "skew_fraction": 0.004, "cells": 10},
-                "patch_face_counts": {"body": 10}, "patch_types": {"body": "wall"}}
-    ok, fb = gate_declared_criteria("snappy", manifest)
+    manifest = {"quality": {"fatal": [], "elements_under_floor": 0, "max_non_ortho": 89.0,
+                            "cells": 10}}
+    ok, fb = gate_declared_criteria("gmsh", manifest)
     assert ok is False and cause_of(fb) == FailureCause.MESH_QUALITY
     (check,) = facts_of(fb)["checks"]
-    assert (check["key"], check["measured"], check["op"], check["threshold"]) == \
-        ("skew_fraction", 0.004, "<=", 5e-4)
+    assert (check["key"], check["measured"], check["op"], check["threshold"]) ==         ("max_non_ortho", 89.0, "<=", 85.0)
+
+
+def test_a_share_of_skewed_faces_is_a_production_limit_not_a_gate():
+    """LAD-cfd-3 / VER-2: a sound mesh with more skewed faces than the share is delivered with the
+    share said - never failed at the quality floor (census bucket 10: a duct at 0.16%)."""
+    from meshpipeline.engines.quality_criteria import gate_declared_criteria
+    from meshpipeline.engines.verdict_limits import PRODUCTION_LIMITS
+    manifest = {"quality": {"fatal": [], "skew_fraction": 0.004, "cells": 10},
+                "patch_face_counts": {"body": 10}, "patch_types": {"body": "wall"}}
+    ok, _ = gate_declared_criteria("snappy", manifest)
+    assert ok is True
+    assert any(lim.key == "skew_fraction" and "snappy" in lim.engines
+               for lim in PRODUCTION_LIMITS)
 
 
 def test_an_unmeasured_bar_is_named_as_unmeasured():

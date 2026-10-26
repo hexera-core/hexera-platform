@@ -73,6 +73,41 @@ class FaceSet:
     nodes: np.ndarray                    # sorted node numbers
 
 
+_TRI = np.dtype([("a", np.int64), ("b", np.int64), ("c", np.int64)])
+
+
+def _tri_keys(rows: np.ndarray) -> np.ndarray:
+    """Each row's three node numbers, sorted, as one record (compared a, then b, then c)."""
+    return np.ascontiguousarray(np.sort(np.asarray(rows, dtype=np.int64)[:, :3], axis=1)).view(_TRI).ravel()
+
+
+class TetFaceIndex:
+    """Every face of a set of tets, sorted once, so the element face under any triangle is a binary
+    search - not a sort of all the faces again for every CAD face (ender3_idler, 25 Oct: 27 minutes in
+    the assembly deck, one full sort of a part's element faces per named face)."""
+
+    def __init__(self, elements: np.ndarray):
+        tets = np.asarray(elements, dtype=np.int64)[:, :4]
+        # face f of element e sits at row 4*e + f; a stable sort keeps the lowest element first in a run
+        keys = _tri_keys(np.stack([tets[:, list(c)] for c in TET_FACE_CORNERS], axis=1).reshape(-1, 3))
+        self.order = np.lexsort((keys["c"], keys["b"], keys["a"]))
+        self.sorted = keys[self.order]
+
+    def lookup(self, faces: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """(element index, face label 1..4) under every triangle of `faces` (see element_faces)."""
+        q = _tri_keys(faces)
+        if not len(q):
+            return np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.int64)
+        pos = np.searchsorted(self.sorted, q, side="left")
+        ok = pos < len(self.sorted)
+        ok[ok] = self.sorted[pos[ok]] == q[ok]
+        if not ok.all():
+            bad = int((~ok).sum())
+            raise ValueError(f"{bad} boundary triangle(s) are not the face of any element")
+        hit = self.order[pos]
+        return hit // 4, hit % 4 + 1
+
+
 def element_faces(elements: np.ndarray, faces: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """(element index, face label 1..4) of the tet face under every triangle of ``faces``.
 
@@ -81,31 +116,7 @@ def element_faces(elements: np.ndarray, faces: np.ndarray) -> tuple[np.ndarray, 
     it would put a load on part of a face. Where two elements share the triangle (a face between
     two solids) the lower element index is taken, so the surface sits on one side, the same
     side every run."""
-    tets = np.asarray(elements, dtype=np.int64)[:, :4]
-    tris = np.sort(np.asarray(faces, dtype=np.int64)[:, :3], axis=1)
-    # face f of element e sits at row 4*e + f, so the first row of a run is the lowest element
-    tf = np.sort(np.stack([tets[:, list(c)] for c in TET_FACE_CORNERS], axis=1).reshape(-1, 3),
-                 axis=1)
-    rows = np.concatenate([tf, tris])
-    is_tri = np.concatenate([np.zeros(len(tf), dtype=np.int8), np.ones(len(tris), dtype=np.int8)])
-    order = np.lexsort((is_tri, rows[:, 2], rows[:, 1], rows[:, 0]))   # stable: tet rows by index
-    srt = rows[order]
-    new = np.ones(len(srt), dtype=bool)
-    new[1:] = np.any(srt[1:] != srt[:-1], axis=1)
-    start = np.flatnonzero(new)[np.cumsum(new) - 1]                   # first row of each run
-    first = order[start]                                               # a tet face if the run has one
-    tri_pos = np.flatnonzero(order >= len(tf))
-    tri_idx = order[tri_pos] - len(tf)
-    hit = first[tri_pos]
-    ok = hit < len(tf)
-    if not ok.all():
-        bad = int((~ok).sum())
-        raise ValueError(f"{bad} boundary triangle(s) are not the face of any element")
-    elem = np.empty(len(tris), dtype=np.int64)
-    label = np.empty(len(tris), dtype=np.int64)
-    elem[tri_idx] = hit // 4
-    label[tri_idx] = hit % 4 + 1
-    return elem, label
+    return TetFaceIndex(elements).lookup(faces)
 
 
 def face_nodes(element: np.ndarray, label: int) -> np.ndarray:
@@ -138,10 +149,19 @@ def face_sets(mesh: SolidMesh) -> list[FaceSet]:
     # a face's nodes are read off the element faces themselves (midside nodes included), so the
     # node set and the surface are the same face by construction
     table = np.asarray(TET10_FACE_NODES if elements.shape[1] == 10 else TET_FACE_CORNERS)
+    tags = sorted(mesh.faces)
+    if not tags:
+        return []
+    # ONE MATCH FOR EVERY FACE: the element faces are sorted once and every CAD face's triangles
+    # looked up together (each triangle's answer is its own, so the sets are the same as matching
+    # face by face) - face by face it sorted the whole mesh once per CAD face, 62 of 170 s on a
+    # 290k-element, 36-face part (fix pack, 22 Oct)
+    tris = [np.asarray(mesh.faces[t], dtype=np.int64)[:, :3] for t in tags]
+    e_all, lab_all = element_faces(elements, np.concatenate(tris))
+    cuts = np.cumsum([len(t) for t in tris])[:-1]
     out = []
-    for k, tag in enumerate(sorted(mesh.faces), start=1):
-        tris = np.asarray(mesh.faces[tag], dtype=np.int64)
-        e, lab = element_faces(elements, tris)
+    for k, (tag, e, lab) in enumerate(zip(tags, np.split(e_all, cuts), np.split(lab_all, cuts), strict=True),
+                                      start=1):
         nodes = np.unique(elements[e[:, None], table[lab - 1]])
         out.append(FaceSet(name=f"Face_{k}", tag=int(tag), elements=e + 1, labels=lab,
                            nodes=nodes))

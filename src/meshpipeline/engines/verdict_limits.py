@@ -65,9 +65,10 @@ PRODUCTION_LIMITS: tuple[Limit, ...] = (
           ("gmsh",), topologies=_CFD,
           source="engines/gmsh/criteria.py (also gmsh's gating bar, so a mesh past it never "
                  "validates)"),
-    Limit("skew_fraction", "Share of skewed faces", "<=", 5e-4, ("cfmesh",),
-          source="the snappy-family gating bar (engines/snappy/criteria.py); advisory for cfMesh, "
-                 "which often does not report it"),
+    Limit("skew_fraction", "Share of skewed faces", "<=", 5e-4, ("snappy", "cfmesh"),
+          source="checkMesh's skewness bars (maxInternalSkewness 4, maxBoundarySkewness 20) as a "
+                 "share of all faces (engines/snappy/criteria.py): a production limit on a sound "
+                 "mesh, never a validity bar (LAD-cfd-3); cfMesh often does not report it"),
     Limit("layer_coverage_pct", "Wall covered by prism layers (percent)", ">=", 80.0,
           ("snappy", "cfmesh", "snappy_multiregion", "vmtk"), needs_layers=True,
           source="Hexera lab history: under 80% coverage, wall shear and y+ are unreliable on a "
@@ -156,9 +157,21 @@ def gating_rows(engine: str, manifest: Mapping) -> list[dict]:
         measured = measurements_from_manifest(dict(manifest))
     except Exception:  # noqa: BLE001 - an engine that cannot be read leaves validity to the gates
         return []
+    # AN FEA MESH is held to validity only (PLAN-fea-8): its quality floor is the NOTE floor, a row
+    # of fea_limits, never a gate - the gmsh floor row gating it refused a valid assembly whose 7
+    # curved slivers sat under SICN 0.01 (dev-areen, 24 Oct). "No degenerate elements" still gates.
+    raw = manifest.get("quality")
+    q: Mapping = raw if isinstance(raw, Mapping) else {}
+    fea = isinstance(q.get("fea"), Mapping) and bool(q["fea"].get("plan"))
+    skip = FEA_NOTE_ONLY if fea else ()
     return [{"key": c.key, "label": c.label, "op": c.op, "limit": c.threshold,
              "measured": measured.get(c.key)}
-            for c in crit if c.gating and c.key not in BUILD_TIME_KEYS]
+            for c in crit if c.gating and c.key not in BUILD_TIME_KEYS and c.key not in skip]
+
+
+#: Gating rows an FEA mesh does not gate on: the note floor (a fea_limits note row) and the CFD face
+#: non-orthogonality, a flow-solver measure that says nothing about an FE mesh.
+FEA_NOTE_ONLY = ("elements_under_floor", "max_non_ortho")
 
 
 def inputs_for(*, engine: str, topology: str, manifest: Mapping | None, valid: bool,
@@ -205,18 +218,32 @@ def fea_limits(quality: Mapping) -> list[dict]:
     fea = quality.get("fea") if isinstance(quality.get("fea"), Mapping) else {}
     if not (fea or {}).get("plan"):
         return []
-    from meshpipeline.engines.fea_quality import LIMITS as FEA_LIMITS
-    rows = [{"key": k, "label": lab, "op": op, "limit": lim, "measured": _plain(quality.get(k)),
-             "source": src} for k, lab, op, lim, src in (*FEA_LIMITS, FEA_RULES_ROW)]
+    from meshpipeline.engines.fea_quality import limits_for
+    order = quality.get("element_order")
+    fea_rows = limits_for(int(order) if isinstance(order, (int, float)) and not isinstance(order, bool) else 1)
     fea_m: Mapping = fea if isinstance(fea, Mapping) else {}
-    best = fea_m.get("best_possible") if isinstance(fea_m.get("best_possible"), Mapping) else None
-    if best:
-        # PLAN-fea-8: no level held every rule, so the mesh is the best possible within the largest;
-        # what that leaves short is named, as a concern (Areen, 21 Oct: never a stop for budget)
+    # ONE LIST OF NOTES (22 Oct): the rows the result screen shows are exactly the rows the job's
+    # verdict reads - the quality note floor and the elements through the thinnest wall first, as
+    # the screen lists them (a job said "Review: passed" while its screen said "with notes")
+    from meshpipeline.engines.gmsh.gates import FEA_WALL_FLOOR
+    rows = [{"key": "elements_under_floor", "op": "==", "limit": 0,
+             "label": f"Elements under the quality note floor (SICN {float(quality.get('sicn_floor') or 0.1):g})",
+             "measured": _plain(quality.get("elements_under_floor")),
+             "source": "engines/gmsh/fea_adapter.py (the note floor: SICN 0.1 straight, 0.01 curved)"},
+            {"key": "through_wall_min", "op": ">=", "limit": FEA_WALL_FLOOR,
+             "label": "Elements through the thinnest wall (2 planned; read to within 10%)",
+             "measured": _plain(fea_m.get("through_wall_min")),
+             "source": "docs/RULES.md PLAN-fea-3 (engines/fea_checks.py)"}]
+    rows += [{"key": k, "label": lab, "op": op, "limit": lim, "measured": _plain(quality.get(k)),
+              "source": src} for k, lab, op, lim, src in (*fea_rows, FEA_RULES_ROW)]
+    coarse = fea_m.get("coarsened") if isinstance(fea_m.get("coarsened"), Mapping) else None
+    if coarse:
+        # PLAN-fea-8: the rules needed more than the element limit, so the finest zones were made
+        # coarser to fit; what that leaves short is named, as a note (Areen, 21 Oct)
         rows.append({"key": "fea_resolution_short", "op": "empty", "limit": [],
                      "measured": [str(x) for x in fea_m.get("resolution_short") or []],
-                     "label": (f"The rules need {best.get('needed_words') or 'more elements'}, more than the largest "
-                               "level holds - meshed as finely as it allows; short of the rules where named"),
+                     "label": (f"The rules need {coarse.get('needed_words') or 'more elements'}, more than the element "
+                               "limit allows - the finest zones were made coarser to fit; short of the rules where named"),
                      "source": "docs/RULES.md PLAN-fea-8 (engines/fea_driver.choose_plan)"})
     raw_aside = quality.get("fea_set_aside")
     aside: Mapping = raw_aside if isinstance(raw_aside, Mapping) else {}

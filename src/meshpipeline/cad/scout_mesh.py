@@ -28,11 +28,14 @@ from meshpipeline.cad.scout import (
     _bladed,
     _name_openings,
     _wall_pairs,
+    length_decimals,
     measured_faces,
 )
 
 #: This many separate pieces read as a scene - buildings, a city block - not a part with mouths.
 MANY_BODIES = 6
+#: ...counting only the pieces that hold at least this share of the skin's area.
+MIN_PIECE_SHARE = 0.005
 #: A flat region smaller than this share of the part's box is trim, not a mouth.
 MIN_REGION_SHARE = 1e-4
 #: A LUMEN (cad/lumen) - the fluid of a tube network - fills at most this much of its box (a
@@ -97,9 +100,12 @@ def write_mesh_skin(path: Path, dest: Path, *, scale_to_m: float) -> Path:
 
 
 # ------------------------------------------------------------------------------ the scout ----
-def scout_mesh(path: Path, *, scale_to_m: float) -> ScoutResult:
+def scout_mesh(path: Path, *, scale_to_m: float, mapped: bool = True) -> ScoutResult:
+    """`mapped=False` reads the openings by the hole finder's shape rules alone, with no
+    inside-space map (the reading the check falls back to when the map's openings cannot close
+    the fluid in and the shape rules' can - geometry_check.keep_a_stageable_proposal)."""
     tris = read_triangles(path) * float(scale_to_m)
-    from meshpipeline.cad.open_ends import find_caps, find_holes, surface
+    from meshpipeline.cad.open_ends import find_caps, find_holes, inside_map, surface
 
     # the skin as one surface, read once for the holes and the lids: an assembly's faces where its
     # solids touch are inside the part
@@ -113,22 +119,30 @@ def scout_mesh(path: Path, *, scale_to_m: float) -> ScoutResult:
     edges, edge_faces, counts = _edges(faces)
     interior = counts == 2
     components = _components(len(faces), edge_faces[interior])
-    n_components = int(components.max() + 1) if len(components) else 1
+    # a fragment of a scan (a few triangles a segmentation left beside a vessel tree) is no body of
+    # its own: only pieces holding a real share of the skin count
+    piece_area = np.bincount(components, weights=mesh.area, minlength=int(components.max()) + 1) \
+        if len(components) else np.zeros(1)
+    n_components = max(int(np.sum(piece_area >= MIN_PIECE_SHARE * float(piece_area.sum()))), 1)
 
     notes: list[str] = []
     candidates: list[Opening] = []
 
-    # THE HOLES, by the one definition the stage's "Add an opening" uses too (cad/open_ends): a
-    # thin wall's open rim (a "rim"), or the mouth of a thick wall's bore at its cut end (a
-    # "ring", the scout's word for an end face whose hole is the opening) - flat or not, square
-    # to the axis or not, wherever the part sits
-    holes = find_holes(mesh=mesh)
+    # THE HOLES, by the one definition the stage's "Add an opening" uses too (cad/open_ends): the
+    # mouths of the part's inside-space map (cad/inside_space, INS-2) - a thin wall's open rim (a
+    # "rim"), or the mouth of a thick wall's bore at its cut end (a "ring", the scout's word for
+    # an end face whose hole is the opening) - flat or not, square to the axis or not, wherever
+    # the part sits. A mouth of a side pocket (a bolt hole beside the bore) is kept for the stage
+    # and proposed as not an opening.
+    holes = find_holes(mesh=mesh, mapped=mapped)
+    imap = inside_map(mesh) if mapped else None
     for h in holes:
         candidates.append(_opening(-1, "rim" if h.kind == "rim" else "ring", h.centroid, h.normal, h.area, h.wh,
                                    bbox_min, bbox_max, diag))
         candidates[-1].confidence = h.confidence
         # an annular mouth: what stands in it (a centre rod or hub), so the flow area is the ring
         candidates[-1].filled = h.filled
+        candidates[-1].side = not h.passage  # type: ignore[attr-defined]
 
     # FLAT FACES, each measured as a lid might be (cad/open_ends, WHAT A CAP IS). A fluid body's
     # mouths are lids: flat, with a sharp rim all the way round and open air outside - wherever
@@ -165,7 +179,9 @@ def scout_mesh(path: Path, *, scale_to_m: float) -> ScoutResult:
             if cap.tube_end:
                 tube_lids.add(id(candidates[-1]))
 
-    measured = measured_faces(candidates)
+    measured = measured_faces(candidates, length_decimals(bbox_max - bbox_min))
+    side_mouths = [c for c in candidates if getattr(c, "side", False)]
+    candidates = [c for c in candidates if not getattr(c, "side", False)]
     rings = [c for c in candidates if c.kind == "ring"]
     # a passage's mouth is no sliver: a lid far longer than it is wide is a wing's tip or a plate's
     # edge, unless its narrow side is a real size against the part (a wide flat duct's mouth) -
@@ -201,6 +217,14 @@ def scout_mesh(path: Path, *, scale_to_m: float) -> ScoutResult:
     elif rim_openings:
         body_kind, input_kind, flow, pool, conf = "surface", "solid-body", "external", rim_openings, 0.45
         notes.append("the mesh is open on one side only, so it reads as a body in a flow; say if it is a passage")
+        # AN OPEN LUMEN WITH ONE MOUTH (an airway tree cut at the trachea, its branches closed): its
+        # other openings are its tubes' closed ends (cad/lumen), read on the skin with its open end
+        # lidded - so "the fluid flows through it" has somewhere to leave by (INS-2)
+        ends = _open_lumen_ends(mesh, rim_openings, bbox_min, bbox_max, diag)
+        if ends:
+            pool = rim_openings + ends
+            notes.append(f"it reads as the fluid inside a network of tubes open at one end: its {len(ends)} closed "
+                         "tube ends are kept as the other openings, should the fluid flow through it")
     else:
         # as cad/scout reads a closed solid: a body whose flat faces cover much of its box AND which
         # fills it is a body (the Ahmed body), a bent or branched passage fills far less of its box
@@ -256,24 +280,44 @@ def scout_mesh(path: Path, *, scale_to_m: float) -> ScoutResult:
     # ...and so is a set of open ends: every rim is a hole in the skin the fluid would leave by, and
     # one left off the proposal is sealed shut without a word - a sixteen-tube bundle's 32 ends were
     # cut to 16, and half its tubes were meshed with one end and no way through
-    if len(pool) > most and all(o.kind in ("ring", "rim") for o in pool[most:]):
+    if len(pool) > most and all(o.kind in ("ring", "rim", "end") for o in pool[most:]):
         most = max(most, min(len(pool), MAX_LUMEN_ENDS))
     if len(pool) > most:
         notes.append(f"{len(pool)} candidate openings found; only the {most} largest are proposed")
         pool = pool[:most]
     openings = _name_openings(pool)
+    # the mouths of side pockets go last, as not openings: on the stage to click, never a port
+    for k, o in enumerate(sorted(side_mouths, key=lambda o: o.area, reverse=True)[:max(0, MAX_LUMEN_ENDS - len(openings))],
+                          start=1):
+        o.name, o.role = f"side_{k}", "not_an_opening"
+        openings.append(o)
+    if side_mouths:
+        notes.append(f"{len(side_mouths)} opening(s) lead into a separate small pocket (a bolt hole, a blind "
+                     "dimple), not into the passage: shown as not an opening; click one to make it one")
     for k, o in enumerate(openings, start=1):
         o.sticker = k                 # its confidence is the finder's: how surely its shape reads as one
     # read as a body in a flow, the openings are kept but not proposed: the stage shows them only once
     # the user says the fluid flows through it after all, and no point inside the flow is sought
 
     seed = None
-    if openings and flow == "internal":
-        big = max(openings, key=lambda o: o.area)
-        inward = -np.asarray(big.normal)
-        p = np.asarray(big.centroid) + inward * 0.5 * big.equivalent_diameter
-        seed = (float(p[0]), float(p[1]), float(p[2]))
-        notes.append("the point inside the flow is placed just inside the largest opening; the mesher checks it")
+    ports = [o for o in openings if o.role in ("inlet", "outlet")]
+    if ports and flow == "internal":
+        # THE POINT INSIDE THE FLOW (INS-4): the deepest point of the passage - farthest from every
+        # wall - read off the map; a body that IS the fluid, the deepest point inside it
+        deep = None
+        if imap is not None and input_kind != "fluid-domain" and imap.passages():
+            deep = imap.passages()[0].deepest
+        elif imap is not None and input_kind == "fluid-domain" and imap.enclosed_deepest is not None:
+            deep = imap.enclosed_deepest
+        if deep is not None:
+            seed = (float(deep[0]), float(deep[1]), float(deep[2]))
+            notes.append("the point inside the flow is the deepest point of the passage, farthest from every wall")
+        else:
+            big = max(ports, key=lambda o: o.area)
+            inward = -np.asarray(big.normal)
+            p = np.asarray(big.centroid) + inward * 0.5 * big.equivalent_diameter
+            seed = (float(p[0]), float(p[1]), float(p[2]))
+            notes.append("the point inside the flow is placed just inside the largest opening; the mesher checks it")
 
     result = ScoutResult(
         body_kind=body_kind, input_kind=input_kind, flow=flow, solids=n_components,
@@ -290,9 +334,40 @@ def scout_mesh(path: Path, *, scale_to_m: float) -> ScoutResult:
         "flow_axis_guess": "+x" if size[0] >= size[1] else "+y",
         # every hole, for the stage: "Add an opening" snaps to these, so a sticker added by hand
         # lands where the measuring step would have put it
-        "holes": [h.as_dict() for h in holes],
+        "holes": [h.as_dict(decimals=length_decimals(bbox_max - bbox_min)) for h in holes],
+        # the part's inside-space map, as the stage reads it (INS-1): whether the fluid has
+        # somewhere to flow through
+        "inside": imap.facts() if imap is not None else {"rule": "INS-1", "mapped": False},
+        # THE SURFACE AS DRAWN (INS-7): open edges that edge no opening, and loose pieces - found
+        # and said, never healed (the CAD repair stage's work)
+        "surface": surface_health(mesh, holes, edges=edges, counts=counts, pieces=n_components),
     }
     return result
+
+
+def surface_health(mesh, holes, *, edges: np.ndarray | None = None, counts: np.ndarray | None = None,
+                   pieces: int | None = None) -> dict:
+    """What the drawn surface itself says (INS-7): its open edges that lie on no hole's loop (a hole
+    is an opening as the hole finder reads it: a map mouth or a shape-rule rim), and how many
+    loose pieces hold a real share of it. Detection only - nothing is closed, joined or turned."""
+    if edges is None or counts is None or pieces is None:
+        edges, edge_faces, counts = _edges(mesh.faces)
+        comp = _components(len(mesh.faces), edge_faces[counts == 2])
+        area = np.bincount(comp, weights=mesh.area, minlength=int(comp.max()) + 1) if len(comp) else np.zeros(1)
+        pieces = max(int(np.sum(area >= MIN_PIECE_SHARE * float(area.sum()))), 1)
+    open_e = edges[counts == 1]
+    stray = 0
+    if len(open_e):
+        on_loop = np.zeros(len(mesh.verts), dtype=bool)
+        loops = [np.asarray(h.loop, dtype=float).reshape(-1, 3) for h in holes if h.loop is not None]
+        if loops:
+            from scipy.spatial import cKDTree
+            span = float(np.linalg.norm(mesh.verts.max(axis=0) - mesh.verts.min(axis=0))) or 1.0
+            d, i = cKDTree(mesh.verts).query(np.concatenate(loops), distance_upper_bound=1e-6 * span)
+            on_loop[i[np.isfinite(d)]] = True
+        stray = int(np.sum(~(on_loop[open_e[:, 0]] & on_loop[open_e[:, 1]])))
+    return {"rule": "INS-7", "open_edges": int(len(open_e)), "open_edges_not_openings": stray,
+            "pieces": int(pieces)}
 
 
 # ------------------------------------------------------------------------------ the lumen ----
@@ -327,6 +402,50 @@ def _lumen(mesh, discs: list[Opening], tube_lids: set[int], fill: float, bbox_mi
     if sparse and mostly_tubes and reading is not None and reading.lumen:
         return True, discs + ends, "a network of thin round tubes"
     return False, ends, ""
+
+
+def _open_lumen_ends(mesh, rims: list[Opening], bbox_min, bbox_max, diag: float) -> list[Opening]:
+    """The closed tube ends of an open tube network (cad/lumen), read on its skin with every open
+    rim lidded (cad/lids): each end not at a rim, as an "end" opening - or [] when the closed skin
+    reads as no tube network, or cannot be closed."""
+    from meshpipeline.cad.lids import LidError, lid
+    from meshpipeline.cad.lumen import read_lumen
+    from meshpipeline.cad.open_ends import _Mesh
+
+    V, F = mesh.verts, mesh.faces
+    extra_v, extra_f = [], []
+    n = len(V)
+    try:
+        for vidx, _eidx in mesh._open_chains():
+            P = V[vidx]
+            pts, tris, _info = lid(P)
+            loop = np.asarray(vidx)
+            m = len(loop)
+            idx = np.where(tris >= m, tris - m + n, loop[np.minimum(tris, m - 1)])
+            extra_f.append(idx)
+            if len(pts):
+                extra_v.append(pts)
+                n += len(pts)
+    except (LidError, ValueError, IndexError):
+        return []
+    if not extra_f:
+        return []
+    try:
+        closed = _Mesh(skin=(np.vstack([V, *extra_v]) if extra_v else V, np.vstack([F, *extra_f])))
+        reading = read_lumen(closed)
+    except Exception:  # noqa: BLE001 - a reading that fails is no evidence
+        return []
+    if reading is None or not reading.lumen:
+        return []
+    out = []
+    for e in reading.ends:
+        if any(float(np.linalg.norm(np.asarray(o.centroid) - e.apex)) <= 1.5 * max(e.radius, 0.5 * o.equivalent_diameter)
+               for o in rims):
+            continue                       # the lidded rim's own end
+        r = e.radius
+        out.append(_opening(-1, "end", e.apex, e.normal, math.pi * r * r, (2.0 * r, 2.0 * r), bbox_min, bbox_max, diag))
+        out[-1].confidence = END_CONFIDENCE
+    return out[:MAX_LUMEN_ENDS]
 
 
 def _directions(openings: list[Opening]) -> int:

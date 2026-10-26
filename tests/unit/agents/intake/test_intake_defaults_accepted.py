@@ -194,4 +194,4 @@ def test_a_unit_change_is_the_applications_and_the_model_converts_nothing():
 def test_the_block_registry_is_unchanged():
     assert [b[0] for b in intake.INTAKE_PROMPT_BLOCKS] == [
         "quality_criteria", "engine_first", "geometry_check", "thermal_model", "purpose_map", "fea_path", "propose_first", "ask_plainly",
-        "plain_text"]
+        "user_notes", "plain_text"]

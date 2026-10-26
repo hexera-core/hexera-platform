@@ -128,6 +128,7 @@ def test_the_served_routes_are_exactly_the_supported_set():
         ("GET", "/api/v1/chat"),                 # the caller's own conversations, keyset paged
         ("GET", "/api/v1/chat/history/{session_id}"),
         ("POST", "/api/v1/chat/message"),
+        ("POST", "/api/v1/chat/notes"),          # the console's notes box, kept word for word
         ("GET", "/api/v1/client-config"),
         ("GET", "/api/v1/credits"),
         ("GET", "/api/v1/credits/history"),      # the org's credit ledger, keyset paged
@@ -172,6 +173,8 @@ def test_the_served_routes_are_exactly_the_supported_set():
         ("GET", "/api/v1/organization"),         # the caller's own organisation and its members
         ("GET", "/api/v1/simulation"),           # the tenant's run list, keyset paged
         ("GET", "/api/v1/simulation/{job_id}"),
+        # a NEW download link for one deliverable, minted at click time; its life scales with size
+        ("GET", "/api/v1/simulation/{job_id}/artifacts/{artifact_id}/download"),
         ("POST", "/api/v1/simulation/{job_id}/dispute"),
         ("POST", "/api/v1/simulation/{job_id}/cancel"),  # the owner stops a run; 409 once finished
         ("GET", "/api/v1/simulation/{job_id}/review"),               # a parked run's unsure defects, grouped

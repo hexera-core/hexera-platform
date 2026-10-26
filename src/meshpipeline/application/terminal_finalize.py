@@ -240,6 +240,8 @@ class TerminalAssembly:
     #: what the engineer already answered "leave it" to, on a failed re-run with nothing new to
     #: ask (application/repair_review_park.settle_left) - said in the failure's message
     review_left: dict = field(default_factory=dict)
+    #: what the steps that read the user's own notes said they did with them (contracts/user_notes)
+    notes_remarks: list = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -255,7 +257,7 @@ def build_terminal_result(assembly: TerminalAssembly, *, delivered_types: list) 
     from meshpipeline.application import final_result as _fr
     from meshpipeline.application.artifact_policy import optional_warnings, required_ready
 
-    ready = required_ready(assembly.engine, delivered_types)
+    ready = required_ready(assembly.engine, delivered_types, assembly.purpose)
     warnings = optional_warnings(delivered_types) if ready else []
     result = _fr.build_final_result(
         job_id=assembly.job_id, owner_id=assembly.owner_id,
@@ -293,6 +295,7 @@ def build_terminal_result(assembly: TerminalAssembly, *, delivered_types: list) 
         result = _fr.with_review_left(result, assembly.review_left)
     # "We fixed your file and meshed the fix" is a different claim from "we meshed your file".
     result = _fr.with_repair_lineage(result, assembly.repair_lineage)
+    result = _fr.with_notes_remarks(result, assembly.notes_remarks)
     # The ONLY pre-composed message honoured is the blameless SYSTEM-failure note; any other stale
     # draft (e.g. a pre-delivery outcome_message) is discarded so one renderer owns the closing.
     # When the result itself names what failed (a review that did not conclude says which way it
@@ -346,16 +349,24 @@ async def assemble_and_finalize(session_factory, assembly: TerminalAssembly, *,
             dataclasses.replace(assembly, status=JobStatus.failed, review_plan=None),
             delivered_types=delivered_types)
 
-    async with session_factory() as db:
-        outcome = await finalize_terminal_atomic(
-            db, ownership=ownership, intended_status=assembly.status,
-            failed_reason=assembly.failed_reason,
-            final_result_dict=rendered.result.to_dict(),
-            closing_message=rendered.closing_message,
-            lease_repo=lease_repo, job_repo=job_repo, review_plan=assembly.review_plan,
-            plain_failure=((plain.result.to_dict(), plain.closing_message)
-                           if plain is not None else None))
-        await db.commit()
+    async def _commit():
+        async with session_factory() as db:
+            done = await finalize_terminal_atomic(
+                db, ownership=ownership, intended_status=assembly.status,
+                failed_reason=assembly.failed_reason,
+                final_result_dict=rendered.result.to_dict(),
+                closing_message=rendered.closing_message,
+                lease_repo=lease_repo, job_repo=job_repo, review_plan=assembly.review_plan,
+                plain_failure=((plain.result.to_dict(), plain.closing_message)
+                               if plain is not None else None))
+            await db.commit()
+            return done
+
+    # THE ONE TERMINAL COMMIT, retried through a database blip (application/db_retry): a run that
+    # got this far has its outcome in hand - a dropped connection here must cost a retry, never the
+    # outcome. The transaction is all-or-nothing, so a failed try left nothing behind to repeat.
+    from meshpipeline.application.db_retry import retry_transient
+    outcome = await retry_transient(_commit, what=f"terminal commit job {assembly.job_id}", jlog=jlog)
     if outcome.fenced:
         jlog.warning("Worker FENCED at the atomic terminal transaction (generation/token "
                      "superseded) - no terminal side effects; the current owner finalizes. "
@@ -553,7 +564,10 @@ async def finalize_crash(session_factory, exc: BaseException, *, job_id: str, ow
 
 async def refuse_before_execution(session_factory, *, job_id: str, failure_class,
                                   dependency: str, detail: str, user_message: str, reason: str,
-                                  job_repo, jlog, publish) -> dict:
+                                  job_repo, jlog, publish, category: str = "") -> dict:
+    """Fail a job that never ran, and dead-letter it. `category` (a FailureCategory value) is what
+    its final record says; without one it is our own failure (internal_pipeline_failure)."""
+    from meshpipeline.application.final_result import FailureCategory, refused_result
     from meshpipeline.errors import failed_reason_for, record_dead_letter
     from meshpipeline.persistence.job_state import TransitionResult
 
@@ -566,6 +580,11 @@ async def refuse_before_execution(session_factory, *, job_id: str, failure_class
                         row.failed_reason = FailedReason(failed_reason_for(failure_class))
                     except (ValueError, AttributeError):
                         row.failed_reason = FailedReason.unhandled
+                    # THE USER'S ACCOUNT, always: the job's final message is rendered from this
+                    # record, and a dead-lettered job without one read as nothing at all
+                    row.final_result = refused_result(
+                        FailureCategory(category or FailureCategory.internal_pipeline_failure.value),
+                        job_id=job_id, owner_id=str(getattr(row, "owner_id", "") or "")).to_dict()
             await db.commit()
     except Exception as exc:                       # noqa: BLE001 - the refusal must still stand
         jlog.warning("pre-execution refusal: could not mark job failed: %s", exc)

@@ -51,6 +51,13 @@ DECLARED_EXCLUSIONS: dict[str, str] = {
         "operation the CAD repair tries next. MITIGATION: a directive is a planner proposal, not a "
         "cap waiver - the repair session's caps, rollback and progress rule judge it exactly as "
         "they judge the rules planner's, and it is written only by the owner-scoped review route."),
+    "user_notes": (
+        "The user's own notes, word for word (contracts/user_notes). GUIDANCE for the AI steps, "
+        "never acceptance criteria (NOTE-3). MITIGATION: they are captured from the user's own "
+        "messages and the owner-scoped notes box only, never from model output; an AI step may use "
+        "them only through settings it already controls, inside their validated limits, so no note "
+        "can move the approved engine, purpose, patches or any fingerprinted value; the reviewer "
+        "reads them as context outside the text a finding may quote, so a note cannot fail a mesh."),
     "review_continuation": (
         "Marks a dispatch as a parked run's own re-run, so the spend gate is not applied twice. "
         "MITIGATION: it changes no mesh input and nothing routes on it; it is set only by the "

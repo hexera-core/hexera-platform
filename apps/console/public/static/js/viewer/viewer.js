@@ -17,6 +17,7 @@ import { headers } from "../api/client.js";
 import { acceptMesh, flagDispute } from "./dispute.js";
 import { VIEWER_FALLBACK } from "./config.js";
 import { roundNumbers } from "../render/outcome.js";
+import { bindFreshDownloads, downloadAttrs } from "../render/download.js";
 import { MOUSE_HINT, bindMouse, isUpAxis, orient, saveUp, savedUp, shield, upSelectHtml, upVector } from "./view_controls.js";
 // a delivered thermal model (an ECXML upload) is read part by part, with slices and its own files
 import { bindThermalResults, sliceColour, thermalDownloads, thermalResultsHtml } from "./thermal_results.js";
@@ -76,7 +77,7 @@ export async function openViewer(job,anchorEl,opts){
   // the case the user asked for leads; the previews follow it
   const _dlHtml=_dl.slice().sort((a,b)=>(b.type==='mesh_bundle')-(a.type==='mesh_bundle')).map(f=>{
       const primary=f.type==='mesh_bundle'?' primary':'';
-      return `<a class="v-dlbtn${primary}" href="${esc(f.url||'#')}" download target="_blank" rel="noopener">
+      return `<a class="v-dlbtn${primary}" href="${esc(f.url||'#')}"${downloadAttrs(job,f)} download target="_blank" rel="noopener">
                 <b>${esc(f.label||f.type)}</b><span>${fmtBytes(f.size)}</span></a>`;}).join('');
   const upAxis=savedUp('job',job)||'+z';
   // THE PANEL READS TOP TO BOTTOM the way the result is used: the verdict and the download, the
@@ -90,6 +91,8 @@ export async function openViewer(job,anchorEl,opts){
               ? `<span class="v-pill fail">DID NOT PASS REVIEW</span>`
               : opts.concerns
               ? `<span class="v-pill concerns">DELIVERED WITH CONCERNS</span>`
+              : opts.withNotes
+              ? `<span class="v-pill concerns">PASSED, WITH NOTES</span>`
               : (_m.pass!==undefined?`<span class="v-pill${_m.pass?'':' fail'}">${_m.pass?'PASS':'FAIL'}</span>`:'')}
             ${_m.attempts?`<span class="sep">·</span><span>${_m.attempts} attempt${_m.attempts!==1?'s':''}</span>`:''}
           </span>
@@ -107,6 +110,12 @@ export async function openViewer(job,anchorEl,opts){
           against <i>your</i> standard and delivered.
           <button class="v-btn primary" id="v-accept-${job}">This is acceptable →</button>
         </div></div>`:''}
+      ${opts.withNotes&&opts.withNotes.length?`<div class="v-why v-concerns">
+        <p class="v-why-h">Passed, with notes</p>
+        <p class="v-why-p">The mesh is valid and passed every check that decides a run. These figures are
+        past a limit, listed so you can weigh them:</p>
+        ${reviewList(opts.withNotes)}
+        </div>`:''}
       ${opts.concerns?`<div class="v-why v-concerns">
         <p class="v-why-h">Points to weigh</p>
         <p class="v-why-p">The mesh passed every validity check, so it is sound, will solve and is
@@ -159,6 +168,9 @@ export async function openViewer(job,anchorEl,opts){
       <div class="v-hint" id="v-hint-${job}">${MOUSE_HINT}</div>
       <div class="v-count" id="v-count-${job}"></div></div>
     <div class="v-flags" id="v-flags-${job}" style="display:none"></div>`;
+  // each Download click asks the API for a fresh link, so one read long after the page loaded -
+  // or a large file's retry - never meets an expired one
+  bindFreshDownloads(box);
   // THE MESH TAKES THE STAGE. With a workbench on the page the delivered mesh fills it and the
   // conversation becomes the drawer beside it; an earlier result stays in the DOM, hidden, so
   // its context is not torn down under a still-running render. Without one (an embedding

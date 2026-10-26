@@ -168,6 +168,7 @@ class TestAnFeaLadderThatRanOut:
         what, nxt = _say(FailureCause.MESH_QUALITY, **self.FACTS)
         said = (what + " " + nxt).lower()
         assert "18 elements near (-95.7, -723.5, 373.8) mm" in what and "2" in what
-        assert "same mesh" in said and "fine detail level" in said
+        assert "same mesh" in said and "degenerate or inverted" in said and "simplify that detail" in said
+        assert "detail level" not in said                  # there is no detail level any more
         for cfd in ("boundary layer", "layers", "flow", "cells"):
             assert cfd not in said

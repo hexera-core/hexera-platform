@@ -314,6 +314,7 @@ SPEC = EngineSpec(
             # for draft meshes, where a too-fine dict was meant to fail fast so the builder
             # coarsens - coarsening is now bounded by the floor. Snappy's budget is 2400 s.
             run_timeout=lambda: min(1200, rtcfg.OPENFOAM_COMMAND_TIMEOUT),
+            watched=True,
             # A PLANNED CASE GETS THE TIME ITS PLAN NEEDS: configure_mesh times the external case
             # from the cells it will make (cfmesh_runner.estimate_cells at a cautious fill rate)
             # and records the cap - up to 50 minutes - or makes the wall coarser until it fits.

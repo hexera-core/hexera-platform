@@ -938,7 +938,7 @@ jobs:
   await-ci:
     name: Wait for CI on this commit
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 75
     permissions:
       contents: read
       checks: read
@@ -987,7 +987,9 @@ jobs:
           # to main both workflows start together and this job can reach the API first. "Not there"
           # and "not finished" are therefore the same state - keep waiting - and only a concluded
           # check is a verdict.
-          deadline=$(( SECONDS + 40 * 60 ))
+          # as long as CI itself may take: its longest jobs are allowed 45 minutes, and a run waits
+          # for runners before they start (40 minutes gave up on CI runs still going)
+          deadline=$(( SECONDS + 70 * 60 ))
           while :; do
             # EVERY ci-gate run for this commit must have concluded, and all of them must have
             # passed. Reading only the latest was wrong: a manual workflow_dispatch of the same
@@ -1028,7 +1030,7 @@ jobs:
               exit 0
             fi
             if [ "${SECONDS}" -ge "${deadline}" ]; then
-              echo "::error::hexera/ci-gate did not conclude for ${SHA} within 40 minutes (${done_ok} passed, ${pending} still running, of ${total})."
+              echo "::error::hexera/ci-gate did not conclude for ${SHA} within 70 minutes (${done_ok} passed, ${pending} still running, of ${total})."
               echo "If this is a release tag, it names a commit CI never validated - tag a commit from main instead."
               exit 1
             fi
@@ -1476,6 +1478,22 @@ jobs:
       # changed what the deploy did. Thirteen seconds of `--help` ahead of a two-hour job.
       - name: The deploy's gcloud arguments still exist (devtools/quality/check_gcloud_flags.py)
         run: python3 devtools/quality/check_gcloud_flags.py
+
+      # A PARTIAL ROLL, SAID OUT LOUD. `images` without `workers` (every merge to main, and a manual
+      # app run without fleet) moves the API and the mesh job to this build and leaves the worker
+      # fleet where it is. Jobs never fail from that (application/platform_contract holds a job a
+      # worker cannot read until one that can takes it), but if this build changed the platform
+      # contract, new jobs wait until the fleet rolls - so the deployer is told, not refused: the
+      # merge deploy depends on this path.
+      - name: Warn when the fleet is left on an older build
+        env:
+          DEPLOY_COMPONENTS: ${{ needs.target.outputs.components }}
+        run: |
+          case ",${DEPLOY_COMPONENTS}," in
+            *,all,*|*,workers,*) exit 0 ;;
+            *,images,*)
+              echo "::warning title=Worker fleet not rolled::This deploy moves the API and the mesh job to this build; the worker fleet stays on its current one. If this build changed the platform contract (run entry arguments, dispatch/state/result schema, or MESH_EXCHANGE_VERSION), new jobs wait with 'the platform is updating' until a fleet deploy (fleet=true). Nothing fails - but run the fleet deploy to let them start." ;;
+          esac
 
       # THE ONLY CLOUD MUTATION IN THIS WORKFLOW. deploy.sh is interactive by default - it prints a
       # plan and makes the operator type the project id - and DEPLOY_NONINTERACTIVE=1 is its

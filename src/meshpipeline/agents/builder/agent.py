@@ -87,8 +87,10 @@ async def node_builder(state: PipelineState) -> dict:
     _publish = execution_publisher(job_id, agent="builder")
 
     attempt = attempt_mod.prepare(state, job_id=job_id, mode=mode)
+    from meshpipeline.contracts.progress_clock import native_seconds
     budget = budget_mod.settle(carried_epoch=state.get("builder_deadline_epoch", 0.0),
-                               pipeline_deadline_epoch=state.get("pipeline_deadline_epoch"))
+                               pipeline_deadline_epoch=state.get("pipeline_deadline_epoch"),
+                               native_s=native_seconds())
 
     def _patch(*, retry_count: int, noop_count: int = 0, api_failure: str = "",
                stop: str = "", workspace: str = "") -> dict:
@@ -98,15 +100,20 @@ async def node_builder(state: PipelineState) -> dict:
             retry_count=retry_count, noop_count=noop_count, api_failure=api_failure,
             flag_responses=attempt_mod.flag_responses(attempt.workspace), stop=stop).state()
 
-    if budget.exhausted:
+    # A DETERMINISTIC DRIVER (the FEA driver) is judged by the pipeline's time, which progress moves
+    # on - never by the model loop's aggregate budget, which an earlier attempt's long mesh spends
+    if budget.driver_exhausted if invoke.takes_driver(attempt, state) else budget.exhausted:
         # Aggregate budget exhausted: fail TRUTHFULLY without another expensive attempt. Nothing
         # is authored, and no execution success is written - the executor still owns that verdict.
         logger.error("Builder aggregate budget exhausted (%ds total) - job_id=%s: failing "
                      "truthfully", bcfg.BUILDER_TOTAL_TIMEOUT_SECONDS, job_id)
         await _publish.anote("Mesh design exceeded its overall time budget",
                              op_id=f"budget-exhausted:{attempt.retry_count}")
-        return _patch(retry_count=bcfg.MAX_BUILDER_RETRIES + 1,      # → failure sink
-                      noop_count=state.get("builder_noop_count", 0))
+        # the run ends on what the LAST attempt ended on, never on this attempt's empty workspace
+        # (attempt.stop_without_building: an FEA guard trip used to read as a mesher crash)
+        return _patch(noop_count=state.get("builder_noop_count", 0),
+                      **attempt_mod.stop_without_building(attempt.workspace, state,
+                                                          stopped=attempt_mod.STOPPED_TIME_SPENT))
 
     if attempt.is_retry:
         # No-progress stop: the same gate rejecting for the same reason twice means the last
@@ -123,8 +130,9 @@ async def node_builder(state: PipelineState) -> dict:
                 "Stopping: the last attempt failed the same check, the same way. Retrying "
                 "cannot fix this - the failure needs a different input or a code change.",
                 op_id=f"no-progress:{attempt.retry_count}")
-            return _patch(retry_count=bcfg.MAX_BUILDER_RETRIES + 1,      # → failure sink
-                          noop_count=state.get("builder_noop_count", 0))
+            return _patch(noop_count=state.get("builder_noop_count", 0),
+                          **attempt_mod.stop_without_building(
+                              attempt.workspace, state, stopped=attempt_mod.STOPPED_NO_PROGRESS))
 
     # THE ENGINE COULD NOT PREPARE ITS INPUT (attempt._record_staging_failure): nothing is run, and
     # the attempt's closing note says why. Running the builder on without the staged input only
@@ -159,7 +167,8 @@ async def node_builder(state: PipelineState) -> dict:
     # nothing, and a cancelled attempt is not a failed one.
     if _staging is None:
         outcome = await invoke.run_attempt(attempt, state, job_id=job_id, publish=_publish,
-                                           timeout_s=budget.attempt_timeout_s)
+                                           timeout_s=budget.attempt_timeout_s,
+                                           driver_timeout_s=budget.driver_remaining_s)
     else:
         logger.error("Builder: engine staging failed - the attempt ends on it, nothing runs - "
                      "job_id=%s: %s", job_id, _staging.builder_text)

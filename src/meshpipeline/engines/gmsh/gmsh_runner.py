@@ -30,6 +30,13 @@ def quality_shortfalls(q: dict) -> list[dict]:
     floor = CFD_SICN_FLOOR if cfd else SICN_FLOOR
     out = []
     sicn = q.get("min_sicn")
+    if (q.get("fea") or {}).get("plan") and sicn is not None:
+        # AN FEA PLAN'S MESH fails only when it is not valid (a degenerate element); under the 0.1
+        # floor is a note on the delivery (Areen, 21 Oct)
+        if float(sicn) <= 0.0:
+            out.append({"key": "min_sicn", "label": "element quality (SICN)", "measured": float(sicn),
+                        "op": ">", "threshold": 0.0})
+        return out
     if sicn is None or float(sicn) < floor:
         out.append({"key": "min_sicn", "label": "element quality (SICN)",
                     "measured": None if sicn is None else float(sicn), "op": ">=",
@@ -72,6 +79,9 @@ def tessellate_to_stl(geom_path, out_stl, *, context=None, prepared=None) -> Pat
         gmsh.model.occ.synchronize()
         # the metre-normalised B-rep IS the staged geometry - the driver reads this, unscaled
         gmsh.write(str(staged_brep))
+        # and gmsh's own B-rep file beside it: lossless, where the STEP round trip loses faces on
+        # some parts (the FEA path reads this first - engines/fea_plan.STAGED_SOLIDS, PLAN-fea-15)
+        gmsh.write(str(ws / "geometry.brep"))
         # gmsh's STEP writer drops the names a CAD file gives single faces: record them from the
         # upload, by where each face is, for the FEA deck to write beside Face_k
         from meshpipeline.cad.face_names import record_for_staging
@@ -327,24 +337,96 @@ def run_cartesian_mesh(workspace, *, timeout: int, context=None) -> dict:
     return run_mesh(workspace, engine="gmsh", timeout=timeout)
 
 
+#: How long an FEA mesher may go without a sign of life (new output, a new stage, CPU being burned
+#: or memory changing - sandbox/liveness) before it is stopped as stuck - never a guess at how long
+#: the mesh should take (Areen, 24 Oct).
+FEA_STALL_WINDOW_S = 900
+#: The FEA mesher's own log, streamed as it runs: what the watchdog and the live stage line read.
+FEA_LOG = "gmshfea.log"
+
+
+def stall_window() -> float:
+    return float(FEA_STALL_WINDOW_S)
+
+
+def _note_fea_threads(ws: Path) -> None:
+    """The threads the FEA mesher runs with, in the run's reproducibility stamp (engines/determinism)."""
+    try:
+        from meshpipeline.engines import determinism as det
+        from meshpipeline.engines.gmsh.fea_adapter import mesh_threads
+        n = mesh_threads((json.loads((ws / "fea_plan.json").read_text()) or {}).get("mesh") or {})
+        det.note_setting("fea_gmsh_threads", {"general": n, "1D": 1, "2D": 1, "3D": n},
+                         "the job's cores; curve and surface meshing on one thread (repeatable)")
+    except Exception:  # noqa: BLE001 - the stamp is a record, never the run's
+        logger.debug("fea threads not noted")
+
+
+def _run_fea_watched(ws: Path, *, timeout: int) -> dict:
+    """AN FEA MESH, WATCHED: stopped only after FEA_STALL_WINDOW_S with no progress, or at `timeout`
+    (the hard ceiling). What the watchdog saw is returned (`watchdog`) for the why-record."""
+    from meshpipeline.sandbox.safe_exec import run_watched
+    _note_fea_threads(ws)
+    # -u: its output reaches the log as it is written (the watchdog reads the log growing)
+    w = run_watched([sys.executable, "-u", "-m", "meshpipeline.engines.gmsh.driver", str(ws)],
+                    log_path=ws / FEA_LOG, hard_timeout=float(timeout), stall_s=stall_window(),
+                    progress_paths=(ws / "fea_stage.json",))
+    seen = {"stopped": w.stopped, "seconds": w.seconds, "longest_silence_s": w.longest_silence_s,
+            "silence_at_stop_s": w.silence_at_stop_s, "stall_window_s": stall_window(),
+            "ceiling_s": float(timeout), "cpu_s": w.cpu_s}
+    if w.stopped == "memory":
+        # THE MEMORY GUARD stopped it (sandbox/safe_exec.run_watched) before the kernel's OOM killer:
+        # the same outcome RUN-3 answers (fea_driver._out_of_memory), one machine up
+        out = describe_native_result(returncode=-9, args=None, stage="gmsh driver",
+                                     output=w.tail + "\n[MEMORY] stopped before the machine ran out of memory")
+        out["out_of_memory"] = True
+    elif w.stopped == "ok":
+        out = describe_native_result(returncode=w.returncode, args=None, stage="gmsh driver", output=w.tail)
+    else:
+        out = describe_native_result(returncode=-1, args=None, stage="gmsh driver", output=w.tail,
+                                     outcome=NativeOutcome.timed_out)
+        out["stalled"] = w.stopped == "stalled"
+    out["watchdog"] = seen
+    return out
+
+
 def _run_gmsh_local(workspace, *, timeout: int, **_ignored) -> dict:
     ws = Path(workspace)
+    if (ws / "fea_plan.json").exists():
+        return _run_fea_watched(ws, timeout=timeout)
     # Invoked by FULL module path, as a module of the installed distribution. A shorter path
     # would only resolve with cwd inside the package, which puts its subpackages on sys.path as
     # top-level modules - the bare-namespace bypass the src layout exists to prevent.
+    # A CFD MESH, WATCHED as the FEA one is (contracts/native_time): stopped only after the stall
+    # window with no sign of life - no output, no CPU, no memory change - or at `timeout`, the
+    # machine's wall. It was a fixed 25 minutes, and a fill still working was cut there.
+    from meshpipeline.contracts.native_time import STALL_WINDOW_S
     try:
         proc = run_guarded(
             [sys.executable, "-m", "meshpipeline.engines.gmsh.driver", str(ws)],
-            capture_output=True, text=True, timeout=timeout,
+            capture_output=True, text=True, timeout=timeout, stall_s=STALL_WINDOW_S,
         )
         tail = ((proc.stdout or "") + "\n" + (proc.stderr or ""))[-2000:]
-        return describe_native_result(returncode=proc.returncode, args=proc.args,
-                                      stage="gmsh driver", output=tail)
+        out = describe_native_result(returncode=proc.returncode, args=proc.args,
+                                     stage="gmsh driver", output=tail)
+        from meshpipeline.engines.gmsh.driver import FILL_ESTIMATE_FILE, FILL_OVERSIZE_FACTOR, RC_FILL_OVERSIZE
+        if proc.returncode == RC_FILL_OVERSIZE:
+            # SIZE, NOT TIME: the passage-sized fill was not started - far past what one job holds
+            try:
+                est = json.loads((ws / FILL_ESTIMATE_FILE).read_text())
+            except (OSError, ValueError):
+                est = {}
+            cells = int(est.get("estimated_cells") or 0)
+            budget = int(int(est.get("limit") or 0) / FILL_OVERSIZE_FACTOR) or 1
+            out["oversize"] = {"stage": "passage-sized fill (estimated before meshing)", "cells": cells,
+                               "budget": budget, "ratio": round(cells / budget, 2), "by_rule": True}
+        return out
     except subprocess.TimeoutExpired as exc:
         tail = (((exc.stdout or b"").decode(errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or ""))
                 + "\n" + ((exc.stderr or b"").decode(errors="replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")))[-2000:]
-        return describe_native_result(returncode=-1, args=exc.cmd, stage="gmsh driver",
-                                      output=tail, outcome=NativeOutcome.timed_out)
+        out = describe_native_result(returncode=-1, args=exc.cmd, stage="gmsh driver",
+                                     output=tail, outcome=NativeOutcome.timed_out)
+        from meshpipeline.sandbox.safe_exec import why_it_stopped
+        return why_it_stopped(exc, out)
 
 
 def check_mesh(workspace) -> dict:

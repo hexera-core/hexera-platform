@@ -125,4 +125,48 @@ def _face_normals(verts: np.ndarray, faces: np.ndarray) -> np.ndarray:
     return cross / np.where(L > 0, L, 1.0)[:, None]
 
 
-__all__ = ["FEATURE_ANGLE_DEG", "edges_block", "prepare_skin", "skin_patch"]
+#: THE STAGE'S TRIANGLE BUDGET: what a browser turns smoothly and prepare_skin readies in seconds.
+#: A skin past it is drawn simplified (`simplified`), never refused and never left undrawn.
+STAGE_MAX_TRIANGLES = 400_000
+
+
+def simplified(tris: np.ndarray, max_triangles: int = STAGE_MAX_TRIANGLES) -> np.ndarray:
+    """The skin with at most `max_triangles` triangles, for drawing: unchanged when it is under the
+    budget, else merged by vertex clustering - every corner snapped to the centre of the grid cell
+    it falls in, cells sized from the skin's area so about the budget's worth survive, collapsed
+    and repeated triangles dropped. A preview of the shape at the grid's resolution (a part's look,
+    its size and outline), never the surface anything is measured on."""
+    tris = np.asarray(tris, dtype=np.float64).reshape(-1, 3, 3)
+    n = len(tris)
+    if n <= max_triangles or n == 0:
+        return tris
+    pts = tris.reshape(-1, 3)
+    lo = pts.min(axis=0)
+    area = 0.5 * float(np.linalg.norm(np.cross(tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0]), axis=1).sum())
+    span = float(np.linalg.norm(pts.max(axis=0) - lo)) or 1.0
+    h = max(math.sqrt(2.0 * area / max(max_triangles, 1)), 1e-6 * span)
+    best = tris
+    for _ in range(8):
+        key = np.floor((pts - lo) / h).astype(np.int64)
+        _, inverse, counts = np.unique(key, axis=0, return_inverse=True, return_counts=True)
+        inverse = inverse.reshape(-1)
+        sums = np.zeros((len(counts), 3))
+        np.add.at(sums, inverse, pts)
+        reps = sums / counts[:, None]
+        faces = inverse.reshape(-1, 3)
+        keep = (faces[:, 0] != faces[:, 1]) & (faces[:, 1] != faces[:, 2]) & (faces[:, 0] != faces[:, 2])
+        faces = faces[keep]
+        if len(faces):
+            _, first = np.unique(np.sort(faces, axis=1), axis=0, return_index=True)
+            faces = faces[np.sort(first)]
+        if len(faces) == 0:
+            break                                      # the grid swallowed the part: keep the last
+        best = reps[faces]
+        if len(faces) <= max_triangles:
+            break
+        h *= 1.1 * math.sqrt(len(faces) / max_triangles)
+    return best
+
+
+__all__ = ["FEATURE_ANGLE_DEG", "STAGE_MAX_TRIANGLES", "edges_block", "prepare_skin", "simplified",
+           "skin_patch"]

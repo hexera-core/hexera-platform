@@ -92,13 +92,20 @@ def _viewer_surface():
         if (Path(workspace) / "fea_plan.json").exists():
             # AN FEA MESH (FEA build step 5): every CAD face its own clickable part, Face_k as the
             # deck names it, and the FEA result block - FEA numbers, never a flow mesh's heatmap
-            from meshpipeline.engines.fea_results import results
-            mesh = read_msh(workspace, by_face=True)
-            resp = stl_response(surface_patches_of(mesh), roles, units, skip_names)
+            from meshpipeline.engines.fea_results import results, viewer_face_names
+            try:
+                mesh = read_msh(workspace, by_face=True, face_names=viewer_face_names(workspace))
+                resp = stl_response(surface_patches_of(mesh), roles, units, skip_names)
+            except Exception as exc:  # noqa: BLE001 - a valid FEA mesh is delivered without its view
+                import logging
+
+                from meshpipeline.engines.fea_results import FEA_VIEW_MISSING
+                logging.getLogger(__name__).warning("FEA view not built: %s", exc)
+                resp = {"kind": "stl", "mesh_units": units, "patches": [], "view_note": FEA_VIEW_MISSING}
             if resp:
                 fea = results(workspace)
                 if fea:
-                    resp["fea"] = fea
+                    resp["fea"] = {**fea, "view_note": resp["view_note"]} if resp.get("view_note") else fea
             return resp
         # named boundary groups from mesh.msh → the shared kind=stl payload, coloured by the
         # quality of the cells behind each face - the same measurement an OpenFOAM mesh gets
@@ -184,12 +191,11 @@ SPEC = EngineSpec(
         _load_recommend=_recommend,
         export_formats=("abaqus_inp", "nastran_bdf", "gmsh_msh", "unv"),
         intake_guidance=(
-            "Gmsh users think in element terms: for a structural deck ask which "
-            "analysis it feeds (static stress, modal), whether they need "
-            "second-order elements (the accuracy default) or first-order, roughly "
-            "how fine (a size factor of the part's diagonal), and which faces carry "
-            "constraints/loads - those become named groups (fixed/load/contact) "
-            "in the .inp."
+            "A structural (FEA) part follows THE FEA PATH: only the analysis type is "
+            "asked; the element order is quadratic (element_order 2) and every face "
+            "is a named group, so never ask the order, a size factor or supports and "
+            "loads. For a fluid domain the user prepared, ask roughly how fine (a size "
+            "factor of the domain's diagonal)."
         ),
         intake_advisories=(
             "Delaunay tetrahedral meshing can leave sliver elements (thin, poorly-shaped "
@@ -289,7 +295,9 @@ SPEC = EngineSpec(
         deliverable=Deliverable(
             marker="mesh.inp",
             bundle="gmsh_case.tar.gz", prefix="gmsh_case",
-            label="Abaqus deck (.inp) + Nastran / UNV",
+            # the whole case: the .inp deck and every solver file written beside it (an FEA mesh's
+            # Nastran .bdf and Ansys .cdb; a .unv only when a flow export asked for one)
+            label="Everything: .inp deck + solver files",
             members=(
                 M("mesh.inp"),
                 M("gmsh_spec.json"),
@@ -316,14 +324,18 @@ SPEC = EngineSpec(
         delivered_mesh=DeliveredMesh(cells="tetrahedral", walls="body-fitted", prism_layers=False),
         run_policy=RunPolicy(
             required_files=("gmsh_spec.json",),
-            # 25 MINUTES: at industry density the passage field (driver.PASSAGE_CELLS_ACROSS)
-            # fills a volute in 7-8 min of single-threaded gmsh (volute_scroll_007: 2.57M tets in
-            # 442 s), right at the old 420 s; the builder loop is 3600 s, validated >= 2x this.
+            # AN ESTIMATE of a long CFD run now (the fallback ladder's "does another engine still
+            # fit"): at industry density the passage field (driver.PASSAGE_CELLS_ACROSS) fills a
+            # volute in 7-8 min of single-threaded gmsh (volute_scroll_007: 2.57M tets in 442 s).
+            # The run itself is WATCHED (watched=True, contracts/native_time): stopped only after
+            # the stall window with no sign of life, or at the machine's wall - it was a fixed
+            # 25 minutes. (An FEA mesh is the FEA driver's, watched the same way, PLAN-fea-13.)
             run_timeout=lambda: min(1500, rtcfg.OPENFOAM_COMMAND_TIMEOUT),
-            timeout_hint=("The passage field holds ~13 cells across every passage, so a fill that "
-                          "does not finish in 25 min is a domain too large for that density "
-                          "(a long flat duct): raise size.value only if the brief allows a coarser "
-                          "mesh, otherwise report the limit; then run_mesh again."),
+            watched=True,
+            timeout_hint=("The passage field holds ~13 cells across every passage; a fill that "
+                          "makes no progress for the stall window is stuck, not slow: raise "
+                          "size.value only if the brief allows a coarser mesh, otherwise report "
+                          "the limit; then run_mesh again."),
             ok_guidance="Valid mesh (no fatal defects) - call submit_mesh.",
             fail_label="gmsh driver failed",
             fail_hint=("Adjust gmsh_spec.json (raise size.value to coarsen; keep "

@@ -68,6 +68,29 @@ def _source_basename(state) -> str:
     return os.path.basename(ref.original_filename) if ref and ref.original_filename else "unknown"
 
 
+def _g(v) -> str | None:
+    """A number in %g form; None for anything that is not one (never a format crash)."""
+    return f"{v:g}" if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+
+def _caveat_row(c: dict) -> str:
+    """One adjudicated deviation in words. Two shapes reach here: a per-direction requirement
+    (direction, requested, measured) and a note gate's caveat (engines/resolution_policy.caveat:
+    kind, gate, cells_across, floor, cells, cell_limit). A missing figure is left out, never formatted."""
+    req, got = _g(c.get("requested")), _g(c.get("measured"))
+    if c.get("direction") is not None and (req or got):
+        return (f"{c.get('direction')}: requested {req or 'n/a'}, measured {got or 'n/a'} reference-lengths")
+    what = str(c.get("gate") or c.get("kind") or "requirement")
+    parts = []
+    across, floor = _g(c.get("cells_across")), _g(c.get("floor"))
+    if across or floor:
+        parts.append(f"{across or 'n/a'} cells across where {floor or 'n/a'} were asked")
+    cells, limit = _g(c.get("cells")), _g(c.get("cell_limit"))
+    if cells and limit:
+        parts.append(f"{cells} cells against a limit of {limit}")
+    return what + (": " + ", ".join(parts) if parts else "")
+
+
 def _with_adjudicated_deviations(brief: str, caveats: list) -> str:
     """A caveated delivery candidate reaches review with its requirement near-misses ALREADY
     adjudicated by deterministic code - they will be stated on delivery. Without saying so,
@@ -76,10 +99,7 @@ def _with_adjudicated_deviations(brief: str, caveats: list) -> str:
     it can neither waive nor add to this list."""
     if not caveats:
         return brief
-    rows = "; ".join(
-        f"{c.get('direction')}: requested {c.get('requested'):g}, "
-        f"measured {c.get('measured'):g} reference-lengths"
-        for c in caveats)
+    rows = "; ".join(_caveat_row(c) for c in caveats if isinstance(c, dict))
     return (brief
             + "\n\nADJUDICATED REQUIREMENT DEVIATIONS (application-owned): " + rows
             + ". These measured near-misses are accepted for delivery and will be stated to "
@@ -174,6 +194,17 @@ async def node_reviewer(state: PipelineState) -> dict:
                  "This is a problem on our side - please try again.",
             chain="[EXECUTOR_SUCCESS_ABSENT] reviewer reached without validated execution")
 
+    # AN FEA JOB (its saved purpose) is judged on the MEASURED FEA FACTS - named faces per solver
+    # file, counts, element types, walls, hot spots, coarsening, set-asides - the evidence the FEA
+    # checklist axes name; the 3D preview shows the part's surface as one group by design.
+    from meshpipeline.engines import fea_review
+    _fea_facts = fea_review.facts_text(workspace) if fea_review.is_fea(purpose) else ""
+    # THE USER'S OWN NOTES (contracts/user_notes): CONTEXT for the judge, never a criterion - they
+    # ride the brief the reviewer reads, and stay out of `brief_text`, the only text a finding may
+    # quote to ask for a rebuild, so no note can fail a mesh (NOTE-3).
+    from meshpipeline.contracts.user_notes import context_block
+    _notes = context_block(state.get("user_notes") or [], consumer="reviewer")
+
     inputs = VisualReviewInteractionInputs(
         job_id=job_id,
         step_basename=_source_basename(state),
@@ -183,7 +214,9 @@ async def node_reviewer(state: PipelineState) -> dict:
         review_save_dir=review_save_dir,
         mesh_units=completed_mesh_unit(manifest).value,
         review_brief=_with_adjudicated_deviations(
-            _brief_txt + (f"\n\n{_confirmed}" if _confirmed else ""),
+            _brief_txt + (f"\n\n{_confirmed}" if _confirmed else "")
+            + (f"\n\n{_fea_facts}" if _fea_facts else "")
+            + (f"\n\n{_notes}" if _notes else ""),
             state.get("requirement_caveats") or []),
         request=_request_txt,
         axis_names=list(plan.axis_names),

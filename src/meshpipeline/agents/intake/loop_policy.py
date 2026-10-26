@@ -9,7 +9,7 @@ from typing import Any
 
 from meshpipeline.agents.intake import garbled, turn
 from meshpipeline.agents.intake.diagnostics import IntakeRunExtension
-from meshpipeline.agents.intake.executor import IntakeExecutionState, category_of
+from meshpipeline.agents.intake.executor import IntakeExecutionState, category_of, fea_path
 from meshpipeline.agents.loop.accounting import ToolInvocation
 from meshpipeline.agents.loop.driver import RoundDecision, ToolOutcome
 from meshpipeline.contracts import engineering_text
@@ -25,11 +25,12 @@ from meshpipeline.contracts.agent_loop import (
 logger = logging.getLogger(__name__)
 
 # The application-rendered terminals, in the priority the batch is resolved with. A new engine
-# selection outranks a submission (the user is choosing again); a submission summary wins only if
-# nothing above it did. An impossible admission is NOT a terminal any more: it goes back to the
+# selection outranks a submission (the user is choosing again); the notes question (asked once, in
+# place of the first summary - contracts/user_notes) outranks the summary it holds back; a
+# submission summary wins only if nothing above it did. An impossible admission is NOT a terminal any more: it goes back to the
 # model as a tool result to repair or put to the user (executor.py) - though it still voids the
 # submission beneath it there, so nothing refused is ever delivered.
-TERMINAL_PRIORITY = ("selection_prompt", "submit_summary")
+TERMINAL_PRIORITY = ("selection_prompt", "notes_prompt", "submit_summary")
 
 # Words that carry no content when two questions are compared: grammar, the assent vocabulary
 # and the scaffolding every proposal shares ("I would go with ... - ok, or tell me what differs").
@@ -179,6 +180,7 @@ class IntakeLoopPolicy:
     engine_nudges: int = 0                     # replies sent back for how they spoke of the engine
     thermal_nudges: int = 0                    # thermal-model replies sent back for generic words
     fea_nudges: int = 0                        # FEA replies sent back for an invented load or material
+    fea_settled_nudges: int = 0                # FEA replies sent back for asking what the FEA path settles
     #: The names a thermal model's file gives (its parts, fans, vents...): its own words, which the
     #: thermal vocabulary check leaves alone (application/thermal_wording.forbidden_words).
     thermal_names: tuple[str, ...] = ()
@@ -260,7 +262,7 @@ class IntakeLoopPolicy:
         # AN FEA PART'S REPLY INVENTS NOTHING. Supports, loads and materials are the user's, set
         # in their own solver on the named faces; a reply that proposes one the user never said
         # ("1 kN downward on the end face", "steel E = 210 GPa") goes back ONCE for a rewrite.
-        if (tuple(self.exec_state.declared_case or ())[:1] == ("structural",) and self.fea_nudges == 0
+        if (fea_path(self.exec_state) and self.fea_nudges == 0
                 and (rounds_left is None or rounds_left > 0)):
             from meshpipeline.application.fea_wording import invented
 
@@ -270,6 +272,24 @@ class IntakeLoopPolicy:
                 logger.info("Intake: an FEA reply proposed what the user never said (%s) - sent "
                             "back once for a rewrite", ", ".join(made_up))
                 return RoundDecision(message=turn.FEA_INVENTED_NUDGE, complete=False)
+        # AN FEA PART'S REPLY ASKS NOTHING THE FEA PATH SETTLED: the engine, the element order
+        # (quadratic tetrahedra), near-wall layers or a detail level. Sent back ONCE for a rewrite;
+        # a reply that still asks has those questions taken out before the user reads it.
+        if fea_path(self.exec_state):
+            from meshpipeline.application.fea_wording import settled_asks, without_settled_asks
+
+            asked = settled_asks(self.plaintext_text, self.exec_state.user_texts)
+            if asked and self.fea_settled_nudges == 0 and (rounds_left is None or rounds_left > 0):
+                self.fea_settled_nudges += 1
+                logger.info("Intake: an FEA reply asked what the FEA path settles (%s) - sent back "
+                            "once for a rewrite", ", ".join(asked))
+                return RoundDecision(message=turn.FEA_SETTLED_NUDGE, complete=False)
+            if asked:
+                cleaned = without_settled_asks(self.plaintext_text, self.exec_state.user_texts)
+                if cleaned:
+                    logger.info("Intake: an FEA reply still asked a settled thing (%s) - those "
+                                "questions were taken out of the reply", ", ".join(asked))
+                    self.plaintext_text = cleaned
         # THE SAME QUESTION IS NEVER ASKED TWICE - enforced here, not left to the prompt. A reply
         # that asks what the user was already asked is sent back ONCE, inside the turn, with the
         # rule: their reply was their answer, take your own proposal and move on. Once, so a model

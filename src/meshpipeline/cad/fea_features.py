@@ -40,6 +40,9 @@ FLAT_TURN_DEG = 0.5
 #: larger curvature over the smaller): a shaft's 2 mm shoulder fillet and the 12 mm shaft it runs
 #: into are tangent, but bend six times apart.
 CURVATURE_RATIO = 1.6
+#: A FILLET is a blend, small beside the part: a concave round of a radius over this share of the
+#: part's diagonal is the part's own gentle curve (a blade's camber), not a hot spot.
+FILLET_MAX_SHARE = 0.1
 #: A concave arc that goes this far round is a whole HOLE.
 HOLE_SPAN_DEG = 355.0
 #: A concave arc of at least this much (and less than a hole) is a NOTCH or GROOVE; less is a FILLET.
@@ -191,6 +194,17 @@ TAPER_DEG = 88.0
 #: graze) has no wall of its own: the faces round it cover the material under it.
 AGREEING_RAYS = 3
 AGREE_RATIO = 1.25
+#: A WALL THAT IS THIN ONLY IN PLACES (PLAN-fea-3, 22 Oct): a face whose thinnest agreed reading
+#: is under VARY_SHARE of its median reading is thin only where those readings are - a counterbore
+#: that runs within 0.05 mm of a bore, on a face whose wall is 3 mm elsewhere (fea0221 asked for
+#: 0.025 mm elements over the whole 660 mm2 face: 298M elements). Its readings under VARY_SHARE of
+#: the median are THIN SPOTS, grouped where they lie within THIN_LINK sample spacings of each other,
+#: and the rest of the face keeps the wall its other readings agree on.
+VARY_SHARE = 0.5
+THIN_LINK = 2.0
+#: at most this many thin spots on one face, and on the whole part (the thinnest kept)
+MAX_THIN_SPOTS = 24
+MAX_THIN_SPOTS_PART = 400
 
 
 def _numpy_hits(s: Surface, origins: np.ndarray, dirs: np.ndarray, reach: float) -> tuple[np.ndarray, np.ndarray]:
@@ -309,6 +323,7 @@ def wall_thickness(s: Surface, *, rays: int = THICKNESS_RAYS, seed: int = 0) -> 
     P, O, D, L = (np.concatenate(x) for x in (points, origins, dirs, labels))
     dist = wall_reach(s, O, D, L, eps=eps)
     per: dict[int, tuple[float, float, np.ndarray]] = {}
+    spots: dict[int, dict] = {}
     best = None
     for lab in np.unique(L):
         k = np.flatnonzero((L == lab) & np.isfinite(dist))
@@ -317,10 +332,57 @@ def wall_thickness(s: Surface, *, rays: int = THICKNESS_RAYS, seed: int = 0) -> 
         if at is None:
             continue        # too few rays read a wall here, or they scatter: no wall of its own
         j = order[at]
-        per[int(lab)] = (float(dist[j]), float(np.median(dist[k])), P[j])
+        median = float(np.median(dist[k]))
+        per[int(lab)] = (float(dist[j]), median, P[j])
         if best is None or dist[j] < best[0]:
             best = (float(dist[j]), int(lab), P[j])
-    return {"per_label": per, "min": best, "rays": int(len(O))}
+        if dist[j] < VARY_SHARE * median:
+            area = float(s.areas[s.label == lab].sum())
+            found = thin_spots(P[k], dist[k], median, spacing=math.sqrt(area / max(len(k), 1)))
+            if found is not None:
+                spots[int(lab)] = found
+    return {"per_label": per, "min": best, "rays": int(len(O)), "thin": spots}
+
+
+def thin_spots(points: np.ndarray, readings: np.ndarray, median: float, *, spacing: float) -> dict | None:
+    """A face thin only in places: {"wall": the wall the rest of the face agrees on, "spots": [{"at",
+    "radius", "thickness"}]} - the readings under VARY_SHARE of the median grouped into spots, each
+    with the centre and the radius that covers its readings (plus one sample spacing, the most the
+    thin region can run past the last reading that saw it), and the thinnest reading in it. None
+    when the rest of the face reads no agreed wall (then the whole face keeps its thinnest)."""
+    thin = readings < VARY_SHARE * median
+    rest = np.sort(readings[~thin])
+    at = agreed_wall(rest)
+    if at is None or not thin.any():
+        return None
+    pts, vals = points[thin], readings[thin]
+    # single-link groups: readings within THIN_LINK sample spacings of each other
+    parent = list(range(len(pts)))
+
+    def root(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    link = THIN_LINK * spacing
+    for a in range(len(pts)):
+        near = np.flatnonzero(np.linalg.norm(pts[a + 1:] - pts[a], axis=1) <= link) + a + 1
+        for b in near:
+            ra, rb = root(a), root(int(b))
+            if ra != rb:
+                parent[max(ra, rb)] = min(ra, rb)
+    groups: dict[int, list[int]] = {}
+    for i in range(len(pts)):
+        groups.setdefault(root(i), []).append(i)
+    out = []
+    for members in groups.values():
+        p, v = pts[members], vals[members]
+        centre = p.mean(axis=0)
+        radius = float(np.max(np.linalg.norm(p - centre, axis=1))) + spacing
+        out.append({"at": centre, "radius": radius, "thickness": float(v.min())})
+    out.sort(key=lambda r: (r["thickness"], tuple(r["at"])))
+    return {"wall": float(rest[at]), "spots": out[:MAX_THIN_SPOTS]}
 
 
 # ---------------------------------------------------------------------- sharp inside corners ----
@@ -610,8 +672,11 @@ def merge_coaxial(arcs: list[Arc]) -> list[Arc]:
     return out
 
 
-def kind_of(arc: Arc) -> tuple[str, str] | None:
-    """(hot-spot type, shape word) for a concave round, None for a convex one."""
+def kind_of(arc: Arc, diag: float | None = None) -> tuple[str, str] | None:
+    """(hot-spot type, shape word) for a concave round, None for a convex one - and None for a
+    gently curved face that is no blend: a "fillet" whose radius is more than FILLET_MAX_SHARE of
+    the part's diagonal (diag, in the surface's unit) is the part's own shape, not a stress raiser
+    (a turbine blade's concave side read "Fillet, radius 205 mm", 22 Oct)."""
     if not arc.concave:
         return None
     if arc.kind == "cylinder" and arc.span_deg >= HOLE_SPAN_DEG:
@@ -619,6 +684,8 @@ def kind_of(arc: Arc) -> tuple[str, str] | None:
     if arc.span_deg >= NOTCH_SPAN_DEG:
         groove = arc.kind == "torus" and arc.around_deg >= HOLE_SPAN_DEG
         return NOTCH, "groove" if groove else "notch"
+    if diag and arc.radius > FILLET_MAX_SHARE * float(diag):
+        return None
     return FILLET, "fillet"
 
 
@@ -730,6 +797,6 @@ def bodies_of(tris: np.ndarray, pairs: EdgePairs) -> int:
 
 
 __all__ = ["FILLET", "HOLE", "HOLE_SPAN_DEG", "MAX_HOT_SPOTS", "NOTCH", "NOTCH_SPAN_DEG", "SHARP_CORNER",
-           "SHARP_TURN_DEG", "SMOOTH_TURN_DEG", "THICKNESS_RAYS", "Arc", "EdgePairs", "Surface",
+           "SHARP_TURN_DEG", "SMOOTH_TURN_DEG", "THICKNESS_RAYS", "VARY_SHARE", "thin_spots", "Arc", "EdgePairs", "Surface",
            "agreed_wall", "bodies_of", "components", "wall_reach", "curved_patches", "edge_pairs", "face_samples", "fit_round", "kind_of", "merge_coaxial", "nesting_depth", "patch_samples",
            "sharp_corners", "smooth_regions", "wall_thickness"]

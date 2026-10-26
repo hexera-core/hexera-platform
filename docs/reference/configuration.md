@@ -191,7 +191,7 @@ The pool is per process, so the fleet's peak demand is a fan-out sum, not a sing
 | `MINIO_REGION` | `us-east-1` | signed into every URL as part of the SigV4 credential scope, and passed explicitly so the client never makes a GetBucketLocation call to discover it |
 | `MINIO_SECRET_KEY` | `minioadmin` | **Secret.** MinIO's own local default |
 | `MINIO_BUCKET` | `mesh-artifacts` | must be lowercase; an uppercase value is rejected and the stack never becomes ready |
-| `MINIO_SIGNED_URL_TTL` | `900` | seconds a download link stays valid |
+| `MINIO_SIGNED_URL_TTL` | `900` | the SHORTEST life of a download link, in seconds. A large file's link lives as long as the file takes to fetch at 1 Mbit/s (a 900 MB deck: 2 h), up to 12 h, so a slow or resumed download is never refused half-way. The console asks for a new link on every Download click |
 
 ## Web search
 
@@ -480,7 +480,7 @@ API: it logs that the directory is missing and leaves `/ui` and `/static` unmoun
 
 <!-- Regenerate: python -m meshpipeline.settings.inventory --reference -->
 
-Every supported setting (270 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
+Every supported setting (275 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
 
 | Setting | Exposure | Read by | Secret |
 |---|---|---|---|
@@ -501,6 +501,7 @@ Every supported setting (270 entries). `template` settings are the ones `.env.ex
 | `CIRCUIT_FAILURE_THRESHOLD` | template | app |  |
 | `CIRCUIT_HALF_OPEN_MAX` | template | app |  |
 | `CIRCUIT_RECOVERY_SECONDS` | template | app |  |
+| `CLAIM_WAIT_SECONDS` | template | app |  |
 | `BUILDER_LOOP_TIMEOUT` | template | app |  |
 | `CLOUDRUN_JOB` | template | app |  |
 | `GCP_MESH_BUCKET` | template | app |  |
@@ -607,7 +608,10 @@ Every supported setting (270 entries). `template` settings are the ones `.env.ex
 | `STATIC_DIR` | template | app |  |
 | `WORKSPACE_BASE` | template | app |  |
 | `EVENT_LOG_TTL_SECONDS` | template | app |  |
+| `RATE_LIMIT_ADDRESS_CEILING_PER_MINUTE` | template | app |  |
+| `RATE_LIMIT_GLOBAL_PER_MINUTE` | template | app |  |
 | `RATE_LIMIT_PER_MINUTE` | template | app |  |
+| `RATE_LIMIT_TRUSTED_PROXY_HOPS` | template | app |  |
 | `WS_MAX_SESSION_SECONDS` | template | app |  |
 | `FAILED_JOB_RETENTION_HOURS` | template | app |  |
 | `PIPELINE_TOTAL_TIMEOUT_SECONDS` | template | app |  |
@@ -653,6 +657,7 @@ Every supported setting (270 entries). `template` settings are the ones `.env.ex
 | `TAVILY_API_KEY` | template | app | yes |
 | `WEB_SEARCH_MAX_RESULTS` | template | app |  |
 | `WEB_SEARCH_TIMEOUT` | template | app |  |
+| `FEA_AI` | internal | app |  |
 | `VMTK_BIN` | template | app |  |
 | `AI_DECISION_CACHE` | internal | app |  |
 | `MESH_CFMESH_THREADS` | internal | app |  |

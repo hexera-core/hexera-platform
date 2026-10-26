@@ -206,8 +206,14 @@ def test_the_narrowest_wall_gates_the_resolution_not_the_mesh_wide_median(tmp_pa
     (tmp_path / "vmtk_staging.json").write_text(json.dumps({"radius_m": {"median": 10.0}}))
     q = check_mesh(tmp_path)
     assert q["passage_cells_across"] > 15                   # the mesh-wide figure looks fine
-    assert q["mesh_ok"] is False
-    assert any("narrowest wall" in f for f in q["fatal"])
+    # an under-resolved fill is SOUND: the narrowest wall is the resolution gate's note
+    # (LAD-cfd-3), never one of the mesh's fatal defects
+    assert q["mesh_ok"] is True and q["under_resolved"] is True and not q["fatal"]
+    from meshpipeline.engines.gates import GateCtx
+    from meshpipeline.engines.vmtk.gates import _gate_resolution_floor
+    ctx = GateCtx(workspace=tmp_path, manifest={"quality": q})
+    ok, fb = _gate_resolution_floor(ctx)
+    assert ok is False and "narrowest wall" in fb
 
 
 def test_passage_resolution_is_measured_and_a_coarse_fill_is_rejected(tmp_path):
@@ -216,8 +222,9 @@ def test_passage_resolution_is_measured_and_a_coarse_fill_is_rejected(tmp_path):
     _write_mixed_vtu(tmp_path / "mesh.vtu", [(0, 1, 2, 3)], _TET_FACES, _BASE_PTS)
     (tmp_path / "vmtk_staging.json").write_text(json.dumps({"radius_m": {"median": 0.5}}))
     q = check_mesh(tmp_path)
-    assert q["passage_cells_across"] < 12 and q["mesh_ok"] is False
-    assert any("undermeshed" in f for f in q["fatal"])
+    # a coarse fill is measured and noted, not broken (LAD-cfd-3): the gate says it, not fatal
+    assert q["passage_cells_across"] < 12 and q["mesh_ok"] is True
+    assert q["under_resolved"] is True and not q["fatal"]
     (tmp_path / "vmtk_staging.json").write_text(json.dumps({"radius_m": {"median": 10.0}}))
     q = check_mesh(tmp_path)
     assert 15 < q["passage_cells_across"] < 20 and q["mesh_ok"] is True

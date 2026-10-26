@@ -298,4 +298,5 @@ def test_a_drain_is_caught_before_the_crash_handler_ever_sees_it():
 
 def test_the_graph_run_is_watched_for_a_drain():
     src = (REPO / "src/meshpipeline/application/pipeline_run.py").read_text("utf-8")
-    assert "run_unless_draining(" in src and "graph.ainvoke(" in src
+    # the graph run goes through post_gate_rescue.run_to_end, inside the drain watch
+    assert "run_unless_draining(" in src and "_run_to_end(graph" in src

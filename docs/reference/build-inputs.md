@@ -40,6 +40,7 @@ implied away.
 | Python runtime deps | exact `==` pins | pip resolution against those pins | `requirements/runtime.txt` |
 | Python build toolchain | pip/setuptools/wheel exact pins | same | `Dockerfile` |
 | Application wheel | built from the committed tree | Gate C provenance | `Dockerfile` |
+| fTetWild (FEA's last rung, mesh image only) | wildmeshing/fTetWild commit `8118f810…` fetched by full SHA; each dependency its CMake fetches (CLI11, Eigen, fmt, geogram, json, libigl, predicates, spdlog, oneTBB) checked against a reviewed full commit SHA after the configure step, and the set of them checked too | Git object identity (`ARG FTETWILD_COMMIT`, `ARG FTETWILD_DEPS`) | `Dockerfile` (`ftetwild-build`) |
 
 Ecosystems the repository does not use, Node/npm, git submodules, cloned dependencies, have no
 locks because they have no acquisitions. The reproducibility guard derives this from the tree, so

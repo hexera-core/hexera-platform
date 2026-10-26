@@ -304,7 +304,8 @@ def _log_gap(metres: float, target: float) -> float:
 
 
 def infer_unit(longest_file_units: float, *, expected: ExpectedSize | None = None,
-               shape: ExpectedSize | None = None, format_unit: LengthUnit | None = None) -> UnitInference | None:
+               shape: ExpectedSize | None = None, format_unit: LengthUnit | None = None,
+               stated: LengthUnit | None = None) -> UnitInference | None:
     """The unit a file that declares none is most likely in, from what the part is.
 
     What the part is comes, best first, from `expected` (the user's words or the naming model's
@@ -315,7 +316,11 @@ def infer_unit(longest_file_units: float, *, expected: ExpectedSize | None = Non
 
     Confidence: high when one reading alone fits (or one fits a decade closer to the usual size
     than any other); medium when several fit; low when nothing says what the part is, or no
-    reading fits. None only for a size that is not a size."""
+    reading fits. None only for a size that is not a size.
+
+    `stated`: the unit most of the file's parts state, for a file that states more than one (an
+    Inventor assembly, six parts in inches and one in millimetres). It leads whenever the part is
+    believable in it - the file's own word beats any convention - and the reading is sure then."""
     try:
         longest = float(longest_file_units)
     except (TypeError, ValueError):
@@ -344,6 +349,13 @@ def infer_unit(longest_file_units: float, *, expected: ExpectedSize | None = Non
         order = _PASSAGE_PREFERENCE if kind is INTERNAL_PASSAGE else _PREFERENCE
         return sorted(units, key=order.index)
 
+    if stated is not None and stated in fits:
+        others = ranked([u for u in fits if u is not stated])
+        alt = others[0] if others else None
+        return UnitInference(stated, "high", lengths[stated], kind.what,
+                             f"most of the file's parts state {UNIT_WORDS[stated]}, and "
+                             f"{length_in(lengths[stated], stated)} is a believable size for {kind.what}",
+                             alt, lengths[alt] if alt else None)
     if not fits:
         # nothing makes it believable as what it reads as: the size alone decides, and says so
         unit = proposed_unit(longest)

@@ -5,12 +5,19 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ChatMessageIn(BaseModel):
     session_id: uuid.UUID
     content: str
+
+
+class ChatNoteIn(BaseModel):
+    """The console's notes box: anything specific about the simulation, kept exactly as typed
+    (contracts/user_notes). Long enough for a pasted spec sheet."""
+    session_id: uuid.UUID
+    text: str = Field(min_length=1, max_length=20_000)
 
 
 class ChatResponse(BaseModel):
