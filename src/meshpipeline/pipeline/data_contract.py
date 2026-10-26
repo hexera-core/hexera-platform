@@ -72,6 +72,17 @@ CONTRACT: tuple[ContractVar, ...] = (
         corpus="training: the prompt side of every agent trajectory",
     ),
     ContractVar(
+        concept="user notes (verbatim)",
+        purpose="the user's OWN words for anything specific about the simulation - the answer to "
+                "the intake's one notes question, the messages it quoted as requirements and the "
+                "console's notes box - kept exactly as typed, never a model's rewrite "
+                "(contracts/user_notes, NOTE-1). Every route's AI steps read them and every "
+                "requirement in them ends applied, met, recorded or not applied on the result",
+        intake_field="user_notes", session_column="user_notes",
+        dispatch_kwarg="user_notes", state_field="user_notes",
+        corpus="training+qa: what the user actually asked for, and what became of each request",
+    ),
+    ContractVar(
         concept="acceptance criteria",
         purpose="intake's qualitative brief the reviewer judges against",
         intake_field="review_brief_txt", session_column="review_brief_txt",
@@ -491,6 +502,7 @@ STATE_FIELDS: dict[str, str] = {
     "review_rerun_count":    "reviews of the same validated mesh started again after one ended without a verdict (node_review_retry); not a mesh attempt - reset to 0 by every builder attempt, because it counts reviews of ONE mesh",
     "request_txt":           "user requirements (see contract)",
     "review_brief_txt":      "acceptance criteria (see contract)",
+    "user_notes":            "the user's own notes, verbatim (see contract)",
     "intake_patches":        "patch contract (see contract)",
     "dimensionality":        "dimensionality (see contract)",
     "purpose":               "purpose / use case (see contract)",

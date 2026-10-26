@@ -160,11 +160,12 @@ def _context_files(workspace: Path, state, source_path: str) -> tuple[str, str]:
                    "reference_length_m": state.get("reference_length_m"),
                    "flow_axis": state.get("flow_axis")},
         input_kind=str(state.get("input_kind") or ""),
+        user_notes=list(state.get("user_notes") or []),
     )
 
 
 def _opening(workspace: Path, state, *, engine: str, source_path: str) -> list:
-    return _build_initial_messages(
+    messages = _build_initial_messages(
         source_path=source_path,
         workspace=workspace,
         domain=state.get("domain", ""),
@@ -174,6 +175,22 @@ def _opening(workspace: Path, state, *, engine: str, source_path: str) -> list:
         engine_params=state.get("engine_params", {}) or {},
         purpose=state.get("purpose", "") or "",
     )
+    note = user_notes_note(workspace, state)
+    if note:
+        _append_to_opening(messages, note)
+    return messages
+
+
+def user_notes_note(workspace: Path, state) -> str:
+    """THE USER'S OWN NOTES for the model-led builder (contracts/user_notes, NOTE-2): where the full
+    text is, the notes themselves, and that submit_mesh answers each requirement. '' with none."""
+    from meshpipeline.contracts import user_notes as un
+    block = un.prompt_block(state.get("user_notes") or [], consumer="builder_model")
+    if not block:
+        return ""
+    return (f"\n\n## The user's own notes - in {workspace}/{un.NOTES_FILE}; READ THEM TOO\n"
+            + block + "\nWhen you call submit_mesh you may say in `notes_remark`, in one plain "
+            "line, what you did with them.")
 
 
 def _append_to_opening(messages: list, note: str) -> None:

@@ -158,6 +158,14 @@ th,td{border-color:var(--border)}
 .req-card .rc-ck.bad .ic{background:var(--danger-soft);color:var(--danger)}
 .req-card .rc-ck.bad{color:var(--text)}
 .req-card .rc-d{color:var(--text-faint);font-size:var(--fs-sm)}
+.req-card .rc-note{margin:2px 16px 6px;padding:6px 10px;border-left:2px solid var(--divider);
+  color:var(--text);font-size:var(--fs-md);white-space:pre-wrap;overflow-wrap:anywhere}
+.req-card .rc-notes-box{padding:4px 16px 6px}
+.req-card .rc-notes-in{width:100%;box-sizing:border-box;min-height:64px;resize:vertical;padding:8px 10px;
+  font:inherit;font-size:var(--fs-md);color:var(--text);background:transparent;border:1px solid var(--border);
+  border-radius:6px}
+.req-card .rc-notes-act{display:flex;align-items:center;gap:10px;margin-top:6px}
+.req-card .rc-notes-msg{color:var(--text-faint);font-size:var(--fs-sm)}
 .req-card .rc-ck code{font-family:var(--mono);font-size:.9em;color:var(--steel-bright)}
 
 /* the engine choice under the one engine question: every engine that can take the file, its fit

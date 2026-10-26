@@ -727,6 +727,7 @@ _REQUIREMENT_WRITES: tuple[tuple[str, str], ...] = (
     ("mesh_engine", "set_mesh_engine"),
     ("domain", "set_task_label"),
     ("engine_params", "set_engine_params"),
+    ("user_notes", "set_user_notes"),
 )
 
 #: Event channels the turn can produce, in the order they must be appended.
@@ -777,10 +778,41 @@ async def persist_turn(inbound: InboundMessage, result: dict, *, session_repo,
         await db.commit()
 
 
+class NoteStatus(str, enum.Enum):
+
+    added = "added"
+    not_found = "not_found"
+    empty = "empty"
+    running = "running"          # the run has started: a note can no longer reach it
+
+
+async def add_console_note(session_id: uuid.UUID, owner_id: str, text: str, *, session_repo,
+                           db_factory, organization_id: str = "") -> tuple[NoteStatus, Any]:
+    """THE CONSOLE'S NOTES BOX (contracts/user_notes, NOTE-1): the user's text kept exactly as
+    typed beside the session's other notes. Returns (status, the session as it now stands). Not
+    while a run is linked - the note could no longer reach it."""
+    from meshpipeline.contracts.user_notes import SOURCE_CONSOLE, make
+    if not str(text or "").strip():
+        return NoteStatus.empty, None
+    async with db_factory() as db:
+        session = await session_repo.get_for_owner(db, session_id, owner_id,
+                                                   organization_id=organization_id)
+        if session is None:
+            return NoteStatus.not_found, None
+        if getattr(session, "job_id", None):
+            return NoteStatus.running, session
+        await session_repo.set_user_notes(db, session_id, [make(text, source=SOURCE_CONSOLE)])
+        await db.commit()
+        fresh = await session_repo.get_for_owner(db, session_id, owner_id,
+                                                 organization_id=organization_id)
+    return NoteStatus.added, fresh
+
+
 def _reply_of(result: dict) -> str:
     from meshpipeline.agents.intake.agent import _extract_reply
     return _extract_reply(result)
 
 
-__all__ = ["STILL_RUNNING_REPLY", "GateChange", "GateTransition", "InboundMessage",
+__all__ = ["STILL_RUNNING_REPLY", "GateChange", "GateTransition", "InboundMessage", "NoteStatus",
+           "add_console_note",
            "MessageOutcome", "MessageStatus", "PreviousRun", "accept", "persist_turn"]

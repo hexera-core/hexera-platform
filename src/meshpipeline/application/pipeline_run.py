@@ -222,7 +222,7 @@ class JobRequest:
                  "approved_snapshot_id", "approved_patch_contract",
                  "approved_intent_fingerprint", "intake_events",
                  "requested_extents", "reference_length_m", "requirements_strict",
-                 "flow_axis", "repair_directives", "review_continuation")
+                 "flow_axis", "repair_directives", "review_continuation", "user_notes")
 
     def __init__(self, job_id, owner_id="dev-user", geometry_source=None,
                  geometry_interpretation=None, session_id="",
@@ -235,7 +235,7 @@ class JobRequest:
                  approved_intent_fingerprint="", intake_events=None,
                  requested_extents=None, reference_length_m=None,
                  requirements_strict=True, flow_axis=None,
-                 repair_directives=None, review_continuation=False):
+                 repair_directives=None, review_continuation=False, user_notes=None):
         self.job_id           = job_id
         self.owner_id         = owner_id
         # Replayed only once the claim has bound the tenant these records file under. They are
@@ -305,6 +305,10 @@ class JobRequest:
         # purchase as the parked run (it was not admitted again and is charged once, at its end).
         self.repair_directives = [dict(d) for d in (repair_directives or [])]
         self.review_continuation = bool(review_continuation)
+        # THE USER'S OWN NOTES, word for word (contracts/user_notes): read by every route's AI
+        # steps and answered per requirement on the result. Empty for a run with none.
+        from meshpipeline.contracts.user_notes import clean as _clean_notes
+        self.user_notes = _clean_notes(user_notes)
         # user's explicit engine choice from intake ('cfmesh'/'snappy'; '' = auto).
         # Pins state['engine'] so resolution keeps it - the user has the final word.
         self.mesh_engine      = (mesh_engine or "").strip().lower()
@@ -435,6 +439,7 @@ def run_pipeline(
     flow_axis:               str | None = None,
     repair_directives:       list | None = None,
     review_continuation:     bool       = False,
+    user_notes:              list | None = None,
 ) -> dict:
 
 
@@ -480,6 +485,7 @@ def run_pipeline(
         user_dispute=user_dispute or {},
         repair_directives=repair_directives or [],
         review_continuation=review_continuation,
+        user_notes=user_notes or [],
         approved_snapshot_id=approved_snapshot_id or "",
         approved_patch_contract=approved_patch_contract,
         approved_intent_fingerprint=approved_intent_fingerprint or "",
@@ -492,6 +498,18 @@ def run_pipeline(
 # must not silently redefine what a dispatch payload may contain. Registering here (rather than the
 # contract importing this module) is what keeps dispatch_contract from importing the orchestrator.
 from meshpipeline.application.dispatch_types import register_run_entry  # noqa: E402
+
+
+def _notes_remarks(final_state) -> list:
+    """The 'From your notes' lines the delivered attempt's steps left (contracts/user_notes);
+    [] for a run with no notes. Never raises: a remark is never worth a run."""
+    if not final_state.get("user_notes"):
+        return []
+    try:
+        from meshpipeline.contracts.user_notes import read_remarks
+        return read_remarks(final_state.get("openfoam_workspace") or "")
+    except Exception:  # noqa: BLE001 - best effort (NOTE-3)
+        return []
 
 
 def _planner_model() -> str:
@@ -682,6 +700,7 @@ async def _run_async(req: JobRequest) -> dict:
             reference_length_m=req.reference_length_m,
             requirements_strict=req.requirements_strict,
             flow_axis=req.flow_axis,
+            user_notes=req.user_notes,
             agent_model_configs={
                 "builder":    {"model": bcfg.BUILDER_MODEL,  "temperature": bcfg.BUILDER_TEMPERATURE,    "max_tokens": bcfg.BUILDER_MAX_TOKENS},
                 "reviewer":   {"model": rcfg.REVIEWER_MODEL, "temperature": rcfg.REVIEWER_TEMPERATURE,   "max_tokens": rcfg.REVIEWER_MAX_TOKENS},
@@ -1234,6 +1253,8 @@ async def _run_async(req: JobRequest) -> dict:
                 review_blocking=list(_review_blocking),
                 review_plan=_review_plan,
                 review_left=_review_left,
+                # what the steps that read the user's notes said they did with them
+                notes_remarks=_notes_remarks(final_state),
                 pre_composed_message=str(final_state.get("outcome_message") or "").strip()),
             ownership=ownership, lease_repo=lease_repo, job_repo=job_repo, jlog=jlog)
         if _publication.fenced:

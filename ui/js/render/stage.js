@@ -98,7 +98,7 @@ export const Stage = {
   // THE FINALIZED BRIEF, as the application settled it - not the model's prose
   // re-read here. Rendered once and then updated in place, because a later turn
   // re-sends the same brief and a conversation should not accumulate copies of it.
-  brief(b){
+  brief(b,addNote){
     if(!b)return;
     const sig=JSON.stringify(b);
     if(this._briefSig===sig)return;
@@ -132,16 +132,31 @@ export const Stage = {
       return `<div class="rc-ck${good?'':(unknown?' unk':' bad')}">`
         +`<span class="ic">${good?'✓':(unknown?'?':'✕')}</span>`
         +`<span>${esc(c.label)}${c.detail?` <span class="rc-d">${esc(c.detail)}</span>`:''}</span></div>`;}).join('');
+    // THE USER'S OWN NOTES, exactly as typed (a pasted spec keeps its lines), and the box that adds
+    // one. Guidance for the mesh, never a check: the plan above is what is approved.
+    const notes=(b.user_notes||[]).map(n=>`<div class="rc-note">${esc(n.text)}</div>`).join('');
+    const box=addNote?`<div class="rc-notes-box"><textarea class="rc-notes-in" rows="3" maxlength="20000"
+        placeholder="Anything specific about this simulation? Paste a spec if you have one."></textarea>
+        <div class="rc-notes-act"><button type="button" class="rc-notes-add">Add note</button>
+        <span class="rc-notes-msg" role="status"></span></div></div>`:'';
     const html=`<div class="who">Hexera · your request, as understood</div>
       <div class="req-card${(b.checks||[]).every(c=>c.status==='pass')?' ok':''}">
         ${thermal?`<div class="rc-h">Job sheet</div><p class="rc-sheet">${esc(b.job_sheet)}</p>`
           :'<div class="rc-h">Mesh plan</div>'}${rows}
         ${ck?`<div class="rc-h rc-h2">Checked</div>${ck}`:''}
+        ${notes||box?`<div class="rc-h rc-h2">Your notes</div>${notes}${box}`:''}
       </div>`;
     if(this._briefEl){this._briefEl.innerHTML=html;}
     else{this.clearEmpty();
       const g=document.createElement('div');g.className='im assistant';g.innerHTML=html;
       this.col().appendChild(g);this._briefEl=g;}
+    const add=this._briefEl.querySelector('.rc-notes-add');
+    if(add)add.onclick=async()=>{
+      const inp=this._briefEl.querySelector('.rc-notes-in'),msg=this._briefEl.querySelector('.rc-notes-msg');
+      const text=inp.value;if(!text.trim())return;
+      add.disabled=true;msg.textContent='';
+      try{this._briefSig='';await addNote(text);}
+      catch(e){add.disabled=false;msg.textContent=(e&&e.message)||'The note was not saved.';}};
     this.scrollBottom();},
 
   /* THE ENGINE CHOICE, under the one engine question. Every engine that can take the uploaded file,

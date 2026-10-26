@@ -153,6 +153,15 @@ class SessionRepository:
         if s:
             s.domain = domain
 
+    async def set_user_notes(self, db: AsyncSession, session_id: uuid.UUID,
+                             notes: list) -> None:
+        """Add the user's notes to the session's: MERGED, never replaced, so a submission's
+        chat notes never erase one typed in the console's box (contracts/user_notes)."""
+        from meshpipeline.contracts.user_notes import merge
+        s = await self.get_internal(db, session_id)
+        if s:
+            s.user_notes = merge(getattr(s, "user_notes", None), notes)
+
     async def set_engine_params(self, db: AsyncSession, session_id: uuid.UUID,
                                 params: dict) -> None:
         s = await self.get_internal(db, session_id)

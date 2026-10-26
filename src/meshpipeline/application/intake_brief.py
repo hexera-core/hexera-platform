@@ -221,6 +221,11 @@ def build_brief(session: Any) -> dict[str, Any] | None:
     # absent stays absent: a field Intake never settled is not a blank row
     brief = {k: v for k, v in brief.items() if v is not None}
     brief["submitted"] = bool(getattr(session, "intake_submitted", False))
+    # THE USER'S OWN NOTES, as typed (contracts/user_notes): listed on the card under the plan, with
+    # the box that adds one. Words only - never where they were captured or when.
+    from meshpipeline.contracts.user_notes import clean as _clean_notes
+    brief["user_notes"] = [{"id": n["id"], "text": n["text"], "source": n["source"]}
+                           for n in _clean_notes(getattr(session, "user_notes", None))]
     brief["checks"] = build_checks(brief)
     _add_display_labels(brief)
     return brief

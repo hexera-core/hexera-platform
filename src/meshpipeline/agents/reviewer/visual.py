@@ -199,6 +199,11 @@ async def node_reviewer(state: PipelineState) -> dict:
     # checklist axes name; the 3D preview shows the part's surface as one group by design.
     from meshpipeline.engines import fea_review
     _fea_facts = fea_review.facts_text(workspace) if fea_review.is_fea(purpose) else ""
+    # THE USER'S OWN NOTES (contracts/user_notes): CONTEXT for the judge, never a criterion - they
+    # ride the brief the reviewer reads, and stay out of `brief_text`, the only text a finding may
+    # quote to ask for a rebuild, so no note can fail a mesh (NOTE-3).
+    from meshpipeline.contracts.user_notes import context_block
+    _notes = context_block(state.get("user_notes") or [], consumer="reviewer")
 
     inputs = VisualReviewInteractionInputs(
         job_id=job_id,
@@ -210,7 +215,8 @@ async def node_reviewer(state: PipelineState) -> dict:
         mesh_units=completed_mesh_unit(manifest).value,
         review_brief=_with_adjudicated_deviations(
             _brief_txt + (f"\n\n{_confirmed}" if _confirmed else "")
-            + (f"\n\n{_fea_facts}" if _fea_facts else ""),
+            + (f"\n\n{_fea_facts}" if _fea_facts else "")
+            + (f"\n\n{_notes}" if _notes else ""),
             state.get("requirement_caveats") or []),
         request=_request_txt,
         axis_names=list(plan.axis_names),

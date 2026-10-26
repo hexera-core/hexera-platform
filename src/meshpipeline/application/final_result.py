@@ -186,6 +186,11 @@ class FinalResult:
     # HOW MANY UNSURE DEFECTS THE MINT CAP DROPPED (repair_review_minting.MINT_CAP), so the review
     # can say "showing the largest N of M" instead of presenting a capped queue as the whole part.
     review_truncated: int = 0
+    # WHAT THE BUILD DID WITH THE USER'S OWN NOTES (contracts/user_notes): the one plain line each
+    # step that read them chose to leave, said on the result as "From your notes: ...". Best effort
+    # and never a check (NOTE-3). Added without a schema bump: it defaults to [] and an older
+    # reader ignores the key.
+    notes_remarks: list = field(default_factory=list)
 
     def __post_init__(self) -> None:
         # THE invariant, enforced at construction so no path can violate it.
@@ -244,7 +249,8 @@ class FinalResult:
             review_parked=int(d.get("review_parked", 0) or 0),
             review_left=(dict(d["review_left"])
                          if isinstance(d.get("review_left"), Mapping) else {}),
-            review_truncated=int(d.get("review_truncated", 0) or 0))
+            review_truncated=int(d.get("review_truncated", 0) or 0),
+            notes_remarks=[str(r) for r in (d.get("notes_remarks") or []) if str(r).strip()])
 
 
 # WHAT A CRASH STILL KNOWS.
@@ -658,6 +664,12 @@ def with_review_left(fr: FinalResult, left: Mapping | None) -> FinalResult:
     return dataclasses.replace(fr, review_left=dict(left or {}))
 
 
+def with_notes_remarks(fr: FinalResult, remarks: list | None) -> FinalResult:
+    """What the steps that read the user's notes said they did with them (best effort)."""
+    import dataclasses
+    return dataclasses.replace(fr, notes_remarks=[str(r) for r in (remarks or []) if str(r).strip()])
+
+
 def with_review_truncated(fr: FinalResult, dropped: int) -> FinalResult:
     import dataclasses
     return dataclasses.replace(fr, review_truncated=max(int(dropped or 0), 0))
@@ -688,6 +700,9 @@ def render_message(fr: FinalResult) -> str:
     if fr.review_parked > 0 and fr.status == TerminalStatus.failed:
         return _render_parked(fr.review_parked)
     text = _render_outcome(fr)
+    # THE USER'S OWN NOTES: what the build did with them, in the steps' own one plain line
+    from meshpipeline.contracts.user_notes import result_lines
+    text = "\n".join([text, *result_lines(fr.notes_remarks, consumer="delivery")])
     ladder = fr.engine_ladder if isinstance(fr.engine_ladder, Mapping) else {}
     if fr.status == TerminalStatus.succeeded:
         from meshpipeline.pipeline.engine_fallback import delivered_note

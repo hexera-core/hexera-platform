@@ -1032,6 +1032,10 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     # and the decision cache answers it the same way.)
     ai = await FA.decide(record, state or {}, P.zones(record), diag_m=diag_m,
                          limit=element_limit(record)[0], job_id=job_id, run=run, wait_s=ai_wait_s(run))
+    # what the AI did with the user's notes, kept for the result's "From your notes" line
+    if (ai.get("decision") or {}).get("notes_remark"):
+        from meshpipeline.contracts.user_notes import record_remark
+        record_remark(ws, ai["decision"]["notes_remark"], by="fea_ai")
     levers: list[dict] = []
     passes: list[dict] = []
     tripped: dict | None = None

@@ -124,6 +124,9 @@ async def _run_shared_loop(attempt: BuilderAttempt, state, *, job_id: str,
             user_dispute=state.get("user_dispute") or None,
             # Where a BROKEN mesh moves this run, so run_mesh does not re-run this engine on it
             broken_mesh_moves_to=_broken_mesh_moves_to(state),
+            # The user's own notes (contracts/user_notes): submit_mesh may then carry one plain
+            # line on what the build did with them. Passed only when there are some.
+            **({"user_notes": list(state["user_notes"])} if state.get("user_notes") else {}),
         ),
         timeout=timeout_s,
     )

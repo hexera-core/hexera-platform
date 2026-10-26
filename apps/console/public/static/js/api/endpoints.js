@@ -103,6 +103,15 @@ export async function sendMessage(sessionId, content) {
   return r.json();
 }
 
+/** The console's notes box: the user's own text, kept word for word beside the session's other
+ *  notes. Resolves to {session_id, brief} - the card as it now stands. */
+export async function addNote(sessionId, text) {
+  const r = await apiFetch("/api/v1/chat/notes",
+    { method: "POST", headers: headers(), body: JSON.stringify({ session_id: sessionId, text }) });
+  if (!r.ok) throw await readError(r);
+  return r.json();
+}
+
 /** The job's current durable facts. `throwOnError` is false for the poller, which treats a
  *  transient 5xx as normal, and true for the deep link, which must know it failed. */
 export async function getJob(jobId, { throwOnError = true } = {}) {
