@@ -364,7 +364,8 @@ def _coarsen_after_timeout(timed_out: dict | None, strategy: dict, *,
     out, cuts = coarsen_after_timeout(timed_out, strategy, ceiling=polcfg.CELL_HARD_LIMIT,
                                       internal=internal)
     if cuts:
-        logger.info("pass after a timeout: the re-plan was not coarser - %s", "; ".join(cuts))
+        why = "the size brake" if timed_out.get("_why") == "oversize" else "a timeout"
+        logger.info("pass after %s: the re-plan was not coarser - %s", why, "; ".join(cuts))
     return out, "; ".join(cuts)
 
 
@@ -979,6 +980,7 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
 
     for attempt in range(1, max_attempts + 1):
         _timed_out_now, _repeat_stop, _mesh_minutes = False, False, 0.0
+        _braked_now = False
         if plan is None:   # repair: re-plan WITH the previous plan + critique (iterate with memory)
             _po = await plan_with_accounting(
                 surface=_plan_surface(state, workspace),
@@ -1179,6 +1181,7 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                 # The next pass is planned with the budget cut by how far over it was headed, and
                 # this case is never run again - a deterministic re-plan, no clock involved.
                 from meshpipeline.engines.size_brake import scaled_budget_factor
+                _braked_now = True
                 _over = dict(result["oversize"])
                 logger.warning("snappy pass %d: stopped by the size brake - %s cells %s, %.1fx the "
                                "budget of %s - re-planning smaller (job_id=%s)", attempt,
@@ -1228,7 +1231,9 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
 
         logger.info("snappy attempt %d - cells=%s wall_faces=%s skew_faces=%s -> %s (job_id=%s)",
                     attempt, q.get("cells"), wall_faces, q.get("skew_faces"),
-                    "PRODUCTION-GRADE" if production else reason[:50], job_id)
+                    "PRODUCTION-GRADE" if production else
+                    ("stopped by the size brake (no mesh kept)" if _braked_now else reason[:50]),
+                    job_id)
         # A LAYER-FATAL PASS (negative-volume / mis-oriented cells - folding prisms) is repaired
         # where it folded: checkMesh located the invalid cells, and the next pass - the SAME plan -
         # leaves layers out only round those spots (_repair_after_fold). Only when the spots are
