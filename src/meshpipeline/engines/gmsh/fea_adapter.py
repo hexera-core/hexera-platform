@@ -733,6 +733,20 @@ def save_kept(gmsh, ws: Path, *, scale: float, tied: dict, kept: list[int], fail
           f"({KEEP_RULE})", file=sys.stderr)
 
 
+def keep_filled(gmsh, ws: Path, vols, failed, rung_vols, *, scale: float, tied: dict,
+                part_volumes: dict[str, list[int]] | None) -> list[int]:
+    """LAD-fea-11: the volumes of `vols` that hold elements - not failed, not fTetWild's - kept for the next
+    pass. A volume gmsh left empty without raising (it only warns "No elements in volume") is a failed part, never
+    a kept one: kept, it would reach the solver files with no elements. Returns the kept volumes."""
+    candidates = sorted({int(v) for v in vols} - {int(v) for v in failed} - {int(v) for v in rung_vols})
+    hollow = set(empty_volumes(gmsh, candidates))
+    good = [v for v in candidates if v not in hollow]
+    if good:
+        save_kept(gmsh, ws, scale=scale, tied=tied, kept=good, failed=sorted({int(v) for v in failed} | hollow),
+                  part_volumes=part_volumes)
+    return good
+
+
 def kept_for(ws: Path, run: dict) -> dict | None:
     """LAD-fea-11: what an earlier pass kept, when this pass's plan says to use it and the files are here."""
     keep = (run or {}).get("keep")
@@ -1354,6 +1368,8 @@ def build_volume(gmsh, ws: Path, plan: dict, geom: Path, asm: dict | None, sidec
                   f"{len(vols) - len(kept)} ({KEEP_RULE})", file=sys.stderr)
     if rung is not None or kept:
         rung_vols = [] if rung is None else (sorted(vols) if rung == "all" else rung_volumes(run, vols, part_volumes))
+        # a part gmsh filled in a later pass is kept as gmsh filled it: fTetWild never meshes it a second time
+        rung_vols = [v for v in rung_vols if v not in set(kept)]
         rest = [v for v in vols if v not in rung_vols and v not in set(kept)]
         all_vols, all_surfaces = vols, surfaces
         if not rest:
@@ -1403,10 +1419,8 @@ def build_volume(gmsh, ws: Path, plan: dict, geom: Path, asm: dict | None, sidec
     except Exception as exc:
         if isinstance(exc, PartsFailed):
             # LAD-fea-11: every other part was filled - kept, with the parts kept before, for the next pass
-            good = sorted({int(v) for v in (all_vols if (rung is not None or kept) else vols)}
-                          - set(exc.volumes) - set(rung_vols))
-            if good:
-                save_kept(gmsh, ws, scale=scale, tied=tied, kept=good, failed=exc.volumes, part_volumes=part_volumes)
+            keep_filled(gmsh, ws, (all_vols if (rung is not None or kept) else vols), exc.volumes, rung_vols,
+                        scale=scale, tied=tied, part_volumes=part_volumes)
         # the surfaces the fill failed on, for the next pass (LAD-fea-6)
         named = sorted(set(empty) | {s for s in surfaces_named(str(exc)) if s in surfaces})
         if not named:
@@ -1419,6 +1433,10 @@ def build_volume(gmsh, ws: Path, plan: dict, geom: Path, asm: dict | None, sidec
     # its surfaces, as a fill failure is, and never delivered
     hollow = empty_volumes(gmsh, vols)
     if hollow:
+        if asm and str((sidecar or {}).get("mode") or "") in ("tie", "contact"):
+            # LAD-fea-11: the parts filled, kept; the ones left empty are the ones to mesh again
+            keep_filled(gmsh, ws, (all_vols if (rung is not None or kept) else vols), hollow, rung_vols,
+                        scale=scale, tied=tied, part_volumes=part_volumes)
         named = sorted({abs(int(t)) for v in hollow for _d, t in gmsh.model.getBoundary([(3, v)], oriented=False)
                         if int(t) in surfaces} | set(empty))
         raise FillFailed(RuntimeError(f"{EMPTY_VOLUMES} the 3D fill left volume(s) {hollow} with no elements"),

@@ -397,3 +397,44 @@ def test_the_driver_meshes_only_the_failed_part_on_its_next_pass(tmp_path, monke
     assert [p["valid"] for p in passes["passes"]] == [False, True] and passes["delivered"] == 2
     plan = json.loads((ws / "fea_plan.json").read_text())
     assert plan["mesh"]["keep"] == {"rule": A.KEEP_RULE, "from_pass": 1}
+
+
+def test_a_part_gmsh_leaves_empty_without_an_error_is_never_kept(tmp_path, monkeypatch):
+    """LAD-fea-11: gmsh can leave a volume with no elements and only warn. That part is a failed one: it is
+    meshed again on the next pass, never kept (kept, it would reach the solver files with no elements)."""
+    import shutil
+
+    shape = fx._compound(fx._box(0, 0, 0, 10, 10, 10), fx._box(20, 0, 0, 8, 8, 8), fx._box(40, 0, 0, 6, 6, 6))
+    planned = _planned(shape, tmp_path, monkeypatch, {"purpose": "structural", "fea_connection": "contact"})
+    ws = tmp_path / "hollow"
+    shutil.copytree(planned, ws)
+    real = gmsh.model.mesh.generate
+
+    def generate(dim=3):
+        if dim == 3 and gmsh.option.getNumber("Mesh.MeshOnlyVisible"):
+            if gmsh.model.getVisibility(3, 2):
+                return None                                    # left empty, no error
+            if gmsh.model.getVisibility(3, 3):
+                raise Exception("Invalid boundary mesh (overlapping facets) on surface 13 surface 14")
+        return real(dim)
+
+    monkeypatch.setattr(gmsh.model.mesh, "generate", staticmethod(generate))
+    with pytest.raises(Exception):
+        A.mesh(ws)
+    kept = json.loads((ws / A.KEEP_JSON).read_text())
+    assert kept["kept_volumes"] == [1] and kept["failed_volumes"] == [2, 3]
+    assert kept["failed_parts"] == ["Part_2", "Part_3"]
+    # and when no fill raises but one leaves its volume empty, the others are kept all the same
+    ws2 = tmp_path / "hollow_only"
+    shutil.copytree(planned, ws2)
+
+    def generate2(dim=3):
+        if dim == 3 and gmsh.option.getNumber("Mesh.MeshOnlyVisible") and gmsh.model.getVisibility(3, 2):
+            return None
+        return real(dim)
+
+    monkeypatch.setattr(gmsh.model.mesh, "generate", staticmethod(generate2))
+    with pytest.raises(Exception, match="no elements"):
+        A.mesh(ws2)
+    kept = json.loads((ws2 / A.KEEP_JSON).read_text())
+    assert kept["kept_volumes"] == [1, 3] and kept["failed_volumes"] == [2]

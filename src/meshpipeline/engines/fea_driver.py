@@ -987,6 +987,23 @@ def _kept_after(ws: Path, n: int, job_id: str) -> dict | None:
     return {"rule": KEEP_RULE, "from_pass": int(n)}
 
 
+def _still_failed(ws: Path) -> set[int] | None:
+    """LAD-fea-11: the parts the latest kept file says still failed (Part_k -> k); None when there is none."""
+    from meshpipeline.engines.gmsh.fea_adapter import KEEP_JSON
+
+    try:
+        meta = json.loads((ws / KEEP_JSON).read_text())
+    except (OSError, ValueError):
+        return None
+    out: set[int] = set()
+    for p in meta.get("failed_parts") or []:
+        try:
+            out.add(int(str(p).rsplit("_", 1)[-1]))
+        except ValueError:
+            continue
+    return out
+
+
 def _clear_outputs(ws: Path) -> None:
     for name in ("mesh.inp", "mesh.bdf", "mesh.cdb", "mesh.msh", "quality.json", "fea_failure.json"):
         (ws / name).unlink(missing_ok=True)
@@ -1065,6 +1082,10 @@ async def _last_rung(ws: Path, record: dict, diag_m: float, first_plan: dict, pa
     ran: list[dict] = []
     for rung in range(1, TW.MAX_RUNG_PASSES + 1):
         parts = TW.rung_parts(record, gm, rung)
+        if rung == 1 and kept is not None and parts is not None:
+            # LAD-fea-11: the parts that STILL failed - a part a later gmsh pass did fill is kept as gmsh filled it
+            still = _still_failed(ws)
+            parts = [p for p in parts if p in still] if still is not None else parts
         n = len(passes) + len(ran) + 1
         plan = copy.deepcopy(first_plan)
         if record.get("assembly_plan"):
