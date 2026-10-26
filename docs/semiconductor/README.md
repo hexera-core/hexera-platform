@@ -420,6 +420,114 @@ with zero faces: the name survives the split whether or not any coolant reached 
 **Each region's own `checkMesh`**, because `-allRegions` reports the PRE-SPLIT mesh, which looks like
 a successful verification and is a measurement of the wrong thing.
 
+## The engine row
+
+The checks above are the mesher's own. This is what turns them into a platform engine: the row of
+declarations and hooks the pipeline reads, in `src/meshpipeline/engines/cfmesh_conjugate/`.
+
+| file | what it does |
+|---|---|
+| `adapter.py` | binds the bundle to the runtime seam; keeps the B-rep in the workspace, because the coolant is cut out of the CAD and not out of a triangle file |
+| `driver.py` | the whole build, with no model in the loop: read the CAD's unit, cut the coolant out, choose the resolution, name the ports, write the plan, run |
+| `budget.py` | how fine, from the fidelity asked for and the cell limit |
+| `plan.py` | the seam: every number the container needs, chosen on the host |
+| `finalize.py` | the report as the manifest, the gates and the review read it |
+| `gates.py` | eight blocking gates |
+| `criteria.py` | the measurable bars and the four review axes |
+| `slices.py` | the three cuts a cold plate is looked at through |
+| `viewer.py` | both regions drawn, each patch under the region that owns it |
+| `review_surface.py` | the two named bodies the reviewer opens |
+| `pack.py`, `builder_guidance.py`, `case_scaffold.py` | the builder's prompt, briefing and case skeleton |
+
+### One run, from a customer's CAD
+
+`manifold_two_level`, built as CAD and read the way an upload is read: the staging hook, the
+driver's own decisions, the dispatch seam, the mesher, `finalize`, then every gate.
+
+| | measured |
+|---|---|
+| part | 3.3 x 4.0 x 1.05 mm, one closed solid, a STEP declaring millimetres |
+| the CAD's unit, read back | 1000 units per metre |
+| coolant found in it | 4.56000 mm3 against the CAD's 4.56000, one passage, narrowest 100 um |
+| its surface | 1,212 triangles, 0 open, 0 non-manifold, 0 inconsistently wound edges |
+| its extent | 3.3 x 4.0 x 0.7 mm, inside the part |
+| resolution chosen | 5 cells across, 160 um background cell, 3 levels |
+| `cartesianMesh` | 139.78 s, peak 1.67 GB |
+| the mesh | 1,790,335 cells: fluid 569,305, solid 1,221,030 |
+| the coolant delivered | 4.53546 mm3, 0.538% from the CAD, where this resolution allows 19.89% |
+| the interface | 179,655 faces on both sides |
+| non-orthogonality, skewness | 24.4659, 0.320854, the worse of the two regions |
+| `mesh.msh` | 42,399,039 bytes, opens as `fluid` and `solid`, two named bodies |
+
+| gate | what it proves |
+|---|---|
+| `manifest_valid` | both regions declared and meshed, no fatal defects, inside the cell budget |
+| `quality_floor` | both regions clear this engine's declared bars |
+| `coolant_volume` | the meshed coolant is the coolant in the CAD, to the accuracy the resolution buys |
+| `coolant_pieces` | as many connected pieces as the part has passages |
+| `regions_split` | the coolant and the metal each have a mesh, and there is no third region |
+| `interface` | the two sides of the shared surface carry the same faces |
+| `named_patches` | every named boundary has a surface behind it in the region that owns it |
+| `patch_contract` | the delivered mesh carries the boundaries confirmed at intake |
+
+Eight of eight pass.
+
+### The block's own faces are not part of the patch contract
+
+This is the one thing in the row that had to be decided rather than measured, and the run decided
+it: the contract gate refused a mesh that had done exactly what was asked. The contract was
+`coolant_in` and `coolant_out`. A conjugate mesh is cut out of the part's bounding box, so the metal
+comes back with its outer faces too, and the delivered boundaries were those two plus `xmin`,
+`xmax`, `zmin` and `zmax`.
+
+Those four are the outside of the plate. They are real boundaries that a solve puts ambient
+convection on, and nobody is asked to name them, because what a cold plate's owner names is where
+the coolant goes in and comes out. So a face still called `xmin` is one the engine named, and it is
+engine-owned in the same way the `fluid_to_solid` interface is. A face the owner named carries their
+name, because `renameBoundary` puts it there before the split.
+
+### What the row is gated on, and what it only reports
+
+The product's flow rule is 13 cells across the narrowest passage. A real cold plate does not hold it
+inside the cell budget:
+
+| | cells |
+|---|---|
+| `manifold_two_level` at 5 across | 1,790,335, measured |
+| the same part at 13 across | about 10.2 M, that mesh scaled by (13/5)^3 |
+| `CELL_HARD_LIMIT` | 8,000,000 |
+
+On the laptop the same wall shows up as memory: at 13 across only one of the eleven parts fits
+15.5 GB, at 909 bytes per cell.
+
+The count would be a poor bar anyway. Seven cells across came out fourteen times worse than six on
+the unit cell, and the error grew steadily with refinement on the manifold, so cells-across does not
+predict the error for any one part. The resolution is therefore reported, as `resolution_short`, and
+the delivery is gated on the thing the count was a proxy for: how far the meshed coolant is from the
+CAD it was cut out of, measured on every run. This run said *the narrowest passage (100 um wide) has
+5 cells across it, where the flow rule asks for 13*, and passed on 0.538%.
+
+### A unit, caught by the run
+
+The extraction was called with a scale of 1.0 on a STEP that declares millimetres, so the plate's
+coolant came back as 4.56 m3 of fluid in a 100 mm channel. Every number after it was off by a
+thousand and consistently so: the cell size, the background cell, the estimate. Nothing in the chain
+could notice, because they all agreed.
+
+The driver reads the unit through the same reader the rest of the platform resolves units with, and
+then checks: a coolant whose own extent is not inside the part it was cut out of is not that part's
+coolant. That is what a factor of a thousand looks like from the outside.
+
+### It is not registered, and it cannot be yet
+
+`tests/unit/engines/test_engine_catalog.py` asserts the registry holds only implemented engines, and
+`test_engine_runtime_contract.py` asserts a planned engine's runtime cannot run. So there is no state
+in which this engine sits in the catalog with a working adapter and no delivered job behind it.
+
+`spec.py` and the three roster edits are therefore kept out of the tree until a job delivers. Without
+`spec.py` the folder is skipped by `engines/registry._discover`, the bundle is inert, and its modules
+are reachable only by direct import, which is what its tests do.
+
 ## Where the time goes
 
 Not the mesher, which is the thing worth knowing before promising a turnaround.
