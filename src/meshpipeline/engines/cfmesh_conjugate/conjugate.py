@@ -43,8 +43,8 @@ try:
 except ImportError:                                      # pragma: no cover - absent on Windows
     resource = None  # type: ignore[assignment]
 
-from meshpipeline.engines.cfmesh.foam_exec import _DEFAULT_BASHRC, _foam_env, check_mesh
-from meshpipeline.engines.cfmesh.polymesh_surface import read_boundary_patches
+from meshpipeline.engines.cfmesh_conjugate.foam_exec import _DEFAULT_BASHRC, _foam_env, check_mesh
+from meshpipeline.engines.cfmesh_conjugate.polymesh_surface import read_boundary_patches
 from meshpipeline.sandbox.safe_exec import run_guarded
 
 logger = logging.getLogger(__name__)

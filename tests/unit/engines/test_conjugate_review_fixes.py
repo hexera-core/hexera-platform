@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from meshpipeline.engines.cfmesh import conjugate as C
+from meshpipeline.engines.cfmesh_conjugate import conjugate as C
 
 _CHT = Path(__file__).resolve().parents[3] / "devtools" / "semiconductor" / "cht.py"
 

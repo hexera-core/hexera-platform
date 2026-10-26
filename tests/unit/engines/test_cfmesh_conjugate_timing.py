@@ -4,7 +4,7 @@ The finding this pins: on a 100-channel part cartesianMesh took 617 s and the ta
 after it took over an hour. For a conjugate mesh the post-processing dominates by a wide margin, so
 a turnaround promise that budgets only for the mesher is a promise about the wrong stage.
 """
-from meshpipeline.engines.cfmesh import conjugate as C
+from meshpipeline.engines.cfmesh_conjugate import conjugate as C
 
 
 def _rep(seconds):

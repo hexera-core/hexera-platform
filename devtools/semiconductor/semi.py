@@ -43,7 +43,7 @@ import convergence as V
 import parts as P
 import regression as R
 
-from meshpipeline.engines.cfmesh import conjugate as C
+from meshpipeline.engines.cfmesh_conjugate import conjugate as C
 from meshpipeline.engines.cfmesh.case_scaffold import write_case_skeleton
 from meshpipeline.engines.staircase_error import annotate, single_passage_error_pct
 

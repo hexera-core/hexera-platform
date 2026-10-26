@@ -6,7 +6,7 @@ costing an hour of meshing.
 """
 import pytest
 
-from meshpipeline.engines.cfmesh import conjugate as C
+from meshpipeline.engines.cfmesh_conjugate import conjugate as C
 from meshpipeline.engines.cfmesh.foam_exec import parse_check_mesh
 
 
