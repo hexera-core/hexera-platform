@@ -16,15 +16,21 @@ they are the same on every run of the same case:
                                         and BEFORE the layer stage runs (the final count is within a
                                         few percent of it: 0.92-1.00 of it on 70 lab runs)
 
-The brake reads them. When either passes SIZE_BRAKE_MARGIN times the case's own cell budget
-(maxGlobalCells), the run is stopped there and the driver re-plans the pass with the budget scaled by
-how far over it would have come out.
+The brake reads them. When the castellated count passes SIZE_BRAKE_MARGIN times the case's own cell
+budget (its plan's, PLAN_CELLS_FILE), or the with-layers count passes SIZE_BRAKE_LAYER_MARGIN times
+it, the run is stopped there and the driver re-plans the pass with a smaller budget.
 
 THE MARGIN, FROM DATA: on 71 finished external and internal lab runs (plan = maxGlobalCells), the
 castellated count read 0.03-0.83x the plan at the 95th percentile (one 1.62x), and the ideal-with-
 layers count 0.04-1.18x - with nothing between 1.18x and 3.2x (hx_shell_side 3.29x, then the plates
-at 3.5x and 6.5x). 1.5x sits in that gap: every run that was within its plan keeps meshing exactly
-as before, and only a run on its way to two or more times its budget is stopped.
+at 3.5x and 6.5x). 1.5x sits in that gap for the castellated count.
+
+THE WITH-LAYERS COUNT GETS 2.0x: it is what snappy WOULD make if every layer went on everywhere, and
+on a thin plate it is well above what comes out. A2.SPlate's pass at a 1M castellation budget read
+3,403,690 cells with layers - 1.70x its 2M plan - and finished production-grade at 2,776,512 (1.39x,
+0.82 of the estimate; main, lab 25 Oct). At 1.5x the brake stopped that good pass and cut the plate
+to 0.54M (lab, cfdtime-brake3). 2.0x keeps it, and still stops every run that was really running
+away (hx_shell_side 3.29x, the plates' first passes at 3.5x and 6.5x).
 
 External bodies only, for now: the internal path's budget is raised by its own gap and thin-feature
 boxes after the plan, and two internal vessels read 2.3-2.7x their lab plan while staying inside the
@@ -34,19 +40,23 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-#: How far over its own cell budget a run may be headed before it is stopped and re-planned.
+#: How far over its own cell budget a run's castellated mesh may come before it is stopped and re-planned.
 SIZE_BRAKE_MARGIN = 1.5
+#: The same for snappy's with-layers estimate, which reads above what the layer stage really adds
+#: (A2.SPlate: estimate 1.70x the plan, finished mesh 1.39x) - see the module docstring.
+SIZE_BRAKE_LAYER_MARGIN = 2.0
 #: The re-planned budget aims this far under the budget the overshoot is measured against, so the
 #: next pass lands inside its plan rather than on its edge.
 SIZE_BRAKE_TARGET = 0.9
 
 _REFINED = re.compile(r"(?m)^\s*Refined mesh\s*:\s*cells:\s*([0-9.eE+]+)")
 _IDEAL = re.compile(r"(?m)^\s*Ideal layer addition\s*:\s*cells:\s*([0-9.eE+]+)")
-#: snappyHexMesh's two counts, in the order it prints them
-SNAPPY_COUNTS = (("castellated", _REFINED), ("with layers", _IDEAL))
+#: snappyHexMesh's two counts, in the order it prints them, each with its own margin (None: the
+#: brake's own)
+SNAPPY_COUNTS = (("castellated", _REFINED, None), ("with layers", _IDEAL, SIZE_BRAKE_LAYER_MARGIN))
 #: cartesianMesh's: the mesh it builds from its octree, printed as "<N> cells" before it maps the
 #: surface, adds layers and optimises (cfMesh, engines/cfmesh/native)
-CFMESH_COUNTS = (("from the octree", re.compile(r"(?m)^\s*(\d+) cells\s*$")),)
+CFMESH_COUNTS = (("from the octree", re.compile(r"(?m)^\s*(\d+) cells\s*$"), None),)
 _MAX_GLOBAL = re.compile(r"maxGlobalCells\s+(\d+)")
 
 
@@ -105,13 +115,13 @@ class SizeBrake:
         if self.tripped is not None or self.budget <= 0:
             return None
         text = self._new_text()
-        limit = self.margin * self.budget
-        for stage, rx in self.counts:
+        for stage, rx, own in self.counts:
+            margin = max(self.margin, own) if own else self.margin
             for raw in rx.findall(text):
                 cells = int(float(raw))
-                if cells > limit:
+                if cells > margin * self.budget:
                     self.tripped = {"stage": stage, "cells": cells, "budget": self.budget,
-                                    "margin": self.margin, "ratio": round(cells / self.budget, 2)}
+                                    "margin": margin, "ratio": round(cells / self.budget, 2)}
                     return (f"the mesh {stage} reads {cells:,} cells, {cells / self.budget:.1f} times its "
                             f"budget of {self.budget:,}")
         return None
@@ -135,5 +145,6 @@ def scaled_budget_factor(tripped: dict) -> float:
     return max(SIZE_BRAKE_STEP, min(0.9, SIZE_BRAKE_TARGET * budget / cells))
 
 
-__all__ = ["SIZE_BRAKE_STEP", "PLAN_CELLS_FILE", "CFMESH_COUNTS", "SIZE_BRAKE_MARGIN", "SIZE_BRAKE_TARGET", "SNAPPY_COUNTS", "SizeBrake",
+__all__ = ["SIZE_BRAKE_STEP", "PLAN_CELLS_FILE", "CFMESH_COUNTS", "SIZE_BRAKE_MARGIN",
+           "SIZE_BRAKE_LAYER_MARGIN", "SIZE_BRAKE_TARGET", "SNAPPY_COUNTS", "SizeBrake",
            "case_budget", "scaled_budget_factor"]

@@ -30,6 +30,24 @@ Layer mesh : cells:2017113  faces:6000000  points:2200000  unbalance:0.0099
 
 def test_the_margin_and_target_are_the_measured_ones():
     assert SB.SIZE_BRAKE_MARGIN == 1.5 and SB.SIZE_BRAKE_TARGET == 0.9
+    assert SB.SIZE_BRAKE_LAYER_MARGIN == 2.0
+
+
+def test_a_with_layers_estimate_a_good_plate_pass_reads_is_not_stopped(tmp_path):
+    """A2.SPlate at a 1M castellation budget: snappy's with-layers estimate read 3,403,690 cells,
+    1.70x the 2M plan, and the pass finished production-grade at 2,776,512 (main, lab 25 Oct). At a
+    1.5x layer margin the brake stopped it and cut the plate to 0.54M (lab, cfdtime-brake3)."""
+    log = tmp_path / "snappyHexMesh.log"
+    log.write_text("Refined mesh : cells:942000  faces:1\nIdeal layer addition : cells:3.40369e+06\n")
+    brake = SB.SizeBrake(log, 2_000_000)
+    assert brake() is None and brake.tripped is None
+
+
+def test_a_castellated_mesh_just_past_one_and_a_half_times_still_trips(tmp_path):
+    log = tmp_path / "snappyHexMesh.log"
+    log.write_text("Refined mesh : cells:3484835  faces:1\n")     # A1.FlatPlate's first pass
+    brake = SB.SizeBrake(log, 2_000_000)
+    assert brake() and brake.tripped["stage"] == "castellated" and brake.tripped["margin"] == 1.5
 
 
 def test_a_run_headed_past_its_budget_with_its_layers_trips_before_the_layers(tmp_path):
@@ -43,7 +61,7 @@ def test_a_run_headed_past_its_budget_with_its_layers_trips_before_the_layers(tm
     reason = brake()
     assert reason and "with layers" in reason
     assert brake.tripped == {"stage": "with layers", "cells": 13_076_800, "budget": 2_000_000,
-                             "margin": 1.5, "ratio": 6.54}
+                             "margin": 2.0, "ratio": 6.54}
 
 
 def test_a_castellated_mesh_far_past_its_budget_trips_at_once(tmp_path):
