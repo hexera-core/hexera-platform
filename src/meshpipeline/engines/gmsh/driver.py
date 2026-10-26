@@ -322,11 +322,18 @@ class FillOverSize(Exception):
         self.estimated, self.limit = int(estimated), int(limit)
 
 
+#: gmsh's own tetrahedra at a target edge are bigger than the regular tetrahedron of that edge: the
+#: count by regular tetrahedra comes out 1.7-1.8 times what gmsh makes - a unit box refined 0.2->0.1,
+#: 0.2->0.05 and 0.1->0.05 (est/actual 1.70, 1.82, 1.82) and hx_shell_side's passage-sized fill
+#: (85.8 M estimated, 48.8 M made: 1.76). Measured, so the estimate is gmsh's count.
+FILL_CALIBRATION = 0.57
+
+
 def estimate_fill(gmsh, points, sizes) -> int | None:
     """The cells the passage-sized fill makes, from the coarse fill it is measured on: each coarse
     tetrahedron splits into (its own edge / the passage size at it)^3 - none where the passage asks
-    for no finer. Its edge is the regular tetrahedron's of the same volume. None when it cannot be
-    read (the fill then simply runs)."""
+    for no finer - times FILL_CALIBRATION. Its edge is the regular tetrahedron's of the same volume.
+    None when it cannot be read (the fill then simply runs)."""
     import numpy as np
     from scipy.spatial import cKDTree
     types, _tags, nodes = gmsh.model.mesh.getElements(3)
@@ -345,7 +352,7 @@ def estimate_fill(gmsh, points, sizes) -> int | None:
     _, nearest = cKDTree(np.asarray(points, dtype=float)).query(p.mean(axis=1))
     target = np.minimum(edge, np.asarray(sizes, dtype=float)[nearest])
     ok = target > 0
-    return int(np.sum((edge[ok] / target[ok]) ** 3) + np.sum(~ok))
+    return int(FILL_CALIBRATION * (np.sum((edge[ok] / target[ok]) ** 3) + np.sum(~ok)))
 
 
 def _fill_limit() -> int:

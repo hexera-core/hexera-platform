@@ -453,7 +453,7 @@ def test_the_fill_estimate_reads_the_passage_sizes_off_the_coarse_fill():
     finally:
         gmsh.finalize()
     assert est is not None and 4 * coarse < est
-    assert 0.5 < est / fine < 2.0, (coarse, est, fine)
+    assert 0.8 < est / fine < 1.25, (coarse, est, fine)
 
 
 def test_an_over_size_fill_moves_the_run_to_another_engine(monkeypatch, tmp_path):
