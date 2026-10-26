@@ -61,6 +61,61 @@ def test_an_assembly_part_gets_its_own_base_diagonal_and_walls():
     assert every["per_part"]["Part_1"]["epsilon_m"] == pytest.approx(min(5e-5, 1e-4))
 
 
+def test_the_rungs_edge_is_never_longer_than_the_part():
+    """LAD-fea-10: a coarsened plan floors every part's base at its zone floor (ox_mc_lid: 61 mm); on a part
+    smaller than that the rung's ideal edge is the part's own diagonal, and said - a part whose base is within
+    its size keeps it."""
+    record = {"bodies": 2, "part_bases": [{"n": 1, "diag_mm": 3.2}, {"n": 2, "diag_mm": 200.0}]}
+    plan = _plan(base=0.0613, zones=[{"part": "Part_1", "size_m": 0.0613, "kind": "part"},
+                                     {"part": "Part_2", "size_m": 0.0613, "kind": "part"}])
+    p = TW.params(plan, record, 0.25, None)
+    small, big = p["per_part"]["Part_1"], p["per_part"]["Part_2"]
+    assert small["edge_length_m"] == pytest.approx(0.0032)
+    assert small["edge_rule"] == TW.EDGE_RULE == "LAD-fea-10" and small["plan_base_m"] == pytest.approx(0.0613)
+    assert big["edge_length_m"] == pytest.approx(0.0613) and "edge_rule" not in big
+
+
+def test_a_parts_peak_memory_is_its_own_not_the_process_that_started_it(tmp_path, fake_ftetwild):
+    """The reaped rusage carries the starting process's resident memory across fork and exec: beside a 1.5 GB
+    parent every small part read 1.5 GB (lab, 26 Oct). The peak is fTetWild's own high-water mark."""
+    import os
+
+    if not Path("/proc/self/status").exists():
+        pytest.skip("no /proc here")
+    assert TW._hwm_kb(os.getpid()) > 0 and TW._hwm_kb(2 ** 22 + 7) == 0
+    ballast = np.ones(400 * 1024 * 1024 // 8)                 # this process: 400 MB more than the stand-in
+    xyz = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], float) * 0.01
+    tris = np.array([[0, 2, 1], [0, 1, 3], [1, 2, 3], [0, 3, 2]])
+    r = TW.run_part({"dir": str(tmp_path / "p"), "xyz": xyz, "tris": tris, "edge": 0.005, "epsilon": 1e-5,
+                     "bg": None, "name": "tet"})
+    assert "error" not in r, r
+    mine = TW._hwm_kb(os.getpid()) / 1024.0 ** 2
+    assert 0.0 < r["peak_gib"] < mine, (r["peak_gib"], mine)
+    assert float(ballast[-1]) == 1.0
+
+
+def test_the_rungs_machine_holds_gmshs_model_and_ftetwilds_parts_beside_it():
+    """RUN-6: the rung's pass is placed by gmsh's model plus fTetWild's own measured one, one part per CPU."""
+    from meshpipeline.contracts import mesh_machine as MM
+    from meshpipeline.engines import fea_driver as FD
+
+    small = TW.rung_machine(2e5, *FD.memory_need(2e5), margin=FD.MEMORY_MARGIN)
+    assert small["where"] == "cloud_run" and small["ftetwild"]["workers"] == TW.CLOUD_RUN_CPUS
+    assert small["ftetwild"]["rule"] == TW.MEMORY_RULE == "RUN-6"
+    ox = 11_212_890                                   # ox_mc_lid's plan
+    gmsh_gib, files = FD.memory_need(ox)
+    d = TW.rung_machine(ox, gmsh_gib, files, margin=FD.MEMORY_MARGIN)
+    m = next(x for x in MM.MACHINES if x.name == d["machine"])
+    need = gmsh_gib + FD.MEMORY_MARGIN * TW.ftetwild_gib(ox, m.cpus)
+    assert need <= MM.usable_gib(m) and d["need_gib"] == pytest.approx(need, abs=0.01)
+    assert d["ftetwild"]["workers"] == m.cpus and d["ftetwild"]["gmsh_gib"] == pytest.approx(gmsh_gib, abs=0.01)
+    # gmsh's model alone just fits a machine: fTetWild's parts beside it take the next one
+    edge = next(x for x in MM.MACHINES if x.name == "n2-highmem-8")
+    tight = MM.usable_gib(edge) - 0.01
+    up = TW.rung_machine(ox, tight, 0.0, margin=FD.MEMORY_MARGIN)
+    assert up["machine"] != "n2-highmem-8" and up["memory_gib"] > edge.memory_gib
+
+
 def test_the_rung_takes_the_named_parts_first_then_every_part():
     asm = {"bodies": 3}
     passes = [{"bad_faces": ["Part_3_Face_2", "Part_3_Face_7"]}, {"bad_faces": []}]

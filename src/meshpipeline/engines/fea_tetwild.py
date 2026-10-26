@@ -131,6 +131,22 @@ def _part_base(plan: Mapping, part: int | None) -> float:
     return base
 
 
+#: LAD-fea-10: the rule that holds the rung's ideal edge to the part's own size
+EDGE_RULE = "LAD-fea-10"
+
+
+def rung_edge(plan: Mapping, part: int | None, diag_m: float) -> float:
+    """LAD-fea-10: fTetWild's ideal edge for a part - its base (PLAN-fea-17), never longer than the part's own
+    diagonal. A plan coarsened to fit (PLAN-fea-8) floors every part's base at its zone floor, and on a big
+    assembly that floor passes the small parts' own size (ox_mc_lid: 61 mm on parts of 3 to 20 mm). gmsh is
+    held there by the parts' face zones; fTetWild, asked for edges twenty times its part with an envelope a
+    thousandth of it, ran past 37 GB and an hour on a 3.2 mm part (Part_64), and past 41 GB and two hours on
+    a 6 mm one (lab, 26 Oct). Held to the part's diagonal: 0.21 GB, 4.4 minutes. A part whose base is within
+    its own size (every part of a plan not coarsened that far) is unchanged."""
+    base = _part_base(plan, part)
+    return min(base, float(diag_m)) if diag_m and diag_m > 0 else base
+
+
 def _part_diag_m(record: Mapping, diag_m: float, part: int | None) -> float:
     if part is not None:
         for b in record.get("part_bases") or []:
@@ -161,9 +177,11 @@ def params(plan: Mapping, record: Mapping, diag_m: float, parts: list[int] | Non
         d = _part_diag_m(record, diag_m, p)
         eps = envelope_m(d, thinnest)
         per["whole" if p is None else f"Part_{p}"] = {
-            "edge_length_m": _sig(_part_base(plan, p)), "epsilon_m": _sig(eps), "diag_m": _sig(d),
+            "edge_length_m": _sig(rung_edge(plan, p, d)), "epsilon_m": _sig(eps), "diag_m": _sig(d),
             "thinnest_wall_m": _sig(thinnest) if thinnest else None,
-            "tessellation_m": _sig(TESSELLATION_SHARE * eps)}
+            "tessellation_m": _sig(TESSELLATION_SHARE * eps),
+            **({"edge_rule": EDGE_RULE, "plan_base_m": _sig(_part_base(plan, p))}
+               if rung_edge(plan, p, d) < _part_base(plan, p) else {})}
     return {"engine": ENGINE, "version": VERSION, "threads": THREADS, "stop_energy": STOP_ENERGY,
             "parts": None if parts is None or not assembly else sorted(int(p) for p in parts),
             "per_part": per, "rule": "LAD-fea-9",
@@ -587,13 +605,15 @@ def run_part(job: dict) -> dict:
     t0 = time.monotonic()
     tail: list[str] = []
     peak_kb = 0
+    hwm_kb = 0
     with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=str(d)) as proc:
         assert proc.stdout is not None
         for line in proc.stdout:
             # fTetWild's own lines are the runner's sign of progress (the FEA watchdog reads output)
             print(f"{RUNG_LINE} {job['name']}: {line.rstrip()}", file=sys.stderr, flush=True)
             tail = (tail + [line.rstrip()])[-20:]
-        # reaped here, with its own peak memory (os.wait4's rusage is this child's alone)
+            hwm_kb = max(hwm_kb, _hwm_kb(proc.pid))
+        hwm_kb = max(hwm_kb, _hwm_kb(proc.pid))
         try:
             _pid, status, usage = os.wait4(proc.pid, 0)
             rc = os.waitstatus_to_exitcode(status)
@@ -601,6 +621,11 @@ def run_part(job: dict) -> dict:
             peak_kb = int(usage.ru_maxrss)
         except ChildProcessError:
             rc = proc.wait()
+    # ITS OWN PEAK: the kernel's high-water mark of fTetWild's own memory, read while it ran. The reaped
+    # rusage's ru_maxrss also holds the forking process's resident memory at the fork (it carries across
+    # fork and exec): beside a 1.5 GB parent every small part read 1.5 GB (lab, 26 Oct), so it stands
+    # only where the high-water mark cannot be read
+    peak_kb = hwm_kb or peak_kb
     seconds = round(time.monotonic() - t0, 1)
     peak_gib = round(peak_kb / 1024.0 ** 2, 2)
     if rc != 0 or not out.exists():
@@ -612,6 +637,61 @@ def run_part(job: dict) -> dict:
         return {"error": f"fTetWild's mesh could not be read ({exc})", "seconds": seconds}
     return {"xyz": pts, "tets": tets, "seconds": seconds, "peak_gib": peak_gib,
             "command": [Path(cmd[0]).name, *cmd[5:]]}
+
+
+def _hwm_kb(pid: int) -> int:
+    """A running process's peak resident memory so far (kB: /proc's VmHWM); 0 where it cannot be read."""
+    try:
+        with open(f"/proc/{int(pid)}/status", encoding="ascii") as fh:
+            for line in fh:
+                if line.startswith("VmHWM:"):
+                    return int(line.split()[1])
+    except (OSError, ValueError):
+        return 0
+    return 0
+
+
+#: RUN-6: fTetWild's MEASURED memory, each part's own peak (VmHWM) on the lab (26 Oct: 17 of ox_mc_lid's parts run
+#: as the rung runs them, at LAD-fea-10 edges, 1,090 to 2.39M tetrahedra): 0.19-0.26 GB however small, and at most
+#: 2.1 GB per million tetrahedra above that (the 651 mm plate, 0.77M in 1.78 GB; others 0.3-1.2 GB per million)
+FTW_BASE_GIB = 0.25
+FTW_GIB_PER_ELEMENT = 2.1e-6
+#: the rule that sizes the last rung's machine from fTetWild's own model
+MEMORY_RULE = "RUN-6"
+#: the Cloud Run mesh job's CPUs (deploy MESH_CPU): how many parts it runs at once
+CLOUD_RUN_CPUS = 8
+
+
+def ftetwild_gib(elements: float, workers: int) -> float:
+    """RUN-6: fTetWild's memory for a rung pass that builds `elements` tetrahedra with `workers` parts at once:
+    each running part's own base, and every element once (a part's elements are its own: the parts at once
+    build at most all of them)."""
+    return max(1, int(workers)) * FTW_BASE_GIB + FTW_GIB_PER_ELEMENT * max(0.0, float(elements))
+
+
+def rung_machine(elements: float, gmsh_gib: float, files_gib: float, *, margin: float) -> dict:
+    """RUN-6: WHERE THE LAST RUNG'S PASS RUNS. The pass holds gmsh's model of every part (the gmsh memory model,
+    `gmsh_gib`, with its margin) while fTetWild runs one part per CPU beside it - its own measured model, with
+    the same margin, for as many parts at once as the machine has CPUs. The smallest place that holds both:
+    the Cloud Run mesh job, else the smallest VM (contracts/mesh_machine). #319 sized it by gmsh's model alone;
+    fTetWild's 24-40 GB parts were LAD-fea-10's runaway edges, and its recorded peaks were the parent's."""
+    from meshpipeline.contracts import mesh_machine as MM
+
+    def need(cpus: int) -> float:
+        return float(gmsh_gib) + float(margin) * ftetwild_gib(elements, cpus)
+
+    cloud = MM.choose(process_gib=need(CLOUD_RUN_CPUS), workspace_gib=files_gib, why="fTetWild memory model")
+    if cloud["where"] == "cloud_run":
+        decision = cloud
+    else:
+        fits = next((m for m in MM.MACHINES if need(m.cpus) <= MM.usable_gib(m)), MM.CEILING)
+        decision = MM.choose(process_gib=need(fits.cpus), workspace_gib=files_gib, why="fTetWild memory model")
+    cpus = int(decision.get("cpus") or CLOUD_RUN_CPUS)
+    decision["ftetwild"] = {"rule": MEMORY_RULE, "elements": int(max(0.0, float(elements))), "workers": cpus,
+                            "ftetwild_gib": round(float(margin) * ftetwild_gib(elements, cpus), 2),
+                            "gmsh_gib": round(float(gmsh_gib), 2),
+                            "model": {"base_gib": FTW_BASE_GIB, "gib_per_element": FTW_GIB_PER_ELEMENT}}
+    return decision
 
 
 #: a part is started beside others only while the job keeps this share of its memory free
