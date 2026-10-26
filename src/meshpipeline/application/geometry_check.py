@@ -1723,9 +1723,20 @@ _PICTURED_KINDS = ("body-surface", "fluid-domain", "solid-body")
 
 
 def _kinds_on_offer(facts: dict, proposal: dict) -> tuple[str, ...]:
-    """Which input kinds the picture-naming step is allowed to settle for this part."""
+    """Which input kinds the picture-naming step is allowed to settle for this part.
+
+    COOLANT ACTUALLY FOUND INSIDE THE PART OUTRANKS THE FLOW THE MEASURING STEP GUESSED. Refusing
+    on an external guess alone withheld the right kind from a third of the parts whose coolant
+    does extract: the branching plate and the 200-channel embedded-silicon array both read as
+    external flow and both give up their coolant cleanly, so the stage could not propose what they
+    plainly are and the user had to pick it by hand. A split that closed the space off and
+    measured a volume is far better evidence than a guess made off flat faces.
+    """
     openings = len(proposal.get("openings") or [])
-    if openings >= MIN_ASSEMBLY_OPENINGS and str(facts.get("flow") or "") != "external":
+    if openings < MIN_ASSEMBLY_OPENINGS:
+        return _PICTURED_KINDS
+    found = bool((facts.get("fluid_volume") or {}).get("found"))
+    if found or str(facts.get("flow") or "") != "external":
         return (*_PICTURED_KINDS, "solid-assembly")
     return _PICTURED_KINDS
 

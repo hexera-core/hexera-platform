@@ -21,6 +21,26 @@ MAX_OPENINGS = 16
 #: A ring face (an annular end of a pipe wall) rims an opening when the hole is a real bore, not
 #: a bolt hole: the inner area against the ring's own outer area.
 MIN_RING_BORE_FRACTION = 0.1
+def _runs_along_the_part(c, sides: tuple[float, float, float]) -> bool:
+    """Whether a perforated face's holes run ALONG the part rather than through its thickness.
+
+    A COOLANT CHANNEL RUNS THE LENGTH OF A PLATE; A SIEVE'S HOLES PIERCE ITS THICKNESS. Both have
+    one hole per passage at each end and both have the same count at both ends, so the pairing
+    rule cannot tell them apart - and a 300 x 300 x 3 mm screen with a 10 x 10 grid of holes read
+    as "pipe_wall / body-surface / internal" at confidence 0.9, which also let the stage offer it
+    as a cooled solid. A sieve is not a cold plate and is not a route into the conjugate mesher.
+
+    The mouth's own normal says which: the holes run along the face's normal, so a sieve's mouths
+    face down the part's THINNEST axis and a plate's face down a long one. Measured: the corpus
+    plates' mouths all face a long axis (the single-channel part is 0.2 x 32.5 x 1.3 mm with its
+    channel along the 32.5), and the screen's face the 3 mm one.
+    """
+    thinnest = min(range(3), key=lambda k: sides[k])
+    # which axis the mouth faces, by the largest component of its normal
+    axis = max(range(3), key=lambda k: abs(c.normal[k]))
+    return axis != thinnest
+
+
 def _has_the_other_end(c, rings: list) -> bool:
     """Whether a perforated face has the far end of its own channels somewhere on the part.
 
@@ -55,6 +75,10 @@ def _has_the_other_end(c, rings: list) -> bool:
 #: called the face solid - so the Corintis baseline (100 channels) and the wavy array (16) were
 #: both read as a solid body in external flow with no openings at all.
 MAX_DOMINANT_HOLE_SHARE = 0.5
+#: ...and how far the largest hole on a perforated face may be from the median one, as a ratio.
+#: A channel array's holes are the SAME SIZE as each other; a flange's bore is several times its
+#: bolt holes. Measured: the corpus plates are 1.0, an ASME Class 1500 NPS 2 flange 4.9.
+MAX_HOLE_SIZE_SPREAD = 2.0
 #: A closed solid's flat face is a MOUTH (the end of a swept fluid body) only when it is a round or
 #: rectangular section at least this fraction of the part's thinnest box side. A nacelle's 8 mm
 #: tail flat on a 200 mm body, a blade tip, a wing's airfoil-shaped tip are not mouths.
@@ -392,8 +416,18 @@ def _measure_wires(face) -> tuple[dict | None, dict | None]:
     holes.sort(key=lambda m: float(m["area_m2"]), reverse=True)
     largest = holes[0]
     total = sum(float(m["area_m2"]) for m in holes)
+    # A PERFORATED FACE'S HOLES ARE ALL THE SAME SIZE, which is the test that actually separates a
+    # cold plate from a flange. The share of the hole area does not: a flange's bore takes 93% of
+    # it on a low-pressure class but only 38% on ASME Class 1500, where eight 22 mm bolts outweigh
+    # a 49 mm bore - and at 38% the face read as perforated, so a Class 1500 NPS 2 spool's inlet
+    # came out as 5932 mm2 against the bore's 1905, with the whole 165 mm flange face as its
+    # extent. Measured: the corpus plates' channels are identical, so largest over median is 1.0;
+    # that flange is 4.9. The share bar is kept as well, since it costs nothing and catches a bore
+    # beside one incidental hole, but this is the load-bearing half.
+    spread = float(largest["area_m2"]) / max(float(holes[len(holes) // 2]["area_m2"]), 1e-18)
     perforated = (len(holes) > 1 and total > 0.0
-                  and float(largest["area_m2"]) / total <= MAX_DOMINANT_HOLE_SHARE)
+                  and float(largest["area_m2"]) / total <= MAX_DOMINANT_HOLE_SHARE
+                  and spread <= MAX_HOLE_SIZE_SPREAD)
     if perforated and outer is not None:
         inner = {"area_m2": total, "centroid": outer["centroid"], "wh_m": outer["wh_m"]}
     else:
@@ -592,7 +626,9 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3, shape=None,
     # its own plane (an orifice plate and a bore shoulder are set into wall) and it faces away from
     # the part (a flange's back face looks at the body it is bolted to).
     rings = [c for c in candidates if c.kind == "ring" and c.clear_ahead and c.rim_free and not c.inward]
-    rings = [c for c in rings if not c.perforated or _has_the_other_end(c, rings)]
+    _sides = tuple(bbox_max[k] - bbox_min[k] for k in range(3))
+    rings = [c for c in rings if not c.perforated
+             or (_has_the_other_end(c, rings) and _runs_along_the_part(c, _sides))]
     discs = [c for c in candidates if c.kind == "disc" and c.clear_ahead]
     hollow = any(n > 1 for n in shells_per_solid)
     # the part's thinnest side: the yardstick every mouth is held to, ring or flat end
