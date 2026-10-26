@@ -216,3 +216,29 @@ def test_a_multiregion_plan_past_the_cloud_run_wall_runs_on_a_vm(tmp_path):
     assert MM.read(tmp_path)["where"] == "cloud_run"
     assert R.machine_for_plan(tmp_path, NT.CLOUD_RUN_WALL_S)["where"] == "gce"
     assert NT.wall_for(tmp_path) == NT.VM_WALL_S
+
+
+def test_a_thermal_plan_the_budget_holds_is_no_longer_refused_for_a_guessed_clock():
+    """The plan used to be refused past 80% of a fixed 3,000 s; the time it may take is now the
+    biggest machine's wall (configure_mesh passes VM_WALL_S), and only the cell budget refuses it."""
+    import math
+
+    from tests.unit.cad.ecxml_models import wirebond_package
+
+    from meshpipeline.cad.ingest.ecxml import read_ecxml
+    from meshpipeline.cad.ingest.ecxml_build import build
+    from meshpipeline.engines.snappy_multiregion import thermal_fidelity as TF
+
+    side = build(read_ecxml(wirebond_package().xml())).sidecar
+    mapping = {r["name"]: [r["name"]] for r in side["regions"]}
+    kinds = {r["name"]: r["type"] for r in side["regions"]}
+    b = side["domain"]["box_m"]
+    base = math.dist(b["min"], b["max"]) / TF.BACKGROUND_DIVISIONS
+
+    def _plan(timeout_s):
+        return TF.plan(side, mapping, kinds, base, (2, 2), {}, budget_cells=1e12, timeout_s=timeout_s)
+
+    need = _plan(float(NT.VM_WALL_S))
+    old_limit_s = need.seconds / TF.TIME_SHARE / 2         # a clock half what this plan needs
+    assert _plan(old_limit_s).refusal                       # refused for time, as it was
+    assert not need.refusal                                 # held only by the budget now
