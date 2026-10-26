@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add the pure, shadow-mode policy for initial mesh worker sizing and one bounded automatic escalation.
+**Goal:** Add a pure, shadow-mode policy for evaluating preflight mesh sizing signals.
 
-**Architecture:** A provider-free application policy accepts immutable workload evidence and returns an explainable, versioned profile decision. A separate pure function decides whether a capacity failure may move one tier upward; no executor composition or dispatch behavior changes.
+**Architecture:** A provider-free application policy accepts immutable workload evidence and returns an explainable, versioned profile recommendation. `contracts.mesh_machine` remains the sole runtime routing and escalation policy; no executor composition or dispatch behavior changes.
 
 **Tech Stack:** Python 3.11, dataclasses, enums, pytest
 
@@ -14,8 +14,8 @@
 
 - Worker sizing remains internal.
 - Runtime dispatch does not change in this slice.
-- Requested mesh fidelity is never reduced by sizing or escalation.
-- At most one automatic escalation is permitted.
+- The shadow recommendation never changes requested mesh fidelity.
+- Runtime escalation remains owned by `contracts.mesh_machine`.
 - No new dependency is introduced.
 
 ## Review Focus
@@ -24,7 +24,6 @@
 - One oversized signal cannot be hidden by several small signals.
 - Missing measurements remain routable and explain why the default was chosen.
 - Negative measured values are rejected instead of producing a smaller worker.
-- Non-capacity failures and already-escalated runs never consume another tier.
 
 ---
 
@@ -36,9 +35,9 @@
 
 **Interfaces:**
 - Consumes: primitive workload measurements available before native execution.
-- Produces: `MeshWorkload`, `MeshExecutionProfile`, `ProfileDecision`, `select_profile(workload)`, and `escalation_profile(current, failure, automatic_escalations)`.
+- Produces: `MeshWorkload`, `MeshExecutionProfile`, `ProfileDecision`, and `select_profile(workload)`.
 
-- [x] **Step 1: Write failing selection and escalation tests**
+- [x] **Step 1: Write failing selection tests**
 
   Cover the review-focus cases plus standard, high-memory, and ultramem recommendations.
 
@@ -50,8 +49,8 @@
 
 - [x] **Step 3: Implement the minimal pure policy**
 
-  Use ordered per-signal ceilings, explicit engine and boundary-layer pressure, stable reason strings,
-  and capacity-failure eligibility. Keep provider selection and persistence out of this module.
+  Use ordered per-signal ceilings, explicit engine and boundary-layer pressure, and stable reason
+  strings. Keep provider selection, escalation, and persistence out of this module.
 
 - [x] **Step 4: Run the focused tests and verify GREEN**
 

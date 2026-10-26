@@ -5,9 +5,7 @@ import pytest
 
 from meshpipeline.application.mesh_execution_profiles import (
     MeshExecutionProfile,
-    MeshFailure,
     MeshWorkload,
-    escalation_profile,
     select_profile,
 )
 
@@ -130,44 +128,3 @@ def test_partial_evidence_that_selects_standard_names_the_missing_signals():
 def test_negative_measurements_are_rejected(field):
     with pytest.raises(ValueError, match=field):
         MeshWorkload(engine="gmsh", **{field: -1})
-
-
-@pytest.mark.parametrize("failure", [
-    MeshFailure.OUT_OF_MEMORY,
-    MeshFailure.CAPACITY_TIMEOUT,
-    MeshFailure.ARTIFACT_CAPACITY,
-])
-@pytest.mark.parametrize("current,expected", [
-    (MeshExecutionProfile.STANDARD, MeshExecutionProfile.HIGH_MEMORY),
-    (MeshExecutionProfile.HIGH_MEMORY, MeshExecutionProfile.ULTRAMEM),
-])
-def test_capacity_failure_escalates_exactly_one_profile(failure, current, expected):
-    assert escalation_profile(current, failure, automatic_escalations=0) is expected
-
-
-def test_ultramem_has_no_higher_profile():
-    assert escalation_profile(
-        MeshExecutionProfile.ULTRAMEM, MeshFailure.OUT_OF_MEMORY,
-        automatic_escalations=0) is None
-
-
-@pytest.mark.parametrize("failure", [
-    MeshFailure.OUT_OF_MEMORY,
-    MeshFailure.CAPACITY_TIMEOUT,
-    MeshFailure.ARTIFACT_CAPACITY,
-])
-def test_a_run_that_already_escalated_does_not_escalate_again(failure):
-    assert escalation_profile(
-        MeshExecutionProfile.HIGH_MEMORY, failure,
-        automatic_escalations=1) is None
-
-
-@pytest.mark.parametrize("failure", [
-    MeshFailure.GEOMETRY,
-    MeshFailure.VALIDATION,
-    MeshFailure.INFRASTRUCTURE,
-])
-def test_non_capacity_failure_does_not_escalate(failure):
-    assert escalation_profile(
-        MeshExecutionProfile.STANDARD, failure,
-        automatic_escalations=0) is None

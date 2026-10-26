@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Emit internal profile recommendations and basic actual execution measurements from the unchanged Cloud Run path.
+**Goal:** Emit internal profile recommendations and basic actual execution measurements from the unchanged mesh execution path.
 
-**Architecture:** A focused application observer derives bounded workload evidence from the declared native payload and wraps one provider call. `CloudRunMeshExecutor.run` invokes the observer, while submission claims, collection, dispatch, and provider arguments remain unchanged.
+**Architecture:** A focused application observer derives bounded workload evidence from the declared native payload and wraps one provider call. `CloudRunMeshExecutor.run` invokes the observer around the existing Cloud Run/GCE dispatcher, while submission claims, collection, dispatch, and provider arguments remain unchanged.
 
 **Tech Stack:** Python 3.11, pathlib, JSON, logging, pytest
 
@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Cloud Run remains the only runtime executor.
+- `contracts.mesh_machine` remains the sole runtime routing and escalation authority.
 - Observation must fail open and must not alter provider results or exceptions.
 - Only declared payload files may be inspected; no recursive workspace scan.
 - Input JSON reads are bounded to 2 MiB per file.
@@ -23,7 +23,7 @@
 - Missing or malformed payload evidence cannot block a mesh submission.
 - Binary STL triangle counts are accepted only when the file length matches its header.
 - Nested JSON evidence chooses the largest relevant numeric value without treating booleans as integers.
-- The log preserves policy version, reasons, recommendation, and actual result measurements.
+- The log preserves policy version, reasons, recommendation, actual machine, and result measurements.
 - A provider exception is re-raised unchanged after observation.
 
 ---

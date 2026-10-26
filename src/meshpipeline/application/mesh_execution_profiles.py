@@ -14,15 +14,6 @@ class MeshExecutionProfile(StrEnum):
     ULTRAMEM = "ultramem"
 
 
-class MeshFailure(StrEnum):
-    OUT_OF_MEMORY = "out-of-memory"
-    CAPACITY_TIMEOUT = "capacity-timeout"
-    ARTIFACT_CAPACITY = "artifact-capacity"
-    GEOMETRY = "geometry"
-    VALIDATION = "validation"
-    INFRASTRUCTURE = "infrastructure"
-
-
 @dataclass(frozen=True)
 class MeshWorkload:
     engine: str
@@ -61,13 +52,6 @@ _HIGH_MEMORY_CEILINGS = {
     "region_count": 512,
 }
 _LAYERED_ENGINES = frozenset({"cfmesh", "gmsh", "snappy", "snappy_multiregion", "vmtk"})
-_CAPACITY_FAILURES = frozenset({
-    MeshFailure.OUT_OF_MEMORY,
-    MeshFailure.CAPACITY_TIMEOUT,
-    MeshFailure.ARTIFACT_CAPACITY,
-})
-
-
 def select_profile(workload: MeshWorkload) -> ProfileDecision:
     evidence_names = (*_STANDARD_CEILINGS, "boundary_layers")
     known = [getattr(workload, name) for name in evidence_names]
@@ -105,20 +89,3 @@ def select_profile(workload: MeshWorkload) -> ProfileDecision:
     reasons = ((f"sizing evidence incomplete: {', '.join(missing)} unavailable",)
                if missing else ())
     return ProfileDecision(MeshExecutionProfile.STANDARD, POLICY_VERSION, reasons)
-
-
-def escalation_profile(
-    current: MeshExecutionProfile,
-    failure: MeshFailure,
-    *,
-    automatic_escalations: int,
-) -> MeshExecutionProfile | None:
-    if automatic_escalations < 0:
-        raise ValueError("automatic_escalations must be non-negative")
-    if automatic_escalations >= 1 or failure not in _CAPACITY_FAILURES:
-        return None
-    if current is MeshExecutionProfile.STANDARD:
-        return MeshExecutionProfile.HIGH_MEMORY
-    if current is MeshExecutionProfile.HIGH_MEMORY:
-        return MeshExecutionProfile.ULTRAMEM
-    return None

@@ -590,6 +590,8 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
     from meshpipeline.contracts import mesh_machine
     machine = mesh_machine.read(workspace)
     on_vm = bool(machine and machine.get("where") == "gce")
+    ran_on = machine or {"where": "cloud_run", "machine": None,
+                         "memory_gib": mesh_machine.CLOUD_RUN_GIB}
     wait_s = timeout + 600 + (VM_START_S if on_vm else 0)
     try:
         from meshpipeline.adapters.mesh_execution.gcs_exchange import storage_client
@@ -675,7 +677,7 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
         # that cannot fit is refused in words and KEPT in the exchange - never half-written, never lost
         _room = worker_room(bucket, out_key, result, ws.parent)
         if _room is not None:
-            return _room
+            return {**_room, "ran_on": ran_on}
         with tempfile.TemporaryDirectory(prefix="mesh_result_", dir=str(ws.parent)) as _tmp:
             _archive = Path(_tmp) / "result.tar.gz"
             bucket.blob(out_key).download_to_filename(str(_archive))
@@ -686,8 +688,7 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
         collected = {**result,
                      "provider_reference": operation.operation_name if operation else "",
                      # WHERE IT RAN, and why (the why record reads it)
-                     "ran_on": machine or {"where": "cloud_run", "machine": None,
-                                           "memory_gib": mesh_machine.CLOUD_RUN_GIB}}
+                     "ran_on": ran_on}
         logger.info("%s ran on %s - rc=%s timed_out=%s", engine,
                     f"a {machine.get('machine')} VM" if on_vm and machine else "Cloud Run Job",
                     result.get("rc"), result.get("timed_out"))
@@ -708,7 +709,7 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
                 "log_tail": f"{ABANDONED_MARKER} {engine}: {stop}"}
     except Exception as exc:  # noqa: BLE001 - any failure is a LOUD mesh failure, not a local run
         if isinstance(result, dict) and "rc" in result:
-            return _uncollected(engine, result, exc)
+            return {**_uncollected(engine, result, exc), "ran_on": ran_on}
         return _fail(engine, f"{type(exc).__name__}: {exc}")
     finally:
         if on_vm and collection_complete:

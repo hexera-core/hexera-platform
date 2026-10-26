@@ -169,6 +169,7 @@ def run_with_shadow_profile(
         "rc": result.get("rc"),
         "timed_out": bool(result.get("timed_out")),
         "cells": _actual_cells(result),
+        "ran_on": result.get("ran_on"),
     }
     try:
         _emit(workload, actual)

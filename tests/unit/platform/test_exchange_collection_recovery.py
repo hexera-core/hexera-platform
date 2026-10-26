@@ -209,6 +209,7 @@ def test_an_output_download_failure_preserves_every_exchange_object(bucket, tmp_
     b.download_faults[coords.output_object_key] = _Fault("connection reset")
     out = _collect(tmp_path)
     assert out["rc"] != 0
+    assert out["ran_on"]["where"] == "cloud_run"
     assert b.deleted == []
     assert _exchange_keys(coords) <= set(b.objects)
 

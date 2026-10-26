@@ -81,8 +81,9 @@ def test_shadow_record_contains_recommendation_and_actuals_without_altering_resu
     _binary_stl(tmp_path / "part.stl")
     (tmp_path / "plan.json").write_text(json.dumps({"max_cells": 12_000_000}))
     note_native_payload(tmp_path, ["part.stl", "plan.json"])
+    ran_on = {"where": "gce", "machine": "n2-highmem-16", "memory_gib": 128.0}
     result = {"rc": 0, "timed_out": False, "quality": {"cells": 11_500_000},
-              "provider_reference": "op-1"}
+              "provider_reference": "op-1", "ran_on": ran_on}
 
     with caplog.at_level(logging.INFO):
         observed = run_with_shadow_profile(tmp_path, "gmsh", lambda: result)
@@ -94,6 +95,7 @@ def test_shadow_record_contains_recommendation_and_actuals_without_altering_resu
     assert record["actual"]["cells"] == 11_500_000
     assert record["actual"]["rc"] == 0
     assert record["actual"]["timed_out"] is False
+    assert record["actual"]["ran_on"] == ran_on
     assert record["actual"]["elapsed_seconds"] >= 0
 
 
