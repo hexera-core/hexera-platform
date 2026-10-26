@@ -68,6 +68,29 @@ def _stat(pid: int) -> tuple[int, float, int] | None:
     return ppid, cpu, rss
 
 
+def descendants(root_pid: int) -> list[int]:
+    """Every process below `root_pid` (not itself), read from /proc; [] where it cannot be read."""
+    try:
+        names = os.listdir("/proc")
+    except OSError:
+        return []
+    children: dict[int, list[int]] = {}
+    for name in names:
+        if name.isdigit():
+            st = _stat(int(name))
+            if st is not None:
+                children.setdefault(st[0], []).append(int(name))
+    out: list[int] = []
+    stack = list(children.get(int(root_pid), ()))
+    while stack:
+        pid = stack.pop()
+        if pid in out:
+            continue
+        out.append(pid)
+        stack.extend(children.get(pid, ()))
+    return out
+
+
 def sample_tree(root_pid: int, *, exclude: Iterable[int] = ()) -> TreeSample | None:
     """CPU and memory of `root_pid` and every process below it, leaving out `exclude` and their
     descendants. None when /proc cannot be read or the root is gone."""
@@ -174,4 +197,4 @@ class LivenessWatch:
 
 
 __all__ = ["MIN_CPU_S", "MIN_CPU_SHARE", "MIN_RSS_STEP_BYTES", "LivenessWatch", "TreeSample",
-           "sample_tree"]
+           "descendants", "sample_tree"]

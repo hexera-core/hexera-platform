@@ -867,7 +867,11 @@ def remaining_seconds(state: Mapping, *, now: float) -> float:
     # the pipeline's deadline as progress has moved it (application/pipeline_budget); the builder's
     # own budget is the model loop's and is never moved
     pipe = state.get("pipeline_deadline_epoch")
-    ends = [effective_deadline(e) if e == pipe else e for e in ends]
+    # ...and the builder's is MODEL time: the seconds spent in native mesh runs are given back, as
+    # agents/builder/budget.settle gives them back (a long, watched mesh never spends it)
+    from meshpipeline.contracts.progress_clock import native_seconds
+    native = native_seconds()
+    ends = [effective_deadline(e) if e == pipe else e + native for e in ends]
     return (min(ends) - now) if ends else float("inf")
 
 

@@ -242,3 +242,82 @@ def test_a_thermal_plan_the_budget_holds_is_no_longer_refused_for_a_guessed_cloc
     old_limit_s = need.seconds / TF.TIME_SHARE / 2         # a clock half what this plan needs
     assert _plan(old_limit_s).refusal                       # refused for time, as it was
     assert not need.refusal                                 # held only by the budget now
+
+
+# THE LOOP'S CLOCKS GIVE A WATCHED MESH ITS TIME
+
+def test_a_tool_call_that_is_a_mesh_still_running_is_not_cut_by_the_loops_clock():
+    """agents/loop/tool_execution waited on each call with a WALL clock of the loop's model time
+    left: a watched mesh past it was dropped mid-run and the attempt ended (Greptile on #320)."""
+    import asyncio
+
+    from meshpipeline.agents.loop.budget import wait_on_model_time
+
+    async def _mesh():
+        with progress_clock.native_run():
+            await asyncio.sleep(0.5)
+        return "meshed"
+
+    assert asyncio.run(wait_on_model_time(_mesh(), timeout=0.1, poll_s=0.05)) == "meshed"
+    assert asyncio.run(wait_on_model_time(_mesh(), timeout=None)) == "meshed"
+    import inspect
+
+    from meshpipeline.agents.loop import tool_execution
+    assert "wait_on_model_time(self.driver.execute(inv)" in inspect.getsource(tool_execution.ToolExecution.run)
+
+
+def test_the_fallback_ladders_time_left_gives_native_time_back():
+    import time
+
+    from meshpipeline.pipeline.engine_fallback import remaining_seconds
+    now = time.time()
+    state = {"builder_deadline_epoch": now + 100.0}
+    assert remaining_seconds(state, now=now) == pytest.approx(100.0, abs=1)
+    with progress_clock.native_run():
+        time.sleep(0.3)
+    assert remaining_seconds(state, now=now) == pytest.approx(100.3, abs=0.2)
+
+
+def test_a_stuck_cfmesh_passage_says_it_stalled(monkeypatch, tmp_path):
+    import json
+
+    from meshpipeline.engines.cfmesh import native as N
+    (tmp_path / "system").mkdir()
+    (tmp_path / "system" / "meshDict").write_text('surfaceFile "geom.stl";')
+    sub = tmp_path / "p2"
+    sub.mkdir()
+    (sub / "geom.stl").write_text("solid x\nendsolid x\n")
+    (tmp_path / N.PASSAGES_FILE).write_text(json.dumps({"runs": ["p2"], "ports": [[], ["b"]]}))
+    monkeypatch.setattr(N, "run_guarded", _stuck("a cfMesh passage"))
+    rc, timed_out, why = N.mesh_passages(tmp_path)
+    assert rc == -1 and timed_out and N.PASSAGE_STALLED in why
+
+
+def test_a_stopped_run_takes_a_tool_it_started_in_its_own_session_with_it(tmp_path):
+    """A nested watched tool (snap-grid's checkMesh) runs in a session of its own; stopping the run
+    that started it must stop it too."""
+    import os
+    import time
+
+    pidf = tmp_path / "child.pid"
+    code = ("import subprocess,sys,time\n"
+            "c=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'], start_new_session=True)\n"
+            f"open({str(pidf)!r},'w').write(str(c.pid))\n"
+            "print('start', flush=True)\ntime.sleep(60)")
+    with pytest.raises(StalledExpired), (tmp_path / "m.log").open("w") as fh:
+        run_guarded(_py(code), stdout=fh, stderr=subprocess.STDOUT, timeout=30, stall_s=1.0, poll_s=0.1)
+    child = int(pidf.read_text())
+    for _ in range(50):
+        try:
+            os.kill(child, 0)
+        except ProcessLookupError:
+            break
+        try:                                   # a zombie left for init to reap counts as gone
+            if open(f"/proc/{child}/stat").read().split(")")[-1].split()[0] == "Z":
+                break
+        except OSError:
+            break
+        time.sleep(0.1)
+    else:
+        os.kill(child, 9)
+        pytest.fail("the tool the run started outlived it")

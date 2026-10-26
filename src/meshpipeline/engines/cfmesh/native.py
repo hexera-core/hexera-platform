@@ -109,6 +109,10 @@ def run_cartesian_mesh(workspace, *, context=None, bashrc: str = _DEFAULT_BASHRC
     return run_mesh(workspace, engine="cfmesh", timeout=timeout)
 
 
+#: how mesh_passages says a passage was STUCK (no sign of life for the stall window), not slow
+PASSAGE_STALLED = "made no progress for the stall window"
+
+
 def mesh_passages(ws: Path, *, bashrc: str = _DEFAULT_BASHRC, timeout: float = 1800.0) -> tuple[int, bool, str]:
     """THE OTHER PASSAGES of a case whose confirmed openings lie on several that do not connect
     (PASSAGES_FILE). cartesianMesh keeps the largest closed region it finds, so each passage is
@@ -152,7 +156,9 @@ def mesh_passages(ws: Path, *, bashrc: str = _DEFAULT_BASHRC, timeout: float = 1
             if _run(f"mergeMeshes -overwrite . {shlex.quote(str(rel))}", ws, f"mergeMeshes_p{k}.log") != 0:
                 tail = "\n".join((ws / f"mergeMeshes_p{k}.log").read_text(errors="replace").splitlines()[-LOG_TAIL_LINES:])
                 return 1, False, f"[CFMESH] passage {k} could not be merged into the mesh:\n{tail}"
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as exc:
+            if getattr(exc, "stalled", False):
+                return -1, True, f"[CFMESH] passage {k} {PASSAGE_STALLED}"
             return -1, True, f"[CFMESH] passage {k} ran out of time"
         # the merged mesh is the case's; the passage's own copy only fills the returned archive
         shutil.rmtree(sub / "constant" / "polyMesh", ignore_errors=True)
@@ -223,6 +229,7 @@ def _run_cartesian_mesh_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
         rc, timed_out, why = mesh_passages(ws, bashrc=bashrc,
                                            timeout=max(60.0, timeout - (time.monotonic() - t0)))
         timing["passages_s"] = round(time.monotonic() - t_p, 1)
+        stalled = stalled or (timed_out and PASSAGE_STALLED in why)
         if why:
             tail = (tail + "\n" + why).strip()
     # The SHARED reading of a native result - signal vs ordinary failure vs timeout - so this

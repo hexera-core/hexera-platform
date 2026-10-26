@@ -311,6 +311,14 @@ def run_watched(args, *, log_path, hard_timeout: float, stall_s: float, progress
 
 
 def _kill_process_group(proc: subprocess.Popen) -> None:
+    # EVERY PROCESS IT STARTED, read before the kill: a tool the run started in a session of its
+    # own (run_guarded's setsid - snap-grid's checkMesh, a nested watched run) is not in its group
+    # and would outlive it, with nothing left to stop it
+    try:
+        from meshpipeline.sandbox.liveness import descendants
+        below = descendants(proc.pid)
+    except Exception:  # noqa: BLE001 - the group kill below still runs
+        below = []
     try:
         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
     except (ProcessLookupError, PermissionError, OSError):
@@ -318,6 +326,14 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
             proc.kill()
         except OSError:
             pass
+    for pid in below:
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
 
 # Drop any env var whose NAME looks like a secret, so model code cannot read keys
 # out of os.environ. Legit runtime vars (PATH, LD_LIBRARY_PATH, OMP_*, VTK/gmsh

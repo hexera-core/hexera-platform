@@ -2,6 +2,7 @@
 # Boundaries: counting rounds, not tool calls - an agent may issue several calls inside one round.
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass
 
@@ -38,4 +39,33 @@ def _now() -> float:
     return time.monotonic() - native_seconds()
 
 
-__all__ = ["LoopBudget"]
+async def wait_on_model_time(work, *, timeout: float | None, poll_s: float = 5.0):
+    """asyncio.wait_for, with the clock standing still while a native mesher runs
+    (contracts/progress_clock.model_time): `work` is stopped at `timeout` seconds of MODEL time,
+    never in the middle of a mesh that is still making progress (that run has its own stall watch
+    and machine wall, contracts/native_time). No timeout: simply awaited. Raises TimeoutError as
+    wait_for does."""
+    from meshpipeline.contracts.progress_clock import model_time, native_running
+    task = asyncio.ensure_future(work)
+    if timeout is None:
+        return await task
+    deadline = model_time() + float(timeout)
+    try:
+        while True:
+            left = deadline - model_time()
+            if left <= 0 and not native_running():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                raise TimeoutError()
+            done, _ = await asyncio.wait({task}, timeout=max(0.05, min(poll_s, left) if left > 0 else poll_s))
+            if done:
+                return task.result()
+    except asyncio.CancelledError:
+        task.cancel()
+        raise
+
+
+__all__ = ["LoopBudget", "wait_on_model_time"]
