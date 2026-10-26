@@ -10,6 +10,7 @@ from unittest.mock import patch
 import meshpipeline.agents.intake.admission_token as at
 import meshpipeline.agents.intake.agent as intake
 import meshpipeline.agents.intake.engine_selection as es
+from meshpipeline.contracts import user_notes as un
 
 _PATCHES = [{"name": "inlet", "type": "inlet", "diameter_mm": 40},
             {"name": "outlet", "type": "outlet", "diameter_mm": 60},
@@ -143,6 +144,8 @@ def test_requirements_still_need_canonical_approval_after_a_confirmed_selection(
     sel = es.select_from_structured_input("gmsh", session_id="s", owner_id="u",
                                           revision=at.revision_of([{"role": "user", "content": "go on"}]))
     state = _state("go on", gate={"selection": sel, "admission": None})
+    # the notes question was asked before; "go on" answers it with nothing to add
+    state["messages"].insert(0, {"role": "assistant", "content": un.QUESTION})
 
     def _submit_with_token():
         tok = json.loads(_SEEN[-1]["content"])["preview_token"]

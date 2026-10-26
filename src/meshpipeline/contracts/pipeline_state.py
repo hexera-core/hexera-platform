@@ -196,6 +196,10 @@ class PipelineState(TypedDict):
     # machine-measured requirement near-misses for the CURRENT attempt (executor-owned;
     # empty means fully conforming). Deterministic code authors these; no agent may.
     requirement_caveats: list
+    # THE USER'S OWN NOTES (contracts/user_notes): their words exactly as typed, seeded by the
+    # application from the approval and never rewritten by a node. Every route's AI steps read
+    # them and answer per requirement; the result says what became of each.
+    user_notes: list
     # THE RESOLUTION LADDER (engines/resolution_policy, LAD-cfd-1/2): the rung the current
     # attempt was built at, the engine it belongs to, and the shortfall it answers. Set by the
     # engine-fallback node between attempts; written into the attempt's workspace by the builder.

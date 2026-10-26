@@ -333,6 +333,14 @@ async def plan_with_accounting(*, workspace, job_id: str, request_txt: str,
                 " cell count was reached.")
         user = ("REQUEST:\n" + (request_txt or "").strip()[:2000]
                 + "\n\nMEASURED GEOMETRY (metres):\n" + json.dumps(metrics, indent=1) + _fid_note)
+        # THE USER'S OWN NOTES, word for word (contracts/user_notes, NOTE-2): guidance for the
+        # plan, never a target it is judged on. A one-line remark on what the plan did with them
+        # may ride the JSON for the result; nothing reads it as a check.
+        from meshpipeline.contracts import user_notes as _un
+        _notes = _un.workspace_block(workspace, consumer="snappy_planner")
+        if _notes:
+            user += ("\n\n" + _notes + "\nYou may add \"notes_remark\": \"<one plain line on what "
+                     "the plan did with the notes>\" to your JSON.")
         if prior_feedback and previous_plan:
             user += ("\n\nYour PREVIOUS plan (which you must REVISE, not repeat) was:\n"
                      + json.dumps(previous_plan, indent=1)
@@ -378,6 +386,8 @@ async def plan_with_accounting(*, workspace, job_id: str, request_txt: str,
         content = round_result.assistant_text
         m = re.search(r"\{.*\}", content, re.S)
         plan = json.loads(m.group(0)) if m else None
+        if isinstance(plan, dict) and plan.get("notes_remark"):
+            _un.record_remark(workspace, plan.pop("notes_remark"), by="snappy_planner")
         _had_usage = bool(round_result.input_tokens or round_result.output_tokens)
         _log_plan_event(job_id, {
             "status": "ok" if plan else "unparseable",

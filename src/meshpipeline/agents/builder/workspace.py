@@ -25,6 +25,7 @@ def _write_workspace_context_files(
     purpose: str = "",
     far_field: dict | None = None,
     input_kind: str = "",
+    user_notes: list | None = None,
 ) -> tuple[str, str]:
     if not request_txt:
         step_basename = os.path.basename(source_path) if source_path else "input.stl"
@@ -109,6 +110,11 @@ def _write_workspace_context_files(
         ff = {k: v for k, v in (far_field or {}).items() if v not in (None, "", {})}
         if ff:
             (workspace / "far_field_request.json").write_text(json.dumps(ff), encoding="utf-8")
+        # THE USER'S OWN NOTES, word for word (contracts/user_notes, NOTE-2): in EVERY attempt's
+        # workspace - model loop or deterministic driver - beside the request they qualify, so no
+        # route can build without them in reach.
+        from meshpipeline.contracts.user_notes import write_file as _write_notes
+        _write_notes(workspace, user_notes or [], consumer="builder_workspace")
     except Exception as exc:
         logger.warning("Builder: failed to write workspace context files - %s", exc)
 

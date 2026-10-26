@@ -127,8 +127,20 @@ by its id, calling fea_lever once. Each option says what it changes. Prefer the 
 the failure described; the first option is the fixed rules' default."""
 
 
-def decision_tool() -> dict:
+def decision_tool(with_notes: bool = False) -> dict:
+    """The decision tool; `with_notes` (the user left notes) adds the optional one-line remark on
+    what was done with them - only then, so a run without notes asks exactly the question it always
+    did and the decision cache keeps answering it."""
     reason = {"type": "string", "description": "short, concrete"}
+    tool = _decision_tool(reason)
+    if with_notes:
+        from meshpipeline.contracts.user_notes import REMARK_DESCRIPTION
+        tool["function"]["parameters"]["properties"]["notes_remark"] = {
+            "type": "string", "description": REMARK_DESCRIPTION}
+    return tool
+
+
+def _decision_tool(reason: dict) -> dict:
     return {"type": "function", "function": {
         "name": TOOL_DECISION,
         "description": "The judgement calls for this part's FEA mesh. The rules turn them into sizes.",
@@ -206,6 +218,19 @@ def brief(record: Mapping, state: Mapping, zone_list: list[dict], *, diag_m: flo
         "micro_details": [{"id": f"M{i}", "kind": m.get("kind"), "size_mm": m.get("size_mm"),
                            "faces": list(m.get("faces") or [])[:4]} for i, m in enumerate(micro, start=1)],
     }
+    # THE USER'S OWN NOTES, word for word (contracts/user_notes, NOTE-2): guidance for the judgement
+    # calls - which zones matter, what to set aside, a budget they named. Only when there are some,
+    # so a run without notes is shown exactly what it always was (the decision cache keys on it).
+    from meshpipeline.contracts.user_notes import prompt_block
+    notes = prompt_block(s.get("user_notes") or [], consumer="fea_ai")
+    if notes:
+        out["user_notes"] = notes
+        out["user_notes_fea"] = (
+            "On this path: a feature they want removed or simplified can be set aside when it "
+            "qualifies (it is meshed coarser and kept - the mesh never removes geometry); a region "
+            "they care about is a zone to refine; a budget they named is budget_elements; supports, "
+            "loads, load histories and joints between parts are theirs to set in their solver on the "
+            "named faces (joints may be suggested). Say in notes_remark what you did with them.")
     # AN ASSEMBLY (PLAN-fea-17, engines/fea_driver.prepare_assembly): its parts and where they meet,
     # for the joint suggestion (AI-fea-7) - the user's own answer on the stage is shown too
     asm = record.get("assembly_plan") or {}
@@ -294,9 +319,14 @@ def _validate(arguments: str, b: Mapping) -> tuple[dict | None, list[str]]:
     if not isinstance(said, list):
         raise TypeError("words is not a list")
     words = [" ".join(str(w).split())[:400] for w in said if str(w).strip()][:5]
-    return {"analysis": analysis, "matters": " ".join(str(raw.get("matters") or "").split())[:500],
-            "zones": zones, "features": features, "joints": joints, "budget_elements": max(0, budget),
-            "words": words}, notes
+    out = {"analysis": analysis, "matters": " ".join(str(raw.get("matters") or "").split())[:500],
+           "zones": zones, "features": features, "joints": joints, "budget_elements": max(0, budget),
+           "words": words}
+    # what was done with the user's notes, one plain line for the result - never checked
+    remark = " ".join(str(raw.get("notes_remark") or "").split())[:400] if b.get("user_notes") else ""
+    if remark:
+        out["notes_remark"] = remark
+    return out, notes
 
 
 # #
@@ -590,7 +620,7 @@ async def decide(record: Mapping, state: Mapping, zone_list: list[dict], *, diag
                        note="The AI was not asked (the attempt had no time to spare); this is the rules' own mesh.")
     b = brief(record, state, zone_list, diag_m=diag_m, limit=limit)
     msgs = messages_for(b)
-    tool = decision_tool()
+    tool = decision_tool(with_notes="user_notes" in b)
     key = _key(msgs, tool)
     from meshpipeline.contracts import execution_guard as _fence
 

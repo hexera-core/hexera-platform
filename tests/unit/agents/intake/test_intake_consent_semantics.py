@@ -10,6 +10,7 @@ import pytest
 
 from meshpipeline.agents.intake.executor import IntakeExecutionState, IntakeToolExecutor
 from meshpipeline.agents.intake.loop_policy import IntakeLoopPolicy
+from meshpipeline.contracts import user_notes as un
 from meshpipeline.contracts.agent_loop import LoopExit, LoopLimits, LoopTally
 from meshpipeline.contracts.model_inference import (
     ModelRoundResult,
@@ -43,9 +44,15 @@ def h(monkeypatch):
     return t
 
 
+#: The notes question already asked and answered "no" (contracts/user_notes): these tests are about
+#: the approval, which the question only ever comes before.
+_NOTES_SETTLED = ({"role": "assistant", "content": un.QUESTION}, {"role": "user", "content": "hello"})
+
+
 def _state(**over):
     st = IntakeExecutionState(session_id="s1", owner_id="u1", revision="r1", user_msg_count=1,
-                              latest_user_msg="hello", rec_authorized=True)
+                              latest_user_msg="hello", rec_authorized=True,
+                              conversation=_NOTES_SETTLED)
     for k, v in over.items():
         setattr(st, k, v)
     return st
@@ -209,7 +216,7 @@ def test_the_terminal_priority_is_selection_then_submission(monkeypatch):
     from meshpipeline.agents.intake.loop_policy import TERMINAL_PRIORITY
     # An impossible admission is no terminal: it goes back to the model as a tool result (see the
     # test below for the voiding it still does). Only the application's own two texts end a turn.
-    assert TERMINAL_PRIORITY == ("selection_prompt", "submit_summary")
+    assert TERMINAL_PRIORITY == ("selection_prompt", "notes_prompt", "submit_summary")
     # a FRESH state each time: resolving a higher-priority terminal deliberately voids the
     # submission below it, so the same state cannot be reused to probe the next rung
     def _resolve(**kw):
@@ -220,6 +227,9 @@ def test_the_terminal_priority_is_selection_then_submission(monkeypatch):
     assert got == "SELECT"
     assert st.submit_summary is None, "a new selection voids the submission beneath it"
     assert _resolve(submit_summary="SUMMARY")[0] == "SUMMARY"
+    # the notes question is asked in place of the first summary, never beside it
+    got, st = _resolve(notes_prompt=un.QUESTION, submit_summary="SUMMARY")
+    assert got == un.QUESTION and st.submit_summary is None
     assert _resolve()[0] is None, "no terminal means the loop continues"
     assert not hasattr(_state(), "admission_block"), "the admission terminal is back"
 

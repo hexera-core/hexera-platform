@@ -240,6 +240,8 @@ class TerminalAssembly:
     #: what the engineer already answered "leave it" to, on a failed re-run with nothing new to
     #: ask (application/repair_review_park.settle_left) - said in the failure's message
     review_left: dict = field(default_factory=dict)
+    #: what the steps that read the user's own notes said they did with them (contracts/user_notes)
+    notes_remarks: list = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -293,6 +295,7 @@ def build_terminal_result(assembly: TerminalAssembly, *, delivered_types: list) 
         result = _fr.with_review_left(result, assembly.review_left)
     # "We fixed your file and meshed the fix" is a different claim from "we meshed your file".
     result = _fr.with_repair_lineage(result, assembly.repair_lineage)
+    result = _fr.with_notes_remarks(result, assembly.notes_remarks)
     # The ONLY pre-composed message honoured is the blameless SYSTEM-failure note; any other stale
     # draft (e.g. a pre-delivery outcome_message) is discarded so one renderer owns the closing.
     # When the result itself names what failed (a review that did not conclude says which way it

@@ -115,6 +115,11 @@ def submit_mesh(ctx: BuilderToolContext, args: dict | None = None) -> dict:
                              + "; ".join(problems[:8])}
         (workspace / "flag_responses.json").write_text(
             json.dumps(HF.as_dicts(responses), indent=2), encoding="utf-8")
+    # WHAT THE BUILD DID WITH THE USER'S NOTES, in one plain line for the result (contracts/
+    # user_notes). Best effort: kept as written, never checked, never a reason to refuse a mesh.
+    if ctx.user_notes and (args or {}).get("notes_remark"):
+        from meshpipeline.contracts.user_notes import record_remark
+        record_remark(workspace, (args or {}).get("notes_remark"), by="builder")
     return {"success": True, _pol.submit_ok_key: True}
 
 
