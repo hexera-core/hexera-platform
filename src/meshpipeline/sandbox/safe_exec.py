@@ -154,6 +154,49 @@ class StalledExpired(subprocess.TimeoutExpired):
         self.silence_s, self.ran_s = silence_s, ran_s
 
 
+class MemoryExpired(subprocess.TimeoutExpired):
+    """A WATCHED process stopped, cleanly, because its machine was about to run out of memory
+    (sandbox/liveness.memory_in_use past MEMORY_GUARD_SHARE of what it allows) - never left to the
+    kernel's OOM killer. A TimeoutExpired, so every caller that handles a stopped run still does;
+    `out_of_memory` tells it apart (RUN-3: the same case one machine up). `used_gib` is what was in
+    use when it was stopped."""
+    stalled = False
+    out_of_memory = True
+
+    def __init__(self, cmd, timeout, *, used_gib: float, limit_gib: float) -> None:
+        super().__init__(cmd, timeout)
+        self.used_gib, self.limit_gib = used_gib, limit_gib
+
+
+def _over_memory() -> tuple[float, float] | None:
+    """(GiB in use, GiB allowed) when the machine is past the memory guard; None otherwise."""
+    from meshpipeline.sandbox.liveness import MEMORY_GUARD_SHARE, memory_in_use
+    try:
+        m = memory_in_use()
+    except Exception:  # noqa: BLE001 - a look that fails is no reason to stop a run
+        return None
+    if m is None or m[1] <= 0 or m[0] <= MEMORY_GUARD_SHARE * m[1]:
+        return None
+    return round(m[0] / 2 ** 30, 2), round(m[1] / 2 ** 30, 2)
+
+
+def why_it_stopped(exc, result: dict) -> dict:
+    """The result of a watched run that ended in a TimeoutExpired, said truthfully: STUCK
+    (`stalled`, StalledExpired), OUT OF MEMORY (`out_of_memory`, MemoryExpired: not a time-out at
+    all, so `timed_out` is cleared and the peak kept in `used_gib`), or stopped at the machine's wall
+    (neither). Returns `result`."""
+    if getattr(exc, "stalled", False):
+        result["stalled"] = True
+    if getattr(exc, "out_of_memory", False):
+        result["out_of_memory"] = True
+        result["timed_out"] = False
+        result["used_gib"] = getattr(exc, "used_gib", None)
+        result["log_tail"] = (str(result.get("log_tail") or "") + "\n[MEMORY] stopped before the machine "
+                              f"ran out of memory: {getattr(exc, 'used_gib', '?')} GiB of "
+                              f"{getattr(exc, 'limit_gib', '?')} GiB in use").strip()
+    return result
+
+
 def _log_of(stdout) -> tuple:
     name = getattr(stdout, "name", None)
     return (name,) if isinstance(name, str) else ()
@@ -189,6 +232,12 @@ def _wait_watched(proc, *, timeout, stall_s: float, progress_paths, poll_s: floa
                 _kill_process_group(proc)
                 proc.wait()
                 raise StoppedByWatch(proc.args, str(reason))
+        over = _over_memory()
+        if over is not None:
+            # THE MEMORY GUARD: stopped as out of memory, before the kernel's OOM killer would end it
+            _kill_process_group(proc)
+            proc.wait()
+            raise MemoryExpired(proc.args, timeout, used_gib=over[0], limit_gib=over[1])
         if now - last >= stall_s:
             _kill_process_group(proc)
             proc.wait()
@@ -295,7 +344,10 @@ def run_watched(args, *, log_path, hard_timeout: float, stall_s: float, progress
                 last = now
                 progress_clock.touch()
             longest = max(longest, now - last)
-            if now - last >= stall_s:
+            if _over_memory() is not None:
+                # THE MEMORY GUARD (as run_guarded's): stopped before the kernel's OOM killer
+                stopped = "memory"
+            elif now - last >= stall_s:
                 stopped = "stalled"
             elif now - t0 >= hard_timeout:
                 stopped = "ceiling"

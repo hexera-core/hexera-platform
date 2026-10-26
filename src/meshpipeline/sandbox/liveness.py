@@ -68,6 +68,50 @@ def _stat(pid: int) -> tuple[int, float, int] | None:
     return ppid, cpu, rss
 
 
+#: THE MEMORY GUARD (sandbox/safe_exec): a watched run is stopped, cleanly and as out of memory, once
+#: what cannot be reclaimed on its machine passes this share of what the machine allows - before the
+#: kernel's OOM killer ends it (and, on Cloud Run, the whole job with it). The rest is the runner's.
+MEMORY_GUARD_SHARE = 0.92
+
+
+def _read_int(path: str) -> int | None:
+    try:
+        raw = Path(path).read_text().strip()
+    except OSError:
+        return None
+    return int(raw) if raw.isdigit() else None
+
+
+def memory_in_use() -> tuple[int, int] | None:
+    """(bytes in use that cannot be reclaimed, bytes the machine allows) for the container this runs
+    in (cgroup v2, else v1: anonymous memory and tmpfs - a Cloud Run job's files live there - against
+    its limit), else the host's (/proc/meminfo). None when neither can be read."""
+    limit = _read_int("/sys/fs/cgroup/memory.max") or _read_int("/sys/fs/cgroup/memory/memory.limit_in_bytes")
+    stat_path = ("/sys/fs/cgroup/memory.stat" if Path("/sys/fs/cgroup/memory.stat").exists()
+                 else "/sys/fs/cgroup/memory/memory.stat")
+    meminfo: dict[str, int] = {}
+    try:
+        for ln in Path("/proc/meminfo").read_text().splitlines():
+            k, _, v = ln.partition(":")
+            meminfo[k.strip()] = int(v.split()[0]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    host = meminfo.get("MemTotal")
+    if limit and host and limit < host:
+        try:
+            stat = {}
+            for ln in Path(stat_path).read_text().splitlines():
+                k, _, v = ln.partition(" ")
+                stat[k] = int(v)
+        except (OSError, ValueError):
+            return None
+        used = stat.get("anon", stat.get("total_rss", 0)) + stat.get("shmem", stat.get("total_shmem", 0))
+        return used, limit
+    if host and "MemAvailable" in meminfo:
+        return host - meminfo["MemAvailable"], host
+    return None
+
+
 def descendants(root_pid: int) -> list[int]:
     """Every process below `root_pid` (not itself), read from /proc; [] where it cannot be read."""
     try:
@@ -196,5 +240,5 @@ class LivenessWatch:
         return sign
 
 
-__all__ = ["MIN_CPU_S", "MIN_CPU_SHARE", "MIN_RSS_STEP_BYTES", "LivenessWatch", "TreeSample",
-           "descendants", "sample_tree"]
+__all__ = ["MEMORY_GUARD_SHARE", "MIN_CPU_S", "MIN_CPU_SHARE", "MIN_RSS_STEP_BYTES", "LivenessWatch",
+           "TreeSample", "descendants", "memory_in_use", "sample_tree"]

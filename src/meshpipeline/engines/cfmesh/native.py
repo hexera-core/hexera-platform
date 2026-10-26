@@ -194,8 +194,9 @@ def _run_cartesian_mesh_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
     # NO GUESSED TIME LIMIT (contracts/native_time): `timeout` is the machine's WALL, and the mesher
     # is WATCHED - stopped only when its log has not grown for the stall window
     from meshpipeline.contracts.native_time import STALL_WINDOW_S
-    from meshpipeline.sandbox.safe_exec import StalledExpired, StoppedByWatch
+    from meshpipeline.sandbox.safe_exec import MemoryExpired, StalledExpired, StoppedByWatch
     stalled = False
+    oom_gib: float | None = None
     # THE SIZE BRAKE (engines/size_brake): cartesianMesh prints the cells it built from its
     # octree before it maps the surface, adds layers and optimises; a count far past the case's own
     # run plan stops it there - deterministic, no clock - and the builder is told by how much
@@ -216,6 +217,8 @@ def _run_cartesian_mesh_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
             rc = proc2.returncode
     except StoppedByWatch:
         rc, timed_out = -1, False
+    except MemoryExpired as exc:
+        rc, timed_out, oom_gib = -1, False, float(exc.used_gib)
     except StalledExpired:
         rc, timed_out, stalled = -1, True, True
     except subprocess.TimeoutExpired:
@@ -239,6 +242,9 @@ def _run_cartesian_mesh_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
         outcome=NativeOutcome.timed_out if timed_out else None)
     if stalled:
         out["stalled"] = True
+    if oom_gib is not None:
+        # OUT OF MEMORY, stopped cleanly (sandbox/safe_exec.MemoryExpired): one machine up
+        out.update(out_of_memory=True, timed_out=False, used_gib=oom_gib)
     if brake is not None and brake.tripped:
         out["oversize"] = dict(brake.tripped)
     # QUALITY IS MEASURED HERE, beside the mesh, and travels home with it. finalize and the

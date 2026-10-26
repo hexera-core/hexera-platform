@@ -378,3 +378,113 @@ def test_a_layered_fill_the_brake_stopped_goes_on_to_the_layer_free_fill(tmp_pat
     gens = [c for c in calls if len(c) > 1 and c[1] == "vmtkmeshgenerator"]
     assert len(gens) == 2 and "-boundarylayer 0" in " ".join(gens[1])
     assert "not untangling" in res["repair_note"] and not res.get("timed_out")
+
+
+# NEVER AN OOM KILL: THE MEMORY GUARD, AND RUN-3 FOR EVERY WATCHED ENGINE
+
+def test_a_run_its_machine_cannot_hold_is_stopped_as_out_of_memory(monkeypatch, tmp_path):
+    from meshpipeline.sandbox import safe_exec
+    from meshpipeline.sandbox.safe_exec import MemoryExpired, why_it_stopped
+    monkeypatch.setattr(safe_exec, "_over_memory", lambda: (30.1, 32.0))
+    with pytest.raises(MemoryExpired) as err:
+        run_guarded(_py("import time\nprint('x', flush=True)\ntime.sleep(30)"), capture_output=True,
+                    text=True, timeout=30, stall_s=5.0, poll_s=0.1)
+    assert err.value.out_of_memory and not err.value.stalled and err.value.used_gib == 30.1
+    out = why_it_stopped(err.value, {"rc": -1, "timed_out": True, "log_tail": ""})
+    assert out["out_of_memory"] and not out["timed_out"] and "out of memory" in out["log_tail"]
+
+
+def test_the_fea_watch_stops_for_memory_as_the_kill_run_3_answers(monkeypatch, tmp_path):
+    from meshpipeline.engines.gmsh import gmsh_runner as G
+    from meshpipeline.sandbox import safe_exec
+    monkeypatch.setattr(safe_exec, "_over_memory", lambda: (30.1, 32.0))
+    w = safe_exec.run_watched(_py("import time\nprint('x', flush=True)\ntime.sleep(30)"),
+                              log_path=tmp_path / "l.log", hard_timeout=30, stall_s=5.0, poll_s=0.1)
+    assert w.stopped == "memory"
+    monkeypatch.setattr(safe_exec, "run_watched", lambda *a, **k: w)
+    out = G._run_fea_watched(tmp_path, timeout=100)
+    from meshpipeline.engines.fea_driver import _out_of_memory
+    assert out["out_of_memory"] and _out_of_memory(out)
+
+
+def test_a_run_out_of_memory_runs_again_one_machine_up(tmp_path):
+    from meshpipeline.contracts import mesh_machine as MM
+    oom = {"rc": -1, "timed_out": False, "out_of_memory": True, "used_gib": 29.5}
+    done = {"rc": 0, "timed_out": False}
+    out, seen = _off_the_wall(tmp_path, [oom, done])
+    assert out == done and [w for _c, w in seen] == ["cloud_run", "gce"]
+    assert MM.read(tmp_path)["machine"] == MM.MACHINES[0].name and MM.read(tmp_path)["why"] == "out_of_memory"
+
+
+def test_out_of_memory_on_the_largest_machine_is_handed_back(tmp_path):
+    from meshpipeline.contracts import mesh_machine as MM
+    MM.write(tmp_path, MM._decision(MM.CEILING, 900.0, 0.0, need=900.0, words="", why="t"))
+    oom = {"rc": -1, "timed_out": False, "out_of_memory": True, "used_gib": 880.0}
+    out, seen = _off_the_wall(tmp_path, [oom])
+    assert out is oom and len(seen) == 1
+
+
+# gmsh CFD: A FILL FAR PAST ONE JOB IS NEVER STARTED
+
+def test_the_fill_estimate_reads_the_passage_sizes_off_the_coarse_fill():
+    gmsh = pytest.importorskip("gmsh")
+    import numpy as np
+
+    from meshpipeline.engines.gmsh.driver import estimate_fill
+
+    def _fill(h: float) -> int:
+        gmsh.option.setNumber("Mesh.MeshSizeMax", h)
+        gmsh.option.setNumber("Mesh.MeshSizeMin", h)
+        gmsh.model.mesh.clear()
+        gmsh.model.mesh.generate(3)
+        return sum(len(t) for t in gmsh.model.mesh.getElements(3)[1])
+
+    gmsh.initialize()
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.model.add("box")
+        gmsh.model.occ.addBox(0, 0, 0, 1, 1, 1)
+        gmsh.model.occ.synchronize()
+        coarse = _fill(0.2)
+        _tags, coords, _ = gmsh.model.mesh.getNodes()
+        pts = np.asarray(coords).reshape(-1, 3)
+        est = estimate_fill(gmsh, pts, np.full(len(pts), 0.1))
+        fine = _fill(0.1)
+    finally:
+        gmsh.finalize()
+    assert est is not None and 4 * coarse < est
+    assert 0.5 < est / fine < 2.0, (coarse, est, fine)
+
+
+def test_an_over_size_fill_moves_the_run_to_another_engine(monkeypatch, tmp_path):
+    import json
+
+    from meshpipeline.agents.builder.tool_context import BuilderToolContext
+    from meshpipeline.agents.builder.tools import meshing as M
+    from meshpipeline.engines import runtime
+    from meshpipeline.engines.gmsh import driver as D
+    from meshpipeline.engines.gmsh import gmsh_runner as G
+    from meshpipeline.engines.preflight import read_refusal
+    from meshpipeline.pipeline.engine_fallback import ENGINE, classify
+
+    (tmp_path / D.FILL_ESTIMATE_FILE).write_text(json.dumps({"estimated_cells": 40_000_000, "limit": 16_000_000}))
+    monkeypatch.setattr(G, "run_guarded", lambda *a, **k: subprocess.CompletedProcess(a[0], D.RC_FILL_OVERSIZE,
+                                                                                      "", "[GMSH] OVERSIZE"))
+    res = G._run_gmsh_local(tmp_path, timeout=NT.CLOUD_RUN_WALL_S)
+    assert res["oversize"]["by_rule"] and res["oversize"]["ratio"] == 5.0
+
+    class _Engine:
+        name = "gmsh"
+
+        def run_cartesian_mesh(self, workspace, *, timeout, context=None):
+            return res
+
+    monkeypatch.setattr(runtime, "get_engine", lambda name: _Engine())
+    ctx = BuilderToolContext(workspace=tmp_path, geometry=object(), job_id="j", engine="gmsh")
+    out = M._run_and_judge(ctx, M.PreparedMeshRun(engine="gmsh", cap=NT.CLOUD_RUN_WALL_S))
+    assert "end your turn" in out["guidance"] and "40,000,000" in out["guidance"]
+    ref = read_refusal(tmp_path)
+    assert ref is not None
+    state = {"engine": "gmsh", "executor_success": False, "executor_failed_gate": "finalize",
+             "executor_failure_cause": ref.cause, "executor_failure_facts": dict(ref.facts)}
+    assert classify(state).kind == ENGINE

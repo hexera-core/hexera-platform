@@ -46,6 +46,9 @@ class StageOutcome:
     timed_out: bool = False
     #: stopped as STUCK (no sign of life for the stall window), not at the machine's wall
     stalled: bool = False
+    #: stopped before the machine ran out of memory (sandbox/safe_exec.MemoryExpired)
+    out_of_memory: bool = False
+    used_gib: float | None = None
 
     @property
     def ok(self) -> bool:
@@ -67,10 +70,13 @@ def run_stage(workspace: Path, command: str, logname: str, *, env: dict, bashrc:
     except subprocess.TimeoutExpired as exc:
         # The guard owns the process tree; a timeout is reported as such and never as rc=0.
         stalled = bool(getattr(exc, "stalled", False))
+        oom = bool(getattr(exc, "out_of_memory", False))
         (workspace / f"log.{logname}").write_text(_text(exc.stdout) + "\n" + _text(exc.stderr))
         logs.append(f"[{logname}] " + (f"STALLED - no progress for {int(stall_s or 0) // 60} min"
-                                       if stalled else "TIMEOUT - the machine's limit"))
-        return StageOutcome(stage=logname, returncode=-1, timed_out=True, stalled=stalled)
+                                       if stalled else "OUT OF MEMORY - stopped before the machine ran out"
+                                       if oom else "TIMEOUT - the machine's limit"))
+        return StageOutcome(stage=logname, returncode=-1, timed_out=True, stalled=stalled,
+                            out_of_memory=oom, used_gib=getattr(exc, "used_gib", None))
 
 
 def _text(v) -> str:
@@ -83,6 +89,9 @@ def _timed_out(outcome: StageOutcome, command: str, logs: list[str]) -> dict:
     if outcome.stalled:
         # STUCK, not slow (contracts/native_time): a bigger machine would not help it
         out["stalled"] = True
+    if outcome.out_of_memory:
+        # OUT OF MEMORY: the same case one machine up (RUN-3, contracts/native_time.run_off_the_wall)
+        out.update(out_of_memory=True, timed_out=False, used_gib=outcome.used_gib)
     return out
 
 

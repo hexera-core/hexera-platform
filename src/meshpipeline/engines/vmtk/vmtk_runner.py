@@ -21,6 +21,7 @@ from meshpipeline.sandbox.safe_exec import (
     StoppedByWatch,
     describe_native_result,
     run_guarded,
+    why_it_stopped,
 )
 
 logger = logging.getLogger(__name__)
@@ -927,6 +928,10 @@ def _run_vmtk_local(workspace, *, timeout: int, **_ignored) -> dict:
         # machine's wall, which sends the whole run to a VM (RUN-5).
         result = _run_pype(ws, argv, timeout=left())
         nxt: int | None = i + 1 if i + 1 < len(ladder) else None
+        if result.get("out_of_memory"):
+            notes.append(f"[vmtk] attempt {i + 1} ({_step_label(strat)}): stopped before the machine "
+                         "ran out of memory")
+            break
         if result.get("timed_out") and not result.get("stalled"):
             # STILL WORKING AT THE MACHINE'S WALL: no other step is started here - the same case
             # runs again on a machine with no such wall (run_off_the_wall), or, already on one, the
@@ -1183,10 +1188,8 @@ def _run_pype(ws: Path, argv: list[str], *, timeout: int) -> dict:
         tail = (_d(exc.stdout) + "\n" + _d(exc.stderr))[-2000:]
         out = describe_native_result(returncode=-1, args=argv, stage="vmtk pype",
                                      output=tail, outcome=NativeOutcome.timed_out)
-        if getattr(exc, "stalled", False):
-            # STUCK, not slow: the ladder's next step answers it, never a bigger machine
-            out["stalled"] = True
-        return out
+        # STUCK, not slow (the ladder's next step answers it), or OUT OF MEMORY (one machine up)
+        return why_it_stopped(exc, out)
 
 
 # quality read-back

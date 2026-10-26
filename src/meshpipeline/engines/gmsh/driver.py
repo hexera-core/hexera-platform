@@ -302,6 +302,57 @@ def _surface_interior_point(pts, faces):
     return p
 
 
+#: SIZE, NOT TIME (RUN-5): the passage-sized fill is not started when its estimated cells pass this
+#: many times the job's cell limit (settings/policy.CELL_HARD_LIMIT) - the same margin the snappy
+#: size brake gives a count with its layers. Meshing it anyway ran out of memory: the shell side of a
+#: 19-tube heat exchanger (13 cells across every gap between the tubes) grew past 4 million nodes
+#: in its fill and was killed at 33 GB after 3.8 hours, where the 1,500 s clock used to cut it.
+FILL_OVERSIZE_FACTOR = 2.0
+#: what the driver writes beside the case when it did not start a fill for its size, and its exit code
+FILL_ESTIMATE_FILE = "fill_estimate.json"
+RC_FILL_OVERSIZE = 7
+
+
+class FillOverSize(Exception):
+    """The passage field asks for a fill past FILL_OVERSIZE_FACTOR x the cell limit."""
+
+    def __init__(self, estimated: int, limit: int) -> None:
+        super().__init__(f"the fill would make about {estimated:,} cells, {estimated / limit:.1f} times "
+                         f"the {limit:,} one job is sized for")
+        self.estimated, self.limit = int(estimated), int(limit)
+
+
+def estimate_fill(gmsh, points, sizes) -> int | None:
+    """The cells the passage-sized fill makes, from the coarse fill it is measured on: each coarse
+    tetrahedron splits into (its own edge / the passage size at it)^3 - none where the passage asks
+    for no finer. Its edge is the regular tetrahedron's of the same volume. None when it cannot be
+    read (the fill then simply runs)."""
+    import numpy as np
+    from scipy.spatial import cKDTree
+    types, _tags, nodes = gmsh.model.mesh.getElements(3)
+    types = [int(t) for t in types]
+    if 4 not in types:
+        return None
+    conn = np.asarray(nodes[types.index(4)], dtype=np.int64).reshape(-1, 4)
+    ntags, coords, _ = gmsh.model.mesh.getNodes()
+    ntags = np.asarray(ntags, dtype=np.int64)
+    xyz = np.asarray(coords, dtype=float).reshape(-1, 3)
+    row = np.full(int(ntags.max()) + 1, -1, dtype=np.int64)
+    row[ntags] = np.arange(len(ntags))
+    p = xyz[row[conn]]
+    vol = np.abs(np.einsum("ij,ij->i", p[:, 1] - p[:, 0], np.cross(p[:, 2] - p[:, 0], p[:, 3] - p[:, 0]))) / 6.0
+    edge = np.cbrt(vol * 6.0 * np.sqrt(2.0))
+    _, nearest = cKDTree(np.asarray(points, dtype=float)).query(p.mean(axis=1))
+    target = np.minimum(edge, np.asarray(sizes, dtype=float)[nearest])
+    ok = target > 0
+    return int(np.sum((edge[ok] / target[ok]) ** 3) + np.sum(~ok))
+
+
+def _fill_limit() -> int:
+    import meshpipeline.settings.policy as polcfg
+    return int(FILL_OVERSIZE_FACTOR * int(polcfg.CELL_HARD_LIMIT))
+
+
 def _passage_field(gmsh, ws, h: float, diag: float, *, discrete: bool = False) -> tuple:
     """For an internal-flow fluid domain: mesh once coarsely at the clamp size h, measure the
     local passage radius on that boundary (engines/radius_field.local_radius: half the
@@ -336,8 +387,23 @@ def _passage_field(gmsh, ws, h: float, diag: float, *, discrete: bool = False) -
             return None, None, None, "no boundary triangles on the coarse mesh"
         r = local_radius(pts, faces, _interior_point(gmsh, pts), diag * 1e-5, diag / 2.0)
         sizes = passage_sizes(r, target=_target, h_max=h, h_min=h * PASSAGE_MIN_SIZE_FRACTION)
+        # SIZE, NOT TIME: what the passage-sized fill will make, read off this coarse fill before it
+        # is cleared - a fill far past what one job holds is never started
+        try:
+            est = estimate_fill(gmsh, pts, sizes)
+        except Exception as exc:  # noqa: BLE001 - an estimate never stops a mesh by failing
+            print(f"[GMSH] the fill could not be estimated: {exc}", file=sys.stderr)
+            est = None
+        if est is not None:
+            (Path(ws) / FILL_ESTIMATE_FILE).write_text(json.dumps({"estimated_cells": est,
+                                                                   "limit": _fill_limit()}))
+            print(f"[GMSH] the passage-sized fill is estimated at {est:,} cells", file=sys.stderr)
+            if est > _fill_limit():
+                raise FillOverSize(est, _fill_limit() // int(FILL_OVERSIZE_FACTOR))
         gmsh.model.mesh.clear()
         return passage_size_callback(pts, sizes), pts, r, "local radius"
+    except FillOverSize:
+        raise
     except Exception as exc:  # noqa: BLE001 - a sizing aid must never lose the mesh
         if not discrete:
             gmsh.model.mesh.clear()
@@ -1121,7 +1187,12 @@ def main(workspace: str) -> int:
 
         # PASSAGE SIZING (fluid domains): elements from the local radius, about
         # PASSAGE_CELLS_ACROSS across every passage, instead of one size for the whole part.
-        _cb, _spts, _srad, _why = _passage_field(gmsh, ws, h, diag, discrete=discrete)
+        try:
+            _cb, _spts, _srad, _why = _passage_field(gmsh, ws, h, diag, discrete=discrete)
+        except FillOverSize as exc:
+            print(f"[GMSH] OVERSIZE: not meshed - {exc}", file=sys.stderr)
+            (ws / STOP_REASON).write_text(f"not meshed: {exc}")
+            return RC_FILL_OVERSIZE
         _passage: dict = {"passage_sizing": _why, "passage_cells_across_target": PASSAGE_CELLS_ACROSS}
         if _cb is not None:
             gmsh.model.mesh.setSizeCallback(_cb)
@@ -1339,7 +1410,7 @@ def run(workspace: str) -> int:
     except OSError:
         pass
     try:
-        return main(workspace)
+        return main(workspace)   # an over-size stop writes its own reason (RC_FILL_OVERSIZE)
     except Exception as exc:
         try:
             stop.write_text(f"{type(exc).__name__}: {exc}"[:600])

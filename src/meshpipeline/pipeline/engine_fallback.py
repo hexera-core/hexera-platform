@@ -683,6 +683,11 @@ def classify(state: Mapping) -> Failure | None:
         kind = NEVER
     stop = stop_class_of(cause)
     stopped = stop.value if stop is not None else ""
+    if facts.get("over_size_by_rule") and kind != NEVER:
+        # TOO BIG BY THE ENGINE'S OWN SIZING RULE (gmsh's passage field, estimated before meshing):
+        # no setting of this engine brings it inside one job, so the run moves to the next engine at
+        # once - the same case again would only be estimated over again
+        return Failure(ENGINE, cause.value, _REASON_BY_CAUSE[cause], stopped)
     broken = broken_cells(facts)
     if broken and kind != NEVER:
         # A BROKEN MESH (checkMesh's fatal defects: negative-volume cells, faces pointing the wrong

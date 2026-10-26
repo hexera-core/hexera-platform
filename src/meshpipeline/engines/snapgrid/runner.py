@@ -169,9 +169,8 @@ def run_native_build(workspace, *, bashrc: str, timeout: int) -> dict:
         (ws / LOG_NAME).write_text(out)
         res = describe_native_result(returncode=-1, args=cmd, stage="snapgrid", output=out,
                                      outcome=NativeOutcome.timed_out)
-        if stalled:
-            res["stalled"] = True
-        return res
+        from meshpipeline.sandbox.safe_exec import why_it_stopped
+        return why_it_stopped(exc, res)
     out = (p.stdout or "") + "\n" + (p.stderr or "")
     (ws / LOG_NAME).write_text(out)
     result = describe_native_result(returncode=p.returncode, args=cmd, stage="snapgrid",

@@ -518,6 +518,26 @@ def _run_and_judge(ctx: BuilderToolContext, prepared: PreparedMeshRun) -> dict:
         # the case's plan. Deterministic: the same case comes out the same size every time, so it
         # must be made coarser by about that much - never re-run as it is.
         _o = res["oversize"]
+        if _o.get("by_rule"):
+            # THE ENGINE'S OWN SIZING RULE asks for that many cells (gmsh's passage field: 13 across
+            # every passage, whatever the wall size) - no setting of this case brings it inside one job,
+            # so the run moves on to the next engine (pipeline/engine_fallback), said as the size it is
+            from meshpipeline.contracts.failure_cause import FailureCause
+            from meshpipeline.engines.preflight import PreflightRefusal
+            _words = (f"the {_o.get('stage')} would make about {int(_o.get('cells') or 0):,} cells, "
+                      f"{float(_o.get('ratio') or 0):.1f} times the {int(_o.get('budget') or 0):,} one job is "
+                      "sized for")
+            PreflightRefusal(
+                gate="finalize", cause=FailureCause.CELL_BUDGET.value,
+                builder_text=f"[MESH_OVER_SIZE] {_words}",
+                facts={"over_size_by_rule": True, "estimated_cells": int(_o.get("cells") or 0),
+                       "cell_limit": int(_o.get("budget") or 0), "meshers_started": 1}).write(workspace)
+            return {"success": False, "oversize": dict(_o),
+                    "guidance": (f"Not meshed: {_words}. This engine's own passage sizing asks for "
+                                 "that, so a coarser size does not change it. Do NOT run_mesh again and "
+                                 "do NOT reconfigure - end your turn now; the run moves on to another "
+                                 "engine."),
+                    "log_tail": res.get("log_tail", "")}
         return {"success": False, "oversize": dict(_o),
                 "guidance": (f"Stopped before finishing: the mesh {_o.get('stage')} already had "
                              f"{int(_o.get('cells') or 0):,} cells, {float(_o.get('ratio') or 0):.1f} times "

@@ -373,7 +373,13 @@ def _run_fea_watched(ws: Path, *, timeout: int) -> dict:
     seen = {"stopped": w.stopped, "seconds": w.seconds, "longest_silence_s": w.longest_silence_s,
             "silence_at_stop_s": w.silence_at_stop_s, "stall_window_s": stall_window(),
             "ceiling_s": float(timeout), "cpu_s": w.cpu_s}
-    if w.stopped == "ok":
+    if w.stopped == "memory":
+        # THE MEMORY GUARD stopped it (sandbox/safe_exec.run_watched) before the kernel's OOM killer:
+        # the same outcome RUN-3 answers (fea_driver._out_of_memory), one machine up
+        out = describe_native_result(returncode=-9, args=None, stage="gmsh driver",
+                                     output=w.tail + "\n[MEMORY] stopped before the machine ran out of memory")
+        out["out_of_memory"] = True
+    elif w.stopped == "ok":
         out = describe_native_result(returncode=w.returncode, args=None, stage="gmsh driver", output=w.tail)
     else:
         out = describe_native_result(returncode=-1, args=None, stage="gmsh driver", output=w.tail,
@@ -400,16 +406,27 @@ def _run_gmsh_local(workspace, *, timeout: int, **_ignored) -> dict:
             capture_output=True, text=True, timeout=timeout, stall_s=STALL_WINDOW_S,
         )
         tail = ((proc.stdout or "") + "\n" + (proc.stderr or ""))[-2000:]
-        return describe_native_result(returncode=proc.returncode, args=proc.args,
-                                      stage="gmsh driver", output=tail)
+        out = describe_native_result(returncode=proc.returncode, args=proc.args,
+                                     stage="gmsh driver", output=tail)
+        from meshpipeline.engines.gmsh.driver import FILL_ESTIMATE_FILE, FILL_OVERSIZE_FACTOR, RC_FILL_OVERSIZE
+        if proc.returncode == RC_FILL_OVERSIZE:
+            # SIZE, NOT TIME: the passage-sized fill was not started - far past what one job holds
+            try:
+                est = json.loads((ws / FILL_ESTIMATE_FILE).read_text())
+            except (OSError, ValueError):
+                est = {}
+            cells = int(est.get("estimated_cells") or 0)
+            budget = int(int(est.get("limit") or 0) / FILL_OVERSIZE_FACTOR) or 1
+            out["oversize"] = {"stage": "passage-sized fill (estimated before meshing)", "cells": cells,
+                               "budget": budget, "ratio": round(cells / budget, 2), "by_rule": True}
+        return out
     except subprocess.TimeoutExpired as exc:
         tail = (((exc.stdout or b"").decode(errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or ""))
                 + "\n" + ((exc.stderr or b"").decode(errors="replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")))[-2000:]
         out = describe_native_result(returncode=-1, args=exc.cmd, stage="gmsh driver",
                                      output=tail, outcome=NativeOutcome.timed_out)
-        if getattr(exc, "stalled", False):
-            out["stalled"] = True
-        return out
+        from meshpipeline.sandbox.safe_exec import why_it_stopped
+        return why_it_stopped(exc, out)
 
 
 def check_mesh(workspace) -> dict:

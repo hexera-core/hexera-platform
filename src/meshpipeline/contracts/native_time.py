@@ -58,21 +58,29 @@ def run_off_the_wall(workspace, run_once: Callable[[int], dict], *, engine: str,
     log = logging.getLogger(__name__)
     while True:
         result = run_once(wall_for(workspace))
-        if not stopped_at_the_wall(result):
+        if isinstance(result, dict) and result.get("out_of_memory"):
+            # RUN-3: stopped before the machine ran out of memory - the SAME case one machine up that
+            # also holds what it used (nothing coarsened); None on the largest, and it is handed back
+            peak = result.get("used_gib")
+            moved = MM.step_up(MM.read(workspace), measured_gib=float(peak) / 0.9 if peak else None)
+            rule, decided = "RUN-3", "step up"
+        elif stopped_at_the_wall(result):
+            moved, rule, decided = MM.off_the_wall(MM.read(workspace)), "RUN-5", "off the wall"
+        else:
             return result
-        moved = MM.off_the_wall(MM.read(workspace))
         if moved is None:
             return result
         MM.write(workspace, moved)
-        log.warning("%s: still working at the Cloud Run wall - the same case runs again on a %s VM "
-                    "(RUN-5)", engine, moved.get("machine"))
+        log.warning("%s: %s - the same case runs again on a %s VM (%s)", engine,
+                    "out of memory" if rule == "RUN-3" else "still working at the Cloud Run wall",
+                    moved.get("machine"), rule)
         try:
             from meshpipeline.contracts import decision_record as _dr
-            _dr.cite(str(job_id or ""), stage=f"{engine}_machine", decided="off the wall",
-                     value=moved.get("machine"), rule="RUN-5", inputs={"engine": engine},
+            _dr.cite(str(job_id or ""), stage=f"{engine}_machine", decided=decided,
+                     value=moved.get("machine"), rule=rule, inputs={"engine": engine},
                      words=str(moved.get("words") or ""))
         except Exception:  # noqa: BLE001 - the why record never stops a mesh
-            log.debug("RUN-5 not cited", exc_info=True)
+            log.debug("%s not cited", rule, exc_info=True)
 
 
 __all__ = ["CLOUD_RUN_MARGIN_S", "CLOUD_RUN_TASK_TIMEOUT_S", "CLOUD_RUN_WALL_S", "STALL_WINDOW_S",
