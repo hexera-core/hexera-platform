@@ -16,6 +16,8 @@ the FIRST trigger that holds pulls its lever, if that lever was not pulled alrea
   LAD-fea-7  OUT OF MEMORY: a pass the mesh job's memory limit killed pulls no lever - the other
              3D algorithm and gentler growth need as much memory or more - and the attempt ends
              saying so (two lab parts spent an hour each on a second pass killed the same way).
+  LAD-fea-8  A SURFACE STAGE THAT STALLS (the watchdog stopped gmsh in 2D) -> gmsh's first mesh of
+             every face is kept (no switch to MeshAdapt), its repeated triangles dropped (MESH-5)
   LAD-fea-6  NO IDENTICAL RETRY: the surfaces a failed pass went wrong on (the fill named them, or
              an invalid element touches them) are meshed the other way (gmsh's MeshAdapt) on the
              next pass - with LAD-fea-1 or LAD-fea-2, or on its own once those are pulled. A surface
@@ -67,7 +69,42 @@ def mesh_settings(levers: list[dict]) -> dict:
     remesh = sorted(_remeshed(levers))
     return {"algorithm3d": "hxt" if "LAD-fea-2" in names else "delaunay",
             "optimise_passes": OPTIMISE_PASSES if "LAD-fea-1" in names else 1,
-            **({"remesh_surfaces": remesh} if remesh else {})}
+            **({"remesh_surfaces": remesh} if remesh else {}),
+            # LAD-fea-8: the surface stage keeps gmsh's own first mesh of every face (no switch to MeshAdapt)
+            **({"surface_switch": False} if SURFACE_STALL in names else {})}
+
+
+#: LAD-fea-8: the lever a surface stage that stalled pulls
+SURFACE_STALL = "LAD-fea-8"
+
+
+def stalled_surface(log: str) -> int | None:
+    """The surface gmsh was meshing when its output stopped, when that was in the 2D stage: the last
+    "Meshing surface N" after the last "Meshing 2D..." with no "Done meshing 2D" after it; else None."""
+    import re
+
+    text = log or ""
+    start = text.rfind("Meshing 2D...")
+    if start < 0 or "Done meshing 2D" in text[start:]:
+        return None
+    found = re.findall(r"Meshing surface (\d+)", text[start:])
+    return int(found[-1]) if found else None
+
+
+def surface_stall_lever(surface: int, levers: list[dict], *, n: int) -> dict | None:
+    """LAD-fea-8: A SURFACE STAGE THAT STALLS (the watchdog stopped the mesher in 2D, on `surface`) is not
+    run again the same way. gmsh, when its Frontal-Delaunay mesh of a face comes out with two triangles
+    the same, throws it away and meshes the face with MeshAdapt, which on a face with a pole at fine size
+    can run longer than the watchdog's window with no output (nakuja_rocket's nose cone, Part_2 alone: 15
+    minutes silent on one face on a laptop-class worker; about 10 on a 16-core VM). The next pass keeps
+    gmsh's first mesh of every face - its repeats dropped by MESH-5 - instead. None when pulled already or
+    no pass is left."""
+    if any(lv["lever"] == SURFACE_STALL for lv in levers) or len(levers) + 1 >= MAX_PASSES:
+        return None
+    return {"lever": SURFACE_STALL, "inputs": {"pass": n, "surface": int(surface)}, "surfaces": [],
+            "words": (f"The surface stage stopped making progress on surface {int(surface)} (gmsh's switch to "
+                      "MeshAdapt there ran past the watchdog), so the next pass keeps gmsh's first mesh of every face "
+                      "and drops its repeated triangles (MESH-5).")}
 
 
 def failed_surfaces(q: Mapping, log: str = "") -> list[int]:
@@ -217,5 +254,5 @@ def best_pass(passes: list[dict]) -> tuple[int | None, str]:
     return ranked[0]["pass"], _DECIDING[i]
 
 
-__all__ = ["AI_LEVERS", "MAX_PASSES", "best_pass", "coarse_factor", "failed_surfaces", "growth", "mesh_settings",
+__all__ = ["AI_LEVERS", "MAX_PASSES", "SURFACE_STALL", "stalled_surface", "surface_stall_lever", "best_pass", "coarse_factor", "failed_surfaces", "growth", "mesh_settings",
            "lever_options", "next_lever", "pass_facts", "tightened"]

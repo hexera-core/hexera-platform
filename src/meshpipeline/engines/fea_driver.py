@@ -1011,6 +1011,20 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                 _clear_outputs(ws)
             native_s = round(time.monotonic() - native_t0, 1)
             await run.fence("accept native mesh output")
+            stuck_on = L.stalled_surface(str(result.get("log_tail") or "")) if result.get("stalled") else None
+            stall_lever = L.surface_stall_lever(stuck_on, levers, n=n) if stuck_on is not None else None
+            if result.get("timed_out") and stall_lever is not None:
+                # LAD-fea-8: A SURFACE STAGE THAT STALLED is the part's, not ours - gmsh's own switch to
+                # MeshAdapt on one face ran past the watchdog - so the next pass meshes the surfaces without it
+                run.note_native_run(produced_usable_mesh=False)
+                passes.append({**L.pass_facts(n, result.get("rc"), {}, plan, log=str(result.get("log_tail") or "")),
+                               "native_s": native_s, "stalled_surface": stuck_on,
+                               "ran_on": {k: machine.get(k) for k in ("where", "machine", "memory_gib", "why")}})
+                _cite(job_id, [{"stage": "fea_ladder", "decided": "lever", "value": stall_lever["lever"],
+                                "rule": stall_lever["lever"], "inputs": stall_lever["inputs"],
+                                "words": stall_lever["words"]}])
+                levers.append(stall_lever)
+                continue
             if result.get("timed_out"):
                 # A GUARD TRIP is our infrastructure, never the part's: it pulls no lever and changes no
                 # plan. The attempt ends here; the run's own retry takes it again (D3: replayed once)
