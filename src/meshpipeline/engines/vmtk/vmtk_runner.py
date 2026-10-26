@@ -13,6 +13,7 @@ from pathlib import Path
 import meshpipeline.settings.runtime as rtcfg
 from meshpipeline.contracts.intake_formats import is_cad
 from meshpipeline.contracts.mesh_units import COMPLETED_MESH_UNIT
+from meshpipeline.contracts.native_time import STALL_WINDOW_S
 from meshpipeline.engines.base import RunPolicy
 from meshpipeline.engines.determinism import note_time_limit
 from meshpipeline.sandbox.safe_exec import (
@@ -725,8 +726,6 @@ def _refit_to_wall(ws: Path, strategy: dict, notes: list[str]) -> dict | None:
     return refit
 
 
-#: the share of the remaining clock a LAYERED ladder step may take while a layer-free step waits
-LAYERED_SHARE = 0.6
 _LADDER_MIN_SECONDS = 60   # a ladder step is not started with less of the budget left ...
 _LADDER_MIN_FRACTION = 0.1  # ... or less than this share of it, whichever is smaller
 _now = time.monotonic       # the run clock; tests substitute it
@@ -920,22 +919,27 @@ def _run_vmtk_local(workspace, *, timeout: int, **_ignored) -> dict:
         layered = staged and int(strat.get("boundary_layers") or 0) > 0
         bare_after = next((j for j in range(i + 1, len(ladder))
                            if int(ladder[j].get("boundary_layers") or 0) <= 0), None)
-        # A LAYERED STEP NEVER TAKES THE WHOLE CLOCK while a layer-free step waits behind it:
-        # vmtk's layer generator scales with the wall's triangles, and on the Fluent aorta (328k
-        # wall triangles, 4 sublayers) the first layered attempt ran out the full 3000 s - no
-        # fill at all, where a layer-free fill was minutes away
-        step_budget = left()
-        if layered and bare_after is not None:
-            step_budget = max(int(floor), int(left() * LAYERED_SHARE))
-        result = _run_pype(ws, argv, timeout=step_budget)
+        # NO SHARE OF THE CLOCK (contracts/native_time): a layered step runs for as long as it is
+        # working. It used to get 60% of a 3,000 s budget while a layer-free step waited, and on the
+        # Fluent aorta (322k wall triangles, 4 sublayers) both were cut and the run moved to snappy.
+        # Now only a step that is STUCK (no sign of life for the stall window) gives way, or the
+        # machine's wall, which sends the whole run to a VM (RUN-5).
+        result = _run_pype(ws, argv, timeout=left())
         nxt: int | None = i + 1 if i + 1 < len(ladder) else None
+        if result.get("timed_out") and not result.get("stalled"):
+            # STILL WORKING AT THE MACHINE'S WALL: no other step is started here - the same case
+            # runs again on a machine with no such wall (run_off_the_wall), or, already on one, the
+            # run ends there
+            notes.append(f"[vmtk] attempt {i + 1} ({_step_label(strat)}): still working at the "
+                         f"machine's limit ({int(timeout)} s)")
+            break
         if layered and bare_after is not None and result.get("timed_out"):
-            # a thinner stack is no faster to grow: straight on to the layer-free fill
-            notes.append(f"[vmtk] attempt {i + 1} ({_step_label(strat)}): the layered fill ran out "
-                         f"its {step_budget} s share of the budget - next: "
+            # STUCK: a thinner stack is no faster to grow - straight on to the layer-free fill
+            notes.append(f"[vmtk] attempt {i + 1} ({_step_label(strat)}): the layered fill made no "
+                         f"progress for {STALL_WINDOW_S // 60} min - next: "
                          f"{_step_label(ladder[bare_after])}")
-            note_time_limit("vmtk.ladder", "a layered fill ran out its share of the budget; "
-                            "the layer-free fill was run instead", budget_s=float(step_budget))
+            note_time_limit("vmtk.ladder", "a layered fill made no progress for the stall window; "
+                            "the layer-free fill was run instead", stall_s=float(STALL_WINDOW_S))
             i = bare_after
             continue
         if _fill_completed(ws, result):
@@ -1098,8 +1102,11 @@ def _write_gmsh_volume(grid, names: dict[int, str], path: Path) -> dict:
 
 
 def _run_pype(ws: Path, argv: list[str], *, timeout: int) -> dict:
+    """One pype, WATCHED (contracts/native_time): stopped only after STALL_WINDOW_S with no sign of
+    life - no output, no CPU, no memory change - (`stalled`), or at `timeout`, the machine's wall."""
     try:
-        proc = run_guarded(argv, cwd=str(ws), capture_output=True, text=True, timeout=timeout)
+        proc = run_guarded(argv, cwd=str(ws), capture_output=True, text=True, timeout=timeout,
+                           stall_s=STALL_WINDOW_S)
         tail = ((proc.stdout or "") + "\n" + (proc.stderr or ""))[-2000:]
         # Signal interpretation is the SHARED seam's, not this bundle's. It lived here first,
         # which meant vmtk explained a SIGSEGV while the other four engines returned a bare
@@ -1114,8 +1121,12 @@ def _run_pype(ws: Path, argv: list[str], *, timeout: int) -> dict:
         def _d(x):
             return x.decode(errors="replace") if isinstance(x, bytes) else (x or "")
         tail = (_d(exc.stdout) + "\n" + _d(exc.stderr))[-2000:]
-        return describe_native_result(returncode=-1, args=argv, stage="vmtk pype",
-                                      output=tail, outcome=NativeOutcome.timed_out)
+        out = describe_native_result(returncode=-1, args=argv, stage="vmtk pype",
+                                     output=tail, outcome=NativeOutcome.timed_out)
+        if getattr(exc, "stalled", False):
+            # STUCK, not slow: the ladder's next step answers it, never a bigger machine
+            out["stalled"] = True
+        return out
 
 
 # quality read-back

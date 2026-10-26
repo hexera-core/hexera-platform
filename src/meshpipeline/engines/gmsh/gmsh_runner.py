@@ -390,10 +390,14 @@ def _run_gmsh_local(workspace, *, timeout: int, **_ignored) -> dict:
     # Invoked by FULL module path, as a module of the installed distribution. A shorter path
     # would only resolve with cwd inside the package, which puts its subpackages on sys.path as
     # top-level modules - the bare-namespace bypass the src layout exists to prevent.
+    # A CFD MESH, WATCHED as the FEA one is (contracts/native_time): stopped only after the stall
+    # window with no sign of life - no output, no CPU, no memory change - or at `timeout`, the
+    # machine's wall. It was a fixed 25 minutes, and a fill still working was cut there.
+    from meshpipeline.contracts.native_time import STALL_WINDOW_S
     try:
         proc = run_guarded(
             [sys.executable, "-m", "meshpipeline.engines.gmsh.driver", str(ws)],
-            capture_output=True, text=True, timeout=timeout,
+            capture_output=True, text=True, timeout=timeout, stall_s=STALL_WINDOW_S,
         )
         tail = ((proc.stdout or "") + "\n" + (proc.stderr or ""))[-2000:]
         return describe_native_result(returncode=proc.returncode, args=proc.args,
@@ -401,8 +405,11 @@ def _run_gmsh_local(workspace, *, timeout: int, **_ignored) -> dict:
     except subprocess.TimeoutExpired as exc:
         tail = (((exc.stdout or b"").decode(errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or ""))
                 + "\n" + ((exc.stderr or b"").decode(errors="replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")))[-2000:]
-        return describe_native_result(returncode=-1, args=exc.cmd, stage="gmsh driver",
-                                      output=tail, outcome=NativeOutcome.timed_out)
+        out = describe_native_result(returncode=-1, args=exc.cmd, stage="gmsh driver",
+                                     output=tail, outcome=NativeOutcome.timed_out)
+        if getattr(exc, "stalled", False):
+            out["stalled"] = True
+        return out
 
 
 def check_mesh(workspace) -> dict:

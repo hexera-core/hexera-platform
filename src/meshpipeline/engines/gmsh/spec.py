@@ -324,14 +324,18 @@ SPEC = EngineSpec(
         delivered_mesh=DeliveredMesh(cells="tetrahedral", walls="body-fitted", prism_layers=False),
         run_policy=RunPolicy(
             required_files=("gmsh_spec.json",),
-            # 25 MINUTES: at industry density the passage field (driver.PASSAGE_CELLS_ACROSS)
-            # fills a volute in 7-8 min of single-threaded gmsh (volute_scroll_007: 2.57M tets in
-            # 442 s), right at the old 420 s; the builder loop is 3600 s, validated >= 2x this.
+            # AN ESTIMATE of a long CFD run now (the fallback ladder's "does another engine still
+            # fit"): at industry density the passage field (driver.PASSAGE_CELLS_ACROSS) fills a
+            # volute in 7-8 min of single-threaded gmsh (volute_scroll_007: 2.57M tets in 442 s).
+            # The run itself is WATCHED (watched=True, contracts/native_time): stopped only after
+            # the stall window with no sign of life, or at the machine's wall - it was a fixed
+            # 25 minutes. (An FEA mesh is the FEA driver's, watched the same way, PLAN-fea-13.)
             run_timeout=lambda: min(1500, rtcfg.OPENFOAM_COMMAND_TIMEOUT),
-            timeout_hint=("The passage field holds ~13 cells across every passage, so a fill that "
-                          "does not finish in 25 min is a domain too large for that density "
-                          "(a long flat duct): raise size.value only if the brief allows a coarser "
-                          "mesh, otherwise report the limit; then run_mesh again."),
+            watched=True,
+            timeout_hint=("The passage field holds ~13 cells across every passage; a fill that "
+                          "makes no progress for the stall window is stuck, not slow: raise "
+                          "size.value only if the brief allows a coarser mesh, otherwise report "
+                          "the limit; then run_mesh again."),
             ok_guidance="Valid mesh (no fatal defects) - call submit_mesh.",
             fail_label="gmsh driver failed",
             fail_hint=("Adjust gmsh_spec.json (raise size.value to coarsen; keep "

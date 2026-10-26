@@ -477,7 +477,17 @@ def _run_and_judge(ctx: BuilderToolContext, prepared: PreparedMeshRun) -> dict:
     # THE handoff. The engine owns preparing its native input from here, and `context`
     # is how it learns what the coordinates mean - without it the bundle would have to
     # re-infer a unit from a file that does not state one.
-    res = R.run_cartesian_mesh(workspace, timeout=_cap, context=ctx)
+    _watched = bool(getattr(_policy, "watched", False))
+    if _watched:
+        # RUN-5 (contracts/native_time.run_off_the_wall): a watched run stopped at the Cloud Run
+        # job's wall STILL WORKING runs again, the same case, on a VM - never handed back as "too
+        # fine" for a limit it only met because of where it ran
+        from meshpipeline.contracts.native_time import run_off_the_wall
+        res = run_off_the_wall(
+            workspace, lambda cap: R.run_cartesian_mesh(workspace, timeout=cap, context=ctx),
+            engine=engine, job_id=ctx.job_id)
+    else:
+        res = R.run_cartesian_mesh(workspace, timeout=_cap, context=ctx)
     _mesh_seconds = _time.monotonic() - _t_mesh_start
     # RECORD the real duration of a run that actually MESHED (rc==0). A timeout or an
     # infra failure is not a data point about how long this shape takes. Best-effort.
@@ -519,6 +529,15 @@ def _run_and_judge(ctx: BuilderToolContext, prepared: PreparedMeshRun) -> dict:
         _stalled = _broken_at_time_out(_policy, res.get("log_tail"))
         if _stalled:
             return _stalled_verdict(ctx, _stalled, res.get("log_tail"))
+        if _watched:
+            # a watched run comes back timed out only STUCK, or at even a VM's wall (RUN-5 above)
+            from meshpipeline.contracts.native_time import STALL_WINDOW_S, wall_for
+            _why = (f"the mesher made no progress for {STALL_WINDOW_S // 60} min - stuck, not slow"
+                    if res.get("stalled") else
+                    f"the mesher was still going at the machine's {wall_for(workspace) // 3600} h limit")
+            return {"success": False, "timed_out": True, "stalled": bool(res.get("stalled")),
+                    "guidance": f"Stopped: {_why}. {_policy.timeout_hint}",
+                    "log_tail": res["log_tail"]}
         return {"success": False, "timed_out": True,
                 "guidance": f"meshing exceeded {_cap // 60} min - too fine. {_policy.timeout_hint}",
                 "log_tail": res["log_tail"]}

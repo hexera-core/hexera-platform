@@ -54,7 +54,6 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         review_caused_retry,
     )
     from meshpipeline.contracts.mesh_execution import note_native_pass, note_native_payload
-    from meshpipeline.engines.registry import get_spec
     from meshpipeline.engines.runtime import get_engine
     from meshpipeline.engines.snapgrid import runner as R
 
@@ -84,9 +83,14 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     note_native_payload(ws, [R.SOURCE_NAME, R.PLAN_NAME])
 
     await run.fence("start native mesh")
-    policy = get_spec("snapgrid").run_policy
-    cap = int(policy.run_timeout()) if policy is not None else 3600
-    result = await asyncio.to_thread(get_engine("snapgrid").run_cartesian_mesh, ws, timeout=cap)
+    # NO GUESSED TIME LIMIT (contracts/native_time): the run's cap is the WALL of the machine it is
+    # on, and the mesher is watched for progress inside (runner.run_native_build); a run stopped at
+    # the Cloud Run wall still working runs again, the same case, on a VM (RUN-5). It was 3,600 s.
+    from meshpipeline.contracts.native_time import run_off_the_wall
+    engine = get_engine("snapgrid")
+    result = await asyncio.to_thread(
+        run_off_the_wall, ws, lambda cap: engine.run_cartesian_mesh(ws, timeout=cap),
+        engine="snapgrid", job_id=job_id)
     # BEFORE the result is judged: a superseded generation must not accept it
     await run.fence("accept native mesh output")
     ok = result.get("rc") == 0

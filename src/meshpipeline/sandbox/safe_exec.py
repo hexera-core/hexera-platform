@@ -102,11 +102,16 @@ def run_guarded(args, *, timeout=None, stall_s: float | None = None, progress_pa
                 poll_s: float = 10.0, watch=None, **kwargs) -> subprocess.CompletedProcess:
     """Run `args` to completion under a hard wall (`timeout`). With `stall_s`, the run is WATCHED
     instead: stopped only when its output (its stdout log file, or `progress_paths`) has not moved
-    for `stall_s` seconds - StalledExpired - or at the wall. Output captured to a pipe cannot be
-    watched, so a captured run keeps the plain wall. `watch`, on a watched run, is asked at every
-    look; a reason it returns stops the run there (StoppedByWatch) - a deterministic stop the caller
-    decides from the run's own output, e.g. a mesh headed far past its cell budget."""
+    for `stall_s` seconds - StalledExpired - or at the wall. A CAPTURED run (capture_output=True) is
+    watched too: its output goes to scratch files the watch reads growing and comes back as a
+    captured run's would (_captured_watched). `watch`, on a watched run, is asked at every look; a
+    reason it returns stops the run there (StoppedByWatch) - a deterministic stop the caller decides
+    from the run's own output, e.g. a mesh headed far past its cell budget."""
     if kwargs.pop("capture_output", False):
+        if stall_s:
+            return _captured_watched(args, timeout=timeout, stall_s=float(stall_s),
+                                     progress_paths=tuple(progress_paths), poll_s=poll_s, watch=watch,
+                                     **kwargs)
         kwargs["stdout"] = subprocess.PIPE
         kwargs["stderr"] = subprocess.PIPE
     kwargs.setdefault("start_new_session", True)   # setsid: child leads its own group
@@ -190,6 +195,49 @@ def _wait_watched(proc, *, timeout, stall_s: float, progress_paths, poll_s: floa
             _kill_process_group(proc)
             proc.wait()
             raise subprocess.TimeoutExpired(proc.args, timeout)
+
+
+def _captured_watched(args, *, timeout, stall_s: float, progress_paths, poll_s: float, watch, **kwargs
+                      ) -> subprocess.CompletedProcess:
+    """A CAPTURED run, WATCHED (run_guarded with capture_output and stall_s): a pipe cannot be
+    watched, so its stdout and stderr go to two scratch files the watch reads growing, and come back
+    exactly as a captured run's would (`.stdout`, `.stderr`; text when asked for, newlines as text
+    mode gives them). Stopped only after `stall_s` with no sign of life (StalledExpired) or at
+    `timeout`, the machine's wall (TimeoutExpired); either carries the output so far, as
+    subprocess.run's does. The scratch files are removed: what the caller keeps is its own."""
+    import shutil
+    import tempfile
+    as_text = bool(kwargs.pop("text", False) or kwargs.pop("universal_newlines", False)
+                   or kwargs.get("encoding"))
+    encoding = kwargs.pop("encoding", None) or "utf-8"
+    errors = kwargs.pop("errors", None) or "replace"
+    for k in ("stdout", "stderr"):
+        kwargs.pop(k, None)
+    scratch = Path(tempfile.mkdtemp(prefix="watched_"))
+    out_p, err_p = scratch / "stdout", scratch / "stderr"
+
+    def _read(p: Path):
+        try:
+            raw = p.read_bytes()
+        except OSError:
+            raw = b""
+        if not as_text:
+            return raw
+        return raw.decode(encoding, errors=errors).replace("\r\n", "\n").replace("\r", "\n")
+    try:
+        with out_p.open("wb") as out, err_p.open("wb") as err:
+            try:
+                proc = run_guarded(args, timeout=timeout, stall_s=stall_s,
+                                   progress_paths=(str(out_p), str(err_p), *progress_paths),
+                                   poll_s=poll_s, watch=watch, stdout=out, stderr=err, **kwargs)
+            except subprocess.TimeoutExpired as exc:     # a stall (StalledExpired) or the wall
+                out.flush()
+                err.flush()
+                exc.output, exc.stderr = _read(out_p), _read(err_p)
+                raise
+        return subprocess.CompletedProcess(proc.args, proc.returncode, _read(out_p), _read(err_p))
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
 
 
 @dataclass(frozen=True)

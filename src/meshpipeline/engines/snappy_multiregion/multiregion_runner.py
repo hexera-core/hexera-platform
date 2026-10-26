@@ -836,18 +836,22 @@ def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
 
     # A THERMAL MODEL'S THINNEST LAYERS SET HOW FINE ITS MESH MUST BE (thermal_fidelity.plan).
     # Each region is raised to the surface level that puts two cells across its thinnest layer
-    # and across the narrow air beside it. A model whose need does not fit the cell budget and
-    # the run's time is refused here, before any case file is written, with the reason - not
-    # meshed for 50 minutes into a mesh that loses the layer (ECXML-TEST, 2026-10-06).
+    # and across the narrow air beside it. A model whose need does not fit the cell budget (or
+    # even a VM's wall) is refused here, before any case file is written, with the reason - not
+    # meshed for 50 minutes into a mesh that loses the layer (ECXML-TEST, 2026-10-06). NO GUESSED
+    # TIME LIMIT (contracts/native_time): the time it may take is the wall of the biggest machine it
+    # can go to, and a plan past the Cloud Run job's wall runs on a VM (RUN-5, machine_for_plan) -
+    # it was this engine's fixed 3,000 s, which refused models the cell budget held.
     thermal_plan = None
     side = _thermal.load(ws)
     if side is not None:
+        from meshpipeline.contracts.native_time import VM_WALL_S
         thermal_plan = _thermal.plan(
             side, _thermal.file_regions(rmap, solids, side),
             {n: str(r["type"]) for n, r in rmap.items()}, base_cell, surface_level,
             region_refinement,
             budget_cells=min(max_cells, int(_ignored.get("cell_budget") or max_cells)),
-            timeout_s=_run_timeout())
+            timeout_s=float(VM_WALL_S))
         (ws / _thermal.THERMAL_PLAN).write_text(json.dumps(thermal_plan.as_dict()))
         if thermal_plan.refusal:
             (ws / "system" / "snappyHexMeshDict").unlink(missing_ok=True)
@@ -858,6 +862,8 @@ def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
         region_refinement = {**region_refinement, **{
             d: lv for d, lv in thermal_plan.levels.items()
             if lv != [int(v) for v in (region_refinement.get(d) or surface_level)]}}
+    # WHERE IT RUNS (RUN-5): a plan whose time passes the Cloud Run job's wall goes to a VM
+    machine_for_plan(ws, thermal_plan.seconds if thermal_plan is not None else None)
 
     # A THIN REGION gets the level its wall needs: a region under one cell across its wall loses
     # its cellZone (s_duct_001_cht's 7.7 mm pipe wall under 14 mm cells split into five unzoned
@@ -955,17 +961,20 @@ def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
     return out
 
 
-def _run_timeout() -> float:
-    """This engine's run time limit (spec.py's run policy), seconds."""
-    try:
-        from meshpipeline.engines.registry import get_spec
-
-        policy = get_spec("snappy_multiregion").run_policy
-        if policy is not None:
-            return float(policy.run_timeout())
-    except Exception:  # noqa: BLE001 - the documented default when the registry cannot say
-        pass
-    return 3000.0
+def machine_for_plan(workspace, planned_s: float | None) -> dict:
+    """RUN-5 FOR multi-region snappy: where the case written in `workspace` runs - the Cloud Run job,
+    or (its planned time, thermal_fidelity.plan's seconds, with the margin past the job's wall) the
+    smallest VM, which has no such wall. Written into the workspace (contracts/mesh_machine) and
+    returned; a case with no plan runs on the Cloud Run job, as always."""
+    from meshpipeline.contracts import mesh_machine as MM
+    from meshpipeline.contracts.native_time import CLOUD_RUN_WALL_S
+    decision = MM.choose(process_gib=0.0, workspace_gib=0.0, why="multi-region thermal plan")
+    decision = MM.for_time(decision, planned_s=float(planned_s) if planned_s else None,
+                           wall_s=float(CLOUD_RUN_WALL_S))
+    MM.write(workspace, decision)
+    if decision.get("where") == "gce":
+        logger.warning("multi-region plan: %s", decision.get("words"))
+    return decision
 
 
 def _locations_in_mesh(region_points: dict | None, fallback) -> str:

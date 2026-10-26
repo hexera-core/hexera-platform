@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from meshpipeline.contracts.native_time import STALL_WINDOW_S
 from meshpipeline.engines.snappy_multiregion.foam_exec import (
     _DEFAULT_BASHRC,
     _foam_env,
@@ -42,6 +44,8 @@ class StageOutcome:
     stage: str
     returncode: int
     timed_out: bool = False
+    #: stopped as STUCK (no sign of life for the stall window), not at the machine's wall
+    stalled: bool = False
 
     @property
     def ok(self) -> bool:
@@ -49,18 +53,37 @@ class StageOutcome:
 
 
 def run_stage(workspace: Path, command: str, logname: str, *, env: dict, bashrc: str,
-              timeout: int, logs: list[str]) -> StageOutcome:
+              timeout: float, logs: list[str], stall_s: float | None = STALL_WINDOW_S) -> StageOutcome:
+    """One OpenFOAM stage, WATCHED (contracts/native_time): stopped only after `stall_s` with no sign
+    of life - no output, no CPU, no memory change - or at `timeout`, what is left of the machine's
+    wall."""
     full = f"source {bashrc} >/dev/null 2>&1 && {command}"
     try:
         p = run_guarded(["bash", "-lc", full], cwd=str(workspace), env=env,
-                        capture_output=True, text=True, timeout=timeout)
+                        capture_output=True, text=True, timeout=timeout, stall_s=stall_s)
         (workspace / f"log.{logname}").write_text((p.stdout or "") + "\n" + (p.stderr or ""))
         logs.append(f"[{logname}] rc={p.returncode}")
         return StageOutcome(stage=logname, returncode=p.returncode)
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
         # The guard owns the process tree; a timeout is reported as such and never as rc=0.
-        logs.append(f"[{logname}] TIMEOUT")
-        return StageOutcome(stage=logname, returncode=-1, timed_out=True)
+        stalled = bool(getattr(exc, "stalled", False))
+        (workspace / f"log.{logname}").write_text(_text(exc.stdout) + "\n" + _text(exc.stderr))
+        logs.append(f"[{logname}] " + (f"STALLED - no progress for {int(stall_s or 0) // 60} min"
+                                       if stalled else "TIMEOUT - the machine's limit"))
+        return StageOutcome(stage=logname, returncode=-1, timed_out=True, stalled=stalled)
+
+
+def _text(v) -> str:
+    return v.decode(errors="replace") if isinstance(v, bytes) else (v or "")
+
+
+def _timed_out(outcome: StageOutcome, command: str, logs: list[str]) -> dict:
+    out = describe_native_result(returncode=-1, args=["bash", "-lc", command], stage=outcome.stage,
+                                 output="\n".join(logs), outcome=NativeOutcome.timed_out)
+    if outcome.stalled:
+        # STUCK, not slow (contracts/native_time): a bigger machine would not help it
+        out["stalled"] = True
+    return out
 
 
 def run_native_build(workspace, *, preflight, render_region_properties, parse_layer_coverage,
@@ -84,14 +107,19 @@ def run_native_build(workspace, *, preflight, render_region_properties, parse_la
                if (ws / ".regions.json").exists() else [])
     env = _foam_env()
     logs: list[str] = []
+    # NO GUESSED TIME LIMIT (contracts/native_time): `timeout` is the WALL of the machine this runs
+    # on, for the whole build - every stage shares it (each used to get it again) - and each stage
+    # is watched for progress
+    wall_at = time.monotonic() + float(timeout)
+
+    def _left() -> float:
+        return max(1.0, wall_at - time.monotonic())
 
     for command, logname in NATIVE_STAGES:
-        outcome = run_stage(ws, command, logname, env=env, bashrc=bashrc, timeout=timeout,
+        outcome = run_stage(ws, command, logname, env=env, bashrc=bashrc, timeout=_left(),
                             logs=logs)
         if outcome.timed_out:
-            return describe_native_result(returncode=-1, args=["bash", "-lc", command],
-                                          stage=outcome.stage, output="\n".join(logs),
-                                          outcome=NativeOutcome.timed_out)
+            return _timed_out(outcome, command, logs)
         if not outcome.ok:
             return describe_native_result(returncode=outcome.returncode,
                                           args=["bash", "-lc", command],
@@ -119,8 +147,10 @@ def run_native_build(workspace, *, preflight, render_region_properties, parse_la
     # they lie at a declared port, and the declared wall everywhere else.
     for _region, cmds in name_exterior(ws, regions):
         for command, logname in cmds:
-            outcome = run_stage(ws, command, logname, env=env, bashrc=bashrc, timeout=timeout,
+            outcome = run_stage(ws, command, logname, env=env, bashrc=bashrc, timeout=_left(),
                                 logs=logs)
+            if outcome.timed_out:
+                return _timed_out(outcome, command, logs)
             if not outcome.ok:
                 return describe_native_result(returncode=outcome.returncode,
                                               args=["bash", "-lc", command],
