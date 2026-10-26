@@ -153,3 +153,51 @@ def test_the_castellation_budget_is_never_cut_under_a_quarter_of_the_plan():
     from meshpipeline.engines.snappy.snappy_runner import CASTELLATION_FLOOR_SHARE
     assert CASTELLATION_FLOOR_SHARE == 0.25
     assert castellation_budget(2_000_000, 40_000_000, margin=1.5) == 500_000
+
+
+# NEVER BELOW THE CASE'S OWN BACKGROUND MESH (release Gate C, 26 Oct)
+
+_GATE_C_LOG = """Refined mesh : cells:131112  faces:400000  points:140000  unbalance:0.02
+Ideal layer addition : cells:135816  unbalance:0.01
+Layer mesh : cells:135816  faces:416900  points:145748  unbalance:0.0099
+"""
+
+
+def _case(tmp_path, *, plan: int, divisions=(60, 48, 48)):
+    import json
+    (tmp_path / "system").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "system" / "blockMeshDict").write_text(
+        "vertices ( (0 0 0) (1 0 0) (1 1 0) (0 1 0) (0 0 1) (1 0 1) (1 1 1) (0 1 1) );\n"
+        f"blocks (hex (0 1 2 3 4 5 6 7) ({divisions[0]} {divisions[1]} {divisions[2]}) simpleGrading (1 1 1)); edges ();\n")
+    (tmp_path / SB.PLAN_CELLS_FILE).write_text(json.dumps({"plan_cells": plan}))
+    return tmp_path
+
+
+def test_the_background_mesh_is_read_from_the_cases_blockmesh(tmp_path):
+    assert SB.background_cells(_case(tmp_path, plan=40_000)) == 60 * 48 * 48 == 138_240
+    assert SB.background_cells(tmp_path / "nowhere") == 0
+
+
+def test_a_plan_under_its_own_background_is_measured_against_the_background(tmp_path):
+    """The native snappy pass of release Gate C: a 40,000-cell plan on a 138,240-cell blockMesh. No
+    castellation budget can shrink the background, so measured against 40,000 the brake read 3.3x and
+    stopped a sound mesh - but only on 8 oversubscribed ranks, slow enough for the watch to look."""
+    ws = _case(tmp_path, plan=40_000)
+    assert SB.case_budget(ws) == 138_240
+    log = tmp_path / "snappyHexMesh.log"
+    log.write_text(_GATE_C_LOG)
+    brake = SB.SizeBrake(log, SB.case_budget(ws))
+    assert brake() is None and brake.tripped is None
+
+
+def test_a_plan_above_its_background_is_measured_against_the_plan(tmp_path):
+    ws = _case(tmp_path, plan=2_000_000, divisions=(40, 30, 30))
+    assert SB.case_budget(ws) == 2_000_000
+
+
+def test_refined_far_past_its_background_still_trips(tmp_path):
+    ws = _case(tmp_path, plan=40_000)
+    log = tmp_path / "snappyHexMesh.log"
+    log.write_text("Refined mesh : cells:900000  faces:1  points:1  unbalance:0.01\n")
+    brake = SB.SizeBrake(log, SB.case_budget(ws))
+    assert brake() and brake.tripped["budget"] == 138_240
