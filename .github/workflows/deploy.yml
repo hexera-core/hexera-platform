@@ -1418,7 +1418,13 @@ jobs:
       # expand to the empty string, which every consumer treats as "not stated" (`-z`), so the
       # shipped defaults stay in force.
       CAD_REPAIR_ENABLED: ${{ inputs.cad_repair && 'true' || '' }}
-      CAD_REPAIR_REVIEW_ENABLED: ${{ inputs.cad_repair && inputs.cad_repair_review && 'true' || '' }}
+      # THE REVIEW IS STATED EITHER WAY once repair is on, and this is the one flag here that
+      # cannot ride the "empty means not stated" convention. Unticking it is a POSITIVE choice -
+      # the autonomous posture - and an empty value does not express it: an environment whose
+      # saved worker.env already carries CAD_REPAIR_REVIEW_ENABLED=true would keep parking
+      # repairs for a person while the API dropped the flag, so the tick would appear to do
+      # nothing. Unticked `cad_repair` still leaves it empty, like its siblings.
+      CAD_REPAIR_REVIEW_ENABLED: ${{ inputs.cad_repair && (inputs.cad_repair_review && 'true' || 'false') || '' }}
       # Planar hole filling rides the same tick. What protects a through-hole is the paired-rim
       # guard (both ends of a missing passage, any cross-section, refuse filling for the run); the
       # session caps only bound the size and volume drift of a fill that is kept.

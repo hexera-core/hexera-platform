@@ -823,7 +823,7 @@ def repair_step_file(source: Path, destination: Path, *,
         from meshpipeline.cad.repair.directives import DirectedPlanner
 
         planner = DirectedPlanner(directives, RulesPlanner(reserved=reserved), reserved=reserved)
-    result = run_loop(before_shape, planner=planner, tolerance_mm=tolerance)
+    result = run_loop(before_shape, planner=planner, tolerance_mm=tolerance, reserved=reserved)
     final = measure(result.shape)
 
     measurements = {

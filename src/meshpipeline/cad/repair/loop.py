@@ -138,7 +138,8 @@ def _unreached(chosen) -> list[dict]:
 
 
 def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: float,
-        session: RepairSession | None = None, clock=time.monotonic) -> RepairRun:
+        session: RepairSession | None = None, clock=time.monotonic,
+        reserved: frozenset = frozenset()) -> RepairRun:
     """Repair `shape` by trying one operation at a time, and report everything that happened.
 
     `session` and `clock` are injectable so the driver's budget arithmetic can be tested without
@@ -163,7 +164,10 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
     def remaining() -> float:
         return limits.timeout_s - (clock() - started)
 
-    work = session if session is not None else RepairSession(shape, remaining_s=remaining)
+    # `reserved` reaches the SESSION as well as the planner: the planner will not aim at a held
+    # entity, and the session will not let a whole-shape sweep remove one it never aimed at.
+    work = session if session is not None else RepairSession(
+        shape, remaining_s=remaining, reserved=reserved)
     if work.remaining_s is None:
         work.remaining_s = remaining
     history = RunHistory()

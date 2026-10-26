@@ -558,7 +558,8 @@ class FixSmallFaces:
         # WHAT ACTUALLY WENT, read from the kernel's own history over EVERY face of the input -
         # not only the targets, because the whole-shape fixer may sweep slivers nobody aimed at,
         # and each of those must pass the same size judgement or the sweep is declined whole.
-        removed_areas = [_face_area(face) for face in _swept_away(context, shape, fixed)]
+        swept = list(_swept_away(context, shape, fixed))
+        removed_areas = [_face_area(face) for face in swept]
 
         if not removed_areas:
             # The fixer found nothing it was willing to merge away. UNCHANGED MEANS UNCHANGED
@@ -580,11 +581,20 @@ class FixSmallFaces:
 
         mapping = mapping_from_context(context, targets, shape_before=shape,
                                        diagonal_mm=diagonal)
+        # WHICH FACES WENT, BY FINGERPRINT, not just how many. This is a WHOLE-SHAPE sweep: it
+        # carries off slivers nobody aimed at, and the mapping above only speaks for the targets.
+        # The session checks these against the entities per-defect review is holding for an
+        # engineer - a hold is recorded against the FACE's fingerprint, so a sweep answering a
+        # `small_edge` on that face would otherwise remove it while the question is still open.
+        quantum = quantum_for(diagonal)
+        removed_fingerprints = sorted({
+            fingerprint_of("face", box_of(face), quantum=quantum) for face in swept})
         return OpOutcome(shape=fixed, mapping=mapping,
                          # DECLARED, so the session's sanity cap accepts exactly this many faces
                          # fewer and refuses one more. `area_removed_mm2` is for the reviewer; the
                          # accounting deliberately does not read it (see the class docstring).
                          evidence={"faces_removed": len(removed_areas),
+                                   "removed_fingerprints": removed_fingerprints,
                                    "area_removed_mm2": round(sum(removed_areas), 6),
                                    "faces_targeted": len(targets),
                                    "precision_mm": float(precision),

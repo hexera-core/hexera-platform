@@ -47,6 +47,10 @@ def _result(**overrides):
     base = {
         "status": "success",
         "selected_engine": "snappy",
+        # The fixture stands for an executor that RAN the pipeline's selection, so the rows it
+        # feeds are scored for selection accuracy. The tests about not scoring a pinned or
+        # defaulted engine override this.
+        "engine_chosen_by": "pipeline-selection",
         "engine_version": "openfoam-2412",
         "mesh_statistics": {"cells": 1000, "max_non_orthogonality": 42.0, "max_skewness": 1.1},
         "quality_criteria": [{"key": "max_non_orthogonality", "measured": 42.0, "passed": True,
@@ -248,9 +252,11 @@ def test_summary_aggregates_success_quality_cost_and_engines():
                                     "mean_wall_seconds": 3.0}
     assert per_engine["gmsh"]["runs"] == 1
     assert per_engine["gmsh"]["successes"] == 0
-    # selection accuracy scored only over rows that declared an expectation
+    # selection accuracy scored only over rows that declared an expectation AND whose engine the
+    # pipeline's selection actually chose; the row with neither is counted as unscored, not graded
     assert summary["engine_selection"] == {"scored": 3, "matched": 2,
-                                           "accuracy": pytest.approx(2 / 3)}
+                                           "accuracy": pytest.approx(2 / 3),
+                                           "unscored_because": {"unknown": 1}}
 
 
 def test_summary_of_no_rows_divides_nothing():
@@ -411,3 +417,59 @@ def test_a_mesh_its_own_finalize_refused_is_not_a_success(tmp_path, monkeypatch)
     assert "fatal=['max_non_ortho']" in result["status"]
     # the quality fields are kept: what the refusal was about is the useful part
     assert result["mesh_statistics"]["cells"] == 9
+
+
+# -- engine selection is only scored where a selection happened ---------------------------------
+
+def test_an_unpinned_scenario_is_not_scored_for_engine_selection(tmp_path):
+    """`default_engine()` is a CONSTANT, not a choice: an unpinned scenario never runs the
+    pipeline's selector, which in a real submit can measure the geometry and recommend a different
+    engine. Scoring the fallback would publish "the default equals the expectation" as agreement.
+    """
+    _write_scenario(tmp_path, "s1", expected_engine="cfmesh")
+    bundle = _run(tmp_path, tmp_path / "bundle",
+                  lambda run, scratch: {**_result(selected_engine="cfmesh"),
+                                        "engine_chosen_by": "registry-default"})
+    _, rows, summary, _ = bb.load_bundle(bundle)
+    (row,) = rows
+    assert row["expected_engine"] == "cfmesh"
+    assert row["selected_engine"] == "cfmesh"
+    assert row["engine_match"] is None, "the registry default was graded as a selection"
+    assert summary["engine_selection"]["scored"] == 0
+    assert summary["engine_selection"]["accuracy"] is None
+    # and the abstention is stated, so "0 scored" does not read as a missing measurement
+    assert summary["engine_selection"]["unscored_because"] == {"registry-default": 1}
+
+
+def test_a_pinned_scenario_is_not_scored_for_engine_selection_either(tmp_path):
+    _write_scenario(tmp_path, "s1", expected_engine="snappy", settings={"engine": "snappy"})
+    bundle = _run(tmp_path, tmp_path / "bundle",
+                  lambda run, scratch: {**_result(selected_engine="snappy"),
+                                        "engine_chosen_by": "scenario-pin"})
+    _, rows, summary, _ = bb.load_bundle(bundle)
+    assert rows[0]["engine_match"] is None
+    assert summary["engine_selection"]["unscored_because"] == {"scenario-pin": 1}
+
+
+def test_an_executor_that_ran_the_real_selection_is_scored(tmp_path):
+    """The field is a seam, not a blanket refusal: an executor that genuinely runs the pipeline's
+    choice says so, and that row is graded."""
+    _write_scenario(tmp_path, "hit", expected_engine="cfmesh")
+    _write_scenario(tmp_path, "miss", expected_engine="snappy")
+
+    def executor(run, scratch):
+        return {**_result(selected_engine="cfmesh"), "engine_chosen_by": "pipeline-selection"}
+
+    bundle = _run(tmp_path, tmp_path / "bundle", executor)
+    _, rows, summary, _ = bb.load_bundle(bundle)
+    assert {r["scenario"]: r["engine_match"] for r in rows} == {"hit": True, "miss": False}
+    assert summary["engine_selection"]["scored"] == 2
+    assert summary["engine_selection"]["matched"] == 1
+    assert summary["engine_selection"]["unscored_because"] == {}
+
+
+def test_the_default_executor_declares_how_it_chose_the_engine(tmp_path):
+    """Not a stub: the real executor must set the field, or build_row would score nothing ever."""
+    run = _case_with(tmp_path, "[]", name="declared")
+    result = mb.execute_scenario(run, tmp_path / "scratch")
+    assert result.get("engine_chosen_by") in ("registry-default", "scenario-pin")

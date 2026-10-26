@@ -27,6 +27,10 @@ from meshpipeline.cad.repair.identity import GONE, EntityRef
 from meshpipeline.cad.repair.localize import analyzer_only, face_scan_budget_s
 from meshpipeline.cad.repair.localize import localize_scan as _localize_scan
 
+# THE ONE DEFINITION OF A HOLD, shared with both planners so they cannot disagree about what a
+# hold covers (plan.py does not import this module, so this is not a cycle).
+from meshpipeline.cad.repair.plan import held_fingerprints
+
 logger = logging.getLogger(__name__)
 
 KEPT = "kept"
@@ -100,7 +104,12 @@ class RepairSession:
     """
 
     def __init__(self, shape, *, measurer=_measure, scanner=None,
-                 remaining_s: Callable[[], float] | None = None) -> None:
+                 remaining_s: Callable[[], float] | None = None,
+                 reserved: frozenset = frozenset()) -> None:
+        #: Defect codes per-defect review holds for a PERSON, as the planner has them. The planner
+        #: will not aim at a held entity; this is the other half - an operation that removes one
+        #: without aiming at it (a whole-shape sweep) is rolled back below.
+        self._reserved = frozenset(reserved)
         self._measure = measurer
         # AN INJECTED SCANNER IS CALLED AS IT ALWAYS WAS, `scanner(shape)`, and is never told
         # about the face scan: that budget is the default scanner's business. What it returns in
@@ -223,6 +232,23 @@ class RepairSession:
         self.shape = outcome.shape
         after = self._measure(self.shape)
         delta = {"before": before.to_dict(), "after": after.to_dict()}
+
+        # HELD GEOMETRY IS NOT A SWEEP'S TO REMOVE. The planner refuses an operation whose
+        # TARGETS carry a held defect, but that is only half the guard: a whole-shape sweep
+        # removes faces nobody aimed at. A hold is recorded against the FACE's fingerprint, so
+        # FixSmallFaces answering a `small_edge` on a held face would carry the face off while the
+        # engineer is still being asked about it. Checked here, where what actually went is known,
+        # and cheap enough to run before the caps.
+        held = held_fingerprints(self._defects, self._reserved)
+        removed_held = sorted(held.intersection(
+            outcome.evidence.get("removed_fingerprints") or ()))
+        if removed_held:
+            self.shape, self._defects, self.complete_scan = snapshot
+            return self._record(OpVerdict(
+                op=op.name, targets=fingerprints, defect_code=code, status=ROLLED_BACK,
+                reason=f"held_for_review:{len(removed_held)} removed entity(s) carry a defect "
+                       f"an engineer is being asked about ({removed_held[0]})",
+                evidence=dict(outcome.evidence), delta=delta))
 
         # The face-count twin of the area/volume declarations: only the sliver sweep sets
         # `faces_removed`, and only a removal of exactly that many is excused (caps.sanity_refusal).

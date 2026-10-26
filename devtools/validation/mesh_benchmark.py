@@ -39,6 +39,14 @@ is a single JSON object with exactly these keys:
   timeout_seconds  (required) num   - positive wall-clock budget for the native run.
   expected_engine  (optional) str   - the engine selection is EXPECTED to choose. Scoring only:
                                       it is never shown to the executor (see integrity rule above).
+                                      Scored ONLY against an executor that ran the pipeline's own
+                                      selection. The default executor does not: it honours a
+                                      `settings.engine` pin, and otherwise takes the registry
+                                      default, which is a constant rather than a measured choice.
+                                      Both leave selection unscored (`engine_match: null`) and are
+                                      counted in the summary's `engine_selection.unscored_because`,
+                                      so an expectation set here is not quietly graded against the
+                                      default agreeing with it.
   case             (optional) str   - relative path of a frozen, pre-authored engine case
                                       directory. Without one the default executor cannot run the
                                       native mesher (authoring a case needs the full pipeline) and
@@ -242,12 +250,21 @@ def execute_scenario(run: ScenarioRun, scratch: Path) -> dict:
     except Exception as exc:  # noqa: BLE001
         return {"status": f"failed: engine {pinned!r} is unknown to the registry ({exc})",
                 "selected_engine": None}
+    # WHERE THE ENGINE CAME FROM, and it is never the pipeline's selector here. A pinned scenario
+    # states its engine; an unpinned one falls back to `default_engine()`, which is a CONSTANT and
+    # not a choice - it never measures the geometry the way a real submit does, where an internal
+    # flow can be recommended a different engine. Scoring that fallback as selection accuracy
+    # would publish "the default equals the expectation" as if the selector had agreed, so this
+    # executor declares how it got here and `build_row` leaves selection unscored for both cases.
+    # A future executor that runs the real selection reports "pipeline-selection" and is scored.
+    chosen_by = "scenario-pin" if pinned else "registry-default"
 
     if run.case_dir is None:
         return {**_unavailable(
             "no frozen `case` directory: this host cannot author an engine case (that takes the "
             "full pipeline's builder and renderer); freeze one into the scenario or run inside "
-            "the mesh image"), "selected_engine": engine}
+            "the mesh image"), "selected_engine": engine,
+                "engine_chosen_by": chosen_by}
 
     # load_scenario refuses a name that is not one path segment, but this function is reachable
     # with a hand-built ScenarioRun, and the next line deletes whatever it resolves to. A
@@ -256,7 +273,8 @@ def execute_scenario(run: ScenarioRun, scratch: Path) -> dict:
     if not workspace.is_relative_to(Path(scratch).resolve()):
         return {"status": f"failed: scenario name {run.name!r} resolves outside the scratch "
                           f"directory, so its workspace cannot be prepared",
-                "selected_engine": engine}
+                "selected_engine": engine,
+                "engine_chosen_by": chosen_by}
     if workspace.exists():
         shutil.rmtree(workspace)
     shutil.copytree(run.case_dir, workspace)
@@ -279,7 +297,8 @@ def execute_scenario(run: ScenarioRun, scratch: Path) -> dict:
     try:
         declaration = _port_declaration(workspace)
     except ScenarioError as exc:
-        return {**_unavailable(str(exc)), "selected_engine": engine}
+        return {**_unavailable(str(exc)), "selected_engine": engine,
+                "engine_chosen_by": chosen_by}
 
     started = time.monotonic()
     try:
@@ -287,9 +306,11 @@ def execute_scenario(run: ScenarioRun, scratch: Path) -> dict:
         out = run_engine_local(workspace, engine=engine, timeout=int(run.timeout_seconds))
     except (ImportError, ModuleNotFoundError, FileNotFoundError) as exc:
         return {**_unavailable(f"native run cannot start on this host ({exc})"),
-                "selected_engine": engine}
+                "selected_engine": engine,
+                "engine_chosen_by": chosen_by}
     except Exception as exc:  # noqa: BLE001 - a crash is a real benchmark outcome
-        return {"status": f"failed: {type(exc).__name__}: {exc}", "selected_engine": engine}
+        return {"status": f"failed: {type(exc).__name__}: {exc}", "selected_engine": engine,
+                "engine_chosen_by": chosen_by}
     mesh_seconds = round(time.monotonic() - started, 2)
 
     # FINALIZE WRITES THE MANIFEST, and nothing else does: run_engine_local runs the mesher alone,
@@ -312,7 +333,8 @@ def execute_scenario(run: ScenarioRun, scratch: Path) -> dict:
         except Exception as exc:  # noqa: BLE001 - a finalize that cannot run is a real outcome
             finalize_error = f"{type(exc).__name__}: {exc}"
 
-    result: dict = {"selected_engine": engine, "timings": {"mesh_seconds": mesh_seconds}}
+    result: dict = {"selected_engine": engine, "engine_chosen_by": chosen_by,
+                    "timings": {"mesh_seconds": mesh_seconds}}
     rc = out.get("rc") if isinstance(out, dict) else None
     manifest_path = workspace / "mesh_manifest.json"
     manifest: dict = {}
@@ -402,8 +424,14 @@ def build_row(scenario: Scenario, result: dict, wall_seconds: float) -> dict:
                     "wall_seconds": round(wall_seconds, 3)},
         "deliverables": list(result.get("deliverables") or []),
         "expected_engine": scenario.expected_engine,
-        "engine_match": (None if scenario.expected_engine is None or selected is None
-                         else selected == scenario.expected_engine),
+        # HOW THE ENGINE WAS ARRIVED AT, which decides whether this row may be scored for
+        # SELECTION at all. The executor reports `engine_chosen_by`: only a row whose engine came
+        # from the pipeline's own selector is evidence about selection.
+        "engine_chosen_by": result.get("engine_chosen_by"),
+        "engine_match": (
+            None if (scenario.expected_engine is None or selected is None
+                     or result.get("engine_chosen_by") != "pipeline-selection")
+            else selected == scenario.expected_engine),
     }
 
 
@@ -441,8 +469,18 @@ def summarise(rows: list[dict]) -> dict:
         entry["success_rate"] = entry["successes"] / entry["runs"]
         entry["mean_wall_seconds"] = statistics.fmean(walls_e)
 
+    # SELECTION IS SCORED ONLY WHERE A SELECTION HAPPENED. `engine_match` is already None for a
+    # row whose engine was pinned or taken from the registry default (build_row), so this counts
+    # the rows that actually exercised the pipeline's choice - and `unscored_because` says where
+    # the rest went, because "accuracy: null over 0 scored" on its own reads like a missing
+    # measurement rather than a deliberate abstention.
     scored = [row for row in rows if row.get("engine_match") is not None]
     matched = sum(1 for row in scored if row["engine_match"])
+    unscored: dict[str, int] = {}
+    for row in rows:
+        if row.get("engine_match") is None:
+            key = str(row.get("engine_chosen_by") or "unknown")
+            unscored[key] = unscored.get(key, 0) + 1
     ready = [row.get("solver_ready") for row in rows]
     return {
         "scenarios": len(rows),
@@ -458,7 +496,8 @@ def summarise(rows: list[dict]) -> dict:
                  "max_wall_seconds": max(walls) if walls else None},
         "per_engine": per_engine,
         "engine_selection": {"scored": len(scored), "matched": matched,
-                             "accuracy": (matched / len(scored)) if scored else None},
+                             "accuracy": (matched / len(scored)) if scored else None,
+                             "unscored_because": dict(sorted(unscored.items()))},
     }
 
 

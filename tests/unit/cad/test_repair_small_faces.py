@@ -191,6 +191,91 @@ def test_a_sweep_that_removed_exactly_what_it_declared_and_cleared_its_defect_is
     assert session.shape == "swept"
 
 
+# A HOLD THE SWEEP MUST NOT REACH
+
+
+def _session_holding(codes, *, scans, measures):
+    """A session that knows which defect codes per-defect review holds for an engineer."""
+    scan_queue, measure_queue = list(scans), list(measures)
+
+    def scanner(_shape, valid=None):
+        return scan_queue.pop(0) if len(scan_queue) > 1 else scan_queue[0]
+
+    def measurer(_shape):
+        return measure_queue.pop(0) if len(measure_queue) > 1 else measure_queue[0]
+
+    return RepairSession("original", measurer=measurer, scanner=scanner, reserved=codes)
+
+
+def test_a_sweep_that_carries_off_a_held_face_is_rolled_back():
+    """THE HOLD IS ON THE FACE, THE AIM WAS ITS EDGE.
+
+    The planner refuses an operation whose TARGETS carry a held defect, but a whole-shape sweep
+    removes faces nobody aimed at. With review on, `small_face` is a judgement an engineer makes,
+    so the face is held - while the sweep answering a `small_edge` beside it would remove the very
+    geometry the question is about, before the answer comes back.
+    """
+    held_face = _small_face_defect(index=6, fingerprint="face:held")
+    edge = EntityDefect(
+        code=DefectCode.small_edge, severity=DefectSeverity.warning, entity_type="edge",
+        entity_index=11, fingerprint="edge:beside", message="a sliver edge", measurements={})
+    # the sweep aims at the EDGE and declares it removed the FACE it sits on
+    outcome = OpOutcome(shape="swept", mapping=EntityMapping.empty(),
+                        evidence={"faces_removed": 1,
+                                  "removed_fingerprints": ["face:held"]})
+    session = _session_holding(
+        frozenset({DefectCode.small_face}),
+        scans=[((held_face, edge), True), ((), True)],
+        measures=[_BEFORE, _BEFORE, _after(19)])
+
+    from meshpipeline.cad.repair.identity import EntityRef
+    targets = (EntityRef(entity_type="edge", fingerprint=edge.fingerprint, entity_index=11),)
+    verdict = session.try_op(_SweepDouble(outcome), targets, edge.code, tolerance_mm=0.1)
+
+    assert verdict.status == ROLLED_BACK
+    assert verdict.reason.startswith("held_for_review:"), verdict.reason
+    assert "face:held" in verdict.reason
+    assert session.shape == "original", "held geometry was removed before the engineer answered"
+
+
+def test_the_same_sweep_is_kept_when_review_holds_nothing():
+    """With review off nothing is held, so the sweep is judged on its caps alone - the autonomous
+    posture, unchanged by the guard above."""
+    face = _small_face_defect(index=6, fingerprint="face:held")
+    outcome = OpOutcome(shape="swept",
+                        mapping=EntityMapping(moved={}, gone=frozenset({face.fingerprint}),
+                                              basis="kernel"),
+                        evidence={"faces_removed": 1, "removed_fingerprints": ["face:held"]})
+    session = _session_holding(frozenset(),
+                               scans=[((face,), True), ((), True)],
+                               measures=[_BEFORE, _BEFORE, _after(19)])
+
+    verdict = session.try_op(_SweepDouble(outcome), _targets_of(face), face.code,
+                             tolerance_mm=0.1)
+
+    assert verdict.status == KEPT
+
+
+def test_a_sweep_that_removes_only_unheld_faces_is_kept_while_a_hold_stands():
+    """The guard is about what WENT, not about the presence of a hold: a held face elsewhere on
+    the part must not stop the sweep clearing a sliver nobody is being asked about."""
+    held_face = _small_face_defect(index=6, fingerprint="face:held")
+    other = _small_face_defect(index=7, fingerprint="face:debris")
+    outcome = OpOutcome(shape="swept",
+                        mapping=EntityMapping(moved={}, gone=frozenset({other.fingerprint}),
+                                              basis="kernel"),
+                        evidence={"faces_removed": 1, "removed_fingerprints": ["face:debris"]})
+    session = _session_holding(
+        frozenset({DefectCode.open_shell}),  # holds a code neither face carries
+        scans=[((held_face, other), True), ((held_face,), True)],
+        measures=[_BEFORE, _BEFORE, _after(19)])
+
+    verdict = session.try_op(_SweepDouble(outcome), _targets_of(other), other.code,
+                             tolerance_mm=0.1)
+
+    assert verdict.status == KEPT
+
+
 # TRIAGE'S REROUTE
 
 

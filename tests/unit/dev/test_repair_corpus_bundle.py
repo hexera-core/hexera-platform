@@ -307,3 +307,47 @@ def test_a_sealed_catalogue_beats_the_reconstruction(tmp_path):
     (tmp_path / "settings.json").write_text(json.dumps({"operations_catalogue": ["sealed_op"]}))
     summary = {"catalogue": {"tally": {"other_op": {}}, "never_exercised": []}}
     assert rc.settings_operation_catalogue(tmp_path, summary) == ["sealed_op"]
+
+
+def test_two_corpus_roots_of_the_same_name_do_not_shadow_each_others_inputs(tmp_path):
+    """`/runs/a/corpus` and `/runs/b/corpus` are two corpora both named `corpus`. Keyed on the
+    directory name alone, a `part.step` in each collides and the second hash replaces the first,
+    leaving the bundle unable to name every input behind its totals."""
+    files = []
+    for side, body in (("a", b"solid A"), ("b", b"solid B")):
+        root = tmp_path / side / "corpus"
+        root.mkdir(parents=True)
+        part = root / "part.step"
+        part.write_bytes(body)
+        files.append(part)
+    roots = [tmp_path / "a" / "corpus", tmp_path / "b" / "corpus"]
+
+    hashes = rc.hash_corpus_inputs(roots, files)
+
+    assert len(hashes) == 2, f"an input was shadowed: {hashes}"
+    assert sorted(hashes) == ["a/corpus/part.step", "b/corpus/part.step"]
+    assert len(set(hashes.values())) == 2
+
+
+def test_one_corpus_root_keeps_its_keys_bare(tmp_path):
+    root = tmp_path / "corpus"
+    root.mkdir()
+    part = root / "part.step"
+    part.write_bytes(b"solid")
+    assert list(rc.hash_corpus_inputs([root], [part])) == ["part.step"]
+
+
+def test_rebundling_a_shadow_planner_run_seals_a_bundle_that_verifies(tmp_path, monkeypatch,
+                                                                      capsys):
+    """corpus_summary only adds the shadow block for a shadow/live run. Sealing with "off" while
+    the settings say "shadow" wrote a summary that --verify, which reads the posture back out of
+    those settings, recomputed differently and rejected - so a recorded model-planner run could
+    not be packaged with its own settings."""
+    rows_json = tmp_path / "rows.json"
+    rows_json.write_text(json.dumps(_RECORDED_ROWS))
+    bundle = tmp_path / "bundle"
+
+    rc.bundle_from_rows(rows_json, bundle, settings={"planner": "shadow"})
+
+    monkeypatch.setattr(sys, "argv", ["repair_corpus.py", "--verify", str(bundle)])
+    assert rc.main() == 0, capsys.readouterr().err

@@ -463,17 +463,45 @@ def _engine_commit() -> str:
         return "unknown"
 
 
+def root_labels(roots: list[Path]) -> dict[Path, str]:
+    """A distinct key prefix per corpus root: the SHORTEST TRAILING PATH that tells them apart.
+
+    The directory's own name is not enough. `/runs/a/corpus` and `/runs/b/corpus` are two corpora
+    both named `corpus`, and both holding a `part.step` would key it `corpus/part.step` - the
+    second hash replacing the first, leaving the bundle unable to name every input behind its
+    totals. So the label grows leftwards (`a/corpus`, `b/corpus`) until every root is unique.
+    """
+    if len(roots) < 2:
+        return dict.fromkeys(roots, "")
+    depth = 1
+    while depth <= max(len(root.parts) for root in roots):
+        labels = {root: "/".join(root.parts[-depth:]) for root in roots}
+        if len(set(labels.values())) == len(roots):
+            return {root: f"{label}/" for root, label in labels.items()}
+        depth += 1
+    # Unreachable for distinct absolute paths; two identical roots would land here.
+    return {root: f"{'/'.join(root.parts[1:])}/" for root in roots}
+
+
 def hash_corpus_inputs(roots: list[Path], files: list[Path]) -> dict[str, str]:
     """sha256 per processed input, keyed relative to the corpus directory it came from. With more
-    than one corpus directory the keys are prefixed with the directory's name, because two corpora
-    may both hold a `part.step` and a merged map must not let one silently shadow the other."""
+    than one corpus directory the keys carry a per-root prefix (`root_labels`), because two
+    corpora may both hold a `part.step` and a merged map must not let one silently shadow the
+    other. A key that would still collide is REFUSED rather than overwritten: a bundle whose
+    input map is missing a file it hashed cannot answer "what was behind this number"."""
     hashes: dict[str, str] = {}
     resolved_roots = [Path(root).resolve() for root in roots]
+    labels = root_labels(resolved_roots)
     for root in resolved_roots:
         members = [f.resolve() for f in files if f.resolve().is_relative_to(root)]
-        prefix = f"{root.name}/" if len(resolved_roots) > 1 else ""
-        hashes.update({prefix + key: value
-                       for key, value in benchmark_bundle.hash_inputs(root, members).items()})
+        for key, value in benchmark_bundle.hash_inputs(root, members).items():
+            prefixed = labels[root] + key
+            if prefixed in hashes and hashes[prefixed] != value:
+                raise ValueError(
+                    f"two corpus inputs both key to {prefixed!r} with different hashes; the "
+                    f"bundle would record only one of them. Pass corpus roots that can be told "
+                    f"apart by their trailing path.")
+            hashes[prefixed] = value
     return hashes
 
 
@@ -542,10 +570,18 @@ def bundle_from_rows(rows_json: Path, bundle_dir: Path, *, track: str = "unspeci
                                 timeout_seconds=timeout_seconds, random_seed=random_seed,
                                 engine_commit=engine_commit or "unknown",
                                 hardware_class=hardware_class or "unknown")
+    # THE PLANNER POSTURE COMES FROM THE SETTINGS BEING SEALED, exactly as the catalogue does, and
+    # for the same reason: corpus_summary only adds the shadow-planner block for a shadow or live
+    # run, so sealing with "off" while the settings say "shadow" writes a summary that `--verify`
+    # - which reads the posture back out of those settings - recomputes differently and rejects.
+    # That would make a recorded model-planner run impossible to package with its own settings.
+    stated_planner = sealed_settings.get("planner")
     return writer.seal(
         manifest, settings=sealed_settings,
         summary=corpus_summary(
-            rows, catalogue=stated_catalogue if isinstance(stated_catalogue, list) else None))
+            rows,
+            stated_planner if stated_planner in ("shadow", "live") else "off",
+            catalogue=stated_catalogue if isinstance(stated_catalogue, list) else None))
 
 
 def _one(path: Path, scratch: Path, *, mode: str = "off") -> dict:
