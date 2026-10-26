@@ -590,10 +590,37 @@ def run_cartesian_mesh(workspace, *, timeout: int, context=None) -> dict:
     # tool handed a path that does not exist (the dispatch-contract test does) still dispatches
     # through the contract, which then reports the missing case itself.
     if ws.is_dir():
+        _note_way_on(ws, str(getattr(context, "broken_mesh_moves_to", "") or ""))
         members = _native_payload_members(ws)
         note_native_pass(ws, _pass_for_payload(ws, members, read_native_pass))
         note_native_payload(ws, members)
     return run_mesh(ws, engine="vmtk", timeout=timeout)
+
+
+#: THE SPEC KEY saying a layered fill whose layers will not untangle gives way to the NEXT ENGINE
+#: (the run moves on, pipeline/engine_fallback) rather than to this engine's layer-free fill: the
+#: plan asks for wall layers, and a later engine is left to build them. Absent: the layer-free fill.
+LAYERS_MOVE_ON = "layers_move_on_to"
+
+
+def _note_way_on(ws: Path, next_engine: str) -> None:
+    """Write into the spec the run ships which way a non-untangling layer goes: to `next_engine`
+    (the engine this run moves to, builder context broken_mesh_moves_to) when the plan asks for
+    wall layers and there is one; else nothing - the ladder's layer-free fill, as before. The spec is
+    rewritten only when that changes, so a run that never meets the brake ships what it always did."""
+    p = ws / "vmtk_spec.json"
+    try:
+        spec = json.loads(p.read_text())
+    except (OSError, ValueError):
+        return
+    want = next_engine if (next_engine and int(spec.get("boundary_layers") or 0) > 0) else ""
+    if str(spec.get(LAYERS_MOVE_ON) or "") == want:
+        return
+    if want:
+        spec[LAYERS_MOVE_ON] = want
+    else:
+        spec.pop(LAYERS_MOVE_ON, None)
+    p.write_text(json.dumps(spec, indent=2))
 
 
 _RUN_IDENTITY_LEDGER = "vmtk_run_identity.json"   # {digest of the payload, its pass number}
@@ -872,6 +899,8 @@ def _run_vmtk_local(workspace, *, timeout: int, **_ignored) -> dict:
                             "not started"}
     strategy = json.loads(spec_path.read_text())
     ladder = repair_ladder(strategy)
+    # read before the budget's refit, which keeps only the generator's own keys
+    move_on = str(strategy.get(LAYERS_MOVE_ON) or "")
     notes: list[str] = []
     result: dict = {}
     staged = bool(resolve_strategy(strategy).get("sizing_array"))
@@ -938,6 +967,15 @@ def _run_vmtk_local(workspace, *, timeout: int, **_ignored) -> dict:
             # run ends there
             notes.append(f"[vmtk] attempt {i + 1} ({_step_label(strat)}): still working at the "
                          f"machine's limit ({int(timeout)} s)")
+            break
+        if layered and result.get("untangle_stopped") and move_on:
+            # THE PLAN ASKS FOR WALL LAYERS and another engine is left to build them: a layer-free
+            # fill here would deliver a mesh without them, hours later (the Fluent aorta: 2.4 h,
+            # no layers, where snappy then built 99% layers in 1.2 h) - the run moves on instead
+            n = int((result["untangle_stopped"] or {}).get("retangled") or 0)
+            notes.append(f"[vmtk] attempt {i + 1} ({_step_label(strat)}): VMTK layers kept re-tangling "
+                         f"({n} rounds) - next engine ({move_on})")
+            result["layers_not_converging"] = {"retangled": n, "next_engine": move_on}
             break
         if layered and bare_after is not None and result.get("untangle_stopped"):
             notes.append(f"[vmtk] attempt {i + 1} ({_step_label(strat)}): "

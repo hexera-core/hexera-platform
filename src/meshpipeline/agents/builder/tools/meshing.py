@@ -545,6 +545,24 @@ def _run_and_judge(ctx: BuilderToolContext, prepared: PreparedMeshRun) -> dict:
                              f"coarser by about {max(1.0, float(_o.get('ratio') or 1.0) / 0.9) ** 0.5:.2f}x "
                              "(or drop refinements), then configure and run_mesh again."),
                 "log_tail": res.get("log_tail", "")}
+    if res.get("layers_not_converging"):
+        # VMTK's layers would not untangle and the plan asks for them: the run moves on to the next
+        # engine (engines/vmtk/vmtk_runner LAYERS_MOVE_ON) - never this engine's layer-free fill
+        from meshpipeline.contracts.failure_cause import FailureCause
+        from meshpipeline.engines.preflight import PreflightRefusal
+        _l = dict(res["layers_not_converging"])
+        _words = f"VMTK layers kept re-tangling ({int(_l.get('retangled') or 0)} rounds) - next engine"
+        logger.warning("run_mesh: %s (%s)", _words, _l.get("next_engine"))
+        PreflightRefusal(
+            gate="finalize", cause=FailureCause.ENGINE_CRASHED.value,
+            builder_text=f"[VMTK_LAYERS_NOT_CONVERGING] {_words}",
+            facts={"layers_not_converging": True, "retangled": int(_l.get("retangled") or 0),
+                   "meshers_started": 1}).write(workspace)
+        return {"success": False, "layers_not_converging": _l,
+                "guidance": (f"Not meshed: {_words}. Do NOT run_mesh again and do NOT reconfigure - "
+                             "end your turn now; the run moves on to the next engine, which builds the "
+                             "layers the plan asks for."),
+                "log_tail": res.get("log_tail", "")}
     if res["timed_out"]:
         _stalled = _broken_at_time_out(_policy, res.get("log_tail"))
         if _stalled:

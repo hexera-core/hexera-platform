@@ -488,3 +488,89 @@ def test_an_over_size_fill_moves_the_run_to_another_engine(monkeypatch, tmp_path
     state = {"engine": "gmsh", "executor_success": False, "executor_failed_gate": "finalize",
              "executor_failure_cause": ref.cause, "executor_failure_facts": dict(ref.facts)}
     assert classify(state).kind == ENGINE
+
+
+def test_the_spec_says_a_non_untangling_layer_moves_on_only_when_layers_are_asked_and_an_engine_is_left(tmp_path):
+    import json
+
+    from meshpipeline.engines.vmtk import vmtk_runner as V
+    spec = tmp_path / "vmtk_spec.json"
+    spec.write_text(json.dumps({"boundary_layers": 4}))
+    V._note_way_on(tmp_path, "snappy")
+    assert json.loads(spec.read_text())[V.LAYERS_MOVE_ON] == "snappy"
+    V._note_way_on(tmp_path, "")                         # no later engine: the layer-free fill
+    assert V.LAYERS_MOVE_ON not in json.loads(spec.read_text())
+    spec.write_text(json.dumps({"boundary_layers": 0}))   # no layers asked: nothing to move on for
+    before = spec.read_text()
+    V._note_way_on(tmp_path, "snappy")
+    assert spec.read_text() == before                    # a run that never meets the brake ships as before
+
+
+def _brake_run(tmp_path, monkeypatch, move_on):
+    import json
+
+    from meshpipeline.engines.vmtk import vmtk_runner as V
+    from meshpipeline.sandbox.safe_exec import StoppedByWatch
+    calls = []
+
+    def fake_run(argv, timeout=None, **kw):
+        calls.append(list(argv))
+        joined = " ".join(argv)
+        if "vmtksurfaceremeshing" in joined:
+            (tmp_path / "lumen.vtp").write_text("remeshed")
+            return subprocess.CompletedProcess(argv, 0, stdout="Done.", stderr="")
+        if "-boundarylayer 1" in joined:
+            brake = kw["watch"]
+            brake.tripped = {"final_warps": 3, "retangled": 2}
+            exc = StoppedByWatch(argv, "the boundary layer is not untangling: its final warp tangled it again 2 times")
+            exc.output = "Generating boundary layer\nuntangle procedure.. \ntry last : try last : try last : "
+            raise exc
+        (tmp_path / "mesh.vtu").write_text("filled")
+        return subprocess.CompletedProcess(argv, 0, stdout="Done executing vmtkmeshgenerator.", stderr="")
+
+    monkeypatch.setattr(V, "run_guarded", fake_run)
+    spec = V.resolve_strategy({"sizing_array": "LocalRadius", "boundary_layers": 4})
+    if move_on:
+        spec[V.LAYERS_MOVE_ON] = move_on
+    (tmp_path / "vmtk_spec.json").write_text(json.dumps(spec))
+    (tmp_path / "lumen_open.vtp").write_text("staged")
+    res = V._run_vmtk_local(tmp_path, timeout=NT.CLOUD_RUN_WALL_S)
+    return res, [c for c in calls if len(c) > 1 and c[1] == "vmtkmeshgenerator"]
+
+
+def test_layers_that_will_not_untangle_move_the_run_on_when_the_plan_asks_for_layers(tmp_path, monkeypatch):
+    res, gens = _brake_run(tmp_path, monkeypatch, "snappy")
+    assert len(gens) == 1                                    # no layer-free fill
+    assert res["layers_not_converging"] == {"retangled": 2, "next_engine": "snappy"}
+    assert "VMTK layers kept re-tangling (2 rounds) - next engine (snappy)" in res["repair_note"]
+    assert not (tmp_path / "mesh.vtu").exists()
+
+
+def test_with_no_engine_left_the_layer_free_fill_still_delivers(tmp_path, monkeypatch):
+    res, gens = _brake_run(tmp_path, monkeypatch, "")
+    assert len(gens) == 2 and "-boundarylayer 0" in " ".join(gens[1]) and not res.get("layers_not_converging")
+
+
+def test_the_builder_ends_the_attempt_and_the_ladder_moves_on(monkeypatch, tmp_path):
+    from meshpipeline.agents.builder.tool_context import BuilderToolContext
+    from meshpipeline.agents.builder.tools import meshing as M
+    from meshpipeline.engines import runtime
+    from meshpipeline.engines.preflight import read_refusal
+    from meshpipeline.pipeline.engine_fallback import ENGINE, classify
+
+    class _Engine:
+        name = "vmtk"
+
+        def run_cartesian_mesh(self, workspace, *, timeout, context=None):
+            return {"rc": -1, "timed_out": False, "log_tail": "",
+                    "layers_not_converging": {"retangled": 2, "next_engine": "snappy"}}
+
+    monkeypatch.setattr(runtime, "get_engine", lambda name: _Engine())
+    ctx = BuilderToolContext(workspace=tmp_path, geometry=object(), job_id="j", engine="vmtk",
+                             broken_mesh_moves_to="snappy")
+    out = M._run_and_judge(ctx, M.PreparedMeshRun(engine="vmtk", cap=NT.CLOUD_RUN_WALL_S))
+    assert "re-tangling (2 rounds) - next engine" in out["guidance"] and "end your turn" in out["guidance"]
+    ref = read_refusal(tmp_path)
+    state = {"engine": "vmtk", "executor_success": False, "executor_failed_gate": "finalize",
+             "executor_failure_cause": ref.cause, "executor_failure_facts": dict(ref.facts)}
+    assert classify(state).kind == ENGINE
