@@ -173,6 +173,22 @@ def test_a_point_on_a_big_face_beside_a_narrow_one_is_on_the_big_face():
     assert dist == pytest.approx(brute, abs=1e-12)
 
 
+def test_parts_run_in_order_and_one_killed_for_memory_runs_again_alone(monkeypatch):
+    seen: list[str] = []
+
+    def fake(job):
+        seen.append(job["name"])
+        if job["name"] == "b" and seen.count("b") == 1:
+            return {"error": "fTetWild exited -9", "rc": -9}
+        return {"name": job["name"]}
+
+    monkeypatch.setattr(TW, "run_part", fake)
+    monkeypatch.setattr(TW, "memory_room", lambda: 0.0)          # no room: one part at a time
+    out = TW.run_parts([{"name": n} for n in "abc"], workers=4)
+    assert [r["name"] for r in out] == ["a", "b", "c"]
+    assert seen == ["a", "b", "c", "b"]
+
+
 def test_closest_points_on_triangles_cover_every_region():
     a, b, c = np.array([[0.0, 0, 0]]), np.array([[1.0, 0, 0]]), np.array([[0.0, 1, 0]])
     cases = {(-1, -1, 0): (0, 0, 0), (2, -1, 0): (1, 0, 0), (-1, 2, 0): (0, 1, 0), (0.5, -1, 0): (0.5, 0, 0),

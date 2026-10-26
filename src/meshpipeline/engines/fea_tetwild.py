@@ -30,6 +30,7 @@ load and support still has its face; a face too small to keep a triangle of its 
 from __future__ import annotations
 
 import math
+import os
 import shutil
 import subprocess
 import sys
@@ -585,21 +586,87 @@ def run_part(job: dict) -> dict:
         cmd += ["--bg-mesh", str(bg)]
     t0 = time.monotonic()
     tail: list[str] = []
+    peak_kb = 0
     with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=str(d)) as proc:
         assert proc.stdout is not None
         for line in proc.stdout:
             # fTetWild's own lines are the runner's sign of progress (the FEA watchdog reads output)
             print(f"{RUNG_LINE} {job['name']}: {line.rstrip()}", file=sys.stderr, flush=True)
             tail = (tail + [line.rstrip()])[-20:]
-        rc = proc.wait()
+        # reaped here, with its own peak memory (os.wait4's rusage is this child's alone)
+        try:
+            _pid, status, usage = os.wait4(proc.pid, 0)
+            rc = os.waitstatus_to_exitcode(status)
+            proc.returncode = rc
+            peak_kb = int(usage.ru_maxrss)
+        except ChildProcessError:
+            rc = proc.wait()
     seconds = round(time.monotonic() - t0, 1)
+    peak_gib = round(peak_kb / 1024.0 ** 2, 2)
     if rc != 0 or not out.exists():
-        return {"error": f"fTetWild exited {rc}: " + " | ".join(tail[-4:]), "seconds": seconds}
+        return {"error": f"fTetWild exited {rc}: " + " | ".join(tail[-4:]), "seconds": seconds, "rc": rc,
+                "peak_gib": peak_gib}
     try:
         pts, tets = _read_tets(out)
     except Exception as exc:  # noqa: BLE001 - said as this part's failure
         return {"error": f"fTetWild's mesh could not be read ({exc})", "seconds": seconds}
-    return {"xyz": pts, "tets": tets, "seconds": seconds, "command": [Path(cmd[0]).name, *cmd[5:]]}
+    return {"xyz": pts, "tets": tets, "seconds": seconds, "peak_gib": peak_gib,
+            "command": [Path(cmd[0]).name, *cmd[5:]]}
+
+
+#: a part is started beside others only while the job keeps this share of its memory free
+MEMORY_ROOM_SHARE = 0.35
+
+
+def memory_room() -> float:
+    """The share of the job's memory still free: its cgroup's limit and use where it has one (Cloud Run, a
+    container), else the machine's MemAvailable; 1.0 when neither can be read."""
+    def read(path: str) -> str:
+        try:
+            return Path(path).read_text().strip()
+        except OSError:
+            return ""
+
+    limit, used = read("/sys/fs/cgroup/memory.max"), read("/sys/fs/cgroup/memory.current")
+    if limit.isdigit() and used.isdigit() and int(limit) > 0:
+        return max(0.0, 1.0 - int(used) / int(limit))
+    info = {ln.split(":")[0]: ln.split()[1] for ln in read("/proc/meminfo").splitlines() if ":" in ln}
+    try:
+        return int(info["MemAvailable"]) / int(info["MemTotal"])
+    except (KeyError, ValueError, ZeroDivisionError):
+        return 1.0
+
+
+def run_parts(jobs: list[dict], workers: int) -> list[dict]:
+    """Every part's run, at most `workers` at once and a new one started beside others only while the job
+    keeps MEMORY_ROOM_SHARE of its memory free; a part killed for memory (beside others) runs again alone.
+    The results are in `jobs` order whatever the timing: each part's mesh is its own (the same input, the
+    same mesh), so how they were scheduled changes nothing delivered."""
+    from concurrent.futures import FIRST_COMPLETED, Future, wait
+
+    results: list[dict | None] = [None] * len(jobs)
+    pending = list(range(len(jobs)))
+    running: dict[int, Future] = {}
+    alone: list[int] = []
+    with ThreadPoolExecutor(max_workers=max(1, int(workers))) as pool:
+        while pending or running:
+            while pending and len(running) < max(1, int(workers)) and (not running or memory_room() >= MEMORY_ROOM_SHARE):
+                i = pending.pop(0)
+                running[i] = pool.submit(run_part, jobs[i])
+            done, _ = wait(list(running.values()), timeout=5.0, return_when=FIRST_COMPLETED)
+            for i, fut in list(running.items()):
+                if fut in done:
+                    r = fut.result()
+                    del running[i]
+                    if r.get("rc") in (-9, 137):
+                        alone.append(i)
+                    else:
+                        results[i] = r
+    for i in alone:
+        print(f"{RUNG_LINE} {jobs[i]['name']}: killed for memory beside other parts - run again alone",
+              file=sys.stderr, flush=True)
+        results[i] = run_part(jobs[i])
+    return [r if r is not None else {"error": "not run"} for r in results]
 
 
 def mesh_into(gmsh, ws: Path, plan: Mapping, staged: Path, volumes: list[int], *, volume_index: Mapping[int, int],
@@ -636,8 +703,7 @@ def mesh_into(gmsh, ws: Path, plan: Mapping, staged: Path, volumes: list[int], *
         meta.append({"volume": int(v), "key": key, "sized": bg is not None, "part": part, "faces": faces, "xyz": xyz, "tris": tris,
                      "label": label, "edge": edge, "eps": eps, "deflection": defl})
     note_stage(ws, "ftetwild", f"meshing {len(jobs)} part(s) with fTetWild (the last rung)")
-    with ThreadPoolExecutor(max_workers=max(1, int(workers))) as pool:
-        results = list(pool.map(run_part, jobs))
+    results = run_parts(jobs, workers)
     failed = [(m["key"], r["error"]) for m, r in zip(meta, results, strict=True) if "error" in r]
     if failed:
         raise RuntimeError("fTetWild could not mesh " + "; ".join(f"{k}: {e}" for k, e in failed))
@@ -695,7 +761,7 @@ def mesh_into(gmsh, ws: Path, plan: Mapping, staged: Path, volumes: list[int], *
             elem_next += int(sel.sum())
             gmsh.model.mesh.addElementsByType(int(surface_tag_of[k]), tri_type, ftags.tolist(), tags[tri6[sel]].ravel().tolist())
         out_parts.append({"part": m["key"], "volume": m["volume"], "elements": int(len(tet10)),
-                          "fTetWild_s": r.get("seconds"), "edge_length_mm": _sig(m["edge"] * 1e3),
+                          "fTetWild_s": r.get("seconds"), "peak_gib": r.get("peak_gib"), "edge_length_mm": _sig(m["edge"] * 1e3),
                           "epsilon_mm": _sig(m["eps"] * 1e3), "deviation_mm": _sig(dev * 1e3),
                           "mesh_to_cad_mm": _sig(float(vdist.max(initial=0.0)) * 1e3),
                           "cad_to_mesh_mm": _sig(float(cdist.max(initial=0.0)) * 1e3),
