@@ -485,7 +485,7 @@ def _run_and_judge(ctx: BuilderToolContext, prepared: PreparedMeshRun) -> dict:
         from meshpipeline.contracts.native_time import run_off_the_wall
         res = run_off_the_wall(
             workspace, lambda cap: R.run_cartesian_mesh(workspace, timeout=cap, context=ctx),
-            engine=engine, job_id=ctx.job_id)
+            engine=engine, job_id=str(getattr(ctx, "job_id", "") or ""))
     else:
         res = R.run_cartesian_mesh(workspace, timeout=_cap, context=ctx)
     _mesh_seconds = _time.monotonic() - _t_mesh_start
