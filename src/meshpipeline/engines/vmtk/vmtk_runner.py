@@ -955,8 +955,7 @@ def _run_vmtk_local(workspace, *, timeout: int, **_ignored) -> dict:
         # Fluent aorta (322k wall triangles, 4 sublayers) both were cut and the run moved to snappy.
         # Now only a step that is STUCK (no sign of life for the stall window) gives way, or the
         # machine's wall, which sends the whole run to a VM (RUN-5).
-        result = _run_pype(ws, argv, timeout=left(),
-                           retangles=UNTANGLE_RETANGLES_MOVING_ON if move_on else UNTANGLE_RETANGLES)
+        result = _run_pype(ws, argv, timeout=left(), at_untangle=bool(move_on and layered))
         nxt: int | None = i + 1 if i + 1 < len(ladder) else None
         if result.get("out_of_memory"):
             notes.append(f"[vmtk] attempt {i + 1} ({_step_label(strat)}): stopped before the machine "
@@ -973,10 +972,14 @@ def _run_vmtk_local(workspace, *, timeout: int, **_ignored) -> dict:
             # THE PLAN ASKS FOR WALL LAYERS and another engine is left to build them: a layer-free
             # fill here would deliver a mesh without them, hours later (the Fluent aorta: 2.4 h,
             # no layers, where snappy then built 99% layers in 1.2 h) - the run moves on instead
-            n = int((result["untangle_stopped"] or {}).get("retangled") or 0)
-            notes.append(f"[vmtk] attempt {i + 1} ({_step_label(strat)}): VMTK layers kept re-tangling "
-                         f"({n} rounds) - next engine ({move_on})")
-            result["layers_not_converging"] = {"retangled": n, "next_engine": move_on}
+            tripped = dict(result["untangle_stopped"] or {})
+            n = int(tripped.get("retangled") or 0)
+            words = (f"VMTK layer needed untangling - {UNTANGLE_RECORD} - next engine ({move_on})"
+                     if tripped.get("untangling") else
+                     f"VMTK layers kept re-tangling ({n} rounds) - next engine ({move_on})")
+            notes.append(f"[vmtk] attempt {i + 1} ({_step_label(strat)}): {words}")
+            logger.warning("vmtk: %s", words)
+            result["layers_not_converging"] = {"retangled": n, "next_engine": move_on, "words": words}
             break
         if layered and bare_after is not None and result.get("untangle_stopped"):
             notes.append(f"[vmtk] attempt {i + 1} ({_step_label(strat)}): "
@@ -1165,21 +1168,23 @@ def _write_gmsh_volume(grid, names: dict[int, str], path: Path) -> dict:
 #: count, no clock. A layer that converges prints one "try last".
 UNTANGLE_RETANGLES = 1
 #: ...and when the run MOVES ON (the plan asks for layers and another engine is left, LAYERS_MOVE_ON)
-#: the first re-tangle is enough: nothing waits for VMTK to recover. Safe by the record: of 706 VMTK
-#: passes whose log shows the layer stage, none even entered the untangle rounds - a layer that
-#: settles never prints "try last" twice (lab and e2e results, 26 Oct). Each round on the aorta is
-#: about 18 minutes (11 rounds in 3.4 hours), so this stops it one round sooner.
-UNTANGLE_RETANGLES_MOVING_ON = 0
+#: the layered fill is stopped as soon as the layer needs untangling at all ("untangle procedure.."):
+#: nothing waits for VMTK to recover, and by the record nothing would come of it - of 706 VMTK passes
+#: whose log shows the layer stage, none ever entered the untangle rounds, and every run that did
+#: failed (lab and e2e results, 26 Oct). The rounds start about 3,250 s into the aorta's fill and run
+#: about 18 minutes each, so the run moves on at about the time main's old 3,000 s clock did.
+UNTANGLE_RECORD = "no passing layered VMTK run ever did (0 of 706)"
+_UNTANGLE_STARTS = "untangle procedure"
 _UNTANGLE_FINAL_WARP = "try last"
 
 
 class UntangleBrake:
     """The run's watch (sandbox/safe_exec.run_guarded `watch`): a reason to stop once the layer
-    generator's output shows its final warp tangled the layer again more than UNTANGLE_RETANGLES
-    times; None while it has not."""
+    generator's output shows its final warp tangled the layer again more than `limit` times - or,
+    `at_untangle` (the run moves on), as soon as the layer needs untangling at all; None until then."""
 
-    def __init__(self, limit: int = UNTANGLE_RETANGLES) -> None:
-        self.limit = int(limit)
+    def __init__(self, limit: int = UNTANGLE_RETANGLES, *, at_untangle: bool = False) -> None:
+        self.limit, self.at_untangle = int(limit), bool(at_untangle)
         self.path: Path | None = None
         self.tripped: dict | None = None
 
@@ -1190,9 +1195,13 @@ class UntangleBrake:
         if self.path is None:
             return None
         try:
-            final_warps = self.path.read_bytes().count(_UNTANGLE_FINAL_WARP.encode())
+            raw = self.path.read_bytes()
         except OSError:
             return None
+        final_warps = raw.count(_UNTANGLE_FINAL_WARP.encode())
+        if self.at_untangle and _UNTANGLE_STARTS.encode() in raw:
+            self.tripped = {"untangling": True, "final_warps": final_warps, "retangled": max(0, final_warps - 1)}
+            return f"the boundary layer needed untangling - {UNTANGLE_RECORD}"
         retangled = final_warps - 1
         if retangled <= self.limit:
             return None
@@ -1201,11 +1210,12 @@ class UntangleBrake:
                 f"{retangled} times")
 
 
-def _run_pype(ws: Path, argv: list[str], *, timeout: int, retangles: int = UNTANGLE_RETANGLES) -> dict:
+def _run_pype(ws: Path, argv: list[str], *, timeout: int, retangles: int = UNTANGLE_RETANGLES,
+              at_untangle: bool = False) -> dict:
     """One pype, WATCHED (contracts/native_time): stopped only after STALL_WINDOW_S with no sign of
     life - no output, no CPU, no memory change - (`stalled`), at `timeout`, the machine's wall, or by
     the untangle brake (`untangle_stopped`: a layer that is not untangling, UntangleBrake)."""
-    brake = UntangleBrake(retangles)
+    brake = UntangleBrake(retangles, at_untangle=at_untangle)
     try:
         proc = run_guarded(argv, cwd=str(ws), capture_output=True, text=True, timeout=timeout,
                            stall_s=STALL_WINDOW_S, watch=brake)

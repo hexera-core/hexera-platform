@@ -551,7 +551,8 @@ def _run_and_judge(ctx: BuilderToolContext, prepared: PreparedMeshRun) -> dict:
         from meshpipeline.contracts.failure_cause import FailureCause
         from meshpipeline.engines.preflight import PreflightRefusal
         _l = dict(res["layers_not_converging"])
-        _words = f"VMTK layers kept re-tangling ({int(_l.get('retangled') or 0)} rounds) - next engine"
+        _words = str(_l.get("words") or
+                     f"VMTK layers kept re-tangling ({int(_l.get('retangled') or 0)} rounds) - next engine")
         logger.warning("run_mesh: %s (%s)", _words, _l.get("next_engine"))
         PreflightRefusal(
             gate="finalize", cause=FailureCause.ENGINE_CRASHED.value,

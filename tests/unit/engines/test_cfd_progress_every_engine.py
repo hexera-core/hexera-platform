@@ -541,7 +541,8 @@ def _brake_run(tmp_path, monkeypatch, move_on):
 def test_layers_that_will_not_untangle_move_the_run_on_when_the_plan_asks_for_layers(tmp_path, monkeypatch):
     res, gens = _brake_run(tmp_path, monkeypatch, "snappy")
     assert len(gens) == 1                                    # no layer-free fill
-    assert res["layers_not_converging"] == {"retangled": 2, "next_engine": "snappy"}
+    assert {k: res["layers_not_converging"][k] for k in ("retangled", "next_engine")} == {
+        "retangled": 2, "next_engine": "snappy"}
     assert "VMTK layers kept re-tangling (2 rounds) - next engine (snappy)" in res["repair_note"]
     assert not (tmp_path / "mesh.vtu").exists()
 
@@ -576,29 +577,33 @@ def test_the_builder_ends_the_attempt_and_the_ladder_moves_on(monkeypatch, tmp_p
     assert classify(state).kind == ENGINE
 
 
-def test_moving_on_the_first_re_tangle_is_enough():
-    """With a next engine to go to, the brake fires at the second "try last" (the first re-tangle);
-    staying on VMTK for its layer-free fill it allows one more round."""
+def test_moving_on_the_brake_fires_as_soon_as_the_layer_needs_untangling():
+    """With a next engine to go to, the layered fill stops at "untangle procedure" (0 of 706 passing
+    layered VMTK runs ever needed it); staying on VMTK for its layer-free fill it waits for the
+    second re-tangle."""
     import os
     import tempfile
 
     from meshpipeline.engines.vmtk import vmtk_runner as V
 
-    def _fires(limit: int, final_warps: int) -> bool:
+    def _fires(text: bytes, **kw) -> str | None:
         fd, path = tempfile.mkstemp()
-        os.write(fd, b"untangle procedure.. \n" + b"try last : " * final_warps)
+        os.write(fd, text)
         os.close(fd)
-        b = V.UntangleBrake(limit)
+        b = V.UntangleBrake(**kw)
         b.follow(path)
         try:
-            return b() is not None
+            return b()
         finally:
             os.unlink(path)
 
-    assert not _fires(V.UNTANGLE_RETANGLES_MOVING_ON, 1)       # one final warp: a layer that settles
-    assert _fires(V.UNTANGLE_RETANGLES_MOVING_ON, 2)           # the first re-tangle: move on now
-    assert not _fires(V.UNTANGLE_RETANGLES, 2)                 # staying: one more round
-    assert _fires(V.UNTANGLE_RETANGLES, 3)
+    settled = b"Generating boundary layer\nCapping inner surface\n"
+    untangling = b"Generating boundary layer\nuntangle procedure.. \n"
+    assert _fires(settled, at_untangle=True) is None             # a layer that settles: left alone
+    why = _fires(untangling, at_untangle=True)
+    assert why and "needed untangling" in why and "0 of 706" in why
+    assert _fires(untangling + b"try last : try last : ") is None    # staying: one more round
+    assert _fires(untangling + b"try last : " * 3)
 
 
 def test_the_layered_step_moving_on_runs_with_the_early_brake(tmp_path, monkeypatch):
@@ -607,8 +612,8 @@ def test_the_layered_step_moving_on_runs_with_the_early_brake(tmp_path, monkeypa
     from meshpipeline.engines.vmtk import vmtk_runner as V
     seen = []
 
-    def fake_pype(ws, argv, *, timeout, retangles=V.UNTANGLE_RETANGLES):
-        seen.append((argv[1] if len(argv) > 1 else "", retangles))
+    def fake_pype(ws, argv, *, timeout, retangles=V.UNTANGLE_RETANGLES, at_untangle=False):
+        seen.append((argv[1] if len(argv) > 1 else "", at_untangle))
         if "vmtksurfaceremeshing" in argv:
             (tmp_path / "lumen.vtp").write_text("remeshed")
         else:
@@ -617,7 +622,7 @@ def test_the_layered_step_moving_on_runs_with_the_early_brake(tmp_path, monkeypa
 
     monkeypatch.setattr(V, "_run_pype", fake_pype)
     monkeypatch.setattr(V, "_folded_share", lambda ws: 0.0)
-    for move_on, want in (("snappy", V.UNTANGLE_RETANGLES_MOVING_ON), ("", V.UNTANGLE_RETANGLES)):
+    for move_on, want in (("snappy", True), ("", False)):
         spec = V.resolve_strategy({"sizing_array": "LocalRadius", "boundary_layers": 4})
         if move_on:
             spec[V.LAYERS_MOVE_ON] = move_on
@@ -626,3 +631,28 @@ def test_the_layered_step_moving_on_runs_with_the_early_brake(tmp_path, monkeypa
         seen.clear()
         V._run_vmtk_local(tmp_path, timeout=NT.CLOUD_RUN_WALL_S)
         assert ("vmtkmeshgenerator", want) in seen
+
+
+def test_moving_on_at_the_untangle_is_said_plainly(tmp_path, monkeypatch):
+    import json
+
+    from meshpipeline.engines.vmtk import vmtk_runner as V
+    from meshpipeline.sandbox.safe_exec import StoppedByWatch
+
+    def fake_run(argv, timeout=None, **kw):
+        if "vmtksurfaceremeshing" in " ".join(argv):
+            (tmp_path / "lumen.vtp").write_text("remeshed")
+            return subprocess.CompletedProcess(argv, 0, stdout="Done.", stderr="")
+        brake = kw["watch"]
+        assert brake.at_untangle
+        brake.tripped = {"untangling": True, "final_warps": 0, "retangled": 0}
+        raise StoppedByWatch(argv, "the boundary layer needed untangling")
+
+    monkeypatch.setattr(V, "run_guarded", fake_run)
+    spec = V.resolve_strategy({"sizing_array": "LocalRadius", "boundary_layers": 4})
+    spec[V.LAYERS_MOVE_ON] = "snappy"
+    (tmp_path / "vmtk_spec.json").write_text(json.dumps(spec))
+    (tmp_path / "lumen_open.vtp").write_text("staged")
+    res = V._run_vmtk_local(tmp_path, timeout=NT.CLOUD_RUN_WALL_S)
+    words = "VMTK layer needed untangling - no passing layered VMTK run ever did (0 of 706) - next engine (snappy)"
+    assert words in res["repair_note"] and res["layers_not_converging"]["words"] == words
