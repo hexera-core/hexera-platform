@@ -1,0 +1,195 @@
+# Responsibility: Carry every input the conjugate mesher needs from the host that chose them to the container that runs it.
+# Owns: the plan file's name and shape, the host-side sizing, and rebuilding the port plan inside the container.
+# Boundaries: it decides sizes and ports; it meshes nothing and judges nothing.
+# Collaborates with: cfmesh_conjugate/conjugate.py (which it feeds) and engines/dispatch.py (which carries only a workspace).
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import asdict, dataclass
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+#: THE SEAM. engines/dispatch.py calls a bundle's runner with (workspace, bashrc, timeout) and
+#: nothing else, while conjugate.build needs a cell size, a refinement depth, the coolant's
+#: expected volume and piece count, a tolerance, the narrowest passage and a port plan. None of
+#: those can be recomputed in the container - the geometry they come from never goes there - so
+#: they are chosen on the host, written here, and read back on the other side. Same split as
+#: snapgrid's: the driver chooses, the runner reads.
+PLAN_NAME = "conjugate_plan.json"
+#: What the mesher reads. The block is written by the driver from the part's own bounds; the
+#: coolant is the surface the extractor wrote (cad/fluid_volume.write_surface).
+BLOCK_STL = "constant/triSurface/block.stl"
+FLUID_STL = "constant/triSurface/fluid.stl"
+#: What the run leaves for finalize.
+REPORT_NAME = "conjugate_report.json"
+
+#: How much wider than the measured staircase error the volume check is allowed to be. The
+#: staircase error IS the expected disagreement between a cut-cell mesh and the CAD it came from,
+#: so the tolerance has to admit it and little else; 1.5x leaves room for the part's own shape
+#: without admitting a mesh that tagged the wrong cells.
+VOLUME_TOL_MARGIN = 1.5
+
+
+@dataclass(frozen=True)
+class ConjugatePlan:
+    """Every number the container needs, in METRES, and the ports by block-face name.
+
+    METRES END TO END, said here because the one slip this file could carry is a unit. The
+    devtools command line takes millimetres and converts at its edge, and when it once passed a
+    lid thickness straight through, `--lid 0.1` meant to add 100 um of metal and added 100 mm:
+    "turning a 1.3 mm plate into a 101.3 mm one. Nothing failed. The mesh built, every check
+    passed, and the block was eighty times the part." A factor of a thousand, silently.
+    """
+
+    background_cell_m: float
+    levels: int
+    expect_fluid_volume_m3: float
+    expect_fluid_pieces: int
+    volume_tol: float
+    narrowest_m: float
+    inlet: str = ""
+    outlet: str = ""
+    port_walls: tuple[str, ...] = ()
+    port_reason: str = ""
+    thickness_m: float | None = None
+    #: What the user called each block face, as render_meshdict's patch_names wants it:
+    #: {"ymin": ["coolant_in", "inlet"]}. Empty means the block keeps its own six face names.
+    patch_names: dict[str, list[str]] | None = None
+    #: Only to say what was asked for, in the report. The cell size above is what is obeyed.
+    cells_across: int = 0
+
+
+def background_for(narrowest_m: float, cells_across: int, levels: int) -> float:
+    """The BACKGROUND cell that puts `cells_across` cells across the narrowest passage.
+
+    The octree halves the cell once per level, so the background has to start 2**levels coarser
+    than the cell wanted at the coolant surface. Asking for the interface size and handing it over
+    as the background is the mistake that produces a mesh 512 times too big.
+    """
+    if cells_across < 1:
+        raise ValueError(f"cells across must be at least 1, got {cells_across}")
+    if narrowest_m <= 0.0:
+        raise ValueError(f"the narrowest passage must be positive, got {narrowest_m}")
+    return (float(narrowest_m) / int(cells_across)) * (2 ** int(levels))
+
+
+def write_plan(workspace, plan: ConjugatePlan) -> None:
+    """The plan beside the case, NOT under constant/.
+
+    foam_case_guard scans everything under constant/ as authored OpenFOAM dictionaries, and a JSON
+    object there is neither a dictionary it can read nor something it should have to judge.
+    """
+    Path(workspace, PLAN_NAME).write_text(
+        json.dumps(asdict(plan), sort_keys=True), encoding="utf-8")
+
+
+def read_plan(workspace) -> ConjugatePlan:
+    """The plan the host wrote. Raises ValueError rather than guessing at anything missing.
+
+    NOTHING IS DEFAULTED HERE, and the cell size is why: it is keyword-only with no default on
+    build() because there is no size that is right for an unknown part, and a plan that silently
+    acquired one would mesh at a resolution nobody chose and report a cell count nobody can
+    account for.
+    """
+    p = Path(workspace, PLAN_NAME)
+    if not p.is_file():
+        raise ValueError(f"no {PLAN_NAME} in the workspace: the conjugate mesher cannot choose a "
+                         "cell size, a tolerance or a port plan for itself")
+    data = json.loads(p.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"{PLAN_NAME} is not a JSON object")
+    missing = [k for k in ("background_cell_m", "expect_fluid_volume_m3", "narrowest_m")
+               if data.get(k) is None]
+    if missing:
+        raise ValueError(f"{PLAN_NAME} is missing {missing}, which cannot be defaulted")
+    known = {f for f in ConjugatePlan.__dataclass_fields__}
+    out = {k: v for k, v in data.items() if k in known}
+    if out.get("port_walls") is not None:
+        out["port_walls"] = tuple(out["port_walls"])
+    return ConjugatePlan(**out)
+
+
+def ports_from(plan: ConjugatePlan):
+    """The port plan as the mesher's own frozen type, or None when the part is sealed.
+
+    A sealed part is still worth meshing - the branching test part is the hardest topology in the
+    set and has no ports at all - so no inlet is a legal plan and not an error.
+    """
+    from meshpipeline.engines.cfmesh_conjugate.conjugate import PortPlan
+
+    if not plan.inlet and not plan.outlet:
+        return None
+    return PortPlan(inlet=plan.inlet, outlet=plan.outlet, walls=tuple(plan.port_walls),
+                    reason=plan.port_reason or "carried in the plan")
+
+
+def plan_for(*, narrowest_m: float, fluid_volume_m3: float, passages: int,
+             solid_lo, solid_hi, fluid_lo, fluid_hi, cells_across: int, levels: int,
+             patch_names: dict | None = None, lid_m: float = 0.0,
+             inlet: str | None = None, outlet: str | None = None,
+             no_ports: bool = False) -> tuple[ConjugatePlan, tuple, tuple]:
+    """Everything derived on the host, before anything runs: (plan, block lo, block hi).
+
+    The same sequence devtools/semiconductor/semi.py has always used, lifted so the platform and
+    the command line cannot drift apart: the block from the solid's own bounds, the cell size from
+    the cells asked for across the narrowest passage, the open faces from where the coolant
+    reaches the block, and the ports from the passage's own extent.
+
+    THE TOLERANCE IS COMPUTED HERE AND STORED, never recomputed in the container. It comes from
+    the staircase error measured for this resolution, and if the container worked it out again
+    from its own idea of the resolution, the gate and the delivered evidence could disagree about
+    whether the same mesh passed.
+    """
+    from meshpipeline.engines.cfmesh_conjugate import conjugate as C
+
+    grow = {"zmax": float(lid_m)} if lid_m else None
+    lo, hi = C.block_bounds(solid_lo, solid_hi, grow)
+    background = background_for(narrowest_m, cells_across, levels)
+    open_ = C.open_faces(fluid_lo, fluid_hi, lo, hi)
+    extent = tuple(fluid_hi[k] - fluid_lo[k] for k in range(3))
+    ports = None if no_ports else C.plan_ports(open_, extent, inlet=inlet, outlet=outlet)
+    plan = ConjugatePlan(
+        background_cell_m=float(background), levels=int(levels),
+        expect_fluid_volume_m3=float(fluid_volume_m3), expect_fluid_pieces=int(passages),
+        volume_tol=_tolerance(cells_across), narrowest_m=float(narrowest_m),
+        inlet=(ports.inlet if ports else ""), outlet=(ports.outlet if ports else ""),
+        port_walls=(tuple(ports.walls) if ports else ()),
+        port_reason=(ports.reason if ports else ""),
+        thickness_m=None, patch_names=_as_lists(patch_names), cells_across=int(cells_across))
+    return plan, lo, hi
+
+
+def _as_lists(patch_names: dict | None) -> dict[str, list[str]] | None:
+    """{"ymin": ("coolant_in", "inlet")} as JSON can hold it."""
+    if not patch_names:
+        return None
+    return {str(face): [str(name), str(role)] for face, (name, role) in patch_names.items()}
+
+
+def as_patch_names(plan: ConjugatePlan) -> dict[str, tuple[str, str]] | None:
+    """...and back, as render_meshdict's patch_names wants it."""
+    if not plan.patch_names:
+        return None
+    return {face: (str(pair[0]), str(pair[1]))
+            for face, pair in plan.patch_names.items() if len(pair) >= 2}
+
+
+def _tolerance(cells_across: int) -> float:
+    """How far the meshed coolant may be from the CAD, for this resolution.
+
+    The staircase error is the expected disagreement, so the bar is that error with a margin,
+    never tighter than the mesher's own default - a coarse run disagreeing by more than its own
+    staircase error has tagged the wrong cells, which is what this is for.
+    """
+    from meshpipeline.engines.cfmesh_conjugate.conjugate import DEFAULT_VOLUME_TOL
+
+    try:
+        from meshpipeline.engines.staircase_error import single_passage_error_pct
+        pct = float(single_passage_error_pct(int(cells_across)))
+    except Exception:                      # noqa: BLE001 - the default is a safe floor
+        logger.info("conjugate plan: no staircase measurement for %s cells across; "
+                    "the default tolerance stands", cells_across)
+        return DEFAULT_VOLUME_TOL
+    return max(DEFAULT_VOLUME_TOL, VOLUME_TOL_MARGIN * pct / 100.0)
