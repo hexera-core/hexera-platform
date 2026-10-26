@@ -79,6 +79,44 @@ MAX_DOMINANT_HOLE_SHARE = 0.5
 #: A channel array's holes are the SAME SIZE as each other; a flange's bore is several times its
 #: bolt holes. Measured: the corpus plates are 1.0, an ASME Class 1500 NPS 2 flange 4.9.
 MAX_HOLE_SIZE_SPREAD = 2.0
+#: ...OR NO HOLE IS ONE OF A KIND. The bar above says a perforated face's holes are all the same
+#: size, and a real manifold plate grades its channel widths ON PURPOSE - wide feeds, narrow
+#: drains - so it is not true of the parts this platform exists for. Measured: a 20 x 12 x 2 mm
+#: plate with three 0.6 mm feeds and seven 0.15 mm drains in one end face has a spread of 16 (the
+#: widths differ by 4, so the areas by 16), read as a solid body in external flow, and had its
+#: 10.58 mm2 SOLID end face proposed as the opening instead of its 1.43 mm2 of channel.
+#:
+#: What the spread bar was really catching is a BORE WITH BOLT HOLES BESIDE IT, and the thing about
+#: a bore is that there is one of it. A graded array has no hole that is one of a kind: every
+#: width is shared with at least one other hole. So a face is also perforated when every hole
+#: belongs to a size class of two or more, however far apart those classes are.
+#:
+#: WHAT IT ADMITS, said plainly: a face with TWO equal bores and a ring of bolt holes has no
+#: singleton either, and reads as perforated. That is a twin-port manifold flange, and reading it
+#: as a two-port face is not obviously the wrong answer for it.
+#: Two holes count as the same size when their WIDTHS are within this ratio - areas within its
+#: square. The flange's bore is 2.2 widths from its bolts and stays a singleton at 1.4.
+SAME_SIZE_WIDTHS = 1.4
+#: How many holes a face needs before its OPEN AREA stops having to clear MIN_RING_BORE_FRACTION.
+#:
+#: That bar - a hole is a bore when it is at least a tenth of its face - is the right question
+#: about ONE hole, and it is the wrong question about a hundred. A cold plate's channels are
+#: deliberately small against the metal that carries the heat away from them, so the share of the
+#: end face they open is a property of the DESIGN and not evidence about whether they are the way
+#: through. Measured on the graded plate built in tests/unit/cad/test_a_graded_channel_array.py:
+#: ten channels opening 2.28 mm2 of a 24.00 mm2 end face is 9.5%, half a point under the bar, and
+#: the face read as a solid disc of 21.72 mm2 - the metal - with the channels subtracted from it.
+#: The watcher found the same thing on a 20 x 20 x 3 mm distributor plate with a 6 x 6 grid of
+#: 0.6 mm bores: no perforated candidate was ever made, so the part fell through to the box-like
+#: solid branch and was offered its own side faces.
+#:
+#: THREE AND NOT TWO. Two holes on a face is the ambiguous case - a bracket with a bolt hole at
+#: each end has two, and so does a two-port plate - and the area bar is worth keeping there. A
+#: channel array has as many holes as it has channels. What stops a panel's ring of identical
+#: mounting holes from reading as a passage is not this number: it is that they pierce the panel's
+#: THICKNESS, which _runs_along_the_part already refuses, and that the other end must carry the
+#: same count.
+MIN_PERFORATED_HOLES = 3
 #: A closed solid's flat face is a MOUTH (the end of a swept fluid body) only when it is a round or
 #: rectangular section at least this fraction of the part's thinnest box side. A nacelle's 8 mm
 #: tail flat on a 200 mm body, a blade tip, a wing's airfoil-shaped tip are not mouths.
@@ -376,6 +414,45 @@ def _rim_polyline(face, wire) -> list:
     return pts
 
 
+def _is_an_open_face(inner: dict, outer: dict) -> bool:
+    """Whether a face's HOLES are the opening rather than incidental holes beside a bore.
+
+    Two ways to be one. A single hole big enough against its face is a bore
+    (MIN_RING_BORE_FRACTION). Many holes are the face's open area whatever share they take
+    (MIN_PERFORATED_HOLES), because a cold plate's channels are deliberately small against the
+    metal that carries heat away from them.
+    """
+    if float(inner["area_m2"]) >= MIN_RING_BORE_FRACTION * float(outer["area_m2"]):
+        return True
+    return (bool(inner.get("perforated"))
+            and int(inner.get("holes") or 0) >= MIN_PERFORATED_HOLES)
+
+
+def _no_hole_is_one_of_a_kind(holes: list[dict]) -> bool:
+    """Whether every hole shares its size with at least one other - a GRADED array, not a bore.
+
+    A manifold plate grades its channels on purpose, so "all the same size" is not true of it; what
+    is true of it is that no width appears once. A flange's bore appears once, among eight
+    identical bolt holes, and that is the difference the size spread was reaching for.
+
+    Sizes are compared by WIDTH (the square root of the area), because a width ratio is the thing
+    a person means by "three times wider" and the area ratio is its square: 3x wider is 9x the
+    area, which no bar set on areas can tell from a bore.
+    """
+    import math
+    widths = sorted(math.sqrt(max(float(m["area_m2"]), 0.0)) for m in holes)
+    if len(widths) < 2:
+        return False
+    for i, w in enumerate(widths):
+        if w <= 0.0:
+            return False
+        near = [v for j, v in enumerate(widths) if j != i
+                and max(v, w) / max(min(v, w), 1e-18) <= SAME_SIZE_WIDTHS]
+        if not near:
+            return False
+    return True
+
+
 def _measure_wires(face) -> tuple[dict | None, dict | None]:
     """(outer, inner): what the face's outer wire encloses, and what its HOLES enclose.
 
@@ -427,7 +504,7 @@ def _measure_wires(face) -> tuple[dict | None, dict | None]:
     spread = float(largest["area_m2"]) / max(float(holes[len(holes) // 2]["area_m2"]), 1e-18)
     perforated = (len(holes) > 1 and total > 0.0
                   and float(largest["area_m2"]) / total <= MAX_DOMINANT_HOLE_SHARE
-                  and spread <= MAX_HOLE_SIZE_SPREAD)
+                  and (spread <= MAX_HOLE_SIZE_SPREAD or _no_hole_is_one_of_a_kind(holes)))
     if perforated and outer is not None:
         inner = {"area_m2": total, "centroid": outer["centroid"], "wh_m": outer["wh_m"]}
     else:
@@ -564,8 +641,9 @@ def scout_cad(path, *, prepared, angular_deflection: float = 0.3, shape=None,
         o_area: float
         o_centroid: tuple[float, float, float]
         o_wh: tuple[float, float]
-        if inner is not None and outer is not None and inner["area_m2"] >= MIN_RING_BORE_FRACTION * outer["area_m2"]:
-            # an annular end face: the HOLE is the opening
+        if inner is not None and outer is not None and _is_an_open_face(inner, outer):
+            # an annular end face: the HOLE is the opening - or a perforated one, where the
+            # holes together are
             kind, o_area = "ring", float(inner["area_m2"])
             o_centroid, o_wh = _xyz(inner["centroid"]), _wh(inner["wh_m"])
         else:

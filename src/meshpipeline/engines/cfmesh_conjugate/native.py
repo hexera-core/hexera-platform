@@ -62,10 +62,16 @@ def _run_conjugate_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
         return {"rc": RC_REFUSED, "timed_out": False,
                 "log_tail": f"FAILED: {type(exc).__name__}: {exc}"}
 
-    _write_report(ws, _as_dict(report, plan))
+    body = _as_dict(report, plan)
+    # WRITTEN BEFORE THE AIDS AND AGAIN AFTER. The aids are the expensive part of the run - a
+    # 35 MB surface and a per-region VTK export - and a report that only appeared once they
+    # finished would be lost by anything that killed the process while they ran, taking the
+    # measurement of a mesh that is on disk with it.
+    _write_report(ws, body)
     # THE REVIEW AIDS, built here because this is where OpenFOAM is. Neither can fail the run:
     # a mesh is never lost over a picture of it.
-    _review_aids(ws, bashrc=bashrc)
+    body["review"] = _review_aids(ws, bashrc=bashrc)
+    _write_report(ws, body)
     tail = (f"fluid {report.fluid.cells:,} cells, solid {report.solid.cells:,}, interface "
             f"{report.interface_faces_fluid:,} faces both sides")
     if report.problems:
@@ -74,8 +80,12 @@ def _run_conjugate_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
             "cells": int(report.fluid.cells + report.solid.cells)}
 
 
-def _review_aids(ws: Path, *, bashrc: str) -> None:
-    """The per-region volume and the two-region surface, for the reviewer.
+def _review_aids(ws: Path, *, bashrc: str) -> dict:
+    """The per-region volume and the two-region surface, for the reviewer, and what they are.
+
+    WHAT THEY ARE IS RECORDED HERE because finalize runs on the other side of the container
+    boundary and would otherwise have to find them again: the volume by walking the VTK tree, and
+    the surface's named groups by re-reading 35 MB of mesh. Both were already worked out here.
 
     ALWAYS, on every run, and that is deliberate. The volume artifact is declared optional -
     requiring it would end a review before the model was asked, on a mesh that passed every gate -
@@ -87,14 +97,23 @@ def _review_aids(ws: Path, *, bashrc: str) -> None:
     from meshpipeline.engines.cfmesh_conjugate.foam_exec import export_volume_vtk
     from meshpipeline.engines.cfmesh_conjugate.review_surface import build_region_msh
 
+    from meshpipeline.engines.cfmesh_conjugate.review_surface import REVIEW_MSH
+
+    out: dict = {"volume": None, "surface": None, "groups": {}, "bbox": None}
     try:
-        export_volume_vtk(ws, all_regions=True, region=FLUID_REGION, bashrc=bashrc)
+        out["volume"] = export_volume_vtk(ws, all_regions=True, region=FLUID_REGION,
+                                          bashrc=bashrc)
     except Exception:                     # noqa: BLE001
         logger.warning("conjugate: the volume export failed (non-fatal)", exc_info=True)
     try:
-        build_region_msh(ws)
+        groups, bbox = build_region_msh(ws)
+        if groups:
+            out["surface"] = REVIEW_MSH
+            out["groups"] = {str(k): [int(t) for t in v] for k, v in groups.items()}
+            out["bbox"] = list(bbox) if bbox else None
     except Exception:                     # noqa: BLE001
         logger.warning("conjugate: the review surface failed (non-fatal)", exc_info=True)
+    return out
 
 
 def _as_dict(report, plan: PL.ConjugatePlan) -> dict:

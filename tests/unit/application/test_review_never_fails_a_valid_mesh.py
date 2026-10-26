@@ -211,8 +211,14 @@ def test_the_review_only_rebuilds_for_a_buildable_change():
     assert route_after_reviewer({**base, "reviewer_axis_findings": CRM_FINDINGS}) == "__end__"
     asks = [dict(CRM_FINDINGS[1], improve=True)]
     assert route_after_reviewer({**base, "reviewer_axis_findings": asks}) == "node_classifier"
-    # spent: no attempt left, the run ends and the mesh is delivered
-    assert route_after_reviewer({**base, "retry_count": 3,
+    # spent: no attempt left, the run ends and the mesh is delivered.
+    #
+    # THE CAP AND NOT A LITERAL. This said 3, which is spent at the shipped cap of 1
+    # (.env.example) and NOT spent on a machine whose own .env raises MAX_BUILDER_RETRIES to 3 -
+    # and settings/env.py loads .env at import, so every test session there routed to
+    # node_classifier and this failed on its own, with no polluter to hunt.
+    from meshpipeline.agents.builder import settings as bcfg
+    assert route_after_reviewer({**base, "retry_count": bcfg.MAX_BUILDER_RETRIES + 2,
                                  "reviewer_axis_findings": asks}) == "__end__"
 
 

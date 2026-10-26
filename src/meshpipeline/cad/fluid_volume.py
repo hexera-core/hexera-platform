@@ -46,6 +46,24 @@ MAX_CAP_FLOOR_M = 10e-6
 #: 0.0007% on the wavy array and exact on the straight ones, so 2% is loose by two orders of
 #: magnitude against that and tight by a whole passage against an inversion.
 VOLUME_AGREES = 0.02
+#: ...and how far EACH PASSAGE's own shell may be from its own volume.
+#:
+#: THE TOTAL CANNOT CARRY THIS CHECK, which is arithmetic rather than opinion. A reversed passage
+#: subtracts its own volume instead of adding it, so the total is short by twice that passage - and
+#: on a part with many passages, twice one of them is nothing against the bar:
+#:
+#:     passages   one reversed, error in the TOTAL    against VOLUME_AGREES of 2%
+#:          5                   40.0%                 caught
+#:         25                    8.0%                 caught
+#:        100                    2.0%                 EXACTLY the bar
+#:        198                    1.01%                passes
+#:
+#: The embedded-silicon array extracts as 198 channels and the Corintis baseline as 100, so the
+#: two parts in the set with the most passages are the two the global check cannot protect. Each
+#: shell is closed on its own, so each has its own sign and its own volume, and comparing them one
+#: at a time is exact however many there are. The honest tessellation error measured on these
+#: parts is 0.17%, so this bar has room to spare.
+PASSAGE_AGREES = 0.02
 
 
 def cap_floor_m(diag: float) -> float:
@@ -1182,6 +1200,32 @@ def narrowest_passage_m(x: Extraction, stl_path) -> float:
     return float(best)
 
 
+def first_passage_wound_in(triangles, spans, volumes) -> tuple[int, float, float] | None:
+    """The first passage whose own shell does not enclose its own volume, or None when all do.
+
+    `spans` is (first triangle, how many) per passage, in the order the triangles were written, and
+    `volumes` what the B-rep says each passage holds. Returns (which, what its shell encloses, what
+    it should) for the first one that disagrees.
+
+    SIGNED, so a reversed shell is caught by its sign alone whatever its size: a passage written
+    inside out encloses MINUS its volume. The tolerance is only for a shell the tessellator left
+    slightly short.
+    """
+    import numpy as np
+
+    T = np.asarray(triangles, dtype=np.float64)
+    for k, (start, count) in enumerate(spans):
+        if count <= 0:
+            continue
+        got = surface_volume(T[start:start + count])
+        want = float(volumes[k]) if k < len(volumes) else 0.0
+        if got <= 0.0:
+            return k, got, want
+        if want > 0.0 and abs(got - want) > PASSAGE_AGREES * want:
+            return k, got, want
+    return None
+
+
 def write_surface(x: Extraction, out_path, *, angular_deflection: float = 0.2,
                   linear_deflection: float | None = None) -> dict | None:
     """The coolant's whole boundary as ONE closed binary STL, in metres, with no patch names.
@@ -1225,9 +1269,12 @@ def write_surface(x: Extraction, out_path, *, angular_deflection: float = 0.2,
         return None
     mesh_to_size(comp, 1.0 / 2500.0, angular_deflection, linear_deflection=linear_deflection)
     tris: list = []
+    spans: list[tuple[int, int]] = []          # (first triangle, how many) per passage
     for p in x.passages:
+        start = len(tris)
         for f in p.boundary:
             tris.extend(_face_triangles(f))
+        spans.append((start, len(tris) - start))
     if not tris:
         logger.warning("fluid volume: the coolant's %d face(s) tessellated to nothing", faces)
         return None
@@ -1254,6 +1301,27 @@ def write_surface(x: Extraction, out_path, *, angular_deflection: float = 0.2,
             logger.warning("fluid volume: the coolant surface has %d %s - not written",
                            checks[key], what)
             return None
+    # EACH PASSAGE AGAINST ITS OWN VOLUME, before the total, because the total cannot see one
+    # reversed passage among a hundred (see PASSAGE_AGREES). Measured on the raw triangles rather
+    # than the welded surface: a closed shell's signed volume is a sum over its own faces and does
+    # not need its vertices joined to its neighbours'.
+    # ...AND ONLY WHEN THE SHELLS CAME OUT CLOSED AS TESSELLATED. seal_open_rims adds membranes
+    # AFTER the triangles were gathered per passage, and a membrane belongs to no passage any more:
+    # the passage it closes is short by exactly the volume the membrane put back, so checking it
+    # against its own volume would refuse a surface that is correct. Where a rim had to be sealed
+    # the attribution is gone, so the total is all there is, and this says so rather than
+    # pretending the stronger check ran.
+    if membranes:
+        logger.info("fluid volume: %d rim membrane(s) were needed, so the per-passage volume "
+                    "check does not apply; the total stands", len(membranes))
+    bad = (None if membranes else
+           first_passage_wound_in(tris, spans, [p.volume for p in x.passages]))
+    if bad is not None:
+        which, got, want = bad
+        logger.warning("fluid volume: passage %d of %d encloses %.6g m3 where the B-rep says "
+                       "%.6g m3 - it is inside out or incomplete - not written",
+                       which + 1, len(x.passages), got, want)
+        return None
     signed = surface_volume(V[F])
     found = sum(p.volume for p in x.passages)
     if signed <= 0.0:
@@ -1274,9 +1342,16 @@ def write_surface(x: Extraction, out_path, *, angular_deflection: float = 0.2,
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     write_stl_binary(out_path, V[F])
+    used = V[F].reshape(-1, 3)
     return {
         "path": str(out_path), "triangles": int(len(F)), "faces": faces,
         "passages": len(x.passages),
+        # WHERE THE COOLANT REACHES, which decides which faces of the block are open. The caller
+        # cannot work it out from anything else here - centroids and areas describe the ports, not
+        # the extent - and reading it back off the STL that was just written is a second answer to
+        # a question this function already holds the vertices for.
+        "bbox_min_m": [round(float(used[:, k].min()), 12) for k in range(3)],
+        "bbox_max_m": [round(float(used[:, k].max()), 12) for k in range(3)],
         "open_edges": int(checks["open_edges"]),
         "nonmanifold_edges": int(checks["nonmanifold_edges"]),
         # read by its real name. This said checks.get("inconsistent"), which _verify does not
@@ -1696,7 +1771,7 @@ def main(argv: list[str]) -> int:
 
 
 __all__ = ["CHECK_BUDGET_S", "MAX_CAP_FLOOR_M", "MAX_FACES", "MAX_TRIANGLES", "STAGE_BUDGET_S", "Extraction", "ExtractionError",
-           "Passage", "Port", "candidate_caps", "closed_pieces", "part_pieces", "extract", "from_triangles", "match_declared", "parts_of", "narrowest_passage_m", "surface_bounded", "surface_volume", "write_surface",
+           "Passage", "Port", "candidate_caps", "closed_pieces", "part_pieces", "extract", "from_triangles", "match_declared", "parts_of", "first_passage_wound_in", "narrowest_passage_m", "surface_bounded", "surface_volume", "write_surface",
            "run_bounded", "stage", "stage_bounded", "touching_parts"]
 
 

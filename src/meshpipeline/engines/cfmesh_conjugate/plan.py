@@ -59,6 +59,11 @@ class ConjugatePlan:
     patch_names: dict[str, list[str]] | None = None
     #: Only to say what was asked for, in the report. The cell size above is what is obeyed.
     cells_across: int = 0
+    #: The block the mesh fills, in metres. CARRIED RATHER THAN RE-MEASURED: it is the mesh's own
+    #: extent and finalize has to publish it, and the alternative - reading it back off the block
+    #: STL or the delivered points - is a second answer to a question the host already settled.
+    block_lo: tuple[float, float, float] | None = None
+    block_hi: tuple[float, float, float] | None = None
 
 
 def background_for(narrowest_m: float, cells_across: int, levels: int) -> float:
@@ -108,6 +113,12 @@ def read_plan(workspace) -> ConjugatePlan:
     out = {k: v for k, v in data.items() if k in known}
     if out.get("port_walls") is not None:
         out["port_walls"] = tuple(out["port_walls"])
+    for k in ("block_lo", "block_hi"):
+        got = out.get(k)
+        if got is not None:
+            if len(got) != 3:
+                raise ValueError(f"{PLAN_NAME}: {k} is not three numbers")
+            out[k] = (float(got[0]), float(got[1]), float(got[2]))
     return ConjugatePlan(**out)
 
 
@@ -157,7 +168,9 @@ def plan_for(*, narrowest_m: float, fluid_volume_m3: float, passages: int,
         inlet=(ports.inlet if ports else ""), outlet=(ports.outlet if ports else ""),
         port_walls=(tuple(ports.walls) if ports else ()),
         port_reason=(ports.reason if ports else ""),
-        thickness_m=None, patch_names=_as_lists(patch_names), cells_across=int(cells_across))
+        thickness_m=None, patch_names=_as_lists(patch_names), cells_across=int(cells_across),
+        block_lo=(float(lo[0]), float(lo[1]), float(lo[2])),
+        block_hi=(float(hi[0]), float(hi[1]), float(hi[2])))
     return plan, lo, hi
 
 

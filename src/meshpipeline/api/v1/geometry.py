@@ -120,6 +120,12 @@ class ConfirmIn(BaseModel):
     #: what tells one channelled cold plate from a file of several parts, and the two are told
     #: different things about where their fluid is.
     solids: int | None = None
+    #: WHETHER THE COOLANT WAS FOUND INSIDE THE SOLIDS, as the check measured it - never the
+    #: form's to send. This, and not the solids count, is what tells a cooled solid from a file of
+    #: parts standing in air: a brazed or diffusion-bonded cold plate is base plus lid, which is
+    #: TWO solids and the commonest way one is made, and counting solids told its owner about
+    #: "the fluid around them" - the opposite of their part.
+    coolant_inside: bool | None = None
     #: SET BY THE SERVER, never taken from the form: why the openings have the roles they have,
     #: when the uploaded file declares them (geometry_check.declared_openings_reason) and the user
     #: kept those roles - said in the declaration and carried into the brief.
@@ -581,6 +587,10 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
                 update["regions"] = names
         if body.solids is None and facts.get("solids") is not None:
             update["solids"] = int(facts["solids"] or 0)
+        if body.coolant_inside is None:
+            # the extraction's own answer (cad/fluid_volume_check.fold -> facts["fluid_volume"]):
+            # the space inside the parts was found and reaches the outside
+            update["coolant_inside"] = bool((facts.get("fluid_volume") or {}).get("found"))
         if update:
             body = body.model_copy(update=update)
     # WHY THE OPENINGS ARE WHAT THEY ARE, when the file declares them - said only while the user

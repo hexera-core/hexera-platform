@@ -237,7 +237,7 @@ def kind_words(body) -> str:
     """How the confirmation names what the file is, in the user's own terms."""
     if str(getattr(body, "input_kind", "")) == "solid-assembly" \
             and not [n for n in (getattr(body, "regions", None) or []) if str(n).strip()] \
-            and int(getattr(body, "solids", 0) or 0) == 1:
+            and _coolant_is_inside(body):
         return _COOLED_SOLID_WORDS
     return _KIND_WORDS[body.input_kind]
 #: What the declaration says of a whole thermal model's air box (check_mode "thermal"): its sides
@@ -264,6 +264,34 @@ def detail_sentence(body) -> str:
 _REGIONS_NAMED = 24
 
 
+def _coolant_is_inside(body) -> bool:
+    """Whether the file is a COOLED SOLID: the coolant is the space inside it.
+
+    THE MEASUREMENT AND NOT THE SOLID COUNT. This branched on solids == 1, and a brazed or
+    diffusion-bonded cold plate is base plus lid - two solids, and the commonest way one is made -
+    so it fell through to "each solid part is its own solid region and the fluid around them is
+    one more", which is the air-box wording and describes the opposite of the part. Three solids
+    (base, lid, manifold) is the same case again.
+
+    The extraction's answer is the right evidence: it found an enclosed space inside the parts that
+    reaches the outside. Where the check did not run or found nothing, the solid count still
+    stands in - a single solid confirmed as a cooled solid is one.
+    """
+    found = getattr(body, "coolant_inside", None)
+    if found is not None:
+        return bool(found)
+    return int(getattr(body, "solids", 0) or 0) == 1
+
+
+def _cooled_solid_words(body) -> str:
+    """"The part is one solid with coolant passages through it", or the same for a bonded stack."""
+    n = int(getattr(body, "solids", 0) or 0)
+    if n >= 2:
+        return (f"The part is {n} solids bonded into one piece, with coolant passages through it "
+                "(a base and a lid, as a brazed or diffusion-bonded cold plate is made)")
+    return "The part is one solid with coolant passages through it"
+
+
 def assembly_sentence(body) -> str:
     """What a multi-region input is, for the intake: the solid and the fluid each their own
     region, meshed as they stand - the conjugate heat-transfer input.
@@ -274,11 +302,11 @@ def assembly_sentence(body) -> str:
     that customer about "the fluid around them" describes the opposite of their part.
     """
     names = [str(n) for n in (getattr(body, "regions", None) or []) if str(n).strip()]
-    if not names and int(getattr(body, "solids", 0) or 0) == 1:
-        return ("The part is one solid with coolant passages through it, so it is two regions at "
-                "once: the solid carries the heat and the coolant inside it takes the heat away. "
-                "Both are meshed, sharing every face between them, as a conjugate heat-transfer "
-                "case - nothing is built around the part.")
+    if not names and _coolant_is_inside(body):
+        return (f"{_cooled_solid_words(body)}, so it is two regions at once: the metal carries "
+                "the heat and the coolant inside it takes the heat away. Both are meshed, sharing "
+                "every face between them, as a conjugate heat-transfer case - nothing is built "
+                "around the part.")
     said = ("Each solid part is its own solid region and the fluid around them is one more region; "
             "together they fill the domain, so the file is meshed as it stands, as a multi-region "
             "(conjugate heat transfer) case, with no fluid domain built around it.")
@@ -405,13 +433,15 @@ def confirmation_message(body) -> str:
         rows = []
         for o in ports:
             inner = _centre_body_mm(o)
-            size = (f"an annulus {o.diameter_mm:.0f} mm across round a {inner:.0f} mm centre body"
-                    if inner else f"{o.diameter_mm:.0f} mm across" if o.diameter_mm
-                    else f"{o.width_mm:.0f} x {o.height_mm:.0f} mm" if o.width_mm and o.height_mm else "")
+            size = (f"an annulus {_mm(o.diameter_mm)} mm across round a {_mm(inner)} mm centre body"
+                    if inner else f"{_mm(o.diameter_mm)} mm across" if o.diameter_mm
+                    else f"{_mm(o.width_mm)} x {_mm(o.height_mm)} mm"
+                    if o.width_mm and o.height_mm else "")
             flow_area = _num_or_none(getattr(o, "flow_area_mm2", None))
             if flow_area and (inner or not o.diameter_mm):
-                size += f" ({flow_area:,.0f} mm2 of flow)"
-            at = (f" at ({o.centroid_mm[0]:.0f}, {o.centroid_mm[1]:.0f}, {o.centroid_mm[2]:.0f}) mm"
+                size += f" ({_mm2(flow_area)} mm2 of flow)"
+            at = (f" at ({_mm(o.centroid_mm[0])}, {_mm(o.centroid_mm[1])}, "
+                  f"{_mm(o.centroid_mm[2])}) mm"
                   if o.centroid_mm and len(o.centroid_mm) == 3 else "")
             rows.append(f"{o.name} ({o.role}){', ' + size if size else ''}{at}")
         parts.append("Openings: " + "; ".join(rows) + ".")
@@ -590,6 +620,51 @@ def _num_or_none(v) -> float | None:
     return x if math.isfinite(x) and x > 0 else None
 
 
+#: How many places a length in millimetres is worth printing to. THREE SIGNIFICANT FIGURES, and
+#: the reason is a measurement: every size in this sentence used to print with :.0f, so a
+#: 2.0 x 0.25 mm port read "2 x 0 mm", a 0.25 mm microchannel read "0 x 0 mm", and a 0.8 mm bore
+#: at (5.0, 0.4, 0.6) read "1 mm across at (5, 0, 1) mm" - the diameter up a quarter and the
+#: centroid moved 0.4 mm on a part whose channel is 0.8 mm wide. This is the text the owner
+#: confirms and the text the case is read back out of, and the numbers behind it were right all
+#: along. A cold plate's channels live between 0.05 and 1 mm, so whole millimetres cannot describe
+#: one at all.
+_PLACES = 3
+
+
+def _mm(value: float) -> str:
+    """A length in millimetres, to three significant figures, with no trailing zeros.
+
+    10.58 -> "10.6",  2.0 -> "2",  0.25 -> "0.25",  0.0457 -> "0.0457",  0.0 -> "0".
+    """
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return "0"
+    if v == 0.0:
+        return "0"
+    import math
+    from decimal import Decimal
+    # _PLACES SIGNIFICANT FIGURES, BUT NEVER COARSER THAN A WHOLE MILLIMETRE. Three significant
+    # figures alone turns a 1234.5 mm part into "1230 mm", which is a centimetre of invented
+    # slack on the one part big enough for it to matter.
+    places = max(0, _PLACES - 1 - int(math.floor(math.log10(abs(v)))))
+    text = format(Decimal(repr(round(v, places))).normalize(), "f")
+    return text.rstrip(".") if "." in text else text
+
+
+def _mm2(value: float) -> str:
+    """An AREA in square millimetres: grouped above a thousand, significant figures below it.
+
+    An annulus of flow is thousands of square millimetres and reads as "2,199"; a microchannel's
+    cross-section is a fraction of one and read as "0" while every size here printed whole.
+    """
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return "0"
+    return f"{v:,.0f}" if abs(v) >= 1000.0 else _mm(v)
+
+
 def _centre_body_mm(o) -> float | None:
     """The diameter of the centre body standing in a round opening's bore (the scout's
     inner_diameter_mm), or None for a plain bore - and for a bore said to be no wider than the
@@ -607,6 +682,7 @@ _OPENING_DEFAULTS: dict[str, object] = {"centroid_mm": None, "diameter_mm": None
                                          "height_mm": None, "inner_diameter_mm": None,
                                          "flow_area_mm2": None}
 _BODY_DEFAULTS: dict[str, object] = {"openings": [], "seed_point_mm": None, "size_mm": None, "part": "",
+                                     "coolant_inside": None,
                                      "flow_axis": None, "reference_length_mm": None, "extents": None,
                                      "grounded": False, "up_axis": None, "scale_to_m": None, "unit": None,
                                      "unit_fixed": False, "unit_fixed_reason": "", "regions": None, "openings_reason": "",

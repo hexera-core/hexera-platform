@@ -89,7 +89,10 @@ _FEA = _rx(
 )
 #: WORDS FOR A FLUID: what CFD answers.
 _FLOW = _rx(
-    r"\bcfd\b", r"\bfluid\b(?![- ]structure)", r"\bflow", r"\bairflow", r"\baero", r"\bdrag\b",
+    # \baero as a PREFIX matches AEROSPACE, so "aerospace bracket, static stress" read as
+    # mechanics AND flow and asked which domain, on a sentence with no fluid in it at all.
+    r"\bcfd\b", r"\bfluid\b(?![- ]structure)", r"\bflow", r"\bairflow", r"\baero\b",
+    r"\baerodynamic", r"\bdrag\b",
     r"\blift\b", r"\bdownforce", r"\bwind\b", r"pressure (drop|loss)", r"\bhead loss", r"\bturbulen",
     r"\bopenfoam\b", r"\bfluent\b", r"star-?ccm", r"\bcfx\b", r"\bvelocity", r"\b\d+\s?(m/s|km/h|mph)",
     r"\bmach\b", r"\breynolds", r"\by\+", r"\byplus", r"boundary layer", r"\binlet", r"\boutlet",
@@ -122,8 +125,30 @@ _EXTERNAL = _rx(r"\baround\b", r"\bover\b", r"\bexternal", r"\baero", r"\bdrag\b
 #: with "pressure drop ACROSS the cold plate" still reaching cooling, so one preposition decided
 #: the mesher. "airflow over the heat sink" survived only because "heat" is itself a heat word and
 #: short-circuited the veto before it ran.
-_PAST_A_BODY = _rx(r"\bexternal", r"\baero", r"\bdrag\b", r"\blift\b", r"\bdownforce",
-                   r"\bwind\b", r"\bhull\b", r"\bwake\b")
+#:
+#: ANCHORED, and measured. `\baero` as a prefix matches AEROSPACE, so "aerospace power module cold
+#: plate, coolant at 2 L/min" vetoed its own coolant and went to car-style CFD (why="flow: aero"),
+#: as did "aerospace cold plate thermal analysis". A whole industry's name is not a question about
+#: air flowing past a body.
+_PAST_A_BODY = _rx(r"\bexternal", r"\baero\b", r"\baerodynamic", r"\bdrag\b", r"\blift\b",
+                   r"\bdownforce", r"\bwind\b", r"\bhull\b", r"\bwake\b")
+
+#: COOLANT INSIDE METAL, SAID OUTRIGHT - and these beat the veto above.
+#:
+#: The veto is there because aerodynamics vocabulary is not what anyone reaches for about coolant
+#: inside metal. These words are the other half of that argument: they are not what anyone reaches
+#: for about air flowing past a body. Measured, every one of these went to car-style CFD:
+#:
+#:     aerospace power module cold plate, coolant at 2 L/min   flow: aero
+#:     pin fin cold plate, I need the wake behind each pin     flow: wake
+#:     externally finned cold plate, water cooling             flow: water
+#:     external thermal resistance of this cold plate          ask domain, why "no cue"
+#:
+#: The last is the worst of the four: the veto suppressed every cue and the reason string then
+#: denied they were there.
+_COOLANT_INSIDE = _rx(r"\bcoolant\b", r"\bcold[- ]plate", r"\bwater[- ]?block", r"\bmicrochannel",
+                      r"\bmicro[- ]channel", r"\bwater[- ]cool", r"\bliquid[- ]cool",
+                      r"\bl\s*/\s*min\b", r"\blpm\b", r"\bgpm\b")
 
 #: WORDS THAT PUT HEAT IN THE QUESTION. Any one of them and the thermal split decides.
 _HEAT = _rx(r"\bthermal", r"\bheat", r"\bhot\b", r"\bwarm", r"\btemperature", r"\bcool", r"\boverheat",
@@ -293,7 +318,11 @@ def read_purpose(text: str) -> PurposeReading:
     # metal, and the heat word is often in the PART'S NAME rather than the question: "downforce on
     # this cooling vent" went to electronics cooling on the "cool" in "cooling", which is the
     # vent's name and not what was asked about it.
-    past_a_body = _PAST_A_BODY.search(said)
+    # ...AND THE COOLANT BEATS THE VETO. A part named as a cold plate, or a coolant with a flow
+    # rate, is the one case where aerodynamics vocabulary sits in a question that is not about air
+    # past a body: "externally finned cold plate" is a cold plate with fins on the outside.
+    inside = _hits(_COOLANT_INSIDE, said)
+    past_a_body = None if inside else _PAST_A_BODY.search(said)
     if not past_a_body and (_HEAT.search(said) or (hardware and not fea)):
         solid = _hits(_SOLID_HEAT, said)
         # The hardware noun is weak evidence, and heat-in-a-solid words outrank it the same way
@@ -323,6 +352,13 @@ def read_purpose(text: str) -> PurposeReading:
         return PurposeReading(route=ROUTE_FEA, analysis=analysis_of(said), why="mechanics: " + ", ".join(fea))
     if flow:
         return PurposeReading(route=ROUTE_FLOW, topology=_topology(said), why="flow: " + ", ".join(flow))
+    # THE VETO SAYS SO WHEN IT IS WHY NOTHING MATCHED. "external thermal resistance of this cold
+    # plate" asked which domain with why="no cue", on a sentence carrying both a heat word and a
+    # part that is nothing but coolant in metal: the veto had suppressed them and the reason then
+    # denied they existed. A reason that contradicts the sentence it read is worse than no reason.
+    if _PAST_A_BODY.search(said) and (_HEAT.search(said) or _hits(_THERMAL_HARDWARE, said)):
+        return PurposeReading(ask=ASK_DOMAIN, why="flow past a body, and heat: " + ", ".join(
+            _hits(_PAST_A_BODY, said) + _hits(_HEAT, said)))
     return PurposeReading(ask=ASK_DOMAIN, why="no cue")
 
 
