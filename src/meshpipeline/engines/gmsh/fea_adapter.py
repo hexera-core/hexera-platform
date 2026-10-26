@@ -485,7 +485,41 @@ def bad_surfaces(gmsh, tags, qualities, *, floor: float = 0.0, skip=()) -> list[
         out.update(mine)
     # the first face of each locked pair keeps its mesh, unless another invalid element touches it too
     keep = {a for a, _b in locked} - loose - {b for _a, b in locked}
-    return sorted(out - keep)
+    return sorted((out - keep) | alike_seconds(gmsh, locked))
+
+
+#: Two faces are alike (same kind, area and gap to their partner) to this share of their area / the part
+_ALIKE = 1e-6
+
+
+def alike_seconds(gmsh, locked) -> set[int]:
+    """LAD-fea-6: THE PAIRS ALIKE A LOCKED PAIR. Faces the same as a pair that locked a sliver (the same kind
+    and area, the same distance apart) mesh the same way and lock their own as soon as sizes move: twelve
+    alike panes in fc_glass_frames took one pass each, pass after pass (6, then 3, then 1). The second face of
+    every alike pair is named with them, so one pass breaks every mirror. Best effort: nothing when the
+    model cannot be measured."""
+    import numpy as np
+
+    if not locked:
+        return set()
+    try:
+        tags = sorted(int(t) for _d, t in gmsh.model.getEntities(2))
+        info = {t: (float(gmsh.model.occ.getMass(2, t)), np.asarray(gmsh.model.occ.getCenterOfMass(2, t), dtype=float),
+                    str(gmsh.model.getType(2, t))) for t in tags}
+        x0, y0, z0, x1, y1, z1 = gmsh.model.getBoundingBox(-1, -1)
+        diag = math.dist((x0, y0, z0), (x1, y1, z1)) or 1.0
+    except Exception:  # noqa: BLE001 - no geometry to compare: the locked pairs alone
+        return set()
+    out: set[int] = set()
+    for a, b in sorted(locked):
+        area, kind = info[a][0], info[a][2]
+        gap = float(np.linalg.norm(info[a][1] - info[b][1]))
+        same = [t for t in tags if info[t][2] == kind and abs(info[t][0] - area) <= _ALIKE * max(area, 1e-300)]
+        for i, s in enumerate(same):
+            for q in same[i + 1:]:
+                if abs(float(np.linalg.norm(info[s][1] - info[q][1])) - gap) <= _ALIKE * diag:
+                    out.add(q)
+    return out
 
 
 def _peak_rss_mb() -> float | None:

@@ -363,3 +363,25 @@ def test_a_sliver_the_record_reads_as_zero_is_traced_like_an_inverted_one():
     assert A.bad_surfaces(g, [10, 11], [1.5e-5, 1.5e-5], floor=A.DEGENERATE_SICN) == [6, 8]
     assert A.bad_surfaces(g, [10, 11], [1.5e-5, 1.5e-5], floor=A.DEGENERATE_SICN, skip={11}) == [6]
     assert round(A.DEGENERATE_SICN - 1e-9, 4) == 0.0 < round(A.DEGENERATE_SICN + 1e-9, 4)
+
+
+def test_every_pair_alike_a_locked_pair_is_named_with_it():
+    """LAD-fea-6: fc_glass_frames' twelve alike panes locked slivers one after another as sizes moved (6 panes,
+    then 3, then 1): the second face of every pair alike the locked one is named at once."""
+    gmsh.initialize()
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.model.add("panes")
+        gmsh.model.occ.addBox(0, 0, 0, 100, 50, 1)
+        gmsh.model.occ.addBox(0, 80, 0, 100, 50, 1)           # an alike pane, 30 apart
+        gmsh.model.occ.addBox(0, 160, 0, 100, 40, 1)          # a pane of another size
+        gmsh.model.occ.synchronize()
+        faces = {t: gmsh.model.occ.getCenterOfMass(2, t) for _d, t in gmsh.model.getEntities(2)}
+        big = sorted(t for t in faces if abs(gmsh.model.occ.getMass(2, t) - 5000.0) < 1e-6)
+        assert len(big) == 4                                   # the two alike panes' front and back
+        first = (big[0], big[1])
+        named = A.alike_seconds(gmsh, {first})
+        assert named == {big[1], big[3]}
+        assert A.alike_seconds(gmsh, set()) == set()
+    finally:
+        gmsh.finalize()
