@@ -639,13 +639,21 @@ def fill_each_volume(gmsh, vols) -> None:
     26 Oct). While a volume is filled the other surfaces' triangles are set aside, and after the last fill
     every one is put back - the same elements, tags and order - and the nodes and elements are numbered as
     gmsh numbers them after a fill. A part's boundary nodes are its own (parts meshed apart share none), so
-    each fill reads exactly what it read before: the same mesh, to the byte."""
+    each fill reads exactly what it read before: the same mesh, to the byte. And gmsh optimises every volume
+    that has tetrahedra again after every fill (the k-th fill re-optimised k volumes: about 2.4 h on ox_mc_lid);
+    a volume one pass left unchanged stays unchanged, so only the volumes still changing are optimised again."""
     everything = gmsh.model.getEntities()
     renumber = gmsh.option.getNumber("Mesh.Renumber")
+    optimize = gmsh.option.getNumber("Mesh.Optimize")
     aside = set_aside_surfaces(gmsh)
     present: set[int] = set()
+    # the volumes gmsh's optimiser still changes: after every fill gmsh optimises EVERY volume that has
+    # tetrahedra again; a volume a pass left unchanged stays unchanged by every later pass, so only these
+    # are optimised again - the same passes, the same mesh, without the passes that change nothing
+    changing: list[int] = []
     gmsh.option.setNumber("Mesh.MeshOnlyVisible", 1)
     gmsh.option.setNumber("Mesh.Renumber", 0)
+    gmsh.option.setNumber("Mesh.Optimize", 0)
     try:
         for v in vols:
             own = sorted({abs(int(t)) for _d, t in gmsh.model.getBoundary([(3, int(v))], oriented=False)})
@@ -661,6 +669,13 @@ def fill_each_volume(gmsh, vols) -> None:
                 # THE PART THAT FAILED, and where: its own surfaces whose meshes cross each other
                 where = crossing_surfaces(gmsh, set(own)) or own[:12]
                 raise RuntimeError(f"{exc} (volume {int(v)}; on surface {', surface '.join(str(t) for t in where)})") from exc
+            if optimize:
+                changing.append(int(v))
+                for w in sorted(changing):
+                    before = _volume_print(gmsh, w)
+                    gmsh.model.mesh.optimize("", dimTags=[(3, w)])
+                    if _volume_print(gmsh, w) == before:
+                        changing.remove(w)
             for s_ in own:
                 # as the fill left them (a fill turns its boundary triangles to face out of the volume)
                 types, tags, nodes = gmsh.model.mesh.getElements(2, int(s_))
@@ -674,11 +689,28 @@ def fill_each_volume(gmsh, vols) -> None:
         for s_ in sorted(aside):
             _put_back(gmsh, aside, s_)
         gmsh.option.setNumber("Mesh.Renumber", renumber)
+        gmsh.option.setNumber("Mesh.Optimize", optimize)
         if renumber:
             gmsh.model.mesh.renumberNodes()
             gmsh.model.mesh.renumberElements()
         gmsh.model.setVisibility(everything, 1)
         gmsh.option.setNumber("Mesh.MeshOnlyVisible", 0)
+
+
+def _volume_print(gmsh, volume: int) -> str:
+    """A volume's own nodes (tags, places) and tetrahedra (their nodes): what an optimiser pass can change."""
+    import hashlib
+
+    import numpy as np
+
+    h = hashlib.sha256()
+    tags, xyz, _p = gmsh.model.mesh.getNodes(3, int(volume), includeBoundary=False)
+    h.update(np.asarray(tags).tobytes())
+    h.update(np.asarray(xyz).tobytes())
+    _t, _e, nodes = gmsh.model.mesh.getElements(3, int(volume))
+    for nd in nodes:
+        h.update(np.asarray(nd).tobytes())
+    return h.hexdigest()
 
 
 #: MESH-7: the rule that fills each volume of parts meshed apart with only its own surface mesh in the model
