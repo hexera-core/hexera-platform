@@ -916,8 +916,13 @@ async def _last_rung(ws: Path, record: dict, diag_m: float, first_plan: dict, pa
         _clear_outputs(ws)
         note_native_pass(ws, n)
         note_native_payload(ws, [p for p in PAYLOAD if (ws / p).exists()])
-        process_gib, files_gib = memory_need(float((plan.get("estimate") or {}).get("elements") or 0))
-        machine = MM.choose(process_gib=process_gib, workspace_gib=files_gib, why="memory model")
+        # RUN-6: gmsh's model for the parts gmsh holds, fTetWild's own measured model for the parts it builds
+        elements = float((plan.get("estimate") or {}).get("elements") or 0)
+        process_gib, files_gib = memory_need(elements)
+        machine = TW.rung_machine(elements, process_gib, files_gib, margin=MEMORY_MARGIN)
+        _cite(job_id, [{"stage": "fea_machine", "decided": machine["where"], "value": machine["machine"],
+                        "rule": TW.MEMORY_RULE, "inputs": {"pass": n, **machine["ftetwild"]},
+                        "words": machine["words"]}])
         MM.write(ws, machine)
         work = planned_work(plan, ceiling_s=ceiling_for(run, machine))
         await run.fence("start native mesh")

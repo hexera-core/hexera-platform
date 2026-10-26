@@ -238,6 +238,8 @@ def size_fields(gmsh, plan: dict, surfaces: set[int], face_tags: dict[str, list[
     base = float(plan["base_size_m"])
     g1 = float(plan.get("growth") or 1.3) - 1.0
     ids = []
+    # what each field can be at its lowest, entity by entity (MESH-6, reach_restricted)
+    bounds: list[dict] = []
     for g in group_zones(plan.get("zones") or []):
         size = float(g["size"])
         if size >= base:
@@ -270,6 +272,10 @@ def size_fields(gmsh, plan: dict, surfaces: set[int], face_tags: dict[str, list[
             both = gmsh.model.mesh.field.add("Max")
             gmsh.model.mesh.field.setNumbers(both, "FieldsList", [th, near])
             ids.append(both)
+            bounds.append({"field": both, "dim": 2, "tags": tags, "size": size, "reach": reach,
+                           "dist_max": reach + (base - size) / max(g1, 1e-6),
+                           "balls": [[float(x), float(y), float(z), float(r)] for x, y, z, r in g["balls"]],
+                           "thickness": (base - size) / max(g1, 1e-6)})
             continue
         if g.get("part"):
             # PLAN-fea-17: the part's base through its whole volume (the estimate's ceiling inside it)
@@ -281,6 +287,7 @@ def size_fields(gmsh, plan: dict, surfaces: set[int], face_tags: dict[str, list[
                 gmsh.model.mesh.field.setNumbers(const, "VolumesList", vols)
                 gmsh.model.mesh.field.setNumber(const, "IncludeBoundary", 1)
                 ids.append(const)
+                bounds.append({"field": const, "constant": size, "volumes": vols})
         dists = []
         if g["edge"]:
             curves = sorted({c for a, b in (fs for fs in g["edges"] if len(fs) == 2)
@@ -291,7 +298,7 @@ def size_fields(gmsh, plan: dict, surfaces: set[int], face_tags: dict[str, list[
             dist = gmsh.model.mesh.field.add("Distance")
             gmsh.model.mesh.field.setNumbers(dist, "CurvesList", curves)
             gmsh.model.mesh.field.setNumber(dist, "Sampling", SAMPLING_MAX)
-            dists.append(dist)
+            dists.append((dist, 1, curves, SAMPLING_MAX))
         else:
             tags = [t for f in g["faces"] for t in tags_of(f)]
             if face_tags is not None:
@@ -302,9 +309,9 @@ def size_fields(gmsh, plan: dict, surfaces: set[int], face_tags: dict[str, list[
                 dist = gmsh.model.mesh.field.add("Distance")
                 gmsh.model.mesh.field.setNumbers(dist, "SurfacesList", part)
                 gmsh.model.mesh.field.setNumber(dist, "Sampling", n)
-                dists.append(dist)
+                dists.append((dist, 2, part, n))
         reach = float(g["reach"])
-        for dist in dists:
+        for dist, dim, src, n_s in dists:
             th = gmsh.model.mesh.field.add("Threshold")
             gmsh.model.mesh.field.setNumber(th, "InField", dist)
             gmsh.model.mesh.field.setNumber(th, "SizeMin", size)
@@ -312,13 +319,262 @@ def size_fields(gmsh, plan: dict, surfaces: set[int], face_tags: dict[str, list[
             gmsh.model.mesh.field.setNumber(th, "DistMin", reach)
             gmsh.model.mesh.field.setNumber(th, "DistMax", reach + (base - size) / max(g1, 1e-6))
             ids.append(th)
+            bounds.append({"field": th, "dim": dim, "tags": list(src), "size": size, "reach": reach,
+                           "dist_max": reach + (base - size) / max(g1, 1e-6), "sampling": int(n_s)})
     if not ids:
         return None
+    ids = reach_restricted(gmsh, ids, bounds, base)
     if len(ids) == 1:
         return ids[0]
     m = gmsh.model.mesh.field.add("Min")
     gmsh.model.mesh.field.setNumbers(m, "FieldsList", ids)
     return m
+
+
+#: MESH-6: an entity's box (and a field's source box) is widened by this share of its own diagonal plus
+#: this share of the model's before a distance is read off it: gmsh's boxes may come from a tessellation,
+#: and a curved face can bulge a little past it. Wider only keeps more fields; it never changes a size.
+BOX_PAD_OWN, BOX_PAD_MODEL = 0.05, 1e-4
+#: MESH-6: a field is left out on an entity only when its lowest possible value there passes the entity's
+#: ceiling by this share as well (rounding can then never make it the smallest)
+PRUNE_MARGIN = 1e-6
+#: MESH-6: a field's source (a face, a curve) bounds the field from above only when its area (length) is
+#: above this share of the model's diagonal squared (to the first): a degenerate one may hold no sample
+SAMPLED_MASS = 1e-12
+#: MESH-6: the rule that consults, on each CAD entity, only the size fields that can size it
+REACH_RULE = "MESH-6"
+
+
+def _boxes(gmsh, dim_tags: list[tuple[int, int]], pad_model: float):
+    """Each entity's padded box (N x 6: lo, hi): gmsh's box and OpenCASCADE's, joined, widened."""
+    import numpy as np
+
+    out = np.zeros((len(dim_tags), 6))
+    for k, (d, t) in enumerate(dim_tags):
+        b = np.asarray(gmsh.model.getBoundingBox(d, t), dtype=float)
+        try:
+            o = np.asarray(gmsh.model.occ.getBoundingBox(d, t), dtype=float)
+            b = np.concatenate([np.minimum(b[:3], o[:3]), np.maximum(b[3:], o[3:])])
+        except Exception:  # noqa: BLE001 - gmsh's own box, widened, stands
+            pass
+        out[k] = b
+    pad = BOX_PAD_OWN * np.linalg.norm(out[:, 3:] - out[:, :3], axis=1) + pad_model
+    out[:, :3] -= pad[:, None]
+    out[:, 3:] += pad[:, None]
+    return out
+
+
+def _box_gap(a, b):
+    """The least distance between each box of `a` (N x 6) and box `b` (6,): 0 where they meet."""
+    import numpy as np
+
+    d = np.maximum(0.0, np.maximum(a[:, :3] - b[3:], b[:3] - a[:, 3:]))
+    return np.sqrt((d * d).sum(axis=1))
+
+
+def _box_far(a, b):
+    """The greatest distance between a point of each box of `a` (N x 6) and a point of box `b` (6,)."""
+    import numpy as np
+
+    d = np.maximum(np.abs(a[:, 3:] - b[:3]), np.abs(b[3:] - a[:, :3]))
+    return np.sqrt((d * d).sum(axis=1))
+
+
+def _threshold_low(gap, size: float, base: float, dmin: float, dmax: float):
+    """gmsh's Threshold (linear, not stopped at DistMax) at distance `gap`: the lowest it can be anywhere at
+    least `gap` from its sources (it never falls as the distance grows)."""
+    import numpy as np
+
+    r = np.clip((gap - dmin) / max(dmax - dmin, 1e-300), 0.0, 1.0)
+    return size * (1.0 - r) + base * r
+
+
+def _ball_low(gap_to_centre, radius: float, thickness: float, v_in: float, v_out: float):
+    """gmsh's Ball field at distance `gap_to_centre` from its centre: the lowest it can be that far out."""
+    import numpy as np
+
+    dist = gap_to_centre - float(radius)
+    ramp = v_in + np.clip(dist, 0.0, None) / max(float(thickness), 1e-300) * (v_out - v_in)
+    return np.where(dist < 0.0, v_in, np.where(dist <= thickness, ramp, v_out))
+
+
+#: MESH-6: the surface kinds whose sampling by a gmsh Distance field is known to cover them to within
+#: own_cover (their parameters are a length, or an angle times a radius no larger than the face's box)
+COVERED_KINDS = ("Plane", "Cylinder", "Cone", "Sphere", "Torus")
+#: MESH-6: own_cover's shares - of the face's sample spacing, and of its box diagonal (gmsh tessellates at
+#: 0.3 rad angular deflection: its chord error is under 0.04 of a chord)
+COVER_SPACINGS, COVER_CHORD_SHARE = 6.0, 0.05
+
+
+def own_cover(gmsh, surface: int, box, sampling: int) -> float | None:
+    """How far a point of `surface` can be from the nearest point a gmsh Distance field (Sampling `sampling`)
+    sampled on it; None where that is not known (a free-form face). gmsh samples a face on its tessellation,
+    each triangle cut into steps under twice the spacing (the face's box diagonal / Sampling), and the
+    tessellation is within its chord error of the face; with no tessellation it samples a Sampling x Sampling
+    grid of the face's parameters, whose cells, for these kinds, are under 3.5 diagonals / (Sampling - 1)."""
+    import numpy as np
+
+    try:
+        kind = str(gmsh.model.getType(2, int(surface)))
+    except Exception:  # noqa: BLE001 - unknown: no cover read
+        return None
+    if kind not in COVERED_KINDS or sampling < 3:
+        return None
+    diag = float(np.linalg.norm(np.asarray(box[3:]) - np.asarray(box[:3])))
+    return COVER_SPACINGS * diag / float(sampling) + COVER_CHORD_SHARE * diag
+
+
+def _closure_of(gmsh, surface: int) -> list[tuple[int, int]]:
+    """The curves and points bounding `surface` (they lie on it)."""
+    curves = [(1, abs(int(t))) for _d, t in gmsh.model.getBoundary([(2, int(surface))], oriented=False)]
+    points = ([(0, abs(int(t))) for _d, t in gmsh.model.getBoundary(curves, combined=False, oriented=False)]
+              if curves else [])
+    return curves + points
+
+
+def reach_restricted(gmsh, ids: list[int], bounds: list[dict], base: float, report: dict | None = None) -> list[int]:
+    """MESH-6: EACH CAD ENTITY CONSULTS ONLY THE SIZE FIELDS THAT CAN SIZE IT. gmsh evaluates the background
+    field at every point it places, and the smallest-of field evaluates EVERY field there - each Distance
+    field a nearest-point search. ox_mc_lid (253 parts, 545 zone groups -> 2,291 fields, 753 Distance fields
+    over 22.9M sample points) took 2.0 s a curve, about 10 h for its 18,229 curves before a single surface
+    (lab, 26 Oct); the surface and volume stages evaluate the field many times more.
+
+    The size at a point is the smallest field there, never more than the entity's CEILING: the base size
+    (Mesh.MeshSizeMax), or a part's own base where that part's Constant field holds (its volumes and what
+    bounds them). A field's LOWEST value over an entity is read from boxes alone: a Threshold is at least
+    its value at the least distance between the entity's box and its sources' boxes, and a thin spot's Max
+    at least the larger of that and its balls'. Where that lowest value is above the ceiling, the field can
+    never be the smallest on that entity, so it is wrapped in a Restrict field that skips it there. Every
+    size gmsh reads is the same number as before, to the bit: the same mesh, sooner. Returns the fields
+    for the Min, each wrapped where it can be skipped somewhere."""
+    import numpy as np
+
+    by_field = {int(b["field"]): b for b in bounds}
+    if len(ids) < 2 or not any(b.get("tags") for b in bounds):
+        return ids
+    dim_tags = [(d, int(t)) for d in (0, 1, 2, 3) for _d, t in gmsh.model.getEntities(d)]
+    if not dim_tags:
+        return ids
+    x0, y0, z0, x1, y1, z1 = gmsh.model.getBoundingBox(-1, -1)
+    pad_model = BOX_PAD_MODEL * (math.dist((x0, y0, z0), (x1, y1, z1)) or 1.0)
+    box = _boxes(gmsh, dim_tags, pad_model)
+    row = {dt: k for k, dt in enumerate(dim_tags)}
+    # THE CEILING on each entity: the base, or the smallest Constant (a part's own base) holding there - on
+    # its volumes and everything bounding them, as gmsh's IncludeBoundary reads them
+    ceiling = np.full(len(dim_tags), float(base))
+    for cb in bounds:
+        if cb.get("constant") is None:
+            continue
+        closure: set[tuple[int, int]] = set()
+        for v in cb["volumes"]:
+            closure.add((3, int(v)))
+            faces = [(2, abs(int(t))) for _d, t in gmsh.model.getBoundary([(3, int(v))], oriented=False)]
+            curves = ([(1, abs(int(t))) for _d, t in gmsh.model.getBoundary(faces, combined=False, oriented=False)]
+                      if faces else [])
+            points = ([(0, abs(int(t))) for _d, t in gmsh.model.getBoundary(curves, combined=False, oriented=False)]
+                      if curves else [])
+            closure.update(faces + curves + points)
+        rows = [row[dt] for dt in closure if dt in row]
+        ceiling[rows] = np.minimum(ceiling[rows], float(cb["constant"]))
+    # each field's LOWEST value over each entity, and its HIGHEST: each of a field's sources holds a sample
+    # point, so nowhere on the entity is the field above its value at the farthest that point can be - and
+    # the smallest of those highs lowers the ceiling too
+    source_box: dict[tuple[int, int], np.ndarray] = {}
+    sized: dict[tuple[int, int], bool] = {}
+    model_diag = pad_model / BOX_PAD_MODEL
+    lows: dict[int, np.ndarray] = {}
+    # each face's own Threshold laws, with how near their sample points are to every point of it
+    face_laws: dict[int, list[tuple[tuple[float, float, float, float], float]]] = {}
+    for fid in ids:
+        b = by_field.get(int(fid))
+        if b is None or not b.get("tags"):
+            continue
+        dim = int(b["dim"])
+        want = list(dict.fromkeys((dim, int(t)) for t in b["tags"] if (dim, int(t)) not in source_box))
+        if want:
+            for dt, bx in zip(want, _boxes(gmsh, want, pad_model), strict=True):
+                source_box[dt] = bx
+                try:
+                    sized[dt] = float(gmsh.model.occ.getMass(*dt)) > SAMPLED_MASS * model_diag ** dt[0]
+                except Exception:  # noqa: BLE001 - not known to hold a sample point: no high read off it
+                    sized[dt] = False
+        gap = np.full(len(dim_tags), np.inf)
+        far = np.full(len(dim_tags), np.inf)
+        for t in dict.fromkeys(int(t) for t in b["tags"]):
+            gap = np.minimum(gap, _box_gap(box, source_box[(dim, t)]))
+            if sized[(dim, t)]:
+                # a degenerate face may hold no sample point, so no high is read off it
+                far = np.minimum(far, _box_far(box, source_box[(dim, t)]))
+        law = (float(b["size"]), float(base), float(b["reach"]), float(b["dist_max"]))
+        low, high = _threshold_low(gap, *law), _threshold_low(far, *law)
+        if b.get("balls"):
+            near_lo = np.full(len(dim_tags), np.inf)
+            near_hi = np.full(len(dim_tags), np.inf)
+            for x, y, z, r in b["balls"]:
+                c = np.asarray([x, y, z, x, y, z], dtype=float)
+                ball = (float(r), float(b["thickness"]), float(b["size"]), float(base))
+                near_lo = np.minimum(near_lo, _ball_low(_box_gap(box, c), *ball))
+                near_hi = np.minimum(near_hi, _ball_low(_box_far(box, c), *ball))
+            low, high = np.maximum(low, near_lo), np.maximum(high, near_hi)
+        if dim == 2 and not b.get("balls") and b.get("sampling"):
+            # ON ITS OWN FACE a Threshold is near its smallest: no point of the face (or of the curves and
+            # points bounding it) is further than own_cover from a point the field sampled on it
+            own = np.full(len(dim_tags), np.inf)
+            for t in dict.fromkeys(int(t) for t in b["tags"]):
+                cover = own_cover(gmsh, t, source_box[(2, t)], int(b["sampling"]))
+                if cover is None:
+                    continue
+                rows = [row[(2, t)]] + [row[dt] for dt in _closure_of(gmsh, t) if dt in row]
+                own[rows] = np.minimum(own[rows], cover)
+                face_laws.setdefault(t, []).append((law, cover))
+            high = np.minimum(high, _threshold_low(own, *law))
+        lows[int(fid)] = low
+        ceiling = np.minimum(ceiling, high)
+    # INSIDE A SOLID every point is within half its box's thinnest side of a boundary face (along that side
+    # it leaves the box, and so the solid, within that): where every boundary face has a law of its own, the
+    # size inside is no more than the largest of those laws that far from the face
+    for k, (d, v) in enumerate(dim_tags):
+        if d != 3:
+            continue
+        half = 0.5 * float(np.min(box[k, 3:] - box[k, :3]))
+        bounding = [abs(int(t)) for _d, t in gmsh.model.getBoundary([(3, int(v))], oriented=False)]
+        if not bounding or any(f not in face_laws for f in bounding):
+            continue
+        worst = max(min(float(_threshold_low(np.array([half + c]), *lw)[0]) for lw, c in face_laws[f]) for f in bounding)
+        ceiling[k] = min(ceiling[k], worst)
+    out: list[int] = []
+    wrapped = skipped = 0
+    for fid in ids:
+        low = lows.get(int(fid))
+        if low is None or int(by_field[int(fid)]["dim"]) == 1:
+            # A FIELD OFF CURVES IS NEVER SKIPPED: gmsh samples a curve's Distance field from the curve's mesh
+            # nodes when it has some, at the field's first use - skipped there, a field would first be used
+            # after its curves were meshed, and sample other points (its highest still lowers the ceiling)
+            out.append(fid)
+            continue
+        keep = low < ceiling * (1.0 + PRUNE_MARGIN)
+        if report is not None:
+            report.setdefault("keep", {})[int(fid)] = keep
+            report["dim_tags"], report["ceiling"] = dim_tags, ceiling
+        if keep.all():
+            out.append(fid)
+            continue
+        lists: dict[int, list[int]] = {0: [], 1: [], 2: [], 3: []}
+        for k in np.flatnonzero(keep).tolist():
+            d, t = dim_tags[k]
+            lists[d].append(t)
+        rf = gmsh.model.mesh.field.add("Restrict")
+        gmsh.model.mesh.field.setNumber(rf, "InField", int(fid))
+        for d, key in ((0, "PointsList"), (1, "CurvesList"), (2, "SurfacesList"), (3, "VolumesList")):
+            if lists[d]:
+                gmsh.model.mesh.field.setNumbers(rf, key, lists[d])
+        gmsh.model.mesh.field.setNumber(rf, "IncludeBoundary", 0)
+        out.append(rf)
+        wrapped += 1
+        skipped += int((~keep).sum())
+    print(f"[GMSH-FEA] size fields consulted only where they can size ({REACH_RULE}): {wrapped} of {len(ids)} "
+          f"restricted, {skipped:,} of {len(dim_tags) * len(ids):,} field-entity pairs skipped", file=sys.stderr)
+    return out
 
 
 def _empty_surfaces(gmsh, surfaces: set[int]) -> list[int]:
@@ -344,33 +600,105 @@ def surface_mesh(gmsh, surfaces: set[int], remesh: set[int]) -> list[int]:
               file=sys.stderr)
         for s in again:
             gmsh.model.mesh.setAlgorithm(2, s, MESH_ADAPT)
-        gmsh.model.mesh.clear()
-        gmsh.model.mesh.generate(2)
+        remesh_only(gmsh, again)
         empty = _empty_surfaces(gmsh, surfaces)
     return empty
+
+
+def remesh_only(gmsh, surfaces) -> None:
+    """THOSE SURFACES MESHED AGAIN, AND NOTHING ELSE: every other curve and surface keeps the mesh it has. The
+    same mesh, to the byte, as clearing the whole model and meshing it all again (gmsh meshes each surface
+    from its own curves, and numbers the nodes and elements afresh after each stage) - without meshing it all
+    again: ox_mc_lid's four empty faces cost a second 1D and 2D of all 7,312 faces, 80 minutes (lab, 26 Oct).
+    What was visible, and whether only that is meshed, is left as it was."""
+    everything = gmsh.model.getEntities()
+    seen = [e for e in everything if gmsh.model.getVisibility(*e)]
+    only = gmsh.option.getNumber("Mesh.MeshOnlyVisible")
+    gmsh.model.mesh.clear([(2, int(s)) for s in surfaces])
+    gmsh.model.setVisibility(everything, 0)
+    gmsh.model.setVisibility([(2, int(s)) for s in surfaces], 1, recursive=True)
+    gmsh.option.setNumber("Mesh.MeshOnlyVisible", 1)
+    try:
+        gmsh.model.mesh.generate(2)
+    finally:
+        gmsh.model.setVisibility(everything, 0)
+        gmsh.model.setVisibility(seen, 1)
+        gmsh.option.setNumber("Mesh.MeshOnlyVisible", only)
 
 
 def fill_each_volume(gmsh, vols) -> None:
     """PARTS MESHED APART ARE FILLED APART (tie, contact): each volume on its own, from its own surface
     mesh - parts that pass into each other in space (an interference) then never make one boundary that
     crosses itself (fc_folding_chair, 24 Oct: "PLC Error: Two facets intersect" on the four overlapping
-    slat pairs when all were filled at once). The same algorithm, the same surface meshes."""
+    slat pairs when all were filled at once). The same algorithm, the same surface meshes.
+
+    MESH-7: EACH FILL SEES ONLY ITS OWN SURFACE MESH. gmsh's Delaunay reads the surface mesh of the WHOLE
+    model for every volume it fills (each boundary node's size from every face's triangles, and a search
+    structure of every face's triangles to classify the tetrahedra): on ox_mc_lid's 253 tied parts, 4.9M
+    surface elements, that was about 30 s a volume before a single tetrahedron - two hours of a fill (lab,
+    26 Oct). While a volume is filled the other surfaces' triangles are set aside, and after the last fill
+    every one is put back - the same elements, tags and order - and the nodes and elements are numbered as
+    gmsh numbers them after a fill. A part's boundary nodes are its own (parts meshed apart share none), so
+    each fill reads exactly what it read before: the same mesh, to the byte."""
     everything = gmsh.model.getEntities()
+    renumber = gmsh.option.getNumber("Mesh.Renumber")
+    aside = set_aside_surfaces(gmsh)
+    present: set[int] = set()
     gmsh.option.setNumber("Mesh.MeshOnlyVisible", 1)
+    gmsh.option.setNumber("Mesh.Renumber", 0)
     try:
         for v in vols:
+            own = sorted({abs(int(t)) for _d, t in gmsh.model.getBoundary([(3, int(v))], oriented=False)})
+            for s_ in own:
+                if s_ not in present:
+                    _put_back(gmsh, aside, s_)
+                    present.add(s_)
             gmsh.model.setVisibility(everything, 0)
             gmsh.model.setVisibility([(3, int(v))], 1, recursive=True)
             try:
                 gmsh.model.mesh.generate(3)
             except Exception as exc:
                 # THE PART THAT FAILED, and where: its own surfaces whose meshes cross each other
-                own = {abs(int(t)) for _d, t in gmsh.model.getBoundary([(3, int(v))], oriented=False)}
-                where = crossing_surfaces(gmsh, own) or sorted(own)[:12]
+                where = crossing_surfaces(gmsh, set(own)) or own[:12]
                 raise RuntimeError(f"{exc} (volume {int(v)}; on surface {', surface '.join(str(t) for t in where)})") from exc
+            for s_ in own:
+                # as the fill left them (a fill turns its boundary triangles to face out of the volume)
+                types, tags, nodes = gmsh.model.mesh.getElements(2, int(s_))
+                aside[int(s_)] = [(int(et), tg, nd) for et, tg, nd in zip(types, tags, nodes, strict=True)]
+                gmsh.model.mesh.removeElements(2, int(s_))
+                present.discard(s_)
     finally:
+        # every surface's triangles back, as they were; then numbered as a fill numbers them
+        for s_ in sorted(present):
+            gmsh.model.mesh.removeElements(2, int(s_))
+        for s_ in sorted(aside):
+            _put_back(gmsh, aside, s_)
+        gmsh.option.setNumber("Mesh.Renumber", renumber)
+        if renumber:
+            gmsh.model.mesh.renumberNodes()
+            gmsh.model.mesh.renumberElements()
         gmsh.model.setVisibility(everything, 1)
         gmsh.option.setNumber("Mesh.MeshOnlyVisible", 0)
+
+
+#: MESH-7: the rule that fills each volume of parts meshed apart with only its own surface mesh in the model
+FILL_ALONE_RULE = "MESH-7"
+
+
+def set_aside_surfaces(gmsh) -> dict[int, list[tuple[int, object, object]]]:
+    """Every surface's elements (type, tags, nodes - in gmsh's order), taken out of the model (MESH-7)."""
+    aside: dict[int, list[tuple[int, object, object]]] = {}
+    for _d, s_ in gmsh.model.getEntities(2):
+        types, tags, nodes = gmsh.model.mesh.getElements(2, int(s_))
+        if sum(len(t) for t in tags):
+            aside[int(s_)] = [(int(et), tg, nd) for et, tg, nd in zip(types, tags, nodes, strict=True)]
+            gmsh.model.mesh.removeElements(2, int(s_))
+    return aside
+
+
+def _put_back(gmsh, aside: dict, surface: int) -> None:
+    for et, tags, nodes in aside.get(int(surface)) or []:
+        gmsh.model.mesh.addElementsByType(int(surface), int(et), tags, nodes)
 
 
 def crossing_surfaces(gmsh, surfaces: set[int], *, limit: int = 12) -> list[int]:
@@ -731,12 +1059,28 @@ def micro_curves_one_segment(gmsh) -> list[int]:
     the model's diagonal) meshed as ONE segment. gmsh gives a curved edge at least two, and on a curve a
     few nanometres long the node between them lies on the chord: the face beside it gets a flat triangle
     folded onto its neighbour's ("overlapping facets", dihedral 1.8e-5 degrees - libredrive_pulley_housing's
-    24 nm edges where a half-hole grazes the bore). Returns the curves."""
+    24 nm edges where a half-hole grazes the bore). THE PART'S diagonal: in an assembly, the smallest solid
+    the curve bounds - the whole model's would make every curve under a millimetre one segment in a 945 mm
+    assembly (ox_mc_lid: 7,533 curves, on screws planned at 0.05 mm), against the plan. A single solid's is
+    the model's, as before. Returns the curves."""
     from meshpipeline.cad.fea_measure import MICRO_FRACTION
 
-    x0, y0, z0, x1, y1, z1 = gmsh.model.getBoundingBox(-1, -1)
-    limit = MICRO_FRACTION * math.dist((x0, y0, z0), (x1, y1, z1))
-    short = [int(c) for _d, c in gmsh.model.getEntities(1) if float(gmsh.model.occ.getMass(1, c)) < limit]
+    def diag(dim: int, tag: int) -> float:
+        x0, y0, z0, x1, y1, z1 = gmsh.model.getBoundingBox(dim, tag)
+        return math.dist((x0, y0, z0), (x1, y1, z1))
+
+    whole = diag(-1, -1)
+    solids = {int(v): diag(3, int(v)) for _d, v in gmsh.model.getEntities(3)}
+    single = len(solids) <= 1
+
+    def limit(c: int) -> float:
+        if single:
+            return MICRO_FRACTION * whole
+        sizes = [solids[int(v)] for s in gmsh.model.getAdjacencies(1, c)[0]
+                 for v in gmsh.model.getAdjacencies(2, int(s))[0] if int(v) in solids]
+        return MICRO_FRACTION * (min(sizes) if sizes else whole)
+
+    short = [int(c) for _d, c in gmsh.model.getEntities(1) if float(gmsh.model.occ.getMass(1, c)) < limit(int(c))]
     for c in short:
         gmsh.model.mesh.setTransfiniteCurve(c, 2)
     return short
