@@ -574,3 +574,55 @@ def test_the_builder_ends_the_attempt_and_the_ladder_moves_on(monkeypatch, tmp_p
     state = {"engine": "vmtk", "executor_success": False, "executor_failed_gate": "finalize",
              "executor_failure_cause": ref.cause, "executor_failure_facts": dict(ref.facts)}
     assert classify(state).kind == ENGINE
+
+
+def test_moving_on_the_first_re_tangle_is_enough():
+    """With a next engine to go to, the brake fires at the second "try last" (the first re-tangle);
+    staying on VMTK for its layer-free fill it allows one more round."""
+    import os
+    import tempfile
+
+    from meshpipeline.engines.vmtk import vmtk_runner as V
+
+    def _fires(limit: int, final_warps: int) -> bool:
+        fd, path = tempfile.mkstemp()
+        os.write(fd, b"untangle procedure.. \n" + b"try last : " * final_warps)
+        os.close(fd)
+        b = V.UntangleBrake(limit)
+        b.follow(path)
+        try:
+            return b() is not None
+        finally:
+            os.unlink(path)
+
+    assert not _fires(V.UNTANGLE_RETANGLES_MOVING_ON, 1)       # one final warp: a layer that settles
+    assert _fires(V.UNTANGLE_RETANGLES_MOVING_ON, 2)           # the first re-tangle: move on now
+    assert not _fires(V.UNTANGLE_RETANGLES, 2)                 # staying: one more round
+    assert _fires(V.UNTANGLE_RETANGLES, 3)
+
+
+def test_the_layered_step_moving_on_runs_with_the_early_brake(tmp_path, monkeypatch):
+    import json
+
+    from meshpipeline.engines.vmtk import vmtk_runner as V
+    seen = []
+
+    def fake_pype(ws, argv, *, timeout, retangles=V.UNTANGLE_RETANGLES):
+        seen.append((argv[1] if len(argv) > 1 else "", retangles))
+        if "vmtksurfaceremeshing" in argv:
+            (tmp_path / "lumen.vtp").write_text("remeshed")
+        else:
+            (tmp_path / "mesh.vtu").write_text("filled")
+        return {"rc": 0, "timed_out": False, "log_tail": "Done executing vmtkmeshgenerator."}
+
+    monkeypatch.setattr(V, "_run_pype", fake_pype)
+    monkeypatch.setattr(V, "_folded_share", lambda ws: 0.0)
+    for move_on, want in (("snappy", V.UNTANGLE_RETANGLES_MOVING_ON), ("", V.UNTANGLE_RETANGLES)):
+        spec = V.resolve_strategy({"sizing_array": "LocalRadius", "boundary_layers": 4})
+        if move_on:
+            spec[V.LAYERS_MOVE_ON] = move_on
+        (tmp_path / "vmtk_spec.json").write_text(json.dumps(spec))
+        (tmp_path / "lumen_open.vtp").write_text("staged")
+        seen.clear()
+        V._run_vmtk_local(tmp_path, timeout=NT.CLOUD_RUN_WALL_S)
+        assert ("vmtkmeshgenerator", want) in seen

@@ -955,7 +955,8 @@ def _run_vmtk_local(workspace, *, timeout: int, **_ignored) -> dict:
         # Fluent aorta (322k wall triangles, 4 sublayers) both were cut and the run moved to snappy.
         # Now only a step that is STUCK (no sign of life for the stall window) gives way, or the
         # machine's wall, which sends the whole run to a VM (RUN-5).
-        result = _run_pype(ws, argv, timeout=left())
+        result = _run_pype(ws, argv, timeout=left(),
+                           retangles=UNTANGLE_RETANGLES_MOVING_ON if move_on else UNTANGLE_RETANGLES)
         nxt: int | None = i + 1 if i + 1 < len(ladder) else None
         if result.get("out_of_memory"):
             notes.append(f"[vmtk] attempt {i + 1} ({_step_label(strat)}): stopped before the machine "
@@ -1163,6 +1164,12 @@ def _write_gmsh_volume(grid, names: dict[int, str], path: Path) -> dict:
 #: this many times, and the ladder moves on to the layer-free fill - deterministic, the mesher's own
 #: count, no clock. A layer that converges prints one "try last".
 UNTANGLE_RETANGLES = 1
+#: ...and when the run MOVES ON (the plan asks for layers and another engine is left, LAYERS_MOVE_ON)
+#: the first re-tangle is enough: nothing waits for VMTK to recover. Safe by the record: of 706 VMTK
+#: passes whose log shows the layer stage, none even entered the untangle rounds - a layer that
+#: settles never prints "try last" twice (lab and e2e results, 26 Oct). Each round on the aorta is
+#: about 18 minutes (11 rounds in 3.4 hours), so this stops it one round sooner.
+UNTANGLE_RETANGLES_MOVING_ON = 0
 _UNTANGLE_FINAL_WARP = "try last"
 
 
@@ -1194,11 +1201,11 @@ class UntangleBrake:
                 f"{retangled} times")
 
 
-def _run_pype(ws: Path, argv: list[str], *, timeout: int) -> dict:
+def _run_pype(ws: Path, argv: list[str], *, timeout: int, retangles: int = UNTANGLE_RETANGLES) -> dict:
     """One pype, WATCHED (contracts/native_time): stopped only after STALL_WINDOW_S with no sign of
     life - no output, no CPU, no memory change - (`stalled`), at `timeout`, the machine's wall, or by
     the untangle brake (`untangle_stopped`: a layer that is not untangling, UntangleBrake)."""
-    brake = UntangleBrake()
+    brake = UntangleBrake(retangles)
     try:
         proc = run_guarded(argv, cwd=str(ws), capture_output=True, text=True, timeout=timeout,
                            stall_s=STALL_WINDOW_S, watch=brake)
