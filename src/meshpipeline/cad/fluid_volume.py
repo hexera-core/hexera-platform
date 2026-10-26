@@ -1104,6 +1104,58 @@ def surface_volume(T) -> float:
     return float(np.einsum("ij,ij->i", A[:, 0], np.cross(A[:, 1], A[:, 2])).sum() / 6.0)
 
 
+def narrowest_passage_m(x: Extraction, stl_path) -> float:
+    """The narrowest coolant passage in the part, in metres (0.0 when it cannot be read).
+
+    THE CORPUS DECLARES THIS AND A CUSTOMER WILL NOT. devtools/semiconductor/parts.py says of it
+    "DECLARED, not measured: it cannot be read off a triangle soup, and it is what the cell size
+    is derived from", and the cell size is what the whole mesh follows from. It is measurable now,
+    because the coolant is extracted as real faces and written as a closed surface.
+
+    TWO READINGS, AND THE SMALLER WINS, because each is blind where the other sees and both err
+    LARGE - and large is the unsafe direction, since it makes every cell coarser than intended.
+
+      the port mouths     exact for a prismatic channel, straight off the B-rep. Blind to a
+                          channel that narrows INSIDE the part (the hotspot array's mouths are
+                          120 um and its channels pinch to 60) and optimistic where a channel
+                          meets the end face at a slant (the wavy array's mouths read 294.71 um
+                          for a 250 um channel, which is 250/cos 32 degrees).
+      the radius field    engines/passage reads the staged wall's inscribed radius, which sees a
+                          pinch anywhere along the channel. Blind below its own sampling spacing,
+                          a fraction of the part's diagonal: on the wavy plate that works out at
+                          250 um - the channel width itself - so every statistic read 354 um,
+                          which is the diagonal of the sampling cell rather than the channel.
+
+    Measured against what the corpus declares, taking the smaller: unit_cell, the two-level
+    manifold, the hotspot array and the embedded-silicon array all exact; murray_ported -0.9%;
+    the wavy array +17.9%, which is the slant and which both readings share. So the declaration
+    becomes the scorecard rather than an input, with one curved part read 18% coarse.
+    """
+    from pathlib import Path
+
+    mouths = [min(p.wh) for passage in x.passages for p in passage.ports if min(p.wh) > 0.0]
+    best = min(mouths) if mouths else 0.0
+    try:
+        from meshpipeline.engines.passage import passage_of_stls
+        seed = x.passages[0].seed if x.passages else None
+        ports = [tuple(p.centroid) for passage in x.passages for p in passage.main_ports]
+        stats = passage_of_stls([Path(stl_path)], interior_point=seed, port_centroids=ports)
+        across = 2.0 * float(stats.get("min") or 0.0)
+    except Exception as exc:                 # noqa: BLE001 - the mouths still stand on their own
+        # AT WARNING, NOT INFO. The field reads through pyvista and scipy and can genuinely fail
+        # on odd geometry, which is why this is caught at all - but the first thing it caught was
+        # a NameError in this very function, and at info level that sat silently behind a reading
+        # that was 100% too coarse on the hotspot array. A fallback that hides a bug is worse than
+        # no fallback.
+        logger.warning("fluid volume: the radius field did not read (%s: %s); the narrowest "
+                       "passage is the mouths' own, which cannot see a channel that pinches "
+                       "inside the part", type(exc).__name__, str(exc)[:160])
+        across = 0.0
+    if across > 0.0:
+        best = min(best, across) if best > 0.0 else across
+    return float(best)
+
+
 def write_surface(x: Extraction, out_path, *, angular_deflection: float = 0.2,
                   linear_deflection: float | None = None) -> dict | None:
     """The coolant's whole boundary as ONE closed binary STL, in metres, with no patch names.
@@ -1210,6 +1262,11 @@ def write_surface(x: Extraction, out_path, *, angular_deflection: float = 0.2,
         "volume_m3": round(found, 15), "surface_volume_m3": round(signed, 15),
         "volume_mm3": round(found * 1e9, 6), "surface_volume_mm3": round(signed * 1e9, 6),
         "seed_m": None if x.passages[0].seed is None else [round(v, 9) for v in x.passages[0].seed],
+        # THE THREE NUMBERS A REAL UPLOAD WILL NOT DECLARE, all measured: the volume and the
+        # passage count above, and the narrowest passage here. conjugate.build takes exactly these
+        # as expect_fluid_volume_m3, expect_fluid_pieces and narrowest_m, and the cell size follows
+        # from the last of them.
+        "narrowest_m": round(narrowest_passage_m(x, out_path), 12),
         "open_rims": open_rims,
     }
 
@@ -1613,7 +1670,7 @@ def main(argv: list[str]) -> int:
 
 
 __all__ = ["CHECK_BUDGET_S", "MAX_CAP_FLOOR_M", "MAX_FACES", "MAX_TRIANGLES", "STAGE_BUDGET_S", "Extraction", "ExtractionError",
-           "Passage", "Port", "candidate_caps", "closed_pieces", "part_pieces", "extract", "from_triangles", "match_declared", "parts_of", "surface_bounded", "surface_volume", "write_surface",
+           "Passage", "Port", "candidate_caps", "closed_pieces", "part_pieces", "extract", "from_triangles", "match_declared", "parts_of", "narrowest_passage_m", "surface_bounded", "surface_volume", "write_surface",
            "run_bounded", "stage", "stage_bounded", "touching_parts"]
 
 
