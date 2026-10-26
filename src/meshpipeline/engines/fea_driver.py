@@ -796,12 +796,20 @@ def ladder_words(passes: list[dict], levers: list[dict]) -> str:
         named = sorted({int(t) for p in passes for t in p.get("bad_surfaces") or []})
         return (f"no pass of the FEA plan built a mesh - the fill could not start ({len(passes)} pass(es); levers "
                 f"{tried}; surfaces it named {named or 'none'}). The plan is deterministic: another attempt "
-                "fails the same way.")
+                "fails the same way." + _rung_said(passes))
     readings = [float(p["min_sicn"]) for p in passes if p.get("min_sicn") is not None]
     worst = min(readings) if readings else None
     return (f"no pass of the FEA plan built a valid mesh - a degenerate or inverted element ({len(passes)} "
             f"pass(es); levers {tried}; best worst element {worst}). The plan is deterministic: another attempt "
-            "builds the same mesh.")
+            "builds the same mesh." + _rung_said(passes))
+
+
+def _rung_said(passes: list[dict]) -> str:
+    """LAD-fea-9 in the exhausted ladder's line: what the last rung (fTetWild) said when it failed too."""
+    rung = [p for p in passes if p.get("engine") == "ftetwild"]
+    if not rung:
+        return ""
+    return f" fTetWild (the last rung) built no valid mesh either: {rung[-1].get('rung_error') or 'no mesh'}."
 
 
 def _read_quality(ws: Path) -> dict:
@@ -838,6 +846,112 @@ def _read_failure(ws: Path) -> dict:
 def _clear_outputs(ws: Path) -> None:
     for name in ("mesh.inp", "mesh.bdf", "mesh.cdb", "mesh.msh", "quality.json", "fea_failure.json"):
         (ws / name).unlink(missing_ok=True)
+
+
+async def _native(ws: Path, machine: dict, work: dict, job_id: str, n: int, run) -> tuple[dict, dict, dict]:
+    """One native pass on `machine`: RUN-3 (out of memory: one machine up) and RUN-5 (still working at
+    the Cloud Run wall: a VM) as every pass. Returns (the result, the machine it ran on, its work)."""
+    from meshpipeline.contracts import mesh_machine as MM
+    from meshpipeline.engines.runtime import get_engine
+
+    while True:
+        result = await asyncio.to_thread(get_engine(ENGINE).run_cartesian_mesh, ws, timeout=work["ceiling_s"])
+        if _out_of_memory(result):
+            moved, rule, decided = MM.step_up(machine, measured_gib=_peak_gib(result)), "RUN-3", "step up"
+        elif result.get("timed_out") and not result.get("stalled"):
+            moved, rule, decided = MM.off_the_wall(machine), "RUN-5", "off the wall"
+        else:
+            return result, machine, work
+        if moved is None:
+            return result, machine, work
+        machine = moved
+        MM.write(ws, machine)
+        work = {**work, "ceiling_s": int(ceiling_for(run, machine))}
+        _cite(job_id, [{"stage": "fea_machine", "decided": decided, "value": machine["machine"], "rule": rule,
+                        "inputs": {"pass": n, "from": machine.get("stepped_from"), "need_gib": machine["need_gib"]},
+                        "words": machine["words"]}])
+        _clear_outputs(ws)
+
+
+def _rung_error(result: dict) -> str:
+    """What the rung's pass said when it failed: the adapter's own fTetWild line, else the log's last line."""
+    tail = [ln.strip() for ln in str(result.get("log_tail") or "").splitlines() if ln.strip()]
+    said = [ln for ln in tail if "fTetWild could not" in ln or "fTetWild is not installed" in ln] or tail
+    return (said[-1] if said else f"exit {result.get('rc')}")[:400]
+
+
+async def _last_rung(ws: Path, record: dict, diag_m: float, first_plan: dict, passes: list[dict], *,
+                     job_id: str, run) -> tuple[dict, list[dict]]:
+    """LAD-fea-9: at most fea_tetwild.MAX_RUNG_PASSES passes - an assembly's parts the failed passes
+    named first, then every part - each on the plan the last round of gmsh passes started from (the other
+    parts meshed as that pass meshed them), plus fTetWild's settings (engines/fea_tetwild.params).
+    Returns (the record, the rung's passes)."""
+    import copy
+
+    from meshpipeline.contracts import mesh_machine as MM
+    from meshpipeline.contracts.mesh_execution import note_native_pass, note_native_payload
+    from meshpipeline.engines import fea_tetwild as TW
+
+    if (record.get("assembly_plan") or {}).get("mode") == "bonded":
+        # the rung meshes a part on its own: a fused assembly is staged apart and tied first (PLAN-fea-17)
+        record = await asyncio.to_thread(restage_tied, ws, record)
+    gm = [p for p in passes if p.get("engine") != TW.ENGINE]
+    ran: list[dict] = []
+    for rung in range(1, TW.MAX_RUNG_PASSES + 1):
+        parts = TW.rung_parts(record, gm, rung)
+        n = len(passes) + len(ran) + 1
+        plan = copy.deepcopy(first_plan)
+        if record.get("assembly_plan"):
+            plan["assembly"] = dict(record["assembly_plan"])          # as staged now (PLAN-fea-17)
+        settings = TW.params(plan, record, diag_m, parts)
+        plan["mesh"] = {**(plan.get("mesh") or {}), "engine": TW.ENGINE, "ftetwild": settings}
+        said = L.rung_words(parts, rung)
+        plan["words"] = [*(plan.get("words") or []), said]
+        _cite(job_id, [{"stage": "fea_ladder", "decided": "last rung", "value": TW.ENGINE, "rule": "LAD-fea-9",
+                        "inputs": {"pass": n, "rung": rung, "parts": parts, "per_part": settings["per_part"],
+                                   "version": settings["version"], "threads": settings["threads"]},
+                        "words": said}])
+        write_plan(ws, plan)
+        run.note_authoring()
+        _clear_outputs(ws)
+        note_native_pass(ws, n)
+        note_native_payload(ws, [p for p in PAYLOAD if (ws / p).exists()])
+        process_gib, files_gib = memory_need(float((plan.get("estimate") or {}).get("elements") or 0))
+        machine = MM.choose(process_gib=process_gib, workspace_gib=files_gib, why="memory model")
+        MM.write(ws, machine)
+        work = planned_work(plan, ceiling_s=ceiling_for(run, machine))
+        await run.fence("start native mesh")
+        t0 = time.monotonic()
+        result, machine, work = await _native(ws, machine, work, job_id, n, run)
+        await run.fence("accept native mesh output")
+        q = _read_quality(ws) if result.get("rc") in (0, 4) else {}
+        made = bool(q) and (ws / "mesh.inp").exists()
+        run.note_native_run(produced_usable_mesh=made and result.get("rc") == 0)
+        facts = {**L.pass_facts(n, result.get("rc"), q, plan, log=str(result.get("log_tail") or ""),
+                                killed=_killed(result)),
+                 "native_s": round(time.monotonic() - t0, 1), "engine": TW.ENGINE, "rung": rung, "parts": parts,
+                 "ran_on": {k: machine.get(k) for k in ("where", "machine", "memory_gib", "why")}}
+        if result.get("timed_out"):
+            facts["timed_out"] = True
+        if not facts["valid"]:
+            facts["rung_error"] = _rung_error(result)
+        ran.append(facts)
+        _keep_pass_log(ws, n)
+        _cite(job_id, [{"stage": "fea_ladder", "decided": "last rung pass", "value": bool(facts["valid"]),
+                        "rule": "LAD-fea-9", "inputs": {"pass": n, "rung": rung, "cells": facts["cells"],
+                                                        "min_sicn": facts["min_sicn"],
+                                                        "error": facts.get("rung_error")},
+                        "words": (f"fTetWild built a valid mesh on pass {n}." if facts["valid"] else
+                                  f"fTetWild's pass {n} built no valid mesh ({facts.get('rung_error')}).")}])
+        if made:
+            _keep_pass(ws, n)
+        if facts["valid"] or parts is None or result.get("timed_out"):
+            break
+    if not any(f["valid"] for f in ran) and gm and (ws / PASS_FOLDER.format(n=gm[-1]["pass"])).exists():
+        # the rung built nothing valid either: the workspace is the last gmsh pass's again, as it was
+        # before the rung, so the exhausted ladder is told from that pass's measures
+        _restore_pass(ws, int(gm[-1]["pass"]))
+    return record, ran
 
 
 async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublisher,
@@ -919,6 +1033,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     too_big: dict | None = None
     rate, cls = fill_rate(record)
     chosen: dict = {}
+    first_plan: dict = {}
     n0 = 0
     while True:
         for n in range(n0 + 1, n0 + L.MAX_PASSES + 1):
@@ -929,6 +1044,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                                                ceiling_s=ceiling_for(run), ai=ai)
                 chosen = {"limit": plan["limit"], "zone_floor_m": plan.get("zone_floor_m"),
                           "coarsened": plan.get("coarsened")}
+                first_plan = plan
                 # every later pass plans with the decision the first one kept (refinements left out
                 # when they would not fit stay out)
                 if plan.get("ai"):
@@ -1112,6 +1228,14 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             continue
         break
 
+    if (tripped is None and too_big is None and passes and first_plan and not any(f["valid"] for f in passes)
+            and not passes[-1].get("out_of_memory")):
+        # LAD-fea-9, THE LAST RUNG: every gmsh option is spent (Delaunay, HXT, MeshAdapt on the surfaces
+        # that failed, and for an assembly the tie) and no pass is valid - fTetWild meshes the part(s)
+        # still without one, the other parts as the tie meshed them. Never for our infrastructure (a
+        # guard trip, a worker too small) or a plan out of memory on the largest machine (LAD-fea-7)
+        record, ran = await _last_rung(ws, record, diag_m, first_plan, passes, job_id=job_id, run=run)
+        passes.extend(ran)
     if too_big is not None and not any(f["valid"] for f in passes):
         (ws / "fea_passes.json").write_text(json.dumps({"passes": passes, "delivered": None, "levers": levers,
                                                         "too_big_for_worker": too_big}, indent=1))

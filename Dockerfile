@@ -26,7 +26,8 @@
 #             build:  make test-container-smoke  (supplies APP_VERSION from the product authority)
 #
 #   mesh-toolchain  the STABLE native floor for the mesh runner: OpenFOAM 2412 (apt, pinned to
-#             an exact package version), vmtk (conda, isolated), and the gmsh runtime libs.
+#             an exact package version), vmtk (conda, isolated), the gmsh runtime libs, and
+#             fTetWild (built from a pinned commit in `ftetwild-build`, FEA's last rung).
 #             Slow, ~2 GB, and the only layer that needs the ESI package repository - which is
 #             served by SourceForge mirrors and is the least reliable thing in this build.
 #             The `mesh` target builds it automatically - it is not a separate artefact and
@@ -195,6 +196,57 @@ RUN pip install --no-cache-dir -c requirements/constraints.txt -r requirements/d
     && ls /dist/*.whl
 
 
+FROM base AS ftetwild-build
+# fTetWild, THE FEA LADDER'S LAST RUNG (LAD-fea-9, engines/fea_tetwild.py): it meshes a part only after
+# every gmsh option left it with no valid mesh. wildmeshing/fTetWild (Hu et al., SIGGRAPH 2020),
+# MPL-2.0 - see docs/reference/third-party.md. BUILT FROM SOURCE in this discarded stage; only the
+# binary and its licence reach the mesh image.
+#
+# PINNED BY COMMIT, AND SO IS EVERY DEPENDENCY IT FETCHES. fTetWild's CMake fetches its dependencies
+# itself (FetchContent, mostly by tag). A tag can be re-pointed, so after the configure step each
+# fetched dependency's checked-out commit is compared with the reviewed one below, and the set of
+# dependencies with the reviewed set - a moved tag or a new dependency fails the build here. (Its
+# unit tests are not configured: they would fetch Catch2 as an unverified archive.)
+#
+# REPEATABLE (the same input gives the same mesh, byte for byte - lab, 25 Oct): upstream seeds two
+# shuffles from std::random_device - fTetWild's triangle insertion order and geogram's
+# random_shuffle (the Delaunay's insertion order) - so two runs of one surface gave two meshes. Both
+# seeds are made constants here, each rewrite checked; with one thread (--max-threads 1, the
+# driver's own setting) the mesh is then the same every run.
+ARG FTETWILD_COMMIT=8118f810478e0e65a7bf2d8cecdc5e203a876e97
+ARG FTETWILD_DEPS="cli11-src=4160d259d961cd393fd8d67590a8c7d210207348 eigen-src=3147391d946bb4b6c68edd901f2add6ac1f31f8c fmt-src=40626af88bd7df9a5fb80be7b25ac85b122d6c21 geogram-src=fc3eb9bf44d2ee29686592e3ef5f5f4daeda27f8 json-src=0901d33bf6e7dfe6f70fd9d142c8f5c6695c6c5b libigl-src=40e7900ccbd767f1f360e0eb10f0f1a6432e0993 predicates-src=decb7bc1260e689cbe008109e3cc5d3a5a433aea spdlog-src=6fa36017cfd5731d617e1a934f0e5ea9c4445b13 tbb-src=06ce6212da6710f4bb2d20a1904b018aa44069bf"
+RUN apt-get update && apt-get install -y --no-install-recommends cmake git libgmp-dev \
+    && rm -rf /var/lib/apt/lists/*
+RUN mkdir -p /src/ftetwild && cd /src/ftetwild \
+    && git init -q && git remote add origin https://github.com/wildmeshing/fTetWild.git \
+    && git fetch -q --depth 1 origin "${FTETWILD_COMMIT}" && git checkout -q FETCH_HEAD \
+    && test "$(git rev-parse HEAD)" = "${FTETWILD_COMMIT}" \
+    && grep -q '^    add_subdirectory(tests)$' CMakeLists.txt \
+    && sed -i 's/^    add_subdirectory(tests)$/    # (unit tests not built in the image)/' CMakeLists.txt \
+    && cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DFLOAT_TETWILD_ENABLE_TBB=ON -DBUILD_SHARED_LIBS=OFF \
+    && for pin in ${FTETWILD_DEPS}; do \
+         d="build/_deps/${pin%%=*}"; want="${pin#*=}"; \
+         test "$(git -C "$d" rev-parse --show-toplevel)" = "$(cd "$d" && pwd -P)" \
+           || { echo "ERROR: fTetWild dependency $d is not a checked-out repository" >&2; exit 1; }; \
+         got="$(git -C "$d" rev-parse HEAD)"; \
+         test "$got" = "$want" || { echo "ERROR: fTetWild dependency $d is at $got, reviewed $want" >&2; exit 1; }; \
+       done \
+    && test "$(ls -d build/_deps/*-src | wc -l)" = "$(echo ${FTETWILD_DEPS} | wc -w)" \
+    && grep -q 'std::mt19937 g(rd());' src/TriangleInsertion.cpp \
+    && sed -i 's/std::mt19937 g(rd());/std::mt19937 g(1);/' src/TriangleInsertion.cpp \
+    && grep -q 'std::mt19937 g(1);' src/TriangleInsertion.cpp \
+    && grep -q 'std::mt19937 urng(rng());' build/_deps/geogram-src/src/lib/geogram/basic/algorithm.h \
+    && sed -i 's/std::mt19937 urng(rng());/std::mt19937 urng(1);/' build/_deps/geogram-src/src/lib/geogram/basic/algorithm.h \
+    && grep -q 'std::mt19937 urng(1);' build/_deps/geogram-src/src/lib/geogram/basic/algorithm.h \
+    && cmake --build build -j"$(nproc)" --target FloatTetwild_bin \
+    && install -D -m 0755 build/FloatTetwild_bin /opt/ftetwild/bin/fTetWild \
+    && install -D -m 0644 LICENSE.MPL2 /opt/ftetwild/LICENSE.MPL2 \
+    && printf '%s\n' "wildmeshing/fTetWild ${FTETWILD_COMMIT} (MPL-2.0); insertion and Delaunay shuffles seeded" \
+         > /opt/ftetwild/VERSION \
+    && /opt/ftetwild/bin/fTetWild --help >/dev/null \
+    && rm -rf /src/ftetwild
+
+
 FROM base AS mesh-toolchain
 # THE STABLE NATIVE FLOOR. Everything here is slow to build, large, and changes only when a
 # toolchain version does - so it sits below the application layers and nothing above it may be
@@ -355,6 +407,15 @@ RUN curl -fsSL \
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libglu1-mesa libegl1 libxft2 libxcursor1 libxinerama1 libxrandr2 libxi6 \
     && rm -rf /var/lib/apt/lists/*
+
+# fTetWild (built in `ftetwild-build` above): its binary, its licence, and the two system libraries it
+# links (GMP for its exact rationals, libgomp for geogram). On PATH as `fTetWild`, where
+# engines/fea_tetwild.binary() finds it; the capability smoke runs it (tests/native).
+COPY --from=ftetwild-build /opt/ftetwild /opt/ftetwild
+RUN apt-get update && apt-get install -y --no-install-recommends libgmp10 libgomp1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -s /opt/ftetwild/bin/fTetWild /usr/local/bin/fTetWild \
+    && fTetWild --help >/dev/null
 
 
 FROM base AS runtime-base

@@ -255,7 +255,11 @@ def test_a_ladder_that_runs_out_says_so_for_the_retry_policy(tmp_path, monkeypat
     ws = _stage(fx.plate_with_hole(), tmp_path / "floor")
 
     def bad_pass(w, timeout):
-        rc = fea_adapter.mesh(w)
+        try:
+            rc = fea_adapter.mesh(w)
+        except Exception:  # noqa: BLE001 - as the mesh runner reports a pass that raised
+            # the last rung's pass (LAD-fea-9): no fTetWild outside the mesh image
+            return {"rc": 1}
         q = json.loads((Path(w) / "quality.json").read_text())
         q.update(min_sicn=0.0, elements_under_floor=5, fatal=["degenerate elements (SICN <= 0)"])
         q.setdefault("fea", {}).setdefault("quality", {})["worst_at_m"] = {"scaled_jacobian": [0.01, 0.02, 0.003]}

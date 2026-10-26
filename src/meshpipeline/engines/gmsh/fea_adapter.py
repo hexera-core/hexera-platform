@@ -742,13 +742,75 @@ def micro_curves_one_segment(gmsh) -> list[int]:
     return short
 
 
+def _source(ftw: dict) -> str:
+    """The engine line the solver files carry."""
+    if not ftw:
+        return "Hexera gmsh engine"
+    return f"Hexera gmsh engine + {ftw.get('version') or 'fTetWild'} (LAD-fea-9: {', '.join(ftw.get('parts') or [])})"
+
+
+def rung_volumes(run: dict, vols: list[int], part_volumes: dict[str, list[int]] | None) -> list[int]:
+    """LAD-fea-9: the volumes fTetWild meshes - the parts the plan names (plan["mesh"]["ftetwild"]
+    ["parts"]), every volume when it names none (a single part, or every part of an assembly)."""
+    parts = ((run or {}).get("ftetwild") or {}).get("parts")
+    if not parts or not part_volumes:
+        return sorted(vols)
+    picked = {int(v) for p in parts for v in part_volumes.get(f"Part_{int(p)}") or []}
+    return sorted(v for v in vols if v in picked) or sorted(vols)
+
+
+def last_rung(gmsh, ws: Path, plan: dict, geom: Path, built: dict, asm, sidecar: dict, *, order: int,
+              tick: Ticker, fell_back: str = "") -> dict:
+    """LAD-fea-9: fTetWild's mesh of the rung's volumes, written into the model gmsh meshed the other parts
+    in (engines/fea_tetwild.mesh_into). Returns the rung's record for quality.json."""
+    from meshpipeline.engines import fea_tetwild as TW
+    from meshpipeline.engines.determinism import job_cpus
+
+    vols, surfaces = built["vols"], built["surfaces"]
+    # each gmsh volume tag -> its solid (MapShapes order), each face index -> its gmsh surface and name
+    if asm:
+        volume_index = {int(t): int(k) for k, t in built["volume_tag"].items()}
+        surface_tag_of = {int(k): int(t) for k, t in built["surface_tag"].items()}
+        names = [str((row.get("names") or [f"Face_{k + 1}"])[0]) for k, row in enumerate(sidecar.get("surfaces") or [])]
+    else:
+        volume_index = {int(v): k for k, v in enumerate(sorted(vols))}
+        surface_tag_of = {k: k + 1 for k in range(len(surfaces))}
+        names = [f"Face_{k + 1}" for k in range(len(surfaces))]
+    # fTetWild's own output is the sign of progress while it runs (the ticker would hide a stuck one)
+    tick.stop()
+    info = TW.mesh_into(gmsh, ws, plan, geom, built["rung_volumes"], volume_index=volume_index,
+                        surface_tag_of=surface_tag_of, names=names, order=order, workers=job_cpus())
+    info["tied"] = bool(built.get("gmsh_volumes"))
+    info["gmsh_parts"] = len(built.get("gmsh_volumes") or [])
+    if fell_back:
+        info["gmsh_failed_again"] = fell_back
+    info["words"] = TW.words(info)
+    return info
+
+
+def rung_build(gmsh, ws: Path, plan: dict, geom: Path, asm: dict | None, sidecar: dict) -> dict:
+    """LAD-fea-9's build: gmsh meshes the parts fTetWild does not take; should it fail on them in this pass
+    too, every part goes to fTetWild (said as "fell_back"). Raises NoSolid only."""
+    try:
+        return build_volume(gmsh, ws, plan, geom, asm, sidecar, rung="named")
+    except FillFailed as first:
+        said = f"{type(first.exc).__name__}: {str(first.exc)[:300]}"
+        print(f"[FTETWILD] gmsh failed on the other parts too ({said}) - every part goes to fTetWild",
+              file=sys.stderr)
+        gmsh.clear()
+        gmsh.option.setNumber("Mesh.MeshOnlyVisible", 0)
+        return {**build_volume(gmsh, ws, plan, geom, asm, sidecar, rung="all"), "fell_back": said}
+
+
 def build_volume(gmsh, ws: Path, plan: dict, geom: Path, asm: dict | None, sidecar: dict, *,
-                 scale: float = 1.0, tags: dict | None = None) -> dict:
+                 scale: float = 1.0, tags: dict | None = None, rung: str | None = None) -> dict:
     """Read the staged solid (`scale` times its metres: OpenCASCADE's own similarity as it reads), size it
     by the plan at that scale, and mesh its surfaces and its volume. Returns what the rest of the mesh
     run reads; raises NoSolid, or FillFailed with the surfaces it went wrong on. `tags`: an assembly's
     sidecar ties from an earlier read (the same file read at another scale has the same entities). Read
-    at any scale but metres (MESH-4, after a failure) its micro curves are one segment each."""
+    at any scale but metres (MESH-4, after a failure) its micro curves are one segment each. `rung`
+    (LAD-fea-9): "named" leaves the parts the plan gives fTetWild unmeshed and meshes the others, alone,
+    as every pass meshes them; "all" meshes none - fTetWild takes every part (`rung_volumes`)."""
     run = plan.get("mesh") or {}
     gmsh.model.add("fea")
     gmsh.option.setNumber("Geometry.OCCScaling", float(scale))
@@ -797,6 +859,23 @@ def build_volume(gmsh, ws: Path, plan: dict, geom: Path, asm: dict | None, sidec
     if bg is not None:
         gmsh.model.mesh.field.setAsBackgroundMesh(bg)
     remesh = {int(s) for s in run.get("remesh_surfaces") or []}
+    # LAD-fea-9, THE LAST RUNG: fTetWild's parts are left unmeshed; gmsh meshes only the others (their own
+    # surfaces, each volume alone), exactly as a pass meshes them. Without a rung nothing here changes
+    rung_vols: list[int] = []
+    if rung is not None:
+        rung_vols = sorted(vols) if rung == "all" else rung_volumes(run, vols, part_volumes)
+        rest = [v for v in vols if v not in rung_vols]
+        if not rest:
+            return {"vols": vols, "surfaces": surfaces, "face_tags": face_tags, "surface_tag": surface_tag,
+                    "volume_tag": volume_tag, "part_volumes": part_volumes, "micro_curves": micro,
+                    "repeated_triangles": {}, "rung_volumes": rung_vols, "gmsh_volumes": []}
+        everything = gmsh.model.getEntities()
+        gmsh.model.setVisibility(everything, 0)
+        gmsh.model.setVisibility([(3, int(v)) for v in rest], 1, recursive=True)
+        gmsh.option.setNumber("Mesh.MeshOnlyVisible", 1)
+        all_vols, all_surfaces = vols, surfaces
+        vols = rest
+        surfaces = {abs(int(t)) for v in rest for _d, t in gmsh.model.getBoundary([(3, v)], oriented=False)} & surfaces
     # LAD-fea-8: after a surface stage that stalled, gmsh's first mesh of every face is kept (its repeats
     # dropped below, MESH-5) rather than thrown away for a MeshAdapt run that never ends
     gmsh.option.setNumber("Mesh.AlgorithmSwitchOnFailure", 0 if run.get("surface_switch") is False else 1)
@@ -833,6 +912,12 @@ def build_volume(gmsh, ws: Path, plan: dict, geom: Path, asm: dict | None, sidec
                         if int(t) in surfaces} | set(empty))
         raise FillFailed(RuntimeError(f"{EMPTY_VOLUMES} the 3D fill left volume(s) {hollow} with no elements"),
                          named, face_tags, tied, hollow=hollow)
+    if rung is not None:
+        gmsh.model.setVisibility(gmsh.model.getEntities(), 1)
+        gmsh.option.setNumber("Mesh.MeshOnlyVisible", 0)
+        return {"vols": all_vols, "surfaces": all_surfaces, "face_tags": face_tags, "surface_tag": surface_tag,
+                "volume_tag": volume_tag, "part_volumes": part_volumes, "micro_curves": micro,
+                "repeated_triangles": repeated, "rung_volumes": rung_vols, "gmsh_volumes": sorted(vols)}
     return {"vols": vols, "surfaces": surfaces, "face_tags": face_tags, "surface_tag": surface_tag,
             "volume_tag": volume_tag, "part_volumes": part_volumes, "micro_curves": micro,
             "repeated_triangles": repeated}
@@ -892,10 +977,14 @@ def mesh(workspace) -> int:
         gmsh.option.setNumber("Mesh.Algorithm3D", ALGORITHMS_3D.get(algorithm_3d(run), 1))
         base = float(plan["base_size_m"])
         tick = Ticker(ws)
+        # LAD-fea-9: the last rung's pass (plan["mesh"]["engine"] == "ftetwild", engines/fea_tetwild.py)
+        rung = str(run.get("engine") or "") == "ftetwild"
+        ftw: dict = {}
         tags: dict | None = None
         scale = 1.0
         try:
-            built = build_volume(gmsh, ws, plan, geom, asm, sidecar, scale=scale)
+            built = (build_volume(gmsh, ws, plan, geom, asm, sidecar, scale=scale) if not rung
+                     else rung_build(gmsh, ws, plan, geom, asm, sidecar))
         except NoSolid:
             print("[GMSH-FEA] no solid volume in geometry.step - an FEA mesh needs a closed solid",
                   file=sys.stderr)
@@ -921,14 +1010,17 @@ def mesh(workspace) -> int:
                 raise again.exc from None
         vols, face_tags = built["vols"], built["face_tags"]
         surface_tag, volume_tag = built["surface_tag"], built["volume_tag"]
+        # gmsh's own steps on what gmsh meshed (every volume, or the rung's other parts; none when
+        # fTetWild takes every part)
+        meshed = not rung or bool(built.get("gmsh_volumes"))
         note_stage(ws, "optimising", "improving the elements")
-        for _ in range(int(run.get("optimise_passes") or 1)):
+        for _ in range(int(run.get("optimise_passes") or 1) if meshed else 0):
             gmsh.model.mesh.optimize("Netgen")
         order = int((plan.get("element") or {}).get("order") or 2)
         settled: dict = {"straightened": 0, "set_aside": [], "cusp_places_m": [], "cusp_elements": 0,
                          "micro_used": [], "micro_elements": 0}
         straight: dict = {}
-        if order > 1:
+        if order > 1 and meshed:
             from meshpipeline.engines.gmsh import fea_settle
 
             # each element's straight shape, before curving: what PLAN-fea-11 compares against
@@ -942,11 +1034,15 @@ def mesh(workspace) -> int:
             # MESH-4: the mesh back to metres, the unit every file and figure below is in (a similarity:
             # every element keeps its shape and quality)
             to_m(gmsh, scale)
-        if order > 1:
+        if order > 1 and meshed:
             tick.start("settling", "checking the curved elements")
             # PLAN-fea-11 (never worse than straight) and PLAN-fea-10 (the cusps set aside)
             settled = fea_settle.settle(gmsh, straight, [c["at_m"] for c in plan.get("cusps") or []],
                                         D.SICN_FLOOR, micro=plan.get("micro") or [])
+        if rung:
+            # LAD-fea-9: fTetWild's parts into the same model, after gmsh's own (straight 10-node tets)
+            ftw = last_rung(gmsh, ws, plan, geom, built, asm, sidecar, order=order, tick=tick,
+                            fell_back=str(built.get("fell_back") or ""))
 
         tick.start("writing", "measuring the elements and writing the solver files")
         etypes, etags, _ = gmsh.model.mesh.getElements(3)
@@ -991,7 +1087,7 @@ def mesh(workspace) -> int:
 
             prep = AD.prepare(from_gmsh(gmsh, sorted(vols)), sidecar, surface_tag=surface_tag,
                               volume_tag=volume_tag)
-            written = AD.write_all(ws, prep, units=COMPLETED_MESH_UNIT.value, source="Hexera gmsh engine",
+            written = AD.write_all(ws, prep, units=COMPLETED_MESH_UNIT.value, source=_source(ftw),
                                    connection=str(asm.get("connection") or "bonded"))
             deck = written["deck"]
             exports = {"nastran": written["nastran"], "ansys": written["ansys"]}
@@ -999,7 +1095,7 @@ def mesh(workspace) -> int:
             # the viewer's clickable faces: each name and the mesh surfaces that carry it
             assembly_out["face_tags"] = {k: sorted(set(v)) for k, v in (face_tags or {}).items()}
         else:
-            deck = D._write_deck(gmsh, ws, discrete=False)
+            deck = D._write_deck(gmsh, ws, discrete=False, source=_source(ftw))
         gmsh.write(str(ws / "mesh.msh"))
         rules: dict = {}
         shape: dict = {}
@@ -1024,7 +1120,7 @@ def mesh(workspace) -> int:
                 if solid is None:
                     raise ValueError("no internal mesh was read")
                 exports = fea_writers.write_all(ws, solid, cad_names=deck.get("cad_face_names") or {},
-                                                units=COMPLETED_MESH_UNIT.value, source="Hexera gmsh engine")
+                                                units=COMPLETED_MESH_UNIT.value, source=_source(ftw))
             except Exception as exc:  # noqa: BLE001 - the deck stands; a missing file is offered as missing
                 print(f"[GMSH-FEA] Nastran / Ansys files not written: {exc}", file=sys.stderr)
         if shape.get("fea_inverted"):
@@ -1076,7 +1172,10 @@ def mesh(workspace) -> int:
                        if plan.get("coarsened") else {}),
                     "through_wall_min": tw, "rules": rules, "quality": shape, "exports": exports,
                     # PLAN-fea-17: the parts, how they are joined, and every joint as written
-                    **({"assembly": assembly_out} if asm else {})},
+                    **({"assembly": assembly_out} if asm else {}),
+                    # LAD-fea-9: the parts fTetWild meshed, how close to the CAD, the faces it affected
+                    **({"ftetwild": ftw} if ftw else {})},
+            **({"engine_rung": "ftetwild"} if ftw else {}),
         }, indent=1))
         print(f"[GMSH-FEA] elements={n_elem} (planned ~{(plan.get('estimate') or {}).get('elements')}) "
               f"nodes={n_nodes} order={order} min_sicn={min_sicn:.3f} through_wall_min={tw} "

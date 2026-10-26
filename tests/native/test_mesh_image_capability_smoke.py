@@ -75,3 +75,28 @@ def test_vmtk_isolated_shim_present_and_env_healthy():
          "import vtk,sys; print(vtk.vtkVersion.GetVTKVersion(), sys.version.split()[0])"],
         capture_output=True, text=True, timeout=60)
     assert probe.returncode == 0 and probe.stdout.strip(), f"vmtk conda env unhealthy: {probe.stderr[-400:]}"
+
+
+def test_ftetwild_is_installed_and_meshes_a_box_the_same_way_twice(tmp_path):
+    """FEA's last rung (LAD-fea-9): the pinned fTetWild build is on PATH, links its libraries, and its
+    seeded build gives the same tetrahedra twice (engines/fea_tetwild.py)."""
+    import hashlib
+
+    import numpy as np
+
+    from meshpipeline.engines import fea_tetwild as TW
+
+    assert TW.binary(), "fTetWild is not on PATH in the mesh image"
+    xyz = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]],
+                   float) * 0.05
+    tris = np.array([[0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7], [0, 1, 5], [0, 5, 4], [1, 2, 6], [1, 6, 5],
+                     [2, 3, 7], [2, 7, 6], [3, 0, 4], [3, 4, 7]])
+    digests = []
+    for k in range(2):
+        r = TW.run_part({"dir": str(tmp_path / f"run{k}"), "xyz": xyz, "tris": tris, "edge": 0.01,
+                         "epsilon": 5e-5, "bg": None, "name": "box"})
+        assert "error" not in r, r
+        _t, vol = TW.orient(r["xyz"], r["tets"])
+        assert (vol > 0).all() and vol.sum() == pytest.approx(0.05 ** 3, rel=1e-3)
+        digests.append(hashlib.sha256(r["xyz"].tobytes() + r["tets"].tobytes()).hexdigest())
+    assert digests[0] == digests[1]

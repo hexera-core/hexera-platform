@@ -1299,7 +1299,7 @@ def main(workspace: str) -> int:
         gmsh.finalize()
 
 
-def _write_deck(gmsh, ws: Path, *, discrete: bool) -> dict:
+def _write_deck(gmsh, ws: Path, *, discrete: bool, source: str = "Hexera gmsh engine") -> dict:
     """mesh.inp from the meshed model: the solid group's volumes, every CAD face that bounds
     them as Face_k, each named surface group (the plan's, and the default group) as an alias,
     and the CAD's own face names where it has them - read from the staging record for a B-rep,
@@ -1322,7 +1322,7 @@ def _write_deck(gmsh, ws: Path, *, discrete: bool) -> dict:
     except Exception as exc:  # noqa: BLE001 - a courtesy: every face is still Face_k
         print(f"[GMSH] CAD face names not read: {exc}", file=sys.stderr)
     return write_inp(ws / "mesh.inp", from_gmsh(gmsh, sorted(set(solid))), aliases,
-                     face_names=names, units="m", source="Hexera gmsh engine")
+                     face_names=names, units="m", source=source)
 
 
 #: Where the driver leaves the reason it stopped without a mesh, for finalize to tell the user.

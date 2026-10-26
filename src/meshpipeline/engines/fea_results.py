@@ -113,6 +113,18 @@ def assembly_block(asm: Mapping) -> dict | None:
             "joints": joints, "absorbed": list(asm.get("absorbed") or []), "notes": list(asm.get("notes") or [])}
 
 
+def safety_net_block(ftw: Mapping) -> dict | None:
+    """LAD-fea-9's lines on the result screen: which parts fTetWild meshed after gmsh could not, how close
+    its surface is to the CAD, and the faces it affected; None when gmsh meshed every part."""
+    if not ftw:
+        return None
+    return {"engine": "fTetWild", "version": ftw.get("version"), "rule": ftw.get("rule") or "LAD-fea-9",
+            "parts": list(ftw.get("parts") or []), "tied": bool(ftw.get("tied")),
+            "epsilon_mm": ftw.get("epsilon_mm"), "deviation_mm": ftw.get("deviation_mm"),
+            "moved_faces": list(ftw.get("moved_faces") or []), "lost_faces": list(ftw.get("lost_faces") or []),
+            "words": str(ftw.get("words") or "")}
+
+
 #: Said on the result screen of an FEA mesh whose 3D view could not be built.
 FEA_VIEW_MISSING = ("The 3D view could not be built for this mesh, so it is not shown. The mesh is valid and "
                     "its files are complete - download them below.")
@@ -202,7 +214,10 @@ def results(workspace) -> dict | None:
     from meshpipeline.contracts.mesh_units import COMPLETED_MESH_UNIT
     mesh_units = COMPLETED_MESH_UNIT.value
     asm = assembly_block(fea.get("assembly") or {})
-    extra = {"assembly": asm} if asm else {}
+    extra: dict[str, Any] = {"assembly": asm} if asm else {}
+    net = safety_net_block(fea.get("ftetwild") or {})
+    if net:
+        extra["safety_net"] = net
     return {**extra,
         "title": "FEA mesh",
         "summary": (f"{cells:,} quadratic tetrahedra (10-node), a solid mesh"
@@ -217,7 +232,7 @@ def results(workspace) -> dict | None:
                   "solvers": "Limits: the strictest of Abaqus/CalculiX, Nastran and Ansys."},
         "elements": cells,
         "through_wall": through,
-        "plan_words": list(plan.get("words") or []),
+        "plan_words": list(plan.get("words") or []) + ([net["words"]] if net and net.get("words") else []),
         "hot_spots": spots,
         "faces": faces,
         "download": {"words": "The full download holds:",
@@ -229,4 +244,5 @@ def results(workspace) -> dict | None:
     }
 
 
-__all__ = ["CONTAINS", "JOINT_WORDS", "SAME_NUMBERS", "assembly_block", "results", "viewer_face_names"]
+__all__ = ["CONTAINS", "JOINT_WORDS", "SAME_NUMBERS", "assembly_block", "results", "safety_net_block",
+           "viewer_face_names"]
