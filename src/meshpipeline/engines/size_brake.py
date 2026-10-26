@@ -66,24 +66,53 @@ _MAX_GLOBAL = re.compile(r"maxGlobalCells\s+(\d+)")
 PLAN_CELLS_FILE = "system/plan_cells.json"
 
 
+#: blockMesh's blocks: `hex (<8 vertices>) (<nx> <ny> <nz>)`
+_HEX_BLOCK = re.compile(r"hex\s*\([^)]*\)\s*\(\s*(\d+)\s+(\d+)\s+(\d+)\s*\)")
+
+
+def background_cells(workspace) -> int:
+    """The cells the case's background mesh starts from: every blockMesh block's nx*ny*nz in its
+    system/blockMeshDict (0 when it cannot be read). snappyHexMesh only ever refines and removes
+    from this mesh, and no castellation budget changes it."""
+    try:
+        text = (Path(workspace) / "system" / "blockMeshDict").read_text(errors="replace")
+    except OSError:
+        return 0
+    return sum(int(a) * int(b) * int(c) for a, b, c in _HEX_BLOCK.findall(text))
+
+
 def case_budget(workspace) -> int | None:
     """The cell budget the brake measures a case against: its plan's (PLAN_CELLS_FILE), else
     maxGlobalCells in its snappyHexMeshDict; None when neither can be read. Never the castellation
     budget alone: on a large thin plate the layers are about 3.5 times the castellated cells whatever
     its size, so measured against the castellation budget the brake would trip on every pass and
-    shrink the mesh until the body was lost (lab, 25 Oct: A1/A2 down to 0.39M cells, no body)."""
+    shrink the mesh until the body was lost (lab, 25 Oct: A1/A2 down to 0.39M cells, no body).
+
+    NEVER BELOW THE BACKGROUND MESH (background_cells): the brake answers a mesh REFINED far past its
+    plan, and re-plans the castellation budget smaller - which cannot shrink the background the case
+    starts from. A plan whose budget is under its own background (a 40,000-cell plan on a 138,240-cell
+    blockMesh: release Gate C's native snappy pass, 26 Oct) read "3.3 times its budget" before any
+    refinement, was stopped and could only be stopped again on every re-plan. And whether it was
+    stopped at all depended on timing - the watch looks every 10 s, so a fast run on 4 ranks finished
+    first and passed while the same case on 8 oversubscribed ranks was stopped - a size brake must
+    give the same answer on every machine."""
     import json
+    budget: int | None = None
     try:
         v = int((json.loads((Path(workspace) / PLAN_CELLS_FILE).read_text()) or {}).get("plan_cells") or 0)
         if v > 0:
-            return v
+            budget = v
     except (OSError, ValueError, TypeError, AttributeError):
         pass
-    try:
-        m = _MAX_GLOBAL.search((Path(workspace) / "system" / "snappyHexMeshDict").read_text(errors="replace"))
-    except OSError:
-        return None
-    return int(m.group(1)) if m else None
+    if budget is None:
+        try:
+            m = _MAX_GLOBAL.search((Path(workspace) / "system" / "snappyHexMeshDict").read_text(errors="replace"))
+        except OSError:
+            return None
+        if not m:
+            return None
+        budget = int(m.group(1))
+    return max(budget, background_cells(workspace))
 
 
 class SizeBrake:
@@ -147,4 +176,4 @@ def scaled_budget_factor(tripped: dict) -> float:
 
 __all__ = ["SIZE_BRAKE_STEP", "PLAN_CELLS_FILE", "CFMESH_COUNTS", "SIZE_BRAKE_MARGIN",
            "SIZE_BRAKE_LAYER_MARGIN", "SIZE_BRAKE_TARGET", "SNAPPY_COUNTS", "SizeBrake",
-           "case_budget", "scaled_budget_factor"]
+           "background_cells", "case_budget", "scaled_budget_factor"]
