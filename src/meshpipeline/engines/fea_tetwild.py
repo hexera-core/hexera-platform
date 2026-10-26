@@ -651,9 +651,10 @@ def _hwm_kb(pid: int) -> int:
     return 0
 
 
-#: RUN-6: fTetWild's MEASURED memory, each part's own peak (VmHWM) on the lab (26 Oct: 17 of ox_mc_lid's parts run
+#: RUN-6: fTetWild's MEASURED memory, each part's own peak (VmHWM) on the lab (26 Oct: 23 of ox_mc_lid's parts run
 #: as the rung runs them, at LAD-fea-10 edges, 1,090 to 2.39M tetrahedra): 0.19-0.26 GB however small, and at most
-#: 2.1 GB per million tetrahedra above that (the 651 mm plate, 0.77M in 1.78 GB; others 0.3-1.2 GB per million)
+#: 2.1 GB per million tetrahedra above that (the steepest: a 13 mm part, 0.26M in 0.75 GB; the 651 mm plate, 0.77M
+#: in 1.78 GB; the others 0.3-1.2 GB per million)
 FTW_BASE_GIB = 0.25
 FTW_GIB_PER_ELEMENT = 2.1e-6
 #: the rule that sizes the last rung's machine from fTetWild's own model

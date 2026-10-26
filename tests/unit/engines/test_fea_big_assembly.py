@@ -241,8 +241,8 @@ def test_a_thin_tube_round_other_parts_meshed_consulting_only_the_fields_that_ca
     """A thin-walled tube with a pin and a block inside its box (ox_mc_lid's bottom connector: a 0.5 mm wall
     40 mm round, its box holding other parts): on the tube's own faces its wall field is near its smallest,
     so the fields of the parts inside are skipped there - and the files are the same, byte for byte."""
-    tube = fx._cut(fx._cyl(0, 0, 0, 10, 12), fx._cyl(0, 0, -1, 9, 14))
-    shape = fx._compound(tube, fx._cyl(0, 0, 2, 2, 8), fx._box(4, 3, 2, 3, 3, 3))
+    tube = fx._cut(fx._cyl(0, 0, 0, 8, 6), fx._cyl(0, 0, -1, 6, 8))
+    shape = fx._compound(tube, fx._cyl(0, 0, 1, 2, 4), fx._box(3, 2, 1, 2, 2, 2))
     planned = _planned(shape, tmp_path, monkeypatch)
     on, off, said = _mesh_both(planned, tmp_path, monkeypatch, capsys)
     assert _restricted(said) > 0
