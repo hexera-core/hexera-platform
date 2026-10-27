@@ -57,6 +57,9 @@ function partLabel(p) {
 /** What an assembly view shows, in one string: a later view that says more is drawn again. */
 const assemblySig = (a) => `${(a.parts || []).length}/${(a.interfaces || []).length}/${(a.notes || []).length}/${a.measured === false ? 0 : 1}/${(a.pairs || []).length}`;
 
+/** Text for an attribute in double quotes (esc() leaves quotes alone: a reason or a JSON map has them). */
+const attr = (s) => esc(s).replace(/"/g, "&quot;");
+
 /** A number as the stage says it: three figures at most. */
 const n3 = (v) => String(Number(Number(v).toPrecision(3)));
 
@@ -86,15 +89,17 @@ export function pairDefault(r, conn, gapOn) {
 function pairRowHtml(r, tag, label, types, k0) {
   const [a, b] = r.parts || ["?", "?"];
   const name = (id) => label[id] ? `${id} · ${label[id]}` : id;
-  const opts = types.map((t) => `<option value="${esc(t.key)}"${t.key === r.type ? " selected" : ""}>${esc(t.label)}</option>`).join("");
-  const keep = r.keep ? `<select class="fea-pair-keep" data-key="${esc(r.key)}" aria-label="${esc(`Which part keeps its full shape where ${a} and ${b} overlap`)}">
-        ${[a, b].map((p) => `<option value="${esc(p)}"${p === r.keep ? " selected" : ""}>${esc(p)} keeps its shape</option>`).join("")}</select>` : "";
-  const reach = `<input class="fea-pair-reach" type="number" min="0" step="any" data-key="${esc(r.key)}" aria-label="${esc(`Reach for ${a} and ${b}, in mm`)}" placeholder="${esc(r.reach_mm != null ? `reach ${n3(r.reach_mm)} mm` : "reach: solver default")}"${r.type === "bonded" ? "" : " hidden"}>`;
-  return `<li class="fea-spot-row fea-itf-row fea-pair ${esc(r.kind || "touching")}" data-spot="${esc(tag)}" data-key="${esc(r.key)}"
-      data-defaults="${esc(JSON.stringify(r.defaults || {}))}" data-whys="${esc(JSON.stringify(r.why || {}))}">
+  const opts = types.map((t) => `<option value="${attr(t.key)}"${t.key === r.type ? " selected" : ""}>${esc(t.label)}</option>`).join("");
+  const keep = r.keep ? `<select class="fea-pair-keep" data-key="${attr(r.key)}" aria-label="${attr(`Which part keeps its full shape where ${a} and ${b} overlap`)}">
+        ${[a, b].map((p) => `<option value="${attr(p)}"${p === r.keep ? " selected" : ""}>${esc(p)} keeps its shape</option>`).join("")}</select>` : "";
+  // THE WAY ON FROM AN OPEN PAIR (PLAN-fea-21): a reach of the user's own, for a bonded pair; blank keeps the
+  // measured reach (a small gap) or the solver's default (parts that touch)
+  const reach = `<input class="fea-pair-reach" type="number" min="0" step="any" data-key="${attr(r.key)}" aria-label="${attr(`Reach for ${a} and ${b}, in mm`)}" title="${attr(r.reach_mm != null ? `Blank: the measured reach, ${n3(r.reach_mm)} mm` : "Blank: the solver's own default")}" placeholder="${attr(r.reach_mm != null ? `reach ${n3(r.reach_mm)} mm` : "reach, mm")}"${r.type === "bonded" ? "" : " hidden"}>`;
+  return `<li class="fea-spot-row fea-itf-row fea-pair ${attr(r.kind || "touching")}" data-spot="${attr(tag)}" data-key="${attr(r.key)}"
+      data-defaults="${attr(JSON.stringify(r.defaults || {}))}" data-whys="${attr(JSON.stringify(r.why || {}))}">
       <span class="fea-spot-id">${esc(tag)}</span>
       <span class="fea-pair-body"><span class="fea-pair-what">${esc(name(a))} and ${esc(name(b))} ${esc(pairMeasured(r))}</span>
-        <span class="fea-pair-set"><select class="fea-pair-type" data-key="${esc(r.key)}" aria-label="${esc(`How ${a} and ${b} are joined`)}">${opts}</select>${keep}${reach}</span>
+        <span class="fea-pair-set"><select class="fea-pair-type" data-key="${attr(r.key)}" aria-label="${attr(`How ${a} and ${b} are joined`)}">${opts}</select>${keep}${reach}</span>
         <span class="fea-pair-why">${esc(((r.why || {})[k0]) || "")}</span>
         ${r.keep_why ? `<span class="fea-pair-why fea-keep-why">${esc(r.keep_why)}</span>` : ""}</span></li>`;
 }
