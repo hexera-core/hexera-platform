@@ -655,7 +655,7 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
             # price is that a same-identity replay collecting it waits out its own deadline for a
             # late result that will not come, and then reads the same timeout.
             _stop(operation, engine=engine, why=f"no result within the {wait_s}s deadline")
-            return _timed_out(engine, wait_s, operation)
+            return {**_timed_out(engine, wait_s, operation), "ran_on": ran_on}
         # A recognised mesh result, checked rather than assumed. Anything else - a JSON scalar, a
         # list, a document without the verdict - is an exchange we do not understand, and the one
         # safe reading of that is "not collected", so the objects stay for someone who can.
