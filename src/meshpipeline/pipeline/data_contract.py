@@ -467,6 +467,9 @@ STATE_FIELDS: dict[str, str] = {
                              "confirmed it on the stage (stored confirmation); '' for anything else",
     "fea_gap_joins":         "whether an FEA assembly's parts that face each other across a small gap are "
                              "joined there (PLAN-fea-18), as confirmed on the stage; True unless switched off",
+    "fea_pairs":             "an FEA assembly's single pairs as the user set them on the stage, by pair key "
+                             "(Part_1|Part_3): each pair's type (bonded / contact / off) and an overlap's owner "
+                             "(PLAN-fea-19/20); {} when every pair follows the rule",
     "flow_topology":         "internal/external flow regime DERIVED from the purpose - a neutral "
                              "fact read by the executor/runners, NOT an engine-native param",
     "leak_closing":          "the leak size the user confirmed on the stage (INS-8): every leak of the "

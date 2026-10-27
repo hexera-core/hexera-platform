@@ -333,8 +333,16 @@ def gap_joins_of(state) -> bool:
     return True if said is None else bool(said)
 
 
+def pairs_of(state) -> dict:
+    """PLAN-fea-19/20: the user's choices for single pairs (state fea_pairs, by pair key), checked;
+    empty when the stage set none - every pair then follows the rule."""
+    from meshpipeline.cad import fea_pairs as FP
+
+    return FP.clean_overrides((state or {}).get("fea_pairs") or {})
+
+
 def prepare_assembly(ws: Path, record: dict, surface, *, connection: str, source_path: str = "",
-                     gap_joins: bool = True) -> dict:
+                     gap_joins: bool = True, pairs: dict | None = None) -> dict:
     """PLAN-fea-17: an assembly's record for the plan, and its staged file for the mesher. Every
     face is renamed Part_k_Face_j (on the record and on the surface the size field reads), each part
     gets its own base size, and the parts are staged as the connection asks (cad/fea_assembly.stage).
@@ -360,7 +368,7 @@ def prepare_assembly(ws: Path, record: dict, surface, *, connection: str, source
     record.update(renamed)
     if len(surface.names) == len(global_names):
         surface.names = list(global_names)
-    sidecar = A.stage(shape, connection, ws, names=names, gap_joins=gap_joins)
+    sidecar = A.stage(shape, connection, ws, names=names, gap_joins=gap_joins, pairs=pairs)
     # each part's own size, read off the measured surface (millimetres): its faces' triangles
     bases = []
     for p in range(1, len(parts) + 1):
@@ -384,7 +392,10 @@ def prepare_assembly(ws: Path, record: dict, surface, *, connection: str, source
                                # WHERE THE PARTS MEET, for the AI's joint suggestion (engines/fea_ai AI-fea-7)
                                "pair_list": [{"pair": i.get("id"), "kind": i.get("kind"), "parts": i.get("parts"),
                                               "area_mm2": i.get("area_mm2"), "at_mm": i.get("at_mm")}
-                                             for i in sidecar["interfaces"]]}
+                                             for i in sidecar["interfaces"]],
+                               # PLAN-fea-19/20: every pair's type and every overlap's owner, with the reason
+                               "joints": list(sidecar.get("joints") or []),
+                               "joint_counts": dict(sidecar.get("joint_counts") or {})}
     if sidecar.get("joins"):
         # PLAN-fea-18: how the joints were found, the small-gap joints, and the faces no gap sizing
         # should read (the gap a joint joins, a skin of no thickness)
@@ -395,6 +406,29 @@ def prepare_assembly(ws: Path, record: dict, surface, *, connection: str, source
 def skin_words(skins: list[dict]) -> list[str]:
     from meshpipeline.cad.fea_assembly import skin_notes
     return skin_notes(skins)
+
+
+def open_pairs_decision(ws: Path) -> list[dict]:
+    """PLAN-fea-21's why-record entry for the delivered mesh: how many bonded pairs meshed apart were
+    checked and which are OPEN (no mesh node within the reach on a face) - [] for a single part or a
+    mesh with no tied pair."""
+    from meshpipeline.cad import fea_pairs as FP
+
+    try:
+        q = json.loads((ws / "quality.json").read_text())
+    except (OSError, ValueError):
+        return []
+    asm = ((q.get("fea") or {}).get("assembly") or {}) if isinstance(q, dict) else {}
+    checked = asm.get("bonded_check") or {}
+    if not checked.get("checked") and not asm.get("open_bonded"):
+        return []
+    opened = [o for o in asm.get("open_bonded") or [] if isinstance(o, dict)]
+    return [{"stage": "fea_check", "decided": "open bonded pairs", "value": len(opened), "rule": FP.OPEN_RULE,
+             "inputs": {"checked": checked.get("checked"), "closed": checked.get("closed"),
+                        "open": [o.get("pair") or o.get("name") for o in opened]},
+             "words": ("; ".join(FP.open_words(o) for o in opened[:6]) if opened
+                       else f"Every one of the {checked.get('checked')} tied bonded pair(s) has mesh nodes within its "
+                            "reach on every face.")}]
 
 
 def restage_tied(ws: Path, record: dict) -> dict:
@@ -412,9 +446,11 @@ def restage_tied(ws: Path, record: dict) -> dict:
         before = json.loads((ws / A.SIDECAR).read_text())
     except (OSError, ValueError):
         before = {}
-    sidecar = A.stage(shape, A.BONDED, ws, names=names, tie=True, gap_joins=before.get("gap_joins", True) is not False)
+    sidecar = A.stage(shape, A.BONDED, ws, names=names, tie=True, gap_joins=before.get("gap_joins", True) is not False,
+                      pairs=before.get("pair_choices") or None)
     plan = dict(record.get("assembly_plan") or {})
-    plan.update(mode=sidecar["mode"], pairs=len(sidecar["pairs"]), notes=list(sidecar["notes"]))
+    plan.update(mode=sidecar["mode"], pairs=len(sidecar["pairs"]), notes=list(sidecar["notes"]),
+                joints=list(sidecar.get("joints") or []), joint_counts=dict(sidecar.get("joint_counts") or {}))
     record["assembly_plan"] = plan
     return record
 
@@ -1232,7 +1268,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         connection = connection_of(state)
         try:
             record = await asyncio.to_thread(prepare_assembly, ws, record, surface, connection=connection,
-                                             source_path=source_path, gap_joins=gap_joins_of(state))
+                                             source_path=source_path, gap_joins=gap_joins_of(state),
+                                             pairs=pairs_of(state))
         except Exception as exc:  # noqa: BLE001 - recorded as the attempt's reason
             logger.exception("fea driver: the assembly could not be staged - job_id=%s", job_id)
             _refuse(ws, cause=FailureCause.NOT_BUILT.value, text=f"the assembly could not be staged ({exc})",
@@ -1260,6 +1297,11 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                                    "pairs": asm.get("pairs"), "interfaces": asm.get("interfaces"),
                                    "tie_first": asm.get("tie_first")},
                         "words": " ".join(P.assembly_words(asm)[:2])}])
+        # PLAN-fea-19/20: each pair's type and each overlap's owner, with its reason
+        from meshpipeline.cad import fea_pairs as FP
+
+        _cite(job_id, FP.decisions(list(asm.get("joints") or []), connection=connection,
+                                   gap_joins=gap_joins_of(state)))
     if not record.get("faces") or not any("thickness_min_mm" in (r or {}) for r in record["faces"].values()):
         # PLAN-fea-3 cannot be planned on walls nobody measured: stop before meshing rather than
         # deliver a mesh whose walls were never held to the rule
@@ -1545,6 +1587,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     ok = best is not None
     if best is not None:
         _restore_pass(ws, best)
+        _cite(job_id, open_pairs_decision(ws))
     (ws / "fea_passes.json").write_text(json.dumps({"passes": passes, "delivered": best, "levers": levers}, indent=1))
     if not ok and passes:
         # THE LADDER RAN OUT on a mesh it built: every pass this plan allows was tried, so the same

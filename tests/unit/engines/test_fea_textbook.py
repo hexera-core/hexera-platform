@@ -13,6 +13,7 @@
 | ASSEMBLY: two 100 mm blocks, bonded, under tension | static | one 200 mm bar: end displacement p L / E, and sigma_xx = p on both sides of the joint | 1% |
 | ASSEMBLY: two 100 mm blocks in contact, under compression | static | sigma_xx = -p in both parts (the load crosses the contact pair) | 1% |
 | ASSEMBLY: three bonded blocks, two of them also tied along a line, under tension | static | the reaction balances the pull (0.1%); sigma_xx = p at the pulled end | 1% |
+| ASSEMBLY: three 100 mm blocks, A-B bonded, A-C set Off (PLAN-fea-19), B pulled | static | A and B as one 200 mm bar (p L / E, sigma_xx = p in B); C unstressed | 1% |
 
 Poisson's ratio is 0 in the plate, the cantilever and the column cases, so a clamped or loaded face
 adds no lateral constraint the closed form leaves out; the other cases use steel's 0.3.
@@ -103,9 +104,11 @@ SLENDER = {"L": 500.0, "h": 10.0}
 BLOCKS = {"a": 100.0, "p": 1.0e6, "gap": 0.2}
 #: how each assembly case's parts are joined (the stage's one answer)
 CONNECTION = {"bonded_tension": "bonded", "contact_compression": "contact", "bonded_gap_tension": "bonded",
-              "bonded_corner_tie": "bonded"}
+              "bonded_corner_tie": "bonded", "pair_off_carries_nothing": "bonded"}
 #: THE CORNER CASE: tests/fea_fixtures.corner_blocks of this section (mm)
 CORNER = {"a": 50.0}
+#: PLAN-fea-19: the single pairs set on the stage, per case (A-C set Off, A-B left bonded)
+PAIRS = {"pair_off_carries_nothing": {"Part_1|Part_3": {"type": "off"}}}
 
 
 def _shape(case: str):
@@ -133,6 +136,9 @@ def _shape(case: str):
     if case == "bonded_gap_tension":
         from tests import fea_fixtures as fx
         return fx.gapped_blocks(BLOCKS["a"], BLOCKS["gap"])
+    if case == "pair_off_carries_nothing":
+        from tests import fea_fixtures as fx
+        return fx.off_and_bonded_blocks(BLOCKS["a"])
     if case in CONNECTION:
         from tests import fea_fixtures as fx
         return fx.touching_blocks(BLOCKS["a"])
@@ -179,7 +185,8 @@ def _mesh(case: str, ws: Path, monkeypatch) -> dict:
         gmsh.finalize()
     monkeypatch.setattr(runtime, "get_engine", lambda _n: SimpleNamespace(
         run_cartesian_mesh=lambda w, timeout: {"rc": fea_adapter.mesh(w)}))
-    state = {"purpose": "structural", **({"fea_connection": CONNECTION[case]} if case in CONNECTION else {})}
+    state = {"purpose": "structural", **({"fea_connection": CONNECTION[case]} if case in CONNECTION else {}),
+             **({"fea_pairs": PAIRS[case]} if case in PAIRS else {})}
     ok, marker, _o = asyncio.run(FD.drive(ws, state, job_id=f"acc-{case}", publish=None, run=_Run()))
     assert ok, f"the driver did not mesh {case}: {marker}"
     return json.loads((ws / "quality.json").read_text())
@@ -584,6 +591,44 @@ RF
     return worst, BLOCKS["p"], "sigma_xx at the pulled end (Pa), worst node"
 
 
+def _pair_off_carries_nothing(ws, q):
+    """PLAN-fea-19: three 100 mm blocks - A held on x = 0, B bonded to A's far end, C sitting on A's top
+    face with its pair set OFF (and held on its own faces, so it cannot drift). B is pulled by p: the
+    bonded pair carries the whole load (sigma_xx = p in B, and A and B stretch as one 200 mm bar), and
+    the Off pair carries none (C stays unstressed: no tie, no contact, nothing joins it to A)."""
+    deck, nodes, nsets = _deck(ws)
+    assert deck.count("*TIE, NAME=") == 1 and "*CONTACT PAIR" not in deck, "only A-B may be joined"
+    a = BLOCKS["a"] * 1e-3
+    load = _face(nodes, nsets, lambda q: abs(q[0] - 2 * a) < 1e-9)
+    x0 = _faces(nodes, nsets, lambda q: abs(q[0]) < 1e-9)                   # A's and C's
+    y0 = _faces(nodes, nsets, lambda q: abs(q[1]) < 1e-9)                   # A's and B's
+    z0 = _faces(nodes, nsets, lambda q: abs(q[2]) < 1e-9)                   # all three
+    top = _face(nodes, nsets, lambda q: abs(q[1] - 2 * a) < 1e-9)           # C's own top
+    assert len(x0) == 2 and len(y0) == 2 and len(z0) == 3, (x0, y0, z0)
+    bc = "\n".join([f"{f}, 1, 1, 0.0" for f in x0] + [f"{f}, 2, 2, 0.0" for f in [*y0, top]]
+                   + [f"{f}, 3, 3, 0.0" for f in z0])
+    _dat, frd = _solve(ws, "off", deck, _material("STEEL", 0.3) + f"""*BOUNDARY
+{bc}
+*STEP
+*STATIC, SOLVER=ITERATIVE CHOLESKY
+*DSLOAD
+{load}, P, {-BLOCKS["p"]:.6e}
+*NODE FILE
+U, S
+*END STEP
+""")
+    u, st = _frd_disp(frd), _frd_stress(frd)
+    in_b = [i for i, x in nodes.items() if x[0] > a * 1.001 and i in st]
+    in_c = [i for i, x in nodes.items() if x[1] > a * 1.001 and i in st]
+    sxx_b = np.array([st[i][0] for i in in_b])
+    assert np.max(np.abs(sxx_b / BLOCKS["p"] - 1.0)) < 0.02, f"B: sigma_xx {sxx_b.min():.4g}..{sxx_b.max():.4g}"
+    # THE OFF PAIR CARRIES NOTHING: C is unstressed (to the solver's round-off)
+    c_peak = max(float(np.max(np.abs(st[i]))) for i in in_c)
+    assert c_peak < 1e-6 * BLOCKS["p"], f"C carries {c_peak:.4g} Pa through a pair set Off"
+    end = float(np.mean([u[i][0] for i in nsets[load]]))
+    return end, BLOCKS["p"] * 2 * BLOCKS["a"] * 1e-3 / E, "end displacement (m): A and B as one bar, C carrying nothing"
+
+
 def _contact_compression(ws, q):
     _nodes, _nsets, _load, _u, st = _blocks(ws, 1.0, contact=True)
     sxx = np.array([v[0] for v in st.values()])
@@ -605,6 +650,7 @@ CASES = {
     "contact_compression": ("static", _contact_compression, 0.01),
     "bonded_gap_tension": ("static", _bonded_gap_tension, 0.01),
     "bonded_corner_tie": ("static", _bonded_corner_tie, 0.01),
+    "pair_off_carries_nothing": ("static", _pair_off_carries_nothing, 0.01),
 }
 
 
