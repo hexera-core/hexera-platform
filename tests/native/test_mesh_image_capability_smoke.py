@@ -18,6 +18,12 @@ BASHRC = rtcfg.OPENFOAM_BASHRC
 # (isolated conda shim) are handled by their own tests below.
 _FOAM_TOOLS = {
     "cfmesh": ["cartesianMesh", "checkMesh"],
+    # THE CONJUGATE MESHER ADDS topoSet, and it is the one tool no other engine needs. cfMesh
+    # cannot mesh multiple regions, so this engine meshes ONE manifold domain and then cuts it:
+    # topoSet tags the coolant cells against the coolant surface, splitMeshRegions cuts along
+    # faces that already exist, and checkMesh runs PER REGION afterwards. A mesh image without
+    # topoSet would fail the whole engine at its second stage.
+    "cfmesh_conjugate": ["cartesianMesh", "topoSet", "splitMeshRegions", "checkMesh"],
     "snappy": ["blockMesh", "snappyHexMesh", "decomposePar", "reconstructParMesh",
                "surfaceFeatureExtract", "checkMesh"],
     "snappy_multiregion": ["blockMesh", "snappyHexMesh", "splitMeshRegions", "checkMesh"],
@@ -33,7 +39,8 @@ def _foam(cmd: str, timeout: int = 60) -> subprocess.CompletedProcess:
 
 
 def test_dispatch_registry_resolves_every_supported_engine(canonical_provenance):
-    expected = {"cfmesh", "snappy", "snappy_multiregion", "gmsh", "vmtk", "snapgrid"}
+    expected = {"cfmesh", "cfmesh_conjugate", "snappy", "snappy_multiregion", "gmsh", "vmtk",
+                "snapgrid"}
     assert set(engine_names()) == expected
     runners = engine_runners()
     assert set(runners) == expected
