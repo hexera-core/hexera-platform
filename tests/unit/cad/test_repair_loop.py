@@ -19,7 +19,7 @@ from meshpipeline.cad.repair.loop import (
     run,
 )
 from meshpipeline.cad.repair.operations import OpOutcome
-from meshpipeline.cad.repair.plan import Candidate
+from meshpipeline.cad.repair.plan import Candidate, RulesPlanner
 from meshpipeline.cad.repair.session import RepairSession
 
 # WHY `stopped_because` IS NOT A DETAIL. "No error defect remains" and "I ran out of operations"
@@ -290,6 +290,66 @@ def test_consecutive_rollbacks_stop_the_run_as_stalled():
     assert result.stopped_because == STALLED
     assert len(result.verdicts) == 2
     assert all(not v.kept for v in result.verdicts)
+
+
+def test_a_decline_spends_no_stall_budget_and_the_next_defect_is_still_reached():
+    # THE hero.stp SHAPE OF FAILURE, in miniature. A tangle of crossing faces is reported once per
+    # member face; the heal-like op aims at the SAME pair from either finding and DECLINES - it ran
+    # nothing, it judged. Before the fix the planner re-proposed the identical aim from the sibling
+    # finding (the ineffective ledger is keyed per proposing defect), the two declines spent a
+    # stall budget of 2, and the sew that would have fixed the open shell was never proposed.
+    class _Declining:
+        name = "healish"
+        answers = frozenset({DefectCode.self_intersection})
+        scope = 7
+
+        def __init__(self):
+            self.calls = 0
+
+        def targets_for(self, defect):
+            # The whole tangle, whichever member finding proposes it - as the real heal does.
+            return (EntityRef(entity_type="face", fingerprint="face:x", entity_index=1),
+                    EntityRef(entity_type="face", fingerprint="face:y", entity_index=2))
+
+        def apply(self, shape, targets, *, tolerance_mm):
+            self.calls += 1
+            return OpOutcome(shape=shape, evidence={"declined": "multi_body"})
+
+    class _Sewing:
+        name = "sewish"
+        answers = frozenset({DefectCode.open_shell})
+        scope = 4
+
+        def targets_for(self, defect):
+            return (EntityRef(entity_type="edge", fingerprint=defect.fingerprint,
+                              entity_index=defect.entity_index),)
+
+        def apply(self, shape, targets, *, tolerance_mm):
+            return OpOutcome(shape="sewn")
+
+    crossing_x = EntityDefect(code=DefectCode.self_intersection, severity=DefectSeverity.error,
+                              entity_type="face", entity_index=1, message="x",
+                              fingerprint="face:x")
+    crossing_y = EntityDefect(code=DefectCode.self_intersection, severity=DefectSeverity.error,
+                              entity_type="face", entity_index=2, message="x",
+                              fingerprint="face:y")
+    open_edge = _defect(fingerprint="edge:open", code=DefectCode.open_shell, index=5)
+    heal, sew = _Declining(), _Sewing()
+
+    result = run(None, planner=RulesPlanner(ops=(heal, sew)),
+                 session=_session([((crossing_x, crossing_y, open_edge), True),
+                                   ((crossing_x, crossing_y), True)]),
+                 budget=LoopBudget(max_ops=6, stall_limit=2, timeout_s=120.0),
+                 tolerance_mm=0.01)
+
+    # The decline happened ONCE, the sew was reached and kept, and the run did not stall: the
+    # crossings remain only because the one operation answering them said no, which is
+    # `no_candidate`, not `stalled`.
+    assert heal.calls == 1
+    assert [(v.op, v.status) for v in result.verdicts] == [("healish", "rolled_back"),
+                                                           ("sewish", "kept")]
+    assert result.verdicts[0].reason.startswith("declined:")
+    assert result.stopped_because == NO_CANDIDATE
 
 
 def test_the_time_budget_covers_the_whole_loop_not_one_operation():
