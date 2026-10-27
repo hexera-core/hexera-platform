@@ -1174,23 +1174,30 @@ async def _rung_refine(ws: Path, record: dict, diag_m: float, first_plan: dict, 
     from meshpipeline.engines import fea_tetwild as TW
 
     parts = last.get("parts")
-    targets = TW.refine_targets(first_plan, list(last["short"]), parts)
-    if not targets:
+    q_last = _read_quality(ws)
+    walls = (((q_last.get("fea") or {}).get("rules") or {}).get("through_wall") or {}).get("short") or []
+    targets = TW.refine_targets(first_plan, list(last["short"]), list(walls), parts)
+    if not targets["ftetwild"] and not targets["gmsh"]:
         return None
     n = len(passes) + len(ran) + 1
     plan = copy.deepcopy(first_plan)
     if record.get("assembly_plan"):
         plan["assembly"] = dict(record["assembly_plan"])
+    # gmsh's parts made finer the LAD-fea-3 way: their own short zone entries in the plan
+    plan["zones"] = TW.tighten_zones(list(plan.get("zones") or []), targets["gmsh"], L.TIGHTEN)
     settings = TW.params(plan, record, diag_m, parts)
-    settings["refine"] = {"rule": TW.REFINE_RULE, "factor": L.TIGHTEN, "parts": targets, "after_pass": last["pass"]}
+    settings["refine"] = {"rule": TW.REFINE_RULE, "factor": L.TIGHTEN, "parts": targets["ftetwild"],
+                          "gmsh_parts": targets["gmsh"], "after_pass": last["pass"]}
+    again = sorted(int(k.split("_")[1]) for k in targets["gmsh"])
     plan["mesh"] = {**(plan.get("mesh") or {}), "engine": TW.ENGINE, "ftetwild": settings,
-                    # LAD-fea-11: the gmsh parts as the rung's first pass had them
-                    **({"keep": kept} if kept is not None else {})}
-    zones = sorted({z for zs in targets.values() for z in zs})
-    said = (f"fTetWild's mesh (pass {last['pass']}) fell short of {len(set(last['short']))} zone rule(s) and no pass "
-            f"was left to make them finer, so one more pass re-meshes {', '.join(sorted(targets))} only, with "
-            f"{', '.join(zones[:8])}{', ...' if len(zones) > 8 else ''} {int(round((1 - L.TIGHTEN) * 100))}% finer and "
-            "held through fTetWild's sizing grid; the better of the two is delivered (LAD-fea-13).")
+                    # LAD-fea-11: the gmsh parts as the rung's first pass had them - but the ones made finer here
+                    **({"keep": {**kept, "remesh_parts": again}} if kept is not None else {})}
+    every = {**targets["ftetwild"], **targets["gmsh"]}
+    zones = sorted({z for zs in every.values() for z in zs})
+    said = (f"The last rung's mesh (pass {last['pass']}) fell short of {len(set(last['short']))} zone rule(s) and no "
+            f"pass was left to make them finer, so one more pass re-meshes {', '.join(sorted(every))} only, with "
+            f"{', '.join(zones[:8])}{', ...' if len(zones) > 8 else ''} {int(round((1 - L.TIGHTEN) * 100))}% finer (on "
+            "fTetWild's parts, held through its sizing grid); the better of the two is delivered (LAD-fea-13).")
     plan["words"] = [*(plan.get("words") or []), said]
     _cite(job_id, [{"stage": "fea_ladder", "decided": "rung refinement", "value": TW.ENGINE, "rule": TW.REFINE_RULE,
                     "inputs": {"pass": n, "after_pass": last["pass"], "short": sorted(set(last["short"])),
@@ -1223,7 +1230,10 @@ async def _rung_refine(ws: Path, record: dict, diag_m: float, first_plan: dict, 
     if not facts["valid"]:
         facts["rung_error"] = _rung_error(result)
     better = L.refined_better(facts, last)
-    if not better:
+    # the better of the two is the one delivered (LAD-fea-5 alone would weigh the worst element first)
+    if better:
+        last["deliverable"] = False
+    else:
         facts["deliverable"] = False
     if made:
         _keep_pass(ws, n)

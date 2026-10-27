@@ -41,16 +41,24 @@ def test_a_zone_being_refined_is_held_through_every_cell_of_the_grid():
     assert np.all(held <= plain + 1e-15)                         # only ever finer than before
 
 
-def test_the_refinement_targets_only_ftetwilds_parts_and_leaves_the_others_as_they_were():
-    plan = {"zones": [{"id": "T1_1", "faces": ["Part_1_Face_3"], "size_m": 0.001},
-                      {"id": "T2_1", "faces": ["Part_2_Face_1"], "size_m": 0.002},
-                      {"id": "W9", "faces": ["Part_3_Face_9"], "size_m": 0.003}]}
-    # pass 1 of the rung gave fTetWild parts 1 and 3; part 2 was gmsh's
-    assert TW.refine_targets(plan, ["T1_1", "T2_1", "W9", "T1_1"], [1, 3]) == {"Part_1": ["T1_1"], "Part_3": ["W9"]}
-    assert TW.refine_targets(plan, ["T2_1"], None) == {"Part_2": ["T2_1"]}
-    refine = {"factor": 0.8, "parts": {"Part_1": ["T1_1"]}}
-    mine, band = TW.refined_plan(plan, refine, "Part_1")
-    assert [z["size_m"] for z in mine["zones"]] == pytest.approx([0.0008, 0.002, 0.003]) and [z["id"] for z in band] == ["T1_1"]
+def test_the_refinement_targets_the_parts_the_short_walls_are_on_and_leaves_the_others_as_they_were():
+    """Zone ids repeat across an assembly's parts (T5_1 is the fifth face of every part): a short wall is on the
+    part of the face the check measured; a hot spot on its own faces' parts. Split by who meshed the part."""
+    plan = {"zones": [{"id": "T5_1", "faces": [f"Part_{k}_Face_5"], "size_m": 0.001} for k in (1, 2, 3, 4)]
+            + [{"id": "H9", "faces": ["Part_3_Face_9"], "size_m": 0.002},
+               {"id": "W7", "faces": ["Part_1_Face_7"], "size_m": 0.003}]}
+    walls = [{"zone": "T5_1", "face": "Part_4_Face_5"}, {"zone": "T5_1", "face": "Part_3_Face_5"}]
+    # the rung's pass gave fTetWild part 3 only; parts 1, 2 and 4 were gmsh's
+    assert TW.refine_targets(plan, ["T5_1", "T5_1", "H9"], walls, [3]) == {
+        "ftetwild": {"Part_3": ["H9", "T5_1"]}, "gmsh": {"Part_4": ["T5_1"]}}
+    assert TW.refine_targets(plan, ["W7"], [], None) == {"ftetwild": {"Part_1": ["W7"]}, "gmsh": {}}
+    # each target part's own entries made finer, never another part's entry of the same id
+    zones = TW.tighten_zones(plan["zones"], {"Part_4": ["T5_1"]}, 0.8)
+    assert [z["size_m"] for z in zones] == pytest.approx([0.001, 0.001, 0.001, 0.0008, 0.002, 0.003])
+    refine = {"factor": 0.8, "parts": {"Part_3": ["H9", "T5_1"]}}
+    mine, band = TW.refined_plan(plan, refine, "Part_3")
+    assert [z["size_m"] for z in mine["zones"]] == pytest.approx([0.001, 0.001, 0.0008, 0.001, 0.0016, 0.003])
+    assert sorted(z["id"] for z in band) == ["H9", "T5_1"]
     other, none = TW.refined_plan(plan, refine, "Part_2")
     assert other is plan and none == []
 

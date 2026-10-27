@@ -559,7 +559,8 @@ def test_the_rung_takes_only_the_part_gmsh_failed_on_and_keeps_the_others_as_gms
     q = json.loads((ws / "quality.json").read_text())
     ftw = q["fea"]["ftetwild"]
     assert ftw["parts"] == ["Part_2"] and ftw["gmsh_parts"] == 2 and not q["fatal"]
-    passes = json.loads((ws / "fea_passes.json").read_text())["passes"]
+    # the ladder's own passes (LAD-fea-13's refinement after a short rung mesh is its own test's)
+    passes = [p for p in json.loads((ws / "fea_passes.json").read_text())["passes"] if "refine" not in p]
     assert [p.get("engine", "gmsh") for p in passes] == ["gmsh", "gmsh", "ftetwild"] and passes[-1]["valid"]
 
 

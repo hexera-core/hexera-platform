@@ -450,19 +450,46 @@ def _zone_part(z: Mapping) -> str:
     return "whole"
 
 
-def refine_targets(plan: Mapping, short: list[str], parts: list[int] | None) -> dict[str, list[str]]:
-    """LAD-fea-13: the fTetWild parts the refinement pass re-meshes, each with the short zones on it. `parts`: the
-    parts the rung's pass gave fTetWild (None: every part)."""
-    zones = {str(z["id"]): z for z in plan.get("zones") or []}
-    out: dict[str, list[str]] = {}
-    for zid in sorted(set(short)):
-        z = zones.get(zid)
-        if z is None:
-            continue
+def refine_targets(plan: Mapping, short: list[str], walls: list[Mapping], parts: list[int] | None) -> dict[str, dict]:
+    """LAD-fea-13: the parts the refinement pass re-meshes, each with its short zones, split by who meshes them:
+    {"ftetwild": {"Part_k" | "whole": [zone ids]}, "gmsh": {"Part_k": [zone ids]}}. A wall short of its elements is
+    on the part of the face the check measured (zone ids repeat across an assembly's parts: T5_1 is the fifth face
+    of every part); any other short zone (a hot spot) is on the parts of its own faces. `parts`: the parts the
+    rung's pass gave fTetWild (None: every part)."""
+    found: dict[str, set[str]] = {}
+    walled = set()
+    for w in walls:
+        zid, face = str(w.get("zone") or ""), str(w.get("face") or "")
+        if zid and zid in set(short):
+            found.setdefault(_face_part(face), set()).add(zid)
+            walled.add(zid)
+    for z in plan.get("zones") or []:
+        zid = str(z.get("id"))
+        if zid in set(short) and zid not in walled:
+            found.setdefault(_zone_part(z), set()).add(zid)
+    out: dict[str, dict] = {"ftetwild": {}, "gmsh": {}}
+    for key, zids in sorted(found.items()):
+        by = "ftetwild" if (parts is None or key == "whole" or int(key.split("_")[1]) in set(parts)) else "gmsh"
+        out[by][key] = sorted(zids)
+    return out
+
+
+def _face_part(face: str) -> str:
+    from meshpipeline.cad.fea_assembly import part_of_face
+
+    k = part_of_face(face)
+    return f"Part_{k}" if k is not None else "whole"
+
+
+def tighten_zones(zones: list, targets: Mapping[str, list[str]], factor: float) -> list[dict]:
+    """The plan's zones with each target part's own short zone entries `factor` finer (LAD-fea-3's way), every
+    other entry as it was."""
+    out = []
+    for z in zones:
         key = _zone_part(z)
-        if parts is not None and key != "whole" and int(key.split("_")[1]) not in set(parts):
-            continue                       # a zone on a part gmsh meshed: not this pass's
-        out.setdefault(key, []).append(zid)
+        if str(z.get("id")) in set(targets.get(key) or []):
+            z = {**z, "size_m": float(z["size_m"]) * factor, "tightened": factor}
+        out.append(z)
     return out
 
 
@@ -470,17 +497,11 @@ def refined_plan(plan: Mapping, refine: Mapping, key: str) -> tuple[Mapping, lis
     """(the plan this part is sized by, the zones held through every cell): a part the refinement names gets its
     short zones LAD-fea-3 finer and held (LAD-fea-13); every other part the plan as it was - so its run, and its
     mesh, are the ones before."""
-    mine = set((refine.get("parts") or {}).get(key) or [])
+    mine = (refine.get("parts") or {}).get(key) or []
     if not mine:
         return plan, []
-    k = float(refine.get("factor") or 1.0)
-    zones = []
-    band = []
-    for z in plan.get("zones") or []:
-        if str(z["id"]) in mine:
-            z = {**z, "size_m": float(z["size_m"]) * k, "tightened": k}
-            band.append(z)
-        zones.append(z)
+    zones = tighten_zones(list(plan.get("zones") or []), {key: list(mine)}, float(refine.get("factor") or 1.0))
+    band = [z for z in zones if z.get("tightened") and _zone_part(z) == key]
     return {**plan, "zones": zones}, band
 
 
@@ -1058,5 +1079,5 @@ def mesh_into(gmsh, ws: Path, plan: Mapping, staged: Path, volumes: list[int], *
 
 __all__ = ["BIN_PATH", "COMMIT", "ENGINE", "MAX_RUNG_PASSES", "Nearest", "VERSION", "binary", "boundary",
            "closest_on_triangles", "envelope_m", "failed_parts", "FLAT_RULE", "FLAT_SHARE", "mesh_into", "orient",
-           "params", "peel_flat", "quadratic", "REFINE_RULE", "SLIVER_SICN", "refine_targets", "refined_plan", "rung_parts", "run_part", "sizing_grid", "split_long", "tessellate",
+           "params", "peel_flat", "quadratic", "REFINE_RULE", "SLIVER_SICN", "refine_targets", "refined_plan", "tighten_zones", "rung_parts", "run_part", "sizing_grid", "split_long", "tessellate",
            "words"]

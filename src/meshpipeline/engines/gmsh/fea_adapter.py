@@ -1371,7 +1371,10 @@ def build_volume(gmsh, ws: Path, plan: dict, geom: Path, asm: dict | None, sidec
     meta = (kept_for(ws, run) if asm and rung != "all" and str((sidecar or {}).get("mode") or "") in ("tie", "contact")
             else None)
     if meta is not None and float(meta.get("scale") or 1.0) == float(scale):
-        kept = [v for v in meta["kept_volumes"] if v in set(vols)]
+        # LAD-fea-13: a kept part the refinement after the rung makes finer is meshed again in this pass
+        again = {int(v) for q in ((run.get("keep") or {}).get("remesh_parts") or [])
+                 for v in (part_volumes or {}).get(f"Part_{int(q)}") or []}
+        kept = [v for v in meta["kept_volumes"] if v in set(vols) and v not in again]
         if kept:
             kept = load_kept(gmsh, ws, kept)
             print(f"[GMSH-FEA] {len(kept)} part volume(s) kept from the pass before; meshing the other "
