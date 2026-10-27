@@ -1568,8 +1568,10 @@ def mesh(workspace) -> int:
         # fTetWild takes every part)
         meshed = not rung or bool(built.get("gmsh_volumes"))
         note_stage(ws, "optimising", "improving the elements")
-        for _ in range(int(run.get("optimise_passes") or 1) if meshed else 0):
-            gmsh.model.mesh.optimize("Netgen")
+        # MESH-10: no volume comes out of the optimiser with invalid elements it went in without
+        from meshpipeline.engines.gmsh import optimise_guard
+        optimised = optimise_guard.optimise(gmsh, "Netgen", int(run.get("optimise_passes") or 1) if meshed else 0,
+                                            log_prefix="[GMSH-FEA]")
         order = int((plan.get("element") or {}).get("order") or 2)
         settled: dict = {"straightened": 0, "set_aside": [], "cusp_places_m": [], "cusp_elements": 0,
                          "micro_used": [], "micro_elements": 0}
@@ -1702,6 +1704,8 @@ def mesh(workspace) -> int:
                                           "fea_max_aspect_ratio", "fea_min_dihedral_deg",
                                           "fea_max_dihedral_deg", "fea_inverted") if k in shape},
             "fea_rules_short": len(rules.get("short") or []) if rules else None,
+            # MESH-10: the volumes the optimiser made invalid, given back the mesh they went in with
+            **({"fea_optimiser_kept_input": optimised} if optimised else {}),
             # MESH-5: a face's repeated surface triangles dropped before the fill
             **({"fea_repeated_triangles": {str(k): v for k, v in built["repeated_triangles"].items()}}
                if built.get("repeated_triangles") else {}),

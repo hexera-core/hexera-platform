@@ -1256,8 +1256,9 @@ def main(workspace: str) -> int:
                 gmsh.model.mesh.generate(3)
         if _cb is not None:
             gmsh.model.mesh.removeSizeCallback()
-        if spec.get("optimize", True):
-            gmsh.model.mesh.optimize("Netgen")
+        # MESH-10: no volume comes out of the optimiser with invalid elements it went in without
+        from meshpipeline.engines.gmsh import optimise_guard
+        _optimised = optimise_guard.optimise(gmsh, "Netgen", 1 if spec.get("optimize", True) else 0)
         if _srad is not None:
             # measured on the FINAL boundary: the radius field carried over from the coarse
             # surface (nearest point; the radius does not change with refinement)
@@ -1353,6 +1354,8 @@ def main(workspace: str) -> int:
                if _openings else {}),
             **_resolution,
             **_passage,
+            # MESH-10: the volumes the optimiser made invalid, given back the mesh they went in with
+            **({"optimiser_kept_input": _optimised} if _optimised else {}),
             "bounds": _final_node_bounds(gmsh),
             # groups = the ACTUAL physical groups present in the meshed model (read back),
             # role-annotated from the spec - the manifest must reflect the artifact, not
