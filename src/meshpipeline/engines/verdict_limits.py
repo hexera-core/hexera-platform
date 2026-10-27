@@ -268,6 +268,18 @@ def fea_limits(quality: Mapping) -> list[dict]:
                                "them is not resolved (on a gear, the contact stress at the tooth tips is not resolved); "
                                "remove or enlarge them in CAD for a clean mesh"),
                      "source": "docs/RULES.md PLAN-fea-12 (cad/fea_measure.cad_micro)"})
+    walls = [w for w in ((_m_(fea_m.get("rules")).get("through_wall") or {}).get("short") or []) if isinstance(w, Mapping)]
+    if walls:
+        # LAD-fea-13: every wall short of its elements through, named - its face, how thick, how many elements
+        # through it against the rule's (a refinement after the last rung that could not bring it up says so here)
+        named = [f"{w.get('face')} ({w.get('zone')}): {float(w.get('elements') or 0.0):.3g} element(s) through a "
+                 f"{float(w.get('thickness_mm') or 0.0):.3g} mm wall, {float(w.get('needed') or 2.0):g} needed"
+                 for w in walls]
+        rows.append({"key": "fea_walls_short", "op": "empty", "limit": [], "measured": named,
+                     "label": (f"{len(walls)} wall(s) with fewer elements through them than the plan's rule - stress "
+                               "through those walls is less exact; a finer mesh there, or a thicker wall in CAD, "
+                               "meets it"),
+                     "source": "docs/RULES.md PLAN-fea-3 / LAD-fea-13 (engines/fea_checks.py)"})
     slivers = aside.get("ftetwild_slivers")
     if isinstance(slivers, Mapping) and slivers.get("elements"):
         # LAD-fea-12: the last rung's slivers on the surface, each named - part, face, SICN, place - and NEVER a
@@ -285,6 +297,10 @@ def fea_limits(quality: Mapping) -> list[dict]:
                                "in CAD for a clean mesh"),
                      "source": "docs/RULES.md LAD-fea-12 (engines/fea_tetwild.mesh_into)"})
     return rows
+
+
+def _m_(v: Any) -> Mapping:
+    return v if isinstance(v, Mapping) else {}
 
 
 def _plain(v: Any) -> Any:

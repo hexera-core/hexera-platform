@@ -253,6 +253,16 @@ def rung_words(parts: list[int] | None, rung: int) -> str:
             "rung (LAD-fea-9). Its surface follows the CAD within its envelope; the faces keep their names.")
 
 
+def refined_better(new: Mapping, old: Mapping) -> bool:
+    """LAD-fea-13: the refinement pass after the rung beats the rung's own pass: valid, within the limit, and fewer
+    zones short of their rule - or as many, with the worst wall holding more elements through it."""
+    if not new.get("valid") or new.get("over"):
+        return False
+    a = (len(set(new.get("short") or [])), -float(new.get("through_wall_min") or 0.0))
+    b = (len(set(old.get("short") or [])), -float(old.get("through_wall_min") or 0.0))
+    return a < b
+
+
 def _rank(f: Mapping) -> tuple:
     return (not f["valid"], bool(f["short"]), f["over"], -float(f["min_sicn"] or 0.0), f["pass"])
 
@@ -262,7 +272,8 @@ _DECIDING = ("a valid mesh", "every rule met", "within the limit", "the better w
 
 def best_pass(passes: list[dict]) -> tuple[int | None, str]:
     """(the pass delivered, what decided it) - None when no pass built a valid mesh."""
-    valid = [f for f in passes if f["valid"]]
+    # LAD-fea-13: a refinement pass after the rung that came out no better than the rung's own is never delivered
+    valid = [f for f in passes if f["valid"] and f.get("deliverable", True)]
     if not valid:
         return None, "no valid mesh"
     ranked = sorted(valid, key=_rank)
@@ -274,4 +285,4 @@ def best_pass(passes: list[dict]) -> tuple[int | None, str]:
 
 
 __all__ = ["AI_LEVERS", "MAX_PASSES", "SURFACE_STALL", "stalled_surface", "surface_stall_lever", "best_pass", "coarse_factor", "failed_surfaces", "growth", "mesh_settings",
-           "lever_options", "next_lever", "pass_facts", "rung_words", "tightened"]
+           "lever_options", "refined_better", "next_lever", "pass_facts", "rung_words", "tightened"]
