@@ -639,7 +639,6 @@ def _spawned(brep, n_parts: int, pairs: list, workers: int, *, tol: float, mm: f
     near, skins, complete), or None when a worker could not start, ran out of time or failed (then the
     caller measures every pair here, one by one). Fresh processes, never forked copies: a fork of a
     process with threads can stall on a lock another thread held (26 Oct, a test run that never ended)."""
-    import os
     import pickle
     import subprocess
     import sys
@@ -659,7 +658,7 @@ def _spawned(brep, n_parts: int, pairs: list, workers: int, *, tol: float, mm: f
                 out = Path(tmp) / f"out{k}.pkl"
                 procs.append((subprocess.Popen([sys.executable, "-m", "meshpipeline.cad.fea_joins", str(spec), str(out)],
                                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                               stderr=subprocess.DEVNULL, env=dict(os.environ)), out))
+                                               stderr=subprocess.DEVNULL), out))
             joints: dict = {}
             near: dict = {}
             skins: dict[int, set[int]] = {}
