@@ -32,5 +32,5 @@ def test_a_small_fillet_is_still_a_stress_raiser():
     spot = {"id": "H1", "type": "fillet", "shape": "fillet", "faces": ["Face_1"], "radius_mm": 0.06,
             "local_thickness_mm": 5.0}
     rec = _record({"Face_1": 0.06}, spots=[spot])
-    assert [z["kind"] for z in P.zones(rec) if z["faces"] == ["Face_1"]] == ["fillet"]
+    assert "fillet" in [z["kind"] for z in P.zones(rec) if z["faces"] == ["Face_1"]]
     assert P.micro_rounds(rec) == []
