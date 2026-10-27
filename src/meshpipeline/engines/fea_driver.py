@@ -46,6 +46,10 @@ BUILD_FAILED = "fea_build_failed"
 GUARD_TRIP = "fea_guard_trip"
 #: The marker of a mesh built but too big for the worker to collect (kept in the exchange).
 TOO_BIG = "fea_too_big_for_worker"
+#: RUN-4: the marker, and the gate, of a pass OUR side never ran (its machine could not be started,
+#: its result never came back): ours, never the part's - no lever is pulled.
+NOT_RUN = "fea_not_run"
+NOT_RUN_GATE = "fea_dispatch"
 #: The gate a guard trip is reported under (ours, never the part's).
 GUARD_GATE = "fea_guard"
 #: MESH-2: the gate a mesh that failed AT a flagged CAD spot is reported under.
@@ -291,7 +295,9 @@ def prepare_assembly(ws: Path, record: dict, surface, *, connection: str, source
         bases.append({"n": p, "id": A.part_id(p), "name": names[p - 1] if p - 1 < len(names) else "",
                       "diag_mm": round(diag, 6), "faces": sorted(faces, key=lambda f: int(f.rsplit("_", 1)[-1]))})
     record["part_bases"] = bases
-    record["assembly_plan"] = {"staged": A.STAGED, "sidecar": A.SIDECAR, "connection": connection,
+    # MESH-8: the zero-thickness skins each part is meshed without (absent when there is none)
+    skins = [sk for sk in sidecar.get("skins") or [] if sk.get("faces")]
+    record["assembly_plan"] = {**({"skins": skins} if skins else {}), "staged": A.STAGED, "sidecar": A.SIDECAR, "connection": connection,
                                "mode": sidecar["mode"], "parts": sidecar["parts"], "pairs": len(sidecar["pairs"]),
                                "interfaces": len(sidecar["interfaces"]), "notes": notes + list(sidecar["notes"]),
                                # TIED FROM THE START: too many parts pass into each other to fuse (TIE_FIRST_PIECES)
@@ -305,6 +311,11 @@ def prepare_assembly(ws: Path, record: dict, surface, *, connection: str, source
         # should read (the gap a joint joins, a skin of no thickness)
         record["assembly_plan"]["joins"] = sidecar["joins"]
     return record
+
+
+def skin_words(skins: list[dict]) -> list[str]:
+    from meshpipeline.cad.fea_assembly import skin_notes
+    return skin_notes(skins)
 
 
 def restage_tied(ws: Path, record: dict) -> dict:
@@ -889,6 +900,25 @@ async def _native(ws: Path, machine: dict, work: dict, job_id: str, n: int, run)
         _clear_outputs(ws)
 
 
+def not_run(result: dict) -> bool:
+    """RUN-4: the pass never ran on OUR side - the mesh job or its VM could not be started (a refused
+    permission, a quota), the run was given up, or its result never came back. The FEA mesher has no
+    exit code of its own for this (contracts/mesh_execution.RC_INFRASTRUCTURE), so it is never read as
+    the part's verdict: no lever is pulled, and the attempt ends as ours (job bf863215, 26 Oct: five
+    passes and the last rung each refused 'HTTP 403' by the VM route, then told as the CAD's fault)."""
+    from meshpipeline.contracts.mesh_execution import RC_INFRASTRUCTURE
+    # a mesh BUILT but too big for this worker to collect is its own outcome (TOO_BIG: the result is kept)
+    return (isinstance(result, dict) and result.get("rc") == RC_INFRASTRUCTURE and not result.get("timed_out")
+            and not result.get("too_big_for_worker"))
+
+
+def not_run_words(unrun: dict) -> str:
+    """What a pass our side never ran says, for the why record and the refusal."""
+    where = unrun.get("machine") or "the mesh job"
+    return (f"pass {unrun.get('pass')} could not be run on {where} on our side "
+            f"({unrun.get('error') or 'no reason given'})")
+
+
 def _rung_error(result: dict) -> str:
     """What the rung's pass said when it failed: the adapter's own fTetWild line, else the log's last line."""
     tail = [ln.strip() for ln in str(result.get("log_tail") or "").splitlines() if ln.strip()]
@@ -956,6 +986,11 @@ async def _last_rung(ws: Path, record: dict, diag_m: float, first_plan: dict, pa
             facts["timed_out"] = True
         if not facts["valid"]:
             facts["rung_error"] = _rung_error(result)
+        if not_run(result):
+            # RUN-4: our side never ran it - no further rung pass would run either
+            facts["not_run"] = True
+            ran.append(facts)
+            break
         ran.append(facts)
         _keep_pass_log(ws, n)
         _cite(job_id, [{"stage": "fea_ladder", "decided": "last rung pass", "value": bool(facts["valid"]),
@@ -1035,6 +1070,11 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                                        "skins": joins.get("skins"), "gap_joins": gap_joins_of(state)},
                             "words": " ".join(str(n) for n in joins.get("notes") or [])
                             or "Where the parts meet was measured on their surfaces."}])
+        if asm.get("skins"):
+            _cite(job_id, [{"stage": "fea_plan", "decided": "skins left out", "rule": "MESH-8",
+                            "value": sum(len(sk["faces"]) for sk in asm["skins"]),
+                            "inputs": {"skins": asm["skins"]},
+                            "words": " ".join(skin_words(asm["skins"]))}])
         _cite(job_id, [{"stage": "fea_plan", "decided": "assembly", "value": asm.get("mode"),
                         "rule": "PLAN-fea-17",
                         "inputs": {"bodies": record.get("bodies"), "connection": connection,
@@ -1064,6 +1104,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     passes: list[dict] = []
     tripped: dict | None = None
     too_big: dict | None = None
+    unrun: dict | None = None
     rate, cls = fill_rate(record)
     chosen: dict = {}
     first_plan: dict = {}
@@ -1160,6 +1201,17 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                 _clear_outputs(ws)
             native_s = round(time.monotonic() - native_t0, 1)
             await run.fence("accept native mesh output")
+            if not_run(result):
+                # RUN-4: OUR SIDE NEVER RAN THIS PASS (its machine could not be started, its result never
+                # came back): not the part's verdict - no lever, no smaller plan; the attempt ends as ours
+                run.note_native_run(produced_usable_mesh=False)
+                unrun = {"pass": n, "error": _rung_error(result), "machine": machine.get("machine"),
+                         "where": machine.get("where")}
+                passes.append({**L.pass_facts(n, result.get("rc"), {}, plan), "native_s": native_s, "not_run": True,
+                               "ran_on": {k: machine.get(k) for k in ("where", "machine", "memory_gib", "why")}})
+                _cite(job_id, [{"stage": "fea_machine", "decided": "not run", "value": machine.get("where"),
+                                "rule": "RUN-4", "inputs": unrun, "words": not_run_words(unrun).capitalize() + "."}])
+                break
             stuck_on = L.stalled_surface(str(result.get("log_tail") or "")) if result.get("stalled") else None
             stall_lever = L.surface_stall_lever(stuck_on, levers, n=n) if stuck_on is not None else None
             if result.get("timed_out") and stall_lever is not None:
@@ -1246,7 +1298,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                             "inputs": lever.get("inputs") or {}, "words": lever["words"]}])
             levers.append(lever)
 
-        if (tripped is None and too_big is None and passes and not any(f["valid"] for f in passes)
+        if (tripped is None and too_big is None and unrun is None and passes and not any(f["valid"] for f in passes)
                 and not passes[-1].get("out_of_memory")
                 and (record.get("assembly_plan") or {}).get("mode") == "bonded"):
             # PLAN-fea-17: A BONDED ASSEMBLY THE MESHER COULD NOT BUILD AS ONE (the fused parts left
@@ -1261,14 +1313,30 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             continue
         break
 
-    if (tripped is None and too_big is None and passes and first_plan and not any(f["valid"] for f in passes)
-            and not passes[-1].get("out_of_memory")):
+    if (tripped is None and too_big is None and unrun is None and passes and first_plan
+            and not any(f["valid"] for f in passes) and not passes[-1].get("out_of_memory")):
         # LAD-fea-9, THE LAST RUNG: every gmsh option is spent (Delaunay, HXT, MeshAdapt on the surfaces
         # that failed, and for an assembly the tie) and no pass is valid - fTetWild meshes the part(s)
         # still without one, the other parts as the tie meshed them. Never for our infrastructure (a
         # guard trip, a worker too small) or a plan out of memory on the largest machine (LAD-fea-7)
         record, ran = await _last_rung(ws, record, diag_m, first_plan, passes, job_id=job_id, run=run)
         passes.extend(ran)
+        if ran and ran[-1].get("not_run") and not any(f["valid"] for f in ran):
+            last = ran[-1]
+            unrun = {"pass": last["pass"], "error": last.get("rung_error"),
+                     "machine": (last.get("ran_on") or {}).get("machine"), "where": (last.get("ran_on") or {}).get("where")}
+            _cite(job_id, [{"stage": "fea_machine", "decided": "not run", "value": unrun["where"], "rule": "RUN-4",
+                            "inputs": unrun, "words": not_run_words(unrun).capitalize() + "."}])
+    if unrun is not None and not any(f["valid"] for f in passes):
+        (ws / "fea_passes.json").write_text(json.dumps({"passes": passes, "delivered": None, "levers": levers,
+                                                        "not_run": unrun}, indent=1))
+        logger.error("fea driver: %s - job_id=%s", not_run_words(unrun), job_id)
+        # told as OURS (run_infrastructure: the run may be taken again), never as the part's geometry
+        _refuse(ws, cause=FailureCause.RUN_INFRASTRUCTURE.value, gate=NOT_RUN_GATE, text=not_run_words(unrun),
+                deterministic=False, ours=True, not_run=unrun)
+        await run.fence("deliver builder outcome")
+        outcome = run.outcome(produced_deliverable=False, exhausted=False, failure_marker=NOT_RUN)
+        return False, NOT_RUN, outcome
     if too_big is not None and not any(f["valid"] for f in passes):
         (ws / "fea_passes.json").write_text(json.dumps({"passes": passes, "delivered": None, "levers": levers,
                                                         "too_big_for_worker": too_big}, indent=1))
@@ -1342,4 +1410,4 @@ def driver_for(state):
 
 __all__ = ["connection_of", "prepare_assembly", "restage_tied", "BYTES_PER_ELEMENT", "MESH_JOB_MEMORY_GIB", "limit_facts", "memory_elements", "FILL_RATES", "FLOOR_STEPS", "WORKSPACE_BYTES_PER_ELEMENT", "memory_need", "MESH_JOB_LIMIT_S", "VM_CEILING_S", "attempt_left_s", "ceiling_for", "planned_seconds", "choose_plan",
            "complexity", "element_limit", "fill_rate", "watchdog_words", "BUILD_FAILED", "GUARD_TRIP", "NO_SOURCE", "QUALITY_GATE", "applies", "drive",
-           "driver_for", "ladder_facts", "ladder_words", "make_plan", "measure_staged", "planned_work", "write_plan"]
+           "driver_for", "NOT_RUN", "NOT_RUN_GATE", "not_run", "not_run_words", "ladder_facts", "ladder_words", "make_plan", "measure_staged", "planned_work", "write_plan"]

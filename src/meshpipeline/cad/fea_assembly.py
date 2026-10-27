@@ -560,7 +560,14 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
     diag = float(np.linalg.norm(hi - lo)) or 1.0
     vols = [_props(s, True)[0] for s in parts]
     notes: list[str] = []
-    fused = fuse(parts, fuzzy=FUZZY_SHARE * diag)
+    # MESH-8: EACH PART AS IT IS MESHED - its zero-thickness skins left out (cad/zero_skins), every face of
+    # what is meshed still named for the CAD face it came from; a part with none is the part itself
+    opened = [open_skins(s) for s in parts]
+    mesh_parts = [o.solid for o in opened]
+    skins = skin_record(opened)
+    notes.extend(skin_notes(skins))
+    fused = fuse(mesh_parts, fuzzy=FUZZY_SHARE * diag)
+    fused.face_origins = [[(p, opened[p - 1].origin[j - 1]) for p, j in o] for o in fused.face_origins]
     mode = PAIR_BONDED if connection == BONDED else PAIR_CONTACT
     if fused.error and connection == BONDED:
         mode = PAIR_TIE
@@ -595,8 +602,8 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
         # (a valid multi-solid B-rep can) becomes one face on each side, each named for its part
         from OCP.BRepBuilderAPI import BRepBuilderAPI_Copy
 
-        staged = compound([BRepBuilderAPI_Copy(s).Shape() for s in parts])
-        face_names = [[n] for n in global_face_names(staged)]
+        staged = compound([BRepBuilderAPI_Copy(s).Shape() for s in mesh_parts])
+        face_names = [[_origin_name(n, opened)] for n in global_face_names(staged)]
         vol_parts = [[p] for p in range(1, len(parts) + 1)]
     out.mkdir(parents=True, exist_ok=True)
     BRepTools.Write_s(staged, str(out / STAGED))
@@ -694,8 +701,54 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
         # HOW THE JOINTS WERE FOUND, and the faces no gap sizing should read: the faces a small-gap
         # joint joins (the gap is joined, not meshed across) and the skins (no thickness)
         sidecar["joins"] = said
+    if skins:
+        sidecar["skins"] = skins          # MESH-8 (absent when there is none: the sidecar is as before)
     (out / SIDECAR).write_text(json.dumps(sidecar, indent=1))
     return sidecar
+
+
+def open_skins(solid):
+    """cad/zero_skins.open_skins (imported here, where every part is staged)."""
+    from meshpipeline.cad import zero_skins
+    return zero_skins.open_skins(solid)
+
+
+def skin_record(opened: list) -> list[dict]:
+    """MESH-8: the skins each part was meshed without, named: [{"part", "faces", "on"}]."""
+    out = []
+    for p, o in enumerate(opened, start=1):
+        if o.skins:
+            out.append({"part": part_id(p), "faces": [face_name(p, k.skin) for k in o.skins],
+                        "on": sorted({face_name(p, k.on) for k in o.skins}, key=_face_sort)})
+        elif o.note:
+            out.append({"part": part_id(p), "faces": [], "on": [], "not_opened": o.note})
+    return out
+
+
+def skin_notes(skins: list[dict]) -> list[str]:
+    """MESH-8 in plain words, one line a part."""
+    out = []
+    for sk in skins:
+        if sk.get("faces"):
+            n = len(sk["faces"])
+            out.append(f"{sk['part']} has {n} skin{'s' if n != 1 else ''} of no thickness in its CAD "
+                       f"({_list(sk['faces'])}, lying on {_list(sk['on'])}, the other side out, with no material "
+                       f"between): {'they are' if n != 1 else 'it is'} left out of the mesh, so the opening "
+                       f"{'they' if n != 1 else 'it'} closed goes through. Nothing with material was changed, and "
+                       "the CAD file is untouched.")
+    return out
+
+
+def _origin_name(name: str, opened: list) -> str:
+    """Part_p_Face_j of a part as meshed -> the CAD face it came from."""
+    p = part_of_face(name)
+    try:
+        j = int(str(name).rsplit("_", 1)[-1])
+    except ValueError:
+        return name
+    if p is None or not (0 < p <= len(opened)) or not (0 < j <= len(opened[p - 1].origin)):
+        return name
+    return face_name(p, opened[p - 1].origin[j - 1])
 
 
 # #
@@ -718,7 +771,7 @@ def rename_record(rec: dict, names: list[str]) -> dict:
     out["hot_spots"] = [{**h, "faces": [nm(f) for f in h.get("faces") or []]} for h in rec.get("hot_spots") or []]
     if isinstance(rec.get("thickness"), dict) and rec["thickness"].get("face"):
         out["thickness"] = {**rec["thickness"], "face": nm(rec["thickness"]["face"])}
-    for key in ("cusps", "micro", "fold_back", "suspects"):
+    for key in ("cusps", "micro", "fold_back", "suspects", "coincident"):
         if rec.get(key):
             out[key] = [{**c, "faces": [nm(f) for f in c.get("faces") or []]} for c in rec[key]]
     out["face_names"] = "Part_k_Face_j"

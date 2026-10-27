@@ -88,9 +88,9 @@ def remote(monkeypatch):
 
     real_poll = C._poll_gcs_json
 
-    def poll(bucket_, key, deadline_s, progress_key=None):
+    def poll(bucket_, key, deadline_s, progress_key=None, **kw):
         calls["waited"].append(deadline_s)
-        return real_poll(bucket_, key, deadline_s, progress_key)
+        return real_poll(bucket_, key, deadline_s, progress_key, **kw)
 
     monkeypatch.setattr(G, "trigger_vm", vm)
     monkeypatch.setattr(G, "delete_vm", lambda ref, why: calls["deleted"].append((ref.instance_name, why)) or True)

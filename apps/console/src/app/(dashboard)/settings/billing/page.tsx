@@ -4,12 +4,14 @@ import { auth } from "@/auth";
 import {
   type Catalogue,
   type Subscription,
+  SALES_CONTACT,
   checkoutBanner,
   isPaying,
   planLabel,
   subscriptionSummary,
 } from "@/app/_components/billing";
 import { ExtraCreditsPicker, ManageBillingButton, PlanPicker } from "@/app/_components/billing-panel";
+import { DashboardNotice } from "@/app/_components/dashboard-notice";
 import { ownerIdFromSession } from "@/lib/auth/session";
 import { consoleFetch } from "@/lib/hexera-api/console-fetch";
 
@@ -62,7 +64,7 @@ export default async function BillingPage({
         <div className="metric-card">
           <p className="label">Current plan</p>
           <b>{subscription === null ? "Unavailable" : planLabel(paying ? subscription.plan : "")}</b>
-          <span>{subscription === null ? "API unavailable" : subscriptionSummary(subscription)}</span>
+          <span>{subscription === null ? "Plan data unavailable" : subscriptionSummary(subscription)}</span>
         </div>
         <div className="metric-card">
           <p className="label">Credit balance</p>
@@ -84,19 +86,28 @@ export default async function BillingPage({
               <p className="page__sub">Monthly capacity, limits and hosted Stripe plan changes.</p>
             </div>
           </div>
-          <div className="panel__body">
-            {catalogue === null ? (
-              <p className="empty">Could not load plans just now. Reload to try again.</p>
-            ) : !catalogue.billing_enabled ? (
-              <p className="empty">Plans are not on sale in this deployment yet.</p>
-            ) : (
+          {catalogue === null ? (
+            <DashboardNotice
+              body="Refresh the page to try again. Your current plan is not affected."
+              retryLabel="Try again"
+              title="We couldn't load available plans"
+              tone="error"
+            />
+          ) : !catalogue.billing_enabled ? (
+            <DashboardNotice
+              action={{ href: SALES_CONTACT, label: "Contact us" }}
+              body="Contact your Hexera representative to discuss plan options for this workspace."
+              title="Online plan changes are unavailable"
+            />
+          ) : (
+            <div className="panel__body">
               <PlanPicker
                 billingEnabled={catalogue.billing_enabled}
                 currentPlan={paying && subscription ? subscription.plan : ""}
                 plans={catalogue.plans}
               />
-            )}
-          </div>
+            </div>
+          )}
         </section>
 
         {catalogue?.extra_credits ? <ExtraCreditsPicker offer={catalogue.extra_credits} /> : null}

@@ -329,6 +329,25 @@ def _contract(f: Mapping) -> tuple[str, str]:
     return what, nxt
 
 
+def not_run_kind(error: object) -> str:
+    """Which of our own failures stopped a mesh before it ran (engines/fea_driver.not_run), read off the
+    executor's line: permission, capacity (no machine free, a quota), never_heard (started, never began),
+    gone (it began, then its machine went away), uncollected (it ran; its result never came back), or other."""
+    said = str(error or "")
+    if "[CLOUD_RUN_RESULT_UNCOLLECTED]" in said:
+        return "uncollected"
+    if "never-heard:" in said:
+        return "never_heard"
+    if "gone:" in said:
+        return "gone"
+    if any(k in said for k in ("QUOTA", "quota", "ZONE_RESOURCE_POOL_EXHAUSTED", "RESOURCE_AVAILABILITY",
+                               "VM could be started")):
+        return "capacity"
+    if any(k in said for k in ("403", "Forbidden", "PERMISSION_DENIED", "permission")):
+        return "permission"
+    return "other"
+
+
 def _fea_quality(f: Mapping) -> tuple[str, str]:
     """An FEA mesh whose plan's every pass left a few badly shaped elements: where they are, that
     another run builds the same mesh, and what the user can change - never flow advice."""
@@ -631,6 +650,29 @@ def _describe(cause: object, facts: Mapping | None = None, *,
                     "we planned for. That is ours to fix.",
                     f"You can run it again ({_RUN_AGAIN}); if it stops the same way, tell us - meshes like this "
                     "need a longer time limit on our side.")
+        unrun = f.get("not_run")
+        if isinstance(unrun, Mapping):
+            # RUN-4: OUR SIDE NEVER RAN THE MESHER (engines/fea_driver.not_run): its machine could not be
+            # started or its result never came back - said as that, never as the part's geometry (job
+            # bf863215, 26 Oct: a refused permission on the big-machine route was told as "two faces lie
+            # on top of each other... thicken that detail in your CAD")
+            kind = not_run_kind(unrun.get("error"))
+            where = ("the larger machine this mesh needs" if unrun.get("where") == "gce"
+                     else "the service that runs the mesher")
+            if kind == "uncollected":
+                return ("The mesher ran, but its result could not be brought back from the machine that ran it, "
+                        "so there was no mesh to check. That is our failure, not your geometry's.",
+                        f"You can run it again with nothing changed: {_RUN_AGAIN}.")
+            why = {"permission": " (it was refused permission)",
+                   "capacity": " (no machine of that size was free, or our quota for them was used up)",
+                   "never_heard": " (it was started but never began: it did not boot, or could not load the mesher)",
+                   "gone": " (the machine stopped answering part way through)",
+                   }.get(kind, "")
+            return (f"No mesh was built: {where} could not be started on our side{why}, so the mesher never ran. "
+                    "Nothing about your part was found wrong. That is our failure, not your geometry's.",
+                    (f"You can run it again with nothing changed once we have fixed it: {_RUN_AGAIN}."
+                     if kind == "permission" else
+                     f"You can run it again with nothing changed: {_RUN_AGAIN}; if it stops the same way, tell us."))
         if f.get("result_uncollected"):
             # the mesher RAN: the return trip failed. A result too large to bring back fails the
             # same way, so the second remedy is said too
@@ -677,6 +719,6 @@ def _describe(cause: object, facts: Mapping | None = None, *,
     return "", ""
 
 
-__all__ = ["RETRY_SKIPPED_NOTE", "SEAM_CAUSES", "STOP_CLASS_WORDS", "FailureCause", "StopClass",
+__all__ = ["not_run_kind", "RETRY_SKIPPED_NOTE", "SEAM_CAUSES", "STOP_CLASS_WORDS", "FailureCause", "StopClass",
            "as_cause", "clean_reason", "describe", "rebuild_over_limit", "retry_can_help",
            "review_stopped_reason", "stop_class_of"]
