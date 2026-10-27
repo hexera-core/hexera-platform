@@ -1048,8 +1048,12 @@ async function openFeaStage(sessionId, d, confirm, opts) {
       // the bodies, the clean check and whether it can go on, when the full reading lands after a
       // preview opened the stage: Proceed reads the same view (`f`), so a stop found late is shown
       // with its way on rather than met as a refusal
-      if (d2 && d2.fea) { Object.assign(f, d2.fea); followClean(panel, f); }
-      const moved = (m && followMeasure(panel, m, p, null)) | (a && followAssembly(panel, a));
+      // each line followed on its own: one that cannot be drawn never keeps the others stale (26 Oct: the
+      // clean check was redrawn and the parts' joints were not)
+      const follow = (fn) => { try { return !!fn(); } catch (e) { console.warn("FEA stage: not redrawn", e); return false; } };
+      if (d2 && d2.fea) { Object.assign(f, d2.fea); follow(() => followClean(panel, f)); }
+      const movedA = !!a && follow(() => followAssembly(panel, a));
+      const moved = (!!m && follow(() => followMeasure(panel, m, p, null))) || movedA;
       if (moved) {
         p.hot_spots = [...(((m || f.measure) || {}).hot_spots || []), ...interfaceMarks(a || f.assembly)];
         if (scene) scene.setSpots(p.hot_spots);

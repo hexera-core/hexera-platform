@@ -203,6 +203,13 @@ export function isHeld() { return _held; }
 export function holdState() { return { held: _held, check: _checkState }; }
 export function noteCheckState(s) { _checkState = s; }
 
+/** The stage told what the check now says - and a stage that cannot redraw a line never ends the
+ *  watch: the next poll tries again (an exception here used to end the loop, leaving the stage as it
+ *  first opened). */
+function safeUpdate(stage, d) {
+  try { stage.update(d); } catch (e) { console.warn("geometry stage: update failed", e); }
+}
+
 async function watchGeometryCheck(sessionId) {
   // THE STAGE OPENS AS SOON AS THE PART IS MEASURED, with the measuring step's own labels under
   // a banner that says what is happening, and takes the model's labels when they arrive. The
@@ -291,7 +298,7 @@ async function watchGeometryCheck(sessionId) {
     } else if (status === "failed" && stage) {
       // the naming gave up after the stage opened: the code's labels stand, the user proceeds -
       // or runs the naming again from the stage, so the watch goes on
-      stage.update(d); _checkState = "ready";
+      safeUpdate(stage, d); _checkState = "ready";
       if (isHeld()) holdInput(stageWait(), STAGE_WAIT_MS);
       if (!d.retry) return;
     } else if (status === "scouted") {
@@ -305,7 +312,7 @@ async function watchGeometryCheck(sessionId) {
         // where to go on, not that the part is still being drawn
         else if (isHeld()) holdInput(stageWait(), STAGE_WAIT_MS);
       }
-      if (stage) stage.update(d);            // the banner: waiting on the chat, the unit, or the naming
+      if (stage) safeUpdate(stage, d);       // the banner: waiting on the chat, the unit, or the naming
       else if (stageFailed) deps.geometryCard(d);   // the card's Proceed follows the unit, in place
     } else if (status === "ready" && d.named !== false) {
       // NAMED ON THE PREVIEW (a big file whose full reading is still running): the watch goes on
@@ -315,7 +322,7 @@ async function watchGeometryCheck(sessionId) {
       if (!readySeen || !waitingFull) {
         _checkState = "ready";
         if (isHeld()) holdInput(stageWait(), STAGE_WAIT_MS);
-        if (stage) stage.update(d); else if (!readySeen) await deps.geometryCheck(sessionId, d, confirmFn, retryFn);
+        if (stage) safeUpdate(stage, d); else if (!readySeen) await deps.geometryCheck(sessionId, d, confirmFn, retryFn);
       }
       readySeen = true;
       if (!waitingFull) return;

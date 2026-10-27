@@ -754,6 +754,8 @@ async def _run_async(req: JobRequest) -> dict:
         # contact); read off the stored confirmation, never the event loop's to wait on
         from meshpipeline.application.fea_check import confirmed_connection
         initial_state["fea_connection"] = await asyncio.to_thread(confirmed_connection, str(session_id or ""))
+        from meshpipeline.application.fea_check import confirmed_gap_joins
+        initial_state["fea_gap_joins"] = await asyncio.to_thread(confirmed_gap_joins, str(session_id or ""))
 
         initial_state["repair_directives"] = list(req.repair_directives)
 

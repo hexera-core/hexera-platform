@@ -62,6 +62,10 @@ class Joint:
     parts: tuple[int, int]        # (slave part, master part)
     sides: tuple[FaceSet, FaceSet]
     overlap: bool = False
+    #: A SMALL-GAP JOINT (PLAN-fea-18): how far the solver must reach across the measured gap to join
+    #: every node of it (the widest gap and a margin, cad/fea_assembly.GAP_REACH_MARGIN); None for
+    #: parts that touch, which keep each solver's own default.
+    reach: float | None = None
 
 
 @dataclass
@@ -201,8 +205,9 @@ def prepare(mesh: SolidMesh, sidecar: dict, *, surface_tag: dict[int, int], volu
         # SLAVE = the smaller surface (the usual rule: the finer, smaller side follows the larger)
         if _area(xyz_of, a, elements) > _area(xyz_of, b, elements):
             a, b, p, q = b, a, q, p
+        reach = float(pair.get("reach") or 0.0)
         joints.append(Joint(name=f"{word}{jid}", kind=kind, parts=(p, q), sides=(a, b),
-                            overlap=bool(pair.get("overlap"))))
+                            overlap=bool(pair.get("overlap")), reach=reach if reach > 0 else None))
     return Prepared(node_ids=node_ids, xyz=xyz, elements=elements, element_part=owner, parts=parts,
                     faces=faces, joints=joints)
 
@@ -210,6 +215,16 @@ def prepare(mesh: SolidMesh, sidecar: dict, *, surface_tag: dict[int, int], volu
 # #
 # Abaqus / CalculiX
 # #
+
+def _f8(v: float) -> str:
+    """A positive real for an 8-column Nastran field, at most 7 characters so a space always parts it
+    from the field before it ("5.932-4")."""
+    for digits in range(6, 0, -1):
+        t = f"{float(v):.{digits}E}".replace("E-0", "-").replace("E+0", "+").replace("E-", "-").replace("E+", "+")
+        if len(t) <= 7:
+            return t
+    return f"{float(v):.1E}"[:7]
+
 
 def _surface(fh, fs: FaceSet) -> None:
     for lab in range(1, 5):
@@ -281,13 +296,19 @@ def write_inp(path: Path | str, prep: Prepared, *, units: str = "m", source: str
                 fh.write(f"*CONTACT PAIR, INTERACTION={INTERACTION}, TYPE=SURFACE TO SURFACE\n")
                 fh.write(f"{j.sides[0].name}, {j.sides[1].name}\n")
         for j in ties:
-            fh.write(f"*TIE, NAME={j.name}\n")
+            if j.reach:
+                # ACROSS A GAP: every slave node within the reach is tied where it stands (ADJUST=NO: the
+                # gap is a weld or a thread, not a misplaced node to move)
+                fh.write(f"** {j.name}: a small-gap joint - the parts are {_coord(j.reach)} or less apart there\n")
+                fh.write(f"*TIE, NAME={j.name}, POSITION TOLERANCE={_coord(j.reach)}, ADJUST=NO\n")
+            else:
+                fh.write(f"*TIE, NAME={j.name}\n")
             fh.write(f"{j.sides[0].name}, {j.sides[1].name}\n")
     return {"element_type": etype, "elements": int(len(prep.elements)), "units": units,
             "parts": [{k: p[k] for k in ("id", "name", "first", "last")} for p in prep.parts],
             "face_sets": {f.name: i for i, f in enumerate(prep.faces, start=1)},
             "joints": [{"name": j.name, "kind": j.kind, "slave": j.sides[0].name, "master": j.sides[1].name,
-                        "overlap": j.overlap} for j in prep.joints],
+                        "overlap": j.overlap, **({"reach": j.reach} if j.reach else {})} for j in prep.joints],
             "cad_face_names": {}, "face_aliases": {}}
 
 
@@ -360,7 +381,9 @@ def write_bdf(path: Path | str, prep: Prepared, *, units: str = "m", source: str
         # cinterf, iglue, isearch) and the master body
         rows = [f"{'BCTABLE':<8}{1:>8d}{'':>8}{'':>8}{len(contacts):>8d}"]
         for j in contacts:
-            rows.append(f"{'':<8}{'SLAVE':<8}{j.parts[0]:>8d}{'0.':>8}{'0.':>8}{'0.':>8}{'0.':>8}"
+            # ERROR: the distance below which a node is taken as touching - a small-gap joint's reach
+            err = _f8(j.reach) if j.reach else "0."
+            rows.append(f"{'':<8}{'SLAVE':<8}{j.parts[0]:>8d}{err:>8}{'0.':>8}{'0.':>8}{'0.':>8}"
                         f"{1 if j.kind == 'tie' else 0:>8d}{0:>8d}")
             rows.append(f"{'':<8}{'MASTERS':<8}{j.parts[1]:>8d}")
         lines.extend(rows)
@@ -420,8 +443,9 @@ def write_cdb(path: Path | str, prep: Prepared, *, units: str = "m", source: str
         lines += ["ET,2,170", "ET,3,174", "KEYOPT,3,12,0"]
     if any(j.kind == "tie" for j in contacts):
         lines += ["ET,4,170", "ET,5,174", "KEYOPT,5,12,5"]
-    for i, _j in enumerate(contacts, start=2):
-        lines.append(f"R,{i}")
+    for i, j in enumerate(contacts, start=2):
+        # PINB (the 6th real constant): a small-gap joint's reach, so the bond takes every node across it
+        lines.append(f"R,{i},,,,,,{j.reach:.6E}" if j.reach else f"R,{i}")
     lines += [f"NBLOCK,6,SOLID,{int(prep.node_ids.max()):>10d},{len(prep.node_ids):>10d}", "(3i9,6e21.13e3)"]
     for i, (x, y, z) in zip(prep.node_ids.tolist(), prep.xyz.tolist(), strict=True):
         lines.append(f"{int(i):>9d}{0:>9d}{0:>9d}{x:21.13E}{y:21.13E}{z:21.13E}")
