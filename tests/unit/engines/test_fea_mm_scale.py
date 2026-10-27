@@ -331,6 +331,55 @@ def test_a_surface_stage_that_stalls_is_meshed_again_without_gmshs_switch(staged
     assert any(e["rule"] == "LAD-fea-8" and e["decided"] == "lever" for e in dr.cited_for("t-stall"))
 
 
+_SPUN_3D = ("Info    : Done meshing 2D (Wall 31s)\nInfo    : Meshing 3D...\n"
+            "Info    : It. 9267500 - 210945 nodes created - worst tet radius 13.2469 (nodes removed 128096 8928459)\n")
+
+
+def test_a_refinement_that_spins_is_a_failed_fill_and_the_next_pass_uses_hxt(staged, tmp_path, monkeypatch):
+    """LAD-fea-11: the watchdog stopped gmsh's 3D refinement as spinning (g_c0103, 3.8 hours): the part's,
+    not ours - the pass is a fill that failed, so the ladder goes on (LAD-fea-2: HXT) and delivers."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from meshpipeline.contracts import decision_record as dr
+    from meshpipeline.engines import runtime
+
+    ws = _ws(staged, tmp_path / "spin")
+    seen: list[object] = []
+
+    def _run(w, timeout):
+        plan = json.loads((Path(w) / "fea_plan.json").read_text())
+        seen.append((plan.get("mesh") or {}).get("algorithm3d"))
+        if len(seen) == 1:
+            return {"rc": -1, "timed_out": True, "stalled": True, "spinning": True, "log_tail": _SPUN_3D,
+                    "watchdog": {"stopped": "spinning",
+                                 "refine": {"iterations": 9267500, "kept": 210945, "rejected": 8928459}}}
+        return {"rc": A.mesh(w)}
+
+    class _Run:
+        async def fence(self, _why):
+            return None
+
+        def note_authoring(self):
+            pass
+
+        def note_native_run(self, produced_usable_mesh):
+            pass
+
+        def outcome(self, produced_deliverable, failure_marker="", exhausted=False):
+            return SimpleNamespace(produced_deliverable=produced_deliverable, terminal_value=failure_marker)
+
+    monkeypatch.setattr(runtime, "get_engine", lambda _n: SimpleNamespace(run_cartesian_mesh=_run))
+    ok, marker, _o = asyncio.run(FD.drive(ws, {}, job_id="t-spin", publish=None, run=_Run()))
+    assert ok, marker
+    assert seen[:2] == ["delaunay", "hxt"]
+    cited = dr.cited_for("t-spin")
+    assert any(e["rule"] == "LAD-fea-11" and e["decided"] == "spinning" for e in cited)
+    assert any(e["rule"] == "LAD-fea-2" for e in cited)
+    # never told as a guard trip (ours): no stall or ceiling verdict
+    assert not any(e.get("stage") == "fea_time" and e["decided"] in ("stalled", "ceiling") for e in cited)
+
+
 def test_a_repeated_triangle_that_is_a_flap_is_dropped_whole():
     """MESH-5: the nose cone's pair was a fold out and back over nothing (two of its edges bound no other
     triangle): keeping one copy left a triangle no element has as a face, and the solver files stopped. A
