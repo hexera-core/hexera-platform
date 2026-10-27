@@ -39,8 +39,13 @@
     "MESH"
    ],
    [
+    "cell_limit",
+    false,
+    "MESH"
+   ],
+   [
     "resolution_floor",
-    true,
+    false,
     "MESH"
    ],
    [
@@ -126,8 +131,13 @@
     "MESH"
    ],
    [
+    "cell_limit",
+    false,
+    "MESH"
+   ],
+   [
     "resolution_floor",
-    true,
+    false,
     "MESH"
    ],
    [
@@ -278,8 +288,13 @@
     "MESH"
    ],
    [
+    "cell_limit",
+    false,
+    "MESH"
+   ],
+   [
     "resolution_floor",
-    true,
+    false,
     "MESH"
    ],
    [
@@ -445,6 +460,16 @@
    [
     "quality_floor",
     true,
+    "MESH"
+   ],
+   [
+    "cell_limit",
+    false,
+    "MESH"
+   ],
+   [
+    "resolution_floor",
+    false,
     "MESH"
    ],
    [

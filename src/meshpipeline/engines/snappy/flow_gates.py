@@ -11,6 +11,7 @@ from meshpipeline.contracts.failure_cause import FailureCause
 from meshpipeline.engines.gates import GateCtx, GateFeedback, GateSpec, refuse
 from meshpipeline.engines.passage import PASSAGE_FLOOR_CELLS
 from meshpipeline.engines.region_check import gate_port_areas
+from meshpipeline.engines.resolution_policy import CELL_LIMIT_PROVES, gate_cell_limit
 
 logger = logging.getLogger(__name__)
 
@@ -83,22 +84,8 @@ def _validate_manifest(workspace: Path, domain: str = "") -> tuple[bool, str]:
         return False, zero_face_feedback(
             f"mesh_manifest.json: these patches have zero faces: {_empty}", _empty, workspace)
 
-    # Compute-feasibility gate: the executor is the SOLE limiter of mesh size (the
-    # reviewer no longer judges cell count). Over the cap → reject with ACTIONABLE
-    # coarsening feedback so the builder can fix it on retry.
-    _cell_count = manifest.get("cell_count", 0)
-    _CELL_HARD_LIMIT = polcfg.CELL_HARD_LIMIT
-    if _cell_count and _cell_count > _CELL_HARD_LIMIT:
-        return (
-            False,
-            refuse(
-                f"mesh_manifest.json: cell_count={_cell_count:,} exceeds the compute budget "
-                f"({_CELL_HARD_LIMIT:,} cells) - the mesh is TOO FINE. COARSEN it: increase "
-                "maxCellSize, raise the wall localRefinement cellSize, and drop or widen any "
-                "objectRefinement, then run_mesh again. Do NOT shrink the domain box to cut "
-                "cells - keep the far-field extents and reduce REFINEMENT instead.",
-                FailureCause.CELL_BUDGET, cells=int(_cell_count), limit=int(_CELL_HARD_LIMIT)),
-        )
+    # THE CELL LIMIT is its own gate now (resolution_policy.gate_cell_limit, cell_limit below):
+    # a note on a sound mesh, never a failure here (LAD-cfd-4).
 
     # snappyHexMesh writes a native OpenFOAM polyMesh. (The engine label here used to read
     # "cfMesh" - inherited verbatim from the retired shared module, so a snappy user was told
@@ -196,7 +183,12 @@ FLOW_GATES: tuple[GateSpec, ...] = (
     GateSpec(key="quality_floor",  check=_gate_quality_floor,       section="MESH",
              proves="The mesh clears every quality bar snappyHexMesh requires - skewness is localized and the body is captured on the wall",
              cause=FailureCause.MESH_QUALITY),
-    GateSpec(key="resolution_floor", check=_gate_resolution_floor, section="MESH",
+    # A NOTE ON A SOUND MESH, NOT A FAILURE (engines/resolution_policy, LAD-cfd-1/3): every
+    # gate after it still runs, the executor records the shortfall, the router climbs the
+    # resolution ladder while a rung is left, and a sound mesh is delivered with the note after.
+    GateSpec(key="cell_limit", check=gate_cell_limit, blocking=False, section="MESH",
+             proves=CELL_LIMIT_PROVES, cause=FailureCause.CELL_BUDGET),
+    GateSpec(key="resolution_floor", check=_gate_resolution_floor, blocking=False, section="MESH",
              proves="Every passage the flow must go through is spanned by enough cells to carry it (12 at the narrowest wall)",
              cause=FailureCause.UNDER_RESOLVED),
     GateSpec(key="patch_contract", check=_gate_patch_contract, section="GROUPS",

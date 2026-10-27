@@ -19,14 +19,25 @@ export function statusClass(status: string, reviewOutcome?: string | null): stri
   return MARKS[status] ?? "status";
 }
 
-/** The word a run's status column shows. `succeeded` stays the API's word, except for a run the
- *  review left points open on: that one says it was delivered with concerns, so a list never reads
- *  it as a pass. */
+/** Everyday words for the API's job states. A state not listed shows as the API names it, with
+ *  underscores as spaces, so a new JobStatus member still reads as words. */
+const LABELS: Record<string, string> = {
+  succeeded: "mesh ready",
+  failed: "failed",
+  running: "running",
+  pending: "waiting to start",
+  queued: "waiting to start",
+  pending_review: "waiting for your review",
+  cancelled: "cancelled",
+};
+
+/** The word a run's status column shows. A run the review left points open on says it was
+ *  delivered with concerns, so a list never reads it as a plain pass. */
 export function statusLabel(status: string, reviewOutcome?: string | null): string {
   if (status === "succeeded" && reviewOutcome === "delivered_with_concerns") {
     return "delivered with concerns";
   }
-  return status;
+  return LABELS[status] ?? status.replace(/_/g, " ");
 }
 
 /** How long a finished run took, in whole units.
@@ -65,5 +76,5 @@ export function runTitle(run: { task_label: string | null; is_rerun?: boolean })
   if (run.task_label) {
     return run.task_label;
   }
-  return run.is_rerun ? "Re-review of an earlier run" : "Untitled study";
+  return run.is_rerun ? "Re-review of an earlier run" : "Untitled run";
 }

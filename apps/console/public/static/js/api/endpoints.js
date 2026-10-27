@@ -38,6 +38,20 @@ export async function uploadGeometry(file, { onProgress } = {}) {
   return r.json();
 }
 
+/* SEVERAL FILES OF ONE ASSEMBLY (each a CAD solid in the assembly's coordinates): one request, the
+   first as `file` and the rest as `parts`; the server joins them into one file of several bodies.
+   They travel in the request body, so together they stay under the direct upload's threshold. */
+export const ASSEMBLY_UPLOAD_MAX_BYTES = DIRECT_UPLOAD_FROM_BYTES;
+
+export async function uploadAssembly(files) {
+  const fd = new FormData();
+  files.forEach((f, i) => fd.append(i === 0 ? "file" : "parts", f));
+  const r = await apiFetch("/api/v1/upload/step-file",
+    { method: "POST", headers: formHeaders(), body: fd });
+  if (!r.ok) throw await readError(r);
+  return r.json();
+}
+
 export async function uploadGeometryDirect(file, { onProgress, makeRequest } = {}) {
   const r = await apiFetch("/api/v1/upload/direct", {
     method: "POST", headers: headers(),
@@ -89,6 +103,15 @@ export async function sendMessage(sessionId, content) {
   return r.json();
 }
 
+/** The console's notes box: the user's own text, kept word for word beside the session's other
+ *  notes. Resolves to {session_id, brief} - the card as it now stands. */
+export async function addNote(sessionId, text) {
+  const r = await apiFetch("/api/v1/chat/notes",
+    { method: "POST", headers: headers(), body: JSON.stringify({ session_id: sessionId, text }) });
+  if (!r.ok) throw await readError(r);
+  return r.json();
+}
+
 /** The job's current durable facts. `throwOnError` is false for the poller, which treats a
  *  transient 5xx as normal, and true for the deep link, which must know it failed. */
 export async function getJob(jobId, { throwOnError = true } = {}) {
@@ -96,6 +119,20 @@ export async function getJob(jobId, { throwOnError = true } = {}) {
   if (!r.ok) {
     if (throwOnError) throw await readError(r);
     return null;
+  }
+  return r.json();
+}
+
+/** A NEW download link for one deliverable, minted now: {download_url, expires_in_seconds,
+ *  size_bytes}. Asked at click time, so the link's whole life - which scales with the file's
+ *  size - lies ahead of the download. Throws with `status` set when the API refuses. */
+export async function downloadLink(jobId, artifactId) {
+  const r = await apiFetch(`/api/v1/simulation/${jobId}/artifacts/${artifactId}/download`,
+    { headers: headers() });
+  if (!r.ok) {
+    const err = await readError(r);
+    err.status = r.status;
+    throw err;
   }
   return r.json();
 }

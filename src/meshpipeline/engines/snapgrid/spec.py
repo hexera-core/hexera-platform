@@ -215,10 +215,14 @@ SPEC = EngineSpec(
         delivered_mesh=DeliveredMesh(cells="hex-dominant", walls="body-fitted", prism_layers=False),
         run_policy=RunPolicy(
             required_files=("source.ecxml",),
-            # placing, gridding, writing every region and checking them; stays under the
-            # service timeout
+            # placing, gridding, writing every region and checking them. AN ESTIMATE now (the
+            # fallback ladder's "does another engine still fit"): the run is WATCHED (watched=True,
+            # contracts/native_time) - stopped only after the stall window with no sign of life, or
+            # at the machine's wall (the driver's cap; RUN-5 moves a run at the Cloud Run wall to a VM).
             run_timeout=lambda: min(3600, rtcfg.OPENFOAM_COMMAND_TIMEOUT * 6),
-            timeout_hint="Choose a coarser mesh fidelity (draft) and run again.",
+            watched=True,
+            timeout_hint=("A build that makes no progress for the stall window is stuck, not slow: "
+                          "choose a coarser mesh fidelity (draft) and run again."),
             ok_guidance="Every region is meshed and checked clean - call submit_mesh.",
             fail_label="snap-grid meshing failed",
             fail_hint=("The build report (snapgrid_report.json) and log.snapgrid say why: a file "

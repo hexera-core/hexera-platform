@@ -74,7 +74,6 @@ def plate(tmp_path_factory):
     from tests import fea_fixtures as fx
 
     from meshpipeline.engines import fea_driver as FD
-    from meshpipeline.engines import fea_plan as P
     from meshpipeline.engines.gmsh import fea_adapter
 
     ws = tmp_path_factory.mktemp("fea_export")
@@ -90,7 +89,7 @@ def plate(tmp_path_factory):
     finally:
         gmsh.finalize()
     record, surface, diag = FD.measure_staged(ws)
-    FD.write_plan(ws, FD.make_plan(record, surface, diag, fidelity="", level=P.Level("draft", "Quick", 25_000)))
+    FD.write_plan(ws, FD.make_plan(record, surface, diag))
     assert fea_adapter.mesh(ws) == 0
     return ws
 

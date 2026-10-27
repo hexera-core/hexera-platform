@@ -34,6 +34,23 @@ PASSAGE_CELLS_ACROSS = 13
 #: fraction of its diagonal (the floor that keeps a thin plate from asking for millions of tets)
 EXTERNAL_THIN_DIVISIONS = 6
 EXTERNAL_MAX_DIVISIONS = 400
+#: THE RESOLUTION LADDER'S RUNG (engines/resolution_policy.LADDER_FILE, LAD-cfd-1): a retry after a
+#: sound mesh short of the floor sizes the passage field this many times finer. A standalone copy
+#: of the file name and the cap: this driver runs as a script inside the mesh image.
+LADDER_FILE = "resolution_ladder.json"
+LADDER_MAX_FACTOR = 3.0
+
+
+def ladder_factor(ws) -> float:
+    """The factor on PASSAGE_CELLS_ACROSS this attempt's rung asks for (1.0 at rung 0, or with no
+    readable rung)."""
+    try:
+        f = float(json.loads((Path(ws) / LADDER_FILE).read_text()).get("factor") or 1.0)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return 1.0
+    return f if 1.0 <= f <= LADDER_MAX_FACTOR else 1.0
+
+
 #: the finest the passage field may ask for, as a fraction of the clamp size h: a chord that
 #: grazes a sharp corner reads as a tiny radius, and 2r/13 of that would never finish
 PASSAGE_MIN_SIZE_FRACTION = 1.0 / 30.0
@@ -285,6 +302,64 @@ def _surface_interior_point(pts, faces):
     return p
 
 
+#: SIZE, NOT TIME (RUN-5): the passage-sized fill is not started when its estimated cells pass this
+#: many times the job's cell limit (settings/policy.CELL_HARD_LIMIT) - the same margin the snappy
+#: size brake gives a count with its layers. Meshing it anyway ran out of memory: the shell side of a
+#: 19-tube heat exchanger (13 cells across every gap between the tubes) grew past 4 million nodes
+#: in its fill and was killed at 33 GB after 3.8 hours, where the 1,500 s clock used to cut it.
+FILL_OVERSIZE_FACTOR = 2.0
+#: what the driver writes beside the case when it did not start a fill for its size, and its exit code
+FILL_ESTIMATE_FILE = "fill_estimate.json"
+RC_FILL_OVERSIZE = 7
+
+
+class FillOverSize(Exception):
+    """The passage field asks for a fill past FILL_OVERSIZE_FACTOR x the cell limit."""
+
+    def __init__(self, estimated: int, limit: int) -> None:
+        super().__init__(f"the fill would make about {estimated:,} cells, {estimated / limit:.1f} times "
+                         f"the {limit:,} one job is sized for")
+        self.estimated, self.limit = int(estimated), int(limit)
+
+
+#: gmsh's own tetrahedra at a target edge are bigger than the regular tetrahedron of that edge: the
+#: count by regular tetrahedra comes out 1.7-1.8 times what gmsh makes - a unit box refined 0.2->0.1,
+#: 0.2->0.05 and 0.1->0.05 (est/actual 1.70, 1.82, 1.82) and hx_shell_side's passage-sized fill
+#: (85.8 M estimated, 48.8 M made: 1.76). Measured, so the estimate is gmsh's count.
+FILL_CALIBRATION = 0.57
+
+
+def estimate_fill(gmsh, points, sizes) -> int | None:
+    """The cells the passage-sized fill makes, from the coarse fill it is measured on: each coarse
+    tetrahedron splits into (its own edge / the passage size at it)^3 - none where the passage asks
+    for no finer - times FILL_CALIBRATION. Its edge is the regular tetrahedron's of the same volume.
+    None when it cannot be read (the fill then simply runs)."""
+    import numpy as np
+    from scipy.spatial import cKDTree
+    types, _tags, nodes = gmsh.model.mesh.getElements(3)
+    types = [int(t) for t in types]
+    if 4 not in types:
+        return None
+    conn = np.asarray(nodes[types.index(4)], dtype=np.int64).reshape(-1, 4)
+    ntags, coords, _ = gmsh.model.mesh.getNodes()
+    ntags = np.asarray(ntags, dtype=np.int64)
+    xyz = np.asarray(coords, dtype=float).reshape(-1, 3)
+    row = np.full(int(ntags.max()) + 1, -1, dtype=np.int64)
+    row[ntags] = np.arange(len(ntags))
+    p = xyz[row[conn]]
+    vol = np.abs(np.einsum("ij,ij->i", p[:, 1] - p[:, 0], np.cross(p[:, 2] - p[:, 0], p[:, 3] - p[:, 0]))) / 6.0
+    edge = np.cbrt(vol * 6.0 * np.sqrt(2.0))
+    _, nearest = cKDTree(np.asarray(points, dtype=float)).query(p.mean(axis=1))
+    target = np.minimum(edge, np.asarray(sizes, dtype=float)[nearest])
+    ok = target > 0
+    return int(FILL_CALIBRATION * (np.sum((edge[ok] / target[ok]) ** 3) + np.sum(~ok)))
+
+
+def _fill_limit() -> int:
+    import meshpipeline.settings.policy as polcfg
+    return int(FILL_OVERSIZE_FACTOR * int(polcfg.CELL_HARD_LIMIT))
+
+
 def _passage_field(gmsh, ws, h: float, diag: float, *, discrete: bool = False) -> tuple:
     """For an internal-flow fluid domain: mesh once coarsely at the clamp size h, measure the
     local passage radius on that boundary (engines/radius_field.local_radius: half the
@@ -296,6 +371,9 @@ def _passage_field(gmsh, ws, h: float, diag: float, *, discrete: bool = False) -
     (None, None, None, why) and the clamp sizing stands - the gate still measures the result."""
     if _read_flow_topology(ws) != "internal":
         return None, None, None, "not an internal-flow domain"
+    # PLAN-cfd-1: the passage's own local radius sizes it, PASSAGE_CELLS_ACROSS across (times the
+    # ladder's factor on a retry one rung up, LAD-cfd-1)
+    _target = PASSAGE_CELLS_ACROSS * ladder_factor(ws)
     try:
         from meshpipeline.engines.radius_field import local_radius
     except Exception as exc:  # noqa: BLE001 - standalone use without pyvista
@@ -307,16 +385,32 @@ def _passage_field(gmsh, ws, h: float, diag: float, *, discrete: bool = False) -
                 return None, None, None, "no boundary triangles on the surface"
             r = local_radius(pts, faces, _surface_interior_point(pts, faces), diag * 1e-5,
                              diag / 2.0)
-            sizes = passage_sizes(r, h_max=h, h_min=h * PASSAGE_MIN_SIZE_FRACTION)
+            sizes = passage_sizes(r, target=_target, h_max=h,
+                                  h_min=h * PASSAGE_MIN_SIZE_FRACTION)
             return passage_size_callback(pts, sizes), pts, r, "local radius (input surface)"
         gmsh.model.mesh.generate(3)
         pts, faces = _boundary_triangles(gmsh)
         if len(faces) < 4:
             return None, None, None, "no boundary triangles on the coarse mesh"
         r = local_radius(pts, faces, _interior_point(gmsh, pts), diag * 1e-5, diag / 2.0)
-        sizes = passage_sizes(r, h_max=h, h_min=h * PASSAGE_MIN_SIZE_FRACTION)
+        sizes = passage_sizes(r, target=_target, h_max=h, h_min=h * PASSAGE_MIN_SIZE_FRACTION)
+        # SIZE, NOT TIME: what the passage-sized fill will make, read off this coarse fill before it
+        # is cleared - a fill far past what one job holds is never started
+        try:
+            est = estimate_fill(gmsh, pts, sizes)
+        except Exception as exc:  # noqa: BLE001 - an estimate never stops a mesh by failing
+            print(f"[GMSH] the fill could not be estimated: {exc}", file=sys.stderr)
+            est = None
+        if est is not None:
+            (Path(ws) / FILL_ESTIMATE_FILE).write_text(json.dumps({"estimated_cells": est,
+                                                                   "limit": _fill_limit()}))
+            print(f"[GMSH] the passage-sized fill is estimated at {est:,} cells", file=sys.stderr)
+            if est > _fill_limit():
+                raise FillOverSize(est, _fill_limit() // int(FILL_OVERSIZE_FACTOR))
         gmsh.model.mesh.clear()
         return passage_size_callback(pts, sizes), pts, r, "local radius"
+    except FillOverSize:
+        raise
     except Exception as exc:  # noqa: BLE001 - a sizing aid must never lose the mesh
         if not discrete:
             gmsh.model.mesh.clear()
@@ -839,6 +933,43 @@ def _bound_groups(gmsh, surfaces, ports, *, cad: bool = False) -> list[dict]:
     return groups
 
 
+def _mesh_cad_at_mm(gmsh, geom: Path, h: float, cb) -> float:
+    """MESH-4 for a CAD solid the CFD path could not mesh in metres: the same file read again at the
+    CAD's own millimetre scale (the same entities, so the same tags and physical groups), sized the
+    same (the clamp size and the passage field, both times the scale) and meshed. Returns the scale;
+    the caller brings the mesh back to metres after curving it."""
+    from meshpipeline.engines.gmsh.fea_adapter import MM_PER_M, drop_repeated_triangles, micro_curves_one_segment
+
+    k = MM_PER_M
+    groups = [(dim, [int(t) for t in gmsh.model.getEntitiesForPhysicalGroup(dim, tag)],
+               gmsh.model.getPhysicalName(dim, tag)) for dim, tag in gmsh.model.getPhysicalGroups()]
+    if cb is not None:
+        gmsh.model.mesh.removeSizeCallback()
+    gmsh.model.remove()
+    gmsh.model.add("fea")
+    gmsh.option.setNumber("Geometry.OCCScaling", k)
+    try:
+        gmsh.model.occ.importShapes(str(geom))
+    finally:
+        gmsh.option.setNumber("Geometry.OCCScaling", 1.0)
+    gmsh.model.occ.synchronize()
+    for dim, tags, name in groups:
+        gmsh.model.addPhysicalGroup(dim, tags, name=name)
+    gmsh.option.setNumber("Mesh.MeshSizeMax", h * k)
+    gmsh.option.setNumber("Mesh.MeshSizeMin", h / 20.0 * k)
+    micro = micro_curves_one_segment(gmsh)
+    if micro:
+        print(f"[GMSH] micro curve(s) {micro[:20]} meshed as one segment each (MESH-4)", file=sys.stderr)
+    if cb is not None:
+        gmsh.model.mesh.setSizeCallback(
+            lambda dim, tag, x, y, z, lc: float(cb(dim, tag, x / k, y / k, z / k, lc / k)) * k)
+    gmsh.model.mesh.generate(2)
+    # MESH-5: a face whose surface mesh repeats a triangle keeps one copy
+    drop_repeated_triangles(gmsh, [t for _d, t in gmsh.model.getEntities(2)])
+    gmsh.model.mesh.generate(3)
+    return k
+
+
 def main(workspace: str) -> int:
     ws = Path(workspace)
     # AN FEA PLAN (engines/fea_*.py, FEA build step 4): the solid is meshed exactly as the plan says,
@@ -1063,45 +1194,66 @@ def main(workspace: str) -> int:
 
         # PASSAGE SIZING (fluid domains): elements from the local radius, about
         # PASSAGE_CELLS_ACROSS across every passage, instead of one size for the whole part.
-        _cb, _spts, _srad, _why = _passage_field(gmsh, ws, h, diag, discrete=discrete)
+        try:
+            _cb, _spts, _srad, _why = _passage_field(gmsh, ws, h, diag, discrete=discrete)
+        except FillOverSize as exc:
+            print(f"[GMSH] OVERSIZE: not meshed - {exc}", file=sys.stderr)
+            (ws / STOP_REASON).write_text(f"not meshed: {exc}")
+            return RC_FILL_OVERSIZE
         _passage: dict = {"passage_sizing": _why, "passage_cells_across_target": PASSAGE_CELLS_ACROSS}
         if _cb is not None:
             gmsh.model.mesh.setSizeCallback(_cb)
         else:
             print(f"[GMSH] passage sizing not applied: {_why}", file=sys.stderr)
+        # MESH-4: the scale the CAD was meshed at (1: the staged metres)
+        _scale = 1.0
+        _cad = not (staged or classified or external)
         try:
             gmsh.model.mesh.generate(3)
             if staged and not any(len(t) for t in gmsh.model.mesh.getElements(3)[1]):
                 # gmsh can fail to recover the boundary, say so in its log and carry on with
                 # an empty volume: that is a failed fill too
                 raise RuntimeError("no volume elements were generated")
+            if _cad:
+                from meshpipeline.engines.gmsh.fea_adapter import EMPTY_VOLUMES, empty_volumes
+                _hollow = empty_volumes(gmsh, vols)
+                if _hollow:
+                    raise RuntimeError(f"{EMPTY_VOLUMES} the 3D fill left volume(s) {_hollow} with no elements")
         except Exception as exc:  # noqa: BLE001 - a staged surface gets one other remesh, below
-            if not staged:
+            if _cad:
+                # MESH-4 (as the FEA path): a CAD solid gmsh could not mesh in metres - OpenCASCADE's
+                # fixed tolerances swallow nanometre edges where one feature grazes another - is
+                # meshed again at the CAD's own millimetre scale, then brought back to metres
+                print(f"[GMSH] the solid could not be meshed at the metre scale ({str(exc)[:200]}); "
+                      "meshing it again at the CAD's own millimetre scale (MESH-4)", file=sys.stderr)
+                _scale = _mesh_cad_at_mm(gmsh, geom, h, _cb)
+            elif not staged:
                 raise
-            # THE PATCHES, REMESHED EACH ON ITS OWN, DID NOT CLOSE INTO A FILLABLE BOUNDARY (a long
-            # bent wall can come back with facets crossing). Once more the way gmsh remeshes an
-            # STL itself - split by angle into patches it can map - with every group carried over
-            # by the patch name its surfaces came from.
-            print(f"[GMSH] the staged boundary did not fill ({exc}); remeshing it split by "
-                  "angle instead", file=sys.stderr)
-            if _cb is not None:
-                gmsh.model.mesh.removeSizeCallback()
-            # a failed fill leaves gmsh's meshing state behind it: start it afresh, same options
-            gmsh.finalize()
-            gmsh.initialize(interruptible=False)
-            gmsh.option.setNumber("General.Terminal", 1)
-            gmsh.option.setNumber("General.NumThreads", 1)
-            gmsh.option.setNumber("Mesh.RandomSeed", 1)
-            gmsh.option.setNumber("Mesh.MeshSizeMax", h)
-            gmsh.option.setNumber("Mesh.MeshSizeMin", h / 20.0)
-            gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", int(spec.get("curvature_nodes", 24)))
-            leftover = _refill_classified(gmsh, boundary, spec)
-            _cb, _spts, _srad, _why = _passage_field(gmsh, ws, h, diag, discrete=True)
-            _passage = {"passage_sizing": _why, "passage_cells_across_target": PASSAGE_CELLS_ACROSS,
-                        "surface_route": "classified by angle"}
-            if _cb is not None:
-                gmsh.model.mesh.setSizeCallback(_cb)
-            gmsh.model.mesh.generate(3)
+            else:
+                # THE PATCHES, REMESHED EACH ON ITS OWN, DID NOT CLOSE INTO A FILLABLE BOUNDARY (a long
+                # bent wall can come back with facets crossing). Once more the way gmsh remeshes an
+                # STL itself - split by angle into patches it can map - with every group carried over
+                # by the patch name its surfaces came from.
+                print(f"[GMSH] the staged boundary did not fill ({exc}); remeshing it split by "
+                      "angle instead", file=sys.stderr)
+                if _cb is not None:
+                    gmsh.model.mesh.removeSizeCallback()
+                # a failed fill leaves gmsh's meshing state behind it: start it afresh, same options
+                gmsh.finalize()
+                gmsh.initialize(interruptible=False)
+                gmsh.option.setNumber("General.Terminal", 1)
+                gmsh.option.setNumber("General.NumThreads", 1)
+                gmsh.option.setNumber("Mesh.RandomSeed", 1)
+                gmsh.option.setNumber("Mesh.MeshSizeMax", h)
+                gmsh.option.setNumber("Mesh.MeshSizeMin", h / 20.0)
+                gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", int(spec.get("curvature_nodes", 24)))
+                leftover = _refill_classified(gmsh, boundary, spec)
+                _cb, _spts, _srad, _why = _passage_field(gmsh, ws, h, diag, discrete=True)
+                _passage = {"passage_sizing": _why, "passage_cells_across_target": PASSAGE_CELLS_ACROSS,
+                            "surface_route": "classified by angle"}
+                if _cb is not None:
+                    gmsh.model.mesh.setSizeCallback(_cb)
+                gmsh.model.mesh.generate(3)
         if _cb is not None:
             gmsh.model.mesh.removeSizeCallback()
         if spec.get("optimize", True):
@@ -1113,6 +1265,7 @@ def main(workspace: str) -> int:
                 import numpy as np
                 from scipy.spatial import cKDTree
                 _fpts, _ffaces = _boundary_triangles(gmsh)
+                _fpts = np.asarray(_fpts) / _scale       # MESH-4: in metres, as the radius field is
                 _, _near = cKDTree(np.asarray(_spts)).query(_fpts)
                 _passage["passage_cells_across_local"] = measure_passage(
                     _fpts, _ffaces, np.asarray(_srad)[_near])
@@ -1126,6 +1279,10 @@ def main(workspace: str) -> int:
             # after it (as it was) it optimised nothing and curved elements shipped as snapped
             gmsh.option.setNumber("Mesh.HighOrderOptimize", 2)  # elastic+optim
             gmsh.model.mesh.setOrder(order)
+        if _scale != 1.0:
+            # MESH-4: curved on the CAD at the scale it was meshed at, then back to metres
+            from meshpipeline.engines.gmsh.fea_adapter import to_m
+            to_m(gmsh, _scale)
 
         # Quality: SICN over the volume elements (signed inverse condition
         # number - Gmsh's standard quality measure; 0 = degenerate, 1 = ideal).
@@ -1220,7 +1377,7 @@ def main(workspace: str) -> int:
         gmsh.finalize()
 
 
-def _write_deck(gmsh, ws: Path, *, discrete: bool) -> dict:
+def _write_deck(gmsh, ws: Path, *, discrete: bool, source: str = "Hexera gmsh engine") -> dict:
     """mesh.inp from the meshed model: the solid group's volumes, every CAD face that bounds
     them as Face_k, each named surface group (the plan's, and the default group) as an alias,
     and the CAD's own face names where it has them - read from the staging record for a B-rep,
@@ -1243,7 +1400,7 @@ def _write_deck(gmsh, ws: Path, *, discrete: bool) -> dict:
     except Exception as exc:  # noqa: BLE001 - a courtesy: every face is still Face_k
         print(f"[GMSH] CAD face names not read: {exc}", file=sys.stderr)
     return write_inp(ws / "mesh.inp", from_gmsh(gmsh, sorted(set(solid))), aliases,
-                     face_names=names, units="m", source="Hexera gmsh engine")
+                     face_names=names, units="m", source=source)
 
 
 #: Where the driver leaves the reason it stopped without a mesh, for finalize to tell the user.
@@ -1260,7 +1417,7 @@ def run(workspace: str) -> int:
     except OSError:
         pass
     try:
-        return main(workspace)
+        return main(workspace)   # an over-size stop writes its own reason (RC_FILL_OVERSIZE)
     except Exception as exc:
         try:
             stop.write_text(f"{type(exc).__name__}: {exc}"[:600])

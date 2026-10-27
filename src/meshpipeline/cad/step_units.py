@@ -130,17 +130,25 @@ def _length_unit_of_context(instances: _Instances, refs: list[int]) -> DeclaredL
     return _unit_metres(instances, fallback) if fallback is not None else None
 
 
-def declared_lengths(path: str | Path) -> list[DeclaredLength]:
-    """Every distinct length unit the file's geometric contexts assign, in order of first use.
-    Empty when no context assigns one."""
+def declared_length_uses(path: str | Path) -> list[tuple[DeclaredLength, int]]:
+    """Every distinct length unit the file's geometric contexts assign, in order of first use,
+    with how many contexts assign it - a mixed assembly (an Inventor export with six parts in
+    inches and one in millimetres) says which unit most of its parts are drawn in. Empty when no
+    context assigns one."""
     data = Path(path).read_bytes()
     instances = _Instances(data)
-    seen: dict[tuple, DeclaredLength] = {}
+    seen: dict[tuple, list] = {}
     for ctx in _CONTEXT.finditer(data):
         refs = [int(r) for r in _REF.findall(ctx.group(1))]
         found = _length_unit_of_context(instances, refs)
         if found is None:
             continue
         key = (round(found.metres, 12) if found.metres is not None else None, found.problem)
-        seen.setdefault(key, found)
-    return list(seen.values())
+        seen.setdefault(key, [found, 0])[1] += 1
+    return [(found, uses) for found, uses in seen.values()]
+
+
+def declared_lengths(path: str | Path) -> list[DeclaredLength]:
+    """Every distinct length unit the file's geometric contexts assign, in order of first use.
+    Empty when no context assigns one."""
+    return [found for found, _uses in declared_length_uses(path)]

@@ -58,15 +58,21 @@ def dialect_of(bashrc: str | None = None) -> str:
     return "esi" if re.search(r"openfoam(v?\d{4})(/|$)", path) else "foundation"
 
 
-def _run(case: Path, command: str, log: str, *, bashrc: str, timeout: int) -> tuple[int, str]:
+def _run(case: Path, command: str, log: str, *, bashrc: str, timeout: int | None) -> tuple[int, str]:
+    """One OpenFOAM tool, WATCHED (contracts/native_time): stopped only after the stall window with
+    no sign of life, or at `timeout` when one is given - the mesher's own run is bounded by the
+    machine's wall (runner.run_native_build), so these tools need no clock of their own."""
+    from meshpipeline.contracts.native_time import STALL_WINDOW_S
     from meshpipeline.sandbox.safe_exec import run_guarded, scrubbed_subprocess_env
 
     full = f"source {bashrc} >/dev/null 2>&1 && {command}"
     try:
         p = run_guarded(["bash", "-lc", full], cwd=str(case), env=scrubbed_subprocess_env(),
-                        capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        (case / f"log.{log}").write_text(f"TIMEOUT after {timeout} s\n")
+                        capture_output=True, text=True, timeout=timeout, stall_s=STALL_WINDOW_S)
+    except subprocess.TimeoutExpired as exc:
+        (case / f"log.{log}").write_text(
+            f"STALLED: no progress for {STALL_WINDOW_S // 60} min\n" if getattr(exc, "stalled", False)
+            else f"TIMEOUT after {timeout} s\n")
         return -1, "timeout"
     out = (p.stdout or "") + "\n" + (p.stderr or "")
     (case / f"log.{log}").write_text(out)
@@ -77,7 +83,7 @@ def _run(case: Path, command: str, log: str, *, bashrc: str, timeout: int) -> tu
 VOLUME_GLOB = "VTK/**/internal.vtu"
 
 
-def export_volume(case, *, bashrc: str, timeout: int = 900) -> str | None:
+def export_volume(case, *, bashrc: str, timeout: int | None = None) -> str | None:
     """The whole mesh's cells as VTK (foamToVTK), for the review's interior slices: the interfaces
     between parts are INTERNAL surfaces, seen only by cutting through the volume. Run while the
     merged mesh still exists (it is removed once the regions are checked). The path is relative
@@ -169,7 +175,7 @@ def _boundary_counts(path: Path) -> dict[str, tuple[str, int]]:
 CHECK_EACH_REGION_UP_TO = 64
 
 
-def check(case, *, bashrc: str | None = None, timeout: int = 3600, jobs: int = 4,
+def check(case, *, bashrc: str | None = None, timeout: int | None = None, jobs: int = 4,
           each_region: bool | None = None, keep_merged: bool = False) -> dict:
     """Check a case mesher.mesh_ecxml wrote (its regions already written, no split needed):
     checkMesh on the whole mesh (every cell and face the regions are cut from), then every region
@@ -260,7 +266,7 @@ def check(case, *, bashrc: str | None = None, timeout: int = 3600, jobs: int = 4
     return result
 
 
-def split_and_check(case, *, bashrc: str | None = None, timeout: int = 3600,
+def split_and_check(case, *, bashrc: str | None = None, timeout: int | None = None,
                     keep_merged: bool = False) -> dict:
     """Run the native stages on a case mesher.mesh_ecxml wrote; return what they found:
     `ok` only when the split wrote every region, every region passes checkMesh with no fatal

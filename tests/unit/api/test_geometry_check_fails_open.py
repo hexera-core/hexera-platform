@@ -456,3 +456,51 @@ async def test_the_hold_read_from_the_store_lets_go_of_a_failed_check_and_a_scou
     await route.confirm_check(SID, route.ConfirmIn(input_kind="body-surface", flow="internal", openings=[],
                                                    scale_to_m=0.001), "alice", "org-1")
     assert gh.hold_applies(str(SID)) is None
+
+
+async def test_a_slow_store_read_never_stalls_the_other_requests(served):
+    # 2026-10-22 on dev-areen: one check read held the event loop for 87 s, and every other request
+    # (job status, stream tickets, uploads) waited behind it. The reads now run off the loop.
+    import asyncio
+
+    store = served({"scout.json": _scouted(), "progress.json": {}, "confirmed.json": {"unit": "mm"}})
+    slow = store.get_bytes
+
+    def _slow(*, object_key):
+        time.sleep(0.15)
+        return slow(object_key=object_key)
+    store.get_bytes = _slow
+    ticks = 0
+
+    async def _other_requests():
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.01)
+            ticks += 1
+    other = asyncio.create_task(_other_requests())
+    d = await route.get_check(SID, "alice", "org-1")
+    other.cancel()
+    assert d["status"] == "scouted"
+    # four reads of 0.15 s each: had any run on the loop, the other task would have stood still
+    assert ticks >= 30, ticks
+
+
+async def test_through_a_part_with_no_inside_is_asked_about_not_meshed(served, monkeypatch):
+    """INS-3: the check mapped no inside to flow through (a baffle plate, a solid magnet) and the
+    user says the fluid flows through it with no openings on it. The stage asks the one plain
+    question - flowing around it is the way out - instead of starting a job that can only fail.
+    The same part said to be flowed around confirms."""
+    from meshpipeline.application.geometry_confirmation import NO_INSIDE_QUESTION
+    scouted = _scouted()
+    scouted["facts"]["inside"] = {"rule": "INS-1", "has_inside": False, "passages": 0, "mouths_per_passage": []}
+    served({"scout.json": scouted}, geometry_interpretation_id=uuid.uuid4(), messages=[])
+    session = (await route._owned_session(SID, "alice", "org-1"))
+    _confirming(monkeypatch, session, {"interpretation_id": "i1", "geometry_source_id": "s1", "unit": "mm",
+                                       "scale_to_metres": 0.001, "basis": "file_declared", "evidence": "SI_UNIT"}, [])
+    with pytest.raises(HTTPException) as err:
+        await route.confirm_check(SID, route.ConfirmIn(input_kind="body-surface", flow="internal", openings=[],
+                                                       scale_to_m=0.001, unit="mm"), "alice", "org-1")
+    assert err.value.status_code == 409 and err.value.detail == NO_INSIDE_QUESTION
+    out = await route.confirm_check(SID, route.ConfirmIn(input_kind="solid-body", flow="external", openings=[],
+                                                         scale_to_m=0.001, unit="mm"), "alice", "org-1")
+    assert out["patches"] == []

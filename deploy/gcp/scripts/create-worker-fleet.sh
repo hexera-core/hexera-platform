@@ -126,10 +126,16 @@ WORKER_ROLLING_MIN_READY_SECONDS="${WORKER_ROLLING_MIN_READY_SECONDS:-180}"
 
 # verification - see step 7. How long the running VMs get to move onto the new template by
 # themselves before the rest are replaced (surge first, so a worker is always serving), how long the
-# whole roll may take before this stage fails, and how often it looks.
+# roll may go WITH NO VM MOVING before this stage fails (a stall window, not a total: a 20-VM roll
+# that keeps moving takes as long as it takes - dev-areen run 40152656665 reached its target about a
+# minute after a fixed 2400 s total had failed it), and how often it looks.
 WORKER_ROLL_FORCE_AFTER_SECONDS="${WORKER_ROLL_FORCE_AFTER_SECONDS:-900}"
 WORKER_ROLL_TIMEOUT_SECONDS="${WORKER_ROLL_TIMEOUT_SECONDS:-2400}"
 WORKER_ROLL_POLL_SECONDS="${WORKER_ROLL_POLL_SECONDS:-20}"
+# THE BACKSTOP, scaled to the fleet: a roll that keeps "moving" without ever landing (a VM that
+# flaps between booting and failing) still ends - after the replacement point, one stall window and
+# this much per VM in the group. Never the rule a healthy roll meets.
+WORKER_ROLL_SECONDS_PER_VM="${WORKER_ROLL_SECONDS_PER_VM:-600}"
 #: A guest-attribute heartbeat older than this is a watchdog that stopped (watchdog.sh writes one
 #: every 30 s), so the health it last reported is not evidence of anything.
 WORKER_ROLL_HEARTBEAT_MAX_AGE_SECONDS="${WORKER_ROLL_HEARTBEAT_MAX_AGE_SECONDS:-180}"
@@ -256,7 +262,7 @@ if [ "${WORKER_ROLLING_MAX_SURGE}" -eq 0 ] && [ "${WORKER_ROLLING_MAX_UNAVAILABL
    instance. Compute Engine rejects it, and so does this."
 fi
 for knob in WORKER_ROLL_FORCE_AFTER_SECONDS WORKER_ROLL_TIMEOUT_SECONDS WORKER_ROLL_POLL_SECONDS \
-            WORKER_ROLL_HEARTBEAT_MAX_AGE_SECONDS; do
+            WORKER_ROLL_HEARTBEAT_MAX_AGE_SECONDS WORKER_ROLL_SECONDS_PER_VM; do
   [[ "${!knob}" =~ ^[0-9]+$ ]] || die "${knob} must be a whole number of seconds, got '${!knob}'"
 done
 if [ "${WORKER_ROLL_FORCE_AFTER_SECONDS}" -ge "${WORKER_ROLL_TIMEOUT_SECONDS}" ]; then
@@ -440,6 +446,66 @@ else
   warn "CLOUDRUN_MESH_JOB or GCP_MESH_BUCKET is unset - no mesh executor to let the fleet call"
 fi
 
+# 2c) THE BIG-MACHINE ROUTE (RUN-4). A plan too big for the mesh job runs on a Compute Engine VM that
+#    runs the job's own image AS the job's own service account (adapters/mesh_execution/gce_vm.py). That
+#    route needs three more grants, and no deploy made them: shared dev and dev-pranav refused every
+#    such pass with "403 Forbidden ... jobs/dev-mesh", the fTetWild rung too (job bf863215, 26 Oct, 39
+#    minutes); dev-areen's had been made by hand.
+#      - the fleet READS the job for its image and identity: roles/run.viewer on the job (run.jobs.get;
+#        jobsExecutorWithOverrides above runs it but cannot read it);
+#      - the fleet starts the VM AS the job's identity: roles/iam.serviceAccountUser on that account;
+#      - the job's identity PULLS the image onto the VM (Cloud Run pulls with its own service agent, a
+#        VM with the account it runs as): roles/artifactregistry.reader on the image's repository.
+#    Creating the VM (compute.instances.create, its disk and network) is a PROJECT grant a deploy
+#    identity is not given; the worker checks every one of these at start, as itself, and logs the
+#    command for any it lacks (adapters/mesh_execution/access_check.py). Each grant here is attempted;
+#    a refusal prints the command that makes it.
+if [ -n "${CLOUDRUN_MESH_JOB:-}" ]; then
+  MESH_JOB_SA="$(gc run jobs describe "${CLOUDRUN_MESH_JOB}" --region "${GCP_REGION}" \
+    --format='value(spec.template.spec.template.spec.serviceAccountName)' 2>/dev/null || true)"
+  MESH_JOB_SA="${MESH_JOB_SA:-${MESH_SA_EMAIL:-}}"
+  MESH_JOB_IMAGE="$(gc run jobs describe "${CLOUDRUN_MESH_JOB}" --region "${GCP_REGION}" \
+    --format='value(spec.template.spec.template.spec.containers[0].image)' 2>/dev/null || true)"
+  if gc run jobs add-iam-policy-binding "${CLOUDRUN_MESH_JOB}" --region "${GCP_REGION}" \
+       --member "serviceAccount:${WORKER_SA_EMAIL}" --role roles/run.viewer >/dev/null; then
+    log "job/${CLOUDRUN_MESH_JOB} += roles/run.viewer -> ${WORKER_SA_EMAIL}"
+  else
+    warn "could not let ${WORKER_SA_EMAIL} read ${CLOUDRUN_MESH_JOB}. Every mesh too big for the job
+       fails at its VM until it can; this is the command:
+         gcloud run jobs add-iam-policy-binding ${CLOUDRUN_MESH_JOB} --project ${GCP_PROJECT_ID} \\
+           --region ${GCP_REGION} --member serviceAccount:${WORKER_SA_EMAIL} --role roles/run.viewer"
+  fi
+  if [ -n "${MESH_JOB_SA}" ]; then
+    if gc iam service-accounts add-iam-policy-binding "${MESH_JOB_SA}" \
+         --member "serviceAccount:${WORKER_SA_EMAIL}" --role roles/iam.serviceAccountUser >/dev/null; then
+      log "serviceAccount/${MESH_JOB_SA} += roles/iam.serviceAccountUser -> ${WORKER_SA_EMAIL}"
+    else
+      warn "could not let ${WORKER_SA_EMAIL} start a VM as ${MESH_JOB_SA}; this is the command:
+         gcloud iam service-accounts add-iam-policy-binding ${MESH_JOB_SA} --project ${GCP_PROJECT_ID} \\
+           --member serviceAccount:${WORKER_SA_EMAIL} --role roles/iam.serviceAccountUser"
+    fi
+    # the repository the image lives in: <location>-docker.pkg.dev/<project>/<repository>/<image>
+    if [[ "${MESH_JOB_IMAGE}" =~ ^([a-z0-9-]+)-docker\.pkg\.dev/([^/]+)/([^/]+)/ ]]; then
+      MESH_REPO="projects/${BASH_REMATCH[2]}/locations/${BASH_REMATCH[1]}/repositories/${BASH_REMATCH[3]}"
+      if gc artifacts repositories add-iam-policy-binding "${MESH_REPO}" \
+           --member "serviceAccount:${MESH_JOB_SA}" --role roles/artifactregistry.reader >/dev/null; then
+        log "${MESH_REPO} += roles/artifactregistry.reader -> ${MESH_JOB_SA}"
+      else
+        warn "could not let ${MESH_JOB_SA} pull the mesh image onto its VM (a repository's IAM needs
+       artifactregistry.repositories.setIamPolicy). Until it can, a big mesh's VM boots and never
+       starts the mesher; this is the command:
+         gcloud artifacts repositories add-iam-policy-binding ${BASH_REMATCH[3]} --project ${BASH_REMATCH[2]} \\
+           --location ${BASH_REMATCH[1]} --member serviceAccount:${MESH_JOB_SA} --role roles/artifactregistry.reader"
+      fi
+    else
+      warn "the mesh job's image (${MESH_JOB_IMAGE:-unknown}) is not in Artifact Registry: make sure
+       ${MESH_JOB_SA} may pull it, or a big mesh's VM boots and never starts the mesher"
+    fi
+  else
+    warn "the mesh job's identity is unknown, so the big-machine route's actAs and image grants were not made"
+  fi
+fi
+
 # 3) the metadata the instance reads. Names in the clear, credentials never - the values were
 #    checked above, before anything was created.
 WORKER_METADATA=(
@@ -599,7 +665,7 @@ fi
 #    not stop taking work within 10s - staying", every two minutes) and never recycled itself; the
 #    VM was only replaced when it was recreated by hand. Step 7 therefore waits for every running VM
 #    to reach the new template, replaces the ones that have not after WORKER_ROLL_FORCE_AFTER_SECONDS,
-#    and fails the stage if they are still not on the new digest and healthy by the deadline.
+#    and fails the stage if no VM has moved any closer for the stall window.
 if gc compute instance-groups managed describe "${WORKER_MIG}" --zone "${WORKER_MIG_ZONE}" >/dev/null 2>&1; then
   CURRENT_TEMPLATE_URL="$(gc compute instance-groups managed describe "${WORKER_MIG}" \
     --zone "${WORKER_MIG_ZONE}" --format='value(versions[0].instanceTemplate)' 2>/dev/null || true)"
@@ -782,22 +848,24 @@ fi
 #    A GROUP AT ZERO is done at once: the next VM the autoscaler starts boots from ${TEMPLATE}.
 _roll_verdict_py='
 import json, sys, time
-instances_file, attrs_dir, template, image, max_age = sys.argv[1:6]
+instances_file, attrs_dir, template, image, max_age, progress_file = sys.argv[1:7]
 with open(instances_file) as fh:
     text = fh.read().strip()
 instances = json.loads(text) if text else []
 now = time.time()
-rows, outdated, pending = [], 0, 0
+rows, outdated, pending, where = [], 0, 0, []
 for inst in instances:
     name = inst.get("name") or str(inst.get("instance", "")).rsplit("/", 1)[-1]
     tpl = str((inst.get("version") or {}).get("instanceTemplate") or inst.get("instanceTemplate") or "").rsplit("/", 1)[-1]
     status, action = inst.get("instanceStatus", "?"), inst.get("currentAction", "?")
     if tpl != template:
         outdated += 1
+        where.append((name, "outdated", tpl))
         rows.append((name, "on %s, not %s (%s, %s)" % (tpl or "<unknown>", template, status, action)))
         continue
     if status != "RUNNING" or action != "NONE":
         pending += 1
+        where.append((name, "pending", status + "/" + action))
         rows.append((name, f"on the new template, still {status}/{action}"))
         continue
     try:
@@ -820,8 +888,15 @@ for inst in instances:
     if problems:
         pending += 1
         rows.append((name, "; ".join(problems)))
+        where.append((name, "unverified", ",".join(sorted(attrs.get(k + "-health", "") for k in ("worker", "geometry")))))
     else:
         rows.append((name, "on the new digest, both containers healthy"))
+        where.append((name, "done", ""))
+# WHERE EACH VM STANDS, without clocks in it (no heartbeat ages): it changes only when a VM moves -
+# a new one appears, one goes, one reaches the template, starts running, turns healthy. Step 7 fails
+# on THIS standing still, never on a total time.
+with open(progress_file, "w") as fh:
+    json.dump(sorted(where), fh)
 for name, what in rows:
     print(f"    {name}: {what}")
 sys.exit(0 if not outdated and not pending else (10 if outdated else 11))
@@ -829,11 +904,14 @@ sys.exit(0 if not outdated and not pending else (10 if outdated else 11))
 _roll_dir="$(mktemp -d)"
 trap 'rm -rf "${_roll_dir}"' EXIT
 _roll_started="$(date +%s)"
+_roll_moved="${_roll_started}"
+_roll_where=""
 _roll_forced=false
 info "Waiting for every ${WORKER_MIG} VM to run ${APP_IMAGE##*@} and report healthy"
-log "replace what has not moved after ${WORKER_ROLL_FORCE_AFTER_SECONDS}s; fail after ${WORKER_ROLL_TIMEOUT_SECONDS}s"
+log "replace what has not moved after ${WORKER_ROLL_FORCE_AFTER_SECONDS}s; fail only when no VM has moved for ${WORKER_ROLL_TIMEOUT_SECONDS}s"
 while :; do
-  _elapsed=$(( $(date +%s) - _roll_started ))
+  _now="$(date +%s)"
+  _elapsed=$(( _now - _roll_started ))
   if ! gc compute instance-groups managed list-instances "${WORKER_MIG}" --zone "${WORKER_MIG_ZONE}" \
        --format=json > "${_roll_dir}/instances.json" 2>"${_roll_dir}/list.err"; then
     warn "could not list the instances of ${WORKER_MIG}: $(tail -c 300 "${_roll_dir}/list.err")"
@@ -857,8 +935,19 @@ for i in (json.loads(text) if text else []):
     _verdict_text="    (the group's instances could not be listed)"
   else
     _verdict_text="$(python3 -c "${_roll_verdict_py}" "${_roll_dir}/instances.json" "${_roll_dir}" \
-      "${TEMPLATE}" "${APP_IMAGE}" "${WORKER_ROLL_HEARTBEAT_MAX_AGE_SECONDS}")" || _verdict_rc=$?
+      "${TEMPLATE}" "${APP_IMAGE}" "${WORKER_ROLL_HEARTBEAT_MAX_AGE_SECONDS}" \
+      "${_roll_dir}/where.json")" || _verdict_rc=$?
+    # PROGRESS: any VM standing somewhere new since the last look restarts the stall window
+    _where_now="$(cat "${_roll_dir}/where.json" 2>/dev/null || true)"
+    if [ -n "${_where_now}" ] && [ "${_where_now}" != "${_roll_where}" ]; then
+      [ -n "${_roll_where}" ] && _roll_moved="${_now}"
+      _roll_where="${_where_now}"
+    fi
   fi
+  _still=$(( _now - _roll_moved ))
+  _vms="$(python3 -c 'import json,sys; t=open(sys.argv[1]).read().strip(); print(len(json.loads(t)) if t else 0)' \
+    "${_roll_dir}/instances.json" 2>/dev/null || echo 0)"
+  _backstop=$(( WORKER_ROLL_FORCE_AFTER_SECONDS + WORKER_ROLL_TIMEOUT_SECONDS + _vms * WORKER_ROLL_SECONDS_PER_VM ))
   if [ "${_verdict_rc}" -eq 0 ]; then
     if [ -z "${_verdict_text}" ]; then
       log "fleet roll      no VM is running - the next one boots from ${TEMPLATE}"
@@ -868,12 +957,16 @@ for i in (json.loads(text) if text else []):
     fi
     break
   fi
-  if [ "${_elapsed}" -ge "${WORKER_ROLL_TIMEOUT_SECONDS}" ]; then
+  if [ "${_still}" -ge "${WORKER_ROLL_TIMEOUT_SECONDS}" ] || [ "${_elapsed}" -ge "${_backstop}" ]; then
     _even=""
     [ "${_roll_forced}" = true ] && _even=", even after a proactive replacement"
-    die "the fleet ${WORKER_MIG} did not reach ${TEMPLATE} (image ${APP_IMAGE}) within
-   ${WORKER_ROLL_TIMEOUT_SECONDS}s${_even}. The deploy is NOT done - workers may still run the old
-   code. Where each VM stands:
+    if [ "${_still}" -ge "${WORKER_ROLL_TIMEOUT_SECONDS}" ]; then
+      _why="no VM moved any closer for ${_still}s (after ${_elapsed}s in all)"
+    else
+      _why="it kept changing for ${_elapsed}s without landing (the backstop for ${_vms} VMs)"
+    fi
+    die "the fleet ${WORKER_MIG} did not reach ${TEMPLATE} (image ${APP_IMAGE}): ${_why}${_even}.
+   The deploy is NOT done - workers may still run the old code. Where each VM stands:
 ${_verdict_text}
    Look closer with:
      gcloud compute instance-groups managed list-instances ${WORKER_MIG} --zone ${WORKER_MIG_ZONE} --project ${GCP_PROJECT_ID}
@@ -902,9 +995,11 @@ ${_verdict_text}"
       --max-unavailable "${WORKER_ROLLING_MAX_UNAVAILABLE}" >/dev/null \
       || die "could not start the proactive replacement of ${WORKER_MIG}'s outdated VMs"
     _roll_forced=true
+    # the replacement is the roll moving: it gets a whole stall window to show it
+    _roll_moved="$(date +%s)"
     MIG_DISPOSITION="${MIG_DISPOSITION}, then replaced proactively"
   fi
-  log "fleet roll      waiting (${_elapsed}s):"
+  log "fleet roll      waiting (${_elapsed}s, last VM moved ${_still}s ago):"
   printf '%s\n' "${_verdict_text}"
   sleep "${WORKER_ROLL_POLL_SECONDS}"
 done

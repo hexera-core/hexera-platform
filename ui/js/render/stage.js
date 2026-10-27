@@ -27,6 +27,8 @@ import { bindThermalPanel, thermalPanelHtml } from "./thermal_form.js";
 import { bindFeaPanel, feaPanelHtml, followMeasure } from "./fea_form.js";
 // the run card's live line: the step running now, in plain words
 import { createRunLine } from "./run_progress.js";
+// the closing message of a finished run, as a summary rather than a wall of lines
+import { outcomeHtml } from "./outcome.js";
 const RunLine = createRunLine();
 
 /* The lightbox is its own DOM region (#lb) but too small to be its own module. */
@@ -89,10 +91,14 @@ export const Stage = {
     if(role==='user')g.innerHTML=`<div class="who">${esc(who||'You')}</div><div class="bub">${mdBlock(text)}</div>`;
     else g.innerHTML=`<div class="who">${esc(who||'Hexera')}</div><div class="txt">${mdBlock(prettyText(displayText(text)))}</div>`;
     this.col().appendChild(g);this.scrollBottom();},
+  // THE CLOSING ACCOUNT of a finished run, in the same voice as every other turn (render/outcome.js)
+  outcome(text,opts){this.clearEmpty();const g=document.createElement('div');g.className='im assistant';
+    g.innerHTML=`<div class="who">Hexera</div><div class="txt">${outcomeHtml(displayText(text),opts)}</div>`;
+    this.col().appendChild(g);this.scrollBottom();},
   // THE FINALIZED BRIEF, as the application settled it - not the model's prose
   // re-read here. Rendered once and then updated in place, because a later turn
   // re-sends the same brief and a conversation should not accumulate copies of it.
-  brief(b){
+  brief(b,addNote){
     if(!b)return;
     const sig=JSON.stringify(b);
     if(this._briefSig===sig)return;
@@ -102,15 +108,18 @@ export const Stage = {
     const thermal=b.check_mode==='thermal'&&b.job_sheet;
     const ROWS=thermal?[['engine','Engine'],['mesh_fidelity','Detail level'],['label','Case']]
       :[['purpose','Purpose'],['engine','Engine'],['input_kind','Input'],
-        ['dimensionality','Dimensionality'],['mesh_fidelity','Mesh detail preference'],
+        ['dimensionality','Dimensions'],['mesh_fidelity','Detail level'],
         ['label','Case']];
     // Prefer the server's display label. A field may be label-ONLY: the fidelity tier always
     // applies, even when the user stated no preference and there is no raw value.
-    let rows=ROWS.filter(([k])=>b[k]||b[k+'_label']).map(([k,l])=>
+    // AN FEA PART has no detail level to show: its mesh is the rules-based recommended one
+    const fea=b.purpose==='structural';
+    let rows=ROWS.filter(([k])=>(b[k]||b[k+'_label'])&&!(fea&&k==='mesh_fidelity')).map(([k,l])=>
       `<div class="rc-row"><div class="rc-k">${esc(l)}</div><div class="rc-v">${esc(b[k+'_label']||b[k])}</div></div>`).join('');
     if(b.engine_params&&Object.keys(b.engine_params).length)
-      rows+=`<div class="rc-row"><div class="rc-k">Engine parameters</div>`
-           +`<div class="rc-v">${esc(JSON.stringify(b.engine_params))}</div></div>`;
+      rows+=`<div class="rc-row"><div class="rc-k">Engine settings</div>`
+           +`<div class="rc-v">${esc(Object.entries(b.engine_params).map(([k,v])=>
+             `${String(k).replace(/_/g,' ')}: ${typeof v==='object'?JSON.stringify(v):v}`).join(', '))}</div></div>`;
     (b.boundary_assignments||[]).forEach(p=>{
       rows+=`<div class="rc-row"><div class="rc-k">${esc(p.name)}</div>`
            +`<div class="rc-v">${esc(p.role||'')}</div></div>`;});
@@ -123,16 +132,31 @@ export const Stage = {
       return `<div class="rc-ck${good?'':(unknown?' unk':' bad')}">`
         +`<span class="ic">${good?'✓':(unknown?'?':'✕')}</span>`
         +`<span>${esc(c.label)}${c.detail?` <span class="rc-d">${esc(c.detail)}</span>`:''}</span></div>`;}).join('');
-    const html=`<div class="who">Requirements · submitted by Hexera</div>
+    // THE USER'S OWN NOTES, exactly as typed (a pasted spec keeps its lines), and the box that adds
+    // one. Guidance for the mesh, never a check: the plan above is what is approved.
+    const notes=(b.user_notes||[]).map(n=>`<div class="rc-note">${esc(n.text)}</div>`).join('');
+    const box=addNote?`<div class="rc-notes-box"><textarea class="rc-notes-in" rows="3" maxlength="20000"
+        placeholder="Anything specific about this simulation? Paste a spec if you have one."></textarea>
+        <div class="rc-notes-act"><button type="button" class="rc-notes-add">Add note</button>
+        <span class="rc-notes-msg" role="status"></span></div></div>`:'';
+    const html=`<div class="who">Hexera · your request, as understood</div>
       <div class="req-card${(b.checks||[]).every(c=>c.status==='pass')?' ok':''}">
         ${thermal?`<div class="rc-h">Job sheet</div><p class="rc-sheet">${esc(b.job_sheet)}</p>`
-          :'<div class="rc-h">Structured brief</div>'}${rows}
-        ${ck?`<div class="rc-h rc-h2">Validated by the application</div>${ck}`:''}
+          :'<div class="rc-h">Mesh plan</div>'}${rows}
+        ${ck?`<div class="rc-h rc-h2">Checked</div>${ck}`:''}
+        ${notes||box?`<div class="rc-h rc-h2">Your notes</div>${notes}${box}`:''}
       </div>`;
     if(this._briefEl){this._briefEl.innerHTML=html;}
     else{this.clearEmpty();
       const g=document.createElement('div');g.className='im assistant';g.innerHTML=html;
       this.col().appendChild(g);this._briefEl=g;}
+    const add=this._briefEl.querySelector('.rc-notes-add');
+    if(add)add.onclick=async()=>{
+      const inp=this._briefEl.querySelector('.rc-notes-in'),msg=this._briefEl.querySelector('.rc-notes-msg');
+      const text=inp.value;if(!text.trim())return;
+      add.disabled=true;msg.textContent='';
+      try{this._briefSig='';await addNote(text);}
+      catch(e){add.disabled=false;msg.textContent=(e&&e.message)||'The note was not saved.';}};
     this.scrollBottom();},
 
   /* THE ENGINE CHOICE, under the one engine question. Every engine that can take the uploaded file,
@@ -308,7 +332,7 @@ export const Stage = {
     const p=document.createElement('div');p.className='proc';
     p.innerHTML=`<div class="proc-head"><svg class="proc-orb" viewBox="0 0 24 24" aria-hidden="true"><circle class="sp-arm" cx="12" cy="12" r="7.2"/><path class="sp-hd" d="M19.20 8.16L22.40 14.56L16.00 14.56Z"/><path class="sp-hd" d="M4.80 15.84L1.60 9.44L8.00 9.44Z"/></svg>
       <span class="proc-title">Generating mesh</span>
-      <span class="proc-sub" id="proc-sub">working…</span>
+      <span class="proc-sub" id="proc-sub"></span>
       <span class="proc-clock" id="proc-clock">0:00</span>
       <button class="proc-cancel" id="proc-cancel" type="button" hidden>Cancel run</button></div>
       <div class="proc-live" id="proc-live"></div>
@@ -333,10 +357,11 @@ export const Stage = {
   // moment a job was created, including the five to ten minutes a job can sit `pending`
   // while the fleet wakes from zero - a silent spinner that read as a hang. The poller hands
   // every status here; a non-empty text is the wait (with the backend's estimate), an empty one
-  // means a worker has it and the line returns to "working…". A finished run is left alone.
+  // means a worker has it and the sub-line empties: the live line under the header says what is
+  // running, so a filler word there only repeated it. A finished run is left alone.
   waiting(text){if(!this.proc||this.proc.classList.contains('done'))return;
     const s=this.proc.querySelector('#proc-sub');if(!s)return;
-    s.textContent=text||'working…';
+    s.textContent=text||'';
     RunLine.model.waiting(text);RunLine.draw();},
   // The Cancel control is shown ONLY for a run this page is attached to live. A replayed run
   // renders the same card, and a control that could stop nothing must not be on it.
@@ -373,8 +398,8 @@ export const Stage = {
     const hasHist=history&&history.typical_s>0;
     const ref=hasHist?history.typical_s*1000:budget*1000;
     const sub=hasHist
-      ?`similar runs ~${fmtDur(history.typical_s*1000)} (${fmtDur(history.p10_s*1000)}-${fmtDur(history.p90_s*1000)}, n=${history.n})`
-      :`no history yet · will run up to ${fmtDur(budget*1000)}`;
+      ?`similar runs take about ${fmtDur(history.typical_s*1000)} (usually ${fmtDur(history.p10_s*1000)} to ${fmtDur(history.p90_s*1000)})`
+      :`no similar runs yet · stops by itself after ${fmtDur(budget*1000)} at most`;
     const w=document.createElement('div');w.className='meshbar';
     w.innerHTML=`<div class="mb-top"><span class="mb-lbl">meshing · ${esc(engine||'')}</span>
         <span class="mb-num">0:00</span></div>
@@ -654,8 +679,11 @@ export const Stage = {
     const cancelled=!!data.cancelled;
     // a delivered mesh whose review left points open is never stamped PASS
     const concerns=data.pass&&data.reviewOutcome==='delivered_with_concerns';
+    // a valid mesh the measured limits passed with some figures past a limit: "Passed, with notes",
+    // the same words its result screen uses
+    const notes=data.pass&&data.reviewOutcome==='passed_with_notes';
     const failed=!data.pass&&!cancelled;
-    const outcome=concerns?'concerns':data.pass?'pass':cancelled?'cancelled':'fail';
+    const outcome=concerns?'concerns':notes?'notes':data.pass?'pass':cancelled?'cancelled':'fail';
     // THE MARKS FOLLOW HOW THE RUN ENDED (see markOf). A cancelled run's open lane stopped; a
     // failed run shows its failure where it stopped, unless a lane already shows it; a delivered
     // mesh whose review left points open is a warning on that review, not a failure.
@@ -671,7 +699,7 @@ export const Stage = {
     // the open lanes close when the job ended, and the run's clock stops there
     this.at(data.endedAt);
     {const t0=Date.parse(data.createdAt||''),t1=Date.parse(data.endedAt||'');
-     RunLine.model.final({...data,concerns,totalMs:t0>0&&t1>0?t1-t0:(this.t0?this.now()-this.t0:null)},this.now());
+     RunLine.model.final({...data,concerns,notes,totalMs:t0>0&&t1>0?t1-t0:(this.t0?this.now()-this.t0:null)},this.now());
      RunLine.draw();}
     Object.keys(this.nodes).forEach(k=>this.done(k));
     lanes.forEach(n=>this.paint(n));
@@ -682,16 +710,17 @@ export const Stage = {
     const opened=this._att!=null||this._built.size>0;
     const att=attemptsLabel(opened,this._built.size,data.attempts);
     if(this.proc){this.proc.classList.add('done','r-'+outcome);   // the header's mark takes the verdict's colour
-      this.proc.querySelector('.proc-title').textContent=data.pass?'Mesh ready':cancelled?'Run cancelled':'Run ended';
-      this.proc.querySelector('#proc-sub').textContent=concerns?'delivered with concerns':data.pass?'completed':cancelled?'cancelled by you':'failed';
+      // ONE STATEMENT OF THE ENDING: the title says it; the live line under it gives the time
+      this.proc.querySelector('.proc-title').textContent=concerns?'Mesh ready, with concerns':notes?'Mesh ready, with notes':data.pass?'Mesh ready':cancelled?'Run cancelled':'Run failed';
+      this.proc.querySelector('#proc-sub').textContent='';
       const cb=this.proc.querySelector('#proc-cancel');if(cb)cb.hidden=true;}
     // verdict row in the timeline. A cancelled run has no verdict: nobody judged a mesh.
     if(this.proc){const n=this.node('result');const v=document.createElement('div');v.className='tl-verd';
-      const pill=concerns?'DELIVERED WITH CONCERNS':data.pass?'PASS':cancelled?'CANCELLED':'FAIL';
-      v.innerHTML=`<span class="pill${concerns?' concerns':data.pass?'':cancelled?' cancelled':' fail'}">${pill}</span><span class="mt">${esc(att)}</span>`;
+      const pill=concerns?'DELIVERED WITH CONCERNS':notes?'PASSED, WITH NOTES':data.pass?'PASS':cancelled?'CANCELLED':'FAIL';
+      v.innerHTML=`<span class="pill${concerns||notes?' concerns':data.pass?'':cancelled?' cancelled':' fail'}">${pill}</span><span class="mt">${esc(att)}</span>`;
       if(cancelled&&data.cancelReason){const r=document.createElement('span');r.className='mt';r.textContent=`reason: ${data.cancelReason}`;v.appendChild(r);}
       // the result lane's mark is the verdict's: never a tick beside a FAIL
-      n.mark={pass:'done',concerns:'warn',cancelled:'ended',fail:'bad'}[outcome];
+      n.mark={pass:'done',notes:'warn',concerns:'warn',cancelled:'ended',fail:'bad'}[outcome];
       n.body.appendChild(v);this.done('result');}
     if(opened)data={...data,attempts:this._built.size};    // the viewer says the same number
 
@@ -699,7 +728,10 @@ export const Stage = {
     // verified result reaches the user through the identity they have been talking to.
     // The text is rendered by application code from durable facts; nothing here reworks
     // it, and no second persona announces it.
-    if(data.text)this.chat('assistant',data.text);
+    // A message of several lines is the backend's structured account (final_result.render_message):
+    // drawn as a summary with its detail folded away. A one-line ending stays a plain chat line.
+    if(data.text&&String(data.text).includes('\n'))this.outcome(data.text,{concerns,notes});
+    else if(data.text)this.chat('assistant',data.text);
 
     const anchor=document.createElement('div');this.col().appendChild(anchor);
     // The stage does not know what a viewer is. It states what happened and where the result

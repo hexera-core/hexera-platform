@@ -12,6 +12,7 @@ import meshpipeline.settings.policy as polcfg
 from meshpipeline.application.execution_publisher import execution_publisher
 from meshpipeline.capture.logger import TrainingLogger
 from meshpipeline.contracts.failure_cause import SEAM_CAUSES
+from meshpipeline.engines import resolution_policy as _rp
 from meshpipeline.engines.runtime import get_engine
 
 logger = logging.getLogger(__name__)
@@ -82,9 +83,13 @@ def _gate_statement(engine: str, gate_key: str) -> str:
     return {"domain_extent": "The far-field domain is the size you asked for",
             # agents/builder/attempt.STAGING_GATE: the engine's own preparation of the file
             "staging": "The engine prepared its input from your file",
-            # engines/fea_driver.py: the FEA plan's checks before meshing (PLAN-fea-8, PLAN-fea-9)
+            # engines/fea_driver.py: the FEA plan's checks before meshing (PLAN-fea-8)
             "fea_plan": "The FEA mesh plan fits the detail level, for one solid part",
-            "fea_guard": "The FEA mesher finished within its guard clock"}.get(
+            "fea_guard": "The FEA mesher finished within its guard clock",
+            # engines/fea_driver.NOT_RUN_GATE (RUN-4): our side started the mesher's machine
+            "fea_dispatch": "The FEA mesher's machine was started and its result came back",
+            # agents/builder/attempt.carry_last_verdict: the run's time ran out before a mesher
+            "builder_budget": "The run had time left to build the mesh"}.get(
         gate_key, "The mesh setup matches what you approved")
 
 
@@ -151,12 +156,18 @@ def _no_mesh_cause(state, workspace, cause: str, facts: dict) -> tuple[str, dict
       RC_INFRASTRUCTURE result with neither tag is snappy's own stage verdict: it ran, and left
       no valid mesh.
 
-    A workspace whose record this process never opened says nothing, and the seam's cause stands
-    exactly as before."""
+    A workspace whose record this process never opened says nothing about a mesher - so it is
+    never told as one that crashed. ENGINE_CRASHED is kept for a mesher that RAN and stopped
+    without its mesh; with no record of any run (an attempt resumed on another worker), the
+    missing mesh is said as ours: RUN_INFRASTRUCTURE, `run_record_unknown`."""
     from meshpipeline.contracts.failure_cause import FailureCause
     from meshpipeline.contracts.mesh_execution import meshers_started, native_runs
     runs = native_runs(workspace)
     if runs is None:
+        # ...unless a mesh is on disk: then a mesher DID run and left it incomplete
+        if (cause == FailureCause.ENGINE_CRASHED.value
+                and not _mesh_on_disk(state.get("engine", ""), workspace)):
+            return FailureCause.RUN_INFRASTRUCTURE.value, {**facts, "run_record_unknown": True}
         return cause, facts
     started = meshers_started(runs) or 0
     facts = {**facts, "meshers_started": started}
@@ -240,7 +251,13 @@ async def node_executor(state: PipelineState) -> dict:
     # a mesh on disk was built after the refusal was written and is judged as usual.
     from meshpipeline.engines.preflight import read_refusal
     _refusal = read_refusal(workspace) or _case_contract_refusal(workspace, job_id)
+    # A DETERMINISTIC DRIVER'S OWN VERDICT on the mesh it left (the FEA ladder ran out): the mesh is
+    # judged as usual, and the verdict's facts travel with the failure - the retry policy reads
+    # that another attempt builds the same mesh, and the user's sentence is the driver's own
+    _driver_verdict = None
     if _refusal is not None and _mesh_on_disk(state.get("engine", ""), workspace):
+        if (_refusal.facts or {}).get("ladder_exhausted"):
+            _driver_verdict = _refusal
         _refusal = None
     if _refusal is not None:
         logger.warning("Executor: pre-flight refused the case before meshing - gate=%s cause=%s "
@@ -309,6 +326,8 @@ async def node_executor(state: PipelineState) -> dict:
     executor_output  = result.get("output", "")
     mesh_manifest: dict = {}
     solvability_metrics: dict = {}  # residual/iters/n_cells/info
+    # the note gates that said no on this mesh (filled by the gate run below)
+    _noted: list[tuple[str, object]] = []
 
     if executor_success:
         # The ENGINE-DECLARED blocking gates (spec.gates): the executor iterates
@@ -328,16 +347,24 @@ async def node_executor(state: PipelineState) -> dict:
         _proves = {g.key: (g.proves or g.key) for g in _spec.gates}
 
         _gate_results: list[tuple[str, bool]] = []
+        # THE NOTE GATES that said no (engines/resolution_policy.NOTE_GATES, declared
+        # blocking=False): their feedback, kept in _noted to become the sound mesh's notes below
 
         def _report_gate(key: str, ok: bool, _fb: str) -> None:
             # RECORDS what the gate proved; it does not publish. `run_gates` wraps this callback
             # in `except Exception`, which would swallow a lost claim, so publication happens
             # below where the refusal can propagate. The order is the gate order either way.
             _gate_results.append((key, ok))
+            if not ok and _rp.is_note_gate(key):
+                _noted.append((key, _fb))
 
         _gates_ok, _gate_key, _gate_feedback = run_gates(
             _spec.gates, _ctx, on_result=_report_gate)
         for _key, _ok in _gate_results:
+            if not _ok and _rp.is_note_gate(_key):
+                # A NOTE, NOT A FAILED CHECK (LAD-cfd-3/4): never shown as a failed check - the
+                # run's result says it in full, and the router reads it
+                continue
             # Report what the gate PROVES, in the engineer's language - never the internal key.
             # This is a TRUST surface: the user is being shown the checks their mesh survived,
             # so it must read as evidence. The statement is ENGINE-declared (GateSpec.proves).
@@ -456,11 +483,39 @@ async def node_executor(state: PipelineState) -> dict:
                 # execution closure counts sites, and truth does not need three copies
                 await _pub.acheck("The far-field domain is the size you asked for", ok=False)
 
+            # OVER ONE JOB'S CELL LIMIT (LAD-cfd-4) the trial solve is not run here: its matrix
+            # for a mesh past the limit outgrows this worker's memory (7.3 M cells took an 8 GiB
+            # worker down before the solver was made lean). checkMesh's fatal topology stands in
+            # for it, and a lean count of the mesh's connected regions (one per passage meshed):
+            # a disconnected pocket is what the solve would catch that the fatal list does not.
+            _skip_solve = any(k == "cell_limit" for k, _ in _noted)
+            if _skip_solve:
+                logger.info("Executor: trial solve skipped - the mesh is over one job's cell "
+                            "limit (LAD-cfd-4) - job_id=%s", job_id)
+                if (executor_success and not contract_failed
+                        and (Path(workspace) / "constant" / "polyMesh" / "owner").exists()):
+                    from meshpipeline.engines.snappy.solvability import check_connected
+                    try:
+                        _conn = await asyncio.to_thread(check_connected, Path(workspace))
+                    except MemoryError:
+                        _conn = (True, "")
+                        logger.warning("Executor: region count ran out of memory - passing on "
+                                       "checkMesh's fatal list - job_id=%s", job_id)
+                    if not _conn[0]:
+                        executor_success = False
+                        failed_gate = "solvability"
+                        failure_cause = SEAM_CAUSES["solvability"].value
+                        failure_facts = {}
+                        solvability_failed = True
+                        executor_output += f"\n{_conn[1]}"
+                        logger.warning("Executor: region count REJECTED an over-limit mesh - "
+                                       "job_id=%s: %s", job_id, _conn[1][:200])
             if (
                 executor_success
                 and not contract_failed
                 and mesh_manifest
                 and polcfg.SOLVABILITY_GATE_ENABLED
+                and not _skip_solve
             ):
                 try:
                     # ENGINE-OWNED seam (like finalize/gates above): each engine
@@ -510,6 +565,31 @@ async def node_executor(state: PipelineState) -> dict:
                     raise classify_exception(_sv_exc, "solvability_gate")
 
 
+    # A SOUND MESH SHORT OF ONE OF OUR OWN BARS (engines/resolution_policy): every blocking gate
+    # and the trial solve passed, so the mesh is valid; each note gate that said no becomes a
+    # measured caveat the router reads (climb the ladder while a rung is left) and the delivery
+    # says (LAD-cfd-3/4). Its own feedback - the engine's repair advice - is the builder's brief.
+    _sound: dict = {}
+    if workspace:
+        _rp.cite_plan(job_id, workspace, attempt=_n)
+    if executor_success and _noted:
+        from meshpipeline.engines.gap_sizing import read_record as _gap_record
+        from meshpipeline.engines.gates import facts_of
+        _plan = _gap_record(workspace) if workspace else None
+        for _key, _fb in _noted:
+            requirement_caveats.append(_rp.caveat(_key, facts_of(_fb), mesh_manifest,
+                                                  engine=str(state.get("engine") or ""),
+                                                  plan=_plan))
+            executor_output += f"\n{_fb}"
+        logger.warning("Executor: sound mesh with note(s) %s - job_id=%s",
+                       [k for k, _ in _noted], job_id)
+    if executor_success:
+        # every sound mesh of the run is kept on the list a later attempt cannot take from it: a
+        # retry that comes out broken never throws an earlier sound mesh away (LAD-cfd-3)
+        _sound = {_rp.SOUND_KEY: _rp.with_sound(state, _rp.sound_entry(
+            state, workspace=str(workspace), manifest=mesh_manifest,
+            caveats=requirement_caveats))}
+
     logger.info(
         "Executor: success=%s job_id=%s output_len=%d",
         executor_success, job_id, len(executor_output),
@@ -535,6 +615,8 @@ async def node_executor(state: PipelineState) -> dict:
             except Exception:
                 pass
 
+    if not executor_success and _driver_verdict is not None:
+        failure_facts = {**dict(failure_facts), **dict(_driver_verdict.facts)}
     TrainingLogger(job_id).log("executor_run", op_id=f"executor:{_n}", payload={
         "success":    executor_success,
         "failed_gate": "" if executor_success else failed_gate,
@@ -559,4 +641,5 @@ async def node_executor(state: PipelineState) -> dict:
         # delivery surfaces state them and the selection machinery reads them; nothing
         # downstream may add to or waive them
         "requirement_caveats":  requirement_caveats,
+        **_sound,
     }

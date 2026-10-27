@@ -1,9 +1,11 @@
 /* Responsibility: Tell the customer their CAD was repaired, and hand them the file - on any
    ending, including a run whose mesh never arrived. */
-/* Boundaries: it renders what the API already delivered. It fetches nothing, decides no status,
-   and makes no claim about the mesh - that is the outcome message's job. */
+/* Boundaries: it renders what the API already delivered (a Download click fetches a fresh link
+   through render/download.js). It decides no status, and makes no claim about the mesh - that is
+   the outcome message's job. */
 
 import { esc, fmtBytes } from "../core/format.js";
+import { bindFreshDownloads, downloadAttrs } from "./download.js";
 
 /* WHY THIS IS NOT PART OF THE VIEWER. The viewer is the mesh's surface, and it only opens on
    proof that a mesh passed a gate (core/events.js resultSurface). A repair is a DIFFERENT
@@ -38,7 +40,7 @@ export function openRepairPanel(job, anchorEl, data) {
     // The repaired geometry leads in the accent, the way the mesh case does in the viewer: it is
     // the thing the customer came for.
     const primary = i === 0 ? " primary" : "";
-    return `<a class="v-dlbtn${primary}" href="${esc(f.url || "#")}" download
+    return `<a class="v-dlbtn${primary}" href="${esc(f.url || "#")}"${downloadAttrs(job, f)} download
                target="_blank" rel="noopener"><b>${esc(f.label || f.type)}</b
                ><span>${fmtBytes(f.size)}</span></a>`;
   }).join("");
@@ -62,6 +64,7 @@ export function openRepairPanel(job, anchorEl, data) {
       </div></div>
     <div class="v-why">${esc(line)}</div>
     <div class="v-sec"><div class="v-dl">${downloads}</div></div>`;
+  bindFreshDownloads(box);
   anchorEl.appendChild(box);
   return box;
 }

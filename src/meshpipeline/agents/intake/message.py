@@ -356,8 +356,18 @@ async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: 
             return unit
         return MessageOutcome(status=MessageStatus.approval_invalidated, transition=settled)
 
-    unit = await _settle_unit(inbound, db, gate=gate, locked=locked, revision=revision,
-                              session_repo=session_repo, logger=logger)
+    # AN FEA PART'S UNIT IS SETTLED ON THE FEA STAGE, never by a chat question: the stage shows the
+    # part's size in the file's numbers with the unit box ("the file does not say - check the
+    # size") and the size-based suggestion, and its Proceed records the unit. A triangle file (STL,
+    # OBJ, PLY, 3MF, GLB) states no unit, and the chat used to ask it before any stage - and so
+    # never held for the check: the model asked again in its own words ("the STEP coordinates" of
+    # an STL), then the engine and the analysis while the part was still being drawn (Areen's
+    # Camaro STL, 2026-10-23). A unit the user names unasked is still recorded.
+    fea_unit_on_stage = (fea_words(messages) and not uc.already_asked(gate)
+                         and uc.stated_unit(inbound.content) is None)
+    unit = None if fea_unit_on_stage else await _settle_unit(
+        inbound, db, gate=gate, locked=locked, revision=revision, session_repo=session_repo,
+        logger=logger)
     if unit is not None:
         if unit.status is MessageStatus.unit_recorded:
             # the unit answer may be the first answer the geometry check waits for
@@ -367,7 +377,7 @@ async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: 
             if hold is not None:
                 return hold
         return unit
-    if uc.needs_confirmation(locked):
+    if uc.needs_confirmation(locked) and not fea_unit_on_stage:
         # THE NAMING WAITS FOR THE UNIT. The user's words go to the model only once the file's
         # scale is known: the naming re-reads every measurement in that unit, and the stage
         # confirms nothing without it. Until then the intake answers as it always did.
@@ -383,6 +393,13 @@ async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: 
         return hold
     return MessageOutcome(status=MessageStatus.proceed,
                           transition=GateTransition(revision=revision))
+
+
+def fea_words(messages: list) -> bool:
+    """Whether the user's words so far take the job to the FEA path (application/purpose_map)."""
+    from meshpipeline.application import purpose_map as pm
+
+    return pm.reading_for(messages).route == pm.ROUTE_FEA
 
 
 def analysis_question_due(messages: list) -> bool:
@@ -710,6 +727,7 @@ _REQUIREMENT_WRITES: tuple[tuple[str, str], ...] = (
     ("mesh_engine", "set_mesh_engine"),
     ("domain", "set_task_label"),
     ("engine_params", "set_engine_params"),
+    ("user_notes", "set_user_notes"),
 )
 
 #: Event channels the turn can produce, in the order they must be appended.
@@ -760,10 +778,41 @@ async def persist_turn(inbound: InboundMessage, result: dict, *, session_repo,
         await db.commit()
 
 
+class NoteStatus(str, enum.Enum):
+
+    added = "added"
+    not_found = "not_found"
+    empty = "empty"
+    running = "running"          # the run has started: a note can no longer reach it
+
+
+async def add_console_note(session_id: uuid.UUID, owner_id: str, text: str, *, session_repo,
+                           db_factory, organization_id: str = "") -> tuple[NoteStatus, Any]:
+    """THE CONSOLE'S NOTES BOX (contracts/user_notes, NOTE-1): the user's text kept exactly as
+    typed beside the session's other notes. Returns (status, the session as it now stands). Not
+    while a run is linked - the note could no longer reach it."""
+    from meshpipeline.contracts.user_notes import SOURCE_CONSOLE, make
+    if not str(text or "").strip():
+        return NoteStatus.empty, None
+    async with db_factory() as db:
+        session = await session_repo.get_for_owner(db, session_id, owner_id,
+                                                   organization_id=organization_id)
+        if session is None:
+            return NoteStatus.not_found, None
+        if getattr(session, "job_id", None):
+            return NoteStatus.running, session
+        await session_repo.set_user_notes(db, session_id, [make(text, source=SOURCE_CONSOLE)])
+        await db.commit()
+        fresh = await session_repo.get_for_owner(db, session_id, owner_id,
+                                                 organization_id=organization_id)
+    return NoteStatus.added, fresh
+
+
 def _reply_of(result: dict) -> str:
     from meshpipeline.agents.intake.agent import _extract_reply
     return _extract_reply(result)
 
 
-__all__ = ["STILL_RUNNING_REPLY", "GateChange", "GateTransition", "InboundMessage",
+__all__ = ["STILL_RUNNING_REPLY", "GateChange", "GateTransition", "InboundMessage", "NoteStatus",
+           "add_console_note",
            "MessageOutcome", "MessageStatus", "PreviousRun", "accept", "persist_turn"]

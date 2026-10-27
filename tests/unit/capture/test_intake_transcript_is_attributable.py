@@ -6,7 +6,7 @@ import ast
 import inspect
 
 WRITE = "_emit_intake_events"
-CLAIM = "claim_delivery"
+CLAIM = "claim_delivery_patiently"  # claim_delivery, waiting out a full database
 
 
 def _function(name: str, module) -> ast.AST:

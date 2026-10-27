@@ -12,6 +12,7 @@ import asyncio
 import base64
 import json
 import logging
+import math
 import tempfile
 import time
 from dataclasses import dataclass
@@ -23,15 +24,56 @@ logger = logging.getLogger(__name__)
 #: failed and unsupported are terminal and say why.
 STATUS_PENDING, STATUS_SCOUTED, STATUS_READY = "pending", "scouted", "ready"
 STATUS_FAILED, STATUS_UNSUPPORTED = "failed", "unsupported"
-#: THE WORKER'S LIMITS for the two steps, in seconds. Past the soft one the task is told to stop
-#: and stores `failed` itself; past the hard one it is killed and stores nothing - and a worker
-#: whose VM is deleted mid-task stores nothing either. The Celery tasks take these same numbers,
-#: so the time box the API reads the check through (`time_boxed`) cannot drift from them.
+#: THE WORKER'S LIMITS for the two steps, in seconds, FOR A SMALL FILE. Past the soft one the task
+#: is told to stop and stores what it has itself; past the hard one it is killed and stores
+#: nothing - and a worker whose VM is deleted mid-task stores nothing either.
+#: NO GUESSED CLOCK BLOCKS A CLEAN FILE (jubilee_frame, a 46 MB printer frame of 145 solids, was
+#: failed at 22 min by these numbers while the worker was still working on it): the limits a check
+#: runs under grow with the file (`step_limits`), are passed to the task when it is queued and
+#: written on the pending marker, so the time box the API reads the check through (`time_boxed`)
+#: holds the check to its own numbers - and while the worker's heartbeat is fresh a check is never
+#: called stuck at all. These numbers are only the backstop for a call that never returns.
 SCOUT_SOFT_LIMIT_S, SCOUT_HARD_LIMIT_S = 900, 1200
 NAMING_SOFT_LIMIT_S, NAMING_HARD_LIMIT_S = 600, 900
+#: What each megabyte of upload adds to a step's limits (reading, tessellating and measuring a
+#: STEP grow with its size: about 1 s/MB to read, minutes for an assembly of hundreds of solids).
+SCOUT_S_PER_MB, NAMING_S_PER_MB = 60.0, 30.0
+#: The backstop's ceiling, whatever the size: a step past it is a call that will never return.
+LIMIT_CEILING_S = 6 * 3600
 #: How long past its hard limit a step is still believed to be running: queue time on a busy
 #: fleet, and clock skew between the API and the worker.
 STALE_MARGIN_S = 120.0
+
+
+def step_limits(step: str, size_bytes: float | int | None) -> tuple[int, int]:
+    """(soft, hard) seconds for a scout or naming step on a file this big: the small-file limits
+    plus `*_S_PER_MB` for every megabyte, hard a fixed margin past soft, under LIMIT_CEILING_S. A
+    file whose size is unknown gets the small-file limits."""
+    if step == RETRY_NAMING:
+        soft0, hard0, per_mb = NAMING_SOFT_LIMIT_S, NAMING_HARD_LIMIT_S, NAMING_S_PER_MB
+    else:
+        soft0, hard0, per_mb = SCOUT_SOFT_LIMIT_S, SCOUT_HARD_LIMIT_S, SCOUT_S_PER_MB
+    try:
+        mb = max(0.0, float(size_bytes or 0) / 1e6)
+    except (TypeError, ValueError):
+        mb = 0.0
+    extra = per_mb * mb
+    soft = int(min(soft0 + extra, LIMIT_CEILING_S - (hard0 - soft0)))
+    return soft, soft + (hard0 - soft0)
+
+
+def limits_of(stored: dict | None, step: str = "scout") -> tuple[float, float]:
+    """The (soft, hard) limits a stored check runs under: the ones written on its marker when it
+    was queued, else the small-file limits (a marker written before the limits grew with the file)."""
+    s = stored or {}
+    soft0, hard0 = step_limits(step, None)
+    prefix = "naming_" if step == RETRY_NAMING else ""
+    try:
+        soft = float(s.get(f"{prefix}soft_limit_s") or soft0)
+        hard = float(s.get(f"{prefix}hard_limit_s") or hard0)
+    except (TypeError, ValueError):
+        soft, hard = float(soft0), float(hard0)
+    return soft, hard
 #: How long the naming step waits for a scout that is still running before giving up. Under its
 #: own soft limit on purpose: a wait that outlived the limit was ended by the worker with a
 #: `failed` written over the scout's `pending`, instead of the request being withdrawn so the
@@ -40,6 +82,9 @@ NAMING_WAIT_S = float(NAMING_SOFT_LIMIT_S - 60)
 #: The plain reasons a time-boxed check reports, and the step a retry runs again.
 SCOUT_TOO_LONG = "the drawing took too long"
 NAMING_TOO_LONG = "the naming step did not answer"
+#: ...and when the worker stopped beating mid-step (killed, or its VM went away).
+SCOUT_STOPPED = "the worker drawing your part stopped"
+NAMING_STOPPED = "the worker naming your part stopped"
 RETRY_SCOUT, RETRY_NAMING = "scout", "naming"
 #: What write_status stamps on every record; what a re-store of a record leaves out.
 _STAMPED_KEYS = ("status", "written_at", "seconds", "session_id")
@@ -151,26 +196,57 @@ def mark_naming_withdrawn(session_id: str) -> None:
                 {**current, "withdrawn": True, "withdrawn_at": time.time()})
 
 
-def time_boxed(stored: dict | None, requested: dict | None, now: float | None = None) -> dict | None:
-    """THE CHECK AS IT SHOULD BE REPORTED NOW. A scout still `pending` past its hard limit (plus
-    the margin) was killed, or lost its worker: nothing will ever write its result, so it is
-    reported `failed` with a plain reason and the step a retry runs. A `scouted` check whose
-    naming was requested that long ago and never answered is reported the same way, with the
-    scout's proposal and skin still on it so the user can fill the names in by hand. Pure, and
-    the one rule every reader applies; it stores nothing, so a worker that was merely slow still
-    lands its result and the next read serves it."""
+def time_boxed(stored: dict | None, requested: dict | None, now: float | None = None,
+               progress: dict | None = None) -> dict | None:
+    """THE CHECK AS IT SHOULD BE REPORTED NOW. A scout still `pending` whose worker has stopped
+    beating (geometry_progress: the worker's heartbeat) was killed, or lost its VM: nothing will
+    ever write its result, so it is reported `failed` with a plain reason and the step a retry
+    runs. A `scouted` check whose naming's worker stopped the same way is reported failed too,
+    with the scout's proposal and skin still on it so the user can fill the names in by hand.
+
+    PROGRESS, NOT A CLOCK: while the worker's heartbeat is fresh the check is working, however
+    long a big file takes - its own limits (written on its marker, sized to the file) end it if a
+    call never returns, and the beat stops then. Without a heartbeat (no worker has picked it up,
+    or a worker from before the heartbeat) the check is held to its own hard limit plus the margin.
+    Pure, and the one rule every reader applies; it stores nothing, so a worker that was merely
+    slow still lands its result and the next read serves it."""
+    from meshpipeline.application import geometry_progress as gp
+
     if stored is None:
         return None
     at = time.time() if now is None else now
     status = stored.get("status")
+    rec = progress if isinstance(progress, dict) else {}
     if status == STATUS_PENDING:
         since = float(stored.get("written_at") or 0.0)
-        if at - since > SCOUT_HARD_LIMIT_S + STALE_MARGIN_S:
+        scout = rec.get("scout") if isinstance(rec.get("scout"), dict) else None
+        beating = gp.beating(scout, at, marker=since) if scout is not None else None
+        if beating is False:
+            return {**stored, "status": STATUS_FAILED, "reason": SCOUT_STOPPED, "named": False,
+                    "step": RETRY_SCOUT, "retry": RETRY_SCOUT}
+        if beating is None and at - since > limits_of(stored)[1] + STALE_MARGIN_S:
             return {**stored, "status": STATUS_FAILED, "reason": SCOUT_TOO_LONG, "named": False,
                     "step": RETRY_SCOUT, "retry": RETRY_SCOUT, "timed_out": True}
+    elif status == STATUS_SCOUTED and is_preview(stored):
+        # A PREVIEW WHOSE SCOUT STOPPED (killed past its limit, or its VM went away) is the
+        # check's result: the quick drawing stands, said so, and the user goes on with it
+        scout = rec.get("scout") if isinstance(rec.get("scout"), dict) else None
+        beating = gp.beating(scout, at) if scout is not None else None
+        since = float(stored.get("written_at") or 0.0)
+        if beating is False:
+            return kept_preview(stored, SCOUT_STOPPED)
+        if beating is None and at - since > limits_of(stored)[1] + STALE_MARGIN_S:
+            return kept_preview(stored, SCOUT_TOO_LONG)
     elif status == STATUS_SCOUTED and naming_pending(requested):
         asked = float((requested or {}).get("requested_at") or 0.0)
-        if at - asked > NAMING_HARD_LIMIT_S + STALE_MARGIN_S:
+        naming = rec.get("naming") if isinstance(rec.get("naming"), dict) else None
+        if naming is not None and float(naming.get("picked_at") or 0.0) < asked - 30.0:
+            naming = None                                 # an earlier naming's record
+        beating = gp.beating(naming, at) if naming is not None else None
+        if beating is False:
+            return {**stored, "status": STATUS_FAILED, "reason": NAMING_STOPPED, "named": False,
+                    "step": RETRY_NAMING, "retry": RETRY_NAMING}
+        if beating is None and at - asked > limits_of(requested, RETRY_NAMING)[1] + STALE_MARGIN_S:
             return {**stored, "status": STATUS_FAILED, "reason": NAMING_TOO_LONG, "named": False,
                     "step": RETRY_NAMING, "retry": RETRY_NAMING, "timed_out": True}
     return stored
@@ -203,7 +279,12 @@ def start_scout(session_id: str, owner_id: str, *, source: dict, interpretation:
 
     marked = False
     try:
-        write_status(session_id, STATUS_PENDING)
+        # the limits this check runs under, sized to the file: the task is queued with the same
+        # numbers (runtime/composition), and the time box reads them back from this marker
+        size = (source or {}).get("size_bytes")
+        soft, hard = step_limits(RETRY_SCOUT, size)
+        write_status(session_id, STATUS_PENDING, soft_limit_s=soft, hard_limit_s=hard,
+                     size_bytes=size)
         marked = True
         if not enqueue_scout(session_id=session_id, owner_id=owner_id, source=source,
                              interpretation=interpretation):
@@ -271,8 +352,31 @@ def naming_requested(session_id: str) -> dict | None:
 
 
 def mark_naming_requested(session_id: str, purpose_text: str) -> None:
+    soft, hard = naming_limits_for(session_id)
     _store_json(check_object_key(session_id, "naming.json"),
-                {"session_id": session_id, "purpose_text": purpose_text[:2000], "requested_at": time.time()})
+                {"session_id": session_id, "purpose_text": purpose_text[:2000], "requested_at": time.time(),
+                 "naming_soft_limit_s": soft, "naming_hard_limit_s": hard})
+
+
+def checked_size_bytes(stored: dict | None) -> int | None:
+    """How big the checked upload is, as its record says: the pending marker's size, else the
+    scouted record's source. None when it does not say."""
+    s = stored or {}
+    size = s.get("size_bytes") or (s.get("source") or {}).get("size_bytes")
+    try:
+        return int(size) if size is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def naming_limits_for(session_id: str) -> tuple[int, int]:
+    """The naming's (soft, hard) limits for this session's upload, sized to its file. Never
+    raises: a record that cannot be read gets the small-file limits."""
+    try:
+        size = checked_size_bytes(read_check(session_id))
+    except Exception:  # noqa: BLE001 - the limits are a backstop; the small-file ones stand in
+        size = None
+    return step_limits(RETRY_NAMING, size)
 
 
 def clear_naming_request(session_id: str) -> None:
@@ -296,14 +400,20 @@ def skin_payload(skin_stl: Path) -> dict:
     import numpy as np
 
     from meshpipeline.cad.stl_io import read_stl_triangles
-    from meshpipeline.render.skin_mesh import edges_block, prepare_skin, skin_patch
+    from meshpipeline.render.skin_mesh import edges_block, prepare_skin, simplified, skin_patch
 
     tris = np.asarray(read_stl_triangles(Path(skin_stl)), dtype=float).reshape(-1, 3, 3)
     if len(tris) == 0:
         raise RuntimeError("the part's skin has no triangles to draw")
-    prepared = prepare_skin(tris)
-    return {"kind": "skin", "mesh_units": "m", "is_mesh": False, "cell_count": 0,
-            "patches": [skin_patch(prepared)], "edges": edges_block(prepared)}
+    # A BIG SKIN IS DRAWN SIMPLIFIED (a scanned car of millions of triangles): the stage turns it
+    # smoothly and it is ready in seconds; the measuring reads the full skin
+    drawn = simplified(tris)
+    prepared = prepare_skin(drawn)
+    payload = {"kind": "skin", "mesh_units": "m", "is_mesh": False, "cell_count": 0,
+               "patches": [skin_patch(prepared)], "edges": edges_block(prepared)}
+    if len(drawn) < len(tris):
+        payload["simplified_from"] = int(len(tris))
+    return payload
 
 
 # ------------------------------------------------------------------------------ the scout ----
@@ -313,27 +423,67 @@ def run_geometry_check(*, session_id: str, owner_id: str, source: dict,
     stored too, as a status the console can show, because a check that silently never arrives is
     worse than one that says it could not read the part. `purpose_text` is accepted for the
     older single-step callers and ignored: naming has its own step now."""
-    from meshpipeline.application import geometry_progress as gp
 
     started = time.time()
-    # THE LIVE LINE: each step is recorded as it starts, so the chat says what is happening now
+    # THE LIVE LINE: each step is recorded as it starts, so the chat says what is happening now -
+    # and the worker's heartbeat beside it, so a long check on a big file is never taken for a
+    # dead one (time_boxed)
     tracker = _scout_tracker(session_id, source)
+    tracker.start_heartbeat()
+    try:
+        return _run_scout(session_id, owner_id, source, interpretation, tracker, started)
+    finally:
+        tracker.stop_heartbeat()          # whatever happened, the beat stops with the task
+
+
+def _run_scout(session_id: str, owner_id: str, source: dict, interpretation: dict | None,
+               tracker, started: float) -> dict:
+    from meshpipeline.application import geometry_progress as gp
+
     token = gp.track(tracker)
+    preview = _Preview(session_id)
     try:
         result = _scout(session_id=session_id, owner_id=owner_id, source=source,
-                        interpretation=interpretation)
+                        interpretation=interpretation, preview=preview)
     except _Unsupported as exc:
         result = {"status": STATUS_UNSUPPORTED, "reason": str(exc), "named": False}
     except Exception as exc:  # noqa: BLE001 - the user is told, in one sentence, and the intake carries on
         logger.exception("geometry scout failed - session=%s", session_id)
-        result = {"status": STATUS_FAILED, "reason": f"{type(exc).__name__}: {str(exc)[:200]}",
-                  "named": False, "step": RETRY_SCOUT, "retry": RETRY_SCOUT}
-        if _out_of_time(exc):
-            # the worker's soft limit: said as the time box says it, not as the exception's name
-            result.update(reason=SCOUT_TOO_LONG, timed_out=True)
+        reason = SCOUT_TOO_LONG if _out_of_time(exc) else f"{type(exc).__name__}: {str(exc)[:200]}"
+        if preview.record is not None:
+            # THE PART WAS ALREADY SHOWN: what failed was the full reading, never the user's way
+            # on. The quick drawing stays, scouted, with the reason said, and the user confirms
+            # the size and unit on it and goes on to the mesh.
+            result = preview.kept(reason)
+        else:
+            result = {"status": STATUS_FAILED, "reason": reason,
+                      "named": False, "step": RETRY_SCOUT, "retry": RETRY_SCOUT}
+            if _out_of_time(exc):
+                # the worker's soft limit: said as the time box says it, not as the exception's name
+                result["timed_out"] = True
     finally:
         gp.untrack(token)
     result["seconds"] = round(time.time() - started, 1)
+    if preview.record is not None and result.get("status") == STATUS_SCOUTED:
+        moved_on = preview.moved_on()
+        if moved_on is not None and moved_on.get("status") == STATUS_READY and moved_on.get("named_on_preview"):
+            # the naming named the preview before this full reading landed: the full reading is
+            # merged under the naming's answer, never dropped
+            full = {**result, "status": STATUS_SCOUTED}
+            merged = merged_onto_full({k: v for k, v in moved_on.items() if k not in _STAMPED_KEYS},
+                                      {"facts": (preview.record or {}).get("facts") or {}}, full)
+            stored = store_status(session_id, STATUS_READY, RETRY_NAMING, **merged)
+            tracker.finish(ok=True)
+            logger.info("geometry scout: the full reading merged under the naming - session=%s in %.1fs",
+                        session_id, result["seconds"])
+            return stored
+        if moved_on is not None:
+            # something else moved the check on (a failed naming the user is acting on): it is not
+            # replaced under them
+            tracker.finish(ok=True)
+            logger.info("geometry scout: the full reading landed after the naming - kept the %s record, "
+                        "session=%s in %.1fs", moved_on.get("status"), session_id, result["seconds"])
+            return moved_on
     # THE WRITE IS PART OF THE TASK: a result that cannot be stored is stored as a failure, so the
     # stage never waits on a `pending` nothing will replace
     stored = store_status(session_id, result.pop("status"), RETRY_SCOUT, **result)
@@ -341,6 +491,138 @@ def run_geometry_check(*, session_id: str, owner_id: str, source: dict,
     logger.info("geometry scout %s - session=%s in %.1fs", stored.get("reason") or stored["status"],
                 session_id, result["seconds"])
     return stored
+
+
+#: A PREVIEW is the part as first drawn, stored before it is measured: "running" while the scout
+#: is still measuring it, "kept" when the full reading never came and the preview stands.
+PREVIEW_RUNNING, PREVIEW_KEPT = "running", "kept"
+
+
+def is_preview(stored: dict | None) -> bool:
+    """Whether the stored check is a preview the scout is still measuring."""
+    return bool(stored) and (stored or {}).get("preview") == PREVIEW_RUNNING
+
+
+class _Preview:
+    """THE PART, SHOWN BEFORE IT IS MEASURED. The scout's full reading of a big assembly - the
+    openings probed face by face, the clean check, the fluid inside, the pictures - takes minutes
+    (jubilee_frame, 145 solids: ten minutes for the probes alone), and nothing about confirming a
+    part's size and unit needs it. So the moment the part is read and its skin drawn, the skin and
+    a provisional check - its size, unit, bodies and name, nothing guessed past that - are stored
+    as `scouted`, marked a preview: the stage opens on it and the user can proceed. The full
+    reading replaces it when it lands; a full reading that fails or runs out of time leaves the
+    preview standing (`kept`), with the reason said, instead of a failed check."""
+
+    def __init__(self, session_id: str) -> None:
+        self.session_id = session_id
+        self.record: dict | None = None
+        self.skin_key: str | None = None
+
+    def publish(self, *, skin: Path, seed: dict, ref, fetched: Path, canonical, placed: bool) -> None:
+        """Store the skin and the provisional check. Never raises: a preview that cannot be made
+        leaves the scout exactly as it was without one."""
+        try:
+            from meshpipeline.cad.part_name import part_name
+
+            facts = preview_facts(skin, seed)
+            facts.update(canonical.facts())
+            facts["notes"].extend(n for n in canonical.notes if n not in facts["notes"])
+            facts["part_name"] = part_name(fetched, ref.original_filename)
+            skin_key = check_object_key(self.session_id, "skin.json")
+            _store_json(skin_key, _placed_skin_payload(fetched) if placed else skin_payload(skin))
+            self.skin_key = skin_key
+            record = {"named": False, "facts": facts, "proposal": _proposal(facts, None), "snapshots": [],
+                      "skin_key": skin_key, "source": ref.to_payload(), "preview": PREVIEW_RUNNING}
+            current = read_check(self.session_id)
+            if current is not None and current.get("status") != STATUS_PENDING:
+                return                    # the check moved on meanwhile; the preview is not needed
+            # the limits the check was queued under stay on it: the time box reads them
+            record.update({k: current[k] for k in ("soft_limit_s", "hard_limit_s", "size_bytes")
+                           if current is not None and current.get(k) is not None})
+            write_status(self.session_id, STATUS_SCOUTED, **record)
+            self.record = record
+            logger.info("geometry check: preview stored (%s mm) - session=%s",
+                        facts.get("size_mm"), self.session_id)
+        except Exception as exc:  # noqa: BLE001 - the full reading still lands as it always did
+            logger.warning("geometry check: no preview (%s: %s) - session=%s", type(exc).__name__,
+                           str(exc)[:200], self.session_id)
+
+    def kept(self, reason: str) -> dict:
+        """The preview as the check's result, the full reading having failed for `reason`."""
+        return kept_preview({**(self.record or {}), "status": STATUS_SCOUTED}, reason)
+
+    def moved_on(self) -> dict | None:
+        """The stored record when something other than the scout has moved the check on since the
+        preview (a naming landed on it), else None."""
+        try:
+            current = read_check(self.session_id)
+        except Exception:  # noqa: BLE001 - unreadable: the scout's result is written as usual
+            return None
+        if current is None or current.get("status") in (STATUS_PENDING, STATUS_SCOUTED):
+            return None
+        return current
+
+
+def kept_preview(record: dict, reason: str) -> dict:
+    """A preview record as the check's standing result: the full reading did not come (`reason`),
+    so the quick drawing is what the user confirms - said on the facts and the proposal, the clean
+    check said to run again at the mesh. Pure: a copy, the record given is not touched."""
+    out = json.loads(json.dumps(jsonable(record)))
+    said = (f"The full check did not finish ({_plain(reason)}): the part is shown from its quick "
+            "drawing. Check its size and unit and press Proceed - it is measured again when it is meshed.")
+    for holder in (out.setdefault("facts", {}), out.setdefault("proposal", {})):
+        notes = holder.setdefault("notes", [])
+        if said not in notes:
+            notes.append(said)
+    validity = out["facts"].get("validity")
+    if isinstance(validity, dict) and validity.get("kind") == "unchecked":
+        validity["summary"] = "The clean check did not finish on this file; it runs again when the part is meshed."
+    out.update(status=STATUS_SCOUTED, preview=PREVIEW_KEPT, preview_reason=str(reason)[:240])
+    return out
+
+
+def _plain(reason: str) -> str:
+    text = str(reason or "").strip()
+    head, sep, rest = text.partition(": ")
+    if sep and " " not in head and head[:1].isupper():
+        text = rest
+    return text.rstrip(" .") or "it stopped"
+
+
+def preview_facts(skin: Path, seed: dict) -> dict:
+    """The provisional check's facts, from the skin alone (metres) and what reading the file said
+    (`seed`: the unit and its note, how it was read, how many solids): the part's real box and
+    size, and nothing the full reading has not measured - no openings, no flat faces, the clean
+    check still to come. Read as a solid body until the user or the full reading says otherwise,
+    with no confidence in that."""
+    import numpy as np
+
+    from meshpipeline.cad.scout import length_decimals
+    from meshpipeline.cad.stl_io import read_stl_triangles
+
+    tris = np.asarray(read_stl_triangles(Path(skin)), dtype=float).reshape(-1, 3)
+    if len(tris) == 0:
+        raise RuntimeError("the part's skin has no triangles to measure")
+    lo, hi = tris.min(axis=0), tris.max(axis=0)
+    size = [float(v) for v in hi - lo]
+    d = length_decimals(size)
+    notes = list(seed.get("notes") or [])
+    notes.append("the part is still being measured: its openings and the clean check follow")
+    return {
+        "body_kind": "unknown", "input_kind": "solid-body", "flow": "external",
+        "solids": seed.get("solids"), "planar_faces": None,
+        "bbox_min_m": [round(float(v), d + 4) for v in lo], "bbox_max_m": [round(float(v), d + 4) for v in hi],
+        "size_mm": [round(v * 1000.0, d) for v in size],
+        "openings": [], "seed_point_m": None, "seed_point_mm": None,
+        "confidence": {"input_kind": 0.0, "openings": 0.0},
+        "notes": notes, "faces": [], "holes": [],
+        "read_as": seed.get("read_as") or "cad",
+        "unit_assumed": bool(seed.get("unit_assumed")),
+        "scale_to_m": float(seed.get("scale_to_m") or 0.001),
+        "validity": {"clean": None, "kind": "unchecked", "complete": False, "reasons": [],
+                     "summary": "The clean check is still running on this file."},
+        "preview": True,
+    }
 
 
 class _Unsupported(RuntimeError):
@@ -389,7 +671,8 @@ def _fetch(ref, work: Path) -> Path:
     return dest
 
 
-def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict | None) -> dict:
+def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict | None,
+           preview: _Preview | None = None) -> dict:
     from meshpipeline.application import geometry_progress as gp
     from meshpipeline.cad.ingest import IngestError, canonicalise
     from meshpipeline.contracts.geometry_source import GeometryInterpretationRef, GeometrySourceRef
@@ -432,17 +715,30 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
         if thermal_sidecar is not None and check_mode_of(canonical.source_format) == THERMAL_CHECK:
             return _scout_thermal(session_id, ref, fetched, canonical, thermal_sidecar)
         placed = bool(canonical.physics.get("placed_parts"))
+
+        def drawn(skin: Path, seed: dict) -> None:
+            # THE PREVIEW, the moment the skin exists: the stage can open on it while the rest of
+            # the reading runs (_Preview)
+            if preview is not None:
+                preview.publish(skin=skin, seed=seed, ref=ref, fetched=fetched, canonical=canonical,
+                                placed=placed)
+
         if canonical.kind is GeometryKind.cad:
-            facts, skin = _scout_exact(local_path, work, interp_ref, ref)
+            facts, skin = _scout_exact(local_path, work, interp_ref, ref, on_skin=drawn)
         else:
             # placed parts are written in millimetres, the unit ECXML geometry is read in
             facts, skin = _scout_triangles(local_path, work, interp_ref, ref,
-                                           file_scale=0.001 if placed else None)
+                                           file_scale=0.001 if placed else None, on_skin=drawn)
         # what kind of geometry this is and what it came from, for whoever decides what to offer
         facts.update(canonical.facts())
         facts.setdefault("notes", []).extend(n for n in canonical.notes if n not in facts["notes"])
         # whether the upload is CLEAN (cad/validity): the contract a mesh is promised on
         facts["validity"] = clean_verdict(fetched, canonical)
+        # THE PART'S NAME FROM THE FILE (cad/part_name): a STEP's own product name, else the upload's
+        # file name - what every stage shows when no model names the part (an FEA part never asks one)
+        from meshpipeline.cad.part_name import part_name
+
+        facts["part_name"] = part_name(fetched, ref.original_filename)
         if facts["validity"].get("clean") is not True and facts["validity"].get("kind") != "unchecked":
             facts["notes"].append(facts["validity"]["summary"])
         # a thermal model's physics (ECXML: materials, powers, fans, vents...), kept whole beside
@@ -462,22 +758,35 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
 
         # the same skin, stored for the stage the user turns the part in
         gp.mark(gp.PICTURES, triangles=gp.skin_triangles(skin))
-        skin_key = check_object_key(session_id, "skin.json")
-        _store_json(skin_key, _placed_skin_payload(fetched) if placed else skin_payload(skin))
+        skin_key = preview.skin_key if preview is not None and preview.skin_key else None
+        if skin_key is None:
+            # the same skin, stored for the stage the user turns the part in (the preview stored
+            # it already when there was one: the same file, drawn once)
+            skin_key = check_object_key(session_id, "skin.json")
+            _store_json(skin_key, _placed_skin_payload(fetched) if placed else skin_payload(skin))
         # which way the part stands up, as far as its shape says: the code's half of the up
         # proposal, weighed against the pictures once the model has seen them
         facts["up_evidence"] = read_up_evidence(skin)
-        shots = render_snapshots(skin, stickered(facts), work / "pictures")
-
         store = get_object_store()
         snapshots = []
-        for s in shots:
-            key = check_object_key(session_id, f"{s.name}.png")
-            store.upload_file(local_path=s.path, object_key=key)
-            # the camera goes with the picture: "the nose is at the left of the top picture" is
-            # read through it
-            snapshots.append({"name": s.name, "object_key": key, "facing": list(s.facing),
-                              "direction": list(s.direction), "up": list(s.up)})
+        # THE PICTURES ARE FOR THE MODEL AND THE CARD, never the user's way on: a part they cannot
+        # be drawn for is still checked, on the stage, with the reason said
+        try:
+            shots = render_snapshots(skin, stickered(facts), work / "pictures")
+            for s in shots:
+                key = check_object_key(session_id, f"{s.name}.png")
+                store.upload_file(local_path=s.path, object_key=key)
+                # the camera goes with the picture: "the nose is at the left of the top picture"
+                # is read through it
+                snapshots.append({"name": s.name, "object_key": key, "facing": list(s.facing),
+                                  "direction": list(s.direction), "up": list(s.up)})
+        except Exception as exc:  # noqa: BLE001 - the stage draws the skin itself
+            if _out_of_time(exc):
+                raise
+            logger.warning("geometry check: the pictures could not be drawn (%s: %s) - session=%s",
+                           type(exc).__name__, str(exc)[:200], session_id)
+            facts.setdefault("notes", []).append(
+                "the pictures could not be drawn, so nothing was named from them; the part is on the stage")
         upright = _store_upright_sheet(session_id, skin, work, store)
     result = {"status": STATUS_SCOUTED, "named": False, "facts": facts, "proposal": _proposal(facts, None),
               "snapshots": snapshots, "skin_key": skin_key, "source": ref.to_payload()}
@@ -798,31 +1107,48 @@ def _store_upright_sheet(session_id: str, skin: Path, work: Path, store) -> dict
     return {"object_key": key, "order": list(sheet.order)}
 
 
-def _scout_exact(local_path: Path, work: Path, interp_ref, ref) -> tuple[dict, Path]:
-    """A STEP or IGES file: OpenCASCADE reads real faces, so the openings come out exact."""
+def _scout_exact(local_path: Path, work: Path, interp_ref, ref, on_skin=None) -> tuple[dict, Path]:
+    """A STEP or IGES file: OpenCASCADE reads real faces, so the openings come out exact.
+    `on_skin(skin, seed)` is told the moment the part's skin is drawn - before it is measured -
+    with what reading the file already said (the unit, the solids)."""
     from meshpipeline.application import geometry_progress as gp
     from meshpipeline.cad.fluid_volume_check import read_fluid_volume, wants_fluid_volume
     from meshpipeline.cad.normalise import occ_scale_transform
-    from meshpipeline.cad.scout import read_cad, scout_cad, write_view_stl
+    from meshpipeline.cad.scout import count_solids, read_cad, scout_cad, write_view_stl
 
     prepared, unit_note = _prepared_coordinates(local_path, interp_ref, ref)
     # read once: the scout and the view skin each work on their own scaled copy of it
     shape = read_cad(local_path)
     gp.mark(gp.MEASURING)
+    interp = getattr(prepared, "interpretation", None)
+    scale_to_m = float(interp.scale_to_metres) if interp is not None else 0.001
+    # THE SKIN FIRST, sized to the part (cad/scout.view_deflection): the stage can show the part
+    # while the rest of it is measured, and a skin is all a preview needs
+    skin = write_view_stl(local_path, work / "skin.stl", prepared=prepared, shape=shape)
+    gp.note_work(triangles=gp.skin_triangles(skin))
+    if on_skin is not None:
+        try:
+            solids: int | None = count_solids(shape)
+        except Exception:  # noqa: BLE001 - the preview says nothing of bodies it cannot count
+            solids = None
+        on_skin(skin, {"read_as": "cad", "unit_assumed": bool(unit_note), "scale_to_m": scale_to_m,
+                       "notes": [unit_note] if unit_note else [], "solids": solids})
     # a thermal model states its openings (declared_openings, below); its many solids are not
     # searched for them
     declared = {"declared_openings": True} if _thermal_sidecar(local_path) is not None else {}
     facts = scout_cad(local_path, prepared=prepared, shape=shape, **declared).as_dict()
     facts["read_as"] = "cad"
     facts["unit_assumed"] = bool(unit_note)
-    interp = getattr(prepared, "interpretation", None)
-    facts["scale_to_m"] = float(interp.scale_to_metres) if interp is not None else 0.001
+    facts["scale_to_m"] = scale_to_m
     if unit_note:
         facts["notes"].append(unit_note)
-    skin = write_view_stl(local_path, work / "skin.stl", prepared=prepared, shape=shape)
+        # the unit most of a mixed file's parts state: the unit proposal's first reading
+        if interp_ref is None and (mostly := _stated_mostly(local_path)) is not None:
+            facts["unit_stated_mostly"] = mostly.unit.value
     gp.mark(gp.OPENINGS, triangles=gp.skin_triangles(skin))
-    facts["holes"] = skin_holes(skin)
+    facts["holes"] = skin_holes(skin, facts)
     if not declared:
+        map_openings(facts)
         # AN ASSEMBLY'S FLUID is the space inside its parts, closed off where it meets the outside
         # (cad/fluid_volume_check): its openings are what the user confirms, not every flat face
         if wants_fluid_volume(facts):
@@ -885,29 +1211,112 @@ def vet_openings(facts: dict, skin: Path) -> None:
         max(kept, key=lambda o: float(o.get("area_mm2") or 0.0))["role"] = "inlet"
 
 
-def skin_holes(skin: Path) -> list[dict]:
-    """The holes of the skin the stage draws, by the one definition the triangle scout uses
-    (cad/open_ends) - what "Add an opening" snaps to. A STEP file's openings are measured exactly
-    from its faces; these are for the click, on the same triangles the user clicks. Never fails
-    the scout: a skin it cannot read has no holes to snap to, and the click falls back."""
+def vet_by_map(facts: dict, imap) -> None:
+    """A CAD PART'S OPENINGS HELD TO ITS MAP (INS-2): an opening the faces read whose outside - a
+    few cubes out along the way the fluid would leave by it - is the part's own inside, not the
+    open air, is a step inside the passage (a counterbore's floor, a socket's shoulder), not a
+    mouth: proposed as not an opening, with the reason in the notes. One the map's grid is too
+    coarse to see is left as it is."""
     import numpy as np
 
-    from meshpipeline.cad.open_ends import find_holes
+    from meshpipeline.cad.inside_space import MIN_ACROSS
+    if not imap.passages():
+        return
+    for o in facts.get("openings") or []:
+        if o.get("role") not in ("inlet", "outlet"):
+            continue
+        c, n = o.get("centroid_m"), o.get("normal")
+        d = float(o.get("diameter_mm") or 0.0) / 1000.0
+        if not c or not n or d < MIN_ACROSS * imap.h:
+            continue
+        c, n = np.asarray(c, dtype=float), np.asarray(n, dtype=float)
+        ahead = imap.where([c + k * imap.h * n for k in (2.0, 3.0, 4.5)])
+        if "out" not in ahead and "pocket" in ahead:
+            o["role"] = "not_an_opening"
+            facts.setdefault("notes", []).append(
+                f"opening {o.get('id')} ({o.get('name')}) is proposed as not an opening: it is a step inside the "
+                "passage, and the space beyond it is the part's own inside, not the outside")
+    kept = [o for o in facts.get("openings") or [] if o.get("role") in ("inlet", "outlet")]
+    if kept and not any(o.get("role") == "inlet" for o in kept):
+        max(kept, key=lambda o: float(o.get("area_mm2") or 0.0))["role"] = "inlet"
+
+
+def map_openings(facts: dict) -> None:
+    """A CAD PART'S OPENINGS FROM ITS MAP (INS-2), when its faces gave fewer than two: the mouths
+    the inside-space map read on its skin (`facts["holes"]`, marked `passage`), proposed as the
+    openings - the largest the inlet - with a side pocket's mouths as not openings. The faces'
+    exact openings always win when there are two or more of them. Never fails the scout."""
+    ports = [o for o in facts.get("openings") or [] if o.get("role") in ("inlet", "outlet")]
+    mouths = [h for h in facts.get("holes") or [] if h.get("passage", True)]
+    if len(ports) >= 2 or len(mouths) < 2 or not (facts.get("inside") or {}).get("has_inside"):
+        return
+    side = [h for h in facts.get("holes") or [] if not h.get("passage", True)]
+    mouths = sorted(mouths, key=lambda h: -float(h.get("area_mm2") or 0.0))
+    out: list[dict] = []
+    for k, h in enumerate([*mouths, *side], start=1):
+        is_side = k > len(mouths)
+        name = ("inlet" if k == 1 else "outlet" if len(mouths) == 2 else f"outlet_{k - 1}") if not is_side \
+            else f"side_{k - len(mouths)}"
+        o = {"id": k, "face": -1, "name": name, "role": "not_an_opening" if is_side else ("inlet" if k == 1 else "outlet"),
+             "kind": "rim" if h.get("kind") == "rim" else "ring", "shape": h.get("shape") or "other",
+             "confidence": float(h.get("confidence") or 0.6),
+             "centroid_m": list(h.get("centroid_m") or []), "centroid_mm": list(h.get("centroid_mm") or []),
+             "normal": list(h.get("normal") or []),
+             "area_m2": round(float(h.get("area_mm2") or 0.0) * 1e-6, 9), "area_mm2": float(h.get("area_mm2") or 0.0),
+             "diameter_mm": h.get("diameter_mm"), "on_extremity": True, "clear_ahead": True, "from_map": True}
+        for key in ("width_mm", "height_mm", "inner_diameter_mm", "flow_area_mm2"):
+            if h.get(key) is not None:
+                o[key] = h[key]
+        out.append(o)
+    facts["openings"] = out
+    facts.setdefault("notes", []).append(
+        f"the part's faces gave {len(ports)} opening(s); its inside-space map found {len(mouths)} mouth(s) of its "
+        "passages, proposed as the openings (measured on the drawn skin: close, not exact)")
+
+
+def skin_holes(skin: Path, facts: dict | None = None) -> list[dict]:
+    """The holes of the skin the stage draws, by the one definition the triangle scout uses
+    (cad/open_ends: the mouths of the part's inside-space map) - what "Add an opening" snaps to.
+    A STEP file's openings are measured exactly from its faces; these are for the click, on the
+    same triangles the user clicks. The map's reading of the part's inside goes into `facts`
+    (`inside`, INS-1), which the stage's flow question reads (INS-3). Never fails the scout: a
+    skin it cannot read has no holes to snap to, and the click falls back."""
+    import numpy as np
+
+    from meshpipeline.cad.open_ends import find_holes, inside_map, surface
     from meshpipeline.cad.stl_io import read_stl_triangles
 
     try:
         tris = np.asarray(read_stl_triangles(Path(skin)), dtype=float).reshape(-1, 3, 3)
-        return [h.as_dict() for h in find_holes(tris)]
+        mesh = surface(tris)
+        found = find_holes(mesh=mesh) if mesh is not None else []
+        holes = [h.as_dict() for h in found]
+        if facts is not None:
+            imap = inside_map(mesh) if mesh is not None else None
+            facts["inside"] = imap.facts() if imap is not None else {"rule": "INS-1", "mapped": False}
+            if mesh is not None:
+                from meshpipeline.cad.scout_mesh import surface_health
+                health = surface_health(mesh, found)
+                if int(facts.get("solids") or 0) >= 1:
+                    # a CAD solid is closed by its B-rep: the skin's open edges are where its
+                    # tessellation's faces meet unwelded, not gaps in the part
+                    health["open_edges_not_openings"] = 0
+                    health["from"] = "cad solids"
+                facts["surface"] = health
+            if imap is not None:
+                vet_by_map(facts, imap)
+        return holes
     except Exception as exc:  # noqa: BLE001 - a click aid, never a reason to fail the check
         logger.warning("geometry check: the skin's holes could not be read (%s: %s)", type(exc).__name__, exc)
         return []
 
 
 def _scout_triangles(local_path: Path, work: Path, interp_ref, ref,
-                     file_scale: float | None = None) -> tuple[dict, Path]:
+                     file_scale: float | None = None, on_skin=None) -> tuple[dict, Path]:
     """An STL, OBJ or VTP file: triangles only, so the openings are read from loops and flat
     rings in the mesh - close, not exact - and the unit is whatever the user confirms
-    (`file_scale`: the scale a converted file was written at, when its source fixes the unit)."""
+    (`file_scale`: the scale a converted file was written at, when its source fixes the unit).
+    `on_skin(skin, seed)` is told the moment the skin is written, before the part is measured."""
     from meshpipeline.application import geometry_progress as gp
     from meshpipeline.cad.scout_mesh import scout_mesh, write_mesh_skin
     from meshpipeline.contracts.geometry_units import LengthUnit, scale_to_metres
@@ -920,6 +1329,12 @@ def _scout_triangles(local_path: Path, work: Path, interp_ref, ref,
         scale = scale_to_metres(LengthUnit.millimetre)
         note = "a triangle file carries no unit; sizes assume millimetres until the intake confirms"
     gp.mark(gp.MEASURING)
+    # THE SKIN FIRST: the stage can show the part while it is measured (the same file either way)
+    skin = write_mesh_skin(local_path, work / "skin.stl", scale_to_m=scale)
+    gp.note_work(triangles=gp.skin_triangles(skin))
+    if on_skin is not None:
+        on_skin(skin, {"read_as": "mesh", "unit_assumed": bool(note), "scale_to_m": scale,
+                       "notes": [note] if note else [], "solids": None})
     result = scout_mesh(local_path, scale_to_m=scale)
     facts = result.as_dict()
     facts.update(getattr(result, "extra", {}) or {})
@@ -928,7 +1343,6 @@ def _scout_triangles(local_path: Path, work: Path, interp_ref, ref,
     facts["scale_to_m"] = scale
     if note:
         facts["notes"].append(note)
-    skin = write_mesh_skin(local_path, work / "skin.stl", scale_to_m=scale)
     gp.mark(gp.OPENINGS, triangles=gp.skin_triangles(skin))
     if not file_scale:
         # a thermal model's placed parts (file_scale) state their regions and openings themselves
@@ -940,8 +1354,79 @@ def _scout_triangles(local_path: Path, work: Path, interp_ref, ref,
         if facts.get("openings_from") != "fluid_volume":
             # the extracted openings bound the fluid by construction; the skin's own passages
             # (several parts' skins together) say nothing about them
+            facts = keep_a_stageable_proposal(facts, local_path, skin, scale)
             vet_openings(facts, skin)
     return facts, skin
+
+
+def _ports_of(facts: dict) -> list[dict]:
+    return [o for o in facts.get("openings") or [] if o.get("role") in ("inlet", "outlet")]
+
+
+def _stages(skin: Path, facts: dict) -> bool | None:
+    """Whether the staging closes the fluid in with these openings (True / False), or None when it
+    cannot be told (fewer than two openings, a skin too big to stage in the check's time)."""
+    from meshpipeline.application.geometry_confirmation import body_of, patches_from
+    from meshpipeline.cad.fluid_passages import VET_MAX_OPENINGS, VET_MAX_TRIANGLES
+    from meshpipeline.cad.internal_surface import InternalSurfaceError, stage_triangles
+    from meshpipeline.cad.scout_mesh import read_triangles
+    from meshpipeline.engines.port_binding import BindError
+
+    ports = _ports_of(facts)
+    if len(ports) < 2 or len(ports) > VET_MAX_OPENINGS:
+        return None
+    try:
+        if (Path(skin).stat().st_size - 84) // 50 > VET_MAX_TRIANGLES:
+            return None
+        patches = patches_from(body_of({"flow": "internal", "input_kind": facts.get("input_kind") or "",
+                                        "openings": [dict(o) for o in ports]}))
+        stage_triangles(read_triangles(Path(skin)), intake_patches=patches, surface_path=Path(skin),
+                        input_kind=str(facts.get("input_kind") or ""), leak_check=False)
+        return True
+    except (InternalSurfaceError, BindError):
+        return False
+    except Exception:  # noqa: BLE001 - a staging that errors tells nothing either way
+        return None
+
+
+def keep_a_stageable_proposal(facts: dict, local_path: Path, skin: Path, scale: float) -> dict:
+    """THE MAP'S OPENINGS, HELD TO THE STAGING (INS-2): when the inside-space map proposes other
+    openings than the hole finder's shape rules alone, and the staging cannot close the fluid in
+    with the map's while it can with the shape rules' (the map read wrong where shells overlap, or
+    took a chip's inlet well for the mouth), the shape rules' reading is proposed, with the note.
+    The map's reading of the part's inside (`inside`) is kept either way."""
+    from meshpipeline.cad.scout_mesh import scout_mesh
+
+    size = [float(v) for v in facts.get("size_mm") or [1.0, 1.0, 1.0]]
+    step = max(1e-3 * math.sqrt(sum(v * v for v in size)), 1e-9)       # a thousandth of the part
+
+    def key(f: dict) -> list:
+        return sorted((o.get("role"), tuple(round(float(v) / step) for v in o.get("centroid_mm") or []))
+                      for o in _ports_of(f))
+    try:
+        old = scout_mesh(local_path, scale_to_m=scale, mapped=False)
+        plain = old.as_dict()
+        plain.update(getattr(old, "extra", {}) or {})
+    except Exception:  # noqa: BLE001 - the map's reading stands
+        return facts
+    if key(plain) == key(facts) or len(_ports_of(plain)) < 2:
+        return facts
+    if _stages(skin, facts) is not False:
+        return facts
+    if _stages(skin, plain) is not True:
+        return facts
+    kept = {k: facts[k] for k in ("inside", "surface", "read_as", "unit_assumed", "scale_to_m") if k in facts}
+    out = dict(facts)
+    for k in ("openings", "seed_point_m", "seed_point_mm", "body_kind", "input_kind", "flow", "confidence", "faces",
+              "holes"):
+        if k in plain:
+            out[k] = plain[k]
+    out.update(kept)
+    out["notes"] = list(facts.get("notes") or []) + [
+        "the openings the inside map read could not close the fluid in; the hole finder's own openings can, "
+        "so they are proposed"]
+    out["openings_by"] = "shape_rules"
+    return out
 
 
 def _prepared_coordinates(path: Path, interp_ref, ref):
@@ -973,13 +1458,37 @@ def _prepared_coordinates(path: Path, interp_ref, ref):
         except Exception as exc:  # noqa: BLE001 - a unit we cannot read is a note, not a failure
             logger.info("geometry check: declared unit unreadable (%s)", exc)
         if unit is None:
-            unit = LengthUnit.millimetre
-            note = "the file does not say its unit; sizes assume millimetres until the intake confirms"
+            # A FILE THAT MIXES UNITS reads first in the one most of its parts state (an Inventor
+            # assembly: six parts in inches, one in millimetres), so the sizes shown are its real
+            # ones; it is still asked, like a file that states none
+            mostly = _stated_mostly(path)
+            if mostly is not None:
+                unit = mostly.unit
+                note = f"{mostly.detail}; sizes are read as the file states them until the intake confirms"
+            else:
+                unit = LengthUnit.millimetre
+                note = "the file does not say its unit; sizes assume millimetres until the intake confirms"
         interp = GeometryInterpretation(
             interpretation_id="unconfirmed", owner_id=ref.owner_id, geometry_source_id=ref.source_id,
             unit=unit, scale_to_metres=scale_to_metres(unit), basis=ResolutionBasis.file_declared,
             evidence="geometry check")
     return from_occ_transfer(interp, parser_applied_unit(path)), note
+
+
+#: The words every assumed-unit note ends with: what a confirmed unit removes from the notes.
+UNIT_ASSUMED_NOTE_END = "until the intake confirms"
+
+
+def _stated_mostly(path: Path):
+    """The unit most of a mixed STEP file's parts state (cad/unit_evidence.stated_mostly), or
+    None; a file it cannot read is simply a file that states none."""
+    from meshpipeline.cad.unit_evidence import stated_mostly
+
+    try:
+        return stated_mostly(path)
+    except Exception as exc:  # noqa: BLE001 - evidence only; the check goes on without it
+        logger.info("geometry check: mixed units unreadable (%s)", exc)
+        return None
 
 
 def read_up_evidence(skin: Path) -> dict:
@@ -1037,6 +1546,9 @@ def run_geometry_naming(*, session_id: str, owner_id: str, purpose_text: str,
 
     tracker = gp.Tracker(session_id, "naming")
     tracker.begin()
+    # the naming's heartbeat: an FEA measurement of a big assembly runs for minutes with nothing
+    # new to say, and must not be taken for a dead worker (time_boxed)
+    tracker.start_heartbeat()
     token = gp.track(tracker)
     try:
         landed = _name(session_id=session_id, owner_id=owner_id, purpose_text=purpose_text,
@@ -1063,6 +1575,7 @@ def run_geometry_naming(*, session_id: str, owner_id: str, purpose_text: str,
         return {"status": STATUS_FAILED, "named": False, "reason": reason, "step": RETRY_NAMING,
                 "retry": RETRY_NAMING}
     finally:
+        tracker.stop_heartbeat()
         gp.untrack(token)
 
 
@@ -1093,7 +1606,7 @@ def _name(*, session_id: str, owner_id: str, purpose_text: str, interpretation: 
             facts = _rescaled(facts, k)
             facts["unit_assumed"] = False
             facts["scale_to_m"] = float(interp_ref.scale_to_metres)
-            facts["notes"] = [n for n in facts.get("notes", []) if "assume millimetres" not in n]
+            facts["notes"] = [n for n in facts.get("notes", []) if UNIT_ASSUMED_NOTE_END not in n]
             # THE SKIN FOLLOWS THE FACTS: the stage places the pins at the corrected centroids on
             # the stored skin, so the skin is re-read in the same unit. The pictures show shape
             # only and stay as they are.
@@ -1106,7 +1619,7 @@ def _name(*, session_id: str, owner_id: str, purpose_text: str, interpretation: 
         result = {k: v for k, v in stored.items() if k not in _STAMPED_KEYS + _FAILURE_KEYS}
         result.update(named=True, facts=facts, vision={}, proposal=proposal,
                       purpose_text=purpose_text[:2000], naming_seconds=round(time.time() - started, 1))
-        landed = store_status(session_id, STATUS_READY, RETRY_NAMING, **result)
+        landed = _land_named(session_id, result, stored)
         logger.info("geometry naming %s - session=%s (a thermal model names itself)", landed["status"], session_id)
         return landed
     if _is_fea(purpose_text):
@@ -1121,7 +1634,7 @@ def _name(*, session_id: str, owner_id: str, purpose_text: str, interpretation: 
         result = {k: v for k, v in stored.items() if k not in _STAMPED_KEYS + _FAILURE_KEYS}
         result.update(named=True, facts=facts, vision={}, proposal=proposal,
                       purpose_text=purpose_text[:2000], naming_seconds=round(time.time() - started, 1))
-        landed = store_status(session_id, STATUS_READY, RETRY_NAMING, **result)
+        landed = _land_named(session_id, result, stored)
         logger.info("geometry naming %s - session=%s (an FEA part: nothing to name)", landed["status"], session_id)
         return landed
 
@@ -1156,10 +1669,57 @@ def _name(*, session_id: str, owner_id: str, purpose_text: str, interpretation: 
                   purpose_text=purpose_text[:2000], naming_seconds=round(time.time() - started, 1))
     # the write is part of the step: a result the store refuses is stored as a failure over the
     # scout's record, so the stage stops waiting and keeps the part
-    landed = store_status(session_id, STATUS_READY, RETRY_NAMING, **result)
+    landed = _land_named(session_id, result, stored)
     logger.info("geometry naming %s - session=%s in %.1fs (model %s)", landed["status"], session_id,
                 result["naming_seconds"], "answered" if "error" not in vision else "unavailable")
     return landed
+
+
+def _land_named(session_id: str, result: dict, named_from: dict) -> dict:
+    """Store the naming's `ready` record. A naming made on a PREVIEW (it waited for the full reading
+    as long as its limit allowed) is merged onto the full reading when that has landed meanwhile -
+    its facts (read in the naming's unit), its openings and pictures, with what the naming added -
+    so the measured part is never lost under a ready record built from the quick drawing. When the
+    full reading has not landed, the record says it was named on the preview, and the scout merges
+    its full reading in when it lands (run_geometry_check)."""
+    result = dict(result)
+    on_preview = result.pop("preview", None) == PREVIEW_RUNNING or bool(result.get("named_on_preview"))
+    if on_preview:
+        try:
+            full = read_check(session_id)
+        except Exception:  # noqa: BLE001 - unreadable: the naming's record stands as it is
+            full = None
+        if full is not None and full.get("status") == STATUS_SCOUTED and not is_preview(full) and full.get("facts"):
+            result = merged_onto_full(result, named_from, full)
+        else:
+            result["named_on_preview"] = True
+    return store_status(session_id, STATUS_READY, RETRY_NAMING, **result)
+
+
+def merged_onto_full(named: dict, named_from: dict, full: dict) -> dict:
+    """A ready record the naming built on the preview `named_from`, re-made on the scout's `full`
+    reading: the full facts in the unit the naming settled (`scale_to_m`), plus every fact the naming
+    added (an FEA part's measurement), the proposal drawn again from them with the model's answer,
+    and the full reading's pictures and openings. Pure."""
+    named_facts = dict(named.get("facts") or {})
+    base_facts = (named_from or {}).get("facts") or {}
+    facts = dict(full.get("facts") or {})
+    try:
+        k = float(named_facts.get("scale_to_m") or 0.0) / float(facts.get("scale_to_m") or 0.0)
+    except (TypeError, ValueError, ZeroDivisionError):
+        k = 1.0
+    if k > 0 and abs(k - 1.0) > 1e-9:
+        facts = _rescaled(facts, k)
+        facts["scale_to_m"] = named_facts.get("scale_to_m")
+        facts["unit_assumed"] = named_facts.get("unit_assumed", False)
+        facts["notes"] = [n for n in facts.get("notes", []) if "assume millimetres" not in n]
+    facts.update({key: v for key, v in named_facts.items() if key not in base_facts})
+    vision = named.get("vision")
+    out = {key: v for key, v in full.items() if key not in _STAMPED_KEYS + _FAILURE_KEYS + ("preview",)}
+    out.update({key: named[key] for key in ("named", "vision", "purpose_text", "naming_seconds") if key in named})
+    out.update(facts=facts, proposal=_proposal(facts, vision))
+    out.pop("named_on_preview", None)
+    return out
 
 
 #: An upload larger than this is not measured for FEA in the naming step (the record says so; the
@@ -1203,7 +1763,21 @@ def fea_measurements(stored: dict, facts: dict, interpretation: dict | None) -> 
                 # the scout's own reading: the confirmed unit when there is one, else the file's
                 prepared, _note = _prepared_coordinates(canonical.path, interp_ref, ref)
                 mm_per_unit = 1000.0 * float(occ_scale_transform(prepared).ScaleFactor())
-                record = measure_cad(read_cad(canonical.path), mm_per_unit=mm_per_unit)
+                shape = read_cad(canonical.path)
+                record = measure_cad(shape, mm_per_unit=mm_per_unit)
+                if int(record.get("bodies") or 0) > 1:
+                    # AN ASSEMBLY: its parts, where they touch or pass into each other, and every
+                    # face named Part_k_Face_j - the names the delivered files use
+                    from meshpipeline.cad.fea_assembly import measure_assembly
+                    record = measure_assembly(shape, record, source=canonical.path, mm_per_unit=mm_per_unit)
+                # MESH-1: WHERE THE CAD MAY BE BROKEN, for the stage to WARN about (never a stop): the
+                # folds the measurement found and the crossings the clean check found, each confirmed
+                # only when a second, independent measure agrees (cad/suspect_defects)
+                try:
+                    from meshpipeline.cad import suspect_defects as SD
+                    record["suspects"] = SD.find(shape, record, validity=facts.get("validity"))
+                except Exception as exc:  # noqa: BLE001 - no suspects measured is no warning
+                    logger.warning("geometry check: suspected defects not measured (%s)", type(exc).__name__)
             else:
                 record = measure_triangles(read_triangles(canonical.path) * scale * 1000.0)
         record.update(measured=True, scale_to_m=scale)
@@ -1222,16 +1796,20 @@ def fea_measurements(stored: dict, facts: dict, interpretation: dict | None) -> 
 def _wait_for_scout(session_id: str) -> dict | None:
     """The stored scout, once it is no longer pending. The user's first answer can land while the
     worker is still drawing; the naming waits rather than answering from nothing."""
-    deadline = time.time() + NAMING_WAIT_S
+    # as long as this naming's own soft limit allows (sized to the file), less a minute to land
+    wait_s = max(NAMING_WAIT_S, float(naming_limits_for(session_id)[0] - 60))
+    deadline = time.time() + wait_s
     while True:
         stored = read_check(session_id)
-        if stored is not None and stored.get("status") != STATUS_PENDING:
+        # A PREVIEW is not the measured part: the scout is still at work on it, so the naming waits
+        # for the full reading - and names the preview only if that does not come in time
+        if stored is not None and stored.get("status") != STATUS_PENDING and not is_preview(stored):
             return stored
         if time.time() >= deadline:
             if stored is None or stored.get("status") == STATUS_PENDING:
                 from meshpipeline.engines.determinism import note_time_limit
                 note_time_limit("geometry_check.naming", "the naming stopped waiting for the scout",
-                                budget_s=float(NAMING_WAIT_S))
+                                budget_s=float(wait_s))
             return stored
         time.sleep(2.0)
 
@@ -1657,7 +2235,7 @@ def _proposal(facts: dict, vision: dict | None) -> dict:
     if _is_thermal(facts):
         return _thermal_proposal(facts, vision)
     proposal = {
-        "part": (vision or {}).get("part") or "",
+        "part": (vision or {}).get("part") or str(facts.get("part_name") or ""),
         "input_kind": facts["input_kind"], "flow": facts["flow"],
         "openings": [dict(o) for o in facts["openings"]],
         "seed_point_mm": facts.get("seed_point_mm"),
@@ -1671,6 +2249,14 @@ def _proposal(facts: dict, vision: dict | None) -> dict:
         "named": vision is not None,
         "vision_available": bool(vision) and "error" not in (vision or {}),
     }
+    # THE PART'S INSIDE (INS-1) and the stage's question when "through it" cannot be meshed as
+    # proposed (INS-3): asked only if the user says the fluid flows through it
+    if isinstance(facts.get("inside"), dict):
+        from meshpipeline.application.geometry_confirmation import flow_question
+        proposal["inside"] = dict(facts["inside"])
+        if isinstance(facts.get("surface"), dict):
+            proposal["surface"] = dict(facts["surface"])
+        proposal["flow_question"] = flow_question(facts["inside"], proposal["openings"], facts.get("surface"))
     if vision is None:
         return _upright(proposal, facts, None, None)
     if "error" in vision:
@@ -1831,6 +2417,7 @@ def unit_inference(proposal: dict, facts: dict | None = None, words: str = "") -
     from the naming model's estimate of a real one's length, then the words for it (its name, the
     user's own words), then the measured shape and the flow. The file's numbers are read back
     through the scale the proposal was measured under."""
+    from meshpipeline.contracts.geometry_units import LengthUnit
     from meshpipeline.contracts.unit_plausibility import (
         FORMAT_UNIT,
         expected_from_estimate,
@@ -1849,10 +2436,17 @@ def unit_inference(proposal: dict, facts: dict | None = None, words: str = "") -
     part = str(proposal.get("part") or "")
     expected = (expected_from_estimate(part, proposal.get("real_length_m"))
                 or expected_from_words(f"{part}\n{words or ''}"))
-    shape = shape_kind(str(proposal.get("flow") or ""), size, grounded=bool(proposal.get("grounded")),
-                       up_axis=proposal.get("up_axis"))
+    # an FEA part (its measurement is in the facts) has no flow: it reads as a part, never as "a
+    # body in an external flow"
+    flow = "" if (facts or {}).get("fea_measure") else str(proposal.get("flow") or "")
+    shape = shape_kind(flow, size, grounded=bool(proposal.get("grounded")), up_axis=proposal.get("up_axis"))
     fmt = str((facts or {}).get("source_format") or "").lower().lstrip(".")
-    inferred = infer_unit(longest_file, expected=expected, shape=shape, format_unit=FORMAT_UNIT.get(fmt))
+    try:
+        stated = LengthUnit((facts or {}).get("unit_stated_mostly") or "")
+    except ValueError:
+        stated = None
+    inferred = infer_unit(longest_file, expected=expected, shape=shape, format_unit=FORMAT_UNIT.get(fmt),
+                          stated=stated)
     return inferred.as_dict() if inferred is not None else None
 
 

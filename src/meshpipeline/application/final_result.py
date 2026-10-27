@@ -186,6 +186,11 @@ class FinalResult:
     # HOW MANY UNSURE DEFECTS THE MINT CAP DROPPED (repair_review_minting.MINT_CAP), so the review
     # can say "showing the largest N of M" instead of presenting a capped queue as the whole part.
     review_truncated: int = 0
+    # WHAT THE BUILD DID WITH THE USER'S OWN NOTES (contracts/user_notes): the one plain line each
+    # step that read them chose to leave, said on the result as "From your notes: ...". Best effort
+    # and never a check (NOTE-3). Added without a schema bump: it defaults to [] and an older
+    # reader ignores the key.
+    notes_remarks: list = field(default_factory=list)
 
     def __post_init__(self) -> None:
         # THE invariant, enforced at construction so no path can violate it.
@@ -244,7 +249,8 @@ class FinalResult:
             review_parked=int(d.get("review_parked", 0) or 0),
             review_left=(dict(d["review_left"])
                          if isinstance(d.get("review_left"), Mapping) else {}),
-            review_truncated=int(d.get("review_truncated", 0) or 0))
+            review_truncated=int(d.get("review_truncated", 0) or 0),
+            notes_remarks=[str(r) for r in (d.get("notes_remarks") or []) if str(r).strip()])
 
 
 # WHAT A CRASH STILL KNOWS.
@@ -619,7 +625,11 @@ def _admission_account(failure_facts: Mapping | None,
 def _render_fidelity(fr: FinalResult) -> str:
     # The mesh-detail line renders the effective tier with its provenance; a record with no tier
     # renders nothing rather than inventing one.
+    from meshpipeline.engines import fea_review
     from meshpipeline.pipeline.enums import render_fidelity_line
+    if fea_review.is_fea(fr.purpose):
+        # an FEA mesh has no detail level: one rules-based plan (PLAN-fea-14), never a tier
+        return ""
     if fr.effective_mesh_fidelity and fr.mesh_fidelity_source:
         return render_fidelity_line(effective=fr.effective_mesh_fidelity,
                                     source=fr.mesh_fidelity_source)
@@ -654,6 +664,12 @@ def with_review_left(fr: FinalResult, left: Mapping | None) -> FinalResult:
     return dataclasses.replace(fr, review_left=dict(left or {}))
 
 
+def with_notes_remarks(fr: FinalResult, remarks: list | None) -> FinalResult:
+    """What the steps that read the user's notes said they did with them (best effort)."""
+    import dataclasses
+    return dataclasses.replace(fr, notes_remarks=[str(r) for r in (remarks or []) if str(r).strip()])
+
+
 def with_review_truncated(fr: FinalResult, dropped: int) -> FinalResult:
     import dataclasses
     return dataclasses.replace(fr, review_truncated=max(int(dropped or 0), 0))
@@ -684,6 +700,9 @@ def render_message(fr: FinalResult) -> str:
     if fr.review_parked > 0 and fr.status == TerminalStatus.failed:
         return _render_parked(fr.review_parked)
     text = _render_outcome(fr)
+    # THE USER'S OWN NOTES: what the build did with them, in the steps' own one plain line
+    from meshpipeline.contracts.user_notes import result_lines
+    text = "\n".join([text, *result_lines(fr.notes_remarks, consumer="delivery")])
     ladder = fr.engine_ladder if isinstance(fr.engine_ladder, Mapping) else {}
     if fr.status == TerminalStatus.succeeded:
         from meshpipeline.pipeline.engine_fallback import delivered_note
@@ -723,12 +742,14 @@ def _render_outcome(fr: FinalResult) -> str:
             kinds = {(c or {}).get("kind") or "domain_extent" for c in shown}
             lines.append("Delivered with stated deviations from your request:"
                          if kinds == {"domain_extent"} else
-                         "Delivered with concerns - these measured quality limits were missed:"
+                         "Passed, with notes - these measured figures are past a limit:"
                          if kinds == {MEASURED_VERDICT} else
                          "Delivered with a stated caveat:" if kinds == {REVIEW_INCONCLUSIVE} else
                          "Delivered with the reviewer's concerns:" if kinds == {REVIEW_CONCERNS}
                          else "Delivered with a note on its narrowest gaps:"
-                         if kinds == {NARROW_PASSAGES}
+                         if kinds and kinds <= {NARROW_PASSAGES, _RESOLUTION_SHORT}
+                         else "Delivered with a note on its size:"
+                         if kinds == {_OVER_CELL_LIMIT}
                          else "Delivered with a concern about its size:"
                          if kinds == {PHYSICAL_SCALE}
                          else "Delivered with stated deviations:")
@@ -777,12 +798,16 @@ def _render_outcome(fr: FinalResult) -> str:
                     lines.extend(_narrow_passage_lines(c))
                 elif kind == PHYSICAL_SCALE:
                     lines.extend(_physical_scale_lines(c))
+                elif kind in (_RESOLUTION_SHORT, _OVER_CELL_LIMIT):
+                    # a sound mesh short of one of our own bars: the note says it all
+                    from meshpipeline.engines.resolution_policy import note_lines
+                    lines.extend(note_lines(c))
                 else:
                     lines.append("  - a stated deviation of an unrecognized kind "
                                  "(see the result record)")
             # the narrow-gap note says everything it needs in its own lines; the closing speaks
             # for the rest
-            core = kinds - {NARROW_PASSAGES, PHYSICAL_SCALE}
+            core = kinds - {NARROW_PASSAGES, PHYSICAL_SCALE, _RESOLUTION_SHORT, _OVER_CELL_LIMIT}
             if MEASURED_VERDICT in core:
                 lines.append(MEASURED_CONCERNS_CLOSING)
             elif core == {"domain_extent"}:
@@ -825,7 +850,7 @@ def _render_outcome(fr: FinalResult) -> str:
             lines.extend(f"  - {_note_text(i)}" for i in notes)
         if measured is not None:
             # the measured limits decided; the review, whatever it said, is the notes above
-            lines.append("Verdict: " + ("delivered with concerns" if measured.get("outcome")
+            lines.append("Verdict: " + ("passed, with notes" if measured.get("outcome")
                                         == "concerns" else "passed every measured limit")
                          + f" (rule {measured.get('rule')})")
         elif fr.reviewer_verdict is ReviewVerdict.passed:
@@ -916,6 +941,15 @@ def worker_lost_result(*, job_id: str, owner_id: str, attempts: int = 0,
     lease lapsed, or it started long ago without ever holding one)."""
     return _reaped_result(FailureCategory.worker_lost, job_id=job_id, owner_id=owner_id,
                           attempts=attempts, attempts_max=attempts_max)
+
+
+def refused_result(category: FailureCategory, *, job_id: str, owner_id: str,
+                   attempts: int = 0) -> FinalResult:
+    """A job failed and dead-lettered before its run began (application/terminal_finalize.
+    refuse_before_execution): nothing ran, so - as for a reaped job - nothing is derived, and the
+    record exists for its sentence."""
+    return _reaped_result(category, job_id=job_id, owner_id=owner_id, attempts=attempts,
+                          attempts_max=0)
 
 
 def never_started_result(*, job_id: str, owner_id: str, attempts: int = 0,
@@ -1170,6 +1204,17 @@ def _concluded_on_valid_mesh(outcome: RunOutcome) -> bool:
             and outcome.reviewer_verdict in ("PASS", "FAIL"))
 
 
+def limits_decide_for(outcome: RunOutcome) -> bool:
+    """Whether the measured limits decide THIS run: everywhere once VERDICT_BY_LIMITS is on, and an
+    FEA job always - its result screen is the measured check (engines/fea_results), and the job
+    must tell the same story (22 Oct: nine valid FEA meshes said "Review: passed" while their
+    screens said "with notes")."""
+    if limits_decide():
+        return True
+    from meshpipeline.engines import fea_review
+    return bool(fea_review.is_fea(outcome.purpose))
+
+
 def limits_decide() -> bool:
     """Whether the measured limits decide the verdict (settings VERDICT_BY_LIMITS). Off = shadow:
     the review-led verdict decides and the limits verdict is only logged beside it."""
@@ -1185,8 +1230,24 @@ def review_blocking(outcome: RunOutcome) -> list[dict]:
         return []
     if not _concluded_on_valid_mesh(outcome) or outcome.reviewer_verdict != "FAIL":
         return []
+    if fea_measured_valid(outcome):
+        # AN FEA MESH THE MEASUREMENTS CALL VALID: the review explains it and adds concerns, it
+        # never fails the run - whatever a review recorded (agents/reviewer/review_policy judges
+        # the same way; this holds for a record judged before that rule)
+        return []
     from meshpipeline.agents.reviewer.review_policy import blocking_findings
     return blocking_findings(list(outcome.axis_findings))
+
+
+def fea_measured_valid(outcome: RunOutcome) -> bool:
+    """Whether the run is an FEA job (its saved purpose) whose delivered mesh the measured checks
+    call valid (engines/fea_review.measured_valid)."""
+    from meshpipeline.engines import fea_review
+    if not fea_review.is_fea(outcome.purpose):
+        return False
+    manifest = outcome.manifest if isinstance(outcome.manifest, Mapping) else {}
+    quality = manifest.get("quality") if isinstance(manifest.get("quality"), Mapping) else outcome.quality
+    return fea_review.measured_valid(quality if isinstance(quality, Mapping) else None) is True
 
 
 def review_concerns_caveat(outcome: RunOutcome) -> dict | None:
@@ -1200,7 +1261,7 @@ def review_concerns_caveat(outcome: RunOutcome) -> dict | None:
     validated mesh with no gate failed, a concluded FAIL verdict and no wrong-problem finding.
     Never granted once the measured limits decide: the review's points are then notes
     (reviewer_notes_caveat), and the limits say whether there are concerns (measured_verdict)."""
-    if limits_decide():
+    if limits_decide_for(outcome):
         return None
     if not _concluded_on_valid_mesh(outcome) or outcome.reviewer_verdict != "FAIL":
         return None
@@ -1257,6 +1318,15 @@ def _limits_apply(outcome: RunOutcome) -> bool:
     return not outcome.api_failure or review_inconclusive_caveat(outcome) is not None
 
 
+def _near_misses(caveats) -> int:
+    """The stated requirements a delivered mesh near-missed. A sound mesh's own notes
+    (engines/resolution_policy: fewer cells across the narrowest gap than the floor, more cells
+    than one job is sized for) are not requirement near-misses: the narrowest gap is its own
+    production limit (passage_cells_across), and a mesh's size is not a fault."""
+    from meshpipeline.engines.resolution_policy import NOTE_KINDS
+    return sum(1 for c in caveats or () if (c or {}).get("kind") not in NOTE_KINDS)
+
+
 def measured_verdict(outcome: RunOutcome) -> dict | None:
     """THE VERDICT FROM MEASURED NUMBERS ALONE: {outcome, rule, inputs, missed}. The inputs are
     every limit with its measured number (engines/verdict_limits), and the outcome and rule follow
@@ -1271,7 +1341,7 @@ def measured_verdict(outcome: RunOutcome) -> dict | None:
             engine=outcome.engine, topology=topology, manifest=outcome.manifest or {},
             valid=bool(outcome.executor_success and not outcome.failed_gate),
             failed_gate=outcome.failed_gate, layers_planned=outcome.layers_planned,
-            requirement_near_misses=len(outcome.requirement_caveats),
+            requirement_near_misses=_near_misses(outcome.requirement_caveats),
             size_concerns=1 if physical_scale_caveat(outcome) is not None else 0,
             notes=_review_points(outcome))
         result, rule = dr.verdict(inputs)
@@ -1283,9 +1353,25 @@ def measured_verdict(outcome: RunOutcome) -> dict | None:
         return None
 
 
+#: The gate name a run refused by its measured limits is recorded under (not a storage failure).
+MEASURED_LIMITS_GATE = "measured_limits"
+
+
+def limits_failure_checks(v: Mapping | None) -> list[dict]:
+    """The rows a failing measured verdict failed, as the failure account's `checks` (label, measured,
+    op, threshold) - what the user reads instead of "could not be stored for download"."""
+    if not v:
+        return []
+    from meshpipeline.contracts import decision_record as dr
+    inputs = v.get("inputs") or {}
+    rows = dr.failed_gating(inputs) or dr.missed_limits(inputs)
+    return [{"key": r.get("key"), "label": r.get("label"), "measured": r.get("measured"),
+             "op": r.get("op"), "threshold": r.get("limit")} for r in rows]
+
+
 def measured_verdict_caveat(outcome: RunOutcome) -> dict | None:
     """The measured verdict as a delivery caveat, when the limits decide and judge this mesh."""
-    if not limits_decide() or not _limits_apply(outcome):
+    if not limits_decide_for(outcome) or not _limits_apply(outcome):
         return None
     v = measured_verdict(outcome)
     if v is None or v["outcome"] not in ("pass", "concerns"):
@@ -1299,7 +1385,7 @@ def measured_verdict_caveat(outcome: RunOutcome) -> dict | None:
 def reviewer_notes_caveat(outcome: RunOutcome) -> dict | None:
     """The concluded review's points as notes, when the limits decide. Shown, labelled, decide
     nothing - whatever verdict the review reached, a wrong-problem claim included."""
-    if not limits_decide() or not _concluded_on_valid_mesh(outcome):
+    if not limits_decide_for(outcome) or not _concluded_on_valid_mesh(outcome):
         return None
     items = _review_points(outcome)
     if not items:
@@ -1333,7 +1419,7 @@ def record_verdict(job_id: str, outcome: RunOutcome, *, succeeded: bool, jlog) -
     greppable) and cites it (docs/RULES.md VER-1..4) so the why record names it and replays it.
     Returns the comparison; never raises."""
     try:
-        decides = limits_decide() and _limits_apply(outcome)
+        decides = limits_decide_for(outcome) and _limits_apply(outcome)
         old = old_review_outcome(succeeded, outcome)
         v, cmp = verdict_record(outcome, decided=old)
         if v is None:
@@ -1360,7 +1446,7 @@ def verdict_record(outcome: RunOutcome, *, decided: str) -> tuple[dict | None, d
     run. `decided` is the outcome the run was given (pass, concerns, wrong_problem, fail)."""
     v = measured_verdict(outcome)
     new = v["outcome"] if v else ""
-    return v, {"decides": limits_decide(), "limits": new, "rule": v["rule"] if v else "",
+    return v, {"decides": limits_decide_for(outcome), "limits": new, "rule": v["rule"] if v else "",
                # two ways of not delivering agree: a gate refused the mesh either way
                "review_led": decided, "agree": bool(v) and (
                    new == decided or {new, decided} <= {"fail", "wrong_problem"}),
@@ -1397,6 +1483,12 @@ def narrow_passage_caveat(outcome: RunOutcome) -> dict | None:
             "narrowest_width_m": v.side.get("narrowest_width_m"),
             "share": v.side.get("under_floor_share"),
             "main_cells_across": v.cells_across, "main_way_width_m": v.main_way_width_m}
+
+
+#: The notes a SOUND mesh short of one of our own bars is delivered with (engines/resolution_policy:
+#: LAD-cfd-3 the narrowest gap under the floor, LAD-cfd-4 more cells than one job is sized for).
+_RESOLUTION_SHORT = "resolution_short"
+_OVER_CELL_LIMIT = "over_cell_limit"
 
 
 #: The caveat kind a delivery carries when the mesh is not a believable size for what it is: the
@@ -1510,6 +1602,8 @@ def _narrow_passage_lines(c: Mapping) -> list[str]:
 #: the measured rows another caveat already tells in its own, fuller words
 _TOLD_ELSEWHERE = {"requirement_near_misses": "domain_extent", "size_concerns": PHYSICAL_SCALE,
                    "passage_cells_across": NARROW_PASSAGES}
+#: ...and the measured rows a sound mesh's own note tells (engines/resolution_policy)
+_TOLD_BY_NOTE = {"passage_cells_across": "resolution_short"}
 
 #: What a delivery the measured limits judged short of production quality closes with.
 MEASURED_CONCERNS_CLOSING = (
@@ -1525,7 +1619,8 @@ REVIEWER_NOTES_HEADING = ("Reviewer notes (an AI reviewer looked at the mesh; it
 
 def _measured_rows(c: Mapping, kinds: set) -> list[Mapping]:
     return [r for r in (c.get("missed") or []) if isinstance(r, Mapping)
-            and _TOLD_ELSEWHERE.get(str(r.get("key") or "")) not in kinds]
+            and _TOLD_ELSEWHERE.get(str(r.get("key") or "")) not in kinds
+            and _TOLD_BY_NOTE.get(str(r.get("key") or "")) not in kinds]
 
 
 def _concern_lines(c: Mapping) -> list[str]:
@@ -1548,6 +1643,9 @@ class StatusDecision:
 
     status: Any                     #: JobStatus - imported lazily to keep this module import-light
     failed_reason: Any | None       #: FailedReason, or None on success
+    #: the gating rows the measured limits failed on a mesh every gate passed (VER-1): told to the
+    #: user as the check that failed, with its measured value and limit - never as a storage failure
+    limits_failed: tuple = ()
 
     @property
     def succeeded(self) -> bool:
@@ -1557,7 +1655,7 @@ class StatusDecision:
 def derive_terminal_status(outcome: RunOutcome, *, job_id: str, jlog) -> StatusDecision:
     from meshpipeline.persistence.models import FailedReason, JobStatus
 
-    if limits_decide() and _limits_apply(outcome):
+    if limits_decide_for(outcome) and _limits_apply(outcome):
         # THE MEASURED LIMITS DECIDE (docs/RULES.md VER-1..4). Every gate passed on this mesh; the
         # limits say pass or delivered with concerns, and the review's points are notes. A review
         # verdict, a wrong-problem claim or a review that did not finish changes nothing here.
@@ -1572,7 +1670,8 @@ def derive_terminal_status(outcome: RunOutcome, *, job_id: str, jlog) -> StatusD
             # never delivered, whoever's reading is wrong
             jlog.error("terminal status: the measured limits fail a mesh the gates passed (%s) - "
                        "not delivered (job_id=%s)", v["rule"], job_id)
-            return StatusDecision(JobStatus.failed, FailedReason.mesh_generation)
+            return StatusDecision(JobStatus.failed, FailedReason.mesh_generation,
+                                  limits_failed=tuple(limits_failure_checks(v)))
 
     if outcome.api_failure and review_inconclusive_caveat(outcome) is not None:
         # DELIVERED, REVIEW INCONCLUSIVE: the mesh passed every hard check and only the review
@@ -1642,7 +1741,10 @@ def derive_terminal_status(outcome: RunOutcome, *, job_id: str, jlog) -> StatusD
 
 #: What the API says about a finished run's review, in one word the console can show. A delivered
 #: mesh whose review left points open is never "passed".
-REVIEW_OUTCOMES = ("passed", "delivered_with_concerns", "review_inconclusive", "wrong_problem")
+#: "passed_with_notes": the measured limits decided and the mesh is valid with some figures past a
+#: limit - said "Passed, with notes" on the job and on the result screen alike
+REVIEW_OUTCOMES = ("passed", "passed_with_notes", "delivered_with_concerns", "review_inconclusive",
+                   "wrong_problem")
 
 
 def review_outcome_of(fr: Mapping | None) -> str | None:
@@ -1658,7 +1760,7 @@ def review_outcome_of(fr: Mapping | None) -> str | None:
     status, verdict = fr.get("status"), fr.get("reviewer_verdict")
     measured = next((c for c in caveats if c.get("kind") == MEASURED_VERDICT), None)
     if measured is not None and status == TerminalStatus.succeeded.value:
-        return "delivered_with_concerns" if measured.get("outcome") == "concerns" else "passed"
+        return "passed_with_notes" if measured.get("outcome") == "concerns" else "passed"
     if status == TerminalStatus.succeeded.value:
         if REVIEW_INCONCLUSIVE in kinds:
             return "review_inconclusive"

@@ -323,7 +323,19 @@ class GapPlan:
                 "affordable": (round(self.affordable, 1) if self.affordable is not None
                                else None),
                 "layer_cells": int(self.after_cells), "ceiling": self.ceiling(),
-                "resolution_short": self.resolution_short}
+                "resolution_short": self.resolution_short,
+                # THE BIG-MACHINE HOOK (PLAN-cfd-3, engines/resolution_policy): the cells the rule
+                # needs are over one job's limit, so this mesh belongs on a bigger machine. Nothing
+                # routes on it yet - the runner is not built - and until it is the run is meshed
+                # as the limit holds and says so (the statuses above)
+                "route_big": self.route_big,
+                "route_rule": "PLAN-cfd-3"}
+
+    @property
+    def route_big(self) -> bool:
+        """The rule's mesh needs more cells than one job may build (PLAN-cfd-3)."""
+        return bool(self.regions or self.status == OVER_LIMIT) and (
+            self.needed * BUDGET_HEADROOM > self.limit > 0)
 
     def floor(self) -> float:
         """The floor the resolution gate holds this run to: the rule's, or - when the user

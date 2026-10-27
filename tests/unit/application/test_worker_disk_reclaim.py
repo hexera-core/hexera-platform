@@ -279,5 +279,5 @@ def test_the_run_frees_disk_after_its_claim_and_before_it_writes_geometry():
     import meshpipeline.application.pipeline_run as pr
     src = inspect.getsource(pr._run_async)
     at = src.index("_wd.reclaim_quietly(")
-    assert src.index("_fence.claim_delivery(") < at < src.index("_gm.prepare_for_execution(")
+    assert src.index("_fence.claim_delivery_patiently(") < at < src.index("_gm.prepare_for_execution(")
     assert "keep={job_id, _dispute_parent}" in src[at:at + 200]

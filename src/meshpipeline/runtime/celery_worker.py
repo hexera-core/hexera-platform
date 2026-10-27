@@ -176,6 +176,13 @@ def _on_worker_ready(sender=None, **kwargs):
     # a queue with work waiting and nobody on it is noticed (deploy/gcp/worker/queue_depth_publisher).
     from meshpipeline.runtime.worker_liveness import start_presence
     start_presence()
+    # ...and check, as this worker's own identity, that it may run the mesh job and start the VM a plan
+    # too big for it runs on (RUN-4): a missing grant is a loud ERROR at start, with its command, never
+    # a customer's job refused "403" (job bf863215). Off the main thread; it never stops the worker.
+    import threading
+
+    from meshpipeline.adapters.mesh_execution.access_check import run_at_start
+    threading.Thread(target=run_at_start, name="mesh-access-check", daemon=True).start()
 
 
 @worker_process_shutdown.connect

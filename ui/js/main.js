@@ -13,7 +13,7 @@
  * loads this module, and this module is the only thing index.html loads.
  */
 import { apiFetch, setNotifier, useIdentity } from "./api/client.js";
-import { getJob } from "./api/endpoints.js";
+import { addNote, getJob } from "./api/endpoints.js";
 import { dispatch, resultSurface } from "./core/events.js";
 import { beginRun, get as getState, isTerminalStatus, set as setState, waitingCopy }
   from "./core/state.js";
@@ -39,7 +39,7 @@ setNotifier({
     "You appear to be offline - reconnecting when your network returns.", "warn"),
   online: () => Notice.release("net"),
   unauthorized: () => Notice.hold("auth",
-    "This deployment rejected the request as unauthorized.", "error"),
+    "You are signed out, or this account cannot do that. Sign in again, then reload the page.", "error"),
   authorized: () => Notice.release("auth"),
 });
 
@@ -99,7 +99,7 @@ configureStream({
     offerNewRun();
   },
   // WHILE THE JOB WAITS FOR A WORKER the header says so, with the backend's estimate; once a
-  // worker has it the line goes back to "working…" and the timeline takes over.
+  // worker has it the line empties and the live line and the timeline take over.
   // The run's clock follows the server's: it counts from when the job was created.
   onStatus: (job) => {
     Stage.waiting(waitingCopy(job) || (streamDown ? STREAM_DOWN_SUB : ""));
@@ -145,6 +145,8 @@ setResultHandler((data, anchor) => {
       { metrics: { attempts: data.attempts, pass: true }, files: data.files || [],
         concerns: data.reviewOutcome === "delivered_with_concerns" ? (data.concerns || []) : null,
         reasoning: data.reviewOutcome === "delivered_with_concerns" ? (data.reasoning || "") : "",
+        // passed by the measured limits, with figures past a limit: listed as notes, as on the result screen
+        withNotes: data.reviewOutcome === "passed_with_notes" ? (data.concerns || []) : null,
         notes: data.notes || [] });
   } else if (surface === "unreviewed") {
     openViewer(job, anchor,
@@ -188,10 +190,16 @@ function attachJob(id, { replayHistory = false, message = "", origin = getState.
   startStream(replayHistory ? 0 : undefined);
 }
 
+/* THE NOTES BOX under the plan: the user's own text, kept as typed; the card redraws with it */
+async function addBriefNote(text) {
+  const d = await addNote(getState.sessionId(), text);
+  Stage.brief(d.brief, addBriefNote);
+}
+
 configureComposer({
   notice: Notice,
   chat: (role, text) => Stage.chat(role, text),
-  brief: (b) => Stage.brief(b),
+  brief: (b) => Stage.brief(b, addBriefNote),
   engineChoice: (c, pick) => Stage.engineChoice(c, pick),
   // the buttons under an application question: what the mesh is for, an FEA part's analysis type
   choices: (list, pick) => Stage.choices(list, pick),
@@ -270,8 +278,8 @@ function bootLive() {
       job = await getJob(deepLinkJob, { throwOnError: false });
     } catch { /* already reported by the HTTP boundary */ }
     if (!job) {
-      Stage.chat("assistant", "I could not open that job. If it belongs to another account, "
-        + "set the user in settings and reload.");
+      Stage.chat("assistant", "I could not open that run. The link may be wrong, or the run may belong to another "
+        + "account.");
       return;
     }
     beginRun(deepLinkJob);

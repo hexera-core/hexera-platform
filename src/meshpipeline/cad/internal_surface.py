@@ -38,6 +38,9 @@ CAP_CREASE_DEG = 30.0
 #: on the other's plane). The scout's former flat-face test (cad/scout_mesh.PLANE_COS, which the
 #: openings work replaced with cad/open_ends.find_caps): this staging was proven with it.
 FLAT_COS = math.cos(math.radians(3.0))
+#: A surface passes through itself (shells overlapping in the part's material) when at least this
+#: share of its area lies inside the material on both sides (INS-5's refusal names it).
+SELF_OVERLAP_SHARE = 0.002
 #: The seed must stand at least this share of its opening's radius clear of every face.
 SEED_CLEARANCE = 0.02
 #: A blunt closed tube end (cad/lumen) is cut at most TIP_DEPTH of the opening's radius deep, and
@@ -79,6 +82,10 @@ class _Opening:
     #: a ring-shaped opening's inner edge: the loop of a centre body standing in the mouth, in its
     #: plane (a rod's open end, or the outline of its flush end face). The lid is the ring between.
     inner: _Opening | None = None
+    #: a mouth of the inside-space map: whether it opens one of the part's passages (False: a side
+    #: pocket, a bolt hole), and which map mouth it is (-1: not from the map)
+    passage: bool = True
+    mouth: int = -1
 
     @property
     def diameter(self) -> float:
@@ -230,7 +237,39 @@ def stage_internal_surface(surface_path, out_dir, *, intake_patches: list | None
 
 
 def stage_triangles(tris, *, intake_patches: list | None = None, input_kind: str = "",
-                    surface_path: Path | None = None) -> StagedInternal:
+                    surface_path: Path | None = None, leak_check: bool = True) -> StagedInternal:
+    """The staging itself (see stage_internal_surface). `leak_check=False` skips the flood leak
+    test (INS-5) for a caller that only reads the staging's answer - the check's vetting of its
+    proposal, the passage count an engine is ranked by - never for a surface that is meshed.
+
+    THE MAP NEVER MAKES A STAGING FAIL THAT WOULD STAND WITHOUT IT (INS-5): when the map's own
+    seals, seed or fluid side leave the boundary unclosable, the same openings are staged once more
+    as the shape rules alone read the surface; that staging is kept only when it closes, and says so.
+    Otherwise the map's refusal - the one that names the place - is the one raised."""
+    ran: dict = {}
+    try:
+        return _stage_triangles(tris, intake_patches=intake_patches, input_kind=input_kind,
+                                surface_path=surface_path, leak_check=leak_check, use_map=True, ran=ran)
+    except InternalSurfaceError as first:
+        from meshpipeline.engines.port_binding import BindError
+        if not ran.get("map"):
+            raise                                  # no map was read: a second staging is the same one
+        try:
+            st = _stage_triangles(tris, intake_patches=intake_patches, input_kind=input_kind,
+                                  surface_path=surface_path, leak_check=leak_check, use_map=False)
+        except (InternalSurfaceError, BindError):
+            raise first from None
+        st.facts["map_refused"] = str(first)[:300]
+        st.facts.setdefault("decisions", []).append(
+            {"stage": "fluid_region", "decided": "map seals", "value": "left out", "rule": "INS-5",
+             "inputs": {"map_refusal": str(first)[:200]},
+             "words": "the map's own seals could not close the boundary; the confirmed openings were staged "
+                      "as the shape rules alone read the surface, and that closes."})
+        return st
+
+
+def _stage_triangles(tris, *, intake_patches: list | None, input_kind: str, surface_path: Path | None,
+                     leak_check: bool, use_map: bool, ran: dict | None = None) -> StagedInternal:
     from meshpipeline.cad.open_ends import _Mesh, skin_faces
 
     tris = np.asarray(tris, dtype=np.float64).reshape(-1, 3, 3)
@@ -245,17 +284,35 @@ def stage_triangles(tris, *, intake_patches: list | None = None, input_kind: str
     rims = _rims(mesh)
     outlines = _outlines(mesh, {r.key() for r in rims})
     bores = _bores(mesh, outlines)
-    ports_decl, wall = _declared(intake_patches, surface_path, rims, bores, mesh)
-    matched = _match(ports_decl, rims, bores, mesh, inner_pool=[*rims, *outlines], input_kind=input_kind,
-                     step_pool=outlines)
+    fluid_body = str(input_kind or "").strip() == "fluid-domain"
+    # THE PART'S INSIDE-SPACE MAP (INS-1): its mouths are openings the declared ports may be
+    # (INS-2), and every one no port claims is sealed into the wall before the fluid's side is read
+    # - so a mouth the shape rules missed never joins the passage to the outside (INS-5). A body
+    # that IS the fluid has its openings on its faces, not at mouths.
+    from meshpipeline.cad.open_ends import inside_map
+    imap = inside_map(mesh) if use_map else None
+    if ran is not None:
+        ran["map"] = imap is not None
+    mouths = [] if (imap is None or fluid_body) else _map_mouths(mesh, imap, {o.key() for o in [*rims, *bores]})
+    decisions: list[dict] = []
+    ports_decl, wall = _declared(intake_patches, surface_path, rims, [*bores, *[m for m in mouths if m.passage]], mesh)
+    matched = _match(ports_decl, rims, [*bores, *mouths], mesh, inner_pool=[*rims, *outlines],
+                     input_kind=input_kind, step_pool=outlines)
     port_loops = [o for o in matched.values() if o.loop is not None]
     caps = [o for o in matched.values() if o.kind == "cap"]
     # every open end that is not a declared opening is sealed into the wall: the fluid may leave
     # only where the user said it does (a ring opening's inner edge is part of its own lid)
     port_loop_keys = {o.key() for o in port_loops} | {o.inner.key() for o in port_loops if o.inner is not None}
     seal_rims = [r for r in rims if r.key() not in port_loop_keys]
+    seal_mouths = [m for m in mouths if m.key() not in port_loop_keys and not _same_opening(m, port_loops)]
     seal_bores: list[_Opening] = []
-    lidded = port_loops + seal_rims
+    lidded = port_loops + seal_rims + seal_mouths
+    if imap is not None and not fluid_body:
+        decisions.append({"stage": "fluid_region", "decided": "openings", "value": len(port_loops) + len(caps),
+                          "rule": "INS-2", "inputs": {"mouths": len(imap.mouths), "passages": len(imap.passages()),
+                                                      "sealed_mouths": len(seal_mouths)},
+                          "words": f"{len(imap.mouths)} mouth(s) of the part's inside: {len(port_loops) + len(caps)} "
+                                   f"confirmed as openings, {len(seal_mouths)} closed into the wall."})
     pieces, chosen, conflict = _fluid_side(mesh, lidded, caps)
     if conflict:
         # THE FLUID REACHES THE OUTSIDE BY ANOTHER WAY: a thick wall's bore the user did not declare
@@ -263,14 +320,32 @@ def stage_triangles(tris, *, intake_patches: list | None = None, input_kind: str
         # the wall, as the CAD path seals an undeclared opening, and the sides are read again - once:
         # with no undeclared bore left to seal, nothing would change on a second reading (a loop that
         # read the same sides forever is what held the rocket nozzle's STL for the lab's 90 minutes).
-        seal_bores = [b for b in bores if b.key() not in port_loop_keys]
+        known = {o.key() for o in seal_mouths}
+        seal_bores = [b for b in bores if b.key() not in port_loop_keys and b.key() not in known
+                      and not _same_opening(b, port_loops)]
         if seal_bores:
-            lidded = port_loops + seal_rims + seal_bores
+            lidded = port_loops + seal_rims + seal_mouths + seal_bores
             pieces, chosen, conflict = _fluid_side(mesh, lidded, caps)
+    if conflict and imap is not None and not fluid_body:
+        # THE FLUID'S SIDE FROM THE MAP (INS-5): the loop-by-loop vote cannot settle which side is
+        # the fluid's along a mouth that is not flat (a chevron nozzle's toothed exit votes both
+        # ways) - the map can: the fluid's side is the pieces whose faces have the passage on one
+        # side of them, each touching a confirmed opening's loop
+        by_map = _fluid_side_by_map(mesh, pieces, imap, [*port_loops, *caps])
+        if by_map is not None:
+            chosen, conflict = by_map, False
+            decisions.append({"stage": "fluid_region", "decided": "fluid side", "value": "map", "rule": "INS-5",
+                              "inputs": {"pieces": int(pieces.max()) + 1, "kept": int(len(chosen))},
+                              "words": "the fluid's side of the surface was read off the map: the pieces that line the passage."})
     if conflict:
+        where = _leak_words(mesh, lidded, imap)
+        if where.startswith(":"):
+            raise InternalSurfaceError(
+                "the fluid cannot be closed off from this surface" + where + ". The openings on the "
+                "picture are not the problem.")
         raise InternalSurfaceError(
             "the openings confirmed on the picture do not close the fluid in: the passage reaches the "
-            "outside of the part some other way. Add the missing opening on the picture (or mark it "
+            f"outside of the part some other way{where}. Add the missing opening on the picture (or mark it "
             "as not an opening so it is sealed), then run again.")
     lids = {id(o): _lid_for(mesh, o) for o in lidded}
     V, F, L, is_lid, lid_report, sealed = _assemble(mesh, pieces, chosen, lidded, caps, wall, lids)
@@ -307,16 +382,205 @@ def stage_triangles(tris, *, intake_patches: list | None = None, input_kind: str
     facts = _verify(V, F, L, list(matched), wall, is_lid=is_lid)
     if facts["patches"][wall]["faces"] == 0:
         raise InternalSurfaceError(EMPTY_WALL)
+    # EVERY CONFIRMED OPENING ITS OWN PATCH (INS-6): one that came out with no faces would be a
+    # boundary the mesh cannot carry
+    empty = sorted(n for n in matched if facts["patches"][n]["faces"] == 0)
+    if empty:
+        raise InternalSurfaceError(
+            f"the confirmed opening(s) {', '.join(empty)} did not become a surface of their own on the "
+            "closed fluid boundary, so the mesh could not carry them. Move each onto an open end or a "
+            "bore's mouth on the picture, then run again.")
+    decisions.append({"stage": "fluid_region", "decided": "port patches", "value": len(matched), "rule": "INS-6",
+                      "inputs": {p: facts["patches"][p]["faces"] for p in sorted(matched)},
+                      "words": "every confirmed opening is its own patch on the closed fluid boundary."})
     facts.update({"lids": lid_report, "sealed": sealed, "input_kind": str(input_kind or ""),
                   "pieces_kept": int(len(chosen)), "pieces": int(pieces.max() + 1) if len(pieces) else 0,
                   "loose_open_pieces_left_out": [{"faces": int(np.sum(pieces == p))} for p in loose],
-                  "rims_found": len(rims), "bores_found": len(bores), "diag_m": round(diag, 6)})
+                  "rims_found": len(rims), "bores_found": len(bores), "diag_m": round(diag, 6),
+                  "mouths_found": len(mouths)})
+    if imap is not None:
+        facts["inside_map"] = imap.facts()
     for o in matched.values():
         o.normal = _outward(V, F, L, o)
-    seed, seed_facts = _seed(V, F, L, matched)
+    deep = _map_deepest(imap, matched, fluid_body)
+    seed, seed_facts = _seed(V, F, L, matched, deep=deep)
     facts["seed"] = seed_facts
+    decisions.append({"stage": "fluid_region", "decided": "seed", "value": seed_facts.get("from"), "rule": "INS-4",
+                      "inputs": {"point_m": seed_facts.get("point"), "clearance_m": seed_facts.get("clearance_m"),
+                                 "winding": seed_facts.get("winding"), "odd_rays": seed_facts.get("odd_rays")},
+                      "words": ("the point inside the flow is the deepest point of the passage, farthest from every wall"
+                                if seed_facts.get("from") == "map" else
+                                "the point inside the flow was stepped in from an opening (the map had no point here)")})
+    # SEALED, AND HELD (INS-5): every edge on two faces (the check above), and the space flooded from
+    # the seed stays inside the staged boundary
+    from meshpipeline.cad.inside_space import LEAK_CELLS, leak_test
+    try:
+        leak, tested = leak_test(V, F, seed, cells=LEAK_CELLS) if leak_check else (None, {"skipped": True})
+    except Exception as exc:  # noqa: BLE001 - a test that cannot run is recorded, never a verdict
+        leak, tested = None, {"error": f"{type(exc).__name__}: {exc}"[:200]}
+    leak_facts: dict[str, object] = dict(tested)
+    if leak is not None:
+        leak_facts["leak_mm"] = [round(float(v) * 1000.0, 2) for v in leak.point]
+        leak_facts["gap_mm"] = None if not math.isfinite(leak.width) else round(leak.width * 1000.0, 3)
+    facts["leak_test"] = leak_facts
+    flood = leak_facts.get("sealed")
+    if flood is True:
+        flood_words = "the flood from the seed stays inside"
+    elif flood is False:
+        flood_words = "the flood from the seed got out of the boundary (the leak is named)"
+    else:
+        flood_words = "the flood test did not run (" + ("skipped" if leak_facts.get("skipped") else "it could not be run") + ")"
+    decisions.append({"stage": "fluid_region", "decided": "sealed",
+                      "value": bool(facts.get("watertight")) and flood is True, "rule": "INS-5",
+                      "inputs": {"watertight": facts.get("watertight"), "open_edges": facts.get("open_edges"),
+                                 "lid_crossings": facts.get("lid_crossings"), "flood_sealed": flood},
+                      "words": ("every edge of the fluid boundary is on two faces" if facts.get("watertight")
+                                else "the fluid boundary has edges not on two faces") + "; " + flood_words + "."})
+    if leak is not None and (math.isfinite(leak.width) or (facts.get("watertight") and not facts.get("lid_crossings"))):
+        # a gap a few cubes wide (a mesher's own cells close it) is named in the record, never a
+        # stop; and a closed, uncrossed boundary the flood still got out of is a grid artefact at a
+        # gap finer than its cubes. Only a WIDE way out - one no thickening of the wall closes, so
+        # every mesher would fill the outside too - stops the staging. Either way the gap is never
+        # patched here: a gap that is not an opening is a CAD defect, left to the CAD repair stage.
+        if math.isfinite(leak.width):
+            decisions.append({"stage": "fluid_region", "decided": "surface gap", "value": "needs CAD repair",
+                              "rule": "INS-5", "inputs": {"leak_mm": leak_facts.get("leak_mm"),
+                                                          "gap_mm": leak_facts.get("gap_mm")},
+                              "words": f"the surface has a gap about {leak.width * 1000:.2g} mm wide near "
+                                       f"({leak.point[0] * 1000:.1f}, {leak.point[1] * 1000:.1f}, "
+                                       f"{leak.point[2] * 1000:.1f}) mm that is not an opening; it is narrow enough "
+                                       "for the mesher's cells to close, and is not patched here: this needs CAD repair."})
+        leak = None
+    if leak is not None:
+        raise InternalSurfaceError(
+            "the closed fluid boundary leaks: the space flooded from the point inside the flow gets out at "
+            f"about ({leak.point[0] * 1000:.1f}, {leak.point[1] * 1000:.1f}, {leak.point[2] * 1000:.1f}) mm"
+            + (f", through a gap about {leak.width * 1000:.2g} mm wide" if math.isfinite(leak.width) else "")
+            + ". If an opening is there, it is not closed: add it on the picture (or mark it as not an opening), then "
+            "run again. If no opening is there, the surface has a gap: this needs CAD repair.")
+    facts["decisions"] = decisions
     return StagedInternal(verts=V, faces=F, labels=L.tolist(), ports=matched, wall=wall, seed=seed,
                           facts=facts)
+
+
+def _map_mouths(mesh, imap, known: set) -> list[_Opening]:
+    """The inside-space map's mouths as staging openings (INS-2): every one whose loop is not one
+    of the shape rules' already, with the side the fluid leaves by (out of its pocket)."""
+    out = []
+    for m in imap.mouths:
+        key = frozenset(np.asarray(m.vidx).tolist())
+        if key in known:
+            continue
+        passage = any(imap.pockets[p].passage for p in m.pockets)
+        out.append(_Opening(kind="rim" if m.kind == "rim" else "bore", centroid=np.asarray(m.centroid, dtype=float),
+                            normal=np.asarray(m.normal, dtype=float), area=float(m.area),
+                            loop=np.asarray(m.vidx), edges=np.asarray(m.eidx), planarity=float(m.planarity),
+                            passage=passage, mouth=m.id))
+    return out
+
+
+#: A piece lines the passage when the passage lies beside at least this share of its area.
+LINES_PASSAGE = 0.5
+
+
+def _fluid_side_by_map(mesh, pieces: np.ndarray, imap, ports: list[_Opening]) -> np.ndarray | None:
+    """The pieces of the cut surface that line the map's passages - the passage on one side of at
+    least LINES_PASSAGE of the piece's area (probed a cube or two off each face) - kept only when
+    every confirmed opening's loop (or cap) touches one of them; None when the map cannot say."""
+    if not imap.passages() or not len(pieces):
+        return None
+    n_p = int(pieces.max()) + 1
+    beside = np.zeros(len(mesh.faces), dtype=bool)
+    for sgn in (1.0, -1.0):
+        for step in (1.0, 1.5, 2.5):
+            w = imap.where(mesh.centre + sgn * step * imap.h * mesh.normal)
+            beside |= np.asarray([x == "pocket" for x in w])
+    lined = np.bincount(pieces, weights=mesh.area * beside, minlength=n_p)
+    area = np.bincount(pieces, weights=mesh.area, minlength=n_p)
+    chosen = np.flatnonzero(lined >= LINES_PASSAGE * np.maximum(area, 1e-300))
+    if not len(chosen):
+        return None
+    keep = set(chosen.tolist())
+    for o in ports:
+        faces = o.faces if o.faces is not None else _loop_faces(mesh, o)
+        if not (set(np.unique(pieces[faces]).tolist()) & keep):
+            return None
+    return chosen
+
+
+def _same_opening(o: _Opening, ports: list[_Opening]) -> bool:
+    """Whether a loop is a confirmed port's own mouth seen from another loop - the same place, the
+    same way, about the same size (a bore's mouth and the step just inside it) - so it is never
+    sealed under the port's own lid."""
+    for p in ports:
+        d = float(np.linalg.norm(o.centroid - p.centroid))
+        size = max(o.size, p.size)
+        if d <= 0.25 * size and abs(float(o.normal @ p.normal)) >= 0.9 and 0.5 <= o.area / max(p.area, 1e-300) <= 2.0:
+            return True
+        # ...or its throat: a loop just behind the port, inside its footprint and no wider (an
+        # inlet well's floor, the bore behind a counterbore) is where the port's own fluid goes on
+        n = p.normal / (float(np.linalg.norm(p.normal)) or 1.0)
+        r = o.centroid - p.centroid
+        depth = -float(r @ n)
+        lateral = float(np.linalg.norm(r + depth * n))
+        if (0.0 <= depth <= 1.5 * p.size and lateral <= 0.5 * p.size and o.size <= 1.05 * p.size
+                and abs(float(o.normal @ n)) >= 0.8):
+            return True
+    return False
+
+
+def _map_deepest(imap, matched: dict, fluid_body: bool):
+    """The map's point inside the flow (INS-4): for a body that is the fluid, the deepest point
+    inside it; else the deepest point of the passage the confirmed openings open into (the one most
+    of them open - every map mouth counts, whichever loop the port was matched to), else of the
+    largest passage. None when the map has none."""
+    if imap is None:
+        return None
+    if fluid_body:
+        return imap.enclosed_deepest
+    passages = imap.passages()
+    if not passages:
+        return None
+    every = [(frozenset(np.asarray(m.vidx).tolist()),
+              _Opening(kind=m.kind, centroid=np.asarray(m.centroid, dtype=float),
+                       normal=np.asarray(m.normal, dtype=float), area=float(m.area)), m.id) for m in imap.mouths]
+    votes: dict[int, int] = {}
+    for o in matched.values():
+        for key, seen_as, mid in every:
+            if key == o.key() or _same_opening(seen_as, [o]):
+                p = imap.passage_of(mid)
+                if p is not None:
+                    votes[p.id] = votes.get(p.id, 0) + 1
+                break
+    if votes:
+        best = max(votes, key=lambda k: (votes[k], -k))
+        return imap.pockets[best].deepest
+    return passages[0].deepest
+
+
+def _leak_words(mesh, lidded: list[_Opening], imap) -> str:
+    """Where the passage reaches the outside, about, for the refusal: the mouth of the map's largest
+    passage that no lid closes, else nothing (the words stay as they were)."""
+    if imap is None:
+        return ""
+    lidded_keys = {o.key() for o in lidded}
+    for p in imap.passages():
+        for mid in p.mouths:
+            m = imap.mouth(mid)
+            seen_as = _Opening(kind=m.kind, centroid=np.asarray(m.centroid, dtype=float),
+                               normal=np.asarray(m.normal, dtype=float), area=float(m.area))
+            if frozenset(np.asarray(m.vidx).tolist()) not in lidded_keys and not _same_opening(seen_as, lidded):
+                c = m.centroid * 1000.0
+                return f" (an opening near ({c[0]:.1f}, {c[1]:.1f}, {c[2]:.1f}) mm, {m.diameter * 1000:.3g} mm across, is not closed)"
+    # NO MOUTH LEFT OPEN: the surface passes through itself - shells that overlap inside the part's
+    # material, never joined into one solid - so its inside and outside meet on faces in the metal
+    inside = imap.faces_inside_material(mesh)
+    if float(mesh.area[inside].sum()) >= SELF_OVERLAP_SHARE * float(mesh.area.sum()):
+        c = (mesh.centre[inside] * mesh.area[inside, None]).sum(axis=0) / float(mesh.area[inside].sum()) * 1000.0
+        return (f": the surface passes through itself - {int(inside.sum())} of its faces lie inside the part's own "
+                f"material, about ({c[0]:.1f}, {c[1]:.1f}, {c[2]:.1f}) mm - so the shells that overlap there need "
+                "joining into one closed solid (a CAD repair) before the fluid can be closed off")
+    return ""
 
 
 def write_staged(staged: StagedInternal, out_dir: Path) -> dict:
@@ -1055,13 +1319,20 @@ def _lid_for(mesh, o: _Opening):
     """(extra points, triangles over o.loop's points then the extras, facts). A ring opening's
     triangles run over its outer loop's points and then its inner loop's, as one loop list (the
     caller's index mapping reads `o.loop` extended by `o.inner.loop`)."""
-    from meshpipeline.cad.lids import LidError, lid, ring
+    from meshpipeline.cad.lids import LidError, lid, ring, ring_bridged
 
     P = mesh.verts[o.loop]
     try:
         if o.inner is not None:
-            tris = ring(P, mesh.verts[o.inner.loop])
-            return np.zeros((0, 3)), tris, {"method": "ring", "planarity": round(o.planarity, 5)}
+            try:
+                tris = ring(P, mesh.verts[o.inner.loop])
+                method = "ring"
+            except LidError:
+                # A CENTRE BODY OF ANY SHAPE (INS-5): spokes, a notched hub - its outline is joined to
+                # the mouth's edge by one bridge and the ring clipped whole
+                tris = ring_bridged(P, mesh.verts[o.inner.loop])
+                method = "ring_bridged"
+            return np.zeros((0, 3)), tris, {"method": method, "planarity": round(o.planarity, 5)}
         extra, tris, info = lid(P)
     except LidError as exc:
         raise InternalSurfaceError(f"the {o.kind} at ({o.centroid[0]:.4f}, {o.centroid[1]:.4f}, "
@@ -1351,14 +1622,29 @@ def _outward(V, F, L, o: _Opening) -> np.ndarray:
     return n / L2 if L2 > 0 else o.normal
 
 
-def _seed(V, F, L, ports: dict[str, _Opening]) -> tuple[np.ndarray, dict]:
+def _seed(V, F, L, ports: dict[str, _Opening], deep=None) -> tuple[np.ndarray, dict]:
     """A point proven inside the fluid: the closed boundary's winding number there is one, and
-    rays both ways along three axes cross it an odd number of times. Candidates step in from every
-    opening along its inward normal, on its axis and off it; among the proven ones the one
-    farthest from any face wins, and no proven point closer than SEED_CLEARANCE of its opening's
-    radius to a face is taken. Thin or curved passages are what the off-axis and shallow steps are
-    for."""
+    rays both ways along three axes cross it an odd number of times.
+
+    THE DEEPEST POINT FIRST (INS-4): the inside-space map's deepest point of the passage (`deep`),
+    farthest from every wall, is taken when it is proven inside and clear of every face. Otherwise
+    candidates step in from every opening along its inward normal, on its axis and off it; among
+    the proven ones the one farthest from any face wins, and no proven point closer than
+    SEED_CLEARANCE of its opening's radius to a face is taken. Thin or curved passages are what the
+    off-axis and shallow steps are for. Never a model's guess, never a point in a wall."""
     T = V[F]
+    if deep is not None:
+        p = np.round(np.asarray(deep, dtype=float), 7)
+        r_min = min((0.5 * o.diameter for o in ports.values()), default=0.0)
+        if abs(float(_winding(T, p[None, :])[0]) - 1.0) < 0.1:
+            clear = float(_point_face_distance(V, F, p).min())
+            axes = np.eye(3)
+            dirs = np.vstack([axes, -axes]) + 1e-3 * np.array([[0.31, 0.17, 0.11]])
+            dirs /= np.linalg.norm(dirs, axis=1, keepdims=True)
+            odd = sum(1 for k in _ray_parity(T, p, dirs) if k % 2 == 1)
+            if clear >= SEED_CLEARANCE * max(r_min, 1e-12) and odd >= 4:
+                return p, {"point": p.tolist(), "winding": round(float(_winding(T, p[None, :])[0]), 4),
+                           "odd_rays": odd, "clearance_m": round(clear, 7), "from": "map"}
     cand_list: list[np.ndarray] = []
     owners: list[tuple[str, float]] = []
     for name, o in ports.items():

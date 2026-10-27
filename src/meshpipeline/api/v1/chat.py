@@ -12,7 +12,7 @@ from meshpipeline.agents.intake import message as msg
 from meshpipeline.agents.intake.agent import _extract_reply
 from meshpipeline.api import pagination
 from meshpipeline.api.schemas import listing
-from meshpipeline.api.schemas.chat import ChatMessageIn, ChatResponse
+from meshpipeline.api.schemas.chat import ChatMessageIn, ChatNoteIn, ChatResponse
 from meshpipeline.api.security import org_dep, owner_dep
 from meshpipeline.application.intake_brief import build_brief
 from meshpipeline.application.job_service import JobService
@@ -176,6 +176,26 @@ async def chat_message(body: ChatMessageIn, owner_id: str = Depends(owner_dep),
         trace=project_all(result.get("_public_trace", [])),
         engine_choice=choice_payload(getattr(_sess, "intake_gate", None)),
     )
+
+
+@router.post("/notes",
+             description="Keep the user's own notes from the console's box, word for word, beside "
+                         "the session's other notes; answers with the brief as it now stands.")
+async def chat_notes(body: ChatNoteIn, owner_id: str = Depends(owner_dep),
+                     organization_id: str = Depends(org_dep)) -> dict:
+    from meshpipeline.persistence.repositories.session_repository import SessionRepository
+
+    status, session = await msg.add_console_note(
+        body.session_id, owner_id, body.text, session_repo=SessionRepository(),
+        db_factory=get_db, organization_id=organization_id)
+    if status is msg.NoteStatus.not_found:
+        raise HTTPException(404, "Session not found")
+    if status is msg.NoteStatus.empty:
+        raise HTTPException(422, "The note is empty.")
+    if status is msg.NoteStatus.running:
+        raise HTTPException(409, "The run has already started, so a new note cannot reach it. "
+                                 "Add it before you approve the next run.")
+    return {"session_id": str(body.session_id), "brief": build_brief(session)}
 
 
 #: Typed approval outcome -> HTTP status. The route owns this table and nothing else about

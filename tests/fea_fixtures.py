@@ -215,6 +215,41 @@ def two_blocks():
     return c
 
 
+def _compound(*shapes):
+    from OCP.BRep import BRep_Builder
+    from OCP.TopoDS import TopoDS_Compound
+
+    c = TopoDS_Compound()
+    b = BRep_Builder()
+    b.MakeCompound(c)
+    for sh in shapes:
+        b.Add(c, sh)
+    return c
+
+
+def touching_blocks(size: float = 10.0):
+    """Two cubes of `size` mm side by side along x, sharing the face x = size: an assembly's two
+    parts that TOUCH over one face (size x size mm)."""
+    return _compound(_box(0, 0, 0, size, size, size), _box(size, 0, 0, size, size, size))
+
+
+def doubled_block():
+    """The same 10 mm cube twice in one file (a body drawn twice): the second wholly inside the first."""
+    return _compound(_box(0, 0, 0, 10, 10, 10), _box(0, 0, 0, 10, 10, 10))
+
+
+def overlapping_chain(n: int):
+    """`n` 10 mm cubes in a row, each shifted 8 mm along x from the one before: n - 1 pairs of parts
+    passing into each other (a welded frame drawn with its members running into one another)."""
+    return _compound(*[_box(8 * k, 0, 0, 10, 10, 10) for k in range(n)])
+
+
+def overlapping_blocks():
+    """Two 10 mm cubes, the second shifted 8 mm along x: they PASS INTO each other over a 2 x 10 x 10
+    mm slab (interference: 20% of either part)."""
+    return _compound(_box(0, 0, 0, 10, 10, 10), _box(8, 0, 0, 10, 10, 10))
+
+
 def pinned_plate():
     """A 40 x 40 x 6 mm plate with an 8 mm hole through its middle, and a pin filling the hole
     exactly: two touching bodies in one file (an assembly's bolt in its hole). The pin's seam is
@@ -263,6 +298,24 @@ def beveled_plate(angle: float | None = None):
     return BRepPrimAPI_MakePrism(face, gp_Vec(0.0, 50.0, 0.0)).Shape()
 
 
+def tangent_boss():
+    """A 40 x 20 x 10 mm plate with a round boss (radius 5, 5 high) on top whose foot is tangent to the
+    plate's y = 0 edge: on the top face the boss's circle meets that straight edge at no angle - a
+    CUSP at (10, 0, 10). A sound solid: the boss and the plate's side face share only that point."""
+    return _fuse(_box(0, 0, 0, 40, 20, 10), _cyl(10, 5, 10, 5, 5))
+
+
+def micro_step():
+    """A 20 x 10 x 10 mm block whose lower half sticks out 0.003 mm on its y = 10 side: a sliver face
+    0.003 mm wide along z = 5 and two 0.003 mm edges at its ends - MICRO DETAILS, far below any element
+    a part this size is meshed with."""
+    return _fuse(_box(0, 0, 0, 20, 10, 10), _box(0, 0, 0, 20, 10.003, 5))
+
+
+#: where the tangent boss's cusp is (mm)
+TANGENT_BOSS_CUSPS = [(10.0, 0.0, 10.0)]
+
+
 # ------------------------------------------------------------------------------- the files ----
 def write_step(shape, path: Path) -> Path:
     from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
@@ -301,3 +354,62 @@ def stl_triangles(shape, chord: float = 0.02, angle: float = 0.08):
             out.append([[pts[i - 1].X(), pts[i - 1].Y(), pts[i - 1].Z()] for i in ids])
         ex.Next()
     return np.asarray(out, dtype=float)
+
+
+def sliver_block():
+    """A 40 x 20 x 10 mm block with a 16 mm bore whose edge runs within 0.5 mm of one side: a wall
+    3 mm or more everywhere but one 0.5 mm sliver (fea0221's counterbore near its bore, made simple)."""
+    return _cut(_box(0, 0, 0, 40, 20, 10), _cyl(20, 11.5, -1, 8, 12))
+
+
+#: a coil spring: mean coil diameter, wire diameter, pitch, active turns (millimetres)
+SPRING = {"D": 30.0, "d": 4.5, "pitch": 9.0, "turns": 4.0}
+
+
+def coil_spring(D: float = SPRING["D"], d: float = SPRING["d"], pitch: float = SPRING["pitch"],
+                turns: float = SPRING["turns"]):
+    """A helical coil spring of round wire about the z axis, its two ends cut square to the wire
+    (a swept circle: no cylinder or torus face, the case PLAN-fea-7 reads from curvature)."""
+    import math
+
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire
+    from OCP.BRepLib import BRepLib
+    from OCP.BRepOffsetAPI import BRepOffsetAPI_MakePipeShell
+    from OCP.GC import GC_MakeCircle
+    from OCP.Geom import Geom_CylindricalSurface
+    from OCP.Geom2d import Geom2d_Line
+    from OCP.gp import gp_Ax2, gp_Ax3, gp_Dir, gp_Dir2d, gp_Pnt, gp_Pnt2d
+
+    r = D / 2.0
+    cyl = Geom_CylindricalSurface(gp_Ax3(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), r)
+    # the helix on the cylinder: u (angle) and v (height) rise together, pitch per turn
+    line = Geom2d_Line(gp_Pnt2d(0, 0), gp_Dir2d(2 * math.pi, pitch))
+    seg = math.hypot(2 * math.pi, pitch) * turns
+    edge = BRepBuilderAPI_MakeEdge(line, cyl, 0.0, seg).Edge()
+    BRepLib.BuildCurves3d_s(edge)
+    spine = BRepBuilderAPI_MakeWire(edge).Wire()
+    # the wire's section at the helix start, square to the helix there
+    t = gp_Dir(0, 2 * math.pi * r, pitch)
+    circle = GC_MakeCircle(gp_Ax2(gp_Pnt(r, 0, 0), t), d / 2.0).Value()
+    profile = BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(circle).Edge()).Wire()
+    pipe = BRepOffsetAPI_MakePipeShell(spine)
+    pipe.SetMode(gp_Dir(0, 0, 1))      # the section keeps its attitude to the coil's axis
+    pipe.Add(profile)
+    pipe.Build()
+    pipe.MakeSolid()
+    return pipe.Shape()
+
+
+def wedge(angle_deg: float, length: float = 100.0, depth: float = 20.0):
+    """A prism whose cross-section is a triangle with a tip of `angle_deg` at the origin: a knife edge
+    of that opening, `length` long, extruded `depth` (cad/fold_back.py finds one under 1 degree)."""
+    import math
+
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+    from OCP.gp import gp_Pnt, gp_Vec
+
+    h = length * math.tan(math.radians(angle_deg))
+    poly = BRepBuilderAPI_MakePolygon(gp_Pnt(0, 0, 0), gp_Pnt(length, 0, 0), gp_Pnt(length, h, 0), True)
+    face = BRepBuilderAPI_MakeFace(poly.Wire()).Face()
+    return BRepPrimAPI_MakePrism(face, gp_Vec(0, 0, depth)).Shape()

@@ -92,6 +92,86 @@ STEP_HEADER_REFUSAL = _STEP_HEADER_REFUSAL
 
 
 
+async def _save_part(part: UploadFile, dest: Path, budget: int) -> int:
+    """One more file of an assembly upload, saved to `dest` within `budget` bytes; its size."""
+    written = 0
+    with open(dest, "wb") as fh:
+        while True:
+            chunk = await part.read(1024 * 1024)
+            if not chunk:
+                break
+            written += len(chunk)
+            if written > budget:
+                fh.close()
+                dest.unlink(missing_ok=True)
+                raise HTTPException(status_code=413, detail=(
+                    f"The files together exceed the {_MAX_FILE_BYTES // (1024 * 1024)} MB limit"))
+            fh.write(chunk)
+    return written
+
+
+async def _joined_assembly(first: Path, first_suffix: str, first_name: str, parts: list[UploadFile],
+                           session_dir: Path, used: int) -> tuple[Path, str, str, bool]:
+    """THE FILES OF ONE ASSEMBLY, joined into one STEP (cad/ingest/assembly_files.combine): each
+    checked as any upload is, each named after its file. Returns the joined file, its suffix, the
+    name it is recorded under and whether its unit is known (no file stating one leaves it to the
+    user, as a lone BREP's is); a file that cannot join an assembly is refused in plain words."""
+    import asyncio as _asyncio
+
+    from meshpipeline.cad.ingest.assembly_files import (
+        CAD_SUFFIXES,
+        MAX_FILES,
+        NOT_CAD,
+        TOO_MANY,
+        AssemblyFilesError,
+        Member,
+        combine,
+    )
+
+    if len(parts) + 1 > MAX_FILES:
+        first.unlink(missing_ok=True)
+        raise HTTPException(status_code=422, detail=TOO_MANY.format(n=MAX_FILES))
+    members = [Member(first, Path(first_name).stem)]
+    saved: list[Path] = [first]
+    try:
+        if first_suffix not in CAD_SUFFIXES:
+            raise HTTPException(status_code=422, detail=NOT_CAD.format(name=first_name))
+        for k, part in enumerate(parts, start=2):
+            name, suffix = sanitised_upload_name(part.filename or "")
+            if suffix not in CAD_SUFFIXES:
+                raise HTTPException(status_code=422, detail=NOT_CAD.format(name=name or "a file"))
+            # ITS OWN FOLDER: a file whose bytes are another format than its name is renamed to that
+            # format's staged name (checked_upload), which must never be another part's file
+            folder = session_dir / f"part_{k}"
+            folder.mkdir(exist_ok=True)
+            dest = folder / f"part_{k}{suffix}"
+            saved.append(dest)
+            used += await _save_part(part, dest, _MAX_FILE_BYTES - used)
+            dest, suffix = await _asyncio.to_thread(checked_upload, dest, suffix)
+            saved[-1] = dest
+            if suffix not in CAD_SUFFIXES:
+                raise HTTPException(status_code=422, detail=NOT_CAD.format(name=name))
+            members.append(Member(dest, Path(name).stem))
+        joined = session_dir / staged_name_for(".step")
+        if joined in saved:
+            joined = session_dir / "assembly_joined.step"
+        try:
+            how = await _asyncio.to_thread(combine, members, joined)
+        except AssemblyFilesError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        logger.info("upload: %d files joined into one assembly (%s)", how["files"], how["method"])
+    finally:
+        for f in saved:
+            f.unlink(missing_ok=True)
+            if f.parent != session_dir:
+                try:
+                    f.parent.rmdir()
+                except OSError:
+                    pass
+    stem = Path(first_name).stem[:48] or "assembly"
+    return joined, ".step", f"{stem}_assembly_of_{len(members)}.step", bool(how.get("unit_known", True))
+
+
 class StepFileOut(BaseModel):
     session_id:      str
     step_filename:   str
@@ -115,6 +195,12 @@ async def upload_step_file(
     owner_id: str        = Depends(owner_dep),
     plan:     str        = Depends(plan_dep),
     organization_id: str = Depends(org_dep),
+    parts: list[UploadFile] | None = File(
+        default=None, description=(
+            "MORE FILES OF ONE ASSEMBLY (optional, multipart field `parts`, repeated): each a CAD solid "
+            "(STEP, IGES or BREP) drawn in the assembly's own coordinates. With `file` they are joined "
+            "into one STEP of several bodies, each part placed where its file puts it and named from "
+            "its CAD product or else its file name; the session meshes that one file.")),
 ):
     filename, suffix = sanitised_upload_name(file.filename or "")
     if suffix not in ACCEPTED_SUFFIXES:
@@ -172,6 +258,13 @@ async def upload_step_file(
     dest, suffix = await _asyncio.to_thread(checked_upload, dest, suffix)
 
     step_filename = filename
+    unit_stated = True
+    # called as a plain function (not through the route) the default is FastAPI's File marker
+    parts = parts if isinstance(parts, list) else None
+    if parts:
+        # SEVERAL FILES, ONE ASSEMBLY (cad/ingest/assembly_files): joined into the session's one source
+        dest, suffix, step_filename, unit_stated = await _joined_assembly(dest, suffix, filename, parts,
+                                                                          session_dir, bytes_written)
 
     # DURABLE SOURCE. The staged file is a streaming buffer, not identity: the pipeline may run in
     # a different container, so the bytes go to object storage and the row records what they must
@@ -262,7 +355,9 @@ async def upload_step_file(
             # is guessed here, and no default is written. A declaration the part's size makes
             # implausible is doubted on the stage, beside the size, before anything is confirmed.
             interpretation_id = None
-            evidence = _declared_unit_evidence(dest)
+            # an assembly joined from files none of which states a unit carries the joiner's mm label
+            # only: not evidence, so the unit is confirmed as a lone BREP's is
+            evidence = _declared_unit_evidence(dest) if unit_stated else None
             if evidence is not None and evidence.resolved and evidence.unit is not None:
                 from meshpipeline.contracts.geometry_units import ResolutionBasis
                 from meshpipeline.persistence.repositories.geometry_interpretation_repository import (  # noqa: E501

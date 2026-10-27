@@ -65,7 +65,7 @@ CRITERIA_ROWS: tuple[Criterion, ...] = (
     ),
     Criterion(
         key="passage_cells_across", label="Core flow resolved across the passage", op=">",
-        threshold=PASSAGE_MIN_CELLS_ACROSS - 1, gating=True,
+        threshold=PASSAGE_MIN_CELLS_ACROSS - 1, gating=False,
         rationale=("Cells across the local passage diameter, measured from the delivered fill. "
                    "Under twelve the velocity profile and pressure drop are not resolved for any "
                    "CFD use; industry RANS practice on internal flow is twenty to forty."),

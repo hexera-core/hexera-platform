@@ -11,6 +11,7 @@ import contextvars
 import json
 import logging
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -50,6 +51,15 @@ _DOING = {QUEUED: "starting", READING: "reading your CAD", MEASURING: "measuring
           OPENINGS: "finding the openings", PICTURES: "drawing the pictures", NAMING: "naming what it sees"}
 _FEA_DOING = {OPENINGS: "reading the surface", NAMING: "measuring the walls and hot spots"}
 
+#: What the line says while the part is shown but still being measured, and once its full
+#: reading did not finish and the quick drawing stands.
+PREVIEW_NOTE = ("Your part is shown beside this chat - you can check it and press Proceed now; "
+                "its openings and the clean check follow when they are ready.")
+PREVIEW_NOTE_FEA = ("Your part is shown beside this chat - you can check its size and unit and press "
+                    "Proceed now; the clean check follows when it is ready.")
+KEPT_NOTE = ("The full check did not finish, so the part is shown from a quick drawing - check its size "
+             "and unit and press Proceed.")
+
 #: After this long with no worker on the scout, the line says it is waiting to start; after the
 #: second, why. Production always has a worker on the queue; a dev stack may not.
 WAITING_AFTER_S, WAITING_NOTE_AFTER_S = 10.0, 60.0
@@ -58,6 +68,10 @@ WAITING_AFTER_S, WAITING_NOTE_AFTER_S = 10.0, 60.0
 VERY_SLOW_FACTOR = 3.0
 #: Notes say "big file" from this size up.
 BIG_FILE_MB = 20.0
+#: THE WORKER'S HEARTBEAT: how often a running step says it is still there, and how long without a
+#: word before the step is taken for dead (its worker killed, or its VM gone). Liveness, not a
+#: budget: a step that beats is never stopped for taking long (geometry_check.time_boxed).
+BEAT_EVERY_S, BEAT_STALE_S = 30.0, 300.0
 
 
 def progress_key(session_id: str) -> str:
@@ -77,17 +91,55 @@ class Tracker:
         self.session_id, self.phase = session_id, phase      # phase: "scout" or "naming"
         self._record: dict = {}
         self._failures = 0
+        self._lock = threading.RLock()
+        self._stop: threading.Event | None = None
+        # the first write of a scout starts the record afresh; every other write keeps the other
+        # phase as the store holds it NOW - the scout and the naming run side by side, and a writer
+        # that put back its own old copy of the other's part would make a live step look dead
+        self._fresh = False
 
     def begin(self, *, work: dict | None = None, **fields) -> None:
         """The worker picked the task up. A scout starts the whole record again; a naming keeps
         the scout's steps beside its own."""
-        now = time.time()
-        current = (read_progress(self.session_id) or {}) if self.phase != "scout" else {}
-        current.pop(self.phase, None)
-        self._record = current
-        self._record[self.phase] = {"picked_at": now, "steps": {}, "current": None, **fields,
-                                    "work": {k: v for k, v in (work or {}).items() if v is not None}}
-        self._write()
+        with self._lock:
+            now = time.time()
+            self._record = {self.phase: {"picked_at": now, "steps": {}, "current": None, **fields,
+                                         "work": {k: v for k, v in (work or {}).items() if v is not None}}}
+            self._fresh = self.phase == "scout"
+            self._write()
+
+    # THE HEARTBEAT. A step on a big file can run for many minutes with nothing new to say; the
+    # beat says the worker is still there, so the check is held to its progress, never to a clock
+    # (geometry_check.time_boxed). It stops with the task - and when the worker is killed or its VM
+    # goes away, with it - and a beat that stops is how a dead check is told from a slow one.
+    def start_heartbeat(self, every_s: float | None = None) -> None:
+        if self._stop is not None:
+            return
+        stop = threading.Event()
+        self._stop = stop
+        period = float(every_s if every_s is not None else BEAT_EVERY_S)
+        self.beat()
+
+        def run() -> None:
+            while not stop.wait(period):
+                self.beat()
+
+        threading.Thread(target=run, name=f"geometry-beat-{self.session_id[:8]}", daemon=True).start()
+
+    def stop_heartbeat(self) -> None:
+        if self._stop is not None:
+            self._stop.set()
+            self._stop = None
+
+    def beat(self) -> None:
+        with self._lock:
+            part = self._record.get(self.phase)
+            if part is None or part.get("ended_at") is not None:
+                return
+            part["beat_at"] = time.time()
+            # the beat is how a live worker is told from a dead one: it is tried whatever earlier
+            # writes did, and a store that answers again brings the live line back with it
+            self._write(force=True)
 
     def work(self, **fields) -> None:
         """How big the job is, as soon as it is known: the file's size, the skin's triangles."""
@@ -98,45 +150,55 @@ class Tracker:
 
     def step(self, key: str, **work) -> None:
         """A step starts; the one before it ends now."""
-        part = self._record.get(self.phase)
-        if part is None:
-            return
-        if work:
-            self.work(**work)
-        now = time.time()
-        was = part.get("current")
-        if was and was in part["steps"]:
-            part["steps"][was].setdefault("end", now)
-        part["steps"][key] = {"at": now}
-        part["current"] = key
-        self._write()
+        with self._lock:
+            part = self._record.get(self.phase)
+            if part is None:
+                return
+            if work:
+                self.work(**work)
+            now = time.time()
+            was = part.get("current")
+            if was and was in part["steps"]:
+                part["steps"][was].setdefault("end", now)
+            part["steps"][key] = {"at": now}
+            part["current"] = key
+            part["beat_at"] = now
+            self._write()
 
     def finish(self, ok: bool) -> None:
         """The task ended. A failure keeps the step it failed in as `current`."""
-        part = self._record.get(self.phase)
-        if part is None:
-            return
-        now = time.time()
-        part["ended_at"] = now
-        part["ok"] = bool(ok)
-        was = part.get("current")
-        if ok and was and was in part["steps"]:
-            part["steps"][was].setdefault("end", now)
-        self._write()
+        with self._lock:
+            part = self._record.get(self.phase)
+            if part is None:
+                return
+            now = time.time()
+            part["ended_at"] = now
+            part["ok"] = bool(ok)
+            was = part.get("current")
+            if ok and was and was in part["steps"]:
+                part["steps"][was].setdefault("end", now)
+            self._write()
 
-    def _write(self) -> None:
-        if self._failures >= self._MAX_FAILURES:
+    def _write(self, force: bool = False) -> None:
+        if self._failures >= self._MAX_FAILURES and not force:
             return
         try:
             from meshpipeline.contracts.object_storage import get_object_store
 
+            if self._fresh:
+                record = dict(self._record)
+                self._fresh = False
+            else:
+                stored = read_progress(self.session_id) or {}
+                record = {**{k: v for k, v in stored.items() if k != self.phase}, **self._record}
             with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
-                json.dump(self._record, fh)
+                json.dump(record, fh)
                 tmp = Path(fh.name)
             try:
                 get_object_store().upload_file(local_path=tmp, object_key=progress_key(self.session_id))
             finally:
                 tmp.unlink(missing_ok=True)
+            self._failures = 0                      # the store answers again: so does the line
         except Exception as exc:  # noqa: BLE001 - the live line is a courtesy; the check goes on
             self._failures += 1
             logger.info("geometry progress: could not record the step (%s) - session=%s",
@@ -167,6 +229,26 @@ def note_work(**work) -> None:
     tracker = _ACTIVE.get()
     if tracker is not None:
         tracker.work(**work)
+
+
+def beating(part: dict | None, now: float, *, marker: float | None = None) -> bool | None:
+    """Whether a phase's worker is still there: True while its heartbeat is fresh, False once it
+    has gone quiet for BEAT_STALE_S (or the task ended without storing its result), None when the
+    record cannot say - no record, one from an earlier attempt (`marker`: the pending marker it
+    must name), or a worker from before the heartbeat."""
+    if not isinstance(part, dict):
+        return None
+    if marker is not None and not _this_attempt(part, marker):
+        return None
+    if part.get("ended_at") is not None:
+        return False
+    beat = part.get("beat_at")
+    if beat is None:
+        return None
+    try:
+        return now - float(beat) <= BEAT_STALE_S
+    except (TypeError, ValueError):
+        return None
 
 
 def skin_triangles(skin: Path) -> int | None:
@@ -379,6 +461,13 @@ def progress_view(stored: dict | None, requested: dict | None, progress: dict | 
         return _scout_failed(view, stored, by_key, scout, scout_steps, suffix, fea)
     if status not in ("scouted", "ready", "failed"):
         return None
+    if status == "scouted" and stored.get("preview") == "running" and not confirmed:
+        # THE PART IS SHOWN, STILL BEING MEASURED (geometry_check._Preview): the line follows the
+        # scout's steps as before, and says the user need not wait for them
+        view = _scouting(view, by_key, scout, scout_steps, work, thermal, at, written_at, scout_limit_s, fea)
+        view["preview"] = True
+        view["note"] = PREVIEW_NOTE_FEA if fea else PREVIEW_NOTE
+        return view
 
     # the part is measured and drawn: every scout step is done, the naming is what is left
     for s in steps:
@@ -397,9 +486,13 @@ def progress_view(stored: dict | None, requested: dict | None, progress: dict | 
             nm["seconds"] = _round(float(stored["naming_seconds"]))
         total = sum(float(s["seconds"] or 0.0) for s in steps if s["key"] != QUEUED)
         view.update(state="done", current=f"Checked in {duration_words(total)}", total_s=_round(total))
+        if stored.get("preview") == "kept":
+            view["note"] = KEPT_NOTE
         return view
     if status == "failed":
         return _failed(view, stored, NAMING, nm, suffix, fea)
+    if stored.get("preview") == "kept":
+        view["note"] = KEPT_NOTE
     if not requested or requested.get("withdrawn"):
         nm["state"] = "waiting"
         view.update(state="waiting", current=("Model ready - answer in the chat and I'll set up the panel" if thermal
@@ -505,6 +598,6 @@ def _failed(view: dict, stored: dict, key: str, step: dict, suffix: str, fea: bo
     return view
 
 
-__all__ = ["MEASURING", "NAMING", "OPENINGS", "PICTURES", "QUEUED", "READING", "SCOUT_STEPS", "Tracker",
-           "duration_words", "is_fea", "mark", "note_work", "progress_key", "progress_view", "read_progress",
+__all__ = ["BEAT_EVERY_S", "BEAT_STALE_S", "MEASURING", "NAMING", "OPENINGS", "PICTURES", "QUEUED", "READING", "SCOUT_STEPS", "Tracker",
+           "beating", "duration_words", "is_fea", "mark", "note_work", "progress_key", "progress_view", "read_progress",
            "skin_triangles", "soft_limit_s", "track", "untrack"]

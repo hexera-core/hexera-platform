@@ -2,42 +2,97 @@
 # Boundaries: a declaration table; these axes are purpose-owned and must not be restated per engine.
 from __future__ import annotations
 
+from meshpipeline.contracts.review_evidence import RenderViewRequirement
 from meshpipeline.engines.review_types import ReviewAxis
 
 # USE-CASE review axes - what each WORKFLOW requires of any mesh, independent of the
 # engine that produced it. The reviewer runtime unions these with the selected engine's
 # mesh-class axes (dedup by name). SAME no-setpoint invariant as the engine rubrics:
 # WHAT to check + WHY + failure signals, never a numeric bar (chord multiples, y+, …).
+
+# THE FEA CHECKLIST (Areen, 2026-10-22). An FEA job is reviewed against what a structural engineer
+# needs of the delivered files - the right part, every CAD face named in every solver file, valid
+# elements of the right type, enough detail through walls and at hot spots, each solver's limits,
+# honest notes, and files that load with matching counts. The hard pass/fail is the measured
+# checks' (engines/fea_review.measured_valid); these axes explain the mesh and add concerns, and a
+# review can never fail an FEA mesh the measurements call valid (agents/reviewer/review_policy).
+# Each axis is judged from the MEASURED FEA FACTS block of the brief ("fea_facts"), never from the
+# 3D preview's surface groups: the preview shows the outer surface as one group by design.
 _STRUCTURAL_AXES: tuple[ReviewAxis, ...] = (
     ReviewAxis(
-        name="restraint_load_surfaces", validation_axis="conformance",
-        guidance=("Check the surfaces the user designated for restraints, loads and "
-                  "contact are tagged as named groups and cover the faces the user "
-                  "actually meant - the semantic correctness of the tagging, not just "
-                  "that some group exists."),
-        concern="The surfaces you restrain or load are not resolved well enough to trust the stresses",
-        failure_signals=("a restraint or load group placed on the wrong faces",
-                         "a load-bearing surface the request named left untagged"),
-        evidence=("groups", "region_summary", "brief"),
+        name="fea_right_part", validation_axis="integrity",
+        guidance=("Check the mesh is the part the user confirmed: its size and units match the "
+                  "confirmed part, it is one continuous solid where the part is one body, its "
+                  "volume follows the CAD, and no feature of the part (a hole, a boss, a rib, a "
+                  "flange) is missing or added."),
+        concern="The mesh does not look like the part you confirmed",
+        failure_signals=("the meshed solid is a different size or in a different unit than confirmed",
+                         "disconnected solid fragments where the part is one body",
+                         "a feature of the CAD missing from the meshed solid"),
+        evidence=("render", "fea_facts", "brief"),
+        requires=(RenderViewRequirement("iso"),),
     ),
     ReviewAxis(
-        name="solid_continuity", validation_axis="integrity",
-        guidance=("Check the mesh is one continuous solid volume where the part is a "
-                  "single body - a stiffness matrix cannot couple disconnected fragments."),
-        concern="The solid is not continuous - the mesh has splits the part does not",
-        failure_signals=("disconnected solid fragments where the part is one body",
-                         "internal gaps or unmeshed pockets inside the solid"),
-        evidence=("region_count", "quality_metrics"),
+        name="fea_faces_named", validation_axis="conformance",
+        guidance=("Check every CAD face is its own named group (Face_k) in all three solver files, "
+                  "using the named-face counts per file in the measured FEA facts against the "
+                  "CAD's own face count; and that any face the user named with a role landed on the "
+                  "faces they meant. The 3D preview shows the outer surface as one group by design - "
+                  "that is never a missing decomposition."),
+        concern="Not every face of your part is a named group in every solver file",
+        failure_signals=("a solver file names fewer faces than the CAD has",
+                         "a face the user named with a role placed on the wrong faces"),
+        evidence=("fea_facts", "brief"),
     ),
     ReviewAxis(
-        name="stress_region_quality", validation_axis="quality",
-        guidance=("Check element quality is adequate where stress concentrates - near "
-                  "restraints, loads, fillets and thin sections - since that is where "
-                  "poor elements corrupt the result the user cares about."),
-        concern="The mesh is too coarse or too distorted where stress concentrates",
-        failure_signals=("low-quality elements clustered at load/restraint/feature regions",
-                         "thin sections resolved by a single distorted element through-thickness"),
-        evidence=("quality_metrics", "groups", "render"),
+        name="fea_element_validity", validation_axis="integrity",
+        guidance=("Check the measured validity: no inverted or degenerate element, and the element "
+                  "type each solver expects (quadratic tetrahedra: C3D10, CTETRA with mid-side "
+                  "nodes, SOLID187)."),
+        concern="Some elements are not valid for the solvers they are for",
+        failure_signals=("inverted or degenerate elements measured",
+                         "a solver file written with a different element type than its solver expects"),
+        evidence=("fea_facts", "quality_metrics"),
+    ),
+    ReviewAxis(
+        name="fea_detail", validation_axis="quality",
+        guidance=("Check there is enough detail where stress lives: elements through every thin "
+                  "wall as the plan's rule asks, and refinement at the hot spots (holes, fillets, "
+                  "notches, inside corners) - read from the measured through-wall count and the hot "
+                  "spots short of their rule."),
+        concern="The mesh is coarser than its rules ask through a wall or at a hot spot",
+        failure_signals=("a thin wall resolved by too few elements through its thickness",
+                         "a hot spot left short of its refinement rule"),
+        evidence=("fea_facts", "quality_metrics"),
+    ),
+    ReviewAxis(
+        name="fea_solver_limits", validation_axis="quality",
+        guidance=("Check the element shape figures against each solver's own published limits "
+                  "(the per-solver lines of the quality checks), and say which solver a figure "
+                  "past a limit matters for."),
+        concern="Some element shapes are past a limit of the solver you will use",
+        failure_signals=("element shape figures past a solver's published limit, widespread rather "
+                         "than at sharp features",),
+        evidence=("quality_metrics", "fea_facts"),
+    ),
+    ReviewAxis(
+        name="fea_honest_notes", validation_axis="conformance",
+        guidance=("Check the delivery says plainly what it gave up: a plan coarsened to fit the "
+                  "element limit names what that left short, and elements set aside at a cusp or a "
+                  "micro detail are named with why stress there is not meaningful."),
+        concern="The delivery does not say what was coarsened or set aside",
+        failure_signals=("a coarsened plan with nothing named as short",
+                         "elements set aside with no reason given"),
+        evidence=("fea_facts",),
+    ),
+    ReviewAxis(
+        name="fea_files_load", validation_axis="solvability",
+        guidance=("Check all three solver files were written and agree: the same element count in "
+                  "each, the same named faces, so the user can load whichever file their solver "
+                  "reads."),
+        concern="The solver files do not all load with the same mesh",
+        failure_signals=("a solver file missing", "element or named-face counts that differ between files"),
+        evidence=("fea_facts",),
     ),
 )
 

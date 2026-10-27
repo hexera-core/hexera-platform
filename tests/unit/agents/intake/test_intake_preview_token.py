@@ -9,6 +9,7 @@ from unittest.mock import patch
 import meshpipeline.agents.intake.admission_token as at
 import meshpipeline.agents.intake.agent as intake
 import meshpipeline.agents.intake.engine_selection as es
+from meshpipeline.contracts import user_notes as un
 
 _MSGS = [{"role": "user", "content": "external CFD, gmsh, fluid-domain, inlet/outlet/wall"}]
 _REV = at.revision_of(_MSGS)
@@ -143,7 +144,9 @@ def test_submit_without_a_token_persists_nothing():
 
 
 def test_submit_with_a_matching_seeded_token_is_authorized_and_shows_canonical_summary():
-    state = {"job_id": "j", "session_id": "s", "user_id": "u", "messages": list(_MSGS)}
+    # the notes question was asked before; the user's answer is their note, kept as typed
+    state = {"job_id": "j", "session_id": "s", "user_id": "u",
+             "messages": [{"role": "assistant", "content": un.QUESTION}, *_MSGS]}
     _token = _seed_gate(state)           # confirmed gmsh + token bound to _CANON == _SUBMIT's canonical
     out = _run(state, [_resp([_tc("submit_requirements",
                                   json.dumps({**_SUBMIT, "preview_token": _token}))]),
@@ -152,6 +155,7 @@ def test_submit_with_a_matching_seeded_token_is_authorized_and_shows_canonical_s
     reply = out["messages"][-1]["content"]
     # app-rendered: the application asks, and the structured brief states what will be built
     assert "confirm the requirements" in reply and "Shall I proceed" in reply
+    assert [n["text"] for n in out["user_notes"]] == [_MSGS[0]["content"]]
 
 
 def test_a_token_whose_backing_selection_was_replaced_is_rejected():

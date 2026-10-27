@@ -184,10 +184,13 @@ def compose_review_rubric(engine: str, purpose_key: str = "", user_dispute=None,
     _pur = PURPOSES.get(purpose_key or "")
     pur_axes = tuple(_pur.review_axes) if _pur else ()
 
+    # a purpose whose own checklist replaces some engine axes (the structural FEA checklist) drops them
+    superseded = set(getattr(_pur, "supersedes_engine_axes", ()) or ()) if _pur else set()
+
     out: list = []
     seen: set[str] = set()
     for ax, owner in ((a, f"engine:{eng}") for a in eng_axes):
-        if ax.name in seen:
+        if ax.name in seen or ax.name in superseded:
             continue
         seen.add(ax.name)
         out.append(dataclasses.replace(_drop_unservable_evidence_hints(ax, _spec), owner=owner))

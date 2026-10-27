@@ -120,6 +120,29 @@ PUBLISH_TAG="${RELEASE_PUBLISH_TAG:-${REC_TAG}}"
 [ -n "${PUBLISH_TAG}" ] && [ "${PUBLISH_TAG}" != "None" ] || die "no publication tag in the record"
 ok "registry ${REGISTRY}, tag ${PUBLISH_TAG}"
 
+# WHAT IMAGE A REFERENCE SERVES, as either of the two IDs Docker gives a local image. The classic
+# image store's ID is the image CONFIG digest; the containerd image store (Docker 29's default,
+# on the hosted runners since 2026-10) gives the MANIFEST digest instead - which is also exactly
+# the digest the registry assigns on push. A record written under either store names one of the
+# two, so a reference is "this image" when EITHER digest equals the recorded ID. Comparing the
+# config digest alone read every re-publish and every reuse of a commit published under the
+# containerd store as a conflicting image (the fleet roll of 65c63ab28b1b, 2026-10-24).
+manifest_digest_of(){
+  local raw
+  raw="$(docker buildx imagetools inspect --raw "$1" 2>/dev/null </dev/null)" || return 1
+  [ -n "${raw}" ] || return 1
+  printf 'sha256:%s' "$(printf '%s' "${raw}" | sha256sum | cut -d' ' -f1)"
+}
+# serves_image <reference> <config digest of it, or ""> <recorded image id>
+serves_image(){
+  local ref="$1" config="$2" want="$3" m
+  [ -n "${want}" ] || return 1
+  [ "${config}" = "${want}" ] && return 0
+  case "${ref}" in *@"${want}") return 0 ;; esac
+  m="$(manifest_digest_of "${ref}")" || return 1
+  [ "${m}" = "${want}" ]
+}
+
 # push each validated image
 stage "publishing the exact validated images (no build)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/amp-publish-XXXXXX")"
@@ -191,7 +214,7 @@ PY
     ok)
       remote_config="$(printf '%s' "${remote_manifest}" | "${PY}" -c \
         'import json,sys; print(json.load(sys.stdin).get("config",{}).get("digest",""))' 2>/dev/null)"
-      if [ -n "${remote_config}" ] && [ "${remote_config}" != "${C_ID}" ]; then
+      if [ -n "${remote_config}" ] && ! serves_image "${target}" "${remote_config}" "${C_ID}"; then
         die "${comp}: ${target} already exists and points at ${remote_config:0:19},
        which is NOT the validated image ${C_ID:0:19}. Refusing to overwrite a published tag.
        Publish under a different tag (RELEASE_PUBLISH_TAG=...) or investigate the conflict."

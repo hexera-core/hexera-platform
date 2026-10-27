@@ -40,6 +40,9 @@ FLAT_TURN_DEG = 0.5
 #: larger curvature over the smaller): a shaft's 2 mm shoulder fillet and the 12 mm shaft it runs
 #: into are tangent, but bend six times apart.
 CURVATURE_RATIO = 1.6
+#: A FILLET is a blend, small beside the part: a concave round of a radius over this share of the
+#: part's diagonal is the part's own gentle curve (a blade's camber), not a hot spot.
+FILLET_MAX_SHARE = 0.1
 #: A concave arc that goes this far round is a whole HOLE.
 HOLE_SPAN_DEG = 355.0
 #: A concave arc of at least this much (and less than a hole) is a NOTCH or GROOVE; less is a FILLET.
@@ -71,6 +74,9 @@ class Surface:
     body: np.ndarray | None = None
     #: Each label's own model tolerance in mm (the CAD face's), or None when unknown.
     tol_mm: np.ndarray | None = None
+    #: Each label's tessellation error in mm (its triangulation's measured deflection from the CAD
+    #: surface), or None when unknown (a triangle file).
+    defl_mm: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         a, b, c = (self.xyz[self.tris[:, k]] for k in range(3))
@@ -178,6 +184,17 @@ FLOOR_FRACTION = 1e-5
 #: A ray goes on through at most this many surfaces that are not its wall (another body's face, or
 #: one under the floor) before it gives up and reads nothing.
 MAX_HOPS = 4
+#: TWO FACES LYING ON EACH OTHER (a self-overlapping solid: a zero-thickness membrane on a wall, a
+#: patch of a bore written twice with opposite sides). A ray from one meeting the other UNDER the floor,
+#: where the two faces share no edge, proves they lie on each other there - no wall of one body ever
+#: reads less than the floor between faces that do not meet. Every other reading of that same pair
+#: closer than the two faces' own TESSELLATION ERROR (each triangulation's measured deflection, added)
+#: is the same coincidence seen through two different sets of chords, not material; it is passed
+#: through like the floor. A 536 mm 11-part bolted assembly's tube read 0.0055 mm "walls" that way, just
+#: past its 0.0054 mm floor, where its membranes lie on its 1.2 mm wall: 2.8 um elements, 138M of them,
+#: and a 961 GiB machine (job bf863215, 26 Oct). Faces with no measured deflection (a triangle file)
+#: keep the floor alone. The band is THIS PAIR's, so a thin wall anywhere else is read as before.
+COINCIDENT_BAND = 1.0
 #: A ray that ends on a face meeting its own at an ACUTE CONVEX EDGE (the material between them
 #: narrower than TAPER_DEG) is reading a TAPER: the wedge's thickness runs to nothing at that edge
 #: however fine the mesh, so it is a sharp edge, not a wall. A flat strip beside a round read 0.08
@@ -191,6 +208,17 @@ TAPER_DEG = 88.0
 #: graze) has no wall of its own: the faces round it cover the material under it.
 AGREEING_RAYS = 3
 AGREE_RATIO = 1.25
+#: A WALL THAT IS THIN ONLY IN PLACES (PLAN-fea-3, 22 Oct): a face whose thinnest agreed reading
+#: is under VARY_SHARE of its median reading is thin only where those readings are - a counterbore
+#: that runs within 0.05 mm of a bore, on a face whose wall is 3 mm elsewhere (fea0221 asked for
+#: 0.025 mm elements over the whole 660 mm2 face: 298M elements). Its readings under VARY_SHARE of
+#: the median are THIN SPOTS, grouped where they lie within THIN_LINK sample spacings of each other,
+#: and the rest of the face keeps the wall its other readings agree on.
+VARY_SHARE = 0.5
+THIN_LINK = 2.0
+#: at most this many thin spots on one face, and on the whole part (the thinnest kept)
+MAX_THIN_SPOTS = 24
+MAX_THIN_SPOTS_PART = 400
 
 
 def _numpy_hits(s: Surface, origins: np.ndarray, dirs: np.ndarray, reach: float) -> tuple[np.ndarray, np.ndarray]:
@@ -218,7 +246,8 @@ def _numpy_hits(s: Surface, origins: np.ndarray, dirs: np.ndarray, reach: float)
     return out, cell
 
 
-def wall_reach(s: Surface, origins: np.ndarray, dirs: np.ndarray, labels: np.ndarray, *, eps: float) -> np.ndarray:
+def wall_reach(s: Surface, origins: np.ndarray, dirs: np.ndarray, labels: np.ndarray, *, eps: float,
+               lying_on: list | None = None) -> np.ndarray:
     """How far each ray (from `eps` inside a face, along its inward normal) runs through the
     material before it LEAVES it - the wall under its start - or nan where that cannot be read.
 
@@ -230,15 +259,43 @@ def wall_reach(s: Surface, origins: np.ndarray, dirs: np.ndarray, labels: np.nda
     * the ray meets it head on enough (GRAZE_COS) and from inside the material, its outward normal
       along the ray. A ray that grazes a face, or meets one from outside (it slipped out of the
       solid through a crack in the tessellation), reads nothing;
-    * it is not a TAPER: a face meeting the ray's own at an acute convex edge (TAPER_DEG)."""
+    * it is not a TAPER: a face meeting the ray's own at an acute convex edge (TAPER_DEG);
+    * it is not a face LYING ON the ray's own (COINCIDENT_BAND): a pair of faces of one body that share
+      no edge and were read under the floor somewhere is read through out to their tessellation error
+      (each such pair, as label pairs a < b, is appended to `lying_on` when it is given)."""
     rays = _Rays(s)
-    n = len(origins)
     m = len(s.names)
     pairs = edge_pairs(s)
     la, lb = s.label[pairs.tri_a], s.label[pairs.tri_b]
     # an acute convex edge: the faces' normals turn by more than 180 - TAPER_DEG across it
     acute = (la != lb) & ~pairs.concave & (pairs.turn_deg > 180.0 - TAPER_DEG)
     wedges = np.unique(np.concatenate([la[acute] * m + lb[acute], lb[acute] * m + la[acute]]))
+    out, lying = _walk(s, rays, origins, dirs, labels, eps=eps, wedges=wedges, m=m)
+    if s.defl_mm is None or not len(lying):
+        return out
+    # FACES LYING ON EACH OTHER (COINCIDENT_BAND): only pairs that share no edge - two faces that meet
+    # are read under the floor beside their edge by every ray started there, and that is no overlap
+    met = np.unique(np.concatenate([la[la != lb] * m + lb[la != lb], lb[la != lb] * m + la[la != lb]]))
+    lying = np.setdiff1d(lying, met)
+    if not len(lying):
+        return out
+    if lying_on is not None:
+        lying_on.extend(sorted({(int(min(k // m, k % m)), int(max(k // m, k % m))) for k in lying}))
+    a, b = lying // m, lying % m
+    band = COINCIDENT_BAND * (np.asarray(s.defl_mm, dtype=float)[a] + np.asarray(s.defl_mm, dtype=float)[b])
+    keys = np.concatenate([lying, b * m + a])
+    vals = np.concatenate([band, band])
+    order = np.argsort(keys, kind="stable")
+    out, _ = _walk(s, rays, origins, dirs, labels, eps=eps, wedges=wedges, m=m, band=(keys[order], vals[order]))
+    return out
+
+
+def _walk(s: Surface, rays: _Rays, origins: np.ndarray, dirs: np.ndarray, labels: np.ndarray, *, eps: float,
+          wedges: np.ndarray, m: int, band: tuple[np.ndarray, np.ndarray] | None = None
+          ) -> tuple[np.ndarray, np.ndarray]:
+    """wall_reach's rays, hop by hop: (each ray's wall or nan, the face pairs - start * m + hit - of one
+    body met under the floor). `band`: (sorted pair keys, the floor each of those pairs is read past)."""
+    n = len(origins)
     floor0 = FLOOR_FRACTION * s.diag
     no_tol = np.zeros(len(s.names))
     tol = s.tol_mm if s.tol_mm is not None else no_tol
@@ -247,6 +304,7 @@ def wall_reach(s: Surface, origins: np.ndarray, dirs: np.ndarray, labels: np.nda
     live = np.arange(n)
     pos = origins.copy()
     reach = 1.01 * s.diag
+    under: list[np.ndarray] = []
     for _hop in range(MAX_HOPS + 1):
         if not len(live):
             break
@@ -257,16 +315,21 @@ def wall_reach(s: Surface, origins: np.ndarray, dirs: np.ndarray, labels: np.nda
         hit = s.label[cell]
         floor = np.maximum(floor0, 2.0 * np.maximum(tol[labels[live]], tol[hit]))
         foreign = (s.body[hit] != s.body[labels[live]]) if s.body is not None else np.zeros(len(live), dtype=bool)
+        key = labels[live] * m + hit
+        under.append(key[~foreign & (total < floor) & (hit != labels[live])])
+        if band is not None and len(band[0]):
+            at = np.clip(np.searchsorted(band[0], key), 0, len(band[0]) - 1)
+            floor = np.where(band[0][at] == key, np.maximum(floor, band[1][at]), floor)
         through = foreign | (total < floor)
         cos = np.einsum("ij,ij->i", dirs[live], s.normals[cell])
-        taper = np.isin(labels[live] * m + hit, wedges)
+        taper = np.isin(key, wedges)
         good = ~through & (cos >= GRAZE_COS) & ~taper
         out[live[good]] = total[good]
         # on through the face that is not this ray's wall, from just past it
         live = live[through]
         travelled[live] = total[through]
         pos[live] = origins[live] + dirs[live] * travelled[live, None]
-    return out
+    return out, (np.unique(np.concatenate(under)) if under else np.zeros(0, dtype=np.int64))
 
 
 def agreed_wall(readings) -> int | None:
@@ -307,8 +370,10 @@ def wall_thickness(s: Surface, *, rays: int = THICKNESS_RAYS, seed: int = 0) -> 
     if not origins:
         return {"per_label": {}, "min": None, "rays": 0}
     P, O, D, L = (np.concatenate(x) for x in (points, origins, dirs, labels))
-    dist = wall_reach(s, O, D, L, eps=eps)
+    lying: list[tuple[int, int]] = []
+    dist = wall_reach(s, O, D, L, eps=eps, lying_on=lying)
     per: dict[int, tuple[float, float, np.ndarray]] = {}
+    spots: dict[int, dict] = {}
     best = None
     for lab in np.unique(L):
         k = np.flatnonzero((L == lab) & np.isfinite(dist))
@@ -317,10 +382,57 @@ def wall_thickness(s: Surface, *, rays: int = THICKNESS_RAYS, seed: int = 0) -> 
         if at is None:
             continue        # too few rays read a wall here, or they scatter: no wall of its own
         j = order[at]
-        per[int(lab)] = (float(dist[j]), float(np.median(dist[k])), P[j])
+        median = float(np.median(dist[k]))
+        per[int(lab)] = (float(dist[j]), median, P[j])
         if best is None or dist[j] < best[0]:
             best = (float(dist[j]), int(lab), P[j])
-    return {"per_label": per, "min": best, "rays": int(len(O))}
+        if dist[j] < VARY_SHARE * median:
+            area = float(s.areas[s.label == lab].sum())
+            found = thin_spots(P[k], dist[k], median, spacing=math.sqrt(area / max(len(k), 1)))
+            if found is not None:
+                spots[int(lab)] = found
+    return {"per_label": per, "min": best, "rays": int(len(O)), "thin": spots, "lying": sorted(set(lying))}
+
+
+def thin_spots(points: np.ndarray, readings: np.ndarray, median: float, *, spacing: float) -> dict | None:
+    """A face thin only in places: {"wall": the wall the rest of the face agrees on, "spots": [{"at",
+    "radius", "thickness"}]} - the readings under VARY_SHARE of the median grouped into spots, each
+    with the centre and the radius that covers its readings (plus one sample spacing, the most the
+    thin region can run past the last reading that saw it), and the thinnest reading in it. None
+    when the rest of the face reads no agreed wall (then the whole face keeps its thinnest)."""
+    thin = readings < VARY_SHARE * median
+    rest = np.sort(readings[~thin])
+    at = agreed_wall(rest)
+    if at is None or not thin.any():
+        return None
+    pts, vals = points[thin], readings[thin]
+    # single-link groups: readings within THIN_LINK sample spacings of each other
+    parent = list(range(len(pts)))
+
+    def root(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    link = THIN_LINK * spacing
+    for a in range(len(pts)):
+        near = np.flatnonzero(np.linalg.norm(pts[a + 1:] - pts[a], axis=1) <= link) + a + 1
+        for b in near:
+            ra, rb = root(a), root(int(b))
+            if ra != rb:
+                parent[max(ra, rb)] = min(ra, rb)
+    groups: dict[int, list[int]] = {}
+    for i in range(len(pts)):
+        groups.setdefault(root(i), []).append(i)
+    out = []
+    for members in groups.values():
+        p, v = pts[members], vals[members]
+        centre = p.mean(axis=0)
+        radius = float(np.max(np.linalg.norm(p - centre, axis=1))) + spacing
+        out.append({"at": centre, "radius": radius, "thickness": float(v.min())})
+    out.sort(key=lambda r: (r["thickness"], tuple(r["at"])))
+    return {"wall": float(rest[at]), "spots": out[:MAX_THIN_SPOTS]}
 
 
 # ---------------------------------------------------------------------- sharp inside corners ----
@@ -610,8 +722,11 @@ def merge_coaxial(arcs: list[Arc]) -> list[Arc]:
     return out
 
 
-def kind_of(arc: Arc) -> tuple[str, str] | None:
-    """(hot-spot type, shape word) for a concave round, None for a convex one."""
+def kind_of(arc: Arc, diag: float | None = None) -> tuple[str, str] | None:
+    """(hot-spot type, shape word) for a concave round, None for a convex one - and None for a
+    gently curved face that is no blend: a "fillet" whose radius is more than FILLET_MAX_SHARE of
+    the part's diagonal (diag, in the surface's unit) is the part's own shape, not a stress raiser
+    (a turbine blade's concave side read "Fillet, radius 205 mm", 22 Oct)."""
     if not arc.concave:
         return None
     if arc.kind == "cylinder" and arc.span_deg >= HOLE_SPAN_DEG:
@@ -619,6 +734,8 @@ def kind_of(arc: Arc) -> tuple[str, str] | None:
     if arc.span_deg >= NOTCH_SPAN_DEG:
         groove = arc.kind == "torus" and arc.around_deg >= HOLE_SPAN_DEG
         return NOTCH, "groove" if groove else "notch"
+    if diag and arc.radius > FILLET_MAX_SHARE * float(diag):
+        return None
     return FILLET, "fillet"
 
 
@@ -730,6 +847,6 @@ def bodies_of(tris: np.ndarray, pairs: EdgePairs) -> int:
 
 
 __all__ = ["FILLET", "HOLE", "HOLE_SPAN_DEG", "MAX_HOT_SPOTS", "NOTCH", "NOTCH_SPAN_DEG", "SHARP_CORNER",
-           "SHARP_TURN_DEG", "SMOOTH_TURN_DEG", "THICKNESS_RAYS", "Arc", "EdgePairs", "Surface",
+           "SHARP_TURN_DEG", "SMOOTH_TURN_DEG", "THICKNESS_RAYS", "VARY_SHARE", "thin_spots", "Arc", "EdgePairs", "Surface",
            "agreed_wall", "bodies_of", "components", "wall_reach", "curved_patches", "edge_pairs", "face_samples", "fit_round", "kind_of", "merge_coaxial", "nesting_depth", "patch_samples",
            "sharp_corners", "smooth_regions", "wall_thickness"]
