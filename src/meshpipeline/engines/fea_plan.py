@@ -148,13 +148,13 @@ def zones(record: Mapping, *, tighten: Mapping[str, float] | None = None) -> lis
                     **({"thickness_m": t * _MM, "wall_elements": STRESS_WALL_ELEMENTS} if t else {})})
 
     face_rows = record.get("faces") or {}
-    for name in sorted(face_rows, key=_face_order):
+    for name in sorted(face_rows, key=_face_sort):
         row = face_rows[name] or {}
         # PLAN-fea-3, THIN ONLY WHERE IT IS THIN: a face thin only in places keeps the wall the rest
         # of it agrees on, and each thin spot is a zone of its own round where its readings are
         t = _f(row.get("thickness_wall_mm")) or _f(row.get("thickness_min_mm"))
         if t is not None:
-            out.append({"id": f"W{_face_order(name)}", "kind": "wall", "faces": [name],
+            out.append({"id": f"W{_face_tag(name)}", "kind": "wall", "faces": [name],
                         "size_m": t / WALL_ELEMENTS * _MM, "reach_m": t * _MM, "rule": "PLAN-fea-3",
                         "thickness_m": t * _MM, "capped": False,
                         "why": f"a {_mm(t)} wall under {name}: {WALL_ELEMENTS} elements through it"})
@@ -162,7 +162,7 @@ def zones(record: Mapping, *, tighten: Mapping[str, float] | None = None) -> lis
             ts, rad = _f(sp.get("thickness_mm")), _f(sp.get("radius_mm"))
             if not ts or rad is None:
                 continue
-            out.append({"id": f"T{_face_order(name)}_{i}", "kind": "wall_spot", "faces": [name],
+            out.append({"id": f"T{_face_tag(name)}_{i}", "kind": "wall_spot", "faces": [name],
                         "size_m": ts / WALL_ELEMENTS * _MM, "reach_m": ts * _MM, "rule": "PLAN-fea-3",
                         "thickness_m": ts * _MM, "capped": False, "radius_m": rad * _MM,
                         "at_m": [float(v) * _MM for v in sp.get("at_mm") or [0.0, 0.0, 0.0]],
@@ -170,7 +170,7 @@ def zones(record: Mapping, *, tighten: Mapping[str, float] | None = None) -> lis
                                 f"{WALL_ELEMENTS} elements through it there")})
         r = _f(row.get("radius_mm"))
         if r is not None and name not in spot_faces:
-            out.append({"id": f"R{_face_order(name)}", "kind": "round", "faces": [name],
+            out.append({"id": f"R{_face_tag(name)}", "kind": "round", "faces": [name],
                         "size_m": QUARTER * r / ROUND_PER_QUARTER * _MM, "reach_m": 0.0,
                         "rule": "PLAN-fea-7", "radius_m": r * _MM, "capped": False,
                         "why": f"a round of radius {_mm(r)} on {name}: {ROUND_PER_QUARTER} elements per quarter-turn"})
@@ -220,6 +220,25 @@ def _face_order(name: str) -> int:
         return int(str(name).rsplit("_", 1)[-1])
     except ValueError:
         return 0
+
+
+def _face_tag(name: str) -> str:
+    """A face zone's id tail: "9" for a single part's Face_9, "2.9" for an assembly's Part_2_Face_9 - every
+    part numbers its faces from 1, so the part is in the id (FEA hunt, 27 Oct: 44 of 46 assembly plans gave two
+    zones one id, and a lever or an AI choice naming "W9" took both parts' walls)."""
+    part = _part_key(name)
+    j = _face_order(name)
+    return f"{part.rsplit('_', 1)[-1]}.{j}" if part else str(j)
+
+
+def _face_sort(name: str) -> tuple[int, int]:
+    """Faces part by part, then by number (a single part's faces are all part 0)."""
+    part = _part_key(name)
+    try:
+        k = int(part.rsplit("_", 1)[-1]) if part else 0
+    except ValueError:
+        k = 0
+    return k, _face_order(name)
 
 
 def _mm(v_mm: float) -> str:
