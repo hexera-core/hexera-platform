@@ -362,14 +362,28 @@ def joined_interfaces(parts: list, fused: Fused, volumes: list[float], *, diag: 
         fuse_itf = pairwise_interfaces(parts, volumes, fuzzy=tol, scale=scale)
     else:
         fuse_itf = interfaces_of(fused, volumes, scale=scale)
-    measured = J.measure(parts, tol=tol, mm_per_unit=mm_per_unit,
-                         budget_s=J.BUDGET_S if budget_s is None else float(budget_s))
-    findings = J.check(fuse_itf, parts, measured, tol=tol, mm_per_unit=mm_per_unit)
+    # NOTHING OPENCASCADE THROWS HERE FAILS THE STAGING: a pair it cannot measure is that pair unmeasured
+    # (the fuse's answer stands there, said); a measurement that fails outright leaves the fuse's answer whole
+    try:
+        measured = J.measure(parts, tol=tol, mm_per_unit=mm_per_unit,
+                             budget_s=J.BUDGET_S if budget_s is None else float(budget_s))
+        findings = J.check(fuse_itf, parts, measured, tol=tol, mm_per_unit=mm_per_unit)
+    except Exception as exc:  # noqa: BLE001 - said as a note; the fuse's answer stands
+        logger.warning("fea assembly: the parts' surfaces could not be measured (%s: %s)", type(exc).__name__, exc)
+        measured = J.Measured(tol=tol, complete=False)
+        measured.unmeasured[(-1, -1)] = f"{type(exc).__name__}: {exc}"[:200]
+        findings = []
     kinds = (J.TOUCHING, J.GAP, J.OVERLAP) if gap_joins else (J.TOUCHING, J.OVERLAP)
     # a touch the fuse missed is an omission, not a wrong answer: the fuse stands, the touch is added
     wrong = [f for f in findings if f["kind"] != "missed"]
     if wrong:
         interfaces = J.interfaces(measured, parts, volumes, scale=scale, kinds=kinds)
+        # a pair the surfaces could not be measured on keeps the fuse's answer
+        keep = [dict(i) for i in fuse_itf
+                if tuple(sorted(int(x.split("_")[1]) - 1 for x in i["parts"])) in measured.unmeasured]
+        for k, itf in enumerate(keep, start=len(interfaces) + 1):
+            itf["id"] = f"Interface_{k}"
+            interfaces.append(itf)
     else:
         said = {tuple(sorted(i["parts"], key=lambda x: int(x.split("_")[1]))) for i in fuse_itf}
         extra = [i for i in J.interfaces(measured, parts, volumes, scale=scale,
@@ -389,7 +403,9 @@ def joined_interfaces(parts: list, fused: Fused, volumes: list[float], *, diag: 
             "added": [i["id"] for i in interfaces if i.get("added")],
             "skins": {part_id(p): [face_name(p, j) for j in js] for p, js in sorted(measured.skins.items())},
             "gaps": [i["id"] for i in interfaces if i.get("kind") == J.GAP],
-            "complete": measured.complete, "seconds": measured.seconds}
+            "complete": measured.complete, "seconds": measured.seconds,
+            "unmeasured": [{"parts": ([part_id(i + 1), part_id(j + 1)] if i >= 0 else []), "why": why}
+                           for (i, j), why in sorted(measured.unmeasured.items())]}
     return interfaces, info
 
 
@@ -397,13 +413,15 @@ def joins_record(info: dict, interfaces: list[dict]) -> dict | None:
     """What the record and the sidecar say of how the joints were found - None when there is nothing
     to say (the fuse stood, no gap was joined, no skin found, the measurement finished), so an
     assembly the new measurement changes nothing on is recorded exactly as before."""
-    if info["trusted"] and not info["gaps"] and not info["skins"] and info["complete"] and not info["findings"]:
+    if info["trusted"] and not info["gaps"] and not info["skins"] and info["complete"] and not info["findings"] \
+            and not info.get("unmeasured"):
         return None
     gap_faces = sorted({f for i in interfaces if i.get("kind") == "gap" for v in (i.get("faces") or {}).values()
                         for f in v}, key=_face_sort)
     return {"found_by": "fuse" if info["trusted"] else "surfaces", "findings": info["findings"],
             "skins": info["skins"], "skin_faces": sorted({f for v in info["skins"].values() for f in v}, key=_face_sort),
             "gaps": info["gaps"], "gap_faces": gap_faces, "added": info.get("added") or [],
+            "unmeasured": info.get("unmeasured") or [],
             "complete": info["complete"],
             "seconds": info["seconds"]}
 
@@ -411,6 +429,14 @@ def joins_record(info: dict, interfaces: list[dict]) -> dict | None:
 def joins_notes(info: dict, interfaces: list[dict], *, unit: str = "mm", scale_to_mm: float = 1.0) -> list[str]:
     """The joints' finding in plain words, for the record and the sidecar."""
     notes = []
+    for u in info.get("unmeasured") or []:
+        why = str(u.get("why") or "").split(":", 1)[0]
+        if u.get("parts"):
+            notes.append(f"Where {u['parts'][0]} and {u['parts'][1]} meet could not be measured on their surfaces "
+                         f"(OpenCASCADE: {why}): the fuse's answer stands for that pair.")
+        else:
+            notes.append(f"The parts' surfaces could not be measured (OpenCASCADE: {why}): where they meet is as "
+                         "the fuse found it.")
     if not info["trusted"]:
         first = info["findings"][0]["words"]
         more = f" ({len(info['findings'])} such answers)" if len(info["findings"]) > 1 else ""
@@ -433,7 +459,7 @@ def joins_notes(info: dict, interfaces: list[dict], *, unit: str = "mm", scale_t
         notes.append(f"{len(gaps)} pair(s) of parts face each other across a small gap and are joined there, as a "
                      f"weld or a thread the CAD does not draw (up to 0.5 mm, less on small parts): {words}"
                      f"{' and more' if len(gaps) > 6 else ''}.")
-    if not info["complete"]:
+    if not info["complete"] and all(u.get("parts") for u in info.get("unmeasured") or []):
         notes.append("The parts' surfaces were not all measured in the time set for it: where they meet is as the "
                      "fuse found it.")
     return notes
@@ -593,6 +619,18 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
         notes.append(f"The parts pass into each other in {n_pieces} places ({n_over} pair(s) of parts), too many to "
                      "mesh as one piece reliably, so each part is meshed on its own and tied where they meet "
                      "(bonded, but their nodes are not shared).")
+    # PLAN-fea-17: PARTS THAT MEET TANGENTIALLY (tangent_meets()): fused, they leave a crack of no angle between
+    # their outer faces that no mesher can fill, so a bonded assembly with one is meshed apart and tied from the
+    # start - never a fused pass that can only fail first (job bf863215, 27 Oct: each bolt's head fillet runs
+    # tangentially onto its washer, and the fused fill failed "PLC Error: A segment and a facet intersect" on
+    # every subset of the parts that held a bolt and its washer)
+    grazed = tangent_meets(fused) if mode == PAIR_BONDED and not fused.error else []
+    if grazed:
+        mode = PAIR_TIE
+        notes.append(f"{_list([' with '.join(part_id(x) for x in pq) for pq in grazed])} meet tangentially - a "
+                     "round of one runs onto the other's face at no angle - and parts fused there leave a crack no "
+                     "mesher can fill, so each part is meshed on its own and tied where they meet (bonded, but "
+                     "their nodes are not shared).")
     if mode == PAIR_BONDED:
         staged = fused.shape
         face_names = [[face_name(p, j) for p, j in o] for o in fused.face_origins]
@@ -692,6 +730,8 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
                "notes": notes, "fuse_seconds": fused.seconds,
                "tie_first": ({"overlap_pieces": n_pieces, "overlap_pairs": n_over, "at": TIE_FIRST_PIECES}
                              if tie_first else None)}
+    if grazed:
+        sidecar["tangent_meets"] = [list(pq) for pq in grazed]   # absent when none: the sidecar is as before
     said = joins_record(info, interfaces)
     if said is not None:
         said["notes"] = joins_notes(info, interfaces, scale_to_mm=mm_per_unit)
@@ -705,6 +745,70 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
         sidecar["skins"] = skins          # MESH-8 (absent when there is none: the sidecar is as before)
     (out / SIDECAR).write_text(json.dumps(sidecar, indent=1))
     return sidecar
+
+
+#: PLAN-fea-17: two parts MEET TANGENTIALLY where an outer face of each meets the other's at an edge of the fuse
+#: with their outward normals within this cosine of opposite (about 5 degrees): a crack of no angle between them.
+TANGENT_COS = -0.996
+
+
+def tangent_meets(fused: Fused) -> list[tuple[int, int]]:
+    """The pairs of parts (Part numbers, sorted) whose outer faces meet tangentially in the fuse: at an edge
+    shared by faces of solids of different parts that bound no other solid, outward normals (at the edge's
+    middle) within TANGENT_COS of opposite. Never raises: what cannot be read is no crack."""
+    try:
+        return _tangent_meets(fused)
+    except Exception:  # noqa: BLE001 - no crack found is the fuse as before
+        return []
+
+
+def _tangent_meets(fused: Fused) -> list[tuple[int, int]]:
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
+    from OCP.BRepLProp import BRepLProp_SLProps
+    from OCP.ShapeAnalysis import ShapeAnalysis_Surface
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_REVERSED
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    emap = _map(fused.shape, TopAbs_EDGE)
+    fmap = _map(fused.shape, TopAbs_FACE)
+    uses: dict[int, list] = {}
+    bounding: dict[int, int] = {}
+    for k, sol in enumerate(solids(fused.shape)):
+        ex = TopExp_Explorer(sol, TopAbs_FACE)
+        while ex.More():
+            f = TopoDS.Face_s(ex.Current())
+            fi = fmap.FindIndex(f)
+            bounding[fi] = bounding.get(fi, 0) + 1
+            e2 = TopExp_Explorer(f, TopAbs_EDGE)
+            while e2.More():
+                uses.setdefault(emap.FindIndex(e2.Current()), []).append((k, fi, f))
+                e2.Next()
+            ex.Next()
+    out: set[tuple[int, int]] = set()
+    for ei, lst in uses.items():
+        outer = [(k, f) for k, fi, f in lst if bounding.get(fi) == 1 and k < len(fused.solid_parts)]
+        if len({tuple(fused.solid_parts[k]) for k, _f in outer}) < 2:
+            continue
+        e = TopoDS.Edge_s(emap.FindKey(ei))
+        if BRep_Tool.Degenerated_s(e):
+            continue
+        c = BRepAdaptor_Curve(e)
+        p = c.Value(0.5 * (c.FirstParameter() + c.LastParameter()))
+        normals = []
+        for k, f in outer:
+            uv = ShapeAnalysis_Surface(BRep_Tool.Surface_s(f)).ValueOfUV(p, 1e-7)
+            pr = BRepLProp_SLProps(BRepAdaptor_Surface(f), uv.X(), uv.Y(), 1, 1e-9)
+            if pr.IsNormalDefined():
+                sign = -1.0 if f.Orientation() == TopAbs_REVERSED else 1.0
+                normals.append((tuple(fused.solid_parts[k]), sign * np.array(pr.Normal().Coord())))
+        for a in range(len(normals)):
+            for b in range(a + 1, len(normals)):
+                pa, pb = normals[a][0], normals[b][0]
+                if pa != pb and len(pa) == 1 and len(pb) == 1 and float(normals[a][1] @ normals[b][1]) < TANGENT_COS:
+                    out.add((min(pa[0], pb[0]), max(pa[0], pb[0])))
+    return sorted(out)
 
 
 def open_skins(solid):
@@ -771,9 +875,11 @@ def rename_record(rec: dict, names: list[str]) -> dict:
     out["hot_spots"] = [{**h, "faces": [nm(f) for f in h.get("faces") or []]} for h in rec.get("hot_spots") or []]
     if isinstance(rec.get("thickness"), dict) and rec["thickness"].get("face"):
         out["thickness"] = {**rec["thickness"], "face": nm(rec["thickness"]["face"])}
-    for key in ("cusps", "micro", "fold_back", "suspects", "coincident"):
+    for key in ("cusps", "micro", "fold_back", "suspects", "coincident", "bores"):
         if rec.get(key):
-            out[key] = [{**c, "faces": [nm(f) for f in c.get("faces") or []]} for c in rec[key]]
+            out[key] = [{**c, "faces": [nm(f) for f in c.get("faces") or []],
+                         **({"outer_faces": [nm(f) for f in c["outer_faces"]]} if c.get("outer_faces") else {})}
+                        for c in rec[key]]
     out["face_names"] = "Part_k_Face_j"
     return out
 

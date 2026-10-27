@@ -141,6 +141,14 @@ class ConfirmIn(BaseModel):
     fea_gap_joins: bool | None = None
     #: SET BY THE SERVER for an FEA assembly with small-gap joints: what the switch decided, in words.
     gap_summary: str = ""
+    #: INS-8: THE LEAK SIZE, in the reading's millimetres, when the check found leaks in the
+    #: surface: every leak up to that wide is closed for the mesh (never in the file). Sent by the
+    #: stage's switch and box; left out, the check's proposal; 0 switches it off. Checked by the
+    #: server, said in the declaration and read into the run from the stored confirmation
+    #: (application/geometry_confirmation.confirmed_leak_closing).
+    close_leaks_mm: float | None = Field(default=None, ge=0)
+    #: SET BY THE SERVER with `close_leaks_mm`: what the switch decided, in words.
+    leaks_summary: str = ""
 
     @field_validator("extents")
     @classmethod
@@ -616,6 +624,12 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
         question = flow_question(_facts.get("inside"), body.openings, _facts.get("surface"))
         if question:
             raise HTTPException(409, question)
+    # THE LEAKS (INS-8): the check's proposal unless the user changed the size or switched it off;
+    # nothing when the check found none, or the fluid flows around the part
+    from meshpipeline.application.geometry_confirmation import leak_closing_answer
+    _leaks = (_stored_check.get("facts") or {}).get("leaks") if body.flow == "internal" and not body.check_mode else None
+    _size, _said = leak_closing_answer(_leaks, body.close_leaks_mm)
+    body = body.model_copy(update={"close_leaks_mm": _size, "leaks_summary": _said})
     if body.input_kind == "solid-assembly" and not body.regions:
         # an assembly's regions are the file's, as the check read them: named in the declaration
         facts = (_read_json(check_object_key(str(session_id), "scout.json")) or {}).get("facts") or {}
