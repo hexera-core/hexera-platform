@@ -77,6 +77,9 @@ class Surface:
     #: Each label's tessellation error in mm (its triangulation's measured deflection from the CAD
     #: surface), or None when unknown (a triangle file).
     defl_mm: np.ndarray | None = None
+    #: The label pairs (a, b), a < b, whose CAD faces share an edge at an acute convex angle (a TAPER, read
+    #: on the exact B-rep), or None when unknown (a triangle file: the triangles' own edges are read).
+    tapers: list[tuple[int, int]] | None = None
 
     def __post_init__(self) -> None:
         a, b, c = (self.xyz[self.tris[:, k]] for k in range(3))
@@ -270,6 +273,12 @@ def wall_reach(s: Surface, origins: np.ndarray, dirs: np.ndarray, labels: np.nda
     # an acute convex edge: the faces' normals turn by more than 180 - TAPER_DEG across it
     acute = (la != lb) & ~pairs.concave & (pairs.turn_deg > 180.0 - TAPER_DEG)
     wedges = np.unique(np.concatenate([la[acute] * m + lb[acute], lb[acute] * m + la[acute]]))
+    if s.tapers:
+        # THE CAD'S OWN TAPERS too (27 Oct): two faces meeting at an acute edge whose triangles the welding did
+        # not join (a coarser tessellation of a whole assembly) are still a taper - a cryostat's cylinder and
+        # the shallow cone it runs into read a 0.0068 mm "wall" that way, 1.3 billion elements
+        t = np.asarray(s.tapers, dtype=np.int64).reshape(-1, 2)
+        wedges = np.unique(np.concatenate([wedges, t[:, 0] * m + t[:, 1], t[:, 1] * m + t[:, 0]]))
     out, lying = _walk(s, rays, origins, dirs, labels, eps=eps, wedges=wedges, m=m)
     if s.defl_mm is None or not len(lying):
         return out
@@ -722,6 +731,41 @@ def merge_coaxial(arcs: list[Arc]) -> list[Arc]:
     return out
 
 
+#: A BORE, NOT A HOLE (PLAN-fea-4, 27 Oct): a concave cylinder that shares its axis with a convex cylinder of
+#: the same part, wider than it, ALL THE WAY ROUND (BORE_OUTER_SPAN_DEG), over at least BORE_OVERLAP of the
+#: hole's own length, and at least BORE_LENGTH_WALLS times as long as the wall between them, is the inside of a
+#: tube, a sleeve or a hollow shaft - the part's main wall, not a hole cut through a wall. A lug's hole beside
+#: its half-round end, an eye, a washer's or a ring's hole - short against their wall - stay holes. The wall rule sizes it (PLAN-fea-3); a stress raiser where something meets or crosses it
+#: is that feature's own zone. A tube's 533 mm bore sized as a hole (3 elements through its 1.2 mm wall along
+#: its whole length) was 2.6M of job bf863215's 3.9M elements; a 0.5 mm-walled cryostat liner's, 158M.
+BORE_OUTER_SPAN_DEG = HOLE_SPAN_DEG
+BORE_OVERLAP = 0.5
+BORE_LENGTH_WALLS = 5.0
+#: the two axes are one within this share of the bore's radius (and to within about 1.5 degrees)
+BORE_AXIS_SHARE = 0.01
+BORE_AXIS_COS = 0.9997
+
+
+def is_bore(hole: Arc, arcs: list[Arc]) -> Arc | None:
+    """The convex cylinder `hole` is the bore of (see BORE_*), or None: it is a hole."""
+    if hole.kind != "cylinder" or not hole.concave or hole.length <= 0:
+        return None
+    for o in arcs:
+        if o is hole or o.kind != "cylinder" or o.concave or o.radius <= hole.radius:
+            continue
+        if o.span_deg < BORE_OUTER_SPAN_DEG or abs(float(o.axis @ hole.axis)) < BORE_AXIS_COS:
+            continue
+        d = o.centre - hole.centre
+        if np.linalg.norm(d - (d @ hole.axis) * hole.axis) > BORE_AXIS_SHARE * hole.radius + 1e-9:
+            continue
+        t = float(d @ hole.axis)
+        lo = max(-0.5 * hole.length, t - 0.5 * o.length)
+        hi = min(0.5 * hole.length, t + 0.5 * o.length)
+        if hi - lo >= BORE_OVERLAP * hole.length and hole.length >= BORE_LENGTH_WALLS * (o.radius - hole.radius):
+            return o
+    return None
+
+
 def kind_of(arc: Arc, diag: float | None = None) -> tuple[str, str] | None:
     """(hot-spot type, shape word) for a concave round, None for a convex one - and None for a
     gently curved face that is no blend: a "fillet" whose radius is more than FILLET_MAX_SHARE of
@@ -846,7 +890,8 @@ def bodies_of(tris: np.ndarray, pairs: EdgePairs) -> int:
     return int(components(len(tris), pairs.tri_a, pairs.tri_b).max() + 1)
 
 
-__all__ = ["FILLET", "HOLE", "HOLE_SPAN_DEG", "MAX_HOT_SPOTS", "NOTCH", "NOTCH_SPAN_DEG", "SHARP_CORNER",
+__all__ = ["BORE_AXIS_COS", "BORE_AXIS_SHARE", "BORE_LENGTH_WALLS", "BORE_OUTER_SPAN_DEG", "BORE_OVERLAP", "is_bore",
+           "FILLET", "HOLE", "HOLE_SPAN_DEG", "MAX_HOT_SPOTS", "NOTCH", "NOTCH_SPAN_DEG", "SHARP_CORNER",
            "SHARP_TURN_DEG", "SMOOTH_TURN_DEG", "THICKNESS_RAYS", "VARY_SHARE", "thin_spots", "Arc", "EdgePairs", "Surface",
            "agreed_wall", "bodies_of", "components", "wall_reach", "curved_patches", "edge_pairs", "face_samples", "fit_round", "kind_of", "merge_coaxial", "nesting_depth", "patch_samples",
            "sharp_corners", "smooth_regions", "wall_thickness"]

@@ -299,7 +299,7 @@ def test_over_the_limit_the_finest_zones_are_coarsened_and_what_is_short_is_name
     record, surface, diag = FD.measure_staged(ws)
     monkeypatch.setattr(FD, "memory_elements", lambda memory_gib=None: 3_000)
     plan = FD.choose_plan(record, surface, diag)
-    assert plan["fits"] and plan["coarsened"]["zone_floor_m"] > 0 and plan["zone_floor_m"] > 0
+    assert plan["fits"] and plan["coarsened"]["zone_floor_m"] > 0 and plan["zone_floors_m"]
     assert plan["resolution_short"] and all(isinstance(w, str) for w in plan["resolution_short"])
     assert any("more than the 3,000-element limit allows" in w for w in plan["words"])
     assert not any(w.startswith("Stopped") for w in plan["words"])
@@ -410,9 +410,66 @@ def test_an_unfinished_histogram_still_counts_what_it_has_not_resolved(tmp_path,
     record, surface, diag = FD.measure_staged(ws)
     full = FD.make_plan(record, surface, diag)
     monkeypatch.setattr(SF, "MAX_CUBES", 20)
+    monkeypatch.setattr(FD, "MAX_CUBES_CEILING", 20)
     cut = FD.make_plan(record, surface, diag)
     assert not cut["histogram_complete"] and cut["estimate"]["elements"] > 0
     assert full["histogram_complete"]
+
+
+def test_a_count_that_ran_out_of_cubes_under_the_limit_is_counted_in_full_and_never_coarsened(tmp_path, monkeypatch):
+    """PLAN-fea-8 (27 Oct): an unfinished count can never say a plan fits, so a plan whose count merely ran
+    out of cubes was coarsened though it fitted (18 corpus plans; job bf863215's bolt fillets meshed at 3
+    elements per quarter-turn instead of 6). Under the limit, it is counted again with more cubes."""
+    from meshpipeline.engines import fea_size_field as SF
+
+    ws = _stage(fx.plate_with_hole(), tmp_path / "recount")
+    record, surface, diag = FD.measure_staged(ws)
+    full = FD.choose_plan(record, surface, diag)
+    monkeypatch.setattr(SF, "MAX_CUBES", 20)
+    again = FD.choose_plan(record, surface, diag)
+    assert again["histogram_complete"] and again["fits"] and not again.get("coarsened")
+    assert again["estimate"] == full["estimate"] and again["zones"] == full["zones"]
+
+
+def _kinds_plan(monkeypatch, need_wall: float, need_fillet: float, limit_share: float):
+    """choose_plan over two zones - a wall and a fillet - whose elements fall as their floors rise (each
+    floor's own factor), against a limit at `limit_share` of the rules' plan."""
+    zones = [{"id": "W1", "kind": "wall", "faces": ["Face_1"], "size_m": 1e-3, "thickness_m": 64e-3},
+             {"id": "H1", "kind": "fillet", "faces": ["Face_2"], "size_m": 1e-3, "radius_m": 1.0}]
+    monkeypatch.setattr(P, "zones", lambda record, tighten=None: [dict(z) for z in zones])
+    monkeypatch.setattr(FD, "_restate", lambda record, plan: plan)
+
+    def fake(record, surface, diag_m, *, levers=None, limit=0, zone_floor_m=None, zone_floors=None, **_k):
+        f = zone_floors or {}
+        wall = need_wall / (f.get("wall", 1e-3) / 1e-3) ** 3
+        fillet = need_fillet / (f.get("fillet", 1e-3) / 1e-3) ** 3
+        est = wall + fillet
+        return {"fits": est <= P.LIMIT_AIM * limit, "estimate": {"elements": int(est)}, "limit": {}, "zones": [],
+                "zone_floors_m": dict(f)}
+
+    monkeypatch.setattr(FD, "make_plan", fake)
+    monkeypatch.setattr(FD, "memory_elements",
+                        lambda memory_gib=None: int(limit_share * (need_wall + need_fillet) / P.LIMIT_AIM))
+    return FD.choose_plan({"faces": {}}, None, 1.0)
+
+
+def test_over_the_limit_the_bulk_is_coarsened_and_the_stress_raisers_keep_their_sizes(monkeypatch):
+    """PLAN-fea-8 (27 Oct): a plan over its limit is coarsened kind by kind - rounds, capped corners, walls -
+    and the fillets, holes and notches keep the sizes their rules ask for while that is enough."""
+    plan = _kinds_plan(monkeypatch, need_wall=900_000, need_fillet=100_000, limit_share=0.5)
+    co = plan["coarsened"]
+    assert "wall" in co["floors_m"] and "fillet" not in co["floors_m"]
+    assert "fillet" in co["kept"] and not co["at_minimums"]
+
+
+def test_the_stress_raisers_are_coarsened_only_when_the_bulk_at_its_minimum_is_not_enough(monkeypatch):
+    """...and when even the walls at their minimum are not enough, the fillets are coarsened as little as it
+    takes - and the walls are then given back as much as still fits."""
+    plan = _kinds_plan(monkeypatch, need_wall=100_000, need_fillet=900_000, limit_share=0.3)
+    co = plan["coarsened"]
+    assert "fillet" in co["floors_m"] and not co["at_minimums"]
+    wall = co["floors_m"].get("wall")
+    assert wall is None or wall < 64e-3, "the walls were given back once the fillets fitted"
 
 
 def test_the_coarsening_search_stops_once_every_zone_is_at_its_minimum(tmp_path, monkeypatch):
@@ -593,15 +650,17 @@ def test_the_floor_search_halves_and_finds_the_floor_one_by_one_would(monkeypatc
     floor-by-floor search found, in far fewer histograms (the caldera planned fourteen, 35 minutes)."""
     zones = [{"id": f"Z{k}", "kind": "hole", "faces": [f"Face_{k}"], "size_m": 1e-6 * 1.5 ** k} for k in range(40)]
     monkeypatch.setattr(P, "zones", lambda record, tighten=None: [dict(z) for z in zones])
-    monkeypatch.setattr(P, "floored", lambda zl, f, through=None: [{**z, "size_m": max(z["size_m"], f)} for z in zl])
+    monkeypatch.setattr(P, "floored", lambda zl, f, through=None, kinds=None: [
+        {**z, "size_m": max(z["size_m"], f)} if kinds is None or z["kind"] in kinds else dict(z) for z in zl])
     monkeypatch.setattr(FD, "_restate", lambda record, plan: plan)
     floors = [1e-6 * 2 ** (k + 1) for k in range(FD.FLOOR_STEPS)]       # what the one-by-one search walks
     first = floors[fits_from] if fits_from is not None else None
     calls = []
 
-    def fake(record, surface, diag_m, *, levers=None, limit=0, zone_floor_m=None, **_k):
-        calls.append(zone_floor_m)
-        ok = zone_floor_m is not None and first is not None and zone_floor_m >= first * (1 - 1e-9)
+    def fake(record, surface, diag_m, *, levers=None, limit=0, zone_floor_m=None, zone_floors=None, **_k):
+        f = (zone_floors or {}).get("hole", zone_floor_m)
+        calls.append(f)
+        ok = f is not None and first is not None and f >= first * (1 - 1e-9)
         return {"fits": ok, "estimate": {"elements": 10 if ok else 10**9}, "limit": {}}
 
     monkeypatch.setattr(FD, "make_plan", fake)

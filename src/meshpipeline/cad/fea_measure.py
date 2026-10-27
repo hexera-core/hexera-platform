@@ -104,6 +104,8 @@ def measure_cad_surface(shape, *, mm_per_unit: float,
                      max_ray_triangles=max_ray_triangles, curvature=curvature)
     record["cusps"] = cad_cusps(shape, float(mm_per_unit))
     record["micro"] = cad_micro(shape, float(mm_per_unit), diag_mm=float(surface.diag))
+    # PLAN-fea-12: the rounds under the measure floor are micro details too, named (no places to set aside)
+    record["micro"] += [{**m, "points_mm": []} for m in record.pop("sub_floor", [])]
     # FOLD-BACK EDGES (cad/fold_back.py): two faces lying on each other along an edge - detected only
     from meshpipeline.cad.fold_back import fold_back_edges
     folds = fold_back_edges(shape, mm_per_unit=float(mm_per_unit))
@@ -306,8 +308,55 @@ def _brep_surface(shape, mm: float):
     # body, and never thinner than the model itself is sure of (cad/fea_features.wall_reach)
     tol = np.array([BRep_Tool.Tolerance_s(f) for f in faces], dtype=float) * mm
     surface = ff.Surface(xyz=xyz, tris=tris[keep], label=label[keep], names=names,
-                         body=_face_bodies(shape, fmap), tol_mm=tol, defl_mm=defl)
+                         body=_face_bodies(shape, fmap), tol_mm=tol, defl_mm=defl, tapers=_brep_tapers(shape, fmap))
     return surface, faces, kinds
+
+
+def _brep_tapers(shape, fmap) -> list[tuple[int, int]]:
+    """The face pairs (0-based, fmap order, a < b) that share a CAD edge at an ACUTE angle: their outward
+    normals at the edge's middle turn by more than 180 - TAPER_DEG (cad/fea_features.TAPER_DEG). Never
+    raises: an edge that cannot be read is no taper."""
+    import math
+
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
+    from OCP.BRepLProp import BRepLProp_SLProps
+    from OCP.ShapeAnalysis import ShapeAnalysis_Surface
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_REVERSED
+    from OCP.TopExp import TopExp
+    from OCP.TopoDS import TopoDS
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+
+    out: set[tuple[int, int]] = set()
+    limit = math.cos(math.radians(180.0 - ff.TAPER_DEG))
+    try:
+        e2f = TopTools_IndexedDataMapOfShapeListOfShape()
+        TopExp.MapShapesAndAncestors_s(shape, TopAbs_EDGE, TopAbs_FACE, e2f)
+        for i in range(1, e2f.Extent() + 1):
+            faces = list(e2f.FindFromIndex(i))
+            ks = sorted({fmap.FindIndex(f) - 1 for f in faces})
+            if len(ks) != 2 or min(ks) < 0:
+                continue
+            e = TopoDS.Edge_s(e2f.FindKey(i))
+            if BRep_Tool.Degenerated_s(e):
+                continue
+            c = BRepAdaptor_Curve(e)
+            p = c.Value(0.5 * (c.FirstParameter() + c.LastParameter()))
+            ns = []
+            for k in ks:
+                f = TopoDS.Face_s(fmap.FindKey(k + 1))
+                uv = ShapeAnalysis_Surface(BRep_Tool.Surface_s(f)).ValueOfUV(p, 1e-9)
+                pr = BRepLProp_SLProps(BRepAdaptor_Surface(f), uv.X(), uv.Y(), 1, 1e-9)
+                if not pr.IsNormalDefined():
+                    break
+                n = pr.Normal()
+                sign = -1.0 if f.Orientation() == TopAbs_REVERSED else 1.0
+                ns.append((sign * n.X(), sign * n.Y(), sign * n.Z()))
+            if len(ns) == 2 and sum(a * b for a, b in zip(ns[0], ns[1], strict=True)) < limit:
+                out.add((ks[0], ks[1]))
+    except Exception:  # noqa: BLE001 - the triangles' own tapers stand
+        return sorted(out)
+    return sorted(out)
 
 
 def _face_bodies(shape, fmap) -> np.ndarray:
@@ -531,6 +580,9 @@ def _record(s: ff.Surface, arcs: list[ff.Arc], *, bodies: int, basis: str, kinds
     # it bends, so a plan can give a convex round enough elements to keep its shape
     round_of = {next(iter(a.labels)): a for a in arcs if len(a.labels) == 1}
     faces = {}
+    # PLAN-fea-12: the rounds under the measure's own floor (cad/fea_features.FLOOR_FRACTION of the part)
+    floor_mm = ff.FLOOR_FRACTION * float(s.diag)
+    sub_floor: list[dict] = []
     for k, name in enumerate(s.names):
         idx = np.flatnonzero(s.label == k)
         if not len(idx):
@@ -538,7 +590,10 @@ def _record(s: ff.Surface, arcs: list[ff.Arc], *, bodies: int, basis: str, kinds
         area = float(s.areas[idx].sum())
         row = {"kind": (kinds[k] if kinds else "region"), "area_mm2": _r(area),
                "centroid_mm": _pt(np.average(s.centroids[idx], axis=0, weights=np.maximum(s.areas[idx], 1e-300)))}
-        if k in round_of:
+        if k in round_of and round_of[k].radius < floor_mm:
+            # PLAN-fea-12: a round under the measure's own floor is a micro detail, never a zone (below)
+            sub_floor.append({"kind": "round", "size_mm": _r(round_of[k].radius), "faces": [name]})
+        elif k in round_of:
             row["radius_mm"] = _r(round_of[k].radius)
             row["concave"] = bool(round_of[k].concave)
         elif curvature and k in curvature and curvature[k] <= ROUND_CAP_SHARE * float(s.diag):
@@ -567,11 +622,28 @@ def _record(s: ff.Surface, arcs: list[ff.Arc], *, bodies: int, basis: str, kinds
         return _r(min(vals)) if vals else None
 
     spots: list[dict] = []
-    for arc in ff.merge_coaxial(arcs):
+    bores: list[dict] = []
+    merged = ff.merge_coaxial(arcs)
+    for arc in merged:
         kind = ff.kind_of(arc, s.diag)
         if kind is None:
             continue
         t, shape = kind
+        if arc.radius < floor_mm:
+            # PLAN-fea-12, UNDER THE MEASURE'S OWN FLOOR (27 Oct): a round whose radius is less than the floor the
+            # wall readings themselves stop at (FLOOR_FRACTION of the part) is no feature the plan can hold - a
+            # kart frame's 0.0016 mm "fillets" on a 600 mm tube asked for 0.4 um elements - so it is a micro
+            # detail: set aside and named, never a hot spot
+            sub_floor.append({"kind": t, "size_mm": _r(arc.radius), "faces": [s.names[k] for k in sorted(arc.labels)]})
+            continue
+        outer = ff.is_bore(arc, merged) if t == ff.HOLE else None
+        if outer is not None:
+            # PLAN-fea-4: A BORE IS THE PART'S MAIN WALL, NOT A HOLE (ff.BORE_*): no hot spot - the wall rule
+            # sizes it - and it is named
+            bores.append({"faces": [s.names[k] for k in sorted(arc.labels)], "radius_mm": _r(arc.radius),
+                          "length_mm": _r(arc.length), "outer_radius_mm": _r(outer.radius),
+                          "outer_faces": [s.names[k] for k in sorted(outer.labels)]})
+            continue
         spot = {"type": t, "shape": SHAPE_WORDS[shape], "radius_mm": _r(arc.radius),
                 "span_deg": _r(arc.span_deg), "faces": [s.names[k] for k in sorted(arc.labels)],
                 "axis": _pt(arc.axis), "basis": arc.basis, "capped": False}
@@ -611,10 +683,17 @@ def _record(s: ff.Surface, arcs: list[ff.Arc], *, bodies: int, basis: str, kinds
     if basis == "triangles":
         notes.append("A triangle file has no CAD faces: its smooth regions (Region_k) are measured, "
                      "and its radii are fitted to the triangles.")
-    out = {"version": VERSION, "basis": basis, "unit": "mm", "bodies": int(bodies),
+    if bores:
+        notes.append(f"{len(bores)} bore(s) - the inside of a tube, sleeve or ring, sharing its axis with the "
+                     "outside - are the part's own wall, sized by the wall rule, not stress-raising holes.")
+    out = {"version": VERSION, "basis": basis, "unit": "mm", "bodies": int(bodies), "diag_mm": _r(s.diag),
            "face_names": "Face_k" if basis == "cad" else "Region_k", "faces": faces,
            "thickness": thickness, "hot_spots": spots, "counts": counts, "complete": complete,
            "notes": notes, "seconds": round(time.time() - started, 2)}
+    if bores:
+        out["bores"] = bores
+    if sub_floor:
+        out["sub_floor"] = sub_floor
     if thick.get("lying"):
         # PLAN-fea-3: FACES OF ONE BODY LYING ON EACH OTHER (a zero-thickness skin or membrane), read through
         # rather than taken for a wall - named, so the plan and the delivery can say where

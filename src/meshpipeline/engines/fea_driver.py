@@ -340,31 +340,59 @@ def restage_tied(ws: Path, record: dict) -> dict:
     return record
 
 
-def _histogram(surface, zone_list: list[dict], levers: list[dict], diag_m: float):
-    from meshpipeline.engines.fea_size_field import SizeField
+#: PLAN-fea-8: A COUNT THAT RAN OUT OF CUBES while still under the limit is counted again with four times the
+#: cubes, up to this many; still short there, its floor under the limit is taken as fitting (engines/fea_plan.
+#: finish: a plan short of its machine steps up when it runs, RUN-3). A plan that fits is never coarsened for a
+#: count that merely stopped short (the corpus sweep of 27 Oct: 18 plans coarsened so; job
+#: bf863215's 6.19M-element plan cut to 3.83M with its bolt fillets at 3 elements per quarter-turn, not 6).
+MAX_CUBES_CEILING = 12_000_000
 
-    field = SizeField(surface, zone_list, growth=L.growth(levers), scale_to_m=1e-3)
-    return field.histogram(coarsest=diag_m / P.MIN_DIVISIONS, per_h3=P.PER_H3, stop_elements=STOP_ELEMENTS)
+
+def _histogram(surface, zone_list: list[dict], levers: list[dict], diag_m: float, *, limit: float | None = None,
+               recount: bool = True):
+    """The zones' volume histogram (engines/fea_size_field). With `limit`, it is counted to 1.5 times it
+    (never less than STOP_ELEMENTS), and a count that ran out of cubes under the limit is counted again
+    with more (MAX_CUBES_CEILING)."""
+    from meshpipeline.engines import fea_size_field as SF
+
+    field = SF.SizeField(surface, zone_list, growth=L.growth(levers), scale_to_m=1e-3)
+    coarsest = diag_m / P.MIN_DIVISIONS
+    stop = STOP_ELEMENTS if limit is None else max(STOP_ELEMENTS, 1.5 * float(limit))
+    cubes = SF.MAX_CUBES
+    while True:
+        hist = field.histogram(coarsest=coarsest, per_h3=P.PER_H3, stop_elements=stop, max_cubes=cubes)
+        if hist.complete or hist.stopped != "cubes" or limit is None or not recount or cubes >= MAX_CUBES_CEILING:
+            return hist
+        if P.elements(hist, coarsest, P.PER_H3) > P.LIMIT_AIM * float(limit):
+            return hist                     # past the limit already: counting further changes nothing
+        cubes = min(MAX_CUBES_CEILING, 4 * cubes)
 
 
 def make_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | None = None,
               limit: int = P.ELEMENT_LIMIT, zone_floor_m: float | None = None, hist=None,
-              through: float | None = None, ai: dict | None = None) -> dict:
+              through: float | None = None, ai: dict | None = None,
+              zone_floors: dict[str, float] | None = None, recount: bool = True) -> dict:
     """The plan for this part, with the ladder's levers applied: the zones the rules ask for, the
     coarsest base the part allows, the estimate against `limit`. `zone_floor_m`: PLAN-fea-8's
     coarsening (the finest zones floored, never past their validity minimums); `hist`: the zones'
     histogram when the caller already has it; `ai`: the AI's checked decision (engines/fea_ai), made
-    exact by the rules before any coarsening."""
+    exact by the rules before any coarsening. `zone_floors`: PLAN-fea-8's coarsening kind by kind (zone
+    kind -> floor), the low-stress zones first (COARSEN_ORDER)."""
     levers = list(levers or [])
     zone_list, applied = FA.apply_zones(P.zones(record, tighten=L.tightened(levers)), _used(ai), record,
                                         diag_m=diag_m)
+    for kind, f in sorted((zone_floors or {}).items()):
+        zone_list = P.floored(zone_list, float(f), through or P.KEEP_THROUGH, kinds=(kind,))
     if zone_floor_m:
         zone_list = P.floored(zone_list, float(zone_floor_m), through or P.KEEP_THROUGH)
     if hist is None:
-        hist = _histogram(surface, zone_list, levers, diag_m)
+        hist = _histogram(surface, zone_list, levers, diag_m, limit=limit, recount=recount)
     plan = P.finish(record, zone_list, hist, diag_m=diag_m, limit=limit, levers=levers, growth=L.growth(levers))
+    if zone_floors:
+        plan["zone_floors_m"] = {k: float(v) for k, v in sorted(zone_floors.items())}
     if zone_floor_m:
         plan["zone_floor_m"] = float(zone_floor_m)
+    if zone_floor_m or zone_floors:
         plan["resolution_short"] = P.shortfalls(zone_list)
     plan["mesh"] = L.mesh_settings(levers)
     if ai:
@@ -388,6 +416,62 @@ def make_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | None
 #: PLAN-fea-8's coarsening search: the zone floor doubles from the finest zone this many times at
 #: most, then one step back where that still fits.
 FLOOR_STEPS = 14
+#: PLAN-fea-8: THE ORDER A PLAN OVER ITS LIMIT IS COARSENED IN, kind by kind - the low-stress bulk first,
+#: the stress raisers last (27 Oct): rounds (sized for their shape only), capped sharp corners (their
+#: stress never settles), walls and the parts' own sizes, then holes, fillets and notches.
+COARSEN_ORDER: tuple[tuple[str, ...], ...] = (("round",), ("corner",), ("wall", "wall_spot", "part"),
+                                              ("hole", "fillet", "notch"))
+
+
+def _coarsen_group(record: dict, surface, diag_m: float, *, levers: list[dict], limit: int, ai, group,
+                   zone_list: list[dict], floors_done: dict[str, float]):
+    """One step of PLAN-fea-8's coarsening: the first floor for `group`'s zones (the others as `floors_done`
+    already floors them) under which the plan fits, found by halving the list of floors - each twice the
+    last, from the group's finest zone, while it still changes a zone's size - then one step back where
+    that still fits. Returns (the plan, the floors now in force, whether it fits), or None when no floor
+    changes the group."""
+    def floors_with(f: float) -> dict[str, float]:
+        return {**floors_done, **dict.fromkeys(group, f)}
+
+    base = [dict(z) for z in zone_list]
+    for kind, f in sorted(floors_done.items()):
+        base = P.floored(base, f, kinds=(kind,))
+    floor = min(float(z["size_m"]) for z in base if z["kind"] in group)
+    floors: list[float] = []
+    last: list[float] | None = None
+    for _ in range(FLOOR_STEPS):
+        floor *= 2.0
+        sizes = [float(z["size_m"]) for z in P.floored(base, floor, kinds=group)]
+        if sizes == last:
+            break
+        last = sizes
+        floors.append(floor)
+    if not floors:
+        return None
+    tried: dict[int, dict] = {}
+
+    def at(k: int) -> dict:
+        if k not in tried:
+            tried[k] = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai, recount=False,
+                                 zone_floors=floors_with(floors[k]))
+        return tried[k]
+
+    if not at(len(floors) - 1)["fits"]:
+        # this kind at its validity minimums is not enough: kept there, and the next kind is coarsened
+        return at(len(floors) - 1), floors_with(floors[-1]), False
+    lo, hi = 0, len(floors) - 1                       # floors[hi] fits; find the first that does
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if at(mid)["fits"]:
+            hi = mid
+        else:
+            lo = mid + 1
+    best, f = at(hi), floors[hi]
+    finer = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai, zone_floors=floors_with(0.75 * f),
+                      recount=False)
+    if finer["fits"]:
+        best, f = finer, 0.75 * f
+    return best, floors_with(f), True
 
 
 def complexity(record: dict) -> str:
@@ -495,55 +579,57 @@ def choose_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | No
         return _restate(record, plan)
     needed = int(plan["estimate"]["elements"])
     said = f"about {needed:,} elements" if plan.get("histogram_complete", True) else f"more than {needed:,} elements"
-    floor = min([float(z["size_m"]) for z in zone_list] or [diag_m / P.MIN_DIVISIONS])
-    # THE FLOORS TO TRY, each twice the last, while it still changes a zone's size (every zone the
-    # floor reaches already at its validity minimum: a coarser floor changes nothing - fea0221 planned
-    # fourteen identical histograms, 330 s, before its first pass). Working them out costs nothing;
-    # each PLAN costs a histogram.
-    floors: list[float] = []
-    last: list[float] | None = None
-    for _ in range(FLOOR_STEPS):
-        floor *= 2.0
-        sizes = [float(z["size_m"]) for z in P.floored(zone_list, floor)]
-        if sizes == last:
-            break
-        last = sizes
-        floors.append(floor)
-    # THE FIRST FLOOR THAT FITS, found by halving the list (the caldera planned fourteen histograms,
-    # 35 minutes, one floor after another): a coarser floor never makes more elements, so the first
-    # that fits is the one the floor-by-floor search found - the coarsest is tried first, and when even
-    # it does not fit the zones are at their minimums after ONE histogram
-    tried: dict[int, dict] = {}
-
-    def at(k: int) -> dict:
-        if k not in tried:
-            tried[k] = make_plan(record, surface, diag_m, levers=levers, limit=limit, zone_floor_m=floors[k], ai=ai)
-        return tried[k]
-
+    # PLAN-fea-8, THE LOW-STRESS BULK FIRST (27 Oct): the zones are coarsened kind by kind in COARSEN_ORDER -
+    # rounds kept only for their shape, then the capped corners (whose stress never settles), then the walls
+    # and the parts' own sizes - and each kind only as far as it must; the stress raisers (fillets, holes,
+    # notches) only when everything before them is at its validity minimum and the plan is still over
+    floors_done: dict[str, float] = {}
     best = plan
-    if floors and at(len(floors) - 1)["fits"]:
-        lo, hi = 0, len(floors) - 1                       # floors[hi] fits; find the first that does
-        while lo < hi:
-            mid = (lo + hi) // 2
-            if at(mid)["fits"]:
-                hi = mid
-            else:
-                lo = mid + 1
-        best, floor = at(hi), floors[hi]
-    elif floors:
-        best = at(len(floors) - 1)
-    at_minimums = not best["fits"]
+    fitted = False
+    kept: list[str] = []
+    for n_group, group in enumerate(COARSEN_ORDER):
+        sel = [z for z in zone_list if z["kind"] in group]
+        if not sel:
+            continue
+        found = _coarsen_group(record, surface, diag_m, levers=levers, limit=limit, ai=ai, group=group,
+                               zone_list=zone_list, floors_done=floors_done)
+        if found is None:
+            continue
+        best, floors_done, fitted = found
+        if fitted:
+            kept = sorted({k for g in COARSEN_ORDER[n_group + 1:] for k in g
+                           if any(z["kind"] == k for z in zone_list)})
+            # GIVE BACK: the kinds coarsened to their minimums before this one fitted are refined again as
+            # far as the plan still fits, the latest first (the stress raisers' floor, once found, stands)
+            for back in reversed(COARSEN_ORDER[:n_group]):
+                if not any(k in floors_done for k in back):
+                    continue
+                others = {k: v for k, v in floors_done.items() if k not in back}
+                whole = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai, zone_floors=others,
+                                  recount=False)
+                if whole["fits"]:
+                    best, floors_done = whole, others          # this kind needs no coarsening at all
+                    continue
+                again = _coarsen_group(record, surface, diag_m, levers=levers, limit=limit, ai=ai, group=back,
+                                       zone_list=zone_list, floors_done=others)
+                if again is not None and again[2]:
+                    best, floors_done = again[0], again[1]
+            break
+    at_minimums = not fitted and not best["fits"]
     if at_minimums:
         # EVEN AT THEIR VALIDITY MINIMUMS the zones need more than the limit: meshed so anyway - the
         # least resolution that keeps every element valid - and said
         best["fits"] = True
-    else:
-        # one step back: a floor a quarter lower still fits? then it gives back resolution
-        finer = make_plan(record, surface, diag_m, levers=levers, limit=limit, zone_floor_m=0.75 * floor, ai=ai)
-        if finer["fits"]:
-            best, floor = finer, 0.75 * floor
+    floor = max(floors_done.values()) if floors_done else 0.0
+    if floors_done and not best.get("histogram_complete", True):
+        # THE CHOSEN PLAN, COUNTED IN FULL ONCE (the search compared the candidates on the plain count)
+        fits = best["fits"]
+        best = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai, zone_floors=floors_done)
+        best["fits"] = best["fits"] or fits or at_minimums
     best["limit"].update(why=why, memory=limit_facts())
     best["coarsened"] = {"needed": needed, "needed_words": said, "zone_floor_m": floor, "at_minimums": at_minimums,
+                         # what was coarsened, kind by kind, and what kept the sizes its rules ask for
+                         "floors_m": {k: float(v) for k, v in sorted(floors_done.items())}, "kept": kept,
                          # PLAN-fea-16: even the least valid mesh may not fit in the job's memory - meshed anyway
                          # past even the largest machine allowed: meshed anyway, said (RUN-2)
                          "over_memory": bool(at_minimums and int(best["estimate"]["elements"])
@@ -1117,7 +1203,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                 plan = await asyncio.to_thread(choose_plan, record, surface, diag_m, levers=levers,
                                                ceiling_s=ceiling_for(run), ai=ai)
                 chosen = {"limit": plan["limit"], "zone_floor_m": plan.get("zone_floor_m"),
-                          "coarsened": plan.get("coarsened")}
+                          "zone_floors": plan.get("zone_floors_m"), "coarsened": plan.get("coarsened")}
                 first_plan = plan
                 # every later pass plans with the decision the first one kept (refinements left out
                 # when they would not fit stay out)
@@ -1131,7 +1217,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                     start = floor_m or min([float(z["size_m"]) for z in P.zones(record)] or [diag_m / P.MIN_DIVISIONS])
                     floor_m = start / L.coarse_factor(levers)
                 plan = await asyncio.to_thread(make_plan, record, surface, diag_m, levers=levers,
-                                               limit=int(chosen["limit"]["elements"]), zone_floor_m=floor_m, ai=ai)
+                                               limit=int(chosen["limit"]["elements"]), zone_floor_m=floor_m, ai=ai,
+                                               zone_floors=chosen.get("zone_floors"))
                 plan["limit"] = chosen["limit"]
                 if chosen.get("coarsened"):
                     plan["coarsened"] = chosen["coarsened"]
