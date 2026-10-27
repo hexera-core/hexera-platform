@@ -204,7 +204,7 @@ def stage_internal(source_path, workspace, *, prepared, intake_patches: list | N
 
 
 def stage_internal_surface(surface_path, out_dir, *, intake_patches: list | None = None,
-                           input_kind: str = "") -> dict:
+                           input_kind: str = "", close_leaks: float | None = None) -> dict:
     """Stage a metre triangle surface for internal flow and write it into `out_dir`.
 
     Returns the record the CAD path (tessellate_internal) returns, so every engine reads one shape:
@@ -218,8 +218,13 @@ def stage_internal_surface(surface_path, out_dir, *, intake_patches: list | None
       facts           the checks: closed, manifold, consistently wound, lids that cross nothing,
                       one patch per opening
     Port names are the declared ones; with no declaration the openings the measuring step proposes
-    are taken, the largest called inlet and the rest outlet (outlet_1, outlet_2, ...)."""
+    are taken, the largest called inlet and the rest outlet (outlet_1, outlet_2, ...).
+    `close_leaks` (metres): the leak size the user confirmed (INS-8); None reads it from the
+    workspace beside the surface (engines/workspace_facts.read_leak_closing), where the run wrote it."""
     from meshpipeline.cad.scout_mesh import read_triangles
+    if close_leaks is None:
+        from meshpipeline.engines.workspace_facts import read_leak_closing
+        close_leaks = read_leak_closing(Path(surface_path).parent) or None
     tris = read_triangles(Path(surface_path))
     if str(input_kind or "").strip() != "fluid-domain":
         # AN ASSEMBLY IN ONE TRIANGLE FILE (several closed parts): the fluid is the space inside
@@ -232,15 +237,19 @@ def stage_internal_surface(surface_path, out_dir, *, intake_patches: list | None
             if staged_fv is not None:
                 return staged_fv
     staged = stage_triangles(tris, intake_patches=intake_patches, input_kind=input_kind,
-                             surface_path=Path(surface_path))
+                             surface_path=Path(surface_path), close_leaks=close_leaks or None)
     return write_staged(staged, Path(out_dir))
 
 
 def stage_triangles(tris, *, intake_patches: list | None = None, input_kind: str = "",
-                    surface_path: Path | None = None, leak_check: bool = True) -> StagedInternal:
+                    surface_path: Path | None = None, leak_check: bool = True,
+                    close_leaks: float | None = None) -> StagedInternal:
     """The staging itself (see stage_internal_surface). `leak_check=False` skips the flood leak
     test (INS-5) for a caller that only reads the staging's answer - the check's vetting of its
     proposal, the passage count an engine is ranked by - never for a surface that is meshed.
+    `close_leaks` (metres) closes every leak of the surface up to that wide, as the user confirmed
+    it on the stage (INS-8): the map is read with them closed, and a leak no seal closes gets a
+    cover in the wall. None or 0: the surface as drawn, exactly as before.
 
     THE MAP NEVER MAKES A STAGING FAIL THAT WOULD STAND WITHOUT IT (INS-5): when the map's own
     seals, seed or fluid side leave the boundary unclosable, the same openings are staged once more
@@ -249,7 +258,8 @@ def stage_triangles(tris, *, intake_patches: list | None = None, input_kind: str
     ran: dict = {}
     try:
         return _stage_triangles(tris, intake_patches=intake_patches, input_kind=input_kind,
-                                surface_path=surface_path, leak_check=leak_check, use_map=True, ran=ran)
+                                surface_path=surface_path, leak_check=leak_check, use_map=True, ran=ran,
+                                close_leaks=close_leaks)
     except InternalSurfaceError as first:
         from meshpipeline.engines.port_binding import BindError
         if not ran.get("map"):
@@ -269,7 +279,8 @@ def stage_triangles(tris, *, intake_patches: list | None = None, input_kind: str
 
 
 def _stage_triangles(tris, *, intake_patches: list | None, input_kind: str, surface_path: Path | None,
-                     leak_check: bool, use_map: bool, ran: dict | None = None) -> StagedInternal:
+                     leak_check: bool, use_map: bool, ran: dict | None = None,
+                     close_leaks: float | None = None) -> StagedInternal:
     from meshpipeline.cad.open_ends import _Mesh, skin_faces
 
     tris = np.asarray(tris, dtype=np.float64).reshape(-1, 3, 3)
@@ -291,6 +302,16 @@ def _stage_triangles(tris, *, intake_patches: list | None, input_kind: str, surf
     # that IS the fluid has its openings on its faces, not at mouths.
     from meshpipeline.cad.open_ends import inside_map
     imap = inside_map(mesh) if use_map else None
+    closing = None
+    if use_map and close_leaks and not fluid_body:
+        # INS-8: THE LEAKS CLOSED UP TO THE USER'S SIZE - the map read with every gap up to that
+        # wide closed, when the map as drawn finds no way through (a map that already finds it
+        # has no leak in the way, and is the one read)
+        from meshpipeline.cad.inside_space import read_inside_or_none
+        if imap is None or not imap.has_inside():
+            closing = read_inside_or_none(mesh, close_up_to=float(close_leaks))
+            if closing is not None and closing.has_inside():
+                imap = closing
     if ran is not None:
         ran["map"] = imap is not None
     mouths = [] if (imap is None or fluid_body) else _map_mouths(mesh, imap, {o.key() for o in [*rims, *bores]})
@@ -418,6 +439,19 @@ def _stage_triangles(tris, *, intake_patches: list | None, input_kind: str, surf
         leak, tested = leak_test(V, F, seed, cells=LEAK_CELLS) if leak_check else (None, {"skipped": True})
     except Exception as exc:  # noqa: BLE001 - a test that cannot run is recorded, never a verdict
         leak, tested = None, {"error": f"{type(exc).__name__}: {exc}"[:200]}
+    if close_leaks and not fluid_body:
+        # INS-8: THE LEAKS UP TO THE CONFIRMED SIZE, CLOSED FOR THE MESH. The seals on the surface's
+        # own loops close a pinhole's rim; a leak the flood still finds a way through gets a cover
+        V, F, L, is_lid, covered = _close_leaks(mesh, imap if imap is closing else None, float(close_leaks),
+                                                V, F, L, is_lid, wall, [*lidded, *caps], cover=leak is not None)
+        decisions.append(covered.pop("decision"))
+        if covered.get("cover_triangles"):
+            facts.update(_verify(V, F, L, list(matched), wall, is_lid=is_lid))
+            try:
+                leak, tested = leak_test(V, F, seed, cells=LEAK_CELLS)
+            except Exception as exc:  # noqa: BLE001 - recorded, never a verdict
+                leak, tested = None, {"error": f"{type(exc).__name__}: {exc}"[:200]}
+        facts["leaks_closed"] = covered
     leak_facts: dict[str, object] = dict(tested)
     if leak is not None:
         leak_facts["leak_mm"] = [round(float(v) * 1000.0, 2) for v in leak.point]
@@ -457,10 +491,65 @@ def _stage_triangles(tris, *, intake_patches: list | None, input_kind: str, surf
             f"about ({leak.point[0] * 1000:.1f}, {leak.point[1] * 1000:.1f}, {leak.point[2] * 1000:.1f}) mm"
             + (f", through a gap about {leak.width * 1000:.2g} mm wide" if math.isfinite(leak.width) else "")
             + ". If an opening is there, it is not closed: add it on the picture (or mark it as not an opening), then "
-            "run again. If no opening is there, the surface has a gap: this needs CAD repair.")
+            "run again. If no opening is there, the surface has a gap: "
+            + (f"leaks up to {float(close_leaks) * 1000:.3g} mm were closed and this one is wider - raise the leak "
+               "size on the picture, or this needs CAD repair." if close_leaks else "this needs CAD repair."))
     facts["decisions"] = decisions
     return StagedInternal(verts=V, faces=F, labels=L.tolist(), ports=matched, wall=wall, seed=seed,
                           facts=facts)
+
+
+def _close_leaks(mesh, closing, up_to: float, V, F, L, is_lid, wall: str, openings: list[_Opening], *,
+                 cover: bool = True):
+    """INS-8: every leak the map closed up to `up_to` (metres) is closed in the staged boundary too.
+    A leak at a loop the staging lids anyway (a pinhole's rim, sealed into the wall) or at a
+    confirmed opening is the seal's or the opening's; when the flood still gets out (`cover`), every
+    other leak gets a COVER in the wall - triangles across the gap where the passage meets it, its
+    rim laid on the surface. Never the customer's file: the boundary the mesher reads. Returns the
+    boundary and what was done, with the decision for the record."""
+    from meshpipeline.cad.inside_space import leak_covers
+    done: dict = {"rule": "INS-8", "up_to_mm": round(up_to * 1000.0, 4)}
+    if closing is None or not closing.leaks:
+        done.update(found=0, covered=0, sealed=0)
+        done["decision"] = {
+            "stage": "fluid_region", "decided": "leaks closed", "value": 0, "rule": "INS-8",
+            "inputs": {"up_to_mm": done["up_to_mm"]},
+            "words": f"leaks up to {up_to * 1000:.3g} mm were to be closed; the map as drawn already closes the "
+                     "fluid in (or no closing up to that size finds it), so nothing was added."}
+        return V, F, L, is_lid, done
+    h = closing.h
+    claimed: list = []
+    to_cover: list = []
+    for s in closing.leaks:
+        at = any(closing.leak_distance(s, o.centroid)
+                 <= 0.5 * max(o.size if o.loop is not None else o.diameter, 0.0) + 2.0 * h for o in openings)
+        (claimed if at else to_cover).append(s)
+    if not cover:
+        # the seals on the surface's own loops hold the fluid: nothing more is added
+        claimed, to_cover = [*claimed, *to_cover], []
+    cover_spots = to_cover
+    T = leak_covers(closing, mesh.verts, mesh.faces, spots=cover_spots) if cover_spots else np.zeros((0, 3, 3))
+    if len(T):
+        n0 = len(V)
+        V = np.vstack([V, T.reshape(-1, 3)])
+        F = np.vstack([F, np.arange(n0, n0 + 3 * len(T), dtype=np.int64).reshape(-1, 3)])
+        L = np.concatenate([L, np.full(len(T), wall, dtype=object)])
+        is_lid = np.concatenate([is_lid, np.zeros(len(T), dtype=bool)])
+    widths = [round(s.width * 1000.0, 3) for s in closing.leaks]
+    by_cover = {id(s) for s in cover_spots}
+    done.update(found=len(closing.leaks), covered=len(cover_spots), sealed=len(claimed),
+                cover_triangles=int(len(T)), widest_mm=max(widths), cell_mm=round(h * 1000.0, 4),
+                radius_cubes=int(closing.close),
+                leaks=[{**s.as_dict(), "closed_by": "cover" if id(s) in by_cover else "seal"}
+                       for s in closing.leaks[:20]])
+    done["decision"] = {
+        "stage": "fluid_region", "decided": "leaks closed", "value": len(closing.leaks), "rule": "INS-8",
+        "inputs": {"up_to_mm": done["up_to_mm"], "widest_mm": max(widths), "covered": len(cover_spots),
+                   "sealed": len(claimed), "cell_mm": done["cell_mm"]},
+        "words": f"{len(closing.leaks)} leak(s) up to {up_to * 1000:.3g} mm wide (the widest {max(widths):.3g} mm) "
+                 f"were closed for the mesh, as confirmed on the stage: {len(claimed)} by the seals on their own "
+                 f"loops, {len(cover_spots)} by a cover in the wall. The uploaded file is unchanged."}
+    return V, F, L, is_lid, done
 
 
 def _map_mouths(mesh, imap, known: set) -> list[_Opening]:

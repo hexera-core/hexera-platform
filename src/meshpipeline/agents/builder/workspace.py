@@ -13,6 +13,23 @@ from meshpipeline.pipeline.enums import Dimensionality
 logger = logging.getLogger(__name__)
 
 
+def write_leak_closing(workspace: Path, leak_closing: dict | None) -> None:
+    """THE LEAK SIZE THE USER CONFIRMED (INS-8), beside the run's surface: every route's internal
+    staging reads it there (engines/workspace_facts.read_leak_closing) and closes the leaks up to
+    it for the mesh - never in the customer's file. None or 0 removes a carried-forward one."""
+    from meshpipeline.engines.workspace_facts import LEAK_CLOSING_FILE
+    rec = leak_closing if isinstance(leak_closing, dict) else {}
+    try:
+        size = float(rec.get("close_up_to_m") or 0.0)
+    except (TypeError, ValueError):
+        size = 0.0
+    path = Path(workspace) / LEAK_CLOSING_FILE
+    if size > 0:
+        path.write_text(json.dumps(rec), encoding="utf-8")
+    elif path.exists():
+        path.unlink()
+
+
 def _write_workspace_context_files(
     workspace: Path,
     source_path: str,
@@ -26,6 +43,7 @@ def _write_workspace_context_files(
     far_field: dict | None = None,
     input_kind: str = "",
     user_notes: list | None = None,
+    leak_closing: dict | None = None,
 ) -> tuple[str, str]:
     if not request_txt:
         step_basename = os.path.basename(source_path) if source_path else "input.stl"
@@ -110,6 +128,7 @@ def _write_workspace_context_files(
         ff = {k: v for k, v in (far_field or {}).items() if v not in (None, "", {})}
         if ff:
             (workspace / "far_field_request.json").write_text(json.dumps(ff), encoding="utf-8")
+        write_leak_closing(workspace, leak_closing)
         # THE USER'S OWN NOTES, word for word (contracts/user_notes, NOTE-2): in EVERY attempt's
         # workspace - model loop or deterministic driver - beside the request they qualify, so no
         # route can build without them in reach.
