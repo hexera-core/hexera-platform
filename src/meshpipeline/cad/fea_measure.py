@@ -308,7 +308,8 @@ def _brep_surface(shape, mm: float):
     # body, and never thinner than the model itself is sure of (cad/fea_features.wall_reach)
     tol = np.array([BRep_Tool.Tolerance_s(f) for f in faces], dtype=float) * mm
     surface = ff.Surface(xyz=xyz, tris=tris[keep], label=label[keep], names=names,
-                         body=_face_bodies(shape, fmap), tol_mm=tol, defl_mm=defl, tapers=_brep_tapers(shape, fmap))
+                         body=_face_bodies(shape, fmap), tol_mm=tol, defl_mm=defl, tapers=_brep_tapers(shape, fmap),
+                         adjacency=_brep_adjacency(shape, fmap))
     return surface, faces, kinds
 
 
@@ -356,6 +357,28 @@ def _brep_tapers(shape, fmap) -> list[tuple[int, int]]:
                 out.add((ks[0], ks[1]))
     except Exception:  # noqa: BLE001 - the triangles' own tapers stand
         return sorted(out)
+    return sorted(out)
+
+
+def _brep_adjacency(shape, fmap) -> list[tuple[int, int]] | None:
+    """The face pairs (0-based, fmap order, a < b) that share a CAD edge; None when it cannot be read (the
+    triangles' own edges are read then)."""
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+
+    out: set[tuple[int, int]] = set()
+    try:
+        e2f = TopTools_IndexedDataMapOfShapeListOfShape()
+        TopExp.MapShapesAndAncestors_s(shape, TopAbs_EDGE, TopAbs_FACE, e2f)
+        for i in range(1, e2f.Extent() + 1):
+            ks = sorted({fmap.FindIndex(f) - 1 for f in e2f.FindFromIndex(i)})
+            ks = [k for k in ks if k >= 0]
+            for x in range(len(ks)):
+                for y in range(x + 1, len(ks)):
+                    out.add((ks[x], ks[y]))
+    except Exception:  # noqa: BLE001 - the triangles' own edges stand
+        return None
     return sorted(out)
 
 

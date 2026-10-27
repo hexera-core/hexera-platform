@@ -80,6 +80,9 @@ class Surface:
     #: The label pairs (a, b), a < b, whose CAD faces share an edge at an acute convex angle (a TAPER, read
     #: on the exact B-rep), or None when unknown (a triangle file: the triangles' own edges are read).
     tapers: list[tuple[int, int]] | None = None
+    #: The label pairs (a, b), a < b, whose CAD faces share an edge (the B-rep's own adjacency), or None when unknown
+    #: (a triangle file: the welded triangles' edges are read).
+    adjacency: list[tuple[int, int]] | None = None
 
     def __post_init__(self) -> None:
         a, b, c = (self.xyz[self.tris[:, k]] for k in range(3))
@@ -823,12 +826,25 @@ def relief_groups(s: Surface, pairs: EdgePairs) -> list[dict]:
     tris_of = _by_label(s)
     verts = [np.unique(s.tris[t]) for t in tris_of]
     area = np.array([float(s.areas[t].sum()) for t in tris_of])
-    la, lb = s.label[pairs.tri_a], s.label[pairs.tri_b]
-    cross = la != lb
     nbrs: list[set[int]] = [set() for _ in range(n)]
-    for a, b in set(zip(la[cross].tolist(), lb[cross].tolist(), strict=True)):
-        nbrs[a].add(b)
-        nbrs[b].add(a)
+    open_label = np.zeros(n, dtype=bool)
+    if s.adjacency is not None:
+        # WHAT TOUCHES WHAT, read on the CAD's own edges: exact, whatever the tessellation left unwelded
+        for a, b in s.adjacency:
+            nbrs[a].add(b)
+            nbrs[b].add(a)
+    else:
+        la, lb = s.label[pairs.tri_a], s.label[pairs.tri_b]
+        cross = la != lb
+        for a, b in set(zip(la[cross].tolist(), lb[cross].tolist(), strict=True)):
+            nbrs[a].add(b)
+            nbrs[b].add(a)
+        # A TRIANGLE FILE'S FACE WITH AN EDGE NOT SHARED BY EXACTLY TWO TRIANGLES (open, or where touching bodies
+        # were welded together) has neighbours the pairs cannot see: never relief - what it touches is unknown
+        half = np.sort(np.vstack([s.tris[:, [0, 1]], s.tris[:, [1, 2]], s.tris[:, [2, 0]]]), axis=1)
+        _u, inv, cnt = np.unique(half, axis=0, return_inverse=True, return_counts=True)
+        odd = cnt[np.asarray(inv).ravel()] != 2
+        open_label[np.unique(np.tile(s.label, 3)[odd])] = True
     # each body's diagonal (the CAD's solids; a triangle file's welded pieces)
     if s.body is not None and len(s.body) == n:
         body = np.asarray(s.body, dtype=np.int64)
@@ -884,7 +900,7 @@ def relief_groups(s: Surface, pairs: EdgePairs) -> list[dict]:
             if g in seen:
                 continue
             seen.add(g)
-            if body[g] != body[f] or g in taken or not len(verts[g]):
+            if body[g] != body[f] or g in taken or not len(verts[g]) or open_label[g]:
                 continue
             if g in plane and float(plane[g][0] @ nf) <= -PLANE_COS:
                 continue
