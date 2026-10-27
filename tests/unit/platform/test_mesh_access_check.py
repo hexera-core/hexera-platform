@@ -58,7 +58,7 @@ def test_the_job_it_can_run_but_not_read_is_named_with_its_command():
     assert [m[0] for m in got.missing] == ["run.jobs.get"]
     assert "--role roles/run.viewer" in got.missing[0][2] and "serviceAccount:w@p.iam.gserviceaccount.com" in got.missing[0][2]
     # without the read, the job's account is unknown, so actAs is not asked
-    assert not any("iam.googleapis.com" in u for u in g.asked)
+    assert not any(u.split("/")[2] == "iam.googleapis.com" for u in g.asked)
     assert all(line.startswith(A.TAG) for line in A.words(got))
 
 

@@ -891,7 +891,9 @@ def not_run(result: dict) -> bool:
     the part's verdict: no lever is pulled, and the attempt ends as ours (job bf863215, 26 Oct: five
     passes and the last rung each refused 'HTTP 403' by the VM route, then told as the CAD's fault)."""
     from meshpipeline.contracts.mesh_execution import RC_INFRASTRUCTURE
-    return isinstance(result, dict) and result.get("rc") == RC_INFRASTRUCTURE and not result.get("timed_out")
+    # a mesh BUILT but too big for this worker to collect is its own outcome (TOO_BIG: the result is kept)
+    return (isinstance(result, dict) and result.get("rc") == RC_INFRASTRUCTURE and not result.get("timed_out")
+            and not result.get("too_big_for_worker"))
 
 
 def not_run_words(unrun: dict) -> str:
