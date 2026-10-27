@@ -217,12 +217,13 @@ def prepare(mesh: SolidMesh, sidecar: dict, *, surface_tag: dict[int, int], volu
 # #
 
 def _f8(v: float) -> str:
-    """A positive real in an 8-column Nastran field."""
+    """A positive real for an 8-column Nastran field, at most 7 characters so a space always parts it
+    from the field before it ("5.932-4")."""
     for digits in range(6, 0, -1):
         t = f"{float(v):.{digits}E}".replace("E-0", "-").replace("E+0", "+").replace("E-", "-").replace("E+", "+")
-        if len(t) <= 8:
+        if len(t) <= 7:
             return t
-    return f"{float(v):.1E}"[:8]
+    return f"{float(v):.1E}"[:7]
 
 
 def _surface(fh, fs: FaceSet) -> None:
