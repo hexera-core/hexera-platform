@@ -518,7 +518,8 @@ def _close_leaks(mesh, closing, up_to: float, V, F, L, is_lid, wall: str, openin
                      "fluid in (or no closing up to that size finds it), so nothing was added."}
         return V, F, L, is_lid, done
     h = closing.h
-    claimed, to_cover = [], []
+    claimed: list = []
+    to_cover: list = []
     for s in closing.leaks:
         at = any(closing.leak_distance(s, o.centroid)
                  <= 0.5 * max(o.size if o.loop is not None else o.diameter, 0.0) + 2.0 * h for o in openings)

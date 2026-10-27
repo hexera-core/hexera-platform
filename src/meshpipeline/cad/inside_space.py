@@ -1070,20 +1070,20 @@ def leak_covers(imap: InsideMap, V: np.ndarray, F: np.ndarray, spots=None) -> np
 
 # each of the six directions: (axis, sign) and the four corners of the face between a cube and its
 # neighbour that way, as offsets of the cube's low corner, wound to face along (axis, sign)
-_FACE = {}
+_FACE: dict[tuple[int, int], np.ndarray] = {}
 for _ax in range(3):
     _u, _w = [a for a in range(3) if a != _ax]
     for _sg in (1, -1):
         _base = np.zeros(3, dtype=np.int64)
         if _sg > 0:
             _base[_ax] = 1
-        _c = []
+        _corners: list[np.ndarray] = []
         for du, dw in ((0, 0), (1, 0), (1, 1), (0, 1)):
             q = _base.copy()
             q[_u] += du
             q[_w] += dw
-            _c.append(q)
-        _c = np.asarray(_c)
+            _corners.append(q)
+        _c = np.asarray(_corners)
         # (u, w, ax) is right-handed for ax = 0 (y, z, x) and 2 (x, y, z); for ax = 1 (x, z, y) it is not
         _right = _ax != 1
         if (_sg > 0) != _right:
