@@ -237,14 +237,16 @@ def _surface(solid, faces: list, diag: float) -> _Surface:
     """The part's surface points (see _Surface), from a tessellation of a copy of it."""
     from OCP.BRep import BRep_Tool
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Copy
-    from OCP.BRepMesh import BRepMesh_IncrementalMesh
     from OCP.TopAbs import TopAbs_REVERSED
     from OCP.TopLoc import TopLoc_Location
     from OCP.TopoDS import TopoDS
     from scipy.spatial import cKDTree
 
+    from meshpipeline.cad.occ_box import mesh_to_size
+
     copy = BRepBuilderAPI_Copy(solid, True, False).Shape()
-    BRepMesh_IncrementalMesh(copy, max(CHORD_SHARE * diag, 1e-12), False, 0.3, False)
+    # through the guarded helper (cad/occ_box): the part's own size sets the chord, never a stray unit
+    mesh_to_size(copy, CHORD_SHARE, 0.3)
     cfaces = _faces(copy)
     longest = max(SAMPLE_SHARE * diag, 1e-12)
     blocks, fids = [], []
