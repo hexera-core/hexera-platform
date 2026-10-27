@@ -557,7 +557,9 @@ def pin_in_bracket():
 
 
 def off_and_bonded_blocks(size: float = 100.0):
-    """Three cubes of `size` mm: Part_1 = A at the origin, Part_2 = B beside it along x (they touch
-    over x = size), Part_3 = C on top of A along y (they touch over y = size) - B never meets C."""
+    """Three blocks of `size` mm: Part_1 = A, a cube at the origin; Part_2 = B, a cube beside it along x
+    (they touch over x = size); Part_3 = C on top of A along y (they touch over y = size), 0.9 of A's
+    length - so C stops a tenth of the size short of B and never meets it, not even along an edge (parts
+    meeting along a line are joined too, PLAN-fea-18)."""
     return _compound(_box(0, 0, 0, size, size, size), _box(size, 0, 0, size, size, size),
-                     _box(0, size, 0, size, size, size))
+                     _box(0, size, 0, 0.9 * size, size, size))
