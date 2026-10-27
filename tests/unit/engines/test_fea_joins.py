@@ -138,10 +138,41 @@ def test_cubes_a_tenth_of_a_millimetre_apart_are_joined_across_the_gap():
     assert itf["area_mm2"] == pytest.approx(100.0, rel=0.05)
 
 
+def test_a_touch_the_fuse_missed_is_added_and_tied_while_the_fuse_stands(monkeypatch, tmp_path):
+    """A MISSED TOUCH (the corpus: pins whose cylinders the fuse did not merge, wires and fins resting
+    along a line): an omission, not a wrong answer - the fuse's own joints stand, conformal, and the
+    touch is added and tied."""
+    shape = fx._compound(fx._box(0, 0, 0, 10, 10, 10), fx._box(10, 0, 0, 10, 10, 10), fx._box(0, 10, 0, 10, 10, 10))
+    real = A.interfaces_of
+
+    def without_the_second(*a, **k):
+        return [i for i in real(*a, **k) if i["parts"] != ["Part_1", "Part_3"]]
+
+    monkeypatch.setattr(A, "interfaces_of", without_the_second)
+    rec = A.record(shape, mm_per_unit=1.0)
+    assert rec["joins"]["found_by"] == "fuse" and [f["kind"] for f in rec["joins"]["findings"]] == ["missed"]
+    (added,) = [i for i in rec["interfaces"] if i.get("added")]
+    assert added["parts"] == ["Part_1", "Part_3"] and added["kind"] == "touching"
+    side = A.stage(shape, A.BONDED, tmp_path, mm_per_unit=1.0)
+    assert side["mode"] == A.PAIR_BONDED
+    kinds = {tuple(p["parts"]): p["kind"] for p in side["pairs"]}
+    assert kinds[(1, 2)] == A.PAIR_BONDED and kinds[(1, 3)] == A.PAIR_TIE
+
+
 def test_the_pairs_measured_in_parallel_give_the_same_answer(monkeypatch):
-    """The pairs shared among forked copies of the process: the same joints, skins and order as one by one."""
+    """The pairs shared among worker processes: the same joints, skins and order as one by one."""
     parts = A.solids(fx.anchorage(skin=True))
+    real, ran = J._spawned, []
+
+    def spy(*a, **k):
+        got = real(*a, **k)
+        ran.append(got is not None)
+        return got
+
+    monkeypatch.setattr(J, "WORKER_PAIRS", 1)
+    monkeypatch.setattr(J, "_spawned", spy)
     forked = J.measure(parts, tol=3e-4, mm_per_unit=1.0)
+    assert ran == [True], "the workers did not run"
     monkeypatch.setattr(J, "MAX_WORKERS", 1)
     serial = J.measure(parts, tol=3e-4, mm_per_unit=1.0)
     assert list(forked.joints) == list(serial.joints)

@@ -29,6 +29,7 @@ part "wholly inside" another whose box it is not inside, or a touch the fuse mis
 """
 from __future__ import annotations
 
+import json
 import math
 import time
 from dataclasses import dataclass, field
@@ -555,24 +556,57 @@ def measure(parts: list, *, tol: float, mm_per_unit: float, budget_s: float = BU
     tol = max(float(tol), 1e-12)
     out = Measured(tol=tol)
     _FACE_TOOLS.clear()
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory(prefix="fea_joins_") as tmp:
+        try:
+            # THE PARTS AS THE WORKERS READ THEM: written once to a B-rep file and read back, here too, so
+            # every pair is measured on the very same numbers whether one process or several measure it
+            brep = Path(tmp) / "parts.brep"
+            parts = _round_trip(parts, brep)
+            pairs = _near_pairs(parts, tol=tol, mm=mm)
+            workers = _workers(len(pairs))
+            if workers > 1 and brep.exists():
+                got = _spawned(brep, len(parts), pairs, workers, tol=tol, mm=mm, budget_s=budget_s, t0=t0)
+                if got is not None:
+                    out.joints, out.near, out.skins, out.complete = got
+                    out.seconds = round(time.time() - t0, 2)
+                    return out
+            return _measure(parts, tol=tol, mm=mm, budget_s=budget_s, t0=t0, out=out, only=set(pairs))
+        finally:
+            _FACE_TOOLS.clear()
+
+
+def _round_trip(parts: list, brep) -> list:
+    """The parts written to `brep` and read back (the same solids, in the same order); the parts as
+    given when the file cannot be written or read."""
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepTools import BRepTools
+    from OCP.TopoDS import TopoDS_Shape
+
+    from meshpipeline.cad.fea_assembly import compound, solids
+
     try:
-        pairs = _near_pairs(parts, tol=tol, mm=mm)
-        workers = _workers(len(pairs))
-        if workers > 1:
-            got = _forked(parts, pairs, workers, tol=tol, mm=mm, budget_s=budget_s, t0=t0)
-            if got is not None:
-                out.joints, out.near, out.skins, out.complete = got
-                out.seconds = round(time.time() - t0, 2)
-                return out
-        return _measure(parts, tol=tol, mm=mm, budget_s=budget_s, t0=t0, out=out, only=set(pairs))
-    finally:
-        _FACE_TOOLS.clear()
+        if not BRepTools.Write_s(compound(parts), str(brep)):
+            return parts
+        shape = TopoDS_Shape()
+        if not BRepTools.Read_s(shape, str(brep), BRep_Builder()):
+            return parts
+        back = solids(shape)
+    except Exception:  # noqa: BLE001 - measured as given
+        return parts
+    if len(back) != len(parts):
+        brep.unlink(missing_ok=True)
+        return parts
+    return back
 
 
 #: THE PAIRS IN PARALLEL: every pair of parts is measured on its own, so the pairs are shared among this
-#: many forked copies of the process (the same answers, in the same order, sooner); one copy a core
-#: up to this many, and only when there are at least two pairs a copy.
+#: many worker processes (the same answers, in the same order, sooner); one a core up to this many, and
+#: only when there are at least WORKER_PAIRS pairs a worker (a worker takes a second or two to start).
 MAX_WORKERS = 8
+WORKER_PAIRS = 4
 
 
 def _near_pairs(parts: list, *, tol: float, mm: float) -> list[tuple[int, int]]:
@@ -590,83 +624,91 @@ def _near_pairs(parts: list, *, tol: float, mm: float) -> list[tuple[int, int]]:
 def _workers(n_pairs: int) -> int:
     import os
 
-    if not hasattr(os, "fork") or n_pairs < 4:
+    if n_pairs < 2 * WORKER_PAIRS:
         return 1
     try:
         cores = len(os.sched_getaffinity(0))
     except (AttributeError, OSError):
         cores = os.cpu_count() or 1
-    return max(1, min(MAX_WORKERS, cores, n_pairs // 2))
+    return max(1, min(MAX_WORKERS, cores, n_pairs // WORKER_PAIRS))
 
 
-def _forked(parts: list, pairs: list, workers: int, *, tol: float, mm: float, budget_s: float, t0: float):
-    """The pairs measured in `workers` forked copies of this process, merged in pair order: (joints,
-    near, skins, complete), or None when a copy could not be made or failed (then the caller measures
-    them here, one by one). A copy only measures and writes its answer to a pipe: it logs nothing and
-    touches no store."""
+def _spawned(brep, n_parts: int, pairs: list, workers: int, *, tol: float, mm: float, budget_s: float, t0: float):
+    """The pairs measured in `workers` fresh Python processes (`python -m meshpipeline.cad.fea_joins`),
+    each reading the parts from the B-rep file `brep` (measure() wrote it), merged in pair order: (joints,
+    near, skins, complete), or None when a worker could not start, ran out of time or failed (then the
+    caller measures every pair here, one by one). Fresh processes, never forked copies: a fork of a
+    process with threads can stall on a lock another thread held (26 Oct, a test run that never ended)."""
     import os
     import pickle
+    import subprocess
+    import sys
+    import tempfile
+    from pathlib import Path
 
-    # everything a copy imports, imported before forking
-    from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Section  # noqa: F401
-    from OCP.BRepClass3d import BRepClass3d_SolidClassifier  # noqa: F401
-    from OCP.BRepExtrema import BRepExtrema_DistShapeShape  # noqa: F401
-    from OCP.BRepGProp import BRepGProp_Face  # noqa: F401
-    from OCP.BRepTopAdaptor import BRepTopAdaptor_FClass2d  # noqa: F401
-    from OCP.GeomAPI import GeomAPI_ProjectPointOnSurf  # noqa: F401
-    from scipy.spatial import cKDTree  # noqa: F401
-
-    from meshpipeline.cad import occ_box  # noqa: F401
-
-    chunks = [pairs[k::workers] for k in range(workers)]
-    kids: list[tuple[int, int]] = []
-    try:
-        for chunk in chunks:
-            r, w = os.pipe()
-            pid = os.fork()
-            if pid == 0:  # pragma: no cover - the copy
-                code = 0
-                try:
-                    os.close(r)
-                    res = _measure(parts, tol=tol, mm=mm, budget_s=budget_s, t0=t0, out=Measured(tol=tol),
-                                   only=set(chunk))
-                    data = pickle.dumps((res.joints, res.near, res.skins, res.complete))
-                except BaseException:  # noqa: BLE001 - the parent measures this chunk itself
-                    data, code = b"", 1
-                try:
-                    with os.fdopen(w, "wb") as fh:
-                        fh.write(data)
-                finally:
-                    os._exit(code)
-            os.close(w)
-            kids.append((pid, r))
-    except OSError:
-        for pid, r in kids:
-            os.close(r)
-            os.waitpid(pid, 0)
+    left = budget_s - (time.time() - t0)
+    if left <= 30.0:
         return None
-    joints: dict = {}
-    near: dict = {}
-    skins: dict[int, set[int]] = {}
-    complete = True
-    failed = False
-    for pid, r in kids:
-        with os.fdopen(r, "rb") as fh:
-            data = fh.read()
-        _pid, status = os.waitpid(pid, 0)
-        if not data or status != 0:
-            failed = True
-            continue
-        j, n, sk, c = pickle.loads(data)  # noqa: S301 - our own forked copy's answer, over a pipe only the two hold
-        joints.update(j)
-        near.update(n)
-        for part, fs in sk.items():
-            skins.setdefault(part, set()).update(fs)
-        complete = complete and c
-    if failed:
-        return None
+    with tempfile.TemporaryDirectory(prefix="fea_joins_") as tmp:
+        procs = []
+        try:
+            for k in range(workers):
+                spec = Path(tmp) / f"job{k}.json"
+                spec.write_text(json.dumps({"brep": str(brep), "pairs": [list(x) for x in pairs[k::workers]],
+                                            "parts": n_parts, "tol": tol, "mm": mm, "budget_s": left}))
+                out = Path(tmp) / f"out{k}.pkl"
+                procs.append((subprocess.Popen([sys.executable, "-m", "meshpipeline.cad.fea_joins", str(spec), str(out)],
+                                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                               stderr=subprocess.DEVNULL, env=dict(os.environ)), out))
+            joints: dict = {}
+            near: dict = {}
+            skins: dict[int, set[int]] = {}
+            complete = True
+            for proc, out in procs:
+                rc = proc.wait(timeout=max(left, 0.0) + 120.0)
+                if rc != 0 or not out.exists():
+                    return None
+                j, n, sk, c = pickle.loads(out.read_bytes())  # noqa: S301 - our own worker's answer, in our own temp dir
+                joints.update(j)
+                near.update(n)
+                for part, fs in sk.items():
+                    skins.setdefault(part, set()).update(fs)
+                complete = complete and c
+        except (OSError, subprocess.SubprocessError, ValueError, EOFError, pickle.UnpicklingError):
+            return None
+        finally:
+            for proc, _out in procs:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait()
     return ({k: joints[k] for k in sorted(joints)}, {k: near[k] for k in sorted(near)},
             {k: sorted(v) for k, v in sorted(skins.items())}, complete)
+
+
+def _worker(spec_path: str, out_path: str) -> int:
+    """One worker of _spawned: the parts read back from the B-rep file, its pairs measured, the answer
+    written."""
+    import pickle
+
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepTools import BRepTools
+    from OCP.TopoDS import TopoDS_Shape
+
+    from meshpipeline.cad.fea_assembly import solids
+
+    spec = json.loads(open(spec_path).read())
+    shape = TopoDS_Shape()
+    if not BRepTools.Read_s(shape, spec["brep"], BRep_Builder()):
+        return 2
+    parts = solids(shape)
+    if len(parts) != int(spec["parts"]):
+        return 3
+    t0 = time.time()
+    res = _measure(parts, tol=float(spec["tol"]), mm=float(spec["mm"]), budget_s=float(spec["budget_s"]), t0=t0,
+                   out=Measured(tol=float(spec["tol"])), only={(int(i), int(j)) for i, j in spec["pairs"]})
+    with open(out_path, "wb") as fh:
+        pickle.dump((res.joints, res.near, res.skins, res.complete), fh)
+    return 0
 
 
 def _measure(parts: list, *, tol: float, mm: float, budget_s: float, t0: float, out: Measured,
@@ -880,3 +922,12 @@ def _r(v: float) -> float:
 
 __all__ = ["BUDGET_S", "FACING_DEG", "GAP", "GAP_JOIN_MM", "GAP_JOIN_SHARE", "Joint", "MIN_JOIN_AREA_SHARE",
            "Measured", "OVERLAP", "TOUCHING", "check", "gap_limit_mm", "interfaces", "measure"]
+
+
+if __name__ == "__main__":  # a worker of _spawned
+    import sys
+
+    # run as the package's own module, so what it pickles is meshpipeline.cad.fea_joins's, not __main__'s
+    from meshpipeline.cad import fea_joins as _self
+
+    sys.exit(_self._worker(sys.argv[1], sys.argv[2]))

@@ -346,12 +346,15 @@ def joined_interfaces(parts: list, fused: Fused, volumes: list[float], *, diag: 
     checked against the parts' surfaces (cad/fea_joins.check). When the surfaces agree, the fuse's
     interfaces stand exactly as they were, and every pair of parts that faces each other across a
     small gap (cad/fea_joins.gap_limit_mm) is added after them, joined there - unless `gap_joins` is
-    off. When the surfaces contradict the fuse (a part "inside" another it does not reach, a touch
-    it missed, a joint only through a face that crosses its own part), the measured joints replace
-    the fuse's: `info["trusted"]` is False, and a bonded mesh is meshed apart and tied.
+    off - and every touch the fuse missed (a pin in an exact hole whose two cylinders it did not
+    merge, a wire or a fin resting on a face along a line) is added too, marked "added", tied there.
+    When the surfaces contradict what the fuse joined (a part "inside" another it does not reach, a
+    joint the surfaces do not have, a joint only through a face that crosses its own part), the
+    measured joints replace the fuse's: `info["trusted"]` is False, and a bonded mesh is meshed apart
+    and tied.
 
     `info`: {"trusted", "findings", "skins" (Part_k -> its faces that cross their own part), "gaps"
-    (the gap interfaces' ids), "complete", "seconds"}."""
+    (the gap interfaces' ids), "added" (the missed touches' ids), "complete", "seconds"}."""
     from meshpipeline.cad import fea_joins as J
 
     tol = FUZZY_SHARE * diag
@@ -363,21 +366,27 @@ def joined_interfaces(parts: list, fused: Fused, volumes: list[float], *, diag: 
                          budget_s=J.BUDGET_S if budget_s is None else float(budget_s))
     findings = J.check(fuse_itf, parts, measured, tol=tol, mm_per_unit=mm_per_unit)
     kinds = (J.TOUCHING, J.GAP, J.OVERLAP) if gap_joins else (J.TOUCHING, J.OVERLAP)
-    if findings:
+    # a touch the fuse missed is an omission, not a wrong answer: the fuse stands, the touch is added
+    wrong = [f for f in findings if f["kind"] != "missed"]
+    if wrong:
         interfaces = J.interfaces(measured, parts, volumes, scale=scale, kinds=kinds)
     else:
         said = {tuple(sorted(i["parts"], key=lambda x: int(x.split("_")[1]))) for i in fuse_itf}
-        extra = [i for i in J.interfaces(measured, parts, volumes, scale=scale, kinds=(J.GAP,))
-                 if tuple(i["parts"]) not in said] if gap_joins else []
+        extra = [i for i in J.interfaces(measured, parts, volumes, scale=scale,
+                                         kinds=(J.TOUCHING, J.GAP) if gap_joins else (J.TOUCHING,))
+                 if tuple(i["parts"]) not in said]
         interfaces = list(fuse_itf)
         for k, itf in enumerate(extra, start=len(interfaces) + 1):
             itf["id"] = f"Interface_{k}"
+            if itf["kind"] == J.TOUCHING:
+                itf["added"] = True
             interfaces.append(itf)
     for itf in interfaces:
         if itf.get("kind") == J.GAP:
             itf["reach_mm"] = _r(float(itf.get("gap_max_mm") or itf.get("gap_mm") or 0.0) * (1.0 + GAP_REACH_MARGIN)
                                  + tol * scale)
-    info = {"trusted": not findings, "findings": findings,
+    info = {"trusted": not wrong, "findings": findings,
+            "added": [i["id"] for i in interfaces if i.get("added")],
             "skins": {part_id(p): [face_name(p, j) for j in js] for p, js in sorted(measured.skins.items())},
             "gaps": [i["id"] for i in interfaces if i.get("kind") == J.GAP],
             "complete": measured.complete, "seconds": measured.seconds}
@@ -388,13 +397,14 @@ def joins_record(info: dict, interfaces: list[dict]) -> dict | None:
     """What the record and the sidecar say of how the joints were found - None when there is nothing
     to say (the fuse stood, no gap was joined, no skin found, the measurement finished), so an
     assembly the new measurement changes nothing on is recorded exactly as before."""
-    if info["trusted"] and not info["gaps"] and not info["skins"] and info["complete"]:
+    if info["trusted"] and not info["gaps"] and not info["skins"] and info["complete"] and not info["findings"]:
         return None
     gap_faces = sorted({f for i in interfaces if i.get("kind") == "gap" for v in (i.get("faces") or {}).values()
                         for f in v}, key=_face_sort)
     return {"found_by": "fuse" if info["trusted"] else "surfaces", "findings": info["findings"],
             "skins": info["skins"], "skin_faces": sorted({f for v in info["skins"].values() for f in v}, key=_face_sort),
-            "gaps": info["gaps"], "gap_faces": gap_faces, "complete": info["complete"],
+            "gaps": info["gaps"], "gap_faces": gap_faces, "added": info.get("added") or [],
+            "complete": info["complete"],
             "seconds": info["seconds"]}
 
 
@@ -406,6 +416,12 @@ def joins_notes(info: dict, interfaces: list[dict], *, unit: str = "mm", scale_t
         more = f" ({len(info['findings'])} such answers)" if len(info["findings"]) > 1 else ""
         notes.append("Where the parts meet was measured on their surfaces, pair by pair: the fuse of all the parts "
                      f"at once gave answers their surfaces contradict - {first}{more}.")
+    added = [i for i in interfaces if i.get("added")]
+    if added:
+        words = "; ".join(f"{i['parts'][0]} and {i['parts'][1]}" for i in added[:6])
+        notes.append(f"{len(added)} place(s) where parts touch were found on their surfaces that the fuse did not "
+                     f"join (two faces it did not merge, or parts meeting along a line): {words}"
+                     f"{' and more' if len(added) > 6 else ''} - they are tied there.")
     for pid, faces in info["skins"].items():
         notes.append(f"{pid} has faces that cross or lie on its own other faces ({_list(faces[:6])}"
                      f"{' and more' if len(faces) > 6 else ''}): a surface of no thickness there, so they join "
@@ -599,7 +615,7 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
     for itf in interfaces:
         p, q = (int(x.split("_")[1]) for x in itf["parts"])
         gap = _gap_fields(itf) if itf.get("kind") == "gap" else {}
-        if mode == PAIR_BONDED and gap:
+        if mode == PAIR_BONDED and (gap or itf.get("added")):
             # A SMALL-GAP JOINT in a fused mesh: the two sides are not one surface, so they are tied
             pairs.append({"id": itf["id"], "kind": PAIR_TIE, "parts": [p, q], "overlap": False,
                           "faces": {str(p): itf["faces"].get(part_id(p)) or [],
