@@ -114,12 +114,15 @@ def zones(record: Mapping, *, tighten: Mapping[str, float] | None = None) -> lis
     out: list[dict] = []
     spot_faces: set[str] = set()
     thinnest = _f((record.get("thickness") or {}).get("min_mm"))
+    own = _part_thinnest(record)
 
     for h in record.get("hot_spots") or []:
         faces = [str(f) for f in h.get("faces") or []]
         t = _f(h.get("local_thickness_mm"))
         if h.get("type") == "sharp_corner":
-            basis = _f(h.get("cap_basis_mm")) or t or thinnest
+            # a corner whose faces read no wall of their own: the thinnest wall of ITS OWN PART
+            # (PLAN-fea-17: every part sized by its own rules), the whole part's only for a single part
+            basis = _f(h.get("cap_basis_mm")) or t or own.get(_part_key(faces[0]) if faces else "", thinnest)
             if basis is None or len(faces) < 2:
                 continue
             size = basis / CORNER_DIVISIONS
@@ -190,6 +193,25 @@ def zones(record: Mapping, *, tighten: Mapping[str, float] | None = None) -> lis
             z["tightened"] = float(k)
         z["size_m"] = _r(z["size_m"])
         z["reach_m"] = _r(z["reach_m"])
+    return out
+
+
+def _part_key(face: str) -> str:
+    """Part_k of an assembly's Part_k_Face_j; "" for a single part's Face_j."""
+    head, sep, _tail = str(face).rpartition("_Face_")
+    return head if sep else ""
+
+
+def _part_thinnest(record: Mapping) -> dict[str, float]:
+    """An assembly's thinnest measured wall, part by part (Part_k -> mm); empty for a single part."""
+    if not record.get("part_bases"):
+        return {}
+    out: dict[str, float] = {}
+    for name, row in (record.get("faces") or {}).items():
+        t = _f((row or {}).get("thickness_min_mm"))
+        key = _part_key(name)
+        if t is not None and key:
+            out[key] = min(out.get(key, t), t)
     return out
 
 
@@ -348,6 +370,18 @@ def words(record: Mapping, plan: Mapping) -> list[str]:
     rounds = [z for z in zs if z["kind"] == "round" and z["size_m"] < plan["base_size_m"]]
     if rounds:
         out.append(f"{len(rounds)} other round face(s) keep their shape: {ROUND_PER_QUARTER} elements per quarter-turn.")
+    lying = [list(c.get("faces") or []) for c in record.get("coincident") or []]
+    if lying:
+        named = "; ".join(" and ".join(f) for f in lying[:6]) + (f" and {len(lying) - 6} more" if len(lying) > 6 else "")
+        out.append(f"Faces lying on each other: {len(lying)} pair(s) of faces of one part lie on top of each other "
+                   f"with no material between them ({named}) - a skin of no thickness in the CAD. They set no wall "
+                   "size: the wall there is read past them.")
+    lying = [list(c.get("faces") or []) for c in record.get("coincident") or []]
+    if lying:
+        named = "; ".join(" and ".join(f) for f in lying[:6]) + (f" and {len(lying) - 6} more" if len(lying) > 6 else "")
+        out.append(f"Faces lying on each other: {len(lying)} pair(s) of faces of one part lie on top of each other "
+                   f"with no material between them ({named}) - a skin of no thickness in the CAD. They set no wall "
+                   "size: the wall there is read past them.")
     cusps = plan.get("cusps") or []
     if cusps:
         out.append(f"Cusps: {len(cusps)} place(s) where two CAD edges of a face meet at almost no angle, so the "
@@ -433,6 +467,16 @@ def decisions(record: Mapping, plan: Mapping) -> list[dict]:
                     "inputs": {"parts": len(asm.get("parts") or []), "connection": asm.get("connection"),
                                "pairs": asm.get("pairs")},
                     "words": " ".join(assembly_words(asm)[:2])})
+    lying = [list(c.get("faces") or []) for c in record.get("coincident") or []]
+    if lying:
+        out.append({"stage": "fea_plan", "decided": "faces lying on each other read through", "value": len(lying),
+                    "rule": "PLAN-fea-3", "inputs": {"pairs": lying},
+                    "words": f"{len(lying)} pair(s) of faces lying on each other set no wall size."})
+    lying = [list(c.get("faces") or []) for c in record.get("coincident") or []]
+    if lying:
+        out.append({"stage": "fea_plan", "decided": "faces lying on each other read through", "value": len(lying),
+                    "rule": "PLAN-fea-3", "inputs": {"pairs": lying},
+                    "words": f"{len(lying)} pair(s) of faces lying on each other set no wall size."})
     cusps = plan.get("cusps") or []
     if cusps:
         out.append({"stage": "fea_plan", "decided": "cusps set aside", "value": len(cusps), "rule": "PLAN-fea-10",

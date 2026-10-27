@@ -269,6 +269,7 @@ def _brep_surface(shape, mm: float):
     fmap = TopTools_IndexedMapOfShape()
     TopExp.MapShapes_s(shape, TopAbs_FACE, fmap)
     faces, kinds, blocks, tri_blocks, labels = [], [], [], [], []
+    defl = np.zeros(fmap.Extent())
     base = 0
     for i in range(1, fmap.Extent() + 1):
         face = TopoDS.Face_s(fmap.FindKey(i))
@@ -278,6 +279,8 @@ def _brep_surface(shape, mm: float):
         tri = BRep_Tool.Triangulation_s(face, loc)
         if tri is None or tri.NbTriangles() == 0:
             continue
+        # how far this face's triangles lie from its CAD surface (cad/fea_features COINCIDENT_BAND)
+        defl[i - 1] = max(0.0, float(tri.Deflection())) * mm
         trsf = loc.Transformation()
         nodes = []
         for k in range(1, tri.NbNodes() + 1):
@@ -303,7 +306,7 @@ def _brep_surface(shape, mm: float):
     # body, and never thinner than the model itself is sure of (cad/fea_features.wall_reach)
     tol = np.array([BRep_Tool.Tolerance_s(f) for f in faces], dtype=float) * mm
     surface = ff.Surface(xyz=xyz, tris=tris[keep], label=label[keep], names=names,
-                         body=_face_bodies(shape, fmap), tol_mm=tol)
+                         body=_face_bodies(shape, fmap), tol_mm=tol, defl_mm=defl)
     return surface, faces, kinds
 
 
@@ -608,10 +611,15 @@ def _record(s: ff.Surface, arcs: list[ff.Arc], *, bodies: int, basis: str, kinds
     if basis == "triangles":
         notes.append("A triangle file has no CAD faces: its smooth regions (Region_k) are measured, "
                      "and its radii are fitted to the triangles.")
-    return {"version": VERSION, "basis": basis, "unit": "mm", "bodies": int(bodies),
-            "face_names": "Face_k" if basis == "cad" else "Region_k", "faces": faces,
-            "thickness": thickness, "hot_spots": spots, "counts": counts, "complete": complete,
-            "notes": notes, "seconds": round(time.time() - started, 2)}
+    out = {"version": VERSION, "basis": basis, "unit": "mm", "bodies": int(bodies),
+           "face_names": "Face_k" if basis == "cad" else "Region_k", "faces": faces,
+           "thickness": thickness, "hot_spots": spots, "counts": counts, "complete": complete,
+           "notes": notes, "seconds": round(time.time() - started, 2)}
+    if thick.get("lying"):
+        # PLAN-fea-3: FACES OF ONE BODY LYING ON EACH OTHER (a zero-thickness skin or membrane), read through
+        # rather than taken for a wall - named, so the plan and the delivery can say where
+        out["coincident"] = [{"faces": [s.names[a], s.names[b]]} for a, b in thick["lying"]]
+    return out
 
 
 __all__ = ["FACT_KEY", "VERSION", "measure_cad", "measure_cad_file", "measure_cad_surface",
