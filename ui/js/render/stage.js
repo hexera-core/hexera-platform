@@ -24,7 +24,7 @@ import { changedAnswers, editsLine, noteDrawn, servedProposal } from "./geometry
 // a thermal model (an ECXML upload) has its own panel, card or stage alike
 import { bindThermalPanel, thermalPanelHtml } from "./thermal_form.js";
 // an FEA part has its own panel too: its size, unit, bodies and clean check, and no flow form
-import { bindFeaPanel, feaPanelHtml, followMeasure } from "./fea_form.js";
+import { bindFeaPanel, feaPanelHtml, followAssembly, followClean, followMeasure } from "./fea_form.js";
 // the run card's live line: the step running now, in plain words
 import { createRunLine } from "./run_progress.js";
 // the closing message of a finished run, as a summary rather than a wall of lines
@@ -326,7 +326,10 @@ export const Stage = {
     if(d&&d.proposal)this._gcServed=servedProposal(this._gcServed,d.proposal);
     followUnit(g,p,q.unit,q.unit_basis);followSuggestion(g,p,q.unit_suggestion);
     // an FEA part's measurement, when it lands after the card was drawn
-    if(d&&d.fea&&d.fea.measure)followMeasure(g,d.fea.measure,p,null);},
+    // the bodies, the clean check and the parts' joints follow too, each on its own
+    const fol=(fn)=>{try{fn();}catch(e){console.warn('FEA card: not redrawn',e);}};
+    if(d&&d.fea){fol(()=>followClean(g,d.fea));if(d.fea.assembly)fol(()=>followAssembly(g,d.fea.assembly));}
+    if(d&&d.fea&&d.fea.measure)fol(()=>followMeasure(g,d.fea.measure,p,null));},
 
   ensureProc(){if(this.proc)return;this.clearEmpty();
     const p=document.createElement('div');p.className='proc';

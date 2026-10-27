@@ -136,6 +136,11 @@ class ConfirmIn(BaseModel):
     fea_connection: str = ""
     #: SET BY THE SERVER for an FEA assembly, from the stored check: its parts, in plain words.
     parts_summary: str = ""
+    #: PLAN-fea-18: the stage's switch for the small-gap joins (on unless the user switched it off);
+    #: read into the run from the stored confirmation (application/fea_check.confirmed_gap_joins).
+    fea_gap_joins: bool | None = None
+    #: SET BY THE SERVER for an FEA assembly with small-gap joints: what the switch decided, in words.
+    gap_summary: str = ""
 
     @field_validator("extents")
     @classmethod
@@ -571,8 +576,16 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
         connection = ""
         if asm is not None:
             connection = fea_check.connection_answer(body.fea_connection) or fea_check.DEFAULT_CONNECTION
-        body = body.model_copy(update={"fea_connection": connection,
-                                       "parts_summary": fea_check.parts_words(asm) if asm else ""})
+        gaps = list((asm or {}).get("gap_joins") or [])
+        gap_on = fea_check.gap_joins_answer(body.fea_gap_joins) if body.fea_gap_joins is not None \
+            else fea_check.DEFAULT_GAP_JOINS
+        body = body.model_copy(update={
+            "fea_connection": connection,
+            "parts_summary": fea_check.parts_words(asm) if asm else "",
+            "fea_gap_joins": gap_on if gaps else None,
+            "gap_summary": (("Joined across small gaps: " if gap_on else "Left open (small gaps not joined): ")
+                            + "; ".join(g["words"].split(" - ")[0] for g in gaps[:8])
+                            + (f" and {len(gaps) - 8} more" if len(gaps) > 8 else "") + ".") if gaps else ""})
         proposed = _stored_check.get("proposal") or {}
         body = body.model_copy(update={
             "input_kind": "solid-body", "flow": None, "openings": [], "seed_point_mm": None,

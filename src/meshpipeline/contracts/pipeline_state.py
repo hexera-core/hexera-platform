@@ -134,6 +134,7 @@ class PipelineState(TypedDict):
     geometry_unsuitable_reason: str    # node_geometry_admission's reject reason (unmeshable input)
     flow_topology:      str            # "internal"/"external"/"" - DERIVED from purpose (neutral fact, NOT an engine_param)
     fea_connection:     str            # an FEA assembly: "bonded" | "contact", as confirmed on the stage ("" otherwise)
+    fea_gap_joins:      bool           # an FEA assembly: parts across a small gap joined there (PLAN-fea-18); True unless switched off
     mesh_manifest:      dict
     reviewer_result:         str
     reviewer_verdict:        str

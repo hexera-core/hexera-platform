@@ -337,6 +337,9 @@ def fea_confirmation_message(body) -> str:
         parts.append(f"An assembly of {said_parts}, meshed together as solids." if said_parts
                      else "An assembly of several parts, meshed together as solids.")
         parts.append(FEA_CONNECTION_WORDS.get(connection, FEA_CONNECTION_WORDS["bonded"]))
+        gap_said = str(getattr(body, "gap_summary", "") or "").strip()
+        if gap_said:
+            parts.append(gap_said)
     clean = str(getattr(body, "clean_summary", "") or "").strip().rstrip(".")
     if clean:
         parts.append(f"Clean check: {clean}.")

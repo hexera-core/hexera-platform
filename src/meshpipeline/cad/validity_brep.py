@@ -395,7 +395,7 @@ def _crossings(shape, diag: float, findings: list[Finding], measured: dict) -> b
         findings.append(Finding("bodies_overlap", ERROR,
                                 f"{len(overlap)} pair(s) of separate bodies pass into each other",
                                 len(overlap),
-                                tuple({"at": c, "bodies": [a + 1, b + 1],
+                                tuple({"at": c, "bodies": [int(a) + 1, int(b) + 1],
                                        "shared_volume_share": None if s is None else _r1(s)}
                                       for a, b, s in overlap[:MAX_PLACES]
                                       if (c := _centre_common(bodies[a], bodies[b])) is not None)))
