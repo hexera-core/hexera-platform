@@ -336,7 +336,7 @@ _SPUN_3D = ("Info    : Done meshing 2D (Wall 31s)\nInfo    : Meshing 3D...\n"
 
 
 def test_a_refinement_that_spins_is_a_failed_fill_and_the_next_pass_uses_hxt(staged, tmp_path, monkeypatch):
-    """LAD-fea-11: the watchdog stopped gmsh's 3D refinement as spinning (g_c0103, 3.8 hours): the part's,
+    """LAD-fea-90: the watchdog stopped gmsh's 3D refinement as spinning (g_c0103, 3.8 hours): the part's,
     not ours - the pass is a fill that failed, so the ladder goes on (LAD-fea-2: HXT) and delivers."""
     import asyncio
     from types import SimpleNamespace
@@ -374,7 +374,7 @@ def test_a_refinement_that_spins_is_a_failed_fill_and_the_next_pass_uses_hxt(sta
     assert ok, marker
     assert seen[:2] == ["delaunay", "hxt"]
     cited = dr.cited_for("t-spin")
-    assert any(e["rule"] == "LAD-fea-11" and e["decided"] == "spinning" for e in cited)
+    assert any(e["rule"] == "LAD-fea-90" and e["decided"] == "spinning" for e in cited)
     assert any(e["rule"] == "LAD-fea-2" for e in cited)
     # never told as a guard trip (ours): no stall or ceiling verdict
     assert not any(e.get("stage") == "fea_time" and e["decided"] in ("stalled", "ceiling") for e in cited)

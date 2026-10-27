@@ -361,7 +361,7 @@ def _note_fea_threads(ws: Path) -> None:
         logger.debug("fea threads not noted")
 
 
-#: LAD-fea-11: gmsh's 3D refinement is SPINNING - inserting points and throwing nearly all of them
+#: LAD-fea-90: gmsh's 3D refinement is SPINNING - inserting points and throwing nearly all of them
 #: away - when, past REFINE_SPIN_MIN_ITERATIONS, the points it rejected outnumber the nodes it kept
 #: REFINE_SPIN_RATIO times over, at two looks REFINE_SPIN_HOLD_S apart. A refinement that gets there
 #: keeps printing and burning CPU, so the stall watch never stops it: g_c0103 (a 9-part Inventor
@@ -396,7 +396,7 @@ def spinning_now(counts: tuple[int, int, int] | None) -> bool:
 
 
 class RefineSpin:
-    """LAD-fea-11: asked at every watchdog look (sandbox/safe_exec.run_watched `spinning`): True once
+    """LAD-fea-90: asked at every watchdog look (sandbox/safe_exec.run_watched `spinning`): True once
     gmsh's 3D refinement has been spinning (spinning_now) for REFINE_SPIN_HOLD_S."""
 
     def __init__(self, log_path: Path, *, hold_s: float = REFINE_SPIN_HOLD_S, clock=None) -> None:

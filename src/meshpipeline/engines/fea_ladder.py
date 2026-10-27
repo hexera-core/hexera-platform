@@ -18,7 +18,7 @@ the FIRST trigger that holds pulls its lever, if that lever was not pulled alrea
              saying so (two lab parts spent an hour each on a second pass killed the same way).
   LAD-fea-8  A SURFACE STAGE THAT STALLS (the watchdog stopped gmsh in 2D) -> gmsh's first mesh of
              every face is kept (no switch to MeshAdapt), its repeated triangles dropped (MESH-5)
-  LAD-fea-11 A 3D REFINEMENT THAT SPINS (the watchdog read gmsh rejecting nearly every point it
+  LAD-fea-90 A 3D REFINEMENT THAT SPINS (the watchdog read gmsh rejecting nearly every point it
              inserts, engines/gmsh/gmsh_runner.RefineSpin) -> a fill that failed: LAD-fea-2 and on
   LAD-fea-6  NO IDENTICAL RETRY: the surfaces a failed pass went wrong on (the fill named them, or
              an invalid element touches them) are meshed the other way (gmsh's MeshAdapt) on the
