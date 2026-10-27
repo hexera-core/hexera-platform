@@ -395,7 +395,8 @@ def test_a_part_gmsh_cannot_mesh_is_delivered_by_the_last_rung(tmp_path, monkeyp
     assert ok, marker
     assert read_refusal(ws) is None
     passes = json.loads((ws / "fea_passes.json").read_text())
-    rung = [p for p in passes["passes"] if p.get("engine") == "ftetwild"]
+    # the rung's own passes (LAD-fea-13's refinement after it, when its mesh is short, is its own test's)
+    rung = [p for p in passes["passes"] if p.get("engine") == "ftetwild" and "refine" not in p]
     gm = [p for p in passes["passes"] if p.get("engine") != "ftetwild"]
     # every gmsh option first (the fixed ladder's passes), the rung after them, delivered
     assert len(gm) == calls.count(None) >= 2 and not any(p["valid"] for p in gm)
