@@ -327,7 +327,7 @@ def size_fields(gmsh, plan: dict, surfaces: set[int], face_tags: dict[str, list[
                            "dist_max": reach + (base - size) / max(g1, 1e-6), "sampling": int(n_s)})
     if not ids:
         return None
-    ids = reach_restricted(gmsh, ids, bounds, base, **({"whole": whole} if whole else {}))
+    ids = reach_restricted(gmsh, ids, bounds, base, whole=whole) if whole else reach_restricted(gmsh, ids, bounds, base)
     if len(ids) == 1:
         return ids[0]
     m = gmsh.model.mesh.field.add("Min")
