@@ -112,6 +112,32 @@ def test_a_fuse_the_surfaces_contradict_is_set_aside(monkeypatch):
     assert [(i["kind"], i["parts"]) for i in interfaces] == [("touching", ["Part_1", "Part_2"])]
 
 
+@pytest.mark.parametrize("build,kind", [(fx.overlapping_blocks, "overlap"), (fx.doubled_block, "overlap"),
+                                        (fx.touching_blocks, "touching")])
+def test_interference_and_a_body_drawn_twice_agree_with_the_fuse(build, kind):
+    """INTERFERENCE (two cubes passing into each other) is measured as surfaces that cross; a body drawn
+    twice as wholly inside: the fuse's answer stands and the join check finds nothing to set aside."""
+    rec = A.record(build(), mm_per_unit=1.0)
+    assert [i["kind"] for i in rec["interfaces"]] == [kind]
+    assert (rec.get("joins") or {}).get("findings", []) == []
+    parts = A.solids(build())
+    m = J.measure(parts, tol=1e-5, mm_per_unit=1.0)
+    assert [jt.kind for jt in m.joints.values()] == [kind]
+
+
+def test_parts_further_apart_than_the_gap_limit_are_not_joined():
+    """Two cubes 1 mm apart (more than 2% of a 10 mm cube): no joint, and nothing for the fuse to miss."""
+    rec = A.record(fx.gapped_blocks(10.0, 1.0), mm_per_unit=1.0)
+    assert rec["interfaces"] == [] and "joins" not in rec
+
+
+def test_cubes_a_tenth_of_a_millimetre_apart_are_joined_across_the_gap():
+    rec = A.record(fx.gapped_blocks(10.0, 0.1), mm_per_unit=1.0)
+    (itf,) = rec["interfaces"]
+    assert itf["kind"] == "gap" and itf["gap_mm"] == pytest.approx(0.1, abs=1e-4)
+    assert itf["area_mm2"] == pytest.approx(100.0, rel=0.05)
+
+
 def test_the_gap_switch_off_joins_no_gap(clean):
     parts = A.solids(fx.anchorage(skin=False))
     vols = [A._props(s, True)[0] for s in parts]

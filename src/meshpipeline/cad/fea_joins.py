@@ -363,7 +363,7 @@ def _on_face(points: np.ndarray, face, uv_mesh=None) -> tuple[np.ndarray, np.nda
 
 
 def _facing(sa: _Surface, a: int, fa, sb: _Surface, b: int, fb, limit: float, reach: float, tol: float,
-            spacing: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+            spacing: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
     """Face a's samples that face face b within `limit`: (their places, their areas, their gaps). Face
     a's triangles within `reach` of face b's points are split to `spacing`, each sample is put exactly
     on face a and measured exactly to face b: it faces b when that is within the limit, their outward
@@ -371,11 +371,11 @@ def _facing(sa: _Surface, a: int, fa, sb: _Surface, b: int, fb, limit: float, re
 
     mine = np.flatnonzero(sa.face == a)
     theirs, their_tree = _face_points(sb, b)
-    empty = (np.zeros((0, 3)), np.zeros(0), np.zeros(0))
+    empty = (np.zeros((0, 3)), np.zeros(0), np.zeros(0), 0.0)
     if not len(mine) or not len(theirs):
         return empty
     if their_tree is None:
-        return (np.zeros((0, 3)), np.zeros(0), np.zeros(0))
+        return empty
     d, _k = their_tree.query(sa.centres[mine], k=1, distance_upper_bound=reach)
     tris = sa.tris[mine[np.isfinite(d)]]
     if not len(tris):
@@ -412,7 +412,10 @@ def _facing(sa: _Surface, a: int, fa, sb: _Surface, b: int, fb, limit: float, re
     opposed = np.einsum("ij,ij->i", n_a, n_b) <= -math.cos(math.radians(FACING_DEG))
     ahead = np.einsum("ij,ij->i", on_b - on_a, n_a) >= -tol
     m = ok_b & (gap <= limit) & opposed & ((gap <= tol) | ahead)
-    return on_a[m], area[m], gap[m]
+    # LYING ON IT, THE SAME SIDE OUT: the two parts' material on the same side of one surface - a body drawn
+    # twice, or two parts passing into each other flush with a shared face
+    aligned = ok_b & (gap <= tol) & (np.einsum("ij,ij->i", n_a, n_b) >= math.cos(math.radians(FACING_DEG)))
+    return on_a[m], area[m], gap[m], float(area[aligned].sum())
 
 
 # #
@@ -583,10 +586,13 @@ def measure(parts: list, *, tol: float, mm_per_unit: float, budget_s: float = BU
         fine = max(min(limit / 2.0, math.sqrt(min_area) / 2.0), tol)
         slack = SAMPLE_SHARE * (diags[i] + diags[j]) + tol
         seen: list[tuple[int, int, np.ndarray, np.ndarray, np.ndarray, float]] = []
+        flush: dict[tuple[int, int], float] = {}
         crossing: list[tuple[int, int, list[np.ndarray]]] = []
         for (a, b), dd in sorted(approx.items()):
-            pa, aa, ga = _facing(si, a, faces[i][a], sj, b, faces[j][b], limit, reach, tol, fine)
-            _pb, ab, _gb = _facing(sj, b, faces[j][b], si, a, faces[i][a], limit, reach, tol, fine)
+            pa, aa, ga, on_a = _facing(si, a, faces[i][a], sj, b, faces[j][b], limit, reach, tol, fine)
+            _pb, ab, _gb, on_b = _facing(sj, b, faces[j][b], si, a, faces[i][a], limit, reach, tol, fine)
+            if min(on_a, on_b) > 0:
+                flush[(a, b)] = min(on_a, on_b)
             if aa.sum() > 0 and ab.sum() > 0:
                 seen.append((a, b, pa, aa, ga, float(ab.sum())))
                 continue
@@ -630,7 +636,10 @@ def measure(parts: list, *, tol: float, mm_per_unit: float, budget_s: float = BU
                                        gap=0.0 if gap <= tol else gap,
                                        gap_max=float(g[:, 0].max()) if gap > tol else 0.0,
                                        at=[float(x) for x in where / max(wsum, 1e-300)], limit=limit)
-        elif crossing:
+        elif crossing or sum(flush.values()) >= min_area:
+            # surfaces that cross, or lie on each other the same side out: the parts pass into each other
+            if not crossing:
+                crossing = [(a, b, [0.5 * (fboxes[i][a][0] + fboxes[i][a][1])]) for (a, b) in flush]
             pts = np.vstack([np.array(at) for _a, _b, at in crossing])
             out.joints[(i, j)] = Joint(i + 1, j + 1, OVERLAP, faces_a=sorted({a + 1 for a, _b, _at in crossing}),
                                        faces_b=sorted({b + 1 for _a, b, _at in crossing}),
