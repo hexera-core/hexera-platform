@@ -195,13 +195,16 @@ def local_floor(gmsh, plan: dict, entities: list[tuple[int, int]], tags_of) -> d
 
 def plan_merges(gmsh, plan: dict, *, face_tags: dict[str, list[int]] | None = None,
                 protected: set[int] | None = None, groups: dict[int, str] | None = None,
-                floor_of=None) -> dict:
+                floor_of=None, frozen: set[int] | None = None) -> dict:
     """MESH-9's decisions on the current (synchronised, not yet meshed) model, at the plan's sizes as the
     model reads them: {"faces": {tiny surface: neighbour}, "chains": [[curves]...], "alone": [surfaces],
     "rows": [...] (the record)}. Empty lists everywhere when nothing is tiny. `groups` (the CFD path): each
     surface's named group (inlet, outlet, wall...) - a face only ever merges into a face of its own group;
-    `floor_of(entities)` -> {entity: smallest size there} in place of the plan's zones (the CFD path's)."""
-    protected = set(protected or ())
+    `floor_of(entities)` -> {entity: smallest size there} in place of the plan's zones (the CFD path's).
+    `frozen`: surfaces whose mesh this pass does not make (an earlier pass's kept parts, LAD-fea-11) - never
+    merged, merged into, or bounded by a compound curve."""
+    frozen = {int(t) for t in frozen or ()}
+    protected = set(protected or ()) | frozen
     base = float(plan["base_size_m"])
     limit_base = TINY_SHARE * base
 
@@ -223,8 +226,8 @@ def plan_merges(gmsh, plan: dict, *, face_tags: dict[str, list[int]] | None = No
         per = sum(length.get(c, 0.0) for c in bound[s])
         width[s] = 2.0 * _area(gmsh, s) / per if per > 0 else 0.0
     # CANDIDATES by the base size first (the local size is never above it), then held to their own floor
-    cand_s = [s for s in surfaces if 0.0 < width[s] < limit_base]
-    cand_c = [c for c in curves if 0.0 < length[c] < limit_base]
+    cand_s = [s for s in surfaces if 0.0 < width[s] < limit_base and s not in frozen]
+    cand_c = [c for c in curves if 0.0 < length[c] < limit_base and not frozen & set(_faces_of(gmsh, c))]
     empty: dict = {"faces": {}, "chains": [], "alone": [], "rows": [], "short": []}
     if not cand_s and not cand_c:
         return empty
@@ -292,6 +295,8 @@ def plan_merges(gmsh, plan: dict, *, face_tags: dict[str, list[int]] | None = No
         if c in erased:
             continue
         fs = _faces_of(gmsh, c)
+        if frozen & set(fs):
+            continue
         rs = tuple(sorted({region[f] for f in fs}))
         if len(fs) == 2 and len(rs) == 2:
             pair_of[c] = rs
@@ -417,6 +422,11 @@ def apply(gmsh, merges: dict) -> None:
     gmsh.option.setNumber("Mesh.CompoundClassify", 1)
     # the model's own entities, before meshing adds the compounds' (settle_nodes tells them apart)
     merges["entities"] = [(int(d), int(t)) for d, t in gmsh.model.getEntities()]
+    # a member meshed before (a mesh file read back - LAD-fea-11's kept parts - holds every curve an earlier
+    # pass meshed) starts afresh: a compound never meets segments an earlier compound laid on its curves
+    stale = [dt for dt in members(merges) if sum(len(x) for x in gmsh.model.mesh.getElements(*dt)[1])]
+    if stale:
+        gmsh.model.mesh.clear(stale)
     regions: dict[int, list[int]] = {}
     for s, n in merges["faces"].items():
         regions.setdefault(int(n), [int(n)]).append(int(s))
@@ -482,6 +492,15 @@ def settle_nodes(gmsh, merges: dict) -> int:
     # where it was, its parameters with it), and every node of a member put exactly on it, with its
     # parameters there
     gmsh.model.mesh.reclassifyNodes()
+    # the compounds' own entities, now empty, leave the model: a mesh file written later (LAD-fea-11's kept
+    # parts) never carries them, so a later pass's compounds never meet one under their own tag
+    spent = [(d, t) for d, t in gmsh.model.getEntities() if d in (1, 2) and (int(d), int(t)) not in before
+             and not sum(len(x) for x in gmsh.model.mesh.getElements(d, t)[1])]
+    for d, t in sorted(spent, reverse=True):          # surfaces first: a curve bounding one stays
+        try:
+            gmsh.model.removeEntities([(d, t)])
+        except Exception:  # noqa: BLE001 - an entity gmsh holds on to stays; it has no element
+            pass
     for d, t in own:
         tags, xyz, _par = gmsh.model.mesh.getNodes(d, t, includeBoundary=False, returnParametricCoord=True)
         if not len(tags):

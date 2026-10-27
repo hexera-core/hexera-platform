@@ -1318,7 +1318,8 @@ def _build(gmsh, ws: Path, plan: dict, geom: Path, asm: dict | None, sidecar: di
         gmsh.option.setNumber("Mesh.MeshOnlyVisible", 0)
         return {"vols": all_vols, "surfaces": all_surfaces, "face_tags": face_tags, "surface_tag": surface_tag,
                 "volume_tag": volume_tag, "part_volumes": part_volumes, "micro_curves": micro,
-                "repeated_triangles": repeated, "rung_volumes": rung_vols, "gmsh_volumes": sorted(vols)}
+                "repeated_triangles": repeated, "rung_volumes": rung_vols, "gmsh_volumes": sorted(vols),
+                **({"tiny": merges} if TINY.active(merges) else {})}
     return {"vols": vols, "surfaces": surfaces, "face_tags": face_tags, "surface_tag": surface_tag,
             "volume_tag": volume_tag, "part_volumes": part_volumes, "micro_curves": micro,
             "repeated_triangles": repeated, **({"tiny": merges} if TINY.active(merges) else {})}
