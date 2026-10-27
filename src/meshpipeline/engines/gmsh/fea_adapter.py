@@ -943,7 +943,8 @@ def assembly_summary(asm: dict, sidecar: dict, prep) -> dict:
     return {"connection": asm.get("connection"), "mode": sidecar.get("mode"),
             "parts": [{"id": p["id"], "name": p["name"], "elements": p["last"] - p["first"] + 1} for p in prep.parts],
             "joints": [{"name": j.name, "kind": j.kind, "parts": [f"Part_{j.parts[0]}", f"Part_{j.parts[1]}"],
-                        "slave": j.sides[0].name, "master": j.sides[1].name, "overlap": j.overlap}
+                        "slave": j.sides[0].name, "master": j.sides[1].name, "overlap": j.overlap,
+                        **({"reach_m": j.reach} if j.reach else {})}
                        for j in prep.joints],
             # a part with no elements of its own: wholly inside another, so fused with it (bonded)
             "absorbed": [p["id"] for p in sidecar.get("parts") or []

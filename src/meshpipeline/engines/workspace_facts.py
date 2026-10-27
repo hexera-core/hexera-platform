@@ -57,6 +57,25 @@ def read_input_kind(workspace) -> str:
         return ""
 
 
+#: INS-8: the leak size the user confirmed on the stage, beside the run's surface (written by the
+#: builder's workspace, agents/builder/workspace.py).
+LEAK_CLOSING_FILE = "leak_closing.json"
+
+
+def read_leak_closing(workspace) -> float:
+    """The leak size the user confirmed on the stage, in metres (INS-8): every leak of the surface up
+    to that wide is closed for the mesh. 0.0 when none was confirmed (no leaks, or switched off)."""
+    try:
+        p = Path(workspace) / LEAK_CLOSING_FILE
+        if not p.exists():
+            return 0.0
+        rec = json.loads(p.read_text(encoding="utf-8"))
+        v = float(rec.get("close_up_to_m") or 0.0) if isinstance(rec, dict) else 0.0
+        return v if 0.0 < v < float("inf") else 0.0
+    except Exception:  # noqa: BLE001 - unreadable means nothing confirmed, never fatal
+        return 0.0
+
+
 def read_far_field_request(workspace) -> dict:
     """The approved far-field request the builder recorded: {requested_extents, reference_length_m,
     flow_axis}, each present only when the intake approved one; {} for none (internal flow, a

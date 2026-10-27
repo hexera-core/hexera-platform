@@ -153,6 +153,32 @@ export function tableHead() {
   return `<thead><tr><th>#</th><th>Name</th><th>Role</th><th>Size</th><th class="gc-pos">Position</th><th>Sure</th><th></th></tr></thead>`;
 }
 
+/** THE LEAKS (INS-8): the gaps the check found in the surface, each with its width and place, and
+ *  the one switch that closes every one up to the size beside it - for the mesh only, never in the
+ *  file. On by default at the check's own size; the user can switch it off or change the size. */
+export function leaksHtml(p) {
+  const lk = p && p.leaks;
+  if (!lk || !Number(lk.found)) return "";
+  const shown = (lk.leaks || []).slice(0, 5);
+  const at = (x) => (x.at_mm || []).map((v) => fmt3(raw(Number(v), p))).join(", ");
+  const rows = shown.map((x) => `${fmt3(raw(num(x.width_mm, 0), p))} ${unitOf(p)} wide at (${at(x)})`).join("; ");
+  const more = Number(lk.found) > shown.length ? `; and ${Number(lk.found) - shown.length} more` : "";
+  const n = Number(lk.found);
+  return `<div class="rc-row gc-leaks"><div class="rc-k">Leaks</div><div class="rc-v">
+      <label><input class="gc-leak-on" type="checkbox" checked> close every leak up to</label>
+      <input class="gc-num gc-leak-size" type="number" min="0" step="any" value="${exact(raw(num(lk.close_up_to_mm, 0), p))}" aria-label="the widest leak to close"> ${sym(p)}
+      <div class="gc-note">${esc(`${n} leak${n === 1 ? "" : "s"} in the surface: ${rows}${more}. They are closed for the mesh only; your file is not changed.`)}</div>
+    </div></div>`;
+}
+
+/** The leak size the form holds, in the reading's millimetres: 0 when switched off, undefined when
+ *  the check found no leaks (the server then takes nothing). */
+export function readLeaks(root, p) {
+  const on = root.querySelector(".gc-leak-on"), size = root.querySelector(".gc-leak-size");
+  if (!on || !size) return undefined;
+  return on.checked ? Math.max(0, typed(num(size.value, 0), p)) : 0;
+}
+
 /** The form for one proposal: the kind and flow selects, the openings table, the notes, and the
  *  one action. Every row carries its opening id so the reader can find it again. */
 export function formHtml(p) {
@@ -177,6 +203,7 @@ export function formHtml(p) {
     ${rows ? `<table class="gc-table">${tableHead()}<tbody>${rows}</tbody></table>`
            : `<div class="gc-note">No openings found. Add one below if the fluid flows through this part.</div>`}
     <div class="gc-tools"><button class="gc-add v-btn" type="button">Add an opening</button><button class="gc-measure v-btn" type="button" title="measure between two points on the part">Measure</button><span class="gc-tools-hint">then click the part where it is</span></div>
+    ${leaksHtml(p)}
     </div>
     ${external}
     ${notes}
@@ -344,6 +371,7 @@ export function readForm(root, p) {
                  // in, for the server to record the unit and re-read every length in it
                  scale_to_m: p.scale_to_m == null ? null : Number(p.scale_to_m), unit: unitOf(p) };
   if (flow === "external") Object.assign(body, readExternal(root, p));
+  else { const leaks = readLeaks(root, p); if (leaks !== undefined) body.close_leaks_mm = leaks; }
   // WHICH WAY IS UP: the stage's Up control where it has one, else what the check proposed
   const upSel = root.closest ? root.closest(".gc-stage")?.querySelector(".v-up select") : null;
   const up = (upSel && upSel.value) || p.up_axis;

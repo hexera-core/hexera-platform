@@ -297,6 +297,8 @@ def map_holes(mesh: _Mesh, imap, shaped: list[Hole]) -> list[Hole]:
     for h in shaped:
         if h.equivalent_diameter >= small:
             continue                        # the map saw this loop, and it is no mouth
+        if imap.leaks:
+            continue                        # a leaky reading's small hole is a leak (INS-8): no opening
         if any(float(np.linalg.norm(h.centroid - o.centroid)) <= 0.5 * max(h.equivalent_diameter, o.equivalent_diameter)
                for o in out):
             continue
