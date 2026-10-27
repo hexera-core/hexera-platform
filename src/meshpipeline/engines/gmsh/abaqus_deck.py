@@ -60,6 +60,9 @@ class SolidMesh:
     faces: dict[int, np.ndarray] = field(default_factory=dict)
     #: (E,) the mesher's own element numbers, in `elements` order (empty when not known)
     element_tags: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    #: a CAD solid's faces are named by their own tag (Face_k = CAD face k), so a face that holds no
+    #: triangle (MESH-8: merged into its neighbour) never renames the faces after it; off, the k-th face
+    by_tag: bool = False
 
 
 @dataclass
@@ -163,7 +166,7 @@ def face_sets(mesh: SolidMesh) -> list[FaceSet]:
     for k, (tag, e, lab) in enumerate(zip(tags, np.split(e_all, cuts), np.split(lab_all, cuts), strict=True),
                                       start=1):
         nodes = np.unique(elements[e[:, None], table[lab - 1]])
-        out.append(FaceSet(name=f"Face_{k}", tag=int(tag), elements=e + 1, labels=lab,
+        out.append(FaceSet(name=f"Face_{int(tag) if mesh.by_tag else k}", tag=int(tag), elements=e + 1, labels=lab,
                            nodes=nodes))
     return out
 
@@ -243,7 +246,7 @@ def write_inp(path: Path | str, mesh: SolidMesh, aliases: dict[str, list[int]] |
     order = np.argsort(np.asarray(mesh.element_volume), kind="stable")
     elements = elements[order]
     vol = np.asarray(mesh.element_volume)[order]
-    fsets = face_sets(SolidMesh(mesh.node_ids, mesh.xyz, elements, vol, mesh.faces))
+    fsets = face_sets(SolidMesh(mesh.node_ids, mesh.xyz, elements, vol, mesh.faces, by_tag=mesh.by_tag))
     vols = list(dict.fromkeys(int(v) for v in vol))
     alias_out, cad_names = _alias_names(fsets, vols, aliases or {}, face_names or {})
 
@@ -312,9 +315,9 @@ def write_inp(path: Path | str, mesh: SolidMesh, aliases: dict[str, list[int]] |
             "cad_face_names": cad_names}
 
 
-def from_gmsh(gmsh, volumes: list[int]) -> SolidMesh:
+def from_gmsh(gmsh, volumes: list[int], *, by_tag: bool = False) -> SolidMesh:
     """The current gmsh model's volume mesh over ``volumes`` and the triangles of every CAD
-    face that bounds one of them."""
+    face that bounds one of them (``by_tag``: a CAD solid, its faces named by their own tags)."""
     tags, coords, _ = gmsh.model.mesh.getNodes()
     xyz = np.asarray(coords, dtype=float).reshape(-1, 3)
     conn_blocks, vol_blocks, tag_blocks = [], [], []
@@ -346,4 +349,4 @@ def from_gmsh(gmsh, volumes: list[int]) -> SolidMesh:
             faces[s] = np.concatenate(blocks)
     return SolidMesh(node_ids=np.asarray(tags, dtype=np.int64), xyz=xyz, elements=elements,
                      element_volume=np.concatenate(vol_blocks), faces=faces,
-                     element_tags=np.concatenate(tag_blocks))
+                     element_tags=np.concatenate(tag_blocks), by_tag=by_tag)

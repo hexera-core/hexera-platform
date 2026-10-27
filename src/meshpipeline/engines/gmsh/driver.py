@@ -933,14 +933,15 @@ def _bound_groups(gmsh, surfaces, ports, *, cad: bool = False) -> list[dict]:
     return groups
 
 
-def _mesh_cad_at_mm(gmsh, geom: Path, h: float, cb) -> float:
+def _mesh_cad_at_mm(gmsh, geom: Path, h: float, cb, k: float | None = None) -> float:
     """MESH-4 for a CAD solid the CFD path could not mesh in metres: the same file read again at the
     CAD's own millimetre scale (the same entities, so the same tags and physical groups), sized the
     same (the clamp size and the passage field, both times the scale) and meshed. Returns the scale;
-    the caller brings the mesh back to metres after curving it."""
+    the caller brings the mesh back to metres after curving it. `k` = 1 (MESH-8's retry): read again
+    and meshed in metres as any solid is, with no compound."""
     from meshpipeline.engines.gmsh.fea_adapter import MM_PER_M, drop_repeated_triangles, micro_curves_one_segment
 
-    k = MM_PER_M
+    k = MM_PER_M if k is None else float(k)
     groups = [(dim, [int(t) for t in gmsh.model.getEntitiesForPhysicalGroup(dim, tag)],
                gmsh.model.getPhysicalName(dim, tag)) for dim, tag in gmsh.model.getPhysicalGroups()]
     if cb is not None:
@@ -957,6 +958,11 @@ def _mesh_cad_at_mm(gmsh, geom: Path, h: float, cb) -> float:
         gmsh.model.addPhysicalGroup(dim, tags, name=name)
     gmsh.option.setNumber("Mesh.MeshSizeMax", h * k)
     gmsh.option.setNumber("Mesh.MeshSizeMin", h / 20.0 * k)
+    if k == 1.0:
+        if cb is not None:
+            gmsh.model.mesh.setSizeCallback(cb)
+        gmsh.model.mesh.generate(3)
+        return k
     micro = micro_curves_one_segment(gmsh)
     if micro:
         print(f"[GMSH] micro curve(s) {micro[:20]} meshed as one segment each (MESH-4)", file=sys.stderr)
@@ -1205,10 +1211,24 @@ def main(workspace: str) -> int:
             gmsh.model.mesh.setSizeCallback(_cb)
         else:
             print(f"[GMSH] passage sizing not applied: {_why}", file=sys.stderr)
+        # MESH-8 (as the FEA path): a CAD face or edge far below the element size this mesh places there
+        # (the clamp, the curvature sizing, the passage field) is meshed as part of its smooth neighbour
+        # in the same group; nothing tiny, nothing set
+        from meshpipeline.engines.gmsh import fea_tiny as TINY
+        _tiny: dict = {}
+        if not (staged or classified or external):
+            _tiny = TINY.plan_merges(gmsh, TINY.cfd_plan(h), groups=TINY.physical_groups(gmsh),
+                                     floor_of=TINY.cfd_floor(gmsh, h, h / 20.0,
+                                                             int(spec.get("curvature_nodes", 24)), _cb))
+            TINY.apply(gmsh, _tiny)
         # MESH-4: the scale the CAD was meshed at (1: the staged metres)
         _scale = 1.0
         _cad = not (staged or classified or external)
         try:
+            if TINY.active(_tiny):
+                # MESH-8: the compounds' nodes back on their CAD faces and curves before the fill
+                gmsh.model.mesh.generate(2)
+                TINY.settle_nodes(gmsh, _tiny)
             gmsh.model.mesh.generate(3)
             if staged and not any(len(t) for t in gmsh.model.mesh.getElements(3)[1]):
                 # gmsh can fail to recover the boundary, say so in its log and carry on with
@@ -1220,7 +1240,19 @@ def main(workspace: str) -> int:
                 if _hollow:
                     raise RuntimeError(f"{EMPTY_VOLUMES} the 3D fill left volume(s) {_hollow} with no elements")
         except Exception as exc:  # noqa: BLE001 - a staged surface gets one other remesh, below
-            if _cad:
+            if _cad and TINY.active(_tiny):
+                # MESH-8: a merge never costs the solid the mesh it had - meshed again with every face as
+                # drawn, then (should that fail too) at the CAD's own scale as before
+                print(f"[GMSH] the solid with tiny faces merged could not be meshed ({str(exc)[:200]}); "
+                      f"meshing it again with every face as drawn ({TINY.RULE})", file=sys.stderr)
+                _tiny = {}
+                try:
+                    _scale = _mesh_cad_at_mm(gmsh, geom, h, _cb, k=1.0)
+                except Exception as again:  # noqa: BLE001 - MESH-4 below
+                    print(f"[GMSH] the solid could not be meshed at the metre scale ({str(again)[:200]}); "
+                          "meshing it again at the CAD's own millimetre scale (MESH-4)", file=sys.stderr)
+                    _scale = _mesh_cad_at_mm(gmsh, geom, h, _cb)
+            elif _cad:
                 # MESH-4 (as the FEA path): a CAD solid gmsh could not mesh in metres - OpenCASCADE's
                 # fixed tolerances swallow nanometre edges where one feature grazes another - is
                 # meshed again at the CAD's own millimetre scale, then brought back to metres
@@ -1279,10 +1311,18 @@ def main(workspace: str) -> int:
             # after it (as it was) it optimised nothing and curved elements shipped as snapped
             gmsh.option.setNumber("Mesh.HighOrderOptimize", 2)  # elastic+optim
             gmsh.model.mesh.setOrder(order)
+            # MESH-8: the midside nodes on a compound's faces and curves onto the CAD by their edges' middles
+            TINY.curve_midsides(gmsh, _tiny)
         if _scale != 1.0:
             # MESH-4: curved on the CAD at the scale it was meshed at, then back to metres
             from meshpipeline.engines.gmsh.fea_adapter import to_m
             to_m(gmsh, _scale)
+        # MESH-8: each merged face's elements into its neighbour (the same named group), and the record
+        _tiny_out: dict = {}
+        if TINY.active(_tiny):
+            _moved = TINY.fold_in(gmsh, _tiny)
+            _tiny_out = {**TINY.record(_tiny, lambda ts: [f"Face_{int(t)}" for t in ts], _scale),
+                         "elements_moved": int(sum(_moved.values()))}
 
         # Quality: SICN over the volume elements (signed inverse condition
         # number - Gmsh's standard quality measure; 0 = degenerate, 1 = ideal).
@@ -1324,7 +1364,7 @@ def main(workspace: str) -> int:
         # writer: that one adds every named face as flat CPS6 elements with no section, and
         # CalculiX refuses the file. Here the deck holds only the 3D elements, and every CAD face
         # is a named element-face *SURFACE + *NSET (Face_k), the plan's groups aliases over them.
-        _deck = _write_deck(gmsh, ws, discrete=discrete)
+        _deck = _write_deck(gmsh, ws, discrete=discrete, by_tag=bool(_tiny_out))
         gmsh.write(str(ws / "mesh.msh"))
         _extras = [e for e in spec.get("extra_exports", []) or [] if e in ("bdf", "unv")]
         if "unv" in _extras:
@@ -1366,6 +1406,8 @@ def main(workspace: str) -> int:
             "default_group_used": bool(leftover),
             # what the delivered deck names: Face_k -> CAD face tag, and each group's faces
             "deck": _deck,
+            # MESH-8: the tiny CAD faces meshed as part of a neighbour, and into which face each went
+            **({"tiny_faces": _tiny_out} if _tiny_out else {}),
             **({"surface_source": "input.stl, classified"} if classified else {}),
             **({"surface_source": "fluid_boundary.stl, staged"} if staged else {}),
             **_external,
@@ -1377,11 +1419,12 @@ def main(workspace: str) -> int:
         gmsh.finalize()
 
 
-def _write_deck(gmsh, ws: Path, *, discrete: bool, source: str = "Hexera gmsh engine") -> dict:
+def _write_deck(gmsh, ws: Path, *, discrete: bool, source: str = "Hexera gmsh engine", by_tag: bool = False) -> dict:
     """mesh.inp from the meshed model: the solid group's volumes, every CAD face that bounds
     them as Face_k, each named surface group (the plan's, and the default group) as an alias,
     and the CAD's own face names where it has them - read from the staging record for a B-rep,
-    and the surface's own names (an STL solid per patch) for a discrete surface."""
+    and the surface's own names (an STL solid per patch) for a discrete surface. `by_tag`: a CAD solid's
+    faces named by their own tags (MESH-8 leaves a merged face with no triangle)."""
     from meshpipeline.engines.gmsh.abaqus_deck import from_gmsh, write_inp
     solid = [int(t) for _d, p in gmsh.model.getPhysicalGroups(3)
              for t in gmsh.model.getEntitiesForPhysicalGroup(3, p)]
@@ -1399,7 +1442,7 @@ def _write_deck(gmsh, ws: Path, *, discrete: bool, source: str = "Hexera gmsh en
             names = names_for_model(gmsh, ws)
     except Exception as exc:  # noqa: BLE001 - a courtesy: every face is still Face_k
         print(f"[GMSH] CAD face names not read: {exc}", file=sys.stderr)
-    return write_inp(ws / "mesh.inp", from_gmsh(gmsh, sorted(set(solid))), aliases,
+    return write_inp(ws / "mesh.inp", from_gmsh(gmsh, sorted(set(solid)), by_tag=by_tag), aliases,
                      face_names=names, units="m", source=source)
 
 
