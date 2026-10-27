@@ -295,13 +295,19 @@ def finish(record: Mapping, zone_list: list[dict], hist: Histogram, *, diag_m: f
     LIMIT_AIM of `limit` (PLAN-fea-8)."""
     base = diag_m / MIN_DIVISIONS
     est = elements(hist, base, PER_H3)
-    fits = hist.complete and est <= LIMIT_AIM * float(limit)
+    # an octree that stopped short is a floor on the estimate: the plan fits when even its CEILING does
+    # (fea_size_field.Histogram.upper) - never coarsened for the octree's own cube budget (PLAN-fea-8)
+    ceiling = None if hist.complete or hist.upper is None else elements(hist.upper, base, PER_H3)
+    fits = est <= LIMIT_AIM * float(limit) and (hist.complete or (ceiling is not None
+                                                                 and ceiling <= LIMIT_AIM * float(limit)))
     plan: dict = {
         "version": VERSION,
         "element": {"family": "tetrahedra", "order": 2, "solid_only": True},
         "base_size_m": _r(base), "growth": float(growth), "per_h3": PER_H3,
         "zones": zone_list, "histogram": hist.as_list(), "histogram_complete": hist.complete,
-        "estimate": {"elements": int(round(est))},
+        **({"histogram_ceiling": Histogram(rows=hist.upper).as_list()} if hist.upper is not None and ceiling is not None
+           else {}),
+        "estimate": {"elements": int(round(est)), **({"ceiling": int(round(ceiling))} if ceiling is not None else {})},
         "limit": {"elements": int(limit)},
         "fits": bool(fits), "levers": list(levers or []),
         # PLAN-fea-10: the cusps the adapter sets aside (metres, the mesh's unit)

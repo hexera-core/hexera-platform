@@ -53,10 +53,15 @@ MAX_WORKERS = 8
 class Histogram:
     """(size_m, volume_m3) rows, smallest size first; `inf` for volume no zone reaches. `complete`
     is False when the octree stopped at MAX_CUBES (the zones alone are past any budget); the cubes it
-    had not resolved are filed at their zones' size, so the estimate is a floor, never zero."""
+    had not resolved are filed at their zones' size, so the estimate is a floor, never zero.
+    `upper` (only when not complete): the same rows with every unresolved cube counted WHOLE at the
+    finest size the field can take anywhere in it (its centre's size less the growth across the
+    cube, never below the finest zone) - a ceiling on the estimate, so a plan whose ceiling fits
+    needs no coarsening although the octree stopped short (PLAN-fea-8)."""
     rows: list[tuple[float, float]]
     complete: bool = True
     cubes: int = 0
+    upper: list[tuple[float, float]] | None = None
 
     def as_list(self) -> list[list[float]]:
         return [[_sig(h), _sig(v)] for h, v in self.rows]
@@ -400,6 +405,7 @@ class SizeField:
         cubes = 0
         zones_only = 0.0
         complete = True
+        upper = None
         e_min = coarsest / 2.0 ** 14
         offsets = np.array([[i, j, k] for i in (-1, 1) for j in (-1, 1) for k in (-1, 1)], dtype=float)
         while len(centres):
@@ -431,6 +437,15 @@ class SizeField:
                     # (fea0221: the octree stopped before any leaf, the estimate read 0 elements and
                     # the time guard fell to its floor)
                     sd_rest = sd[~leaf]
+                    # ... and their CEILING: each cube whole, at the finest size the field can reach
+                    # anywhere in it (the field changes by at most growth-1 per unit length; never
+                    # below the finest zone). A thin wide part (a 2 m x 1 m x 5 mm panel) stops the
+                    # octree on its cube budget at a few million elements, far under any limit: its
+                    # ceiling says so, and the plan keeps the rules' own sizes (lab, 27 Oct)
+                    finest = min((float(g.size) for g in self.groups), default=float(e_min))
+                    h_lo = np.maximum(finest, hz[~leaf] - (self.growth - 1.0) * r)
+                    upper = _binned(np.concatenate([*sizes, h_lo]),
+                                    np.concatenate([*vols, np.full(len(h_lo), e ** 3)]))
                     sizes.append(hz[~leaf])
                     vols.append(np.clip(0.5 - sd_rest / e, 0.0, 1.0) * e ** 3)
                 break
@@ -438,7 +453,8 @@ class SizeField:
             centres = (rest[:, None, :] + offsets[None, :, :] * (e / 2.0)).reshape(-1, 3)
         h = np.concatenate(sizes) if sizes else np.zeros(0)
         v = np.concatenate(vols) if vols else np.zeros(0)
-        return Histogram(rows=_binned(h, v), complete=complete, cubes=int(cubes))
+        return Histogram(rows=_binned(h, v), complete=complete, cubes=int(cubes),
+                         upper=None if complete else upper)
 
 
 def plan_workers() -> int:
