@@ -64,9 +64,10 @@ def _kinds_words(kinds) -> str:
 
 
 def _time_words(minutes: int) -> str:
+    """A time at the part's slow fill rate (PLAN-fea-13): an upper end, said as one."""
     if minutes < 90:
-        return f"about {max(1, minutes)} minutes"
-    return f"about {minutes / 60.0:.1f} hours"
+        return f"up to about {max(1, minutes)} minutes"
+    return f"up to about {minutes / 60.0:.1f} hours"
 
 
 def row(record: dict, plan: dict, key: str) -> dict:
@@ -115,13 +116,13 @@ def options(record: dict, surface, diag_m: float, *, ai: dict | None = None) -> 
         out.update(recommended=QUICKER,
                    why=(f"The quicker mesh coarsens only {_kinds_words(quick['short_kinds'])}. Every wall keeps its "
                         "elements through it and every fillet, hole and notch its rule size, so the stresses you "
-                        f"read are the same, in {_time_words(quick['minutes'])} on the standard machine instead of "
+                        f"read are the same - {_time_words(quick['minutes'])} on the standard machine instead of "
                         f"{_time_words(full['minutes'])} on a {full['memory_gib']:g} GiB one."))
     else:
         out.update(recommended=FULL,
                    why=(f"The quicker mesh would leave {_kinds_words(gave_up)} short of their rules "
                         f"({quick['short_zones']} zones). The full-rules mesh keeps them, on a {full['memory_gib']:g} "
-                        f"GiB machine in {_time_words(full['minutes'])}."))
+                        f"GiB machine, {_time_words(full['minutes'])}."))
     return out
 
 
