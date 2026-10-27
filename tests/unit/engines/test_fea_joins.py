@@ -138,6 +138,20 @@ def test_cubes_a_tenth_of_a_millimetre_apart_are_joined_across_the_gap():
     assert itf["area_mm2"] == pytest.approx(100.0, rel=0.05)
 
 
+def test_the_pairs_measured_in_parallel_give_the_same_answer(monkeypatch):
+    """The pairs shared among forked copies of the process: the same joints, skins and order as one by one."""
+    parts = A.solids(fx.anchorage(skin=True))
+    forked = J.measure(parts, tol=3e-4, mm_per_unit=1.0)
+    monkeypatch.setattr(J, "MAX_WORKERS", 1)
+    serial = J.measure(parts, tol=3e-4, mm_per_unit=1.0)
+    assert list(forked.joints) == list(serial.joints)
+    for k in serial.joints:
+        a, b = forked.joints[k], serial.joints[k]
+        assert (a.kind, a.faces_a, a.faces_b) == (b.kind, b.faces_a, b.faces_b)
+        assert a.area == pytest.approx(b.area) and (a.gap or 0.0) == pytest.approx(b.gap or 0.0)
+    assert forked.skins == serial.skins and forked.near == serial.near
+
+
 def test_the_gap_switch_off_joins_no_gap(clean):
     parts = A.solids(fx.anchorage(skin=False))
     vols = [A._props(s, True)[0] for s in parts]

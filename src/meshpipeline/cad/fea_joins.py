@@ -104,6 +104,17 @@ def _faces(shape) -> list:
     return [TopoDS.Face_s(m.FindKey(i)) for i in range(1, m.Extent() + 1)]
 
 
+def _edges(face) -> list:
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopExp import TopExp
+    from OCP.TopoDS import TopoDS
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    m = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(face, TopAbs_EDGE, m)
+    return [TopoDS.Edge_s(m.FindKey(i)) for i in range(1, m.Extent() + 1)]
+
+
 def _box(shape) -> tuple[np.ndarray, np.ndarray]:
     from OCP.Bnd import Bnd_Box
     from OCP.BRepBndLib import BRepBndLib
@@ -261,9 +272,18 @@ def _surface(solid, faces: list, diag: float) -> _Surface:
                                                         for n in range(1, tri.NbNodes() + 1))])
         t = np.array([[tri.Triangle(n).Value(i) for i in (1, 2, 3)] for n in range(1, tri.NbTriangles() + 1)]) - 1
         if tri.HasUVNodes():
-            uvn = np.array([[q.X(), q.Y()] for q in (tri.UVNode(n) for n in range(1, tri.NbNodes() + 1))])
-            ut = uvn[t]
-            uvs[k] = (ut, cKDTree(ut.mean(axis=1)))
+            # THE FACE'S CLEAR INSIDE: its triangles none of whose corners lies on one of its edges - a
+            # point inside one of those is inside the trimmed face, with no classifier to ask
+            rim: set[int] = set()
+            for e in _edges(f):
+                poly = BRep_Tool.PolygonOnTriangulation_s(e, tri, loc)
+                if poly is not None:
+                    rim.update(int(poly.Node(n)) - 1 for n in range(1, poly.NbNodes() + 1))
+            inner = ~np.isin(t, np.fromiter(rim, dtype=np.int64, count=len(rim))).any(axis=1)
+            if inner.any():
+                uvn = np.array([[q.X(), q.Y()] for q in (tri.UVNode(n) for n in range(1, tri.NbNodes() + 1))])
+                ut = uvn[t[inner]]
+                uvs[k] = (ut, cKDTree(ut.mean(axis=1)))
         if f.Orientation() == TopAbs_REVERSED:
             t = t[:, [0, 2, 1]]
         tp = _split(pts[t], longest, 200000)
@@ -300,8 +320,7 @@ def _inside_uv(uv: np.ndarray, mesh) -> np.ndarray:
         den = np.where(ok, den, 1.0)
         bu = (d11 * d02 - d01 * d12) / den
         bv = (d00 * d12 - d01 * d02) / den
-        eps = 1e-6
-        inside |= ok & (bu >= -eps) & (bv >= -eps) & (bu + bv <= 1 + eps)
+        inside |= ok & (bu >= 0.0) & (bv >= 0.0) & (bu + bv <= 1.0)
     return inside
 
 
@@ -313,6 +332,10 @@ def _face_points(surf: _Surface, face: int):
         pts = surf.centres[surf.face == face]
         surf.by_face[face] = (pts, cKDTree(pts) if len(pts) else None)
     return surf.by_face[face]
+
+
+#: The per-face tools of the measurement under way (measure() clears it at its start and its end).
+_FACE_TOOLS: dict[int, tuple] = {}
 
 
 def _on_face(points: np.ndarray, face, uv_mesh=None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -328,15 +351,19 @@ def _on_face(points: np.ndarray, face, uv_mesh=None) -> tuple[np.ndarray, np.nda
     from OCP.gp import gp_Pnt, gp_Pnt2d, gp_Vec
     from OCP.TopAbs import TopAbs_IN, TopAbs_ON
 
-    surf = BRep_Tool.Surface_s(face)
-    u0, u1, v0, v1 = BRepTools.UVBounds_s(face)
-    cls = BRepTopAdaptor_FClass2d(face, 1e-9)
-    props = BRepGProp_Face(face)
+    # each face's projector, classifier and normal reader, built once a measurement (a face of many
+    # holes takes OpenCASCADE a while to set up for classifying)
+    key = face.__hash__()
+    if key not in _FACE_TOOLS or not _FACE_TOOLS[key][0].IsSame(face):
+        surf = BRep_Tool.Surface_s(face)
+        u0, u1, v0, v1 = BRepTools.UVBounds_s(face)
+        proj = GeomAPI_ProjectPointOnSurf()
+        proj.Init(surf, u0, u1, v0, v1, 1e-9)
+        _FACE_TOOLS[key] = (face, proj, BRepTopAdaptor_FClass2d(face, 1e-9), BRepGProp_Face(face))
+    _f, proj, cls, props = _FACE_TOOLS[key]
     ok = np.zeros(len(points), dtype=bool)
     foot = np.zeros((len(points), 3))
     nrm = np.zeros((len(points), 3))
-    proj = GeomAPI_ProjectPointOnSurf()
-    proj.Init(surf, u0, u1, v0, v1, 1e-9)
     p, n = gp_Pnt(), gp_Vec()
     uv = np.full((len(points), 2), np.nan)
     for k, (x, y, z) in enumerate(points.tolist()):
@@ -344,12 +371,14 @@ def _on_face(points: np.ndarray, face, uv_mesh=None) -> tuple[np.ndarray, np.nda
         if proj.IsDone() and proj.NbPoints() > 0:
             uv[k] = proj.LowerDistanceParameters()
     found = np.isfinite(uv[:, 0])
+    # inside the trimmed face: clearly inside its tessellation's inner triangles, else OpenCASCADE's
+    # classifier (the same answer, only sooner where the point is well inside)
+    clear = np.zeros(len(points), dtype=bool)
     if uv_mesh is not None and found.any():
-        inside = np.zeros(len(points), dtype=bool)
-        inside[found] = _inside_uv(uv[found], uv_mesh)
-    else:
-        inside = np.array([bool(found[k]) and cls.Perform(gp_Pnt2d(float(uv[k, 0]), float(uv[k, 1])))
-                           in (TopAbs_IN, TopAbs_ON) for k in range(len(points))], dtype=bool)
+        clear[found] = _inside_uv(uv[found], uv_mesh)
+    inside = clear.copy()
+    for k in np.flatnonzero(found & ~clear).tolist():
+        inside[k] = cls.Perform(gp_Pnt2d(float(uv[k, 0]), float(uv[k, 1]))) in (TopAbs_IN, TopAbs_ON)
     for k in np.flatnonzero(inside).tolist():
         u, v = float(uv[k, 0]), float(uv[k, 1])
         props.Normal(u, v, p, n)
@@ -387,7 +416,7 @@ def _facing(sa: _Surface, a: int, fa, sb: _Surface, b: int, fb, limit: float, re
     cells = _cells(tris, step)
     reps = np.array([c[0] for c in cells])
     pts = tris[reps].mean(axis=1)
-    ok_b, on_b, _n = _on_face(pts, fb)
+    ok_b, on_b, _n = _on_face(pts, fb, sb.uv.get(b))
     kd, _kk = their_tree.query(pts, k=1)
     # where the centre's projection misses face b (beyond its edge), its nearest point of face b
     dist = np.where(ok_b, np.linalg.norm(on_b - pts, axis=1), kd - (reach - limit))
@@ -404,9 +433,9 @@ def _facing(sa: _Surface, a: int, fa, sb: _Surface, b: int, fb, limit: float, re
     area = np.array([float(tri_area[c].sum()) for c in cells])
     keep = area > 0
     pts, area = tris[reps[keep]].mean(axis=1), area[keep]
-    ok_a, on_a, n_a = _on_face(pts, fa)
+    ok_a, on_a, n_a = _on_face(pts, fa, sa.uv.get(a))
     on_a, n_a, area = on_a[ok_a], n_a[ok_a], area[ok_a]
-    ok_b, on_b, n_b = _on_face(on_a, fb)
+    ok_b, on_b, n_b = _on_face(on_a, fb, sb.uv.get(b))
     gap = np.full(len(on_a), np.inf)
     gap[ok_b] = np.linalg.norm(on_b[ok_b] - on_a[ok_b], axis=1)
     opposed = np.einsum("ij,ij->i", n_a, n_b) <= -math.cos(math.radians(FACING_DEG))
@@ -520,6 +549,128 @@ def measure(parts: list, *, tol: float, mm_per_unit: float, budget_s: float = BU
     """Every pair of parts' joint, measured on their surfaces (see the module text). `tol`: the
     distance taken as touching (the fuse's fuzzy value), in the parts' unit; `mm_per_unit` turns the
     gap limit's millimetres into it."""
+
+    t0 = time.time()
+    mm = float(mm_per_unit) or 1.0
+    tol = max(float(tol), 1e-12)
+    out = Measured(tol=tol)
+    _FACE_TOOLS.clear()
+    try:
+        pairs = _near_pairs(parts, tol=tol, mm=mm)
+        workers = _workers(len(pairs))
+        if workers > 1:
+            got = _forked(parts, pairs, workers, tol=tol, mm=mm, budget_s=budget_s, t0=t0)
+            if got is not None:
+                out.joints, out.near, out.skins, out.complete = got
+                out.seconds = round(time.time() - t0, 2)
+                return out
+        return _measure(parts, tol=tol, mm=mm, budget_s=budget_s, t0=t0, out=out, only=set(pairs))
+    finally:
+        _FACE_TOOLS.clear()
+
+
+#: THE PAIRS IN PARALLEL: every pair of parts is measured on its own, so the pairs are shared among this
+#: many forked copies of the process (the same answers, in the same order, sooner); one copy a core
+#: up to this many, and only when there are at least two pairs a copy.
+MAX_WORKERS = 8
+
+
+def _near_pairs(parts: list, *, tol: float, mm: float) -> list[tuple[int, int]]:
+    """The pairs of parts whose boxes come within twice their gap limit: the only ones measured."""
+    boxes = [_box(s) for s in parts]
+    diags = [float(np.linalg.norm(b[1] - b[0])) for b in boxes]
+    out = []
+    for i, j in combinations(range(len(parts)), 2):
+        limit = max(gap_limit_mm(diags[i] * mm, diags[j] * mm) / mm, tol)
+        if _meet(boxes[i], boxes[j], 2 * limit):
+            out.append((i, j))
+    return out
+
+
+def _workers(n_pairs: int) -> int:
+    import os
+
+    if not hasattr(os, "fork") or n_pairs < 4:
+        return 1
+    try:
+        cores = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        cores = os.cpu_count() or 1
+    return max(1, min(MAX_WORKERS, cores, n_pairs // 2))
+
+
+def _forked(parts: list, pairs: list, workers: int, *, tol: float, mm: float, budget_s: float, t0: float):
+    """The pairs measured in `workers` forked copies of this process, merged in pair order: (joints,
+    near, skins, complete), or None when a copy could not be made or failed (then the caller measures
+    them here, one by one). A copy only measures and writes its answer to a pipe: it logs nothing and
+    touches no store."""
+    import os
+    import pickle
+
+    # everything a copy imports, imported before forking
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Section  # noqa: F401
+    from OCP.BRepClass3d import BRepClass3d_SolidClassifier  # noqa: F401
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape  # noqa: F401
+    from OCP.BRepGProp import BRepGProp_Face  # noqa: F401
+    from OCP.BRepTopAdaptor import BRepTopAdaptor_FClass2d  # noqa: F401
+    from OCP.GeomAPI import GeomAPI_ProjectPointOnSurf  # noqa: F401
+    from scipy.spatial import cKDTree  # noqa: F401
+
+    from meshpipeline.cad import occ_box  # noqa: F401
+
+    chunks = [pairs[k::workers] for k in range(workers)]
+    kids: list[tuple[int, int]] = []
+    try:
+        for chunk in chunks:
+            r, w = os.pipe()
+            pid = os.fork()
+            if pid == 0:  # pragma: no cover - the copy
+                code = 0
+                try:
+                    os.close(r)
+                    res = _measure(parts, tol=tol, mm=mm, budget_s=budget_s, t0=t0, out=Measured(tol=tol),
+                                   only=set(chunk))
+                    data = pickle.dumps((res.joints, res.near, res.skins, res.complete))
+                except BaseException:  # noqa: BLE001 - the parent measures this chunk itself
+                    data, code = b"", 1
+                try:
+                    with os.fdopen(w, "wb") as fh:
+                        fh.write(data)
+                finally:
+                    os._exit(code)
+            os.close(w)
+            kids.append((pid, r))
+    except OSError:
+        for pid, r in kids:
+            os.close(r)
+            os.waitpid(pid, 0)
+        return None
+    joints: dict = {}
+    near: dict = {}
+    skins: dict[int, set[int]] = {}
+    complete = True
+    failed = False
+    for pid, r in kids:
+        with os.fdopen(r, "rb") as fh:
+            data = fh.read()
+        _pid, status = os.waitpid(pid, 0)
+        if not data or status != 0:
+            failed = True
+            continue
+        j, n, sk, c = pickle.loads(data)  # noqa: S301 - our own forked copy's answer, over a pipe only the two hold
+        joints.update(j)
+        near.update(n)
+        for part, fs in sk.items():
+            skins.setdefault(part, set()).update(fs)
+        complete = complete and c
+    if failed:
+        return None
+    return ({k: joints[k] for k in sorted(joints)}, {k: near[k] for k in sorted(near)},
+            {k: sorted(v) for k, v in sorted(skins.items())}, complete)
+
+
+def _measure(parts: list, *, tol: float, mm: float, budget_s: float, t0: float, out: Measured,
+             only: set | None = None) -> Measured:
     from OCP.BRep import BRep_Tool
     from OCP.BRepClass3d import BRepClass3d_SolidClassifier
     from OCP.TopAbs import TopAbs_IN, TopAbs_VERTEX
@@ -527,10 +678,6 @@ def measure(parts: list, *, tol: float, mm_per_unit: float, budget_s: float = BU
     from OCP.TopoDS import TopoDS
     from OCP.TopTools import TopTools_IndexedMapOfShape
 
-    t0 = time.time()
-    mm = float(mm_per_unit) or 1.0
-    tol = max(float(tol), 1e-12)
-    out = Measured(tol=tol)
     boxes = [_box(s) for s in parts]
     diags = [float(np.linalg.norm(b[1] - b[0])) for b in boxes]
     faces = [_faces(s) for s in parts]
@@ -545,6 +692,8 @@ def measure(parts: list, *, tol: float, mm_per_unit: float, budget_s: float = BU
 
     pairs_tried = 0
     for i, j in combinations(range(len(parts)), 2):
+        if only is not None and (i, j) not in only:
+            continue
         if time.time() - t0 > budget_s:
             out.complete = False
             break
