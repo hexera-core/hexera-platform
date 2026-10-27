@@ -143,6 +143,7 @@ def test_a_touch_the_fuse_missed_is_added_and_tied_while_the_fuse_stands(monkeyp
     along a line): an omission, not a wrong answer - the fuse's own joints stand, conformal, and the
     touch is added and tied."""
     shape = fx._compound(fx._box(0, 0, 0, 10, 10, 10), fx._box(10, 0, 0, 10, 10, 10), fx._box(0, 10, 0, 10, 10, 10))
+    # (Part_2 and Part_3 meet along an edge too: a line joint the fuse has no face for, added as well)
     real = A.interfaces_of
 
     def without_the_second(*a, **k):
@@ -150,9 +151,10 @@ def test_a_touch_the_fuse_missed_is_added_and_tied_while_the_fuse_stands(monkeyp
 
     monkeypatch.setattr(A, "interfaces_of", without_the_second)
     rec = A.record(shape, mm_per_unit=1.0)
-    assert rec["joins"]["found_by"] == "fuse" and [f["kind"] for f in rec["joins"]["findings"]] == ["missed"]
-    (added,) = [i for i in rec["interfaces"] if i.get("added")]
-    assert added["parts"] == ["Part_1", "Part_3"] and added["kind"] == "touching"
+    assert rec["joins"]["found_by"] == "fuse" and {f["kind"] for f in rec["joins"]["findings"]} == {"missed"}
+    added = {tuple(i["parts"]): i for i in rec["interfaces"] if i.get("added")}
+    assert added[("Part_1", "Part_3")]["kind"] == "touching" and not added[("Part_1", "Part_3")].get("line")
+    assert added[("Part_2", "Part_3")].get("line")
     side = A.stage(shape, A.BONDED, tmp_path, mm_per_unit=1.0)
     assert side["mode"] == A.PAIR_BONDED
     kinds = {tuple(p["parts"]): p["kind"] for p in side["pairs"]}
@@ -306,7 +308,8 @@ def test_a_distance_opencascade_cannot_give_is_unknown_never_a_crash():
 
 
 def _three_blocks():
-    return fx._compound(fx._box(0, 0, 0, 10, 10, 10), fx._box(10, 0, 0, 10, 10, 10), fx._box(0, 10, 0, 10, 10, 10))
+    """Three cubes in a row: the middle one touches each end one over a face; the ends are apart."""
+    return fx._compound(fx._box(0, 0, 0, 10, 10, 10), fx._box(10, 0, 0, 10, 10, 10), fx._box(-10, 0, 0, 10, 10, 10))
 
 
 def test_a_pair_opencascade_throws_on_is_unmeasured_and_the_fuse_stands_there(monkeypatch, tmp_path):
@@ -341,3 +344,43 @@ def test_a_measurement_that_fails_outright_leaves_the_fuse_whole(monkeypatch, tm
     assert any("could not be measured" in n for n in rec["notes"])
     side = A.stage(_three_blocks(), A.BONDED, tmp_path, mm_per_unit=1.0)
     assert len(side["pairs"]) == 2
+
+
+# #
+# parts that meet only along a line, an edge or at a point (the industrial hunt, 27 Oct: a kart's plates on
+# its frame, a ring in a countersink, corners a hair apart)
+# #
+
+def _tube_on_plate():
+    return fx._compound(fx._box(0, 0, -5, 100, 40, 5), fx._cyl(10, 20, 10, 10, 80, axis=(1, 0, 0)))
+
+
+def test_a_tube_lying_on_a_plate_is_joined_along_the_line():
+    rec = A.record(_tube_on_plate(), mm_per_unit=1.0)
+    (itf,) = rec["interfaces"]
+    assert itf["parts"] == ["Part_1", "Part_2"] and itf["kind"] == "touching" and itf.get("line")
+    assert itf["reach_mm"] >= itf["gap_limit_mm"]          # the solver ties a band along the line
+    assert any("meet only along a line" in n for n in rec["notes"])
+
+
+@pytest.mark.parametrize("apart,joined", [(0.0, True), (0.3, True), (0.6, False)])
+def test_corners_and_edges_a_hair_apart_are_joined_within_the_gap_limit(apart, joined):
+    """Two 30 mm cubes meeting along one edge (apart = 0), or with their edges `apart` mm away diagonally."""
+    d = apart / 2 ** 0.5
+    rec = A.record(fx._compound(fx._box(0, 0, 0, 30, 30, 30), fx._box(30 + d, 30 + d, 0, 30, 30, 30)), mm_per_unit=1.0)
+    assert bool(rec["interfaces"]) is joined
+    if joined:
+        (itf,) = rec["interfaces"]
+        assert itf.get("line") and itf["gap_mm"] == pytest.approx(apart, abs=1e-6)
+
+
+def test_a_line_contact_is_tied_with_its_reach_in_a_bonded_mesh(tmp_path):
+    side = A.stage(_tube_on_plate(), A.BONDED, tmp_path, mm_per_unit=1.0)
+    (pair,) = side["pairs"]
+    assert pair["kind"] == A.PAIR_TIE and pair["reach"] > 0 and all(pair["faces"].values())
+
+
+def test_the_stage_says_a_line_contact_in_words():
+    from meshpipeline.application import fea_check as F
+
+    assert F.gap_words("Plate", "Frame", 0.0, line=True) == "Plate meets Frame only along a line or an edge - joined there"
