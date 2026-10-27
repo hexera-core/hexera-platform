@@ -531,7 +531,7 @@ def test_nothing_here_reads_an_environment_variable():
 def test_the_rung_takes_only_the_part_gmsh_failed_on_and_keeps_the_others_as_gmsh_filled_them(tmp_path, monkeypatch,
                                                                                             fake_ftetwild, capsys):
     """LAD-fea-11 with the last rung: parts meshed apart; gmsh's fill fails on Part_2 on every pass. Pass 1 keeps
-    the other parts, pass 2 meshes only Part_2, and the rung's pass gives Part_2 to fTetWild with the others
+    Part_1 (the fill stops at Part_2), pass 2 meshes only Part_3 and Part_2, and the rung's pass gives Part_2 to fTetWild with the others
     read back as pass 1 filled them - never meshed by gmsh again."""
     pytest.importorskip("OCP.BRepPrimAPI")
     import gmsh
@@ -551,9 +551,10 @@ def test_the_rung_takes_only_the_part_gmsh_failed_on_and_keeps_the_others_as_gms
     ok, marker, _o = _drive(ws, monkeypatch, {"purpose": "structural", "fea_connection": "contact"})
     assert ok, marker
     said = capsys.readouterr().err
-    # pass 2 (gmsh on Part_2 alone: HXT, its faces with MeshAdapt - then no gmsh option is left) and the rung's
-    # pass (fTetWild on Part_2 alone)
-    assert said.count("2 part volume(s) kept from the pass before; meshing the other 1") == 2
+    # pass 1 stops at Part_2 (Part_3 not reached); pass 2 fills Part_3, then fails on Part_2 again (HXT, its faces
+    # with MeshAdapt - then no gmsh option is left); the rung's pass gives Part_2 alone to fTetWild
+    assert "1 part volume(s) kept from the pass before; meshing the other 2" in said
+    assert "2 part volume(s) kept from the pass before; meshing the other 1" in said
     q = json.loads((ws / "quality.json").read_text())
     ftw = q["fea"]["ftetwild"]
     assert ftw["parts"] == ["Part_2"] and ftw["gmsh_parts"] == 2 and not q["fatal"]

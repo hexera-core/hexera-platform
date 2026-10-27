@@ -337,7 +337,8 @@ def test_a_part_the_fill_fails_on_is_meshed_again_alone_and_the_others_are_kept(
         with pytest.raises(Exception, match="overlapping facets"):
             A.mesh(first)
     kept = json.loads((first / A.KEEP_JSON).read_text())
-    assert kept["failed_volumes"] == [2] and kept["kept_volumes"] == [1, 3] and kept["rule"] == A.KEEP_RULE
+    # the fill stops at the part that failed (gmsh refuses every mesh call after an error): Part_3 was not reached
+    assert kept["failed_volumes"] == [2] and kept["kept_volumes"] == [1] and kept["rule"] == A.KEEP_RULE
     assert kept["failed_parts"] == ["Part_2"] and (first / A.KEEP_MSH).exists()
     capsys.readouterr()
     plan = json.loads((first / "fea_plan.json").read_text())
@@ -345,7 +346,7 @@ def test_a_part_the_fill_fails_on_is_meshed_again_alone_and_the_others_are_kept(
     (first / "fea_plan.json").write_text(json.dumps(plan))
     assert A.mesh(first) == 0
     said = capsys.readouterr().err
-    assert "2 part volume(s) kept from the pass before; meshing the other 1" in said
+    assert "1 part volume(s) kept from the pass before; meshing the other 2" in said
     q, q_whole = (json.loads((w / "quality.json").read_text()) for w in (first, whole))
     # the failed pass went on to the CAD's own scale (MESH-4), where it kept its parts: so does this one
     assert q["fea_mesh_scale"] == "mm" and not q["fatal"] and q["min_sicn"] > 0.0
@@ -392,7 +393,7 @@ def test_the_driver_meshes_only_the_failed_part_on_its_next_pass(tmp_path, monke
                                           source_path=str(ws / "upload.step")))
     assert ok, marker
     said = capsys.readouterr().err
-    assert "2 part volume(s) kept from the pass before; meshing the other 1" in said
+    assert "1 part volume(s) kept from the pass before; meshing the other 2" in said
     passes = json.loads((ws / "fea_passes.json").read_text())
     assert [p["valid"] for p in passes["passes"]] == [False, True] and passes["delivered"] == 2
     plan = json.loads((ws / "fea_plan.json").read_text())
@@ -438,3 +439,29 @@ def test_a_part_gmsh_leaves_empty_without_an_error_is_never_kept(tmp_path, monke
         A.mesh(ws2)
     kept = json.loads((ws2 / A.KEEP_JSON).read_text())
     assert kept["kept_volumes"] == [1, 3] and kept["failed_volumes"] == [2]
+
+
+def test_after_a_real_gmsh_error_the_fill_stops_and_keeps_only_what_it_filled():
+    """gmsh refuses every mesh call after an error in the same process ("I'm busy! Ask me that later", ox_mc_lid,
+    27 Oct: the 14 parts after Part_239 came back empty). The fill stops at the part that failed and says which it
+    reached; the parts after it are neither kept nor failed - the next pass fills them, the failed part last."""
+    gmsh.initialize()
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.model.add("lock")
+        for i in range(3):
+            gmsh.model.occ.addBox(i * 2.0, 0, 0, 1, 1, 1)
+        gmsh.model.occ.synchronize()
+        gmsh.option.setNumber("Mesh.MeshSizeMax", 0.3)
+        gmsh.model.mesh.generate(2)
+        # a facet laid twice on volume 2's first face: gmsh's own "overlapping facets" error in its fill
+        face = abs(gmsh.model.getBoundary([(3, 2)], oriented=False)[0][1])
+        _t, _tags, nodes = gmsh.model.mesh.getElements(2, face)
+        a, b, c = (int(n) for n in nodes[0][:3])
+        gmsh.model.mesh.addElementsByType(face, 2, [int(gmsh.model.mesh.getMaxElementTag()) + 1], [a, c, b])
+        with pytest.raises(A.PartsFailed) as got:
+            A.fill_each_volume(gmsh, [1, 2, 3])
+        assert got.value.volumes == [2] and got.value.attempted == [1, 2]
+        assert A.empty_volumes(gmsh, [1, 2, 3]) == [2, 3]
+    finally:
+        gmsh.finalize()

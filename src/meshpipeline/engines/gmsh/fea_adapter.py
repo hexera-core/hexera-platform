@@ -647,8 +647,10 @@ def fill_each_volume(gmsh, vols) -> None:
     gmsh.option.setNumber("Mesh.MeshOnlyVisible", 1)
     gmsh.option.setNumber("Mesh.Renumber", 0)
     failed: list[tuple[int, str]] = []
+    attempted: list[int] = []
     try:
         for v in vols:
+            attempted.append(int(v))
             own = sorted({abs(int(t)) for _d, t in gmsh.model.getBoundary([(3, int(v))], oriented=False)})
             for s_ in own:
                 if s_ not in present:
@@ -659,19 +661,22 @@ def fill_each_volume(gmsh, vols) -> None:
             try:
                 gmsh.model.mesh.generate(3)
             except Exception as exc:
-                # THE PART THAT FAILED, and where: its own surfaces whose meshes cross each other. The other
-                # parts are filled all the same (LAD-fea-11): the next pass keeps them and meshes only this one
+                # THE PART THAT FAILED, and where: its own surfaces whose meshes cross each other. The fill stops
+                # here - after an error gmsh refuses every further mesh call in this process ("I'm busy! Ask me
+                # that later", lab 27 Oct) - and the parts filled so far are kept (LAD-fea-11): the next pass meshes
+                # this one and the ones not reached, this one last
                 where = crossing_surfaces(gmsh, set(own)) or own[:12]
                 failed.append((int(v), f"{exc} (volume {int(v)}; on surface {', surface '.join(str(t) for t in where)})"))
-                print(f"[GMSH-FEA] volume {int(v)} could not be filled - the other parts are filled all the same "
-                      f"({KEEP_RULE})", file=sys.stderr)
-                gmsh.model.mesh.clear([(3, int(v))])
+                print(f"[GMSH-FEA] volume {int(v)} could not be filled - the {len(attempted) - 1} filled before it "
+                      f"are kept ({KEEP_RULE})", file=sys.stderr)
             for s_ in own:
                 # as the fill left them (a fill turns its boundary triangles to face out of the volume)
                 types, tags, nodes = gmsh.model.mesh.getElements(2, int(s_))
                 aside[int(s_)] = [(int(et), tg, nd) for et, tg, nd in zip(types, tags, nodes, strict=True)]
                 gmsh.model.mesh.removeElements(2, int(s_))
                 present.discard(s_)
+            if failed:
+                break
     finally:
         # every surface's triangles back, as they were; then numbered as a fill numbers them
         for s_ in sorted(present):
@@ -685,15 +690,17 @@ def fill_each_volume(gmsh, vols) -> None:
         gmsh.model.setVisibility(everything, 1)
         gmsh.option.setNumber("Mesh.MeshOnlyVisible", 0)
     if failed:
-        raise PartsFailed(failed)
+        raise PartsFailed(failed, attempted)
 
 
 class PartsFailed(RuntimeError):
     """Some volumes of parts meshed apart could not be filled; every other one was (LAD-fea-11)."""
 
-    def __init__(self, failed: list[tuple[int, str]]):
+    def __init__(self, failed: list[tuple[int, str]], attempted: list[int] | None = None):
         super().__init__("; ".join(msg for _v, msg in failed))
         self.volumes = [int(v) for v, _m in failed]
+        #: the volumes the fill reached (it stops at the first that fails); the others were never tried
+        self.attempted = [int(v) for v in (attempted or self.volumes)]
 
 
 #: LAD-fea-11: THE PARTS A FAILED PASS DID MESH ARE KEPT - their mesh (gmsh's own file, at the scale it was
@@ -734,11 +741,12 @@ def save_kept(gmsh, ws: Path, *, scale: float, tied: dict, kept: list[int], fail
 
 
 def keep_filled(gmsh, ws: Path, vols, failed, rung_vols, *, scale: float, tied: dict,
-                part_volumes: dict[str, list[int]] | None) -> list[int]:
+                part_volumes: dict[str, list[int]] | None, untried=()) -> list[int]:
     """LAD-fea-11: the volumes of `vols` that hold elements - not failed, not fTetWild's - kept for the next
     pass. A volume gmsh left empty without raising (it only warns "No elements in volume") is a failed part, never
     a kept one: kept, it would reach the solver files with no elements. Returns the kept volumes."""
-    candidates = sorted({int(v) for v in vols} - {int(v) for v in failed} - {int(v) for v in rung_vols})
+    skip = {int(v) for v in untried}
+    candidates = sorted({int(v) for v in vols} - {int(v) for v in failed} - {int(v) for v in rung_vols} - skip)
     hollow = set(empty_volumes(gmsh, candidates))
     good = [v for v in candidates if v not in hollow]
     if good:
@@ -804,11 +812,12 @@ def give_back_volumes(gmsh, held) -> None:
                                               moved.tolist())
 
 
-def load_kept(gmsh, ws: Path, kept: list[int]) -> None:
+def load_kept(gmsh, ws: Path, kept: list[int]) -> list[int]:
     """LAD-fea-11: the kept parts' mesh read back onto the same entities; every other volume, with the faces,
-    curves and corners bounding it, left with no mesh, to be meshed in this pass."""
+    curves and corners bounding it, left with no mesh, to be meshed in this pass. A volume the file holds no
+    element of is not kept, whatever the record says. Returns the volumes kept."""
     gmsh.merge(str(Path(ws) / KEEP_MSH))
-    keep = {int(v) for v in kept}
+    keep = {int(v) for v in kept} - set(empty_volumes(gmsh, sorted(int(v) for v in kept)))
     clear: set[tuple[int, int]] = set()
     for _d, v in gmsh.model.getEntities(3):
         if int(v) in keep:
@@ -822,6 +831,7 @@ def load_kept(gmsh, ws: Path, kept: list[int]) -> None:
         clear.update(faces + curves + points)
     if clear:
         gmsh.model.mesh.clear(sorted(clear))
+    return sorted(keep)
 
 
 #: MESH-7: the rule that fills each volume of parts meshed apart with only its own surface mesh in the model
@@ -1363,7 +1373,7 @@ def build_volume(gmsh, ws: Path, plan: dict, geom: Path, asm: dict | None, sidec
     if meta is not None and float(meta.get("scale") or 1.0) == float(scale):
         kept = [v for v in meta["kept_volumes"] if v in set(vols)]
         if kept:
-            load_kept(gmsh, ws, kept)
+            kept = load_kept(gmsh, ws, kept)
             print(f"[GMSH-FEA] {len(kept)} part volume(s) kept from the pass before; meshing the other "
                   f"{len(vols) - len(kept)} ({KEEP_RULE})", file=sys.stderr)
     if rung is not None or kept:
@@ -1371,6 +1381,9 @@ def build_volume(gmsh, ws: Path, plan: dict, geom: Path, asm: dict | None, sidec
         # a part gmsh filled in a later pass is kept as gmsh filled it: fTetWild never meshes it a second time
         rung_vols = [v for v in rung_vols if v not in set(kept)]
         rest = [v for v in vols if v not in rung_vols and v not in set(kept)]
+        # the parts that failed before are filled last: a fill that fails stops the pass's fills
+        before = {int(v) for v in ((meta or {}).get("failed_volumes") or [])}
+        rest = [v for v in rest if int(v) not in before] + [v for v in rest if int(v) in before]
         all_vols, all_surfaces = vols, surfaces
         if not rest:
             if rung is None:
@@ -1420,7 +1433,8 @@ def build_volume(gmsh, ws: Path, plan: dict, geom: Path, asm: dict | None, sidec
         if isinstance(exc, PartsFailed):
             # LAD-fea-11: every other part was filled - kept, with the parts kept before, for the next pass
             keep_filled(gmsh, ws, (all_vols if (rung is not None or kept) else vols), exc.volumes, rung_vols,
-                        scale=scale, tied=tied, part_volumes=part_volumes)
+                        scale=scale, tied=tied, part_volumes=part_volumes,
+                        untried=[v for v in vols if int(v) not in set(exc.attempted)])
         # the surfaces the fill failed on, for the next pass (LAD-fea-6)
         named = sorted(set(empty) | {s for s in surfaces_named(str(exc)) if s in surfaces})
         if not named:
