@@ -1178,7 +1178,8 @@ def build_volume(gmsh, ws: Path, plan: dict, geom: Path, asm: dict | None, sidec
     """_build, with MESH-9's tiny-face merges; should a build with merges fail on a surface a merge
     meshes, the same build again without them (a merge never costs a part the mesh it had)."""
     try:
-        return _build(gmsh, ws, plan, geom, asm, sidecar, scale=scale, tags=tags, rung=rung, tiny=rung is None)
+        return _build(gmsh, ws, plan, geom, asm, sidecar, scale=scale, tags=tags, rung=rung,
+                      tiny=rung is None and not _AS_DRAWN[0])
     except FillFailed as exc:
         merged = {t for d, t in getattr(exc, "tiny_members", []) if d == 2}
         if not merged or not (set(exc.named) & merged or not exc.named):
@@ -1331,7 +1332,34 @@ def _tiny_failed(exc: FillFailed, whole: set[tuple[int, int]] | None) -> FillFai
     return exc
 
 
+#: MESH-9: set while a pass is meshed again with every face as drawn (its merged mesh was not valid)
+_AS_DRAWN = [False]
+
+
 def mesh(workspace) -> int:
+    """Mesh the staged solid by the plan (_mesh). MESH-9: a mesh its tiny-face merges left NOT VALID (an
+    inverted or degenerate element) is meshed again in the same pass with every face as drawn - a merge never
+    costs a part the mesh it had (fc_zcoupling, 27 Oct: a collapsed sliver left inverted elements and cost
+    two more passes)."""
+    rc = _mesh(workspace)
+    if rc != 4:
+        return rc
+    try:
+        q = json.loads((Path(workspace) / "quality.json").read_text())
+    except (OSError, ValueError):
+        return rc
+    if not q.get("fea_tiny"):
+        return rc
+    print(f"[GMSH-FEA] the mesh with tiny faces merged is not valid ({'; '.join(q.get('fatal') or [])}) - "
+          f"meshed again with every face as drawn ({TINY.RULE})", file=sys.stderr)
+    _AS_DRAWN[0] = True
+    try:
+        return _mesh(workspace)
+    finally:
+        _AS_DRAWN[0] = False
+
+
+def _mesh(workspace) -> int:
     """Mesh the staged solid by the plan. Exit codes as the driver's: 0 a valid mesh, 2 no
     geometry, 3 no solid, 4 fatal defects."""
     from meshpipeline.engines import fea_checks as checks

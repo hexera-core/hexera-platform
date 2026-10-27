@@ -418,3 +418,28 @@ def test_a_cfd_fill_the_merges_break_is_meshed_again_as_drawn_in_a_fresh_session
     assert "meshing it again with every face as drawn" in capsys.readouterr().err
     q, q_off = _q(ws), _q(off)
     assert "tiny_faces" not in q and q["cells"] == q_off["cells"] and q["min_sicn"] == q_off["min_sicn"]
+
+
+def test_a_merged_mesh_that_is_not_valid_is_meshed_again_as_drawn(strip, strip_meshed, tmp_path, monkeypatch, capsys):
+    """A mesh the merges left with an inverted element is meshed again in the same pass with every face as
+    drawn: the mesh the part has without MESH-9, to the byte."""
+    _on, off = strip_meshed
+    ws = _copy(strip, tmp_path / "ws")
+    real = A._mesh
+    seen: list[bool] = []
+
+    def once(w):
+        seen.append(A._AS_DRAWN[0])
+        rc = real(w)
+        if len(seen) == 1:
+            q = _q(Path(w))
+            q["fatal"] = ["1 inverted element(s) (Jacobian not above zero)"]
+            (Path(w) / "quality.json").write_text(json.dumps(q))
+            return 4
+        return rc
+
+    monkeypatch.setattr(A, "_mesh", once)
+    assert A.mesh(ws) == 0
+    assert seen == [False, True] and "meshed again with every face as drawn" in capsys.readouterr().err
+    assert "fea_tiny" not in _q(ws) and _sha(ws / "mesh.inp") == _sha(off / "mesh.inp")
+    assert A._AS_DRAWN[0] is False
