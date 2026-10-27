@@ -547,9 +547,11 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
                          for p in range(1, len(parts) + 1)],
                "surfaces": surfaces, "volumes": volumes, "pairs": pairs, "interfaces": interfaces,
                "unpaired": [{"inner": a, "outer": b} for a, b in unpaired],
-               "notes": notes, "fuse_seconds": fused.seconds, "skins": skins,
+               "notes": notes, "fuse_seconds": fused.seconds,
                "tie_first": ({"overlap_pieces": n_pieces, "overlap_pairs": n_over, "at": TIE_FIRST_PIECES}
                              if tie_first else None)}
+    if skins:
+        sidecar["skins"] = skins          # MESH-8 (absent when there is none: the sidecar is as before)
     (out / SIDECAR).write_text(json.dumps(sidecar, indent=1))
     return sidecar
 

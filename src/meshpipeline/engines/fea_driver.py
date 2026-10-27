@@ -287,13 +287,13 @@ def prepare_assembly(ws: Path, record: dict, surface, *, connection: str, source
         bases.append({"n": p, "id": A.part_id(p), "name": names[p - 1] if p - 1 < len(names) else "",
                       "diag_mm": round(diag, 6), "faces": sorted(faces, key=lambda f: int(f.rsplit("_", 1)[-1]))})
     record["part_bases"] = bases
-    record["assembly_plan"] = {"staged": A.STAGED, "sidecar": A.SIDECAR, "connection": connection,
+    # MESH-8: the zero-thickness skins each part is meshed without (absent when there is none)
+    skins = [sk for sk in sidecar.get("skins") or [] if sk.get("faces")]
+    record["assembly_plan"] = {**({"skins": skins} if skins else {}), "staged": A.STAGED, "sidecar": A.SIDECAR, "connection": connection,
                                "mode": sidecar["mode"], "parts": sidecar["parts"], "pairs": len(sidecar["pairs"]),
                                "interfaces": len(sidecar["interfaces"]), "notes": notes + list(sidecar["notes"]),
                                # TIED FROM THE START: too many parts pass into each other to fuse (TIE_FIRST_PIECES)
                                "tie_first": sidecar.get("tie_first"),
-                               # MESH-8: the zero-thickness skins each part is meshed without
-                               "skins": [sk for sk in sidecar.get("skins") or [] if sk.get("faces")],
                                # WHERE THE PARTS MEET, for the AI's joint suggestion (engines/fea_ai AI-fea-7)
                                "pair_list": [{"pair": i.get("id"), "kind": i.get("kind"), "parts": i.get("parts"),
                                               "area_mm2": i.get("area_mm2"), "at_mm": i.get("at_mm")}
