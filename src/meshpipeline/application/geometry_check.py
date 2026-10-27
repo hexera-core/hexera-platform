@@ -1213,7 +1213,8 @@ def vet_openings(facts: dict, skin: Path) -> None:
                                         "openings": [dict(o) for o in ops]}))
     except Exception:  # noqa: BLE001 - openings the declaration cannot be made from are not vetted
         return
-    stranded = stranded_openings(skin, patches, close_leaks=proposed_leak_closing(facts))
+    close = proposed_leak_closing(facts)
+    stranded = stranded_openings(skin, patches, close_leaks=close) if close else stranded_openings(skin, patches)
     if not stranded or len(stranded) >= len(ops) - 1:
         return                   # at least two openings must stay: a vetting cannot empty a part
     for o in ops:
