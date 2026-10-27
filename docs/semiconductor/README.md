@@ -518,15 +518,25 @@ The driver reads the unit through the same reader the rest of the platform resol
 then checks: a coolant whose own extent is not inside the part it was cut out of is not that part's
 coolant. That is what a factor of a thousand looks like from the outside.
 
-### It is not registered, and it cannot be yet
+### It is registered, and registering it found three defects
 
 `tests/unit/engines/test_engine_catalog.py` asserts the registry holds only implemented engines, and
-`test_engine_runtime_contract.py` asserts a planned engine's runtime cannot run. So there is no state
-in which this engine sits in the catalog with a working adapter and no delivered job behind it.
+`test_engine_runtime_contract.py` asserts a planned engine's runtime cannot run. I read that as
+forbidding a committed `spec.py` until a job delivered, and held it out of the tree. That was the
+wrong reading. The rule is about a CLAIM, it is enforced by tests, and the tests run on any branch.
+What they require is that `validation_evidence.json` carries an entry and that the entry is honest.
+The entry says which tier the delivery reached (T4, native to terminal) and which half of the
+pipeline that delivery did not exercise (T5, a hosted job with a real intake and a real visual
+review).
 
-`spec.py` and the three roster edits are therefore kept out of the tree until a job delivers. Without
-`spec.py` the folder is skipped by `engines/registry._discover`, the bundle is inert, and its modules
-are reachable only by direct import, which is what its tests do.
+Three defects were only reachable once it was in the catalog, which is the argument for registering
+it rather than leaving the bundle inert.
+
+| defect | what it did |
+|---|---|
+| `reads_source_formats` declared the STEP family | `capability._source_read_form` asks whether ANY engine claims a format, so listing "step" changed the admitted geometry form for every STEP upload in the product, a car included. The field means "I read the UPLOADED file itself, not the canonical STEP/STL", which only the snap grid does. Emptied. What this engine actually needs, a B-rep rather than a triangle file, was already declared on the right axis: `accepts=(FlowSupport("multi-region", ("cad",)),)`. |
+| the runner hand-built its result dict | `{rc, timed_out, log_tail}`, five keys short of every other engine, `signalled` and `signal` and `stage` among them. It now calls `sandbox/safe_exec.describe_native_result`, and a failed OpenFOAM stage carries its own exit code and its own name out through `ConjugateError`, so the report names `topoSet` when `topoSet` is what died. |
+| `RC_NO_PLAN` was -2 | A negative return code means "killed by signal N" to that seam. So a workspace with no plan reported as a mesher killed by SIGINT, and a mesher the kernel killed for memory, measured at 1.67 GB peak on a SMALL plate, arrived as a plain refusal. The two were swapped. Now positive, and measured on all four paths: a mesh rc=0 ok, no plan rc=2 failed, refused rc=1 failed, killed rc=-9 signalled SIGKILL at cartesianMesh. |
 
 ## Where the time goes
 
