@@ -1248,6 +1248,11 @@ def main(workspace: str) -> int:
                 _tiny = {}
                 try:
                     _scale = _mesh_cad_at_mm(gmsh, geom, h, _cb, k=1.0)
+                    from meshpipeline.engines.gmsh.fea_adapter import EMPTY_VOLUMES, empty_volumes
+                    _hollow = empty_volumes(gmsh, [t for _d, t in gmsh.model.getEntities(3)])
+                    if _hollow:
+                        # an empty volume is a failed fill here too, as on the first try
+                        raise RuntimeError(f"{EMPTY_VOLUMES} the 3D fill left volume(s) {_hollow} with no elements")
                 except Exception as again:  # noqa: BLE001 - MESH-4 below
                     print(f"[GMSH] the solid could not be meshed at the metre scale ({str(again)[:200]}); "
                           "meshing it again at the CAD's own millimetre scale (MESH-4)", file=sys.stderr)

@@ -269,7 +269,7 @@ def plan_merges(gmsh, plan: dict, *, face_tags: dict[str, list[int]] | None = No
                 continue
             same = groups is None or groups.get(n) == groups.get(s)
             # the CFD path: a face that is its group's only face never goes into another group
-            if not same and group_size.get(str(groups.get(s)), 0) <= 1:
+            if not same and group_size.get(str((groups or {}).get(s)), 0) <= 1:
                 continue
             ang = crease_deg(gmsh, c, s, n, signs)
             if ang is None:
