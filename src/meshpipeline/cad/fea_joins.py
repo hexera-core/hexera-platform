@@ -11,6 +11,9 @@ reach, and miss the same joint on the mirrored side. The surfaces themselves are
 * TOUCHING: faces of two parts whose outward normals face each other (within 45 degrees of opposite)
   and lie within the fuse's own fuzzy distance, over at least MIN_JOIN_AREA_SHARE of the smaller
   part's size squared.
+* LINE: surfaces that come within the gap limit only along a line, an edge or at a point (no faces
+  facing each other over the least joint area: a tube on a plate, a plate's edge on a frame) - joined
+  there with the gap limit as the solver's reach.
 * GAP (the small-gap join): the same, across a gap of up to gap_limit_mm(): 0.5 mm, or 2% of the
   smaller part's box diagonal when that is less - the bonded-contact tolerance a solver user sets
   for welds and threads the CAD does not draw (a boss sleeved into a clearance hole, a bolt in its
@@ -75,6 +78,8 @@ class Joint:
     gap_max: float | None = None
     at: list[float] | None = None
     limit: float = 0.0
+    #: met along a line, an edge or at a point: no faces facing each other over the least joint area
+    line: bool = False
 
 
 @dataclass
@@ -166,6 +171,22 @@ def _dist(a, b) -> float:
         return float(d.Value()) if d.IsDone() else math.nan
     except Exception:  # noqa: BLE001 - OpenCASCADE's failures arrive as plain exceptions; unknown
         return math.nan
+
+
+def _dist_at(a, b) -> tuple[float, np.ndarray]:
+    """The shapes' distance and the middle of their closest points; (nan, origin) when OpenCASCADE
+    cannot say."""
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+
+    try:
+        d = BRepExtrema_DistShapeShape(a, b)
+        d.Perform()
+        if not d.IsDone() or d.NbSolution() == 0:
+            return math.nan, np.zeros(3)
+        p, q = d.PointOnShape1(1), d.PointOnShape2(1)
+        return float(d.Value()), np.array([(p.X() + q.X()) / 2, (p.Y() + q.Y()) / 2, (p.Z() + q.Z()) / 2])
+    except Exception:  # noqa: BLE001 - unknown, never a crash
+        return math.nan, np.zeros(3)
 
 
 def _area(shape) -> float:
@@ -841,11 +862,20 @@ def _measure(parts: list, *, tol: float, mm: float, budget_s: float, t0: float, 
                 gap = 0.0 if touch >= min_area else float(g[order, 0][np.searchsorted(cum, 0.5 * cum[-1])])
                 fa_keep = sorted(a + 1 for a, v in area_a.items() if v >= 0.1 * min_area)
                 fb_keep = sorted(b + 1 for b, v in area_b.items() if v >= 0.1 * min_area)
-                out.joints[(i, j)] = Joint(i + 1, j + 1, TOUCHING if gap <= tol else GAP, faces_a=fa_keep,
+                # TOUCHING ALONG A LINE: faces that face each other across a band that closes to nothing (a tube
+                # on a plate) touch there, though no touching area is measured - a touch, said as a line one
+                line = False
+                if gap > tol:
+                    a0, b0 = min(((a, b, float(ga.min())) for a, b, _pa, _aa, ga, _fb in seen if len(ga)),
+                                 key=lambda r: r[2])[:2]
+                    if _dist_at(faces[i][a0], faces[j][b0])[0] <= tol:
+                        line = True
+                gap_max = float(g[:, 0].max())
+                out.joints[(i, j)] = Joint(i + 1, j + 1, TOUCHING if gap <= tol or line else GAP, faces_a=fa_keep,
                                            faces_b=fb_keep, area=min(total_a, total_b),
-                                           gap=0.0 if gap <= tol else gap,
-                                           gap_max=float(g[:, 0].max()) if gap > tol else 0.0,
-                                           at=[float(x) for x in where / max(wsum, 1e-300)], limit=limit)
+                                           gap=0.0 if gap <= tol or line else gap,
+                                           gap_max=gap_max if gap > tol else 0.0,
+                                           at=[float(x) for x in where / max(wsum, 1e-300)], limit=limit, line=line)
             elif crossing or sum(flush.values()) >= min_area:
                 # surfaces that cross, or lie on each other the same side out: the parts pass into each other
                 if not crossing:
@@ -855,7 +885,26 @@ def _measure(parts: list, *, tol: float, mm: float, budget_s: float, t0: float, 
                                            faces_b=sorted({b + 1 for _a, b, _at in crossing}),
                                            at=[float(x) for x in pts.mean(axis=0)], limit=limit)
             else:
-                out.near[(i, j)] = {"skin_only": skinned}
+                # NEAR ALONG A LINE, AN EDGE OR A POINT (a tube lying on a plate, a plate's edge on a frame, a
+                # ring in a countersink, corners a hair apart): no faces face each other over the least joint
+                # area, yet the surfaces come within the gap limit - joined there, as a solver's bonded reach
+                # joins whatever lies within it. A skin is no evidence here either.
+                close = []
+                for (a, b), dd in sorted(approx.items()):
+                    if dd > limit + slack or sk_i.get(a) or sk_j.get(b):
+                        continue
+                    dab, where_ab = _dist_at(faces[i][a], faces[j][b])
+                    if dab <= limit:
+                        close.append((a, b, dab, where_ab))
+                if close and not skinned:
+                    dmin = min(c[2] for c in close)
+                    out.joints[(i, j)] = Joint(
+                        i + 1, j + 1, TOUCHING if dmin <= tol else GAP, faces_a=sorted({c[0] + 1 for c in close}),
+                        faces_b=sorted({c[1] + 1 for c in close}), area=0.0, gap=0.0 if dmin <= tol else dmin,
+                        gap_max=limit, at=[float(x) for x in np.mean([c[3] for c in close], axis=0)], limit=limit,
+                        line=True)
+                else:
+                    out.near[(i, j)] = {"skin_only": skinned}
         except Exception as exc:  # noqa: BLE001 - OpenCASCADE threw on this pair (StdFail_NotDone...)
             # ONE PAIR OPENCASCADE CANNOT MEASURE is that pair unmeasured: the fuse's answer stands for it,
             # and the rest of the assembly is measured as ever
@@ -882,9 +931,11 @@ def interfaces(measured: Measured, parts: list, volumes: list[float], *, scale: 
         row: dict[str, Any] = {"kind": jt.kind, "parts": [part_id(p), part_id(q)], "faces": faces,
                                "at_mm": [_r(x * scale) for x in (jt.at or [0.0, 0.0, 0.0])],
                                "area_mm2": _r(jt.area * scale * scale) if jt.kind != OVERLAP else None}
-        if jt.kind == GAP:
+        if jt.kind == GAP or jt.line:
             row.update(gap_mm=_r(float(jt.gap or 0.0) * scale), gap_max_mm=_r(float(jt.gap_max or 0.0) * scale),
                        gap_limit_mm=_r(jt.limit * scale))
+        if jt.line:
+            row["line"] = True
         if jt.kind == OVERLAP:
             inside = not jt.faces_a and not jt.faces_b
             smaller = min(volumes[i], volumes[j]) or 1.0
