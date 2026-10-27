@@ -149,6 +149,11 @@ class ConfirmIn(BaseModel):
     close_leaks_mm: float | None = Field(default=None, ge=0)
     #: SET BY THE SERVER with `close_leaks_mm`: what the switch decided, in words.
     leaks_summary: str = ""
+    #: PLAN-fea-22: the size the user picked on the stage ("full" or "quicker"), checked against what the check
+    #: offered; read into the run from the stored confirmation (application/fea_check.confirmed_plan_choice).
+    fea_plan: str = ""
+    #: SET BY THE SERVER: the size choice in words, for the declaration.
+    plan_summary: str = ""
 
     @field_validator("extents")
     @classmethod
@@ -594,6 +599,9 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
             "gap_summary": (("Joined across small gaps: " if gap_on else "Left open (small gaps not joined): ")
                             + "; ".join(g["words"].split(" - ")[0] for g in gaps[:8])
                             + (f" and {len(gaps) - 8} more" if len(gaps) > 8 else "") + ".") if gaps else ""})
+        # PLAN-fea-22: the size the user picked, when the check offered a choice (the recommended one when unsent)
+        plan = fea_check.plan_answer(body.fea_plan, facts)
+        body = body.model_copy(update={"fea_plan": plan, "plan_summary": fea_check.plan_words(plan, facts)})
         proposed = _stored_check.get("proposal") or {}
         body = body.model_copy(update={
             "input_kind": "solid-body", "flow": None, "openings": [], "seed_point_mm": None,

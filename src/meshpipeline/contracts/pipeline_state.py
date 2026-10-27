@@ -136,6 +136,7 @@ class PipelineState(TypedDict):
     leak_closing:       dict | None    # INS-8: {"close_up_to_m", "rule"} as confirmed on the stage; None = the surface as drawn
     fea_connection:     str            # an FEA assembly: "bonded" | "contact", as confirmed on the stage ("" otherwise)
     fea_gap_joins:      bool           # an FEA assembly: parts across a small gap joined there (PLAN-fea-18); True unless switched off
+    fea_plan_choice:    str            # PLAN-fea-22: "full" | "quicker", the size the user picked on the stage ("" when none was offered)
     mesh_manifest:      dict
     reviewer_result:         str
     reviewer_verdict:        str

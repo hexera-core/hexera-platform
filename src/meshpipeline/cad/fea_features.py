@@ -766,6 +766,156 @@ def is_bore(hole: Arc, arcs: list[Arc]) -> Arc | None:
     return None
 
 
+#: A CHANNEL, NOT A HOLE (PLAN-fea-4): a concave cylinder that runs at least CHANNEL_RUN of its body's whole
+#: length along its own axis, in a body at least CHANNEL_ELONGATION times as long along that axis as it is
+#: across it, is part of the section of a bar, an extrusion or a drilled shaft - every cross-section along the
+#: body has it, so the load the body carries along its length runs past it, not round it. It is sized as the
+#: wall it leaves (PLAN-fea-3), like a bore. A hole across a body (a plate's, a link's pin hole) or a short
+#: one along it stays a hole. A 10 mm slotted extrusion's 2.5 mm centre channel, 1.5 m long, sized as a hole
+#: (3 elements through its 0.25 mm wall along the whole length) was 87% of a 57M plan.
+CHANNEL_RUN = 0.9
+CHANNEL_ELONGATION = 5.0
+
+
+def body_extent(xyz: np.ndarray, axis: np.ndarray) -> tuple[float, float]:
+    """(how long a body's points run along `axis`, how far they spread across it at most)."""
+    a = np.asarray(axis, dtype=float)
+    a = a / max(float(np.linalg.norm(a)), 1e-300)
+    e1, e2 = _frame(a)
+    along = xyz @ a
+    return float(along.max() - along.min()), float(max(np.ptp(xyz @ e1), np.ptp(xyz @ e2)))
+
+
+def is_channel(hole: Arc, along: float, across: float) -> bool:
+    """`hole` (a concave cylinder) runs the length of a long body (see CHANNEL_*): `along` and `across` are the
+    body's extents along the hole's axis and across it (body_extent)."""
+    if hole.kind != "cylinder" or not hole.concave or hole.length <= 0 or along <= 0:
+        return False
+    return hole.length >= CHANNEL_RUN * along and along >= CHANNEL_ELONGATION * across
+
+
+#: RAISED OR SUNK DETAIL (PLAN-fea-12): faces standing off a flat face by no more than RELIEF_SHARE of their
+#: body's diagonal - lettering, a logo, a shallow texture - on ONE side of it (raised above it, or sunk into
+#: it), touching nothing but that face (and its own faces), are relief: shape only, carrying no load of their
+#: own. Their walls, corners, fillets and rounds get no zone; one zone, as fine as the relief is high, keeps
+#: their shape. The share is the edge-break share (PLAN-fea-12's ROUND_MICRO): a 15 mm printer part's 0.05 mm
+#: lettering asked for 0.016 mm corners and walls of 2 elements through 0.06 mm strokes, 24.9M elements
+#: (6.6 times the part without it). A chamfer or a fillet at a face's edge touches the next wall, and a thin
+#: sheet's other side faces away from it, so neither is relief.
+RELIEF_SHARE = 1e-3
+#: a face is flat when its points lie within this share of the part's diagonal of one plane
+FLAT_SHARE = 1e-6
+#: two flat faces are one plane when their normals agree to this cosine (and their planes to FLAT_SHARE)
+PLANE_COS = 0.9999
+
+
+def _by_label(s: Surface) -> list[np.ndarray]:
+    """Each label's triangles (indices into s.tris)."""
+    order = np.argsort(s.label, kind="stable")
+    cuts = np.searchsorted(s.label[order], np.arange(len(s.names) + 1))
+    return [order[cuts[k]:cuts[k + 1]] for k in range(len(s.names))]
+
+
+def relief_groups(s: Surface, pairs: EdgePairs) -> list[dict]:
+    """The relief on the surface (see RELIEF_SHARE): [{"labels": set, "parent": label, "height": mm,
+    "raised": bool}], each group the faces of one connected piece of relief on one flat face."""
+    n = len(s.names)
+    tris_of = _by_label(s)
+    verts = [np.unique(s.tris[t]) for t in tris_of]
+    area = np.array([float(s.areas[t].sum()) for t in tris_of])
+    la, lb = s.label[pairs.tri_a], s.label[pairs.tri_b]
+    cross = la != lb
+    nbrs: list[set[int]] = [set() for _ in range(n)]
+    for a, b in set(zip(la[cross].tolist(), lb[cross].tolist(), strict=True)):
+        nbrs[a].add(b)
+        nbrs[b].add(a)
+    # each body's diagonal (the CAD's solids; a triangle file's welded pieces)
+    if s.body is not None and len(s.body) == n:
+        body = np.asarray(s.body, dtype=np.int64)
+    else:
+        comp = components(len(s.tris), pairs.tri_a, pairs.tri_b)
+        body = np.zeros(n, dtype=np.int64)
+        body[s.label] = comp
+    diag: dict[int, float] = {}
+    for b in np.unique(body).tolist():
+        ks = [k for k in np.flatnonzero(body == b).tolist() if len(verts[k])]
+        vs = np.unique(np.concatenate([verts[k] for k in ks])) if ks else np.zeros(0, dtype=np.int64)
+        diag[b] = float(np.linalg.norm(np.ptp(s.xyz[vs], axis=0))) if len(vs) else 0.0
+    # the flat faces: their outward normal and plane
+    tol = FLAT_SHARE * s.diag
+    plane: dict[int, tuple[np.ndarray, float]] = {}
+    for k in range(n):
+        t = tris_of[k]
+        if not len(t):
+            continue
+        nrm = (s.normals[t] * s.areas[t, None]).sum(axis=0)
+        ln = float(np.linalg.norm(nrm))
+        if ln <= 0:
+            continue
+        nrm = nrm / ln
+        off = float(s.centroids[t[0]] @ nrm)
+        if float(np.abs(s.xyz[verts[k]] @ nrm - off).max()) <= tol:
+            plane[k] = (nrm, off)
+    taken: set[int] = set()
+    parented: set[int] = set()
+    out: list[dict] = []
+    for f in sorted(plane, key=lambda k: -area[k]):
+        if f in parented or f in taken:
+            continue
+        nf, of = plane[f]
+        h_max = RELIEF_SHARE * diag[int(body[f])]
+        # the parent: this flat face and every flat face of its body in the same plane that touches it
+        parent, stack = {f}, [f]
+        while stack:
+            for x in nbrs[stack.pop()]:
+                if x not in parent and x in plane and body[x] == body[f] and float(plane[x][0] @ nf) >= PLANE_COS                         and abs(plane[x][1] - of) <= tol:
+                    parent.add(x)
+                    stack.append(x)
+        parented |= parent
+        if h_max <= tol:
+            continue
+        # every face of the body lying within h_max of the plane, on one side of it (a flat one facing the
+        # same way as the parent, never away: that is a thin sheet's other side), reached from the parent
+        side: dict[int, float] = {}
+        seen: set[int] = set(parent)
+        frontier = [g for p in parent for g in nbrs[p]]
+        while frontier:
+            g = frontier.pop()
+            if g in seen:
+                continue
+            seen.add(g)
+            if body[g] != body[f] or g in taken or not len(verts[g]):
+                continue
+            if g in plane and float(plane[g][0] @ nf) <= -PLANE_COS:
+                continue
+            d = s.xyz[verts[g]] @ nf - of
+            lo, hi = float(d.min()), float(d.max())
+            if hi > h_max or lo < -h_max or (lo < -tol and hi > tol):
+                continue
+            side[g] = hi if hi > tol else lo
+            frontier.extend(x for x in nbrs[g] if x not in seen)
+        # its connected pieces, each kept only when it touches nothing but itself and the parent
+        left = set(side)
+        while left:
+            seed = left.pop()
+            piece, stack = {seed}, [seed]
+            while stack:
+                for x in nbrs[stack.pop()]:
+                    if x in left:
+                        left.discard(x)
+                        piece.add(x)
+                        stack.append(x)
+            if any(x not in piece and x not in parent for g in piece for x in nbrs[g]):
+                continue
+            hs = [side[g] for g in piece]
+            height = max(abs(v) for v in hs)
+            if height <= tol:
+                continue
+            out.append({"labels": piece, "parent": f, "height": height, "raised": max(hs) > 0})
+            taken |= piece
+    return out
+
+
 def kind_of(arc: Arc, diag: float | None = None) -> tuple[str, str] | None:
     """(hot-spot type, shape word) for a concave round, None for a convex one - and None for a
     gently curved face that is no blend: a "fillet" whose radius is more than FILLET_MAX_SHARE of

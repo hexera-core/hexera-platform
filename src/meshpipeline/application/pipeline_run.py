@@ -760,6 +760,9 @@ async def _run_async(req: JobRequest) -> dict:
         initial_state["fea_connection"] = await asyncio.to_thread(confirmed_connection, str(session_id or ""))
         from meshpipeline.application.fea_check import confirmed_gap_joins
         initial_state["fea_gap_joins"] = await asyncio.to_thread(confirmed_gap_joins, str(session_id or ""))
+        # PLAN-fea-22: THE SIZE THE USER PICKED (the full-rules mesh unless they picked the quicker one)
+        from meshpipeline.application.fea_check import confirmed_plan_choice
+        initial_state["fea_plan_choice"] = await asyncio.to_thread(confirmed_plan_choice, str(session_id or ""))
 
         initial_state["repair_directives"] = list(req.repair_directives)
 

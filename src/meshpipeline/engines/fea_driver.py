@@ -254,6 +254,14 @@ def gap_joins_of(state) -> bool:
     return True if said is None else bool(said)
 
 
+def plan_cap_of(state) -> int | None:
+    """PLAN-fea-22: the element cap the user's size choice puts on the plan (state fea_plan_choice): the standard
+    mesh job's when they picked the quicker mesh, else None - the full-rules mesh, on the machine it needs."""
+    from meshpipeline.engines import fea_plan_options as PO
+    said = str((state or {}).get("fea_plan_choice") or "").strip().lower()
+    return PO.standard_elements() if said == PO.QUICKER else None
+
+
 def prepare_assembly(ws: Path, record: dict, surface, *, connection: str, source_path: str = "",
                      gap_joins: bool = True) -> dict:
     """PLAN-fea-17: an assembly's record for the plan, and its staged file for the mesher. Every
@@ -419,7 +427,7 @@ FLOOR_STEPS = 14
 #: PLAN-fea-8: THE ORDER A PLAN OVER ITS LIMIT IS COARSENED IN, kind by kind - the low-stress bulk first,
 #: the stress raisers last (27 Oct): rounds (sized for their shape only), capped sharp corners (their
 #: stress never settles), walls and the parts' own sizes, then holes, fillets and notches.
-COARSEN_ORDER: tuple[tuple[str, ...], ...] = (("round",), ("corner",), ("wall", "wall_spot", "part"),
+COARSEN_ORDER: tuple[tuple[str, ...], ...] = (("round", "relief"), ("corner",), ("wall", "wall_spot", "part"),
                                               ("hole", "fillet", "notch"))
 
 
@@ -554,7 +562,7 @@ def _with_ai(plan: dict) -> dict:
 
 
 def choose_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | None = None,
-                ceiling_s: float | None = None, ai: dict | None = None) -> dict:
+                ceiling_s: float | None = None, ai: dict | None = None, cap: int | None = None) -> dict:
     """PLAN-fea-8, NEVER A STOP BEFORE MESHING (Areen, 21 Oct): the rules' own plan when it fits under
     the limit; else the finest zones coarsened until it fits, never past what keeps elements valid,
     what that leaves short named (resolution_short); else - every zone at its validity minimum and
@@ -565,6 +573,11 @@ def choose_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | No
     mine, said = FA.budget_limit(limit, _used(ai))
     if said:
         limit, why = mine, said
+    if cap is not None and int(cap) < limit:
+        # PLAN-fea-22: THE QUICKER MESH THE USER PICKED - sized to the standard mesh job, the low-stress zones
+        # coarsened first (COARSEN_ORDER)
+        limit, why = int(cap), (f"the quicker mesh you picked: what the standard machine holds "
+                                f"({MESH_JOB_MEMORY_GIB:g} GiB)")
     plan = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai)
     if not plan["fits"] and FA.refines(_used(ai)):
         # AI-fea-5: THE AI'S REFINEMENTS NEVER COST THE RULES' OWN ZONES. Over the limit, they are
@@ -1200,8 +1213,14 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             if n == n0 + 1:
                 # PLAN-fea-8: the rules' own plan, coarsened to fit under the limit when it must - never a
                 # stop before meshing
+                cap = plan_cap_of(state)
                 plan = await asyncio.to_thread(choose_plan, record, surface, diag_m, levers=levers,
-                                               ceiling_s=ceiling_for(run), ai=ai)
+                                               ceiling_s=ceiling_for(run), ai=ai, cap=cap)
+                if cap is not None:
+                    _cite(job_id, [{"stage": "fea_plan", "decided": "size choice", "value": "quicker",
+                                    "rule": "PLAN-fea-22", "inputs": {"cap_elements": cap},
+                                    "words": ("You picked the quicker mesh: it is sized to the standard machine, "
+                                              "the low-stress zones coarsened first.")}])
                 chosen = {"limit": plan["limit"], "zone_floor_m": plan.get("zone_floor_m"),
                           "zone_floors": plan.get("zone_floors_m"), "coarsened": plan.get("coarsened")}
                 first_plan = plan

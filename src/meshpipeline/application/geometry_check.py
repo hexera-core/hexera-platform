@@ -15,6 +15,7 @@ import logging
 import math
 import tempfile
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -1647,12 +1648,21 @@ def _name(*, session_id: str, owner_id: str, purpose_text: str, interpretation: 
         from meshpipeline.cad.fea_measure import FACT_KEY
 
         facts[FACT_KEY] = fea_measurements(stored, facts, interpretation)
+        # PLAN-fea-22: A CAD PART'S MESH IS SIZED once the stage is shown (the size choice lands on it after)
+        from meshpipeline.application.fea_check import PLAN_FACT_KEY
+        sizing = ""
+        if (facts[FACT_KEY].get("measured") and facts[FACT_KEY].get("basis") == "cad"
+                and not fea_blocker(facts)):
+            sizing = uuid.uuid4().hex
+            facts[PLAN_FACT_KEY] = {"sizing": True, "token": sizing}
         proposal = _proposal(facts, {})
         result = {k: v for k, v in stored.items() if k not in _STAMPED_KEYS + _FAILURE_KEYS}
         result.update(named=True, facts=facts, vision={}, proposal=proposal,
                       purpose_text=purpose_text[:2000], naming_seconds=round(time.time() - started, 1))
         landed = _land_named(session_id, result, stored)
         logger.info("geometry naming %s - session=%s (an FEA part: nothing to name)", landed["status"], session_id)
+        if sizing and landed.get("status") == STATUS_READY:
+            size_fea_plan(session_id, stored, interpretation, token=sizing, started=started)
         return landed
 
     with tempfile.TemporaryDirectory(prefix=f"geometry_naming_{session_id[:8]}_") as tmp:
@@ -1690,6 +1700,66 @@ def _name(*, session_id: str, owner_id: str, purpose_text: str, interpretation: 
     logger.info("geometry naming %s - session=%s in %.1fs (model %s)", landed["status"], session_id,
                 result["naming_seconds"], "answered" if "error" not in vision else "unavailable")
     return landed
+
+
+def fea_blocker(facts: dict) -> bool:
+    """Whether the FEA stage stops this part (a surface, not a closed solid): nothing to size then."""
+    from meshpipeline.application.fea_check import blocker
+    return bool(blocker(facts)[0])
+
+
+#: PLAN-fea-22: what the naming keeps back of its own time limit after sizing the mesh (storing the result)
+SIZING_MARGIN_S = 90.0
+#: ...and the least worth starting: with less left, the mesh is sized when it runs
+SIZING_MIN_S = 60.0
+
+
+def size_fea_plan(session_id: str, stored: dict, interpretation: dict | None, *, token: str,
+                  started: float) -> dict:
+    """PLAN-fea-22: the size choice for the FEA part just shown (engines/fea_plan_options), planned as the run
+    plans it in a child stopped within the naming's own time, and stored on the check - unless the check moved on
+    meanwhile (a new naming, a new unit: its marker's token is no longer this one). Never raises; returns what it
+    stored (the options, or why they were not sized)."""
+    from meshpipeline.application.fea_check import PLAN_FACT_KEY
+    from meshpipeline.engines import fea_plan_options as PO
+
+    budget = min(PO.BUDGET_S, naming_limits_for(session_id)[0] - (time.time() - started) - SIZING_MARGIN_S)
+    got: dict = {"sized": False, "why": "There was no time left to size the mesh before it runs"}
+    if budget >= SIZING_MIN_S:
+        try:
+            from meshpipeline.cad.ingest import canonicalise
+            from meshpipeline.contracts.geometry_source import GeometryInterpretationRef, GeometrySourceRef
+            from meshpipeline.contracts.intake_formats import GeometryKind
+
+            ref = GeometrySourceRef.from_payload(stored["source"])
+            interp_ref = GeometryInterpretationRef.from_payload(interpretation) if interpretation else None
+            with tempfile.TemporaryDirectory(prefix="fea_plan_") as tmp:
+                work = Path(tmp)
+                canonical = canonicalise(_fetch(ref, work), work, stem="geometry", ecxml_form="placed")
+                if canonical.kind is GeometryKind.cad:
+                    prepared, _note = _prepared_coordinates(canonical.path, interp_ref, ref)
+                    options = PO.bounded(canonical.path, to_metres=float(prepared.to_metres), budget_s=budget)
+                    got = {"sized": True, **options} if options else \
+                        {"sized": False, "why": "The mesh could not be sized in time before it runs"}
+        except Exception as exc:  # noqa: BLE001 - the run sizes it; the stage says so
+            logger.warning("geometry check: the FEA mesh was not sized (%s: %s)", type(exc).__name__, str(exc)[:200])
+            got = {"sized": False, "why": "The mesh could not be sized before it runs"}
+    try:
+        current = read_check(session_id)
+        facts = dict((current or {}).get("facts") or {})
+        mark = facts.get(PLAN_FACT_KEY)
+        if not current or current.get("status") != STATUS_READY or not isinstance(mark, dict) \
+                or mark.get("token") != token:
+            logger.info("geometry check: the FEA size choice is stale (the check moved on) - session=%s", session_id)
+            return got
+        facts[PLAN_FACT_KEY] = got
+        write_status(session_id, STATUS_READY, **{**{k: v for k, v in current.items() if k not in _STAMPED_KEYS},
+                                                  "facts": facts})
+    except Exception:  # noqa: BLE001 - the stage then keeps saying it is sizing; the run sizes it
+        logger.exception("geometry check: the FEA size choice could not be stored - session=%s", session_id)
+    logger.info("geometry check: FEA size choice %s - session=%s", "sized" if got.get("sized") else "not sized",
+                session_id)
+    return got
 
 
 def _land_named(session_id: str, result: dict, named_from: dict) -> dict:

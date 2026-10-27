@@ -340,6 +340,9 @@ def fea_confirmation_message(body) -> str:
         gap_said = str(getattr(body, "gap_summary", "") or "").strip()
         if gap_said:
             parts.append(gap_said)
+    plan_said = str(getattr(body, "plan_summary", "") or "").strip()
+    if plan_said:
+        parts.append(plan_said)       # PLAN-fea-22: the size the user picked
     clean = str(getattr(body, "clean_summary", "") or "").strip().rstrip(".")
     if clean:
         parts.append(f"Clean check: {clean}.")

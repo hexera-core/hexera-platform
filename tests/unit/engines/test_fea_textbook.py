@@ -5,6 +5,7 @@
 | Case | Analysis | Closed form | Tolerance |
 |---|---|---|---|
 | plate with a hole, d/W = 0.2 | static | Heywood net-section Kt = 2 + (1 - d/W)^3 = 2.512 | 3% |
+| the same plate with ribs, meshed QUICKER (PLAN-fea-22: their capped corners coarsened) | static | the same Kt at the hole | 3% |
 | cantilever, L/h = 15, tip displacement | static | Timoshenko stiffness 1 / (L^3/3EI + L/kGA) | 1% |
 | thick-walled cylinder, b/a = 2, internal pressure | static | Lame hoop stress at the bore p (a^2+b^2)/(b^2-a^2) | 3% |
 | round bar with a U-groove, D = 50, d = 40, r = 5 (a quarter, symmetry) | static | Kt = 2.193 (converged axisymmetric reference; the published fits' 2.05-2.06 are about 6% low) | 3% |
@@ -89,6 +90,10 @@ def _torus(major, minor, z):
 
 
 PLATE = {"L": 200.0, "W": 100.0, "t": 5.0, "d": 20.0}
+#: PLAN-fea-22'S EVIDENCE: four 2 mm ribs on the plate near its held end (16 capped sharp corners at their roots),
+#: and the quicker mesh's cap as a share of the full-rules estimate - low enough that the corners are coarsened,
+#: high enough that nothing else is (the plan records it: the case checks it)
+RIBS = {"n": 4, "x0": 8.0, "pitch": 9.0, "w": 4.0, "h": 2.0, "share": 0.6}
 CANT = {"L": 300.0, "h": 20.0}
 LAME = {"a": 50.0, "b": 100.0, "h": 20.0, "p": 10e6}
 #: THE GROOVE'S REFERENCE. No closed form exists for a U-groove; the published fits give 2.06
@@ -108,6 +113,13 @@ def _shape(case: str):
     if case == "plate_hole":
         return _cut(_box(0, 0, 0, PLATE["L"], PLATE["W"], PLATE["t"]),
                     _cyl(PLATE["d"] / 2, PLATE["t"] + 2, PLATE["L"] / 2, PLATE["W"] / 2, -1))
+    if case == "plate_hole_quicker":
+        from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
+        plate = _box(0, 0, 0, PLATE["L"], PLATE["W"], PLATE["t"])
+        for k in range(int(RIBS["n"])):
+            rib = _box(RIBS["x0"] + k * RIBS["pitch"], 0.1 * PLATE["W"], PLATE["t"], RIBS["w"], 0.8 * PLATE["W"], RIBS["h"])
+            plate = BRepAlgoAPI_Fuse(plate, rib).Shape()
+        return _cut(plate, _cyl(PLATE["d"] / 2, PLATE["t"] + RIBS["h"] + 2, PLATE["L"] / 2, PLATE["W"] / 2, -1))
     if case == "cantilever":
         return _box(0, 0, 0, CANT["L"], CANT["h"], CANT["h"])
     if case == "lame":
@@ -173,6 +185,14 @@ def _mesh(case: str, ws: Path, monkeypatch) -> dict:
     monkeypatch.setattr(runtime, "get_engine", lambda _n: SimpleNamespace(
         run_cartesian_mesh=lambda w, timeout: {"rc": fea_adapter.mesh(w)}))
     state = {"purpose": "structural", **({"fea_connection": CONNECTION[case]} if case in CONNECTION else {})}
+    if case == "plate_hole_quicker":
+        # PLAN-fea-22: THE QUICKER MESH, its cap set to RIBS["share"] of this part's full-rules estimate
+        from meshpipeline.engines import fea_plan as P
+        from meshpipeline.engines import fea_plan_options as PO
+        record, surface, diag_m = FD.measure_staged(ws)
+        full = FD.choose_plan(record, surface, diag_m)["estimate"]["elements"]
+        monkeypatch.setattr(PO, "standard_elements", lambda: int(RIBS["share"] * full / P.LIMIT_AIM))
+        state["fea_plan_choice"] = "quicker"
     ok, marker, _o = asyncio.run(FD.drive(ws, state, job_id=f"acc-{case}", publish=None, run=_Run()))
     assert ok, f"the driver did not mesh {case}: {marker}"
     return json.loads((ws / "quality.json").read_text())
@@ -294,6 +314,45 @@ S
     smax = max(st[0] for st in _frd_stress(frd).values())
     net = gross * PLATE["W"] / (PLATE["W"] - PLATE["d"])
     return smax / net, 2.0 + (1 - PLATE["d"] / PLATE["W"]) ** 3, "net-section Kt"
+
+
+def _plate_quicker(ws, q):
+    """The ribbed plate meshed quicker: only the ribs' capped corners were coarsened (the plan says), and the hole
+    reads the plate's Kt - the stress at the ribs' sharp corners never settles, so the peak is read round the hole."""
+    plan = json.loads((ws / "fea_plan.json").read_text())
+    assert sorted({z["kind"] for z in plan["zones"] if z.get("short")}) == ["corner"], plan.get("resolution_short")
+    deck, nodes, nsets = _deck(ws)
+    fixed = _face(nodes, nsets, lambda p: abs(p[0]) < 1e-9)
+    load = _face(nodes, nsets, lambda p: abs(p[0] - PLATE["L"] * 1e-3) < 1e-9)
+    ids = nsets[fixed]
+    a = _pick(nodes, ids, lambda p: p[1] + p[2])
+    b = _pick(nodes, ids, lambda p: -p[1] + p[2])
+    c = _pick(nodes, ids, lambda p: p[1] - p[2])
+    gross = 1.0e6
+    _dat, frd = _solve(ws, "ktq", deck, _material("STEEL", 0.0) + f"""*NSET, NSET=PA
+{a}
+*NSET, NSET=PB
+{b}
+*NSET, NSET=PC
+{c}
+*BOUNDARY
+{fixed}, 1, 1, 0.0
+PA, 2, 3, 0.0
+PB, 3, 3, 0.0
+PC, 2, 2, 0.0
+*STEP
+*STATIC, SOLVER=ITERATIVE CHOLESKY
+*DSLOAD
+{load}, P, {-gross:.6e}
+*NODE FILE
+S
+*END STEP
+""")
+    centre = np.array([PLATE["L"] / 2, PLATE["W"] / 2]) * 1e-3
+    near = {n for n, p in nodes.items() if np.linalg.norm(p[:2] - centre) <= PLATE["d"] * 1e-3}
+    smax = max(st[0] for n, st in _frd_stress(frd).items() if n in near)
+    net = gross * PLATE["W"] / (PLATE["W"] - PLATE["d"])
+    return smax / net, 2.0 + (1 - PLATE["d"] / PLATE["W"]) ** 3, "net-section Kt at the hole, quicker mesh"
 
 
 def _cantilever(ws, q):
@@ -549,6 +608,7 @@ def _contact_compression(ws, q):
 
 CASES = {
     "plate_hole": ("static", _plate, 0.03),
+    "plate_hole_quicker": ("static", _plate_quicker, 0.03),
     "cantilever": ("static", _cantilever, 0.01),
     "lame": ("static", _lame, 0.03),
     "groove": ("static", _groove, 0.03),
