@@ -57,6 +57,9 @@ class Histogram:
     rows: list[tuple[float, float]]
     complete: bool = True
     cubes: int = 0
+    #: why an unfinished histogram stopped: "cubes" (its cube budget) or "elements" (the zones alone past
+    #: the count it was asked to reach); "" when it finished
+    stopped: str = ""
 
     def as_list(self) -> list[list[float]]:
         return [[_sig(h), _sig(v)] for h, v in self.rows]
@@ -363,16 +366,19 @@ class SizeField:
         return self.solid(np.asarray(p, dtype=float).reshape(-1, 3))
 
     def histogram(self, *, coarsest: float, per_h3: float, stop_elements: float = math.inf,
-                  workers: int | None = None) -> Histogram:
+                  workers: int | None = None, max_cubes: int | None = None) -> Histogram:
         n = plan_workers() if workers is None else max(1, int(workers))
+        cap = MAX_CUBES if max_cubes is None else int(max_cubes)
         if n <= 1:
-            return self._histogram(coarsest=coarsest, per_h3=per_h3, stop_elements=stop_elements, pool=None)
+            return self._histogram(coarsest=coarsest, per_h3=per_h3, stop_elements=stop_elements, pool=None,
+                                   max_cubes=cap)
         # PLAIN CHILD PROCESSES, never forked (the planner runs in a worker thread of an event loop) and
         # never multiprocessing's spawn (it re-imports the caller's main module, which a script without
         # a main guard runs again): `python -m` this module, fed by pipes
         pool = _Pool(self._spec, n)
         try:
-            return self._histogram(coarsest=coarsest, per_h3=per_h3, stop_elements=stop_elements, pool=pool)
+            return self._histogram(coarsest=coarsest, per_h3=per_h3, stop_elements=stop_elements, pool=pool,
+                                   max_cubes=cap)
         finally:
             pool.close()
 
@@ -385,7 +391,8 @@ class SizeField:
             return np.concatenate(parts)
         return np.concatenate([a for a, _b in parts]), np.concatenate([b for _a, b in parts])
 
-    def _histogram(self, *, coarsest: float, per_h3: float, stop_elements: float, pool) -> Histogram:
+    def _histogram(self, *, coarsest: float, per_h3: float, stop_elements: float, pool,
+                   max_cubes: int = MAX_CUBES) -> Histogram:
         """The volume at each zone size, from an octree over the part (see the module text).
         `coarsest` is the largest base size the plan may take: past it nothing is resolved finer.
         Stops (complete=False) once the zones alone pass `stop_elements` or MAX_CUBES."""
@@ -400,6 +407,7 @@ class SizeField:
         cubes = 0
         zones_only = 0.0
         complete = True
+        stopped = ""
         e_min = coarsest / 2.0 ** 14
         offsets = np.array([[i, j, k] for i in (-1, 1) for j in (-1, 1) for k in (-1, 1)], dtype=float)
         while len(centres):
@@ -423,8 +431,10 @@ class SizeField:
                 fine = np.isfinite(hz[leaf])
                 zones_only += float(np.sum(v[fine] / np.minimum(hz[leaf][fine], coarsest) ** 3)) * per_h3
             rest = centres[~leaf]
-            if zones_only > stop_elements or cubes + 8 * len(rest) > MAX_CUBES:
+            if zones_only > stop_elements or cubes + 8 * len(rest) > max_cubes:
                 complete = not len(rest)
+                if not complete:
+                    stopped = "elements" if zones_only > stop_elements else "cubes"
                 if len(rest):
                     # STOPPED SHORT: the cubes not yet resolved are still counted, at the size their
                     # zones ask for - an unfinished histogram is a floor on the estimate, never zero
@@ -438,7 +448,7 @@ class SizeField:
             centres = (rest[:, None, :] + offsets[None, :, :] * (e / 2.0)).reshape(-1, 3)
         h = np.concatenate(sizes) if sizes else np.zeros(0)
         v = np.concatenate(vols) if vols else np.zeros(0)
-        return Histogram(rows=_binned(h, v), complete=complete, cubes=int(cubes))
+        return Histogram(rows=_binned(h, v), complete=complete, cubes=int(cubes), stopped=stopped)
 
 
 def plan_workers() -> int:

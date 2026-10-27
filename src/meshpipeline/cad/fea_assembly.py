@@ -458,6 +458,18 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
         notes.append(f"The parts pass into each other in {n_pieces} places ({n_over} pair(s) of parts), too many to "
                      "mesh as one piece reliably, so each part is meshed on its own and tied where they meet "
                      "(bonded, but their nodes are not shared).")
+    # PLAN-fea-17: PARTS THAT MEET TANGENTIALLY (tangent_meets()): fused, they leave a crack of no angle between
+    # their outer faces that no mesher can fill, so a bonded assembly with one is meshed apart and tied from the
+    # start - never a fused pass that can only fail first (job bf863215, 27 Oct: each bolt's head fillet runs
+    # tangentially onto its washer, and the fused fill failed "PLC Error: A segment and a facet intersect" on
+    # every subset of the parts that held a bolt and its washer)
+    grazed = tangent_meets(fused) if mode == PAIR_BONDED and not fused.error else []
+    if grazed:
+        mode = PAIR_TIE
+        notes.append(f"{_list([' with '.join(part_id(x) for x in pq) for pq in grazed])} meet tangentially - a "
+                     "round of one runs onto the other's face at no angle - and parts fused there leave a crack no "
+                     "mesher can fill, so each part is meshed on its own and tied where they meet (bonded, but "
+                     "their nodes are not shared).")
     if mode == PAIR_BONDED:
         staged = fused.shape
         face_names = [[face_name(p, j) for p, j in o] for o in fused.face_origins]
@@ -550,10 +562,76 @@ def stage(shape, connection: str, out_dir: Path | str, *, names: list[str] | Non
                "notes": notes, "fuse_seconds": fused.seconds,
                "tie_first": ({"overlap_pieces": n_pieces, "overlap_pairs": n_over, "at": TIE_FIRST_PIECES}
                              if tie_first else None)}
+    if grazed:
+        sidecar["tangent_meets"] = [list(pq) for pq in grazed]   # absent when none: the sidecar is as before
     if skins:
         sidecar["skins"] = skins          # MESH-8 (absent when there is none: the sidecar is as before)
     (out / SIDECAR).write_text(json.dumps(sidecar, indent=1))
     return sidecar
+
+
+#: PLAN-fea-17: two parts MEET TANGENTIALLY where an outer face of each meets the other's at an edge of the fuse
+#: with their outward normals within this cosine of opposite (about 5 degrees): a crack of no angle between them.
+TANGENT_COS = -0.996
+
+
+def tangent_meets(fused: Fused) -> list[tuple[int, int]]:
+    """The pairs of parts (Part numbers, sorted) whose outer faces meet tangentially in the fuse: at an edge
+    shared by faces of solids of different parts that bound no other solid, outward normals (at the edge's
+    middle) within TANGENT_COS of opposite. Never raises: what cannot be read is no crack."""
+    try:
+        return _tangent_meets(fused)
+    except Exception:  # noqa: BLE001 - no crack found is the fuse as before
+        return []
+
+
+def _tangent_meets(fused: Fused) -> list[tuple[int, int]]:
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
+    from OCP.BRepLProp import BRepLProp_SLProps
+    from OCP.ShapeAnalysis import ShapeAnalysis_Surface
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_REVERSED
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    emap = _map(fused.shape, TopAbs_EDGE)
+    fmap = _map(fused.shape, TopAbs_FACE)
+    uses: dict[int, list] = {}
+    bounding: dict[int, int] = {}
+    for k, sol in enumerate(solids(fused.shape)):
+        ex = TopExp_Explorer(sol, TopAbs_FACE)
+        while ex.More():
+            f = TopoDS.Face_s(ex.Current())
+            fi = fmap.FindIndex(f)
+            bounding[fi] = bounding.get(fi, 0) + 1
+            e2 = TopExp_Explorer(f, TopAbs_EDGE)
+            while e2.More():
+                uses.setdefault(emap.FindIndex(e2.Current()), []).append((k, fi, f))
+                e2.Next()
+            ex.Next()
+    out: set[tuple[int, int]] = set()
+    for ei, lst in uses.items():
+        outer = [(k, f) for k, fi, f in lst if bounding.get(fi) == 1 and k < len(fused.solid_parts)]
+        if len({tuple(fused.solid_parts[k]) for k, _f in outer}) < 2:
+            continue
+        e = TopoDS.Edge_s(emap.FindKey(ei))
+        if BRep_Tool.Degenerated_s(e):
+            continue
+        c = BRepAdaptor_Curve(e)
+        p = c.Value(0.5 * (c.FirstParameter() + c.LastParameter()))
+        normals = []
+        for k, f in outer:
+            uv = ShapeAnalysis_Surface(BRep_Tool.Surface_s(f)).ValueOfUV(p, 1e-7)
+            pr = BRepLProp_SLProps(BRepAdaptor_Surface(f), uv.X(), uv.Y(), 1, 1e-9)
+            if pr.IsNormalDefined():
+                sign = -1.0 if f.Orientation() == TopAbs_REVERSED else 1.0
+                normals.append((tuple(fused.solid_parts[k]), sign * np.array(pr.Normal().Coord())))
+        for a in range(len(normals)):
+            for b in range(a + 1, len(normals)):
+                pa, pb = normals[a][0], normals[b][0]
+                if pa != pb and len(pa) == 1 and len(pb) == 1 and float(normals[a][1] @ normals[b][1]) < TANGENT_COS:
+                    out.add((min(pa[0], pb[0]), max(pa[0], pb[0])))
+    return sorted(out)
 
 
 def open_skins(solid):
@@ -620,7 +698,7 @@ def rename_record(rec: dict, names: list[str]) -> dict:
     out["hot_spots"] = [{**h, "faces": [nm(f) for f in h.get("faces") or []]} for h in rec.get("hot_spots") or []]
     if isinstance(rec.get("thickness"), dict) and rec["thickness"].get("face"):
         out["thickness"] = {**rec["thickness"], "face": nm(rec["thickness"]["face"])}
-    for key in ("cusps", "micro", "fold_back", "suspects", "coincident"):
+    for key in ("cusps", "micro", "fold_back", "suspects", "coincident", "bores"):
         if rec.get(key):
             out[key] = [{**c, "faces": [nm(f) for f in c.get("faces") or []]} for c in rec[key]]
     out["face_names"] = "Part_k_Face_j"

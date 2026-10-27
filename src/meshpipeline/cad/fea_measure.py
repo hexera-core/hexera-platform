@@ -567,11 +567,21 @@ def _record(s: ff.Surface, arcs: list[ff.Arc], *, bodies: int, basis: str, kinds
         return _r(min(vals)) if vals else None
 
     spots: list[dict] = []
-    for arc in ff.merge_coaxial(arcs):
+    bores: list[dict] = []
+    merged = ff.merge_coaxial(arcs)
+    for arc in merged:
         kind = ff.kind_of(arc, s.diag)
         if kind is None:
             continue
         t, shape = kind
+        outer = ff.is_bore(arc, merged) if t == ff.HOLE else None
+        if outer is not None:
+            # PLAN-fea-4: A BORE IS THE PART'S MAIN WALL, NOT A HOLE (ff.BORE_*): no hot spot - the wall rule
+            # sizes it - and it is named
+            bores.append({"faces": [s.names[k] for k in sorted(arc.labels)], "radius_mm": _r(arc.radius),
+                          "length_mm": _r(arc.length), "outer_radius_mm": _r(outer.radius),
+                          "outer_faces": [s.names[k] for k in sorted(outer.labels)]})
+            continue
         spot = {"type": t, "shape": SHAPE_WORDS[shape], "radius_mm": _r(arc.radius),
                 "span_deg": _r(arc.span_deg), "faces": [s.names[k] for k in sorted(arc.labels)],
                 "axis": _pt(arc.axis), "basis": arc.basis, "capped": False}
@@ -611,10 +621,15 @@ def _record(s: ff.Surface, arcs: list[ff.Arc], *, bodies: int, basis: str, kinds
     if basis == "triangles":
         notes.append("A triangle file has no CAD faces: its smooth regions (Region_k) are measured, "
                      "and its radii are fitted to the triangles.")
+    if bores:
+        notes.append(f"{len(bores)} bore(s) - the inside of a tube, sleeve or ring, sharing its axis with the "
+                     "outside - are the part's own wall, sized by the wall rule, not stress-raising holes.")
     out = {"version": VERSION, "basis": basis, "unit": "mm", "bodies": int(bodies),
            "face_names": "Face_k" if basis == "cad" else "Region_k", "faces": faces,
            "thickness": thickness, "hot_spots": spots, "counts": counts, "complete": complete,
            "notes": notes, "seconds": round(time.time() - started, 2)}
+    if bores:
+        out["bores"] = bores
     if thick.get("lying"):
         # PLAN-fea-3: FACES OF ONE BODY LYING ON EACH OTHER (a zero-thickness skin or membrane), read through
         # rather than taken for a wall - named, so the plan and the delivery can say where
