@@ -12,6 +12,10 @@ from dataclasses import dataclass, field, replace
 
 import meshpipeline.settings.cad_repair as rcfg
 from meshpipeline.cad.repair.contracts import DefectSeverity
+
+# The ONE list of sources whose directive may answer a held defect, shared with DirectedPlanner so
+# the planner's permission and the session's exemption cannot drift apart.
+from meshpipeline.cad.repair.directives import HELD_ANSWERING_SOURCES
 from meshpipeline.cad.repair.localize import analyzer_only
 from meshpipeline.cad.repair.plan import RulesPlanner, RunHistory
 from meshpipeline.cad.repair.session import HEAL_OP, OpVerdict, RepairSession
@@ -202,8 +206,17 @@ def run(shape, *, planner=None, budget: LoopBudget | None = None, tolerance_mm: 
             stopped = _terminal(work, NO_CANDIDATE)
             break
 
+        # WHAT THIS PROPOSAL IS ALLOWED TO ANSWER. A directive from the engineer being asked (or a
+        # replay of an operation this upload already kept) may aim at a held defect - that is
+        # DirectedPlanner's HELD_ANSWERING_SOURCES - so the session must not then roll the result
+        # back for touching the very entity the answer was about. The exemption is only what this
+        # directive aims at, never every hold on the part.
+        answered_held = (
+            frozenset({*(t.fingerprint for t in candidate.targets),
+                       candidate.defect_fingerprint})
+            if candidate.source in HELD_ANSWERING_SOURCES else frozenset())
         verdict = work.try_op(candidate.op, candidate.targets, candidate.defect_code,
-                              tolerance_mm=tolerance_mm)
+                              tolerance_mm=tolerance_mm, answered_held=answered_held)
         if candidate.source and work.log and work.log[-1] is verdict:
             # THE DIRECTIVE THAT PROPOSED IT travels with the verdict, so what became of an
             # engineer's decision is read off the log and never inferred from op names.

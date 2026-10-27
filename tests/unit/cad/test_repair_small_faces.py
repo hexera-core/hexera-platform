@@ -343,3 +343,49 @@ def test_a_small_face_code_with_no_located_entity_still_goes_to_a_person(sweep_o
                          "entities": []}}
     advice = recommend(repair_status="clean", report=report)
     assert advice.route == ROUTE_MANUAL_CLEANUP
+
+
+def test_the_engineers_own_approval_is_not_rolled_back_by_the_hold(monkeypatch):
+    """BEING ASKED AND ANSWERING IS THE POINT OF REVIEW.
+
+    DirectedPlanner lets a directive from the engineer (or a replay of an operation this upload
+    already kept) aim at a held defect. A blanket refusal in the session would roll back the very
+    repair the engineer just approved, so the exemption is what the directive answers.
+    """
+    face = _small_face_defect(index=6, fingerprint="face:approved")
+    outcome = OpOutcome(shape="swept",
+                        mapping=EntityMapping(moved={}, gone=frozenset({face.fingerprint}),
+                                              basis="kernel"),
+                        evidence={"faces_removed": 1,
+                                  "removed_fingerprints": ["face:approved"]})
+    session = _session_holding(frozenset({DefectCode.small_face}),
+                               scans=[((face,), True), ((), True)],
+                               measures=[_BEFORE, _BEFORE, _after(19)])
+
+    verdict = session.try_op(_SweepDouble(outcome), _targets_of(face), face.code,
+                             tolerance_mm=0.1,
+                             answered_held=frozenset({"face:approved"}))
+
+    assert verdict.status == KEPT, verdict.reason
+    assert session.shape == "swept"
+
+
+def test_an_approval_of_one_sliver_is_not_a_licence_to_sweep_another_held_face():
+    """The exemption is only what the directive answers. A second held face, which no engineer has
+    been asked about, must still stop the sweep."""
+    approved = _small_face_defect(index=6, fingerprint="face:approved")
+    other_held = _small_face_defect(index=7, fingerprint="face:other")
+    outcome = OpOutcome(shape="swept", mapping=EntityMapping.empty(),
+                        evidence={"faces_removed": 2,
+                                  "removed_fingerprints": ["face:approved", "face:other"]})
+    session = _session_holding(frozenset({DefectCode.small_face}),
+                               scans=[((approved, other_held), True), ((), True)],
+                               measures=[_BEFORE, _BEFORE, _after(18)])
+
+    verdict = session.try_op(_SweepDouble(outcome), _targets_of(approved), approved.code,
+                             tolerance_mm=0.1,
+                             answered_held=frozenset({"face:approved"}))
+
+    assert verdict.status == ROLLED_BACK
+    assert verdict.reason.startswith("held_for_review:")
+    assert "face:other" in verdict.reason

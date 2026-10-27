@@ -135,3 +135,44 @@ def test_load_bundle_recomputes_the_aggregate_when_given_the_benchmarks_own(tmp_
     bb.load_bundle(sealed)  # without the aggregate it still loads, as before
     with pytest.raises(ValueError, match="does not match the aggregate recomputed"):
         bb.load_bundle(sealed, aggregate)
+
+
+def test_a_bundle_sealed_before_a_summary_field_existed_still_verifies(tmp_path):
+    """An aggregate gains fields as the benchmark learns to report more. Demanding whole-dict
+    equality made every older bundle fail the moment a summary grew a key - exactly the "valid
+    evidence looks edited" failure this check exists to prevent."""
+    def aggregate_then(rows: list[dict]) -> dict:
+        return {"repaired": sum(1 for r in rows if r.get("outcome") == "repaired")}
+
+    def aggregate_now(rows: list[dict]) -> dict:
+        # the same figures, plus a field that did not exist when the bundle was sealed
+        return {**aggregate_then(rows), "unscored_because": {"registry-default": 1}}
+
+    writer = bb.BundleWriter(tmp_path / "bundle")
+    writer.write_row({"file": "a.step", "outcome": "repaired"})
+    sealed = writer.seal(_manifest(), settings={}, summary=aggregate_then([{"outcome": "repaired"}]))
+
+    _, _, summary, _ = bb.load_bundle(sealed, aggregate_now)
+    assert summary["repaired"] == 1
+    assert "unscored_because" not in summary, "the stored summary was not rewritten"
+
+
+def test_a_field_the_bundle_does_carry_is_still_policed(tmp_path):
+    """Tolerating absent fields must not tolerate edited ones: whatever the summary claims is
+    still checked, which is the whole of its tamper surface."""
+    def aggregate(rows: list[dict]) -> dict:
+        return {"repaired": sum(1 for r in rows if r.get("outcome") == "repaired"),
+                "later_field": "added since"}
+
+    writer = bb.BundleWriter(tmp_path / "bundle")
+    writer.write_row({"file": "a.step", "outcome": "repaired"})
+    sealed = writer.seal(_manifest(), settings={}, summary={"repaired": 1})
+
+    bb.load_bundle(sealed, aggregate)  # the new field alone is fine
+
+    summary_path = sealed / "summary.json"
+    body = json.loads(summary_path.read_text())
+    body["repaired"] = 99
+    summary_path.write_text(json.dumps(body))
+    with pytest.raises(ValueError, match="repaired"):
+        bb.load_bundle(sealed, aggregate)

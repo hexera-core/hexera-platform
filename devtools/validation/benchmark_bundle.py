@@ -145,10 +145,16 @@ def load_bundle(directory: Path,
             f"summary row_count {summary.get('row_count')} != rows.jsonl rows {len(rows)}")
     if recompute is not None:
         expected_summary = {**recompute(rows), "row_count": len(rows)}
-        if summary != expected_summary:
-            differing = sorted(
-                key for key in set(expected_summary) | set(summary)
-                if summary.get(key) != expected_summary.get(key))
+        # COMPARED FIELD BY FIELD, OVER WHAT THE BUNDLE ACTUALLY CLAIMS. An aggregate gains fields
+        # as the benchmark learns to report more, and a bundle sealed before one existed does not
+        # carry it: demanding whole-dict equality would make every older bundle fail the moment a
+        # summary grew a key, which is the "valid evidence looks edited" failure this check exists
+        # to prevent. So a key the stored summary does not have is skipped as predating it, and
+        # every key it DOES have must still match - which is the whole of its tamper surface,
+        # because a figure can only be edited where it is written.
+        differing = sorted(key for key, value in summary.items()
+                           if expected_summary.get(key) != value)
+        if differing:
             raise ValueError(
                 f"summary.json in {directory} does not match the aggregate recomputed from "
                 f"rows.jsonl; disagreeing field(s): {differing}")

@@ -181,7 +181,7 @@ class RepairSession:
         _write_step(self.shape, Path(destination))
 
     def try_op(self, op, targets: tuple[EntityRef, ...], defect_code, *,
-               tolerance_mm: float) -> OpVerdict:
+               tolerance_mm: float, answered_held: frozenset[str] = frozenset()) -> OpVerdict:
         """Apply one operation and keep it only if it repaired what it aimed at.
 
         THE ORDER IS THE DESIGN:
@@ -239,7 +239,13 @@ class RepairSession:
         # FixSmallFaces answering a `small_edge` on a held face would carry the face off while the
         # engineer is still being asked about it. Checked here, where what actually went is known,
         # and cheap enough to run before the caps.
-        held = held_fingerprints(self._defects, self._reserved)
+        # `answered_held` IS THE ENGINEER'S ANSWER. DirectedPlanner lets an engineer's directive -
+        # and a replay of an operation this upload already kept - aim at a held defect, because
+        # being asked and answering is the whole point of review. A blanket refusal here would
+        # roll back the repair the engineer just approved. So the exemption is exactly the
+        # entities that directive answers, and every OTHER held face is still protected: an
+        # approval of one sliver is not a licence to sweep the rest of the part.
+        held = held_fingerprints(self._defects, self._reserved) - frozenset(answered_held)
         removed_held = sorted(held.intersection(
             outcome.evidence.get("removed_fingerprints") or ()))
         if removed_held:
