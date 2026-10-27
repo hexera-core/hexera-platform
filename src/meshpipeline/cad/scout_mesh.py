@@ -146,7 +146,10 @@ def scout_mesh(path: Path, *, scale_to_m: float, mapped: bool = True) -> ScoutRe
         from meshpipeline.cad.open_ends import map_holes, shape_holes
         leaky = read_leaks(mesh, plain=imap)
         if leaky is not None:
-            holes = map_holes(mesh, leaky, shape_holes(mesh))
+            from meshpipeline.cad.inside_space import MIN_ACROSS, with_hole_leaks
+            shaped = shape_holes(mesh)
+            holes = map_holes(mesh, leaky, shaped)
+            with_hole_leaks(leaky, [h for h in shaped if h.equivalent_diameter < MIN_ACROSS * leaky.h])
             imap = leaky
     for h in holes:
         candidates.append(_opening(-1, "rim" if h.kind == "rim" else "ring", h.centroid, h.normal, h.area, h.wh,

@@ -266,7 +266,7 @@ def map_holes(mesh: _Mesh, imap, shaped: list[Hole]) -> list[Hole]:
     `passage=False`: the stage can click it, the proposal does not make it a port."""
     from dataclasses import replace
 
-    from meshpipeline.cad.inside_space import MIN_ACROSS, proposed_leak_size
+    from meshpipeline.cad.inside_space import MIN_ACROSS
     by_loop = {frozenset(map(tuple, np.round(h.loop, 12).tolist())): h for h in shaped}
     out: list[Hole] = []
     for m in imap.mouths:
@@ -297,9 +297,8 @@ def map_holes(mesh: _Mesh, imap, shaped: list[Hole]) -> list[Hole]:
     for h in shaped:
         if h.equivalent_diameter >= small:
             continue                        # the map saw this loop, and it is no mouth
-        if imap.leaks and (h.equivalent_diameter <= proposed_leak_size(imap)
-                           or imap.leak_at(h.centroid, 0.5 * h.equivalent_diameter + 1.5 * imap.h)):
-            continue                        # a leak the map closed, or one no wider (INS-8): no opening
+        if imap.leaks:
+            continue                        # a leaky reading's small hole is a leak (INS-8): no opening
         if any(float(np.linalg.norm(h.centroid - o.centroid)) <= 0.5 * max(h.equivalent_diameter, o.equivalent_diameter)
                for o in out):
             continue

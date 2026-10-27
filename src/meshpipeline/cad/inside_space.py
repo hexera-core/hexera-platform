@@ -186,7 +186,7 @@ class InsideMap:
         p = np.asarray(point, dtype=float)
         c = s.cubes
         if not len(c):
-            return math.inf
+            return float(np.linalg.norm(np.asarray(s.point, dtype=float) - p))
         sy, sz = self.shape[1], self.shape[2]
         ijk = np.stack([c // (sy * sz), (c // sz) % sy, c % sz], axis=1)
         cen = self.origin + (ijk + 0.5) * self.h
@@ -716,9 +716,12 @@ class LeakSpot:
     width: float                    # how wide the gap is, about (a cube's multiple)
     cubes: np.ndarray = field(repr=False)   # the closed cubes that close it (flat, grid order)
     passage: tuple[int, ...] = ()   # the passage labels on its fluid side
+    #: "gap" (closed cubes of the grid) or "hole" (a hole of the surface too small for the grid to
+    #: see, read by the shape rules: its width is its own size)
+    kind: str = "gap"
 
     def as_dict(self, mm_per_unit: float = 1000.0) -> dict:
-        return {"id": self.id, "width_mm": round(self.width * mm_per_unit, 3),
+        return {"id": self.id, "kind": self.kind, "width_mm": round(self.width * mm_per_unit, 3),
                 "at_mm": [round(float(v) * mm_per_unit, 2) for v in self.point], "cubes": int(len(self.cubes))}
 
 
@@ -1025,6 +1028,24 @@ def read_leaks(mesh, *, cells: int = GRID_CELLS, plain: InsideMap | None = None,
         if why is not None:
             why.append(f"the leaks could not be read ({type(exc).__name__})")
         return None
+
+
+def with_hole_leaks(imap: InsideMap, holes) -> None:
+    """A leaky reading's small holes are leaks too (INS-8): every hole of the surface too small for
+    the grid to see (the shape rules' `holes`, each with a centroid and an equivalent diameter) that
+    no leak already covers is listed as one, its width its own size - the map found the part's
+    inside only once gaps of that scale were closed, so a hole of that scale is one of them."""
+    if not imap.leaks:
+        return
+    for h in holes:
+        d = float(h.equivalent_diameter)
+        if any(imap.leak_distance(s, h.centroid) <= 0.5 * d + 1.5 * imap.h for s in imap.leaks):
+            continue
+        imap.leaks.append(LeakSpot(id=-1, point=np.asarray(h.centroid, dtype=float), width=d,
+                                   cubes=np.zeros(0, dtype=np.int64), kind="hole"))
+    imap.leaks.sort(key=lambda s: (-s.width, float(s.point[0]), float(s.point[1]), float(s.point[2])))
+    for k, s in enumerate(imap.leaks):
+        s.id = k
 
 
 def proposed_leak_size(imap: InsideMap) -> float:
