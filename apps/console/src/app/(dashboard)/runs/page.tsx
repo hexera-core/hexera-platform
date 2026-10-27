@@ -43,9 +43,6 @@ export default async function RunsPage({
         <div>
           <p className="page__eyebrow">Runs</p>
           <h1 className="page__title">Mesh runs</h1>
-          <p className="page__intro">
-            Every mesh you have asked for, newest first. Open one to see its steps and downloads.
-          </p>
         </div>
         <Link className="btn btn--gold" href="/runs/new">
           New run
@@ -71,7 +68,6 @@ export default async function RunsPage({
           <div className="panel__head">
             <div>
               <p className="label">All runs</p>
-              <p className="page__sub">How each run ended, how long it took and how many tries it needed.</p>
             </div>
           </div>
           <table className="table">
