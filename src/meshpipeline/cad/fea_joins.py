@@ -85,6 +85,8 @@ class Measured:
     skins: dict[int, list[int]] = field(default_factory=dict)
     #: pairs whose surfaces come within the gap limit but make no joint: whether they meet only on skins
     near: dict[tuple[int, int], dict] = field(default_factory=dict)
+    #: pairs OpenCASCADE could not measure (the reason): the fuse's answer stands for them
+    unmeasured: dict[tuple[int, int], str] = field(default_factory=dict)
     complete: bool = True
     seconds: float = 0.0
     tol: float = 0.0
@@ -154,11 +156,16 @@ def _shells(solid):
 
 
 def _dist(a, b) -> float:
+    """The shapes' distance, or nan when OpenCASCADE cannot say (BRepExtrema can throw StdFail_NotDone,
+    or finish without an answer): an unknown distance is never taken as apart, nor as touching."""
     from OCP.BRepExtrema import BRepExtrema_DistShapeShape
 
-    d = BRepExtrema_DistShapeShape(a, b)
-    d.Perform()
-    return float(d.Value()) if d.IsDone() else math.inf
+    try:
+        d = BRepExtrema_DistShapeShape(a, b)
+        d.Perform()
+        return float(d.Value()) if d.IsDone() else math.nan
+    except Exception:  # noqa: BLE001 - OpenCASCADE's failures arrive as plain exceptions; unknown
+        return math.nan
 
 
 def _area(shape) -> float:
@@ -368,7 +375,10 @@ def _on_face(points: np.ndarray, face, uv_mesh=None) -> tuple[np.ndarray, np.nda
     p, n = gp_Pnt(), gp_Vec()
     uv = np.full((len(points), 2), np.nan)
     for k, (x, y, z) in enumerate(points.tolist()):
-        proj.Perform(gp_Pnt(x, y, z))
+        try:
+            proj.Perform(gp_Pnt(x, y, z))
+        except Exception:  # noqa: BLE001, S112 - a point OpenCASCADE cannot project is not on the face
+            continue
         if proj.IsDone() and proj.NbPoints() > 0:
             uv[k] = proj.LowerDistanceParameters()
     found = np.isfinite(uv[:, 0])
@@ -379,10 +389,16 @@ def _on_face(points: np.ndarray, face, uv_mesh=None) -> tuple[np.ndarray, np.nda
         clear[found] = _inside_uv(uv[found], uv_mesh)
     inside = clear.copy()
     for k in np.flatnonzero(found & ~clear).tolist():
-        inside[k] = cls.Perform(gp_Pnt2d(float(uv[k, 0]), float(uv[k, 1]))) in (TopAbs_IN, TopAbs_ON)
+        try:
+            inside[k] = cls.Perform(gp_Pnt2d(float(uv[k, 0]), float(uv[k, 1]))) in (TopAbs_IN, TopAbs_ON)
+        except Exception:  # noqa: BLE001 - a point OpenCASCADE cannot classify is not on the face
+            inside[k] = False
     for k in np.flatnonzero(inside).tolist():
         u, v = float(uv[k, 0]), float(uv[k, 1])
-        props.Normal(u, v, p, n)
+        try:
+            props.Normal(u, v, p, n)
+        except Exception:  # noqa: BLE001, S112 - no normal there: the point is not on the face
+            continue
         mag = n.Magnitude()
         if mag <= 0:
             continue
@@ -570,7 +586,7 @@ def measure(parts: list, *, tol: float, mm_per_unit: float, budget_s: float = BU
             if workers > 1 and brep.exists():
                 got = _spawned(brep, len(parts), pairs, workers, tol=tol, mm=mm, budget_s=budget_s, t0=t0)
                 if got is not None:
-                    out.joints, out.near, out.skins, out.complete = got
+                    out.joints, out.near, out.skins, out.complete, out.unmeasured = got
                     out.seconds = round(time.time() - t0, 2)
                     return out
             return _measure(parts, tol=tol, mm=mm, budget_s=budget_s, t0=t0, out=out, only=set(pairs))
@@ -661,15 +677,17 @@ def _spawned(brep, n_parts: int, pairs: list, workers: int, *, tol: float, mm: f
                                                stderr=subprocess.DEVNULL), out))
             joints: dict = {}
             near: dict = {}
+            unmeasured: dict = {}
             skins: dict[int, set[int]] = {}
             complete = True
             for proc, out in procs:
                 rc = proc.wait(timeout=max(left, 0.0) + 120.0)
                 if rc != 0 or not out.exists():
                     return None
-                j, n, sk, c = pickle.loads(out.read_bytes())  # noqa: S301 - our own worker's answer, in our own temp dir
+                j, n, sk, c, um = pickle.loads(out.read_bytes())  # noqa: S301 - our own worker's answer, in our own temp dir
                 joints.update(j)
                 near.update(n)
+                unmeasured.update(um)
                 for part, fs in sk.items():
                     skins.setdefault(part, set()).update(fs)
                 complete = complete and c
@@ -681,7 +699,8 @@ def _spawned(brep, n_parts: int, pairs: list, workers: int, *, tol: float, mm: f
                     proc.kill()
                     proc.wait()
     return ({k: joints[k] for k in sorted(joints)}, {k: near[k] for k in sorted(near)},
-            {k: sorted(v) for k, v in sorted(skins.items())}, complete)
+            {k: sorted(v) for k, v in sorted(skins.items())}, complete,
+            {k: unmeasured[k] for k in sorted(unmeasured)})
 
 
 def _worker(spec_path: str, out_path: str) -> int:
@@ -706,7 +725,7 @@ def _worker(spec_path: str, out_path: str) -> int:
     res = _measure(parts, tol=float(spec["tol"]), mm=float(spec["mm"]), budget_s=float(spec["budget_s"]), t0=t0,
                    out=Measured(tol=float(spec["tol"])), only={(int(i), int(j)) for i, j in spec["pairs"]})
     with open(out_path, "wb") as fh:
-        pickle.dump((res.joints, res.near, res.skins, res.complete), fh)
+        pickle.dump((res.joints, res.near, res.skins, res.complete, res.unmeasured), fh)
     return 0
 
 
@@ -741,101 +760,108 @@ def _measure(parts: list, *, tol: float, mm: float, budget_s: float, t0: float, 
         limit = max(gap_limit_mm(diags[i] * mm, diags[j] * mm) / mm, tol)
         if not _meet(boxes[i], boxes[j], 2 * limit):
             continue
-        si, sj = surface(i), surface(j)
-        reach = limit + SAMPLE_SHARE * (diags[i] + diags[j]) + tol
-        if not len(si.centres) or not len(sj.centres):
-            continue
-        d_ij, k_ij = sj.tree.query(si.centres, k=1, distance_upper_bound=reach)
-        d_ji, k_ji = si.tree.query(sj.centres, k=1, distance_upper_bound=reach)
-        n_i, n_j = np.isfinite(d_ij), np.isfinite(d_ji)
-        if not n_i.any() and not n_j.any():
-            # NO SURFACE NEAR: the smaller wholly inside the other, or apart
-            small, big = (i, j) if diags[i] <= diags[j] else (j, i)
-            if _inside(boxes[small], boxes[big], tol):
-                vm = TopTools_IndexedMapOfShape()
-                TopExp.MapShapes_s(parts[small], TopAbs_VERTEX, vm)
-                if vm.Extent():
-                    p = BRep_Tool.Pnt_s(TopoDS.Vertex_s(vm.FindKey(1)))
-                    if BRepClass3d_SolidClassifier(parts[big], p, tol).State() == TopAbs_IN:
-                        c = 0.5 * (boxes[small][0] + boxes[small][1])
-                        out.joints[(i, j)] = Joint(i + 1, j + 1, OVERLAP, area=0.0, at=[float(x) for x in c],
-                                                   limit=limit)
-            continue
-        # THE FACES THAT COME NEAR: each pair of a face of one part and the face of the other nearest it,
-        # with the closest their points come (the tessellation's word: within a triangle's size)
-        approx: dict[tuple[int, int], float] = {}
-        for fa_, fb_, dd in zip(si.face[n_i].tolist(), sj.face[k_ij[n_i]].tolist(), d_ij[n_i].tolist(), strict=True):
-            approx[(fa_, fb_)] = min(approx.get((fa_, fb_), math.inf), dd)
-        for fa_, fb_, dd in zip(si.face[k_ji[n_j]].tolist(), sj.face[n_j].tolist(), d_ji[n_j].tolist(), strict=True):
-            approx[(fa_, fb_)] = min(approx.get((fa_, fb_), math.inf), dd)
-        pairs_tried += len(approx)
-        if pairs_tried > MAX_FACE_PAIRS:
-            out.complete = False
-            break
-        min_area = MIN_JOIN_AREA_SHARE * min(diags[i], diags[j]) ** 2
-        fine = max(min(limit / 2.0, math.sqrt(min_area) / 2.0), tol)
-        slack = SAMPLE_SHARE * (diags[i] + diags[j]) + tol
-        seen: list[tuple[int, int, np.ndarray, np.ndarray, np.ndarray, float]] = []
-        flush: dict[tuple[int, int], float] = {}
-        crossing: list[tuple[int, int, list[np.ndarray]]] = []
-        for (a, b), dd in sorted(approx.items()):
-            pa, aa, ga, on_a = _facing(si, a, faces[i][a], sj, b, faces[j][b], limit, reach, tol, fine)
-            _pb, ab, _gb, on_b = _facing(sj, b, faces[j][b], si, a, faces[i][a], limit, reach, tol, fine)
-            if min(on_a, on_b) > 0:
-                flush[(a, b)] = min(on_a, on_b)
-            if aa.sum() > 0 and ab.sum() > 0:
-                seen.append((a, b, pa, aa, ga, float(ab.sum())))
+        try:
+            si, sj = surface(i), surface(j)
+            reach = limit + SAMPLE_SHARE * (diags[i] + diags[j]) + tol
+            if not len(si.centres) or not len(sj.centres):
                 continue
-            # surfaces that may cross: only where their points come within a triangle's size
-            if dd <= slack and _dist(faces[i][a], faces[j][b]) <= tol:
-                at = _crossing_points(faces[i][a], faces[j][b], tol)
-                if at:
-                    crossing.append((a, b, at))
-        # SKINS: a face the other part passes through, and that crosses or lies on another face of its
-        # own part, is a surface of no thickness there - its crossing joins nothing
-        for p, side in ((i, {c[0] for c in crossing}), (j, {c[1] for c in crossing})):
-            _skin_faces(parts[p], faces[p], fboxes[p], side, tol, MIN_JOIN_AREA_SHARE * diags[p] ** 2,
-                        skin.setdefault(p, {}), surface(p), 2.0 * SAMPLE_SHARE * diags[p])
-        sk_i, sk_j = skin.get(i, {}), skin.get(j, {})
-        area_a: dict[int, float] = {}
-        area_b: dict[int, float] = {}
-        touch = 0.0
-        gaps: list[tuple[float, float]] = []
-        where = np.zeros(3)
-        wsum = 0.0
-        for a, b, pa, aa, ga, fb_area in seen:
-            fa_area = float(aa.sum())
-            touch += float(aa[ga <= tol].sum())
-            area_a[a] = area_a.get(a, 0.0) + fa_area
-            area_b[b] = area_b.get(b, 0.0) + fb_area
-            gaps.extend(zip(ga.tolist(), aa.tolist(), strict=True))
-            where += (pa * aa[:, None]).sum(axis=0)
-            wsum += fa_area
-        skinned = any(sk_i.get(c[0]) or sk_j.get(c[1]) for c in crossing)
-        crossing = [c for c in crossing if not sk_i.get(c[0]) and not sk_j.get(c[1])]
-        total_a, total_b = sum(area_a.values()), sum(area_b.values())
-        if min(total_a, total_b) >= min_area:
-            g = np.array(gaps)
-            order = np.argsort(g[:, 0])
-            cum = np.cumsum(g[order, 1])
-            gap = 0.0 if touch >= min_area else float(g[order, 0][np.searchsorted(cum, 0.5 * cum[-1])])
-            fa_keep = sorted(a + 1 for a, v in area_a.items() if v >= 0.1 * min_area)
-            fb_keep = sorted(b + 1 for b, v in area_b.items() if v >= 0.1 * min_area)
-            out.joints[(i, j)] = Joint(i + 1, j + 1, TOUCHING if gap <= tol else GAP, faces_a=fa_keep,
-                                       faces_b=fb_keep, area=min(total_a, total_b),
-                                       gap=0.0 if gap <= tol else gap,
-                                       gap_max=float(g[:, 0].max()) if gap > tol else 0.0,
-                                       at=[float(x) for x in where / max(wsum, 1e-300)], limit=limit)
-        elif crossing or sum(flush.values()) >= min_area:
-            # surfaces that cross, or lie on each other the same side out: the parts pass into each other
-            if not crossing:
-                crossing = [(a, b, [0.5 * (fboxes[i][a][0] + fboxes[i][a][1])]) for (a, b) in flush]
-            pts = np.vstack([np.array(at) for _a, _b, at in crossing])
-            out.joints[(i, j)] = Joint(i + 1, j + 1, OVERLAP, faces_a=sorted({a + 1 for a, _b, _at in crossing}),
-                                       faces_b=sorted({b + 1 for _a, b, _at in crossing}),
-                                       at=[float(x) for x in pts.mean(axis=0)], limit=limit)
-        else:
-            out.near[(i, j)] = {"skin_only": skinned}
+            d_ij, k_ij = sj.tree.query(si.centres, k=1, distance_upper_bound=reach)
+            d_ji, k_ji = si.tree.query(sj.centres, k=1, distance_upper_bound=reach)
+            n_i, n_j = np.isfinite(d_ij), np.isfinite(d_ji)
+            if not n_i.any() and not n_j.any():
+                # NO SURFACE NEAR: the smaller wholly inside the other, or apart
+                small, big = (i, j) if diags[i] <= diags[j] else (j, i)
+                if _inside(boxes[small], boxes[big], tol):
+                    vm = TopTools_IndexedMapOfShape()
+                    TopExp.MapShapes_s(parts[small], TopAbs_VERTEX, vm)
+                    if vm.Extent():
+                        p = BRep_Tool.Pnt_s(TopoDS.Vertex_s(vm.FindKey(1)))
+                        if BRepClass3d_SolidClassifier(parts[big], p, tol).State() == TopAbs_IN:
+                            c = 0.5 * (boxes[small][0] + boxes[small][1])
+                            out.joints[(i, j)] = Joint(i + 1, j + 1, OVERLAP, area=0.0, at=[float(x) for x in c],
+                                                       limit=limit)
+                continue
+            # THE FACES THAT COME NEAR: each pair of a face of one part and the face of the other nearest it,
+            # with the closest their points come (the tessellation's word: within a triangle's size)
+            approx: dict[tuple[int, int], float] = {}
+            for fa_, fb_, dd in zip(si.face[n_i].tolist(), sj.face[k_ij[n_i]].tolist(), d_ij[n_i].tolist(), strict=True):
+                approx[(fa_, fb_)] = min(approx.get((fa_, fb_), math.inf), dd)
+            for fa_, fb_, dd in zip(si.face[k_ji[n_j]].tolist(), sj.face[n_j].tolist(), d_ji[n_j].tolist(), strict=True):
+                approx[(fa_, fb_)] = min(approx.get((fa_, fb_), math.inf), dd)
+            pairs_tried += len(approx)
+            if pairs_tried > MAX_FACE_PAIRS:
+                out.complete = False
+                break
+            min_area = MIN_JOIN_AREA_SHARE * min(diags[i], diags[j]) ** 2
+            fine = max(min(limit / 2.0, math.sqrt(min_area) / 2.0), tol)
+            slack = SAMPLE_SHARE * (diags[i] + diags[j]) + tol
+            seen: list[tuple[int, int, np.ndarray, np.ndarray, np.ndarray, float]] = []
+            flush: dict[tuple[int, int], float] = {}
+            crossing: list[tuple[int, int, list[np.ndarray]]] = []
+            for (a, b), dd in sorted(approx.items()):
+                pa, aa, ga, on_a = _facing(si, a, faces[i][a], sj, b, faces[j][b], limit, reach, tol, fine)
+                _pb, ab, _gb, on_b = _facing(sj, b, faces[j][b], si, a, faces[i][a], limit, reach, tol, fine)
+                if min(on_a, on_b) > 0:
+                    flush[(a, b)] = min(on_a, on_b)
+                if aa.sum() > 0 and ab.sum() > 0:
+                    seen.append((a, b, pa, aa, ga, float(ab.sum())))
+                    continue
+                # surfaces that may cross: only where their points come within a triangle's size
+                if dd <= slack and _dist(faces[i][a], faces[j][b]) <= tol:
+                    at = _crossing_points(faces[i][a], faces[j][b], tol)
+                    if at:
+                        crossing.append((a, b, at))
+            # SKINS: a face the other part passes through, and that crosses or lies on another face of its
+            # own part, is a surface of no thickness there - its crossing joins nothing
+            for p, side in ((i, {c[0] for c in crossing}), (j, {c[1] for c in crossing})):
+                _skin_faces(parts[p], faces[p], fboxes[p], side, tol, MIN_JOIN_AREA_SHARE * diags[p] ** 2,
+                            skin.setdefault(p, {}), surface(p), 2.0 * SAMPLE_SHARE * diags[p])
+            sk_i, sk_j = skin.get(i, {}), skin.get(j, {})
+            area_a: dict[int, float] = {}
+            area_b: dict[int, float] = {}
+            touch = 0.0
+            gaps: list[tuple[float, float]] = []
+            where = np.zeros(3)
+            wsum = 0.0
+            for a, b, pa, aa, ga, fb_area in seen:
+                fa_area = float(aa.sum())
+                touch += float(aa[ga <= tol].sum())
+                area_a[a] = area_a.get(a, 0.0) + fa_area
+                area_b[b] = area_b.get(b, 0.0) + fb_area
+                gaps.extend(zip(ga.tolist(), aa.tolist(), strict=True))
+                where += (pa * aa[:, None]).sum(axis=0)
+                wsum += fa_area
+            skinned = any(sk_i.get(c[0]) or sk_j.get(c[1]) for c in crossing)
+            crossing = [c for c in crossing if not sk_i.get(c[0]) and not sk_j.get(c[1])]
+            total_a, total_b = sum(area_a.values()), sum(area_b.values())
+            if min(total_a, total_b) >= min_area:
+                g = np.array(gaps)
+                order = np.argsort(g[:, 0])
+                cum = np.cumsum(g[order, 1])
+                gap = 0.0 if touch >= min_area else float(g[order, 0][np.searchsorted(cum, 0.5 * cum[-1])])
+                fa_keep = sorted(a + 1 for a, v in area_a.items() if v >= 0.1 * min_area)
+                fb_keep = sorted(b + 1 for b, v in area_b.items() if v >= 0.1 * min_area)
+                out.joints[(i, j)] = Joint(i + 1, j + 1, TOUCHING if gap <= tol else GAP, faces_a=fa_keep,
+                                           faces_b=fb_keep, area=min(total_a, total_b),
+                                           gap=0.0 if gap <= tol else gap,
+                                           gap_max=float(g[:, 0].max()) if gap > tol else 0.0,
+                                           at=[float(x) for x in where / max(wsum, 1e-300)], limit=limit)
+            elif crossing or sum(flush.values()) >= min_area:
+                # surfaces that cross, or lie on each other the same side out: the parts pass into each other
+                if not crossing:
+                    crossing = [(a, b, [0.5 * (fboxes[i][a][0] + fboxes[i][a][1])]) for (a, b) in flush]
+                pts = np.vstack([np.array(at) for _a, _b, at in crossing])
+                out.joints[(i, j)] = Joint(i + 1, j + 1, OVERLAP, faces_a=sorted({a + 1 for a, _b, _at in crossing}),
+                                           faces_b=sorted({b + 1 for _a, b, _at in crossing}),
+                                           at=[float(x) for x in pts.mean(axis=0)], limit=limit)
+            else:
+                out.near[(i, j)] = {"skin_only": skinned}
+        except Exception as exc:  # noqa: BLE001 - OpenCASCADE threw on this pair (StdFail_NotDone...)
+            # ONE PAIR OPENCASCADE CANNOT MEASURE is that pair unmeasured: the fuse's answer stands for it,
+            # and the rest of the assembly is measured as ever
+            out.joints.pop((i, j), None)
+            out.near.pop((i, j), None)
+            out.unmeasured[(i, j)] = f"{type(exc).__name__}: {exc}"[:200]
     out.skins = {p + 1: sorted(k + 1 for k, v in c.items() if v) for p, c in skin.items() if any(c.values())}
     out.seconds = round(time.time() - t0, 2)
     return out
@@ -887,6 +913,8 @@ def check(fuse_interfaces: list[dict], parts: list, measured: Measured, *, tol: 
     found: list[dict] = []
     for (i, j), itf in sorted(said.items()):
         names = [f"Part_{i + 1}", f"Part_{j + 1}"]
+        if (i, j) in measured.unmeasured:
+            continue
         if (i, j) not in measured.joints and measured.complete:
             near = measured.near.get((i, j))
             gap = _dist(_shells(parts[i]), _shells(parts[j]))
@@ -894,7 +922,7 @@ def check(fuse_interfaces: list[dict], parts: list, measured: Measured, *, tol: 
                 found.append({"kind": "skin_only", "parts": names,
                               "words": f"the fuse joins {names[0]} and {names[1]}, but they meet only on faces "
                                        "that cross their own part"})
-            elif gap > tol:
+            elif gap > tol:      # an unknown distance (nan) is no finding
                 found.append({"kind": "apart", "parts": names,
                               "words": f"the fuse joins {names[0]} and {names[1]}, but their surfaces are "
                                        f"{gap * mm:.3g} mm apart"})
